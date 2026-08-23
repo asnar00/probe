@@ -191,3 +191,55 @@ inst str {s}, [sp, #{i 0..16380 /4}]
 ; --- system: enable the FPU at boot (CPACR_EL1.FPEN) ---
 inst msr cpacr_el1, {x}
 inst isb
+
+; --- NEON, 64-bit (D-register) forms: the SIMD tier for TxN vectors ---
+; arrangement suffixes are literal text; the learner sees only the
+; register and lane-index slots. Integer lanes: 8b/4h/2s; float: 2s.
+reg v = v0..v31
+
+inst add {v}.8b, {v}.8b, {v}.8b
+inst add {v}.4h, {v}.4h, {v}.4h
+inst add {v}.2s, {v}.2s, {v}.2s
+inst sub {v}.8b, {v}.8b, {v}.8b
+inst sub {v}.4h, {v}.4h, {v}.4h
+inst sub {v}.2s, {v}.2s, {v}.2s
+inst mul {v}.8b, {v}.8b, {v}.8b
+inst mul {v}.4h, {v}.4h, {v}.4h
+inst mul {v}.2s, {v}.2s, {v}.2s
+
+; bitwise ops ignore the lane arrangement; the 8b form serves them all
+inst and {v}.8b, {v}.8b, {v}.8b
+inst orr {v}.8b, {v}.8b, {v}.8b
+inst eor {v}.8b, {v}.8b, {v}.8b
+
+; per-lane variable shifts (negative amounts shift right)
+inst sshl {v}.8b, {v}.8b, {v}.8b
+inst sshl {v}.4h, {v}.4h, {v}.4h
+inst sshl {v}.2s, {v}.2s, {v}.2s
+inst ushl {v}.8b, {v}.8b, {v}.8b
+inst ushl {v}.4h, {v}.4h, {v}.4h
+inst ushl {v}.2s, {v}.2s, {v}.2s
+
+; float lanes
+inst fadd {v}.2s, {v}.2s, {v}.2s
+inst fsub {v}.2s, {v}.2s, {v}.2s
+inst fmul {v}.2s, {v}.2s, {v}.2s
+inst fdiv {v}.2s, {v}.2s, {v}.2s
+
+; splat from a general register
+inst dup {v}.8b, {w}
+inst dup {v}.4h, {w}
+inst dup {v}.2s, {w}
+
+; lane extract to a general register (zero- and sign-extending)
+inst umov {w}, {v}.b[{i 0..7}]
+inst umov {w}, {v}.h[{i 0..3}]
+inst umov {w}, {v}.s[{i 0..1}]
+inst smov {x}, {v}.b[{i 0..7}]
+inst smov {x}, {v}.h[{i 0..3}]
+inst smov {x}, {v}.s[{i 0..1}]
+
+; lane insert from a general register
+inst ins {v}.b[{i 0..7}], {w}
+inst ins {v}.h[{i 0..3}], {w}
+inst ins {v}.s[{i 0..1}], {w}
