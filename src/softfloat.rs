@@ -18,149 +18,156 @@
 use crate::ssa::{self, CastOp, FCond, Inst, Module, Type};
 
 pub const RUNTIME: &str = r#"
-type $fp = { sign: i1, exp: i11, frac: i52 }
-type $fp32 = { sign: i1, exp: i8, frac: i23 }
+type $fp = { sign: u1, exp: u11, frac: u52 }
+type $fp32 = { sign: u1, exp: u8, frac: u23 }
 
-fn @__fp_qnan() -> i64 {
-    %q: i64 = iconst 0x7ff8000000000000
+fn @__fp_qnan() -> u64 {
+    %q: u64 = iconst 0x7ff8000000000000
     ret %q
 }
 
-fn @__fp_isnan(%b: i64) -> i1 {
+fn @__fp_isnan(%b: u64) -> u1 {
     %p: $fp = bitcast %b
-    %e: i11 = extract %p, exp
-    %f: i52 = extract %p, frac
-    %emax: i11 = iconst 2047
-    %isemax: i1 = icmp.eq %e, %emax
-    %zf: i52 = iconst 0
-    %fnz: i1 = icmp.ne %f, %zf
-    %x: i64 = zext %isemax
-    %y: i64 = zext %fnz
-    %z: i64 = and %x, %y
-    %r: i1 = trunc %z
+    %e: u11 = extract %p, exp
+    %f: u52 = extract %p, frac
+    %emax: u11 = iconst 2047
+    %isemax: u1 = icmp.eq %e, %emax
+    %zf: u52 = iconst 0
+    %fnz: u1 = icmp.ne %f, %zf
+    %x: u64 = ext %isemax
+    %y: u64 = ext %fnz
+    %z: u64 = and %x, %y
+    %r: u1 = trunc %z
     ret %r
 }
 
-fn @__fp_zero(%s: i1) -> i64 {
-    %e: i11 = iconst 0
-    %f: i52 = iconst 0
+fn @__fp_zero(%s: u1) -> u64 {
+    %e: u11 = iconst 0
+    %f: u52 = iconst 0
     %p: $fp = pack %s, %e, %f
-    %r: i64 = bitcast %p
+    %r: u64 = bitcast %p
     ret %r
 }
 
-fn @__fp_inf(%s: i1) -> i64 {
-    %e: i11 = iconst 2047
-    %f: i52 = iconst 0
+fn @__fp_inf(%s: u1) -> u64 {
+    %e: u11 = iconst 2047
+    %f: u52 = iconst 0
     %p: $fp = pack %s, %e, %f
-    %r: i64 = bitcast %p
+    %r: u64 = bitcast %p
     ret %r
 }
 
-fn @__fp_pack(%s: i1, %e: i64, %m: i64) -> i64 {
-    %e11: i11 = trunc %e
-    %m52: i52 = trunc %m
+fn @__fp_pack(%s: u1, %e: u64, %m: u64) -> u64 {
+    %e11: u11 = trunc %e
+    %m52: u52 = trunc %m
     %p: $fp = pack %s, %e11, %m52
-    %r: i64 = bitcast %p
+    %r: u64 = bitcast %p
     ret %r
 }
 
 ; m56 holds 1.frac plus guard/round/sticky in [2^55, 2^56); round to
-; nearest even, overflowing to infinity, flushing e <= 0 to zero
-fn @__fp_round(%s: i1, %e: i64, %m56: i64) -> i64 {
-    %one: i64 = iconst 1
-    %three: i64 = iconst 3
-    %zero: i64 = iconst 0
-    %m: i64 = lshr %m56, %three
-    %gsh: i64 = iconst 2
-    %g0: i64 = lshr %m56, %gsh
-    %g: i64 = and %g0, %one
-    %rs: i64 = and %m56, %three
-    %lsb: i64 = and %m, %one
-    %any0: i64 = or %rs, %lsb
-    %any: i1 = icmp.ne %any0, %zero
-    %anyi: i64 = zext %any
-    %up: i64 = and %g, %anyi
-    %m2: i64 = iadd %m, %up
-    %top: i64 = iconst 0x20000000000000
-    %ovf: i1 = icmp.eq %m2, %top
-    %ef: i64, %mf: i64 = if %ovf {
-        %m3: i64 = lshr %m2, %one
-        %e2: i64 = iadd %e, %one
+; nearest even, overflowing to infinity. Exponents travel as u64: an
+; underflowed exponent shows up as a huge value (top bit set) or zero.
+fn @__fp_round(%s: u1, %e: u64, %m56: u64) -> u64 {
+    %one: u64 = iconst 1
+    %three: u64 = iconst 3
+    %zero: u64 = iconst 0
+    %m: u64 = shr %m56, %three
+    %gsh: u64 = iconst 2
+    %g0: u64 = shr %m56, %gsh
+    %g: u64 = and %g0, %one
+    %rs: u64 = and %m56, %three
+    %lsb: u64 = and %m, %one
+    %any0: u64 = or %rs, %lsb
+    %any: u1 = icmp.ne %any0, %zero
+    %anyi: u64 = ext %any
+    %up: u64 = and %g, %anyi
+    %m2: u64 = iadd %m, %up
+    %top: u64 = iconst 0x20000000000000
+    %ovf: u1 = icmp.eq %m2, %top
+    %ef: u64, %mf: u64 = if %ovf {
+        %m3: u64 = shr %m2, %one
+        %e2: u64 = iadd %e, %one
         yield %e2, %m3
     } else {
         yield %e, %m2
     }
-    %emax: i64 = iconst 2047
-    %oo: i1 = icmp.sge %ef, %emax
-    if %oo {
-        %inf: i64 = call @__fp_inf(%s)
-        ret %inf
+    %hi: u64 = iconst 0x8000000000000000
+    %neg: u1 = icmp.ge %ef, %hi
+    if %neg {
+        %z0: u64 = call @__fp_zero(%s)
+        ret %z0
     }
-    %uu: i1 = icmp.sle %ef, %zero
+    %uu: u1 = icmp.eq %ef, %zero
     if %uu {
-        %z: i64 = call @__fp_zero(%s)
+        %z: u64 = call @__fp_zero(%s)
         ret %z
     }
-    %r: i64 = call @__fp_pack(%s, %ef, %mf)
+    %emax: u64 = iconst 2047
+    %oo: u1 = icmp.ge %ef, %emax
+    if %oo {
+        %inf: u64 = call @__fp_inf(%s)
+        ret %inf
+    }
+    %r: u64 = call @__fp_pack(%s, %ef, %mf)
     ret %r
 }
 
-fn @__f64_add(%a: i64, %b: i64) -> i64 {
-    %an: i1 = call @__fp_isnan(%a)
+fn @__f64_add(%a: u64, %b: u64) -> u64 {
+    %an: u1 = call @__fp_isnan(%a)
     if %an {
-        %q1: i64 = call @__fp_qnan()
+        %q1: u64 = call @__fp_qnan()
         ret %q1
     }
-    %bn: i1 = call @__fp_isnan(%b)
+    %bn: u1 = call @__fp_isnan(%b)
     if %bn {
-        %q2: i64 = call @__fp_qnan()
+        %q2: u64 = call @__fp_qnan()
         ret %q2
     }
     %pa: $fp = bitcast %a
     %pb: $fp = bitcast %b
-    %sa: i1 = extract %pa, sign
-    %sb: i1 = extract %pb, sign
-    %ea0: i11 = extract %pa, exp
-    %eb0: i11 = extract %pb, exp
-    %fa0: i52 = extract %pa, frac
-    %fb0: i52 = extract %pb, frac
-    %ea: i64 = zext %ea0
-    %eb: i64 = zext %eb0
-    %fa: i64 = zext %fa0
-    %fb: i64 = zext %fb0
-    %emax: i64 = iconst 2047
-    %zero: i64 = iconst 0
-    %one: i64 = iconst 1
-    %ainf: i1 = icmp.eq %ea, %emax
+    %sa: u1 = extract %pa, sign
+    %sb: u1 = extract %pb, sign
+    %ea0: u11 = extract %pa, exp
+    %eb0: u11 = extract %pb, exp
+    %fa0: u52 = extract %pa, frac
+    %fb0: u52 = extract %pb, frac
+    %ea: u64 = ext %ea0
+    %eb: u64 = ext %eb0
+    %fa: u64 = ext %fa0
+    %fb: u64 = ext %fb0
+    %emax: u64 = iconst 2047
+    %zero: u64 = iconst 0
+    %one: u64 = iconst 1
+    %ainf: u1 = icmp.eq %ea, %emax
     if %ainf {
-        %binf: i1 = icmp.eq %eb, %emax
+        %binf: u1 = icmp.eq %eb, %emax
         if %binf {
-            %same: i1 = icmp.eq %a, %b
+            %same: u1 = icmp.eq %a, %b
             if %same {
                 ret %a
             }
-            %q3: i64 = call @__fp_qnan()
+            %q3: u64 = call @__fp_qnan()
             ret %q3
         }
         ret %a
     }
-    %binf2: i1 = icmp.eq %eb, %emax
+    %binf2: u1 = icmp.eq %eb, %emax
     if %binf2 {
         ret %b
     }
-    %az: i1 = icmp.eq %ea, %zero
-    %bz: i1 = icmp.eq %eb, %zero
-    %azi: i64 = zext %az
-    %bzi: i64 = zext %bz
-    %bothz0: i64 = and %azi, %bzi
-    %bothz: i1 = trunc %bothz0
+    %az: u1 = icmp.eq %ea, %zero
+    %bz: u1 = icmp.eq %eb, %zero
+    %azi: u64 = ext %az
+    %bzi: u64 = ext %bz
+    %bothz0: u64 = and %azi, %bzi
+    %bothz: u1 = trunc %bothz0
     if %bothz {
-        %sai: i64 = zext %sa
-        %sbi: i64 = zext %sb
-        %sb0: i64 = and %sai, %sbi
-        %sr: i1 = trunc %sb0
-        %z1: i64 = call @__fp_zero(%sr)
+        %sai: u64 = ext %sa
+        %sbi: u64 = ext %sb
+        %sb0: u64 = and %sai, %sbi
+        %sr: u1 = trunc %sb0
+        %z1: u64 = call @__fp_zero(%sr)
         ret %z1
     }
     if %az {
@@ -169,520 +176,521 @@ fn @__f64_add(%a: i64, %b: i64) -> i64 {
     if %bz {
         ret %a
     }
-    %hid: i64 = iconst 0x10000000000000
-    %Ma: i64 = or %fa, %hid
-    %Mb: i64 = or %fb, %hid
+    %hid: u64 = iconst 0x10000000000000
+    %Ma: u64 = or %fa, %hid
+    %Mb: u64 = or %fb, %hid
     ; order operands so the larger magnitude comes first
-    %lte: i1 = icmp.slt %ea, %eb
-    %eqe: i1 = icmp.eq %ea, %eb
-    %ltm: i1 = icmp.ult %Ma, %Mb
-    %eqei: i64 = zext %eqe
-    %ltmi: i64 = zext %ltm
-    %t0: i64 = and %eqei, %ltmi
-    %ltei: i64 = zext %lte
-    %sw0: i64 = or %ltei, %t0
-    %swap: i1 = trunc %sw0
-    %sx: i1, %sy: i1, %e1: i64, %M1: i64, %e2: i64, %M2: i64 = if %swap {
+    %lte: u1 = icmp.lt %ea, %eb
+    %eqe: u1 = icmp.eq %ea, %eb
+    %ltm: u1 = icmp.lt %Ma, %Mb
+    %eqei: u64 = ext %eqe
+    %ltmi: u64 = ext %ltm
+    %t0: u64 = and %eqei, %ltmi
+    %ltei: u64 = ext %lte
+    %sw0: u64 = or %ltei, %t0
+    %swap: u1 = trunc %sw0
+    %sx: u1, %sy: u1, %e1: u64, %M1: u64, %e2: u64, %M2: u64 = if %swap {
         yield %sb, %sa, %eb, %Mb, %ea, %Ma
     } else {
         yield %sa, %sb, %ea, %Ma, %eb, %Mb
     }
-    %d: i64 = isub %e1, %e2
-    %three: i64 = iconst 3
-    %M13: i64 = shl %M1, %three
-    %M23: i64 = shl %M2, %three
-    %c60: i64 = iconst 60
-    %far: i1 = icmp.sgt %d, %c60
-    %sh: i64, %st: i64 = if %far {
+    %d: u64 = isub %e1, %e2
+    %three: u64 = iconst 3
+    %M13: u64 = shl %M1, %three
+    %M23: u64 = shl %M2, %three
+    %c60: u64 = iconst 60
+    %far: u1 = icmp.gt %d, %c60
+    %sh: u64, %st: u64 = if %far {
         yield %zero, %one
     } else {
-        %sh0: i64 = lshr %M23, %d
-        %msk0: i64 = shl %one, %d
-        %msk: i64 = isub %msk0, %one
-        %lost: i64 = and %M23, %msk
-        %lnz: i1 = icmp.ne %lost, %zero
-        %sti: i64 = zext %lnz
+        %sh0: u64 = shr %M23, %d
+        %msk0: u64 = shl %one, %d
+        %msk: u64 = isub %msk0, %one
+        %lost: u64 = and %M23, %msk
+        %lnz: u1 = icmp.ne %lost, %zero
+        %sti: u64 = ext %lnz
         yield %sh0, %sti
     }
-    %sxi: i64 = zext %sx
-    %syi: i64 = zext %sy
-    %sdif: i64 = xor %sxi, %syi
-    %ssame: i1 = icmp.eq %sdif, %zero
-    %m56: i64, %ef: i64 = if %ssame {
-        %shj: i64 = or %sh, %st
-        %sum: i64 = iadd %M13, %shj
-        %lim: i64 = iconst 0x100000000000000
-        %c: i1 = icmp.uge %sum, %lim
-        %mm: i64, %ee: i64 = if %c {
-            %lo: i64 = and %sum, %one
-            %s1: i64 = lshr %sum, %one
-            %s2: i64 = or %s1, %lo
-            %ep: i64 = iadd %e1, %one
+    %sxi: u64 = ext %sx
+    %syi: u64 = ext %sy
+    %sdif: u64 = xor %sxi, %syi
+    %ssame: u1 = icmp.eq %sdif, %zero
+    %m56: u64, %ef: u64 = if %ssame {
+        %shj: u64 = or %sh, %st
+        %sum: u64 = iadd %M13, %shj
+        %lim: u64 = iconst 0x100000000000000
+        %c: u1 = icmp.ge %sum, %lim
+        %mm: u64, %ee: u64 = if %c {
+            %lo: u64 = and %sum, %one
+            %s1: u64 = shr %sum, %one
+            %s2: u64 = or %s1, %lo
+            %ep: u64 = iadd %e1, %one
             yield %s2, %ep
         } else {
             yield %sum, %e1
         }
         yield %mm, %ee
     } else {
-        %d0: i64 = isub %M13, %sh
-        %d1: i64 = isub %d0, %st
-        %dj: i64 = or %d1, %st
-        %cz: i1 = icmp.eq %dj, %zero
+        %d0: u64 = isub %M13, %sh
+        %d1: u64 = isub %d0, %st
+        %dj: u64 = or %d1, %st
+        %cz: u1 = icmp.eq %dj, %zero
         if %cz {
-            %pos: i1 = iconst 0
-            %z2: i64 = call @__fp_zero(%pos)
+            %pos: u1 = iconst 0
+            %z2: u64 = call @__fp_zero(%pos)
             ret %z2
         }
-        %top55: i64 = iconst 0x80000000000000
-        %mn: i64, %en: i64 = loop(%mc: i64 = %dj, %ec: i64 = %e1) {
-            %ok: i1 = icmp.uge %mc, %top55
+        %top55: u64 = iconst 0x80000000000000
+        %mn: u64, %en: u64 = loop(%mc: u64 = %dj, %ec: u64 = %e1) {
+            %ok: u1 = icmp.ge %mc, %top55
             if %ok {
                 break %mc, %ec
             }
-            %mc2: i64 = shl %mc, %one
-            %ec2: i64 = isub %ec, %one
+            %mc2: u64 = shl %mc, %one
+            %ec2: u64 = isub %ec, %one
             continue %mc2, %ec2
         }
         yield %mn, %en
     }
-    %r: i64 = call @__fp_round(%sx, %ef, %m56)
+    %r: u64 = call @__fp_round(%sx, %ef, %m56)
     ret %r
 }
 
-fn @__f64_sub(%a: i64, %b: i64) -> i64 {
-    %sgn: i64 = iconst 0x8000000000000000
-    %nb: i64 = xor %b, %sgn
-    %r: i64 = call @__f64_add(%a, %nb)
+fn @__f64_sub(%a: u64, %b: u64) -> u64 {
+    %sgn: u64 = iconst 0x8000000000000000
+    %nb: u64 = xor %b, %sgn
+    %r: u64 = call @__f64_add(%a, %nb)
     ret %r
 }
 
-fn @__f64_mul(%a: i64, %b: i64) -> i64 {
-    %an: i1 = call @__fp_isnan(%a)
+fn @__f64_mul(%a: u64, %b: u64) -> u64 {
+    %an: u1 = call @__fp_isnan(%a)
     if %an {
-        %q1: i64 = call @__fp_qnan()
+        %q1: u64 = call @__fp_qnan()
         ret %q1
     }
-    %bn: i1 = call @__fp_isnan(%b)
+    %bn: u1 = call @__fp_isnan(%b)
     if %bn {
-        %q2: i64 = call @__fp_qnan()
+        %q2: u64 = call @__fp_qnan()
         ret %q2
     }
     %pa: $fp = bitcast %a
     %pb: $fp = bitcast %b
-    %sa: i1 = extract %pa, sign
-    %sb: i1 = extract %pb, sign
-    %ea0: i11 = extract %pa, exp
-    %eb0: i11 = extract %pb, exp
-    %fa0: i52 = extract %pa, frac
-    %fb0: i52 = extract %pb, frac
-    %ea: i64 = zext %ea0
-    %eb: i64 = zext %eb0
-    %fa: i64 = zext %fa0
-    %fb: i64 = zext %fb0
-    %sai: i64 = zext %sa
-    %sbi: i64 = zext %sb
-    %sx0: i64 = xor %sai, %sbi
-    %sx: i1 = trunc %sx0
-    %emax: i64 = iconst 2047
-    %zero: i64 = iconst 0
-    %az: i1 = icmp.eq %ea, %zero
-    %bz: i1 = icmp.eq %eb, %zero
-    %ainf: i1 = icmp.eq %ea, %emax
+    %sa: u1 = extract %pa, sign
+    %sb: u1 = extract %pb, sign
+    %ea0: u11 = extract %pa, exp
+    %eb0: u11 = extract %pb, exp
+    %fa0: u52 = extract %pa, frac
+    %fb0: u52 = extract %pb, frac
+    %ea: u64 = ext %ea0
+    %eb: u64 = ext %eb0
+    %fa: u64 = ext %fa0
+    %fb: u64 = ext %fb0
+    %sai: u64 = ext %sa
+    %sbi: u64 = ext %sb
+    %sx0: u64 = xor %sai, %sbi
+    %sx: u1 = trunc %sx0
+    %emax: u64 = iconst 2047
+    %zero: u64 = iconst 0
+    %az: u1 = icmp.eq %ea, %zero
+    %bz: u1 = icmp.eq %eb, %zero
+    %ainf: u1 = icmp.eq %ea, %emax
     if %ainf {
         if %bz {
-            %q3: i64 = call @__fp_qnan()
+            %q3: u64 = call @__fp_qnan()
             ret %q3
         }
-        %i1_: i64 = call @__fp_inf(%sx)
+        %i1_: u64 = call @__fp_inf(%sx)
         ret %i1_
     }
-    %binf: i1 = icmp.eq %eb, %emax
+    %binf: u1 = icmp.eq %eb, %emax
     if %binf {
         if %az {
-            %q4: i64 = call @__fp_qnan()
+            %q4: u64 = call @__fp_qnan()
             ret %q4
         }
-        %i2_: i64 = call @__fp_inf(%sx)
+        %i2_: u64 = call @__fp_inf(%sx)
         ret %i2_
     }
     if %az {
-        %z1: i64 = call @__fp_zero(%sx)
+        %z1: u64 = call @__fp_zero(%sx)
         ret %z1
     }
     if %bz {
-        %z2: i64 = call @__fp_zero(%sx)
+        %z2: u64 = call @__fp_zero(%sx)
         ret %z2
     }
-    %hid: i64 = iconst 0x10000000000000
-    %Ma: i64 = or %fa, %hid
-    %Mb: i64 = or %fb, %hid
-    %bias: i64 = iconst 1023
-    %es: i64 = iadd %ea, %eb
-    %e: i64 = isub %es, %bias
+    %hid: u64 = iconst 0x10000000000000
+    %Ma: u64 = or %fa, %hid
+    %Mb: u64 = or %fb, %hid
+    %bias: u64 = iconst 1023
+    %es: u64 = iadd %ea, %eb
+    %e: u64 = isub %es, %bias
     ; 53x53 -> 106-bit product from 32-bit partials
-    %m32: i64 = iconst 0xffffffff
-    %c32: i64 = iconst 32
-    %a0: i64 = and %Ma, %m32
-    %a1: i64 = lshr %Ma, %c32
-    %b0: i64 = and %Mb, %m32
-    %b1: i64 = lshr %Mb, %c32
-    %p00: i64 = imul %a0, %b0
-    %p01: i64 = imul %a0, %b1
-    %p10: i64 = imul %a1, %b0
-    %p11: i64 = imul %a1, %b1
-    %p00h: i64 = lshr %p00, %c32
-    %p01l: i64 = and %p01, %m32
-    %p10l: i64 = and %p10, %m32
-    %mid0: i64 = iadd %p00h, %p01l
-    %mid: i64 = iadd %mid0, %p10l
-    %midl: i64 = and %mid, %m32
-    %los: i64 = shl %midl, %c32
-    %p00l: i64 = and %p00, %m32
-    %lo: i64 = or %los, %p00l
-    %p01h: i64 = lshr %p01, %c32
-    %p10h: i64 = lshr %p10, %c32
-    %midh: i64 = lshr %mid, %c32
-    %hi0: i64 = iadd %p11, %p01h
-    %hi1: i64 = iadd %hi0, %p10h
-    %hi: i64 = iadd %hi1, %midh
+    %m32: u64 = iconst 0xffffffff
+    %c32: u64 = iconst 32
+    %a0: u64 = and %Ma, %m32
+    %a1: u64 = shr %Ma, %c32
+    %b0: u64 = and %Mb, %m32
+    %b1: u64 = shr %Mb, %c32
+    %p00: u64 = imul %a0, %b0
+    %p01: u64 = imul %a0, %b1
+    %p10: u64 = imul %a1, %b0
+    %p11: u64 = imul %a1, %b1
+    %p00h: u64 = shr %p00, %c32
+    %p01l: u64 = and %p01, %m32
+    %p10l: u64 = and %p10, %m32
+    %mid0: u64 = iadd %p00h, %p01l
+    %mid: u64 = iadd %mid0, %p10l
+    %midl: u64 = and %mid, %m32
+    %los: u64 = shl %midl, %c32
+    %p00l: u64 = and %p00, %m32
+    %lo: u64 = or %los, %p00l
+    %p01h: u64 = shr %p01, %c32
+    %p10h: u64 = shr %p10, %c32
+    %midh: u64 = shr %mid, %c32
+    %hi0: u64 = iadd %p11, %p01h
+    %hi1: u64 = iadd %hi0, %p10h
+    %hi: u64 = iadd %hi1, %midh
     ; take 56 bits from the top of the 106-bit product
-    %c49: i64 = iconst 49
-    %c15: i64 = iconst 15
-    %th: i64 = shl %hi, %c15
-    %tl: i64 = lshr %lo, %c49
-    %t0_: i64 = or %th, %tl
-    %lm0: i64 = iconst 0x1ffffffffffff
-    %lost: i64 = and %lo, %lm0
-    %lnz: i1 = icmp.ne %lost, %zero
-    %sti: i64 = zext %lnz
-    %t: i64 = or %t0_, %sti
-    %lim: i64 = iconst 0x100000000000000
-    %c: i1 = icmp.uge %t, %lim
-    %one: i64 = iconst 1
-    %m56: i64, %ef: i64 = if %c {
-        %lo1: i64 = and %t, %one
-        %t1: i64 = lshr %t, %one
-        %t2: i64 = or %t1, %lo1
-        %e2: i64 = iadd %e, %one
+    %c49: u64 = iconst 49
+    %c15: u64 = iconst 15
+    %th: u64 = shl %hi, %c15
+    %tl: u64 = shr %lo, %c49
+    %t0_: u64 = or %th, %tl
+    %lm0: u64 = iconst 0x1ffffffffffff
+    %lost: u64 = and %lo, %lm0
+    %lnz: u1 = icmp.ne %lost, %zero
+    %sti: u64 = ext %lnz
+    %t: u64 = or %t0_, %sti
+    %lim: u64 = iconst 0x100000000000000
+    %c: u1 = icmp.ge %t, %lim
+    %one: u64 = iconst 1
+    %m56: u64, %ef: u64 = if %c {
+        %lo1: u64 = and %t, %one
+        %t1: u64 = shr %t, %one
+        %t2: u64 = or %t1, %lo1
+        %e2: u64 = iadd %e, %one
         yield %t2, %e2
     } else {
         yield %t, %e
     }
-    %r: i64 = call @__fp_round(%sx, %ef, %m56)
+    %r: u64 = call @__fp_round(%sx, %ef, %m56)
     ret %r
 }
 
-fn @__f64_div(%a: i64, %b: i64) -> i64 {
-    %an: i1 = call @__fp_isnan(%a)
+fn @__f64_div(%a: u64, %b: u64) -> u64 {
+    %an: u1 = call @__fp_isnan(%a)
     if %an {
-        %q1: i64 = call @__fp_qnan()
+        %q1: u64 = call @__fp_qnan()
         ret %q1
     }
-    %bn: i1 = call @__fp_isnan(%b)
+    %bn: u1 = call @__fp_isnan(%b)
     if %bn {
-        %q2: i64 = call @__fp_qnan()
+        %q2: u64 = call @__fp_qnan()
         ret %q2
     }
     %pa: $fp = bitcast %a
     %pb: $fp = bitcast %b
-    %sa: i1 = extract %pa, sign
-    %sb: i1 = extract %pb, sign
-    %ea0: i11 = extract %pa, exp
-    %eb0: i11 = extract %pb, exp
-    %fa0: i52 = extract %pa, frac
-    %fb0: i52 = extract %pb, frac
-    %ea: i64 = zext %ea0
-    %eb: i64 = zext %eb0
-    %fa: i64 = zext %fa0
-    %fb: i64 = zext %fb0
-    %sai: i64 = zext %sa
-    %sbi: i64 = zext %sb
-    %sx0: i64 = xor %sai, %sbi
-    %sx: i1 = trunc %sx0
-    %emax: i64 = iconst 2047
-    %zero: i64 = iconst 0
-    %az: i1 = icmp.eq %ea, %zero
-    %bz: i1 = icmp.eq %eb, %zero
-    %ainf: i1 = icmp.eq %ea, %emax
-    %binf: i1 = icmp.eq %eb, %emax
+    %sa: u1 = extract %pa, sign
+    %sb: u1 = extract %pb, sign
+    %ea0: u11 = extract %pa, exp
+    %eb0: u11 = extract %pb, exp
+    %fa0: u52 = extract %pa, frac
+    %fb0: u52 = extract %pb, frac
+    %ea: u64 = ext %ea0
+    %eb: u64 = ext %eb0
+    %fa: u64 = ext %fa0
+    %fb: u64 = ext %fb0
+    %sai: u64 = ext %sa
+    %sbi: u64 = ext %sb
+    %sx0: u64 = xor %sai, %sbi
+    %sx: u1 = trunc %sx0
+    %emax: u64 = iconst 2047
+    %zero: u64 = iconst 0
+    %az: u1 = icmp.eq %ea, %zero
+    %bz: u1 = icmp.eq %eb, %zero
+    %ainf: u1 = icmp.eq %ea, %emax
+    %binf: u1 = icmp.eq %eb, %emax
     if %ainf {
         if %binf {
-            %q3: i64 = call @__fp_qnan()
+            %q3: u64 = call @__fp_qnan()
             ret %q3
         }
-        %i1_: i64 = call @__fp_inf(%sx)
+        %i1_: u64 = call @__fp_inf(%sx)
         ret %i1_
     }
     if %binf {
-        %z1: i64 = call @__fp_zero(%sx)
+        %z1: u64 = call @__fp_zero(%sx)
         ret %z1
     }
     if %bz {
         if %az {
-            %q4: i64 = call @__fp_qnan()
+            %q4: u64 = call @__fp_qnan()
             ret %q4
         }
-        %i2_: i64 = call @__fp_inf(%sx)
+        %i2_: u64 = call @__fp_inf(%sx)
         ret %i2_
     }
     if %az {
-        %z2: i64 = call @__fp_zero(%sx)
+        %z2: u64 = call @__fp_zero(%sx)
         ret %z2
     }
-    %hid: i64 = iconst 0x10000000000000
-    %Ma: i64 = or %fa, %hid
-    %Mb: i64 = or %fb, %hid
-    %bias: i64 = iconst 1023
-    %ed: i64 = isub %ea, %eb
-    %e0: i64 = iadd %ed, %bias
-    %one: i64 = iconst 1
-    %small: i1 = icmp.ult %Ma, %Mb
-    %rem0: i64, %e: i64 = if %small {
-        %r2: i64 = shl %Ma, %one
-        %e1: i64 = isub %e0, %one
+    %hid: u64 = iconst 0x10000000000000
+    %Ma: u64 = or %fa, %hid
+    %Mb: u64 = or %fb, %hid
+    %bias: u64 = iconst 1023
+    %ed: u64 = isub %ea, %eb
+    %e0: u64 = iadd %ed, %bias
+    %one: u64 = iconst 1
+    %small: u1 = icmp.lt %Ma, %Mb
+    %rem0: u64, %e: u64 = if %small {
+        %r2: u64 = shl %Ma, %one
+        %e1: u64 = isub %e0, %one
         yield %r2, %e1
     } else {
         yield %Ma, %e0
     }
     ; 55 quotient bits by restoring division
-    %c55: i64 = iconst 55
-    %q: i64, %rem: i64 = loop(%i: i64 = %zero, %qq: i64 = %zero, %rr: i64 = %rem0) {
-        %done: i1 = icmp.sge %i, %c55
+    %c55: u64 = iconst 55
+    %q: u64, %rem: u64 = loop(%i: u64 = %zero, %qq: u64 = %zero, %rr: u64 = %rem0) {
+        %done: u1 = icmp.ge %i, %c55
         if %done {
             break %qq, %rr
         }
-        %q1_: i64 = shl %qq, %one
-        %ge: i1 = icmp.uge %rr, %Mb
-        %q2_: i64, %r2_: i64 = if %ge {
-            %rs: i64 = isub %rr, %Mb
-            %qo: i64 = or %q1_, %one
+        %q1_: u64 = shl %qq, %one
+        %ge: u1 = icmp.ge %rr, %Mb
+        %q2_: u64, %r2_: u64 = if %ge {
+            %rs: u64 = isub %rr, %Mb
+            %qo: u64 = or %q1_, %one
             yield %qo, %rs
         } else {
             yield %q1_, %rr
         }
-        %r3_: i64 = shl %r2_, %one
-        %i2: i64 = iadd %i, %one
+        %r3_: u64 = shl %r2_, %one
+        %i2: u64 = iadd %i, %one
         continue %i2, %q2_, %r3_
     }
-    %rnz: i1 = icmp.ne %rem, %zero
-    %sti: i64 = zext %rnz
-    %m0: i64 = shl %q, %one
-    %m56: i64 = or %m0, %sti
-    %r: i64 = call @__fp_round(%sx, %e, %m56)
+    %rnz: u1 = icmp.ne %rem, %zero
+    %sti: u64 = ext %rnz
+    %m0: u64 = shl %q, %one
+    %m56: u64 = or %m0, %sti
+    %r: u64 = call @__fp_round(%sx, %e, %m56)
     ret %r
 }
 
 ; ordered comparisons; magnitudes flush subnormals like the arithmetic
-fn @__f64_eq(%a: i64, %b: i64) -> i1 {
-    %f: i1 = iconst 0
-    %t: i1 = iconst 1
-    %an: i1 = call @__fp_isnan(%a)
+fn @__f64_eq(%a: u64, %b: u64) -> u1 {
+    %f: u1 = iconst 0
+    %t: u1 = iconst 1
+    %an: u1 = call @__fp_isnan(%a)
     if %an {
         ret %f
     }
-    %bn: i1 = call @__fp_isnan(%b)
+    %bn: u1 = call @__fp_isnan(%b)
     if %bn {
         ret %f
     }
-    %sgn: i64 = iconst 0x8000000000000000
-    %nsgn: i64 = iconst 0x7fffffffffffffff
-    %ma: i64 = and %a, %nsgn
-    %mb: i64 = and %b, %nsgn
-    %zero: i64 = iconst 0
-    %az: i1 = icmp.eq %ma, %zero
-    %bz: i1 = icmp.eq %mb, %zero
-    %azi: i64 = zext %az
-    %bzi: i64 = zext %bz
-    %both0: i64 = and %azi, %bzi
-    %both: i1 = trunc %both0
+    %nsgn: u64 = iconst 0x7fffffffffffffff
+    %ma: u64 = and %a, %nsgn
+    %mb: u64 = and %b, %nsgn
+    %zero: u64 = iconst 0
+    %az: u1 = icmp.eq %ma, %zero
+    %bz: u1 = icmp.eq %mb, %zero
+    %azi: u64 = ext %az
+    %bzi: u64 = ext %bz
+    %both0: u64 = and %azi, %bzi
+    %both: u1 = trunc %both0
     if %both {
         ret %t
     }
-    %r: i1 = icmp.eq %a, %b
+    %r: u1 = icmp.eq %a, %b
     ret %r
 }
 
-fn @__f64_ne(%a: i64, %b: i64) -> i1 {
-    %t: i1 = iconst 1
-    %an: i1 = call @__fp_isnan(%a)
+fn @__f64_ne(%a: u64, %b: u64) -> u1 {
+    %t: u1 = iconst 1
+    %an: u1 = call @__fp_isnan(%a)
     if %an {
         ret %t
     }
-    %bn: i1 = call @__fp_isnan(%b)
+    %bn: u1 = call @__fp_isnan(%b)
     if %bn {
         ret %t
     }
-    %e: i1 = call @__f64_eq(%a, %b)
-    %ei: i64 = zext %e
-    %one: i64 = iconst 1
-    %ni: i64 = xor %ei, %one
-    %r: i1 = trunc %ni
+    %e: u1 = call @__f64_eq(%a, %b)
+    %ei: u64 = ext %e
+    %one: u64 = iconst 1
+    %ni: u64 = xor %ei, %one
+    %r: u1 = trunc %ni
     ret %r
 }
 
-fn @__f64_lt(%a: i64, %b: i64) -> i1 {
-    %f: i1 = iconst 0
-    %an: i1 = call @__fp_isnan(%a)
+fn @__f64_lt(%a: u64, %b: u64) -> u1 {
+    %f: u1 = iconst 0
+    %an: u1 = call @__fp_isnan(%a)
     if %an {
         ret %f
     }
-    %bn: i1 = call @__fp_isnan(%b)
+    %bn: u1 = call @__fp_isnan(%b)
     if %bn {
         ret %f
     }
-    %nsgn: i64 = iconst 0x7fffffffffffffff
-    %ma: i64 = and %a, %nsgn
-    %mb: i64 = and %b, %nsgn
-    %zero: i64 = iconst 0
-    %az: i1 = icmp.eq %ma, %zero
-    %bz: i1 = icmp.eq %mb, %zero
-    %azi: i64 = zext %az
-    %bzi: i64 = zext %bz
-    %both0: i64 = and %azi, %bzi
-    %both: i1 = trunc %both0
+    %nsgn: u64 = iconst 0x7fffffffffffffff
+    %ma: u64 = and %a, %nsgn
+    %mb: u64 = and %b, %nsgn
+    %zero: u64 = iconst 0
+    %az: u1 = icmp.eq %ma, %zero
+    %bz: u1 = icmp.eq %mb, %zero
+    %azi: u64 = ext %az
+    %bzi: u64 = ext %bz
+    %both0: u64 = and %azi, %bzi
+    %both: u1 = trunc %both0
     if %both {
         ret %f
     }
-    %c63: i64 = iconst 63
-    %sa: i64 = lshr %a, %c63
-    %sb: i64 = lshr %b, %c63
-    %sdiff: i1 = icmp.ne %sa, %sb
+    %c63: u64 = iconst 63
+    %sa: u64 = shr %a, %c63
+    %sb: u64 = shr %b, %c63
+    %sdiff: u1 = icmp.ne %sa, %sb
     if %sdiff {
-        %r1: i1 = trunc %sa
+        %r1: u1 = trunc %sa
         ret %r1
     }
-    %sneg: i1 = trunc %sa
+    %sneg: u1 = trunc %sa
     if %sneg {
-        %r2: i1 = icmp.ugt %ma, %mb
+        %r2: u1 = icmp.gt %ma, %mb
         ret %r2
     }
-    %r3: i1 = icmp.ult %ma, %mb
+    %r3: u1 = icmp.lt %ma, %mb
     ret %r3
 }
 
-fn @__f64_le(%a: i64, %b: i64) -> i1 {
-    %f: i1 = iconst 0
-    %an: i1 = call @__fp_isnan(%a)
+fn @__f64_le(%a: u64, %b: u64) -> u1 {
+    %f: u1 = iconst 0
+    %an: u1 = call @__fp_isnan(%a)
     if %an {
         ret %f
     }
-    %bn: i1 = call @__fp_isnan(%b)
+    %bn: u1 = call @__fp_isnan(%b)
     if %bn {
         ret %f
     }
-    %lt: i1 = call @__f64_lt(%b, %a)
-    %li: i64 = zext %lt
-    %one: i64 = iconst 1
-    %ni: i64 = xor %li, %one
-    %r: i1 = trunc %ni
+    %lt: u1 = call @__f64_lt(%b, %a)
+    %li: u64 = ext %lt
+    %one: u64 = iconst 1
+    %ni: u64 = xor %li, %one
+    %r: u1 = trunc %ni
     ret %r
 }
 
-fn @__f64_from_i64(%n: i64) -> i64 {
-    %zero: i64 = iconst 0
-    %isz: i1 = icmp.eq %n, %zero
+fn @__f64_from_i64(%n: i64) -> u64 {
+    %zeroi: i64 = iconst 0
+    %zero: u64 = iconst 0
+    %isz: u1 = icmp.eq %n, %zeroi
     if %isz {
         ret %zero
     }
-    %neg: i1 = icmp.slt %n, %zero
-    %mag: i64 = if %neg {
-        %m0: i64 = isub %zero, %n
+    %neg: u1 = icmp.lt %n, %zeroi
+    %magi: i64 = if %neg {
+        %m0: i64 = isub %zeroi, %n
         yield %m0
     } else {
         yield %n
     }
+    %mag: u64 = bitcast %magi
     ; find the highest set bit
-    %c63: i64 = iconst 63
-    %one: i64 = iconst 1
-    %hb: i64 = loop(%i: i64 = %c63) {
-        %sh: i64 = lshr %mag, %i
-        %bit: i64 = and %sh, %one
-        %set: i1 = icmp.ne %bit, %zero
+    %c63: u64 = iconst 63
+    %one: u64 = iconst 1
+    %hb: u64 = loop(%i: u64 = %c63) {
+        %sh: u64 = shr %mag, %i
+        %bit: u64 = and %sh, %one
+        %set: u1 = icmp.ne %bit, %zero
         if %set {
             break %i
         }
-        %i2: i64 = isub %i, %one
+        %i2: u64 = isub %i, %one
         continue %i2
     }
-    %bias: i64 = iconst 1023
-    %e: i64 = iadd %bias, %hb
-    %c52: i64 = iconst 52
-    %fits: i1 = icmp.sle %hb, %c52
+    %bias: u64 = iconst 1023
+    %e: u64 = iadd %bias, %hb
+    %c52: u64 = iconst 52
+    %fits: u1 = icmp.le %hb, %c52
     if %fits {
-        %shl_: i64 = isub %c52, %hb
-        %m: i64 = shl %mag, %shl_
-        %r1: i64 = call @__fp_pack(%neg, %e, %m)
+        %shl_: u64 = isub %c52, %hb
+        %m: u64 = shl %mag, %shl_
+        %r1: u64 = call @__fp_pack(%neg, %e, %m)
         ret %r1
     }
-    %sh2: i64 = isub %hb, %c52
-    %keep: i64 = lshr %mag, %sh2
-    %gsh: i64 = isub %sh2, %one
-    %g0: i64 = lshr %mag, %gsh
-    %g: i64 = and %g0, %one
-    %rm0: i64 = shl %one, %gsh
-    %rm: i64 = isub %rm0, %one
-    %rest: i64 = and %mag, %rm
-    %rnz: i1 = icmp.ne %rest, %zero
-    %sti: i64 = zext %rnz
-    %lsb: i64 = and %keep, %one
-    %any0: i64 = or %sti, %lsb
-    %anynz: i1 = icmp.ne %any0, %zero
-    %anyi: i64 = zext %anynz
-    %up: i64 = and %g, %anyi
-    %m2: i64 = iadd %keep, %up
-    %top: i64 = iconst 0x20000000000000
-    %ovf: i1 = icmp.eq %m2, %top
-    %ef: i64, %mf: i64 = if %ovf {
-        %m3: i64 = lshr %m2, %one
-        %e2: i64 = iadd %e, %one
+    %sh2: u64 = isub %hb, %c52
+    %keep: u64 = shr %mag, %sh2
+    %gsh: u64 = isub %sh2, %one
+    %g0: u64 = shr %mag, %gsh
+    %g: u64 = and %g0, %one
+    %rm0: u64 = shl %one, %gsh
+    %rm: u64 = isub %rm0, %one
+    %rest: u64 = and %mag, %rm
+    %rnz: u1 = icmp.ne %rest, %zero
+    %sti: u64 = ext %rnz
+    %lsb: u64 = and %keep, %one
+    %any0: u64 = or %sti, %lsb
+    %anynz: u1 = icmp.ne %any0, %zero
+    %anyi: u64 = ext %anynz
+    %up: u64 = and %g, %anyi
+    %m2: u64 = iadd %keep, %up
+    %top: u64 = iconst 0x20000000000000
+    %ovf: u1 = icmp.eq %m2, %top
+    %ef: u64, %mf: u64 = if %ovf {
+        %m3: u64 = shr %m2, %one
+        %e2: u64 = iadd %e, %one
         yield %e2, %m3
     } else {
         yield %e, %m2
     }
-    %r2: i64 = call @__fp_pack(%neg, %ef, %mf)
+    %r2: u64 = call @__fp_pack(%neg, %ef, %mf)
     ret %r2
 }
 
-fn @__f64_from_u64(%n: i64) -> i64 {
-    %zero: i64 = iconst 0
-    %neg: i1 = icmp.slt %n, %zero
-    if %neg {
-        ; top bit set: halve (losing nothing to rounding only if even;
-        ; fold the lost bit into the value via from_i64 of n/2*2? standard:
-        ; convert (n >> 1 | n & 1) and double
-        %one: i64 = iconst 1
-        %h0: i64 = lshr %n, %one
-        %lo: i64 = and %n, %one
-        %h: i64 = or %h0, %lo
-        %d: i64 = call @__f64_from_i64(%h)
-        %two: i64 = iconst 0x4000000000000000
-        %r0: i64 = call @__f64_mul(%d, %two)
+fn @__f64_from_u64(%n: u64) -> u64 {
+    %top: u64 = iconst 0x8000000000000000
+    %big: u1 = icmp.ge %n, %top
+    if %big {
+        ; halve with the lost bit jammed, convert, double back — exact
+        %one: u64 = iconst 1
+        %h0: u64 = shr %n, %one
+        %lo: u64 = and %n, %one
+        %h: u64 = or %h0, %lo
+        %hi_: i64 = bitcast %h
+        %d: u64 = call @__f64_from_i64(%hi_)
+        %two: u64 = iconst 0x4000000000000000
+        %r0: u64 = call @__f64_mul(%d, %two)
         ret %r0
     }
-    %r: i64 = call @__f64_from_i64(%n)
+    %ni: i64 = bitcast %n
+    %r: u64 = call @__f64_from_i64(%ni)
     ret %r
 }
 
-fn @__f64_to_i64(%a: i64) -> i64 {
-    %zero: i64 = iconst 0
-    %an: i1 = call @__fp_isnan(%a)
+fn @__f64_to_i64(%a: u64) -> i64 {
+    %zeroi: i64 = iconst 0
+    %an: u1 = call @__fp_isnan(%a)
     if %an {
-        ret %zero
+        ret %zeroi
     }
     %p: $fp = bitcast %a
-    %s: i1 = extract %p, sign
-    %e0: i11 = extract %p, exp
-    %f0: i52 = extract %p, frac
-    %e: i64 = zext %e0
-    %f: i64 = zext %f0
-    %bias: i64 = iconst 1023
-    %lt1: i1 = icmp.slt %e, %bias
+    %s: u1 = extract %p, sign
+    %e0: u11 = extract %p, exp
+    %f0: u52 = extract %p, frac
+    %e: u64 = ext %e0
+    %f: u64 = ext %f0
+    %bias: u64 = iconst 1023
+    %lt1: u1 = icmp.lt %e, %bias
     if %lt1 {
-        ret %zero
+        ret %zeroi
     }
-    %sh: i64 = isub %e, %bias
-    %c62: i64 = iconst 62
-    %huge: i1 = icmp.sgt %sh, %c62
+    %sh: u64 = isub %e, %bias
+    %c62: u64 = iconst 62
+    %huge: u1 = icmp.gt %sh, %c62
     if %huge {
         if %s {
             %min: i64 = iconst 0x8000000000000000
@@ -691,279 +699,287 @@ fn @__f64_to_i64(%a: i64) -> i64 {
         %max: i64 = iconst 0x7fffffffffffffff
         ret %max
     }
-    %hid: i64 = iconst 0x10000000000000
-    %M: i64 = or %f, %hid
-    %c52: i64 = iconst 52
-    %left: i1 = icmp.sgt %sh, %c52
-    %r0: i64 = if %left {
-        %k1: i64 = isub %sh, %c52
-        %v1: i64 = shl %M, %k1
+    %hid: u64 = iconst 0x10000000000000
+    %M: u64 = or %f, %hid
+    %c52: u64 = iconst 52
+    %left: u1 = icmp.gt %sh, %c52
+    %r0: u64 = if %left {
+        %k1: u64 = isub %sh, %c52
+        %v1: u64 = shl %M, %k1
         yield %v1
     } else {
-        %k2: i64 = isub %c52, %sh
-        %v2: i64 = lshr %M, %k2
+        %k2: u64 = isub %c52, %sh
+        %v2: u64 = shr %M, %k2
         yield %v2
     }
+    %ri: i64 = bitcast %r0
     if %s {
-        %n: i64 = isub %zero, %r0
-        ret %n
+        %nn: i64 = isub %zeroi, %ri
+        ret %nn
     }
-    ret %r0
+    ret %ri
 }
 
-fn @__f64_to_u64(%a: i64) -> i64 {
-    %zero: i64 = iconst 0
-    %c63: i64 = iconst 63
-    %sa: i64 = lshr %a, %c63
-    %neg: i1 = trunc %sa
+fn @__f64_to_u64(%a: u64) -> u64 {
+    %zero: u64 = iconst 0
+    %c63: u64 = iconst 63
+    %sa: u64 = shr %a, %c63
+    %neg: u1 = trunc %sa
     if %neg {
         ret %zero
     }
-    %r: i64 = call @__f64_to_i64(%a)
+    %ri: i64 = call @__f64_to_i64(%a)
+    %r: u64 = bitcast %ri
     ret %r
 }
 
-fn @__f64_from_i32(%n: i32) -> i64 {
-    %w: i64 = sext %n
-    %r: i64 = call @__f64_from_i64(%w)
+fn @__f64_from_i32(%n: i32) -> u64 {
+    %w: i64 = ext %n
+    %r: u64 = call @__f64_from_i64(%w)
     ret %r
 }
 
-fn @__f64_from_u32(%n: i32) -> i64 {
-    %w: i64 = zext %n
-    %r: i64 = call @__f64_from_i64(%w)
+fn @__f64_from_u32(%n: u32) -> u64 {
+    %w0: u64 = ext %n
+    %w: i64 = bitcast %w0
+    %r: u64 = call @__f64_from_i64(%w)
     ret %r
 }
 
-fn @__f64_to_i32(%a: i64) -> i32 {
+fn @__f64_to_i32(%a: u64) -> i32 {
     %w: i64 = call @__f64_to_i64(%a)
     %r: i32 = trunc %w
     ret %r
 }
 
-fn @__f64_to_u32(%a: i64) -> i32 {
-    %w: i64 = call @__f64_to_u64(%a)
-    %r: i32 = trunc %w
+fn @__f64_to_u32(%a: u64) -> u32 {
+    %w: u64 = call @__f64_to_u64(%a)
+    %r: u32 = trunc %w
     ret %r
 }
 
-fn @__f64_from_f32(%b: i32) -> i64 {
+fn @__f64_from_f32(%b: u32) -> u64 {
     %p: $fp32 = bitcast %b
-    %s: i1 = extract %p, sign
-    %e0: i8 = extract %p, exp
-    %f0: i23 = extract %p, frac
-    %e8: i64 = zext %e0
-    %f: i64 = zext %f0
-    %c255: i64 = iconst 255
-    %zero: i64 = iconst 0
-    %isinfnan: i1 = icmp.eq %e8, %c255
+    %s: u1 = extract %p, sign
+    %e0: u8 = extract %p, exp
+    %f0: u23 = extract %p, frac
+    %e8: u64 = ext %e0
+    %f: u64 = ext %f0
+    %c255: u64 = iconst 255
+    %zero: u64 = iconst 0
+    %isinfnan: u1 = icmp.eq %e8, %c255
     if %isinfnan {
-        %fz: i1 = icmp.eq %f, %zero
+        %fz: u1 = icmp.eq %f, %zero
         if %fz {
-            %inf: i64 = call @__fp_inf(%s)
+            %inf: u64 = call @__fp_inf(%s)
             ret %inf
         }
-        %q: i64 = call @__fp_qnan()
+        %q: u64 = call @__fp_qnan()
         ret %q
     }
-    %isz: i1 = icmp.eq %e8, %zero
+    %isz: u1 = icmp.eq %e8, %zero
     if %isz {
-        %z: i64 = call @__fp_zero(%s)
+        %z: u64 = call @__fp_zero(%s)
         ret %z
     }
-    %c896: i64 = iconst 896
-    %e: i64 = iadd %e8, %c896
-    %c29: i64 = iconst 29
-    %m: i64 = shl %f, %c29
-    %r: i64 = call @__fp_pack(%s, %e, %m)
+    %c896: u64 = iconst 896
+    %e: u64 = iadd %e8, %c896
+    %c29: u64 = iconst 29
+    %m: u64 = shl %f, %c29
+    %r: u64 = call @__fp_pack(%s, %e, %m)
     ret %r
 }
 
-fn @__f32_from_f64(%a: i64) -> i32 {
-    %an: i1 = call @__fp_isnan(%a)
+fn @__f32_from_f64(%a: u64) -> u32 {
+    %an: u1 = call @__fp_isnan(%a)
     if %an {
-        %q: i32 = iconst 0x7fc00000
+        %q: u32 = iconst 0x7fc00000
         ret %q
     }
     %p: $fp = bitcast %a
-    %s: i1 = extract %p, sign
-    %e0: i11 = extract %p, exp
-    %f0: i52 = extract %p, frac
-    %e: i64 = zext %e0
-    %f: i64 = zext %f0
-    %si: i64 = zext %s
-    %c31: i64 = iconst 31
-    %stop: i64 = shl %si, %c31
-    %sbits: i32 = trunc %stop
-    %emax: i64 = iconst 2047
-    %zero: i64 = iconst 0
-    %isinf: i1 = icmp.eq %e, %emax
+    %s: u1 = extract %p, sign
+    %e0: u11 = extract %p, exp
+    %f0: u52 = extract %p, frac
+    %e: u64 = ext %e0
+    %f: u64 = ext %f0
+    %si: u64 = ext %s
+    %c31: u64 = iconst 31
+    %stop: u64 = shl %si, %c31
+    %sbits: u32 = trunc %stop
+    %emax: u64 = iconst 2047
+    %zero: u64 = iconst 0
+    %isinf: u1 = icmp.eq %e, %emax
     if %isinf {
-        %infc: i32 = iconst 0x7f800000
-        %r0: i32 = or %sbits, %infc
+        %infc: u32 = iconst 0x7f800000
+        %r0: u32 = or %sbits, %infc
         ret %r0
     }
-    %isz: i1 = icmp.eq %e, %zero
+    %isz: u1 = icmp.eq %e, %zero
     if %isz {
         ret %sbits
     }
-    %c896: i64 = iconst 896
-    %e32: i64 = isub %e, %c896
-    %c255: i64 = iconst 255
-    %tooBig: i1 = icmp.sge %e32, %c255
-    if %tooBig {
-        %infc2: i32 = iconst 0x7f800000
-        %r1: i32 = or %sbits, %infc2
-        ret %r1
-    }
-    %tooSmall: i1 = icmp.sle %e32, %zero
-    if %tooSmall {
+    %c896: u64 = iconst 896
+    %e32: u64 = isub %e, %c896
+    %hibit: u64 = iconst 0x8000000000000000
+    %tooSmall0: u1 = icmp.ge %e32, %hibit
+    if %tooSmall0 {
         ret %sbits
     }
-    %c29: i64 = iconst 29
-    %keep: i64 = lshr %f, %c29
-    %c28: i64 = iconst 28
-    %g0: i64 = lshr %f, %c28
-    %one: i64 = iconst 1
-    %g: i64 = and %g0, %one
-    %rm: i64 = iconst 0xfffffff
-    %rest: i64 = and %f, %rm
-    %rnz: i1 = icmp.ne %rest, %zero
-    %sti: i64 = zext %rnz
-    %lsb: i64 = and %keep, %one
-    %any0: i64 = or %sti, %lsb
-    %anynz: i1 = icmp.ne %any0, %zero
-    %anyi: i64 = zext %anynz
-    %up: i64 = and %g, %anyi
-    %m2: i64 = iadd %keep, %up
-    %m23top: i64 = iconst 0x800000
-    %ovf: i1 = icmp.eq %m2, %m23top
-    %ef: i64, %mf: i64 = if %ovf {
-        %e2: i64 = iadd %e32, %one
+    %tooSmall1: u1 = icmp.eq %e32, %zero
+    if %tooSmall1 {
+        ret %sbits
+    }
+    %c255: u64 = iconst 255
+    %tooBig: u1 = icmp.ge %e32, %c255
+    if %tooBig {
+        %infc2: u32 = iconst 0x7f800000
+        %r1: u32 = or %sbits, %infc2
+        ret %r1
+    }
+    %c29: u64 = iconst 29
+    %keep: u64 = shr %f, %c29
+    %c28: u64 = iconst 28
+    %g0: u64 = shr %f, %c28
+    %one: u64 = iconst 1
+    %g: u64 = and %g0, %one
+    %rm: u64 = iconst 0xfffffff
+    %rest: u64 = and %f, %rm
+    %rnz: u1 = icmp.ne %rest, %zero
+    %sti: u64 = ext %rnz
+    %lsb: u64 = and %keep, %one
+    %any0: u64 = or %sti, %lsb
+    %anynz: u1 = icmp.ne %any0, %zero
+    %anyi: u64 = ext %anynz
+    %up: u64 = and %g, %anyi
+    %m2: u64 = iadd %keep, %up
+    %m23top: u64 = iconst 0x800000
+    %ovf: u1 = icmp.eq %m2, %m23top
+    %ef: u64, %mf: u64 = if %ovf {
+        %e2: u64 = iadd %e32, %one
         yield %e2, %zero
     } else {
         yield %e32, %m2
     }
-    %again: i1 = icmp.sge %ef, %c255
+    %again: u1 = icmp.ge %ef, %c255
     if %again {
-        %infc3: i32 = iconst 0x7f800000
-        %r2: i32 = or %sbits, %infc3
+        %infc3: u32 = iconst 0x7f800000
+        %r2: u32 = or %sbits, %infc3
         ret %r2
     }
-    %e8: i8 = trunc %ef
-    %m23: i23 = trunc %mf
+    %e8: u8 = trunc %ef
+    %m23: u23 = trunc %mf
     %sp: $fp32 = pack %s, %e8, %m23
-    %r: i32 = bitcast %sp
+    %r: u32 = bitcast %sp
     ret %r
 }
 
 ; f32 arithmetic: promote, operate in f64, demote — correctly rounded
 ; because 53 >= 2*24 + 2 (innocuous double rounding)
-fn @__f32_add(%a: i32, %b: i32) -> i32 {
-    %wa: i64 = call @__f64_from_f32(%a)
-    %wb: i64 = call @__f64_from_f32(%b)
-    %w: i64 = call @__f64_add(%wa, %wb)
-    %r: i32 = call @__f32_from_f64(%w)
+fn @__f32_add(%a: u32, %b: u32) -> u32 {
+    %wa: u64 = call @__f64_from_f32(%a)
+    %wb: u64 = call @__f64_from_f32(%b)
+    %w: u64 = call @__f64_add(%wa, %wb)
+    %r: u32 = call @__f32_from_f64(%w)
     ret %r
 }
 
-fn @__f32_sub(%a: i32, %b: i32) -> i32 {
-    %wa: i64 = call @__f64_from_f32(%a)
-    %wb: i64 = call @__f64_from_f32(%b)
-    %w: i64 = call @__f64_sub(%wa, %wb)
-    %r: i32 = call @__f32_from_f64(%w)
+fn @__f32_sub(%a: u32, %b: u32) -> u32 {
+    %wa: u64 = call @__f64_from_f32(%a)
+    %wb: u64 = call @__f64_from_f32(%b)
+    %w: u64 = call @__f64_sub(%wa, %wb)
+    %r: u32 = call @__f32_from_f64(%w)
     ret %r
 }
 
-fn @__f32_mul(%a: i32, %b: i32) -> i32 {
-    %wa: i64 = call @__f64_from_f32(%a)
-    %wb: i64 = call @__f64_from_f32(%b)
-    %w: i64 = call @__f64_mul(%wa, %wb)
-    %r: i32 = call @__f32_from_f64(%w)
+fn @__f32_mul(%a: u32, %b: u32) -> u32 {
+    %wa: u64 = call @__f64_from_f32(%a)
+    %wb: u64 = call @__f64_from_f32(%b)
+    %w: u64 = call @__f64_mul(%wa, %wb)
+    %r: u32 = call @__f32_from_f64(%w)
     ret %r
 }
 
-fn @__f32_div(%a: i32, %b: i32) -> i32 {
-    %wa: i64 = call @__f64_from_f32(%a)
-    %wb: i64 = call @__f64_from_f32(%b)
-    %w: i64 = call @__f64_div(%wa, %wb)
-    %r: i32 = call @__f32_from_f64(%w)
+fn @__f32_div(%a: u32, %b: u32) -> u32 {
+    %wa: u64 = call @__f64_from_f32(%a)
+    %wb: u64 = call @__f64_from_f32(%b)
+    %w: u64 = call @__f64_div(%wa, %wb)
+    %r: u32 = call @__f32_from_f64(%w)
     ret %r
 }
 
-fn @__f32_eq(%a: i32, %b: i32) -> i1 {
-    %wa: i64 = call @__f64_from_f32(%a)
-    %wb: i64 = call @__f64_from_f32(%b)
-    %r: i1 = call @__f64_eq(%wa, %wb)
+fn @__f32_eq(%a: u32, %b: u32) -> u1 {
+    %wa: u64 = call @__f64_from_f32(%a)
+    %wb: u64 = call @__f64_from_f32(%b)
+    %r: u1 = call @__f64_eq(%wa, %wb)
     ret %r
 }
 
-fn @__f32_ne(%a: i32, %b: i32) -> i1 {
-    %wa: i64 = call @__f64_from_f32(%a)
-    %wb: i64 = call @__f64_from_f32(%b)
-    %r: i1 = call @__f64_ne(%wa, %wb)
+fn @__f32_ne(%a: u32, %b: u32) -> u1 {
+    %wa: u64 = call @__f64_from_f32(%a)
+    %wb: u64 = call @__f64_from_f32(%b)
+    %r: u1 = call @__f64_ne(%wa, %wb)
     ret %r
 }
 
-fn @__f32_lt(%a: i32, %b: i32) -> i1 {
-    %wa: i64 = call @__f64_from_f32(%a)
-    %wb: i64 = call @__f64_from_f32(%b)
-    %r: i1 = call @__f64_lt(%wa, %wb)
+fn @__f32_lt(%a: u32, %b: u32) -> u1 {
+    %wa: u64 = call @__f64_from_f32(%a)
+    %wb: u64 = call @__f64_from_f32(%b)
+    %r: u1 = call @__f64_lt(%wa, %wb)
     ret %r
 }
 
-fn @__f32_le(%a: i32, %b: i32) -> i1 {
-    %wa: i64 = call @__f64_from_f32(%a)
-    %wb: i64 = call @__f64_from_f32(%b)
-    %r: i1 = call @__f64_le(%wa, %wb)
+fn @__f32_le(%a: u32, %b: u32) -> u1 {
+    %wa: u64 = call @__f64_from_f32(%a)
+    %wb: u64 = call @__f64_from_f32(%b)
+    %r: u1 = call @__f64_le(%wa, %wb)
     ret %r
 }
 
-fn @__f32_from_i64(%n: i64) -> i32 {
-    %w: i64 = call @__f64_from_i64(%n)
-    %r: i32 = call @__f32_from_f64(%w)
+fn @__f32_from_i64(%n: i64) -> u32 {
+    %w: u64 = call @__f64_from_i64(%n)
+    %r: u32 = call @__f32_from_f64(%w)
     ret %r
 }
 
-fn @__f32_from_u64(%n: i64) -> i32 {
-    %w: i64 = call @__f64_from_u64(%n)
-    %r: i32 = call @__f32_from_f64(%w)
+fn @__f32_from_u64(%n: u64) -> u32 {
+    %w: u64 = call @__f64_from_u64(%n)
+    %r: u32 = call @__f32_from_f64(%w)
     ret %r
 }
 
-fn @__f32_from_i32(%n: i32) -> i32 {
-    %w: i64 = call @__f64_from_i32(%n)
-    %r: i32 = call @__f32_from_f64(%w)
+fn @__f32_from_i32(%n: i32) -> u32 {
+    %w: u64 = call @__f64_from_i32(%n)
+    %r: u32 = call @__f32_from_f64(%w)
     ret %r
 }
 
-fn @__f32_from_u32(%n: i32) -> i32 {
-    %w: i64 = call @__f64_from_u32(%n)
-    %r: i32 = call @__f32_from_f64(%w)
+fn @__f32_from_u32(%n: u32) -> u32 {
+    %w: u64 = call @__f64_from_u32(%n)
+    %r: u32 = call @__f32_from_f64(%w)
     ret %r
 }
 
-fn @__f32_to_i64(%a: i32) -> i64 {
-    %w: i64 = call @__f64_from_f32(%a)
+fn @__f32_to_i64(%a: u32) -> i64 {
+    %w: u64 = call @__f64_from_f32(%a)
     %r: i64 = call @__f64_to_i64(%w)
     ret %r
 }
 
-fn @__f32_to_u64(%a: i32) -> i64 {
-    %w: i64 = call @__f64_from_f32(%a)
-    %r: i64 = call @__f64_to_u64(%w)
+fn @__f32_to_u64(%a: u32) -> u64 {
+    %w: u64 = call @__f64_from_f32(%a)
+    %r: u64 = call @__f64_to_u64(%w)
     ret %r
 }
 
-fn @__f32_to_i32(%a: i32) -> i32 {
+fn @__f32_to_i32(%a: u32) -> i32 {
     %w: i64 = call @__f32_to_i64(%a)
     %r: i32 = trunc %w
     ret %r
 }
 
-fn @__f32_to_u32(%a: i32) -> i32 {
-    %w: i64 = call @__f32_to_u64(%a)
-    %r: i32 = trunc %w
+fn @__f32_to_u32(%a: u32) -> u32 {
+    %w: u64 = call @__f32_to_u64(%a)
+    %r: u32 = trunc %w
     ret %r
 }
 "#;
@@ -1062,16 +1078,16 @@ fn soften_function(func: &mut ssa::Function) {
                         });
                     };
                     match op {
-                        CastOp::Sitofp | CastOp::Uitofp => {
-                            let u = if op == CastOp::Uitofp { "u" } else { "i" };
+                        CastOp::Itof => {
+                            let u = if from.is_signed() { "i" } else { "u" };
                             let fw = if f64ty(to) { 64 } else { 32 };
-                            let iw = if from == Type::I64 { 64 } else { 32 };
+                            let iw = if from.width() == Some(64) { 64 } else { 32 };
                             call(format!("__f{}_from_{}{}", fw, u, iw), &mut out);
                         }
-                        CastOp::Fptosi | CastOp::Fptoui => {
-                            let u = if op == CastOp::Fptoui { "u" } else { "i" };
+                        CastOp::Ftoi => {
+                            let u = if to.is_signed() { "i" } else { "u" };
                             let fw = if f64ty(from) { 64 } else { 32 };
-                            let iw = if to == Type::I64 { 64 } else { 32 };
+                            let iw = if to.width() == Some(64) { 64 } else { 32 };
                             call(format!("__f{}_to_{}{}", fw, u, iw), &mut out);
                         }
                         CastOp::Fpromote => call("__f64_from_f32".into(), &mut out),
@@ -1083,8 +1099,8 @@ fn soften_function(func: &mut ssa::Function) {
                             // float<->struct bitcast keeps its (integer)
                             // form after retyping
                             let post = |t: Type| match t {
-                                Type::F64 => Type::I64,
-                                Type::F32 => Type::I32,
+                                Type::F64 => Type::U(64),
+                                Type::F32 => Type::U(32),
                                 t => t,
                             };
                             if post(from) == post(to) {
@@ -1104,17 +1120,18 @@ fn soften_function(func: &mut ssa::Function) {
     if !subst.is_empty() {
         crate::lower::substitute(func, &subst);
     }
+    // softened float values are raw bit patterns: unsigned
     for v in &mut func.values {
         v.ty = match v.ty {
-            Type::F64 => Type::I64,
-            Type::F32 => Type::I32,
+            Type::F64 => Type::U(64),
+            Type::F32 => Type::U(32),
             t => t,
         };
     }
     for r in &mut func.rets {
         *r = match *r {
-            Type::F64 => Type::I64,
-            Type::F32 => Type::I32,
+            Type::F64 => Type::U(64),
+            Type::F32 => Type::U(32),
             t => t,
         };
     }

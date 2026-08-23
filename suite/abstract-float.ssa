@@ -16,7 +16,7 @@ fn @aavg(%a: float, %b: float) -> float {
 ; int -> abstract float via policy width
 fn @ascale(%n: int) -> float {
 ^entry:
-    %f: float = sitofp %n
+    %f: float = itof %n
     %h: float = fconst 0.5
     %r: float = fmul %f, %h
     ret %r
@@ -24,7 +24,7 @@ fn @ascale(%n: int) -> float {
 
 ; abstract float with comparison and branch
 fn @amix(%a: float, %b: float) -> float {
-    %lt: i1 = fcmp.olt %a, %b
+    %lt: u1 = fcmp.olt %a, %b
     %r: float = if %lt {
         %m: float = fadd %a, %b
         %h: float = fconst 0.625

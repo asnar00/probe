@@ -32,22 +32,22 @@ fn @mul(%a: i64, %b: i64) -> i64 {
 }
 fn @sdivt(%a: i64, %b: i64) -> i64 {
 ^entry:
-    %r: i64 = sdiv %a, %b
+    %r: i64 = div %a, %b
     ret %r
 }
-fn @udivt(%a: i64, %b: i64) -> i64 {
+fn @udivt(%a: u64, %b: u64) -> u64 {
 ^entry:
-    %r: i64 = udiv %a, %b
+    %r: u64 = div %a, %b
     ret %r
 }
 fn @sremt(%a: i64, %b: i64) -> i64 {
 ^entry:
-    %r: i64 = srem %a, %b
+    %r: i64 = rem %a, %b
     ret %r
 }
-fn @uremt(%a: i64, %b: i64) -> i64 {
+fn @uremt(%a: u64, %b: u64) -> u64 {
 ^entry:
-    %r: i64 = urem %a, %b
+    %r: u64 = rem %a, %b
     ret %r
 }
 fn @andt(%a: i64, %b: i64) -> i64 {
@@ -70,13 +70,13 @@ fn @shlt(%a: i64, %b: i64) -> i64 {
     %r: i64 = shl %a, %b
     ret %r
 }
-fn @lshrt(%a: i64, %b: i64) -> i64 {
+fn @lshrt(%a: u64, %b: u64) -> u64 {
 ^entry:
-    %r: i64 = lshr %a, %b
+    %r: u64 = shr %a, %b
     ret %r
 }
 fn @ashrt(%a: i64, %b: i64) -> i64 {
 ^entry:
-    %r: i64 = ashr %a, %b
+    %r: i64 = shr %a, %b
     ret %r
 }

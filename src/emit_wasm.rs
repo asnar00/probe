@@ -110,18 +110,17 @@ fn normalize_key(template: &str) -> String {
 
 fn valtype(ty: Type) -> u8 {
     match ty {
-        Type::I64 => 0x7E,
-        Type::I32 | Type::I1 | Type::Ptr => 0x7F,
         Type::F64 => 0x7C,
         Type::F32 => 0x7D,
-        Type::Int | Type::Float | Type::IN(_) | Type::Struct(_) => {
-            unreachable!("abstract and arbitrary-width types are lowered before emission")
-        }
+        Type::Ptr => 0x7F,
+        t if t.width() == Some(64) => 0x7E,
+        t if matches!(t.width(), Some(1) | Some(32)) => 0x7F,
+        _ => unreachable!("abstract and arbitrary-width types are lowered before emission"),
     }
 }
 
 fn is64(ty: Type) -> bool {
-    ty == Type::I64
+    ty.width() == Some(64)
 }
 
 pub fn compile(module: &Module, enc: &WEncoder) -> Result<Vec<u8>, String> {
@@ -343,20 +342,36 @@ fn binop_key(op: BinOp, ty: Type) -> String {
         };
         return format!("{}.{}", if ty == Type::F64 { "f64" } else { "f32" }, base);
     }
+    let s = ty.is_signed();
     let base = match op {
         BinOp::IAdd => "add",
         BinOp::ISub => "sub",
         BinOp::IMul => "mul",
-        BinOp::SDiv => "div_s",
-        BinOp::UDiv => "div_u",
-        BinOp::SRem => "rem_s",
-        BinOp::URem => "rem_u",
+        BinOp::Div => {
+            if s {
+                "div_s"
+            } else {
+                "div_u"
+            }
+        }
+        BinOp::Rem => {
+            if s {
+                "rem_s"
+            } else {
+                "rem_u"
+            }
+        }
         BinOp::And => "and",
         BinOp::Or => "or",
         BinOp::Xor => "xor",
         BinOp::Shl => "shl",
-        BinOp::LShr => "shr_u",
-        BinOp::AShr => "shr_s",
+        BinOp::Shr => {
+            if s {
+                "shr_s"
+            } else {
+                "shr_u"
+            }
+        }
         _ => unreachable!(),
     };
     format!("{}.{}", if is64(ty) { "i64" } else { "i32" }, base)
@@ -376,17 +391,14 @@ fn fcmp_key(cond: crate::ssa::FCond, ty: Type) -> String {
 }
 
 fn cmp_key(cond: Cond, ty: Type) -> String {
+    let sfx = if ty.is_signed() { "s" } else { "u" };
     let base = match cond {
-        Cond::Eq => "eq",
-        Cond::Ne => "ne",
-        Cond::Slt => "lt_s",
-        Cond::Sle => "le_s",
-        Cond::Sgt => "gt_s",
-        Cond::Sge => "ge_s",
-        Cond::Ult => "lt_u",
-        Cond::Ule => "le_u",
-        Cond::Ugt => "gt_u",
-        Cond::Uge => "ge_u",
+        Cond::Eq => "eq".to_string(),
+        Cond::Ne => "ne".to_string(),
+        Cond::Lt => format!("lt_{}", sfx),
+        Cond::Le => format!("le_{}", sfx),
+        Cond::Gt => format!("gt_{}", sfx),
+        Cond::Ge => format!("ge_{}", sfx),
     };
     format!("{}.{}", if is64(ty) { "i64" } else { "i32" }, base)
 }
@@ -441,79 +453,82 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
         Inst::Cast { op, dst, src } => {
             let from = e.func.ty(*src);
             let to = e.func.ty(*dst);
-            match (op, from, to) {
-                // i1 sign-extension: 0/1 -> 0/-1, computed as 0 - v
-                (CastOp::Sext, Type::I1, Type::I64) => {
-                    e.op("i64.const {}", Some(0))?;
-                    e.get(*src)?;
-                    e.op("i64.extend_i32_u", None)?;
-                    e.op("i64.sub", None)?;
+            let sw = from.width();
+            let dw = to.width();
+            match op {
+                CastOp::Ext => {
+                    // i1's 0/1 sign-extends via 0 - v; everything else maps
+                    // onto wasm's typed extends
+                    if sw == Some(1) && from.is_signed() {
+                        if dw == Some(64) {
+                            e.op("i64.const {}", Some(0))?;
+                            e.get(*src)?;
+                            e.op("i64.extend_i32_u", None)?;
+                            e.op("i64.sub", None)?;
+                        } else {
+                            e.op("i32.const {}", Some(0))?;
+                            e.get(*src)?;
+                            e.op("i32.sub", None)?;
+                        }
+                    } else if dw == Some(64) {
+                        e.get(*src)?;
+                        if sw == Some(32) && from.is_signed() {
+                            e.op("i64.extend_i32_s", None)?;
+                        } else {
+                            e.op("i64.extend_i32_u", None)?;
+                        }
+                    } else {
+                        e.get(*src)?; // width-1 -> 32: same i32 local value
+                    }
                 }
-                (CastOp::Sext, Type::I1, Type::I32) => {
-                    e.op("i32.const {}", Some(0))?;
+                CastOp::Trunc => {
                     e.get(*src)?;
-                    e.op("i32.sub", None)?;
+                    if sw == Some(64) {
+                        e.op("i32.wrap_i64", None)?;
+                    }
+                    if dw == Some(1) {
+                        e.op("i32.const {}", Some(1))?;
+                        e.op("i32.and", None)?;
+                    }
                 }
-                (CastOp::Sext, Type::I32, Type::I64) => {
+                CastOp::Itof => {
                     e.get(*src)?;
-                    e.op("i64.extend_i32_s", None)?;
-                }
-                (CastOp::Zext, Type::I1, Type::I64) | (CastOp::Zext, Type::I32, Type::I64) => {
-                    e.get(*src)?;
-                    e.op("i64.extend_i32_u", None)?;
-                }
-                (CastOp::Zext, Type::I1, Type::I32) => {
-                    e.get(*src)?; // already a 0/1 i32
-                }
-                (CastOp::Trunc, Type::I64, Type::I32) => {
-                    e.get(*src)?;
-                    e.op("i32.wrap_i64", None)?;
-                }
-                (CastOp::Trunc, Type::I64, Type::I1) => {
-                    e.get(*src)?;
-                    e.op("i32.wrap_i64", None)?;
-                    e.op("i32.const {}", Some(1))?;
-                    e.op("i32.and", None)?;
-                }
-                (CastOp::Trunc, Type::I32, Type::I1) => {
-                    e.get(*src)?;
-                    e.op("i32.const {}", Some(1))?;
-                    e.op("i32.and", None)?;
-                }
-                (CastOp::Sitofp, _, _) | (CastOp::Uitofp, _, _) => {
-                    e.get(*src)?;
-                    let u = if matches!(op, CastOp::Uitofp) { "u" } else { "s" };
+                    let u = if from.is_signed() { "s" } else { "u" };
                     let f = if to == Type::F64 { "f64" } else { "f32" };
-                    let i = if from == Type::I64 { "i64" } else { "i32" };
+                    let i = if sw == Some(64) { "i64" } else { "i32" };
                     e.op(&format!("{}.convert_{}_{}", f, i, u), None)?;
                 }
-                (CastOp::Fptosi, _, _) | (CastOp::Fptoui, _, _) => {
+                CastOp::Ftoi => {
                     e.get(*src)?;
-                    let u = if matches!(op, CastOp::Fptoui) { "u" } else { "s" };
+                    let u = if to.is_signed() { "s" } else { "u" };
                     let f = if from == Type::F64 { "f64" } else { "f32" };
-                    let i = if to == Type::I64 { "i64" } else { "i32" };
+                    let i = if dw == Some(64) { "i64" } else { "i32" };
                     e.op(&format!("{}.trunc_{}_{}", i, f, u), None)?;
                 }
-                (CastOp::Fpromote, _, _) => {
+                CastOp::Fpromote => {
                     e.get(*src)?;
                     e.op("f64.promote_f32", None)?;
                 }
-                (CastOp::Fdemote, _, _) => {
+                CastOp::Fdemote => {
                     e.get(*src)?;
                     e.op("f32.demote_f64", None)?;
                 }
-                (CastOp::Bitcast, _, _) => {
+                CastOp::Bitcast => {
                     e.get(*src)?;
-                    let k = match (from, to) {
-                        (Type::I64, Type::F64) => "f64.reinterpret_i64",
-                        (Type::F64, Type::I64) => "i64.reinterpret_f64",
-                        (Type::I32, Type::F32) => "f32.reinterpret_i32",
-                        (Type::F32, Type::I32) => "i32.reinterpret_f32",
+                    match (from.is_float(), to.is_float()) {
+                        (false, true) if to == Type::F64 => {
+                            e.op("f64.reinterpret_i64", None)?
+                        }
+                        (true, false) if from == Type::F64 => {
+                            e.op("i64.reinterpret_f64", None)?
+                        }
+                        (false, true) => e.op("f32.reinterpret_i32", None)?,
+                        (true, false) => e.op("i32.reinterpret_f32", None)?,
+                        // same-width signedness change: same local value
+                        (false, false) => {}
                         _ => unreachable!(),
-                    };
-                    e.op(k, None)?;
+                    }
                 }
-                _ => return Err(format!("unsupported cast {:?} -> {:?}", from, to)),
             }
             e.set(*dst)
         }
@@ -522,7 +537,7 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             let k = match e.func.ty(*dst) {
                 Type::F64 => "f64.load offset={}",
                 Type::F32 => "f32.load offset={}",
-                Type::I64 => "i64.load offset={}",
+                t if t.width() == Some(64) || t == Type::Ptr => "i64.load offset={}",
                 _ => "i32.load offset={}",
             };
             e.op(k, Some(0))?;
@@ -534,7 +549,7 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             let k = match e.func.ty(*val) {
                 Type::F64 => "f64.store offset={}",
                 Type::F32 => "f32.store offset={}",
-                Type::I64 => "i64.store offset={}",
+                t if t.width() == Some(64) || t == Type::Ptr => "i64.store offset={}",
                 _ => "i32.store offset={}",
             };
             e.op(k, Some(0))

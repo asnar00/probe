@@ -9,14 +9,14 @@
 
 fn @divmod(%a: i64, %b: i64) -> (i64, i64) {
 ^entry:
-    %q: i64 = sdiv %a, %b
-    %r: i64 = srem %a, %b
+    %q: i64 = div %a, %b
+    %r: i64 = rem %a, %b
     ret %q, %r
 }
 
 fn @minmax(%a: i64, %b: i64) -> (i64, i64) {
 ^entry:
-    %lt: i1 = icmp.slt %a, %b
+    %lt: u1 = icmp.lt %a, %b
     br %lt, ^ab, ^ba
 ^ab:
     ret %a, %b

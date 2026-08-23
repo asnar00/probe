@@ -15,20 +15,21 @@ pub struct BlockId(pub u32);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Type {
-    I1,
-    I32,
-    I64,
+    /// signed integer, 1..=64 bits. Signedness lives in the TYPE: `div`,
+    /// `rem`, `shr`, ordered `icmp`, `ext`, `itof`/`ftoi` all take their
+    /// behavior from operand types, so there is one opcode per operation.
+    /// Odd widths lower to sign-extended values in 64-bit containers.
+    I(u8),
+    /// unsigned integer, 1..=64 bits; `u1` is the boolean (icmp results).
+    /// Odd widths lower to zero-extended values in 64-bit containers.
+    U(u8),
     Ptr,
     F32,
     F64,
-    /// arbitrary-width integer, 2..=63 bits (excluding the named widths);
-    /// signedness stays in the opcodes, as for every integer type.
-    /// Lowered to masked i64 operations before emission (`lower_widths`)
-    IN(u8),
-    /// abstract integer: resolved to a concrete type by the target's
-    /// replacement policy before verification (see `resolve_types`)
+    /// abstract integers/float: resolved to a concrete type by the
+    /// target's replacement policy before verification
     Int,
-    /// abstract float: resolved like `Int`
+    Uint,
     Float,
     /// packed bitfield struct; index into the module's struct table
     /// (each Function carries a copy). Total width <= 64; lowered to its
@@ -60,15 +61,14 @@ impl StructDef {
 impl Type {
     pub fn name(self) -> String {
         match self {
-            Type::I1 => "i1".into(),
-            Type::I32 => "i32".into(),
-            Type::I64 => "i64".into(),
+            Type::I(n) => format!("i{}", n),
+            Type::U(n) => format!("u{}", n),
             Type::Ptr => "ptr".into(),
             Type::Int => "int".into(),
+            Type::Uint => "uint".into(),
             Type::F32 => "f32".into(),
             Type::F64 => "f64".into(),
             Type::Float => "float".into(),
-            Type::IN(n) => format!("i{}", n),
             Type::Struct(_) => "$struct".into(), // callers with a table print the name
         }
     }
@@ -80,18 +80,25 @@ impl Type {
 
     fn from_name(s: &str) -> Option<Type> {
         match s {
-            "i1" => Some(Type::I1),
-            "i32" => Some(Type::I32),
-            "i64" => Some(Type::I64),
             "ptr" => Some(Type::Ptr),
             "int" => Some(Type::Int),
+            "uint" => Some(Type::Uint),
             "f32" => Some(Type::F32),
             "f64" => Some(Type::F64),
             "float" => Some(Type::Float),
             _ => {
-                let n: u8 = s.strip_prefix('i')?.parse().ok()?;
-                if (2..=63).contains(&n) && n != 32 {
-                    Some(Type::IN(n))
+                let (ctor, rest): (fn(u8) -> Type, &str) =
+                    if let Some(r) = s.strip_prefix('i') {
+                        (Type::I, r)
+                    } else if let Some(r) = s.strip_prefix('u') {
+                        (Type::U, r)
+                    } else {
+                        return None;
+                    };
+                let n: u8 = rest.parse().ok()?;
+                // reject a leading zero or empty ("i", "i0", "i07")
+                if (1..=64).contains(&n) && !rest.starts_with('0') {
+                    Some(ctor(n))
                 } else {
                     None
                 }
@@ -99,20 +106,22 @@ impl Type {
         }
     }
 
-    /// Integer bit width, for sext/zext/trunc rules; ptr and floats take
-    /// no part in width changes.
+    /// Integer bit width, for ext/trunc rules; ptr and floats take no
+    /// part in width changes.
     pub fn width(self) -> Option<u32> {
         match self {
-            Type::I1 => Some(1),
-            Type::IN(n) => Some(n as u32),
-            Type::I32 => Some(32),
-            Type::I64 => Some(64),
-            Type::Ptr | Type::Int | Type::F32 | Type::F64 | Type::Float | Type::Struct(_) => None,
+            Type::I(n) | Type::U(n) => Some(n as u32),
+            _ => None,
         }
     }
 
+    /// Signedness — the property the opcodes read.
+    pub fn is_signed(self) -> bool {
+        matches!(self, Type::I(_) | Type::Int)
+    }
+
     fn is_arith(self) -> bool {
-        matches!(self, Type::I32 | Type::I64 | Type::IN(_))
+        matches!(self, Type::I(n) | Type::U(n) if n >= 2)
     }
 
     pub fn is_float(self) -> bool {
@@ -120,7 +129,10 @@ impl Type {
     }
 
     fn is_memory(self) -> bool {
-        matches!(self, Type::I32 | Type::I64 | Type::Ptr | Type::F32 | Type::F64)
+        matches!(
+            self,
+            Type::I(32) | Type::U(32) | Type::I(64) | Type::U(64) | Type::Ptr | Type::F32 | Type::F64
+        )
     }
 }
 
@@ -133,16 +145,13 @@ pub enum BinOp {
     IAdd,
     ISub,
     IMul,
-    SDiv,
-    UDiv,
-    SRem,
-    URem,
+    Div,
+    Rem,
     And,
     Or,
     Xor,
     Shl,
-    LShr,
-    AShr,
+    Shr,
 }
 
 const BINOPS: &[(&str, BinOp)] = &[
@@ -153,16 +162,13 @@ const BINOPS: &[(&str, BinOp)] = &[
     ("iadd", BinOp::IAdd),
     ("isub", BinOp::ISub),
     ("imul", BinOp::IMul),
-    ("sdiv", BinOp::SDiv),
-    ("udiv", BinOp::UDiv),
-    ("srem", BinOp::SRem),
-    ("urem", BinOp::URem),
+    ("div", BinOp::Div),
+    ("rem", BinOp::Rem),
     ("and", BinOp::And),
     ("or", BinOp::Or),
     ("xor", BinOp::Xor),
     ("shl", BinOp::Shl),
-    ("lshr", BinOp::LShr),
-    ("ashr", BinOp::AShr),
+    ("shr", BinOp::Shr),
 ];
 
 impl BinOp {
@@ -206,27 +212,19 @@ impl FCond {
 pub enum Cond {
     Eq,
     Ne,
-    Slt,
-    Sle,
-    Sgt,
-    Sge,
-    Ult,
-    Ule,
-    Ugt,
-    Uge,
+    Lt,
+    Le,
+    Gt,
+    Ge,
 }
 
 const CONDS: &[(&str, Cond)] = &[
     ("eq", Cond::Eq),
     ("ne", Cond::Ne),
-    ("slt", Cond::Slt),
-    ("sle", Cond::Sle),
-    ("sgt", Cond::Sgt),
-    ("sge", Cond::Sge),
-    ("ult", Cond::Ult),
-    ("ule", Cond::Ule),
-    ("ugt", Cond::Ugt),
-    ("uge", Cond::Uge),
+    ("lt", Cond::Lt),
+    ("le", Cond::Le),
+    ("gt", Cond::Gt),
+    ("ge", Cond::Ge),
 ];
 
 impl Cond {
@@ -237,29 +235,27 @@ impl Cond {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CastOp {
-    Sext,
-    Zext,
+    /// widen; the fill follows the SOURCE's signedness
+    Ext,
     Trunc,
-    Sitofp,
-    Uitofp,
-    Fptosi,
-    Fptoui,
+    /// int -> float; signedness from the int side's type
+    Itof,
+    /// float -> int, rounding toward zero; signedness from the int side
+    Ftoi,
     Fpromote,
     Fdemote,
-    /// same-width reinterpretation: i64<->f64, i32<->f32
+    /// same-width reinterpretation: between int signedness, int<->float,
+    /// int<->struct
     Bitcast,
 }
 
 impl CastOp {
     pub fn name(self) -> &'static str {
         match self {
-            CastOp::Sext => "sext",
-            CastOp::Zext => "zext",
+            CastOp::Ext => "ext",
             CastOp::Trunc => "trunc",
-            CastOp::Sitofp => "sitofp",
-            CastOp::Uitofp => "uitofp",
-            CastOp::Fptosi => "fptosi",
-            CastOp::Fptoui => "fptoui",
+            CastOp::Itof => "itof",
+            CastOp::Ftoi => "ftoi",
             CastOp::Fpromote => "fpromote",
             CastOp::Fdemote => "fdemote",
             CastOp::Bitcast => "bitcast",
@@ -413,18 +409,24 @@ impl Module {
 #[derive(Clone, Copy)]
 pub struct Policy {
     pub int: Type,
+    pub uint: Type,
     pub float: Type,
 }
 
 impl Policy {
     pub fn new(int: Type, float: Type) -> Result<Policy, String> {
-        if !matches!(int, Type::I32 | Type::I64) {
+        if !matches!(int, Type::I(32) | Type::I(64)) {
             return Err(format!("'int' cannot resolve to {}", int.name()));
         }
         if !matches!(float, Type::F32 | Type::F64) {
             return Err(format!("'float' cannot resolve to {}", float.name()));
         }
-        Ok(Policy { int, float })
+        // 'uint' follows 'int' at the same width
+        let uint = match int {
+            Type::I(n) => Type::U(n),
+            _ => unreachable!(),
+        };
+        Ok(Policy { int, uint, float })
     }
 }
 
@@ -435,6 +437,7 @@ pub fn resolve_types(module: &mut Module, policy: &Policy) {
     for func in &mut module.funcs {
         let subst = |t: &mut Type| match *t {
             Type::Int => *t = policy.int,
+            Type::Uint => *t = policy.uint,
             Type::Float => *t = policy.float,
             _ => {}
         };
@@ -1312,16 +1315,12 @@ impl Parser {
                     Err(self.err(format!("expected a float literal, found {}", t)))
                 }
             },
-            "sext" | "zext" | "trunc" | "sitofp" | "uitofp" | "fptosi" | "fptoui"
-            | "fpromote" | "fdemote" | "bitcast" => {
+            "ext" | "trunc" | "itof" | "ftoi" | "fpromote" | "fdemote" | "bitcast" => {
                 let cast = match op {
-                    "sext" => CastOp::Sext,
-                    "zext" => CastOp::Zext,
+                    "ext" => CastOp::Ext,
                     "trunc" => CastOp::Trunc,
-                    "sitofp" => CastOp::Sitofp,
-                    "uitofp" => CastOp::Uitofp,
-                    "fptosi" => CastOp::Fptosi,
-                    "fptoui" => CastOp::Fptoui,
+                    "itof" => CastOp::Itof,
+                    "ftoi" => CastOp::Ftoi,
                     "fpromote" => CastOp::Fpromote,
                     "fdemote" => CastOp::Fdemote,
                     _ => CastOp::Bitcast,
@@ -2022,7 +2021,7 @@ fn verify_function(module: &Module, func: &Function, errs: &mut Vec<String>) {
 
     // rule 0: abstract types are resolved before verification
     for v in &func.values {
-        if matches!(v.ty, Type::Int | Type::Float) {
+        if matches!(v.ty, Type::Int | Type::Uint | Type::Float) {
             errs.push(ctx(format!(
                 "value '%{}' has unresolved abstract type '{}' (run type resolution first)",
                 v.name,
@@ -2133,18 +2132,18 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
         Inst::IConst { dst, imm } => {
             let ty = func.ty(*dst);
             let ok = match ty {
-                Type::I1 => (0..=1).contains(imm),
-                Type::I32 => i32::try_from(*imm).is_ok() || u32::try_from(*imm).is_ok(),
                 // ptr constants are raw addresses (MMIO, fixed buffers) —
                 // meaningful wherever ptr is an address-space index
-                Type::I64 | Type::Ptr => true,
-                Type::IN(n) => {
+                Type::I(64) | Type::U(64) | Type::Ptr => true,
+                // accept the value written as signed or as the unsigned
+                // bit pattern of the width; canonicalization is lowering's
+                Type::I(n) | Type::U(n) => {
                     let n = n as u32;
                     *imm >= -(1i64 << (n - 1)) && *imm < (1i64 << n)
                 }
                 Type::F32 | Type::F64 => false, // use fconst
                 Type::Struct(_) => false,       // use pack
-                Type::Int | Type::Float => unreachable!("rejected by rule 0"),
+                Type::Int | Type::Uint | Type::Float => unreachable!("rejected by rule 0"),
             };
             if !ok {
                 errs.push(ctx(format!(
@@ -2169,9 +2168,9 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             rhs,
         } => {
             let (td, tl, tr) = (func.ty(*dst), func.ty(*lhs), func.ty(*rhs));
-            if td != Type::I1 {
+            if td != Type::U(1) {
                 errs.push(ctx(format!(
-                    "fcmp.{} result {} must be i1",
+                    "fcmp.{} result {} must be u1",
                     cond.name(),
                     name(*dst)
                 )));
@@ -2219,15 +2218,15 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             rhs,
         } => {
             let (td, tl, tr) = (func.ty(*dst), func.ty(*lhs), func.ty(*rhs));
-            if td != Type::I1 {
+            if td != Type::U(1) {
                 errs.push(ctx(format!(
-                    "icmp.{} result {} must be i1, not {}",
+                    "icmp.{} result {} must be u1, not {}",
                     cond.name(),
                     name(*dst),
                     td.name()
                 )));
             }
-            if tl != tr || !matches!(tl, Type::I32 | Type::I64 | Type::IN(_) | Type::Ptr) {
+            if tl != tr || !(tl.is_arith() || tl == Type::Ptr) {
                 errs.push(ctx(format!(
                     "icmp.{}: operands must share an integer type or ptr; got {} and {}",
                     cond.name(),
@@ -2238,23 +2237,22 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
         }
         Inst::Cast { op, dst, src } => {
             let (td, ts) = (func.ty(*dst), func.ty(*src));
-            let int_wide = |t: Type| matches!(t, Type::I32 | Type::I64);
+            let int_wide = |t: Type| matches!(t.width(), Some(32) | Some(64));
             let ok = match op {
-                CastOp::Sext | CastOp::Zext | CastOp::Trunc => {
-                    match (ts.width(), td.width()) {
-                        (Some(ws), Some(wd)) => match op {
-                            CastOp::Sext | CastOp::Zext => wd > ws,
-                            _ => wd < ws,
-                        },
-                        _ => false,
-                    }
-                }
-                CastOp::Sitofp | CastOp::Uitofp => int_wide(ts) && td.is_float(),
-                CastOp::Fptosi | CastOp::Fptoui => ts.is_float() && int_wide(td),
+                CastOp::Ext | CastOp::Trunc => match (ts.width(), td.width()) {
+                    (Some(ws), Some(wd)) => match op {
+                        CastOp::Ext => wd > ws,
+                        _ => wd < ws,
+                    },
+                    _ => false,
+                },
+                CastOp::Itof => int_wide(ts) && td.is_float(),
+                CastOp::Ftoi => ts.is_float() && int_wide(td),
                 CastOp::Fpromote => ts == Type::F32 && td == Type::F64,
                 CastOp::Fdemote => ts == Type::F64 && td == Type::F32,
                 CastOp::Bitcast => {
-                    // same total width, different type: int<->float<->struct
+                    // same total width, different type: signedness flips,
+                    // int<->float, int<->struct
                     let w = |t: Type| match t {
                         Type::F32 => Some(32),
                         Type::F64 => Some(64),
@@ -2296,12 +2294,13 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             }
         }
         Inst::PtrAdd { dst, base, off } => {
+            let offw = func.ty(*off).width();
             if func.ty(*dst) != Type::Ptr
                 || func.ty(*base) != Type::Ptr
-                || func.ty(*off) != Type::I64
+                || offw != Some(64)
             {
                 errs.push(ctx(
-                    "ptradd requires result: ptr, base: ptr, offset: i64".into()
+                    "ptradd requires result: ptr, base: ptr, offset: 64-bit int".into(),
                 ));
             }
         }
@@ -2420,9 +2419,9 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
         },
         Inst::Jmp { .. } | Inst::Br { .. } => {
             if let Inst::Br { cond, .. } = inst {
-                if func.ty(*cond) != Type::I1 {
+                if func.ty(*cond).width() != Some(1) {
                     errs.push(ctx(format!(
-                        "br condition {} must be i1, not {}",
+                        "br condition {} must be one bit wide, not {}",
                         name(*cond),
                         func.ty(*cond).name()
                     )));
@@ -2472,7 +2471,7 @@ fn @sum(%n: i64) -> i64 {
     %zero: i64 = iconst 0
     jmp ^loop(%zero, %zero)
 ^loop(%i: i64, %acc: i64):
-    %done: i1 = icmp.sge %i, %n
+    %done: u1 = icmp.ge %i, %n
     br %done, ^exit, ^body
 ^body:
     %acc2: i64 = iadd %acc, %i
@@ -2498,7 +2497,7 @@ fn @sum(%n: i64) -> i64 {
         let m = parse(SUM).unwrap();
         let f = m.func("sum").unwrap();
         assert_eq!(f.params.len(), 1);
-        assert_eq!(f.rets, vec![Type::I64]);
+        assert_eq!(f.rets, vec![Type::I(64)]);
         assert_eq!(f.blocks.len(), 4);
         assert_eq!(f.blocks[1].params.len(), 2);
         assert!(matches!(f.blocks[1].insts.last(), Some(Inst::Br { .. })));
@@ -2515,7 +2514,7 @@ fn @get(%p: ptr) -> i32 {
 fn @use(%p: ptr) -> i64 {
 ^entry:
     %v: i32 = call @get(%p)
-    %w: i64 = sext %v
+    %w: i64 = ext %v
     %eight: i64 = iconst 8
     %q: ptr = ptradd %p, %eight
     store %w, %q
@@ -2602,7 +2601,7 @@ fn @bad(%a: i64) -> i64 {
 fn @sum(%n: i64) -> i64 {
     %zero: i64 = iconst 0
     %r: i64 = loop(%i: i64 = %zero, %acc: i64 = %zero) {
-        %done: i1 = icmp.sge %i, %n
+        %done: u1 = icmp.ge %i, %n
         if %done {
             break %acc
         }
@@ -2628,7 +2627,7 @@ fn @sum(%n: i64) -> i64 {
     #[test]
     fn structured_if_yield_types_checked() {
         let src = r"
-fn @bad(%c: i1, %a: i64, %b: i32) -> i64 {
+fn @bad(%c: u1, %a: i64, %b: i32) -> i64 {
     %r: i64 = if %c {
         yield %a
     } else {
@@ -2656,7 +2655,7 @@ fn @bad(%c: i1, %a: i64, %b: i32) -> i64 {
         assert!(parse("fn @f() {\n    ret\n    ret\n}").is_err());
         // value-yielding if without else
         assert!(parse(
-            "fn @f(%c: i1, %a: i64) -> i64 {\n    %r: i64 = if %c {\n        yield %a\n    }\n    ret %r\n}"
+            "fn @f(%c: u1, %a: i64) -> i64 {\n    %r: i64 = if %c {\n        yield %a\n    }\n    ret %r\n}"
         )
         .is_err());
     }
@@ -2666,7 +2665,7 @@ fn @bad(%c: i1, %a: i64, %b: i32) -> i64 {
         // %x is defined textually after its use; the prescan makes this fine
         // (dominance is the emitter's problem, per the spec).
         let src = r"
-fn @fwd(%c: i1) -> i64 {
+fn @fwd(%c: u1) -> i64 {
 ^entry:
     br %c, ^a, ^b
 ^a:

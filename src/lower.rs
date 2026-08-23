@@ -1,42 +1,330 @@
 //! Mandatory lowering passes that erase the richer type-system features
 //! before emission, so backends only ever see the core types
-//! (i1/i32/i64/ptr/f32/f64).
+//! (width-1 bools, i32/u32, i64/u64, ptr, f32, f64).
 //!
-//! `lower_widths`: arbitrary-width integers (i5, i11, i52...) become
-//! masked i64 operations. The canonical representation of an iN value is
-//! zero-extended in its container: closed under and/or/xor/udiv/urem/
-//! unsigned compares as-is; add/sub/mul/shl re-mask their result; signed
-//! operations sign-extend their operands into temporaries first (shift
-//! left then arithmetic shift right); shift amounts reduce mod N. Because
-//! types live on variables, the final step is just retyping the value
-//! tables — instructions never carry widths.
+//! `lower_widths`: arbitrary-width integers become 64-bit container
+//! operations. The canonical representation follows the type: `uN` values
+//! are zero-extended, `iN` values sign-extended. That choice makes
+//! division, remainder, comparisons, and right shifts *direct* on the
+//! container (the container op's own type-driven behavior is correct);
+//! add/sub/mul/shl re-canonicalize their results, and shift amounts
+//! reduce mod N. Width-1 values are the exception: 0/1 for both signs
+//! (`ext` interprets). Because types live on variables, the final step is
+//! retyping the value tables.
+//!
+//! `lower_structs`: packed bitfield structs become their carrier
+//! (unsigned) integer; extract is shift+trunc, pack/insert mask each
+//! field and or it into place. Whole-width identities collapse to value
+//! substitutions.
 
-use crate::ssa::{BinOp, CastOp, Cond, Function, Inst, Module, Type, ValueId};
+use crate::ssa::{BinOp, CastOp, Function, Inst, Module, Type, ValueId};
 use std::collections::HashMap;
 
-/// The full mandatory lowering: structs first (they produce iN carriers and
-/// operations), then arbitrary widths.
 pub fn lower(module: &mut Module) {
     lower_structs(module);
     lower_widths(module);
 }
 
+fn odd(t: Type) -> Option<(u8, bool)> {
+    match t {
+        Type::I(n) if n != 1 && n != 32 && n != 64 => Some((n, true)),
+        Type::U(n) if n != 1 && n != 32 && n != 64 => Some((n, false)),
+        _ => None,
+    }
+}
+
+fn container(t: Type) -> Type {
+    match t {
+        Type::I(_) => Type::I(64),
+        Type::U(_) => Type::U(64),
+        t => t,
+    }
+}
+
+struct Lw<'a> {
+    func: &'a mut Function,
+    out: Vec<Inst>,
+}
+
+impl Lw<'_> {
+    fn tmp(&mut self, ty: Type) -> ValueId {
+        let id = ValueId(self.func.values.len() as u32);
+        self.func.values.push(crate::ssa::ValueData {
+            name: format!("__lw{}", id.0),
+            ty,
+        });
+        id
+    }
+
+    fn iconst(&mut self, ty: Type, v: i64) -> ValueId {
+        let d = self.tmp(ty);
+        self.out.push(Inst::IConst { dst: d, imm: v });
+        d
+    }
+
+    fn bin(&mut self, ty: Type, op: BinOp, lhs: ValueId, rhs: ValueId) -> ValueId {
+        let d = self.tmp(ty);
+        self.out.push(Inst::Bin {
+            op,
+            dst: d,
+            lhs,
+            rhs,
+        });
+        d
+    }
+
+    fn bin_into(&mut self, op: BinOp, dst: ValueId, lhs: ValueId, rhs: ValueId) {
+        self.out.push(Inst::Bin {
+            op,
+            dst,
+            lhs,
+            rhs,
+        });
+    }
+
+    fn cast(&mut self, op: CastOp, dst: ValueId, src: ValueId) {
+        self.out.push(Inst::Cast { op, dst, src });
+    }
+
+    fn cast_tmp(&mut self, op: CastOp, ty: Type, src: ValueId) -> ValueId {
+        let d = self.tmp(ty);
+        self.cast(op, d, src);
+        d
+    }
+
+    /// canonicalize a container value for width n into `dst`:
+    /// unsigned masks, signed shifts up and arithmetically back down
+    fn canon_into(&mut self, dst: ValueId, src: ValueId, n: u8, signed: bool) {
+        let cty = if signed { Type::I(64) } else { Type::U(64) };
+        if signed {
+            let k = self.iconst(cty, 64 - n as i64);
+            let hi = self.bin(cty, BinOp::Shl, src, k);
+            self.bin_into(BinOp::Shr, dst, hi, k);
+        } else {
+            let m = self.iconst(cty, ((1u128 << n) - 1) as u64 as i64);
+            self.bin_into(BinOp::And, dst, src, m);
+        }
+    }
+
+    /// shift amounts are taken mod the bit width
+    fn amt_mod(&mut self, ty: Type, amt: ValueId, n: u8) -> ValueId {
+        let nn = self.iconst(ty, n as i64);
+        self.bin(ty, BinOp::Rem, amt, nn)
+    }
+}
+
 // ---------------------------------------------------------------------------
-// lower_structs: packed bitfield structs -> carrier integers.
-//
-// A struct's carrier is the integer of its total width (i64/i32 for the
-// named widths, iN otherwise — lower_widths finishes those). `extract` is
-// shift+truncate, `pack` is zext+shift+or, `insert` is mask+or. Whole-
-// width identities (single-field structs, struct<->int bitcasts) collapse
-// to value substitutions and cost nothing.
+// widths
+
+pub fn lower_widths(module: &mut Module) {
+    for func in &mut module.funcs {
+        let has_odd = func.values.iter().any(|v| odd(v.ty).is_some());
+        if has_odd {
+            lower_function(func);
+        }
+    }
+}
+
+fn lower_function(func: &mut Function) {
+    let mut subst: HashMap<ValueId, ValueId> = HashMap::new();
+    for b in 0..func.blocks.len() {
+        let insts = std::mem::take(&mut func.blocks[b].insts);
+        let out = {
+            let mut lw = Lw {
+                func,
+                out: Vec::with_capacity(insts.len()),
+            };
+            for inst in insts {
+                lower_inst(&mut lw, inst, &mut subst);
+            }
+            lw.out
+        };
+        func.blocks[b].insts = out;
+    }
+    if !subst.is_empty() {
+        substitute(func, &subst);
+    }
+    for v in &mut func.values {
+        if odd(v.ty).is_some() {
+            v.ty = container(v.ty);
+        }
+    }
+    for r in &mut func.rets {
+        if odd(*r).is_some() {
+            *r = container(*r);
+        }
+    }
+}
+
+fn lower_inst(lw: &mut Lw, inst: Inst, subst: &mut HashMap<ValueId, ValueId>) {
+    match inst {
+        Inst::IConst { dst, imm } => {
+            let imm = match odd(lw.func.ty(dst)) {
+                Some((n, true)) => (imm << (64 - n)) >> (64 - n), // sign-extended canonical
+                Some((n, false)) => (imm as u64 & ((1u128 << n) - 1) as u64) as i64,
+                None => imm,
+            };
+            lw.out.push(Inst::IConst { dst, imm });
+        }
+        Inst::Bin { op, dst, lhs, rhs } => {
+            let Some((n, signed)) = odd(lw.func.ty(dst)) else {
+                lw.out.push(Inst::Bin { op, dst, lhs, rhs });
+                return;
+            };
+            let cty = container(lw.func.ty(dst));
+            match op {
+                // canonical forms are closed under these
+                BinOp::And | BinOp::Or | BinOp::Xor => {
+                    lw.out.push(Inst::Bin { op, dst, lhs, rhs });
+                }
+                // the container's type-driven op is correct on canonical
+                // values; signed div can overflow the width (MIN / -1),
+                // so re-canonicalize that case
+                BinOp::Div | BinOp::Rem => {
+                    if signed {
+                        let t = lw.bin(cty, op, lhs, rhs);
+                        lw.canon_into(dst, t, n, signed);
+                    } else {
+                        lw.out.push(Inst::Bin { op, dst, lhs, rhs });
+                    }
+                }
+                BinOp::IAdd | BinOp::ISub | BinOp::IMul => {
+                    let t = lw.bin(cty, op, lhs, rhs);
+                    lw.canon_into(dst, t, n, signed);
+                }
+                BinOp::Shl => {
+                    let a = lw.amt_mod(cty, rhs, n);
+                    let t = lw.bin(cty, BinOp::Shl, lhs, a);
+                    lw.canon_into(dst, t, n, signed);
+                }
+                BinOp::Shr => {
+                    // canonical values shift correctly by type; results
+                    // stay canonical
+                    let a = lw.amt_mod(cty, rhs, n);
+                    lw.bin_into(BinOp::Shr, dst, lhs, a);
+                }
+                _ => unreachable!("float ops have no iN operands"),
+            }
+        }
+        // canonical forms compare correctly under the container's
+        // type-driven comparison — nothing to change
+        Inst::ICmp { .. } => lw.out.push(inst),
+        Inst::Cast { op, dst, src } => lower_cast(lw, op, dst, src, subst),
+        other => lw.out.push(other),
+    }
+}
+
+fn lower_cast(
+    lw: &mut Lw,
+    op: CastOp,
+    dst: ValueId,
+    src: ValueId,
+    subst: &mut HashMap<ValueId, ValueId>,
+) {
+    let sty = lw.func.ty(src);
+    let dty = lw.func.ty(dst);
+    let so = odd(sty);
+    let dodd = odd(dty);
+    if so.is_none() && dodd.is_none() {
+        lw.out.push(Inst::Cast { op, dst, src });
+        return;
+    }
+    match op {
+        CastOp::Ext => {
+            let src_signed = sty.is_signed();
+            match (so, dodd) {
+                // odd -> 64-bit: canonical bits are already right; same
+                // signedness is identity, mixed reinterprets
+                (Some((_, ss)), None) if dty.width() == Some(64) => {
+                    if ss == dty.is_signed() {
+                        subst.insert(dst, src);
+                    } else {
+                        lw.cast(CastOp::Bitcast, dst, src);
+                    }
+                }
+                // odd -> 32-bit: low bits of the canonical container
+                (Some(_), None) => {
+                    lw.cast(CastOp::Trunc, dst, src);
+                }
+                // odd -> odd
+                (Some((_, ss)), Some((dn, ds))) => {
+                    if ss == ds {
+                        subst.insert(dst, src); // canonical form carries over
+                    } else if !ss {
+                        // unsigned into signed width: top bit is clear, so
+                        // the value is already canonical — reinterpret
+                        lw.cast(CastOp::Bitcast, dst, src);
+                    } else {
+                        // signed into unsigned width: re-canonicalize
+                        let b = lw.cast_tmp(CastOp::Bitcast, Type::U(64), src);
+                        lw.canon_into(dst, b, dn, ds);
+                    }
+                }
+                // core -> odd
+                (None, Some((dn, ds))) => {
+                    if src_signed == ds || !src_signed {
+                        // core ext fills by source sign; canonical for the
+                        // destination in these cases
+                        lw.cast(CastOp::Ext, dst, src);
+                    } else {
+                        // signed source into unsigned width: sign-extend,
+                        // then mask down to the destination width
+                        let w = lw.cast_tmp(CastOp::Ext, Type::I(64), src);
+                        let b = lw.cast_tmp(CastOp::Bitcast, Type::U(64), w);
+                        lw.canon_into(dst, b, dn, ds);
+                    }
+                }
+                (None, None) => unreachable!(),
+            }
+        }
+        CastOp::Trunc => {
+            match dodd {
+                Some((dn, ds)) => {
+                    // widen 32-bit sources into a container first (fill is
+                    // irrelevant: only low bits survive)
+                    let wide = if sty.width() == Some(32) {
+                        lw.cast_tmp(CastOp::Ext, container(sty), src)
+                    } else {
+                        src
+                    };
+                    // match the destination's container signedness; same
+                    // sign means the (future) containers already agree
+                    let wty = lw.func.ty(wide);
+                    let wide = if container(wty) != container(dty) {
+                        lw.cast_tmp(CastOp::Bitcast, container(dty), wide)
+                    } else {
+                        wide
+                    };
+                    lw.canon_into(dst, wide, dn, ds);
+                }
+                // odd -> narrower core: container trunc takes low bits
+                None => lw.cast(CastOp::Trunc, dst, src),
+            }
+        }
+        CastOp::Bitcast => {
+            // odd <-> odd same width: same bits, different canonical form;
+            // re-canonicalize into the destination's
+            match (so, dodd) {
+                (Some(_), Some((dn, ds))) => {
+                    let b = if container(sty) != container(dty) {
+                        lw.cast_tmp(CastOp::Bitcast, container(dty), src)
+                    } else {
+                        src
+                    };
+                    lw.canon_into(dst, b, dn, ds);
+                }
+                _ => lw.out.push(Inst::Cast { op, dst, src }),
+            }
+        }
+        _ => unreachable!("float casts are restricted to 32/64-bit ints"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// structs
 
 fn carrier(total: u32) -> Type {
-    match total {
-        64 => Type::I64,
-        32 => Type::I32,
-        1 => Type::I1,
-        n => Type::IN(n as u8),
-    }
+    Type::U(total as u8)
 }
 
 fn lower_structs(module: &mut Module) {
@@ -80,29 +368,35 @@ fn lower_structs_fn(func: &mut Function) {
     }
 }
 
-impl Lw<'_> {
-    fn cconst(&mut self, c: Type, v: i64) -> ValueId {
-        let d = self.tmp(c);
-        self.out.push(Inst::IConst { dst: d, imm: v });
-        d
-    }
-
-    fn cbin(&mut self, c: Type, op: BinOp, lhs: ValueId, rhs: ValueId) -> ValueId {
-        let d = self.tmp(c);
-        self.out.push(Inst::Bin {
-            op,
-            dst: d,
-            lhs,
-            rhs,
-        });
-        d
-    }
-}
-
 fn struct_of(func: &Function, v: ValueId) -> Option<u16> {
     match func.ty(v) {
         Type::Struct(i) => Some(i),
         _ => None,
+    }
+}
+
+impl Lw<'_> {
+    /// widen a field value into the carrier and mask to its width —
+    /// masking makes sign-extended (signed-field) values safe to place
+    fn field_to_carrier(&mut self, c: Type, w: u32, total: u32, v: ValueId) -> ValueId {
+        let vty = self.func.ty(v);
+        let widened = if vty.width() == Some(total) {
+            if vty == c {
+                v
+            } else {
+                self.cast_tmp(CastOp::Bitcast, c, v)
+            }
+        } else {
+            // Ext straight to the carrier type; the width pass sorts out
+            // fills and canonical forms, the mask below cleans the sign
+            self.cast_tmp(CastOp::Ext, c, v)
+        };
+        if w == total {
+            widened
+        } else {
+            let m = self.iconst(c, ((1u128 << w) - 1) as u64 as i64);
+            self.bin(c, BinOp::And, widened, m)
+        }
     }
 }
 
@@ -120,27 +414,31 @@ fn lower_struct_inst(
             let w = def.fields[field as usize].1.width().unwrap();
             let off = def.offset(field as usize);
             if w == total {
-                subst.insert(dst, src);
+                if lw.func.ty(dst) == c {
+                    subst.insert(dst, src);
+                } else {
+                    lw.cast(CastOp::Bitcast, dst, src);
+                }
                 return;
             }
             let shifted = if off > 0 {
-                let k = lw.cconst(c, off as i64);
-                lw.cbin(c, BinOp::LShr, src, k)
+                let k = lw.iconst(c, off as i64);
+                lw.bin(c, BinOp::Shr, src, k)
             } else {
                 src
             };
-            lw.out.push(Inst::Cast {
-                op: CastOp::Trunc,
-                dst,
-                src: shifted,
-            });
+            lw.cast(CastOp::Trunc, dst, shifted);
         }
         Inst::Pack { dst, args } => {
             let def = &structs[struct_of(lw.func, dst).unwrap() as usize];
             let total = def.total_bits();
             let c = carrier(total);
             if def.fields.len() == 1 {
-                subst.insert(dst, args[0]);
+                if lw.func.ty(args[0]) == c {
+                    subst.insert(dst, args[0]);
+                } else {
+                    lw.cast(CastOp::Bitcast, dst, args[0]);
+                }
                 return;
             }
             let mut acc: Option<ValueId> = None;
@@ -148,36 +446,21 @@ fn lower_struct_inst(
             for (i, (&arg, (_, fty))) in args.iter().zip(&def.fields).enumerate() {
                 let w = fty.width().unwrap();
                 let off = def.offset(i);
-                let widened = if w == total {
-                    arg
-                } else {
-                    let t = lw.tmp(c);
-                    lw.out.push(Inst::Cast {
-                        op: CastOp::Zext,
-                        dst: t,
-                        src: arg,
-                    });
-                    t
-                };
+                let masked = lw.field_to_carrier(c, w, total, arg);
                 let shifted = if off > 0 {
-                    let k = lw.cconst(c, off as i64);
-                    lw.cbin(c, BinOp::Shl, widened, k)
+                    let k = lw.iconst(c, off as i64);
+                    lw.bin(c, BinOp::Shl, masked, k)
                 } else {
-                    widened
+                    masked
                 };
                 acc = Some(match acc {
                     None => shifted,
                     Some(a) => {
                         if i == n - 1 {
-                            lw.out.push(Inst::Bin {
-                                op: BinOp::Or,
-                                dst,
-                                lhs: a,
-                                rhs: shifted,
-                            });
+                            lw.bin_into(BinOp::Or, dst, a, shifted);
                             dst
                         } else {
-                            lw.cbin(c, BinOp::Or, a, shifted)
+                            lw.bin(c, BinOp::Or, a, shifted)
                         }
                     }
                 });
@@ -195,45 +478,33 @@ fn lower_struct_inst(
             let w = def.fields[field as usize].1.width().unwrap();
             let off = def.offset(field as usize);
             if w == total {
-                subst.insert(dst, val);
+                if lw.func.ty(val) == c {
+                    subst.insert(dst, val);
+                } else {
+                    lw.cast(CastOp::Bitcast, dst, val);
+                }
                 return;
             }
-            let field_mask = ((1u64 << w) - 1) << off;
-            let keep = if total == 64 {
-                !field_mask
-            } else {
-                !field_mask & ((1u64 << total) - 1)
-            };
-            let km = lw.cconst(c, keep as i64);
-            let cleared = lw.cbin(c, BinOp::And, src, km);
-            let widened = {
-                let t = lw.tmp(c);
-                lw.out.push(Inst::Cast {
-                    op: CastOp::Zext,
-                    dst: t,
-                    src: val,
-                });
-                t
-            };
+            let field_mask = (((1u128 << w) - 1) as u64) << off;
+            let keep = !field_mask & ((1u128 << total) - 1) as u64;
+            let km = lw.iconst(c, keep as i64);
+            let cleared = lw.bin(c, BinOp::And, src, km);
+            let masked = lw.field_to_carrier(c, w, total, val);
             let shifted = if off > 0 {
-                let k = lw.cconst(c, off as i64);
-                lw.cbin(c, BinOp::Shl, widened, k)
+                let k = lw.iconst(c, off as i64);
+                lw.bin(c, BinOp::Shl, masked, k)
             } else {
-                widened
+                masked
             };
-            lw.out.push(Inst::Bin {
-                op: BinOp::Or,
-                dst,
-                lhs: cleared,
-                rhs: shifted,
-            });
+            lw.bin_into(BinOp::Or, dst, cleared, shifted);
         }
         Inst::Cast {
             op: CastOp::Bitcast,
             dst,
             src,
         } => {
-            // post-retype view of each side: same type -> pure identity
+            // struct<->scalar: identical bits; drop when the post-retype
+            // types will match, keep the (cheap) bitcast otherwise
             let post = |f: &Function, v: ValueId| match f.ty(v) {
                 Type::Struct(i) => carrier(structs[i as usize].total_bits()),
                 t => t,
@@ -246,295 +517,6 @@ fn lower_struct_inst(
                     dst,
                     src,
                 });
-            }
-        }
-        other => lw.out.push(other),
-    }
-}
-
-pub fn lower_widths(module: &mut Module) {
-    for func in &mut module.funcs {
-        let has_odd = func.values.iter().any(|v| matches!(v.ty, Type::IN(_)));
-        if has_odd {
-            lower_function(func);
-        }
-    }
-}
-
-fn width_of(func: &Function, v: ValueId) -> Option<u8> {
-    match func.ty(v) {
-        Type::IN(n) => Some(n),
-        _ => None,
-    }
-}
-
-struct Lw<'a> {
-    func: &'a mut Function,
-    out: Vec<Inst>,
-}
-
-impl Lw<'_> {
-    fn tmp(&mut self, ty: Type) -> ValueId {
-        let id = ValueId(self.func.values.len() as u32);
-        self.func.values.push(crate::ssa::ValueData {
-            name: format!("__lw{}", id.0),
-            ty,
-        });
-        id
-    }
-
-    fn iconst(&mut self, v: i64) -> ValueId {
-        let d = self.tmp(Type::I64);
-        self.out.push(Inst::IConst { dst: d, imm: v });
-        d
-    }
-
-    fn bin(&mut self, op: BinOp, lhs: ValueId, rhs: ValueId) -> ValueId {
-        let d = self.tmp(Type::I64);
-        self.out.push(Inst::Bin {
-            op,
-            dst: d,
-            lhs,
-            rhs,
-        });
-        d
-    }
-
-    fn bin_into(&mut self, op: BinOp, dst: ValueId, lhs: ValueId, rhs: ValueId) {
-        self.out.push(Inst::Bin {
-            op,
-            dst,
-            lhs,
-            rhs,
-        });
-    }
-
-    /// canonical-form mask: keep the low n bits
-    fn mask_into(&mut self, dst: ValueId, src: ValueId, n: u8) {
-        let m = self.iconst(((1u64 << n) - 1) as i64);
-        self.bin_into(BinOp::And, dst, src, m);
-    }
-
-    /// sign-extend the low n bits of a canonical value into a temp
-    fn sx(&mut self, src: ValueId, n: u8) -> ValueId {
-        let k = self.iconst(64 - n as i64);
-        let hi = self.bin(BinOp::Shl, src, k);
-        self.bin(BinOp::AShr, hi, k)
-    }
-
-    /// shift amounts are taken mod the bit width
-    fn amt_mod(&mut self, amt: ValueId, n: u8) -> ValueId {
-        let nn = self.iconst(n as i64);
-        self.bin(BinOp::URem, amt, nn)
-    }
-}
-
-fn lower_function(func: &mut Function) {
-    let mut subst: HashMap<ValueId, ValueId> = HashMap::new();
-    for b in 0..func.blocks.len() {
-        let insts = std::mem::take(&mut func.blocks[b].insts);
-        let out = {
-            let mut lw = Lw {
-                func,
-                out: Vec::with_capacity(insts.len()),
-            };
-            for inst in insts {
-                lower_inst(&mut lw, inst, &mut subst);
-            }
-            lw.out
-        };
-        func.blocks[b].insts = out;
-    }
-
-    // identity rewrites (zext iN -> wider) collapse to their source
-    if !subst.is_empty() {
-        substitute(func, &subst);
-    }
-
-    // the payoff of types-on-variables: retyping IS the lowering finale
-    for v in &mut func.values {
-        if matches!(v.ty, Type::IN(_)) {
-            v.ty = Type::I64;
-        }
-    }
-    for r in &mut func.rets {
-        if matches!(r, Type::IN(_)) {
-            *r = Type::I64;
-        }
-    }
-}
-
-fn lower_inst(lw: &mut Lw, inst: Inst, subst: &mut HashMap<ValueId, ValueId>) {
-    match inst {
-        Inst::IConst { dst, imm } => {
-            let imm = match width_of(lw.func, dst) {
-                Some(n) => (imm as u64 & ((1u64 << n) - 1)) as i64,
-                None => imm,
-            };
-            lw.out.push(Inst::IConst { dst, imm });
-        }
-        Inst::Bin { op, dst, lhs, rhs } => {
-            let Some(n) = width_of(lw.func, dst).or_else(|| width_of(lw.func, lhs)) else {
-                lw.out.push(Inst::Bin { op, dst, lhs, rhs });
-                return;
-            };
-            match op {
-                BinOp::And | BinOp::Or | BinOp::Xor | BinOp::UDiv | BinOp::URem => {
-                    lw.out.push(Inst::Bin { op, dst, lhs, rhs });
-                }
-                BinOp::IAdd | BinOp::ISub | BinOp::IMul => {
-                    let t = lw.bin(op, lhs, rhs);
-                    lw.mask_into(dst, t, n);
-                }
-                BinOp::Shl => {
-                    let a = lw.amt_mod(rhs, n);
-                    let t = lw.bin(BinOp::Shl, lhs, a);
-                    lw.mask_into(dst, t, n);
-                }
-                BinOp::LShr => {
-                    let a = lw.amt_mod(rhs, n);
-                    lw.bin_into(BinOp::LShr, dst, lhs, a);
-                }
-                BinOp::AShr => {
-                    let sl = lw.sx(lhs, n);
-                    let a = lw.amt_mod(rhs, n);
-                    let t = lw.bin(BinOp::AShr, sl, a);
-                    lw.mask_into(dst, t, n);
-                }
-                BinOp::SDiv | BinOp::SRem => {
-                    let sl = lw.sx(lhs, n);
-                    let sr = lw.sx(rhs, n);
-                    let t = lw.bin(op, sl, sr);
-                    lw.mask_into(dst, t, n);
-                }
-                _ => unreachable!("float ops have no iN operands"),
-            }
-        }
-        Inst::ICmp {
-            cond,
-            dst,
-            lhs,
-            rhs,
-        } => {
-            let Some(n) = width_of(lw.func, lhs) else {
-                lw.out.push(Inst::ICmp {
-                    cond,
-                    dst,
-                    lhs,
-                    rhs,
-                });
-                return;
-            };
-            let signed = matches!(cond, Cond::Slt | Cond::Sle | Cond::Sgt | Cond::Sge);
-            let (l, r) = if signed {
-                (lw.sx(lhs, n), lw.sx(rhs, n))
-            } else {
-                (lhs, rhs) // canonical zero-extension preserves unsigned order
-            };
-            lw.out.push(Inst::ICmp {
-                cond,
-                dst,
-                lhs: l,
-                rhs: r,
-            });
-        }
-        Inst::Cast { op, dst, src } => {
-            let sn = width_of(lw.func, src);
-            let dn = width_of(lw.func, dst);
-            if sn.is_none() && dn.is_none() {
-                lw.out.push(Inst::Cast { op, dst, src });
-                return;
-            }
-            let sty = lw.func.ty(src);
-            let dty = lw.func.ty(dst);
-            match op {
-                CastOp::Zext => {
-                    match (sn, dty) {
-                        // iN -> i64: canonical form IS the answer
-                        (Some(_), Type::I64) => {
-                            subst.insert(dst, src);
-                        }
-                        // iN -> i32 / iM: take low bits of the canonical value
-                        (Some(_), Type::I32) => {
-                            lw.out.push(Inst::Cast {
-                                op: CastOp::Trunc,
-                                dst,
-                                src,
-                            });
-                        }
-                        (Some(_), Type::IN(_)) => {
-                            subst.insert(dst, src); // wider iM: still canonical
-                        }
-                        // i1/i32 -> iN: widen through the core cast
-                        (None, _) => {
-                            if sty == Type::I32 {
-                                lw.out.push(Inst::Cast {
-                                    op: CastOp::Zext,
-                                    dst,
-                                    src,
-                                });
-                            } else {
-                                // i1: 0/1, already canonical at any width
-                                lw.out.push(Inst::Cast {
-                                    op: CastOp::Zext,
-                                    dst,
-                                    src,
-                                });
-                            }
-                        }
-                        _ => unreachable!(),
-                    }
-                }
-                CastOp::Sext => {
-                    // source is iN: materialize the sign, then narrow to dst
-                    if let Some(n) = sn {
-                        let sxv = lw.sx(src, n);
-                        match dty {
-                            Type::I64 => {
-                                subst.insert(dst, sxv);
-                            }
-                            Type::I32 => lw.out.push(Inst::Cast {
-                                op: CastOp::Trunc,
-                                dst,
-                                src: sxv,
-                            }),
-                            Type::IN(m) => lw.mask_into(dst, sxv, m),
-                            _ => unreachable!(),
-                        }
-                    } else {
-                        // i1/i32 -> iN(m): core sign-extend to 64, mask to m
-                        let m = dn.unwrap();
-                        let wide = lw.tmp(Type::I64);
-                        lw.out.push(Inst::Cast {
-                            op: CastOp::Sext,
-                            dst: wide,
-                            src,
-                        });
-                        lw.mask_into(dst, wide, m);
-                    }
-                }
-                CastOp::Trunc => {
-                    if let Some(m) = dn {
-                        // any wider integer -> iN(m): mask the canonical bits
-                        let wide = if sty == Type::I32 {
-                            let w = lw.tmp(Type::I64);
-                            lw.out.push(Inst::Cast {
-                                op: CastOp::Zext,
-                                dst: w,
-                                src,
-                            });
-                            w
-                        } else {
-                            src
-                        };
-                        lw.mask_into(dst, wide, m);
-                    } else {
-                        // iN -> i32/i1: the core trunc takes low bits, which
-                        // is exactly right for canonical values
-                        lw.out.push(Inst::Cast { op, dst, src });
-                    }
-                }
-                _ => unreachable!("float casts are restricted to i32/i64"),
             }
         }
         other => lw.out.push(other),

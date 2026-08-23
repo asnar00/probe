@@ -4,7 +4,7 @@ fn @sum(%n: i64) -> i64 {
     %zero: i64 = iconst 0
     jmp ^loop(%zero, %zero)
 ^loop(%i: i64, %acc: i64):
-    %done: i1 = icmp.sge %i, %n
+    %done: u1 = icmp.ge %i, %n
     br %done, ^exit, ^body
 ^body:
     %acc2: i64 = iadd %acc, %i

@@ -18,21 +18,21 @@ fn @mul32(%a: i32, %b: i32) -> i32 {
 }
 fn @sdiv32(%a: i32, %b: i32) -> i32 {
 ^entry:
-    %r: i32 = sdiv %a, %b
+    %r: i32 = div %a, %b
     ret %r
 }
 fn @srem32(%a: i32, %b: i32) -> i32 {
 ^entry:
-    %r: i32 = srem %a, %b
+    %r: i32 = rem %a, %b
     ret %r
 }
-fn @lshr32(%a: i32, %b: i32) -> i32 {
+fn @lshr32(%a: u32, %b: u32) -> u32 {
 ^entry:
-    %r: i32 = lshr %a, %b
+    %r: u32 = shr %a, %b
     ret %r
 }
 fn @ashr32(%a: i32, %b: i32) -> i32 {
 ^entry:
-    %r: i32 = ashr %a, %b
+    %r: i32 = shr %a, %b
     ret %r
 }

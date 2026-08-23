@@ -28,12 +28,13 @@ suite/*.ssa  --parse/verify-->  SSA  --emitter-->  bytes  --run-->  results
   instead of phi nodes, multiple return values, an optional structured
   front-end (`if`/`loop`/`break`/`continue`/`yield`) that lowers to the
   flat block graph at parse time, floats (`f32`/`f64`, full conversion and
-  bitcast set), arbitrary-width integers (`i5`, `i52`...), packed bitfield
-  structs (`type $fp = { sign: i1, exp: i11, frac: i52 }` — an IEEE double,
-  by construction), and abstract numeric types (`int`, `float`) resolved by
-  a per-target replacement policy (`--int=`, `--float=` to override).
-  Widths and structs lower to masked core-integer code before emission, so
-  backends never see them.
+  bitcast set), arbitrary-width integers of both signednesses (`i5`,
+  `u52`...) — signedness lives in the TYPE, so there is one `div`, one
+  `shr`, one `icmp.lt` — packed bitfield structs (`type $fp = { sign: u1,
+  exp: u11, frac: u52 }` — an IEEE double, by construction), and abstract
+  numeric types (`int`, `uint`, `float`) resolved by a per-target
+  replacement policy. Widths and structs lower to core-integer code before
+  emission, so backends never see them.
 - **Two learners**:
   - `src/learn.rs` for fixed-width register ISAs: one-hot probes XORed
     against a baseline map each operand bit to its encoding bit — which

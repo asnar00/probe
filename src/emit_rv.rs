@@ -370,7 +370,8 @@ fn compile_function(
 }
 
 fn bin_template(op: BinOp, ty: Type) -> &'static str {
-    let w = ty == Type::I32;
+    let w = ty.width() == Some(32);
+    let signed = ty.is_signed();
     match op {
         BinOp::IAdd => {
             if w {
@@ -393,34 +394,18 @@ fn bin_template(op: BinOp, ty: Type) -> &'static str {
                 "mul {r}, {r}, {r}"
             }
         }
-        BinOp::SDiv => {
-            if w {
-                "divw {r}, {r}, {r}"
-            } else {
-                "div {r}, {r}, {r}"
-            }
-        }
-        BinOp::UDiv => {
-            if w {
-                "divuw {r}, {r}, {r}"
-            } else {
-                "divu {r}, {r}, {r}"
-            }
-        }
-        BinOp::SRem => {
-            if w {
-                "remw {r}, {r}, {r}"
-            } else {
-                "rem {r}, {r}, {r}"
-            }
-        }
-        BinOp::URem => {
-            if w {
-                "remuw {r}, {r}, {r}"
-            } else {
-                "remu {r}, {r}, {r}"
-            }
-        }
+        BinOp::Div => match (w, signed) {
+            (true, true) => "divw {r}, {r}, {r}",
+            (true, false) => "divuw {r}, {r}, {r}",
+            (false, true) => "div {r}, {r}, {r}",
+            (false, false) => "divu {r}, {r}, {r}",
+        },
+        BinOp::Rem => match (w, signed) {
+            (true, true) => "remw {r}, {r}, {r}",
+            (true, false) => "remuw {r}, {r}, {r}",
+            (false, true) => "rem {r}, {r}, {r}",
+            (false, false) => "remu {r}, {r}, {r}",
+        },
         BinOp::And => "and {r}, {r}, {r}",
         BinOp::Or => "or {r}, {r}, {r}",
         BinOp::Xor => "xor {r}, {r}, {r}",
@@ -431,20 +416,12 @@ fn bin_template(op: BinOp, ty: Type) -> &'static str {
                 "sll {r}, {r}, {r}"
             }
         }
-        BinOp::LShr => {
-            if w {
-                "srlw {r}, {r}, {r}"
-            } else {
-                "srl {r}, {r}, {r}"
-            }
-        }
-        BinOp::AShr => {
-            if w {
-                "sraw {r}, {r}, {r}"
-            } else {
-                "sra {r}, {r}, {r}"
-            }
-        }
+        BinOp::Shr => match (w, signed) {
+            (true, true) => "sraw {r}, {r}, {r}",
+            (true, false) => "srlw {r}, {r}, {r}",
+            (false, true) => "sra {r}, {r}, {r}",
+            (false, false) => "srl {r}, {r}, {r}",
+        },
         BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv => {
             unreachable!("float ops matched before bin_template")
         }
@@ -457,8 +434,9 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
     const XORI: &str = "xori {r}, {r}, {i -2048..2047}";
     match inst {
         Inst::IConst { dst, imm } => {
-            // i32 constants live sign-extended, per the W convention
-            let v = if e.func.ty(*dst) == Type::I32 {
+            // 32-bit constants live sign-extended, per the W convention
+            // (which serves u32 too: W ops read the low 32 bits)
+            let v = if e.func.ty(*dst).width() == Some(32) {
                 *imm as i32 as i64
             } else {
                 *imm
@@ -547,37 +525,25 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             lhs,
             rhs,
         } => {
+            let ty = e.func.ty(*lhs);
             let rl = e.src_reg(*lhs, T0)?;
             let rr = e.src_reg(*rhs, T1)?;
             let rd = e.dst_reg(*dst, T0);
-            // sign-extended i32 values compare correctly with 64-bit slt/sltu
+            // canonical i32/u32 values compare correctly at 64 bits
+            let slt = if ty.is_signed() { SLT } else { SLTU };
             match cond {
-                Cond::Slt => {
-                    e.emit(SLT, &[rd, rl, rr])?;
+                Cond::Lt => {
+                    e.emit(slt, &[rd, rl, rr])?;
                 }
-                Cond::Ult => {
-                    e.emit(SLTU, &[rd, rl, rr])?;
+                Cond::Gt => {
+                    e.emit(slt, &[rd, rr, rl])?;
                 }
-                Cond::Sgt => {
-                    e.emit(SLT, &[rd, rr, rl])?;
-                }
-                Cond::Ugt => {
-                    e.emit(SLTU, &[rd, rr, rl])?;
-                }
-                Cond::Sge => {
-                    e.emit(SLT, &[rd, rl, rr])?;
+                Cond::Ge => {
+                    e.emit(slt, &[rd, rl, rr])?;
                     e.emit(XORI, &[rd, rd, 1])?;
                 }
-                Cond::Uge => {
-                    e.emit(SLTU, &[rd, rl, rr])?;
-                    e.emit(XORI, &[rd, rd, 1])?;
-                }
-                Cond::Sle => {
-                    e.emit(SLT, &[rd, rr, rl])?;
-                    e.emit(XORI, &[rd, rd, 1])?;
-                }
-                Cond::Ule => {
-                    e.emit(SLTU, &[rd, rr, rl])?;
+                Cond::Le => {
+                    e.emit(slt, &[rd, rr, rl])?;
                     e.emit(XORI, &[rd, rd, 1])?;
                 }
                 Cond::Eq => {
@@ -596,56 +562,63 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             let to = e.func.ty(*dst);
             let rs = e.src_reg(*src, T0)?;
             let rd = e.dst_reg(*dst, T1);
+            let sw = from.width();
+            let dw = to.width();
             match (op, from, to) {
-                // i1 is 0/1; sign-extension is negation
-                (CastOp::Sext, Type::I1, _) => {
+                // width-1 signed value (0/1): sign-extension is negation
+                (CastOp::Ext, _, _) if sw == Some(1) && from.is_signed() => {
                     e.emit("sub {r}, {r}, {r}", &[rd, ZERO, rs])?;
                 }
-                // i32 values are already sign-extended
-                (CastOp::Sext, Type::I32, Type::I64) | (CastOp::Zext, Type::I1, _) => {
+                // u1 is 0/1 already; i32 is already sign-extended
+                (CastOp::Ext, _, _) if sw == Some(1) => {
                     e.mov(rd, rs)?;
                 }
-                (CastOp::Zext, Type::I32, Type::I64) => {
+                (CastOp::Ext, _, _) if sw == Some(32) && from.is_signed() => {
+                    e.mov(rd, rs)?;
+                }
+                (CastOp::Ext, _, _) if sw == Some(32) => {
                     e.emit("slli {r}, {r}, {i 0..63}", &[rd, rs, 32])?;
                     e.emit("srli {r}, {r}, {i 0..63}", &[rd, rd, 32])?;
                 }
-                (CastOp::Trunc, Type::I64, Type::I32) => {
+                (CastOp::Trunc, _, _) if dw == Some(32) => {
                     e.emit("addiw {r}, {r}, {i -2048..2047}", &[rd, rs, 0])?;
                 }
-                (CastOp::Trunc, _, Type::I1) => {
+                (CastOp::Trunc, _, _) if dw == Some(1) => {
                     e.emit("andi {r}, {r}, {i -2048..2047}", &[rd, rs, 1])?;
                 }
-                (CastOp::Sitofp, _, _) | (CastOp::Uitofp, _, _) => {
+                // same-width signedness change: same bits, same canonical
+                (CastOp::Bitcast, _, _) if !from.is_float() && !to.is_float() => {
+                    e.mov(rd, rs)?;
+                }
+                (CastOp::Itof, _, _) => {
                     let rs = e.src_reg(*src, T0)?;
                     let rdf = e.dst_reg(*dst, FT0);
-                    let signed = matches!(op, CastOp::Sitofp);
-                    let t = match (from, to, signed) {
-                        (Type::I64, Type::F64, true) => "fcvt.d.l {f}, {r}",
-                        (Type::I32, Type::F64, true) => "fcvt.d.w {f}, {r}",
-                        (Type::I64, Type::F32, true) => "fcvt.s.l {f}, {r}",
-                        (Type::I32, Type::F32, true) => "fcvt.s.w {f}, {r}",
-                        (Type::I64, Type::F64, false) => "fcvt.d.lu {f}, {r}",
-                        (Type::I32, Type::F64, false) => "fcvt.d.wu {f}, {r}",
-                        (Type::I64, Type::F32, false) => "fcvt.s.lu {f}, {r}",
-                        (Type::I32, Type::F32, false) => "fcvt.s.wu {f}, {r}",
+                    let t = match (from.width(), to, from.is_signed()) {
+                        (Some(64), Type::F64, true) => "fcvt.d.l {f}, {r}",
+                        (Some(32), Type::F64, true) => "fcvt.d.w {f}, {r}",
+                        (Some(64), Type::F32, true) => "fcvt.s.l {f}, {r}",
+                        (Some(32), Type::F32, true) => "fcvt.s.w {f}, {r}",
+                        (Some(64), Type::F64, false) => "fcvt.d.lu {f}, {r}",
+                        (Some(32), Type::F64, false) => "fcvt.d.wu {f}, {r}",
+                        (Some(64), Type::F32, false) => "fcvt.s.lu {f}, {r}",
+                        (Some(32), Type::F32, false) => "fcvt.s.wu {f}, {r}",
                         _ => unreachable!(),
                     };
                     e.emit(t, &[rdf, rs])?;
                     return e.finish(*dst, rdf);
                 }
-                (CastOp::Fptosi, _, _) | (CastOp::Fptoui, _, _) => {
+                (CastOp::Ftoi, _, _) => {
                     let rs = e.src_reg(*src, FT0)?;
                     let rdi = e.dst_reg(*dst, T0);
-                    let signed = matches!(op, CastOp::Fptosi);
-                    let t = match (from, to, signed) {
-                        (Type::F64, Type::I64, true) => "fcvt.l.d {r}, {f}, rtz",
-                        (Type::F64, Type::I32, true) => "fcvt.w.d {r}, {f}, rtz",
-                        (Type::F32, Type::I64, true) => "fcvt.l.s {r}, {f}, rtz",
-                        (Type::F32, Type::I32, true) => "fcvt.w.s {r}, {f}, rtz",
-                        (Type::F64, Type::I64, false) => "fcvt.lu.d {r}, {f}, rtz",
-                        (Type::F64, Type::I32, false) => "fcvt.wu.d {r}, {f}, rtz",
-                        (Type::F32, Type::I64, false) => "fcvt.lu.s {r}, {f}, rtz",
-                        (Type::F32, Type::I32, false) => "fcvt.wu.s {r}, {f}, rtz",
+                    let t = match (from, to.width(), to.is_signed()) {
+                        (Type::F64, Some(64), true) => "fcvt.l.d {r}, {f}, rtz",
+                        (Type::F64, Some(32), true) => "fcvt.w.d {r}, {f}, rtz",
+                        (Type::F32, Some(64), true) => "fcvt.l.s {r}, {f}, rtz",
+                        (Type::F32, Some(32), true) => "fcvt.w.s {r}, {f}, rtz",
+                        (Type::F64, Some(64), false) => "fcvt.lu.d {r}, {f}, rtz",
+                        (Type::F64, Some(32), false) => "fcvt.wu.d {r}, {f}, rtz",
+                        (Type::F32, Some(64), false) => "fcvt.lu.s {r}, {f}, rtz",
+                        (Type::F32, Some(32), false) => "fcvt.wu.s {r}, {f}, rtz",
                         _ => unreachable!(),
                     };
                     e.emit(t, &[rdi, rs])?;
@@ -667,11 +640,11 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
                     let (sf, df) = (from.is_float(), to.is_float());
                     let rs = e.src_reg(*src, if sf { FT0 } else { T0 })?;
                     let rdc = e.dst_reg(*dst, if df { FT0 } else { T0 });
-                    let t = match (from, to) {
-                        (Type::I64, Type::F64) => "fmv.d.x {f}, {r}",
-                        (Type::F64, Type::I64) => "fmv.x.d {r}, {f}",
-                        (Type::I32, Type::F32) => "fmv.w.x {f}, {r}",
-                        (Type::F32, Type::I32) => "fmv.x.w {r}, {f}",
+                    let t = match (sf, df, if sf { from } else { to }) {
+                        (false, true, Type::F64) => "fmv.d.x {f}, {r}",
+                        (true, false, Type::F64) => "fmv.x.d {r}, {f}",
+                        (false, true, _) => "fmv.w.x {f}, {r}",
+                        (true, false, _) => "fmv.x.w {r}, {f}",
                         _ => unreachable!(),
                     };
                     e.emit(t, &[rdc, rs])?;
@@ -688,7 +661,7 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             let t = match ty {
                 Type::F64 => "fld {f}, {i -2048..2047}({r})",
                 Type::F32 => "flw {f}, {i -2048..2047}({r})",
-                Type::I32 => "lw {r}, {i -2048..2047}({r})",
+                t if t.width() == Some(32) => "lw {r}, {i -2048..2047}({r})",
                 _ => LD,
             };
             e.emit(t, &[rd, 0, ra])?;
@@ -701,7 +674,7 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             let t = match ty {
                 Type::F64 => "fsd {f}, {i -2048..2047}({r})",
                 Type::F32 => "fsw {f}, {i -2048..2047}({r})",
-                Type::I32 => "sw {r}, {i -2048..2047}({r})",
+                t if t.width() == Some(32) => "sw {r}, {i -2048..2047}({r})",
                 _ => SD,
             };
             e.emit(t, &[rv, 0, ra])?;

@@ -132,6 +132,38 @@ fn parse_case(line: &str) -> Result<Case, String> {
     })
 }
 
+/// Emit SSA turning result `r` (type rt) into a zero-extended u64 bit
+/// pattern named `%b<i>`; appends the statements to `w` with 4-space
+/// indent. Returns the value name to use.
+fn convert_ret_to_bits(w: &mut String, rt: ssa::Type, r: &str, i: usize) -> String {
+    use ssa::Type;
+    match rt {
+        Type::I(64) | Type::U(64) => r.to_string(),
+        Type::F64 => {
+            w.push_str(&format!("    %b{}: u64 = bitcast {}\n", i, r));
+            format!("%b{}", i)
+        }
+        Type::F32 => {
+            w.push_str(&format!("    %c{}: u32 = bitcast {}\n", i, r));
+            w.push_str(&format!("    %b{}: u64 = ext %c{}\n", i, i));
+            format!("%b{}", i)
+        }
+        // unsigned values extend zero-filled by their own type
+        Type::U(_) => {
+            w.push_str(&format!("    %b{}: u64 = ext {}\n", i, r));
+            format!("%b{}", i)
+        }
+        // signed sub-64: reinterpret unsigned first so the extension is
+        // zero-filled (the suite's zero-extended convention)
+        Type::I(n) => {
+            w.push_str(&format!("    %c{}: u{} = bitcast {}\n", i, n, r));
+            w.push_str(&format!("    %b{}: u64 = ext %c{}\n", i, i));
+            format!("%b{}", i)
+        }
+        _ => r.to_string(),
+    }
+}
+
 pub struct Report {
     pub passed: usize,
     pub failed: usize,
@@ -161,8 +193,8 @@ pub fn run_dir(dir: &str, backend: Backend) -> Result<Report, String> {
 /// encodings are smaller and memory indices are 32-bit anyway.
 fn default_int(backend: Backend) -> ssa::Type {
     match backend {
-        Backend::Wasm => ssa::Type::I32,
-        _ => ssa::Type::I64,
+        Backend::Wasm => ssa::Type::I(32),
+        _ => ssa::Type::I(64),
     }
 }
 
@@ -198,7 +230,7 @@ fn prepare_cases(module: &ssa::Module, cases: &mut [Case]) -> Result<String, Str
                         ExpVal::Float(v) => *v,
                         ExpVal::Int(v) => *v as f64,
                     };
-                    Ok(if rt == ssa::Type::F32 {
+                        Ok(if rt == ssa::Type::F32 {
                         (x as f32).to_bits() as i64
                     } else {
                         x.to_bits() as i64
@@ -227,7 +259,12 @@ fn prepare_cases(module: &ssa::Module, cases: &mut [Case]) -> Result<String, Str
             return Err(format!("float cases with array args not supported: '{}'", case.text));
         }
         let mut w = format!("fn @__w{}() -> (", n);
-        w.push_str(&vec!["i64"; func.rets.len()].join(", "));
+        let ret_tys: Vec<&str> = func
+            .rets
+            .iter()
+            .map(|t| if *t == ssa::Type::I(64) { "i64" } else { "u64" })
+            .collect();
+        w.push_str(&ret_tys.join(", "));
         w.push_str(") {
 ^entry:
 ");
@@ -269,27 +306,7 @@ fn prepare_cases(module: &ssa::Module, cases: &mut [Case]) -> Result<String, Str
         ));
         let mut outs = Vec::new();
         for (i, (&rt, r)) in func.rets.iter().zip(&rets).enumerate() {
-            let out = match rt {
-                ssa::Type::F64 => {
-                    w.push_str(&format!("    %b{}: i64 = bitcast {}
-", i, r));
-                    format!("%b{}", i)
-                }
-                ssa::Type::F32 => {
-                    w.push_str(&format!("    %c{}: i32 = bitcast {}
-", i, r));
-                    w.push_str(&format!("    %b{}: i64 = zext %c{}
-", i, i));
-                    format!("%b{}", i)
-                }
-                ssa::Type::I64 => r.clone(),
-                _ => {
-                    w.push_str(&format!("    %b{}: i64 = zext {}
-", i, r));
-                    format!("%b{}", i)
-                }
-            };
-            outs.push(out);
+            outs.push(convert_ret_to_bits(&mut w, rt, r, i));
         }
         w.push_str(&format!("    ret {}
 }}
@@ -539,9 +556,11 @@ fn run_wasm(
             let pty = func.params.get(j).map(|&p| func.ty(p));
             match a {
                 ArgSpec::Int(v) => {
-                    let t = match pty {
-                        Some(ssa::Type::I64) => "i64".to_string(),
-                        _ => "i32".to_string(),
+                    let t = if pty.map(|t| t.width()) == Some(Some(64)) || pty == Some(ssa::Type::Ptr)
+                    {
+                        "i64".to_string()
+                    } else {
+                        "i32".to_string()
                     };
                     spec.push_str(&format!("{{\"t\":\"{}\",\"v\":\"{}\"}}", t, v));
                 }
@@ -561,7 +580,11 @@ fn run_wasm(
             if j > 0 {
                 spec.push(',');
             }
-            spec.push_str(if t == ssa::Type::I64 { "\"i64\"" } else { "\"i32\"" });
+            spec.push_str(if t.width() == Some(64) {
+                "\"i64\""
+            } else {
+                "\"i32\""
+            });
         }
         spec.push_str("]}");
     }
@@ -625,7 +648,7 @@ const ARM_HEAP: u64 = 0x4140_0000;
 fn helpers(uart: u64) -> String {
     format!(
         r"
-fn @__pch(%c: i64) {{
+fn @__pch(%c: u64) {{
 ^entry:
     %u: ptr = iconst {}
     %c32: i32 = trunc %c
@@ -638,27 +661,27 @@ fn @__pch(%c: i64) {{
 }
 
 const PHEX: &str = r"
-fn @__phex(%v: i64) {
+fn @__phex(%v: u64) {
 ^entry:
-    %sh0: i64 = iconst 60
+    %sh0: u64 = iconst 60
     jmp ^loop(%sh0)
-^loop(%sh: i64):
-    %t: i64 = lshr %v, %sh
-    %m: i64 = iconst 15
-    %n: i64 = and %t, %m
-    %nine: i64 = iconst 9
-    %big: i1 = icmp.sgt %n, %nine
-    %bigi: i64 = zext %big
-    %gap: i64 = iconst 39
-    %adj: i64 = imul %bigi, %gap
-    %z: i64 = iconst 48
-    %c1: i64 = iadd %n, %z
-    %c: i64 = iadd %c1, %adj
+^loop(%sh: u64):
+    %t: u64 = shr %v, %sh
+    %m: u64 = iconst 15
+    %n: u64 = and %t, %m
+    %nine: u64 = iconst 9
+    %big: u1 = icmp.gt %n, %nine
+    %bigi: u64 = ext %big
+    %gap: u64 = iconst 39
+    %adj: u64 = imul %bigi, %gap
+    %z: u64 = iconst 48
+    %c1: u64 = iadd %n, %z
+    %c: u64 = iadd %c1, %adj
     call @__pch(%c)
-    %zero: i64 = iconst 0
-    %done: i1 = icmp.eq %sh, %zero
-    %four: i64 = iconst 4
-    %sh2: i64 = isub %sh, %four
+    %zero: u64 = iconst 0
+    %done: u1 = icmp.eq %sh, %zero
+    %four: u64 = iconst 4
+    %sh2: u64 = isub %sh, %four
     br %done, ^exit, ^loop(%sh2)
 ^exit:
     ret
@@ -749,17 +772,26 @@ fn gen_driver(
         // print results: 16 hex digits each, space-separated, newline after
         for (i, (r, rt)) in rets.iter().enumerate() {
             if i > 0 {
-                let sp = tmp(&mut s, "i64", "iconst 32".into());
+                let sp = tmp(&mut s, "u64", "iconst 32".into());
                 s.push_str(&format!("    call @__pch({})\n", sp));
             }
-            let printable = match rt {
-                ssa::Type::I64 => r.clone(),
-                // zext to the suite's zero-extended convention for sub-64 types
-                _ => tmp(&mut s, "i64", format!("zext {}", r)),
+            let printable = if *rt == ssa::Type::U(64) {
+                r.clone()
+            } else if *rt == ssa::Type::I(64) {
+                let b = tmp_name();
+                s.push_str(&format!("    {}: u64 = bitcast {}\n", b, r));
+                b
+            } else {
+                n.set(n.get() + 1);
+                let uniq = 100000 + n.get() as usize;
+                let mut conv = String::new();
+                let name = convert_ret_to_bits(&mut conv, *rt, r, uniq);
+                s.push_str(&conv);
+                name
             };
             s.push_str(&format!("    call @__phex({})\n", printable));
         }
-        let nl = tmp(&mut s, "i64", "iconst 10".into());
+        let nl = tmp(&mut s, "u64", "iconst 10".into());
         s.push_str(&format!("    call @__pch({})\n", nl));
     }
     s.push_str(exit_ssa);
@@ -1030,10 +1062,10 @@ mod tests {
         // replacement policy (concrete-typed programs are unaffected)
         use crate::ssa::Type;
         for (int, float) in [
-            (Type::I32, Type::F32),
-            (Type::I32, Type::F64),
-            (Type::I64, Type::F32),
-            (Type::I64, Type::F64),
+            (Type::I(32), Type::F32),
+            (Type::I(32), Type::F64),
+            (Type::I(64), Type::F32),
+            (Type::I(64), Type::F64),
         ] {
             let report = super::run_dir_at(
                 "suite",

@@ -379,7 +379,7 @@ mod tests {
         for i in 1..=20 {
             big.push_str(&format!("    %v{}: i64 = iadd %v{}, %v{}\n", i, i - 1, i - 1));
         }
-        big.push_str("    %ten: i64 = iconst 1048576\n    %r: i64 = sdiv %v20, %ten\n    ret %r\n}\n");
+        big.push_str("    %ten: i64 = iconst 1048576\n    %r: i64 = div %v20, %ten\n    ret %r\n}\n");
         // 2^21 / 2^20 = 2 -> twice = 4... keep the arithmetic honest below
         let m3 = parse(&format!(
             "{}fn @twice() -> i64 {{\n^e:\n    %a: i64 = call @val()\n    %b: i64 = iadd %a, %a\n    ret %b\n}}\n",

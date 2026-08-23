@@ -40,7 +40,7 @@ fn main() -> ExitCode {
         }
     });
     // native defaults: the machine's natural widths
-    let int = int_override.unwrap_or(ssa::Type::I64);
+    let int = int_override.unwrap_or(ssa::Type::I(64));
     let float = float_override.unwrap_or(ssa::Type::F64);
     let policy = match ssa::Policy::new(int, float) {
         Ok(p) => p,

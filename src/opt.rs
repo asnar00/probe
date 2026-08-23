@@ -219,11 +219,15 @@ fn const_fold(func: &mut Function) {
     }
 }
 
+/// canonical stored form: unsigned zero-extended, signed sign-extended;
+/// width-1 values are 0/1 for both signs
 fn norm(ty: Type, v: i64) -> i64 {
-    match ty {
-        Type::I32 => (v as u32) as i64, // stored zero-extended
-        Type::I1 => v & 1,
-        _ => v,
+    match ty.width() {
+        Some(64) => v,
+        Some(1) => v & 1,
+        Some(n) if ty.is_signed() => (v << (64 - n)) >> (64 - n),
+        Some(n) => (v as u64 & ((1u128 << n) - 1) as u64) as i64,
+        None => v,
     }
 }
 
@@ -231,77 +235,88 @@ fn fold_bin(op: BinOp, ty: Type, a: i64, b: i64) -> Option<i64> {
     if op.is_float() {
         return None; // float folding: not yet (rounding-mode care needed)
     }
-    let v = if ty == Type::I32 {
-        let (a, b) = (a as i32, b as i32);
-        let r: i32 = match op {
-            BinOp::IAdd => a.wrapping_add(b),
-            BinOp::ISub => a.wrapping_sub(b),
-            BinOp::IMul => a.wrapping_mul(b),
-            BinOp::SDiv | BinOp::SRem if b == 0 || (a == i32::MIN && b == -1) => return None,
-            BinOp::UDiv | BinOp::URem if b == 0 => return None,
-            BinOp::SDiv => a.wrapping_div(b),
-            BinOp::UDiv => ((a as u32) / (b as u32)) as i32,
-            BinOp::SRem => a.wrapping_rem(b),
-            BinOp::URem => ((a as u32) % (b as u32)) as i32,
-            BinOp::And => a & b,
-            BinOp::Or => a | b,
-            BinOp::Xor => a ^ b,
-            BinOp::Shl => a.wrapping_shl(b as u32 & 31),
-            BinOp::LShr => ((a as u32) >> (b as u32 & 31)) as i32,
-            BinOp::AShr => a >> (b as u32 & 31),
-            _ => unreachable!(),
-        };
-        r as i64
-    } else {
-        match op {
-            BinOp::IAdd => a.wrapping_add(b),
-            BinOp::ISub => a.wrapping_sub(b),
-            BinOp::IMul => a.wrapping_mul(b),
-            BinOp::SDiv | BinOp::SRem if b == 0 || (a == i64::MIN && b == -1) => return None,
-            BinOp::UDiv | BinOp::URem if b == 0 => return None,
-            BinOp::SDiv => a.wrapping_div(b),
-            BinOp::UDiv => ((a as u64) / (b as u64)) as i64,
-            BinOp::SRem => a.wrapping_rem(b),
-            BinOp::URem => ((a as u64) % (b as u64)) as i64,
-            BinOp::And => a & b,
-            BinOp::Or => a | b,
-            BinOp::Xor => a ^ b,
-            BinOp::Shl => a.wrapping_shl(b as u32 & 63),
-            BinOp::LShr => ((a as u64) >> (b as u64 & 63)) as i64,
-            BinOp::AShr => a >> (b as u64 & 63),
-            _ => unreachable!(),
+    let signed = ty.is_signed();
+    let n = ty.width()?;
+    // operate on the canonical container values
+    let v = match op {
+        BinOp::IAdd => a.wrapping_add(b),
+        BinOp::ISub => a.wrapping_sub(b),
+        BinOp::IMul => a.wrapping_mul(b),
+        BinOp::Div | BinOp::Rem if b == 0 => return None,
+        BinOp::Div | BinOp::Rem if signed && a == i64::MIN && b == -1 => return None,
+        BinOp::Div => {
+            if signed {
+                a.wrapping_div(b)
+            } else {
+                ((a as u64) / (b as u64)) as i64
+            }
         }
+        BinOp::Rem => {
+            if signed {
+                a.wrapping_rem(b)
+            } else {
+                ((a as u64) % (b as u64)) as i64
+            }
+        }
+        BinOp::And => a & b,
+        BinOp::Or => a | b,
+        BinOp::Xor => a ^ b,
+        BinOp::Shl => a.wrapping_shl(b as u32 % n),
+        BinOp::Shr => {
+            if signed {
+                a >> (b as u32 % n)
+            } else {
+                ((a as u64) >> (b as u32 % n)) as i64
+            }
+        }
+        _ => unreachable!(),
     };
     Some(norm(ty, v))
 }
 
 fn fold_cmp(cond: Cond, ty: Type, a: i64, b: i64) -> bool {
-    let (sa, sb, ua, ub) = if ty == Type::I32 {
-        (a as i32 as i64, b as i32 as i64, (a as u32) as u64, (b as u32) as u64)
-    } else {
-        (a, b, a as u64, b as u64)
-    };
+    // canonical stored forms compare correctly at container width
+    let signed = ty.is_signed();
     match cond {
-        Cond::Eq => ua == ub,
-        Cond::Ne => ua != ub,
-        Cond::Slt => sa < sb,
-        Cond::Sle => sa <= sb,
-        Cond::Sgt => sa > sb,
-        Cond::Sge => sa >= sb,
-        Cond::Ult => ua < ub,
-        Cond::Ule => ua <= ub,
-        Cond::Ugt => ua > ub,
-        Cond::Uge => ua >= ub,
+        Cond::Eq => a == b,
+        Cond::Ne => a != b,
+        Cond::Lt => {
+            if signed {
+                a < b
+            } else {
+                (a as u64) < (b as u64)
+            }
+        }
+        Cond::Le => {
+            if signed {
+                a <= b
+            } else {
+                (a as u64) <= (b as u64)
+            }
+        }
+        Cond::Gt => {
+            if signed {
+                a > b
+            } else {
+                (a as u64) > (b as u64)
+            }
+        }
+        Cond::Ge => {
+            if signed {
+                a >= b
+            } else {
+                (a as u64) >= (b as u64)
+            }
+        }
     }
 }
 
 fn fold_cast(op: CastOp, from: Type, to: Type, a: i64) -> i64 {
-    let v = match (op, from) {
-        (CastOp::Sext, Type::I1) => -(a & 1),
-        (CastOp::Sext, Type::I32) => a as i32 as i64,
-        (CastOp::Zext, Type::I1) => a & 1,
-        (CastOp::Zext, Type::I32) => (a as u32) as i64,
-        (CastOp::Trunc, _) => a,
+    let v = match op {
+        // canonical values carry their sign — except width-1, stored 0/1,
+        // where ext must interpret (i1's 1 widens to -1)
+        CastOp::Ext if from.width() == Some(1) && from.is_signed() => -(a & 1),
+        CastOp::Ext | CastOp::Trunc => a,
         _ => a,
     };
     norm(to, v)
@@ -331,9 +346,12 @@ fn dce(func: &mut Function) {
         | Inst::FCmp { .. }
         | Inst::Cast { .. }
         | Inst::PtrAdd { .. }
+        | Inst::Extract { .. }
+        | Inst::Pack { .. }
+        | Inst::Insert { .. }
         | Inst::Load { .. } => true,
         Inst::Bin { op, rhs, .. } => match op {
-            BinOp::SDiv | BinOp::UDiv | BinOp::SRem | BinOp::URem => {
+            BinOp::Div | BinOp::Rem => {
                 matches!(consts[rhs.0 as usize], Some(v) if v != 0)
             }
             _ => true,
@@ -507,8 +525,9 @@ fn @f() -> i64 {
     %a: i64 = iconst 6
     %b: i64 = iconst 7
     %c: i64 = imul %a, %b
-    %d: i1 = icmp.slt %a, %b
-    %e: i64 = sext %d
+    %d: u1 = icmp.lt %a, %b
+    %ds: i1 = bitcast %d
+    %e: i64 = ext %ds
     %r: i64 = iadd %c, %e
     ret %r
 }
@@ -528,7 +547,7 @@ fn @f() -> i64 {
 fn @count(%n: i64) -> i64 {
     %zero: i64 = iconst 0
     %r: i64 = loop(%i: i64 = %zero) {
-        %done: i1 = icmp.sge %i, %n
+        %done: u1 = icmp.ge %i, %n
         if %done {
             break %i
         }
@@ -565,7 +584,7 @@ fn @count(%n: i64) -> i64 {
 fn @g(%a: i64, %b: i64) -> i64 {
 ^entry:
     %two: i64 = iconst 2
-    %c: i1 = icmp.slt %a, %b
+    %c: u1 = icmp.lt %a, %b
     br %c, ^x, ^y
 ^x:
     jmp ^join(%two)

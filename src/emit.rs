@@ -387,18 +387,19 @@ const LDR_SP_S: &str = "ldr {s}, [sp, #{i 0..16380 /4}]";
 const STR_SP_S: &str = "str {s}, [sp, #{i 0..16380 /4}]";
 const CSET: &str = "cset {x}, {e eq|ne|lt|le|gt|ge|lo|ls|hi|hs}";
 
-fn cond_name(c: Cond) -> &'static str {
-    match c {
-        Cond::Eq => "eq",
-        Cond::Ne => "ne",
-        Cond::Slt => "lt",
-        Cond::Sle => "le",
-        Cond::Sgt => "gt",
-        Cond::Sge => "ge",
-        Cond::Ult => "lo",
-        Cond::Ule => "ls",
-        Cond::Ugt => "hi",
-        Cond::Uge => "hs",
+/// arm condition code for a comparison, by the operand type's signedness
+fn cond_name(c: Cond, signed: bool) -> &'static str {
+    match (c, signed) {
+        (Cond::Eq, _) => "eq",
+        (Cond::Ne, _) => "ne",
+        (Cond::Lt, true) => "lt",
+        (Cond::Le, true) => "le",
+        (Cond::Gt, true) => "gt",
+        (Cond::Ge, true) => "ge",
+        (Cond::Lt, false) => "lo",
+        (Cond::Le, false) => "ls",
+        (Cond::Gt, false) => "hi",
+        (Cond::Ge, false) => "hs",
     }
 }
 
@@ -686,10 +687,10 @@ impl FnEmit<'_> {
     }
 }
 
-/// pick the x or w form of a template by operand type
+/// pick the x or w form of a template by operand width
 macro_rules! xw {
     ($ty:expr, $x:expr, $w:expr) => {
-        if $ty == Type::I32 {
+        if $ty.width() == Some(32) {
             $w
         } else {
             $x
@@ -937,19 +938,26 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             let rl = e.src_reg(*lhs, 9)?;
             let rr = e.src_reg(*rhs, 10)?;
             let rd = e.dst_reg(*dst, 9);
+            let signed = ty.is_signed();
             let simple: Option<&'static str> = match op {
                 BinOp::IAdd => Some(xw!(ty, "add {x}, {x}, {x}", "add {w}, {w}, {w}")),
                 BinOp::ISub => Some(xw!(ty, "sub {x}, {x}, {x}", "sub {w}, {w}, {w}")),
                 BinOp::IMul => Some(xw!(ty, "mul {x}, {x}, {x}", "mul {w}, {w}, {w}")),
-                BinOp::SDiv => Some(xw!(ty, "sdiv {x}, {x}, {x}", "sdiv {w}, {w}, {w}")),
-                BinOp::UDiv => Some(xw!(ty, "udiv {x}, {x}, {x}", "udiv {w}, {w}, {w}")),
+                BinOp::Div => Some(if signed {
+                    xw!(ty, "sdiv {x}, {x}, {x}", "sdiv {w}, {w}, {w}")
+                } else {
+                    xw!(ty, "udiv {x}, {x}, {x}", "udiv {w}, {w}, {w}")
+                }),
                 BinOp::And => Some(xw!(ty, "and {x}, {x}, {x}", "and {w}, {w}, {w}")),
                 BinOp::Or => Some(xw!(ty, "orr {x}, {x}, {x}", "orr {w}, {w}, {w}")),
                 BinOp::Xor => Some(xw!(ty, "eor {x}, {x}, {x}", "eor {w}, {w}, {w}")),
                 BinOp::Shl => Some(xw!(ty, "lsl {x}, {x}, {x}", "lsl {w}, {w}, {w}")),
-                BinOp::LShr => Some(xw!(ty, "lsr {x}, {x}, {x}", "lsr {w}, {w}, {w}")),
-                BinOp::AShr => Some(xw!(ty, "asr {x}, {x}, {x}", "asr {w}, {w}, {w}")),
-                BinOp::SRem | BinOp::URem => None,
+                BinOp::Shr => Some(if signed {
+                    xw!(ty, "asr {x}, {x}, {x}", "asr {w}, {w}, {w}")
+                } else {
+                    xw!(ty, "lsr {x}, {x}, {x}", "lsr {w}, {w}, {w}")
+                }),
+                BinOp::Rem => None,
                 BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv => {
                     unreachable!("float ops matched by the guard above")
                 }
@@ -960,9 +968,10 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                 }
                 None => {
                     // r = a - (a div b) * b; the quotient goes via x11
-                    let div = match op {
-                        BinOp::SRem => xw!(ty, "sdiv {x}, {x}, {x}", "sdiv {w}, {w}, {w}"),
-                        _ => xw!(ty, "udiv {x}, {x}, {x}", "udiv {w}, {w}, {w}"),
+                    let div = if signed {
+                        xw!(ty, "sdiv {x}, {x}, {x}", "sdiv {w}, {w}, {w}")
+                    } else {
+                        xw!(ty, "udiv {x}, {x}, {x}", "udiv {w}, {w}, {w}")
                     };
                     e.emit(div, &[11, rl, rr])?;
                     e.emit(
@@ -984,7 +993,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             let rr = e.src_reg(*rhs, 10)?;
             e.emit(xw!(ty, "cmp {x}, {x}", "cmp {w}, {w}"), &[rl, rr])?;
             let rd = e.dst_reg(*dst, 9);
-            let ci = e.enc.enum_index(CSET, cond_name(*cond))?;
+            let ci = e.enc.enum_index(CSET, cond_name(*cond, ty.is_signed()))?;
             e.emit(CSET, &[rd, ci])?;
             e.finish(*dst, rd)
         }
@@ -993,59 +1002,69 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             let to = e.func.ty(*dst);
             let rs = e.src_reg(*src, 9)?;
             let rd = e.dst_reg(*dst, 10);
+            let sw = from.width();
+            let dw = to.width();
             match (op, from, to) {
-                (CastOp::Sext, Type::I1, Type::I64) => {
-                    e.emit("sbfx {x}, {x}, #0, #1", &[rd, rs])?;
+                // widening: the fill follows the source's signedness
+                (CastOp::Ext, _, _) if sw == Some(1) && from.is_signed() => {
+                    if dw == Some(32) {
+                        e.emit("sbfx {w}, {w}, #0, #1", &[rd, rs])?;
+                    } else {
+                        e.emit("sbfx {x}, {x}, #0, #1", &[rd, rs])?;
+                    }
                 }
-                (CastOp::Sext, Type::I1, Type::I32) => {
-                    e.emit("sbfx {w}, {w}, #0, #1", &[rd, rs])?;
+                (CastOp::Ext, _, _) if sw == Some(1) => {
+                    e.emit("and {x}, {x}, #1", &[rd, rs])?;
                 }
-                (CastOp::Sext, Type::I32, Type::I64) => {
+                (CastOp::Ext, _, _) if sw == Some(32) && from.is_signed() => {
                     e.emit("sxtw {x}, {w}", &[rd, rs])?;
                 }
-                (CastOp::Zext, Type::I1, _) => {
-                    e.emit("and {x}, {x}, #1", &[rd, rs])?;
-                }
-                (CastOp::Zext, Type::I32, Type::I64) => {
+                (CastOp::Ext, _, _) if sw == Some(32) => {
                     e.emit("mov {w}, {w}", &[rd, rs])?; // clears the high half
                 }
-                (CastOp::Trunc, _, Type::I32) => {
+                (CastOp::Trunc, _, _) if dw == Some(32) => {
                     e.emit("mov {w}, {w}", &[rd, rs])?;
                 }
-                (CastOp::Trunc, _, Type::I1) => {
+                (CastOp::Trunc, _, _) if dw == Some(1) => {
                     e.emit("and {x}, {x}, #1", &[rd, rs])?;
                 }
-                (CastOp::Sitofp, _, _) | (CastOp::Uitofp, _, _) => {
+                // same-width signedness change: a register move
+                (CastOp::Bitcast, _, _) if !from.is_float() && !to.is_float() => {
+                    if dw == Some(32) {
+                        e.emit("mov {w}, {w}", &[rd, rs])?;
+                    } else {
+                        e.emit("mov {x}, {x}", &[rd, rs])?;
+                    }
+                }
+                (CastOp::Itof, _, _) => {
                     let rs = e.src_reg(*src, 9)?;
                     let rdf = e.dst_reg(*dst, 16);
-                    let signed = matches!(op, CastOp::Sitofp);
-                    let t = match (from, to, signed) {
-                        (Type::I64, Type::F64, true) => "scvtf {d}, {x}",
-                        (Type::I32, Type::F64, true) => "scvtf {d}, {w}",
-                        (Type::I64, Type::F32, true) => "scvtf {s}, {x}",
-                        (Type::I32, Type::F32, true) => "scvtf {s}, {w}",
-                        (Type::I64, Type::F64, false) => "ucvtf {d}, {x}",
-                        (Type::I32, Type::F64, false) => "ucvtf {d}, {w}",
-                        (Type::I64, Type::F32, false) => "ucvtf {s}, {x}",
-                        (Type::I32, Type::F32, false) => "ucvtf {s}, {w}",
+                    let t = match (from.width(), to, from.is_signed()) {
+                        (Some(64), Type::F64, true) => "scvtf {d}, {x}",
+                        (Some(32), Type::F64, true) => "scvtf {d}, {w}",
+                        (Some(64), Type::F32, true) => "scvtf {s}, {x}",
+                        (Some(32), Type::F32, true) => "scvtf {s}, {w}",
+                        (Some(64), Type::F64, false) => "ucvtf {d}, {x}",
+                        (Some(32), Type::F64, false) => "ucvtf {d}, {w}",
+                        (Some(64), Type::F32, false) => "ucvtf {s}, {x}",
+                        (Some(32), Type::F32, false) => "ucvtf {s}, {w}",
                         _ => unreachable!(),
                     };
                     e.emit(t, &[rdf, rs])?;
                     return e.finish(*dst, rdf);
                 }
-                (CastOp::Fptosi, _, _) | (CastOp::Fptoui, _, _) => {
+                (CastOp::Ftoi, _, _) => {
                     let rs = e.src_reg(*src, 16)?;
                     let rdi = e.dst_reg(*dst, 9);
-                    let signed = matches!(op, CastOp::Fptosi);
-                    let t = match (from, to, signed) {
-                        (Type::F64, Type::I64, true) => "fcvtzs {x}, {d}",
-                        (Type::F64, Type::I32, true) => "fcvtzs {w}, {d}",
-                        (Type::F32, Type::I64, true) => "fcvtzs {x}, {s}",
-                        (Type::F32, Type::I32, true) => "fcvtzs {w}, {s}",
-                        (Type::F64, Type::I64, false) => "fcvtzu {x}, {d}",
-                        (Type::F64, Type::I32, false) => "fcvtzu {w}, {d}",
-                        (Type::F32, Type::I64, false) => "fcvtzu {x}, {s}",
-                        (Type::F32, Type::I32, false) => "fcvtzu {w}, {s}",
+                    let t = match (from, to.width(), to.is_signed()) {
+                        (Type::F64, Some(64), true) => "fcvtzs {x}, {d}",
+                        (Type::F64, Some(32), true) => "fcvtzs {w}, {d}",
+                        (Type::F32, Some(64), true) => "fcvtzs {x}, {s}",
+                        (Type::F32, Some(32), true) => "fcvtzs {w}, {s}",
+                        (Type::F64, Some(64), false) => "fcvtzu {x}, {d}",
+                        (Type::F64, Some(32), false) => "fcvtzu {w}, {d}",
+                        (Type::F32, Some(64), false) => "fcvtzu {x}, {s}",
+                        (Type::F32, Some(32), false) => "fcvtzu {w}, {s}",
                         _ => unreachable!(),
                     };
                     e.emit(t, &[rdi, rs])?;
@@ -1067,11 +1086,11 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                     let (sf, df) = (from.is_float(), to.is_float());
                     let rs = e.src_reg(*src, if sf { 16 } else { 9 })?;
                     let rdc = e.dst_reg(*dst, if df { 16 } else { 9 });
-                    let t = match (from, to) {
-                        (Type::I64, Type::F64) => "fmov {d}, {x}",
-                        (Type::F64, Type::I64) => "fmov {x}, {d}",
-                        (Type::I32, Type::F32) => "fmov {s}, {w}",
-                        (Type::F32, Type::I32) => "fmov {w}, {s}",
+                    let t = match (sf, df, from.width().or(to.width())) {
+                        (false, true, _) if to == Type::F64 => "fmov {d}, {x}",
+                        (true, false, _) if from == Type::F64 => "fmov {x}, {d}",
+                        (false, true, _) => "fmov {s}, {w}",
+                        (true, false, _) => "fmov {w}, {s}",
                         _ => unreachable!(),
                     };
                     e.emit(t, &[rdc, rs])?;
@@ -1088,7 +1107,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             let t = match ty {
                 Type::F64 => "ldr {d}, [{x}, #{i 0..32760 /8}]",
                 Type::F32 => "ldr {s}, [{x}, #{i 0..16380 /4}]",
-                Type::I32 => "ldr {w}, [{x}, #{i 0..16380 /4}]",
+                t if t.width() == Some(32) => "ldr {w}, [{x}, #{i 0..16380 /4}]",
                 _ => "ldr {x}, [{x}, #{i 0..32760 /8}]",
             };
             e.emit(t, &[rd, ra, 0])?;
@@ -1101,7 +1120,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             let t = match ty {
                 Type::F64 => "str {d}, [{x}, #{i 0..32760 /8}]",
                 Type::F32 => "str {s}, [{x}, #{i 0..16380 /4}]",
-                Type::I32 => "str {w}, [{x}, #{i 0..16380 /4}]",
+                t if t.width() == Some(32) => "str {w}, [{x}, #{i 0..16380 /4}]",
                 _ => "str {x}, [{x}, #{i 0..32760 /8}]",
             };
             e.emit(t, &[rv, ra, 0]).map(|_| ())
@@ -1354,9 +1373,9 @@ fn @addmul(%a: i32, %b: i32) -> i32 {
         let j = jit(r"
 fn @half_sext(%a: i32) -> i64 {
 ^entry:
-    %w: i64 = sext %a
+    %w: i64 = ext %a
     %two: i64 = iconst 2
-    %h: i64 = sdiv %w, %two
+    %h: i64 = div %w, %two
     ret %h
 }
 ");
@@ -1370,8 +1389,9 @@ fn @half_sext(%a: i32) -> i64 {
         let j = jit(r"
 fn @mask(%a: i64, %b: i64) -> i64 {
 ^entry:
-    %lt: i1 = icmp.slt %a, %b
-    %m: i64 = sext %lt
+    %lt: u1 = icmp.lt %a, %b
+    %ls: i1 = bitcast %lt
+    %m: i64 = ext %ls
     ret %m
 }
 ");
@@ -1408,7 +1428,7 @@ fn @sum4(%p: ptr) -> i32 {
     jmp ^loop(%zero, %zero32)
 ^loop(%i: i64, %acc: i32):
     %four: i64 = iconst 4
-    %done: i1 = icmp.sge %i, %four
+    %done: u1 = icmp.ge %i, %four
     br %done, ^exit, ^body
 ^body:
     %off: i64 = imul %i, %four
@@ -1432,7 +1452,7 @@ fn @sum4(%p: ptr) -> i32 {
 fn @mix(%a: i64, %b: i64) -> i64 {
 ^entry:
     %sh: i64 = shl %a, %b
-    %r: i64 = urem %sh, %a
+    %r: i64 = rem %sh, %a
     %x: i64 = xor %r, %b
     ret %x
 }

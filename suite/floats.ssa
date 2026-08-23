@@ -47,7 +47,7 @@ fn @fdiv2(%a: f64, %b: f64) -> f64 {
 
 ; branches on float comparison
 fn @fmax(%a: f64, %b: f64) -> f64 {
-    %gt: i1 = fcmp.ogt %a, %b
+    %gt: u1 = fcmp.ogt %a, %b
     %r: f64 = if %gt {
         yield %a
     } else {
@@ -59,13 +59,13 @@ fn @fmax(%a: f64, %b: f64) -> f64 {
 ; float -> int truncates toward zero on every target
 fn @f2i(%x: f64) -> i64 {
 ^entry:
-    %r: i64 = fptosi %x
+    %r: i64 = ftoi %x
     ret %r
 }
 
 fn @i2f(%n: i64) -> f64 {
 ^entry:
-    %r: f64 = sitofp %n
+    %r: f64 = itof %n
     ret %r
 }
 
@@ -78,8 +78,8 @@ fn @fbits(%x: f64) -> i64 {
 ; round toward zero, back to float: trunc(2.75) = 2.0
 fn @fround(%x: f64) -> f64 {
 ^entry:
-    %i: i64 = fptosi %x
-    %r: f64 = sitofp %i
+    %i: i64 = ftoi %x
+    %r: f64 = itof %i
     ret %r
 }
 
@@ -108,17 +108,17 @@ fn @floop(%n: i64) -> f64 {
     %zero: i64 = iconst 0
     %fz: f64 = fconst 0.0
     %r: f64 = loop(%i: i64 = %zero, %acc: f64 = %fz) {
-        %done: i1 = icmp.sge %i, %n
+        %done: u1 = icmp.ge %i, %n
         if %done {
             break %acc
         }
         %one: i64 = iconst 1
         %i2: i64 = iadd %i, %one
-        %fi: f64 = sitofp %i2
+        %fi: f64 = itof %i2
         %acc2: f64 = fadd %acc, %fi
         continue %i2, %acc2
     }
-    %fn_: f64 = sitofp %n
+    %fn_: f64 = itof %n
     %m: f64 = fdiv %r, %fn_
     ret %m
 }

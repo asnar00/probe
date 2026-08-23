@@ -11,78 +11,78 @@
 ;! fp_next 1.0 -> 4607182418800017409
 ;! flag_swap 5 -> 7
 
-type $rgb = { r: i8, g: i8, b: i8 }
-type $fp = { sign: i1, exp: i11, frac: i52 }
-type $flags = { a: i1, b: i1, rest: i3 }
+type $rgb = { r: u8, g: u8, b: u8 }
+type $fp = { sign: u1, exp: u11, frac: u52 }
+type $flags = { a: u1, b: u1, rest: u3 }
 
-fn @rgb_r(%c: i24) -> i8 {
+fn @rgb_r(%c: u24) -> u8 {
 ^entry:
     %p: $rgb = bitcast %c
-    %r: i8 = extract %p, r
+    %r: u8 = extract %p, r
     ret %r
 }
 
-fn @rgb_g(%c: i24) -> i8 {
+fn @rgb_g(%c: u24) -> u8 {
 ^entry:
     %p: $rgb = bitcast %c
-    %r: i8 = extract %p, g
+    %r: u8 = extract %p, g
     ret %r
 }
 
-fn @rgb_b(%c: i24) -> i8 {
+fn @rgb_b(%c: u24) -> u8 {
 ^entry:
     %p: $rgb = bitcast %c
-    %r: i8 = extract %p, b
+    %r: u8 = extract %p, b
     ret %r
 }
 
-fn @rgb_make(%r: i8, %g: i8, %b: i8) -> i24 {
+fn @rgb_make(%r: u8, %g: u8, %b: u8) -> u24 {
 ^entry:
     %p: $rgb = pack %r, %g, %b
-    %c: i24 = bitcast %p
+    %c: u24 = bitcast %p
     ret %c
 }
 
 ; halve each channel with field updates
-fn @rgb_dim(%c: i24) -> i24 {
+fn @rgb_dim(%c: u24) -> u24 {
 ^entry:
     %p: $rgb = bitcast %c
-    %one: i8 = iconst 1
-    %r: i8 = extract %p, r
-    %g: i8 = extract %p, g
-    %b: i8 = extract %p, b
-    %r2: i8 = lshr %r, %one
-    %g2: i8 = lshr %g, %one
-    %b2: i8 = lshr %b, %one
+    %one: u8 = iconst 1
+    %r: u8 = extract %p, r
+    %g: u8 = extract %p, g
+    %b: u8 = extract %p, b
+    %r2: u8 = shr %r, %one
+    %g2: u8 = shr %g, %one
+    %b2: u8 = shr %b, %one
     %q: $rgb = pack %r2, %g2, %b2
-    %o: i24 = bitcast %q
+    %o: u24 = bitcast %q
     ret %o
 }
 
 ; the biased exponent of a double, by looking at it
-fn @fp_exp(%x: f64) -> i11 {
+fn @fp_exp(%x: f64) -> u11 {
 ^entry:
     %p: $fp = bitcast %x
-    %e: i11 = extract %p, exp
+    %e: u11 = extract %p, exp
     ret %e
 }
 
-fn @fp_sign(%x: f64) -> i1 {
+fn @fp_sign(%x: f64) -> u1 {
 ^entry:
     %p: $fp = bitcast %x
-    %s: i1 = extract %p, sign
+    %s: u1 = extract %p, sign
     ret %s
 }
 
 ; nextafter(x, +inf) for positive normals: bump the fraction
-fn @fp_next(%x: f64) -> i64 {
+fn @fp_next(%x: f64) -> u64 {
 ^entry:
     %p: $fp = bitcast %x
-    %f: i52 = extract %p, frac
-    %one: i52 = iconst 1
-    %f2: i52 = iadd %f, %one
+    %f: u52 = extract %p, frac
+    %one: u52 = iconst 1
+    %f2: u52 = iadd %f, %one
     %q: $fp = insert %p, frac, %f2
-    %r: i64 = bitcast %q
+    %r: u64 = bitcast %q
     ret %r
 }
 
@@ -91,19 +91,19 @@ fn @fp_next(%x: f64) -> i64 {
 ; swap a and b of 5 -> unchanged... use 5 = a0 b0 rest101; swapped = same.
 ; better: 5 -> insert a=b(0),b=a(0): same. Use flag_swap on 0b00101? Let's
 ; swap and also set rest to rest|1: expected computed below.
-fn @flag_swap(%v: i5) -> i5 {
+fn @flag_swap(%v: u5) -> u5 {
 ^entry:
     %p: $flags = bitcast %v
-    %a: i1 = extract %p, a
-    %b: i1 = extract %p, b
+    %a: u1 = extract %p, a
+    %b: u1 = extract %p, b
     %q1: $flags = insert %p, a, %b
     %q2: $flags = insert %q1, b, %a
-    %rest: i3 = extract %q2, rest
-    %one: i3 = iconst 1
-    %r2: i3 = or %rest, %one
-    %two: i3 = iconst 2
-    %r3: i3 = or %r2, %two
+    %rest: u3 = extract %q2, rest
+    %one: u3 = iconst 1
+    %r2: u3 = or %rest, %one
+    %two: u3 = iconst 2
+    %r3: u3 = or %r2, %two
     %q3: $flags = insert %q2, rest, %r3
-    %r: i5 = bitcast %q3
+    %r: u5 = bitcast %q3
     ret %r
 }

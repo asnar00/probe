@@ -11,10 +11,12 @@ things we can learn ARM64 encodings for by probing LLVM.
   passed as an argument on the branch, and received as a parameter on the
   target block (the Cranelift / MLIR style). This keeps "where does this value
   come from" local to the branch instruction and makes the emitter simpler.
-- **Types live on variables, not opcodes.** Every value definition is written
-  `%name: ty = op ...` — the same form as function and block parameters. Opcodes
-  are pure operations with no type suffixes, which keeps the opcode set small;
-  the verifier checks that operand and result types are consistent.
+- **Types live on variables, not opcodes — signedness included.** Every value
+  definition is written `%name: ty = op ...`, and a type like `u5` or `i32`
+  carries both width and signedness. `div`, `rem`, `shr`, ordered `icmp`,
+  `ext`, `itof`/`ftoi` all take their behavior from their operand types, so
+  there is exactly one opcode per operation and the data layout states the
+  intent once.
 - **No nesting, no expressions.** One instruction per line, every intermediate
   value named. This is the layer *below* everything clever.
 
@@ -86,28 +88,26 @@ left-hand side.
 
 ### Integer arithmetic and bitwise ops
 
-Both operands and the result must all have the same integer type — the
-named widths or any `iN`. Arbitrary widths wrap at 2^N, shift amounts are
-taken mod N, and signedness stays in the opcode as always. In registers an
-`iN` value is kept zero-extended (its canonical form); signed operations
-sign-extend internally. The lowering pass turns `iN` operations into
-masked i64 code, so backends never see odd widths.
+Both operands and the result must share one integer type (width >= 2).
+Values wrap at 2^N; shift amounts are taken mod N. Where signedness
+matters, the type decides — one opcode each:
 
 ```
-%v: i64 = iadd %a, %b
+%v: i64 = iadd %a, %b       ; two's-complement: sign-agnostic
 %v: i64 = isub %a, %b
 %v: i64 = imul %a, %b
-%v: i64 = sdiv %a, %b       ; signed divide
-%v: i64 = udiv %a, %b       ; unsigned divide
-%v: i64 = srem %a, %b       ; signed remainder
-%v: i64 = urem %a, %b       ; unsigned remainder
-%v: i64 = and  %a, %b
-%v: i64 = or   %a, %b
-%v: i64 = xor  %a, %b
-%v: i64 = shl  %a, %b       ; shift amount taken mod bit-width
-%v: i64 = lshr %a, %b       ; logical (zero-fill) shift right
-%v: i64 = ashr %a, %b       ; arithmetic (sign-fill) shift right
+%v: i64 = div %a, %b        ; signed for iN operands, unsigned for uN
+%v: i64 = rem %a, %b        ; likewise
+%v: i64 = and %a, %b
+%v: u64 = or  %a, %b
+%v: u64 = xor %a, %b
+%v: u64 = shl %a, %b        ; sign-agnostic
+%v: u64 = shr %a, %b        ; zero-fill for uN, sign-fill for iN
 ```
+
+Odd widths lower to 64-bit container code before emission: unsigned
+values live zero-extended, signed values sign-extended — so callers pass
+and receive natural values (-6 as an `i5` argument is just -6).
 
 ### Float arithmetic
 
@@ -121,13 +121,12 @@ require a decimal point (or exponent); `fconst` also accepts integers.
 
 ### Comparison
 
-Operands must share a type (`i32`, `i64`, or `ptr`); the result is `i1`. The
-condition is part of the opcode (it selects an operation, not a type).
+Operands must share an integer type (or `ptr`, which compares unsigned);
+the result is `u1`.
 
 ```
-%c: i1 = icmp.eq  %a, %b    ; also: ne
-%c: i1 = icmp.slt %a, %b    ; signed:   slt sle sgt sge
-%c: i1 = icmp.ult %a, %b    ; unsigned: ult ule ugt uge
+%c: u1 = icmp.eq %a, %b     ; also: ne
+%c: u1 = icmp.lt %a, %b     ; lt le gt ge — signedness from the operands
 ```
 
 ### Width changes
@@ -136,30 +135,32 @@ The source and result types determine the conversion; the opcode only picks
 how new bits are filled.
 
 ```
-%v: i64 = sext %a           ; sign-extend  (result wider than source)
-%v: i64 = zext %a           ; zero-extend  (result wider than source)
-%v: i32 = trunc %a          ; truncate     (result narrower than source)
+%v: i64 = ext %a            ; widen; the fill follows the SOURCE's sign
+%v: i32 = trunc %a          ; truncate (sign-agnostic: keeps low bits)
+%v: u64 = bitcast %a        ; same-width reinterpretation (sign flip,
+                            ; int<->float, int<->struct)
 ```
 
-Widths are ranked `i1 < i32 < i64`; `ptr` takes no part in width changes.
+`ptr` takes no part in width changes.
 
 Float comparisons are *ordered* (false when either side is NaN), except
 `une`, which is true on NaN:
 
 ```
-%c: i1 = fcmp.oeq %a, %b    ; also: une olt ole ogt oge
+%c: u1 = fcmp.oeq %a, %b    ; also: une olt ole ogt oge
 ```
 
 Float conversions carry direction and signedness in the opcode; widths
 come from the value types as usual:
 
 ```
-%f: f64 = sitofp %n         ; signed int -> float   (uitofp: unsigned)
-%n: i64 = fptosi %f         ; float -> int, rounds toward zero (fptoui)
+%f: f64 = itof %n           ; int -> float; signedness from the int type
+%n: i64 = ftoi %f           ; float -> int, rounds toward zero
 %d: f64 = fpromote %s       ; f32 -> f64
 %s: f32 = fdemote %d        ; f64 -> f32
-%b: i64 = bitcast %f        ; same-width bit reinterpretation
 ```
+
+The int side of `itof`/`ftoi` must be 32 or 64 bits wide.
 
 ### Memory
 
