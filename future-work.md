@@ -73,6 +73,17 @@ Backend sketch:
   Architecture** XML (see reference/README.md) — an independent scorecard
   the learner never consults during learning.
 
+## Numeric tower
+
+- **Fixed-point types**: `fx8.8` as sugar for a struct-backed numeric —
+  `{ int: i8, frac: u8 }` — with its operation set written as an SSA
+  library, exactly the softfloat recipe: struct layout states the format,
+  a lowering pass rewrites `fadd`-style ops on fixed values into calls,
+  and differential tests pin the semantics. Generalizes to `fxM.N` and to
+  unsigned `ufxM.N`; an abstract `fixed` type joins the replacement
+  policy alongside `int`/`uint`/`float`.
+- Saturating/checked arithmetic variants as type- or op-level opt-ins.
+
 ## Language
 
 - External calls (libc symbols) from JIT'd code.

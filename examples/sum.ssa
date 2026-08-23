@@ -1,15 +1,15 @@
 ; sum of 0..n
-fn @sum(%n: i64) -> i64 {
+fn @sum(%n: int) -> int {
 ^entry:
-    %zero: i64 = iconst 0
+    %zero: int = iconst 0
     jmp ^loop(%zero, %zero)
-^loop(%i: i64, %acc: i64):
+^loop(%i: int, %acc: int):
     %done: u1 = icmp.ge %i, %n
     br %done, ^exit, ^body
 ^body:
-    %acc2: i64 = iadd %acc, %i
-    %one: i64 = iconst 1
-    %i2: i64 = iadd %i, %one
+    %acc2: int = iadd %acc, %i
+    %one: int = iconst 1
+    %i2: int = iadd %i, %one
     jmp ^loop(%i2, %acc2)
 ^exit:
     ret %acc

@@ -2,7 +2,7 @@
 ;! sext32 0xfffffff6 -> -10
 ;! sext32 10 -> 10
 ;! zext32 0xfffffff6 -> 4294967286
-;! trunc64 0x1ffffffff -> 4294967295
+;! trunc64 0x1ffffffff -> -1
 ;! bit 7 -> 1
 ;! bit 6 -> 0
 ;! sextbit 7 -> -1

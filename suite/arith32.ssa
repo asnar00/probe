@@ -1,10 +1,11 @@
-; 32-bit ops: results wrap at 32 bits and live zero-extended
-;! add32 0x7fffffff 1 -> 2147483648
+; 32-bit ops wrap at 32 bits; signed results read naturally (-3, not a
+; zero-extended encoding), unsigned ones as their bit value
+;! add32 0x7fffffff 1 -> -2147483648
 ;! mul32 65536 65536 -> 0
-;! sdiv32 0xfffffff6 3 -> 4294967293
-;! srem32 0xfffffff9 4 -> 4294967293
+;! sdiv32 0xfffffff6 3 -> -3
+;! srem32 0xfffffff9 4 -> -3
 ;! lshr32 0x80000000 31 -> 1
-;! ashr32 0x80000000 31 -> 4294967295
+;! ashr32 0x80000000 31 -> -1
 
 fn @add32(%a: i32, %b: i32) -> i32 {
 ^entry:

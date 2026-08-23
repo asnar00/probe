@@ -53,6 +53,10 @@ struct Case {
     args: Vec<ArgSpec>,
     raw_expected: Vec<ExpVal>, // as written in the directive
     expected: Vec<i64>,        // resolved comparison values (bits for floats)
+    /// per-result normalization: sub-64 integer results read naturally —
+    /// signed sign-extended, unsigned zero-extended — whatever the
+    /// execution path handed back
+    norms: Vec<Option<(u8, bool)>>,
     text: String,              // the directive as written, for reporting
 }
 
@@ -128,6 +132,7 @@ fn parse_case(line: &str) -> Result<Case, String> {
         args,
         raw_expected,
         expected: Vec::new(),
+        norms: Vec::new(),
         text: line.trim().to_string(),
     })
 }
@@ -238,6 +243,14 @@ fn prepare_cases(module: &ssa::Module, cases: &mut [Case]) -> Result<String, Str
                 }
             })
             .collect::<Result<_, _>>()?;
+        case.norms = func
+            .rets
+            .iter()
+            .map(|t| match t.width() {
+                Some(n) if n < 64 => Some((n as u8, t.is_signed())),
+                _ => None,
+            })
+            .collect();
         if case.expected.len() != case.raw_expected.len() {
             return Err(format!(
                 "'{}' expects {} values but @{} returns {}",
@@ -1023,6 +1036,16 @@ fn run_arm_qemu(
 }
 
 fn finish_case(report: &mut Report, name: &str, case: &Case, got: Result<Vec<i64>, String>) {
+    let got = got.map(|vs| {
+        vs.iter()
+            .enumerate()
+            .map(|(i, &v)| match case.norms.get(i).copied().flatten() {
+                Some((n, true)) => (v << (64 - n)) >> (64 - n),
+                Some((n, false)) => (v as u64 & ((1u128 << n) - 1) as u64) as i64,
+                None => v,
+            })
+            .collect::<Vec<i64>>()
+    });
     match got {
         Ok(got) if got == case.expected => report.case(true, name, &case.text, ""),
         Ok(got) => {

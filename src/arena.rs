@@ -342,7 +342,10 @@ mod tests {
     use super::*;
 
     fn parse(src: &str) -> crate::ssa::Module {
-        let m = crate::ssa::parse(src).expect("parse");
+        let mut m = crate::ssa::parse(src).expect("parse");
+        let policy =
+            crate::ssa::Policy::new(crate::ssa::Type::I(64), crate::ssa::Type::F64).unwrap();
+        crate::ssa::resolve_types(&mut m, &policy);
         crate::ssa::verify(&m).expect("verify");
         m
     }

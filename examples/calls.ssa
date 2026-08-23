@@ -1,14 +1,14 @@
-fn @square(%x: i64) -> i64 {
+fn @square(%x: int) -> int {
 ^entry:
-    %r: i64 = imul %x, %x
+    %r: int = imul %x, %x
     ret %r
 }
 
 ; hypot2(a,b) = a*a + b*b, via two calls
-fn @hypot2(%a: i64, %b: i64) -> i64 {
+fn @hypot2(%a: int, %b: int) -> int {
 ^entry:
-    %aa: i64 = call @square(%a)
-    %bb: i64 = call @square(%b)
-    %s: i64 = iadd %aa, %bb
+    %aa: int = call @square(%a)
+    %bb: int = call @square(%b)
+    %s: int = iadd %aa, %bb
     ret %s
 }

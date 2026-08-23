@@ -7,14 +7,14 @@
 ;! minmax -1 1 -> -1, 1
 ;! recombine 17 5 -> 17
 
-fn @divmod(%a: i64, %b: i64) -> (i64, i64) {
+fn @divmod(%a: int, %b: int) -> (int, int) {
 ^entry:
-    %q: i64 = div %a, %b
-    %r: i64 = rem %a, %b
+    %q: int = div %a, %b
+    %r: int = rem %a, %b
     ret %q, %r
 }
 
-fn @minmax(%a: i64, %b: i64) -> (i64, i64) {
+fn @minmax(%a: int, %b: int) -> (int, int) {
 ^entry:
     %lt: u1 = icmp.lt %a, %b
     br %lt, ^ab, ^ba
@@ -25,10 +25,10 @@ fn @minmax(%a: i64, %b: i64) -> (i64, i64) {
 }
 
 ; q*b + r must reconstruct a — exercises multi-value call results
-fn @recombine(%a: i64, %b: i64) -> i64 {
+fn @recombine(%a: int, %b: int) -> int {
 ^entry:
-    %q: i64, %r: i64 = call @divmod(%a, %b)
-    %t: i64 = imul %q, %b
-    %s: i64 = iadd %t, %r
+    %q: int, %r: int = call @divmod(%a, %b)
+    %t: int = imul %q, %b
+    %s: int = iadd %t, %r
     ret %s
 }

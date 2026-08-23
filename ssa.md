@@ -244,13 +244,20 @@ fn @sum(%n: i64) -> i64 {
 
 ## Abstract numeric types
 
-`int` is an **abstract integer type**: code written with it does not choose
-a width — the compiler does, at compile time, by a *replacement policy*
-derived from the target (its natural register width, or a size-oriented
-choice like i32 on wasm32) and from user concerns (`--int=i32|i64`).
-Because types live on variables, resolution is a single rewrite of the
-value tables before verification; opcodes, instructions, and everything
-downstream see only concrete types.
+**Abstract types are the house style**: original SSA code should say
+`int`, `uint`, and `float` unless it genuinely means a specific layout.
+Concrete types are for width-specific work — bit patterns, struct fields,
+memory layout, code exact only at one width. Abstract code is
+policy-portable by construction, and the suite enforces it: the same
+programs run under every width policy and must agree.
+
+An abstract type does not choose a width — the compiler does, at compile
+time, by a *replacement policy* derived from the target (its natural
+register width, or a size-oriented choice like i32 on wasm32) and from
+user concerns (`--int=i32|i64`, `--float=f32|f64`; `uint` follows `int`'s
+width). Because types live on variables, resolution is a single rewrite
+of the value tables before verification; opcodes, instructions, and
+everything downstream see only concrete types.
 
 ```
 fn @gcd(%a: int, %b: int) -> int {     ; width chosen per target/policy
