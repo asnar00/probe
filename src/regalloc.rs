@@ -303,7 +303,7 @@ pub fn allocate(func: &Function, int_pool: &[i64], float_pool: &[i64]) -> Alloc 
         .collect();
     order.sort_by_key(|&i| start[i]);
     let mut loc = vec![Loc::Slot(usize::MAX); n];
-    let is_float = |i: usize| func.values[i].ty.is_float();
+    let is_float = |i: usize| func.values[i].ty.uses_float_reg();
     let mut free: [Vec<i64>; 2] = [int_pool.to_vec(), float_pool.to_vec()];
     free[0].reverse();
     free[1].reverse();

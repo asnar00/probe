@@ -197,6 +197,13 @@ impl Type {
         matches!(self, Type::F32 | Type::F64)
     }
 
+    /// Register-class choice for allocation, staging, and calls: floats
+    /// and vectors travel in the d registers (our vectors are <= 64 bits,
+    /// exactly one d register). Type rules never use this.
+    pub fn uses_float_reg(self) -> bool {
+        matches!(self, Type::F32 | Type::F64 | Type::Vec(..))
+    }
+
     fn is_memory(self) -> bool {
         matches!(
             self,
@@ -512,6 +519,21 @@ impl Policy {
             float,
             scalar: ScalarPolicy::Float(float),
         })
+    }
+}
+
+/// A scalar crossing a vector lane boundary: the element type itself, or
+/// the canonical forms width-lowering leaves behind — the 64-bit container
+/// for sub-32-bit integer lanes, and the u32 bit pattern for f32 lanes.
+fn lane_scalar_ok(elem: VecElem, t: Type) -> bool {
+    if t == elem.ty() {
+        return true;
+    }
+    match elem {
+        VecElem::I(n) if n < 32 => t == Type::I(64),
+        VecElem::U(n) if n < 32 => t == Type::U(64),
+        VecElem::F32 => t == Type::U(32),
+        _ => false,
     }
 }
 
@@ -2475,7 +2497,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 Type::Vec(lanes, elem) => {
                     if *field >= lanes as u16 {
                         errs.push(ctx("extract: lane index out of range".into()));
-                    } else if func.ty(*dst) != elem.ty() {
+                    } else if !lane_scalar_ok(elem, func.ty(*dst)) {
                         errs.push(ctx(format!(
                             "extract lane {}: result must be {}, not {}",
                             field,
@@ -2523,7 +2545,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     )));
                 } else {
                     for (i, a) in args.iter().enumerate() {
-                        if func.ty(*a) != elem.ty() {
+                        if !lane_scalar_ok(elem, func.ty(*a)) {
                             errs.push(ctx(format!(
                                 "pack lane {}: expected {}, got {}",
                                 i,
@@ -2570,7 +2592,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 }
                 if *field >= lanes as u16 {
                     errs.push(ctx("insert: lane index out of range".into()));
-                } else if func.ty(*val) != elem.ty() {
+                } else if !lane_scalar_ok(elem, func.ty(*val)) {
                     errs.push(ctx(format!(
                         "insert lane {}: value must be {}, not {}",
                         field,

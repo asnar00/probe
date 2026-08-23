@@ -26,6 +26,253 @@ pub fn lower(module: &mut Module) {
     lower_widths(module);
 }
 
+/// The native (arm64) lowering: vector-preserving. Functions whose vector
+/// ops all have NEON mappings keep their vectors whole for the emitter;
+/// the rest scalarize their BODIES but keep vector types in their
+/// signatures, so the calling convention is uniform module-wide (vector
+/// params, arguments, and returns always travel in d registers — a
+/// scalarized function pays one fmov per boundary crossing, a kept
+/// function pays nothing).
+pub fn lower_native(module: &mut Module) {
+    lower_vectors_native(module);
+    lower_structs(module);
+    lower_widths(module);
+}
+
+/// Every vector op the NEON emitter can realize directly: elementwise
+/// arithmetic minus div/rem (NEON has no integer divide), 8/16/32-bit
+/// lanes, and vector<->scalar bitcasts at 32/64 bits total.
+fn neon_ok(func: &Function, inst: &crate::ssa::Inst) -> bool {
+    use crate::ssa::{BinOp, CastOp, Inst, VecElem};
+    let lane_ok = |e: crate::ssa::VecElem| matches!(e.bits(), 8 | 16 | 32);
+    let vec_elem = |t: Type| match t {
+        Type::Vec(_, e) => Some(e),
+        _ => None,
+    };
+    match inst {
+        Inst::Bin { op, dst, .. } => match vec_elem(func.ty(*dst)) {
+            None => true,
+            Some(e) => {
+                lane_ok(e)
+                    && match op {
+                        BinOp::Div | BinOp::Rem => false,
+                        BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv => {
+                            e == VecElem::F32
+                        }
+                        _ => true,
+                    }
+            }
+        },
+        Inst::Extract { src, .. } | Inst::Insert { src, .. } => {
+            vec_elem(func.ty(*src)).map_or(true, lane_ok)
+        }
+        Inst::Pack { dst, .. } => vec_elem(func.ty(*dst)).map_or(true, lane_ok),
+        Inst::Cast {
+            op: CastOp::Bitcast,
+            dst,
+            src,
+        } => {
+            let total = |t: Type| match t {
+                Type::Vec(n, e) => Some(n as u32 * e.bits()),
+                _ => None,
+            };
+            match total(func.ty(*src)).or(total(func.ty(*dst))) {
+                Some(bits) => matches!(bits, 32 | 64),
+                None => true,
+            }
+        }
+        _ => true,
+    }
+}
+
+fn lower_vectors_native(module: &mut Module) {
+    use crate::ssa::{CastOp, Inst};
+    let has_vec = |f: &Function| f.values.iter().any(|v| matches!(v.ty, Type::Vec(..)));
+    let keep: Vec<bool> = module
+        .funcs
+        .iter()
+        .map(|f| {
+            !has_vec(f)
+                || f.blocks
+                    .iter()
+                    .flat_map(|b| &b.insts)
+                    .all(|i| neon_ok(f, i))
+        })
+        .collect();
+    if keep.iter().all(|&k| k) {
+        return; // everything emits directly; vectors survive to the emitter
+    }
+    // struct table for the scalarized functions
+    let sid = register_vec_structs(module);
+    for (fi, func) in module.funcs.iter_mut().enumerate() {
+        if keep[fi] || !has_vec(func) {
+            continue;
+        }
+        // remember which values must keep their vector type: params, and
+        // fresh boundary temps introduced below
+        let vec_params: Vec<crate::ssa::ValueId> = func
+            .params
+            .iter()
+            .copied()
+            .filter(|&p| matches!(func.ty(p), Type::Vec(..)))
+            .collect();
+        let mut boundary: Vec<crate::ssa::ValueId> = vec_params.clone();
+        let mut ntmp = 0u32;
+        // vector call/ret boundaries: calls pass and return vectors (the
+        // uniform ABI), rets return them — bridge with bitcasts
+        for b in 0..func.blocks.len() {
+            let insts = std::mem::take(&mut func.blocks[b].insts);
+            let mut out = Vec::with_capacity(insts.len());
+            for inst in insts {
+                match inst {
+                    Inst::Call { dsts, callee, mut args } => {
+                        for a in args.iter_mut() {
+                            if let Type::Vec(..) = func.ty(*a) {
+                                ntmp += 1;
+                                func.values.push(crate::ssa::ValueData {
+                                    name: format!("vb{}", ntmp),
+                                    ty: func.ty(*a),
+                                });
+                                let t = crate::ssa::ValueId(func.values.len() as u32 - 1);
+                                boundary.push(t);
+                                out.push(Inst::Cast {
+                                    op: CastOp::Bitcast,
+                                    dst: t,
+                                    src: *a,
+                                });
+                                *a = t;
+                            }
+                        }
+                        let mut post = Vec::new();
+                        let dsts = dsts
+                            .into_iter()
+                            .map(|d| {
+                                if let Type::Vec(..) = func.ty(d) {
+                                    ntmp += 1;
+                                    func.values.push(crate::ssa::ValueData {
+                                        name: format!("vb{}", ntmp),
+                                        ty: func.ty(d),
+                                    });
+                                    let t = crate::ssa::ValueId(func.values.len() as u32 - 1);
+                                    boundary.push(t);
+                                    post.push(Inst::Cast {
+                                        op: CastOp::Bitcast,
+                                        dst: d,
+                                        src: t,
+                                    });
+                                    t
+                                } else {
+                                    d
+                                }
+                            })
+                            .collect();
+                        out.push(Inst::Call { dsts, callee, args });
+                        out.extend(post);
+                    }
+                    Inst::Ret { mut vals } => {
+                        for v in vals.iter_mut() {
+                            if let Type::Vec(..) = func.ty(*v) {
+                                ntmp += 1;
+                                func.values.push(crate::ssa::ValueData {
+                                    name: format!("vb{}", ntmp),
+                                    ty: func.ty(*v),
+                                });
+                                let t = crate::ssa::ValueId(func.values.len() as u32 - 1);
+                                boundary.push(t);
+                                out.push(Inst::Cast {
+                                    op: CastOp::Bitcast,
+                                    dst: t,
+                                    src: *v,
+                                });
+                                *v = t;
+                            }
+                        }
+                        out.push(Inst::Ret { vals });
+                    }
+                    other => out.push(other),
+                }
+            }
+            func.blocks[b].insts = out;
+        }
+        // vector params: bridge into the scalarized body through a bitcast
+        // (substitute first, then prepend, so the bridge isn't rewritten)
+        let mut entry_casts = Vec::new();
+        let mut subst = HashMap::new();
+        for &p in &vec_params {
+            ntmp += 1;
+            func.values.push(crate::ssa::ValueData {
+                name: format!("vb{}", ntmp),
+                ty: func.ty(p),
+            });
+            let c = crate::ssa::ValueId(func.values.len() as u32 - 1);
+            subst.insert(p, c);
+            entry_casts.push(Inst::Cast {
+                op: CastOp::Bitcast,
+                dst: c,
+                src: p,
+            });
+        }
+        if !subst.is_empty() {
+            substitute(func, &subst);
+            // the bridge value scalarizes with the body; the param stays
+            for (&p, &c) in &subst {
+                let _ = (p, c);
+            }
+            let mut pre = entry_casts;
+            pre.append(&mut func.blocks[0].insts);
+            func.blocks[0].insts = pre;
+        }
+        // scalarize the body; boundary values and params keep Vec
+        lower_vectors_fn(func, &sid, &boundary_set(&boundary, &vec_params));
+    }
+}
+
+fn boundary_set(
+    boundary: &[crate::ssa::ValueId],
+    _params: &[crate::ssa::ValueId],
+) -> std::collections::HashSet<crate::ssa::ValueId> {
+    boundary.iter().copied().collect()
+}
+
+/// register the generated per-vector-type structs in the module table
+fn register_vec_structs(
+    module: &mut Module,
+) -> std::collections::HashMap<(u8, crate::ssa::VecElem), u16> {
+    use crate::ssa::VecElem;
+    let mut vecs: Vec<(u8, VecElem)> = Vec::new();
+    for f in &module.funcs {
+        for t in f.values.iter().map(|v| v.ty).chain(f.rets.iter().copied()) {
+            if let Type::Vec(n, e) = t {
+                if !vecs.contains(&(n, e)) {
+                    vecs.push((n, e));
+                }
+            }
+        }
+    }
+    let mut defs = (*module.structs).clone();
+    let mut sid = std::collections::HashMap::new();
+    for &(n, e) in &vecs {
+        let field_ty = match e {
+            VecElem::F32 => Type::U(32), // struct fields are integers
+            e => e.ty(),
+        };
+        let name = format!("__v{}{}", n, e.ty().name());
+        if let Some(i) = defs.iter().position(|d| d.name == name) {
+            sid.insert((n, e), i as u16);
+            continue;
+        }
+        let fields = (0..n).rev().map(|i| (format!("l{}", i), field_ty)).collect();
+        sid.insert((n, e), defs.len() as u16);
+        defs.push(crate::ssa::StructDef { name, fields });
+    }
+    let rc = std::rc::Rc::new(defs);
+    module.structs = rc.clone();
+    for f in &mut module.funcs {
+        f.structs = rc.clone();
+    }
+    sid
+}
+
 /// Scalarize vectors into packed structs: each vector type becomes a
 /// generated struct (lane 0 in the low bits, so fields are declared lane
 /// N-1 first), elementwise ops become per-lane extract/op/pack, and lane
@@ -50,31 +297,17 @@ pub fn lower_vectors(module: &mut Module) {
     if vecs.is_empty() {
         return;
     }
-    let mut defs = (*module.structs).clone();
-    let mut sid = std::collections::HashMap::new();
-    for &(n, e) in &vecs {
-        let field_ty = match e {
-            VecElem::F32 => Type::U(32), // struct fields are integers
-            e => e.ty(),
-        };
-        let fields = (0..n).rev().map(|i| (format!("l{}", i), field_ty)).collect();
-        sid.insert((n, e), defs.len() as u16);
-        defs.push(crate::ssa::StructDef {
-            name: format!("__v{}{}", n, e.ty().name()),
-            fields,
-        });
-    }
-    let rc = std::rc::Rc::new(defs);
-    module.structs = rc.clone();
+    let sid = register_vec_structs(module);
+    let none = std::collections::HashSet::new();
     for f in &mut module.funcs {
-        f.structs = rc.clone();
-        lower_vectors_fn(f, &sid);
+        lower_vectors_fn(f, &sid, &none);
     }
 }
 
 fn lower_vectors_fn(
     func: &mut Function,
     sid: &std::collections::HashMap<(u8, crate::ssa::VecElem), u16>,
+    keep_vec: &std::collections::HashSet<crate::ssa::ValueId>,
 ) {
     use crate::ssa::{CastOp, Inst, VecElem};
     let mut ntmp = 0u32;
@@ -164,15 +397,22 @@ fn lower_vectors_fn(
         func.blocks[b].insts = out;
     }
     // retype vector values to their generated structs; everything else
-    // (params, branch args, calls, bitcasts) follows automatically
-    for v in &mut func.values {
+    // (params, branch args, calls, bitcasts) follows automatically. Values
+    // in keep_vec are ABI-boundary values (params, call args/results, ret
+    // operands) that stay vectors — and so do the return types with them.
+    for (i, v) in func.values.iter_mut().enumerate() {
+        if keep_vec.contains(&crate::ssa::ValueId(i as u32)) {
+            continue;
+        }
         if let Type::Vec(n, e) = v.ty {
             v.ty = Type::Struct(sid[&(n, e)]);
         }
     }
-    for r in &mut func.rets {
-        if let Type::Vec(n, e) = *r {
-            *r = Type::Struct(sid[&(n, e)]);
+    if keep_vec.is_empty() {
+        for r in &mut func.rets {
+            if let Type::Vec(n, e) = *r {
+                *r = Type::Struct(sid[&(n, e)]);
+            }
         }
     }
 }

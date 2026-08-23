@@ -422,7 +422,10 @@ pub fn run_dir_at(
                 softfloat::soften(&mut module)?;
             }
             ssa::verify(&module).map_err(|errs| errs.join("; "))?;
-            lower::lower(&mut module);
+            match backend {
+                Backend::Native | Backend::ArmQemu => lower::lower_native(&mut module),
+                _ => lower::lower(&mut module),
+            }
             opt::optimize(&mut module, level);
             ssa::verify(&module)
                 .map_err(|errs| format!("after optimization: {}", errs.join("; ")))?;
@@ -985,7 +988,7 @@ fn run_arm_qemu(
         }
         // the driver is generated against the lowered module, so lower
         // before verifying the combined source
-        lower::lower(&mut m2);
+        lower::lower_native(&mut m2);
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
         opt::optimize(&mut m2, level);
         let compiled = emit::compile(&m2, enc)?;

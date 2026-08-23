@@ -387,6 +387,82 @@ const LDR_SP_S: &str = "ldr {s}, [sp, #{i 0..16380 /4}]";
 const STR_SP_S: &str = "str {s}, [sp, #{i 0..16380 /4}]";
 const CSET: &str = "cset {x}, {e eq|ne|lt|le|gt|ge|lo|ls|hi|hs}";
 
+/// NEON three-register template for (op, lane width); templates are static
+/// because fixups hold them — the full combination table is small.
+/// Partial vectors use the full-width arrangement; unused upper lanes are
+/// never observed.
+fn vt3(name: &str, bits: u32) -> &'static str {
+    match (name, bits) {
+        ("add", 8) => "add {v}.8b, {v}.8b, {v}.8b",
+        ("add", 16) => "add {v}.4h, {v}.4h, {v}.4h",
+        ("add", 32) => "add {v}.2s, {v}.2s, {v}.2s",
+        ("sub", 8) => "sub {v}.8b, {v}.8b, {v}.8b",
+        ("sub", 16) => "sub {v}.4h, {v}.4h, {v}.4h",
+        ("sub", 32) => "sub {v}.2s, {v}.2s, {v}.2s",
+        ("mul", 8) => "mul {v}.8b, {v}.8b, {v}.8b",
+        ("mul", 16) => "mul {v}.4h, {v}.4h, {v}.4h",
+        ("mul", 32) => "mul {v}.2s, {v}.2s, {v}.2s",
+        ("and", _) => "and {v}.8b, {v}.8b, {v}.8b",
+        ("orr", _) => "orr {v}.8b, {v}.8b, {v}.8b",
+        ("eor", _) => "eor {v}.8b, {v}.8b, {v}.8b",
+        ("sshl", 8) => "sshl {v}.8b, {v}.8b, {v}.8b",
+        ("sshl", 16) => "sshl {v}.4h, {v}.4h, {v}.4h",
+        ("sshl", 32) => "sshl {v}.2s, {v}.2s, {v}.2s",
+        ("ushl", 8) => "ushl {v}.8b, {v}.8b, {v}.8b",
+        ("ushl", 16) => "ushl {v}.4h, {v}.4h, {v}.4h",
+        ("ushl", 32) => "ushl {v}.2s, {v}.2s, {v}.2s",
+        ("fadd", _) => "fadd {v}.2s, {v}.2s, {v}.2s",
+        ("fsub", _) => "fsub {v}.2s, {v}.2s, {v}.2s",
+        ("fmul", _) => "fmul {v}.2s, {v}.2s, {v}.2s",
+        ("fdiv", _) => "fdiv {v}.2s, {v}.2s, {v}.2s",
+        _ => unreachable!("non-NEON vector op/width reaches emission"),
+    }
+}
+
+fn vdup(bits: u32) -> &'static str {
+    match bits {
+        8 => "dup {v}.8b, {w}",
+        16 => "dup {v}.4h, {w}",
+        32 => "dup {v}.2s, {w}",
+        _ => unreachable!(),
+    }
+}
+
+fn vsmov(bits: u32) -> &'static str {
+    match bits {
+        8 => "smov {x}, {v}.b[{i 0..7}]",
+        16 => "smov {x}, {v}.h[{i 0..3}]",
+        32 => "smov {x}, {v}.s[{i 0..1}]",
+        _ => unreachable!(),
+    }
+}
+
+fn vumov(bits: u32) -> &'static str {
+    match bits {
+        8 => "umov {w}, {v}.b[{i 0..7}]",
+        16 => "umov {w}, {v}.h[{i 0..3}]",
+        32 => "umov {w}, {v}.s[{i 0..1}]",
+        _ => unreachable!(),
+    }
+}
+
+fn vins(bits: u32) -> &'static str {
+    match bits {
+        8 => "ins {v}.b[{i 0..7}], {w}",
+        16 => "ins {v}.h[{i 0..3}], {w}",
+        32 => "ins {v}.s[{i 0..1}], {w}",
+        _ => unreachable!(),
+    }
+}
+
+/// total bits of a vector type (None for scalars)
+fn vec_bits(t: Type) -> Option<u32> {
+    match t {
+        Type::Vec(n, e) => Some(n as u32 * e.bits()),
+        _ => None,
+    }
+}
+
 /// arm condition code for a comparison, by the operand type's signedness
 fn cond_name(c: Cond, signed: bool) -> &'static str {
     match (c, signed) {
@@ -552,7 +628,7 @@ impl FnEmit<'_> {
     /// values, staging). Targets are x0..x17 / d0..d7; sources are pool
     /// registers or slots — disjoint, so sequences never clobber.
     fn value_to(&mut self, target: i64, v: ValueId) -> Result<(), String> {
-        let float = self.func.ty(v).is_float();
+        let float = self.func.ty(v).uses_float_reg();
         match self.alloc.loc[v.0 as usize] {
             crate::regalloc::Loc::Reg(r) => self.class_mov(float, target, r),
             crate::regalloc::Loc::Slot(i) => {
@@ -565,7 +641,7 @@ impl FnEmit<'_> {
 
     /// store a specific register (of v's class) into v's location
     fn value_from(&mut self, v: ValueId, source: i64) -> Result<(), String> {
-        let float = self.func.ty(v).is_float();
+        let float = self.func.ty(v).uses_float_reg();
         match self.alloc.loc[v.0 as usize] {
             crate::regalloc::Loc::Reg(r) => self.class_mov(float, r, source),
             crate::regalloc::Loc::Slot(i) => {
@@ -641,7 +717,7 @@ impl FnEmit<'_> {
             let mut pending: Vec<(Loc, Loc)> = params
                 .iter()
                 .zip(args)
-                .filter(|(p, _)| self.func.ty(**p).is_float() == float)
+                .filter(|(p, _)| self.func.ty(**p).uses_float_reg() == float)
                 .map(|(p, a)| (self.alloc.loc[p.0 as usize], self.alloc.loc[a.0 as usize]))
                 .filter(|(d, s)| d != s)
                 .collect();
@@ -779,7 +855,7 @@ fn compile_function(
     }
     let (mut gi, mut fi) = (0i64, 0i64);
     for &p in &func.params {
-        if func.ty(p).is_float() {
+        if func.ty(p).uses_float_reg() {
             e.value_from(p, fi)?;
             fi += 1;
         } else {
@@ -880,6 +956,50 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                     e.emit("movk {x}, #{i 0..65535}, lsl #16", &[9, (v >> 16) as i64])?;
                 }
                 e.emit("fmov {s}, {w}", &[rd, 9])?;
+            }
+            e.finish(*dst, rd)
+        }
+        Inst::Bin { op, dst, lhs, rhs } if matches!(e.func.ty(*dst), Type::Vec(..)) => {
+            let Type::Vec(_, elem) = e.func.ty(*dst) else { unreachable!() };
+            let n = elem.bits();
+            let rl = e.src_reg(*lhs, 16)?;
+            let rr = e.src_reg(*rhs, 17)?;
+            let rd = e.dst_reg(*dst, 16);
+            use crate::ssa::VecElem;
+            match op {
+                BinOp::IAdd => drop(e.emit(vt3("add", n), &[rd, rl, rr])?),
+                BinOp::ISub => drop(e.emit(vt3("sub", n), &[rd, rl, rr])?),
+                BinOp::IMul => drop(e.emit(vt3("mul", n), &[rd, rl, rr])?),
+                // bitwise ops ignore the arrangement; 8b serves them all
+                BinOp::And => drop(e.emit(vt3("and", n), &[rd, rl, rr])?),
+                BinOp::Or => drop(e.emit(vt3("orr", n), &[rd, rl, rr])?),
+                BinOp::Xor => drop(e.emit(vt3("eor", n), &[rd, rl, rr])?),
+                BinOp::FAdd => drop(e.emit(vt3("fadd", n), &[rd, rl, rr])?),
+                BinOp::FSub => drop(e.emit(vt3("fsub", n), &[rd, rl, rr])?),
+                BinOp::FMul => drop(e.emit(vt3("fmul", n), &[rd, rl, rr])?),
+                BinOp::FDiv => drop(e.emit(vt3("fdiv", n), &[rd, rl, rr])?),
+                BinOp::Shl | BinOp::Shr => {
+                    // amounts are mod the lane width: mask with a splat of
+                    // N-1 (v18), then shift left — or right, via s/ushl
+                    // with negated amounts (zero built in v19 by eor)
+                    e.emit("movz {x}, #{i 0..65535}", &[9, n as i64 - 1])?;
+                    e.emit(vdup(n), &[18, 9])?;
+                    e.emit(vt3("and", n), &[18, 18, rr])?;
+                    let amt = if *op == BinOp::Shr {
+                        e.emit(vt3("eor", n), &[19, 19, 19])?;
+                        e.emit(vt3("sub", n), &[19, 19, 18])?;
+                        19
+                    } else {
+                        18
+                    };
+                    let shl = if matches!(elem, VecElem::I(_)) {
+                        vt3("sshl", n)
+                    } else {
+                        vt3("ushl", n)
+                    };
+                    e.emit(shl, &[rd, rl, amt])?;
+                }
+                _ => return Err(format!("no NEON lowering for {} on vectors", op.name())),
             }
             e.finish(*dst, rd)
         }
@@ -1028,6 +1148,32 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                 (CastOp::Trunc, _, _) if dw == Some(1) => {
                     e.emit("and {x}, {x}, #1", &[rd, rs])?;
                 }
+                // vector <-> scalar reinterpretation: a cross-class (or
+                // same-class) register move of the right width
+                (CastOp::Bitcast, _, _)
+                    if matches!(from, Type::Vec(..)) || matches!(to, Type::Vec(..)) =>
+                {
+                    let wide = from.width().or(to.width()) != Some(32)
+                        && from != Type::F32
+                        && to != Type::F32
+                        && vec_bits(from).unwrap_or(64) == 64
+                        && vec_bits(to).unwrap_or(64) == 64;
+                    let sf = from.uses_float_reg();
+                    let df = to.uses_float_reg();
+                    let rs = e.src_reg(*src, if sf { 16 } else { 9 })?;
+                    let rdc = e.dst_reg(*dst, if df { 17 } else { 10 });
+                    match (sf, df) {
+                        (true, true) => e.fmov(rdc, rs)?,
+                        (false, true) => {
+                            e.emit(if wide { "fmov {d}, {x}" } else { "fmov {s}, {w}" }, &[rdc, rs])?;
+                        }
+                        (true, false) => {
+                            e.emit(if wide { "fmov {x}, {d}" } else { "fmov {w}, {s}" }, &[rdc, rs])?;
+                        }
+                        (false, false) => unreachable!("one side is a vector"),
+                    }
+                    return e.finish(*dst, rdc);
+                }
                 // same-width signedness change: a register move
                 (CastOp::Bitcast, _, _) if !from.is_float() && !to.is_float() => {
                     if dw == Some(32) {
@@ -1138,7 +1284,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             }
             let (mut gi, mut fi) = (0i64, 0i64);
             for &a in args {
-                if e.func.ty(a).is_float() {
+                if e.func.ty(a).uses_float_reg() {
                     e.value_to(fi, a)?;
                     fi += 1;
                 } else {
@@ -1156,7 +1302,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             });
             let (mut gi, mut fi) = (0i64, 0i64);
             for &d in dsts {
-                if e.func.ty(d).is_float() {
+                if e.func.ty(d).uses_float_reg() {
                     e.value_from(d, fi)?;
                     fi += 1;
                 } else {
@@ -1191,6 +1337,66 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             e.branch_args(*else_target, else_args)?;
             e.branch("b #{i -134217728..134217724 /4}", vec![0], 0, *else_target)
         }
+        Inst::Extract { dst, src, field } if matches!(e.func.ty(*src), Type::Vec(..)) => {
+            let Type::Vec(_, elem) = e.func.ty(*src) else { unreachable!() };
+            let n = elem.bits();
+            let rs = e.src_reg(*src, 16)?;
+            use crate::ssa::VecElem;
+            match elem {
+                VecElem::I(_) => {
+                    // sign-extends: exactly the canonical container form
+                    let rd = e.dst_reg(*dst, 9);
+                    e.emit(vsmov(n), &[rd, rs, *field as i64])?;
+                    e.finish(*dst, rd)
+                }
+                VecElem::U(_) => {
+                    let rd = e.dst_reg(*dst, 9);
+                    e.emit(vumov(n), &[rd, rs, *field as i64])?;
+                    e.finish(*dst, rd)
+                }
+                VecElem::F32 => {
+                    // no direct v-lane -> s-reg move learned: go via w9
+                    let rd = e.dst_reg(*dst, 17);
+                    e.emit(vumov(32), &[9, rs, *field as i64])?;
+                    e.emit("fmov {s}, {w}", &[rd, 9])?;
+                    e.finish(*dst, rd)
+                }
+            }
+        }
+        Inst::Insert { dst, src, field, val }
+            if matches!(e.func.ty(*src), Type::Vec(..)) =>
+        {
+            let Type::Vec(_, elem) = e.func.ty(*src) else { unreachable!() };
+            let n = elem.bits();
+            let rs = e.src_reg(*src, 17)?;
+            let rd = e.dst_reg(*dst, 16);
+            e.fmov(rd, rs)?; // copy, then overwrite one lane in place
+            let rv = if elem == crate::ssa::VecElem::F32 {
+                let rf = e.src_reg(*val, 17)?;
+                e.emit("fmov {w}, {s}", &[9, rf])?;
+                9
+            } else {
+                e.src_reg(*val, 9)?
+            };
+            e.emit(vins(n), &[rd, *field as i64, rv])?;
+            e.finish(*dst, rd)
+        }
+        Inst::Pack { dst, args } if matches!(e.func.ty(*dst), Type::Vec(..)) => {
+            let Type::Vec(_, elem) = e.func.ty(*dst) else { unreachable!() };
+            let n = elem.bits();
+            let rd = e.dst_reg(*dst, 16);
+            for (lane, a) in args.iter().enumerate() {
+                let rv = if elem == crate::ssa::VecElem::F32 {
+                    let rf = e.src_reg(*a, 17)?;
+                    e.emit("fmov {w}, {s}", &[9, rf])?;
+                    9
+                } else {
+                    e.src_reg(*a, 9)?
+                };
+                e.emit(vins(n), &[rd, lane as i64, rv])?;
+            }
+            e.finish(*dst, rd)
+        }
         Inst::Extract { .. } | Inst::Pack { .. } | Inst::Insert { .. } => {
             unreachable!("struct ops are lowered before emission")
         }
@@ -1200,7 +1406,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             }
             let (mut gi, mut fi) = (0i64, 0i64);
             for &v in vals {
-                if e.func.ty(v).is_float() {
+                if e.func.ty(v).uses_float_reg() {
                     e.value_to(fi, v)?;
                     fi += 1;
                 } else {

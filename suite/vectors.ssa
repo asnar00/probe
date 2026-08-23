@@ -1,10 +1,10 @@
 ; short vectors: lanes x element written i16x4 / f32x2 / u8x4, lane 0 in
 ; the low bits, total <= 64 for now. Elementwise arithmetic uses the
 ; ordinary opcodes — the type alone makes an op a vector op — and
-; extract/insert/pack take a lane index (lane 0 first in pack). Tier-0
-; lowering scalarizes to packed structs, so every backend runs vectors
-; today; SIMD encodings arrive later as a probe-learned optimization
-; verified against this same suite.
+; extract/insert/pack take a lane index (lane 0 first in pack). On arm64
+; these emit probe-learned NEON instructions (vectors live in d
+; registers); every other backend scalarizes to packed structs. Both
+; tiers answer these directives, so they referee each other.
 ;! vadd16 -> 0x2c00210016000b
 ;! vwrap8 -> 0x1002c
 ;! vmul16s -> -21, -45
@@ -15,6 +15,7 @@
 ;! vdiv32s -7 9 -> -3, 3
 ;! vsum -> 5, 10
 ;! vcall 7 -9 -> -7, 9
+;! vmixed 0x80006 -> 0x40003
 
 ; (1,2,3,4) + (10,20,30,40), per 16-bit lane
 fn @vadd16() -> u64 {
@@ -169,4 +170,23 @@ fn @vcall(%x: i64, %y: i64) -> (i64, i64) {
     %r0: i64 = ext %n0
     %r1: i64 = ext %n1
     ret %r0, %r1
+}
+
+; integer div has no NEON encoding: this callee's body scalarizes, but
+; its signature keeps the vector type — vectors always travel in d
+; registers, so NEON callers and scalarized callees interoperate
+fn @vhalve(%v: u16x2) -> u16x2 {
+    %two: u16 = iconst 2
+    %d: u16x2 = pack %two, %two
+    %q: u16x2 = div %v, %d
+    ret %q
+}
+
+fn @vmixed(%x: u64) -> u64 {
+    %x32: u32 = trunc %x
+    %v: u16x2 = bitcast %x32
+    %h: u16x2 = call @vhalve(%v)
+    %r32: u32 = bitcast %h
+    %r: u64 = ext %r32
+    ret %r
 }

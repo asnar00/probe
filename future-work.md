@@ -75,17 +75,15 @@ Backend sketch:
 
 ## Vectors and SIMD
 
-- **Probe-learned SIMD tier**: the NEON encodings are LEARNED — 34
-  D-register shapes (add/sub/mul per arrangement, bitwise, sshl/ushl,
-  fadd..fdiv .2s, dup, umov/smov/ins with lane-index fields) verified in
-  targets/arm64.encodings.json; the learner recovered the imm5 lane
-  scheme as per-arrangement bit fields. Next: EMIT them — a vector
-  register class in regalloc (v regs, D-form), an emit path that keeps
-  Vec values whole when every op in a function has a learned encoding
-  (falling back to scalarization per-function otherwise), and
-  differential verification of SIMD emission against the scalarized
-  reference across the suite. RVV and wasm-simd follow the same recipe.
-  Scalarization stays as tier 0 and as the referee.
+- **NEON emission is live**: arm64 keeps vectors whole in d registers
+  and emits the learned encodings; per-function fallback scalarizes
+  bodies (never signatures) for ops NEON lacks (integer div/rem, odd
+  lane widths), so both tiers interoperate across calls. wasm/riscv
+  still scalarize — RVV and wasm-simd follow the same probe->emit
+  recipe when wanted. Remaining NEON polish: fold the mod-N shift mask
+  when amounts are constant, dup-based splat detection (pack of one
+  repeated value), and lane-pair moves for f32 extracts (currently
+  umov+fmov).
 - **128-bit vectors** (f32x4, i16x8 — SSE/NEON width): needs multi-
   register SSA values (register pairs in regalloc, call-ABI rules,
   two-word spills). The type syntax already generalizes; only the

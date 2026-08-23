@@ -236,7 +236,7 @@ fn load_module(
         softfloat::soften(&mut module)?;
     }
     ssa::verify(&module).map_err(|errs| format!("{}: {}", path, errs.join("\n")))?;
-    lower::lower(&mut module);
+    lower::lower_native(&mut module);
     opt::optimize(&mut module, level);
     ssa::verify(&module)
         .map_err(|errs| format!("{}: after optimization: {}", path, errs.join("\n")))?;
@@ -364,7 +364,7 @@ fn cmd_live(path: &str, fname: &str, fargs: &[i64], policy: ssa::Policy) -> Exit
                     ssa::resolve_types(&mut m, &policy);
                     scalar::scalarize(&mut m)?;
                     ssa::verify(&m).map_err(|e| e.join("; "))?;
-                    lower::lower(&mut m);
+                    lower::lower_native(&mut m);
                     Ok(m)
                 })();
                 match parsed {

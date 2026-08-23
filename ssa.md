@@ -222,14 +222,21 @@ converts a vector to and from any equal-width scalar.
 %v: i16x2 = pack %a0, %a1
 ```
 
-Lowering scalarizes: each vector type becomes a packed struct, each
-elementwise op becomes per-lane code, and struct lowering finishes the
-job — so vectors run correctly on every backend with no new machine
-instructions. SIMD encodings are planned as a probe-learned optimization
-tier, verified against this scalarized reference. Vector comparisons,
-splat/reduce sugar, and memory access arrive with that tier; until then
-comparisons and reductions are written per-lane, and vectors move
-through memory as their bitcast scalar.
+Two lowerings exist. The portable tier scalarizes: each vector type
+becomes a packed struct, each elementwise op per-lane code, and struct
+lowering finishes the job — every backend runs vectors with no new
+machine instructions. On arm64 the emitter instead keeps vectors whole
+and uses probe-learned NEON encodings (`add.4h`, `fadd.2s`, lane
+`ins`/`umov`/`smov`, `dup`): one elementwise op is one instruction, and
+vector values live in d registers. A function containing a vector op
+NEON cannot express (integer div/rem, odd lane widths) falls back to
+scalarization — body only: signatures keep their vector types, so NEON
+and scalarized functions call each other freely (vectors always travel
+in d registers). The two tiers are verified against each other by the
+same suite across backends. Vector comparisons, splat/reduce sugar, and
+memory access are future work; until then comparisons and reductions
+are written per-lane, and vectors move through memory as their bitcast
+scalar.
 
 ### Calls
 
