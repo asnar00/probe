@@ -13,6 +13,12 @@
 ;! bits 0xf0 -> 0x87
 ;! cmplit 41 -> 0
 ;! cmplit 42 -> 1
+;! clamp 5 0 10 -> 5
+;! clamp 15 0 10 -> 10
+;! clamp -3 0 10 -> 0
+;! vclamp 250 -> 100
+;! collatz 27 -> 111
+;! collatz 1 -> 0
 ;! geo5 -> 121
 
 ; 2x^2 - 3x + 1, one line
@@ -45,8 +51,36 @@ fn @bits(%x: uint) -> uint {
 
 ; a literal comparison operand takes the other side's type
 fn @cmplit(%x: int) -> u1 {
-    %r: u1 = icmp.eq %x, 42
+    %r: u1 = %x == 42
     ret %r
+}
+
+; guards: comparison conditions, one-line arms, literal and call rets
+fn @clamp(%x: int, %lo: int, %hi: int) -> int {
+    if %x > %hi { ret %hi }
+    if %x < %lo { ret %lo }
+    ret %x
+}
+
+fn @vclamp(%x: int) -> int {
+    %lo: int = 0
+    %hi: int = 100
+    ret call @clamp(%x, %lo, %hi)
+}
+
+fn @collatz(%n0: int) -> int {
+    %steps: int = loop(%n: int = %n0, %k: int = 0) {
+        if %n == 1 { break %k }
+        %odd: u1 = %n & 1 == 1
+        %k2: int = %k + 1
+        if %odd {
+            %n2: int = 3 * %n + 1
+            continue %n2, %k2
+        }
+        %h: int = %n / 2
+        continue %h, %k2
+    }
+    ret %steps
 }
 
 ; literal loop inits, literal step, expression body

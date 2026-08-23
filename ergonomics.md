@@ -64,6 +64,32 @@ didn't cause the retry; arithmetic-in-the-head did — which is exactly
 the class of token expenditure that expression sugar (and directives
 computed by a reference implementation) exists to remove.
 
+## Experiment 2: comparisons + guard sugar (landed)
+
+Driven by experiment 1's residue: the rational library's remaining
+ceremony was NaR-guard prologues (6 lines × 8 functions) and `icmp`
+lines. Mutations: comparison operators (`< <= > >= == !=`, one
+non-associative level, operand type from the value side, icmp/fcmp by
+type), literals in `break`/`continue`/`yield`/`ret` (typed positionally
+from what they feed), `ret call @f(...)`, and single-line blocks. A
+guard collapsed from six lines to one:
+
+    if %ar > %numlim { ret call @rat_nar() }
+
+Cumulative measurement vs the pre-sugar corpus (same referees, now
+203/203):
+
+| file | code lines | bytes | atoms |
+|---|---|---|---|
+| suite/scalar.ssa | −29.4% | −25.5% | −27.9% |
+| lib/rational.ssa | −32.1% | −21.0% | −18.8% |
+
+The split from experiment 1 closed: guard sugar targeted exactly the
+ceremony that expression sugar couldn't reach. Remaining residue in the
+library: `call`+bind pairs (no literals in call args — needs callee
+signatures at parse time), pack/extract, and the value-yielding if
+form.
+
 ## The live half (not yet run)
 
 Static atom counts are a proxy. The real experiment: a task battery —
@@ -80,3 +106,6 @@ shouldn't silently steer the design).
 - 2026-08-23: literal operands + expression RHS. Landed. −26% atoms on
   expression-heavy code, −6% on call/control-heavy; zero semantic
   change; suite green everywhere.
+- 2026-08-23: comparisons, terminator literals, ret-call, single-line
+  blocks. Landed. Cumulative −28%/−19% atoms on the two corpus files;
+  the guard prologue is one line; suite green everywhere.

@@ -49,13 +49,13 @@ fn @s_max3(%a: int, %b: int, %c: int) -> int {
     %af: scalar = itof %a
     %bf: scalar = itof %b
     %cf: scalar = itof %c
-    %ab: u1 = fcmp.ogt %af, %bf
+    %ab: u1 = %af > %bf
     %m1: scalar = if %ab {
         yield %af
     } else {
         yield %bf
     }
-    %mc: u1 = fcmp.ogt %m1, %cf
+    %mc: u1 = %m1 > %cf
     %m2: scalar = if %mc {
         yield %m1
     } else {
@@ -68,10 +68,7 @@ fn @s_max3(%a: int, %b: int, %c: int) -> int {
 ; (1 + 1/2 + 1/4 + 1/8) * 8 = 15, a scalar accumulator in a loop
 fn @s_geo() -> int {
     %s: scalar = loop(%i: int = 0, %acc: scalar = 0.0, %x: scalar = 1.0) {
-        %done: u1 = icmp.ge %i, 4
-        if %done {
-            break %acc
-        }
+        if %i >= 4 { break %acc }
         %acc2: scalar = %acc + %x
         %x2: scalar = %x * 0.5
         %i2: int = %i + 1
@@ -87,6 +84,6 @@ fn @s_less_half(%a: int, %b: int) -> u1 {
     %af: scalar = itof %a
     %bf: scalar = itof %b
     %q: scalar = %af / %bf
-    %r: u1 = fcmp.olt %q, 0.5
+    %r: u1 = %q < 0.5
     ret %r
 }

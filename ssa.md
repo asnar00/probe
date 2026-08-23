@@ -382,8 +382,35 @@ instructions at parse time.
 %t: i64 = %a * %dgi + %c * %bgi
 ```
 
+**Comparisons.** The comparison operators `< <= > >= == !=` form a
+single, non-associative level above the arithmetic ones, usable at the
+root of a u1-typed definition and directly as an `if` condition. The
+operand type comes from whichever side names a value (so one side may
+be a literal), and picks `icmp` or ordered `fcmp` — with signedness, as
+ever, from the type:
+
+```
+%done: u1 = %i >= %n
+%odd: u1 = %n & 1 == 1
+if %x > %hi { ret %hi }
+```
+
+**Statement-position sugar.** `break`, `continue`, `yield`, and `ret`
+accept literals, typed positionally by what they feed (loop variables,
+bound results, the function's return types). `ret call @f(...)` returns
+a call's results directly. A block containing one short statement can
+close on the same line — together these make a guard a single line:
+
+```
+if %xnar { ret call @rat_nar() }
+if %y == 0 { break %x }
+loop(%i: int = 0, %acc: scalar = 0.0) { ...
+```
+
 There is deliberately no bare-copy form (`%v: ty = %x` is an error —
 SSA has no copy opcode) and no unary minus on values (write `0 - %x`).
+Call arguments do not take literals (the callee's signature isn't
+available at parse time) — that is a logged future mutation.
 
 ## Structured control flow
 
