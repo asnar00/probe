@@ -7,6 +7,7 @@ mod lower;
 mod opt;
 mod oracle;
 mod regalloc;
+mod softfloat;
 mod ssa;
 mod suite;
 mod target;
@@ -20,6 +21,7 @@ fn main() -> ExitCode {
     let mut level = opt::MAX_LEVEL;
     let mut int_override: Option<ssa::Type> = None;
     let mut float_override: Option<ssa::Type> = None;
+    let mut soft = false;
     args.retain(|a| {
         if let Some(l) = a.strip_prefix("-O") {
             level = l.parse().unwrap_or(opt::MAX_LEVEL);
@@ -29,6 +31,9 @@ fn main() -> ExitCode {
             false
         } else if let Some(t) = a.strip_prefix("--float=") {
             float_override = ssa::Type::from_name_pub(t);
+            false
+        } else if a == "--softfloat" {
+            soft = true;
             false
         } else {
             true
@@ -51,7 +56,7 @@ fn main() -> ExitCode {
                 .cloned();
             cmd_learn(&args[1], out.as_deref())
         }
-        Some("compile") if args.len() >= 2 => cmd_compile(&args[1], level, policy),
+        Some("compile") if args.len() >= 2 => cmd_compile(&args[1], level, policy, soft),
         Some("live") if args.len() >= 3 => {
             let fargs: Result<Vec<i64>, _> = args[3..].iter().map(|a| a.parse()).collect();
             match fargs {
@@ -63,7 +68,7 @@ fn main() -> ExitCode {
         Some("run") if args.len() >= 3 => {
             let fargs: Result<Vec<i64>, _> = args[3..].iter().map(|a| a.parse()).collect();
             match fargs {
-                Ok(fargs) => cmd_run(&args[1], &args[2], &fargs, level, policy),
+                Ok(fargs) => cmd_run(&args[1], &args[2], &fargs, level, policy, soft),
                 Err(_) => fail("function arguments must be integers"),
             }
         }
@@ -83,7 +88,7 @@ fn main() -> ExitCode {
                 .find(|a| **a != "wasm" && **a != "riscv" && **a != "arm-qemu")
                 .copied()
                 .unwrap_or("suite");
-            match suite::run_dir_at(dir, backend, level, int_override, float_override) {
+            match suite::run_dir_at(dir, backend, level, int_override, float_override, soft) {
                 Ok(report) => {
                     print!("{}", report.log);
                     if report.failed == 0 {
@@ -103,7 +108,8 @@ fn main() -> ExitCode {
             eprintln!("       probe tiers <file.ssa>");
             eprintln!("       probe live <file.ssa> <function> [args...]");
             eprintln!("       (-O<n> selects the optimization level on any command;");
-            eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy)");
+            eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy;");
+            eprintln!("        --softfloat lowers float ops to the SSA softfloat runtime)");
             ExitCode::FAILURE
         }
     }
@@ -181,10 +187,18 @@ fn cmd_learn(path: &str, out: Option<&str>) -> ExitCode {
 
 const ENCODINGS: &str = "targets/arm64.encodings.json";
 
-fn load_module(path: &str, level: usize, policy: ssa::Policy) -> Result<ssa::Module, String> {
+fn load_module(
+    path: &str,
+    level: usize,
+    policy: ssa::Policy,
+    soft: bool,
+) -> Result<ssa::Module, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
     let mut module = ssa::parse(&src).map_err(|e| format!("{}: {}", path, e))?;
     ssa::resolve_types(&mut module, &policy);
+    if soft {
+        softfloat::soften(&mut module)?;
+    }
     ssa::verify(&module).map_err(|errs| format!("{}: {}", path, errs.join("\n")))?;
     lower::lower(&mut module);
     opt::optimize(&mut module, level);
@@ -196,15 +210,16 @@ fn load_module(path: &str, level: usize, policy: ssa::Policy) -> Result<ssa::Mod
 /// Compile at every pipeline prefix: the gradual-optimization story in one
 /// table — level 0 is the instant baseline, each row adds one pass.
 fn cmd_tiers(path: &str, policy: ssa::Policy) -> ExitCode {
+    let soft = false;
     let enc = match emit::Encoder::load(ENCODINGS) {
         Ok(e) => e,
         Err(e) => return fail(&e),
     };
     println!("{:<7} {:<44} {:>8} {:>10}", "level", "passes", "bytes", "time");
-    let _warmup = load_module(path, opt::MAX_LEVEL, policy); // touch caches before timing
+    let _warmup = load_module(path, opt::MAX_LEVEL, policy, soft); // touch caches before timing
     for level in 0..=opt::MAX_LEVEL {
         let t0 = std::time::Instant::now();
-        let module = match load_module(path, level, policy) {
+        let module = match load_module(path, level, policy, soft) {
             Ok(m) => m,
             Err(e) => return fail(&e),
         };
@@ -230,8 +245,8 @@ fn cmd_tiers(path: &str, policy: ssa::Policy) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn cmd_compile(path: &str, level: usize, policy: ssa::Policy) -> ExitCode {
-    let result = load_module(path, level, policy).and_then(|module| {
+fn cmd_compile(path: &str, level: usize, policy: ssa::Policy, soft: bool) -> ExitCode {
+    let result = load_module(path, level, policy, soft).and_then(|module| {
         let enc = emit::Encoder::load(ENCODINGS)?;
         emit::compile(&module, &enc)
     });
@@ -257,8 +272,8 @@ fn cmd_compile(path: &str, level: usize, policy: ssa::Policy) -> ExitCode {
     }
 }
 
-fn cmd_run(path: &str, fname: &str, fargs: &[i64], level: usize, policy: ssa::Policy) -> ExitCode {
-    let result = load_module(path, level, policy).and_then(|module| {
+fn cmd_run(path: &str, fname: &str, fargs: &[i64], level: usize, policy: ssa::Policy, soft: bool) -> ExitCode {
+    let result = load_module(path, level, policy, soft).and_then(|module| {
         let nrets = module
             .func(fname)
             .map(|f| f.rets.len())

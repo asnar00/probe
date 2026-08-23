@@ -81,6 +81,11 @@ cargo run -- test arm-qemu     # qemu-system-aarch64
 cargo run -- tiers examples/tiers-demo.ssa
 cargo run -- -O0 run examples/sum.ssa sum 100
 
+# software floating point, written in this compiler's own SSA over the
+# $fp bitfield struct; float ops become calls into it, so int-only CPUs
+# get floats. Verified bit-for-bit against the host FPU.
+cargo run -- --softfloat test
+
 # the incremental compiler: one JIT arena, per-function slots with slack,
 # counting trampolines. Edit the file while this runs — changed functions
 # recompile in place at level 0 (microseconds), and functions that get hot

@@ -18,7 +18,7 @@
 //! (arrays are copied into the module's linear memory, pointers become
 //! offsets).
 
-use crate::{emit, emit_rv, emit_wasm, lower, opt, ssa};
+use crate::{emit, emit_rv, emit_wasm, lower, opt, softfloat, ssa};
 use std::process::Command;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -153,7 +153,7 @@ impl Report {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn run_dir(dir: &str, backend: Backend) -> Result<Report, String> {
-    run_dir_at(dir, backend, opt::MAX_LEVEL, None, None)
+    run_dir_at(dir, backend, opt::MAX_LEVEL, None, None, false)
 }
 
 /// Each target's default replacement policy for the abstract 'int' type:
@@ -307,6 +307,7 @@ pub fn run_dir_at(
     level: usize,
     int_override: Option<ssa::Type>,
     float_override: Option<ssa::Type>,
+    soft: bool,
 ) -> Result<Report, String> {
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {}", dir, e))?
@@ -380,6 +381,9 @@ pub fn run_dir_at(
             };
             let mut module = ssa::parse(&full_src).map_err(|e| e.to_string())?;
             ssa::resolve_types(&mut module, &policy);
+            if soft {
+                softfloat::soften(&mut module)?;
+            }
             ssa::verify(&module).map_err(|errs| errs.join("; "))?;
             lower::lower(&mut module);
             opt::optimize(&mut module, level);
@@ -417,6 +421,7 @@ pub fn run_dir_at(
                 &name,
                 &scratch,
                 level,
+                soft,
                 &mut report,
             ),
             Backend::ArmQemu => run_arm_qemu(
@@ -428,6 +433,7 @@ pub fn run_dir_at(
                 &name,
                 &scratch,
                 level,
+                soft,
                 &mut report,
             ),
         }
@@ -825,6 +831,7 @@ fn run_riscv(
     name: &str,
     scratch: &std::path::Path,
     level: usize,
+    soft: bool,
     report: &mut Report,
 ) {
     let fail_all = |report: &mut Report, msg: String| {
@@ -841,6 +848,9 @@ fn run_riscv(
         let full = format!("{}\n{}\n{}", driver, helpers(RV_UART), src);
         let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);
+        if soft {
+            softfloat::soften(&mut m2)?;
+        }
         // the driver is generated against the lowered module, so lower
         // before verifying the combined source
         lower::lower(&mut m2);
@@ -900,6 +910,7 @@ fn run_arm_qemu(
     name: &str,
     scratch: &std::path::Path,
     level: usize,
+    soft: bool,
     report: &mut Report,
 ) {
     let fail_all = |report: &mut Report, msg: String| {
@@ -915,6 +926,9 @@ fn run_arm_qemu(
         let full = format!("{}\n{}\n{}\n{}", driver, helpers(ARM_UART), stub, src);
         let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);
+        if soft {
+            softfloat::soften(&mut m2)?;
+        }
         // the driver is generated against the lowered module, so lower
         // before verifying the combined source
         lower::lower(&mut m2);
@@ -1004,7 +1018,7 @@ mod tests {
     fn regression_suite_every_level() {
         // any prefix of the pass pipeline must be a correct stopping point
         for level in 0..=crate::opt::MAX_LEVEL {
-            let report = super::run_dir_at("suite", super::Backend::Native, level, None, None)
+            let report = super::run_dir_at("suite", super::Backend::Native, level, None, None, false)
                 .expect("suite runs");
             assert_eq!(report.failed, 0, "at level {}:\n{}", level, report.log);
         }
@@ -1027,6 +1041,7 @@ mod tests {
                 crate::opt::MAX_LEVEL,
                 Some(int),
                 Some(float),
+                false,
             )
             .expect("suite runs");
             assert_eq!(
@@ -1050,6 +1065,23 @@ mod tests {
     fn regression_suite_riscv() {
         let report = super::run_dir("suite", super::Backend::Riscv).expect("suite runs");
         assert_eq!(report.failed, 0, "\n{}", report.log);
+    }
+
+    #[test]
+    fn regression_suite_softfloat() {
+        // the SSA softfloat runtime against hardware-derived expectations:
+        // identical results, bit for bit, with no FPU instructions emitted
+        // for user code
+        let report = super::run_dir_at(
+            "suite",
+            super::Backend::Native,
+            crate::opt::MAX_LEVEL,
+            None,
+            None,
+            true,
+        )
+        .expect("suite runs");
+        assert_eq!(report.failed, 0, "softfloat:\n{}", report.log);
     }
 
     #[test]

@@ -80,5 +80,8 @@ Backend sketch:
   comes from the caller).
 - Float folding in const-fold (needs rounding-mode care), and fused
   multiply-add selection (`fmadd`/`fma` exist on every target).
-- NaN-semantics tests: the suite's float cases stay in NaN-free territory;
-  fcmp-with-NaN behavior is emitted correctly but untested end to end.
+- Softfloat tier 2: subnormals (currently flush-to-zero, checked by the
+  differential tests' expectations), NaN payload propagation, and an
+  int-only target profile that turns `--softfloat` on by policy.
+- NaN-semantics suite cases end to end (the softfloat runtime and the
+  differential tests cover NaN, the .ssa suite doesn't yet).
