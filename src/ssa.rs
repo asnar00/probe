@@ -19,6 +19,9 @@ pub enum Type {
     I32,
     I64,
     Ptr,
+    /// abstract integer: resolved to a concrete type by the target's
+    /// replacement policy before verification (see `resolve_types`)
+    Int,
 }
 
 impl Type {
@@ -28,7 +31,13 @@ impl Type {
             Type::I32 => "i32",
             Type::I64 => "i64",
             Type::Ptr => "ptr",
+            Type::Int => "int",
         }
+    }
+
+    /// public alias for CLI flag parsing
+    pub fn from_name_pub(s: &str) -> Option<Type> {
+        Type::from_name(s)
     }
 
     fn from_name(s: &str) -> Option<Type> {
@@ -37,6 +46,7 @@ impl Type {
             "i32" => Some(Type::I32),
             "i64" => Some(Type::I64),
             "ptr" => Some(Type::Ptr),
+            "int" => Some(Type::Int),
             _ => None,
         }
     }
@@ -47,7 +57,7 @@ impl Type {
             Type::I1 => Some(0),
             Type::I32 => Some(1),
             Type::I64 => Some(2),
-            Type::Ptr => None,
+            Type::Ptr | Type::Int => None,
         }
     }
 
@@ -252,6 +262,42 @@ pub struct Module {
 impl Module {
     pub fn func(&self, name: &str) -> Option<&Function> {
         self.funcs.iter().find(|f| f.name == name)
+    }
+}
+
+/// The replacement policy for abstract numeric types: what `int` becomes
+/// on this compilation. Targets supply defaults (their natural width, or a
+/// size-oriented choice); the user can override. `float` joins when
+/// concrete floats do.
+#[derive(Clone, Copy)]
+pub struct Policy {
+    pub int: Type,
+}
+
+impl Policy {
+    pub fn new(int: Type) -> Result<Policy, String> {
+        match int {
+            Type::I32 | Type::I64 => Ok(Policy { int }),
+            t => Err(format!("'int' cannot resolve to {}", t.name())),
+        }
+    }
+}
+
+/// Resolve abstract types to concrete ones. Because types live on values,
+/// not opcodes, this is one sweep over the value tables and signatures —
+/// no instruction ever changes.
+pub fn resolve_types(module: &mut Module, policy: &Policy) {
+    for func in &mut module.funcs {
+        for v in &mut func.values {
+            if v.ty == Type::Int {
+                v.ty = policy.int;
+            }
+        }
+        for r in &mut func.rets {
+            if *r == Type::Int {
+                *r = policy.int;
+            }
+        }
     }
 }
 
@@ -1532,6 +1578,17 @@ fn verify_function(module: &Module, func: &Function, errs: &mut Vec<String>) {
         return;
     }
 
+    // rule 0: abstract types are resolved before verification
+    for v in &func.values {
+        if v.ty == Type::Int {
+            errs.push(ctx(format!(
+                "value '%{}' has unresolved abstract type 'int' (run type resolution first)",
+                v.name
+            )));
+            return;
+        }
+    }
+
     // rule 1: every value defined exactly once
     let mut defined = vec![0u32; func.values.len()];
     let mut define = |id: ValueId, errs: &mut Vec<String>| {
@@ -1638,6 +1695,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 // ptr constants are raw addresses (MMIO, fixed buffers) —
                 // meaningful wherever ptr is an address-space index
                 Type::I64 | Type::Ptr => true,
+                Type::Int => unreachable!("rejected by rule 0"),
             };
             if !ok {
                 errs.push(ctx(format!(

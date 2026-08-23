@@ -25,9 +25,11 @@ suite/*.ssa  --parse/verify-->  SSA  --emitter-->  bytes  --run-->  results
 ## What's here
 
 - **An SSA IR** (`ssa.md`, `src/ssa.rs`): typed values, block parameters
-  instead of phi nodes, multiple return values, and an optional structured
+  instead of phi nodes, multiple return values, an optional structured
   front-end (`if`/`loop`/`break`/`continue`/`yield`) that lowers to the
-  flat block graph at parse time.
+  flat block graph at parse time, and abstract numeric types (`int`)
+  resolved to concrete widths by a per-target replacement policy
+  (`--int=i32|i64` to override).
 - **Two learners**:
   - `src/learn.rs` for fixed-width register ISAs: one-hot probes XORed
     against a baseline map each operand bit to its encoding bit — which

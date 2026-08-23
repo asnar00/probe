@@ -181,6 +181,32 @@ fn @sum(%n: i64) -> i64 {
 }
 ```
 
+## Abstract numeric types
+
+`int` is an **abstract integer type**: code written with it does not choose
+a width — the compiler does, at compile time, by a *replacement policy*
+derived from the target (its natural register width, or a size-oriented
+choice like i32 on wasm32) and from user concerns (`--int=i32|i64`).
+Because types live on variables, resolution is a single rewrite of the
+value tables before verification; opcodes, instructions, and everything
+downstream see only concrete types.
+
+```
+fn @gcd(%a: int, %b: int) -> int {     ; width chosen per target/policy
+    ...
+    %r: int = srem %x, %y              ; same ops, abstractly typed
+```
+
+- Abstract and concrete types mix freely (`i1` conditions, `ptr`
+  addresses, explicit `i32`/`i64` where a width is required).
+- A width-change cast (`sext`/`zext`/`trunc`) between `int` and a concrete
+  type is only valid under policies where the widths actually differ — the
+  verifier checks the resolved program, so such code ties itself to a
+  policy. Policy-portable code keeps casts among concrete types.
+- Memory keeps concrete types in portable code: a load of `int` changes
+  access width with the policy.
+- `float` will join `int` when concrete float types land.
+
 ## Structured control flow
 
 A function body that opens with a statement instead of a `^label:` is in

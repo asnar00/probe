@@ -79,4 +79,6 @@ Backend sketch:
 - An `alloca`-style op for function-local scratch memory (today all memory
   comes from the caller).
 - Floats (`f32`/`f64`) — types are reserved in the spec; every target has
-  probeable instruction groups for them.
+  probeable instruction groups for them. When they land, abstract `float`
+  joins `int` in the replacement policy (one new Policy field plus a
+  resolution arm).

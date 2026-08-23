@@ -1,0 +1,84 @@
+; abstract 'int' resolves per target policy: i64 on the register machines,
+; i32 on wasm32 — and to either under --int=i32/--int=i64. These cases are
+; policy-independent by construction: all values fit in i32, nothing
+; overflows, and results are non-negative (so the i32 zero-extension
+; convention and raw i64 results agree). Memory ops stay concrete-typed —
+; a load of 'int' changes access width with the policy.
+;! agcd 1071 462 -> 21
+;! agcd 48 36 -> 12
+;! asum 100 -> 4950
+;! asum 0 -> 0
+;! afib 15 -> 610
+;! aclamp 250 0 100 -> 100
+;! aclamp -5 0 100 -> 0
+;! aclamp 42 0 100 -> 42
+;! aeven 10 -> 1
+;! aeven 7 -> 0
+
+fn @agcd(%a: int, %b: int) -> int {
+    %g: int = loop(%x: int = %a, %y: int = %b) {
+        %zero: int = iconst 0
+        %done: i1 = icmp.eq %y, %zero
+        if %done {
+            break %x
+        }
+        %r: int = srem %x, %y
+        continue %y, %r
+    }
+    ret %g
+}
+
+fn @asum(%n: int) -> int {
+    %zero: int = iconst 0
+    %r: int = loop(%i: int = %zero, %acc: int = %zero) {
+        %done: i1 = icmp.sge %i, %n
+        if %done {
+            break %acc
+        }
+        %one: int = iconst 1
+        %acc2: int = iadd %acc, %i
+        %i2: int = iadd %i, %one
+        continue %i2, %acc2
+    }
+    ret %r
+}
+
+fn @afib(%n: int) -> int {
+    %two: int = iconst 2
+    %small: i1 = icmp.slt %n, %two
+    if %small {
+        ret %n
+    }
+    %one: int = iconst 1
+    %n1: int = isub %n, %one
+    %a: int = call @afib(%n1)
+    %n2: int = isub %n, %two
+    %b: int = call @afib(%n2)
+    %r: int = iadd %a, %b
+    ret %r
+}
+
+; abstract and concrete types mix freely: i1 conditions, int arithmetic
+fn @aclamp(%v: int, %lo: int, %hi: int) -> int {
+    %below: i1 = icmp.slt %v, %lo
+    %r: int = if %below {
+        yield %lo
+    } else {
+        %above: i1 = icmp.sgt %v, %hi
+        %s: int = if %above {
+            yield %hi
+        } else {
+            yield %v
+        }
+        yield %s
+    }
+    ret %r
+}
+
+fn @aeven(%n: int) -> i1 {
+    %one: int = iconst 1
+    %bit: int = and %n, %one
+    %flip: int = xor %bit, %one
+    %r: i1 = trunc %flip
+    ret %r
+}

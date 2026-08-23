@@ -17,14 +17,20 @@ fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     // -O<n> selects how much of the SSA pass pipeline runs (default: all)
     let mut level = opt::MAX_LEVEL;
+    let mut int_override: Option<ssa::Type> = None;
     args.retain(|a| {
         if let Some(l) = a.strip_prefix("-O") {
             level = l.parse().unwrap_or(opt::MAX_LEVEL);
+            false
+        } else if let Some(t) = a.strip_prefix("--int=") {
+            int_override = ssa::Type::from_name_pub(t);
             false
         } else {
             true
         }
     });
+    // native default: the machine's natural 64-bit width
+    let int = int_override.unwrap_or(ssa::Type::I64);
     match args.first().map(String::as_str) {
         Some("parse") if args.len() >= 2 => cmd_parse(&args[1]),
         Some("learn") if args.len() >= 2 => {
@@ -35,19 +41,19 @@ fn main() -> ExitCode {
                 .cloned();
             cmd_learn(&args[1], out.as_deref())
         }
-        Some("compile") if args.len() >= 2 => cmd_compile(&args[1], level),
+        Some("compile") if args.len() >= 2 => cmd_compile(&args[1], level, int),
         Some("live") if args.len() >= 3 => {
             let fargs: Result<Vec<i64>, _> = args[3..].iter().map(|a| a.parse()).collect();
             match fargs {
-                Ok(fargs) => cmd_live(&args[1], &args[2], &fargs),
+                Ok(fargs) => cmd_live(&args[1], &args[2], &fargs, int),
                 Err(_) => fail("function arguments must be integers"),
             }
         }
-        Some("tiers") if args.len() >= 2 => cmd_tiers(&args[1]),
+        Some("tiers") if args.len() >= 2 => cmd_tiers(&args[1], int),
         Some("run") if args.len() >= 3 => {
             let fargs: Result<Vec<i64>, _> = args[3..].iter().map(|a| a.parse()).collect();
             match fargs {
-                Ok(fargs) => cmd_run(&args[1], &args[2], &fargs, level),
+                Ok(fargs) => cmd_run(&args[1], &args[2], &fargs, level, int),
                 Err(_) => fail("function arguments must be integers"),
             }
         }
@@ -67,7 +73,7 @@ fn main() -> ExitCode {
                 .find(|a| **a != "wasm" && **a != "riscv" && **a != "arm-qemu")
                 .copied()
                 .unwrap_or("suite");
-            match suite::run_dir_at(dir, backend, level) {
+            match suite::run_dir_at(dir, backend, level, int_override) {
                 Ok(report) => {
                     print!("{}", report.log);
                     if report.failed == 0 {
@@ -86,7 +92,8 @@ fn main() -> ExitCode {
             eprintln!("       probe run <file.ssa> <function> [args...]");
             eprintln!("       probe tiers <file.ssa>");
             eprintln!("       probe live <file.ssa> <function> [args...]");
-            eprintln!("       (-O<n> selects the optimization level on any command)");
+            eprintln!("       (-O<n> selects the optimization level on any command;");
+            eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy)");
             ExitCode::FAILURE
         }
     }
@@ -164,9 +171,11 @@ fn cmd_learn(path: &str, out: Option<&str>) -> ExitCode {
 
 const ENCODINGS: &str = "targets/arm64.encodings.json";
 
-fn load_module(path: &str, level: usize) -> Result<ssa::Module, String> {
+fn load_module(path: &str, level: usize, int: ssa::Type) -> Result<ssa::Module, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
     let mut module = ssa::parse(&src).map_err(|e| format!("{}: {}", path, e))?;
+    let policy = ssa::Policy::new(int)?;
+    ssa::resolve_types(&mut module, &policy);
     ssa::verify(&module).map_err(|errs| format!("{}: {}", path, errs.join("\n")))?;
     opt::optimize(&mut module, level);
     ssa::verify(&module)
@@ -176,16 +185,16 @@ fn load_module(path: &str, level: usize) -> Result<ssa::Module, String> {
 
 /// Compile at every pipeline prefix: the gradual-optimization story in one
 /// table — level 0 is the instant baseline, each row adds one pass.
-fn cmd_tiers(path: &str) -> ExitCode {
+fn cmd_tiers(path: &str, int: ssa::Type) -> ExitCode {
     let enc = match emit::Encoder::load(ENCODINGS) {
         Ok(e) => e,
         Err(e) => return fail(&e),
     };
     println!("{:<7} {:<44} {:>8} {:>10}", "level", "passes", "bytes", "time");
-    let _warmup = load_module(path, opt::MAX_LEVEL); // touch caches before timing
+    let _warmup = load_module(path, opt::MAX_LEVEL, int); // touch caches before timing
     for level in 0..=opt::MAX_LEVEL {
         let t0 = std::time::Instant::now();
-        let module = match load_module(path, level) {
+        let module = match load_module(path, level, int) {
             Ok(m) => m,
             Err(e) => return fail(&e),
         };
@@ -211,8 +220,8 @@ fn cmd_tiers(path: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn cmd_compile(path: &str, level: usize) -> ExitCode {
-    let result = load_module(path, level).and_then(|module| {
+fn cmd_compile(path: &str, level: usize, int: ssa::Type) -> ExitCode {
+    let result = load_module(path, level, int).and_then(|module| {
         let enc = emit::Encoder::load(ENCODINGS)?;
         emit::compile(&module, &enc)
     });
@@ -238,8 +247,8 @@ fn cmd_compile(path: &str, level: usize) -> ExitCode {
     }
 }
 
-fn cmd_run(path: &str, fname: &str, fargs: &[i64], level: usize) -> ExitCode {
-    let result = load_module(path, level).and_then(|module| {
+fn cmd_run(path: &str, fname: &str, fargs: &[i64], level: usize, int: ssa::Type) -> ExitCode {
+    let result = load_module(path, level, int).and_then(|module| {
         let nrets = module
             .func(fname)
             .map(|f| f.rets.len())
@@ -267,7 +276,7 @@ fn cmd_run(path: &str, fname: &str, fargs: &[i64], level: usize) -> ExitCode {
 /// per-function slots and trampolines. Edits to the source recompile only
 /// the changed functions at level 0 (instant); functions whose invocation
 /// counters cross the threshold get promoted through the full pipeline.
-fn cmd_live(path: &str, fname: &str, fargs: &[i64]) -> ExitCode {
+fn cmd_live(path: &str, fname: &str, fargs: &[i64], int: ssa::Type) -> ExitCode {
     const PROMOTE_AT: u64 = 10_000;
     let enc = match emit::Encoder::load(ENCODINGS) {
         Ok(e) => e,
@@ -289,7 +298,8 @@ fn cmd_live(path: &str, fname: &str, fargs: &[i64]) -> ExitCode {
             Ok(src) if src != held_src => {
                 held_src = src.clone();
                 let parsed = (|| -> Result<ssa::Module, String> {
-                    let m = ssa::parse(&src).map_err(|e| e.to_string())?;
+                    let mut m = ssa::parse(&src).map_err(|e| e.to_string())?;
+                    ssa::resolve_types(&mut m, &ssa::Policy::new(int)?);
                     ssa::verify(&m).map_err(|e| e.join("; "))?;
                     Ok(m)
                 })();

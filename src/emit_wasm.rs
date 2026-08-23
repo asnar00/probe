@@ -108,6 +108,7 @@ fn valtype(ty: Type) -> u8 {
     match ty {
         Type::I64 => 0x7E,
         Type::I32 | Type::I1 | Type::Ptr => 0x7F,
+        Type::Int => unreachable!("abstract types are resolved before emission"),
     }
 }
 
