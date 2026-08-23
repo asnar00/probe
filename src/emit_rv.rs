@@ -771,6 +771,9 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             e.branch_args(*else_target, else_args)?;
             e.goto(*else_target)
         }
+        Inst::Extract { .. } | Inst::Pack { .. } | Inst::Insert { .. } => {
+            unreachable!("struct ops are lowered before emission")
+        }
         Inst::Ret { vals } => {
             if vals.len() > 8 {
                 return Err("more than 8 return values not supported yet".into());

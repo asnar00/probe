@@ -114,8 +114,8 @@ fn valtype(ty: Type) -> u8 {
         Type::I32 | Type::I1 | Type::Ptr => 0x7F,
         Type::F64 => 0x7C,
         Type::F32 => 0x7D,
-        Type::Int | Type::Float => {
-            unreachable!("abstract types are resolved before emission")
+        Type::Int | Type::Float | Type::IN(_) | Type::Struct(_) => {
+            unreachable!("abstract and arbitrary-width types are lowered before emission")
         }
     }
 }
@@ -579,6 +579,9 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             e.op("else", None)?;
             e.jump(*else_target, else_args, block_pos, 1)?;
             e.op("end", None)
+        }
+        Inst::Extract { .. } | Inst::Pack { .. } | Inst::Insert { .. } => {
+            unreachable!("struct ops are lowered before emission")
         }
         Inst::Ret { vals } => {
             for &v in vals {

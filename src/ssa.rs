@@ -21,24 +21,55 @@ pub enum Type {
     Ptr,
     F32,
     F64,
+    /// arbitrary-width integer, 2..=63 bits (excluding the named widths);
+    /// signedness stays in the opcodes, as for every integer type.
+    /// Lowered to masked i64 operations before emission (`lower_widths`)
+    IN(u8),
     /// abstract integer: resolved to a concrete type by the target's
     /// replacement policy before verification (see `resolve_types`)
     Int,
     /// abstract float: resolved like `Int`
     Float,
+    /// packed bitfield struct; index into the module's struct table
+    /// (each Function carries a copy). Total width <= 64; lowered to its
+    /// carrier integer before emission.
+    Struct(u16),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StructDef {
+    pub name: String,
+    /// declared MSB-first: the first field occupies the top bits
+    pub fields: Vec<(String, Type)>,
+}
+
+impl StructDef {
+    pub fn total_bits(&self) -> u32 {
+        self.fields.iter().filter_map(|(_, t)| t.width()).sum()
+    }
+
+    /// LSB offset of field i (sum of the widths of later fields)
+    pub fn offset(&self, i: usize) -> u32 {
+        self.fields[i + 1..]
+            .iter()
+            .filter_map(|(_, t)| t.width())
+            .sum()
+    }
 }
 
 impl Type {
-    pub fn name(self) -> &'static str {
+    pub fn name(self) -> String {
         match self {
-            Type::I1 => "i1",
-            Type::I32 => "i32",
-            Type::I64 => "i64",
-            Type::Ptr => "ptr",
-            Type::Int => "int",
-            Type::F32 => "f32",
-            Type::F64 => "f64",
-            Type::Float => "float",
+            Type::I1 => "i1".into(),
+            Type::I32 => "i32".into(),
+            Type::I64 => "i64".into(),
+            Type::Ptr => "ptr".into(),
+            Type::Int => "int".into(),
+            Type::F32 => "f32".into(),
+            Type::F64 => "f64".into(),
+            Type::Float => "float".into(),
+            Type::IN(n) => format!("i{}", n),
+            Type::Struct(_) => "$struct".into(), // callers with a table print the name
         }
     }
 
@@ -57,22 +88,31 @@ impl Type {
             "f32" => Some(Type::F32),
             "f64" => Some(Type::F64),
             "float" => Some(Type::Float),
-            _ => None,
+            _ => {
+                let n: u8 = s.strip_prefix('i')?.parse().ok()?;
+                if (2..=63).contains(&n) && n != 32 {
+                    Some(Type::IN(n))
+                } else {
+                    None
+                }
+            }
         }
     }
 
-    /// Width rank for sext/zext/trunc rules; ptr takes no part in width changes.
-    fn rank(self) -> Option<u32> {
+    /// Integer bit width, for sext/zext/trunc rules; ptr and floats take
+    /// no part in width changes.
+    pub fn width(self) -> Option<u32> {
         match self {
-            Type::I1 => Some(0),
-            Type::I32 => Some(1),
-            Type::I64 => Some(2),
-            Type::Ptr | Type::Int | Type::F32 | Type::F64 | Type::Float => None,
+            Type::I1 => Some(1),
+            Type::IN(n) => Some(n as u32),
+            Type::I32 => Some(32),
+            Type::I64 => Some(64),
+            Type::Ptr | Type::Int | Type::F32 | Type::F64 | Type::Float | Type::Struct(_) => None,
         }
     }
 
     fn is_arith(self) -> bool {
-        matches!(self, Type::I32 | Type::I64)
+        matches!(self, Type::I32 | Type::I64 | Type::IN(_))
     }
 
     pub fn is_float(self) -> bool {
@@ -276,6 +316,24 @@ pub enum Inst {
         base: ValueId,
         off: ValueId,
     },
+    /// read one bitfield out of a struct value
+    Extract {
+        dst: ValueId,
+        src: ValueId,
+        field: u16,
+    },
+    /// build a struct value from all its fields, in declaration order
+    Pack {
+        dst: ValueId,
+        args: Vec<ValueId>,
+    },
+    /// a copy of `src` with one field replaced
+    Insert {
+        dst: ValueId,
+        src: ValueId,
+        field: u16,
+        val: ValueId,
+    },
     Call {
         dsts: Vec<ValueId>,
         callee: String,
@@ -323,6 +381,7 @@ pub struct Function {
     pub rets: Vec<Type>,
     pub values: Vec<ValueData>,
     pub blocks: Vec<Block>,
+    pub structs: std::rc::Rc<Vec<StructDef>>,
 }
 
 impl Function {
@@ -338,6 +397,7 @@ impl Function {
 #[derive(Clone, Debug, Default)]
 pub struct Module {
     pub funcs: Vec<Function>,
+    pub structs: std::rc::Rc<Vec<StructDef>>,
 }
 
 impl Module {
@@ -397,6 +457,7 @@ enum Tok {
     Value(String),  // %x
     Block(String),  // ^x
     Global(String), // @x
+    TyName(String), // $x
     Int(i64),
     FloatLit(f64),
     Colon,
@@ -417,6 +478,7 @@ impl fmt::Display for Tok {
             Tok::Value(s) => write!(f, "'%{}'", s),
             Tok::Block(s) => write!(f, "'^{}'", s),
             Tok::Global(s) => write!(f, "'@{}'", s),
+            Tok::TyName(s) => write!(f, "'${}'", s),
             Tok::Int(n) => write!(f, "'{}'", n),
             Tok::FloatLit(x) => write!(f, "'{:?}'", x),
             Tok::Colon => write!(f, "':'"),
@@ -473,7 +535,7 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                     chars.next();
                 }
             }
-            '%' | '^' | '@' => {
+            '%' | '^' | '@' | '$' => {
                 chars.next();
                 let name = lex_name(&mut chars);
                 if name.is_empty() {
@@ -483,7 +545,8 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                     match c {
                         '%' => Tok::Value(name),
                         '^' => Tok::Block(name),
-                        _ => Tok::Global(name),
+                        '@' => Tok::Global(name),
+                        _ => Tok::TyName(name),
                     },
                     line,
                 ));
@@ -641,12 +704,25 @@ fn lex_int_str(s: &str) -> Result<i64, String> {
 
 pub fn parse(src: &str) -> Result<Module, ParseError> {
     let toks = lex(src)?;
-    let mut p = Parser { toks, pos: 0 };
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        structs: Vec::new(),
+    };
     let mut module = Module::default();
     p.skip_newlines();
     while !p.at_end() {
-        module.funcs.push(p.parse_function()?);
+        if matches!(p.peek(), Some(Tok::Ident(k)) if k == "type") {
+            p.parse_type_decl()?;
+        } else {
+            module.funcs.push(p.parse_function()?);
+        }
         p.skip_newlines();
+    }
+    let rc = std::rc::Rc::new(p.structs);
+    module.structs = rc.clone();
+    for f in &mut module.funcs {
+        f.structs = rc.clone();
     }
     Ok(module)
 }
@@ -654,6 +730,7 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
 struct Parser {
     toks: Vec<(Tok, usize)>,
     pos: usize,
+    structs: Vec<StructDef>,
 }
 
 /// Placeholder branch target inside structured constructs; every one is
@@ -780,11 +857,69 @@ impl Parser {
     }
 
     fn expect_type(&mut self) -> Result<Type, ParseError> {
+        if let Some(Tok::TyName(_)) = self.peek() {
+            let Tok::TyName(n) = self.next()? else {
+                unreachable!()
+            };
+            return match self.structs.iter().position(|d| d.name == n) {
+                Some(i) => Ok(Type::Struct(i as u16)),
+                None => {
+                    self.pos -= 1;
+                    Err(self.err(format!("unknown struct type '${}'", n)))
+                }
+            };
+        }
         let s = self.expect_ident()?;
         Type::from_name(&s).ok_or_else(|| {
             self.pos -= 1;
             self.err(format!("unknown type '{}'", s))
         })
+    }
+
+    /// `type $name = { field: iN, ... }` — fields are declared MSB-first
+    /// and must be integer widths; the total may not exceed 64 bits
+    fn parse_type_decl(&mut self) -> Result<(), ParseError> {
+        self.expect_ident()?; // "type"
+        let name = match self.next()? {
+            Tok::TyName(n) => n,
+            t => {
+                self.pos -= 1;
+                return Err(self.err(format!("expected a $name, found {}", t)));
+            }
+        };
+        if self.structs.iter().any(|d| d.name == name) {
+            return Err(self.err(format!("struct '${}' is defined more than once", name)));
+        }
+        self.expect(Tok::Equals)?;
+        self.expect(Tok::LBrace)?;
+        let mut fields = Vec::new();
+        loop {
+            let fname = self.expect_ident()?;
+            self.expect(Tok::Colon)?;
+            let ty = self.expect_type()?;
+            if ty.width().is_none() {
+                return Err(self.err(format!(
+                    "struct field '{}' must have an integer width",
+                    fname
+                )));
+            }
+            fields.push((fname, ty));
+            if self.eat(&Tok::RBrace) {
+                break;
+            }
+            self.expect(Tok::Comma)?;
+        }
+        let def = StructDef { name, fields };
+        if def.total_bits() == 0 || def.total_bits() > 64 {
+            return Err(self.err(format!(
+                "struct '${}' is {} bits; 1..=64 required",
+                def.name,
+                def.total_bits()
+            )));
+        }
+        self.expect(Tok::Newline)?;
+        self.structs.push(def);
+        Ok(())
     }
 
     fn expect_value(&mut self, scope: &FuncScope) -> Result<ValueId, ParseError> {
@@ -836,16 +971,27 @@ impl Parser {
         while i + 2 <= hi {
             if let (Tok::Value(name), Tok::Colon) = (&self.toks[i].0, &self.toks[i + 1].0) {
                 let line = self.toks[i].1;
-                let Tok::Ident(tyname) = &self.toks[i + 2].0 else {
-                    return Err(ParseError {
+                let ty = match &self.toks[i + 2].0 {
+                    Tok::Ident(tyname) => Type::from_name(tyname).ok_or_else(|| ParseError {
                         line,
-                        msg: format!("expected a type after '%{}:'", name),
-                    });
+                        msg: format!("unknown type '{}'", tyname),
+                    })?,
+                    Tok::TyName(tn) => {
+                        let idx = self.structs.iter().position(|d| &d.name == tn).ok_or_else(
+                            || ParseError {
+                                line,
+                                msg: format!("unknown struct type '${}'", tn),
+                            },
+                        )?;
+                        Type::Struct(idx as u16)
+                    }
+                    _ => {
+                        return Err(ParseError {
+                            line,
+                            msg: format!("expected a type after '%{}:'", name),
+                        })
+                    }
                 };
-                let ty = Type::from_name(tyname).ok_or_else(|| ParseError {
-                    line,
-                    msg: format!("unknown type '{}'", tyname),
-                })?;
                 if scope.value_ids.contains_key(name) {
                     return Err(ParseError {
                         line,
@@ -961,6 +1107,7 @@ impl Parser {
                 rets,
                 values: scope.values,
                 blocks,
+                structs: std::rc::Rc::new(Vec::new()), // set by parse()
             });
         }
 
@@ -1015,6 +1162,7 @@ impl Parser {
             rets,
             values: scope.values,
             blocks,
+            structs: std::rc::Rc::new(Vec::new()), // set by parse() at the end
         })
     }
 
@@ -1027,6 +1175,28 @@ impl Parser {
                 name
             ))
         })
+    }
+
+    fn field_index(
+        &self,
+        scope: &FuncScope,
+        v: ValueId,
+        fname: &str,
+    ) -> Result<u16, ParseError> {
+        let Type::Struct(si) = scope.values[v.0 as usize].ty else {
+            return Err(self.err(format!(
+                "'%{}' is not a struct value",
+                scope.values[v.0 as usize].name
+            )));
+        };
+        let def = &self.structs[si as usize];
+        def.fields
+            .iter()
+            .position(|(n, _)| n == fname)
+            .map(|i| i as u16)
+            .ok_or_else(|| {
+                self.err(format!("struct '${}' has no field '{}'", def.name, fname))
+            })
     }
 
     fn parse_inst(&mut self, scope: &FuncScope) -> Result<Inst, ParseError> {
@@ -1168,6 +1338,34 @@ impl Parser {
                 self.expect(Tok::Comma)?;
                 let off = self.expect_value(scope)?;
                 Ok(Inst::PtrAdd { dst, base, off })
+            }
+            "extract" => {
+                let src = self.expect_value(scope)?;
+                self.expect(Tok::Comma)?;
+                let fname = self.expect_ident()?;
+                let field = self.field_index(scope, src, &fname)?;
+                Ok(Inst::Extract { dst, src, field })
+            }
+            "pack" => {
+                let mut args = vec![self.expect_value(scope)?];
+                while self.eat(&Tok::Comma) {
+                    args.push(self.expect_value(scope)?);
+                }
+                Ok(Inst::Pack { dst, args })
+            }
+            "insert" => {
+                let src = self.expect_value(scope)?;
+                self.expect(Tok::Comma)?;
+                let fname = self.expect_ident()?;
+                self.expect(Tok::Comma)?;
+                let val = self.expect_value(scope)?;
+                let field = self.field_index(scope, src, &fname)?;
+                Ok(Inst::Insert {
+                    dst,
+                    src,
+                    field,
+                    val,
+                })
             }
             _ => Err(self.err(format!("unknown opcode '{}'", op))),
         }
@@ -1583,6 +1781,17 @@ impl Parser {
 
 impl fmt::Display for Module {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for def in self.structs.iter() {
+            let fields: Vec<String> = def
+                .fields
+                .iter()
+                .map(|(n, t)| format!("{}: {}", n, t.name()))
+                .collect();
+            writeln!(f, "type ${} = {{ {} }}", def.name, fields.join(", "))?;
+        }
+        if !self.structs.is_empty() {
+            writeln!(f)?;
+        }
         for (i, func) in self.funcs.iter().enumerate() {
             if i > 0 {
                 writeln!(f)?;
@@ -1594,13 +1803,21 @@ impl fmt::Display for Module {
 }
 
 impl Function {
+    /// type name with struct names resolved through this function's table
+    pub fn ty_name(&self, ty: Type) -> String {
+        match ty {
+            Type::Struct(i) => format!("${}", self.structs[i as usize].name),
+            t => t.name(),
+        }
+    }
+
     fn fmt_value(&self, id: ValueId) -> String {
         format!("%{}", self.value(id).name)
     }
 
     fn fmt_def(&self, id: ValueId) -> String {
         let v = self.value(id);
-        format!("%{}: {}", v.name, v.ty.name())
+        format!("%{}: {}", v.name, self.ty_name(v.ty))
     }
 
     fn fmt_args(&self, args: &[ValueId]) -> String {
@@ -1631,9 +1848,9 @@ impl fmt::Display for Function {
         write!(f, "fn @{}({})", self.name, params)?;
         match self.rets.len() {
             0 => {}
-            1 => write!(f, " -> {}", self.rets[0].name())?,
+            1 => write!(f, " -> {}", self.ty_name(self.rets[0]))?,
             _ => {
-                let ts: Vec<&str> = self.rets.iter().map(|t| t.name()).collect();
+                let ts: Vec<String> = self.rets.iter().map(|&t| self.ty_name(t)).collect();
                 write!(f, " -> ({})", ts.join(", "))?;
             }
         }
@@ -1714,6 +1931,39 @@ impl Function {
                 self.fmt_value(*base),
                 self.fmt_value(*off)
             ),
+            Inst::Extract { dst, src, field } => {
+                let fname = match self.ty(*src) {
+                    Type::Struct(i) => self.structs[i as usize].fields[*field as usize].0.clone(),
+                    _ => format!("#{}", field),
+                };
+                format!(
+                    "{} = extract {}, {}",
+                    self.fmt_def(*dst),
+                    self.fmt_value(*src),
+                    fname
+                )
+            }
+            Inst::Pack { dst, args } => {
+                format!("{} = pack {}", self.fmt_def(*dst), self.fmt_args(args))
+            }
+            Inst::Insert {
+                dst,
+                src,
+                field,
+                val,
+            } => {
+                let fname = match self.ty(*src) {
+                    Type::Struct(i) => self.structs[i as usize].fields[*field as usize].0.clone(),
+                    _ => format!("#{}", field),
+                };
+                format!(
+                    "{} = insert {}, {}, {}",
+                    self.fmt_def(*dst),
+                    self.fmt_value(*src),
+                    fname,
+                    self.fmt_value(*val)
+                )
+            }
             Inst::Call { dsts, callee, args } => {
                 let call = format!("call @{}({})", callee, self.fmt_args(args));
                 if dsts.is_empty() {
@@ -1888,7 +2138,12 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 // ptr constants are raw addresses (MMIO, fixed buffers) —
                 // meaningful wherever ptr is an address-space index
                 Type::I64 | Type::Ptr => true,
+                Type::IN(n) => {
+                    let n = n as u32;
+                    *imm >= -(1i64 << (n - 1)) && *imm < (1i64 << n)
+                }
                 Type::F32 | Type::F64 => false, // use fconst
+                Type::Struct(_) => false,       // use pack
                 Type::Int | Type::Float => unreachable!("rejected by rule 0"),
             };
             if !ok {
@@ -1972,9 +2227,9 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     td.name()
                 )));
             }
-            if tl != tr || !matches!(tl, Type::I32 | Type::I64 | Type::Ptr) {
+            if tl != tr || !matches!(tl, Type::I32 | Type::I64 | Type::IN(_) | Type::Ptr) {
                 errs.push(ctx(format!(
-                    "icmp.{}: operands must share a type (i32/i64/ptr); got {} and {}",
+                    "icmp.{}: operands must share an integer type or ptr; got {} and {}",
                     cond.name(),
                     tl.name(),
                     tr.name()
@@ -1986,10 +2241,10 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             let int_wide = |t: Type| matches!(t, Type::I32 | Type::I64);
             let ok = match op {
                 CastOp::Sext | CastOp::Zext | CastOp::Trunc => {
-                    match (ts.rank(), td.rank()) {
-                        (Some(rs), Some(rd)) => match op {
-                            CastOp::Sext | CastOp::Zext => rd > rs,
-                            _ => rd < rs,
+                    match (ts.width(), td.width()) {
+                        (Some(ws), Some(wd)) => match op {
+                            CastOp::Sext | CastOp::Zext => wd > ws,
+                            _ => wd < ws,
                         },
                         _ => false,
                     }
@@ -1999,10 +2254,14 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 CastOp::Fpromote => ts == Type::F32 && td == Type::F64,
                 CastOp::Fdemote => ts == Type::F64 && td == Type::F32,
                 CastOp::Bitcast => {
-                    (ts == Type::I64 && td == Type::F64)
-                        || (ts == Type::F64 && td == Type::I64)
-                        || (ts == Type::I32 && td == Type::F32)
-                        || (ts == Type::F32 && td == Type::I32)
+                    // same total width, different type: int<->float<->struct
+                    let w = |t: Type| match t {
+                        Type::F32 => Some(32),
+                        Type::F64 => Some(64),
+                        Type::Struct(i) => Some(func.structs[i as usize].total_bits()),
+                        t => t.width(),
+                    };
+                    ts != td && w(ts).is_some() && w(ts) == w(td)
                 }
             };
             if !ok {
@@ -2077,6 +2336,88 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 }
             }
         }
+        Inst::Extract { dst, src, field } => {
+            match func.ty(*src) {
+                Type::Struct(i) => {
+                    let def = &func.structs[i as usize];
+                    match def.fields.get(*field as usize) {
+                        Some((fname, fty)) => {
+                            if func.ty(*dst) != *fty {
+                                errs.push(ctx(format!(
+                                    "extract {}: result must be {}, not {}",
+                                    fname,
+                                    func.ty_name(*fty),
+                                    func.ty_name(func.ty(*dst))
+                                )));
+                            }
+                        }
+                        None => errs.push(ctx("extract: field index out of range".into())),
+                    }
+                }
+                t => errs.push(ctx(format!(
+                    "extract source must be a struct, not {}",
+                    func.ty_name(t)
+                ))),
+            }
+        }
+        Inst::Pack { dst, args } => match func.ty(*dst) {
+            Type::Struct(i) => {
+                let def = &func.structs[i as usize];
+                if args.len() != def.fields.len() {
+                    errs.push(ctx(format!(
+                        "pack into ${}: {} fields required, {} given",
+                        def.name,
+                        def.fields.len(),
+                        args.len()
+                    )));
+                } else {
+                    for (a, (fname, fty)) in args.iter().zip(&def.fields) {
+                        if func.ty(*a) != *fty {
+                            errs.push(ctx(format!(
+                                "pack field {}: expected {}, got {}",
+                                fname,
+                                func.ty_name(*fty),
+                                func.ty_name(func.ty(*a))
+                            )));
+                        }
+                    }
+                }
+            }
+            t => errs.push(ctx(format!(
+                "pack result must be a struct, not {}",
+                func.ty_name(t)
+            ))),
+        },
+        Inst::Insert {
+            dst,
+            src,
+            field,
+            val,
+        } => match func.ty(*src) {
+            Type::Struct(i) => {
+                let def = &func.structs[i as usize];
+                if func.ty(*dst) != func.ty(*src) {
+                    errs.push(ctx("insert result must have the source's struct type".into()));
+                }
+                match def.fields.get(*field as usize) {
+                    Some((fname, fty)) => {
+                        if func.ty(*val) != *fty {
+                            errs.push(ctx(format!(
+                                "insert {}: value must be {}, not {}",
+                                fname,
+                                func.ty_name(*fty),
+                                func.ty_name(func.ty(*val))
+                            )));
+                        }
+                    }
+                    None => errs.push(ctx("insert: field index out of range".into())),
+                }
+            }
+            t => errs.push(ctx(format!(
+                "insert source must be a struct, not {}",
+                func.ty_name(t)
+            ))),
+        },
         Inst::Jmp { .. } | Inst::Br { .. } => {
             if let Inst::Br { cond, .. } = inst {
                 if func.ty(*cond) != Type::I1 {

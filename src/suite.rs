@@ -18,7 +18,7 @@
 //! (arrays are copied into the module's linear memory, pointers become
 //! offsets).
 
-use crate::{emit, emit_rv, emit_wasm, opt, ssa};
+use crate::{emit, emit_rv, emit_wasm, lower, opt, ssa};
 use std::process::Command;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -381,6 +381,7 @@ pub fn run_dir_at(
             let mut module = ssa::parse(&full_src).map_err(|e| e.to_string())?;
             ssa::resolve_types(&mut module, &policy);
             ssa::verify(&module).map_err(|errs| errs.join("; "))?;
+            lower::lower(&mut module);
             opt::optimize(&mut module, level);
             ssa::verify(&module)
                 .map_err(|errs| format!("after optimization: {}", errs.join("; ")))?;
@@ -533,8 +534,8 @@ fn run_wasm(
             match a {
                 ArgSpec::Int(v) => {
                     let t = match pty {
-                        Some(ssa::Type::I64) => "i64",
-                        _ => "i32",
+                        Some(ssa::Type::I64) => "i64".to_string(),
+                        _ => "i32".to_string(),
                     };
                     spec.push_str(&format!("{{\"t\":\"{}\",\"v\":\"{}\"}}", t, v));
                 }
@@ -696,7 +697,7 @@ fn gen_driver(
             match a {
                 ArgSpec::Int(v) => {
                     let ty = pty.name();
-                    argv.push(tmp(&mut s, ty, format!("iconst {}", v)));
+                    argv.push(tmp(&mut s, &ty, format!("iconst {}", v)));
                 }
                 ArgSpec::Float(_) => unreachable!("float args are wrapped"),
                 ArgSpec::ArrI64(vals) => {
@@ -840,6 +841,9 @@ fn run_riscv(
         let full = format!("{}\n{}\n{}", driver, helpers(RV_UART), src);
         let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);
+        // the driver is generated against the lowered module, so lower
+        // before verifying the combined source
+        lower::lower(&mut m2);
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
         opt::optimize(&mut m2, level);
         let compiled = emit_rv::compile(&m2, enc)?;
@@ -911,6 +915,9 @@ fn run_arm_qemu(
         let full = format!("{}\n{}\n{}\n{}", driver, helpers(ARM_UART), stub, src);
         let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);
+        // the driver is generated against the lowered module, so lower
+        // before verifying the combined source
+        lower::lower(&mut m2);
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
         opt::optimize(&mut m2, level);
         let compiled = emit::compile(&m2, enc)?;

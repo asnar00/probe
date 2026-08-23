@@ -35,6 +35,8 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `i32` | 32-bit integer                                           |
 | `i64` | 64-bit integer                                           |
 | `ptr` | pointer (64-bit on our target)                           |
+| `iN`  | any-width integer, N in 2..=63 (e.g. `i5`, `i52`)        |
+| `$name` | packed bitfield struct (see *Structs*), <= 64 bits     |
 | `f32` | 32-bit IEEE float                                        |
 | `f64` | 64-bit IEEE float                                        |
 | `int` | abstract integer — resolved to a concrete width by the   |
@@ -84,7 +86,12 @@ left-hand side.
 
 ### Integer arithmetic and bitwise ops
 
-Both operands and the result must all have the same type (`i32` or `i64`).
+Both operands and the result must all have the same integer type — the
+named widths or any `iN`. Arbitrary widths wrap at 2^N, shift amounts are
+taken mod N, and signedness stays in the opcode as always. In registers an
+`iN` value is kept zero-extended (its canonical form); signed operations
+sign-extend internally. The lowering pass turns `iN` operations into
+masked i64 code, so backends never see odd widths.
 
 ```
 %v: i64 = iadd %a, %b
@@ -164,6 +171,28 @@ or the stored value's type (stores): `i32`, `i64`, or `ptr` (64 bits).
 store %v, %addr
 %p: ptr = ptradd %base, %off    ; %base: ptr, %off: i64
 ```
+
+### Structs
+
+`type $name = { field: iN, ... }` declares a packed bitfield struct at
+module level: fields are integer-width types, declared **MSB-first** (the
+first field occupies the top bits), total width at most 64. A struct value
+travels in one register; `bitcast` converts it to and from any equal-width
+scalar. Field access is by name:
+
+```
+type $fp = { sign: i1, exp: i11, frac: i52 }
+
+%p: $fp = bitcast %x            ; x: f64 — same 64 bits, structured view
+%e: i11 = extract %p, exp       ; read a field
+%q: $fp = insert %p, frac, %f2  ; copy with one field replaced
+%r: $fp = pack %s, %e, %f       ; build from all fields, in order
+```
+
+Structs lower to shift/mask code on their carrier integer before emission
+(whole-width identities cost nothing), so they exist only at SSA level.
+They cannot be loaded or stored directly; move them as their bitcast
+scalar.
 
 ### Calls
 

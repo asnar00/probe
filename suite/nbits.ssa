@@ -1,0 +1,127 @@
+; arbitrary-width integers: canonical form is zero-extended, signedness in
+; the ops. Directive args/results use the canonical encoding (26 = -6 in i5)
+;! add5 25 9 -> 2
+;! add5 15 16 -> 31
+;! mul7 20 13 -> 4
+;! sdiv5 26 2 -> 29
+;! sdiv5s 26 2 -> -3
+;! udiv5 26 2 -> 13
+;! slt5 26 2 -> 1
+;! ult5 26 2 -> 0
+;! shl5 3 7 -> 12
+;! ashr5s 26 1 -> -3
+;! sx5 26 -> -6
+;! zx5 26 -> 26
+;! tr5 100 -> 4
+;! sx5to12 26 -> 4090
+;! add33 4294967296 4294967296 -> 0
+;! add33 4294967295 1 -> 4294967296
+;! sum17 1000 -> 106284
+
+fn @add5(%a: i5, %b: i5) -> i5 {
+^entry:
+    %r: i5 = iadd %a, %b
+    ret %r
+}
+
+fn @mul7(%a: i7, %b: i7) -> i7 {
+^entry:
+    %r: i7 = imul %a, %b
+    ret %r
+}
+
+; -6 / 2 = -3 (canonical 29)
+fn @sdiv5(%a: i5, %b: i5) -> i5 {
+^entry:
+    %r: i5 = sdiv %a, %b
+    ret %r
+}
+
+; same, sign-extended out to i64 for a readable answer
+fn @sdiv5s(%a: i5, %b: i5) -> i64 {
+^entry:
+    %r: i5 = sdiv %a, %b
+    %w: i64 = sext %r
+    ret %w
+}
+
+; unsigned sees 26, not -6
+fn @udiv5(%a: i5, %b: i5) -> i5 {
+^entry:
+    %r: i5 = udiv %a, %b
+    ret %r
+}
+
+fn @slt5(%a: i5, %b: i5) -> i1 {
+^entry:
+    %r: i1 = icmp.slt %a, %b
+    ret %r
+}
+
+fn @ult5(%a: i5, %b: i5) -> i1 {
+^entry:
+    %r: i1 = icmp.ult %a, %b
+    ret %r
+}
+
+; shift amounts reduce mod the width: 7 mod 5 = 2
+fn @shl5(%a: i5, %b: i5) -> i5 {
+^entry:
+    %r: i5 = shl %a, %b
+    ret %r
+}
+
+fn @ashr5s(%a: i5, %b: i5) -> i64 {
+^entry:
+    %r: i5 = ashr %a, %b
+    %w: i64 = sext %r
+    ret %w
+}
+
+fn @sx5(%a: i5) -> i64 {
+^entry:
+    %r: i64 = sext %a
+    ret %r
+}
+
+fn @zx5(%a: i5) -> i64 {
+^entry:
+    %r: i64 = zext %a
+    ret %r
+}
+
+fn @tr5(%a: i64) -> i5 {
+^entry:
+    %r: i5 = trunc %a
+    ret %r
+}
+
+; -6 as i12 canonical = 4096 - 6
+fn @sx5to12(%a: i5) -> i12 {
+^entry:
+    %r: i12 = sext %a
+    ret %r
+}
+
+; a width bigger than 32: wraps at 2^33
+fn @add33(%a: i33, %b: i33) -> i33 {
+^entry:
+    %r: i33 = iadd %a, %b
+    ret %r
+}
+
+; loop arithmetic in i17: sum of 0..999 = 499500, mod 2^17 = 106284
+fn @sum17(%n: i17) -> i17 {
+    %zero: i17 = iconst 0
+    %r: i17 = loop(%i: i17 = %zero, %acc: i17 = %zero) {
+        %done: i1 = icmp.uge %i, %n
+        if %done {
+            break %acc
+        }
+        %one: i17 = iconst 1
+        %acc2: i17 = iadd %acc, %i
+        %i2: i17 = iadd %i, %one
+        continue %i2, %acc2
+    }
+    ret %r
+}

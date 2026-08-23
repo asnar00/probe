@@ -3,6 +3,7 @@ mod emit;
 mod emit_rv;
 mod emit_wasm;
 mod learn;
+mod lower;
 mod opt;
 mod oracle;
 mod regalloc;
@@ -185,6 +186,7 @@ fn load_module(path: &str, level: usize, policy: ssa::Policy) -> Result<ssa::Mod
     let mut module = ssa::parse(&src).map_err(|e| format!("{}: {}", path, e))?;
     ssa::resolve_types(&mut module, &policy);
     ssa::verify(&module).map_err(|errs| format!("{}: {}", path, errs.join("\n")))?;
+    lower::lower(&mut module);
     opt::optimize(&mut module, level);
     ssa::verify(&module)
         .map_err(|errs| format!("{}: after optimization: {}", path, errs.join("\n")))?;
@@ -309,6 +311,7 @@ fn cmd_live(path: &str, fname: &str, fargs: &[i64], policy: ssa::Policy) -> Exit
                     let mut m = ssa::parse(&src).map_err(|e| e.to_string())?;
                     ssa::resolve_types(&mut m, &policy);
                     ssa::verify(&m).map_err(|e| e.join("; "))?;
+                    lower::lower(&mut m);
                     Ok(m)
                 })();
                 match parsed {

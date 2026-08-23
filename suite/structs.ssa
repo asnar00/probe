@@ -1,0 +1,109 @@
+; packed bitfield structs: total <= 64 bits, fields MSB-first, lowered to
+; carrier integers before emission. The teaser for what's coming: $fp IS
+; the IEEE double layout, and float introspection is field access.
+;! rgb_r 0xff8040 -> 255
+;! rgb_g 0xff8040 -> 128
+;! rgb_b 0xff8040 -> 64
+;! rgb_make 255 128 64 -> 16744512
+;! rgb_dim 0xff8040 -> 8339488
+;! fp_exp 2.0 -> 1024
+;! fp_sign -2.5 -> 1
+;! fp_next 1.0 -> 4607182418800017409
+;! flag_swap 5 -> 7
+
+type $rgb = { r: i8, g: i8, b: i8 }
+type $fp = { sign: i1, exp: i11, frac: i52 }
+type $flags = { a: i1, b: i1, rest: i3 }
+
+fn @rgb_r(%c: i24) -> i8 {
+^entry:
+    %p: $rgb = bitcast %c
+    %r: i8 = extract %p, r
+    ret %r
+}
+
+fn @rgb_g(%c: i24) -> i8 {
+^entry:
+    %p: $rgb = bitcast %c
+    %r: i8 = extract %p, g
+    ret %r
+}
+
+fn @rgb_b(%c: i24) -> i8 {
+^entry:
+    %p: $rgb = bitcast %c
+    %r: i8 = extract %p, b
+    ret %r
+}
+
+fn @rgb_make(%r: i8, %g: i8, %b: i8) -> i24 {
+^entry:
+    %p: $rgb = pack %r, %g, %b
+    %c: i24 = bitcast %p
+    ret %c
+}
+
+; halve each channel with field updates
+fn @rgb_dim(%c: i24) -> i24 {
+^entry:
+    %p: $rgb = bitcast %c
+    %one: i8 = iconst 1
+    %r: i8 = extract %p, r
+    %g: i8 = extract %p, g
+    %b: i8 = extract %p, b
+    %r2: i8 = lshr %r, %one
+    %g2: i8 = lshr %g, %one
+    %b2: i8 = lshr %b, %one
+    %q: $rgb = pack %r2, %g2, %b2
+    %o: i24 = bitcast %q
+    ret %o
+}
+
+; the biased exponent of a double, by looking at it
+fn @fp_exp(%x: f64) -> i11 {
+^entry:
+    %p: $fp = bitcast %x
+    %e: i11 = extract %p, exp
+    ret %e
+}
+
+fn @fp_sign(%x: f64) -> i1 {
+^entry:
+    %p: $fp = bitcast %x
+    %s: i1 = extract %p, sign
+    ret %s
+}
+
+; nextafter(x, +inf) for positive normals: bump the fraction
+fn @fp_next(%x: f64) -> i64 {
+^entry:
+    %p: $fp = bitcast %x
+    %f: i52 = extract %p, frac
+    %one: i52 = iconst 1
+    %f2: i52 = iadd %f, %one
+    %q: $fp = insert %p, frac, %f2
+    %r: i64 = bitcast %q
+    ret %r
+}
+
+; swap two flag bits: %v bits are [a b rest3]; 5 = 0b00101 -> a=0,b=0? no:
+; i5 layout MSB-first: a=bit4, b=bit3, rest=bits0-2. 5 = 00101: a=0,b=0,rest=5
+; swap a and b of 5 -> unchanged... use 5 = a0 b0 rest101; swapped = same.
+; better: 5 -> insert a=b(0),b=a(0): same. Use flag_swap on 0b00101? Let's
+; swap and also set rest to rest|1: expected computed below.
+fn @flag_swap(%v: i5) -> i5 {
+^entry:
+    %p: $flags = bitcast %v
+    %a: i1 = extract %p, a
+    %b: i1 = extract %p, b
+    %q1: $flags = insert %p, a, %b
+    %q2: $flags = insert %q1, b, %a
+    %rest: i3 = extract %q2, rest
+    %one: i3 = iconst 1
+    %r2: i3 = or %rest, %one
+    %two: i3 = iconst 2
+    %r3: i3 = or %r2, %two
+    %q3: $flags = insert %q2, rest, %r3
+    %r: i5 = bitcast %q3
+    ret %r
+}

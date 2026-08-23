@@ -1172,6 +1172,9 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             e.branch_args(*else_target, else_args)?;
             e.branch("b #{i -134217728..134217724 /4}", vec![0], 0, *else_target)
         }
+        Inst::Extract { .. } | Inst::Pack { .. } | Inst::Insert { .. } => {
+            unreachable!("struct ops are lowered before emission")
+        }
         Inst::Ret { vals } => {
             if vals.len() > 8 {
                 return Err("more than 8 return values not supported yet".into());
