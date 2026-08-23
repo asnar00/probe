@@ -28,9 +28,13 @@ Backend sketch:
 
 ## Code quality
 
-- **Real register allocation** for the native backends: the every-value-in-a-
-  stack-slot strategy emits roughly 4x the necessary instructions. Even a
-  simple linear scan over block-local live ranges would transform output.
+- **Move coalescing / peephole**: the linear-scan allocator (done — 3.8x on
+  loop-heavy code) still emits redundant staging moves (`mov x9, x20` then
+  `mov x20, x9` around branch arguments) and saves callee-saved registers
+  singly instead of in `stp` pairs. A peephole pass or proper parallel-move
+  resolution would tighten both.
+- **Caller-saved pool for leaf functions**: values in leaf functions could
+  use x9..x17 with no prologue saves at all.
 - **Constant materialization**: use `movn`/single-`movz` forms on arm64 and
   `lui+addiw` fast paths on riscv64 instead of worst-case chunk sequences.
 

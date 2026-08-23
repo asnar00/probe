@@ -2,9 +2,10 @@
 //! encoded from the learned table (targets/riscv64.encodings.json) via the
 //! same Encoder the arm64 backend uses — the JSON format is identical.
 //!
-//! Strategy mirrors the arm64 backend: every SSA value gets a stack slot;
-//! each instruction loads operands into scratch registers, computes, and
-//! stores back. Differences that are genuinely RISC-V:
+//! Strategy mirrors the arm64 backend: linear-scan allocation over the
+//! callee-saved pool s2..s11 (x18..x27), spills staged through t0/t1,
+//! branch arguments two-phased through a0..a7. Differences that are
+//! genuinely RISC-V:
 //!
 //! - No flags register: icmp lowers to slt/sltu/xor/sltiu sequences.
 //! - i32 convention: slots hold values *sign-extended* to 64 bits — that is
@@ -16,12 +17,17 @@
 //!   skip (`beq cond, x0, +8` over a `jal`) with ±1MB range.
 //!
 //! Registers: x0 zero | x1 ra | x2 sp | x5-x7 (t0-t2) scratch |
-//! x10-x17 (a0-a7) arguments, results, and branch-argument staging.
+//! x10-x17 (a0-a7) arguments, results, branch staging | x18-x27 the pool.
 //!
-//! Frame: sp+0 saved ra, sp+16+8i value slots; sp fixed for the body.
+//! Frame: sp+0 saved ra, sp+16 callee-saved save area, then spill slots.
 
 use crate::emit::{Compiled, Encoder};
+use crate::regalloc::{self, Loc};
 use crate::ssa::{BinOp, BlockId, CastOp, Cond, Function, Inst, Module, Type, ValueId};
+
+/// pool for the allocator: callee-saved s2..s11 (x18..x27) — values placed
+/// here survive calls by construction
+const REG_POOL: &[i64] = &[18, 19, 20, 21, 22, 23, 24, 25, 26, 27];
 
 const ZERO: i64 = 0; // x0
 const RA: i64 = 1;
@@ -78,6 +84,8 @@ struct RvEmit<'a> {
     func: &'a Function,
     code: &'a mut Vec<u8>,
     frame: i64,
+    alloc: &'a regalloc::Alloc,
+    spill_base: i64,
     block_offsets: Vec<Option<usize>>,
     fixups: Vec<Fixup>,
 }
@@ -90,18 +98,63 @@ impl RvEmit<'_> {
         Ok(at)
     }
 
-    fn slot(&self, v: ValueId) -> i64 {
-        16 + 8 * v.0 as i64
+    fn slot_off(&self, idx: usize) -> i64 {
+        self.spill_base + 8 * idx as i64
     }
 
-    fn load(&mut self, reg: i64, v: ValueId) -> Result<(), String> {
-        let off = self.slot(v);
-        self.emit(LD, &[reg, off, SP]).map(|_| ())
+    fn src_reg(&mut self, v: ValueId, scratch: i64) -> Result<i64, String> {
+        match self.alloc.loc[v.0 as usize] {
+            Loc::Reg(r) => Ok(r),
+            Loc::Slot(i) => {
+                let off = self.slot_off(i);
+                self.emit(LD, &[scratch, off, SP])?;
+                Ok(scratch)
+            }
+        }
     }
 
-    fn store(&mut self, reg: i64, v: ValueId) -> Result<(), String> {
-        let off = self.slot(v);
-        self.emit(SD, &[reg, off, SP]).map(|_| ())
+    fn dst_reg(&self, v: ValueId, scratch: i64) -> i64 {
+        match self.alloc.loc[v.0 as usize] {
+            Loc::Reg(r) => r,
+            Loc::Slot(_) => scratch,
+        }
+    }
+
+    fn finish(&mut self, v: ValueId, reg: i64) -> Result<(), String> {
+        if let Loc::Slot(i) = self.alloc.loc[v.0 as usize] {
+            let off = self.slot_off(i);
+            self.emit(SD, &[reg, off, SP])?;
+        }
+        Ok(())
+    }
+
+    fn mov(&mut self, dst: i64, src: i64) -> Result<(), String> {
+        if dst != src {
+            self.emit(ADDI, &[dst, src, 0])?;
+        }
+        Ok(())
+    }
+
+    /// place v into a specific register (targets a0..a7 / staging; sources
+    /// are pool registers or slots — disjoint, so sequences never clobber)
+    fn value_to(&mut self, target: i64, v: ValueId) -> Result<(), String> {
+        match self.alloc.loc[v.0 as usize] {
+            Loc::Reg(r) => self.mov(target, r),
+            Loc::Slot(i) => {
+                let off = self.slot_off(i);
+                self.emit(LD, &[target, off, SP]).map(|_| ())
+            }
+        }
+    }
+
+    fn value_from(&mut self, v: ValueId, source: i64) -> Result<(), String> {
+        match self.alloc.loc[v.0 as usize] {
+            Loc::Reg(r) => self.mov(r, source),
+            Loc::Slot(i) => {
+                let off = self.slot_off(i);
+                self.emit(SD, &[source, off, SP]).map(|_| ())
+            }
+        }
     }
 
     /// unconditional jump to an SSA block (offset patched later)
@@ -116,22 +169,26 @@ impl RvEmit<'_> {
         Ok(())
     }
 
-    /// branch arguments: load all into a0.. then store — swap-safe
+    /// branch arguments: two phases through a0..a7 — all sources read
+    /// before any target parameter is written, so swaps can't clobber
     fn branch_args(&mut self, target: BlockId, args: &[ValueId]) -> Result<(), String> {
         if args.len() > 8 {
             return Err("more than 8 branch arguments not supported yet".into());
         }
         for (j, &a) in args.iter().enumerate() {
-            self.load(A0 + j as i64, a)?;
+            self.value_to(A0 + j as i64, a)?;
         }
         let params: Vec<ValueId> = self.func.blocks[target.0 as usize].params.clone();
         for (j, &p) in params.iter().enumerate() {
-            self.store(A0 + j as i64, p)?;
+            self.value_from(p, A0 + j as i64)?;
         }
         Ok(())
     }
 
     fn epilogue(&mut self) -> Result<(), String> {
+        for (k, &r) in self.alloc.used_regs.clone().iter().enumerate() {
+            self.emit(LD, &[r, 16 + 8 * k as i64, SP])?;
+        }
         self.emit(LD, &[RA, 0, SP])?;
         self.emit(ADDI, &[SP, SP, self.frame])?;
         self.emit("jalr {r}, {i -2048..2047}({r})", &[ZERO, 0, RA])?;
@@ -178,8 +235,10 @@ fn compile_function(
     code: &mut Vec<u8>,
     call_fixups: &mut Vec<Fixup>,
 ) -> Result<(), String> {
-    let nslots = func.values.len() as i64;
-    let frame = (16 + 8 * nslots + 15) & !15;
+    let alloc = regalloc::allocate(func, REG_POOL);
+    let nsaved = alloc.used_regs.len() as i64;
+    let spill_base = 16 + 8 * nsaved;
+    let frame = (spill_base + 8 * alloc.nslots as i64 + 15) & !15;
     if frame > 2047 {
         return Err("function needs too large a frame for v0".into());
     }
@@ -192,14 +251,19 @@ fn compile_function(
         func,
         code,
         frame,
+        alloc: &alloc,
+        spill_base,
         block_offsets: vec![None; func.blocks.len()],
         fixups: Vec::new(),
     };
 
     e.emit(ADDI, &[SP, SP, -frame])?;
     e.emit(SD, &[RA, 0, SP])?;
+    for (k, &r) in alloc.used_regs.iter().enumerate() {
+        e.emit(SD, &[r, 16 + 8 * k as i64, SP])?;
+    }
     for (i, &p) in func.params.iter().enumerate() {
-        e.store(A0 + i as i64, p)?;
+        e.value_from(p, A0 + i as i64)?;
     }
 
     for (bi, block) in func.blocks.iter().enumerate() {
@@ -315,14 +379,16 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             } else {
                 *imm
             };
-            e.iconst(T0, v)?;
-            e.store(T0, *dst)
+            let rd = e.dst_reg(*dst, T0);
+            e.iconst(rd, v)?;
+            e.finish(*dst, rd)
         }
         Inst::Bin { op, dst, lhs, rhs } => {
-            e.load(T0, *lhs)?;
-            e.load(T1, *rhs)?;
-            e.emit(bin_template(*op, e.func.ty(*dst)), &[T0, T0, T1])?;
-            e.store(T0, *dst)
+            let rl = e.src_reg(*lhs, T0)?;
+            let rr = e.src_reg(*rhs, T1)?;
+            let rd = e.dst_reg(*dst, T0);
+            e.emit(bin_template(*op, e.func.ty(*dst)), &[rd, rl, rr])?;
+            e.finish(*dst, rd)
         }
         Inst::ICmp {
             cond,
@@ -330,106 +396,111 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             lhs,
             rhs,
         } => {
-            e.load(T0, *lhs)?;
-            e.load(T1, *rhs)?;
-            // sign-extended i32 slots compare correctly with 64-bit slt/sltu
+            let rl = e.src_reg(*lhs, T0)?;
+            let rr = e.src_reg(*rhs, T1)?;
+            let rd = e.dst_reg(*dst, T0);
+            // sign-extended i32 values compare correctly with 64-bit slt/sltu
             match cond {
                 Cond::Slt => {
-                    e.emit(SLT, &[T0, T0, T1])?;
+                    e.emit(SLT, &[rd, rl, rr])?;
                 }
                 Cond::Ult => {
-                    e.emit(SLTU, &[T0, T0, T1])?;
+                    e.emit(SLTU, &[rd, rl, rr])?;
                 }
                 Cond::Sgt => {
-                    e.emit(SLT, &[T0, T1, T0])?;
+                    e.emit(SLT, &[rd, rr, rl])?;
                 }
                 Cond::Ugt => {
-                    e.emit(SLTU, &[T0, T1, T0])?;
+                    e.emit(SLTU, &[rd, rr, rl])?;
                 }
                 Cond::Sge => {
-                    e.emit(SLT, &[T0, T0, T1])?;
-                    e.emit(XORI, &[T0, T0, 1])?;
+                    e.emit(SLT, &[rd, rl, rr])?;
+                    e.emit(XORI, &[rd, rd, 1])?;
                 }
                 Cond::Uge => {
-                    e.emit(SLTU, &[T0, T0, T1])?;
-                    e.emit(XORI, &[T0, T0, 1])?;
+                    e.emit(SLTU, &[rd, rl, rr])?;
+                    e.emit(XORI, &[rd, rd, 1])?;
                 }
                 Cond::Sle => {
-                    e.emit(SLT, &[T0, T1, T0])?;
-                    e.emit(XORI, &[T0, T0, 1])?;
+                    e.emit(SLT, &[rd, rr, rl])?;
+                    e.emit(XORI, &[rd, rd, 1])?;
                 }
                 Cond::Ule => {
-                    e.emit(SLTU, &[T0, T1, T0])?;
-                    e.emit(XORI, &[T0, T0, 1])?;
+                    e.emit(SLTU, &[rd, rr, rl])?;
+                    e.emit(XORI, &[rd, rd, 1])?;
                 }
                 Cond::Eq => {
-                    e.emit("xor {r}, {r}, {r}", &[T0, T0, T1])?;
-                    e.emit("sltiu {r}, {r}, {i -2048..2047}", &[T0, T0, 1])?;
+                    e.emit("xor {r}, {r}, {r}", &[rd, rl, rr])?;
+                    e.emit("sltiu {r}, {r}, {i -2048..2047}", &[rd, rd, 1])?;
                 }
                 Cond::Ne => {
-                    e.emit("xor {r}, {r}, {r}", &[T0, T0, T1])?;
-                    e.emit(SLTU, &[T0, ZERO, T0])?;
+                    e.emit("xor {r}, {r}, {r}", &[rd, rl, rr])?;
+                    e.emit(SLTU, &[rd, ZERO, rd])?;
                 }
             }
-            e.store(T0, *dst)
+            e.finish(*dst, rd)
         }
         Inst::Cast { op, dst, src } => {
             let from = e.func.ty(*src);
             let to = e.func.ty(*dst);
-            e.load(T0, *src)?;
+            let rs = e.src_reg(*src, T0)?;
+            let rd = e.dst_reg(*dst, T1);
             match (op, from, to) {
                 // i1 is 0/1; sign-extension is negation
                 (CastOp::Sext, Type::I1, _) => {
-                    e.emit("sub {r}, {r}, {r}", &[T0, ZERO, T0])?;
+                    e.emit("sub {r}, {r}, {r}", &[rd, ZERO, rs])?;
                 }
-                // i32 slots are already sign-extended
-                (CastOp::Sext, Type::I32, Type::I64) => {}
-                (CastOp::Zext, Type::I1, _) => {}
+                // i32 values are already sign-extended
+                (CastOp::Sext, Type::I32, Type::I64) | (CastOp::Zext, Type::I1, _) => {
+                    e.mov(rd, rs)?;
+                }
                 (CastOp::Zext, Type::I32, Type::I64) => {
-                    e.emit("slli {r}, {r}, {i 0..63}", &[T0, T0, 32])?;
-                    e.emit("srli {r}, {r}, {i 0..63}", &[T0, T0, 32])?;
+                    e.emit("slli {r}, {r}, {i 0..63}", &[rd, rs, 32])?;
+                    e.emit("srli {r}, {r}, {i 0..63}", &[rd, rd, 32])?;
                 }
                 (CastOp::Trunc, Type::I64, Type::I32) => {
-                    e.emit("addiw {r}, {r}, {i -2048..2047}", &[T0, T0, 0])?;
+                    e.emit("addiw {r}, {r}, {i -2048..2047}", &[rd, rs, 0])?;
                 }
                 (CastOp::Trunc, _, Type::I1) => {
-                    e.emit("andi {r}, {r}, {i -2048..2047}", &[T0, T0, 1])?;
+                    e.emit("andi {r}, {r}, {i -2048..2047}", &[rd, rs, 1])?;
                 }
                 _ => return Err(format!("unsupported cast {:?} -> {:?}", from, to)),
             }
-            e.store(T0, *dst)
+            e.finish(*dst, rd)
         }
         Inst::Load { dst, addr } => {
-            e.load(T0, *addr)?;
+            let ra = e.src_reg(*addr, T0)?;
+            let rd = e.dst_reg(*dst, T1);
             if e.func.ty(*dst) == Type::I32 {
-                e.emit("lw {r}, {i -2048..2047}({r})", &[T0, 0, T0])?;
+                e.emit("lw {r}, {i -2048..2047}({r})", &[rd, 0, ra])?;
             } else {
-                e.emit(LD, &[T0, 0, T0])?;
+                e.emit(LD, &[rd, 0, ra])?;
             }
-            e.store(T0, *dst)
+            e.finish(*dst, rd)
         }
         Inst::Store { val, addr } => {
-            e.load(T1, *val)?;
-            e.load(T0, *addr)?;
+            let rv = e.src_reg(*val, T1)?;
+            let ra = e.src_reg(*addr, T0)?;
             if e.func.ty(*val) == Type::I32 {
-                e.emit("sw {r}, {i -2048..2047}({r})", &[T1, 0, T0])?;
+                e.emit("sw {r}, {i -2048..2047}({r})", &[rv, 0, ra])?;
             } else {
-                e.emit(SD, &[T1, 0, T0])?;
+                e.emit(SD, &[rv, 0, ra])?;
             }
             Ok(())
         }
         Inst::PtrAdd { dst, base, off } => {
-            e.load(T0, *base)?;
-            e.load(T1, *off)?;
-            e.emit("add {r}, {r}, {r}", &[T0, T0, T1])?;
-            e.store(T0, *dst)
+            let rb = e.src_reg(*base, T0)?;
+            let ro = e.src_reg(*off, T1)?;
+            let rd = e.dst_reg(*dst, T0);
+            e.emit("add {r}, {r}, {r}", &[rd, rb, ro])?;
+            e.finish(*dst, rd)
         }
         Inst::Call { dsts, callee, args } => {
             if args.len() > 8 {
                 return Err("more than 8 call arguments not supported yet".into());
             }
             for (j, &a) in args.iter().enumerate() {
-                e.load(A0 + j as i64, a)?;
+                e.value_to(A0 + j as i64, a)?;
             }
             let at = e.emit(JAL, &[RA, 0])?;
             e.fixups.push(Fixup {
@@ -439,7 +510,7 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
                 target: FixTarget::Func(callee.clone()),
             });
             for (j, &d) in dsts.iter().enumerate() {
-                e.store(A0 + j as i64, d)?;
+                e.value_from(d, A0 + j as i64)?;
             }
             Ok(())
         }
@@ -454,15 +525,15 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             else_target,
             else_args,
         } => {
-            e.load(T0, *cond)?;
+            let rc = e.src_reg(*cond, T0)?;
             // cond == 0 hops over the then-side moves + jump; the hop is a
             // local distance (tens of bytes), patched once the then side is
             // emitted, so argument moves only run on the taken path
-            let beq_at = e.emit(BEQ, &[T0, ZERO, 0])?;
+            let beq_at = e.emit(BEQ, &[rc, ZERO, 0])?;
             e.branch_args(*then_target, then_args)?;
             e.goto(*then_target)?;
             let else_here = e.code.len() as i64 - beq_at as i64;
-            let word = e.enc.encode(BEQ, &[T0, ZERO, else_here])?;
+            let word = e.enc.encode(BEQ, &[rc, ZERO, else_here])?;
             e.code[beq_at..beq_at + 4].copy_from_slice(&word.to_le_bytes());
             e.branch_args(*else_target, else_args)?;
             e.goto(*else_target)
@@ -472,7 +543,7 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
                 return Err("more than 8 return values not supported yet".into());
             }
             for (j, &v) in vals.iter().enumerate() {
-                e.load(A0 + j as i64, v)?;
+                e.value_to(A0 + j as i64, v)?;
             }
             e.epilogue()
         }

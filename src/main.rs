@@ -3,6 +3,7 @@ mod emit_rv;
 mod emit_wasm;
 mod learn;
 mod oracle;
+mod regalloc;
 mod ssa;
 mod suite;
 mod target;

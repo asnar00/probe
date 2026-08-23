@@ -6,14 +6,17 @@
 //! instruction selection (which templates realize each SSA op), the frame
 //! layout, and branch/call fixups.
 //!
-//! Register strategy (v0, correct-not-fast): every SSA value gets an 8-byte
-//! stack slot. Each instruction loads its operands into scratch registers
-//! (x9/x10/x11), computes, and stores the result back. Nothing lives in a
-//! register across an instruction, so calls clobber nothing that matters.
+//! Register strategy: linear-scan allocation (src/regalloc.rs) over the
+//! callee-saved pool x19..x28 — values allocated there survive calls by
+//! construction, so call sites need no spill logic. Values that don't fit
+//! spill to stack slots and stage through scratch x9/x10/x11 per
+//! instruction. Branch arguments move in two phases through x9..x16 so
+//! swap-shaped jumps can't clobber themselves.
 //!
 //! Frame layout (sp stays put for the whole body):
-//!     sp + 0        saved x29, x30
-//!     sp + 16+8*i   slot for value i
+//!     sp + 0            saved x29, x30
+//!     sp + 16 + 8k      save area for the k-th used callee-saved register
+//!     spill_base + 8i   slot for the i-th spilled value
 //!
 //! 32-bit (i32) ops use the w-register templates; w-ops zero the high half,
 //! so slots always hold values zero-extended to 64 bits and are always
@@ -446,6 +449,8 @@ struct FnEmit<'a> {
     func: &'a Function,
     code: &'a mut Vec<u8>,
     frame: i64,
+    alloc: &'a crate::regalloc::Alloc,
+    spill_base: i64,
     block_offsets: Vec<Option<usize>>,
     fixups: Vec<Fixup>,
 }
@@ -464,19 +469,69 @@ impl FnEmit<'_> {
         Ok(())
     }
 
-    fn slot(&self, v: ValueId) -> i64 {
-        16 + 8 * v.0 as i64
+    fn slot_off(&self, idx: usize) -> i64 {
+        self.spill_base + 8 * idx as i64
     }
 
-    /// slot -> register (always a full 64-bit load; slots are zero-extended)
-    fn load(&mut self, reg: i64, v: ValueId) -> Result<(), String> {
-        let off = self.slot(v);
-        self.emit(LDR_SP, &[reg, off]).map(|_| ())
+    /// register currently holding v: its allocated register, or the spill
+    /// slot loaded into `scratch`
+    fn src_reg(&mut self, v: ValueId, scratch: i64) -> Result<i64, String> {
+        match self.alloc.loc[v.0 as usize] {
+            crate::regalloc::Loc::Reg(r) => Ok(r),
+            crate::regalloc::Loc::Slot(i) => {
+                let off = self.slot_off(i);
+                self.emit(LDR_SP, &[scratch, off])?;
+                Ok(scratch)
+            }
+        }
     }
 
-    fn store(&mut self, reg: i64, v: ValueId) -> Result<(), String> {
-        let off = self.slot(v);
-        self.emit(STR_SP, &[reg, off]).map(|_| ())
+    /// register a result should be computed into
+    fn dst_reg(&self, v: ValueId, scratch: i64) -> i64 {
+        match self.alloc.loc[v.0 as usize] {
+            crate::regalloc::Loc::Reg(r) => r,
+            crate::regalloc::Loc::Slot(_) => scratch,
+        }
+    }
+
+    /// after computing into dst_reg(v): spill if v lives on the stack
+    fn finish(&mut self, v: ValueId, reg: i64) -> Result<(), String> {
+        if let crate::regalloc::Loc::Slot(i) = self.alloc.loc[v.0 as usize] {
+            let off = self.slot_off(i);
+            self.emit(STR_SP, &[reg, off])?;
+        }
+        Ok(())
+    }
+
+    fn mov(&mut self, dst: i64, src: i64) -> Result<(), String> {
+        if dst != src {
+            self.emit("mov {x}, {x}", &[dst, src])?;
+        }
+        Ok(())
+    }
+
+    /// place v into a specific register (call args, return values, staging).
+    /// Targets are x0..x17; sources are pool registers or slots — disjoint,
+    /// so a sequence of these never clobbers a pending source.
+    fn value_to(&mut self, target: i64, v: ValueId) -> Result<(), String> {
+        match self.alloc.loc[v.0 as usize] {
+            crate::regalloc::Loc::Reg(r) => self.mov(target, r),
+            crate::regalloc::Loc::Slot(i) => {
+                let off = self.slot_off(i);
+                self.emit(LDR_SP, &[target, off]).map(|_| ())
+            }
+        }
+    }
+
+    /// store a specific register into v's location
+    fn value_from(&mut self, v: ValueId, source: i64) -> Result<(), String> {
+        match self.alloc.loc[v.0 as usize] {
+            crate::regalloc::Loc::Reg(r) => self.mov(r, source),
+            crate::regalloc::Loc::Slot(i) => {
+                let off = self.slot_off(i);
+                self.emit(STR_SP, &[source, off]).map(|_| ())
+            }
+        }
     }
 
     /// branch to a block: emit with placeholder offset, fix up at function end
@@ -500,24 +555,27 @@ impl FnEmit<'_> {
         Ok(())
     }
 
-    /// move branch arguments into the target block's parameter slots.
-    /// Loads all args into x9..x16 first, then stores — so swaps like
-    /// jmp ^loop(%b, %a) into ^loop(%a, %b) can't clobber each other.
+    /// move branch arguments into the target block's parameter locations.
+    /// Two phases through x9..x16: all sources are read before any target
+    /// is written, so swaps like jmp ^loop(%b, %a) can't clobber.
     fn branch_args(&mut self, target: BlockId, args: &[ValueId]) -> Result<(), String> {
         if args.len() > 8 {
             return Err("more than 8 branch arguments not supported yet".into());
         }
         for (j, &a) in args.iter().enumerate() {
-            self.load(9 + j as i64, a)?;
+            self.value_to(9 + j as i64, a)?;
         }
         let params: Vec<ValueId> = self.func.blocks[target.0 as usize].params.clone();
         for (j, &p) in params.iter().enumerate() {
-            self.store(9 + j as i64, p)?;
+            self.value_from(p, 9 + j as i64)?;
         }
         Ok(())
     }
 
     fn epilogue(&mut self) -> Result<(), String> {
+        for (k, &r) in self.alloc.used_regs.clone().iter().enumerate() {
+            self.emit(LDR_SP, &[r, 16 + 8 * k as i64])?;
+        }
         self.emit("ldp {x}, {x}, [sp, #{i -512..504 /8}]", &[29, 30, 0])?;
         self.emit("add sp, sp, #{i 0..4095}", &[self.frame])?;
         self.emit("ret", &[])?;
@@ -536,14 +594,20 @@ macro_rules! xw {
     };
 }
 
+/// pool for the allocator: callee-saved x19..x28 — values placed here
+/// survive calls by construction, so call sites need no spill logic
+const REG_POOL: &[i64] = &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
+
 fn compile_function(
     func: &Function,
     enc: &Encoder,
     code: &mut Vec<u8>,
     call_fixups: &mut Vec<Fixup>,
 ) -> Result<(), String> {
-    let nslots = func.values.len() as i64;
-    let frame = (16 + 8 * nslots + 15) & !15;
+    let alloc = crate::regalloc::allocate(func, REG_POOL);
+    let nsaved = alloc.used_regs.len() as i64;
+    let spill_base = 16 + 8 * nsaved;
+    let frame = (spill_base + 8 * alloc.nslots as i64 + 15) & !15;
     if frame > 4095 {
         return Err("function needs too large a frame for v0".into());
     }
@@ -556,16 +620,21 @@ fn compile_function(
         func,
         code,
         frame,
+        alloc: &alloc,
+        spill_base,
         block_offsets: vec![None; func.blocks.len()],
         fixups: Vec::new(),
     };
 
-    // prologue
+    // prologue: frame, fp/lr, callee-saved save area, then parameters
     e.emit("sub sp, sp, #{i 0..4095}", &[frame])?;
     e.emit("stp {x}, {x}, [sp, #{i -512..504 /8}]", &[29, 30, 0])?;
     e.emit("mov x29, sp", &[])?;
+    for (k, &r) in alloc.used_regs.iter().enumerate() {
+        e.emit(STR_SP, &[r, 16 + 8 * k as i64])?;
+    }
     for (i, &p) in func.params.iter().enumerate() {
-        e.store(i as i64, p)?;
+        e.value_from(p, i as i64)?;
     }
 
     for (bi, block) in func.blocks.iter().enumerate() {
@@ -594,6 +663,7 @@ fn compile_function(
 fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
     match inst {
         Inst::IConst { dst, imm } => {
+            let rd = e.dst_reg(*dst, 9);
             let v = *imm as u64;
             let chunks: Vec<(i64, u16)> = (0..4).map(|i| (i, (v >> (16 * i)) as u16)).collect();
             let movz = [
@@ -614,18 +684,19 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                     continue;
                 }
                 let t = if first { movz[i as usize] } else { movk[i as usize] };
-                e.emit(t, &[9, c as i64])?;
+                e.emit(t, &[rd, c as i64])?;
                 first = false;
             }
             if first {
-                e.emit(movz[0], &[9, 0])?; // the constant 0
+                e.emit(movz[0], &[rd, 0])?; // the constant 0
             }
-            e.store(9, *dst)
+            e.finish(*dst, rd)
         }
         Inst::Bin { op, dst, lhs, rhs } => {
             let ty = e.func.ty(*dst);
-            e.load(9, *lhs)?;
-            e.load(10, *rhs)?;
+            let rl = e.src_reg(*lhs, 9)?;
+            let rr = e.src_reg(*rhs, 10)?;
+            let rd = e.dst_reg(*dst, 9);
             let simple: Option<&'static str> = match op {
                 BinOp::IAdd => Some(xw!(ty, "add {x}, {x}, {x}", "add {w}, {w}, {w}")),
                 BinOp::ISub => Some(xw!(ty, "sub {x}, {x}, {x}", "sub {w}, {w}, {w}")),
@@ -642,22 +713,22 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             };
             match simple {
                 Some(t) => {
-                    e.emit(t, &[9, 9, 10])?;
+                    e.emit(t, &[rd, rl, rr])?;
                 }
                 None => {
-                    // r = a - (a div b) * b
+                    // r = a - (a div b) * b; the quotient goes via x11
                     let div = match op {
                         BinOp::SRem => xw!(ty, "sdiv {x}, {x}, {x}", "sdiv {w}, {w}, {w}"),
                         _ => xw!(ty, "udiv {x}, {x}, {x}", "udiv {w}, {w}, {w}"),
                     };
-                    e.emit(div, &[11, 9, 10])?;
+                    e.emit(div, &[11, rl, rr])?;
                     e.emit(
                         xw!(ty, "msub {x}, {x}, {x}, {x}", "msub {w}, {w}, {w}, {w}"),
-                        &[9, 11, 10, 9],
+                        &[rd, 11, rr, rl],
                     )?;
                 }
             }
-            e.store(9, *dst)
+            e.finish(*dst, rd)
         }
         Inst::ICmp {
             cond,
@@ -666,82 +737,86 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             rhs,
         } => {
             let ty = e.func.ty(*lhs);
-            e.load(9, *lhs)?;
-            e.load(10, *rhs)?;
-            e.emit(xw!(ty, "cmp {x}, {x}", "cmp {w}, {w}"), &[9, 10])?;
+            let rl = e.src_reg(*lhs, 9)?;
+            let rr = e.src_reg(*rhs, 10)?;
+            e.emit(xw!(ty, "cmp {x}, {x}", "cmp {w}, {w}"), &[rl, rr])?;
+            let rd = e.dst_reg(*dst, 9);
             let ci = e.enc.enum_index(CSET, cond_name(*cond))?;
-            e.emit(CSET, &[9, ci])?;
-            e.store(9, *dst)
+            e.emit(CSET, &[rd, ci])?;
+            e.finish(*dst, rd)
         }
         Inst::Cast { op, dst, src } => {
             let from = e.func.ty(*src);
             let to = e.func.ty(*dst);
-            e.load(9, *src)?;
+            let rs = e.src_reg(*src, 9)?;
+            let rd = e.dst_reg(*dst, 10);
             match (op, from, to) {
                 (CastOp::Sext, Type::I1, Type::I64) => {
-                    e.emit("sbfx {x}, {x}, #0, #1", &[9, 9])?;
+                    e.emit("sbfx {x}, {x}, #0, #1", &[rd, rs])?;
                 }
                 (CastOp::Sext, Type::I1, Type::I32) => {
-                    e.emit("sbfx {w}, {w}, #0, #1", &[9, 9])?;
+                    e.emit("sbfx {w}, {w}, #0, #1", &[rd, rs])?;
                 }
                 (CastOp::Sext, Type::I32, Type::I64) => {
-                    e.emit("sxtw {x}, {w}", &[9, 9])?;
+                    e.emit("sxtw {x}, {w}", &[rd, rs])?;
                 }
                 (CastOp::Zext, Type::I1, _) => {
-                    e.emit("and {x}, {x}, #1", &[9, 9])?;
+                    e.emit("and {x}, {x}, #1", &[rd, rs])?;
                 }
                 (CastOp::Zext, Type::I32, Type::I64) => {
-                    e.emit("mov {w}, {w}", &[9, 9])?; // clears the high half
+                    e.emit("mov {w}, {w}", &[rd, rs])?; // clears the high half
                 }
                 (CastOp::Trunc, _, Type::I32) => {
-                    e.emit("mov {w}, {w}", &[9, 9])?;
+                    e.emit("mov {w}, {w}", &[rd, rs])?;
                 }
                 (CastOp::Trunc, _, Type::I1) => {
-                    e.emit("and {x}, {x}, #1", &[9, 9])?;
+                    e.emit("and {x}, {x}, #1", &[rd, rs])?;
                 }
                 _ => return Err(format!("unsupported cast {:?} -> {:?}", from, to)),
             }
-            e.store(9, *dst)
+            e.finish(*dst, rd)
         }
         Inst::Load { dst, addr } => {
             let ty = e.func.ty(*dst);
-            e.load(9, *addr)?;
+            let ra = e.src_reg(*addr, 9)?;
+            let rd = e.dst_reg(*dst, 10);
             e.emit(
                 xw!(
                     ty,
                     "ldr {x}, [{x}, #{i 0..32760 /8}]",
                     "ldr {w}, [{x}, #{i 0..16380 /4}]"
                 ),
-                &[9, 9, 0],
+                &[rd, ra, 0],
             )?;
-            e.store(9, *dst)
+            e.finish(*dst, rd)
         }
         Inst::Store { val, addr } => {
             let ty = e.func.ty(*val);
-            e.load(10, *val)?;
-            e.load(9, *addr)?;
+            let rv = e.src_reg(*val, 10)?;
+            let ra = e.src_reg(*addr, 9)?;
             e.emit(
                 xw!(
                     ty,
                     "str {x}, [{x}, #{i 0..32760 /8}]",
                     "str {w}, [{x}, #{i 0..16380 /4}]"
                 ),
-                &[10, 9, 0],
+                &[rv, ra, 0],
             )
             .map(|_| ())
         }
         Inst::PtrAdd { dst, base, off } => {
-            e.load(9, *base)?;
-            e.load(10, *off)?;
-            e.emit("add {x}, {x}, {x}", &[9, 9, 10])?;
-            e.store(9, *dst)
+            let rb = e.src_reg(*base, 9)?;
+            let ro = e.src_reg(*off, 10)?;
+            let rd = e.dst_reg(*dst, 9);
+            e.emit("add {x}, {x}, {x}", &[rd, rb, ro])?;
+            e.finish(*dst, rd)
         }
         Inst::Call { dsts, callee, args } => {
             if args.len() > 8 {
                 return Err("more than 8 call arguments not supported yet".into());
             }
             for (j, &a) in args.iter().enumerate() {
-                e.load(j as i64, a)?;
+                e.value_to(j as i64, a)?;
             }
             let at = e.emit("bl #{i -134217728..134217724 /4}", &[0])?;
             e.fixups.push(Fixup {
@@ -751,9 +826,8 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                 imm_slot: 0,
                 target: FixTarget::Func(callee.clone()),
             });
-            // results arrive in x0..x7, mirroring how arguments went out
             for (j, &d) in dsts.iter().enumerate() {
-                e.store(j as i64, d)?;
+                e.value_from(d, j as i64)?;
             }
             Ok(())
         }
@@ -768,16 +842,16 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             else_target,
             else_args,
         } => {
-            e.load(9, *cond)?;
-            // cbz x9 -> (else path, emitted after the then path); patched below
-            let cbz_at = e.emit("cbz {x}, #{i -1048576..1048572 /4}", &[9, 0])?;
+            let rc = e.src_reg(*cond, 9)?;
+            // cbz -> (else path, emitted after the then path); patched below
+            let cbz_at = e.emit("cbz {x}, #{i -1048576..1048572 /4}", &[rc, 0])?;
             e.branch_args(*then_target, then_args)?;
             e.branch("b #{i -134217728..134217724 /4}", vec![0], 0, *then_target)?;
             let else_here = e.code.len() as i64 - cbz_at as i64;
             e.patch(
                 cbz_at,
                 "cbz {x}, #{i -1048576..1048572 /4}",
-                &[9, else_here],
+                &[rc, else_here],
             )?;
             e.branch_args(*else_target, else_args)?;
             e.branch("b #{i -134217728..134217724 /4}", vec![0], 0, *else_target)
@@ -787,7 +861,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                 return Err("more than 8 return values not supported yet".into());
             }
             for (j, &v) in vals.iter().enumerate() {
-                e.load(j as i64, v)?;
+                e.value_to(j as i64, v)?;
             }
             e.epilogue()
         }
