@@ -36,10 +36,14 @@ Backend sketch:
 - **More SSA passes for higher tiers**: GVN/CSE, copy propagation (folding
   `x + 0` style identities needs use-rewriting), loop-invariant code
   motion (the structured front-end knows the loops), inlining.
-- **Background tiering**: the pipeline-prefix machinery is in (`-O<n>`,
-  suite-verified at every level); the next step is the runtime side — a
-  work queue of (function, pass) drained on a background thread, with
-  recompiled functions swapped in through a call indirection table.
+- **Background tiering off the main thread**: the incremental arena is in
+  (`probe live`): per-function slots with slack, counting trampolines,
+  in-place recompiles, automatic hot promotion. Promotion currently runs
+  on the main loop between calls; moving it to a worker thread needs the
+  trampoline retarget made atomic (a literal-pool `ldr/br` trampoline with
+  a single 64-bit target store, instead of the movz/movk chain).
+- **Arena hygiene**: abandoned slots after growth are never reused (a free
+  list would fix it), and invocation counters never reset on reload.
 - **Caller-saved pool for leaf functions**: values in leaf functions could
   use x9..x17 with no prologue saves at all.
 - **Constant materialization**: use `movn`/single-`movz` forms on arm64 and

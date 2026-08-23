@@ -1,3 +1,4 @@
+mod arena;
 mod emit;
 mod emit_rv;
 mod emit_wasm;
@@ -35,6 +36,13 @@ fn main() -> ExitCode {
             cmd_learn(&args[1], out.as_deref())
         }
         Some("compile") if args.len() >= 2 => cmd_compile(&args[1], level),
+        Some("live") if args.len() >= 3 => {
+            let fargs: Result<Vec<i64>, _> = args[3..].iter().map(|a| a.parse()).collect();
+            match fargs {
+                Ok(fargs) => cmd_live(&args[1], &args[2], &fargs),
+                Err(_) => fail("function arguments must be integers"),
+            }
+        }
         Some("tiers") if args.len() >= 2 => cmd_tiers(&args[1]),
         Some("run") if args.len() >= 3 => {
             let fargs: Result<Vec<i64>, _> = args[3..].iter().map(|a| a.parse()).collect();
@@ -77,6 +85,7 @@ fn main() -> ExitCode {
             eprintln!("       probe compile <file.ssa>");
             eprintln!("       probe run <file.ssa> <function> [args...]");
             eprintln!("       probe tiers <file.ssa>");
+            eprintln!("       probe live <file.ssa> <function> [args...]");
             eprintln!("       (-O<n> selects the optimization level on any command)");
             ExitCode::FAILURE
         }
@@ -250,6 +259,99 @@ fn cmd_run(path: &str, fname: &str, fargs: &[i64], level: usize) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => fail(&e),
+    }
+}
+
+
+/// The incremental compiler loop: everything lives in one JIT arena with
+/// per-function slots and trampolines. Edits to the source recompile only
+/// the changed functions at level 0 (instant); functions whose invocation
+/// counters cross the threshold get promoted through the full pipeline.
+fn cmd_live(path: &str, fname: &str, fargs: &[i64]) -> ExitCode {
+    const PROMOTE_AT: u64 = 10_000;
+    let enc = match emit::Encoder::load(ENCODINGS) {
+        Ok(e) => e,
+        Err(e) => return fail(&e),
+    };
+    let mut ar = match arena::Arena::new(enc) {
+        Ok(a) => a,
+        Err(e) => return fail(&e),
+    };
+    let mut held_src = String::new();
+    let mut module: Option<ssa::Module> = None;
+    println!(
+        "live: watching {} — edit it while this runs; hot functions promote at {} calls",
+        path, PROMOTE_AT
+    );
+    loop {
+        // reload on change; a broken edit keeps the last good code running
+        match std::fs::read_to_string(path) {
+            Ok(src) if src != held_src => {
+                held_src = src.clone();
+                let parsed = (|| -> Result<ssa::Module, String> {
+                    let m = ssa::parse(&src).map_err(|e| e.to_string())?;
+                    ssa::verify(&m).map_err(|e| e.join("; "))?;
+                    Ok(m)
+                })();
+                match parsed {
+                    Ok(m) => {
+                        let t0 = std::time::Instant::now();
+                        match ar.sync(&m.funcs, 0) {
+                            Ok(done) => {
+                                let dt = t0.elapsed().as_secs_f64() * 1e6;
+                                for i in &done {
+                                    println!(
+                                        "  reload  @{:<12} {:>4} bytes  level 0  {}",
+                                        i.name,
+                                        i.bytes,
+                                        if i.in_place { "in place" } else { "relocated" }
+                                    );
+                                }
+                                if !done.is_empty() {
+                                    println!("  ({} function(s) in {:.0}us)", done.len(), dt);
+                                }
+                                module = Some(m);
+                            }
+                            Err(e) => println!("  compile error: {} (keeping old code)", e),
+                        }
+                    }
+                    Err(e) => println!("  parse error: {} (keeping old code)", e),
+                }
+            }
+            _ => {}
+        }
+        // promote hot tier-0 functions through the full pipeline
+        if let Some(m) = &module {
+            for (name, calls, lvl) in ar.by_heat() {
+                if calls >= PROMOTE_AT && lvl < opt::MAX_LEVEL {
+                    if let Some(f) = m.funcs.iter().find(|f| f.name == name) {
+                        let t0 = std::time::Instant::now();
+                        match ar.install(f, opt::MAX_LEVEL) {
+                            Ok(i) => println!(
+                                "  promote @{:<12} level {} after {} calls ({:.0}us, {} bytes, {})",
+                                i.name,
+                                i.level,
+                                calls,
+                                t0.elapsed().as_secs_f64() * 1e6,
+                                i.bytes,
+                                if i.in_place { "in place" } else { "relocated" }
+                            ),
+                            Err(e) => println!("  promote @{} failed: {}", name, e),
+                        }
+                    }
+                }
+            }
+            let nrets = m.func(fname).map(|f| f.rets.len()).unwrap_or(1);
+            let shown = match nrets {
+                2 => ar.call2(fname, fargs).map(|(a, b)| format!("{}, {}", a, b)),
+                _ => ar.call(fname, fargs).map(|v| v.to_string()),
+            };
+            match shown {
+                Ok(v) => println!("{}({:?}) = {}", fname, fargs, v),
+                Err(e) => println!("  {}", e),
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
 }
 

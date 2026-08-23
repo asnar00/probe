@@ -645,6 +645,32 @@ macro_rules! xw {
 /// survive calls by construction, so call sites need no spill logic
 const REG_POOL: &[i64] = &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
 
+/// Compile one function into a standalone buffer that will live at arena
+/// offset `base`; calls resolve through `resolve` (name -> arena offset of
+/// the callee's entry — in the incremental arena, its trampoline).
+pub fn compile_one(
+    func: &Function,
+    enc: &Encoder,
+    base: i64,
+    resolve: &dyn Fn(&str) -> Option<i64>,
+) -> Result<Vec<u8>, String> {
+    let mut code = Vec::new();
+    let mut fixups = Vec::new();
+    compile_function(func, enc, &mut code, &mut fixups)
+        .map_err(|e| format!("@{}: {}", func.name, e))?;
+    for fix in fixups {
+        let FixTarget::Func(name) = &fix.target else {
+            unreachable!()
+        };
+        let target = resolve(name).ok_or_else(|| format!("call to unknown function @{}", name))?;
+        let mut values = fix.values;
+        values[fix.imm_slot] = target - (base + fix.at as i64);
+        let word = enc.encode(fix.template, &values)?;
+        code[fix.at..fix.at + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    Ok(code)
+}
+
 fn compile_function(
     func: &Function,
     enc: &Encoder,

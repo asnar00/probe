@@ -74,6 +74,12 @@ cargo run -- test arm-qemu     # qemu-system-aarch64
 # `tiers` compiles at every prefix to show the gradual-optimization story
 cargo run -- tiers examples/tiers-demo.ssa
 cargo run -- -O0 run examples/sum.ssa sum 100
+
+# the incremental compiler: one JIT arena, per-function slots with slack,
+# counting trampolines. Edit the file while this runs — changed functions
+# recompile in place at level 0 (microseconds), and functions that get hot
+# are automatically promoted through the full pass pipeline.
+cargo run -- live examples/fib.ssa fib 25
 ```
 
 Toolchain expectations (macOS/arm64 host): `llvm-mc` (brew llvm), `wabt`

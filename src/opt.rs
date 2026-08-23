@@ -30,11 +30,14 @@ pub const PASSES: &[(&str, PassFn)] = &[
 pub const MAX_LEVEL: usize = PASSES.len();
 
 pub fn optimize(module: &mut Module, level: usize) {
-    let k = level.min(MAX_LEVEL);
     for func in &mut module.funcs {
-        for (_, pass) in &PASSES[..k] {
-            pass(func);
-        }
+        optimize_function(func, level);
+    }
+}
+
+pub fn optimize_function(func: &mut Function, level: usize) {
+    for (_, pass) in &PASSES[..level.min(MAX_LEVEL)] {
+        pass(func);
     }
 }
 
