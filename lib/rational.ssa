@@ -105,10 +105,8 @@ fn @rat_make(%n0: i64, %d0: i64) -> $rat {
 ; a/b + c/d = (a*(d/g) + c*(b/g)) / ((b/g)*d), g = gcd(b, d); the
 ; pre-gcd keeps the cross products small, rat_fit finishes the reduction
 fn @rat_add(%x: $rat, %y: $rat) -> $rat {
-    %xnar: u1 = call @rat_is_nar(%x)
-    if %xnar { ret call @rat_nar() }
-    %ynar: u1 = call @rat_is_nar(%y)
-    if %ynar { ret call @rat_nar() }
+    if call @rat_is_nar(%x) { ret call @rat_nar() }
+    if call @rat_is_nar(%y) { ret call @rat_nar() }
     %a: i64, %b: u64 = call @rat_parts(%x)
     %c: i64, %d: u64 = call @rat_parts(%y)
     %g: u64 = call @rat_gcd(%b, %d)
@@ -122,8 +120,7 @@ fn @rat_add(%x: $rat, %y: $rat) -> $rat {
 }
 
 fn @rat_neg(%x: $rat) -> $rat {
-    %xnar: u1 = call @rat_is_nar(%x)
-    if %xnar { ret call @rat_nar() }
+    if call @rat_is_nar(%x) { ret call @rat_nar() }
     %n: i64, %d: u64 = call @rat_parts(%x)
     %m: i64 = 0 - %n
     ret call @rat_fit(%m, %d)
@@ -137,10 +134,8 @@ fn @rat_sub(%x: $rat, %y: $rat) -> $rat {
 ; canonical operands keep the plain cross products in range:
 ; |num product| <= 2^62, den product < 2^64
 fn @rat_mul(%x: $rat, %y: $rat) -> $rat {
-    %xnar: u1 = call @rat_is_nar(%x)
-    if %xnar { ret call @rat_nar() }
-    %ynar: u1 = call @rat_is_nar(%y)
-    if %ynar { ret call @rat_nar() }
+    if call @rat_is_nar(%x) { ret call @rat_nar() }
+    if call @rat_is_nar(%y) { ret call @rat_nar() }
     %a: i64, %b: u64 = call @rat_parts(%x)
     %c: i64, %d: u64 = call @rat_parts(%y)
     %n: i64 = %a * %c
@@ -151,10 +146,8 @@ fn @rat_mul(%x: $rat, %y: $rat) -> $rat {
 ; multiply by the reciprocal, sign moved to the numerator; done on
 ; 64-bit parts because the reciprocal itself may not fit $rat
 fn @rat_div(%x: $rat, %y: $rat) -> $rat {
-    %xnar: u1 = call @rat_is_nar(%x)
-    if %xnar { ret call @rat_nar() }
-    %ynar: u1 = call @rat_is_nar(%y)
-    if %ynar { ret call @rat_nar() }
+    if call @rat_is_nar(%x) { ret call @rat_nar() }
+    if call @rat_is_nar(%y) { ret call @rat_nar() }
     %c: i64, %d: u64 = call @rat_parts(%y)
     if %c == 0 { ret call @rat_nar() }
     %a: i64, %b: u64 = call @rat_parts(%x)
@@ -175,10 +168,8 @@ fn @rat_div(%x: $rat, %y: $rat) -> $rat {
 
 ; a/b < c/d  <=>  a*d < c*b (dens positive); NaR compares false
 fn @rat_lt(%x: $rat, %y: $rat) -> u1 {
-    %xnar: u1 = call @rat_is_nar(%x)
-    if %xnar { ret 0 }
-    %ynar: u1 = call @rat_is_nar(%y)
-    if %ynar { ret 0 }
+    if call @rat_is_nar(%x) { ret 0 }
+    if call @rat_is_nar(%y) { ret 0 }
     %a: i64, %b: u64 = call @rat_parts(%x)
     %c: i64, %d: u64 = call @rat_parts(%y)
     %bi: i64 = bitcast %b
@@ -189,10 +180,8 @@ fn @rat_lt(%x: $rat, %y: $rat) -> u1 {
 
 ; canonical forms are unique, so equality is bit equality (minus NaR)
 fn @rat_eq(%x: $rat, %y: $rat) -> u1 {
-    %xnar: u1 = call @rat_is_nar(%x)
-    if %xnar { ret 0 }
-    %ynar: u1 = call @rat_is_nar(%y)
-    if %ynar { ret 0 }
+    if call @rat_is_nar(%x) { ret 0 }
+    if call @rat_is_nar(%y) { ret 0 }
     %xb: u64 = bitcast %x
     %yb: u64 = bitcast %y
     %r: u1 = %xb == %yb
@@ -203,25 +192,20 @@ fn @rat_eq(%x: $rat, %y: $rat) -> u1 {
 ; comparison) and true for ne (the une convention); with NaR excluded
 ; the order is total, so le is lt with the operands swapped, negated
 fn @rat_le(%x: $rat, %y: $rat) -> u1 {
-    %xnar: u1 = call @rat_is_nar(%x)
-    if %xnar { ret 0 }
-    %ynar: u1 = call @rat_is_nar(%y)
-    if %ynar { ret 0 }
-    %gt: u1 = call @rat_lt(%y, %x)
-    if %gt { ret 0 }
+    if call @rat_is_nar(%x) { ret 0 }
+    if call @rat_is_nar(%y) { ret 0 }
+    if call @rat_lt(%y, %x) { ret 0 }
     ret 1
 }
 
 fn @rat_ne(%x: $rat, %y: $rat) -> u1 {
-    %e: u1 = call @rat_eq(%x, %y)
-    if %e { ret 0 }
+    if call @rat_eq(%x, %y) { ret 0 }
     ret 1
 }
 
 ; truncates toward zero; NaR -> 0
 fn @rat_to_int(%x: $rat) -> i64 {
-    %xnar: u1 = call @rat_is_nar(%x)
-    if %xnar { ret 0 }
+    if call @rat_is_nar(%x) { ret 0 }
     %n: i64, %d: u64 = call @rat_parts(%x)
     %di: i64 = bitcast %d
     %r: i64 = %n / %di

@@ -907,12 +907,26 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         structs: Vec::new(),
         pending: Vec::new(),
         nlit: 0,
+        sigs: HashMap::new(),
     };
     let mut module = Module::default();
+    // phase 1: type declarations and function signatures, so call sugar
+    // in any body knows every callee's types regardless of order
     p.skip_newlines();
     while !p.at_end() {
         if matches!(p.peek(), Some(Tok::Ident(k)) if k == "type") {
             p.parse_type_decl()?;
+        } else {
+            p.prescan_signature()?;
+        }
+        p.skip_newlines();
+    }
+    p.pos = 0;
+    // phase 2: bodies (type declarations were fully handled in phase 1)
+    p.skip_newlines();
+    while !p.at_end() {
+        if matches!(p.peek(), Some(Tok::Ident(k)) if k == "type") {
+            p.skip_line();
         } else {
             module.funcs.push(p.parse_function()?);
         }
@@ -934,6 +948,9 @@ struct Parser {
     /// expression sugar; drained ahead of the instruction that uses them
     pending: Vec<Inst>,
     nlit: u32,
+    /// every function signature in the module, collected up front so
+    /// call sugar (literal args, call-in-expression) knows callee types
+    sigs: HashMap<String, (Vec<Type>, Vec<Type>)>,
 }
 
 /// expression-sugar AST: parsed first, then desugared to flat temps so
@@ -1096,6 +1113,85 @@ impl Parser {
 
     /// `type $name = { field: iN, ... }` — fields are declared MSB-first
     /// and must be integer widths; the total may not exceed 64 bits
+    /// does the rest of this line contain an expression operator? Used to
+    /// route `%r: u1 = call @f(%x) == 0` to the expression parser while
+    /// keeping plain call bindings on the direct path.
+    fn line_has_op(&self) -> bool {
+        for (t, _) in &self.toks[self.pos..] {
+            match t {
+                Tok::Newline => return false,
+                Tok::Op(_) => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn skip_line(&mut self) {
+        while !self.at_end() {
+            let (t, _) = &self.toks[self.pos];
+            self.pos += 1;
+            if matches!(t, Tok::Newline) {
+                break;
+            }
+        }
+    }
+
+    /// read one function's signature into `sigs` and skip its body
+    fn prescan_signature(&mut self) -> Result<(), ParseError> {
+        let kw = self.expect_ident()?;
+        if kw != "fn" {
+            self.pos -= 1;
+            return Err(self.err(format!("expected 'fn', found '{}'", kw)));
+        }
+        self.pos -= 1;
+        let (_, hi) = self.function_range()?;
+        self.pos += 1; // past `fn`
+        let name = match self.next()? {
+            Tok::Global(n) => n,
+            t => {
+                self.pos -= 1;
+                return Err(self.err(format!("expected a function name, found {}", t)));
+            }
+        };
+        self.expect(Tok::LParen)?;
+        let mut params = Vec::new();
+        if !self.eat(&Tok::RParen) {
+            loop {
+                match self.next()? {
+                    Tok::Value(_) => {}
+                    t => {
+                        self.pos -= 1;
+                        return Err(self.err(format!("expected a parameter, found {}", t)));
+                    }
+                }
+                self.expect(Tok::Colon)?;
+                params.push(self.expect_type()?);
+                if self.eat(&Tok::RParen) {
+                    break;
+                }
+                self.expect(Tok::Comma)?;
+            }
+        }
+        let mut rets = Vec::new();
+        if self.eat(&Tok::Arrow) {
+            if self.eat(&Tok::LParen) {
+                loop {
+                    rets.push(self.expect_type()?);
+                    if self.eat(&Tok::RParen) {
+                        break;
+                    }
+                    self.expect(Tok::Comma)?;
+                }
+            } else {
+                rets.push(self.expect_type()?);
+            }
+        }
+        self.sigs.insert(name, (params, rets));
+        self.pos = hi + 1; // past the closing brace
+        Ok(())
+    }
+
     fn parse_type_decl(&mut self) -> Result<(), ParseError> {
         self.expect_ident()?; // "type"
         let name = match self.next()? {
@@ -1423,6 +1519,31 @@ impl Parser {
                 Ok(EAst::V(id))
             }
             t @ (Tok::Int(_) | Tok::FloatLit(_)) => Ok(EAst::Lit(t)),
+            Tok::Ident(k) if k == "call" => {
+                let (callee, args) = self.parse_call_tail(scope)?;
+                let rets = match self.sigs.get(&callee) {
+                    Some((_, r)) if r.len() == 1 => r.clone(),
+                    Some(_) => {
+                        return Err(self.err(format!(
+                            "@{} in an expression must return exactly one value",
+                            callee
+                        )))
+                    }
+                    None => {
+                        return Err(self.err(format!(
+                            "call in an expression needs @{}'s signature",
+                            callee
+                        )))
+                    }
+                };
+                let t = self.temp_val(scope, rets[0]);
+                self.pending.push(Inst::Call {
+                    dsts: vec![t],
+                    callee,
+                    args,
+                });
+                Ok(EAst::V(t))
+            }
             Tok::LParen => {
                 let e = self.expr_level(scope, 0)?;
                 self.expect(Tok::RParen)?;
@@ -1796,7 +1917,11 @@ impl Parser {
                     self.expect_type()?;
                 }
                 self.expect(Tok::Equals)?;
-                let inst = if !matches!(self.peek(), Some(Tok::Ident(_))) {
+                let expr = !matches!(self.peek(), Some(Tok::Ident(_)))
+                    || (dsts.len() == 1
+                        && matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
+                        && self.line_has_op());
+                let inst = if expr {
                     // expression sugar: %v: ty = %a * %b + 1
                     if dsts.len() != 1 {
                         return Err(self.err("an expression defines exactly one value"));
@@ -1984,7 +2109,10 @@ impl Parser {
             }
             "ret" => {
                 // `ret call @f(...)`: return the callee's results directly
-                if matches!(self.peek(), Some(Tok::Ident(k)) if k == "call") {
+                // (with an operator after, it's an expression instead)
+                if matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
+                    && !self.line_has_op()
+                {
                     self.pos += 1;
                     let rets = scope.rets.clone();
                     let (callee, args) = self.parse_call_tail(scope)?;
@@ -2008,7 +2136,10 @@ impl Parser {
         }
     }
 
-    fn parse_call_tail(&mut self, scope: &FuncScope) -> Result<(String, Vec<ValueId>), ParseError> {
+    fn parse_call_tail(
+        &mut self,
+        scope: &mut FuncScope,
+    ) -> Result<(String, Vec<ValueId>), ParseError> {
         let callee = match self.next()? {
             Tok::Global(n) => n,
             t => {
@@ -2016,11 +2147,24 @@ impl Parser {
                 return Err(self.err(format!("expected a function name, found {}", t)));
             }
         };
+        let ptys = self.sigs.get(&callee).map(|(p, _)| p.clone());
         self.expect(Tok::LParen)?;
         let mut args = Vec::new();
         if !self.eat(&Tok::RParen) {
             loop {
-                args.push(self.expect_value(scope)?);
+                match self.peek() {
+                    Some(Tok::Int(_)) | Some(Tok::FloatLit(_)) => {
+                        let Some(&ty) = ptys.as_ref().and_then(|p| p.get(args.len())) else {
+                            return Err(self.err(format!(
+                                "a literal argument needs @{}'s signature (unknown or                                  too few parameters)",
+                                callee
+                            )));
+                        };
+                        let tok = self.next()?.clone();
+                        args.push(self.synth_lit(scope, ty, &tok)?);
+                    }
+                    _ => args.push(self.expect_value(scope)?),
+                }
                 if self.eat(&Tok::RParen) {
                     break;
                 }
@@ -2088,7 +2232,11 @@ impl Parser {
                     self.expect_type()?;
                 }
                 self.expect(Tok::Equals)?;
-                if !matches!(self.peek(), Some(Tok::Ident(_))) {
+                let expr = !matches!(self.peek(), Some(Tok::Ident(_)))
+                    || (dsts.len() == 1
+                        && matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
+                        && self.line_has_op());
+                if expr {
                     if dsts.len() != 1 {
                         return Err(self.err("an expression defines exactly one value"));
                     }
@@ -2180,7 +2328,10 @@ impl Parser {
                 }
                 "ret" => {
                     // `ret call @f(...)`: return the callee's results
-                    if matches!(self.peek(), Some(Tok::Ident(k)) if k == "call") {
+                    // (with an operator after, it's an expression instead)
+                    if matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
+                        && !self.line_has_op()
+                    {
                         self.pos += 1;
                         let rets = scope.rets.clone();
                         let (callee, args) = self.parse_call_tail(scope)?;
@@ -2426,24 +2577,56 @@ impl Parser {
         let mut vals = Vec::new();
         loop {
             match self.peek() {
-                Some(Tok::Value(_)) => vals.push(self.expect_value(scope)?),
-                Some(Tok::Int(_)) | Some(Tok::FloatLit(_)) => {
-                    let Some(&ty) = tys.get(vals.len()) else {
-                        return Err(self.err(
-                            "no declared type for a literal in this position".to_string(),
-                        ));
-                    };
-                    let tok = self.next()?.clone();
-                    vals.push(self.synth_lit(scope, ty, &tok)?);
+                Some(
+                    Tok::Value(_)
+                    | Tok::Int(_)
+                    | Tok::FloatLit(_)
+                    | Tok::LParen
+                    | Tok::Ident(_),
+                ) => {
+                    // each element is a full expression (a bare value is
+                    // the degenerate case); literals and temps take the
+                    // positional type
+                    match self.expr_level(scope, 0)? {
+                        EAst::V(id) => vals.push(id),
+                        ast => {
+                            let Some(&ty) = tys.get(vals.len()) else {
+                                return Err(self.err(
+                                    "no declared type for an expression in this position"
+                                        .to_string(),
+                                ));
+                            };
+                            let id = self.emit_ast(scope, ty, ast)?;
+                            vals.push(id);
+                        }
+                    }
                 }
                 _ if vals.is_empty() => break,
-                _ => return Err(self.err("expected a value or literal".to_string())),
+                _ => return Err(self.err("expected a value or expression".to_string())),
             }
             if !self.eat(&Tok::Comma) {
                 break;
             }
         }
         Ok(vals)
+    }
+
+    /// emit any expression AST to a fresh value of the given type
+    fn emit_ast(
+        &mut self,
+        scope: &mut FuncScope,
+        ty: Type,
+        ast: EAst,
+    ) -> Result<ValueId, ParseError> {
+        match ast {
+            EAst::Cmp(sym, l, r) => {
+                let t = self.temp_val(scope, Type::U(1));
+                let inst = self.emit_cmp(scope, sym, *l, *r, t)?;
+                self.pending.push(inst);
+                Ok(t)
+            }
+            ast => self.emit_expr(scope, ty, ast),
+        }
     }
 
     fn parse_branch_target(

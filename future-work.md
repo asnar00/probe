@@ -125,13 +125,8 @@ ergonomics.md). Landed: literal operands and expression right-hand
 sides (-26% atoms on expression-heavy code, -6% on call/control-heavy).
 Next candidate mutations, by observed remaining ceremony:
 
-- **Literals in call args**: needs callee signatures at parse time
-  (two-pass or module-context parsing); would also enable
-  `ret call @clamp(%x, 0, 100)`.
-- **Call in expression position** (`%r: u1 = call @f(%x) == 0`) and a
-  condition form `if call @rat_is_nar(%x) { ... }` — would erase the
-  bind-then-test pairs that are now the library's main residue.
-- **Unary minus on values** (currently `0 - %x`).
+- **Unary minus on values** (currently `0 - %x`); calls nested in call
+  arguments (`call @f(call @g(%x))`).
 - The live half of the methodology: a task battery (write-new,
   edit-existing, find-the-bug) measured in real model tokens-to-green,
   across models, per ergonomics.md.

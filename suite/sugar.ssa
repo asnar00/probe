@@ -19,6 +19,10 @@
 ;! vclamp 250 -> 100
 ;! collatz 27 -> 111
 ;! collatz 1 -> 0
+;! haltstep 10 -> 5
+;! haltstep 1 -> 4
+;! neareven 1 -> 1
+;! neareven 3 -> 0
 ;! geo5 -> 121
 
 ; 2x^2 - 3x + 1, one line
@@ -63,9 +67,23 @@ fn @clamp(%x: int, %lo: int, %hi: int) -> int {
 }
 
 fn @vclamp(%x: int) -> int {
-    %lo: int = 0
-    %hi: int = 100
-    ret call @clamp(%x, %lo, %hi)
+    ret call @clamp(%x, 0, 100)
+}
+
+; call sugar: as a condition, as an expression atom, with literal args
+fn @is_even(%x: int) -> u1 {
+    %r: u1 = %x & 1 == 0
+    ret %r
+}
+
+fn @haltstep(%x: int) -> int {
+    if call @is_even(%x) { ret %x / 2 }
+    ret 3 * %x + 1
+}
+
+fn @neareven(%x: int) -> u1 {
+    %r: u1 = call @haltstep(%x) == 4
+    ret %r
 }
 
 fn @collatz(%n0: int) -> int {

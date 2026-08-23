@@ -85,10 +85,39 @@ Cumulative measurement vs the pre-sugar corpus (same referees, now
 | lib/rational.ssa | −32.1% | −21.0% | −18.8% |
 
 The split from experiment 1 closed: guard sugar targeted exactly the
-ceremony that expression sugar couldn't reach. Remaining residue in the
-library: `call`+bind pairs (no literals in call args — needs callee
-signatures at parse time), pack/extract, and the value-yielding if
-form.
+ceremony that expression sugar couldn't reach.
+
+## Experiment 3: call sugar via whole-module signatures (landed)
+
+Experiment 2's residue was bind-then-test pairs. The blocker was
+parse-order: call sugar needs callee types before the callee parses.
+Fix: parsing became two-phase — type declarations and all function
+signatures first, bodies second — after which three forms fall out:
+
+- literals in call arguments (typed by the callee's parameters):
+  `ret call @clamp(%x, 0, 100)`
+- `call` as an expression atom (single-result callees):
+  `%r: u1 = call @haltstep(%x) == 4`
+- `call` as an if condition, giving the NaR guard its terminal form:
+
+      if call @rat_is_nar(%x) { ret call @rat_nar() }
+
+Also landed en route: terminator operands are full expressions
+(`ret %x / 2`, `ret 3 * %x + 1`) — a form I reached for *unprompted*
+while writing the smoke tests, which is its own kind of evidence.
+
+Cumulative vs the pre-sugar corpus (207/207 everywhere, including
+rat-on-softfloat-f32):
+
+| file | code lines | bytes | atoms |
+|---|---|---|---|
+| suite/scalar.ssa | −29% | −26% | −28% |
+| lib/rational.ssa | −38% | −25% | −24% |
+
+Residue now: pack/extract chains, the value-yielding if form, and
+multi-result call bindings — all structural rather than ceremonial.
+The curve is flattening; the next big wins likely need the live-battery
+evidence rather than static intuition.
 
 ## The live half (not yet run)
 
@@ -109,3 +138,7 @@ shouldn't silently steer the design).
 - 2026-08-23: comparisons, terminator literals, ret-call, single-line
   blocks. Landed. Cumulative −28%/−19% atoms on the two corpus files;
   the guard prologue is one line; suite green everywhere.
+- 2026-08-23: two-phase parse (module signatures first); literal call
+  args, call-in-expression, call-in-condition, expression terminator
+  operands. Landed. Cumulative −28%/−24% atoms, −29%/−38% lines; suite
+  green everywhere.

@@ -407,10 +407,16 @@ if %y == 0 { break %x }
 loop(%i: int = 0, %acc: scalar = 0.0) { ...
 ```
 
+**Call sugar.** Parsing is two-phase (all signatures are read before
+any body), so calls compose with the rest: literal arguments take the
+callee's parameter types (`call @clamp(%x, 0, 100)`); a single-result
+call is an expression atom (`%r: u1 = call @f(%x) == 0`) and an `if`
+condition (`if call @rat_is_nar(%x) { ret call @rat_nar() }`); and
+`break`/`continue`/`yield`/`ret` operands are full expressions
+(`ret %x / 2`).
+
 There is deliberately no bare-copy form (`%v: ty = %x` is an error —
 SSA has no copy opcode) and no unary minus on values (write `0 - %x`).
-Call arguments do not take literals (the callee's signature isn't
-available at parse time) — that is a logged future mutation.
 
 ## Structured control flow
 
