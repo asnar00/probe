@@ -39,6 +39,7 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `ptr` | pointer (64-bit on our target)                           |
 | `iN`  | any-width integer, N in 2..=63 (e.g. `i5`, `i52`)        |
 | `$name` | packed bitfield struct (see *Structs*), <= 64 bits     |
+| `TxN`   | short vector: N lanes of T (see *Vectors*), <= 64 bits |
 | `f32` | 32-bit IEEE float                                        |
 | `f64` | 64-bit IEEE float                                        |
 | `int` | abstract integer — resolved to a concrete width by the   |
@@ -196,6 +197,39 @@ Structs lower to shift/mask code on their carrier integer before emission
 (whole-width identities cost nothing), so they exist only at SSA level.
 They cannot be loaded or stored directly; move them as their bitcast
 scalar.
+
+### Vectors
+
+`i16x4`, `f32x2`, `u8x8` — N lanes of a scalar element type (iN/uN/f32),
+lane 0 in the low bits, total width at most 64 for now (the SIMD tier
+will lift this to 128). Vectors add **no arithmetic opcodes**: because
+types live on variables, the ordinary opcodes are elementwise when their
+type is a vector — lanes wrap, divide, shift, and take their signedness
+independently, per the element type:
+
+```
+%s: i16x4 = iadd %a, %b         ; four independent 16-bit adds
+%q: i32x2 = div %a, %d          ; signed lanes: signed divides
+```
+
+Lane access reuses the struct ops with an integer lane index in place of
+a field name; `pack` takes lanes in order, lane 0 first. `bitcast`
+converts a vector to and from any equal-width scalar.
+
+```
+%x: f32 = extract %v, 0
+%w: u16x4 = insert %v, 2, %n
+%v: i16x2 = pack %a0, %a1
+```
+
+Lowering scalarizes: each vector type becomes a packed struct, each
+elementwise op becomes per-lane code, and struct lowering finishes the
+job — so vectors run correctly on every backend with no new machine
+instructions. SIMD encodings are planned as a probe-learned optimization
+tier, verified against this scalarized reference. Vector comparisons,
+splat/reduce sugar, and memory access arrive with that tier; until then
+comparisons and reductions are written per-lane, and vectors move
+through memory as their bitcast scalar.
 
 ### Calls
 

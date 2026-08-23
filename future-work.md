@@ -73,6 +73,26 @@ Backend sketch:
   Architecture** XML (see reference/README.md) — an independent scorecard
   the learner never consults during learning.
 
+## Vectors and SIMD
+
+- **Probe-learned SIMD tier**: vectors currently lower by scalarization
+  (correct everywhere, no new encodings). Next: probe NEON / RVV /
+  wasm-simd instruction formats the same way scalar ISAs were learned,
+  emit vector ops directly when a learned encoding exists, and verify
+  differentially against the scalarized reference — the softfloat-vs-FPU
+  trick applied to SIMD. Scalarization stays as tier 0 and as the
+  referee.
+- **128-bit vectors** (f32x4, i16x8 — SSE/NEON width): needs multi-
+  register SSA values (register pairs in regalloc, call-ABI rules,
+  two-word spills). The type syntax already generalizes; only the
+  64-bit total cap comes off.
+- **Vector comparisons and selects** (mask vectors, u1xN), `splat` and
+  `reduce.*` sugar, vector load/store — arriving with the SIMD tier,
+  where they map to real instructions.
+- **Small-float lanes**: fp8/fp4 elements (see the numeric tower) make
+  `vec(16, fp4e2m1)` expressible, which with a scale field gives the
+  nvfp4/MX block formats as ordinary structs + libraries.
+
 ## Numeric tower
 
 - **Rationals, generalized**: lib/rational.ssa is the recipe — `$rat` =

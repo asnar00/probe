@@ -1,0 +1,172 @@
+; short vectors: lanes x element written i16x4 / f32x2 / u8x4, lane 0 in
+; the low bits, total <= 64 for now. Elementwise arithmetic uses the
+; ordinary opcodes — the type alone makes an op a vector op — and
+; extract/insert/pack take a lane index (lane 0 first in pack). Tier-0
+; lowering scalarizes to packed structs, so every backend runs vectors
+; today; SIMD encodings arrive later as a probe-learned optimization
+; verified against this same suite.
+;! vadd16 -> 0x2c00210016000b
+;! vwrap8 -> 0x1002c
+;! vmul16s -> -21, -45
+;! vdotf 1.5 2.5 4.0 6.0 -> 21.0
+;! vswap 0x123456789abcdef0 -> 0x9abcdef012345678
+;! vinsert 0x1111222233334444 -> 0x1111beef33334444
+;! vshl -> 0x1000010
+;! vdiv32s -7 9 -> -3, 3
+;! vsum -> 5, 10
+;! vcall 7 -9 -> -7, 9
+
+; (1,2,3,4) + (10,20,30,40), per 16-bit lane
+fn @vadd16() -> u64 {
+    %a0: i16 = iconst 1
+    %a1: i16 = iconst 2
+    %a2: i16 = iconst 3
+    %a3: i16 = iconst 4
+    %b0: i16 = iconst 10
+    %b1: i16 = iconst 20
+    %b2: i16 = iconst 30
+    %b3: i16 = iconst 40
+    %a: i16x4 = pack %a0, %a1, %a2, %a3
+    %b: i16x4 = pack %b0, %b1, %b2, %b3
+    %s: i16x4 = iadd %a, %b
+    %r: u64 = bitcast %s
+    ret %r
+}
+
+; lanes wrap independently at 2^8
+fn @vwrap8() -> u32 {
+    %a0: u8 = iconst 200
+    %a1: u8 = iconst 250
+    %a2: u8 = iconst 7
+    %a3: u8 = iconst 128
+    %b0: u8 = iconst 100
+    %b1: u8 = iconst 6
+    %b2: u8 = iconst 250
+    %b3: u8 = iconst 128
+    %a: u8x4 = pack %a0, %a1, %a2, %a3
+    %b: u8x4 = pack %b0, %b1, %b2, %b3
+    %s: u8x4 = iadd %a, %b
+    %r: u32 = bitcast %s
+    ret %r
+}
+
+; signed lanes: (-3, 5) * (7, -9)
+fn @vmul16s() -> (i64, i64) {
+    %a0: i16 = iconst -3
+    %a1: i16 = iconst 5
+    %b0: i16 = iconst 7
+    %b1: i16 = iconst -9
+    %a: i16x2 = pack %a0, %a1
+    %b: i16x2 = pack %b0, %b1
+    %p: i16x2 = imul %a, %b
+    %p0: i16 = extract %p, 0
+    %p1: i16 = extract %p, 1
+    %r0: i64 = ext %p0
+    %r1: i64 = ext %p1
+    ret %r0, %r1
+}
+
+; 2-lane float dot product
+fn @vdotf(%a0: f32, %a1: f32, %b0: f32, %b1: f32) -> f32 {
+    %a: f32x2 = pack %a0, %a1
+    %b: f32x2 = pack %b0, %b1
+    %p: f32x2 = fmul %a, %b
+    %p0: f32 = extract %p, 0
+    %p1: f32 = extract %p, 1
+    %r: f32 = fadd %p0, %p1
+    ret %r
+}
+
+; swap the halves of a u64, viewed as u32x2
+fn @vswap(%x: u64) -> u64 {
+    %v: u32x2 = bitcast %x
+    %lo: u32 = extract %v, 0
+    %hi: u32 = extract %v, 1
+    %w: u32x2 = pack %hi, %lo
+    %r: u64 = bitcast %w
+    ret %r
+}
+
+; replace lane 2 of a u16x4
+fn @vinsert(%x: u64) -> u64 {
+    %v: u16x4 = bitcast %x
+    %n: u16 = iconst 0xbeef
+    %w: u16x4 = insert %v, 2, %n
+    %r: u64 = bitcast %w
+    ret %r
+}
+
+; per-lane shift amounts: (1, 1) << (4, 8)
+fn @vshl() -> u32 {
+    %a0: u16 = iconst 1
+    %a1: u16 = iconst 1
+    %s0: u16 = iconst 4
+    %s1: u16 = iconst 8
+    %a: u16x2 = pack %a0, %a1
+    %s: u16x2 = pack %s0, %s1
+    %v: u16x2 = shl %a, %s
+    %r: u32 = bitcast %v
+    ret %r
+}
+
+; signedness from the lane type: (-7, 9) / (2, 3)
+fn @vdiv32s(%x: i64, %y: i64) -> (i64, i64) {
+    %x32: i32 = trunc %x
+    %y32: i32 = trunc %y
+    %two: i32 = iconst 2
+    %three: i32 = iconst 3
+    %a: i32x2 = pack %x32, %y32
+    %d: i32x2 = pack %two, %three
+    %q: i32x2 = div %a, %d
+    %q0: i32 = extract %q, 0
+    %q1: i32 = extract %q, 1
+    %r0: i64 = ext %q0
+    %r1: i64 = ext %q1
+    ret %r0, %r1
+}
+
+; a vector accumulator in a loop: (1,2) added five times
+fn @vsum() -> (i64, i64) {
+    %z: i32 = iconst 0
+    %one: i32 = iconst 1
+    %two: i32 = iconst 2
+    %zero: i32x2 = pack %z, %z
+    %step: i32x2 = pack %one, %two
+    %izero: i64 = iconst 0
+    %five: i64 = iconst 5
+    %acc: i32x2 = loop(%i: i64 = %izero, %v: i32x2 = %zero) {
+        %done: u1 = icmp.ge %i, %five
+        if %done {
+            break %v
+        }
+        %v2: i32x2 = iadd %v, %step
+        %ione: i64 = iconst 1
+        %i2: i64 = iadd %i, %ione
+        continue %i2, %v2
+    }
+    %a0: i32 = extract %acc, 0
+    %a1: i32 = extract %acc, 1
+    %r0: i64 = ext %a0
+    %r1: i64 = ext %a1
+    ret %r0, %r1
+}
+
+; vectors cross call boundaries like any value
+fn @vneg2(%v: i32x2) -> i32x2 {
+    %z: i32 = iconst 0
+    %zero: i32x2 = pack %z, %z
+    %r: i32x2 = isub %zero, %v
+    ret %r
+}
+
+fn @vcall(%x: i64, %y: i64) -> (i64, i64) {
+    %x32: i32 = trunc %x
+    %y32: i32 = trunc %y
+    %v: i32x2 = pack %x32, %y32
+    %n: i32x2 = call @vneg2(%v)
+    %n0: i32 = extract %n, 0
+    %n1: i32 = extract %n, 1
+    %r0: i64 = ext %n0
+    %r1: i64 = ext %n1
+    ret %r0, %r1
+}

@@ -21,8 +21,160 @@ use crate::ssa::{BinOp, CastOp, Function, Inst, Module, Type, ValueId};
 use std::collections::HashMap;
 
 pub fn lower(module: &mut Module) {
+    lower_vectors(module);
     lower_structs(module);
     lower_widths(module);
+}
+
+/// Scalarize vectors into packed structs: each vector type becomes a
+/// generated struct (lane 0 in the low bits, so fields are declared lane
+/// N-1 first), elementwise ops become per-lane extract/op/pack, and lane
+/// indices become field indices. Float lanes travel as their bit patterns
+/// in the struct, bitcast at the lane boundary. After this pass nothing
+/// downstream knows vectors existed — struct lowering turns the rest into
+/// carrier-integer code. Idempotent, and also called from soften() so the
+/// softfloat rewrite sees scalar float ops, never vector ones.
+pub fn lower_vectors(module: &mut Module) {
+    use crate::ssa::VecElem;
+    // collect the vector types in use and generate their structs
+    let mut vecs: Vec<(u8, VecElem)> = Vec::new();
+    for f in &module.funcs {
+        for t in f.values.iter().map(|v| v.ty).chain(f.rets.iter().copied()) {
+            if let Type::Vec(n, e) = t {
+                if !vecs.contains(&(n, e)) {
+                    vecs.push((n, e));
+                }
+            }
+        }
+    }
+    if vecs.is_empty() {
+        return;
+    }
+    let mut defs = (*module.structs).clone();
+    let mut sid = std::collections::HashMap::new();
+    for &(n, e) in &vecs {
+        let field_ty = match e {
+            VecElem::F32 => Type::U(32), // struct fields are integers
+            e => e.ty(),
+        };
+        let fields = (0..n).rev().map(|i| (format!("l{}", i), field_ty)).collect();
+        sid.insert((n, e), defs.len() as u16);
+        defs.push(crate::ssa::StructDef {
+            name: format!("__v{}{}", n, e.ty().name()),
+            fields,
+        });
+    }
+    let rc = std::rc::Rc::new(defs);
+    module.structs = rc.clone();
+    for f in &mut module.funcs {
+        f.structs = rc.clone();
+        lower_vectors_fn(f, &sid);
+    }
+}
+
+fn lower_vectors_fn(
+    func: &mut Function,
+    sid: &std::collections::HashMap<(u8, crate::ssa::VecElem), u16>,
+) {
+    use crate::ssa::{CastOp, Inst, VecElem};
+    let mut ntmp = 0u32;
+    let mut tmp = |func: &mut Function, ty: Type| {
+        ntmp += 1;
+        func.values.push(crate::ssa::ValueData {
+            name: format!("vl{}", ntmp),
+            ty,
+        });
+        crate::ssa::ValueId(func.values.len() as u32 - 1)
+    };
+    for b in 0..func.blocks.len() {
+        let insts = std::mem::take(&mut func.blocks[b].insts);
+        let mut out = Vec::with_capacity(insts.len());
+        for inst in insts {
+            match inst {
+                Inst::Bin { op, dst, lhs, rhs } if matches!(func.ty(dst), Type::Vec(..)) => {
+                    let Type::Vec(lanes, elem) = func.ty(dst) else { unreachable!() };
+                    let fty = if elem == VecElem::F32 { Type::U(32) } else { elem.ty() };
+                    let mut lane_vals = Vec::with_capacity(lanes as usize);
+                    for lane in 0..lanes {
+                        let field = (lanes - 1 - lane) as u16;
+                        let e1 = tmp(func, fty);
+                        let e2 = tmp(func, fty);
+                        out.push(Inst::Extract { dst: e1, src: lhs, field });
+                        out.push(Inst::Extract { dst: e2, src: rhs, field });
+                        if elem == VecElem::F32 {
+                            let (b1, b2) = (tmp(func, Type::F32), tmp(func, Type::F32));
+                            out.push(Inst::Cast { op: CastOp::Bitcast, dst: b1, src: e1 });
+                            out.push(Inst::Cast { op: CastOp::Bitcast, dst: b2, src: e2 });
+                            let r = tmp(func, Type::F32);
+                            out.push(Inst::Bin { op, dst: r, lhs: b1, rhs: b2 });
+                            let rb = tmp(func, Type::U(32));
+                            out.push(Inst::Cast { op: CastOp::Bitcast, dst: rb, src: r });
+                            lane_vals.push(rb);
+                        } else {
+                            let r = tmp(func, fty);
+                            out.push(Inst::Bin { op, dst: r, lhs: e1, rhs: e2 });
+                            lane_vals.push(r);
+                        }
+                    }
+                    lane_vals.reverse(); // pack takes fields in declaration order
+                    out.push(Inst::Pack { dst, args: lane_vals });
+                }
+                Inst::Extract { dst, src, field } if matches!(func.ty(src), Type::Vec(..)) => {
+                    let Type::Vec(lanes, elem) = func.ty(src) else { unreachable!() };
+                    let field = (lanes as u16 - 1) - field;
+                    if elem == VecElem::F32 {
+                        let t = tmp(func, Type::U(32));
+                        out.push(Inst::Extract { dst: t, src, field });
+                        out.push(Inst::Cast { op: CastOp::Bitcast, dst, src: t });
+                    } else {
+                        out.push(Inst::Extract { dst, src, field });
+                    }
+                }
+                Inst::Insert { dst, src, field, val }
+                    if matches!(func.ty(src), Type::Vec(..)) =>
+                {
+                    let Type::Vec(lanes, elem) = func.ty(src) else { unreachable!() };
+                    let field = (lanes as u16 - 1) - field;
+                    if elem == VecElem::F32 {
+                        let t = tmp(func, Type::U(32));
+                        out.push(Inst::Cast { op: CastOp::Bitcast, dst: t, src: val });
+                        out.push(Inst::Insert { dst, src, field, val: t });
+                    } else {
+                        out.push(Inst::Insert { dst, src, field, val });
+                    }
+                }
+                Inst::Pack { dst, mut args } if matches!(func.ty(dst), Type::Vec(..)) => {
+                    let Type::Vec(_, elem) = func.ty(dst) else { unreachable!() };
+                    if elem == VecElem::F32 {
+                        args = args
+                            .into_iter()
+                            .map(|a| {
+                                let t = tmp(func, Type::U(32));
+                                out.push(Inst::Cast { op: CastOp::Bitcast, dst: t, src: a });
+                                t
+                            })
+                            .collect();
+                    }
+                    args.reverse(); // lane 0 last: fields are declared MSB-first
+                    out.push(Inst::Pack { dst, args });
+                }
+                other => out.push(other),
+            }
+        }
+        func.blocks[b].insts = out;
+    }
+    // retype vector values to their generated structs; everything else
+    // (params, branch args, calls, bitcasts) follows automatically
+    for v in &mut func.values {
+        if let Type::Vec(n, e) = v.ty {
+            v.ty = Type::Struct(sid[&(n, e)]);
+        }
+    }
+    for r in &mut func.rets {
+        if let Type::Vec(n, e) = *r {
+            *r = Type::Struct(sid[&(n, e)]);
+        }
+    }
 }
 
 fn odd(t: Type) -> Option<(u8, bool)> {

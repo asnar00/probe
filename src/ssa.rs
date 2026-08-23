@@ -40,6 +40,38 @@ pub enum Type {
     /// (each Function carries a copy). Total width <= 64; lowered to its
     /// carrier integer before emission.
     Struct(u16),
+    /// short vector: `i16x4`, `f32x2`, `u8x8` — lanes x element, lane 0
+    /// in the low bits, total width <= 64 for now (the SIMD tier lifts
+    /// this). Elementwise arithmetic uses the ordinary opcodes — the type
+    /// alone makes it a vector op — and extract/insert/pack take a lane
+    /// index where structs take a field name. Lowered to a packed struct
+    /// (then to its carrier integer) before anything downstream looks.
+    Vec(u8, VecElem),
+}
+
+/// A vector's element type: the scalar core types that fit in lanes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum VecElem {
+    I(u8),
+    U(u8),
+    F32,
+}
+
+impl VecElem {
+    pub fn ty(self) -> Type {
+        match self {
+            VecElem::I(n) => Type::I(n),
+            VecElem::U(n) => Type::U(n),
+            VecElem::F32 => Type::F32,
+        }
+    }
+
+    pub fn bits(self) -> u32 {
+        match self {
+            VecElem::I(n) | VecElem::U(n) => n as u32,
+            VecElem::F32 => 32,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -76,6 +108,7 @@ impl Type {
             Type::Float => "float".into(),
             Type::Scalar => "scalar".into(),
             Type::Struct(_) => "$struct".into(), // callers with a table print the name
+            Type::Vec(n, e) => format!("{}x{}", e.ty().name(), n),
         }
     }
 
@@ -94,6 +127,26 @@ impl Type {
             "float" => Some(Type::Float),
             "scalar" => Some(Type::Scalar),
             _ => {
+                // vector names: <elem>x<lanes>, e.g. i16x4, f32x2, u8x8
+                if let Some((el, ln)) = s.rsplit_once('x') {
+                    if let (Some(elem), Ok(lanes)) = (Type::from_name(el), ln.parse::<u8>()) {
+                        let elem = match elem {
+                            Type::I(n) => Some(VecElem::I(n)),
+                            Type::U(n) => Some(VecElem::U(n)),
+                            Type::F32 => Some(VecElem::F32),
+                            _ => None,
+                        };
+                        if let Some(elem) = elem {
+                            if lanes >= 2
+                                && !ln.starts_with('0')
+                                && lanes as u32 * elem.bits() <= 64
+                            {
+                                return Some(Type::Vec(lanes, elem));
+                            }
+                        }
+                        return None;
+                    }
+                }
                 let (ctor, rest): (fn(u8) -> Type, &str) =
                     if let Some(r) = s.strip_prefix('i') {
                         (Type::I, r)
@@ -129,6 +182,15 @@ impl Type {
 
     fn is_arith(self) -> bool {
         matches!(self, Type::I(n) | Type::U(n) if n >= 2)
+    }
+
+    /// A vector's element type, or the type itself: what the elementwise
+    /// op-class rules look at.
+    fn elem_or_self(self) -> Type {
+        match self {
+            Type::Vec(_, e) => e.ty(),
+            t => t,
+        }
     }
 
     pub fn is_float(self) -> bool {
@@ -1219,6 +1281,23 @@ impl Parser {
         })
     }
 
+    /// A struct field name, or an integer lane index for vectors.
+    fn field_or_lane(&mut self, scope: &FuncScope, v: ValueId) -> Result<u16, ParseError> {
+        if let Tok::Int(i) = self.next()? {
+            if matches!(scope.values[v.0 as usize].ty, Type::Vec(..)) && (0..=u16::MAX as i64).contains(&i) {
+                return Ok(i as u16);
+            }
+            self.pos -= 1;
+            return Err(self.err(format!(
+                "'%{}' is not a vector value (lane indices index vectors; structs use field names)",
+                scope.values[v.0 as usize].name
+            )));
+        }
+        self.pos -= 1;
+        let fname = self.expect_ident()?;
+        self.field_index(scope, v, &fname)
+    }
+
     fn field_index(
         &self,
         scope: &FuncScope,
@@ -1380,8 +1459,7 @@ impl Parser {
             "extract" => {
                 let src = self.expect_value(scope)?;
                 self.expect(Tok::Comma)?;
-                let fname = self.expect_ident()?;
-                let field = self.field_index(scope, src, &fname)?;
+                let field = self.field_or_lane(scope, src)?;
                 Ok(Inst::Extract { dst, src, field })
             }
             "pack" => {
@@ -1394,10 +1472,9 @@ impl Parser {
             "insert" => {
                 let src = self.expect_value(scope)?;
                 self.expect(Tok::Comma)?;
-                let fname = self.expect_ident()?;
+                let field = self.field_or_lane(scope, src)?;
                 self.expect(Tok::Comma)?;
                 let val = self.expect_value(scope)?;
-                let field = self.field_index(scope, src, &fname)?;
                 Ok(Inst::Insert {
                     dst,
                     src,
@@ -1972,7 +2049,7 @@ impl Function {
             Inst::Extract { dst, src, field } => {
                 let fname = match self.ty(*src) {
                     Type::Struct(i) => self.structs[i as usize].fields[*field as usize].0.clone(),
-                    _ => format!("#{}", field),
+                    _ => format!("{}", field),
                 };
                 format!(
                     "{} = extract {}, {}",
@@ -1992,7 +2069,7 @@ impl Function {
             } => {
                 let fname = match self.ty(*src) {
                     Type::Struct(i) => self.structs[i as usize].fields[*field as usize].0.clone(),
-                    _ => format!("#{}", field),
+                    _ => format!("{}", field),
                 };
                 format!(
                     "{} = insert {}, {}, {}",
@@ -2181,7 +2258,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     *imm >= -(1i64 << (n - 1)) && *imm < (1i64 << n)
                 }
                 Type::F32 | Type::F64 => false, // use fconst
-                Type::Struct(_) => false,       // use pack
+                Type::Struct(_) | Type::Vec(..) => false, // use pack
                 Type::Int | Type::Uint | Type::Float | Type::Scalar => {
                     unreachable!("rejected by rule 0")
                 }
@@ -2227,7 +2304,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
         }
         Inst::Bin { op, dst, lhs, rhs } if op.is_float() => {
             let (td, tl, tr) = (func.ty(*dst), func.ty(*lhs), func.ty(*rhs));
-            if !td.is_float() || tl != td || tr != td {
+            if !td.elem_or_self().is_float() || tl != td || tr != td {
                 errs.push(ctx(format!(
                     "{}: operands and result must share a float type; got {}, {}, {}",
                     op.name(),
@@ -2239,7 +2316,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
         }
         Inst::Bin { op, dst, lhs, rhs } => {
             let (td, tl, tr) = (func.ty(*dst), func.ty(*lhs), func.ty(*rhs));
-            if !td.is_arith() || tl != td || tr != td {
+            if !td.elem_or_self().is_arith() || tl != td || tr != td {
                 errs.push(ctx(format!(
                     "{}: operands and result must share an arithmetic type; got {}: {}, {}: {}, {}: {}",
                     op.name(),
@@ -2298,6 +2375,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                         Type::F32 => Some(32),
                         Type::F64 => Some(64),
                         Type::Struct(i) => Some(func.structs[i as usize].total_bits()),
+                        Type::Vec(n, e) => Some(n as u32 * e.bits()),
                         t => t.width(),
                     };
                     ts != td && w(ts).is_some() && w(ts) == w(td)
@@ -2394,8 +2472,20 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                         None => errs.push(ctx("extract: field index out of range".into())),
                     }
                 }
+                Type::Vec(lanes, elem) => {
+                    if *field >= lanes as u16 {
+                        errs.push(ctx("extract: lane index out of range".into()));
+                    } else if func.ty(*dst) != elem.ty() {
+                        errs.push(ctx(format!(
+                            "extract lane {}: result must be {}, not {}",
+                            field,
+                            elem.ty().name(),
+                            func.ty(*dst).name()
+                        )));
+                    }
+                }
                 t => errs.push(ctx(format!(
-                    "extract source must be a struct, not {}",
+                    "extract source must be a struct or vector, not {}",
                     func.ty_name(t)
                 ))),
             }
@@ -2423,8 +2513,29 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     }
                 }
             }
+            Type::Vec(lanes, elem) => {
+                if args.len() != lanes as usize {
+                    errs.push(ctx(format!(
+                        "pack into {}: {} lanes required, {} given",
+                        func.ty(*dst).name(),
+                        lanes,
+                        args.len()
+                    )));
+                } else {
+                    for (i, a) in args.iter().enumerate() {
+                        if func.ty(*a) != elem.ty() {
+                            errs.push(ctx(format!(
+                                "pack lane {}: expected {}, got {}",
+                                i,
+                                elem.ty().name(),
+                                func.ty(*a).name()
+                            )));
+                        }
+                    }
+                }
+            }
             t => errs.push(ctx(format!(
-                "pack result must be a struct, not {}",
+                "pack result must be a struct or vector, not {}",
                 func.ty_name(t)
             ))),
         },
@@ -2453,8 +2564,23 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     None => errs.push(ctx("insert: field index out of range".into())),
                 }
             }
+            Type::Vec(lanes, elem) => {
+                if func.ty(*dst) != func.ty(*src) {
+                    errs.push(ctx("insert result must have the source's vector type".into()));
+                }
+                if *field >= lanes as u16 {
+                    errs.push(ctx("insert: lane index out of range".into()));
+                } else if func.ty(*val) != elem.ty() {
+                    errs.push(ctx(format!(
+                        "insert lane {}: value must be {}, not {}",
+                        field,
+                        elem.ty().name(),
+                        func.ty(*val).name()
+                    )));
+                }
+            }
             t => errs.push(ctx(format!(
-                "insert source must be a struct, not {}",
+                "insert source must be a struct or vector, not {}",
                 func.ty_name(t)
             ))),
         },

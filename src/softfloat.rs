@@ -994,6 +994,8 @@ fn @__f32_to_u32(%a: u32) -> u32 {
 // integer/struct SSA and go through the normal lowering.
 
 pub fn soften(module: &mut Module) -> Result<(), String> {
+    // scalarize vectors first so float lanes arrive as scalar float ops
+    crate::lower::lower_vectors(module);
     if module.funcs.iter().any(|f| f.name == "__f64_add") {
         return Ok(()); // already softened / library present
     }
