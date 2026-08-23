@@ -31,10 +31,16 @@ suite/*.ssa  --parse/verify-->  SSA  --emitter-->  bytes  --run-->  results
   bitcast set), arbitrary-width integers of both signednesses (`i5`,
   `u52`...) — signedness lives in the TYPE, so there is one `div`, one
   `shr`, one `icmp.lt` — packed bitfield structs (`type $fp = { sign: u1,
-  exp: u11, frac: u52 }` — an IEEE double, by construction), and abstract
-  numeric types (`int`, `uint`, `float`) resolved by a per-target
-  replacement policy. Widths and structs lower to core-integer code before
-  emission, so backends never see them.
+  exp: u11, frac: u52 }` — an IEEE double, by construction), short
+  vectors (`i16x4`, `f32x2` — elementwise with the ordinary opcodes, no
+  new ones), and abstract numeric types (`int`, `uint`, `float`, and
+  `scalar` — the parent of float and rational) resolved by a per-target
+  replacement policy. Widths, structs, and (off arm64) vectors lower to
+  core-integer code before emission. A layer of parse-time sugar —
+  expressions with C precedence, comparisons, literal operands,
+  one-line guards like `if call @rat_is_nar(%x) { ret call @rat_nar() }`
+  — is being evolved downhill on measured authorship cost
+  (`ergonomics.md`).
 - **Two learners**:
   - `src/learn.rs` for fixed-width register ISAs: one-hot probes XORed
     against a baseline map each operand bit to its encoding bit — which
@@ -45,14 +51,25 @@ suite/*.ssa  --parse/verify-->  SSA  --emitter-->  bytes  --run-->  results
     fixed bytes plus LEB128 codecs at discovered positions, probed through
     wat2wasm with a bootstrap chain of stack context.
 - **Three backends**, none of which contain a single hand-written opcode:
-  - `arm64` — JIT: mmap/MAP_JIT on Apple Silicon, run in-process
+  - `arm64` — JIT: mmap/MAP_JIT on Apple Silicon, run in-process, with
+    class-aware register allocation, an SSA optimization pipeline whose
+    levels are prefixes of one pass list, an incremental JIT arena with
+    hot-function promotion, and probe-learned NEON: a vector op is one
+    instruction
   - `wasm32` — module emission, executed by node
   - `riscv64` — bare-metal on qemu-system-riscv64, with the runtime
     harness (UART printing, exit) generated in the project's own SSA
-- **One regression suite** (`suite/*.ssa`): 86 cases with expectations
+- **Numerics as libraries, not compiler features**: softfloat
+  (`src/softfloat.rs` — SSA over the `$fp` struct, bit-exact against the
+  host FPU, so int-only CPUs get floats) and exact rational arithmetic
+  (`lib/rational.ssa` — `$rat` with canonical reduced form and NaR;
+  `--scalar=rat` runs abstract-scalar programs in exact arithmetic).
+  The same recipe extends to fixed-point, fp8/fp4, and block formats.
+- **One regression suite** (`suite/*.ssa`): 200+ cases with expectations
   embedded as `;! gcd 48 36 -> 12` directives, run identically against
-  every backend — including arm64 under qemu-system-aarch64 as an
-  independent second referee for the same bytes the M-series CPU runs.
+  every backend and policy — including arm64 under qemu-system-aarch64
+  as an independent second referee, NEON vs scalarized vector emission
+  refereeing each other, and softfloat vs the FPU.
 
 ## Usage
 
@@ -87,6 +104,12 @@ cargo run -- -O0 run examples/sum.ssa sum 100
 # get floats. Verified bit-for-bit against the host FPU.
 cargo run -- --softfloat test
 
+# width and representation policies: the same abstract-typed programs,
+# different arithmetic - and the answers must agree
+cargo run -- --int=i32 --float=f32 test
+cargo run -- --scalar=rat test                       # exact rationals
+cargo run -- --scalar=rat --softfloat --int=i32 --float=f32 test
+
 # the incremental compiler: one JIT arena, per-function slots with slack,
 # counting trampolines. Edit the file while this runs — changed functions
 # recompile in place at level 0 (microseconds), and functions that get hot
@@ -98,5 +121,6 @@ Toolchain expectations (macOS/arm64 host): `llvm-mc` (brew llvm), `wabt`
 (wat2wasm), `node`, `qemu`. The learned `targets/*.encodings.json` files
 are checked in, so the backends and suite work without re-learning.
 
-See `future-work.md` for where this is headed (indirect calls, register
-allocation, floats, differential testing against clang).
+See `future-work.md` for where this is headed (128-bit vectors, the
+fp8/fp4 float menagerie, fixed-point via `--scalar=fx8.8`, indirect
+calls) and `ergonomics.md` for the language-evolution methodology.
