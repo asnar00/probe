@@ -141,6 +141,98 @@ pub fn allocate(func: &Function, pool: &[i64]) -> Alloc {
         }
     }
 
+    // ---- interference: who is live at each value's definition ----
+    // Precise per-point liveness (unlike the conservative spans below):
+    // two values interfere iff one is live where the other is defined.
+    let mut live_at_def: Vec<HashSet<ValueId>> = vec![HashSet::new(); n];
+    for (b, block) in func.blocks.iter().enumerate() {
+        let mut live = live_out[b].clone();
+        for inst in block.insts.iter().rev() {
+            defs.clear();
+            inst_defs(inst, &mut defs);
+            for &d in &defs {
+                live.remove(&d);
+            }
+            for &d in &defs {
+                let set = &mut live_at_def[d.0 as usize];
+                set.extend(live.iter().copied());
+                set.extend(defs.iter().copied().filter(|&x| x != d));
+            }
+            uses.clear();
+            inst_uses(inst, &mut uses);
+            for &u in &uses {
+                live.insert(u);
+            }
+        }
+        // block (and, in the entry block, function) parameters are defined
+        // simultaneously at the block head, with live_in alongside them
+        let mut params: Vec<ValueId> = block.params.clone();
+        if b == 0 {
+            params.extend(&func.params);
+        }
+        for &p in &params {
+            let set = &mut live_at_def[p.0 as usize];
+            set.extend(live_in[b].iter().copied());
+            set.extend(params.iter().copied().filter(|&x| x != p));
+        }
+    }
+    let interfere = |u: ValueId, v: ValueId| {
+        live_at_def[v.0 as usize].contains(&u) || live_at_def[u.0 as usize].contains(&v)
+    };
+
+    // ---- coalescing: merge block parameters with their branch arguments ----
+    // Sharing a register turns the parallel move on that edge into a no-op
+    // (the loop back-edge case: %i2 = %i + 1; jmp ^loop(%i2) — one register).
+    // Union-find; a merge is allowed only if no member of one set interferes
+    // with any member of the other.
+    let mut uf: Vec<usize> = (0..n).collect();
+    fn find(uf: &mut Vec<usize>, mut x: usize) -> usize {
+        while uf[x] != x {
+            uf[x] = uf[uf[x]];
+            x = uf[x];
+        }
+        x
+    }
+    let mut members: Vec<Vec<ValueId>> = (0..n).map(|i| vec![ValueId(i as u32)]).collect();
+    for block in &func.blocks {
+        if let Some(term) = block.insts.last() {
+            let mut edges: Vec<(ValueId, ValueId)> = Vec::new();
+            match term {
+                Inst::Jmp { target, args } => {
+                    let params = &func.blocks[target.0 as usize].params;
+                    edges.extend(params.iter().copied().zip(args.iter().copied()));
+                }
+                Inst::Br {
+                    then_target,
+                    then_args,
+                    else_target,
+                    else_args,
+                    ..
+                } => {
+                    let tp = &func.blocks[then_target.0 as usize].params;
+                    edges.extend(tp.iter().copied().zip(then_args.iter().copied()));
+                    let ep = &func.blocks[else_target.0 as usize].params;
+                    edges.extend(ep.iter().copied().zip(else_args.iter().copied()));
+                }
+                _ => {}
+            }
+            for (p, a) in edges {
+                let (rp, ra) = (find(&mut uf, p.0 as usize), find(&mut uf, a.0 as usize));
+                if rp == ra {
+                    continue;
+                }
+                let ok = !members[rp]
+                    .iter()
+                    .any(|&x| members[ra].iter().any(|&y| interfere(x, y)));
+                if ok {
+                    let moved = std::mem::take(&mut members[ra]);
+                    members[rp].extend(moved);
+                    uf[ra] = rp;
+                }
+            }
+        }
+    }
+
     // ---- intervals over a linear numbering ----
     let mut start = vec![u32::MAX; n];
     let mut end = vec![0u32; n];
@@ -183,8 +275,19 @@ pub fn allocate(func: &Function, pool: &[i64]) -> Alloc {
         pos = block_end;
     }
 
-    // ---- linear scan with furthest-end eviction ----
-    let mut order: Vec<usize> = (0..n).filter(|&i| start[i] != u32::MAX).collect();
+    // fold member intervals into their coalesced root's
+    for i in 0..n {
+        let r = find(&mut uf, i);
+        if r != i && start[i] != u32::MAX {
+            start[r] = start[r].min(start[i]);
+            end[r] = end[r].max(end[i]);
+        }
+    }
+
+    // ---- linear scan with furthest-end eviction, over coalesced roots ----
+    let mut order: Vec<usize> = (0..n)
+        .filter(|&i| find(&mut uf, i) == i && start[i] != u32::MAX)
+        .collect();
     order.sort_by_key(|&i| start[i]);
     let mut loc = vec![Loc::Slot(usize::MAX); n];
     let mut free: Vec<i64> = pool.to_vec();
@@ -221,19 +324,33 @@ pub fn allocate(func: &Function, pool: &[i64]) -> Alloc {
         // else: v stays spilled
     }
 
-    // ---- compact spill slots; collect used registers ----
+    // propagate root locations to coalesced members (shared slot included)
+    let mut root_slot: Vec<Option<usize>> = vec![None; n];
     let mut nslots = 0;
+    for i in 0..n {
+        let r = find(&mut uf, i);
+        if r != i {
+            continue;
+        }
+        if let Loc::Slot(_) = loc[i] {
+            root_slot[i] = Some(nslots);
+            nslots += 1;
+        }
+    }
+    for i in 0..n {
+        let r = find(&mut uf, i);
+        loc[i] = match loc[r] {
+            Loc::Reg(reg) => Loc::Reg(reg),
+            Loc::Slot(_) => Loc::Slot(root_slot[r].unwrap()),
+        };
+    }
+
+    // ---- collect used registers ----
     let mut used: Vec<i64> = Vec::new();
     for i in 0..n {
-        match loc[i] {
-            Loc::Slot(_) => {
-                loc[i] = Loc::Slot(nslots);
-                nslots += 1;
-            }
-            Loc::Reg(r) => {
-                if !used.contains(&r) {
-                    used.push(r);
-                }
+        if let Loc::Reg(r) = loc[i] {
+            if !used.contains(&r) {
+                used.push(r);
             }
         }
     }

@@ -28,15 +28,11 @@ Backend sketch:
 
 ## Code quality
 
-- **Move coalescing**: branch arguments now resolve as true parallel moves
-  (cycles broken through one scratch) and callee-saved saves pair into
-  `stp`/`ldp`, but loop-carried values still bounce through a fresh register
-  each iteration (`add x24, x20, x23; mov x20, x24`). Coalescing a block
-  parameter with its branch-argument sources — hinting the allocator to
-  give them one register — would delete those moves.
 - **Branch chain simplification**: `br` lowering can leave a `cbz` hopping
   over a `b` that lands on another `b`; a fixup-time pass could thread
-  branches to their final targets.
+  branches to their final targets. (Move coalescing is done: block params
+  merge with their branch arguments via interference-checked union-find,
+  so loop back edges carry no moves.)
 - **Caller-saved pool for leaf functions**: values in leaf functions could
   use x9..x17 with no prologue saves at all.
 - **Constant materialization**: use `movn`/single-`movz` forms on arm64 and
