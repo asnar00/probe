@@ -555,26 +555,73 @@ impl FnEmit<'_> {
         Ok(())
     }
 
-    /// move branch arguments into the target block's parameter locations.
-    /// Two phases through x9..x16: all sources are read before any target
-    /// is written, so swaps like jmp ^loop(%b, %a) can't clobber.
+    /// one location-to-location move (registers or spill slots)
+    fn loc_move(
+        &mut self,
+        dst: crate::regalloc::Loc,
+        src: crate::regalloc::Loc,
+    ) -> Result<(), String> {
+        use crate::regalloc::Loc;
+        match (dst, src) {
+            (Loc::Reg(d), Loc::Reg(s)) => self.mov(d, s),
+            (Loc::Reg(d), Loc::Slot(s)) => {
+                let off = self.slot_off(s);
+                self.emit(LDR_SP, &[d, off]).map(|_| ())
+            }
+            (Loc::Slot(d), Loc::Reg(s)) => {
+                let off = self.slot_off(d);
+                self.emit(STR_SP, &[s, off]).map(|_| ())
+            }
+            (Loc::Slot(d), Loc::Slot(s)) => {
+                // transit through x10; x9 stays free for cycle breaking
+                self.emit(LDR_SP, &[10, self.slot_off(s)])?;
+                self.emit(STR_SP, &[10, self.slot_off(d)]).map(|_| ())
+            }
+        }
+    }
+
+    /// move branch arguments into the target block's parameter locations:
+    /// a proper parallel move — emit moves whose destination nobody still
+    /// reads, break cycles (swaps, rotations) by stashing one source in x9
     fn branch_args(&mut self, target: BlockId, args: &[ValueId]) -> Result<(), String> {
-        if args.len() > 8 {
-            return Err("more than 8 branch arguments not supported yet".into());
-        }
-        for (j, &a) in args.iter().enumerate() {
-            self.value_to(9 + j as i64, a)?;
-        }
+        use crate::regalloc::Loc;
         let params: Vec<ValueId> = self.func.blocks[target.0 as usize].params.clone();
-        for (j, &p) in params.iter().enumerate() {
-            self.value_from(p, 9 + j as i64)?;
+        let mut pending: Vec<(Loc, Loc)> = params
+            .iter()
+            .zip(args)
+            .map(|(&p, &a)| (self.alloc.loc[p.0 as usize], self.alloc.loc[a.0 as usize]))
+            .filter(|(d, s)| d != s)
+            .collect();
+        let scratch = Loc::Reg(9);
+        while !pending.is_empty() {
+            if let Some(i) = (0..pending.len())
+                .find(|&i| !pending.iter().any(|&(_, s)| s == pending[i].0))
+            {
+                let (d, s) = pending.swap_remove(i);
+                self.loc_move(d, s)?;
+            } else {
+                // pure cycle: stash one source in the scratch register
+                let s = pending[0].1;
+                self.loc_move(scratch, s)?;
+                for m in pending.iter_mut().filter(|m| m.1 == s) {
+                    m.1 = scratch;
+                }
+            }
         }
         Ok(())
     }
 
     fn epilogue(&mut self) -> Result<(), String> {
-        for (k, &r) in self.alloc.used_regs.clone().iter().enumerate() {
-            self.emit(LDR_SP, &[r, 16 + 8 * k as i64])?;
+        for (k, pair) in self.alloc.used_regs.clone().chunks(2).enumerate() {
+            match pair {
+                [a, b] => {
+                    self.emit("ldp {x}, {x}, [sp, #{i -512..504 /8}]", &[*a, *b, 16 + 16 * k as i64])?;
+                }
+                [a] => {
+                    self.emit(LDR_SP, &[*a, 16 + 16 * k as i64])?;
+                }
+                _ => unreachable!(),
+            }
         }
         self.emit("ldp {x}, {x}, [sp, #{i -512..504 /8}]", &[29, 30, 0])?;
         self.emit("add sp, sp, #{i 0..4095}", &[self.frame])?;
@@ -630,8 +677,16 @@ fn compile_function(
     e.emit("sub sp, sp, #{i 0..4095}", &[frame])?;
     e.emit("stp {x}, {x}, [sp, #{i -512..504 /8}]", &[29, 30, 0])?;
     e.emit("mov x29, sp", &[])?;
-    for (k, &r) in alloc.used_regs.iter().enumerate() {
-        e.emit(STR_SP, &[r, 16 + 8 * k as i64])?;
+    for (k, pair) in alloc.used_regs.chunks(2).enumerate() {
+        match pair {
+            [a, b] => {
+                e.emit("stp {x}, {x}, [sp, #{i -512..504 /8}]", &[*a, *b, 16 + 16 * k as i64])?;
+            }
+            [a] => {
+                e.emit(STR_SP, &[*a, 16 + 16 * k as i64])?;
+            }
+            _ => unreachable!(),
+        }
     }
     for (i, &p) in func.params.iter().enumerate() {
         e.value_from(p, i as i64)?;

@@ -2,6 +2,7 @@ mod emit;
 mod emit_rv;
 mod emit_wasm;
 mod learn;
+mod opt;
 mod oracle;
 mod regalloc;
 mod ssa;
@@ -143,8 +144,9 @@ const ENCODINGS: &str = "targets/arm64.encodings.json";
 
 fn load_module(path: &str) -> Result<ssa::Module, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
-    let module = ssa::parse(&src).map_err(|e| format!("{}: {}", path, e))?;
+    let mut module = ssa::parse(&src).map_err(|e| format!("{}: {}", path, e))?;
     ssa::verify(&module).map_err(|errs| format!("{}: {}", path, errs.join("\n")))?;
+    opt::sink_module(&mut module);
     Ok(module)
 }
 

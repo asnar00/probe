@@ -29,7 +29,7 @@ pub struct Alloc {
     pub nslots: usize,
 }
 
-fn inst_uses(inst: &Inst, out: &mut Vec<ValueId>) {
+pub(crate) fn inst_uses(inst: &Inst, out: &mut Vec<ValueId>) {
     match inst {
         Inst::IConst { .. } => {}
         Inst::Bin { lhs, rhs, .. } | Inst::ICmp { lhs, rhs, .. } => {
@@ -62,7 +62,7 @@ fn inst_uses(inst: &Inst, out: &mut Vec<ValueId>) {
     }
 }
 
-fn inst_defs(inst: &Inst, out: &mut Vec<ValueId>) {
+pub(crate) fn inst_defs(inst: &Inst, out: &mut Vec<ValueId>) {
     match inst {
         Inst::IConst { dst, .. }
         | Inst::Bin { dst, .. }

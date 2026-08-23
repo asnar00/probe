@@ -169,18 +169,50 @@ impl RvEmit<'_> {
         Ok(())
     }
 
-    /// branch arguments: two phases through a0..a7 — all sources read
-    /// before any target parameter is written, so swaps can't clobber
+    /// one location-to-location move (registers or spill slots)
+    fn loc_move(&mut self, dst: Loc, src: Loc) -> Result<(), String> {
+        match (dst, src) {
+            (Loc::Reg(d), Loc::Reg(s)) => self.mov(d, s),
+            (Loc::Reg(d), Loc::Slot(s)) => {
+                let off = self.slot_off(s);
+                self.emit(LD, &[d, off, SP]).map(|_| ())
+            }
+            (Loc::Slot(d), Loc::Reg(s)) => {
+                let off = self.slot_off(d);
+                self.emit(SD, &[s, off, SP]).map(|_| ())
+            }
+            (Loc::Slot(d), Loc::Slot(s)) => {
+                // transit through t1; t0 stays free for cycle breaking
+                self.emit(LD, &[T1, self.slot_off(s), SP])?;
+                self.emit(SD, &[T1, self.slot_off(d), SP]).map(|_| ())
+            }
+        }
+    }
+
+    /// branch arguments as a parallel move: emit moves whose destination
+    /// nobody still reads; break cycles by stashing one source in t0
     fn branch_args(&mut self, target: BlockId, args: &[ValueId]) -> Result<(), String> {
-        if args.len() > 8 {
-            return Err("more than 8 branch arguments not supported yet".into());
-        }
-        for (j, &a) in args.iter().enumerate() {
-            self.value_to(A0 + j as i64, a)?;
-        }
         let params: Vec<ValueId> = self.func.blocks[target.0 as usize].params.clone();
-        for (j, &p) in params.iter().enumerate() {
-            self.value_from(p, A0 + j as i64)?;
+        let mut pending: Vec<(Loc, Loc)> = params
+            .iter()
+            .zip(args)
+            .map(|(&p, &a)| (self.alloc.loc[p.0 as usize], self.alloc.loc[a.0 as usize]))
+            .filter(|(d, s)| d != s)
+            .collect();
+        let scratch = Loc::Reg(T0);
+        while !pending.is_empty() {
+            if let Some(i) =
+                (0..pending.len()).find(|&i| !pending.iter().any(|&(_, s)| s == pending[i].0))
+            {
+                let (d, s) = pending.swap_remove(i);
+                self.loc_move(d, s)?;
+            } else {
+                let s = pending[0].1;
+                self.loc_move(scratch, s)?;
+                for m in pending.iter_mut().filter(|m| m.1 == s) {
+                    m.1 = scratch;
+                }
+            }
         }
         Ok(())
     }

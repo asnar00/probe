@@ -18,7 +18,7 @@
 //! (arrays are copied into the module's linear memory, pointers become
 //! offsets).
 
-use crate::{emit, emit_rv, emit_wasm, ssa};
+use crate::{emit, emit_rv, emit_wasm, opt, ssa};
 use std::process::Command;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -187,8 +187,9 @@ pub fn run_dir(dir: &str, backend: Backend) -> Result<Report, String> {
             if let Some(e) = bad_directive {
                 return Err(e);
             }
-            let module = ssa::parse(&src).map_err(|e| e.to_string())?;
+            let mut module = ssa::parse(&src).map_err(|e| e.to_string())?;
             ssa::verify(&module).map_err(|errs| errs.join("; "))?;
+            opt::sink_module(&mut module);
             Ok(module)
         })();
         let module = match module {
@@ -633,8 +634,9 @@ fn run_riscv(
         );
         let driver = gen_driver(module, cases, RV_HEAP, &exit_ssa)?;
         let full = format!("{}\n{}\n{}", driver, helpers(RV_UART), src);
-        let m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
+        let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
+        opt::sink_module(&mut m2);
         let compiled = emit_rv::compile(&m2, enc)?;
         // preamble: sp = 0x80800000 (mid-RAM), then fall into @__start
         let mut bin = Vec::new();
@@ -693,8 +695,9 @@ fn run_arm_qemu(
         let driver = gen_driver(module, cases, ARM_HEAP, "    call @__qemu_exit()\n")?;
         let stub = "fn @__qemu_exit() {\n^entry:\n    ret\n}\n";
         let full = format!("{}\n{}\n{}\n{}", driver, helpers(ARM_UART), stub, src);
-        let m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
+        let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
+        opt::sink_module(&mut m2);
         let compiled = emit::compile(&m2, enc)?;
         // preamble: sp = 0x41000000 via x29 (sp itself isn't a movz target)
         let mut bin = Vec::new();
