@@ -29,14 +29,17 @@ things we can learn ARM64 encodings for by probing LLVM.
 
 ## Types
 
-| type  | meaning                        |
-|-------|--------------------------------|
-| `i1`  | boolean (result of `icmp`)     |
-| `i32` | 32-bit integer                 |
-| `i64` | 64-bit integer                 |
-| `ptr` | pointer (64-bit on our target) |
+| type  | meaning                                                  |
+|-------|----------------------------------------------------------|
+| `i1`  | boolean (result of `icmp`)                               |
+| `i32` | 32-bit integer                                           |
+| `i64` | 64-bit integer                                           |
+| `ptr` | pointer (64-bit on our target)                           |
+| `int` | abstract integer — resolved to a concrete width by the   |
+|       | target's replacement policy (see *Abstract numeric types*) |
 
-Floats are reserved for a later version.
+Floats are reserved for a later version (`float` will join `int` as an
+abstract type when they land).
 
 ## Structure
 
