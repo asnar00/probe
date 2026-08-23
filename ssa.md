@@ -181,13 +181,15 @@ store %v, %addr
 ### Structs
 
 `type $name = { field: iN, ... }` declares a packed bitfield struct at
-module level: fields are integer-width types, declared **MSB-first** (the
-first field occupies the top bits), total width at most 64. A struct value
-travels in one register; `bitcast` converts it to and from any equal-width
-scalar. Field access is by name:
+module level: fields are integer-width types (or abstract — `int`,
+`uint`, `half`, `uhalf` — resolved by the policy), declared
+**low-first**: the first field occupies the low bits, the same
+convention as vector lane 0 and as C layout viewed little-endian. Total
+width at most 64. A struct value travels in one register; `bitcast`
+converts it to and from any equal-width scalar. Field access is by name:
 
 ```
-type $fp = { sign: i1, exp: i11, frac: i52 }
+type $fp = { frac: u52, exp: u11, sign: u1 }
 
 %p: $fp = bitcast %x            ; x: f64 — same 64 bits, structured view
 %e: i11 = extract %p, exp       ; read a field

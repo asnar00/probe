@@ -30,8 +30,8 @@ suite/*.ssa  --parse/verify-->  SSA  --emitter-->  bytes  --run-->  results
   flat block graph at parse time, floats (`f32`/`f64`, full conversion and
   bitcast set), arbitrary-width integers of both signednesses (`i5`,
   `u52`...) — signedness lives in the TYPE, so there is one `div`, one
-  `shr`, one `icmp.lt` — packed bitfield structs (`type $fp = { sign: u1,
-  exp: u11, frac: u52 }` — an IEEE double, by construction), short
+  `shr`, one `icmp.lt` — packed bitfield structs (`type $fp = { frac: u52,
+  exp: u11, sign: u1 }` — an IEEE double, by construction), short
   vectors (`i16x4`, `f32x2` — elementwise with the ordinary opcodes, no
   new ones), and abstract numeric types (`int`, `uint`, `float`, and
   `scalar` — the parent of float and rational) resolved by a per-target

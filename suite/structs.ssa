@@ -1,5 +1,6 @@
-; packed bitfield structs: total <= 64 bits, fields MSB-first, lowered to
-; carrier integers before emission. The teaser for what's coming: $fp IS
+; packed bitfield structs: total <= 64 bits, fields low-first (the first
+; field occupies the low bits, like vector lane 0 and C layout), lowered
+; to carrier integers before emission. The teaser for what's coming: $fp IS
 ; the IEEE double layout, and float introspection is field access.
 ;! rgb_r 0xff8040 -> 255
 ;! rgb_g 0xff8040 -> 128
@@ -11,9 +12,9 @@
 ;! fp_next 1.0 -> 4607182418800017409
 ;! flag_swap 5 -> 7
 
-type $rgb = { r: u8, g: u8, b: u8 }
-type $fp = { sign: u1, exp: u11, frac: u52 }
-type $flags = { a: u1, b: u1, rest: u3 }
+type $rgb = { b: u8, g: u8, r: u8 }
+type $fp = { frac: u52, exp: u11, sign: u1 }
+type $flags = { rest: u3, b: u1, a: u1 }
 
 fn @rgb_r(%c: u24) -> u8 {
 ^entry:
@@ -38,7 +39,7 @@ fn @rgb_b(%c: u24) -> u8 {
 
 fn @rgb_make(%r: u8, %g: u8, %b: u8) -> u24 {
 ^entry:
-    %p: $rgb = pack %r, %g, %b
+    %p: $rgb = pack %b, %g, %r
     %c: u24 = bitcast %p
     ret %c
 }
@@ -54,7 +55,7 @@ fn @rgb_dim(%c: u24) -> u24 {
     %r2: u8 = shr %r, %one
     %g2: u8 = shr %g, %one
     %b2: u8 = shr %b, %one
-    %q: $rgb = pack %r2, %g2, %b2
+    %q: $rgb = pack %b2, %g2, %r2
     %o: u24 = bitcast %q
     ret %o
 }
@@ -87,7 +88,7 @@ fn @fp_next(%x: f64) -> u64 {
 }
 
 ; swap two flag bits: %v bits are [a b rest3]; 5 = 0b00101 -> a=0,b=0? no:
-; i5 layout MSB-first: a=bit4, b=bit3, rest=bits0-2. 5 = 00101: a=0,b=0,rest=5
+; i5 layout low-first: rest=bits0-2, b=bit3, a=bit4. 5 = 00101: a=0,b=0,rest=5
 ; swap a and b of 5 -> unchanged... use 5 = a0 b0 rest101; swapped = same.
 ; better: 5 -> insert a=b(0),b=a(0): same. Use flag_swap on 0b00101? Let's
 ; swap and also set rest to rest|1: expected computed below.

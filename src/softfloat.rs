@@ -18,8 +18,8 @@
 use crate::ssa::{self, CastOp, FCond, Inst, Module, Type};
 
 pub const RUNTIME: &str = r#"
-type $fp = { sign: u1, exp: u11, frac: u52 }
-type $fp32 = { sign: u1, exp: u8, frac: u23 }
+type $fp = { frac: u52, exp: u11, sign: u1 }
+type $fp32 = { frac: u23, exp: u8, sign: u1 }
 
 fn @__fp_qnan() -> u64 {
     %q: u64 = iconst 0x7ff8000000000000
@@ -44,7 +44,7 @@ fn @__fp_isnan(%b: u64) -> u1 {
 fn @__fp_zero(%s: u1) -> u64 {
     %e: u11 = iconst 0
     %f: u52 = iconst 0
-    %p: $fp = pack %s, %e, %f
+    %p: $fp = pack %f, %e, %s
     %r: u64 = bitcast %p
     ret %r
 }
@@ -52,7 +52,7 @@ fn @__fp_zero(%s: u1) -> u64 {
 fn @__fp_inf(%s: u1) -> u64 {
     %e: u11 = iconst 2047
     %f: u52 = iconst 0
-    %p: $fp = pack %s, %e, %f
+    %p: $fp = pack %f, %e, %s
     %r: u64 = bitcast %p
     ret %r
 }
@@ -60,7 +60,7 @@ fn @__fp_inf(%s: u1) -> u64 {
 fn @__fp_pack(%s: u1, %e: u64, %m: u64) -> u64 {
     %e11: u11 = trunc %e
     %m52: u52 = trunc %m
-    %p: $fp = pack %s, %e11, %m52
+    %p: $fp = pack %m52, %e11, %s
     %r: u64 = bitcast %p
     ret %r
 }
@@ -868,7 +868,7 @@ fn @__f32_from_f64(%a: u64) -> u32 {
     }
     %e8: u8 = trunc %ef
     %m23: u23 = trunc %mf
-    %sp: $fp32 = pack %s, %e8, %m23
+    %sp: $fp32 = pack %m23, %e8, %s
     %r: u32 = bitcast %sp
     ret %r
 }

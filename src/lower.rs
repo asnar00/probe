@@ -261,7 +261,7 @@ fn register_vec_structs(
             sid.insert((n, e), i as u16);
             continue;
         }
-        let fields = (0..n).rev().map(|i| (format!("l{}", i), field_ty)).collect();
+        let fields = (0..n).map(|i| (format!("l{}", i), field_ty)).collect();
         sid.insert((n, e), defs.len() as u16);
         defs.push(crate::ssa::StructDef { name, fields });
     }
@@ -274,9 +274,8 @@ fn register_vec_structs(
 }
 
 /// Scalarize vectors into packed structs: each vector type becomes a
-/// generated struct (lane 0 in the low bits, so fields are declared lane
-/// N-1 first), elementwise ops become per-lane extract/op/pack, and lane
-/// indices become field indices. Float lanes travel as their bit patterns
+/// generated struct (fields low-first, so lane i IS field i), elementwise
+/// ops become per-lane extract/op/pack. Float lanes travel as their bit patterns
 /// in the struct, bitcast at the lane boundary. After this pass nothing
 /// downstream knows vectors existed — struct lowering turns the rest into
 /// carrier-integer code. Idempotent, and also called from soften() so the
@@ -329,7 +328,7 @@ fn lower_vectors_fn(
                     let fty = if elem == VecElem::F32 { Type::U(32) } else { elem.ty() };
                     let mut lane_vals = Vec::with_capacity(lanes as usize);
                     for lane in 0..lanes {
-                        let field = (lanes - 1 - lane) as u16;
+                        let field = lane as u16;
                         let e1 = tmp(func, fty);
                         let e2 = tmp(func, fty);
                         out.push(Inst::Extract { dst: e1, src: lhs, field });
@@ -349,12 +348,10 @@ fn lower_vectors_fn(
                             lane_vals.push(r);
                         }
                     }
-                    lane_vals.reverse(); // pack takes fields in declaration order
                     out.push(Inst::Pack { dst, args: lane_vals });
                 }
                 Inst::Extract { dst, src, field } if matches!(func.ty(src), Type::Vec(..)) => {
-                    let Type::Vec(lanes, elem) = func.ty(src) else { unreachable!() };
-                    let field = (lanes as u16 - 1) - field;
+                    let Type::Vec(_, elem) = func.ty(src) else { unreachable!() };
                     if elem == VecElem::F32 {
                         let t = tmp(func, Type::U(32));
                         out.push(Inst::Extract { dst: t, src, field });
@@ -366,8 +363,7 @@ fn lower_vectors_fn(
                 Inst::Insert { dst, src, field, val }
                     if matches!(func.ty(src), Type::Vec(..)) =>
                 {
-                    let Type::Vec(lanes, elem) = func.ty(src) else { unreachable!() };
-                    let field = (lanes as u16 - 1) - field;
+                    let Type::Vec(_, elem) = func.ty(src) else { unreachable!() };
                     if elem == VecElem::F32 {
                         let t = tmp(func, Type::U(32));
                         out.push(Inst::Cast { op: CastOp::Bitcast, dst: t, src: val });
@@ -388,7 +384,6 @@ fn lower_vectors_fn(
                             })
                             .collect();
                     }
-                    args.reverse(); // lane 0 last: fields are declared MSB-first
                     out.push(Inst::Pack { dst, args });
                 }
                 other => out.push(other),

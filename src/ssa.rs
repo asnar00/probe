@@ -85,7 +85,9 @@ impl VecElem {
 #[derive(Clone, Debug, PartialEq)]
 pub struct StructDef {
     pub name: String,
-    /// declared MSB-first: the first field occupies the top bits
+    /// declared low-first: the first field occupies the LOW bits — the
+    /// same convention as vector lanes (lane 0 low) and C layout (first
+    /// field at offset 0, viewed little-endian)
     pub fields: Vec<(String, Type)>,
 }
 
@@ -94,9 +96,9 @@ impl StructDef {
         self.fields.iter().filter_map(|(_, t)| t.width()).sum()
     }
 
-    /// LSB offset of field i (sum of the widths of later fields)
+    /// LSB offset of field i (sum of the widths of earlier fields)
     pub fn offset(&self, i: usize) -> u32 {
-        self.fields[i + 1..]
+        self.fields[..i]
             .iter()
             .filter_map(|(_, t)| t.width())
             .sum()
@@ -1154,7 +1156,7 @@ impl Parser {
         })
     }
 
-    /// `type $name = { field: iN, ... }` — fields are declared MSB-first
+    /// `type $name = { field: iN, ... }` — fields are declared low-first
     /// and must be integer widths; the total may not exceed 64 bits
     /// does the rest of this line contain an expression operator? Used to
     /// route `%r: u1 = call @f(%x) == 0` to the expression parser while
