@@ -1,0 +1,406 @@
+; rational arithmetic as a pure SSA library — no compiler support needed:
+; the type is a struct, the ops are functions. Canonical form: den > 0,
+; gcd(|num|, den) = 1, sign in num. den == 0 is NaR (not-a-rational),
+; which propagates like NaN and compares false. Semantics are exact-or-
+; NaR: a result that cannot be represented reduced in i32/u32 becomes
+; NaR rather than silently approximating. Intermediates use 64-bit ops,
+; which canonical operands cannot overflow except the final sum in add
+; when both cross products are near 2^63 — accepted tier-1 scope.
+;! t_add 1 2 1 3 -> 5, 6
+;! t_add 1 6 1 3 -> 1, 2
+;! t_add -1 2 1 3 -> -1, 6
+;! t_sub 1 2 1 3 -> 1, 6
+;! t_mul 2 3 3 4 -> 1, 2
+;! t_mul -2 3 3 4 -> -1, 2
+;! t_div 1 2 1 4 -> 2, 1
+;! t_div 2 3 -4 5 -> -5, 6
+;! t_make 6 -8 -> -3, 4
+;! t_make 0 5 -> 0, 1
+;! t_lt 1 3 1 2 -> 1
+;! t_lt 1 2 1 3 -> 0
+;! t_lt -1 2 1 3 -> 1
+;! t_eq 2 4 1 2 -> 1
+;! t_eq 1 2 1 3 -> 0
+;! t_to_int 7 2 -> 3
+;! t_to_int -7 2 -> -3
+;! t_to_float 3 4 -> 0.75
+;! t_nar 1 0 -> 1
+;! t_nar 1 2 -> 0
+;! t_harmonic 4 -> 25, 12
+
+type $rat = { num: i32, den: u32 }
+
+fn @rat_gcd(%a: u64, %b: u64) -> u64 {
+    %g: u64 = loop(%x: u64 = %a, %y: u64 = %b) {
+        %zero: u64 = iconst 0
+        %done: u1 = icmp.eq %y, %zero
+        if %done {
+            break %x
+        }
+        %r: u64 = rem %x, %y
+        continue %y, %r
+    }
+    ret %g
+}
+
+fn @rat_abs(%v: i64) -> u64 {
+    %zero: i64 = iconst 0
+    %neg: u1 = icmp.lt %v, %zero
+    %a: i64 = if %neg {
+        %m: i64 = isub %zero, %v
+        yield %m
+    } else {
+        yield %v
+    }
+    %u: u64 = bitcast %a
+    ret %u
+}
+
+fn @rat_nar() -> $rat {
+    %n: i32 = iconst 0
+    %d: u32 = iconst 0
+    %r: $rat = pack %n, %d
+    ret %r
+}
+
+fn @rat_is_nar(%a: $rat) -> u1 {
+    %d: u32 = extract %a, den
+    %zero: u32 = iconst 0
+    %r: u1 = icmp.eq %d, %zero
+    ret %r
+}
+
+; unpack to 64-bit working values (num sign-extended, den zero-extended)
+fn @rat_parts(%a: $rat) -> (i64, u64) {
+    %n32: i32 = extract %a, num
+    %d32: u32 = extract %a, den
+    %n: i64 = ext %n32
+    %d: u64 = ext %d32
+    ret %n, %d
+}
+
+; reduce and range-check a 64-bit num/den pair; den must be nonzero
+fn @rat_fit(%n: i64, %d: u64) -> $rat {
+    %a: u64 = call @rat_abs(%n)
+    %zero: u64 = iconst 0
+    %anz: u1 = icmp.ne %a, %zero
+    ; gcd(0, d) = d, which normalizes 0/d to 0/1
+    %g: u64 = if %anz {
+        %g0: u64 = call @rat_gcd(%a, %d)
+        yield %g0
+    } else {
+        yield %d
+    }
+    %ar: u64 = div %a, %g
+    %dr: u64 = div %d, %g
+    %zeroi: i64 = iconst 0
+    %neg: u1 = icmp.lt %n, %zeroi
+    ; range check: num in i32 (asymmetric by sign), den in u32
+    %numlim: u64 = if %neg {
+        %l1: u64 = iconst 0x80000000
+        yield %l1
+    } else {
+        %l2: u64 = iconst 0x7fffffff
+        yield %l2
+    }
+    %nbad: u1 = icmp.gt %ar, %numlim
+    if %nbad {
+        %x1: $rat = call @rat_nar()
+        ret %x1
+    }
+    %denlim: u64 = iconst 0xffffffff
+    %dbad: u1 = icmp.gt %dr, %denlim
+    if %dbad {
+        %x2: $rat = call @rat_nar()
+        ret %x2
+    }
+    %ari: i64 = bitcast %ar
+    %nsig: i64 = if %neg {
+        %m: i64 = isub %zeroi, %ari
+        yield %m
+    } else {
+        yield %ari
+    }
+    %n32: i32 = trunc %nsig
+    %d32: u32 = trunc %dr
+    %r: $rat = pack %n32, %d32
+    ret %r
+}
+
+fn @rat_make(%n0: i64, %d0: i64) -> $rat {
+    %zeroi: i64 = iconst 0
+    %dz: u1 = icmp.eq %d0, %zeroi
+    if %dz {
+        %x: $rat = call @rat_nar()
+        ret %x
+    }
+    %dneg: u1 = icmp.lt %d0, %zeroi
+    %n: i64, %d: i64 = if %dneg {
+        %nn: i64 = isub %zeroi, %n0
+        %nd: i64 = isub %zeroi, %d0
+        yield %nn, %nd
+    } else {
+        yield %n0, %d0
+    }
+    %du: u64 = bitcast %d
+    %r: $rat = call @rat_fit(%n, %du)
+    ret %r
+}
+
+; a/b + c/d = (a*(d/g) + c*(b/g)) / ((b/g)*d), g = gcd(b, d); the
+; pre-gcd keeps the cross products small, rat_fit finishes the reduction
+fn @rat_add(%x: $rat, %y: $rat) -> $rat {
+    %xnar: u1 = call @rat_is_nar(%x)
+    if %xnar {
+        %q1: $rat = call @rat_nar()
+        ret %q1
+    }
+    %ynar: u1 = call @rat_is_nar(%y)
+    if %ynar {
+        %q2: $rat = call @rat_nar()
+        ret %q2
+    }
+    %a: i64, %b: u64 = call @rat_parts(%x)
+    %c: i64, %d: u64 = call @rat_parts(%y)
+    %g: u64 = call @rat_gcd(%b, %d)
+    %bg: u64 = div %b, %g
+    %dg: u64 = div %d, %g
+    %bgi: i64 = bitcast %bg
+    %dgi: i64 = bitcast %dg
+    %t1: i64 = imul %a, %dgi
+    %t2: i64 = imul %c, %bgi
+    %t: i64 = iadd %t1, %t2
+    %den: u64 = imul %bg, %d
+    %r: $rat = call @rat_fit(%t, %den)
+    ret %r
+}
+
+fn @rat_neg(%x: $rat) -> $rat {
+    %xnar: u1 = call @rat_is_nar(%x)
+    if %xnar {
+        %q: $rat = call @rat_nar()
+        ret %q
+    }
+    %n: i64, %d: u64 = call @rat_parts(%x)
+    %zero: i64 = iconst 0
+    %m: i64 = isub %zero, %n
+    %r: $rat = call @rat_fit(%m, %d)
+    ret %r
+}
+
+fn @rat_sub(%x: $rat, %y: $rat) -> $rat {
+    %ny: $rat = call @rat_neg(%y)
+    %r: $rat = call @rat_add(%x, %ny)
+    ret %r
+}
+
+; canonical operands keep the plain cross products in range:
+; |num product| <= 2^62, den product < 2^64
+fn @rat_mul(%x: $rat, %y: $rat) -> $rat {
+    %xnar: u1 = call @rat_is_nar(%x)
+    if %xnar {
+        %q1: $rat = call @rat_nar()
+        ret %q1
+    }
+    %ynar: u1 = call @rat_is_nar(%y)
+    if %ynar {
+        %q2: $rat = call @rat_nar()
+        ret %q2
+    }
+    %a: i64, %b: u64 = call @rat_parts(%x)
+    %c: i64, %d: u64 = call @rat_parts(%y)
+    %n: i64 = imul %a, %c
+    %den: u64 = imul %b, %d
+    %r: $rat = call @rat_fit(%n, %den)
+    ret %r
+}
+
+; multiply by the reciprocal, sign moved to the numerator; done on
+; 64-bit parts because the reciprocal itself may not fit $rat
+fn @rat_div(%x: $rat, %y: $rat) -> $rat {
+    %xnar: u1 = call @rat_is_nar(%x)
+    if %xnar {
+        %q1: $rat = call @rat_nar()
+        ret %q1
+    }
+    %ynar: u1 = call @rat_is_nar(%y)
+    if %ynar {
+        %q2: $rat = call @rat_nar()
+        ret %q2
+    }
+    %c: i64, %d: u64 = call @rat_parts(%y)
+    %zeroi: i64 = iconst 0
+    %cz: u1 = icmp.eq %c, %zeroi
+    if %cz {
+        %q3: $rat = call @rat_nar()
+        ret %q3
+    }
+    %a: i64, %b: u64 = call @rat_parts(%x)
+    %di: i64 = bitcast %d
+    %cneg: u1 = icmp.lt %c, %zeroi
+    %rn: i64, %rdi: i64 = if %cneg {
+        %nd: i64 = isub %zeroi, %di
+        %nc: i64 = isub %zeroi, %c
+        yield %nd, %nc
+    } else {
+        yield %di, %c
+    }
+    %n: i64 = imul %a, %rn
+    %rdu: u64 = bitcast %rdi
+    %den: u64 = imul %b, %rdu
+    %r: $rat = call @rat_fit(%n, %den)
+    ret %r
+}
+
+; a/b < c/d  <=>  a*d < c*b (dens positive); NaR compares false
+fn @rat_lt(%x: $rat, %y: $rat) -> u1 {
+    %xnar: u1 = call @rat_is_nar(%x)
+    if %xnar {
+        %f1: u1 = iconst 0
+        ret %f1
+    }
+    %ynar: u1 = call @rat_is_nar(%y)
+    if %ynar {
+        %f2: u1 = iconst 0
+        ret %f2
+    }
+    %a: i64, %b: u64 = call @rat_parts(%x)
+    %c: i64, %d: u64 = call @rat_parts(%y)
+    %bi: i64 = bitcast %b
+    %di: i64 = bitcast %d
+    %lhs: i64 = imul %a, %di
+    %rhs: i64 = imul %c, %bi
+    %r: u1 = icmp.lt %lhs, %rhs
+    ret %r
+}
+
+; canonical forms are unique, so equality is bit equality (minus NaR)
+fn @rat_eq(%x: $rat, %y: $rat) -> u1 {
+    %xnar: u1 = call @rat_is_nar(%x)
+    if %xnar {
+        %f1: u1 = iconst 0
+        ret %f1
+    }
+    %ynar: u1 = call @rat_is_nar(%y)
+    if %ynar {
+        %f2: u1 = iconst 0
+        ret %f2
+    }
+    %xb: u64 = bitcast %x
+    %yb: u64 = bitcast %y
+    %r: u1 = icmp.eq %xb, %yb
+    ret %r
+}
+
+; truncates toward zero; NaR -> 0
+fn @rat_to_int(%x: $rat) -> i64 {
+    %xnar: u1 = call @rat_is_nar(%x)
+    if %xnar {
+        %z: i64 = iconst 0
+        ret %z
+    }
+    %n: i64, %d: u64 = call @rat_parts(%x)
+    %di: i64 = bitcast %d
+    %r: i64 = div %n, %di
+    ret %r
+}
+
+; NaR -> 0.0/0.0 = NaN, for free
+fn @rat_to_float(%x: $rat) -> float {
+    %n: i64, %d: u64 = call @rat_parts(%x)
+    %nf: float = itof %n
+    %df: float = itof %d
+    %r: float = fdiv %nf, %df
+    ret %r
+}
+
+; ---- test wrappers: build rationals from directive args, return parts ----
+
+fn @t_add(%an: i64, %ad: i64, %bn: i64, %bd: i64) -> (i64, u64) {
+    %x: $rat = call @rat_make(%an, %ad)
+    %y: $rat = call @rat_make(%bn, %bd)
+    %s: $rat = call @rat_add(%x, %y)
+    %n: i64, %d: u64 = call @rat_parts(%s)
+    ret %n, %d
+}
+
+fn @t_sub(%an: i64, %ad: i64, %bn: i64, %bd: i64) -> (i64, u64) {
+    %x: $rat = call @rat_make(%an, %ad)
+    %y: $rat = call @rat_make(%bn, %bd)
+    %s: $rat = call @rat_sub(%x, %y)
+    %n: i64, %d: u64 = call @rat_parts(%s)
+    ret %n, %d
+}
+
+fn @t_mul(%an: i64, %ad: i64, %bn: i64, %bd: i64) -> (i64, u64) {
+    %x: $rat = call @rat_make(%an, %ad)
+    %y: $rat = call @rat_make(%bn, %bd)
+    %s: $rat = call @rat_mul(%x, %y)
+    %n: i64, %d: u64 = call @rat_parts(%s)
+    ret %n, %d
+}
+
+fn @t_div(%an: i64, %ad: i64, %bn: i64, %bd: i64) -> (i64, u64) {
+    %x: $rat = call @rat_make(%an, %ad)
+    %y: $rat = call @rat_make(%bn, %bd)
+    %s: $rat = call @rat_div(%x, %y)
+    %n: i64, %d: u64 = call @rat_parts(%s)
+    ret %n, %d
+}
+
+fn @t_make(%n0: i64, %d0: i64) -> (i64, u64) {
+    %x: $rat = call @rat_make(%n0, %d0)
+    %n: i64, %d: u64 = call @rat_parts(%x)
+    ret %n, %d
+}
+
+fn @t_lt(%an: i64, %ad: i64, %bn: i64, %bd: i64) -> u1 {
+    %x: $rat = call @rat_make(%an, %ad)
+    %y: $rat = call @rat_make(%bn, %bd)
+    %r: u1 = call @rat_lt(%x, %y)
+    ret %r
+}
+
+fn @t_eq(%an: i64, %ad: i64, %bn: i64, %bd: i64) -> u1 {
+    %x: $rat = call @rat_make(%an, %ad)
+    %y: $rat = call @rat_make(%bn, %bd)
+    %r: u1 = call @rat_eq(%x, %y)
+    ret %r
+}
+
+fn @t_to_int(%n0: i64, %d0: i64) -> i64 {
+    %x: $rat = call @rat_make(%n0, %d0)
+    %r: i64 = call @rat_to_int(%x)
+    ret %r
+}
+
+fn @t_to_float(%n0: i64, %d0: i64) -> float {
+    %x: $rat = call @rat_make(%n0, %d0)
+    %r: float = call @rat_to_float(%x)
+    ret %r
+}
+
+fn @t_nar(%n0: i64, %d0: i64) -> u1 {
+    %x: $rat = call @rat_make(%n0, %d0)
+    %r: u1 = call @rat_is_nar(%x)
+    ret %r
+}
+
+; 1 + 1/2 + ... + 1/n, exactly — a rational accumulator in a loop
+fn @t_harmonic(%n: i64) -> (i64, u64) {
+    %zero: i64 = iconst 0
+    %one: i64 = iconst 1
+    %z: $rat = call @rat_make(%zero, %one)
+    %s: $rat = loop(%i: i64 = %one, %acc: $rat = %z) {
+        %done: u1 = icmp.gt %i, %n
+        if %done {
+            break %acc
+        }
+        %term: $rat = call @rat_make(%one, %i)
+        %acc2: $rat = call @rat_add(%acc, %term)
+        %i2: i64 = iadd %i, %one
+        continue %i2, %acc2
+    }
+    %rn: i64, %rd: u64 = call @rat_parts(%s)
+    ret %rn, %rd
+}

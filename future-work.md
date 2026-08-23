@@ -75,6 +75,13 @@ Backend sketch:
 
 ## Numeric tower
 
+- **Rationals, generalized**: `suite/rational.ssa` proves the recipe —
+  `rat` = `{ num: i32, den: u32 }` plus an SSA op library (canonical
+  reduced form, NaR = den 0, exact-or-NaR semantics), zero compiler
+  changes. Next rungs: parametrized `rat(N)` widths (r16 = i16/u16 fits
+  32 bits), an abstract `rat` in the replacement policy, a mediant /
+  continued-fraction `float -> rat` best-approximation, and detecting
+  the one 64-bit intermediate overflow corner in add.
 - **Fixed-point types**: `fx8.8` as sugar for a struct-backed numeric —
   `{ int: i8, frac: u8 }` — with its operation set written as an SSA
   library, exactly the softfloat recipe: struct layout states the format,
