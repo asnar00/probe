@@ -31,6 +31,10 @@ pub enum Piece {
     Fixed(Vec<u8>),
     ULeb,
     SLeb,
+    /// 8 raw little-endian bytes (f64.const); the slot value is the bits
+    Bits64,
+    /// 4 raw little-endian bytes (f32.const)
+    Bits32,
 }
 
 pub fn uleb(mut v: u64) -> Vec<u8> {
@@ -67,6 +71,12 @@ pub fn encode_pieces(pieces: &[Piece], value: Option<i64>) -> Vec<u8> {
             Piece::Fixed(b) => out.extend_from_slice(b),
             Piece::ULeb => out.extend(uleb(value.expect("slot value") as u64)),
             Piece::SLeb => out.extend(sleb(value.expect("slot value"))),
+            Piece::Bits64 => {
+                out.extend((value.expect("slot value") as u64).to_le_bytes())
+            }
+            Piece::Bits32 => {
+                out.extend((value.expect("slot value") as u32).to_le_bytes())
+            }
         }
     }
     out
@@ -75,9 +85,16 @@ pub fn encode_pieces(pieces: &[Piece], value: Option<i64>) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 // Seed format
 
+#[derive(Clone, Copy, PartialEq)]
+enum WSlot {
+    Range(i64, i64),
+    F64,
+    F32,
+}
+
 struct WInst {
     template: String, // e.g. "local.get {i 0..16384}"
-    slot: Option<(i64, i64)>,
+    slot: Option<WSlot>,
     sig: String,                    // "(param i64 i64) (result i64)"
     locals: Option<(usize, String)>, // extra locals: (count, type)
     pre: Vec<String>,               // learned-template instantiations
@@ -150,8 +167,8 @@ fn parse_wseed(name: &str, src: &str) -> Result<WSeed, String> {
     Ok(seed)
 }
 
-/// At most one `{i lo..hi}` slot per template.
-fn parse_slot(template: &str) -> Result<Option<(i64, i64)>, String> {
+/// At most one slot per template: `{i lo..hi}`, `{f64}`, or `{f32}`.
+fn parse_slot(template: &str) -> Result<Option<WSlot>, String> {
     let Some(open) = template.find('{') else {
         return Ok(None);
     };
@@ -160,6 +177,12 @@ fn parse_slot(template: &str) -> Result<Option<(i64, i64)>, String> {
         .ok_or("unclosed '{'")?
         + open;
     let inner = template[open + 1..close].trim();
+    if inner == "f64" {
+        return Ok(Some(WSlot::F64));
+    }
+    if inner == "f32" {
+        return Ok(Some(WSlot::F32));
+    }
     let spec = inner
         .strip_prefix("i ")
         .ok_or_else(|| format!("bad slot '{{{}}}'", inner))?;
@@ -169,14 +192,21 @@ fn parse_slot(template: &str) -> Result<Option<(i64, i64)>, String> {
     if template[close + 1..].contains('{') {
         return Err("at most one slot per template".into());
     }
-    Ok(Some((lo, hi)))
+    Ok(Some(WSlot::Range(lo, hi)))
 }
 
-fn render(template: &str, value: Option<i64>) -> String {
+/// slot values are integers; float slots carry the BIT PATTERN and render
+/// as a shortest-roundtrip decimal literal for the wat text
+fn render(template: &str, slot: Option<WSlot>, value: Option<i64>) -> String {
     match (template.find('{'), value) {
         (Some(open), Some(v)) => {
             let close = template[open..].find('}').unwrap() + open;
-            format!("{}{}{}", &template[..open], v, &template[close + 1..])
+            let text = match slot {
+                Some(WSlot::F64) => format!("{:?}", f64::from_bits(v as u64)),
+                Some(WSlot::F32) => format!("{:?}", f32::from_bits(v as u32)),
+                _ => v.to_string(),
+            };
+            format!("{}{}{}", &template[..open], text, &template[close + 1..])
         }
         _ => template.to_string(),
     }
@@ -264,7 +294,7 @@ pub struct WShapeResult {
 }
 
 struct Learned {
-    templates: Vec<(String, Option<(i64, i64)>, Vec<Piece>)>,
+    templates: Vec<(String, Option<WSlot>, Vec<Piece>)>,
 }
 
 impl Learned {
@@ -322,6 +352,24 @@ impl Learned {
     }
 }
 
+/// sample float bit patterns: normal values across signs and magnitudes
+/// (no NaN/Inf — tools may canonicalize payloads)
+fn float_probe_values(f32bits: bool) -> Vec<i64> {
+    let doubles: [f64; 12] = [
+        0.0, 1.0, -1.0, 0.5, 2.5, -3.75, 100.0, -0.001, 1e10, -1e-10, 12345.6789, 3.5e38,
+    ];
+    doubles
+        .iter()
+        .map(|&d| {
+            if f32bits {
+                (d as f32).to_bits() as i64
+            } else {
+                d.to_bits() as i64
+            }
+        })
+        .collect()
+}
+
 fn probe_values(lo: i64, hi: i64) -> Vec<i64> {
     let mut vals: Vec<i64> = vec![
         0, 1, 2, 3, 5, 63, 64, 127, 128, 129, 255, 256, 8191, 8192, 16383, 16384,
@@ -362,7 +410,7 @@ fn build_module(inst: &WInst, values: &[Option<i64>]) -> String {
             wat.push('\n');
         }
         wat.push_str("    ");
-        wat.push_str(&render(&inst.template, v));
+        wat.push_str(&render(&inst.template, inst.slot, v));
         wat.push('\n');
         for p in &inst.post {
             wat.push_str("    ");
@@ -388,16 +436,19 @@ fn strip<'a>(body: &'a [u8], pre: &[u8], post: &[u8]) -> Result<&'a [u8], String
 
 /// Fit remainders to `prefix + codec(value) + suffix` with constant
 /// prefix/suffix. Tries ULEB then SLEB (SLEB only, if the range is signed).
-fn fit_codec(probes: &[(i64, Vec<u8>)], signed: bool) -> Result<Vec<Piece>, String> {
-    let codecs: &[Piece] = if signed {
-        &[Piece::SLeb]
-    } else {
-        &[Piece::ULeb, Piece::SLeb]
+fn fit_codec(probes: &[(i64, Vec<u8>)], slot: WSlot) -> Result<Vec<Piece>, String> {
+    let codecs: &[Piece] = match slot {
+        WSlot::F64 => &[Piece::Bits64],
+        WSlot::F32 => &[Piece::Bits32],
+        WSlot::Range(lo, _) if lo < 0 => &[Piece::SLeb],
+        WSlot::Range(..) => &[Piece::ULeb, Piece::SLeb],
     };
     for codec in codecs {
         let enc = |v: i64| match codec {
             Piece::ULeb => uleb(v as u64),
             Piece::SLeb => sleb(v),
+            Piece::Bits64 => (v as u64).to_le_bytes().to_vec(),
+            Piece::Bits32 => (v as u32).to_le_bytes().to_vec(),
             _ => unreachable!(),
         };
         let max_pl = probes
@@ -518,7 +569,9 @@ fn learn_one(
     let post = learned.encode_items(&inst.post)?;
 
     let values: Vec<Option<i64>> = match inst.slot {
-        Some((lo, hi)) => probe_values(lo, hi).into_iter().map(Some).collect(),
+        Some(WSlot::Range(lo, hi)) => probe_values(lo, hi).into_iter().map(Some).collect(),
+        Some(WSlot::F64) => float_probe_values(false).into_iter().map(Some).collect(),
+        Some(WSlot::F32) => float_probe_values(true).into_iter().map(Some).collect(),
         None => vec![None],
     };
     let wat = build_module(inst, &values);
@@ -547,23 +600,42 @@ fn learn_one(
     }
     let pieces = match inst.slot {
         None => vec![Piece::Fixed(remainders[0].1.clone())],
-        Some((lo, _)) => {
+        Some(slot) => {
             for (_, r) in &remainders[1..] {
                 if *r == remainders[0].1 {
                     return Err("slot value does not affect the encoding".into());
                 }
             }
-            fit_codec(&remainders, lo < 0)?
+            fit_codec(&remainders, slot)?
         }
     };
 
     // ---- verify on fresh values ----
     let tested = match inst.slot {
         None => 1, // nothing further to vary; the single probe is the proof
-        Some((lo, hi)) => {
+        Some(slot) => {
             let mut rng = Rng(0xA076_1D64_78BD_642F);
-            let vvals: Vec<Option<i64>> =
-                verify_values(lo, hi, &mut rng).into_iter().map(Some).collect();
+            let raw: Vec<i64> = match slot {
+                WSlot::Range(lo, hi) => verify_values(lo, hi, &mut rng),
+                // random normal floats: bounded exponent, random mantissa
+                WSlot::F64 => (0..24)
+                    .map(|_| {
+                        let sign = (rng.next() & 1) << 63;
+                        let exp = (896 + (rng.next() % 256)) << 52; // 2^-127..2^128
+                        let man = rng.next() & ((1 << 52) - 1);
+                        (sign | exp | man) as i64
+                    })
+                    .collect(),
+                WSlot::F32 => (0..24)
+                    .map(|_| {
+                        let sign = ((rng.next() & 1) as u32) << 31;
+                        let exp = ((64 + (rng.next() % 128)) as u32) << 23;
+                        let man = (rng.next() as u32) & ((1 << 23) - 1);
+                        (sign | exp | man) as i64
+                    })
+                    .collect(),
+            };
+            let vvals: Vec<Option<i64>> = raw.into_iter().map(Some).collect();
             let wat = build_module(inst, &vvals);
             let wasm = wat2wasm(scratch, &wat)?;
             let (bodies, _) = extract_bodies(&wasm)?;
@@ -606,6 +678,8 @@ pub fn wreport(results: &[WShapeResult]) -> String {
                             .join(""),
                         Piece::ULeb => "uleb".into(),
                         Piece::SLeb => "sleb".into(),
+                        Piece::Bits64 => "bits64".into(),
+                        Piece::Bits32 => "bits32".into(),
                     })
                     .collect();
                 out.push_str(&format!(
@@ -645,6 +719,8 @@ pub fn wto_json(name: &str, results: &[WShapeResult], end_byte: u8) -> String {
                     ),
                     Piece::ULeb => "{\"uleb\": true}".into(),
                     Piece::SLeb => "{\"sleb\": true}".into(),
+                    Piece::Bits64 => "{\"bits64\": true}".into(),
+                    Piece::Bits32 => "{\"bits32\": true}".into(),
                 })
                 .collect();
             out.push_str(&format!(

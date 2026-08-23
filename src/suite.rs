@@ -37,15 +37,23 @@ pub enum Backend {
 
 enum ArgSpec {
     Int(i64),
+    Float(f64),
     ArrI64(Vec<i64>),
     ArrI32(Vec<i32>),
+}
+
+#[derive(Clone, Copy)]
+enum ExpVal {
+    Int(i64),
+    Float(f64),
 }
 
 struct Case {
     func: String,
     args: Vec<ArgSpec>,
-    expected: Vec<i64>, // one entry per return value
-    text: String,       // the directive as written, for reporting
+    raw_expected: Vec<ExpVal>, // as written in the directive
+    expected: Vec<i64>,        // resolved comparison values (bits for floats)
+    text: String,              // the directive as written, for reporting
 }
 
 fn parse_int(tok: &str) -> Result<i64, String> {
@@ -66,9 +74,18 @@ fn parse_case(line: &str) -> Result<Case, String> {
     let (call, expect) = line
         .split_once("->")
         .ok_or("directive needs '-> expected'")?;
-    let expected: Vec<i64> = expect
+    let raw_expected: Vec<ExpVal> = expect
         .split(',')
-        .map(|v| parse_int(v.trim()))
+        .map(|v| {
+            let t = v.trim();
+            if t.contains('.') {
+                t.parse::<f64>()
+                    .map(ExpVal::Float)
+                    .map_err(|_| format!("bad float '{}'", t))
+            } else {
+                parse_int(t).map(ExpVal::Int)
+            }
+        })
         .collect::<Result<_, _>>()?;
     let mut toks = Vec::new();
     let mut rest = call.trim();
@@ -98,6 +115,10 @@ fn parse_case(line: &str) -> Result<Case, String> {
                 .map(|v| parse_int(v.trim()).map(|x| x as i32))
                 .collect();
             args.push(ArgSpec::ArrI32(vals?));
+        } else if tok.contains('.') {
+            args.push(ArgSpec::Float(
+                tok.parse::<f64>().map_err(|_| format!("bad float '{}'", tok))?,
+            ));
         } else {
             args.push(ArgSpec::Int(parse_int(tok)?));
         }
@@ -105,7 +126,8 @@ fn parse_case(line: &str) -> Result<Case, String> {
     Ok(Case {
         func,
         args,
-        expected,
+        raw_expected,
+        expected: Vec::new(),
         text: line.trim().to_string(),
     })
 }
@@ -131,7 +153,7 @@ impl Report {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn run_dir(dir: &str, backend: Backend) -> Result<Report, String> {
-    run_dir_at(dir, backend, opt::MAX_LEVEL, None)
+    run_dir_at(dir, backend, opt::MAX_LEVEL, None, None)
 }
 
 /// Each target's default replacement policy for the abstract 'int' type:
@@ -144,11 +166,147 @@ fn default_int(backend: Backend) -> ssa::Type {
     }
 }
 
+/// Cases touching floats run through a generated wrapper: it fconsts the
+/// arguments, calls the target, and returns every result as integer bits
+/// (bitcast, f32 zero-extended) — so every execution path (native FFI,
+/// node, both qemu drivers) stays integer-only, and float comparison is
+/// exact-bits on all of them. Returns extra source to append, and fills
+/// each case's comparison values.
+fn prepare_cases(module: &ssa::Module, cases: &mut [Case]) -> Result<String, String> {
+    let mut wrappers = String::new();
+    for (n, case) in cases.iter_mut().enumerate() {
+        let func = module
+            .func(&case.func)
+            .ok_or_else(|| format!("no function @{} for '{}'", case.func, case.text))?;
+        let param_tys: Vec<ssa::Type> = func.params.iter().map(|&p| func.ty(p)).collect();
+        let needs_wrap = param_tys.iter().any(|t| t.is_float())
+            || func.rets.iter().any(|t| t.is_float())
+            || case.args.iter().any(|a| matches!(a, ArgSpec::Float(_)));
+
+        // comparison values: float expectations become IEEE bits
+        case.expected = case
+            .raw_expected
+            .iter()
+            .zip(&func.rets)
+            .map(|(e, &rt)| match (e, rt.is_float()) {
+                (ExpVal::Int(v), false) => Ok(*v),
+                (ExpVal::Float(_), false) => {
+                    Err(format!("float expectation for integer result in '{}'", case.text))
+                }
+                (e, true) => {
+                    let x = match e {
+                        ExpVal::Float(v) => *v,
+                        ExpVal::Int(v) => *v as f64,
+                    };
+                    Ok(if rt == ssa::Type::F32 {
+                        (x as f32).to_bits() as i64
+                    } else {
+                        x.to_bits() as i64
+                    })
+                }
+            })
+            .collect::<Result<_, _>>()?;
+        if case.expected.len() != case.raw_expected.len() {
+            return Err(format!(
+                "'{}' expects {} values but @{} returns {}",
+                case.text,
+                case.raw_expected.len(),
+                case.func,
+                func.rets.len()
+            ));
+        }
+
+        if !needs_wrap {
+            continue;
+        }
+        if case
+            .args
+            .iter()
+            .any(|a| matches!(a, ArgSpec::ArrI64(_) | ArgSpec::ArrI32(_)))
+        {
+            return Err(format!("float cases with array args not supported: '{}'", case.text));
+        }
+        let mut w = format!("fn @__w{}() -> (", n);
+        w.push_str(&vec!["i64"; func.rets.len()].join(", "));
+        w.push_str(") {
+^entry:
+");
+        let mut argv = Vec::new();
+        for (j, a) in case.args.iter().enumerate() {
+            let pt = *param_tys
+                .get(j)
+                .ok_or_else(|| format!("too many args in '{}'", case.text))?;
+            let name = format!("%a{}", j);
+            match (a, pt.is_float()) {
+                (ArgSpec::Int(v), false) => {
+                    w.push_str(&format!("    {}: {} = iconst {}
+", name, pt.name(), v))
+                }
+                (ArgSpec::Float(v), true) => {
+                    w.push_str(&format!("    {}: {} = fconst {:?}
+", name, pt.name(), v))
+                }
+                (ArgSpec::Int(v), true) => {
+                    w.push_str(&format!("    {}: {} = fconst {:?}
+", name, pt.name(), *v as f64))
+                }
+                _ => return Err(format!("argument {} type mismatch in '{}'", j, case.text)),
+            }
+            argv.push(name);
+        }
+        let rets: Vec<String> = (0..func.rets.len()).map(|i| format!("%r{}", i)).collect();
+        let defs: Vec<String> = rets
+            .iter()
+            .zip(&func.rets)
+            .map(|(r, t)| format!("{}: {}", r, t.name()))
+            .collect();
+        w.push_str(&format!(
+            "    {} = call @{}({})
+",
+            defs.join(", "),
+            case.func,
+            argv.join(", ")
+        ));
+        let mut outs = Vec::new();
+        for (i, (&rt, r)) in func.rets.iter().zip(&rets).enumerate() {
+            let out = match rt {
+                ssa::Type::F64 => {
+                    w.push_str(&format!("    %b{}: i64 = bitcast {}
+", i, r));
+                    format!("%b{}", i)
+                }
+                ssa::Type::F32 => {
+                    w.push_str(&format!("    %c{}: i32 = bitcast {}
+", i, r));
+                    w.push_str(&format!("    %b{}: i64 = zext %c{}
+", i, i));
+                    format!("%b{}", i)
+                }
+                ssa::Type::I64 => r.clone(),
+                _ => {
+                    w.push_str(&format!("    %b{}: i64 = zext {}
+", i, r));
+                    format!("%b{}", i)
+                }
+            };
+            outs.push(out);
+        }
+        w.push_str(&format!("    ret {}
+}}
+", outs.join(", ")));
+        wrappers.push_str(&w);
+        case.func = format!("__w{}", n);
+        case.args.clear();
+    }
+    Ok(wrappers)
+}
+
 pub fn run_dir_at(
     dir: &str,
     backend: Backend,
     level: usize,
     int_override: Option<ssa::Type>,
+    float_override: Option<ssa::Type>,
 ) -> Result<Report, String> {
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {}", dir, e))?
@@ -183,7 +341,10 @@ pub fn run_dir_at(
             .map_err(|e| e.to_string())?;
     }
 
-    let policy = ssa::Policy::new(int_override.unwrap_or(default_int(backend)))?;
+    let policy = ssa::Policy::new(
+        int_override.unwrap_or(default_int(backend)),
+        float_override.unwrap_or(ssa::Type::F64),
+    )?;
     let mut report = Report {
         passed: 0,
         failed: 0,
@@ -204,20 +365,29 @@ pub fn run_dir_at(
             }
         }
 
-        let module = (|| -> Result<ssa::Module, String> {
+        let prepared = (|| -> Result<(ssa::Module, String), String> {
             if let Some(e) = bad_directive {
                 return Err(e);
             }
             let mut module = ssa::parse(&src).map_err(|e| e.to_string())?;
             ssa::resolve_types(&mut module, &policy);
             ssa::verify(&module).map_err(|errs| errs.join("; "))?;
+            let wrappers = prepare_cases(&module, &mut cases)?;
+            let full_src = if wrappers.is_empty() {
+                src.clone()
+            } else {
+                format!("{}\n{}", src, wrappers)
+            };
+            let mut module = ssa::parse(&full_src).map_err(|e| e.to_string())?;
+            ssa::resolve_types(&mut module, &policy);
+            ssa::verify(&module).map_err(|errs| errs.join("; "))?;
             opt::optimize(&mut module, level);
             ssa::verify(&module)
                 .map_err(|errs| format!("after optimization: {}", errs.join("; ")))?;
-            Ok(module)
+            Ok((module, full_src))
         })();
-        let module = match module {
-            Ok(m) => m,
+        let (module, src) = match prepared {
+            Ok(v) => v,
             Err(e) => {
                 report.failed += cases.len().max(1);
                 report.log.push_str(&format!("FAIL  {:<16} {}\n", name, e));
@@ -295,6 +465,7 @@ fn run_native(
         for a in &case.args {
             match a {
                 ArgSpec::Int(v) => argv.push(*v),
+                ArgSpec::Float(_) => unreachable!("float args are wrapped"),
                 ArgSpec::ArrI64(vals) => {
                     bufs64.push(vals.clone());
                     argv.push(bufs64.last().unwrap().as_ptr() as i64);
@@ -367,6 +538,7 @@ fn run_wasm(
                     };
                     spec.push_str(&format!("{{\"t\":\"{}\",\"v\":\"{}\"}}", t, v));
                 }
+                ArgSpec::Float(_) => unreachable!("float args are wrapped"),
                 ArgSpec::ArrI64(vals) => {
                     let vs: Vec<String> = vals.iter().map(|v| format!("\"{}\"", v)).collect();
                     spec.push_str(&format!("{{\"t\":\"ptr\",\"a64\":[{}]}}", vs.join(",")));
@@ -526,6 +698,7 @@ fn gen_driver(
                     let ty = pty.name();
                     argv.push(tmp(&mut s, ty, format!("iconst {}", v)));
                 }
+                ArgSpec::Float(_) => unreachable!("float args are wrapped"),
                 ArgSpec::ArrI64(vals) => {
                     heap = (heap + 7) & !7;
                     let base = heap;
@@ -679,9 +852,15 @@ fn run_riscv(
             (SLLI, [2, 2, 8]),
             (ADDI, [2, 2, 0x80]),
             (SLLI, [2, 2, 16]),
+            // FPUs power up off: set mstatus.FS (bits 13-14) via t0
+            (ADDI, [5, 0, 0x600]),
+            (SLLI, [5, 5, 4]),
         ] {
             bin.extend(enc.encode(t, &v)?.to_le_bytes());
         }
+        bin.extend(
+            enc.encode("csrrs {r}, mstatus, {r}", &[0, 5])?.to_le_bytes(),
+        );
         bin.extend(&compiled.code);
         Ok(bin)
     })();
@@ -742,6 +921,13 @@ fn run_arm_qemu(
                 .to_le_bytes(),
         );
         bin.extend(enc.encode("mov sp, x29", &[])?.to_le_bytes());
+        // FPUs power up off: CPACR_EL1.FPEN = 0b11 (bits 20-21), then isb
+        bin.extend(
+            enc.encode("movz {x}, #{i 0..65535}, lsl #16", &[9, 0x30])?
+                .to_le_bytes(),
+        );
+        bin.extend(enc.encode("msr cpacr_el1, {x}", &[9])?.to_le_bytes());
+        bin.extend(enc.encode("isb", &[])?.to_le_bytes());
         let preamble = bin.len();
         bin.extend(&compiled.code);
         // patch the exit stub
@@ -811,25 +997,39 @@ mod tests {
     fn regression_suite_every_level() {
         // any prefix of the pass pipeline must be a correct stopping point
         for level in 0..=crate::opt::MAX_LEVEL {
-            let report = super::run_dir_at("suite", super::Backend::Native, level, None)
+            let report = super::run_dir_at("suite", super::Backend::Native, level, None, None)
                 .expect("suite runs");
             assert_eq!(report.failed, 0, "at level {}:\n{}", level, report.log);
         }
     }
 
     #[test]
-    fn regression_suite_both_int_policies() {
+    fn regression_suite_all_policies() {
         // abstract-typed programs must behave identically under every
         // replacement policy (concrete-typed programs are unaffected)
-        for int in [crate::ssa::Type::I32, crate::ssa::Type::I64] {
+        use crate::ssa::Type;
+        for (int, float) in [
+            (Type::I32, Type::F32),
+            (Type::I32, Type::F64),
+            (Type::I64, Type::F32),
+            (Type::I64, Type::F64),
+        ] {
             let report = super::run_dir_at(
                 "suite",
                 super::Backend::Native,
                 crate::opt::MAX_LEVEL,
                 Some(int),
+                Some(float),
             )
             .expect("suite runs");
-            assert_eq!(report.failed, 0, "with int={}:\n{}", int.name(), report.log);
+            assert_eq!(
+                report.failed,
+                0,
+                "with int={} float={}:\n{}",
+                int.name(),
+                float.name(),
+                report.log
+            );
         }
     }
 

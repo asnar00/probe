@@ -228,6 +228,9 @@ fn norm(ty: Type, v: i64) -> i64 {
 }
 
 fn fold_bin(op: BinOp, ty: Type, a: i64, b: i64) -> Option<i64> {
+    if op.is_float() {
+        return None; // float folding: not yet (rounding-mode care needed)
+    }
     let v = if ty == Type::I32 {
         let (a, b) = (a as i32, b as i32);
         let r: i32 = match op {
@@ -246,6 +249,7 @@ fn fold_bin(op: BinOp, ty: Type, a: i64, b: i64) -> Option<i64> {
             BinOp::Shl => a.wrapping_shl(b as u32 & 31),
             BinOp::LShr => ((a as u32) >> (b as u32 & 31)) as i32,
             BinOp::AShr => a >> (b as u32 & 31),
+            _ => unreachable!(),
         };
         r as i64
     } else {
@@ -265,6 +269,7 @@ fn fold_bin(op: BinOp, ty: Type, a: i64, b: i64) -> Option<i64> {
             BinOp::Shl => a.wrapping_shl(b as u32 & 63),
             BinOp::LShr => ((a as u64) >> (b as u64 & 63)) as i64,
             BinOp::AShr => a >> (b as u64 & 63),
+            _ => unreachable!(),
         }
     };
     Some(norm(ty, v))
@@ -321,7 +326,9 @@ fn dce(func: &mut Function) {
     }
     let removable = |inst: &Inst| match inst {
         Inst::IConst { .. }
+        | Inst::FConst { .. }
         | Inst::ICmp { .. }
+        | Inst::FCmp { .. }
         | Inst::Cast { .. }
         | Inst::PtrAdd { .. }
         | Inst::Load { .. } => true,

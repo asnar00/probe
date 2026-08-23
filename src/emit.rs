@@ -381,6 +381,10 @@ pub struct Compiled {
 // templates, named once (the strings must match the seed file exactly)
 const LDR_SP: &str = "ldr {x}, [sp, #{i 0..32760 /8}]";
 const STR_SP: &str = "str {x}, [sp, #{i 0..32760 /8}]";
+const LDR_SP_D: &str = "ldr {d}, [sp, #{i 0..32760 /8}]";
+const STR_SP_D: &str = "str {d}, [sp, #{i 0..32760 /8}]";
+const LDR_SP_S: &str = "ldr {s}, [sp, #{i 0..16380 /4}]";
+const STR_SP_S: &str = "str {s}, [sp, #{i 0..16380 /4}]";
 const CSET: &str = "cset {x}, {e eq|ne|lt|le|gt|ge|lo|ls|hi|hs}";
 
 fn cond_name(c: Cond) -> &'static str {
@@ -473,14 +477,31 @@ impl FnEmit<'_> {
         self.spill_base + 8 * idx as i64
     }
 
+    fn slot_ldr(&self, ty: Type) -> &'static str {
+        match ty {
+            Type::F64 => LDR_SP_D,
+            Type::F32 => LDR_SP_S,
+            _ => LDR_SP,
+        }
+    }
+
+    fn slot_str(&self, ty: Type) -> &'static str {
+        match ty {
+            Type::F64 => STR_SP_D,
+            Type::F32 => STR_SP_S,
+            _ => STR_SP,
+        }
+    }
+
     /// register currently holding v: its allocated register, or the spill
-    /// slot loaded into `scratch`
+    /// slot loaded into `scratch` (a register of v's class)
     fn src_reg(&mut self, v: ValueId, scratch: i64) -> Result<i64, String> {
         match self.alloc.loc[v.0 as usize] {
             crate::regalloc::Loc::Reg(r) => Ok(r),
             crate::regalloc::Loc::Slot(i) => {
                 let off = self.slot_off(i);
-                self.emit(LDR_SP, &[scratch, off])?;
+                let t = self.slot_ldr(self.func.ty(v));
+                self.emit(t, &[scratch, off])?;
                 Ok(scratch)
             }
         }
@@ -498,7 +519,8 @@ impl FnEmit<'_> {
     fn finish(&mut self, v: ValueId, reg: i64) -> Result<(), String> {
         if let crate::regalloc::Loc::Slot(i) = self.alloc.loc[v.0 as usize] {
             let off = self.slot_off(i);
-            self.emit(STR_SP, &[reg, off])?;
+            let t = self.slot_str(self.func.ty(v));
+            self.emit(t, &[reg, off])?;
         }
         Ok(())
     }
@@ -510,26 +532,45 @@ impl FnEmit<'_> {
         Ok(())
     }
 
-    /// place v into a specific register (call args, return values, staging).
-    /// Targets are x0..x17; sources are pool registers or slots — disjoint,
-    /// so a sequence of these never clobbers a pending source.
+    fn fmov(&mut self, dst: i64, src: i64) -> Result<(), String> {
+        if dst != src {
+            self.emit("fmov {d}, {d}", &[dst, src])?;
+        }
+        Ok(())
+    }
+
+    fn class_mov(&mut self, float: bool, dst: i64, src: i64) -> Result<(), String> {
+        if float {
+            self.fmov(dst, src)
+        } else {
+            self.mov(dst, src)
+        }
+    }
+
+    /// place v into a specific register of its own class (call args, return
+    /// values, staging). Targets are x0..x17 / d0..d7; sources are pool
+    /// registers or slots — disjoint, so sequences never clobber.
     fn value_to(&mut self, target: i64, v: ValueId) -> Result<(), String> {
+        let float = self.func.ty(v).is_float();
         match self.alloc.loc[v.0 as usize] {
-            crate::regalloc::Loc::Reg(r) => self.mov(target, r),
+            crate::regalloc::Loc::Reg(r) => self.class_mov(float, target, r),
             crate::regalloc::Loc::Slot(i) => {
                 let off = self.slot_off(i);
-                self.emit(LDR_SP, &[target, off]).map(|_| ())
+                let t = self.slot_ldr(self.func.ty(v));
+                self.emit(t, &[target, off]).map(|_| ())
             }
         }
     }
 
-    /// store a specific register into v's location
+    /// store a specific register (of v's class) into v's location
     fn value_from(&mut self, v: ValueId, source: i64) -> Result<(), String> {
+        let float = self.func.ty(v).is_float();
         match self.alloc.loc[v.0 as usize] {
-            crate::regalloc::Loc::Reg(r) => self.mov(r, source),
+            crate::regalloc::Loc::Reg(r) => self.class_mov(float, r, source),
             crate::regalloc::Loc::Slot(i) => {
                 let off = self.slot_off(i);
-                self.emit(STR_SP, &[source, off]).map(|_| ())
+                let t = self.slot_str(self.func.ty(v));
+                self.emit(t, &[source, off]).map(|_| ())
             }
         }
     }
@@ -555,25 +596,32 @@ impl FnEmit<'_> {
         Ok(())
     }
 
-    /// one location-to-location move (registers or spill slots)
+    /// one location-to-location move; `float` selects the register class
+    /// (slot<->slot moves are class-agnostic byte copies)
     fn loc_move(
         &mut self,
+        float: bool,
         dst: crate::regalloc::Loc,
         src: crate::regalloc::Loc,
     ) -> Result<(), String> {
         use crate::regalloc::Loc;
+        let (ldr, str_) = if float {
+            (LDR_SP_D, STR_SP_D)
+        } else {
+            (LDR_SP, STR_SP)
+        };
         match (dst, src) {
-            (Loc::Reg(d), Loc::Reg(s)) => self.mov(d, s),
+            (Loc::Reg(d), Loc::Reg(s)) => self.class_mov(float, d, s),
             (Loc::Reg(d), Loc::Slot(s)) => {
                 let off = self.slot_off(s);
-                self.emit(LDR_SP, &[d, off]).map(|_| ())
+                self.emit(ldr, &[d, off]).map(|_| ())
             }
             (Loc::Slot(d), Loc::Reg(s)) => {
                 let off = self.slot_off(d);
-                self.emit(STR_SP, &[s, off]).map(|_| ())
+                self.emit(str_, &[s, off]).map(|_| ())
             }
             (Loc::Slot(d), Loc::Slot(s)) => {
-                // transit through x10; x9 stays free for cycle breaking
+                // transit through x10; the cycle scratches stay free
                 self.emit(LDR_SP, &[10, self.slot_off(s)])?;
                 self.emit(STR_SP, &[10, self.slot_off(d)]).map(|_| ())
             }
@@ -582,29 +630,33 @@ impl FnEmit<'_> {
 
     /// move branch arguments into the target block's parameter locations:
     /// a proper parallel move — emit moves whose destination nobody still
-    /// reads, break cycles (swaps, rotations) by stashing one source in x9
+    /// reads, break cycles by stashing one source in a class scratch
+    /// (x9 for integers, d16 for floats)
     fn branch_args(&mut self, target: BlockId, args: &[ValueId]) -> Result<(), String> {
         use crate::regalloc::Loc;
         let params: Vec<ValueId> = self.func.blocks[target.0 as usize].params.clone();
-        let mut pending: Vec<(Loc, Loc)> = params
-            .iter()
-            .zip(args)
-            .map(|(&p, &a)| (self.alloc.loc[p.0 as usize], self.alloc.loc[a.0 as usize]))
-            .filter(|(d, s)| d != s)
-            .collect();
-        let scratch = Loc::Reg(9);
-        while !pending.is_empty() {
-            if let Some(i) = (0..pending.len())
-                .find(|&i| !pending.iter().any(|&(_, s)| s == pending[i].0))
-            {
-                let (d, s) = pending.swap_remove(i);
-                self.loc_move(d, s)?;
-            } else {
-                // pure cycle: stash one source in the scratch register
-                let s = pending[0].1;
-                self.loc_move(scratch, s)?;
-                for m in pending.iter_mut().filter(|m| m.1 == s) {
-                    m.1 = scratch;
+        // classes never collide on locations, so resolve each class alone
+        for float in [false, true] {
+            let mut pending: Vec<(Loc, Loc)> = params
+                .iter()
+                .zip(args)
+                .filter(|(p, _)| self.func.ty(**p).is_float() == float)
+                .map(|(p, a)| (self.alloc.loc[p.0 as usize], self.alloc.loc[a.0 as usize]))
+                .filter(|(d, s)| d != s)
+                .collect();
+            let scratch = Loc::Reg(if float { 16 } else { 9 });
+            while !pending.is_empty() {
+                if let Some(i) = (0..pending.len())
+                    .find(|&i| !pending.iter().any(|&(_, s)| s == pending[i].0))
+                {
+                    let (d, s) = pending.swap_remove(i);
+                    self.loc_move(float, d, s)?;
+                } else {
+                    let s = pending[0].1;
+                    self.loc_move(float, scratch, s)?;
+                    for m in pending.iter_mut().filter(|m| m.1 == s) {
+                        m.1 = scratch;
+                    }
                 }
             }
         }
@@ -612,7 +664,7 @@ impl FnEmit<'_> {
     }
 
     fn epilogue(&mut self) -> Result<(), String> {
-        for (k, pair) in self.alloc.used_regs.clone().chunks(2).enumerate() {
+        for (k, pair) in self.alloc.used_int.clone().chunks(2).enumerate() {
             match pair {
                 [a, b] => {
                     self.emit("ldp {x}, {x}, [sp, #{i -512..504 /8}]", &[*a, *b, 16 + 16 * k as i64])?;
@@ -622,6 +674,10 @@ impl FnEmit<'_> {
                 }
                 _ => unreachable!(),
             }
+        }
+        let fbase = 16 + 8 * self.alloc.used_int.len() as i64;
+        for (k, &r) in self.alloc.used_float.clone().iter().enumerate() {
+            self.emit(LDR_SP_D, &[r, fbase + 8 * k as i64])?;
         }
         self.emit("ldp {x}, {x}, [sp, #{i -512..504 /8}]", &[29, 30, 0])?;
         self.emit("add sp, sp, #{i 0..4095}", &[self.frame])?;
@@ -641,9 +697,11 @@ macro_rules! xw {
     };
 }
 
-/// pool for the allocator: callee-saved x19..x28 — values placed here
-/// survive calls by construction, so call sites need no spill logic
-const REG_POOL: &[i64] = &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
+/// pools for the allocator: callee-saved x19..x28 and d8..d15 — values
+/// placed there survive calls by construction, so call sites need no
+/// spill logic
+const INT_POOL: &[i64] = &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
+const FLOAT_POOL: &[i64] = &[8, 9, 10, 11, 12, 13, 14, 15];
 
 /// Compile one function into a standalone buffer that will live at arena
 /// offset `base`; calls resolve through `resolve` (name -> arena offset of
@@ -677,8 +735,8 @@ fn compile_function(
     code: &mut Vec<u8>,
     call_fixups: &mut Vec<Fixup>,
 ) -> Result<(), String> {
-    let alloc = crate::regalloc::allocate(func, REG_POOL);
-    let nsaved = alloc.used_regs.len() as i64;
+    let alloc = crate::regalloc::allocate(func, INT_POOL, FLOAT_POOL);
+    let nsaved = (alloc.used_int.len() + alloc.used_float.len()) as i64;
     let spill_base = 16 + 8 * nsaved;
     let frame = (spill_base + 8 * alloc.nslots as i64 + 15) & !15;
     if frame > 4095 {
@@ -703,7 +761,7 @@ fn compile_function(
     e.emit("sub sp, sp, #{i 0..4095}", &[frame])?;
     e.emit("stp {x}, {x}, [sp, #{i -512..504 /8}]", &[29, 30, 0])?;
     e.emit("mov x29, sp", &[])?;
-    for (k, pair) in alloc.used_regs.chunks(2).enumerate() {
+    for (k, pair) in alloc.used_int.chunks(2).enumerate() {
         match pair {
             [a, b] => {
                 e.emit("stp {x}, {x}, [sp, #{i -512..504 /8}]", &[*a, *b, 16 + 16 * k as i64])?;
@@ -714,8 +772,19 @@ fn compile_function(
             _ => unreachable!(),
         }
     }
-    for (i, &p) in func.params.iter().enumerate() {
-        e.value_from(p, i as i64)?;
+    let fbase = 16 + 8 * alloc.used_int.len() as i64;
+    for (k, &r) in alloc.used_float.iter().enumerate() {
+        e.emit(STR_SP_D, &[r, fbase + 8 * k as i64])?;
+    }
+    let (mut gi, mut fi) = (0i64, 0i64);
+    for &p in &func.params {
+        if func.ty(p).is_float() {
+            e.value_from(p, fi)?;
+            fi += 1;
+        } else {
+            e.value_from(p, gi)?;
+            gi += 1;
+        }
     }
 
     for (bi, block) in func.blocks.iter().enumerate() {
@@ -773,6 +842,96 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             }
             e.finish(*dst, rd)
         }
+        Inst::FConst { dst, bits } => {
+            // build the bit pattern in x9, move it into the float register
+            let rd = e.dst_reg(*dst, 16);
+            if e.func.ty(*dst) == Type::F64 {
+                let v = *bits;
+                let mut first = true;
+                let movz = [
+                    "movz {x}, #{i 0..65535}",
+                    "movz {x}, #{i 0..65535}, lsl #16",
+                    "movz {x}, #{i 0..65535}, lsl #32",
+                    "movz {x}, #{i 0..65535}, lsl #48",
+                ];
+                let movk = [
+                    "movk {x}, #{i 0..65535}",
+                    "movk {x}, #{i 0..65535}, lsl #16",
+                    "movk {x}, #{i 0..65535}, lsl #32",
+                    "movk {x}, #{i 0..65535}, lsl #48",
+                ];
+                for i in 0..4 {
+                    let c = ((v >> (16 * i)) & 0xffff) as i64;
+                    if c == 0 {
+                        continue;
+                    }
+                    e.emit(if first { movz[i] } else { movk[i] }, &[9, c])?;
+                    first = false;
+                }
+                if first {
+                    e.emit(movz[0], &[9, 0])?;
+                }
+                e.emit("fmov {d}, {x}", &[rd, 9])?;
+            } else {
+                let v = (f64::from_bits(*bits) as f32).to_bits() as u64;
+                e.emit("movz {x}, #{i 0..65535}", &[9, (v & 0xffff) as i64])?;
+                if v >> 16 != 0 {
+                    e.emit("movk {x}, #{i 0..65535}, lsl #16", &[9, (v >> 16) as i64])?;
+                }
+                e.emit("fmov {s}, {w}", &[rd, 9])?;
+            }
+            e.finish(*dst, rd)
+        }
+        Inst::Bin { op, dst, lhs, rhs } if op.is_float() => {
+            let ty = e.func.ty(*dst);
+            let rl = e.src_reg(*lhs, 16)?;
+            let rr = e.src_reg(*rhs, 17)?;
+            let rd = e.dst_reg(*dst, 16);
+            let t = match (op, ty == Type::F64) {
+                (BinOp::FAdd, true) => "fadd {d}, {d}, {d}",
+                (BinOp::FSub, true) => "fsub {d}, {d}, {d}",
+                (BinOp::FMul, true) => "fmul {d}, {d}, {d}",
+                (BinOp::FDiv, true) => "fdiv {d}, {d}, {d}",
+                (BinOp::FAdd, false) => "fadd {s}, {s}, {s}",
+                (BinOp::FSub, false) => "fsub {s}, {s}, {s}",
+                (BinOp::FMul, false) => "fmul {s}, {s}, {s}",
+                (BinOp::FDiv, false) => "fdiv {s}, {s}, {s}",
+                _ => unreachable!(),
+            };
+            e.emit(t, &[rd, rl, rr])?;
+            e.finish(*dst, rd)
+        }
+        Inst::FCmp {
+            cond,
+            dst,
+            lhs,
+            rhs,
+        } => {
+            use crate::ssa::FCond;
+            let ty = e.func.ty(*lhs);
+            let rl = e.src_reg(*lhs, 16)?;
+            let rr = e.src_reg(*rhs, 17)?;
+            // only conditions arm can cset directly; olt/ole flip operands
+            let (cc, swap) = match cond {
+                FCond::Oeq => ("eq", false),
+                FCond::Une => ("ne", false),
+                FCond::Ogt => ("gt", false),
+                FCond::Oge => ("ge", false),
+                FCond::Olt => ("gt", true),
+                FCond::Ole => ("ge", true),
+            };
+            let t = if ty == Type::F64 {
+                "fcmp {d}, {d}"
+            } else {
+                "fcmp {s}, {s}"
+            };
+            let (a, b) = if swap { (rr, rl) } else { (rl, rr) };
+            e.emit(t, &[a, b])?;
+            let rd = e.dst_reg(*dst, 9);
+            let ci = e.enc.enum_index(CSET, cc)?;
+            e.emit(CSET, &[rd, ci])?;
+            e.finish(*dst, rd)
+        }
         Inst::Bin { op, dst, lhs, rhs } => {
             let ty = e.func.ty(*dst);
             let rl = e.src_reg(*lhs, 9)?;
@@ -791,6 +950,9 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                 BinOp::LShr => Some(xw!(ty, "lsr {x}, {x}, {x}", "lsr {w}, {w}, {w}")),
                 BinOp::AShr => Some(xw!(ty, "asr {x}, {x}, {x}", "asr {w}, {w}, {w}")),
                 BinOp::SRem | BinOp::URem => None,
+                BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv => {
+                    unreachable!("float ops matched by the guard above")
+                }
             };
             match simple {
                 Some(t) => {
@@ -853,6 +1015,68 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                 (CastOp::Trunc, _, Type::I1) => {
                     e.emit("and {x}, {x}, #1", &[rd, rs])?;
                 }
+                (CastOp::Sitofp, _, _) | (CastOp::Uitofp, _, _) => {
+                    let rs = e.src_reg(*src, 9)?;
+                    let rdf = e.dst_reg(*dst, 16);
+                    let signed = matches!(op, CastOp::Sitofp);
+                    let t = match (from, to, signed) {
+                        (Type::I64, Type::F64, true) => "scvtf {d}, {x}",
+                        (Type::I32, Type::F64, true) => "scvtf {d}, {w}",
+                        (Type::I64, Type::F32, true) => "scvtf {s}, {x}",
+                        (Type::I32, Type::F32, true) => "scvtf {s}, {w}",
+                        (Type::I64, Type::F64, false) => "ucvtf {d}, {x}",
+                        (Type::I32, Type::F64, false) => "ucvtf {d}, {w}",
+                        (Type::I64, Type::F32, false) => "ucvtf {s}, {x}",
+                        (Type::I32, Type::F32, false) => "ucvtf {s}, {w}",
+                        _ => unreachable!(),
+                    };
+                    e.emit(t, &[rdf, rs])?;
+                    return e.finish(*dst, rdf);
+                }
+                (CastOp::Fptosi, _, _) | (CastOp::Fptoui, _, _) => {
+                    let rs = e.src_reg(*src, 16)?;
+                    let rdi = e.dst_reg(*dst, 9);
+                    let signed = matches!(op, CastOp::Fptosi);
+                    let t = match (from, to, signed) {
+                        (Type::F64, Type::I64, true) => "fcvtzs {x}, {d}",
+                        (Type::F64, Type::I32, true) => "fcvtzs {w}, {d}",
+                        (Type::F32, Type::I64, true) => "fcvtzs {x}, {s}",
+                        (Type::F32, Type::I32, true) => "fcvtzs {w}, {s}",
+                        (Type::F64, Type::I64, false) => "fcvtzu {x}, {d}",
+                        (Type::F64, Type::I32, false) => "fcvtzu {w}, {d}",
+                        (Type::F32, Type::I64, false) => "fcvtzu {x}, {s}",
+                        (Type::F32, Type::I32, false) => "fcvtzu {w}, {s}",
+                        _ => unreachable!(),
+                    };
+                    e.emit(t, &[rdi, rs])?;
+                    return e.finish(*dst, rdi);
+                }
+                (CastOp::Fpromote, _, _) => {
+                    let rs = e.src_reg(*src, 16)?;
+                    let rdf = e.dst_reg(*dst, 17);
+                    e.emit("fcvt {d}, {s}", &[rdf, rs])?;
+                    return e.finish(*dst, rdf);
+                }
+                (CastOp::Fdemote, _, _) => {
+                    let rs = e.src_reg(*src, 16)?;
+                    let rdf = e.dst_reg(*dst, 17);
+                    e.emit("fcvt {s}, {d}", &[rdf, rs])?;
+                    return e.finish(*dst, rdf);
+                }
+                (CastOp::Bitcast, _, _) => {
+                    let (sf, df) = (from.is_float(), to.is_float());
+                    let rs = e.src_reg(*src, if sf { 16 } else { 9 })?;
+                    let rdc = e.dst_reg(*dst, if df { 16 } else { 9 });
+                    let t = match (from, to) {
+                        (Type::I64, Type::F64) => "fmov {d}, {x}",
+                        (Type::F64, Type::I64) => "fmov {x}, {d}",
+                        (Type::I32, Type::F32) => "fmov {s}, {w}",
+                        (Type::F32, Type::I32) => "fmov {w}, {s}",
+                        _ => unreachable!(),
+                    };
+                    e.emit(t, &[rdc, rs])?;
+                    return e.finish(*dst, rdc);
+                }
                 _ => return Err(format!("unsupported cast {:?} -> {:?}", from, to)),
             }
             e.finish(*dst, rd)
@@ -860,30 +1084,27 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
         Inst::Load { dst, addr } => {
             let ty = e.func.ty(*dst);
             let ra = e.src_reg(*addr, 9)?;
-            let rd = e.dst_reg(*dst, 10);
-            e.emit(
-                xw!(
-                    ty,
-                    "ldr {x}, [{x}, #{i 0..32760 /8}]",
-                    "ldr {w}, [{x}, #{i 0..16380 /4}]"
-                ),
-                &[rd, ra, 0],
-            )?;
+            let rd = e.dst_reg(*dst, if ty.is_float() { 16 } else { 10 });
+            let t = match ty {
+                Type::F64 => "ldr {d}, [{x}, #{i 0..32760 /8}]",
+                Type::F32 => "ldr {s}, [{x}, #{i 0..16380 /4}]",
+                Type::I32 => "ldr {w}, [{x}, #{i 0..16380 /4}]",
+                _ => "ldr {x}, [{x}, #{i 0..32760 /8}]",
+            };
+            e.emit(t, &[rd, ra, 0])?;
             e.finish(*dst, rd)
         }
         Inst::Store { val, addr } => {
             let ty = e.func.ty(*val);
-            let rv = e.src_reg(*val, 10)?;
+            let rv = e.src_reg(*val, if ty.is_float() { 16 } else { 10 })?;
             let ra = e.src_reg(*addr, 9)?;
-            e.emit(
-                xw!(
-                    ty,
-                    "str {x}, [{x}, #{i 0..32760 /8}]",
-                    "str {w}, [{x}, #{i 0..16380 /4}]"
-                ),
-                &[rv, ra, 0],
-            )
-            .map(|_| ())
+            let t = match ty {
+                Type::F64 => "str {d}, [{x}, #{i 0..32760 /8}]",
+                Type::F32 => "str {s}, [{x}, #{i 0..16380 /4}]",
+                Type::I32 => "str {w}, [{x}, #{i 0..16380 /4}]",
+                _ => "str {x}, [{x}, #{i 0..32760 /8}]",
+            };
+            e.emit(t, &[rv, ra, 0]).map(|_| ())
         }
         Inst::PtrAdd { dst, base, off } => {
             let rb = e.src_reg(*base, 9)?;
@@ -896,8 +1117,15 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             if args.len() > 8 {
                 return Err("more than 8 call arguments not supported yet".into());
             }
-            for (j, &a) in args.iter().enumerate() {
-                e.value_to(j as i64, a)?;
+            let (mut gi, mut fi) = (0i64, 0i64);
+            for &a in args {
+                if e.func.ty(a).is_float() {
+                    e.value_to(fi, a)?;
+                    fi += 1;
+                } else {
+                    e.value_to(gi, a)?;
+                    gi += 1;
+                }
             }
             let at = e.emit("bl #{i -134217728..134217724 /4}", &[0])?;
             e.fixups.push(Fixup {
@@ -907,8 +1135,15 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                 imm_slot: 0,
                 target: FixTarget::Func(callee.clone()),
             });
-            for (j, &d) in dsts.iter().enumerate() {
-                e.value_from(d, j as i64)?;
+            let (mut gi, mut fi) = (0i64, 0i64);
+            for &d in dsts {
+                if e.func.ty(d).is_float() {
+                    e.value_from(d, fi)?;
+                    fi += 1;
+                } else {
+                    e.value_from(d, gi)?;
+                    gi += 1;
+                }
             }
             Ok(())
         }
@@ -941,8 +1176,15 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             if vals.len() > 8 {
                 return Err("more than 8 return values not supported yet".into());
             }
-            for (j, &v) in vals.iter().enumerate() {
-                e.value_to(j as i64, v)?;
+            let (mut gi, mut fi) = (0i64, 0i64);
+            for &v in vals {
+                if e.func.ty(v).is_float() {
+                    e.value_to(fi, v)?;
+                    fi += 1;
+                } else {
+                    e.value_to(gi, v)?;
+                    gi += 1;
+                }
             }
             e.epilogue()
         }

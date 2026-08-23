@@ -35,11 +35,11 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `i32` | 32-bit integer                                           |
 | `i64` | 64-bit integer                                           |
 | `ptr` | pointer (64-bit on our target)                           |
+| `f32` | 32-bit IEEE float                                        |
+| `f64` | 64-bit IEEE float                                        |
 | `int` | abstract integer — resolved to a concrete width by the   |
 |       | target's replacement policy (see *Abstract numeric types*) |
-
-Floats are reserved for a later version (`float` will join `int` as an
-abstract type when they land).
+| `float` | abstract float — resolved like `int` (`--float=f32|f64`) |
 
 ## Structure
 
@@ -102,6 +102,16 @@ Both operands and the result must all have the same type (`i32` or `i64`).
 %v: i64 = ashr %a, %b       ; arithmetic (sign-fill) shift right
 ```
 
+### Float arithmetic
+
+Both operands and the result must share a float type. Float literals
+require a decimal point (or exponent); `fconst` also accepts integers.
+
+```
+%v: f64 = fconst 2.5
+%v: f64 = fadd %a, %b       ; also fsub, fmul, fdiv
+```
+
 ### Comparison
 
 Operands must share a type (`i32`, `i64`, or `ptr`); the result is `i1`. The
@@ -125,6 +135,24 @@ how new bits are filled.
 ```
 
 Widths are ranked `i1 < i32 < i64`; `ptr` takes no part in width changes.
+
+Float comparisons are *ordered* (false when either side is NaN), except
+`une`, which is true on NaN:
+
+```
+%c: i1 = fcmp.oeq %a, %b    ; also: une olt ole ogt oge
+```
+
+Float conversions carry direction and signedness in the opcode; widths
+come from the value types as usual:
+
+```
+%f: f64 = sitofp %n         ; signed int -> float   (uitofp: unsigned)
+%n: i64 = fptosi %f         ; float -> int, rounds toward zero (fptoui)
+%d: f64 = fpromote %s       ; f32 -> f64
+%s: f32 = fdemote %d        ; f64 -> f32
+%b: i64 = bitcast %f        ; same-width bit reinterpretation
+```
 
 ### Memory
 
@@ -208,7 +236,9 @@ fn @gcd(%a: int, %b: int) -> int {     ; width chosen per target/policy
   policy. Policy-portable code keeps casts among concrete types.
 - Memory keeps concrete types in portable code: a load of `int` changes
   access width with the policy.
-- `float` will join `int` when concrete float types land.
+- `float` resolves the same way (`f64` by default on every target;
+  `--float=f32` for size). Policy-portable abstract-float code sticks to
+  values exact in both widths.
 
 ## Structured control flow
 

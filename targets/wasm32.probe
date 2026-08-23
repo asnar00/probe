@@ -94,3 +94,58 @@ inst br_if {i 0..12} :: sig=(param i32) (result i64) :: pre=block, block, block,
 inst return :: sig=(param i64) (result i64) :: pre=local.get 0
 inst unreachable :: sig=(result i64)
 inst call {i 0..129} :: sig=(result i64) :: preamble=130 :: post=i64.const 0
+
+; --- floating point ---
+inst f64.const {f64} :: sig=(result f64)
+inst f32.const {f32} :: sig=(result f32)
+
+inst f64.add :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
+inst f64.sub :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
+inst f64.mul :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
+inst f64.div :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
+inst f32.add :: sig=(param f32 f32) (result f32) :: pre=local.get 0, local.get 1
+inst f32.sub :: sig=(param f32 f32) (result f32) :: pre=local.get 0, local.get 1
+inst f32.mul :: sig=(param f32 f32) (result f32) :: pre=local.get 0, local.get 1
+inst f32.div :: sig=(param f32 f32) (result f32) :: pre=local.get 0, local.get 1
+
+inst f64.eq :: sig=(param f64 f64) (result i32) :: pre=local.get 0, local.get 1
+inst f64.ne :: sig=(param f64 f64) (result i32) :: pre=local.get 0, local.get 1
+inst f64.lt :: sig=(param f64 f64) (result i32) :: pre=local.get 0, local.get 1
+inst f64.le :: sig=(param f64 f64) (result i32) :: pre=local.get 0, local.get 1
+inst f64.gt :: sig=(param f64 f64) (result i32) :: pre=local.get 0, local.get 1
+inst f64.ge :: sig=(param f64 f64) (result i32) :: pre=local.get 0, local.get 1
+inst f32.eq :: sig=(param f32 f32) (result i32) :: pre=local.get 0, local.get 1
+inst f32.ne :: sig=(param f32 f32) (result i32) :: pre=local.get 0, local.get 1
+inst f32.lt :: sig=(param f32 f32) (result i32) :: pre=local.get 0, local.get 1
+inst f32.le :: sig=(param f32 f32) (result i32) :: pre=local.get 0, local.get 1
+inst f32.gt :: sig=(param f32 f32) (result i32) :: pre=local.get 0, local.get 1
+inst f32.ge :: sig=(param f32 f32) (result i32) :: pre=local.get 0, local.get 1
+
+inst f64.convert_i64_s :: sig=(param i64) (result f64) :: pre=local.get 0
+inst f64.convert_i64_u :: sig=(param i64) (result f64) :: pre=local.get 0
+inst f64.convert_i32_s :: sig=(param i32) (result f64) :: pre=local.get 0
+inst f64.convert_i32_u :: sig=(param i32) (result f64) :: pre=local.get 0
+inst f32.convert_i64_s :: sig=(param i64) (result f32) :: pre=local.get 0
+inst f32.convert_i64_u :: sig=(param i64) (result f32) :: pre=local.get 0
+inst f32.convert_i32_s :: sig=(param i32) (result f32) :: pre=local.get 0
+inst f32.convert_i32_u :: sig=(param i32) (result f32) :: pre=local.get 0
+inst i64.trunc_f64_s :: sig=(param f64) (result i64) :: pre=local.get 0
+inst i64.trunc_f64_u :: sig=(param f64) (result i64) :: pre=local.get 0
+inst i32.trunc_f64_s :: sig=(param f64) (result i32) :: pre=local.get 0
+inst i32.trunc_f64_u :: sig=(param f64) (result i32) :: pre=local.get 0
+inst i64.trunc_f32_s :: sig=(param f32) (result i64) :: pre=local.get 0
+inst i64.trunc_f32_u :: sig=(param f32) (result i64) :: pre=local.get 0
+inst i32.trunc_f32_s :: sig=(param f32) (result i32) :: pre=local.get 0
+inst i32.trunc_f32_u :: sig=(param f32) (result i32) :: pre=local.get 0
+inst f64.promote_f32 :: sig=(param f32) (result f64) :: pre=local.get 0
+inst f32.demote_f64 :: sig=(param f64) (result f32) :: pre=local.get 0
+
+inst i64.reinterpret_f64 :: sig=(param f64) (result i64) :: pre=local.get 0
+inst f64.reinterpret_i64 :: sig=(param i64) (result f64) :: pre=local.get 0
+inst i32.reinterpret_f32 :: sig=(param f32) (result i32) :: pre=local.get 0
+inst f32.reinterpret_i32 :: sig=(param i32) (result f32) :: pre=local.get 0
+
+inst f64.load offset={i 0..1000000} :: sig=(param i32) (result f64) :: pre=local.get 0
+inst f64.store offset={i 0..1000000} :: sig=(param i32 f64) :: pre=local.get 0, local.get 1
+inst f32.load offset={i 0..1000000} :: sig=(param i32) (result f32) :: pre=local.get 0
+inst f32.store offset={i 0..1000000} :: sig=(param i32 f32) :: pre=local.get 0, local.get 1

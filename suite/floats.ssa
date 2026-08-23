@@ -1,0 +1,124 @@
+; floating point across every backend; comparisons are exact IEEE bits,
+; which +,-,*,/ guarantee deterministically on all targets
+;! favg 2.5 7.5 -> 5.0
+;! favg -1.0 4.0 -> 1.5
+;! fquad 2.0 -> 17.0
+;! fdiv2 7.0 2.0 -> 3.5
+;! fmax 2.5 -3.5 -> 2.5
+;! fmax -0.5 8.25 -> 8.25
+;! f2i 7.9 -> 7
+;! f2i -7.9 -> -7
+;! i2f 5 -> 5.0
+;! i2f -12 -> -12.0
+;! fbits 1.0 -> 4607182418800017408
+;! fround 2.75 -> 2.0
+;! fsum32 0.25 0.5 -> 0.75
+;! fpromo 0.5 -> 0.5
+;! floop 10 -> 5.5
+
+; (a + b) / 2
+fn @favg(%a: f64, %b: f64) -> f64 {
+^entry:
+    %s: f64 = fadd %a, %b
+    %two: f64 = fconst 2.0
+    %r: f64 = fdiv %s, %two
+    ret %r
+}
+
+; 3x^2 + 2x + 1
+fn @fquad(%x: f64) -> f64 {
+^entry:
+    %three: f64 = fconst 3.0
+    %two: f64 = fconst 2.0
+    %one: f64 = fconst 1.0
+    %xx: f64 = fmul %x, %x
+    %t1: f64 = fmul %three, %xx
+    %t2: f64 = fmul %two, %x
+    %s1: f64 = fadd %t1, %t2
+    %r: f64 = fadd %s1, %one
+    ret %r
+}
+
+fn @fdiv2(%a: f64, %b: f64) -> f64 {
+^entry:
+    %r: f64 = fdiv %a, %b
+    ret %r
+}
+
+; branches on float comparison
+fn @fmax(%a: f64, %b: f64) -> f64 {
+    %gt: i1 = fcmp.ogt %a, %b
+    %r: f64 = if %gt {
+        yield %a
+    } else {
+        yield %b
+    }
+    ret %r
+}
+
+; float -> int truncates toward zero on every target
+fn @f2i(%x: f64) -> i64 {
+^entry:
+    %r: i64 = fptosi %x
+    ret %r
+}
+
+fn @i2f(%n: i64) -> f64 {
+^entry:
+    %r: f64 = sitofp %n
+    ret %r
+}
+
+fn @fbits(%x: f64) -> i64 {
+^entry:
+    %r: i64 = bitcast %x
+    ret %r
+}
+
+; round toward zero, back to float: trunc(2.75) = 2.0
+fn @fround(%x: f64) -> f64 {
+^entry:
+    %i: i64 = fptosi %x
+    %r: f64 = sitofp %i
+    ret %r
+}
+
+; f32 arithmetic (exact values)
+fn @fsum32(%a: f32, %b: f32) -> f32 {
+^entry:
+    %r: f32 = fadd %a, %b
+    ret %r
+}
+
+; f32 -> f64 -> f32 round trip of an exact value
+fn @fpromo(%a: f32) -> f32 {
+^entry:
+    %w: f64 = fpromote %a
+    %two: f64 = fconst 2.0
+    %d: f64 = fmul %w, %two
+    %h: f64 = fconst 0.5
+    %d2: f64 = fmul %d, %h
+    %r: f32 = fdemote %d2
+    ret %r
+}
+
+; float accumulation in a loop with an int counter: sum of i/2 for i=1..n
+; wait: 1+2+..10 = 55, /10 = 5.5 -> mean of 1..n
+fn @floop(%n: i64) -> f64 {
+    %zero: i64 = iconst 0
+    %fz: f64 = fconst 0.0
+    %r: f64 = loop(%i: i64 = %zero, %acc: f64 = %fz) {
+        %done: i1 = icmp.sge %i, %n
+        if %done {
+            break %acc
+        }
+        %one: i64 = iconst 1
+        %i2: i64 = iadd %i, %one
+        %fi: f64 = sitofp %i2
+        %acc2: f64 = fadd %acc, %fi
+        continue %i2, %acc2
+    }
+    %fn_: f64 = sitofp %n
+    %m: f64 = fdiv %r, %fn_
+    ret %m
+}

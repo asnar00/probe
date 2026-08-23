@@ -78,7 +78,7 @@ Backend sketch:
 - External calls (libc symbols) from JIT'd code.
 - An `alloca`-style op for function-local scratch memory (today all memory
   comes from the caller).
-- Floats (`f32`/`f64`) — types are reserved in the spec; every target has
-  probeable instruction groups for them. When they land, abstract `float`
-  joins `int` in the replacement policy (one new Policy field plus a
-  resolution arm).
+- Float folding in const-fold (needs rounding-mode care), and fused
+  multiply-add selection (`fmadd`/`fma` exist on every target).
+- NaN-semantics tests: the suite's float cases stay in NaN-free territory;
+  fcmp-with-NaN behavior is emitted correctly but untested end to end.

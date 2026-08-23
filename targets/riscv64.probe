@@ -3,7 +3,7 @@
 ; across the encoding; the per-bit learner should handle them unchanged.
 
 triple riscv64
-attr +m
+attr +m,+f,+d
 width 4
 
 reg r = x0..x31
@@ -62,3 +62,60 @@ inst sllw {r}, {r}, {r}
 inst srlw {r}, {r}, {r}
 inst sraw {r}, {r}, {r}
 inst addiw {r}, {r}, {i -2048..2047}
+
+; --- floating point (F and D extensions) ---
+reg f = f0..f31
+
+inst fadd.d {f}, {f}, {f}
+inst fsub.d {f}, {f}, {f}
+inst fmul.d {f}, {f}, {f}
+inst fdiv.d {f}, {f}, {f}
+inst fadd.s {f}, {f}, {f}
+inst fsub.s {f}, {f}, {f}
+inst fmul.s {f}, {f}, {f}
+inst fdiv.s {f}, {f}, {f}
+
+; comparisons write integer registers directly
+inst feq.d {r}, {f}, {f}
+inst flt.d {r}, {f}, {f}
+inst fle.d {r}, {f}, {f}
+inst feq.s {r}, {f}, {f}
+inst flt.s {r}, {f}, {f}
+inst fle.s {r}, {f}, {f}
+
+; conversions (rtz = round toward zero on float->int)
+inst fcvt.d.l {f}, {r}
+inst fcvt.d.w {f}, {r}
+inst fcvt.s.l {f}, {r}
+inst fcvt.s.w {f}, {r}
+inst fcvt.d.lu {f}, {r}
+inst fcvt.d.wu {f}, {r}
+inst fcvt.s.lu {f}, {r}
+inst fcvt.s.wu {f}, {r}
+inst fcvt.l.d {r}, {f}, rtz
+inst fcvt.w.d {r}, {f}, rtz
+inst fcvt.l.s {r}, {f}, rtz
+inst fcvt.w.s {r}, {f}, rtz
+inst fcvt.lu.d {r}, {f}, rtz
+inst fcvt.wu.d {r}, {f}, rtz
+inst fcvt.lu.s {r}, {f}, rtz
+inst fcvt.wu.s {r}, {f}, rtz
+inst fcvt.d.s {f}, {f}
+inst fcvt.s.d {f}, {f}
+
+; bit-pattern moves and register moves
+inst fmv.x.d {r}, {f}
+inst fmv.d.x {f}, {r}
+inst fmv.x.w {r}, {f}
+inst fmv.w.x {f}, {r}
+inst fmv.d {f}, {f}
+inst fmv.s {f}, {f}
+
+; float memory
+inst fld {f}, {i -2048..2047}({r})
+inst fsd {f}, {i -2048..2047}({r})
+inst flw {f}, {i -2048..2047}({r})
+inst fsw {f}, {i -2048..2047}({r})
+
+; --- system: enable the FPU at boot (mstatus.FS) ---
+inst csrrs {r}, mstatus, {r}

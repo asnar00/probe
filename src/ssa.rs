@@ -19,9 +19,13 @@ pub enum Type {
     I32,
     I64,
     Ptr,
+    F32,
+    F64,
     /// abstract integer: resolved to a concrete type by the target's
     /// replacement policy before verification (see `resolve_types`)
     Int,
+    /// abstract float: resolved like `Int`
+    Float,
 }
 
 impl Type {
@@ -32,6 +36,9 @@ impl Type {
             Type::I64 => "i64",
             Type::Ptr => "ptr",
             Type::Int => "int",
+            Type::F32 => "f32",
+            Type::F64 => "f64",
+            Type::Float => "float",
         }
     }
 
@@ -47,6 +54,9 @@ impl Type {
             "i64" => Some(Type::I64),
             "ptr" => Some(Type::Ptr),
             "int" => Some(Type::Int),
+            "f32" => Some(Type::F32),
+            "f64" => Some(Type::F64),
+            "float" => Some(Type::Float),
             _ => None,
         }
     }
@@ -57,7 +67,7 @@ impl Type {
             Type::I1 => Some(0),
             Type::I32 => Some(1),
             Type::I64 => Some(2),
-            Type::Ptr | Type::Int => None,
+            Type::Ptr | Type::Int | Type::F32 | Type::F64 | Type::Float => None,
         }
     }
 
@@ -65,13 +75,21 @@ impl Type {
         matches!(self, Type::I32 | Type::I64)
     }
 
+    pub fn is_float(self) -> bool {
+        matches!(self, Type::F32 | Type::F64)
+    }
+
     fn is_memory(self) -> bool {
-        matches!(self, Type::I32 | Type::I64 | Type::Ptr)
+        matches!(self, Type::I32 | Type::I64 | Type::Ptr | Type::F32 | Type::F64)
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BinOp {
+    FAdd,
+    FSub,
+    FMul,
+    FDiv,
     IAdd,
     ISub,
     IMul,
@@ -88,6 +106,10 @@ pub enum BinOp {
 }
 
 const BINOPS: &[(&str, BinOp)] = &[
+    ("fadd", BinOp::FAdd),
+    ("fsub", BinOp::FSub),
+    ("fmul", BinOp::FMul),
+    ("fdiv", BinOp::FDiv),
     ("iadd", BinOp::IAdd),
     ("isub", BinOp::ISub),
     ("imul", BinOp::IMul),
@@ -106,6 +128,37 @@ const BINOPS: &[(&str, BinOp)] = &[
 impl BinOp {
     pub fn name(self) -> &'static str {
         BINOPS.iter().find(|(_, op)| *op == self).unwrap().0
+    }
+
+    pub fn is_float(self) -> bool {
+        matches!(self, BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv)
+    }
+}
+
+/// Ordered float comparisons (false when either operand is NaN), plus
+/// `une` (true on NaN) as the negation of `oeq`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FCond {
+    Oeq,
+    Une,
+    Olt,
+    Ole,
+    Ogt,
+    Oge,
+}
+
+const FCONDS: &[(&str, FCond)] = &[
+    ("oeq", FCond::Oeq),
+    ("une", FCond::Une),
+    ("olt", FCond::Olt),
+    ("ole", FCond::Ole),
+    ("ogt", FCond::Ogt),
+    ("oge", FCond::Oge),
+];
+
+impl FCond {
+    pub fn name(self) -> &'static str {
+        FCONDS.iter().find(|(_, c)| *c == self).unwrap().0
     }
 }
 
@@ -147,6 +200,14 @@ pub enum CastOp {
     Sext,
     Zext,
     Trunc,
+    Sitofp,
+    Uitofp,
+    Fptosi,
+    Fptoui,
+    Fpromote,
+    Fdemote,
+    /// same-width reinterpretation: i64<->f64, i32<->f32
+    Bitcast,
 }
 
 impl CastOp {
@@ -155,6 +216,13 @@ impl CastOp {
             CastOp::Sext => "sext",
             CastOp::Zext => "zext",
             CastOp::Trunc => "trunc",
+            CastOp::Sitofp => "sitofp",
+            CastOp::Uitofp => "uitofp",
+            CastOp::Fptosi => "fptosi",
+            CastOp::Fptoui => "fptoui",
+            CastOp::Fpromote => "fpromote",
+            CastOp::Fdemote => "fdemote",
+            CastOp::Bitcast => "bitcast",
         }
     }
 }
@@ -165,6 +233,13 @@ pub enum Inst {
         dst: ValueId,
         imm: i64,
     },
+    /// float constant; `bits` is always the f64 bit pattern of the value —
+    /// an f32 destination narrows at emission, so abstract `float` needs no
+    /// constant rewriting at resolution time
+    FConst {
+        dst: ValueId,
+        bits: u64,
+    },
     Bin {
         op: BinOp,
         dst: ValueId,
@@ -173,6 +248,12 @@ pub enum Inst {
     },
     ICmp {
         cond: Cond,
+        dst: ValueId,
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    FCmp {
+        cond: FCond,
         dst: ValueId,
         lhs: ValueId,
         rhs: ValueId,
@@ -272,14 +353,18 @@ impl Module {
 #[derive(Clone, Copy)]
 pub struct Policy {
     pub int: Type,
+    pub float: Type,
 }
 
 impl Policy {
-    pub fn new(int: Type) -> Result<Policy, String> {
-        match int {
-            Type::I32 | Type::I64 => Ok(Policy { int }),
-            t => Err(format!("'int' cannot resolve to {}", t.name())),
+    pub fn new(int: Type, float: Type) -> Result<Policy, String> {
+        if !matches!(int, Type::I32 | Type::I64) {
+            return Err(format!("'int' cannot resolve to {}", int.name()));
         }
+        if !matches!(float, Type::F32 | Type::F64) {
+            return Err(format!("'float' cannot resolve to {}", float.name()));
+        }
+        Ok(Policy { int, float })
     }
 }
 
@@ -288,15 +373,16 @@ impl Policy {
 /// no instruction ever changes.
 pub fn resolve_types(module: &mut Module, policy: &Policy) {
     for func in &mut module.funcs {
+        let subst = |t: &mut Type| match *t {
+            Type::Int => *t = policy.int,
+            Type::Float => *t = policy.float,
+            _ => {}
+        };
         for v in &mut func.values {
-            if v.ty == Type::Int {
-                v.ty = policy.int;
-            }
+            subst(&mut v.ty);
         }
         for r in &mut func.rets {
-            if *r == Type::Int {
-                *r = policy.int;
-            }
+            subst(r);
         }
     }
 }
@@ -312,6 +398,7 @@ enum Tok {
     Block(String),  // ^x
     Global(String), // @x
     Int(i64),
+    FloatLit(f64),
     Colon,
     Comma,
     LParen,
@@ -331,6 +418,7 @@ impl fmt::Display for Tok {
             Tok::Block(s) => write!(f, "'^{}'", s),
             Tok::Global(s) => write!(f, "'@{}'", s),
             Tok::Int(n) => write!(f, "'{}'", n),
+            Tok::FloatLit(x) => write!(f, "'{:?}'", x),
             Tok::Colon => write!(f, "':'"),
             Tok::Comma => write!(f, "','"),
             Tok::LParen => write!(f, "'('"),
@@ -434,15 +522,18 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                     chars.next();
                     toks.push((Tok::Arrow, line));
                 } else if chars.peek().is_some_and(|c| c.is_ascii_digit()) {
-                    let n = lex_int(&mut chars).map_err(|m| err(line, m))?;
-                    toks.push((Tok::Int(n.wrapping_neg()), line));
+                    match lex_number(&mut chars).map_err(|m| err(line, m))? {
+                        Tok::Int(n) => toks.push((Tok::Int(n.wrapping_neg()), line)),
+                        Tok::FloatLit(x) => toks.push((Tok::FloatLit(-x), line)),
+                        _ => unreachable!(),
+                    }
                 } else {
                     return Err(err(line, "expected '->' or a number after '-'".into()));
                 }
             }
             '0'..='9' => {
-                let n = lex_int(&mut chars).map_err(|m| err(line, m))?;
-                toks.push((Tok::Int(n), line));
+                let t = lex_number(&mut chars).map_err(|m| err(line, m))?;
+                toks.push((t, line));
             }
             c if c.is_ascii_alphabetic() || c == '_' => {
                 let mut s = lex_name(&mut chars);
@@ -476,7 +567,8 @@ fn lex_name(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
     s
 }
 
-fn lex_int(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<i64, String> {
+/// integer, or float when a '.' / exponent follows (hex stays integer)
+fn lex_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<Tok, String> {
     let mut s = String::new();
     while let Some(&c) = chars.peek() {
         if c.is_ascii_alphanumeric() {
@@ -486,6 +578,53 @@ fn lex_int(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<i64, Stri
             break;
         }
     }
+    let is_hex = s.starts_with("0x") || s.starts_with("0X");
+    let mut float = false;
+    if !is_hex {
+        if chars.peek() == Some(&'.') {
+            float = true;
+            s.push('.');
+            chars.next();
+            while let Some(&c) = chars.peek() {
+                if c.is_ascii_digit() {
+                    s.push(c);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+        }
+        // exponent: "1e10", "2.5e-3" ("e" already consumed into s if no dot)
+        if s.ends_with(['e', 'E']) || (float && matches!(chars.peek(), Some(&'e') | Some(&'E'))) {
+            float = true;
+            if !s.ends_with(['e', 'E']) {
+                s.push('e');
+                chars.next();
+            }
+            if matches!(chars.peek(), Some(&'+') | Some(&'-')) {
+                s.push(*chars.peek().unwrap());
+                chars.next();
+            }
+            while let Some(&c) = chars.peek() {
+                if c.is_ascii_digit() {
+                    s.push(c);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    if float {
+        return s
+            .parse::<f64>()
+            .map(Tok::FloatLit)
+            .map_err(|_| format!("bad float literal '{}'", s));
+    }
+    lex_int_str(&s).map(Tok::Int)
+}
+
+fn lex_int_str(s: &str) -> Result<i64, String> {
     // parse as u64 so full-width bit patterns (and i64::MIN's magnitude
     // before negation) are representable; iconst semantics are bit-level
     let v = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
@@ -949,6 +1088,22 @@ impl Parser {
                 rhs,
             });
         }
+        if let Some(cc) = op.strip_prefix("fcmp.") {
+            let cond = FCONDS
+                .iter()
+                .find(|(n, _)| *n == cc)
+                .map(|(_, c)| *c)
+                .ok_or_else(|| self.err(format!("unknown float comparison '{}'", cc)))?;
+            let lhs = self.expect_value(scope)?;
+            self.expect(Tok::Comma)?;
+            let rhs = self.expect_value(scope)?;
+            return Ok(Inst::FCmp {
+                cond,
+                dst,
+                lhs,
+                rhs,
+            });
+        }
         if let Some(cc) = op.strip_prefix("icmp.") {
             let cond = CONDS
                 .iter()
@@ -973,11 +1128,33 @@ impl Parser {
                     Err(self.err(format!("expected an integer literal, found {}", t)))
                 }
             },
-            "sext" | "zext" | "trunc" => {
+            "fconst" => match self.next()? {
+                Tok::FloatLit(x) => Ok(Inst::FConst {
+                    dst,
+                    bits: x.to_bits(),
+                }),
+                Tok::Int(i) => Ok(Inst::FConst {
+                    dst,
+                    bits: (i as f64).to_bits(),
+                }),
+                t => {
+                    self.pos -= 1;
+                    Err(self.err(format!("expected a float literal, found {}", t)))
+                }
+            },
+            "sext" | "zext" | "trunc" | "sitofp" | "uitofp" | "fptosi" | "fptoui"
+            | "fpromote" | "fdemote" | "bitcast" => {
                 let cast = match op {
                     "sext" => CastOp::Sext,
                     "zext" => CastOp::Zext,
-                    _ => CastOp::Trunc,
+                    "trunc" => CastOp::Trunc,
+                    "sitofp" => CastOp::Sitofp,
+                    "uitofp" => CastOp::Uitofp,
+                    "fptosi" => CastOp::Fptosi,
+                    "fptoui" => CastOp::Fptoui,
+                    "fpromote" => CastOp::Fpromote,
+                    "fdemote" => CastOp::Fdemote,
+                    _ => CastOp::Bitcast,
                 };
                 let src = self.expect_value(scope)?;
                 Ok(Inst::Cast { op: cast, dst, src })
@@ -1485,6 +1662,9 @@ impl Function {
     fn fmt_inst(&self, inst: &Inst) -> String {
         match inst {
             Inst::IConst { dst, imm } => format!("{} = iconst {}", self.fmt_def(*dst), imm),
+            Inst::FConst { dst, bits } => {
+                format!("{} = fconst {:?}", self.fmt_def(*dst), f64::from_bits(*bits))
+            }
             Inst::Bin { op, dst, lhs, rhs } => format!(
                 "{} = {} {}, {}",
                 self.fmt_def(*dst),
@@ -1499,6 +1679,18 @@ impl Function {
                 rhs,
             } => format!(
                 "{} = icmp.{} {}, {}",
+                self.fmt_def(*dst),
+                cond.name(),
+                self.fmt_value(*lhs),
+                self.fmt_value(*rhs)
+            ),
+            Inst::FCmp {
+                cond,
+                dst,
+                lhs,
+                rhs,
+            } => format!(
+                "{} = fcmp.{} {}, {}",
                 self.fmt_def(*dst),
                 cond.name(),
                 self.fmt_value(*lhs),
@@ -1580,10 +1772,11 @@ fn verify_function(module: &Module, func: &Function, errs: &mut Vec<String>) {
 
     // rule 0: abstract types are resolved before verification
     for v in &func.values {
-        if v.ty == Type::Int {
+        if matches!(v.ty, Type::Int | Type::Float) {
             errs.push(ctx(format!(
-                "value '%{}' has unresolved abstract type 'int' (run type resolution first)",
-                v.name
+                "value '%{}' has unresolved abstract type '{}' (run type resolution first)",
+                v.name,
+                v.ty.name()
             )));
             return;
         }
@@ -1695,13 +1888,57 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 // ptr constants are raw addresses (MMIO, fixed buffers) —
                 // meaningful wherever ptr is an address-space index
                 Type::I64 | Type::Ptr => true,
-                Type::Int => unreachable!("rejected by rule 0"),
+                Type::F32 | Type::F64 => false, // use fconst
+                Type::Int | Type::Float => unreachable!("rejected by rule 0"),
             };
             if !ok {
                 errs.push(ctx(format!(
                     "iconst {} does not fit in type {}",
                     imm,
                     ty.name()
+                )));
+            }
+        }
+        Inst::FConst { dst, .. } => {
+            if !func.ty(*dst).is_float() {
+                errs.push(ctx(format!(
+                    "fconst result must be f32/f64, not {}",
+                    func.ty(*dst).name()
+                )));
+            }
+        }
+        Inst::FCmp {
+            cond,
+            dst,
+            lhs,
+            rhs,
+        } => {
+            let (td, tl, tr) = (func.ty(*dst), func.ty(*lhs), func.ty(*rhs));
+            if td != Type::I1 {
+                errs.push(ctx(format!(
+                    "fcmp.{} result {} must be i1",
+                    cond.name(),
+                    name(*dst)
+                )));
+            }
+            if tl != tr || !tl.is_float() {
+                errs.push(ctx(format!(
+                    "fcmp.{}: operands must share a float type; got {} and {}",
+                    cond.name(),
+                    tl.name(),
+                    tr.name()
+                )));
+            }
+        }
+        Inst::Bin { op, dst, lhs, rhs } if op.is_float() => {
+            let (td, tl, tr) = (func.ty(*dst), func.ty(*lhs), func.ty(*rhs));
+            if !td.is_float() || tl != td || tr != td {
+                errs.push(ctx(format!(
+                    "{}: operands and result must share a float type; got {}, {}, {}",
+                    op.name(),
+                    td.name(),
+                    tl.name(),
+                    tr.name()
                 )));
             }
         }
@@ -1735,7 +1972,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     td.name()
                 )));
             }
-            if tl != tr || !tl.is_memory() {
+            if tl != tr || !matches!(tl, Type::I32 | Type::I64 | Type::Ptr) {
                 errs.push(ctx(format!(
                     "icmp.{}: operands must share a type (i32/i64/ptr); got {} and {}",
                     cond.name(),
@@ -1746,16 +1983,31 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
         }
         Inst::Cast { op, dst, src } => {
             let (td, ts) = (func.ty(*dst), func.ty(*src));
-            let ok = match (ts.rank(), td.rank()) {
-                (Some(rs), Some(rd)) => match op {
-                    CastOp::Sext | CastOp::Zext => rd > rs,
-                    CastOp::Trunc => rd < rs,
-                },
-                _ => false,
+            let int_wide = |t: Type| matches!(t, Type::I32 | Type::I64);
+            let ok = match op {
+                CastOp::Sext | CastOp::Zext | CastOp::Trunc => {
+                    match (ts.rank(), td.rank()) {
+                        (Some(rs), Some(rd)) => match op {
+                            CastOp::Sext | CastOp::Zext => rd > rs,
+                            _ => rd < rs,
+                        },
+                        _ => false,
+                    }
+                }
+                CastOp::Sitofp | CastOp::Uitofp => int_wide(ts) && td.is_float(),
+                CastOp::Fptosi | CastOp::Fptoui => ts.is_float() && int_wide(td),
+                CastOp::Fpromote => ts == Type::F32 && td == Type::F64,
+                CastOp::Fdemote => ts == Type::F64 && td == Type::F32,
+                CastOp::Bitcast => {
+                    (ts == Type::I64 && td == Type::F64)
+                        || (ts == Type::F64 && td == Type::I64)
+                        || (ts == Type::I32 && td == Type::F32)
+                        || (ts == Type::F32 && td == Type::I32)
+                }
             };
             if !ok {
                 errs.push(ctx(format!(
-                    "{} from {} to {} is not a valid width change",
+                    "{} from {} to {} is not valid",
                     op.name(),
                     ts.name(),
                     td.name()

@@ -27,9 +27,10 @@ suite/*.ssa  --parse/verify-->  SSA  --emitter-->  bytes  --run-->  results
 - **An SSA IR** (`ssa.md`, `src/ssa.rs`): typed values, block parameters
   instead of phi nodes, multiple return values, an optional structured
   front-end (`if`/`loop`/`break`/`continue`/`yield`) that lowers to the
-  flat block graph at parse time, and abstract numeric types (`int`)
-  resolved to concrete widths by a per-target replacement policy
-  (`--int=i32|i64` to override).
+  flat block graph at parse time, floats (`f32`/`f64`, full conversion and
+  bitcast set), and abstract numeric types (`int`, `float`) resolved to
+  concrete widths by a per-target replacement policy (`--int=i32|i64`,
+  `--float=f32|f64` to override).
 - **Two learners**:
   - `src/learn.rs` for fixed-width register ISAs: one-hot probes XORed
     against a baseline map each operand bit to its encoding bit — which

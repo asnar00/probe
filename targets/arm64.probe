@@ -133,3 +133,61 @@ inst mov sp, x29
 
 ; --- hypervisor call: the qemu bare-metal harness exits via PSCI ---
 inst hvc #{i 0..65535}
+
+; --- floating point (learned like everything else) ---
+reg d = d0..d31
+reg s = s0..s31
+
+inst fadd {d}, {d}, {d}
+inst fsub {d}, {d}, {d}
+inst fmul {d}, {d}, {d}
+inst fdiv {d}, {d}, {d}
+inst fadd {s}, {s}, {s}
+inst fsub {s}, {s}, {s}
+inst fmul {s}, {s}, {s}
+inst fdiv {s}, {s}, {s}
+
+inst fcmp {d}, {d}
+inst fcmp {s}, {s}
+
+; int <-> float conversions, all width pairs
+inst scvtf {d}, {x}
+inst scvtf {d}, {w}
+inst scvtf {s}, {x}
+inst scvtf {s}, {w}
+inst ucvtf {d}, {x}
+inst ucvtf {d}, {w}
+inst ucvtf {s}, {x}
+inst ucvtf {s}, {w}
+inst fcvtzs {x}, {d}
+inst fcvtzs {w}, {d}
+inst fcvtzs {x}, {s}
+inst fcvtzs {w}, {s}
+inst fcvtzu {x}, {d}
+inst fcvtzu {w}, {d}
+inst fcvtzu {x}, {s}
+inst fcvtzu {w}, {s}
+inst fcvt {d}, {s}
+inst fcvt {s}, {d}
+
+; bit-pattern moves (bitcast) and register moves
+inst fmov {x}, {d}
+inst fmov {d}, {x}
+inst fmov {w}, {s}
+inst fmov {s}, {w}
+inst fmov {d}, {d}
+inst fmov {s}, {s}
+
+; float memory: heap and stack addressing
+inst ldr {d}, [{x}, #{i 0..32760 /8}]
+inst str {d}, [{x}, #{i 0..32760 /8}]
+inst ldr {s}, [{x}, #{i 0..16380 /4}]
+inst str {s}, [{x}, #{i 0..16380 /4}]
+inst ldr {d}, [sp, #{i 0..32760 /8}]
+inst str {d}, [sp, #{i 0..32760 /8}]
+inst ldr {s}, [sp, #{i 0..16380 /4}]
+inst str {s}, [sp, #{i 0..16380 /4}]
+
+; --- system: enable the FPU at boot (CPACR_EL1.FPEN) ---
+inst msr cpacr_el1, {x}
+inst isb

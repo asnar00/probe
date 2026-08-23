@@ -1,0 +1,37 @@
+; abstract 'float' resolves per policy (f64 default, --float=f32 to override);
+; these cases use only values and results exact in BOTH widths
+;! aavg 2.5 7.5 -> 5.0
+;! aavg -4.0 3.0 -> -0.5
+;! ascale 3 -> 1.5
+;! amix 2.0 6.0 -> 5.0
+
+fn @aavg(%a: float, %b: float) -> float {
+^entry:
+    %s: float = fadd %a, %b
+    %two: float = fconst 2.0
+    %r: float = fdiv %s, %two
+    ret %r
+}
+
+; int -> abstract float via policy width
+fn @ascale(%n: int) -> float {
+^entry:
+    %f: float = sitofp %n
+    %h: float = fconst 0.5
+    %r: float = fmul %f, %h
+    ret %r
+}
+
+; abstract float with comparison and branch
+fn @amix(%a: float, %b: float) -> float {
+    %lt: i1 = fcmp.olt %a, %b
+    %r: float = if %lt {
+        %m: float = fadd %a, %b
+        %h: float = fconst 0.625
+        %s: float = fmul %m, %h
+        yield %s
+    } else {
+        yield %a
+    }
+    ret %r
+}

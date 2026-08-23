@@ -68,6 +68,10 @@ impl WEncoder {
                     pieces.push(Piece::ULeb);
                 } else if p.get("sleb").is_some() {
                     pieces.push(Piece::SLeb);
+                } else if p.get("bits64").is_some() {
+                    pieces.push(Piece::Bits64);
+                } else if p.get("bits32").is_some() {
+                    pieces.push(Piece::Bits32);
                 } else {
                     return Err("unknown piece kind".into());
                 }
@@ -108,7 +112,11 @@ fn valtype(ty: Type) -> u8 {
     match ty {
         Type::I64 => 0x7E,
         Type::I32 | Type::I1 | Type::Ptr => 0x7F,
-        Type::Int => unreachable!("abstract types are resolved before emission"),
+        Type::F64 => 0x7C,
+        Type::F32 => 0x7D,
+        Type::Int | Type::Float => {
+            unreachable!("abstract types are resolved before emission")
+        }
     }
 }
 
@@ -325,6 +333,16 @@ fn compile_function(
 }
 
 fn binop_key(op: BinOp, ty: Type) -> String {
+    if op.is_float() {
+        let base = match op {
+            BinOp::FAdd => "add",
+            BinOp::FSub => "sub",
+            BinOp::FMul => "mul",
+            BinOp::FDiv => "div",
+            _ => unreachable!(),
+        };
+        return format!("{}.{}", if ty == Type::F64 { "f64" } else { "f32" }, base);
+    }
     let base = match op {
         BinOp::IAdd => "add",
         BinOp::ISub => "sub",
@@ -339,8 +357,22 @@ fn binop_key(op: BinOp, ty: Type) -> String {
         BinOp::Shl => "shl",
         BinOp::LShr => "shr_u",
         BinOp::AShr => "shr_s",
+        _ => unreachable!(),
     };
     format!("{}.{}", if is64(ty) { "i64" } else { "i32" }, base)
+}
+
+fn fcmp_key(cond: crate::ssa::FCond, ty: Type) -> String {
+    use crate::ssa::FCond;
+    let base = match cond {
+        FCond::Oeq => "eq",
+        FCond::Une => "ne",
+        FCond::Olt => "lt",
+        FCond::Ole => "le",
+        FCond::Ogt => "gt",
+        FCond::Oge => "ge",
+    };
+    format!("{}.{}", if ty == Type::F64 { "f64" } else { "f32" }, base)
 }
 
 fn cmp_key(cond: Cond, ty: Type) -> String {
@@ -369,10 +401,30 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             }
             e.set(*dst)
         }
+        Inst::FConst { dst, bits } => {
+            if e.func.ty(*dst) == Type::F64 {
+                e.op("f64.const {}", Some(*bits as i64))?;
+            } else {
+                let b = (f64::from_bits(*bits) as f32).to_bits() as i64;
+                e.op("f32.const {}", Some(b))?;
+            }
+            e.set(*dst)
+        }
         Inst::Bin { op, dst, lhs, rhs } => {
             e.get(*lhs)?;
             e.get(*rhs)?;
             e.op(&binop_key(*op, e.func.ty(*dst)), None)?;
+            e.set(*dst)
+        }
+        Inst::FCmp {
+            cond,
+            dst,
+            lhs,
+            rhs,
+        } => {
+            e.get(*lhs)?;
+            e.get(*rhs)?;
+            e.op(&fcmp_key(*cond, e.func.ty(*lhs)), None)?;
             e.set(*dst)
         }
         Inst::ICmp {
@@ -428,27 +480,64 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
                     e.op("i32.const {}", Some(1))?;
                     e.op("i32.and", None)?;
                 }
+                (CastOp::Sitofp, _, _) | (CastOp::Uitofp, _, _) => {
+                    e.get(*src)?;
+                    let u = if matches!(op, CastOp::Uitofp) { "u" } else { "s" };
+                    let f = if to == Type::F64 { "f64" } else { "f32" };
+                    let i = if from == Type::I64 { "i64" } else { "i32" };
+                    e.op(&format!("{}.convert_{}_{}", f, i, u), None)?;
+                }
+                (CastOp::Fptosi, _, _) | (CastOp::Fptoui, _, _) => {
+                    e.get(*src)?;
+                    let u = if matches!(op, CastOp::Fptoui) { "u" } else { "s" };
+                    let f = if from == Type::F64 { "f64" } else { "f32" };
+                    let i = if to == Type::I64 { "i64" } else { "i32" };
+                    e.op(&format!("{}.trunc_{}_{}", i, f, u), None)?;
+                }
+                (CastOp::Fpromote, _, _) => {
+                    e.get(*src)?;
+                    e.op("f64.promote_f32", None)?;
+                }
+                (CastOp::Fdemote, _, _) => {
+                    e.get(*src)?;
+                    e.op("f32.demote_f64", None)?;
+                }
+                (CastOp::Bitcast, _, _) => {
+                    e.get(*src)?;
+                    let k = match (from, to) {
+                        (Type::I64, Type::F64) => "f64.reinterpret_i64",
+                        (Type::F64, Type::I64) => "i64.reinterpret_f64",
+                        (Type::I32, Type::F32) => "f32.reinterpret_i32",
+                        (Type::F32, Type::I32) => "i32.reinterpret_f32",
+                        _ => unreachable!(),
+                    };
+                    e.op(k, None)?;
+                }
                 _ => return Err(format!("unsupported cast {:?} -> {:?}", from, to)),
             }
             e.set(*dst)
         }
         Inst::Load { dst, addr } => {
             e.get(*addr)?;
-            if is64(e.func.ty(*dst)) {
-                e.op("i64.load offset={}", Some(0))?;
-            } else {
-                e.op("i32.load offset={}", Some(0))?;
-            }
+            let k = match e.func.ty(*dst) {
+                Type::F64 => "f64.load offset={}",
+                Type::F32 => "f32.load offset={}",
+                Type::I64 => "i64.load offset={}",
+                _ => "i32.load offset={}",
+            };
+            e.op(k, Some(0))?;
             e.set(*dst)
         }
         Inst::Store { val, addr } => {
             e.get(*addr)?;
             e.get(*val)?;
-            if is64(e.func.ty(*val)) {
-                e.op("i64.store offset={}", Some(0))
-            } else {
-                e.op("i32.store offset={}", Some(0))
-            }
+            let k = match e.func.ty(*val) {
+                Type::F64 => "f64.store offset={}",
+                Type::F32 => "f32.store offset={}",
+                Type::I64 => "i64.store offset={}",
+                _ => "i32.store offset={}",
+            };
+            e.op(k, Some(0))
         }
         Inst::PtrAdd { dst, base, off } => {
             e.get(*base)?;

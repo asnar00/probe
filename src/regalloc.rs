@@ -24,15 +24,16 @@ pub enum Loc {
 }
 
 pub struct Alloc {
-    pub loc: Vec<Loc>,       // per ValueId
-    pub used_regs: Vec<i64>, // pool registers this function touches (sorted)
+    pub loc: Vec<Loc>,        // per ValueId
+    pub used_int: Vec<i64>,   // integer pool registers touched (sorted)
+    pub used_float: Vec<i64>, // float pool registers touched (sorted)
     pub nslots: usize,
 }
 
 pub(crate) fn inst_uses(inst: &Inst, out: &mut Vec<ValueId>) {
     match inst {
-        Inst::IConst { .. } => {}
-        Inst::Bin { lhs, rhs, .. } | Inst::ICmp { lhs, rhs, .. } => {
+        Inst::IConst { .. } | Inst::FConst { .. } => {}
+        Inst::Bin { lhs, rhs, .. } | Inst::ICmp { lhs, rhs, .. } | Inst::FCmp { lhs, rhs, .. } => {
             out.push(*lhs);
             out.push(*rhs);
         }
@@ -65,8 +66,10 @@ pub(crate) fn inst_uses(inst: &Inst, out: &mut Vec<ValueId>) {
 pub(crate) fn inst_defs(inst: &Inst, out: &mut Vec<ValueId>) {
     match inst {
         Inst::IConst { dst, .. }
+        | Inst::FConst { dst, .. }
         | Inst::Bin { dst, .. }
         | Inst::ICmp { dst, .. }
+        | Inst::FCmp { dst, .. }
         | Inst::Cast { dst, .. }
         | Inst::Load { dst, .. }
         | Inst::PtrAdd { dst, .. } => out.push(*dst),
@@ -87,7 +90,7 @@ fn successors(inst: &Inst) -> Vec<usize> {
     }
 }
 
-pub fn allocate(func: &Function, pool: &[i64]) -> Alloc {
+pub fn allocate(func: &Function, int_pool: &[i64], float_pool: &[i64]) -> Alloc {
     let n = func.values.len();
     let nb = func.blocks.len();
 
@@ -285,30 +288,37 @@ pub fn allocate(func: &Function, pool: &[i64]) -> Alloc {
     }
 
     // ---- linear scan with furthest-end eviction, over coalesced roots ----
+    // Two register classes, two pools, one scan: each root draws from the
+    // pool matching its type class (coalesced members share a type).
     let mut order: Vec<usize> = (0..n)
         .filter(|&i| find(&mut uf, i) == i && start[i] != u32::MAX)
         .collect();
     order.sort_by_key(|&i| start[i]);
     let mut loc = vec![Loc::Slot(usize::MAX); n];
-    let mut free: Vec<i64> = pool.to_vec();
-    free.reverse(); // pop from the front of the pool first
-    let mut active: Vec<(u32, usize, i64)> = Vec::new(); // (end, value, reg)
+    let is_float = |i: usize| func.values[i].ty.is_float();
+    let mut free: [Vec<i64>; 2] = [int_pool.to_vec(), float_pool.to_vec()];
+    free[0].reverse();
+    free[1].reverse();
+    let mut active: [Vec<(u32, usize, i64)>; 2] = [Vec::new(), Vec::new()];
 
     for &v in &order {
+        let cls = is_float(v) as usize;
         let s = start[v];
-        let mut i = 0;
-        while i < active.len() {
-            if active[i].0 < s {
-                free.push(active[i].2);
-                active.swap_remove(i);
-            } else {
-                i += 1;
+        for c in 0..2 {
+            let mut i = 0;
+            while i < active[c].len() {
+                if active[c][i].0 < s {
+                    free[c].push(active[c][i].2);
+                    active[c].swap_remove(i);
+                } else {
+                    i += 1;
+                }
             }
         }
-        if let Some(r) = free.pop() {
+        if let Some(r) = free[cls].pop() {
             loc[v] = Loc::Reg(r);
-            active.push((end[v], v, r));
-        } else if let Some(idx) = active
+            active[cls].push((end[v], v, r));
+        } else if let Some(idx) = active[cls]
             .iter()
             .enumerate()
             .max_by_key(|(_, a)| a.0)
@@ -316,10 +326,10 @@ pub fn allocate(func: &Function, pool: &[i64]) -> Alloc {
             .map(|(i, _)| i)
         {
             // evict the interval that ends furthest away; it spills instead
-            let (_, evicted, r) = active.swap_remove(idx);
+            let (_, evicted, r) = active[cls].swap_remove(idx);
             loc[evicted] = Loc::Slot(usize::MAX);
             loc[v] = Loc::Reg(r);
-            active.push((end[v], v, r));
+            active[cls].push((end[v], v, r));
         }
         // else: v stays spilled
     }
@@ -345,19 +355,23 @@ pub fn allocate(func: &Function, pool: &[i64]) -> Alloc {
         };
     }
 
-    // ---- collect used registers ----
-    let mut used: Vec<i64> = Vec::new();
+    // ---- collect used registers, per class ----
+    let mut used_int: Vec<i64> = Vec::new();
+    let mut used_float: Vec<i64> = Vec::new();
     for i in 0..n {
         if let Loc::Reg(r) = loc[i] {
+            let used = if is_float(i) { &mut used_float } else { &mut used_int };
             if !used.contains(&r) {
                 used.push(r);
             }
         }
     }
-    used.sort_unstable();
+    used_int.sort_unstable();
+    used_float.sort_unstable();
     Alloc {
         loc,
-        used_regs: used,
+        used_int,
+        used_float,
         nslots,
     }
 }
