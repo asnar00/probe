@@ -28,11 +28,18 @@ Backend sketch:
 
 ## Code quality
 
-- **Branch chain simplification**: `br` lowering can leave a `cbz` hopping
-  over a `b` that lands on another `b`; a fixup-time pass could thread
-  branches to their final targets. (Move coalescing is done: block params
-  merge with their branch arguments via interference-checked union-find,
-  so loop back edges carry no moves.)
+- **Fall-through branch elimination**: simplify-cfg now threads branches
+  through empty forwarding blocks at SSA level, but emitters still emit a
+  `b`/`jal` to a block that is laid out immediately after it. Removing
+  those needs layout-aware sizing (dropping an instruction shifts every
+  later offset), i.e. a two-pass or relaxation-style emitter.
+- **More SSA passes for higher tiers**: GVN/CSE, copy propagation (folding
+  `x + 0` style identities needs use-rewriting), loop-invariant code
+  motion (the structured front-end knows the loops), inlining.
+- **Background tiering**: the pipeline-prefix machinery is in (`-O<n>`,
+  suite-verified at every level); the next step is the runtime side — a
+  work queue of (function, pass) drained on a background thread, with
+  recompiled functions swapped in through a call indirection table.
 - **Caller-saved pool for leaf functions**: values in leaf functions could
   use x9..x17 with no prologue saves at all.
 - **Constant materialization**: use `movn`/single-`movz` forms on arm64 and

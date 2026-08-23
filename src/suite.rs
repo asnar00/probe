@@ -129,7 +129,12 @@ impl Report {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn run_dir(dir: &str, backend: Backend) -> Result<Report, String> {
+    run_dir_at(dir, backend, opt::MAX_LEVEL)
+}
+
+pub fn run_dir_at(dir: &str, backend: Backend, level: usize) -> Result<Report, String> {
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {}", dir, e))?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -189,7 +194,9 @@ pub fn run_dir(dir: &str, backend: Backend) -> Result<Report, String> {
             }
             let mut module = ssa::parse(&src).map_err(|e| e.to_string())?;
             ssa::verify(&module).map_err(|errs| errs.join("; "))?;
-            opt::sink_module(&mut module);
+            opt::optimize(&mut module, level);
+            ssa::verify(&module)
+                .map_err(|errs| format!("after optimization: {}", errs.join("; ")))?;
             Ok(module)
         })();
         let module = match module {
@@ -220,6 +227,7 @@ pub fn run_dir(dir: &str, backend: Backend) -> Result<Report, String> {
                 &cases,
                 &name,
                 &scratch,
+                level,
                 &mut report,
             ),
             Backend::ArmQemu => run_arm_qemu(
@@ -229,6 +237,7 @@ pub fn run_dir(dir: &str, backend: Backend) -> Result<Report, String> {
                 &cases,
                 &name,
                 &scratch,
+                level,
                 &mut report,
             ),
         }
@@ -613,6 +622,7 @@ fn check_hex_lines(out: &str, cases: &[Case], name: &str, report: &mut Report) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_riscv(
     module: &ssa::Module,
     src: &str,
@@ -620,6 +630,7 @@ fn run_riscv(
     cases: &[Case],
     name: &str,
     scratch: &std::path::Path,
+    level: usize,
     report: &mut Report,
 ) {
     let fail_all = |report: &mut Report, msg: String| {
@@ -636,7 +647,7 @@ fn run_riscv(
         let full = format!("{}\n{}\n{}", driver, helpers(RV_UART), src);
         let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
-        opt::sink_module(&mut m2);
+        opt::optimize(&mut m2, level);
         let compiled = emit_rv::compile(&m2, enc)?;
         // preamble: sp = 0x80800000 (mid-RAM), then fall into @__start
         let mut bin = Vec::new();
@@ -675,6 +686,7 @@ fn run_riscv(
 // ---------------------------------------------------------------------------
 // arm64 under qemu (bare-metal aarch64 virt machine)
 
+#[allow(clippy::too_many_arguments)]
 fn run_arm_qemu(
     module: &ssa::Module,
     src: &str,
@@ -682,6 +694,7 @@ fn run_arm_qemu(
     cases: &[Case],
     name: &str,
     scratch: &std::path::Path,
+    level: usize,
     report: &mut Report,
 ) {
     let fail_all = |report: &mut Report, msg: String| {
@@ -697,7 +710,7 @@ fn run_arm_qemu(
         let full = format!("{}\n{}\n{}\n{}", driver, helpers(ARM_UART), stub, src);
         let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
-        opt::sink_module(&mut m2);
+        opt::optimize(&mut m2, level);
         let compiled = emit::compile(&m2, enc)?;
         // preamble: sp = 0x41000000 via x29 (sp itself isn't a movz target)
         let mut bin = Vec::new();
@@ -769,6 +782,16 @@ mod tests {
     fn regression_suite_native() {
         let report = super::run_dir("suite", super::Backend::Native).expect("suite runs");
         assert_eq!(report.failed, 0, "\n{}", report.log);
+    }
+
+    #[test]
+    fn regression_suite_every_level() {
+        // any prefix of the pass pipeline must be a correct stopping point
+        for level in 0..=crate::opt::MAX_LEVEL {
+            let report = super::run_dir_at("suite", super::Backend::Native, level)
+                .expect("suite runs");
+            assert_eq!(report.failed, 0, "at level {}:\n{}", level, report.log);
+        }
     }
 
     #[test]

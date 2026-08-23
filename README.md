@@ -68,6 +68,12 @@ cargo run -- test              # native arm64 JIT
 cargo run -- test wasm         # node
 cargo run -- test riscv        # qemu-system-riscv64
 cargo run -- test arm-qemu     # qemu-system-aarch64
+
+# the optimization pipeline: levels are prefixes of one SSA pass list
+# (simplify-cfg, const-fold, dce, sink); -O<n> works on any command, and
+# `tiers` compiles at every prefix to show the gradual-optimization story
+cargo run -- tiers examples/tiers-demo.ssa
+cargo run -- -O0 run examples/sum.ssa sum 100
 ```
 
 Toolchain expectations (macOS/arm64 host): `llvm-mc` (brew llvm), `wabt`

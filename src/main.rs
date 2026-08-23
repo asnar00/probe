@@ -13,7 +13,17 @@ mod wlearn;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // -O<n> selects how much of the SSA pass pipeline runs (default: all)
+    let mut level = opt::MAX_LEVEL;
+    args.retain(|a| {
+        if let Some(l) = a.strip_prefix("-O") {
+            level = l.parse().unwrap_or(opt::MAX_LEVEL);
+            false
+        } else {
+            true
+        }
+    });
     match args.first().map(String::as_str) {
         Some("parse") if args.len() >= 2 => cmd_parse(&args[1]),
         Some("learn") if args.len() >= 2 => {
@@ -24,11 +34,12 @@ fn main() -> ExitCode {
                 .cloned();
             cmd_learn(&args[1], out.as_deref())
         }
-        Some("compile") if args.len() >= 2 => cmd_compile(&args[1]),
+        Some("compile") if args.len() >= 2 => cmd_compile(&args[1], level),
+        Some("tiers") if args.len() >= 2 => cmd_tiers(&args[1]),
         Some("run") if args.len() >= 3 => {
             let fargs: Result<Vec<i64>, _> = args[3..].iter().map(|a| a.parse()).collect();
             match fargs {
-                Ok(fargs) => cmd_run(&args[1], &args[2], &fargs),
+                Ok(fargs) => cmd_run(&args[1], &args[2], &fargs, level),
                 Err(_) => fail("function arguments must be integers"),
             }
         }
@@ -48,7 +59,7 @@ fn main() -> ExitCode {
                 .find(|a| **a != "wasm" && **a != "riscv" && **a != "arm-qemu")
                 .copied()
                 .unwrap_or("suite");
-            match suite::run_dir(dir, backend) {
+            match suite::run_dir_at(dir, backend, level) {
                 Ok(report) => {
                     print!("{}", report.log);
                     if report.failed == 0 {
@@ -65,6 +76,8 @@ fn main() -> ExitCode {
             eprintln!("       probe learn <target.probe> [-o encodings.json]");
             eprintln!("       probe compile <file.ssa>");
             eprintln!("       probe run <file.ssa> <function> [args...]");
+            eprintln!("       probe tiers <file.ssa>");
+            eprintln!("       (-O<n> selects the optimization level on any command)");
             ExitCode::FAILURE
         }
     }
@@ -142,16 +155,55 @@ fn cmd_learn(path: &str, out: Option<&str>) -> ExitCode {
 
 const ENCODINGS: &str = "targets/arm64.encodings.json";
 
-fn load_module(path: &str) -> Result<ssa::Module, String> {
+fn load_module(path: &str, level: usize) -> Result<ssa::Module, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
     let mut module = ssa::parse(&src).map_err(|e| format!("{}: {}", path, e))?;
     ssa::verify(&module).map_err(|errs| format!("{}: {}", path, errs.join("\n")))?;
-    opt::sink_module(&mut module);
+    opt::optimize(&mut module, level);
+    ssa::verify(&module)
+        .map_err(|errs| format!("{}: after optimization: {}", path, errs.join("\n")))?;
     Ok(module)
 }
 
-fn cmd_compile(path: &str) -> ExitCode {
-    let result = load_module(path).and_then(|module| {
+/// Compile at every pipeline prefix: the gradual-optimization story in one
+/// table — level 0 is the instant baseline, each row adds one pass.
+fn cmd_tiers(path: &str) -> ExitCode {
+    let enc = match emit::Encoder::load(ENCODINGS) {
+        Ok(e) => e,
+        Err(e) => return fail(&e),
+    };
+    println!("{:<7} {:<44} {:>8} {:>10}", "level", "passes", "bytes", "time");
+    let _warmup = load_module(path, opt::MAX_LEVEL); // touch caches before timing
+    for level in 0..=opt::MAX_LEVEL {
+        let t0 = std::time::Instant::now();
+        let module = match load_module(path, level) {
+            Ok(m) => m,
+            Err(e) => return fail(&e),
+        };
+        let compiled = match emit::compile(&module, &enc) {
+            Ok(c) => c,
+            Err(e) => return fail(&e),
+        };
+        let dt = t0.elapsed();
+        let names: Vec<&str> = opt::PASSES[..level].iter().map(|(n, _)| *n).collect();
+        let label = if names.is_empty() {
+            "(none)".to_string()
+        } else {
+            format!("+{}", names.join(" +"))
+        };
+        println!(
+            "{:<7} {:<44} {:>8} {:>8.0}us",
+            level,
+            label,
+            compiled.code.len(),
+            dt.as_secs_f64() * 1e6
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_compile(path: &str, level: usize) -> ExitCode {
+    let result = load_module(path, level).and_then(|module| {
         let enc = emit::Encoder::load(ENCODINGS)?;
         emit::compile(&module, &enc)
     });
@@ -177,8 +229,8 @@ fn cmd_compile(path: &str) -> ExitCode {
     }
 }
 
-fn cmd_run(path: &str, fname: &str, fargs: &[i64]) -> ExitCode {
-    let result = load_module(path).and_then(|module| {
+fn cmd_run(path: &str, fname: &str, fargs: &[i64], level: usize) -> ExitCode {
+    let result = load_module(path, level).and_then(|module| {
         let nrets = module
             .func(fname)
             .map(|f| f.rets.len())
