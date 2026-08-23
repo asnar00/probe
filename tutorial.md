@@ -14,12 +14,11 @@ something unusual, we'll stop and look at it.
 ## 1. A number is a struct
 
 ```
-type $rat = { num: i32, den: u32 }
+type $rat = { num: half, den: uhalf }
 ```
 
-That's the entire type definition: a packed 64-bit struct — a signed
-32-bit numerator and an unsigned 32-bit denominator. Two things are
-worth noticing already.
+That's the entire type definition: a packed struct — a signed numerator
+and an unsigned denominator. Three things are worth noticing already.
 
 First, **signedness lives in the type, not in the operations**. probe
 has one `div`, one `%`, one `<` — each does signed or unsigned (or
@@ -29,10 +28,18 @@ by something is signed division, dividing a `den` is unsigned, and
 nobody ever writes `udiv` or `sdiv` because the data already said which
 one is meant.
 
-Second, this struct fits in a register. probe lowers packed structs to
-shift-and-mask code on an ordinary 64-bit integer, so a `$rat` value
-travels through the program (and through function calls) like any other
-value. No memory, no pointers, no ABI ceremony.
+Second, the widths are *abstract*. `half` and `uhalf` resolve at
+compile time to half the width of the platform's `int` policy: build
+with `--int=i64` (the default) and a `$rat` is i32/u32; build with
+`--int=i32` and it's i16/u16. The library doesn't know its own size —
+you'll see below how it's written so the *arithmetic stays correct at
+any width*, which is why "half" is the right abstraction and not just
+a convenience.
+
+Third, this struct fits in a register. probe lowers packed structs to
+shift-and-mask code on an ordinary integer, so a `$rat` value travels
+through the program (and through function calls) like any other value.
+No memory, no pointers, no ABI ceremony.
 
 We adopt two conventions on top of the layout:
 
@@ -47,10 +54,10 @@ We adopt two conventions on top of the layout:
 ## 2. The workhorse: gcd
 
 ```
-fn @rat_gcd(%a: u64, %b: u64) -> u64 {
-    %g: u64 = loop(%x: u64 = %a, %y: u64 = %b) {
+fn @rat_gcd(%a: uint, %b: uint) -> uint {
+    %g: uint = loop(%x: uint = %a, %y: uint = %b) {
         if %y == 0 { break %x }
-        %r: u64 = %x % %y
+        %r: uint = %x % %y
         continue %y, %r
     }
     ret %g
@@ -60,19 +67,20 @@ fn @rat_gcd(%a: u64, %b: u64) -> u64 {
 This is Euclid's algorithm, and it introduces most of the language in
 eight lines:
 
-- **Every value is named and typed.** `%r: u64 = %x % %y` declares a
+- **Every value is named and typed.** `%r: uint = %x % %y` declares a
   new value, states its type, and computes it. Values are assigned
   exactly once — this is SSA (static single assignment) — so a name
-  means the same thing everywhere it appears.
-- **The loop declares its own state.** `loop(%x: u64 = %a, ...)` lists
+  means the same thing everywhere it appears. (`uint` is the abstract
+  unsigned word — u64 by default, u32 under `--int=i32`.)
+- **The loop declares its own state.** `loop(%x: uint = %a, ...)` lists
   the *loop-carried variables* with their initial values. `continue`
   supplies the next iteration's values; `break` exits, yielding the
   loop's result, which is bound on the left (`%g`). There is no
   mutation anywhere — the loop header is the complete list of what
   changes per iteration, which is exactly the thing you want to know
   when reading a loop.
-- **`%x % %y` is unsigned remainder** — because `%x` is `u64`. Same
-  opcode, signed, for an `i64`. The one-line guard
+- **`%x % %y` is unsigned remainder** — because `%x` is `uint`. Same
+  opcode, signed, for an `int`. The one-line guard
   `if %y == 0 { break %x }` compares, branches, and exits in a form
   that reads like the algorithm.
 
@@ -86,82 +94,92 @@ Values enter through `rat_make(n, d)`, which fixes signs and delegates
 to `rat_fit` — the function that enforces the canonical form:
 
 ```
-fn @rat_make(%n0: i64, %d0: i64) -> $rat {
-    if %d0 == 0 { ret call @rat_nar() }
+fn @rat_make(%n0: int, %d0: int) -> $rat {
+    if %d0 == 0 { ret @rat_nar() }
     %dneg: u1 = %d0 < 0
-    %n: i64, %d: i64 = if %dneg {
-        %nn: i64 = 0 - %n0
-        %nd: i64 = 0 - %d0
+    %n: int, %d: int = if %dneg {
+        %nn: int = 0 - %n0
+        %nd: int = 0 - %d0
         yield %nn, %nd
     } else {
         yield %n0, %d0
     }
-    %du: u64 = bitcast %d
-    ret call @rat_fit(%n, %du)
+    %du: uint = bitcast %d
+    ret @rat_fit(%n, %du)
 }
 ```
 
 New pieces here:
 
 - **`if` is an expression.** The value-yielding form binds results on
-  the left (`%n: i64, %d: i64 = if ...`) and each arm ends with
+  the left (`%n: int, %d: int = if ...`) and each arm ends with
   `yield`. Notice it yields *two* values — multiple results are
   ordinary in probe, for `if`, for `loop`, and for functions.
 - **`bitcast` reinterprets bits** between equal-width types — here
-  `i64` to `u64` after we've made the value positive, so that
+  `int` to `uint` after we've made the value positive, so that
   everything downstream does unsigned arithmetic. Casts are always
   written; nothing converts silently.
-- **`ret call @rat_fit(...)`** returns another function's results
+- **`ret @rat_fit(...)`** returns another function's results
   directly. And the first line is the library's signature move, the
   one-line guard:
 
   ```
-  if %d0 == 0 { ret call @rat_nar() }
+  if %d0 == 0 { ret @rat_nar() }
   ```
 
 Inside `rat_fit`, after dividing out the gcd, the range check shows the
-exact-or-NaR policy in action:
+exact-or-NaR policy in action — and it's width-blind. "Does this value
+fit the field?" is answered by narrowing and re-widening:
 
 ```
-if %ar > %numlim { ret call @rat_nar() }
-if %dr > 0xffffffff { ret call @rat_nar() }
+%n32: half = trunc %nsig
+%nback: int = ext %n32
+if %nback != %nsig { ret @rat_nar() }
 ```
 
-If the reduced numerator or denominator doesn't fit the struct, the
-answer isn't a rounded lie — it's NaR, and every later operation will
-faithfully pass it along.
+If the round trip changes the value, it didn't fit; the answer isn't a
+rounded lie — it's NaR, and every later operation will faithfully pass
+it along. Notice there's no `0x7fffffff` anywhere: the library contains
+no width as a constant, which is what lets the policy choose the width.
 
 ## 4. Arithmetic that can't overflow (mostly)
 
 Addition is the interesting one. The naive formula
-`a/b + c/d = (ad + cb)/bd` overflows 64-bit intermediates easily, so
-the library uses the classic pre-reduction (Knuth's trick): divide both
+`a/b + c/d = (ad + cb)/bd` overflows its intermediates easily, so the
+library uses the classic pre-reduction (Knuth's trick): divide both
 denominators by their gcd first.
 
 ```
 fn @rat_add(%x: $rat, %y: $rat) -> $rat {
-    if call @rat_is_nar(%x) { ret call @rat_nar() }
-    if call @rat_is_nar(%y) { ret call @rat_nar() }
-    %a: i64, %b: u64 = call @rat_parts(%x)
-    %c: i64, %d: u64 = call @rat_parts(%y)
-    %g: u64 = call @rat_gcd(%b, %d)
-    %bg: u64 = %b / %g
-    %dg: u64 = %d / %g
-    %bgi: i64 = bitcast %bg
-    %dgi: i64 = bitcast %dg
-    %t: i64 = %a * %dgi + %c * %bgi
-    %den: u64 = %bg * %d
-    ret call @rat_fit(%t, %den)
+    if @rat_is_nar(%x) { ret @rat_nar() }
+    if @rat_is_nar(%y) { ret @rat_nar() }
+    %a: int, %b: uint = @rat_parts(%x)
+    %c: int, %d: uint = @rat_parts(%y)
+    %g: uint = @rat_gcd(%b, %d)
+    %bg: uint = %b / %g
+    %dg: uint = %d / %g
+    %bgi: int = bitcast %bg
+    %dgi: int = bitcast %dg
+    %t: int = %a * %dgi + %c * %bgi
+    %den: uint = %bg * %d
+    ret @rat_fit(%t, %den)
 }
 ```
 
 Read it top to bottom: two NaR guards, unpack both operands
 (`rat_parts` returns a pair — multiple return values again), one gcd,
 the cross-multiply as a single expression, and hand the un-reduced
-result to `rat_fit` to finish. For canonical inputs the intermediate
-products fit comfortably in 64 bits; the one truly extreme corner (both
-cross products near 2^63) is documented scope, in the same spirit as
-"tier 1 softfloat flushes subnormals".
+result to `rat_fit` to finish.
+
+And here is why `half` was the right abstraction: **cross products of
+w-bit values need 2w bits.** Because the fields are half a word and the
+intermediates (`int`, `uint`) are a whole word, that relationship holds
+at *every* policy — i32 fields with i64 math, or i16 fields with i32
+math. Had the fields been `int`, the library's own arithmetic would
+overflow. The struct declaration encodes the correctness argument.
+(The one truly extreme corner — both cross products near the top of the
+word — is documented scope, in the same spirit as "tier 1 softfloat
+flushes subnormals".)
 
 Comparison exploits canonicity twice. Ordering cross-multiplies
 (denominators are positive, so no sign flips):
@@ -173,10 +191,13 @@ Comparison exploits canonicity twice. Ordering cross-multiplies
 — and equality doesn't compute anything at all:
 
 ```
-%xb: u64 = bitcast %x
-%yb: u64 = bitcast %y
+%xb: uint = bitcast %x
+%yb: uint = bitcast %y
 %r: u1 = %xb == %yb
 ```
+
+(A `$rat` is two half-words — exactly one word — so it bitcasts to
+`uint` under any policy.)
 
 Canonical forms are unique, so equal rationals are equal *bit patterns*.
 That's the payoff for making every function reduce.
@@ -202,6 +223,7 @@ cargo run -- test              # native arm64 (JIT, in-process)
 cargo run -- test wasm         # compiled to WebAssembly, run by node
 cargo run -- test riscv        # bare-metal RISC-V under qemu
 cargo run -- test arm-qemu     # arm64 again, under qemu as a second referee
+cargo run -- --int=i32 test    # the same library as 16-bit rationals
 ```
 
 The same source, the same directives, four independent execution paths

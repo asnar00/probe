@@ -67,7 +67,7 @@ fn @clamp(%x: int, %lo: int, %hi: int) -> int {
 }
 
 fn @vclamp(%x: int) -> int {
-    ret call @clamp(%x, 0, 100)
+    ret @clamp(%x, 0, 100)
 }
 
 ; call sugar: as a condition, as an expression atom, with literal args
@@ -77,12 +77,12 @@ fn @is_even(%x: int) -> u1 {
 }
 
 fn @haltstep(%x: int) -> int {
-    if call @is_even(%x) { ret %x / 2 }
+    if @is_even(%x) { ret %x / 2 }
     ret 3 * %x + 1
 }
 
 fn @neareven(%x: int) -> u1 {
-    %r: u1 = call @haltstep(%x) == 4
+    %r: u1 = @haltstep(%x) == 4
     ret %r
 }
 

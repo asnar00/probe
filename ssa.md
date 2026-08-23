@@ -242,17 +242,19 @@ scalar.
 
 ### Calls
 
-Callees are named symbols. Signatures are checked against the module if the
+Callees are named symbols — and the `@` sigil alone marks a call, so no
+keyword is needed. Signatures are checked against the module if the
 function is defined here, taken on trust if external.
 
 ```
-%v: i64 = call @f(%a, %b)             ; call with one result
-%q: i64, %r: i64 = call @divmod(%a, %b)  ; call with two results
-call @g(%a)                           ; call with results ignored (or none)
+%v: i64 = @f(%a, %b)                ; call with one result
+%q: i64, %r: i64 = @divmod(%a, %b)  ; call with two results
+@g(%a)                              ; call with results ignored (or none)
 ```
 
-A call binds either *all* of the callee's return values or *none* of them
-(`call` is the only instruction that may define more than one value).
+A call binds either *all* of the callee's return values or *none* of
+them (a call is the only form that may define more than one value).
+The legacy `call @f(...)` spelling is still accepted.
 
 ### Terminators
 
@@ -426,11 +428,11 @@ loop(%i: int = 0, %acc: scalar = 0.0) { ...
 
 **Call sugar.** Parsing is two-phase (all signatures are read before
 any body), so calls compose with the rest: literal arguments take the
-callee's parameter types (`call @clamp(%x, 0, 100)`); a single-result
-call is an expression atom (`%r: u1 = call @f(%x) == 0`) and an `if`
-condition (`if call @rat_is_nar(%x) { ret call @rat_nar() }`); and
+callee's parameter types (`@clamp(%x, 0, 100)`); a single-result call
+is an expression atom (`%r: u1 = @f(%x) == 0`) and an `if` condition
+(`if @rat_is_nar(%x) { ret @rat_nar() }`); and
 `break`/`continue`/`yield`/`ret` operands are full expressions
-(`ret %x / 2`).
+(`ret %x / 2`, `ret @sq(%x) + 1`).
 
 There is deliberately no bare-copy form (`%v: ty = %x` is an error —
 SSA has no copy opcode) and no unary minus on values (write `0 - %x`).

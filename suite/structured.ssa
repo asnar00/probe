@@ -51,9 +51,9 @@ fn @sfib(%n: int) -> int {
     }
     %one: int = iconst 1
     %n1: int = isub %n, %one
-    %a: int = call @sfib(%n1)
+    %a: int = @sfib(%n1)
     %n2: int = isub %n, %two
-    %b: int = call @sfib(%n2)
+    %b: int = @sfib(%n2)
     %r: int = iadd %a, %b
     ret %r
 }

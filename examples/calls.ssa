@@ -7,8 +7,8 @@ fn @square(%x: int) -> int {
 ; hypot2(a,b) = a*a + b*b, via two calls
 fn @hypot2(%a: int, %b: int) -> int {
 ^entry:
-    %aa: int = call @square(%a)
-    %bb: int = call @square(%b)
+    %aa: int = @square(%a)
+    %bb: int = @square(%b)
     %s: int = iadd %aa, %bb
     ret %s
 }

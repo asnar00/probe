@@ -27,7 +27,7 @@ fn @minmax(%a: int, %b: int) -> (int, int) {
 ; q*b + r must reconstruct a — exercises multi-value call results
 fn @recombine(%a: int, %b: int) -> int {
 ^entry:
-    %q: int, %r: int = call @divmod(%a, %b)
+    %q: int, %r: int = @divmod(%a, %b)
     %t: int = imul %q, %b
     %s: int = iadd %t, %r
     ret %s

@@ -53,9 +53,9 @@ fn @fib(%n: int) -> int {
 ^rec:
     %one: int = iconst 1
     %n1: int = isub %n, %one
-    %a: int = call @fib(%n1)
+    %a: int = @fib(%n1)
     %n2: int = isub %n, %two
-    %b: int = call @fib(%n2)
+    %b: int = @fib(%n2)
     %r: int = iadd %a, %b
     ret %r
 }
@@ -68,8 +68,8 @@ fn @square(%x: int) -> int {
 
 fn @hypot2(%a: int, %b: int) -> int {
 ^entry:
-    %aa: int = call @square(%a)
-    %bb: int = call @square(%b)
+    %aa: int = @square(%a)
+    %bb: int = @square(%b)
     %s: int = iadd %aa, %bb
     ret %s
 }

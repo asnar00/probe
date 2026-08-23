@@ -9,9 +9,9 @@ fn @fib(%n: int) -> int {
 ^rec:
     %one: int = iconst 1
     %n1: int = isub %n, %one
-    %a: int = call @fib(%n1)
+    %a: int = @fib(%n1)
     %n2: int = isub %n, %two
-    %b: int = call @fib(%n2)
+    %b: int = @fib(%n2)
     %r: int = iadd %a, %b
     ret %r
 }

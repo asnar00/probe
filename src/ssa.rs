@@ -1567,7 +1567,13 @@ impl Parser {
                 Ok(EAst::V(id))
             }
             t @ (Tok::Int(_) | Tok::FloatLit(_)) => Ok(EAst::Lit(t)),
-            Tok::Ident(k) if k == "call" => {
+            t2 @ (Tok::Global(_) | Tok::Ident(_))
+                if matches!(&t2, Tok::Global(_))
+                    || matches!(&t2, Tok::Ident(k) if k == "call") =>
+            {
+                if matches!(&t2, Tok::Global(_)) {
+                    self.pos -= 1; // parse_call_tail reads the name itself
+                }
                 let (callee, args) = self.parse_call_tail(scope)?;
                 let rets = match self.sigs.get(&callee) {
                     Some((_, r)) if r.len() == 1 => r.clone(),
@@ -1965,26 +1971,32 @@ impl Parser {
                     self.expect_type()?;
                 }
                 self.expect(Tok::Equals)?;
-                let expr = !matches!(self.peek(), Some(Tok::Ident(_)))
-                    || (dsts.len() == 1
-                        && matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
-                        && self.line_has_op());
+                // a call is written @f(...); the RHS routes to the direct
+                // call form unless operators follow (then it's an
+                // expression with a call atom). 'call' stays accepted.
+                let callish = matches!(self.peek(), Some(Tok::Global(_)))
+                    || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call");
+                let expr = (!matches!(self.peek(), Some(Tok::Ident(_))) && !callish)
+                    || (callish && dsts.len() == 1 && self.line_has_op());
                 let inst = if expr {
                     // expression sugar: %v: ty = %a * %b + 1
                     if dsts.len() != 1 {
                         return Err(self.err("an expression defines exactly one value"));
                     }
                     self.parse_expr_into(dsts[0], scope)?
+                } else if callish {
+                    if matches!(self.peek(), Some(Tok::Ident(_))) {
+                        self.pos += 1; // legacy 'call' keyword
+                    }
+                    let (callee, args) = self.parse_call_tail(scope)?;
+                    Inst::Call { dsts, callee, args }
                 } else {
                     let op = self.expect_ident()?;
-                    if op == "call" {
-                        let (callee, args) = self.parse_call_tail(scope)?;
-                        Inst::Call { dsts, callee, args }
-                    } else if dsts.len() == 1 {
+                    if dsts.len() == 1 {
                         self.parse_def_op(&op, dsts[0], scope)?
                     } else {
                         return Err(self.err(format!(
-                            "only 'call' can define multiple values, not '{}'",
+                            "only a call can define multiple values, not '{}'",
                             op
                         )));
                     }
@@ -1997,6 +2009,17 @@ impl Parser {
                 let inst = self.parse_plain_op(&op, scope)?;
                 self.expect(Tok::Newline)?;
                 Ok(inst)
+            }
+            // bare call statement: @f(...) with results ignored
+            Tok::Global(_) => {
+                self.pos -= 1;
+                let (callee, args) = self.parse_call_tail(scope)?;
+                self.expect(Tok::Newline)?;
+                Ok(Inst::Call {
+                    dsts: Vec::new(),
+                    callee,
+                    args,
+                })
             }
             t => {
                 self.pos -= 1;
@@ -2156,12 +2179,15 @@ impl Parser {
                 })
             }
             "ret" => {
-                // `ret call @f(...)`: return the callee's results directly
+                // `ret @f(...)`: return the callee's results directly
                 // (with an operator after, it's an expression instead)
-                if matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
+                if (matches!(self.peek(), Some(Tok::Global(_)))
+                    || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call"))
                     && !self.line_has_op()
                 {
-                    self.pos += 1;
+                    if matches!(self.peek(), Some(Tok::Ident(_))) {
+                        self.pos += 1;
+                    }
                     let rets = scope.rets.clone();
                     let (callee, args) = self.parse_call_tail(scope)?;
                     let dsts: Vec<ValueId> =
@@ -2280,10 +2306,22 @@ impl Parser {
                     self.expect_type()?;
                 }
                 self.expect(Tok::Equals)?;
-                let expr = !matches!(self.peek(), Some(Tok::Ident(_)))
-                    || (dsts.len() == 1
-                        && matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
-                        && self.line_has_op());
+                let callish = matches!(self.peek(), Some(Tok::Global(_)))
+                    || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call");
+                let expr = (!matches!(self.peek(), Some(Tok::Ident(_))) && !callish)
+                    || (callish && dsts.len() == 1 && self.line_has_op());
+                if callish && !expr {
+                    if matches!(self.peek(), Some(Tok::Ident(_))) {
+                        self.pos += 1; // legacy 'call' keyword
+                    }
+                    let (callee, args) = self.parse_call_tail(scope)?;
+                    for p in self.pending.drain(..) {
+                        st.push(p);
+                    }
+                    st.push(Inst::Call { dsts, callee, args });
+                    self.end_stmt()?;
+                    return Ok(false);
+                }
                 if expr {
                     if dsts.len() != 1 {
                         return Err(self.err("an expression defines exactly one value"));
@@ -2318,6 +2356,21 @@ impl Parser {
                         st.push(inst);
                     }
                 }
+                self.end_stmt()?;
+                Ok(false)
+            }
+            // bare call statement: @f(...) with results ignored
+            Tok::Global(_) => {
+                self.pos -= 1;
+                let (callee, args) = self.parse_call_tail(scope)?;
+                for p in self.pending.drain(..) {
+                    st.push(p);
+                }
+                st.push(Inst::Call {
+                    dsts: Vec::new(),
+                    callee,
+                    args,
+                });
                 self.end_stmt()?;
                 Ok(false)
             }
@@ -2375,12 +2428,15 @@ impl Parser {
                     Ok(true)
                 }
                 "ret" => {
-                    // `ret call @f(...)`: return the callee's results
+                    // `ret @f(...)`: return the callee's results
                     // (with an operator after, it's an expression instead)
-                    if matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
+                    if (matches!(self.peek(), Some(Tok::Global(_)))
+                        || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call"))
                         && !self.line_has_op()
                     {
-                        self.pos += 1;
+                        if matches!(self.peek(), Some(Tok::Ident(_))) {
+                            self.pos += 1;
+                        }
                         let rets = scope.rets.clone();
                         let (callee, args) = self.parse_call_tail(scope)?;
                         let dsts: Vec<ValueId> =
@@ -2630,7 +2686,8 @@ impl Parser {
                     | Tok::Int(_)
                     | Tok::FloatLit(_)
                     | Tok::LParen
-                    | Tok::Ident(_),
+                    | Tok::Ident(_)
+                    | Tok::Global(_),
                 ) => {
                     // each element is a full expression (a bare value is
                     // the degenerate case); literals and temps take the
@@ -2894,7 +2951,7 @@ impl Function {
                 )
             }
             Inst::Call { dsts, callee, args } => {
-                let call = format!("call @{}({})", callee, self.fmt_args(args));
+                let call = format!("@{}({})", callee, self.fmt_args(args));
                 if dsts.is_empty() {
                     call
                 } else {

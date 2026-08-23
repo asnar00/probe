@@ -164,7 +164,7 @@ fn @vcall(%x: i64, %y: i64) -> (i64, i64) {
     %x32: i32 = trunc %x
     %y32: i32 = trunc %y
     %v: i32x2 = pack %x32, %y32
-    %n: i32x2 = call @vneg2(%v)
+    %n: i32x2 = @vneg2(%v)
     %n0: i32 = extract %n, 0
     %n1: i32 = extract %n, 1
     %r0: i64 = ext %n0
@@ -185,7 +185,7 @@ fn @vhalve(%v: u16x2) -> u16x2 {
 fn @vmixed(%x: u64) -> u64 {
     %x32: u32 = trunc %x
     %v: u16x2 = bitcast %x32
-    %h: u16x2 = call @vhalve(%v)
+    %h: u16x2 = @vhalve(%v)
     %r32: u32 = bitcast %h
     %r: u64 = ext %r32
     ret %r

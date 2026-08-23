@@ -119,6 +119,18 @@ multi-result call bindings — all structural rather than ceremonial.
 The curve is flattening; the next big wins likely need the live-battery
 evidence rather than static intuition.
 
+## Experiment 4: the `call` keyword retires (landed)
+
+User-observed redundancy: `@` already marks globals, so `@f(args)` is
+unambiguous in every position — binding, statement, expression atom,
+condition, `ret`. The keyword survives as accepted legacy; the printer
+and corpus use the bare form. The guard reaches its final shape:
+
+    if @rat_is_nar(%x) { ret @rat_nar() }
+
+Measured: −4% atoms on the call-dense rational files. Small, but the
+kind that compounds — every future call in every future file.
+
 ## The live half (not yet run)
 
 Static atom counts are a proxy. The real experiment: a task battery —
@@ -142,3 +154,6 @@ shouldn't silently steer the design).
   args, call-in-expression, call-in-condition, expression terminator
   operands. Landed. Cumulative −28%/−24% atoms, −29%/−38% lines; suite
   green everywhere.
+- 2026-08-24: `call` keyword retired (user-spotted redundancy): `@f()`
+  is the call form everywhere, printer canonical. −4% atoms on
+  call-dense files.
