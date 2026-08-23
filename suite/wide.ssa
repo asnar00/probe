@@ -1,0 +1,89 @@
+; multi-word structs: past one 64-bit carrier, a struct packs C-like
+; (low-first, a field never straddles a word) and its VALUES lower by
+; splitting into one value per word — through params, calls, returns,
+; and loops, with no memory involved. The emitters never see any of it.
+; This is also the seed of the $wide (i128) library: add-with-carry
+; below is 128-bit addition as ordinary SSA.
+;! t_wadd 5 7 10 20 -> 15, 27
+;! t_wadd 0xffffffffffffffff 0 1 0 -> 0, 1
+;! t_wadd 0xffffffffffffffff 0xffffffffffffffff 1 0 -> 0, 0
+;! t_ins 1 2 -> 1, 99
+;! t_mix 123 -> 0xf00d, 123
+;! t_mix_c 123 -> 777
+;! t_wsum 5 -> 15, 0
+;! t_wsum 0 -> 0, 0
+
+type $u128 = { lo: u64, hi: u64 }
+
+; 128-bit addition: the carry is one unsigned comparison
+fn @wadd(%x: $u128, %y: $u128) -> $u128 {
+    %xl: u64 = extract %x, lo
+    %xh: u64 = extract %x, hi
+    %yl: u64 = extract %y, lo
+    %yh: u64 = extract %y, hi
+    %sl: u64 = %xl + %yl
+    %carry: u1 = %sl < %xl
+    %c: u64 = ext %carry
+    %sh: u64 = %xh + %yh + %c
+    %r: $u128 = pack %sl, %sh
+    ret %r
+}
+
+fn @t_wadd(%a: u64, %b: u64, %c: u64, %d: u64) -> (u64, u64) {
+    %x: $u128 = pack %a, %b
+    %y: $u128 = pack %c, %d
+    %s: $u128 = @wadd(%x, %y)
+    %lo: u64 = extract %s, lo
+    %hi: u64 = extract %s, hi
+    ret %lo, %hi
+}
+
+fn @t_ins(%a: u64, %b: u64) -> (u64, u64) {
+    %x: $u128 = pack %a, %b
+    %n: u64 = 99
+    %y: $u128 = insert %x, hi, %n
+    %lo: u64 = extract %y, lo
+    %hi: u64 = extract %y, hi
+    ret %lo, %hi
+}
+
+; b would straddle the first word, so it starts the second; c follows it
+type $mix = { a: u52, b: u30, c: u10 }
+
+fn @t_mix(%v: u64) -> (u64, u64) {
+    %a: u52 = 0xf00d
+    %b: u30 = trunc %v
+    %c: u10 = 777
+    %p: $mix = pack %a, %b, %c
+    %ra: u52 = extract %p, a
+    %rb: u30 = extract %p, b
+    %qa: u64 = ext %ra
+    %qb: u64 = ext %rb
+    ret %qa, %qb
+}
+
+fn @t_mix_c(%v: u64) -> u64 {
+    %a: u52 = 0xf00d
+    %b: u30 = trunc %v
+    %c: u10 = 777
+    %p: $mix = pack %a, %b, %c
+    %rc: u10 = extract %p, c
+    %qc: u64 = ext %rc
+    ret %qc
+}
+
+; a 128-bit accumulator carried around a loop
+fn @t_wsum(%n: u64) -> (u64, u64) {
+    %z: u64 = 0
+    %zero: $u128 = pack %z, %z
+    %s: $u128 = loop(%i: u64 = 1, %acc: $u128 = %zero) {
+        if %i > %n { break %acc }
+        %step: $u128 = pack %i, %z
+        %acc2: $u128 = @wadd(%acc, %step)
+        %i2: u64 = %i + 1
+        continue %i2, %acc2
+    }
+    %lo: u64 = extract %s, lo
+    %hi: u64 = extract %s, hi
+    ret %lo, %hi
+}

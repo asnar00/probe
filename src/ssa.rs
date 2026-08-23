@@ -96,6 +96,23 @@ impl StructDef {
         self.fields.iter().filter_map(|(_, t)| t.width()).sum()
     }
 
+    /// C-like multi-word layout: fields pack low-first and never straddle
+    /// a 64-bit word (a field that would cross starts the next word).
+    /// Returns (word count, per-field (word index, bit offset in word)).
+    pub fn word_layout(&self) -> (u32, Vec<(u32, u32)>) {
+        let mut pos = 0u32;
+        let mut map = Vec::with_capacity(self.fields.len());
+        for (_, t) in &self.fields {
+            let w = t.width().unwrap_or(0);
+            if pos % 64 + w > 64 {
+                pos = (pos / 64 + 1) * 64;
+            }
+            map.push((pos / 64, pos % 64));
+            pos += w;
+        }
+        (pos.div_ceil(64).max(1), map)
+    }
+
     /// LSB offset of field i (sum of the widths of earlier fields)
     pub fn offset(&self, i: usize) -> u32 {
         self.fields[..i]
@@ -1274,9 +1291,9 @@ impl Parser {
         // abstract fields have no width yet; the resolved layout is
         // checked by the verifier instead
         let all_known = def.fields.iter().all(|(_, t)| t.width().is_some());
-        if all_known && (def.total_bits() == 0 || def.total_bits() > 64) {
+        if all_known && (def.total_bits() == 0 || def.word_layout().0 > 8) {
             return Err(self.err(format!(
-                "struct '${}' is {} bits; 1..=64 required",
+                "struct '${}' is {} bits; 1 bit to 8 words (512 bits) required",
                 def.name,
                 def.total_bits()
             )));
@@ -2998,9 +3015,9 @@ pub fn verify(module: &Module) -> Result<(), Vec<String>> {
                 "struct '${}' has an unresolved field type (run type resolution first)",
                 d.name
             ));
-        } else if d.total_bits() == 0 || d.total_bits() > 64 {
+        } else if d.total_bits() == 0 || d.word_layout().0 > 8 {
             errs.push(format!(
-                "struct '${}' resolves to {} bits; 1..=64 required",
+                "struct '${}' resolves to {} bits; 1 bit to 8 words (512 bits) required",
                 d.name,
                 d.total_bits()
             ));
@@ -3267,7 +3284,14 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     let w = |t: Type| match t {
                         Type::F32 => Some(32),
                         Type::F64 => Some(64),
-                        Type::Struct(i) => Some(func.structs[i as usize].total_bits()),
+                        Type::Struct(i) => {
+                            let d = &func.structs[i as usize];
+                            if d.word_layout().0 == 1 {
+                                Some(d.total_bits())
+                            } else {
+                                None // multi-word structs move by parts
+                            }
+                        }
                         Type::Vec(n, e) => Some(n as u32 * e.bits()),
                         t => t.width(),
                     };

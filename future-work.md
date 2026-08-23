@@ -109,6 +109,18 @@ Backend sketch:
   the day its library exists, and so could intervals, posits, or a
   decimal type — each is a struct layout, an op library, and one arm in
   the scalarize mapping.
+- **$wide (i128) as a library**: multi-word structs make it a struct +
+  SSA functions (suite/wide.ssa's add-with-carry is the seed); closes
+  full-word-field rationals ({ num: int, den: uint }) and fixed-point
+  at every width.
+- **Struct load/store**: per-word memory ops at computed offsets — the
+  C-interop payoff (arrays of structs, records in buffers, MMIO
+  blocks). Layout is already C-like.
+- **Structure-of-vectors (AoS -> SoA)**: vec-of-struct types resolving
+  to struct-of-vectors under a layout policy, for the well-understood
+  cache/SIMD wins. The multi-word value-splitting machinery is the
+  intended substrate: same decomposition, vectors as the parts; field
+  access is symbolic until lowering precisely so this stays possible.
 - **Fixed-point types**: `fx8.8` as sugar for a struct-backed numeric —
   `{ int: i8, frac: u8 }` — with its operation set written as an SSA
   library, exactly the softfloat recipe: struct layout states the format,

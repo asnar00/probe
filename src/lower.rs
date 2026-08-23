@@ -21,9 +21,235 @@ use crate::ssa::{BinOp, CastOp, Function, Inst, Module, Type, ValueId};
 use std::collections::HashMap;
 
 pub fn lower(module: &mut Module) {
+    lower_wide_structs(module);
     lower_vectors(module);
     lower_structs(module);
     lower_widths(module);
+}
+
+/// Multi-word structs (past one 64-bit carrier, C-like packed) lower by
+/// VALUE SPLITTING: a wide-struct value becomes one value per word, each
+/// typed as a generated single-word struct, and every use site expands —
+/// params, block params, branch args, calls, returns, pack/extract/
+/// insert. No memory is involved, the emitters never know, and the
+/// mechanism is deliberately generic: a future structure-of-vectors
+/// (AoS -> SoA) policy is the same decomposition with vectors as parts.
+pub fn lower_wide_structs(module: &mut Module) {
+    use crate::ssa::{Inst, StructDef, ValueId};
+    use std::collections::HashMap;
+
+    // which structs are wide, and their per-word sub-structs
+    struct Wide {
+        words: u32,
+        field_word: Vec<(u32, u32)>, // (word, local field index)
+        word_sid: Vec<u16>,
+    }
+    let mut wide: HashMap<u16, Wide> = HashMap::new();
+    let mut defs = (*module.structs).clone();
+    for i in 0..defs.len() {
+        let (words, map) = defs[i].word_layout();
+        if words <= 1 {
+            continue;
+        }
+        // fields of one word form a contiguous low-first run, so each
+        // word is itself an ordinary small struct
+        let mut word_sid = Vec::new();
+        let mut field_word = Vec::new();
+        let mut local = 0u32;
+        let mut cur = 0u32;
+        let mut cur_fields: Vec<(String, Type)> = Vec::new();
+        let src_fields = defs[i].fields.clone();
+        let name = defs[i].name.clone();
+        let mut flush =
+            |w: u32, fields: &mut Vec<(String, Type)>, defs: &mut Vec<StructDef>| {
+                word_sid.push(defs.len() as u16);
+                defs.push(StructDef {
+                    name: format!("__w{}_{}", name, w),
+                    fields: std::mem::take(fields),
+                });
+            };
+        for (fi, (fname, fty)) in src_fields.iter().enumerate() {
+            let (w, _) = map[fi];
+            if w != cur {
+                flush(cur, &mut cur_fields, &mut defs);
+                cur = w;
+                local = 0;
+            }
+            field_word.push((w, local));
+            local += 1;
+            cur_fields.push((fname.clone(), *fty));
+        }
+        flush(cur, &mut cur_fields, &mut defs);
+        wide.insert(
+            i as u16,
+            Wide {
+                words,
+                field_word,
+                word_sid,
+            },
+        );
+    }
+    if wide.is_empty() {
+        return;
+    }
+    let rc = std::rc::Rc::new(defs);
+    module.structs = rc.clone();
+    for f in &mut module.funcs {
+        f.structs = rc.clone();
+    }
+
+    for func in &mut module.funcs {
+        let is_wide = |ty: Type| match ty {
+            Type::Struct(i) => wide.contains_key(&i),
+            _ => false,
+        };
+        if !func.values.iter().any(|v| is_wide(v.ty)) {
+            // return types may still be wide in a declaration-only sense
+            let any_ret = func.rets.iter().any(|&t| is_wide(t));
+            if !any_ret {
+                continue;
+            }
+        }
+        // one part-value per word, for every wide value
+        let mut parts: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+        for vi in 0..func.values.len() {
+            let ty = func.values[vi].ty;
+            let Type::Struct(si) = ty else { continue };
+            let Some(w) = wide.get(&si) else { continue };
+            let base = func.values[vi].name.clone();
+            let mut ps = Vec::with_capacity(w.words as usize);
+            for j in 0..w.words {
+                func.values.push(crate::ssa::ValueData {
+                    name: format!("{}_w{}", base, j),
+                    ty: Type::Struct(w.word_sid[j as usize]),
+                });
+                ps.push(ValueId(func.values.len() as u32 - 1));
+            }
+            parts.insert(ValueId(vi as u32), ps);
+        }
+        let expand = |list: &mut Vec<ValueId>, parts: &HashMap<ValueId, Vec<ValueId>>| {
+            let mut out = Vec::with_capacity(list.len());
+            for &v in list.iter() {
+                match parts.get(&v) {
+                    Some(ps) => out.extend(ps.iter().copied()),
+                    None => out.push(v),
+                }
+            }
+            *list = out;
+        };
+        expand(&mut func.params, &parts);
+        let mut rets = Vec::new();
+        for &t in &func.rets {
+            match t {
+                Type::Struct(si) if wide.contains_key(&si) => {
+                    let w = &wide[&si];
+                    for j in 0..w.words {
+                        rets.push(Type::Struct(w.word_sid[j as usize]));
+                    }
+                }
+                t => rets.push(t),
+            }
+        }
+        func.rets = rets;
+        let mut subst: HashMap<ValueId, ValueId> = HashMap::new();
+        for b in 0..func.blocks.len() {
+            expand(&mut func.blocks[b].params, &parts);
+            let insts = std::mem::take(&mut func.blocks[b].insts);
+            let mut out = Vec::with_capacity(insts.len());
+            for inst in insts {
+                match inst {
+                    Inst::Pack { dst, args } if parts.contains_key(&dst) => {
+                        let Type::Struct(si) = func.ty(dst) else { unreachable!() };
+                        let w = &wide[&si];
+                        let dp = parts[&dst].clone();
+                        let mut per_word: Vec<Vec<ValueId>> =
+                            vec![Vec::new(); w.words as usize];
+                        for (fi, &a) in args.iter().enumerate() {
+                            per_word[w.field_word[fi].0 as usize].push(a);
+                        }
+                        for (j, wargs) in per_word.into_iter().enumerate() {
+                            out.push(Inst::Pack {
+                                dst: dp[j],
+                                args: wargs,
+                            });
+                        }
+                    }
+                    Inst::Extract { dst, src, field } if parts.contains_key(&src) => {
+                        let Type::Struct(si) = func.ty(src) else { unreachable!() };
+                        let (w, local) = wide[&si].field_word[field as usize];
+                        out.push(Inst::Extract {
+                            dst,
+                            src: parts[&src][w as usize],
+                            field: local as u16,
+                        });
+                    }
+                    Inst::Insert {
+                        dst,
+                        src,
+                        field,
+                        val,
+                    } if parts.contains_key(&src) => {
+                        let Type::Struct(si) = func.ty(src) else { unreachable!() };
+                        let (w, local) = wide[&si].field_word[field as usize];
+                        let (dp, sp) = (parts[&dst].clone(), parts[&src].clone());
+                        for j in 0..dp.len() {
+                            if j == w as usize {
+                                out.push(Inst::Insert {
+                                    dst: dp[j],
+                                    src: sp[j],
+                                    field: local as u16,
+                                    val,
+                                });
+                            } else {
+                                // untouched words alias the source's parts
+                                subst.insert(dp[j], sp[j]);
+                            }
+                        }
+                    }
+                    Inst::Call {
+                        dsts,
+                        callee,
+                        mut args,
+                    } => {
+                        expand(&mut args, &parts);
+                        let mut dsts = dsts;
+                        expand(&mut dsts, &parts);
+                        out.push(Inst::Call { dsts, callee, args });
+                    }
+                    Inst::Ret { mut vals } => {
+                        expand(&mut vals, &parts);
+                        out.push(Inst::Ret { vals });
+                    }
+                    Inst::Jmp { target, mut args } => {
+                        expand(&mut args, &parts);
+                        out.push(Inst::Jmp { target, args });
+                    }
+                    Inst::Br {
+                        cond,
+                        then_target,
+                        mut then_args,
+                        else_target,
+                        mut else_args,
+                    } => {
+                        expand(&mut then_args, &parts);
+                        expand(&mut else_args, &parts);
+                        out.push(Inst::Br {
+                            cond,
+                            then_target,
+                            then_args,
+                            else_target,
+                            else_args,
+                        });
+                    }
+                    other => out.push(other),
+                }
+            }
+            func.blocks[b].insts = out;
+        }
+        if !subst.is_empty() {
+            substitute(func, &subst);
+        }
+    }
 }
 
 /// The native (arm64) lowering: vector-preserving. Functions whose vector
@@ -34,6 +260,7 @@ pub fn lower(module: &mut Module) {
 /// scalarized function pays one fmov per boundary crossing, a kept
 /// function pays nothing).
 pub fn lower_native(module: &mut Module) {
+    lower_wide_structs(module);
     lower_vectors_native(module);
     lower_structs(module);
     lower_widths(module);

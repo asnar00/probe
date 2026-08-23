@@ -184,9 +184,15 @@ store %v, %addr
 module level: fields are integer-width types (or abstract — `int`,
 `uint`, `half`, `uhalf` — resolved by the policy), declared
 **low-first**: the first field occupies the low bits, the same
-convention as vector lane 0 and as C layout viewed little-endian. Total
-width at most 64. A struct value travels in one register; `bitcast`
-converts it to and from any equal-width scalar. Field access is by name:
+convention as vector lane 0 and as C layout viewed little-endian.
+
+A struct up to 64 bits travels in one register, and `bitcast` converts
+it to and from any equal-width scalar. Larger structs (to 8 words / 512
+bits) pack C-like — a field never straddles a 64-bit word; one that
+would cross starts the next word — and lower by *value splitting*: one
+value per word, expanded through params, calls, returns, and branches,
+with no memory involved (they cannot be `bitcast` as a whole; move
+fields or words). Field access is by name either way:
 
 ```
 type $fp = { frac: u52, exp: u11, sign: u1 }
