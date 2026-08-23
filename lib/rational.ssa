@@ -2,103 +2,108 @@
 ; SSA - no compiler support. Canonical form: den > 0, gcd(|num|, den) = 1,
 ; sign in the numerator. den == 0 is NaR (not-a-rational): it propagates,
 ; and compares false (except ne). Exact-or-NaR semantics: results are
-; reduced, and anything unrepresentable in i32/u32 becomes NaR rather
+; reduced, and anything unrepresentable in the fields becomes NaR rather
 ; than silently approximating. This file is linked in textually wherever
 ; @rat_* or $rat is used, and is the 'scalar -> rat' policy's runtime.
+;
+; The library is width-agnostic: fields are `half`/`uhalf` (half the
+; `int` policy's width) and intermediates are `int`/`uint`, so the
+; invariant the arithmetic rests on - cross products need TWICE the
+; field width - holds under every policy. int=int gives i32/u32
+; rationals with int math; int=i32 gives i16/u16 rationals with i32
+; math. Range checks are trunc/ext round-trips, so no width appears as
+; a constant anywhere.
 
-type $rat = { num: i32, den: u32 }
+type $rat = { num: half, den: uhalf }
 
-fn @rat_gcd(%a: u64, %b: u64) -> u64 {
-    %g: u64 = loop(%x: u64 = %a, %y: u64 = %b) {
+fn @rat_gcd(%a: uint, %b: uint) -> uint {
+    %g: uint = loop(%x: uint = %a, %y: uint = %b) {
         if %y == 0 { break %x }
-        %r: u64 = %x % %y
+        %r: uint = %x % %y
         continue %y, %r
     }
     ret %g
 }
 
-fn @rat_abs(%v: i64) -> u64 {
+fn @rat_abs(%v: int) -> uint {
     %neg: u1 = %v < 0
-    %a: i64 = if %neg {
-        %m: i64 = 0 - %v
+    %a: int = if %neg {
+        %m: int = 0 - %v
         yield %m
     } else {
         yield %v
     }
-    %u: u64 = bitcast %a
+    %u: uint = bitcast %a
     ret %u
 }
 
 fn @rat_nar() -> $rat {
-    %n: i32 = 0
-    %d: u32 = 0
+    %n: half = 0
+    %d: uhalf = 0
     %r: $rat = pack %n, %d
     ret %r
 }
 
 fn @rat_is_nar(%a: $rat) -> u1 {
-    %d: u32 = extract %a, den
+    %d: uhalf = extract %a, den
     %r: u1 = %d == 0
     ret %r
 }
 
 ; unpack to 64-bit working values (num sign-extended, den zero-extended)
-fn @rat_parts(%a: $rat) -> (i64, u64) {
-    %n32: i32 = extract %a, num
-    %d32: u32 = extract %a, den
-    %n: i64 = ext %n32
-    %d: u64 = ext %d32
+fn @rat_parts(%a: $rat) -> (int, uint) {
+    %n32: half = extract %a, num
+    %d32: uhalf = extract %a, den
+    %n: int = ext %n32
+    %d: uint = ext %d32
     ret %n, %d
 }
 
 ; reduce and range-check a 64-bit num/den pair; den must be nonzero
-fn @rat_fit(%n: i64, %d: u64) -> $rat {
-    %a: u64 = call @rat_abs(%n)
+fn @rat_fit(%n: int, %d: uint) -> $rat {
+    %a: uint = call @rat_abs(%n)
     %anz: u1 = %a != 0
     ; gcd(0, d) = d, which normalizes 0/d to 0/1
-    %g: u64 = if %anz {
-        %g0: u64 = call @rat_gcd(%a, %d)
+    %g: uint = if %anz {
+        %g0: uint = call @rat_gcd(%a, %d)
         yield %g0
     } else {
         yield %d
     }
-    %ar: u64 = %a / %g
-    %dr: u64 = %d / %g
+    %ar: uint = %a / %g
+    %dr: uint = %d / %g
     %neg: u1 = %n < 0
-    ; range check: num in i32 (asymmetric by sign), den in u32
-    %numlim: u64 = if %neg {
-        %l1: u64 = 0x80000000
-        yield %l1
-    } else {
-        %l2: u64 = 0x7fffffff
-        yield %l2
-    }
-    if %ar > %numlim { ret call @rat_nar() }
-    if %dr > 0xffffffff { ret call @rat_nar() }
-    %ari: i64 = bitcast %ar
-    %nsig: i64 = if %neg {
-        %m: i64 = 0 - %ari
+    %ari: int = bitcast %ar
+    %nsig: int = if %neg {
+        %m: int = 0 - %ari
         yield %m
     } else {
         yield %ari
     }
-    %n32: i32 = trunc %nsig
-    %d32: u32 = trunc %dr
+    ; range checks are trunc/ext round-trips: a value fits its field
+    ; exactly when narrowing and re-widening gives it back (this also
+    ; handles the asymmetric signed range for free)
+    %n32: half = trunc %nsig
+    %nback: int = ext %n32
+    if %nback != %nsig { ret call @rat_nar() }
+    %d32: uhalf = trunc %dr
+    %dback: uint = ext %d32
+    if %dback != %dr { ret call @rat_nar() }
     %r: $rat = pack %n32, %d32
     ret %r
 }
 
-fn @rat_make(%n0: i64, %d0: i64) -> $rat {
+fn @rat_make(%n0: int, %d0: int) -> $rat {
     if %d0 == 0 { ret call @rat_nar() }
     %dneg: u1 = %d0 < 0
-    %n: i64, %d: i64 = if %dneg {
-        %nn: i64 = 0 - %n0
-        %nd: i64 = 0 - %d0
+    %n: int, %d: int = if %dneg {
+        %nn: int = 0 - %n0
+        %nd: int = 0 - %d0
         yield %nn, %nd
     } else {
         yield %n0, %d0
     }
-    %du: u64 = bitcast %d
+    %du: uint = bitcast %d
     ret call @rat_fit(%n, %du)
 }
 
@@ -107,22 +112,22 @@ fn @rat_make(%n0: i64, %d0: i64) -> $rat {
 fn @rat_add(%x: $rat, %y: $rat) -> $rat {
     if call @rat_is_nar(%x) { ret call @rat_nar() }
     if call @rat_is_nar(%y) { ret call @rat_nar() }
-    %a: i64, %b: u64 = call @rat_parts(%x)
-    %c: i64, %d: u64 = call @rat_parts(%y)
-    %g: u64 = call @rat_gcd(%b, %d)
-    %bg: u64 = %b / %g
-    %dg: u64 = %d / %g
-    %bgi: i64 = bitcast %bg
-    %dgi: i64 = bitcast %dg
-    %t: i64 = %a * %dgi + %c * %bgi
-    %den: u64 = %bg * %d
+    %a: int, %b: uint = call @rat_parts(%x)
+    %c: int, %d: uint = call @rat_parts(%y)
+    %g: uint = call @rat_gcd(%b, %d)
+    %bg: uint = %b / %g
+    %dg: uint = %d / %g
+    %bgi: int = bitcast %bg
+    %dgi: int = bitcast %dg
+    %t: int = %a * %dgi + %c * %bgi
+    %den: uint = %bg * %d
     ret call @rat_fit(%t, %den)
 }
 
 fn @rat_neg(%x: $rat) -> $rat {
     if call @rat_is_nar(%x) { ret call @rat_nar() }
-    %n: i64, %d: u64 = call @rat_parts(%x)
-    %m: i64 = 0 - %n
+    %n: int, %d: uint = call @rat_parts(%x)
+    %m: int = 0 - %n
     ret call @rat_fit(%m, %d)
 }
 
@@ -136,10 +141,10 @@ fn @rat_sub(%x: $rat, %y: $rat) -> $rat {
 fn @rat_mul(%x: $rat, %y: $rat) -> $rat {
     if call @rat_is_nar(%x) { ret call @rat_nar() }
     if call @rat_is_nar(%y) { ret call @rat_nar() }
-    %a: i64, %b: u64 = call @rat_parts(%x)
-    %c: i64, %d: u64 = call @rat_parts(%y)
-    %n: i64 = %a * %c
-    %den: u64 = %b * %d
+    %a: int, %b: uint = call @rat_parts(%x)
+    %c: int, %d: uint = call @rat_parts(%y)
+    %n: int = %a * %c
+    %den: uint = %b * %d
     ret call @rat_fit(%n, %den)
 }
 
@@ -148,21 +153,21 @@ fn @rat_mul(%x: $rat, %y: $rat) -> $rat {
 fn @rat_div(%x: $rat, %y: $rat) -> $rat {
     if call @rat_is_nar(%x) { ret call @rat_nar() }
     if call @rat_is_nar(%y) { ret call @rat_nar() }
-    %c: i64, %d: u64 = call @rat_parts(%y)
+    %c: int, %d: uint = call @rat_parts(%y)
     if %c == 0 { ret call @rat_nar() }
-    %a: i64, %b: u64 = call @rat_parts(%x)
-    %di: i64 = bitcast %d
+    %a: int, %b: uint = call @rat_parts(%x)
+    %di: int = bitcast %d
     %cneg: u1 = %c < 0
-    %rn: i64, %rdi: i64 = if %cneg {
-        %nd: i64 = 0 - %di
-        %nc: i64 = 0 - %c
+    %rn: int, %rdi: int = if %cneg {
+        %nd: int = 0 - %di
+        %nc: int = 0 - %c
         yield %nd, %nc
     } else {
         yield %di, %c
     }
-    %n: i64 = %a * %rn
-    %rdu: u64 = bitcast %rdi
-    %den: u64 = %b * %rdu
+    %n: int = %a * %rn
+    %rdu: uint = bitcast %rdi
+    %den: uint = %b * %rdu
     ret call @rat_fit(%n, %den)
 }
 
@@ -170,10 +175,10 @@ fn @rat_div(%x: $rat, %y: $rat) -> $rat {
 fn @rat_lt(%x: $rat, %y: $rat) -> u1 {
     if call @rat_is_nar(%x) { ret 0 }
     if call @rat_is_nar(%y) { ret 0 }
-    %a: i64, %b: u64 = call @rat_parts(%x)
-    %c: i64, %d: u64 = call @rat_parts(%y)
-    %bi: i64 = bitcast %b
-    %di: i64 = bitcast %d
+    %a: int, %b: uint = call @rat_parts(%x)
+    %c: int, %d: uint = call @rat_parts(%y)
+    %bi: int = bitcast %b
+    %di: int = bitcast %d
     %r: u1 = %a * %di < %c * %bi
     ret %r
 }
@@ -182,8 +187,8 @@ fn @rat_lt(%x: $rat, %y: $rat) -> u1 {
 fn @rat_eq(%x: $rat, %y: $rat) -> u1 {
     if call @rat_is_nar(%x) { ret 0 }
     if call @rat_is_nar(%y) { ret 0 }
-    %xb: u64 = bitcast %x
-    %yb: u64 = bitcast %y
+    %xb: uint = bitcast %x
+    %yb: uint = bitcast %y
     %r: u1 = %xb == %yb
     ret %r
 }
@@ -204,17 +209,17 @@ fn @rat_ne(%x: $rat, %y: $rat) -> u1 {
 }
 
 ; truncates toward zero; NaR -> 0
-fn @rat_to_int(%x: $rat) -> i64 {
+fn @rat_to_int(%x: $rat) -> int {
     if call @rat_is_nar(%x) { ret 0 }
-    %n: i64, %d: u64 = call @rat_parts(%x)
-    %di: i64 = bitcast %d
-    %r: i64 = %n / %di
+    %n: int, %d: uint = call @rat_parts(%x)
+    %di: int = bitcast %d
+    %r: int = %n / %di
     ret %r
 }
 
 ; NaR -> 0.0/0.0 = NaN, for free
 fn @rat_to_float(%x: $rat) -> float {
-    %n: i64, %d: u64 = call @rat_parts(%x)
+    %n: int, %d: uint = call @rat_parts(%x)
     %nf: float = itof %n
     %df: float = itof %d
     %r: float = %nf / %df

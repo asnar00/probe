@@ -25,91 +25,91 @@
 
 ; ---- test wrappers: build rationals from directive args, return parts ----
 
-fn @t_add(%an: i64, %ad: i64, %bn: i64, %bd: i64) -> (i64, u64) {
+fn @t_add(%an: int, %ad: int, %bn: int, %bd: int) -> (int, uint) {
     %x: $rat = call @rat_make(%an, %ad)
     %y: $rat = call @rat_make(%bn, %bd)
     %s: $rat = call @rat_add(%x, %y)
-    %n: i64, %d: u64 = call @rat_parts(%s)
+    %n: int, %d: uint = call @rat_parts(%s)
     ret %n, %d
 }
 
-fn @t_sub(%an: i64, %ad: i64, %bn: i64, %bd: i64) -> (i64, u64) {
+fn @t_sub(%an: int, %ad: int, %bn: int, %bd: int) -> (int, uint) {
     %x: $rat = call @rat_make(%an, %ad)
     %y: $rat = call @rat_make(%bn, %bd)
     %s: $rat = call @rat_sub(%x, %y)
-    %n: i64, %d: u64 = call @rat_parts(%s)
+    %n: int, %d: uint = call @rat_parts(%s)
     ret %n, %d
 }
 
-fn @t_mul(%an: i64, %ad: i64, %bn: i64, %bd: i64) -> (i64, u64) {
+fn @t_mul(%an: int, %ad: int, %bn: int, %bd: int) -> (int, uint) {
     %x: $rat = call @rat_make(%an, %ad)
     %y: $rat = call @rat_make(%bn, %bd)
     %s: $rat = call @rat_mul(%x, %y)
-    %n: i64, %d: u64 = call @rat_parts(%s)
+    %n: int, %d: uint = call @rat_parts(%s)
     ret %n, %d
 }
 
-fn @t_div(%an: i64, %ad: i64, %bn: i64, %bd: i64) -> (i64, u64) {
+fn @t_div(%an: int, %ad: int, %bn: int, %bd: int) -> (int, uint) {
     %x: $rat = call @rat_make(%an, %ad)
     %y: $rat = call @rat_make(%bn, %bd)
     %s: $rat = call @rat_div(%x, %y)
-    %n: i64, %d: u64 = call @rat_parts(%s)
+    %n: int, %d: uint = call @rat_parts(%s)
     ret %n, %d
 }
 
-fn @t_make(%n0: i64, %d0: i64) -> (i64, u64) {
+fn @t_make(%n0: int, %d0: int) -> (int, uint) {
     %x: $rat = call @rat_make(%n0, %d0)
-    %n: i64, %d: u64 = call @rat_parts(%x)
+    %n: int, %d: uint = call @rat_parts(%x)
     ret %n, %d
 }
 
-fn @t_lt(%an: i64, %ad: i64, %bn: i64, %bd: i64) -> u1 {
+fn @t_lt(%an: int, %ad: int, %bn: int, %bd: int) -> u1 {
     %x: $rat = call @rat_make(%an, %ad)
     %y: $rat = call @rat_make(%bn, %bd)
     %r: u1 = call @rat_lt(%x, %y)
     ret %r
 }
 
-fn @t_eq(%an: i64, %ad: i64, %bn: i64, %bd: i64) -> u1 {
+fn @t_eq(%an: int, %ad: int, %bn: int, %bd: int) -> u1 {
     %x: $rat = call @rat_make(%an, %ad)
     %y: $rat = call @rat_make(%bn, %bd)
     %r: u1 = call @rat_eq(%x, %y)
     ret %r
 }
 
-fn @t_to_int(%n0: i64, %d0: i64) -> i64 {
+fn @t_to_int(%n0: int, %d0: int) -> int {
     %x: $rat = call @rat_make(%n0, %d0)
-    %r: i64 = call @rat_to_int(%x)
+    %r: int = call @rat_to_int(%x)
     ret %r
 }
 
-fn @t_to_float(%n0: i64, %d0: i64) -> float {
+fn @t_to_float(%n0: int, %d0: int) -> float {
     %x: $rat = call @rat_make(%n0, %d0)
     %r: float = call @rat_to_float(%x)
     ret %r
 }
 
-fn @t_nar(%n0: i64, %d0: i64) -> u1 {
+fn @t_nar(%n0: int, %d0: int) -> u1 {
     %x: $rat = call @rat_make(%n0, %d0)
     %r: u1 = call @rat_is_nar(%x)
     ret %r
 }
 
 ; 1 + 1/2 + ... + 1/n, exactly — a rational accumulator in a loop
-fn @t_harmonic(%n: i64) -> (i64, u64) {
-    %zero: i64 = iconst 0
-    %one: i64 = iconst 1
+fn @t_harmonic(%n: int) -> (int, uint) {
+    %zero: int = iconst 0
+    %one: int = iconst 1
     %z: $rat = call @rat_make(%zero, %one)
-    %s: $rat = loop(%i: i64 = %one, %acc: $rat = %z) {
+    %s: $rat = loop(%i: int = %one, %acc: $rat = %z) {
         %done: u1 = icmp.gt %i, %n
         if %done {
             break %acc
         }
         %term: $rat = call @rat_make(%one, %i)
         %acc2: $rat = call @rat_add(%acc, %term)
-        %i2: i64 = iadd %i, %one
+        %i2: int = iadd %i, %one
         continue %i2, %acc2
     }
-    %rn: i64, %rd: u64 = call @rat_parts(%s)
+    %rn: int, %rd: uint = call @rat_parts(%s)
     ret %rn, %rd
 }

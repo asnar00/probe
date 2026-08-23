@@ -28,10 +28,11 @@ pub fn link(src: &str, policy: &Policy) -> String {
     }
 }
 
-/// Convert an f64 to an exact (num, den) pair that fits $rat. Every
-/// finite float is a rational with a power-of-two denominator; scalar
-/// constants in portable code are simple dyadics, so most fit easily.
-fn exact_rat(v: f64) -> Result<(i64, u64), String> {
+/// Convert an f64 to an exact (num, den) pair that fits $rat's fields
+/// (hw bits each — half the policy's word). Every finite float is a
+/// rational with a power-of-two denominator; scalar constants in
+/// portable code are simple dyadics, so most fit easily.
+fn exact_rat(v: f64, hw: u32) -> Result<(i64, u64), String> {
     if !v.is_finite() {
         return Err(format!("scalar constant {} is not finite", v));
     }
@@ -54,9 +55,16 @@ fn exact_rat(v: f64) -> Result<(i64, u64), String> {
     } else {
         d = 1;
     }
-    let fits = if n < 0 { -n <= 1 << 31 } else { n <= 0x7fffffff };
-    if !fits || d > 0xffffffff {
-        return Err(format!("scalar constant {} not representable as rat", v));
+    let fits = if n < 0 {
+        -n <= 1i64 << (hw - 1)
+    } else {
+        n < 1i64 << (hw - 1)
+    };
+    if !fits || d >= 1u64 << hw {
+        return Err(format!(
+            "scalar constant {} not representable as a {}-bit rat",
+            v, hw
+        ));
     }
     Ok((n, d))
 }
@@ -73,13 +81,24 @@ fn gcd(mut a: u64, mut b: u64) -> u64 {
 /// already `$rat`) and before soften and verification. Real float ops are
 /// untouched — scalar and concrete floats mix freely in one module.
 pub fn scalarize(module: &mut Module) -> Result<(), String> {
-    let Some(rat) = module.structs.iter().position(|d| d.name == "rat") else {
+    let Some(rid) = module.structs.iter().position(|d| d.name == "rat") else {
         return Ok(()); // no library linked, so no rat-typed values exist
     };
-    let rat = Type::Struct(rat as u16);
+    // the library is width-agnostic ($rat = { num: half, den: uhalf });
+    // read the RESOLVED field width and derive the word type from it
+    let hw = match module.structs[rid].fields[0].1 {
+        Type::I(n) => n as u32,
+        t => {
+            return Err(format!(
+                "$rat's num field resolved to {}, expected a signed integer",
+                t.name()
+            ))
+        }
+    };
+    let rat = Type::Struct(rid as u16);
     let mut errs = Vec::new();
     for func in &mut module.funcs {
-        scalarize_function(func, rat, &mut errs);
+        scalarize_function(func, rat, hw, &mut errs);
     }
     if errs.is_empty() {
         Ok(())
@@ -88,7 +107,10 @@ pub fn scalarize(module: &mut Module) -> Result<(), String> {
     }
 }
 
-fn scalarize_function(func: &mut ssa::Function, rat: Type, errs: &mut Vec<String>) {
+fn scalarize_function(func: &mut ssa::Function, rat: Type, hw: u32, errs: &mut Vec<String>) {
+    // the word: twice the field width — what rat_make takes and
+    // rat_to_int returns under the current policy
+    let wty = Type::I((2 * hw) as u8);
     let mut ntmp = 0u32;
     for b in 0..func.blocks.len() {
         let insts = std::mem::take(&mut func.blocks[b].insts);
@@ -109,10 +131,10 @@ fn scalarize_function(func: &mut ssa::Function, rat: Type, errs: &mut Vec<String
         for inst in insts {
             match inst {
                 Inst::FConst { dst, bits } if func.ty(dst) == rat => {
-                    match exact_rat(f64::from_bits(bits)) {
+                    match exact_rat(f64::from_bits(bits), hw) {
                         Ok((n, d)) => {
-                            let nv = tmp(func, Type::I(32));
-                            let dv = tmp(func, Type::U(32));
+                            let nv = tmp(func, Type::I(hw as u8));
+                            let dv = tmp(func, Type::U(hw as u8));
                             out.push(Inst::IConst { dst: nv, imm: n });
                             out.push(Inst::IConst { dst: dv, imm: d as i64 });
                             out.push(Inst::Pack {
@@ -155,29 +177,21 @@ fn scalarize_function(func: &mut ssa::Function, rat: Type, errs: &mut Vec<String
                     dst,
                     src,
                 } if func.ty(dst) == rat => {
-                    // rat_make takes (i64, i64): widen or reinterpret first
-                    let n64 = match func.ty(src) {
-                        Type::I(64) => src,
-                        Type::U(64) => {
-                            let t = tmp(func, Type::I(64));
-                            out.push(Inst::Cast {
-                                op: CastOp::Bitcast,
-                                dst: t,
-                                src,
-                            });
-                            t
-                        }
-                        _ => {
-                            let t = tmp(func, Type::I(64));
-                            out.push(Inst::Cast {
-                                op: CastOp::Ext,
-                                dst: t,
-                                src,
-                            });
-                            t
-                        }
+                    // rat_make takes two words: adapt the source's width
+                    let sw = func.ty(src);
+                    let n64 = if sw == wty {
+                        src
+                    } else {
+                        let t = tmp(func, wty);
+                        let op = match (sw.width(), wty.width()) {
+                            (Some(a), Some(b)) if a < b => CastOp::Ext,
+                            (Some(a), Some(b)) if a > b => CastOp::Trunc,
+                            _ => CastOp::Bitcast,
+                        };
+                        out.push(Inst::Cast { op, dst: t, src });
+                        t
                     };
-                    let one = tmp(func, Type::I(64));
+                    let one = tmp(func, wty);
                     out.push(Inst::IConst { dst: one, imm: 1 });
                     out.push(call1(dst, "rat_make", vec![n64, one]));
                 }
@@ -185,27 +199,22 @@ fn scalarize_function(func: &mut ssa::Function, rat: Type, errs: &mut Vec<String
                     op: CastOp::Ftoi,
                     dst,
                     src,
-                } if func.ty(src) == rat => match func.ty(dst) {
-                    Type::I(64) => out.push(call1(dst, "rat_to_int", vec![src])),
-                    Type::U(64) => {
-                        let t = tmp(func, Type::I(64));
+                } if func.ty(src) == rat => {
+                    // rat_to_int returns a word: adapt to the destination
+                    let dt = func.ty(dst);
+                    if dt == wty {
+                        out.push(call1(dst, "rat_to_int", vec![src]));
+                    } else {
+                        let t = tmp(func, wty);
                         out.push(call1(t, "rat_to_int", vec![src]));
-                        out.push(Inst::Cast {
-                            op: CastOp::Bitcast,
-                            dst,
-                            src: t,
-                        });
+                        let op = match (wty.width(), dt.width()) {
+                            (Some(a), Some(b)) if a < b => CastOp::Ext,
+                            (Some(a), Some(b)) if a > b => CastOp::Trunc,
+                            _ => CastOp::Bitcast,
+                        };
+                        out.push(Inst::Cast { op, dst, src: t });
                     }
-                    _ => {
-                        let t = tmp(func, Type::I(64));
-                        out.push(call1(t, "rat_to_int", vec![src]));
-                        out.push(Inst::Cast {
-                            op: CastOp::Trunc,
-                            dst,
-                            src: t,
-                        });
-                    }
-                },
+                }
                 other => out.push(other),
             }
         }

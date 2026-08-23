@@ -31,6 +31,14 @@ pub enum Type {
     Int,
     Uint,
     Float,
+    /// abstract half-word integers: resolved to HALF the `int` policy's
+    /// width (i32/u32 under int=i64, i16/u16 under int=i32). The point is
+    /// stating a width *relationship*: a struct of `half` fields with
+    /// `int` intermediates keeps "intermediates are twice the fields"
+    /// true under every policy — the invariant exact-rational arithmetic
+    /// (and fixed-point, and anything product-shaped) rests on.
+    Half,
+    UHalf,
     /// abstract scalar — parent of float, rational, (future) fixed-point.
     /// Resolved by policy either to a concrete float (a substitution, like
     /// `float`) or to the `$rat` struct (a rewrite of its float-opcode
@@ -107,6 +115,8 @@ impl Type {
             Type::F64 => "f64".into(),
             Type::Float => "float".into(),
             Type::Scalar => "scalar".into(),
+            Type::Half => "half".into(),
+            Type::UHalf => "uhalf".into(),
             Type::Struct(_) => "$struct".into(), // callers with a table print the name
             Type::Vec(n, e) => format!("{}x{}", e.ty().name(), n),
         }
@@ -126,6 +136,8 @@ impl Type {
             "f64" => Some(Type::F64),
             "float" => Some(Type::Float),
             "scalar" => Some(Type::Scalar),
+            "half" => Some(Type::Half),
+            "uhalf" => Some(Type::UHalf),
             _ => {
                 // vector names: <elem>x<lanes>, e.g. i16x4, f32x2, u8x8
                 if let Some((el, ln)) = s.rsplit_once('x') {
@@ -177,7 +189,7 @@ impl Type {
 
     /// Signedness — the property the opcodes read.
     pub fn is_signed(self) -> bool {
-        matches!(self, Type::I(_) | Type::Int)
+        matches!(self, Type::I(_) | Type::Int | Type::Half)
     }
 
     fn is_arith(self) -> bool {
@@ -541,6 +553,35 @@ fn lane_scalar_ok(elem: VecElem, t: Type) -> bool {
 /// not opcodes, this is one sweep over the value tables and signatures —
 /// no instruction ever changes.
 pub fn resolve_types(module: &mut Module, policy: &Policy) {
+    let hw = match policy.int {
+        Type::I(n) => n / 2,
+        _ => 32,
+    };
+    // struct fields resolve too (layouts may be policy-parametric); the
+    // shared table is rebuilt and re-distributed
+    if module.structs.iter().any(|d| {
+        d.fields
+            .iter()
+            .any(|(_, t)| matches!(t, Type::Int | Type::Uint | Type::Half | Type::UHalf))
+    }) {
+        let mut defs = (*module.structs).clone();
+        for d in &mut defs {
+            for (_, t) in &mut d.fields {
+                match *t {
+                    Type::Int => *t = policy.int,
+                    Type::Uint => *t = policy.uint,
+                    Type::Half => *t = Type::I(hw),
+                    Type::UHalf => *t = Type::U(hw),
+                    _ => {}
+                }
+            }
+        }
+        let rc = std::rc::Rc::new(defs);
+        module.structs = rc.clone();
+        for f in &mut module.funcs {
+            f.structs = rc.clone();
+        }
+    }
     // scalar -> $rat needs the rational library's struct in the module's
     // table (the load paths link it in textually); if it is absent, Scalar
     // stays unresolved and rule 0 reports it honestly
@@ -557,6 +598,8 @@ pub fn resolve_types(module: &mut Module, policy: &Policy) {
             Type::Int => *t = policy.int,
             Type::Uint => *t = policy.uint,
             Type::Float => *t = policy.float,
+            Type::Half => *t = Type::I(hw),
+            Type::UHalf => *t = Type::U(hw),
             Type::Scalar => {
                 if let Some(sc) = scalar {
                     *t = sc
@@ -1211,7 +1254,9 @@ impl Parser {
             let fname = self.expect_ident()?;
             self.expect(Tok::Colon)?;
             let ty = self.expect_type()?;
-            if ty.width().is_none() {
+            let abstract_int =
+                matches!(ty, Type::Int | Type::Uint | Type::Half | Type::UHalf);
+            if ty.width().is_none() && !abstract_int {
                 return Err(self.err(format!(
                     "struct field '{}' must have an integer width",
                     fname
@@ -1224,7 +1269,10 @@ impl Parser {
             self.expect(Tok::Comma)?;
         }
         let def = StructDef { name, fields };
-        if def.total_bits() == 0 || def.total_bits() > 64 {
+        // abstract fields have no width yet; the resolved layout is
+        // checked by the verifier instead
+        let all_known = def.fields.iter().all(|(_, t)| t.width().is_some());
+        if all_known && (def.total_bits() == 0 || def.total_bits() > 64) {
             return Err(self.err(format!(
                 "struct '${}' is {} bits; 1..=64 required",
                 def.name,
@@ -2883,6 +2931,22 @@ impl Function {
 
 pub fn verify(module: &Module) -> Result<(), Vec<String>> {
     let mut errs = Vec::new();
+    // struct layouts must be fully resolved and fit a 64-bit carrier
+    // (abstract fields defer this check from parse to here)
+    for d in module.structs.iter() {
+        if d.fields.iter().any(|(_, t)| t.width().is_none()) {
+            errs.push(format!(
+                "struct '${}' has an unresolved field type (run type resolution first)",
+                d.name
+            ));
+        } else if d.total_bits() == 0 || d.total_bits() > 64 {
+            errs.push(format!(
+                "struct '${}' resolves to {} bits; 1..=64 required",
+                d.name,
+                d.total_bits()
+            ));
+        }
+    }
     for func in &module.funcs {
         verify_function(module, func, &mut errs);
     }
@@ -2903,7 +2967,10 @@ fn verify_function(module: &Module, func: &Function, errs: &mut Vec<String>) {
 
     // rule 0: abstract types are resolved before verification
     for v in &func.values {
-        if matches!(v.ty, Type::Int | Type::Uint | Type::Float | Type::Scalar) {
+        if matches!(
+            v.ty,
+            Type::Int | Type::Uint | Type::Float | Type::Scalar | Type::Half | Type::UHalf
+        ) {
             errs.push(ctx(format!(
                 "value '%{}' has unresolved abstract type '{}' (run type resolution first)",
                 v.name,
@@ -3025,7 +3092,8 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 }
                 Type::F32 | Type::F64 => false, // use fconst
                 Type::Struct(_) | Type::Vec(..) => false, // use pack
-                Type::Int | Type::Uint | Type::Float | Type::Scalar => {
+                Type::Int | Type::Uint | Type::Float | Type::Scalar | Type::Half
+                | Type::UHalf => {
                     unreachable!("rejected by rule 0")
                 }
             };

@@ -47,6 +47,8 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `float` | abstract float — resolved like `int` (`--float=f32|f64`) |
 | `scalar` | abstract scalar, parent of float and rational — resolved |
 |       | to a concrete float or to `$rat` (`--scalar=f32|f64|rat`)  |
+| `half`  | abstract integers resolving to HALF the `int` policy's   |
+| `uhalf` | width — for stating width *relationships* (see below)    |
 
 ## Structure
 
@@ -301,6 +303,21 @@ user concerns (`--int=i32|i64`, `--float=f32|f64`; `uint` follows `int`'s
 width). Because types live on variables, resolution is a single rewrite
 of the value tables before verification; opcodes, instructions, and
 everything downstream see only concrete types.
+
+### half and uhalf: width relationships
+
+Some code depends not on a width but on a *ratio* of widths: exact
+rational arithmetic is correct only when intermediates are twice the
+component width (cross products of w-bit values need 2w bits). `half`
+and `uhalf` resolve to half the `int` policy's width, so a struct of
+`half` fields with `int` intermediates keeps that invariant true under
+every policy — under `int=i64` the rational library computes with
+i32/u32 components and i64 math; under `int=i32`, i16/u16 components
+and i32 math. Struct fields may be abstract (`int`, `uint`, `half`,
+`uhalf`); the resolved layout must still fit the 64-bit carrier, which
+the verifier checks after resolution. Width-agnostic range checks are
+written as trunc/ext round-trips (narrow, re-widen, compare) instead of
+magic constants.
 
 ```
 fn @gcd(%a: int, %b: int) -> int {     ; width chosen per target/policy
