@@ -190,7 +190,7 @@ impl Report {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn run_dir(dir: &str, backend: Backend) -> Result<Report, String> {
-    run_dir_at(dir, backend, opt::MAX_LEVEL, None, None, false)
+    run_dir_at(dir, backend, opt::MAX_LEVEL, None, None, None, false)
 }
 
 /// Each target's default replacement policy for the abstract 'int' type:
@@ -337,6 +337,7 @@ pub fn run_dir_at(
     level: usize,
     int_override: Option<ssa::Type>,
     float_override: Option<ssa::Type>,
+    scalar_override: Option<ssa::ScalarPolicy>,
     soft: bool,
 ) -> Result<Report, String> {
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
@@ -372,10 +373,13 @@ pub fn run_dir_at(
             .map_err(|e| e.to_string())?;
     }
 
-    let policy = ssa::Policy::new(
+    let mut policy = ssa::Policy::new(
         int_override.unwrap_or(default_int(backend)),
         float_override.unwrap_or(ssa::Type::F64),
     )?;
+    if let Some(sc) = scalar_override {
+        policy.scalar = sc;
+    }
     let mut report = Report {
         passed: 0,
         failed: 0,
@@ -384,6 +388,7 @@ pub fn run_dir_at(
     for path in &files {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", name, e))?;
+        let src = crate::scalar::link(&src, &policy);
 
         let mut cases = Vec::new();
         let mut bad_directive = None;
@@ -402,6 +407,7 @@ pub fn run_dir_at(
             }
             let mut module = ssa::parse(&src).map_err(|e| e.to_string())?;
             ssa::resolve_types(&mut module, &policy);
+            crate::scalar::scalarize(&mut module)?;
             ssa::verify(&module).map_err(|errs| errs.join("; "))?;
             let wrappers = prepare_cases(&module, &mut cases)?;
             let full_src = if wrappers.is_empty() {
@@ -411,6 +417,7 @@ pub fn run_dir_at(
             };
             let mut module = ssa::parse(&full_src).map_err(|e| e.to_string())?;
             ssa::resolve_types(&mut module, &policy);
+            crate::scalar::scalarize(&mut module)?;
             if soft {
                 softfloat::soften(&mut module)?;
             }
@@ -893,6 +900,7 @@ fn run_riscv(
         let full = format!("{}\n{}\n{}", driver, helpers(RV_UART), src);
         let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);
+        crate::scalar::scalarize(&mut m2)?;
         if soft {
             softfloat::soften(&mut m2)?;
         }
@@ -971,6 +979,7 @@ fn run_arm_qemu(
         let full = format!("{}\n{}\n{}\n{}", driver, helpers(ARM_UART), stub, src);
         let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);
+        crate::scalar::scalarize(&mut m2)?;
         if soft {
             softfloat::soften(&mut m2)?;
         }
@@ -1073,8 +1082,9 @@ mod tests {
     fn regression_suite_every_level() {
         // any prefix of the pass pipeline must be a correct stopping point
         for level in 0..=crate::opt::MAX_LEVEL {
-            let report = super::run_dir_at("suite", super::Backend::Native, level, None, None, false)
-                .expect("suite runs");
+            let report =
+                super::run_dir_at("suite", super::Backend::Native, level, None, None, None, false)
+                    .expect("suite runs");
             assert_eq!(report.failed, 0, "at level {}:\n{}", level, report.log);
         }
     }
@@ -1096,6 +1106,7 @@ mod tests {
                 crate::opt::MAX_LEVEL,
                 Some(int),
                 Some(float),
+                None,
                 false,
             )
             .expect("suite runs");
@@ -1108,6 +1119,23 @@ mod tests {
                 report.log
             );
         }
+    }
+
+    #[test]
+    fn regression_suite_scalar_rat() {
+        // the same abstract-scalar programs, computed in exact rational
+        // arithmetic instead of floating point
+        let report = super::run_dir_at(
+            "suite",
+            super::Backend::Native,
+            crate::opt::MAX_LEVEL,
+            None,
+            None,
+            Some(crate::ssa::ScalarPolicy::Rat),
+            false,
+        )
+        .expect("suite runs");
+        assert_eq!(report.failed, 0, "\n{}", report.log);
     }
 
     #[test]
@@ -1131,6 +1159,7 @@ mod tests {
             "suite",
             super::Backend::Native,
             crate::opt::MAX_LEVEL,
+            None,
             None,
             None,
             true,

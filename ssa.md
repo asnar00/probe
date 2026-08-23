@@ -44,6 +44,8 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `int` | abstract integer — resolved to a concrete width by the   |
 |       | target's replacement policy (see *Abstract numeric types*) |
 | `float` | abstract float — resolved like `int` (`--float=f32|f64`) |
+| `scalar` | abstract scalar, parent of float and rational — resolved |
+|       | to a concrete float or to `$rat` (`--scalar=f32|f64|rat`)  |
 
 ## Structure
 
@@ -276,6 +278,31 @@ fn @gcd(%a: int, %b: int) -> int {     ; width chosen per target/policy
 - `float` resolves the same way (`f64` by default on every target;
   `--float=f32` for size). Policy-portable abstract-float code sticks to
   values exact in both widths.
+
+### scalar
+
+`scalar` sits above `float`: it abstracts not just the width but the
+*representation*. Scalar code is written with the float opcodes
+(`fconst`, `fadd`..`fdiv`, `fcmp.*`, `itof`, `ftoi`), and the policy
+decides what they mean:
+
+- `--scalar=f64` / `--scalar=f32` (default: follows `float`): pure type
+  substitution, exactly like `float`.
+- `--scalar=rat`: scalar values become the rational library's `$rat`
+  struct (`{ num: i32, den: u32 }`, lib/rational.ssa — linked in
+  textually), and a pass rewrites the float opcodes into library calls:
+  `fadd` -> `@rat_add`, `fcmp.olt` -> `@rat_lt`, `itof %n` ->
+  `@rat_make(%n, 1)`, `ftoi` -> `@rat_to_int`, and `fconst` becomes the
+  exact `num/den` pair (every finite float is a dyadic rational; a
+  constant too precise to fit is a compile-time error). NaN-adjacent
+  behavior maps to NaR (`den == 0`): ordered comparisons false, `une`
+  true.
+
+Portable scalar code keeps to values exact in every implementation —
+dyadic constants, integer entry and exit — the same discipline abstract
+`float` already has across widths. A future fixed-point implementation
+joins the same seam: struct layout plus an op library, selected by
+`--scalar=fx8.8`-style policies.
 
 ## Structured control flow
 

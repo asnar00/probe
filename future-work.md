@@ -75,13 +75,18 @@ Backend sketch:
 
 ## Numeric tower
 
-- **Rationals, generalized**: `suite/rational.ssa` proves the recipe —
-  `rat` = `{ num: i32, den: u32 }` plus an SSA op library (canonical
-  reduced form, NaR = den 0, exact-or-NaR semantics), zero compiler
-  changes. Next rungs: parametrized `rat(N)` widths (r16 = i16/u16 fits
-  32 bits), an abstract `rat` in the replacement policy, a mediant /
-  continued-fraction `float -> rat` best-approximation, and detecting
-  the one 64-bit intermediate overflow corner in add.
+- **Rationals, generalized**: lib/rational.ssa is the recipe — `$rat` =
+  `{ num: i32, den: u32 }` plus an SSA op library (canonical reduced
+  form, NaR = den 0, exact-or-NaR semantics), zero compiler changes —
+  and `--scalar=rat` plugs it under the abstract `scalar` type. Next
+  rungs: parametrized `rat(N)` widths (r16 = i16/u16 fits 32 bits), a
+  mediant / continued-fraction `float -> rat` best-approximation, and
+  detecting the one 64-bit intermediate overflow corner in add.
+- **More scalar implementations**: `scalar` abstracts the numeric
+  representation itself; fixed-point (below) joins as `--scalar=fx8.8`
+  the day its library exists, and so could intervals, posits, or a
+  decimal type — each is a struct layout, an op library, and one arm in
+  the scalarize mapping.
 - **Fixed-point types**: `fx8.8` as sugar for a struct-backed numeric —
   `{ int: i8, frac: u8 }` — with its operation set written as an SSA
   library, exactly the softfloat recipe: struct layout states the format,

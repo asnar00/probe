@@ -31,6 +31,11 @@ pub enum Type {
     Int,
     Uint,
     Float,
+    /// abstract scalar — parent of float, rational, (future) fixed-point.
+    /// Resolved by policy either to a concrete float (a substitution, like
+    /// `float`) or to the `$rat` struct (a rewrite of its float-opcode
+    /// operations into rational-library calls — see scalar.rs).
+    Scalar,
     /// packed bitfield struct; index into the module's struct table
     /// (each Function carries a copy). Total width <= 64; lowered to its
     /// carrier integer before emission.
@@ -69,6 +74,7 @@ impl Type {
             Type::F32 => "f32".into(),
             Type::F64 => "f64".into(),
             Type::Float => "float".into(),
+            Type::Scalar => "scalar".into(),
             Type::Struct(_) => "$struct".into(), // callers with a table print the name
         }
     }
@@ -86,6 +92,7 @@ impl Type {
             "f32" => Some(Type::F32),
             "f64" => Some(Type::F64),
             "float" => Some(Type::Float),
+            "scalar" => Some(Type::Scalar),
             _ => {
                 let (ctor, rest): (fn(u8) -> Type, &str) =
                     if let Some(r) = s.strip_prefix('i') {
@@ -411,6 +418,16 @@ pub struct Policy {
     pub int: Type,
     pub uint: Type,
     pub float: Type,
+    pub scalar: ScalarPolicy,
+}
+
+/// What the abstract `scalar` type becomes: a concrete float (pure type
+/// substitution) or the rational library's `$rat` struct (scalar.rs then
+/// rewrites the float opcodes into calls).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ScalarPolicy {
+    Float(Type),
+    Rat,
 }
 
 impl Policy {
@@ -426,7 +443,13 @@ impl Policy {
             Type::I(n) => Type::U(n),
             _ => unreachable!(),
         };
-        Ok(Policy { int, uint, float })
+        // 'scalar' follows 'float' unless overridden
+        Ok(Policy {
+            int,
+            uint,
+            float,
+            scalar: ScalarPolicy::Float(float),
+        })
     }
 }
 
@@ -434,11 +457,27 @@ impl Policy {
 /// not opcodes, this is one sweep over the value tables and signatures —
 /// no instruction ever changes.
 pub fn resolve_types(module: &mut Module, policy: &Policy) {
+    // scalar -> $rat needs the rational library's struct in the module's
+    // table (the load paths link it in textually); if it is absent, Scalar
+    // stays unresolved and rule 0 reports it honestly
+    let scalar = match policy.scalar {
+        ScalarPolicy::Float(t) => Some(t),
+        ScalarPolicy::Rat => module
+            .structs
+            .iter()
+            .position(|d| d.name == "rat")
+            .map(|i| Type::Struct(i as u16)),
+    };
     for func in &mut module.funcs {
         let subst = |t: &mut Type| match *t {
             Type::Int => *t = policy.int,
             Type::Uint => *t = policy.uint,
             Type::Float => *t = policy.float,
+            Type::Scalar => {
+                if let Some(sc) = scalar {
+                    *t = sc
+                }
+            }
             _ => {}
         };
         for v in &mut func.values {
@@ -2021,7 +2060,7 @@ fn verify_function(module: &Module, func: &Function, errs: &mut Vec<String>) {
 
     // rule 0: abstract types are resolved before verification
     for v in &func.values {
-        if matches!(v.ty, Type::Int | Type::Uint | Type::Float) {
+        if matches!(v.ty, Type::Int | Type::Uint | Type::Float | Type::Scalar) {
             errs.push(ctx(format!(
                 "value '%{}' has unresolved abstract type '{}' (run type resolution first)",
                 v.name,
@@ -2143,7 +2182,9 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 }
                 Type::F32 | Type::F64 => false, // use fconst
                 Type::Struct(_) => false,       // use pack
-                Type::Int | Type::Uint | Type::Float => unreachable!("rejected by rule 0"),
+                Type::Int | Type::Uint | Type::Float | Type::Scalar => {
+                    unreachable!("rejected by rule 0")
+                }
             };
             if !ok {
                 errs.push(ctx(format!(

@@ -1,0 +1,114 @@
+; code over the abstract 'scalar' type — the parent of float and rat: the
+; policy decides whether these functions compute in f64, f32, or exact
+; rational arithmetic, and the answers must agree. Portable scalar code
+; keeps to values exact in every implementation (dyadic constants, integer
+; entry and exit), the same discipline abstract 'float' has across widths.
+;! s_lerp 2 10 -> 6
+;! s_lerp 0 5 -> 2
+;! s_lerp -8 8 -> 0
+;! s_avg4 1 2 3 6 -> 3
+;! s_avg4 -4 -4 2 2 -> -1
+;! s_poly 3 -> 10
+;! s_poly 0 -> 1
+;! s_poly -2 -> 15
+;! s_max3 3 9 5 -> 9
+;! s_max3 -5 -9 -7 -> -5
+;! s_geo -> 15
+;! s_less_half 1 4 -> 1
+;! s_less_half 3 4 -> 0
+;! s_less_half 1 2 -> 0
+
+; a + (b - a)/2, truncated to int
+fn @s_lerp(%a: int, %b: int) -> int {
+    %af: scalar = itof %a
+    %bf: scalar = itof %b
+    %half: scalar = fconst 0.5
+    %d: scalar = fsub %bf, %af
+    %hd: scalar = fmul %d, %half
+    %m: scalar = fadd %af, %hd
+    %r: int = ftoi %m
+    ret %r
+}
+
+fn @s_avg4(%a: int, %b: int, %c: int, %d: int) -> int {
+    %af: scalar = itof %a
+    %bf: scalar = itof %b
+    %cf: scalar = itof %c
+    %df: scalar = itof %d
+    %s1: scalar = fadd %af, %bf
+    %s2: scalar = fadd %s1, %cf
+    %s3: scalar = fadd %s2, %df
+    %q: scalar = fconst 0.25
+    %m: scalar = fmul %s3, %q
+    %r: int = ftoi %m
+    ret %r
+}
+
+; 2x^2 - 3x + 1
+fn @s_poly(%x: int) -> int {
+    %xf: scalar = itof %x
+    %two: scalar = fconst 2.0
+    %three: scalar = fconst 3.0
+    %one: scalar = fconst 1.0
+    %xx: scalar = fmul %xf, %xf
+    %t1: scalar = fmul %two, %xx
+    %t2: scalar = fmul %three, %xf
+    %t3: scalar = fsub %t1, %t2
+    %p: scalar = fadd %t3, %one
+    %r: int = ftoi %p
+    ret %r
+}
+
+fn @s_max3(%a: int, %b: int, %c: int) -> int {
+    %af: scalar = itof %a
+    %bf: scalar = itof %b
+    %cf: scalar = itof %c
+    %ab: u1 = fcmp.ogt %af, %bf
+    %m1: scalar = if %ab {
+        yield %af
+    } else {
+        yield %bf
+    }
+    %mc: u1 = fcmp.ogt %m1, %cf
+    %m2: scalar = if %mc {
+        yield %m1
+    } else {
+        yield %cf
+    }
+    %r: int = ftoi %m2
+    ret %r
+}
+
+; (1 + 1/2 + 1/4 + 1/8) * 8 = 15, a scalar accumulator in a loop
+fn @s_geo() -> int {
+    %one: scalar = fconst 1.0
+    %half: scalar = fconst 0.5
+    %zero: scalar = fconst 0.0
+    %izero: int = iconst 0
+    %terms: int = iconst 4
+    %s: scalar = loop(%i: int = %izero, %acc: scalar = %zero, %x: scalar = %one) {
+        %done: u1 = icmp.ge %i, %terms
+        if %done {
+            break %acc
+        }
+        %acc2: scalar = fadd %acc, %x
+        %x2: scalar = fmul %x, %half
+        %ione: int = iconst 1
+        %i2: int = iadd %i, %ione
+        continue %i2, %acc2, %x2
+    }
+    %eight: scalar = fconst 8.0
+    %sc: scalar = fmul %s, %eight
+    %r: int = ftoi %sc
+    ret %r
+}
+
+; is a/b < 1/2?
+fn @s_less_half(%a: int, %b: int) -> u1 {
+    %af: scalar = itof %a
+    %bf: scalar = itof %b
+    %q: scalar = fdiv %af, %bf
+    %half: scalar = fconst 0.5
+    %r: u1 = fcmp.olt %q, %half
+    ret %r
+}

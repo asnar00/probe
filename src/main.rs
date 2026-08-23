@@ -7,6 +7,7 @@ mod lower;
 mod opt;
 mod oracle;
 mod regalloc;
+mod scalar;
 mod softfloat;
 mod ssa;
 mod suite;
@@ -21,6 +22,8 @@ fn main() -> ExitCode {
     let mut level = opt::MAX_LEVEL;
     let mut int_override: Option<ssa::Type> = None;
     let mut float_override: Option<ssa::Type> = None;
+    let mut scalar_override: Option<ssa::ScalarPolicy> = None;
+    let mut scalar_bad = false;
     let mut soft = false;
     args.retain(|a| {
         if let Some(l) = a.strip_prefix("-O") {
@@ -32,6 +35,21 @@ fn main() -> ExitCode {
         } else if let Some(t) = a.strip_prefix("--float=") {
             float_override = ssa::Type::from_name_pub(t);
             false
+        } else if let Some(t) = a.strip_prefix("--scalar=") {
+            scalar_override = if t == "rat" {
+                Some(ssa::ScalarPolicy::Rat)
+            } else {
+                match ssa::Type::from_name_pub(t) {
+                    Some(f @ (ssa::Type::F32 | ssa::Type::F64)) => {
+                        Some(ssa::ScalarPolicy::Float(f))
+                    }
+                    _ => {
+                        scalar_bad = true;
+                        None
+                    }
+                }
+            };
+            false
         } else if a == "--softfloat" {
             soft = true;
             false
@@ -42,10 +60,16 @@ fn main() -> ExitCode {
     // native defaults: the machine's natural widths
     let int = int_override.unwrap_or(ssa::Type::I(64));
     let float = float_override.unwrap_or(ssa::Type::F64);
-    let policy = match ssa::Policy::new(int, float) {
+    if scalar_bad {
+        return fail("--scalar must be f32, f64, or rat");
+    }
+    let mut policy = match ssa::Policy::new(int, float) {
         Ok(p) => p,
         Err(e) => return fail(&e),
     };
+    if let Some(sc) = scalar_override {
+        policy.scalar = sc;
+    }
     match args.first().map(String::as_str) {
         Some("parse") if args.len() >= 2 => cmd_parse(&args[1]),
         Some("learn") if args.len() >= 2 => {
@@ -88,7 +112,15 @@ fn main() -> ExitCode {
                 .find(|a| **a != "wasm" && **a != "riscv" && **a != "arm-qemu")
                 .copied()
                 .unwrap_or("suite");
-            match suite::run_dir_at(dir, backend, level, int_override, float_override, soft) {
+            match suite::run_dir_at(
+                dir,
+                backend,
+                level,
+                int_override,
+                float_override,
+                scalar_override,
+                soft,
+            ) {
                 Ok(report) => {
                     print!("{}", report.log);
                     if report.failed == 0 {
@@ -109,6 +141,7 @@ fn main() -> ExitCode {
             eprintln!("       probe live <file.ssa> <function> [args...]");
             eprintln!("       (-O<n> selects the optimization level on any command;");
             eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy;");
+            eprintln!("        --scalar=f32|f64|rat sets the abstract 'scalar' policy;");
             eprintln!("        --softfloat lowers float ops to the SSA softfloat runtime)");
             ExitCode::FAILURE
         }
@@ -120,6 +153,7 @@ fn cmd_parse(path: &str) -> ExitCode {
         Ok(s) => s,
         Err(e) => return fail(&format!("{}: {}", path, e)),
     };
+    let src = scalar::link(&src, &ssa::Policy::new(ssa::Type::I(64), ssa::Type::F64).unwrap());
     let module = match ssa::parse(&src) {
         Ok(m) => m,
         Err(e) => return fail(&format!("{}: {}", path, e)),
@@ -194,8 +228,10 @@ fn load_module(
     soft: bool,
 ) -> Result<ssa::Module, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
+    let src = scalar::link(&src, &policy);
     let mut module = ssa::parse(&src).map_err(|e| format!("{}: {}", path, e))?;
     ssa::resolve_types(&mut module, &policy);
+    scalar::scalarize(&mut module)?;
     if soft {
         softfloat::soften(&mut module)?;
     }
@@ -323,8 +359,10 @@ fn cmd_live(path: &str, fname: &str, fargs: &[i64], policy: ssa::Policy) -> Exit
             Ok(src) if src != held_src => {
                 held_src = src.clone();
                 let parsed = (|| -> Result<ssa::Module, String> {
+                    let src = scalar::link(&src, &policy);
                     let mut m = ssa::parse(&src).map_err(|e| e.to_string())?;
                     ssa::resolve_types(&mut m, &policy);
+                    scalar::scalarize(&mut m)?;
                     ssa::verify(&m).map_err(|e| e.join("; "))?;
                     lower::lower(&mut m);
                     Ok(m)
