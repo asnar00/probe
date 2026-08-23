@@ -445,6 +445,40 @@ is an expression atom (`%r: u1 = @f(%x) == 0`) and an `if` condition
 There is deliberately no bare-copy form (`%v: ty = %x` is an error —
 SSA has no copy opcode) and no unary minus on values (write `0 - %x`).
 
+## Width-parametric types and functions
+
+Types may take width parameters in round brackets, and any type
+position accepts a **width expression** over parameters, integer
+literals, `+ - * /`, and parens:
+
+```
+type $fp(E, M) = { frac: u(M), exp: u(E), sign: u1 }
+type $rat(N)  = { num: i(N), den: u(N) }
+
+fn @mulwide(%a: u(N), %b: u(N)) -> u(2*N) {
+    %aw: u(2*N) = ext %a
+    ...
+}
+```
+
+A struct instantiates by explicit arguments (`$fp(4, 3)` — the fp8
+e4m3 layout; `$fp(5, 10)` is fp16, `$fp(11, 52)` is the double). A
+function whose signature has free width parameters is **generic**: it
+parses once as a template, and each call site infers the parameters
+from the argument types (`@sq(%x)` with an `i16` argument instantiates
+N=16) and monomorphizes on demand — instances are ordinary functions
+and structs with mangled names (`sq__16`, `fp__4_3`), so the verifier,
+lowering, and every backend see nothing new. Generics may call
+generics; parameters propagate through inference.
+
+The point is stating width **relationships**: `u(2*N)` in `@mulwide`'s
+signature makes "products need twice the width" checkable, the same
+invariant `half`/`uhalf` hardcode at one ratio. Restrictions: a
+parameter must be inferable from some argument position that names it
+directly; literal arguments cannot drive inference; instantiated
+widths must land in 1..=64 (and struct layouts within 8 words), checked
+per instance with precise errors.
+
 ## Structured control flow
 
 A function body that opens with a statement instead of a `^label:` is in

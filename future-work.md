@@ -95,6 +95,22 @@ Backend sketch:
   `vec(16, fp4e2m1)` expressible, which with a scale field gives the
   nvfp4/MX block formats as ordinary structs + libraries.
 
+## Width generics (landed) — next steps
+
+- **`W` in width expressions**: bind the policy's word width so
+  `type $rat = $rat(W/2)` writes the policy-sized rational once and
+  `half`/`uhalf` become sugar (`i(W/2)`); needs parse to know the
+  policy (or a post-parse instantiation stage).
+- **Parametric type aliases** (`type $r16 = $rat(16)`), inference from
+  return-type context, and literal args to generic calls (defer literal
+  typing until parameters solve).
+- **The $fp(E, M) op library**: promote/demote written once over
+  (E, M) — collapses softfloat's duplicated f64/f32 code and delivers
+  the whole small-float menagerie (fp8/fp4/bf16) with exhaustive
+  per-instance verification.
+- **$rat(N) library**: the rational library generic over N, subsuming
+  the half/uhalf version once W lands.
+
 ## Numeric tower
 
 - **Rationals, generalized**: lib/rational.ssa is the recipe — `$rat` =

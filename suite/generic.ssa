@@ -1,0 +1,93 @@
+; width-parametric types and functions: declared once with parameters in
+; round brackets, instantiated by use. Type positions take width
+; expressions (i(N), u(2*N), $fp(4, 3)); function parameters are
+; inferred from argument types at the call site, and instances
+; monomorphize on demand (rat__16-style names). The point is stating
+; width RELATIONSHIPS: mulwide's result type u(2*N) makes "products
+; need twice the width" part of the signature.
+;! t_sq16 300 -> 24464
+;! t_sq16 -5 -> 25
+;! t_sq32 300 -> 90000
+;! t_quad8 100 -> 144
+;! t_mulw 300 300 -> 90000
+;! t_mulw 65535 65535 -> 4294836225
+;! fp8_exp 85 -> 10
+;! fp8_frac 85 -> 5
+;! fp16_exp 15360 -> 15
+
+type $fp(E, M) = { frac: u(M), exp: u(E), sign: u1 }
+
+fn @sq(%x: i(N)) -> i(N) {
+    ret %x * %x
+}
+
+fn @dbl(%x: u(N)) -> u(N) {
+    ret %x + %x
+}
+
+; generic calling generic: N propagates through inference
+fn @quad(%x: u(N)) -> u(N) {
+    %d: u(N) = @dbl(%x)
+    ret @dbl(%d)
+}
+
+; a widening multiply: the 2x width relationship in the signature
+fn @mulwide(%a: u(N), %b: u(N)) -> u(2*N) {
+    %aw: u(2*N) = ext %a
+    %bw: u(2*N) = ext %b
+    ret %aw * %bw
+}
+
+fn @t_sq16(%a: i64) -> i64 {
+    %x: i16 = trunc %a
+    %y: i16 = @sq(%x)
+    %r: i64 = ext %y
+    ret %r
+}
+
+fn @t_sq32(%a: i64) -> i64 {
+    %x: i32 = trunc %a
+    %y: i32 = @sq(%x)
+    %r: i64 = ext %y
+    ret %r
+}
+
+fn @t_quad8(%a: i64) -> u64 {
+    %x: u8 = trunc %a
+    %y: u8 = @quad(%x)
+    %r: u64 = ext %y
+    ret %r
+}
+
+fn @t_mulw(%a: i64, %b: i64) -> u64 {
+    %x: u16 = trunc %a
+    %y: u16 = trunc %b
+    %p: u32 = @mulwide(%x, %y)
+    %r: u64 = ext %p
+    ret %r
+}
+
+; the float menagerie's structs, one declaration: fp8 e4m3 is $fp(4, 3)
+fn @fp8_exp(%b: u64) -> u64 {
+    %v: u8 = trunc %b
+    %p: $fp(4, 3) = bitcast %v
+    %e: u4 = extract %p, exp
+    %r: u64 = ext %e
+    ret %r
+}
+
+fn @fp8_frac(%b: u64) -> u64 {
+    %v: u8 = trunc %b
+    %p: $fp(4, 3) = bitcast %v
+    %f: u3 = extract %p, frac
+    %r: u64 = ext %f
+    ret %r
+}
+
+fn @fp16_exp(%b: u64) -> u64 {
+    %v: u16 = trunc %b
+    %p: $fp(5, 10) = bitcast %v
+    %e: u5 = extract %p, exp
+    %r: u64 = ext %e
+    ret %r
+}

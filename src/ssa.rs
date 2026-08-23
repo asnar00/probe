@@ -970,6 +970,14 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         pending: Vec::new(),
         nlit: 0,
         sigs: HashMap::new(),
+        gfns: HashMap::new(),
+        gstructs: HashMap::new(),
+        wenv: HashMap::new(),
+        inst_name: None,
+        struct_insts: HashMap::new(),
+        struct_inst_rev: HashMap::new(),
+        fn_insts: HashMap::new(),
+        fn_worklist: Vec::new(),
     };
     let mut module = Module::default();
     // phase 1: type declarations and function signatures, so call sugar
@@ -984,15 +992,46 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         p.skip_newlines();
     }
     p.pos = 0;
-    // phase 2: bodies (type declarations were fully handled in phase 1)
+    // phase 2: bodies (type declarations were fully handled in phase 1;
+    // width-generic templates are skipped — instances parse on demand)
     p.skip_newlines();
     while !p.at_end() {
         if matches!(p.peek(), Some(Tok::Ident(k)) if k == "type") {
             p.skip_line();
+        } else if matches!(p.toks.get(p.pos + 1).map(|(t, _)| t), Some(Tok::Global(n)) if p.gfns.contains_key(n))
+        {
+            let (_, hi) = p.function_range()?;
+            p.pos = hi + 1;
         } else {
             module.funcs.push(p.parse_function()?);
         }
         p.skip_newlines();
+    }
+    // monomorphization: parse queued instances (which may queue more)
+    let mut spins = 0;
+    while let Some((gname, vals, mangled)) = p.fn_worklist.pop() {
+        spins += 1;
+        if spins > 4096 {
+            return Err(ParseError {
+                line: 0,
+                msg: "instantiation explosion (over 4096 width-generic instances)".into(),
+            });
+        }
+        let g = &p.gfns[&gname];
+        let (lo, params) = (g.lo, g.params.clone());
+        let save_env = std::mem::take(&mut p.wenv);
+        for (par, &v) in params.iter().zip(&vals) {
+            p.wenv.insert(par.clone(), v);
+        }
+        p.inst_name = Some(mangled.clone());
+        let save_pos = p.pos;
+        p.pos = lo;
+        let f = p.parse_function()?;
+        module.funcs.push(f);
+        p.pos = save_pos;
+        p.wenv = save_env;
+        p.inst_name = None;
+        p.fn_insts.insert(mangled, true);
     }
     let rc = std::rc::Rc::new(p.structs);
     module.structs = rc.clone();
@@ -1013,6 +1052,104 @@ struct Parser {
     /// every function signature in the module, collected up front so
     /// call sugar (literal args, call-in-expression) knows callee types
     sigs: HashMap<String, (Vec<Type>, Vec<Type>)>,
+    /// width-generic templates and their instantiation state
+    gfns: HashMap<String, GenericFn>,
+    gstructs: HashMap<String, GenericStruct>,
+    wenv: HashMap<String, i64>,
+    inst_name: Option<String>,
+    struct_insts: HashMap<(String, Vec<i64>), u16>,
+    /// instantiated struct id -> (generic name, argument values), for
+    /// solving parameters from argument types at call sites
+    struct_inst_rev: HashMap<u16, (String, Vec<i64>)>,
+    fn_insts: HashMap<String, bool>, // mangled -> body parsed yet
+    fn_worklist: Vec<(String, Vec<i64>, String)>,
+}
+
+/// a width expression inside a parametric type: `i(N)`, `u(2*N)`,
+/// `$fp(E+1, M)` — literals, parameters, + - * /, parens
+#[derive(Clone, Debug)]
+enum WExpr {
+    Lit(i64),
+    Par(String),
+    Bin(char, Box<WExpr>, Box<WExpr>),
+}
+
+impl WExpr {
+    fn eval(&self, env: &HashMap<String, i64>) -> Result<i64, String> {
+        match self {
+            WExpr::Lit(n) => Ok(*n),
+            WExpr::Par(p) => env
+                .get(p)
+                .copied()
+                .ok_or_else(|| format!("unbound width parameter '{}'", p)),
+            WExpr::Bin(op, l, r) => {
+                let (a, b) = (l.eval(env)?, r.eval(env)?);
+                Ok(match op {
+                    '+' => a + b,
+                    '-' => a - b,
+                    '*' => a * b,
+                    _ => {
+                        if b == 0 {
+                            return Err("division by zero in a width expression".into());
+                        }
+                        a / b
+                    }
+                })
+            }
+        }
+    }
+
+    fn params(&self, out: &mut Vec<String>) {
+        match self {
+            WExpr::Lit(_) => {}
+            WExpr::Par(p) => {
+                if !out.contains(p) {
+                    out.push(p.clone());
+                }
+            }
+            WExpr::Bin(_, l, r) => {
+                l.params(out);
+                r.params(out);
+            }
+        }
+    }
+}
+
+fn symty_params(st: &SymTy, out: &mut Vec<String>) {
+    match st {
+        SymTy::C(_) => {}
+        SymTy::IW(e) | SymTy::UW(e) => e.params(out),
+        SymTy::GS(_, es) => {
+            for e in es {
+                e.params(out);
+            }
+        }
+    }
+}
+
+/// a type in a width-generic signature, held symbolically until the
+/// call site's argument types solve the parameters
+#[derive(Clone, Debug)]
+enum SymTy {
+    C(Type),
+    IW(WExpr),
+    UW(WExpr),
+    GS(String, Vec<WExpr>),
+}
+
+/// a width-generic function: a token-range template, instantiated by
+/// re-parsing under a parameter environment (monomorphization)
+struct GenericFn {
+    params: Vec<String>,
+    lo: usize,
+    sig_params: Vec<SymTy>,
+    sig_rets: Vec<SymTy>,
+}
+
+struct GenericStruct {
+    params: Vec<String>,
+    /// token range of the field list, from '{'
+    fields_at: usize,
 }
 
 /// expression-sugar AST: parsed first, then desugared to flat temps so
@@ -1158,6 +1295,12 @@ impl Parser {
             let Tok::TyName(n) = self.next()? else {
                 unreachable!()
             };
+            // parametric struct instantiation: $fp(4, 3) or, inside a
+            // generic body, $rat(N)
+            if matches!(self.peek(), Some(Tok::LParen)) {
+                let args = self.parse_width_args()?;
+                return self.instantiate_struct(&n, &args).map(Type::Struct);
+            }
             return match self.structs.iter().position(|d| d.name == n) {
                 Some(i) => Ok(Type::Struct(i as u16)),
                 None => {
@@ -1167,10 +1310,173 @@ impl Parser {
             };
         }
         let s = self.expect_ident()?;
+        // parametric integer widths: i(N), u(2*N), evaluated in the
+        // current instantiation's environment
+        if (s == "i" || s == "u") && matches!(self.peek(), Some(Tok::LParen)) {
+            self.pos += 1;
+            let e = self.parse_wexpr()?;
+            self.expect(Tok::RParen)?;
+            let w = e
+                .eval(&self.wenv)
+                .map_err(|m| self.err(m))?;
+            if !(1..=64).contains(&w) {
+                return Err(self.err(format!(
+                    "width expression evaluates to {}; 1..=64 required",
+                    w
+                )));
+            }
+            return Ok(if s == "i" {
+                Type::I(w as u8)
+            } else {
+                Type::U(w as u8)
+            });
+        }
         Type::from_name(&s).ok_or_else(|| {
             self.pos -= 1;
             self.err(format!("unknown type '{}'", s))
         })
+    }
+
+    /// the `{ field: ty, ... }` list of a struct declaration (shared by
+    /// concrete declarations and generic instantiation)
+    fn parse_field_list(&mut self) -> Result<Vec<(String, Type)>, ParseError> {
+        self.expect(Tok::LBrace)?;
+        let mut fields = Vec::new();
+        loop {
+            let fname = self.expect_ident()?;
+            self.expect(Tok::Colon)?;
+            let ty = self.expect_type()?;
+            let abstract_int =
+                matches!(ty, Type::Int | Type::Uint | Type::Half | Type::UHalf);
+            if ty.width().is_none() && !abstract_int {
+                return Err(self.err(format!(
+                    "struct field '{}' must have an integer width",
+                    fname
+                )));
+            }
+            fields.push((fname, ty));
+            if self.eat(&Tok::RBrace) {
+                break;
+            }
+            self.expect(Tok::Comma)?;
+        }
+        Ok(fields)
+    }
+
+    /// `( expr, expr, ... )` — evaluated width arguments
+    fn parse_width_args(&mut self) -> Result<Vec<i64>, ParseError> {
+        self.expect(Tok::LParen)?;
+        let mut out = Vec::new();
+        loop {
+            let e = self.parse_wexpr()?;
+            out.push(e.eval(&self.wenv).map_err(|m| self.err(m))?);
+            if self.eat(&Tok::RParen) {
+                break;
+            }
+            self.expect(Tok::Comma)?;
+        }
+        Ok(out)
+    }
+
+    /// width expression: + - over * /, literals, parameters, parens
+    fn parse_wexpr(&mut self) -> Result<WExpr, ParseError> {
+        let mut lhs = self.parse_wterm()?;
+        loop {
+            match self.peek() {
+                Some(&Tok::Op(o @ ("+" | "-"))) => {
+                    self.pos += 1;
+                    let rhs = self.parse_wterm()?;
+                    lhs = WExpr::Bin(o.chars().next().unwrap(), Box::new(lhs), Box::new(rhs));
+                }
+                // "N-1" lexes the 1 as Int(-1): absorb the sign
+                Some(&Tok::Int(n)) if n < 0 => {
+                    self.pos += 1;
+                    lhs = WExpr::Bin('-', Box::new(lhs), Box::new(WExpr::Lit(-n)));
+                }
+                _ => break,
+            }
+        }
+        Ok(lhs)
+    }
+
+    fn parse_wterm(&mut self) -> Result<WExpr, ParseError> {
+        let mut lhs = self.parse_wfactor()?;
+        while let Some(&Tok::Op(o @ ("*" | "/"))) = self.peek() {
+            self.pos += 1;
+            let rhs = self.parse_wfactor()?;
+            lhs = WExpr::Bin(o.chars().next().unwrap(), Box::new(lhs), Box::new(rhs));
+        }
+        Ok(lhs)
+    }
+
+    fn parse_wfactor(&mut self) -> Result<WExpr, ParseError> {
+        match self.next()? {
+            Tok::Int(n) => Ok(WExpr::Lit(n)),
+            Tok::Ident(p) => Ok(WExpr::Par(p)),
+            Tok::LParen => {
+                let e = self.parse_wexpr()?;
+                self.expect(Tok::RParen)?;
+                Ok(e)
+            }
+            t => {
+                self.pos -= 1;
+                Err(self.err(format!("expected a width expression, found {}", t)))
+            }
+        }
+    }
+
+    /// instantiate a generic struct with concrete width arguments,
+    /// memoized; the instance is an ordinary struct named e.g. fp__4_3
+    fn instantiate_struct(&mut self, gname: &str, vals: &[i64]) -> Result<u16, ParseError> {
+        if let Some(&id) = self.struct_insts.get(&(gname.to_string(), vals.to_vec())) {
+            return Ok(id);
+        }
+        let Some(g) = self.gstructs.get(gname) else {
+            return Err(self.err(format!("'${}' is not a parametric struct type", gname)));
+        };
+        if g.params.len() != vals.len() {
+            return Err(self.err(format!(
+                "'${}' takes {} width parameters, {} given",
+                gname,
+                g.params.len(),
+                vals.len()
+            )));
+        }
+        let (params, fields_at) = (g.params.clone(), g.fields_at);
+        let save_pos = self.pos;
+        let save_env = std::mem::take(&mut self.wenv);
+        for (p, &v) in params.iter().zip(vals) {
+            self.wenv.insert(p.clone(), v);
+        }
+        self.pos = fields_at;
+        let fields = self.parse_field_list();
+        self.pos = save_pos;
+        self.wenv = save_env;
+        let fields = fields?;
+        let mangled = format!(
+            "{}__{}",
+            gname,
+            vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_")
+        );
+        let def = StructDef {
+            name: mangled,
+            fields,
+        };
+        if def.total_bits() == 0 || def.word_layout().0 > 8 {
+            return Err(self.err(format!(
+                "'${}' instantiated at {:?} is {} bits; 1 bit to 8 words required",
+                gname,
+                vals,
+                def.total_bits()
+            )));
+        }
+        let id = self.structs.len() as u16;
+        self.structs.push(def);
+        self.struct_insts
+            .insert((gname.to_string(), vals.to_vec()), id);
+        self.struct_inst_rev
+            .insert(id, (gname.to_string(), vals.to_vec()));
+        Ok(id)
     }
 
     /// `type $name = { field: iN, ... }` — fields are declared low-first
@@ -1200,6 +1506,9 @@ impl Parser {
     }
 
     /// read one function's signature into `sigs` and skip its body
+    /// read one function's signature — SYMBOLICALLY, so width-generic
+    /// functions (any i(N)/u(N)/$g(N) with free parameters) register as
+    /// templates; concrete functions register their sigs as before.
     fn prescan_signature(&mut self) -> Result<(), ParseError> {
         let kw = self.expect_ident()?;
         if kw != "fn" {
@@ -1207,7 +1516,7 @@ impl Parser {
             return Err(self.err(format!("expected 'fn', found '{}'", kw)));
         }
         self.pos -= 1;
-        let (_, hi) = self.function_range()?;
+        let (lo, hi) = self.function_range()?;
         self.pos += 1; // past `fn`
         let name = match self.next()? {
             Tok::Global(n) => n,
@@ -1228,7 +1537,7 @@ impl Parser {
                     }
                 }
                 self.expect(Tok::Colon)?;
-                params.push(self.expect_type()?);
+                params.push(self.parse_symty()?);
                 if self.eat(&Tok::RParen) {
                     break;
                 }
@@ -1239,19 +1548,225 @@ impl Parser {
         if self.eat(&Tok::Arrow) {
             if self.eat(&Tok::LParen) {
                 loop {
-                    rets.push(self.expect_type()?);
+                    rets.push(self.parse_symty()?);
                     if self.eat(&Tok::RParen) {
                         break;
                     }
                     self.expect(Tok::Comma)?;
                 }
             } else {
-                rets.push(self.expect_type()?);
+                rets.push(self.parse_symty()?);
             }
         }
-        self.sigs.insert(name, (params, rets));
+        // free width parameters anywhere in the signature make it generic
+        let mut free = Vec::new();
+        for st in params.iter().chain(&rets) {
+            symty_params(st, &mut free);
+        }
+        if free.is_empty() {
+            let empty = HashMap::new();
+            let cp: Result<Vec<Type>, _> =
+                params.iter().map(|t| self.eval_symty(t, &empty)).collect();
+            let cr: Result<Vec<Type>, _> =
+                rets.iter().map(|t| self.eval_symty(t, &empty)).collect();
+            self.sigs.insert(name, (cp?, cr?));
+        } else {
+            self.gfns.insert(
+                name,
+                GenericFn {
+                    params: free,
+                    lo,
+                    sig_params: params,
+                    sig_rets: rets,
+                },
+            );
+        }
         self.pos = hi + 1; // past the closing brace
         Ok(())
+    }
+
+    /// a signature type, held symbolically: concrete, i(expr), u(expr),
+    /// or a generic-struct application $g(expr, ...)
+    fn parse_symty(&mut self) -> Result<SymTy, ParseError> {
+        if let Some(Tok::TyName(_)) = self.peek() {
+            let Tok::TyName(n) = self.next()? else { unreachable!() };
+            if matches!(self.peek(), Some(Tok::LParen)) {
+                self.pos += 1;
+                let mut exprs = Vec::new();
+                loop {
+                    exprs.push(self.parse_wexpr()?);
+                    if self.eat(&Tok::RParen) {
+                        break;
+                    }
+                    self.expect(Tok::Comma)?;
+                }
+                return Ok(SymTy::GS(n, exprs));
+            }
+            return match self.structs.iter().position(|d| d.name == n) {
+                Some(i) => Ok(SymTy::C(Type::Struct(i as u16))),
+                None => {
+                    self.pos -= 1;
+                    Err(self.err(format!("unknown struct type '${}'", n)))
+                }
+            };
+        }
+        let s = self.expect_ident()?;
+        if (s == "i" || s == "u") && matches!(self.peek(), Some(Tok::LParen)) {
+            self.pos += 1;
+            let e = self.parse_wexpr()?;
+            self.expect(Tok::RParen)?;
+            return Ok(if s == "i" { SymTy::IW(e) } else { SymTy::UW(e) });
+        }
+        match Type::from_name(&s) {
+            Some(t) => Ok(SymTy::C(t)),
+            None => {
+                self.pos -= 1;
+                Err(self.err(format!("unknown type '{}'", s)))
+            }
+        }
+    }
+
+    /// evaluate a symbolic type under a width environment
+    fn eval_symty(
+        &mut self,
+        st: &SymTy,
+        env: &HashMap<String, i64>,
+    ) -> Result<Type, ParseError> {
+        match st {
+            SymTy::C(t) => Ok(*t),
+            SymTy::IW(e) => {
+                let w = e.eval(env).map_err(|m| self.err(m))?;
+                if !(1..=64).contains(&w) {
+                    return Err(self.err(format!("width {} out of range 1..=64", w)));
+                }
+                Ok(Type::I(w as u8))
+            }
+            SymTy::UW(e) => {
+                let w = e.eval(env).map_err(|m| self.err(m))?;
+                if !(1..=64).contains(&w) {
+                    return Err(self.err(format!("width {} out of range 1..=64", w)));
+                }
+                Ok(Type::U(w as u8))
+            }
+            SymTy::GS(n, exprs) => {
+                let vals: Result<Vec<i64>, _> =
+                    exprs.iter().map(|e| e.eval(env)).collect();
+                let vals = vals.map_err(|m| self.err(m))?;
+                let (n, vals2) = (n.clone(), vals);
+                self.instantiate_struct(&n, &vals2).map(Type::Struct)
+            }
+        }
+    }
+
+    /// queue a generic-function instantiation (memoized); its concrete
+    /// signature is registered immediately so call sugar works, and its
+    /// body is parsed from the worklist after the main pass
+    fn request_fn_inst(&mut self, gname: &str, vals: &[i64]) -> Result<String, ParseError> {
+        let mangled = format!(
+            "{}__{}",
+            gname,
+            vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_")
+        );
+        if self.fn_insts.contains_key(&mangled) {
+            return Ok(mangled);
+        }
+        let g = &self.gfns[gname];
+        let (params, sp, sr) = (g.params.clone(), g.sig_params.clone(), g.sig_rets.clone());
+        let mut env = HashMap::new();
+        for (p, &v) in params.iter().zip(vals) {
+            env.insert(p.clone(), v);
+        }
+        let cp: Result<Vec<Type>, _> = sp.iter().map(|t| self.eval_symty(t, &env)).collect();
+        let cr: Result<Vec<Type>, _> = sr.iter().map(|t| self.eval_symty(t, &env)).collect();
+        self.sigs.insert(mangled.clone(), (cp?, cr?));
+        self.fn_insts.insert(mangled.clone(), false);
+        self.fn_worklist
+            .push((gname.to_string(), vals.to_vec(), mangled.clone()));
+        Ok(mangled)
+    }
+
+    /// solve a generic call's width parameters by matching argument types
+    /// against the symbolic signature, then instantiate
+    fn solve_generic_call(
+        &mut self,
+        gname: &str,
+        args: &[ValueId],
+        scope: &FuncScope,
+    ) -> Result<String, ParseError> {
+        let g = &self.gfns[gname];
+        let (gparams, sig) = (g.params.clone(), g.sig_params.clone());
+        if args.len() != sig.len() {
+            return Err(self.err(format!(
+                "@{} takes {} arguments, {} given",
+                gname,
+                sig.len(),
+                args.len()
+            )));
+        }
+        let mut env: HashMap<String, i64> = HashMap::new();
+        let bind = |env: &mut HashMap<String, i64>, p: &str, v: i64| -> Result<(), String> {
+            match env.get(p) {
+                Some(&old) if old != v => Err(format!(
+                    "width parameter {} is both {} and {}",
+                    p, old, v
+                )),
+                _ => {
+                    env.insert(p.to_string(), v);
+                    Ok(())
+                }
+            }
+        };
+        // pass 1: positions that name a parameter directly
+        for (&a, st) in args.iter().zip(&sig) {
+            let aty = scope.values[a.0 as usize].ty;
+            let r = match (st, aty) {
+                (SymTy::IW(WExpr::Par(p)), Type::I(w)) => bind(&mut env, p, w as i64),
+                (SymTy::UW(WExpr::Par(p)), Type::U(w)) => bind(&mut env, p, w as i64),
+                (SymTy::GS(n, exprs), Type::Struct(id)) => {
+                    match self.struct_inst_rev.get(&id) {
+                        Some((gn, vals)) if gn == n => {
+                            let mut r = Ok(());
+                            for (e, &v) in exprs.iter().zip(vals) {
+                                if let WExpr::Par(p) = e {
+                                    if let Err(m) = bind(&mut env, p, v) {
+                                        r = Err(m);
+                                        break;
+                                    }
+                                }
+                            }
+                            r
+                        }
+                        _ => Ok(()), // pass 2 reports the mismatch
+                    }
+                }
+                _ => Ok(()),
+            };
+            r.map_err(|m| self.err(m))?;
+        }
+        for p in &gparams {
+            if !env.contains_key(p) {
+                return Err(self.err(format!(
+                    "cannot infer width parameter {} for @{} from the argument types",
+                    p, gname
+                )));
+            }
+        }
+        // pass 2: every position must agree once evaluated
+        for (i, (&a, st)) in args.iter().zip(&sig).enumerate() {
+            let want = self.eval_symty(st, &env)?;
+            let got = scope.values[a.0 as usize].ty;
+            if want != got {
+                return Err(self.err(format!(
+                    "@{} argument {}: expected {}, got {}",
+                    gname,
+                    i + 1,
+                    want.name(),
+                    got.name()
+                )));
+            }
+        }
+        let vals: Vec<i64> = gparams.iter().map(|p| env[p]).collect();
+        self.request_fn_inst(gname, &vals)
     }
 
     fn parse_type_decl(&mut self) -> Result<(), ParseError> {
@@ -1266,27 +1781,26 @@ impl Parser {
         if self.structs.iter().any(|d| d.name == name) {
             return Err(self.err(format!("struct '${}' is defined more than once", name)));
         }
-        self.expect(Tok::Equals)?;
-        self.expect(Tok::LBrace)?;
-        let mut fields = Vec::new();
-        loop {
-            let fname = self.expect_ident()?;
-            self.expect(Tok::Colon)?;
-            let ty = self.expect_type()?;
-            let abstract_int =
-                matches!(ty, Type::Int | Type::Uint | Type::Half | Type::UHalf);
-            if ty.width().is_none() && !abstract_int {
-                return Err(self.err(format!(
-                    "struct field '{}' must have an integer width",
-                    fname
-                )));
+        // parametric declaration: type $rat(N) = { ... } — capture the
+        // field list as a template, instantiated on use
+        if matches!(self.peek(), Some(Tok::LParen)) {
+            self.pos += 1;
+            let mut params = Vec::new();
+            loop {
+                params.push(self.expect_ident()?);
+                if self.eat(&Tok::RParen) {
+                    break;
+                }
+                self.expect(Tok::Comma)?;
             }
-            fields.push((fname, ty));
-            if self.eat(&Tok::RBrace) {
-                break;
-            }
-            self.expect(Tok::Comma)?;
+            self.expect(Tok::Equals)?;
+            let fields_at = self.pos; // at '{'
+            self.gstructs.insert(name, GenericStruct { params, fields_at });
+            self.skip_line();
+            return Ok(());
         }
+        self.expect(Tok::Equals)?;
+        let fields = self.parse_field_list()?;
         let def = StructDef { name, fields };
         // abstract fields have no width yet; the resolved layout is
         // checked by the verifier instead
@@ -1711,7 +2225,7 @@ impl Parser {
     /// Every value definition in the format is the pattern `%name : type` —
     /// function params, block params, and instruction results alike. One scan
     /// over the function's tokens builds the whole value table.
-    fn prescan_values(&self, lo: usize, hi: usize) -> Result<FuncScope, ParseError> {
+    fn prescan_values(&mut self, lo: usize, hi: usize) -> Result<FuncScope, ParseError> {
         let mut scope = FuncScope {
             values: Vec::new(),
             value_ids: HashMap::new(),
@@ -1722,29 +2236,19 @@ impl Parser {
         let mut i = lo;
         while i + 2 <= hi {
             if let (Tok::Value(name), Tok::Colon) = (&self.toks[i].0, &self.toks[i + 1].0) {
+                let name = name.clone();
                 let line = self.toks[i].1;
-                let ty = match &self.toks[i + 2].0 {
-                    Tok::Ident(tyname) => Type::from_name(tyname).ok_or_else(|| ParseError {
-                        line,
-                        msg: format!("unknown type '{}'", tyname),
-                    })?,
-                    Tok::TyName(tn) => {
-                        let idx = self.structs.iter().position(|d| &d.name == tn).ok_or_else(
-                            || ParseError {
-                                line,
-                                msg: format!("unknown struct type '${}'", tn),
-                            },
-                        )?;
-                        Type::Struct(idx as u16)
-                    }
-                    _ => {
-                        return Err(ParseError {
-                            line,
-                            msg: format!("expected a type after '%{}:'", name),
-                        })
-                    }
-                };
-                if scope.value_ids.contains_key(name) {
+                // parse the type through the full type parser so
+                // parametric forms (i(N), $fp(4,3)) instantiate here too
+                let save = self.pos;
+                self.pos = i + 2;
+                let ty = self.expect_type().map_err(|mut e| {
+                    e.line = line;
+                    e
+                })?;
+                let after = self.pos;
+                self.pos = save;
+                if scope.value_ids.contains_key(&name) {
                     return Err(ParseError {
                         line,
                         msg: format!("value '%{}' is defined more than once", name),
@@ -1756,7 +2260,7 @@ impl Parser {
                     name: name.clone(),
                     ty,
                 });
-                i += 3;
+                i = after;
             } else {
                 i += 1;
             }
@@ -1805,6 +2309,7 @@ impl Parser {
         self.prescan_blocks(lo, hi, &mut scope)?;
         self.pos += 1; // past `fn`
 
+        let inst_name = self.inst_name.take();
         let name = match self.next()? {
             Tok::Global(n) => n,
             t => {
@@ -1812,6 +2317,7 @@ impl Parser {
                 return Err(self.err(format!("expected a function name, found {}", t)));
             }
         };
+        let name = inst_name.unwrap_or(name);
 
         // parameters: names resolve via the prescan; re-parse for order
         self.expect(Tok::LParen)?;
@@ -2240,6 +2746,29 @@ impl Parser {
                 return Err(self.err(format!("expected a function name, found {}", t)));
             }
         };
+        // width-generic callee: parse the arguments, solve the width
+        // parameters from their types, and instantiate (memoized)
+        if self.gfns.contains_key(&callee) {
+            self.expect(Tok::LParen)?;
+            let mut args = Vec::new();
+            if !self.eat(&Tok::RParen) {
+                loop {
+                    if matches!(self.peek(), Some(Tok::Int(_) | Tok::FloatLit(_))) {
+                        return Err(self.err(format!(
+                            "@{} is width-generic: literal arguments cannot drive                              inference; pass typed values",
+                            callee
+                        )));
+                    }
+                    args.push(self.expect_value(scope)?);
+                    if self.eat(&Tok::RParen) {
+                        break;
+                    }
+                    self.expect(Tok::Comma)?;
+                }
+            }
+            let mangled = self.solve_generic_call(&callee, &args, scope)?;
+            return Ok((mangled, args));
+        }
         let ptys = self.sigs.get(&callee).map(|(p, _)| p.clone());
         self.expect(Tok::LParen)?;
         let mut args = Vec::new();
