@@ -1,0 +1,64 @@
+; every comparison condition; results are i1 (0 or 1)
+;! eq 5 5 -> 1
+;! eq 5 6 -> 0
+;! ne 5 6 -> 1
+;! slt -1 1 -> 1
+;! slt 1 -1 -> 0
+;! sle 5 5 -> 1
+;! sgt 1 -1 -> 1
+;! sge -1 1 -> 0
+;! ult -1 1 -> 0
+;! ule 1 -1 -> 1
+;! ugt -1 1 -> 1
+;! uge 1 -1 -> 0
+
+fn @eq(%a: i64, %b: i64) -> i1 {
+^entry:
+    %r: i1 = icmp.eq %a, %b
+    ret %r
+}
+fn @ne(%a: i64, %b: i64) -> i1 {
+^entry:
+    %r: i1 = icmp.ne %a, %b
+    ret %r
+}
+fn @slt(%a: i64, %b: i64) -> i1 {
+^entry:
+    %r: i1 = icmp.slt %a, %b
+    ret %r
+}
+fn @sle(%a: i64, %b: i64) -> i1 {
+^entry:
+    %r: i1 = icmp.sle %a, %b
+    ret %r
+}
+fn @sgt(%a: i64, %b: i64) -> i1 {
+^entry:
+    %r: i1 = icmp.sgt %a, %b
+    ret %r
+}
+fn @sge(%a: i64, %b: i64) -> i1 {
+^entry:
+    %r: i1 = icmp.sge %a, %b
+    ret %r
+}
+fn @ult(%a: i64, %b: i64) -> i1 {
+^entry:
+    %r: i1 = icmp.ult %a, %b
+    ret %r
+}
+fn @ule(%a: i64, %b: i64) -> i1 {
+^entry:
+    %r: i1 = icmp.ule %a, %b
+    ret %r
+}
+fn @ugt(%a: i64, %b: i64) -> i1 {
+^entry:
+    %r: i1 = icmp.ugt %a, %b
+    ret %r
+}
+fn @uge(%a: i64, %b: i64) -> i1 {
+^entry:
+    %r: i1 = icmp.uge %a, %b
+    ret %r
+}

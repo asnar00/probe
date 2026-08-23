@@ -1,0 +1,43 @@
+; width changes; i32 args arrive as raw low-32 bit patterns
+;! sext32 0xfffffff6 -> -10
+;! sext32 10 -> 10
+;! zext32 0xfffffff6 -> 4294967286
+;! trunc64 0x1ffffffff -> 4294967295
+;! bit 7 -> 1
+;! bit 6 -> 0
+;! sextbit 7 -> -1
+;! sextbit 6 -> 0
+;! zextbit 7 -> 1
+
+fn @sext32(%a: i32) -> i64 {
+^entry:
+    %r: i64 = sext %a
+    ret %r
+}
+fn @zext32(%a: i32) -> i64 {
+^entry:
+    %r: i64 = zext %a
+    ret %r
+}
+fn @trunc64(%a: i64) -> i32 {
+^entry:
+    %r: i32 = trunc %a
+    ret %r
+}
+fn @bit(%a: i64) -> i1 {
+^entry:
+    %r: i1 = trunc %a
+    ret %r
+}
+fn @sextbit(%a: i64) -> i64 {
+^entry:
+    %b: i1 = trunc %a
+    %r: i64 = sext %b
+    ret %r
+}
+fn @zextbit(%a: i64) -> i64 {
+^entry:
+    %b: i1 = trunc %a
+    %r: i64 = zext %b
+    ret %r
+}

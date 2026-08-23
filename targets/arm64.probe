@@ -1,0 +1,135 @@
+; AArch64 probe seed.
+; Registers x31/w31 mean sp or zr depending on context, so classes stop at 30.
+
+triple arm64
+width 4
+
+reg x = x0..x30
+reg w = w0..w30
+
+; --- three-register ALU ---
+inst add {x}, {x}, {x}
+inst sub {x}, {x}, {x}
+inst and {x}, {x}, {x}
+inst orr {x}, {x}, {x}
+inst eor {x}, {x}, {x}
+inst mul {x}, {x}, {x}
+inst sdiv {x}, {x}, {x}
+inst udiv {x}, {x}, {x}
+inst lsl {x}, {x}, {x}
+inst lsr {x}, {x}, {x}
+inst asr {x}, {x}, {x}
+inst add {w}, {w}, {w}
+inst sub {w}, {w}, {w}
+inst mul {w}, {w}, {w}
+
+; 4-register: needed for srem/urem (r = a - (a/b)*b)
+inst msub {x}, {x}, {x}, {x}
+inst madd {x}, {x}, {x}, {x}
+
+; --- immediates ---
+inst add {x}, {x}, #{i 0..4095}
+inst sub {x}, {x}, #{i 0..4095}
+inst movz {x}, #{i 0..65535}
+inst movz {x}, #{i 0..65535}, lsl #16
+inst movz {x}, #{i 0..65535}, lsl #32
+inst movz {x}, #{i 0..65535}, lsl #48
+inst movk {x}, #{i 0..65535}
+inst movk {x}, #{i 0..65535}, lsl #16
+inst movk {x}, #{i 0..65535}, lsl #32
+inst movk {x}, #{i 0..65535}, lsl #48
+inst movn {x}, #{i 0..65535}
+
+; shift-by-constant: alias of ubfm/sbfm with a nonlinear encoding —
+; expect these to be learned as lookup tables, not linear fields
+inst lsl {x}, {x}, #{i 0..63}
+inst lsr {x}, {x}, #{i 0..63}
+inst asr {x}, {x}, #{i 0..63}
+
+; logical immediate: famously nonlinear (immr/imms run-length encoding).
+; kept here deliberately — the learner should FAIL it honestly.
+inst orr {x}, {x}, #{i 0..4095}
+
+; --- compare and conditionals ---
+inst cmp {x}, {x}
+inst cmp {x}, #{i 0..4095}
+inst cset {x}, {e eq|ne|lt|le|gt|ge|lo|ls|hi|hs}
+inst csel {x}, {x}, {x}, {e eq|ne|lt|le|gt|ge|lo|ls|hi|hs}
+
+; --- extends (for sext/zext/trunc) ---
+inst sxtw {x}, {w}
+inst sxtb {w}, {w}
+inst sxth {w}, {w}
+inst uxtb {w}, {w}
+inst uxth {w}, {w}
+inst mov {w}, {w}
+inst mov {x}, {x}
+
+; --- memory (scaled unsigned offset, and register offset) ---
+inst ldr {x}, [{x}, #{i 0..32760 /8}]
+inst str {x}, [{x}, #{i 0..32760 /8}]
+inst ldr {w}, [{x}, #{i 0..16380 /4}]
+inst str {w}, [{x}, #{i 0..16380 /4}]
+inst ldr {x}, [{x}, {x}]
+inst str {x}, [{x}, {x}]
+inst ldrsw {x}, [{x}, #{i 0..16380 /4}]
+
+; --- branches (pc-relative, signed offsets) ---
+inst b #{i -134217728..134217724 /4}
+inst bl #{i -134217728..134217724 /4}
+inst b.{e eq|ne|lt|le|gt|ge|lo|ls|hi|hs} #{i -1048576..1048572 /4}
+inst cbz {x}, #{i -1048576..1048572 /4}
+inst cbnz {x}, #{i -1048576..1048572 /4}
+inst ret
+inst ret {x}
+inst br {x}
+inst blr {x}
+
+; --- 32-bit (w) forms: needed for every i32 SSA op ---
+inst and {w}, {w}, {w}
+inst orr {w}, {w}, {w}
+inst eor {w}, {w}, {w}
+inst sdiv {w}, {w}, {w}
+inst udiv {w}, {w}, {w}
+inst lsl {w}, {w}, {w}
+inst lsr {w}, {w}, {w}
+inst asr {w}, {w}, {w}
+inst msub {w}, {w}, {w}, {w}
+inst madd {w}, {w}, {w}, {w}
+inst add {w}, {w}, #{i 0..4095}
+inst sub {w}, {w}, #{i 0..4095}
+inst movz {w}, #{i 0..65535}
+inst movz {w}, #{i 0..65535}, lsl #16
+inst movk {w}, #{i 0..65535}
+inst movk {w}, #{i 0..65535}, lsl #16
+inst movn {w}, #{i 0..65535}
+inst cmp {w}, {w}
+inst cmp {w}, #{i 0..4095}
+inst cset {w}, {e eq|ne|lt|le|gt|ge|lo|ls|hi|hs}
+inst csel {w}, {w}, {w}, {e eq|ne|lt|le|gt|ge|lo|ls|hi|hs}
+inst cbz {w}, #{i -1048576..1048572 /4}
+inst cbnz {w}, #{i -1048576..1048572 /4}
+
+; --- i1 casts: fixed logical/bitfield immediates baked into the template ---
+; zext from i1 = mask to the low bit; sext from i1 = replicate the low bit
+inst and {w}, {w}, #1
+inst and {x}, {x}, #1
+inst sbfx {w}, {w}, #0, #1
+inst sbfx {x}, {x}, #0, #1
+
+; --- stack and frame machinery (spills, prologue/epilogue) ---
+; sp isn't in the x class (encoding 31 means sp/zr by context), so it
+; appears literally in these templates
+inst add sp, sp, #{i 0..4095}
+inst sub sp, sp, #{i 0..4095}
+inst str {x}, [sp, #{i 0..32760 /8}]
+inst ldr {x}, [sp, #{i 0..32760 /8}]
+inst str {w}, [sp, #{i 0..16380 /4}]
+inst ldr {w}, [sp, #{i 0..16380 /4}]
+inst stp {x}, {x}, [sp, #{i -512..504 /8}]
+inst ldp {x}, {x}, [sp, #{i -512..504 /8}]
+inst mov x29, sp
+inst mov sp, x29
+
+; --- hypervisor call: the qemu bare-metal harness exits via PSCI ---
+inst hvc #{i 0..65535}

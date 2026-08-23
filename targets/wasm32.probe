@@ -1,0 +1,96 @@
+; WebAssembly probe seed — byte-format learner (opcodes + LEB128 varints).
+; Order matters: it is the bootstrap chain. Templates learned earlier are
+; used as pre/post stack context (and byte prefixes) for later ones.
+; 'end' is observed from function terminators, never probed directly.
+
+target wasm32
+format bytes
+oracle wat2wasm
+
+; --- locals: the first rungs of the ladder (bodies with no context) ---
+inst local.get {i 0..16384} :: sig=(param i64) (result i64) :: locals=16384 i64
+inst local.set {i 0..16384} :: sig=(param i64) :: locals=16384 i64 :: pre=local.get 0
+
+; --- constants (SLEB128 across the full range) ---
+inst i64.const {i -9223372036854775808..9223372036854775807} :: sig=(result i64)
+inst i32.const {i -2147483648..2147483647} :: sig=(result i32)
+
+; --- i64 arithmetic ---
+inst i64.add :: sig=(param i64 i64) (result i64) :: pre=local.get 0, local.get 1
+inst i64.sub :: sig=(param i64 i64) (result i64) :: pre=local.get 0, local.get 1
+inst i64.mul :: sig=(param i64 i64) (result i64) :: pre=local.get 0, local.get 1
+inst i64.div_s :: sig=(param i64 i64) (result i64) :: pre=local.get 0, local.get 1
+inst i64.div_u :: sig=(param i64 i64) (result i64) :: pre=local.get 0, local.get 1
+inst i64.rem_s :: sig=(param i64 i64) (result i64) :: pre=local.get 0, local.get 1
+inst i64.rem_u :: sig=(param i64 i64) (result i64) :: pre=local.get 0, local.get 1
+inst i64.and :: sig=(param i64 i64) (result i64) :: pre=local.get 0, local.get 1
+inst i64.or :: sig=(param i64 i64) (result i64) :: pre=local.get 0, local.get 1
+inst i64.xor :: sig=(param i64 i64) (result i64) :: pre=local.get 0, local.get 1
+inst i64.shl :: sig=(param i64 i64) (result i64) :: pre=local.get 0, local.get 1
+inst i64.shr_s :: sig=(param i64 i64) (result i64) :: pre=local.get 0, local.get 1
+inst i64.shr_u :: sig=(param i64 i64) (result i64) :: pre=local.get 0, local.get 1
+
+; --- i64 comparisons (produce i32) ---
+inst i64.eq :: sig=(param i64 i64) (result i32) :: pre=local.get 0, local.get 1
+inst i64.ne :: sig=(param i64 i64) (result i32) :: pre=local.get 0, local.get 1
+inst i64.lt_s :: sig=(param i64 i64) (result i32) :: pre=local.get 0, local.get 1
+inst i64.lt_u :: sig=(param i64 i64) (result i32) :: pre=local.get 0, local.get 1
+inst i64.le_s :: sig=(param i64 i64) (result i32) :: pre=local.get 0, local.get 1
+inst i64.le_u :: sig=(param i64 i64) (result i32) :: pre=local.get 0, local.get 1
+inst i64.gt_s :: sig=(param i64 i64) (result i32) :: pre=local.get 0, local.get 1
+inst i64.gt_u :: sig=(param i64 i64) (result i32) :: pre=local.get 0, local.get 1
+inst i64.ge_s :: sig=(param i64 i64) (result i32) :: pre=local.get 0, local.get 1
+inst i64.ge_u :: sig=(param i64 i64) (result i32) :: pre=local.get 0, local.get 1
+
+; --- i32 arithmetic ---
+inst i32.add :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.sub :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.mul :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.div_s :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.div_u :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.rem_s :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.rem_u :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.and :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.or :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.xor :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.shl :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.shr_s :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.shr_u :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+
+; --- i32 comparisons ---
+inst i32.eq :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.ne :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.lt_s :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.lt_u :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.le_s :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.le_u :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.gt_s :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.gt_u :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.ge_s :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+inst i32.ge_u :: sig=(param i32 i32) (result i32) :: pre=local.get 0, local.get 1
+
+; --- width changes ---
+inst i64.extend_i32_s :: sig=(param i32) (result i64) :: pre=local.get 0
+inst i64.extend_i32_u :: sig=(param i32) (result i64) :: pre=local.get 0
+inst i32.wrap_i64 :: sig=(param i64) (result i32) :: pre=local.get 0
+
+; --- memory (offset immediate; natural alignment stays constant) ---
+inst i64.load offset={i 0..1000000} :: sig=(param i32) (result i64) :: pre=local.get 0
+inst i64.store offset={i 0..1000000} :: sig=(param i32 i64) :: pre=local.get 0, local.get 1
+inst i32.load offset={i 0..1000000} :: sig=(param i32) (result i32) :: pre=local.get 0
+inst i32.store offset={i 0..1000000} :: sig=(param i32 i32) :: pre=local.get 0, local.get 1
+
+; --- stack management (learned early so control-flow probes can use it) ---
+inst drop :: sig=(param i64) :: pre=local.get 0
+
+; --- control flow ---
+; 'end' is already known (observed as every body's terminator)
+inst block :: sig=(result i64) :: post=end, i64.const 0
+inst loop :: sig=(result i64) :: post=end, i64.const 0
+inst if :: sig=(param i32) (result i64) :: pre=local.get 0 :: post=end, i64.const 0
+inst else :: sig=(param i32 i64) (result i64) :: pre=local.get 0, if, local.get 1, drop :: post=local.get 1, drop, end, i64.const 0
+inst br {i 0..12} :: sig=(result i64) :: pre=block, block, block, block, block, block, block, block, block, block, block, block, block :: post=end, end, end, end, end, end, end, end, end, end, end, end, end, i64.const 0
+inst br_if {i 0..12} :: sig=(param i32) (result i64) :: pre=block, block, block, block, block, block, block, block, block, block, block, block, block, local.get 0 :: post=end, end, end, end, end, end, end, end, end, end, end, end, end, i64.const 0
+inst return :: sig=(param i64) (result i64) :: pre=local.get 0
+inst unreachable :: sig=(result i64)
+inst call {i 0..129} :: sig=(result i64) :: preamble=130 :: post=i64.const 0

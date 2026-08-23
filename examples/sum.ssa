@@ -1,0 +1,16 @@
+; sum of 0..n
+fn @sum(%n: i64) -> i64 {
+^entry:
+    %zero: i64 = iconst 0
+    jmp ^loop(%zero, %zero)
+^loop(%i: i64, %acc: i64):
+    %done: i1 = icmp.sge %i, %n
+    br %done, ^exit, ^body
+^body:
+    %acc2: i64 = iadd %acc, %i
+    %one: i64 = iconst 1
+    %i2: i64 = iadd %i, %one
+    jmp ^loop(%i2, %acc2)
+^exit:
+    ret %acc
+}

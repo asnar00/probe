@@ -1,0 +1,64 @@
+; RISC-V RV64IM probe seed — mainly here to prove the learner is
+; target-agnostic. B-type and J-type immediates are famously scrambled
+; across the encoding; the per-bit learner should handle them unchanged.
+
+triple riscv64
+attr +m
+width 4
+
+reg r = x0..x31
+
+inst add {r}, {r}, {r}
+inst sub {r}, {r}, {r}
+inst and {r}, {r}, {r}
+inst or {r}, {r}, {r}
+inst xor {r}, {r}, {r}
+inst sll {r}, {r}, {r}
+inst srl {r}, {r}, {r}
+inst sra {r}, {r}, {r}
+inst mul {r}, {r}, {r}
+inst div {r}, {r}, {r}
+inst divu {r}, {r}, {r}
+inst rem {r}, {r}, {r}
+inst remu {r}, {r}, {r}
+
+inst addi {r}, {r}, {i -2048..2047}
+inst andi {r}, {r}, {i -2048..2047}
+inst ori {r}, {r}, {i -2048..2047}
+inst xori {r}, {r}, {i -2048..2047}
+inst slti {r}, {r}, {i -2048..2047}
+inst slli {r}, {r}, {i 0..63}
+inst srli {r}, {r}, {i 0..63}
+inst srai {r}, {r}, {i 0..63}
+inst lui {r}, {i 0..1048575}
+
+inst ld {r}, {i -2048..2047}({r})
+inst sd {r}, {i -2048..2047}({r})
+inst lw {r}, {i -2048..2047}({r})
+inst sw {r}, {i -2048..2047}({r})
+
+; scrambled-immediate territory
+inst beq {r}, {r}, {i -4096..4094 /2}
+inst bne {r}, {r}, {i -4096..4094 /2}
+inst blt {r}, {r}, {i -4096..4094 /2}
+inst bge {r}, {r}, {i -4096..4094 /2}
+inst jal {r}, {i -1048576..1048574 /2}
+inst jalr {r}, {i -2048..2047}({r})
+
+; --- comparisons (no flags on RISC-V; icmp lowers to slt/sltu sequences) ---
+inst slt {r}, {r}, {r}
+inst sltu {r}, {r}, {r}
+inst sltiu {r}, {r}, {i -2048..2047}
+
+; --- 32-bit (W) forms: results sign-extend, the natural i32 convention ---
+inst addw {r}, {r}, {r}
+inst subw {r}, {r}, {r}
+inst mulw {r}, {r}, {r}
+inst divw {r}, {r}, {r}
+inst divuw {r}, {r}, {r}
+inst remw {r}, {r}, {r}
+inst remuw {r}, {r}, {r}
+inst sllw {r}, {r}, {r}
+inst srlw {r}, {r}, {r}
+inst sraw {r}, {r}, {r}
+inst addiw {r}, {r}, {i -2048..2047}

@@ -1,0 +1,17 @@
+; naive recursion — exercises call/bl fixups and the frame discipline
+fn @fib(%n: i64) -> i64 {
+^entry:
+    %two: i64 = iconst 2
+    %small: i1 = icmp.slt %n, %two
+    br %small, ^base, ^rec
+^base:
+    ret %n
+^rec:
+    %one: i64 = iconst 1
+    %n1: i64 = isub %n, %one
+    %a: i64 = call @fib(%n1)
+    %n2: i64 = isub %n, %two
+    %b: i64 = call @fib(%n2)
+    %r: i64 = iadd %a, %b
+    ret %r
+}

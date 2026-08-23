@@ -1,0 +1,38 @@
+; 32-bit ops: results wrap at 32 bits and live zero-extended
+;! add32 0x7fffffff 1 -> 2147483648
+;! mul32 65536 65536 -> 0
+;! sdiv32 0xfffffff6 3 -> 4294967293
+;! srem32 0xfffffff9 4 -> 4294967293
+;! lshr32 0x80000000 31 -> 1
+;! ashr32 0x80000000 31 -> 4294967295
+
+fn @add32(%a: i32, %b: i32) -> i32 {
+^entry:
+    %r: i32 = iadd %a, %b
+    ret %r
+}
+fn @mul32(%a: i32, %b: i32) -> i32 {
+^entry:
+    %r: i32 = imul %a, %b
+    ret %r
+}
+fn @sdiv32(%a: i32, %b: i32) -> i32 {
+^entry:
+    %r: i32 = sdiv %a, %b
+    ret %r
+}
+fn @srem32(%a: i32, %b: i32) -> i32 {
+^entry:
+    %r: i32 = srem %a, %b
+    ret %r
+}
+fn @lshr32(%a: i32, %b: i32) -> i32 {
+^entry:
+    %r: i32 = lshr %a, %b
+    ret %r
+}
+fn @ashr32(%a: i32, %b: i32) -> i32 {
+^entry:
+    %r: i32 = ashr %a, %b
+    ret %r
+}

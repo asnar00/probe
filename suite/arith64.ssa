@@ -1,0 +1,82 @@
+; 64-bit arithmetic, one op per function
+;! add 3 4 -> 7
+;! add -3 4 -> 1
+;! sub 3 10 -> -7
+;! mul -3 4 -> -12
+;! sdivt -7 2 -> -3
+;! sdivt 7 -2 -> -3
+;! udivt -1 16 -> 1152921504606846975
+;! sremt -7 2 -> -1
+;! uremt -1 10 -> 5
+;! andt 12 10 -> 8
+;! ort 12 10 -> 14
+;! xort 12 10 -> 6
+;! shlt 3 62 -> -4611686018427387904
+;! lshrt -1 60 -> 15
+;! ashrt -8 2 -> -2
+
+fn @add(%a: i64, %b: i64) -> i64 {
+^entry:
+    %r: i64 = iadd %a, %b
+    ret %r
+}
+fn @sub(%a: i64, %b: i64) -> i64 {
+^entry:
+    %r: i64 = isub %a, %b
+    ret %r
+}
+fn @mul(%a: i64, %b: i64) -> i64 {
+^entry:
+    %r: i64 = imul %a, %b
+    ret %r
+}
+fn @sdivt(%a: i64, %b: i64) -> i64 {
+^entry:
+    %r: i64 = sdiv %a, %b
+    ret %r
+}
+fn @udivt(%a: i64, %b: i64) -> i64 {
+^entry:
+    %r: i64 = udiv %a, %b
+    ret %r
+}
+fn @sremt(%a: i64, %b: i64) -> i64 {
+^entry:
+    %r: i64 = srem %a, %b
+    ret %r
+}
+fn @uremt(%a: i64, %b: i64) -> i64 {
+^entry:
+    %r: i64 = urem %a, %b
+    ret %r
+}
+fn @andt(%a: i64, %b: i64) -> i64 {
+^entry:
+    %r: i64 = and %a, %b
+    ret %r
+}
+fn @ort(%a: i64, %b: i64) -> i64 {
+^entry:
+    %r: i64 = or %a, %b
+    ret %r
+}
+fn @xort(%a: i64, %b: i64) -> i64 {
+^entry:
+    %r: i64 = xor %a, %b
+    ret %r
+}
+fn @shlt(%a: i64, %b: i64) -> i64 {
+^entry:
+    %r: i64 = shl %a, %b
+    ret %r
+}
+fn @lshrt(%a: i64, %b: i64) -> i64 {
+^entry:
+    %r: i64 = lshr %a, %b
+    ret %r
+}
+fn @ashrt(%a: i64, %b: i64) -> i64 {
+^entry:
+    %r: i64 = ashr %a, %b
+    ret %r
+}
