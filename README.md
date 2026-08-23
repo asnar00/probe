@@ -71,6 +71,10 @@ suite/*.ssa  --parse/verify-->  SSA  --emitter-->  bytes  --run-->  results
   as an independent second referee, NEON vs scalarized vector emission
   refereeing each other, and softfloat vs the FPU.
 
+**New here? Start with [`tutorial.md`](tutorial.md)** — a guided tour of
+the language and the project's verification culture, by way of the
+rational-number library.
+
 ## Usage
 
 ```sh

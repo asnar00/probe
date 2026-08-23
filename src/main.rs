@@ -153,11 +153,13 @@ fn cmd_parse(path: &str) -> ExitCode {
         Ok(s) => s,
         Err(e) => return fail(&format!("{}: {}", path, e)),
     };
-    let src = scalar::link(&src, &ssa::Policy::new(ssa::Type::I(64), ssa::Type::F64).unwrap());
-    let module = match ssa::parse(&src) {
+    let policy = ssa::Policy::new(ssa::Type::I(64), ssa::Type::F64).unwrap();
+    let src = scalar::link(&src, &policy);
+    let mut module = match ssa::parse(&src) {
         Ok(m) => m,
         Err(e) => return fail(&format!("{}: {}", path, e)),
     };
+    ssa::resolve_types(&mut module, &policy);
     if let Err(errs) = ssa::verify(&module) {
         for e in &errs {
             eprintln!("{}: {}", path, e);
