@@ -594,11 +594,14 @@ enum Tok {
     RBrace,
     Arrow,
     Equals,
+    /// expression operator: + - * / % & | ^ << >>
+    Op(&'static str),
 }
 
 impl fmt::Display for Tok {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            Tok::Op(o) => write!(f, "'{}'", o),
             Tok::Newline => write!(f, "end of line"),
             Tok::Ident(s) => write!(f, "'{}'", s),
             Tok::Value(s) => write!(f, "'%{}'", s),
@@ -665,7 +668,13 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                 chars.next();
                 let name = lex_name(&mut chars);
                 if name.is_empty() {
-                    return Err(err(line, format!("expected a name after '{}'", c)));
+                    // a bare sigil with no name is an expression operator
+                    match c {
+                        '%' => toks.push((Tok::Op("%"), line)),
+                        '^' => toks.push((Tok::Op("^"), line)),
+                        _ => return Err(err(line, format!("expected a name after '{}'", c))),
+                    }
+                    continue;
                 }
                 toks.push((
                     match c {
@@ -717,7 +726,45 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                         _ => unreachable!(),
                     }
                 } else {
-                    return Err(err(line, "expected '->' or a number after '-'".into()));
+                    toks.push((Tok::Op("-"), line));
+                }
+            }
+            '+' => {
+                chars.next();
+                toks.push((Tok::Op("+"), line));
+            }
+            '*' => {
+                chars.next();
+                toks.push((Tok::Op("*"), line));
+            }
+            '/' => {
+                chars.next();
+                toks.push((Tok::Op("/"), line));
+            }
+            '&' => {
+                chars.next();
+                toks.push((Tok::Op("&"), line));
+            }
+            '|' => {
+                chars.next();
+                toks.push((Tok::Op("|"), line));
+            }
+            '<' => {
+                chars.next();
+                if chars.peek() == Some(&'<') {
+                    chars.next();
+                    toks.push((Tok::Op("<<"), line));
+                } else {
+                    return Err(err(line, "expected '<<'".into()));
+                }
+            }
+            '>' => {
+                chars.next();
+                if chars.peek() == Some(&'>') {
+                    chars.next();
+                    toks.push((Tok::Op(">>"), line));
+                } else {
+                    return Err(err(line, "expected '>>'".into()));
                 }
             }
             '0'..='9' => {
@@ -834,6 +881,8 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         toks,
         pos: 0,
         structs: Vec::new(),
+        pending: Vec::new(),
+        nlit: 0,
     };
     let mut module = Module::default();
     p.skip_newlines();
@@ -857,6 +906,18 @@ struct Parser {
     toks: Vec<(Tok, usize)>,
     pos: usize,
     structs: Vec<StructDef>,
+    /// constant/temp definitions synthesized by literal-operand and
+    /// expression sugar; drained ahead of the instruction that uses them
+    pending: Vec<Inst>,
+    nlit: u32,
+}
+
+/// expression-sugar AST: parsed first, then desugared to flat temps so
+/// the root operation can define the declared value directly
+enum EAst {
+    V(ValueId),
+    Lit(Tok),
+    Bin(BinOp, Box<EAst>, Box<EAst>),
 }
 
 /// Placeholder branch target inside structured constructs; every one is
@@ -1048,6 +1109,275 @@ impl Parser {
         Ok(())
     }
 
+    /// synthesize a constant of the given type from a literal token; its
+    /// defining instruction goes to `pending`, drained before the user of
+    /// the constant. This is the literal-operand sugar: `iadd %i, 1`.
+    fn synth_lit(
+        &mut self,
+        scope: &mut FuncScope,
+        ty: Type,
+        tok: &Tok,
+    ) -> Result<ValueId, ParseError> {
+        let floatish = matches!(ty, Type::F32 | Type::F64 | Type::Float | Type::Scalar);
+        let inst_for = |dst: ValueId| -> Result<Inst, String> {
+            match (tok, floatish) {
+                (Tok::Int(n), false) => Ok(Inst::IConst { dst, imm: *n }),
+                (Tok::Int(n), true) => Ok(Inst::FConst {
+                    dst,
+                    bits: (*n as f64).to_bits(),
+                }),
+                (Tok::FloatLit(x), true) => Ok(Inst::FConst {
+                    dst,
+                    bits: x.to_bits(),
+                }),
+                (Tok::FloatLit(_), false) => {
+                    Err(format!("float literal needs a float type, not {}", ty.name()))
+                }
+                _ => Err("expected a literal".into()),
+            }
+        };
+        if matches!(ty, Type::Vec(..) | Type::Struct(_)) {
+            return Err(self.err(format!(
+                "literal operands cannot have type {} (use pack)",
+                ty.name()
+            )));
+        }
+        let mut name;
+        loop {
+            self.nlit += 1;
+            name = format!("c{}", self.nlit);
+            if !scope.value_ids.contains_key(&name) {
+                break;
+            }
+        }
+        scope.values.push(ValueData { name: name.clone(), ty });
+        let id = ValueId(scope.values.len() as u32 - 1);
+        scope.value_ids.insert(name, id);
+        let inst = inst_for(id).map_err(|m| self.err(m))?;
+        self.pending.push(inst);
+        Ok(id)
+    }
+
+    /// a value operand that may also be a literal of the given type
+    fn operand(
+        &mut self,
+        scope: &mut FuncScope,
+        ty: Type,
+    ) -> Result<ValueId, ParseError> {
+        match self.peek() {
+            Some(Tok::Int(_)) | Some(Tok::FloatLit(_)) => {
+                let tok = self.next()?.clone();
+                self.synth_lit(scope, ty, &tok)
+            }
+            _ => self.expect_value(scope),
+        }
+    }
+
+    /// Expression sugar: `%v: ty = %a * %b + 1`. Pure arithmetic with C
+    /// precedence (| ^ & << >> + - * / %), parenthesized subexpressions,
+    /// and literal operands; every node has the declared result type, and
+    /// the opcode family (iadd vs fadd, div's signedness) comes from that
+    /// type — exactly the types-on-variables rule, applied to sugar. The
+    /// tree desugars to ordinary flat instructions at parse time (temps
+    /// %c1, %c2, ...); like structured control flow, it is one-way sugar —
+    /// the printer prints flat form.
+    fn parse_expr_into(
+        &mut self,
+        dst: ValueId,
+        scope: &mut FuncScope,
+    ) -> Result<Inst, ParseError> {
+        let ty = scope.values[dst.0 as usize].ty;
+        let ast = self.expr_level(scope, ty, 0)?;
+        match ast {
+            EAst::Bin(op, l, r) => {
+                let lhs = self.emit_expr(scope, ty, *l)?;
+                let rhs = self.emit_expr(scope, ty, *r)?;
+                Ok(Inst::Bin { op, dst, lhs, rhs })
+            }
+            EAst::Lit(tok) => self.lit_inst(ty, dst, &tok),
+            EAst::V(_) => Err(self.err(
+                "an expression must compute something; there is no copy opcode".to_string(),
+            )),
+        }
+    }
+
+    fn emit_expr(
+        &mut self,
+        scope: &mut FuncScope,
+        ty: Type,
+        e: EAst,
+    ) -> Result<ValueId, ParseError> {
+        match e {
+            EAst::V(id) => Ok(id),
+            EAst::Lit(tok) => self.synth_lit(scope, ty, &tok),
+            EAst::Bin(op, l, r) => {
+                let lhs = self.emit_expr(scope, ty, *l)?;
+                let rhs = self.emit_expr(scope, ty, *r)?;
+                let mut name;
+                loop {
+                    self.nlit += 1;
+                    name = format!("c{}", self.nlit);
+                    if !scope.value_ids.contains_key(&name) {
+                        break;
+                    }
+                }
+                scope.values.push(ValueData { name: name.clone(), ty });
+                let id = ValueId(scope.values.len() as u32 - 1);
+                scope.value_ids.insert(name, id);
+                self.pending.push(Inst::Bin { op, dst: id, lhs, rhs });
+                Ok(id)
+            }
+        }
+    }
+
+    /// operator for the level's symbol, chosen by the result type
+    fn expr_op(&self, ty: Type, sym: &str) -> Result<BinOp, ParseError> {
+        let floatish = matches!(ty, Type::F32 | Type::F64 | Type::Float | Type::Scalar)
+            || matches!(ty, Type::Vec(_, VecElem::F32));
+        let op = match (sym, floatish) {
+            ("+", true) => BinOp::FAdd,
+            ("-", true) => BinOp::FSub,
+            ("*", true) => BinOp::FMul,
+            ("/", true) => BinOp::FDiv,
+            ("+", false) => BinOp::IAdd,
+            ("-", false) => BinOp::ISub,
+            ("*", false) => BinOp::IMul,
+            ("/", false) => BinOp::Div,
+            ("%", false) => BinOp::Rem,
+            ("&", false) => BinOp::And,
+            ("|", false) => BinOp::Or,
+            ("^", false) => BinOp::Xor,
+            ("<<", false) => BinOp::Shl,
+            (">>", false) => BinOp::Shr,
+            (o, true) => {
+                return Err(self.err(format!("'{}' is not a float operation", o)))
+            }
+            _ => unreachable!(),
+        };
+        Ok(op)
+    }
+
+    /// precedence-climbing over the C levels: | ^ & <<>> +- */%
+    fn expr_level(
+        &mut self,
+        scope: &mut FuncScope,
+        ty: Type,
+        level: usize,
+    ) -> Result<EAst, ParseError> {
+        const LEVELS: &[&[&str]] = &[
+            &["|"],
+            &["^"],
+            &["&"],
+            &["<<", ">>"],
+            &["+", "-"],
+            &["*", "/", "%"],
+        ];
+        if level == LEVELS.len() {
+            return self.expr_atom(scope, ty);
+        }
+        let mut lhs = self.expr_level(scope, ty, level + 1)?;
+        loop {
+            // "%x - 3" lexes the literal as Int(-3): absorb the sign as
+            // a subtraction at the +/- level
+            if LEVELS[level].contains(&"+") {
+                match self.peek() {
+                    Some(&Tok::Int(n)) if n < 0 && n != i64::MIN => {
+                        self.next()?;
+                        let op = self.expr_op(ty, "-")?;
+                        lhs = EAst::Bin(op, Box::new(lhs), Box::new(EAst::Lit(Tok::Int(-n))));
+                        continue;
+                    }
+                    Some(&Tok::FloatLit(x)) if x < 0.0 => {
+                        self.next()?;
+                        let op = self.expr_op(ty, "-")?;
+                        lhs = EAst::Bin(
+                            op,
+                            Box::new(lhs),
+                            Box::new(EAst::Lit(Tok::FloatLit(-x))),
+                        );
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            let Some(&Tok::Op(sym)) = self.peek() else { break };
+            if !LEVELS[level].contains(&sym) {
+                break;
+            }
+            self.next()?;
+            let rhs = self.expr_level(scope, ty, level + 1)?;
+            let op = self.expr_op(ty, sym)?;
+            lhs = EAst::Bin(op, Box::new(lhs), Box::new(rhs));
+        }
+        Ok(lhs)
+    }
+
+    fn expr_atom(&mut self, scope: &mut FuncScope, ty: Type) -> Result<EAst, ParseError> {
+        match self.next()? {
+            Tok::Value(name) => {
+                let id = scope.value_ids.get(&name).copied().ok_or_else(|| {
+                    self.pos -= 1;
+                    self.err(format!("use of undefined value '%{}'", name))
+                })?;
+                Ok(EAst::V(id))
+            }
+            t @ (Tok::Int(_) | Tok::FloatLit(_)) => Ok(EAst::Lit(t)),
+            Tok::LParen => {
+                let e = self.expr_level(scope, ty, 0)?;
+                self.expect(Tok::RParen)?;
+                Ok(e)
+            }
+            t => {
+                self.pos -= 1;
+                Err(self.err(format!("expected a value, literal, or '(', found {}", t)))
+            }
+        }
+    }
+
+    /// a constant-defining instruction for a literal, typed by `ty`
+    fn lit_inst(&self, ty: Type, dst: ValueId, tok: &Tok) -> Result<Inst, ParseError> {
+        let floatish = matches!(ty, Type::F32 | Type::F64 | Type::Float | Type::Scalar);
+        match (tok, floatish) {
+            (Tok::Int(n), false) => Ok(Inst::IConst { dst, imm: *n }),
+            (Tok::Int(n), true) => Ok(Inst::FConst {
+                dst,
+                bits: (*n as f64).to_bits(),
+            }),
+            (Tok::FloatLit(x), true) => Ok(Inst::FConst {
+                dst,
+                bits: x.to_bits(),
+            }),
+            (Tok::FloatLit(_), false) => Err(self.err(format!(
+                "float literal needs a float type, not {}",
+                ty.name()
+            ))),
+            _ => Err(self.err("expected a literal".to_string())),
+        }
+    }
+
+    /// comparison operands: either side may be a literal, typed by the
+    /// other side (both literal is an error — nothing fixes the width)
+    fn cmp_operands(
+        &mut self,
+        scope: &mut FuncScope,
+    ) -> Result<(ValueId, ValueId), ParseError> {
+        match self.peek() {
+            Some(Tok::Int(_)) | Some(Tok::FloatLit(_)) => {
+                let tok = self.next()?.clone();
+                self.expect(Tok::Comma)?;
+                let rhs = self.expect_value(scope)?;
+                let lhs = self.synth_lit(scope, scope.values[rhs.0 as usize].ty, &tok)?;
+                Ok((lhs, rhs))
+            }
+            _ => {
+                let lhs = self.expect_value(scope)?;
+                self.expect(Tok::Comma)?;
+                let rhs = self.operand(scope, scope.values[lhs.0 as usize].ty)?;
+                Ok((lhs, rhs))
+            }
+        }
+    }
+
     fn expect_value(&mut self, scope: &FuncScope) -> Result<ValueId, ParseError> {
         match self.next()? {
             Tok::Value(name) => scope.value_ids.get(&name).copied().ok_or_else(|| {
@@ -1226,7 +1556,7 @@ impl Parser {
         // structured form; it parses via if/loop constructs and lowers to
         // the same block graph on the fly.
         if !matches!(self.peek(), Some(Tok::Block(_)) | Some(Tok::RBrace)) {
-            let blocks = self.parse_structured_body(&scope)?;
+            let blocks = self.parse_structured_body(&mut scope)?;
             return Ok(Function {
                 name,
                 params,
@@ -1271,10 +1601,12 @@ impl Parser {
                     });
                 }
                 Some(_) => {
-                    let block = blocks
-                        .last_mut()
-                        .ok_or_else(|| self.err("instruction before the first block label"))?;
-                    let inst = self.parse_inst(&scope)?;
+                    if blocks.is_empty() {
+                        return Err(self.err("instruction before the first block label"));
+                    }
+                    let inst = self.parse_inst(&mut scope)?;
+                    let block = blocks.last_mut().unwrap();
+                    block.insts.extend(self.pending.drain(..));
                     block.insts.push(inst);
                     self.skip_newlines();
                 }
@@ -1342,7 +1674,7 @@ impl Parser {
             })
     }
 
-    fn parse_inst(&mut self, scope: &FuncScope) -> Result<Inst, ParseError> {
+    fn parse_inst(&mut self, scope: &mut FuncScope) -> Result<Inst, ParseError> {
         match self.next()? {
             // %dst: ty [, %dst2: ty ...] = op ...
             Tok::Value(name) => {
@@ -1361,17 +1693,25 @@ impl Parser {
                     self.expect_type()?;
                 }
                 self.expect(Tok::Equals)?;
-                let op = self.expect_ident()?;
-                let inst = if op == "call" {
-                    let (callee, args) = self.parse_call_tail(scope)?;
-                    Inst::Call { dsts, callee, args }
-                } else if dsts.len() == 1 {
-                    self.parse_def_op(&op, dsts[0], scope)?
+                let inst = if !matches!(self.peek(), Some(Tok::Ident(_))) {
+                    // expression sugar: %v: ty = %a * %b + 1
+                    if dsts.len() != 1 {
+                        return Err(self.err("an expression defines exactly one value"));
+                    }
+                    self.parse_expr_into(dsts[0], scope)?
                 } else {
-                    return Err(self.err(format!(
-                        "only 'call' can define multiple values, not '{}'",
-                        op
-                    )));
+                    let op = self.expect_ident()?;
+                    if op == "call" {
+                        let (callee, args) = self.parse_call_tail(scope)?;
+                        Inst::Call { dsts, callee, args }
+                    } else if dsts.len() == 1 {
+                        self.parse_def_op(&op, dsts[0], scope)?
+                    } else {
+                        return Err(self.err(format!(
+                            "only 'call' can define multiple values, not '{}'",
+                            op
+                        )));
+                    }
                 };
                 self.expect(Tok::Newline)?;
                 Ok(inst)
@@ -1389,11 +1729,12 @@ impl Parser {
         }
     }
 
-    fn parse_def_op(&mut self, op: &str, dst: ValueId, scope: &FuncScope) -> Result<Inst, ParseError> {
+    fn parse_def_op(&mut self, op: &str, dst: ValueId, scope: &mut FuncScope) -> Result<Inst, ParseError> {
         if let Some((_, bin)) = BINOPS.iter().find(|(n, _)| *n == op) {
-            let lhs = self.expect_value(scope)?;
+            let ty = scope.values[dst.0 as usize].ty;
+            let lhs = self.operand(scope, ty)?;
             self.expect(Tok::Comma)?;
-            let rhs = self.expect_value(scope)?;
+            let rhs = self.operand(scope, ty)?;
             return Ok(Inst::Bin {
                 op: *bin,
                 dst,
@@ -1407,9 +1748,7 @@ impl Parser {
                 .find(|(n, _)| *n == cc)
                 .map(|(_, c)| *c)
                 .ok_or_else(|| self.err(format!("unknown float comparison '{}'", cc)))?;
-            let lhs = self.expect_value(scope)?;
-            self.expect(Tok::Comma)?;
-            let rhs = self.expect_value(scope)?;
+            let (lhs, rhs) = self.cmp_operands(scope)?;
             return Ok(Inst::FCmp {
                 cond,
                 dst,
@@ -1423,9 +1762,7 @@ impl Parser {
                 .find(|(n, _)| *n == cc)
                 .map(|(_, c)| *c)
                 .ok_or_else(|| self.err(format!("unknown comparison condition '{}'", cc)))?;
-            let lhs = self.expect_value(scope)?;
-            self.expect(Tok::Comma)?;
-            let rhs = self.expect_value(scope)?;
+            let (lhs, rhs) = self.cmp_operands(scope)?;
             return Ok(Inst::ICmp {
                 cond,
                 dst,
@@ -1587,7 +1924,7 @@ impl Parser {
     // easy direction — the reverse (CFG -> structured, the "relooper"
     // problem) is what structured-only targets like wasm force on you.
 
-    fn parse_structured_body(&mut self, scope: &FuncScope) -> Result<Vec<Block>, ParseError> {
+    fn parse_structured_body(&mut self, scope: &mut FuncScope) -> Result<Vec<Block>, ParseError> {
         let mut st = StructEmit {
             blocks: Vec::new(),
             cur: 0,
@@ -1603,7 +1940,7 @@ impl Parser {
     /// Parse statements up to (not consuming) the closing '}'. Returns
     /// whether every path through them terminated (ret/break/continue/yield,
     /// or an if whose arms all terminate).
-    fn parse_struct_stmts(&mut self, scope: &FuncScope, st: &mut StructEmit) -> Result<bool, ParseError> {
+    fn parse_struct_stmts(&mut self, scope: &mut FuncScope, st: &mut StructEmit) -> Result<bool, ParseError> {
         self.skip_newlines();
         loop {
             if matches!(self.peek(), Some(Tok::RBrace)) {
@@ -1620,7 +1957,7 @@ impl Parser {
         }
     }
 
-    fn parse_struct_stmt(&mut self, scope: &FuncScope, st: &mut StructEmit) -> Result<bool, ParseError> {
+    fn parse_struct_stmt(&mut self, scope: &mut FuncScope, st: &mut StructEmit) -> Result<bool, ParseError> {
         match self.next()? {
             Tok::Value(name) => {
                 let mut dsts = vec![self.def_id(scope, &name)?];
@@ -1638,6 +1975,18 @@ impl Parser {
                     self.expect_type()?;
                 }
                 self.expect(Tok::Equals)?;
+                if !matches!(self.peek(), Some(Tok::Ident(_))) {
+                    if dsts.len() != 1 {
+                        return Err(self.err("an expression defines exactly one value"));
+                    }
+                    let inst = self.parse_expr_into(dsts[0], scope)?;
+                    for p in self.pending.drain(..) {
+                        st.push(p);
+                    }
+                    st.push(inst);
+                    self.expect(Tok::Newline)?;
+                    return Ok(false);
+                }
                 let op = self.expect_ident()?;
                 match op.as_str() {
                     "if" => return self.parse_struct_if(scope, st, dsts),
@@ -1654,6 +2003,9 @@ impl Parser {
                             )));
                         }
                         let inst = self.parse_def_op(&op, dsts[0], scope)?;
+                        for p in self.pending.drain(..) {
+                            st.push(p);
+                        }
                         st.push(inst);
                     }
                 }
@@ -1728,7 +2080,7 @@ impl Parser {
 
     fn parse_struct_if(
         &mut self,
-        scope: &FuncScope,
+        scope: &mut FuncScope,
         st: &mut StructEmit,
         dsts: Vec<ValueId>,
     ) -> Result<bool, ParseError> {
@@ -1813,7 +2165,7 @@ impl Parser {
 
     fn parse_struct_loop(
         &mut self,
-        scope: &FuncScope,
+        scope: &mut FuncScope,
         st: &mut StructEmit,
         dsts: Vec<ValueId>,
     ) -> Result<bool, ParseError> {
@@ -1830,9 +2182,12 @@ impl Parser {
                     }
                 }
                 self.expect(Tok::Colon)?;
-                self.expect_type()?;
+                let vty = self.expect_type()?;
                 self.expect(Tok::Equals)?;
-                inits.push(self.expect_value(scope)?);
+                inits.push(self.operand(scope, vty)?);
+                for p in self.pending.drain(..) {
+                    st.push(p);
+                }
                 if self.eat(&Tok::RParen) {
                     break;
                 }

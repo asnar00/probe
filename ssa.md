@@ -345,6 +345,46 @@ dyadic constants, integer entry and exit — the same discipline abstract
 joins the same seam: struct layout plus an op library, selected by
 `--scalar=fx8.8`-style policies.
 
+## Literal operands and expressions
+
+Two pieces of parse-time sugar keep authorship cheap without touching
+the instruction set. Both are one-way, like structured control flow:
+the printer prints flat form.
+
+**Literal operands.** Anywhere an arithmetic operand, comparison
+operand, or loop initializer is expected, a literal may stand in for a
+value; the parser synthesizes the `iconst`/`fconst` (`%c1`, `%c2`, ...)
+just before the use. The literal's type comes from the result (for
+arithmetic), the other operand (for comparisons), or the declared
+variable (for loop inits) — a comparison of two literals is an error,
+since nothing fixes the width. An integer literal in a float position
+becomes a float constant, as with `fconst`.
+
+```
+%i2: int = iadd %i, 1
+%done: u1 = icmp.ge %i, 4
+%s: scalar = loop(%i: int = 0, %acc: scalar = 0.0) { ...
+%k: i64 = 42                    ; a bare literal is iconst/fconst
+```
+
+**Expressions.** A definition whose right-hand side is not an opcode is
+a pure arithmetic expression over values and literals, with C precedence
+(`|` lowest, then `^`, `&`, `<< >>`, `+ -`, `* / %`) and parentheses.
+Every node has the declared result type, and the opcode family follows
+from it — the types-on-variables rule applied to sugar: `/` is signed or
+unsigned division by the type, `+` is `iadd` or `fadd`, and on a vector
+type each operation is elementwise. The tree desugars to ordinary flat
+instructions at parse time.
+
+```
+%p: scalar = 2.0 * %xf * %xf - 3.0 * %xf + 1.0
+%r: uint = %x >> 5 | 0x80
+%t: i64 = %a * %dgi + %c * %bgi
+```
+
+There is deliberately no bare-copy form (`%v: ty = %x` is an error —
+SSA has no copy opcode) and no unary minus on values (write `0 - %x`).
+
 ## Structured control flow
 
 A function body that opens with a statement instead of a `^label:` is in

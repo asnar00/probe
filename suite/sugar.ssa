@@ -1,0 +1,65 @@
+; ergonomic sugar, designed for cheap authorship: literal operands
+; (iadd %i, 1 - the constant's type comes from the result or the other
+; operand) and expression right-hand sides with C precedence, desugared
+; to flat SSA at parse time (one-way, like structured control flow).
+; The opcode family still comes from the declared type - '/' is signed
+; or unsigned division, '+' integer or float, by the type alone.
+;! poly 3 -> 10
+;! poly 0 -> 1
+;! poly -2 -> 15
+;! mix 10 20 -> 116
+;! fexpr 2.5 -> 2.0
+;! horner 2 -> 37
+;! bits 0xf0 -> 0x87
+;! cmplit 41 -> 0
+;! cmplit 42 -> 1
+;! geo5 -> 121
+
+; 2x^2 - 3x + 1, one line
+fn @poly(%x: int) -> int {
+    %p: int = 2 * %x * %x - 3 * %x + 1
+    ret %p
+}
+
+fn @mix(%a: int, %b: int) -> int {
+    %r: int = (%a + %b) * 4 - (%a & 255) + %b % 7
+    ret %r
+}
+
+fn @fexpr(%x: float) -> float {
+    %r: float = (%x + 1.5) * 0.5
+    ret %r
+}
+
+; 3x^3 + 2x^2 + x + 3 by Horner's rule: ((3x + 2)x + 1)x + 3
+fn @horner(%x: int) -> int {
+    %r: int = ((3 * %x + 2) * %x + 1) * %x + 3
+    ret %r
+}
+
+; bitwise levels: | below ^ below & below shifts
+fn @bits(%x: uint) -> uint {
+    %r: uint = %x >> 5 | 0x80
+    ret %r
+}
+
+; a literal comparison operand takes the other side's type
+fn @cmplit(%x: int) -> u1 {
+    %r: u1 = icmp.eq %x, 42
+    ret %r
+}
+
+; literal loop inits, literal step, expression body
+fn @geo5() -> int {
+    %m: int = loop(%i: int = 0, %acc: int = 1) {
+        %done: u1 = icmp.ge %i, 4
+        if %done {
+            break %acc
+        }
+        %acc2: int = %acc * 3
+        %i2: int = %i + 1
+        continue %i2, %acc2
+    }
+    %r: int = %m + 40
+    ret %r
+}

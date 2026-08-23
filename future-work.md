@@ -118,6 +118,24 @@ Backend sketch:
   policy alongside `int`/`uint`/`float`.
 - Saturating/checked arithmetic variants as type- or op-level opt-ins.
 
+## Ergonomics (token-cost descent)
+
+The language is being evolved downhill on measured authorship cost (see
+ergonomics.md). Landed: literal operands and expression right-hand
+sides (-26% atoms on expression-heavy code, -6% on call/control-heavy).
+Next candidate mutations, by observed remaining ceremony:
+
+- **Guard sugar**: the NaR-propagation prologue (is_nar -> ret nar) is
+  6 lines x 8 functions in the rational library — some early-return or
+  propagation form would erase the biggest remaining boilerplate.
+- **Literals in yield/break/ret/call args**: needs result/param types at
+  parse time (call args need the callee's signature — two-pass or
+  module-context parsing).
+- **Unary minus on values** (currently `0 - %x`).
+- The live half of the methodology: a task battery (write-new,
+  edit-existing, find-the-bug) measured in real model tokens-to-green,
+  across models, per ergonomics.md.
+
 ## Language
 
 - External calls (libc symbols) from JIT'd code.

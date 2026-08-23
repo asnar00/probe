@@ -22,10 +22,7 @@
 fn @s_lerp(%a: int, %b: int) -> int {
     %af: scalar = itof %a
     %bf: scalar = itof %b
-    %half: scalar = fconst 0.5
-    %d: scalar = fsub %bf, %af
-    %hd: scalar = fmul %d, %half
-    %m: scalar = fadd %af, %hd
+    %m: scalar = %af + (%bf - %af) * 0.5
     %r: int = ftoi %m
     ret %r
 }
@@ -35,11 +32,7 @@ fn @s_avg4(%a: int, %b: int, %c: int, %d: int) -> int {
     %bf: scalar = itof %b
     %cf: scalar = itof %c
     %df: scalar = itof %d
-    %s1: scalar = fadd %af, %bf
-    %s2: scalar = fadd %s1, %cf
-    %s3: scalar = fadd %s2, %df
-    %q: scalar = fconst 0.25
-    %m: scalar = fmul %s3, %q
+    %m: scalar = (%af + %bf + %cf + %df) * 0.25
     %r: int = ftoi %m
     ret %r
 }
@@ -47,14 +40,7 @@ fn @s_avg4(%a: int, %b: int, %c: int, %d: int) -> int {
 ; 2x^2 - 3x + 1
 fn @s_poly(%x: int) -> int {
     %xf: scalar = itof %x
-    %two: scalar = fconst 2.0
-    %three: scalar = fconst 3.0
-    %one: scalar = fconst 1.0
-    %xx: scalar = fmul %xf, %xf
-    %t1: scalar = fmul %two, %xx
-    %t2: scalar = fmul %three, %xf
-    %t3: scalar = fsub %t1, %t2
-    %p: scalar = fadd %t3, %one
+    %p: scalar = 2.0 * %xf * %xf - 3.0 * %xf + 1.0
     %r: int = ftoi %p
     ret %r
 }
@@ -81,24 +67,17 @@ fn @s_max3(%a: int, %b: int, %c: int) -> int {
 
 ; (1 + 1/2 + 1/4 + 1/8) * 8 = 15, a scalar accumulator in a loop
 fn @s_geo() -> int {
-    %one: scalar = fconst 1.0
-    %half: scalar = fconst 0.5
-    %zero: scalar = fconst 0.0
-    %izero: int = iconst 0
-    %terms: int = iconst 4
-    %s: scalar = loop(%i: int = %izero, %acc: scalar = %zero, %x: scalar = %one) {
-        %done: u1 = icmp.ge %i, %terms
+    %s: scalar = loop(%i: int = 0, %acc: scalar = 0.0, %x: scalar = 1.0) {
+        %done: u1 = icmp.ge %i, 4
         if %done {
             break %acc
         }
-        %acc2: scalar = fadd %acc, %x
-        %x2: scalar = fmul %x, %half
-        %ione: int = iconst 1
-        %i2: int = iadd %i, %ione
+        %acc2: scalar = %acc + %x
+        %x2: scalar = %x * 0.5
+        %i2: int = %i + 1
         continue %i2, %acc2, %x2
     }
-    %eight: scalar = fconst 8.0
-    %sc: scalar = fmul %s, %eight
+    %sc: scalar = %s * 8.0
     %r: int = ftoi %sc
     ret %r
 }
@@ -107,8 +86,7 @@ fn @s_geo() -> int {
 fn @s_less_half(%a: int, %b: int) -> u1 {
     %af: scalar = itof %a
     %bf: scalar = itof %b
-    %q: scalar = fdiv %af, %bf
-    %half: scalar = fconst 0.5
-    %r: u1 = fcmp.olt %q, %half
+    %q: scalar = %af / %bf
+    %r: u1 = fcmp.olt %q, 0.5
     ret %r
 }
