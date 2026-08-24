@@ -130,8 +130,8 @@ v: f64 = fconst 2.5
 
 ### Comparison
 
-Operands must share an integer type (or `ptr`, which compares unsigned);
-the result is `u1`.
+Operands must share an integer type of any width — including `u1` —
+(or `ptr`, which compares unsigned); the result is `u1`.
 
 ```
 c: u1 = icmp.eq a, b     ; also: ne
@@ -206,6 +206,15 @@ e: i11 = extract p, exp       ; read a field
 q: $fp = insert p, frac, f2  ; copy with one field replaced
 r: $fp = pack s, e, f       ; build from all fields, in order
 ```
+
+Two pieces of sugar make bit-level code read naturally. **Field
+access**: `value.field` reads a named field (sugar for `extract`) — and
+float-family values expose their layout directly (`x.sign`, `x.exp`,
+`x.frac`, through the `$fp(E, M)` view from lib/float.ssa).
+**Constructors**: `$name(f1, f2, ...)` packs a struct from all its
+fields in declaration order, and `float(E, M)(frac, exp, sign)` builds
+a float; constructor field expressions compute at full width and narrow
+at the boundary, so `(1 << E) - 1` means what it says.
 
 Structs lower to shift/mask code on their carrier integer before emission
 (whole-width identities cost nothing), so they exist only at SSA level.

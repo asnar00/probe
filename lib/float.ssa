@@ -18,6 +18,10 @@
 ; fp_from_f64 round to zero (they are below every practical target's
 ; range); NaN payloads collapse to a quiet NaN.
 
+; the bitfield view of any float(E, M) — also what value.frac /
+; value.exp / value.sign field access on a float value desugars to
+type $fp(E, M) = { frac: u(M), exp: u(E), sign: u1 }
+
 ; small float -> f64 (exact: every float(E<=11, M<=52) value is an f64)
 fn fp_to_f64(bits: u(E+M+1)) -> f64 {
     b: u64 = ext bits
@@ -148,27 +152,30 @@ fn fp_from_f64(x: f64) -> u(E+M+1) {
 }
 
 ; ---------------------------------------------------------------------------
-; DIY arithmetic: direct bitwise add/sub/mul, generic over (E, M), pure
-; integer code — no f64 detour, no FPU assumption. This is the universal
-; fallthrough of the platform model: when a target exposes a native
-; instruction for a format (f32/f64 on FPU targets), that shadows these;
-; otherwise the ops lower to calls to these instances. Full subnormal
-; support, round to nearest even via guard/round/sticky bits.
-; fp_add works for every M <= 52 (f64 included); fp_mul needs the double-
-; width product to fit u64, so M <= 31 (f32 and below).
+; DIY arithmetic: direct bitwise add/sub/mul, generic over the format,
+; pure integer code — no f64 detour, no FPU assumption. This is the
+; universal fallthrough of the platform model: when a target exposes a
+; native instruction for a format (f32/f64 on FPU targets), that
+; shadows these; otherwise the ops lower to calls to these instances.
+; Full subnormal support, round to nearest even via guard/round/sticky.
+; fp_add works for every M <= 52 (f64 included); fp_mul needs the
+; double-width product to fit u64, so M <= 31 (f32 and below).
+;
+; Signatures are over float(E, M) itself, so call sites infer the
+; format from their arguments; a float's fields are read directly
+; (a.sign, a.exp, a.frac) and results build with the float(E, M)(...)
+; constructor — both are sugar over the $fp(E, M) view above.
 
 ; canonical quiet NaN
-fn fp_qnan() -> u(E+M+1) {
-    n: u64 = ((1 << E) - 1) << M | 1 << (M - 1)
-    r: u(E+M+1) = trunc n
-    ret r
+fn fp_qnan() -> float(E, M) {
+    ret float(E, M)(1 << (M - 1), (1 << E) - 1, 0)
 }
 
-; shared tail: round to nearest even (3 extra bits: guard/round/sticky),
-; pack sign/exponent/fraction, detect overflow. The implicit bit makes
-; the exponent arithmetic absorb a rounding carry, and a subnormal that
-; rounds up to 2^M lands exactly on the minimum normal encoding.
-fn fp_pack(ms1: u64, xe1: u64, rs: u64) -> u(E+M+1) {
+; shared tail: round to nearest even on 3 extra bits, pack, overflow to
+; infinity. The implicit bit makes the exponent arithmetic absorb a
+; rounding carry, and a subnormal that rounds up to 2^M lands exactly
+; on the minimum normal encoding.
+fn fp_pack(ms1: u64, xe1: u64, rs: u64) -> float(E, M) {
     lsb: u64 = ms1 >> 3 & 1
     g: u64 = ms1 >> 2 & 1
     rr: u64 = ms1 >> 1 & 1
@@ -183,51 +190,45 @@ fn fp_pack(ms1: u64, xe1: u64, rs: u64) -> u(E+M+1) {
     } else {
         yield ms2
     }
+    sgn: u1 = trunc rs
     ef: u64 = packed >> M
-    if ef >= emax {
-        inf: u64 = rs << (E + M) | emax << M
-        ri: u(E+M+1) = trunc inf
-        ret ri
-    }
+    if ef >= emax { ret float(E, M)(0, (1 << E) - 1, sgn) }
     res: u64 = rs << (E + M) | packed
-    ro: u(E+M+1) = trunc res
-    ret ro
+    rb: u(E+M+1) = trunc res
+    out: float(E, M) = bitcast rb
+    ret out
 }
 
-fn fp_add(a: u(E+M+1), b: u(E+M+1)) -> u(E+M+1) {
-    au: u64 = ext a
-    bu: u64 = ext b
-    sa: u64 = au >> (E + M) & 1
-    sb: u64 = bu >> (E + M) & 1
-    maga: u64 = au & ((1 << (E + M)) - 1)
-    magb: u64 = bu & ((1 << (E + M)) - 1)
+fn fp_add(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    ; unpack: a float's fields are directly accessible
+    sa: u1 = a.sign
+    sb: u1 = b.sign
+    ea: u64 = ext a.exp
+    eb: u64 = ext b.exp
+    fa: u64 = ext a.frac
+    fb: u64 = ext b.frac
     emax: u64 = (1 << E) - 1
-    ea: u64 = maga >> M
-    eb: u64 = magb >> M
-    fa: u64 = maga & ((1 << M) - 1)
-    fb: u64 = magb & ((1 << M) - 1)
+    ; NaN in, canonical quiet NaN out
     if ea == emax {
         if fa != 0 { ret fp_qnan(E, M)() }
     }
     if eb == emax {
         if fb != 0 { ret fp_qnan(E, M)() }
     }
+    ; infinities pass through; opposite-sign inf + inf is NaN
     if ea == emax {
         if eb == emax {
-            ; inf + inf: same sign passes through, opposite is NaN
             if sa != sb { ret fp_qnan(E, M)() }
         }
-        ra: u(E+M+1) = trunc au
-        ret ra
+        ret a
     }
-    if eb == emax {
-        rb: u(E+M+1) = trunc bu
-        ret rb
-    }
-    ; order so 'x' has the larger magnitude (magnitude bits compare as
-    ; plain integers — a property of the IEEE layout)
+    if eb == emax { ret b }
+    ; order so x has the larger magnitude — IEEE layouts compare as
+    ; plain integers
+    maga: u64 = ea << M | fa
+    magb: u64 = eb << M | fb
     swap: u1 = maga < magb
-    xe0: u64, xf: u64, xs: u64, ye0: u64, yf: u64, ys: u64 = if swap {
+    xe0: u64, xf: u64, xs: u1, ye0: u64, yf: u64, ys: u1 = if swap {
         yield eb, fb, sb, ea, fa, sa
     } else {
         yield ea, fa, sa, eb, fb, sb
@@ -247,7 +248,7 @@ fn fp_add(a: u(E+M+1), b: u(E+M+1)) -> u(E+M+1) {
         mi2: u64 = yf | 1 << M
         yield mi2, ye0
     }
-    ; align the smaller operand, keeping guard/round/sticky
+    ; align the smaller operand, keeping guard/round/sticky bits
     mx3: u64 = mx << 3
     my3i: u64 = my << 3
     d: u64 = xe - ye
@@ -263,7 +264,7 @@ fn fp_add(a: u(E+M+1), b: u(E+M+1)) -> u(E+M+1) {
         yield shp
     }
     ; effective add or subtract, by sign agreement
-    ms0: u64, rs: u64 = if xs == ys {
+    ms0: u64, rs: u1 = if xs == ys {
         msum: u64 = mx3 + my3
         yield msum, xs
     } else {
@@ -272,15 +273,13 @@ fn fp_add(a: u(E+M+1), b: u(E+M+1)) -> u(E+M+1) {
     }
     if ms0 == 0 {
         ; exact cancellation is +0, but -0 + -0 keeps its sign
-        zs: u64 = if xs == ys {
+        zs: u1 = if xs == ys {
             yield xs
         } else {
-            z0: u64 = 0
+            z0: u1 = 0
             yield z0
         }
-        zv: u64 = zs << (E + M)
-        rz: u(E+M+1) = trunc zv
-        ret rz
+        ret float(E, M)(0, 0, zs)
     }
     ; renormalize: a carry shifts right once (sticky-preserving), a
     ; cancellation shifts left until normal or the subnormal floor
@@ -300,57 +299,57 @@ fn fp_add(a: u(E+M+1), b: u(E+M+1)) -> u(E+M+1) {
         }
         yield msl2, xel
     }
-    ret fp_pack(E, M)(ms1, xe1, rs)
+    rs64: u64 = ext rs
+    ret fp_pack(E, M)(ms1, xe1, rs64)
 }
 
-fn fp_sub(a: u(E+M+1), b: u(E+M+1)) -> u(E+M+1) {
-    bu: u64 = ext b
-    bf: u64 = bu ^ 1 << (E + M)
-    b2: u(E+M+1) = trunc bf
-    ret fp_add(E, M)(a, b2)
+; subtraction is addition with b's sign flipped
+fn fp_sub(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    ns: u1 = if b.sign == 1 {
+        z0: u1 = 0
+        yield z0
+    } else {
+        o1: u1 = 1
+        yield o1
+    }
+    nb: float(E, M) = float(E, M)(b.frac, b.exp, ns)
+    ret fp_add(nb, a)
 }
 
-fn fp_mul(a: u(E+M+1), b: u(E+M+1)) -> u(E+M+1) {
-    au: u64 = ext a
-    bu: u64 = ext b
-    sa: u64 = au >> (E + M) & 1
-    sb: u64 = bu >> (E + M) & 1
-    sr: u64 = sa ^ sb
-    maga: u64 = au & ((1 << (E + M)) - 1)
-    magb: u64 = bu & ((1 << (E + M)) - 1)
+fn fp_mul(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    sa: u1 = a.sign
+    sb: u1 = b.sign
+    ea: u64 = ext a.exp
+    eb: u64 = ext b.exp
+    fa: u64 = ext a.frac
+    fb: u64 = ext b.frac
     emax: u64 = (1 << E) - 1
-    ea: u64 = maga >> M
-    eb: u64 = magb >> M
-    fa: u64 = maga & ((1 << M) - 1)
-    fb: u64 = magb & ((1 << M) - 1)
+    sr: u1 = if sa == sb {
+        z0: u1 = 0
+        yield z0
+    } else {
+        o1: u1 = 1
+        yield o1
+    }
     if ea == emax {
         if fa != 0 { ret fp_qnan(E, M)() }
     }
     if eb == emax {
         if fb != 0 { ret fp_qnan(E, M)() }
     }
+    maga: u64 = ea << M | fa
+    magb: u64 = eb << M | fb
     if ea == emax {
+        ; inf * 0 is NaN, inf * x is inf with the product sign
         if magb == 0 { ret fp_qnan(E, M)() }
-        inf1: u64 = sr << (E + M) | emax << M
-        r1: u(E+M+1) = trunc inf1
-        ret r1
+        ret float(E, M)(0, (1 << E) - 1, sr)
     }
     if eb == emax {
         if maga == 0 { ret fp_qnan(E, M)() }
-        inf2: u64 = sr << (E + M) | emax << M
-        r2: u(E+M+1) = trunc inf2
-        ret r2
+        ret float(E, M)(0, (1 << E) - 1, sr)
     }
-    if maga == 0 {
-        z1: u64 = sr << (E + M)
-        rz1: u(E+M+1) = trunc z1
-        ret rz1
-    }
-    if magb == 0 {
-        z2: u64 = sr << (E + M)
-        rz2: u(E+M+1) = trunc z2
-        ret rz2
-    }
+    if maga == 0 { ret float(E, M)(0, 0, sr) }
+    if magb == 0 { ret float(E, M)(0, 0, sr) }
     ; normalized significands with signed exponents (subnormals go
     ; negative after normalization)
     ma: u64, xea: i64 = if ea == 0 {
@@ -410,9 +409,7 @@ fn fp_mul(a: u(E+M+1), b: u(E+M+1)) -> u(E+M+1) {
     pe1: i64 = pe0 + need
     if sh1 >= 54 {
         ; deep underflow: everything rounds away
-        z3: u64 = sr << (E + M)
-        rz3: u(E+M+1) = trunc z3
-        ret rz3
+        ret float(E, M)(0, 0, sr)
     }
     ms1: u64 = if sh1 <= 0 {
         lsh: i64 = 0 - sh1
@@ -428,5 +425,6 @@ fn fp_mul(a: u(E+M+1), b: u(E+M+1)) -> u(E+M+1) {
         yield msr
     }
     peu: u64 = bitcast pe1
-    ret fp_pack(E, M)(ms1, peu, sr)
+    sr64: u64 = ext sr
+    ret fp_pack(E, M)(ms1, peu, sr64)
 }

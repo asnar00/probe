@@ -1155,6 +1155,35 @@ fn fmt_fn_name(name: &str) -> String {
     }
 }
 
+/// point an instruction's destination at a different value
+fn rebind_dst(inst: &mut Inst, from: ValueId, to: ValueId) {
+    match inst {
+        Inst::IConst { dst, .. }
+        | Inst::FConst { dst, .. }
+        | Inst::Bin { dst, .. }
+        | Inst::ICmp { dst, .. }
+        | Inst::FCmp { dst, .. }
+        | Inst::Cast { dst, .. }
+        | Inst::Load { dst, .. }
+        | Inst::PtrAdd { dst, .. }
+        | Inst::Extract { dst, .. }
+        | Inst::Pack { dst, .. }
+        | Inst::Insert { dst, .. } => {
+            if *dst == from {
+                *dst = to;
+            }
+        }
+        Inst::Call { dsts, .. } => {
+            for d in dsts {
+                if *d == from {
+                    *d = to;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn symty_params(st: &SymTy, out: &mut Vec<String>) {
     match st {
         SymTy::C(_) => {}
@@ -1164,6 +1193,20 @@ fn symty_params(st: &SymTy, out: &mut Vec<String>) {
                 e.params(out);
             }
         }
+        SymTy::FPW(e, m) => {
+            e.params(out);
+            m.params(out);
+        }
+    }
+}
+
+/// the (E, M) of any float-family member
+fn float_em(t: Type) -> Option<(i64, i64)> {
+    match t {
+        Type::F32 => Some((8, 23)),
+        Type::F64 => Some((11, 52)),
+        Type::FP(e, m) => Some((e as i64, m as i64)),
+        _ => None,
     }
 }
 
@@ -1175,6 +1218,8 @@ enum SymTy {
     IW(WExpr),
     UW(WExpr),
     GS(String, Vec<WExpr>),
+    /// float(E, M) with free parameters — infers from FP/F32/F64 args
+    FPW(WExpr, WExpr),
 }
 
 /// a width-generic function: a token-range template, instantiated by
@@ -1586,7 +1631,11 @@ impl Parser {
     fn is_opcode(name: &str) -> bool {
         name.starts_with("icmp.")
             || name.starts_with("fcmp.")
-            || name.starts_with("b.")
+            || matches!(
+                name,
+                "b.eq" | "b.ne" | "b.lt" | "b.le" | "b.gt" | "b.ge" | "b.lo" | "b.ls"
+                    | "b.hi" | "b.hs"
+            )
             || matches!(
                 name,
                 "add" | "sub" | "mul" | "div" | "rem"
@@ -1736,10 +1785,22 @@ impl Parser {
             return Ok(if s == "i" { SymTy::IW(e) } else { SymTy::UW(e) });
         }
         if s == "float" && matches!(self.peek(), Some(Tok::LParen)) {
-            // literal float(E, M) in a signature (parametric float
-            // signatures are future work: nothing to infer E, M from)
-            let args = self.parse_width_args()?;
-            return self.make_float_type(&args).map(SymTy::C);
+            self.pos += 1;
+            let e = self.parse_wexpr()?;
+            self.expect(Tok::Comma)?;
+            let m = self.parse_wexpr()?;
+            self.expect(Tok::RParen)?;
+            let mut ps = Vec::new();
+            e.params(&mut ps);
+            m.params(&mut ps);
+            if ps.is_empty() {
+                let args = vec![
+                    e.eval(&HashMap::new()).map_err(|x| self.err(x))?,
+                    m.eval(&HashMap::new()).map_err(|x| self.err(x))?,
+                ];
+                return self.make_float_type(&args).map(SymTy::C);
+            }
+            return Ok(SymTy::FPW(e, m));
         }
         match Type::from_name(&s) {
             Some(t) => Ok(SymTy::C(t)),
@@ -1778,6 +1839,13 @@ impl Parser {
                 let vals = vals.map_err(|m| self.err(m))?;
                 let (n, vals2) = (n.clone(), vals);
                 self.instantiate_struct(&n, &vals2).map(Type::Struct)
+            }
+            SymTy::FPW(e, m) => {
+                let args = vec![
+                    e.eval(env).map_err(|x| self.err(x))?,
+                    m.eval(env).map_err(|x| self.err(x))?,
+                ];
+                self.make_float_type(&args)
             }
         }
     }
@@ -1875,6 +1943,21 @@ impl Parser {
             let r = match (st, aty) {
                 (SymTy::IW(WExpr::Par(p)), Type::I(w)) => bind(&mut env, p, w as i64),
                 (SymTy::UW(WExpr::Par(p)), Type::U(w)) => bind(&mut env, p, w as i64),
+                (SymTy::FPW(ee, me), aty2) => match float_em(aty2) {
+                    Some((ev, mv)) => {
+                        let mut r = Ok(());
+                        if let WExpr::Par(p) = ee {
+                            r = bind(&mut env, p, ev);
+                        }
+                        if r.is_ok() {
+                            if let WExpr::Par(p) = me {
+                                r = bind(&mut env, p, mv);
+                            }
+                        }
+                        r
+                    }
+                    None => Ok(()),
+                },
                 (SymTy::GS(n, exprs), Type::Struct(id)) => {
                     match self.struct_inst_rev.get(&id) {
                         Some((gn, vals)) if gn == n => {
@@ -1995,6 +2078,142 @@ impl Parser {
         id
     }
 
+    /// the $fp(E, M) struct view of a float-family type
+    fn float_view(&mut self, t: Type) -> Result<u16, ParseError> {
+        let Some((e, m)) = float_em(t) else {
+            return Err(self.err(format!("{} has no fields", t.name())));
+        };
+        if !self.gstructs.contains_key("fp") {
+            return Err(self.err(
+                "float field access needs the fp struct from lib/float.ssa".to_string(),
+            ));
+        }
+        self.instantiate_struct("fp", &[e, m])
+    }
+
+    /// value.field — extract from a struct, or from a float through its
+    /// bitfield view; emits through `pending`
+    fn field_access(
+        &mut self,
+        scope: &mut FuncScope,
+        id: ValueId,
+        field: &str,
+    ) -> Result<ValueId, ParseError> {
+        let ty = scope.values[id.0 as usize].ty;
+        let (src, si) = match ty {
+            Type::Struct(si) => (id, si),
+            t if float_em(t).is_some() => {
+                let si = self.float_view(t)?;
+                let sv = self.temp_val(scope, Type::Struct(si));
+                self.pending.push(Inst::Cast {
+                    op: CastOp::Bitcast,
+                    dst: sv,
+                    src: id,
+                });
+                (sv, si)
+            }
+            t => {
+                return Err(self.err(format!("{} has no fields", t.name())));
+            }
+        };
+        let def = &self.structs[si as usize];
+        let Some(fi) = def.fields.iter().position(|(n, _)| n == field) else {
+            return Err(self.err(format!(
+                "'${}' has no field '{}'",
+                def.name, field
+            )));
+        };
+        let fty = def.fields[fi].1;
+        let dst = self.temp_val(scope, fty);
+        self.pending.push(Inst::Extract {
+            dst,
+            src,
+            field: fi as u16,
+        });
+        Ok(dst)
+    }
+
+    /// TypeName(fields...) — pack a struct (or a float, through its
+    /// bitfield view) from all its fields, in declaration order
+    fn construct(&mut self, scope: &mut FuncScope, ty: Type) -> Result<ValueId, ParseError> {
+        let si = match ty {
+            Type::Struct(si) => si,
+            t if float_em(t).is_some() => self.float_view(t)?,
+            t => {
+                return Err(self.err(format!("{} cannot be constructed", t.name())));
+            }
+        };
+        let ftys: Vec<Type> = self.structs[si as usize]
+            .fields
+            .iter()
+            .map(|(_, t)| *t)
+            .collect();
+        self.expect(Tok::LParen)?;
+        let mut args = Vec::new();
+        loop {
+            let ast = self.expr_level(scope, 0)?;
+            let Some(&fty) = ftys.get(args.len()) else {
+                return Err(self.err(format!(
+                    "too many fields for '${}'",
+                    self.structs[si as usize].name
+                )));
+            };
+            // field expressions compute at full width (so shifts and
+            // masks behave naturally) and narrow at the boundary;
+            // literals and already-field-typed values pass straight in
+            let v = match ast {
+                EAst::Lit(tok) => self.synth_lit(scope, fty, &tok)?,
+                EAst::V(id) if scope.values[id.0 as usize].ty == fty => id,
+                ast => {
+                    let wide = self.emit_ast(scope, Type::U(64), ast)?;
+                    let wty = scope.values[wide.0 as usize].ty;
+                    if wty == fty {
+                        wide
+                    } else {
+                        let t = self.temp_val(scope, fty);
+                        let op = match (wty.width(), fty.width()) {
+                            (Some(a), Some(b)) if a > b => CastOp::Trunc,
+                            (Some(a), Some(b)) if a < b => CastOp::Ext,
+                            _ => CastOp::Bitcast,
+                        };
+                        self.pending.push(Inst::Cast {
+                            op,
+                            dst: t,
+                            src: wide,
+                        });
+                        t
+                    }
+                }
+            };
+            args.push(v);
+            if self.eat(&Tok::RParen) {
+                break;
+            }
+            self.expect(Tok::Comma)?;
+        }
+        if args.len() != ftys.len() {
+            return Err(self.err(format!(
+                "'${}' has {} fields, {} given",
+                self.structs[si as usize].name,
+                ftys.len(),
+                args.len()
+            )));
+        }
+        let sv = self.temp_val(scope, Type::Struct(si));
+        self.pending.push(Inst::Pack { dst: sv, args });
+        if matches!(ty, Type::Struct(_)) {
+            Ok(sv)
+        } else {
+            let fv = self.temp_val(scope, ty);
+            self.pending.push(Inst::Cast {
+                op: CastOp::Bitcast,
+                dst: fv,
+                src: sv,
+            });
+            Ok(fv)
+        }
+    }
+
     /// synthesize a constant of the given type from a literal token; its
     /// defining instruction goes to `pending`, drained before the user of
     /// the constant. This is the literal-operand sugar: `iadd %i, 1`.
@@ -2048,7 +2267,7 @@ impl Parser {
                 let tok = self.next()?.clone();
                 self.synth_lit(scope, ty, &tok)
             }
-            _ => self.expect_value(scope),
+            _ => self.expect_value_mut(scope),
         }
     }
 
@@ -2066,6 +2285,7 @@ impl Parser {
         scope: &mut FuncScope,
     ) -> Result<Inst, ParseError> {
         let ty = scope.values[dst.0 as usize].ty;
+        let vlen = scope.values.len() as u32;
         let ast = self.expr_level(scope, 0)?;
         match ast {
             EAst::Bin(sym, l, r) => {
@@ -2076,6 +2296,15 @@ impl Parser {
             }
             EAst::Cmp(sym, l, r) => self.emit_cmp(scope, sym, *l, *r, dst),
             EAst::Lit(tok) => self.lit_inst(ty, dst, &tok),
+            EAst::V(id) if id.0 >= vlen => {
+                // the root is machinery this expression emitted (a field
+                // access or constructor): rebind its result to `dst`
+                let Some(last) = self.pending.last_mut() else {
+                    return Err(self.err("internal: expression temp without a definition".to_string()));
+                };
+                rebind_dst(last, id, dst);
+                Ok(self.pending.pop().unwrap())
+            }
             EAst::V(_) => Err(self.err(
                 "an expression must compute something; there is no copy opcode".to_string(),
             )),
@@ -2254,12 +2483,56 @@ impl Parser {
 
     fn expr_atom(&mut self, scope: &mut FuncScope) -> Result<EAst, ParseError> {
         // width parameters are literals inside a generic instance:
-        // %mask: u64 = (1 << M) - 1
+        // mask: u64 = (1 << M) - 1
         if let Some(Tok::Ident(p)) = self.peek() {
             if let Some(&v) = self.wenv.get(p) {
                 self.pos += 1;
                 return Ok(EAst::Lit(Tok::Int(v)));
             }
+        }
+        // field access: value.field on a struct — or on a float, whose
+        // fields are its $fp(E, M) view (frac / exp / sign)
+        if let Some(Tok::Ident(name)) = self.peek() {
+            if let Some(dot) = name.find('.') {
+                let (base, field) = (name[..dot].to_string(), name[dot + 1..].to_string());
+                if scope.value_ids.contains_key(&base) {
+                    self.pos += 1;
+                    let id = scope.value_ids[&base];
+                    let v = self.field_access(scope, id, &field)?;
+                    return Ok(EAst::V(v));
+                }
+            }
+        }
+        // constructors: float(E, M)(fields...) or $name(fields...) pack
+        // a value from its fields
+        if matches!(self.peek(), Some(Tok::Ident(k)) if k == "float")
+            && matches!(self.toks.get(self.pos + 1).map(|(t, _)| t), Some(Tok::LParen))
+        {
+            self.pos += 1;
+            let args = self.parse_width_args()?;
+            let ty = self.make_float_type(&args)?;
+            let v = self.construct(scope, ty)?;
+            return Ok(EAst::V(v));
+        }
+        if let Some(Tok::TyName(_)) = self.peek() {
+            let Some(Tok::TyName(n)) = self.peek().cloned() else { unreachable!() };
+            self.pos += 1;
+            let ty = if matches!(self.peek(), Some(Tok::LParen))
+                && self.explicit_widths_ahead()
+            {
+                let wargs = self.parse_width_args()?;
+                Type::Struct(self.instantiate_struct(&n, &wargs)?)
+            } else {
+                match self.structs.iter().position(|d| d.name == n) {
+                    Some(i) => Type::Struct(i as u16),
+                    None => {
+                        self.pos -= 1;
+                        return Err(self.err(format!("unknown struct type '${}'", n)));
+                    }
+                }
+            };
+            let v = self.construct(scope, ty)?;
+            return Ok(EAst::V(v));
         }
         // a name directly followed by '(' is a call, not a value
         let callish = matches!(
@@ -2356,12 +2629,12 @@ impl Parser {
             Some(Tok::Int(_)) | Some(Tok::FloatLit(_)) => {
                 let tok = self.next()?.clone();
                 self.expect(Tok::Comma)?;
-                let rhs = self.expect_value(scope)?;
+                let rhs = self.expect_value_mut(scope)?;
                 let lhs = self.synth_lit(scope, scope.values[rhs.0 as usize].ty, &tok)?;
                 Ok((lhs, rhs))
             }
             _ => {
-                let lhs = self.expect_value(scope)?;
+                let lhs = self.expect_value_mut(scope)?;
                 self.expect(Tok::Comma)?;
                 let rhs = self.operand(scope, scope.values[lhs.0 as usize].ty)?;
                 Ok((lhs, rhs))
@@ -2382,6 +2655,22 @@ impl Parser {
                 Err(self.err(format!("expected a value, found {}", t)))
             }
         }
+    }
+
+    /// a value operand that may be a field access (value.field): the
+    /// extract (and, for floats, the view bitcast) go through `pending`
+    fn expect_value_mut(&mut self, scope: &mut FuncScope) -> Result<ValueId, ParseError> {
+        if let Some(Tok::Ident(name)) = self.peek() {
+            if let Some(dot) = name.find('.') {
+                let (base, field) = (name[..dot].to_string(), name[dot + 1..].to_string());
+                if scope.value_ids.contains_key(&base) {
+                    self.pos += 1;
+                    let id = scope.value_ids[&base];
+                    return self.field_access(scope, id, &field);
+                }
+            }
+        }
+        self.expect_value(scope)
     }
 
     // -- pre-scans -----------------------------------------------------------
@@ -2705,7 +2994,10 @@ impl Parser {
                 let wpar =
                     matches!(self.peek(), Some(Tok::Ident(k)) if self.wenv.contains_key(k));
                 let bare_val = matches!(self.peek(), Some(Tok::Ident(k))
-                    if !Parser::is_reserved(k) && !callish);
+                    if !Parser::is_reserved(k) && !callish)
+                    || matches!(self.peek(), Some(Tok::Ident(k))
+                        if k == "float"
+                            && matches!(self.toks.get(self.pos + 1).map(|(t, _)| t), Some(Tok::LParen)));
                 let expr = (!matches!(self.peek(), Some(Tok::Ident(_))) && !callish)
                     || wpar
                     || bare_val
@@ -2874,38 +3166,38 @@ impl Parser {
                     "fdemote" => CastOp::Fdemote,
                     _ => CastOp::Bitcast,
                 };
-                let src = self.expect_value(scope)?;
+                let src = self.expect_value_mut(scope)?;
                 Ok(Inst::Cast { op: cast, dst, src })
             }
             "load" => {
-                let addr = self.expect_value(scope)?;
+                let addr = self.expect_value_mut(scope)?;
                 Ok(Inst::Load { dst, addr })
             }
             "ptradd" => {
-                let base = self.expect_value(scope)?;
+                let base = self.expect_value_mut(scope)?;
                 self.expect(Tok::Comma)?;
-                let off = self.expect_value(scope)?;
+                let off = self.expect_value_mut(scope)?;
                 Ok(Inst::PtrAdd { dst, base, off })
             }
             "extract" => {
-                let src = self.expect_value(scope)?;
+                let src = self.expect_value_mut(scope)?;
                 self.expect(Tok::Comma)?;
                 let field = self.field_or_lane(scope, src)?;
                 Ok(Inst::Extract { dst, src, field })
             }
             "pack" => {
-                let mut args = vec![self.expect_value(scope)?];
+                let mut args = vec![self.expect_value_mut(scope)?];
                 while self.eat(&Tok::Comma) {
-                    args.push(self.expect_value(scope)?);
+                    args.push(self.expect_value_mut(scope)?);
                 }
                 Ok(Inst::Pack { dst, args })
             }
             "insert" => {
-                let src = self.expect_value(scope)?;
+                let src = self.expect_value_mut(scope)?;
                 self.expect(Tok::Comma)?;
                 let field = self.field_or_lane(scope, src)?;
                 self.expect(Tok::Comma)?;
-                let val = self.expect_value(scope)?;
+                let val = self.expect_value_mut(scope)?;
                 Ok(Inst::Insert {
                     dst,
                     src,
@@ -2920,9 +3212,9 @@ impl Parser {
     fn parse_plain_op(&mut self, op: &str, scope: &mut FuncScope) -> Result<Inst, ParseError> {
         match op {
             "store" => {
-                let val = self.expect_value(scope)?;
+                let val = self.expect_value_mut(scope)?;
                 self.expect(Tok::Comma)?;
-                let addr = self.expect_value(scope)?;
+                let addr = self.expect_value_mut(scope)?;
                 Ok(Inst::Store { val, addr })
             }
             "call" => {
@@ -2938,7 +3230,7 @@ impl Parser {
                 Ok(Inst::Jmp { target, args })
             }
             "br" => {
-                let cond = self.expect_value(scope)?;
+                let cond = self.expect_value_mut(scope)?;
                 self.expect(Tok::Comma)?;
                 let (then_target, then_args) = self.parse_branch_target(scope)?;
                 self.expect(Tok::Comma)?;
@@ -3021,7 +3313,7 @@ impl Parser {
                                 let tok = self.next()?.clone();
                                 args.push(self.synth_lit(scope, ty, &tok)?);
                             }
-                            _ => args.push(self.expect_value(scope)?),
+                            _ => args.push(self.expect_value_mut(scope)?),
                         }
                         if self.eat(&Tok::RParen) {
                             break;
@@ -3041,7 +3333,7 @@ impl Parser {
                             callee
                         )));
                     }
-                    args.push(self.expect_value(scope)?);
+                    args.push(self.expect_value_mut(scope)?);
                     if self.eat(&Tok::RParen) {
                         break;
                     }
@@ -3067,7 +3359,7 @@ impl Parser {
                         let tok = self.next()?.clone();
                         args.push(self.synth_lit(scope, ty, &tok)?);
                     }
-                    _ => args.push(self.expect_value(scope)?),
+                    _ => args.push(self.expect_value_mut(scope)?),
                 }
                 if self.eat(&Tok::RParen) {
                     break;
@@ -3151,7 +3443,10 @@ impl Parser {
                 let wpar =
                     matches!(self.peek(), Some(Tok::Ident(k)) if self.wenv.contains_key(k));
                 let bare_val = matches!(self.peek(), Some(Tok::Ident(k))
-                    if !Parser::is_reserved(k) && !callish);
+                    if !Parser::is_reserved(k) && !callish)
+                    || matches!(self.peek(), Some(Tok::Ident(k))
+                        if k == "float"
+                            && matches!(self.toks.get(self.pos + 1).map(|(t, _)| t), Some(Tok::LParen)));
                 let expr = (!matches!(self.peek(), Some(Tok::Ident(_))) && !callish)
                     || wpar
                     || bare_val
@@ -3358,7 +3653,7 @@ impl Parser {
         let cond = if matches!(self.peek(), Some(Tok::Value(_)))
             && matches!(self.toks.get(self.pos + 1).map(|(t, _)| t), Some(Tok::LBrace))
         {
-            self.expect_value(scope)?
+            self.expect_value_mut(scope)?
         } else {
             match self.expr_level(scope, 0)? {
                 EAst::V(id) => id,
@@ -4100,7 +4395,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     td.name()
                 )));
             }
-            if tl != tr || !(tl.is_arith() || tl == Type::Ptr) {
+            if tl != tr || !(tl.width().is_some() || tl == Type::Ptr) {
                 errs.push(ctx(format!(
                     "icmp.{}: operands must share an integer type or ptr; got {} and {}",
                     cond.name(),

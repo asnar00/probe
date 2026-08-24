@@ -67,27 +67,24 @@ fn t_mulw(a: i64, b: i64) -> u64 {
     ret r
 }
 
-; the float menagerie's structs, one declaration: fp8 e4m3 is $fp(4, 3)
+; a float's fields are directly readable: x.sign, x.exp, x.frac
 fn fp8_exp(b: u64) -> u64 {
     v: u8 = trunc b
-    p: $fp(4, 3) = bitcast v
-    e: u4 = extract p, exp
-    r: u64 = ext e
+    x: float(4, 3) = bitcast v
+    r: u64 = ext x.exp
     ret r
 }
 
 fn fp8_frac(b: u64) -> u64 {
     v: u8 = trunc b
-    p: $fp(4, 3) = bitcast v
-    f: u3 = extract p, frac
-    r: u64 = ext f
+    x: float(4, 3) = bitcast v
+    r: u64 = ext x.frac
     ret r
 }
 
 fn fp16_exp(b: u64) -> u64 {
     v: u16 = trunc b
-    p: $fp(5, 10) = bitcast v
-    e: u5 = extract p, exp
-    r: u64 = ext e
+    x: float(5, 10) = bitcast v
+    r: u64 = ext x.exp
     ret r
 }

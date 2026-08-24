@@ -200,11 +200,17 @@ fn const_fold(func: &mut Function) {
                         }
                         _ => None,
                     },
-                    Inst::Cast { op, dst, src } => get(*src).map(|a| {
+                    Inst::Cast { op, dst, src } => {
                         let from = func.values[src.0 as usize].ty;
                         let to = func.values[dst.0 as usize].ty;
-                        (*dst, fold_cast(*op, from, to, a))
-                    }),
+                        // a float destination can't hold an iconst: leave
+                        // int->float bitcasts for the emitter
+                        if to.is_float() {
+                            None
+                        } else {
+                            get(*src).map(|a| (*dst, fold_cast(*op, from, to, a)))
+                        }
+                    }
                     _ => None,
                 };
                 if let Some((dst, imm)) = folded {

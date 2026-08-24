@@ -87,10 +87,12 @@ pub fn link(src: &str, policy: &Policy) -> String {
             out.push_str(&format!(
                 "\nfn __fp_force_{e}_{m}(x: f64) -> f64 {{\n    \
                  b: u{t} = fp_from_f64({e}, {m})(x)\n    \
-                 c: u{t} = fp_add({e}, {m})(b, b)\n    \
-                 d: u{t} = fp_sub({e}, {m})(c, b)\n    \
-                 g: u{t} = fp_mul({e}, {m})(d, b)\n    \
-                 ret fp_to_f64({e}, {m})(g)\n}}\n",
+                 xf: float({e}, {m}) = bitcast b\n    \
+                 c: float({e}, {m}) = fp_add(xf, xf)\n    \
+                 d: float({e}, {m}) = fp_sub(c, xf)\n    \
+                 g: float({e}, {m}) = fp_mul(d, xf)\n    \
+                 gb: u{t} = bitcast g\n    \
+                 ret fp_to_f64({e}, {m})(gb)\n}}\n",
                 e = e,
                 m = m,
                 t = e + m + 1
@@ -682,8 +684,20 @@ mod tests {
     #[test]
     fn f32_diy_vs_fpu() {
         let j = jit(
-            "fn a32(a: u32, b: u32) -> u32 { ret fp_add(8, 23)(a, b) }\n\
-             fn m32(a: u32, b: u32) -> u32 { ret fp_mul(8, 23)(a, b) }\n",
+            "fn a32(a: u32, b: u32) -> u32 {\n\
+                 xa: f32 = bitcast a\n\
+                 xb: f32 = bitcast b\n\
+                 s: f32 = fp_add(xa, xb)\n\
+                 r: u32 = bitcast s\n\
+                 ret r\n\
+             }\n\
+             fn m32(a: u32, b: u32) -> u32 {\n\
+                 xa: f32 = bitcast a\n\
+                 xb: f32 = bitcast b\n\
+                 s: f32 = fp_mul(xa, xb)\n\
+                 r: u32 = bitcast s\n\
+                 ret r\n\
+             }\n",
         );
         let is_nan = |v: u32| (v >> 23) & 0xff == 0xff && v & 0x7fffff != 0;
         let same = |g: u32, w: u32| g == w || (is_nan(g) && is_nan(w));
