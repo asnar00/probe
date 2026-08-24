@@ -48,13 +48,20 @@ family, and the familiar sizes are just two members of it.
 
 ## 2. Using one
 
-Here's a complete probe function that adds two fp8 numbers — this is
-`add8` from `suite/menagerie.ssa`, verbatim:
+Here's a real function from the test suite — `f8add` in
+`suite/menagerie.ssa`, verbatim. It takes two fp8 bit patterns, adds
+them as floats, and returns the resulting pattern:
 
 ```
-fn add8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
-    s: float(4, 3) = a + b
-    ret s
+fn f8add(a: u64, b: u64) -> u64 {
+    pa: u8 = trunc a
+    pb: u8 = trunc b
+    xa: float(4, 3) = bitcast pa
+    xb: float(4, 3) = bitcast pb
+    s: float(4, 3) = xa + xb
+    c: u8 = bitcast s
+    r: u64 = ext c
+    ret r
 }
 ```
 
@@ -67,9 +74,17 @@ Three things to know about the language, and then you can read it:
 - A value is set once and never changes. (This style is called SSA;
   compilers use it internally because it makes programs easy to check.)
 
-And it really is arithmetic: `+`, `*`, comparisons, constants, and
-conversions all work on every format in the family. This line (from
-`f8dot`, same file) computes a dot product in 8-bit floats:
+Reading it top to bottom: the test harness passes 64-bit integers, so
+the function narrows each one to 8 bits (`trunc`), reinterprets those
+bits as an fp8 (`bitcast` — same bits, new meaning), adds — that `+` is
+a floating-point add *because its operands are floats* — then turns the
+result back into bits for checking (`bitcast`, and `ext` widens to the
+64 bits the harness wants). Conversion is always written; nothing is
+implicit.
+
+And the whole family really is arithmetic: `+`, `*`, comparisons,
+constants, conversions. This line (from `f8dot`, same file) computes a
+dot product in 8-bit floats:
 
 ```
 s: float(4, 3) = xa * xb + xc * xd

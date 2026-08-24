@@ -18,17 +18,12 @@
 ;! itof8 3 -> 0x44
 ;! promo8 0x38 -> 0x3c00
 
-fn add8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
-    s: float(4, 3) = a + b
-    ret s
-}
-
 fn f8add(a: u64, b: u64) -> u64 {
     pa: u8 = trunc a
     pb: u8 = trunc b
     xa: float(4, 3) = bitcast pa
     xb: float(4, 3) = bitcast pb
-    s: float(4, 3) = add8(xa, xb)
+    s: float(4, 3) = xa + xb
     c: u8 = bitcast s
     r: u64 = ext c
     ret r
