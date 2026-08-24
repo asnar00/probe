@@ -1392,6 +1392,27 @@ impl Parser {
         Ok(fields)
     }
 
+    /// the float family member for evaluated (E, M) arguments
+    fn make_float_type(&self, args: &[i64]) -> Result<Type, ParseError> {
+        if args.len() != 2 {
+            return Err(self.err("float(E, M) takes two parameters".to_string()));
+        }
+        let (e, m) = (args[0], args[1]);
+        match (e, m) {
+            (8, 23) => Ok(Type::F32),
+            (11, 52) => Ok(Type::F64),
+            (e, m) if (2..=8).contains(&e) && (1..=24).contains(&m) => {
+                Ok(Type::FP(e as u8, m as u8))
+            }
+            _ => Err(self.err(format!(
+                "float({}, {}) is out of range (E in 2..=8, M in 1..=24 for \
+                 small formats — every value must be an f64 normal — or \
+                 the native (8, 23) / (11, 52))",
+                e, m
+            ))),
+        }
+    }
+
     /// `( expr, expr, ... )` — evaluated width arguments
     fn parse_width_args(&mut self) -> Result<Vec<i64>, ParseError> {
         self.expect(Tok::LParen)?;
@@ -1645,6 +1666,12 @@ impl Parser {
             let e = self.parse_wexpr()?;
             self.expect(Tok::RParen)?;
             return Ok(if s == "i" { SymTy::IW(e) } else { SymTy::UW(e) });
+        }
+        if s == "float" && matches!(self.peek(), Some(Tok::LParen)) {
+            // literal float(E, M) in a signature (parametric float
+            // signatures are future work: nothing to infer E, M from)
+            let args = self.parse_width_args()?;
+            return self.make_float_type(&args).map(SymTy::C);
         }
         match Type::from_name(&s) {
             Some(t) => Ok(SymTy::C(t)),
