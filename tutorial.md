@@ -1,56 +1,36 @@
-# A first look at probe: floats of every size
+# Understanding probe: a tour of the real code
 
-probe is a small compiler with an unusual habit: instead of trusting
-big reference manuals, it checks everything against something
-independent. It learns machine instruction encodings by probing real
-assemblers, and it runs every test on four different machines that must
-all agree, bit for bit. This page shows you the language it compiles,
-starting with its favorite trick: **floating-point numbers of any
-size**.
+This is a guided walk through the codebase as it actually is. Every
+code block below is quoted verbatim from a file in this repo, or is the
+actual output of a command you can run. Nothing is idealized.
 
-You don't need to know the project already. You do need to vaguely
-remember what a floating-point number is; we'll rebuild the rest as we
-go.
+The route: one small function, followed from source to silicon —
+through the parser, into the library that implements its arithmetic,
+down to the machine instructions it becomes on two different kinds of
+target — and then the machinery that makes any of it believable.
 
-## 1. One type, every float
-
-Modern AI hardware is full of tiny floats — fp8, bf16, fp16 — because
-smaller numbers move faster and pack tighter. Each format is usually a
-separate, special thing. In probe, they're all one type with two
-numbers in it:
+## 0. The map
 
 ```
-float(E, M)
+src/*.rs            the compiler (~17k lines of Rust)
+  ssa.rs              the language: lexer, parser, generics, verifier
+  lower.rs            lowering: wide structs, vectors, structs, widths
+  scalar.rs           representation policies: rationals, small floats
+  softfloat.rs        the (older, hand-written) f64/f32 soft-float runtime
+  opt.rs              the SSA pass pipeline (levels are prefixes of it)
+  regalloc.rs         class-aware linear scan, coalescing
+  emit.rs / emit_rv.rs / emit_wasm.rs   the three backends
+  learn.rs / wlearn.rs / oracle.rs      the encoding learners
+lib/float.ssa       the float family + group softfloat (this tour's star)
+lib/rational.ssa    exact fractions, same recipe
+suite/*.ssa         ~240 test cases as ;! directives, run on 4 machines
+targets/*.probe     probe seeds; *.encodings.json = learned, verified
 ```
 
-`E` is how many bits the exponent gets, `M` is how many the fraction
-gets, and there's always one sign bit on top. So a `float(4, 3)` is 8
-bits laid out like this:
+## 1. A real function
 
-```
-   [ s ][ e e e e ][ m m m ]
-    sign  exponent  fraction     = fp8 (the "e4m3" format)
-```
-
-Pick different numbers, get different formats:
-
-| you write | you get | size |
-|---|---|---|
-| `float(4, 3)` | fp8 | 8 bits |
-| `float(5, 10)` | fp16 (half precision) | 16 bits |
-| `float(8, 7)` | bf16 (bfloat) | 16 bits |
-| `float(8, 23)` | **this is `f32`** — the same type | 32 bits |
-| `float(11, 52)` | **this is `f64`** | 64 bits |
-
-That last part matters: the ordinary floats aren't special built-ins
-with the small ones bolted on. `f32` *is* `float(8, 23)`. There's one
-family, and the familiar sizes are just two members of it.
-
-## 2. Using one
-
-Here's a real function from the test suite — `f8add` in
-`suite/menagerie.ssa`, verbatim. It takes two fp8 bit patterns, adds
-them as floats, and returns the resulting pattern:
+From `suite/menagerie.ssa` — it adds two fp8 numbers, taking and
+returning their bit patterns (the test harness passes 64-bit integers):
 
 ```
 fn f8add(a: u64, b: u64) -> u64 {
@@ -65,216 +45,221 @@ fn f8add(a: u64, b: u64) -> u64 {
 }
 ```
 
-Three things to know about the language, and then you can read it:
+Language basics, in three lines: `name: type = ...` defines a value
+(once — this is SSA, values never change); `name(...)` calls a
+function; and the *types* carry the meaning — there is one `+`, and
+here it is a float add because its operands are `float(4, 3)`.
 
-- `name: type = ...` creates a value; `name(...)` calls a function.
-- Every value states its type when it's created — and types do a lot of
-  work here. There's one `+`, one `/`, one `<`, and each looks at its
-  operands' types to decide what kind of add, divide, or compare it is.
-- A value is set once and never changes. (This style is called SSA;
-  compilers use it internally because it makes programs easy to check.)
+`float(E, M)` is the whole float family: 1 sign bit, E exponent bits,
+M mantissa bits. `float(4, 3)` is fp8 (e4m3), `float(5, 10)` is fp16,
+`float(8, 7)` is bf16 — and `float(8, 23)` **is** `f32`, the same
+type; the parser canonicalizes it. The familiar floats are just two
+members of the family.
 
-Reading it top to bottom: the test harness passes 64-bit integers, so
-the function narrows each one to 8 bits (`trunc`), reinterprets those
-bits as an fp8 (`bitcast` — same bits, new meaning), adds — that `+` is
-a floating-point add *because its operands are floats* — then turns the
-result back into bits for checking (`bitcast`, and `ext` widens to the
-64 bits the harness wants). Conversion is always written; nothing is
-implicit.
+`trunc`/`ext` narrow and widen integers; `bitcast` reinterprets bits
+without changing them. Conversions are always written.
 
-And the whole family really is arithmetic: `+`, `*`, comparisons,
-constants, conversions. This line (from `f8dot`, same file) computes a
-dot product in 8-bit floats:
+## 2. What the parser does
 
-```
-s: float(4, 3) = xa * xb + xc * xd
-```
-
-## 3. How it works: one function, with or without hardware
-
-Your CPU has an f32 add instruction, but no fp8 add. probe handles both
-cases with one rule:
-
-- **If the machine has an instruction for the format, use it.** `f32`
-  addition compiles to the actual `fadd` instruction (whose encoding
-  probe learned by probing an assembler).
-- **If it doesn't, fall through to a library.** fp8 addition compiles
-  to ordinary integer instructions that do the job by hand: pull the
-  numbers apart into sign, exponent, and fraction; line the fractions
-  up; add; round to the nearest representable value.
-
-The library isn't written per format. It's written **once**, with `E`
-and `M` as parameters, in probe's own language. These are the opening
-lines of the real `fp_add` in `lib/float.ssa`:
+The surface syntax — expressions, `+`, dot access — is sugar that
+disappears at parse time. `cargo run -- parse suite/menagerie.ssa`
+prints what everything downstream actually sees; here is `f8add` from
+that output:
 
 ```
-fn fp_add(a: float(E, M), b: float(E, M)) -> float(E, M) {
-    ; unpack: a float's fields are directly accessible
+fn f8add(a: u64, b: u64) -> u64 {
+^entry:
+    pa: u8 = trunc a
+    pb: u8 = trunc b
+    xa: float(4, 3) = bitcast pa
+    xb: float(4, 3) = bitcast pb
+    s: float(4, 3) = add xa, xb
+    c: u8 = bitcast s
+    r: u64 = ext c
+    ret r
+}
+```
+
+One instruction per line, explicit blocks (`^entry:`), no expressions
+— the assembler-shaped core. Control-flow sugar (`if`/`loop`) lowers
+the same way, into a flat graph of blocks. The sugar is one-way: it
+exists for authors, and the verifier, optimizer, and backends never
+see it.
+
+## 3. Where the add comes from: group softfloat
+
+No machine has an fp8 add instruction, so where does `add xa, xb` go?
+To `lib/float.ssa`, which defines the operation *once*, for every
+format at the same time, in a group that marks it as the default
+implementation:
+
+```
+group softfloat {
+```
+
+```
+fn add(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    ; unpack: a float's fields are directly accessible, at their own
+    ; widths
     sa: u1 = a.sign
     sb: u1 = b.sign
-    ea: u64 = ext a.exp
-    eb: u64 = ext b.exp
-    fa: u64 = ext a.frac
-    fb: u64 = ext b.frac
+    ea: u(E) = a.exp
+    eb: u(E) = b.exp
+    fa: u(M) = a.frac
+    fb: u(M) = b.frac
 ```
 
-A float's fields — sign, exponent, fraction — are read straight off the
-value, and `ext` widens them into ordinary integers to work on. A bit
-further down, two of the algorithm's nicer moments (still verbatim; the
-`;` lines are its own comments):
+`E` and `M` are width parameters. A float's fields — sign, exponent,
+fraction — read straight off the value (`a.exp`), each at its own
+width: the exponent is a `u(E)`, an E-bit unsigned integer. When you
+use `float(4, 3)`, the compiler stamps out this function with E=4,
+M=3 (it appears in compiled output as `softfloat_add__4_3`).
+
+Two passages further down show the algorithm's character. Magnitude
+comparison is free, because of how IEEE chose the layout:
 
 ```
     ; order so x has the larger magnitude — IEEE layouts compare as
     ; plain integers
-    maga: u64 = ea << M | fa
-    magb: u64 = eb << M | fb
+    eaw: u(E+M) = ext ea
+    ebw: u(E+M) = ext eb
+    faw: u(E+M) = ext fa
+    fbw: u(E+M) = ext fb
+    maga: u(E+M) = eaw << M | faw
+    magb: u(E+M) = ebw << M | fbw
     swap: u1 = maga < magb
 ```
 
+and the add itself is two cases, chosen by sign agreement:
+
 ```
     ; effective add or subtract, by sign agreement
-    ms0: u64, rs: u1 = if xs == ys {
-        msum: u64 = mx3 + my3
+    ms0: u(M+5), rs: u1 = if xs == ys {
+        msum: u(M+5) = mx3 + my3
         yield msum, xs
     } else {
-        mdiff: u64 = mx3 - my3
+        mdiff: u(M+5) = mx3 - my3
         yield mdiff, xs
     }
 ```
 
-The rest — aligning the smaller number, renormalizing after carries and
-cancellations, rounding to nearest-even — is another eighty lines of
-the same kind, ending in a constructor that builds the result float
-from its fields. When you use `float(4, 3)`, the compiler stamps out
-this function with E=4, M=3. One function covers fp8, fp16, bf16 — and,
-in principle, f32 itself.
+Notice the widths. `u(M+5)` is the significand with its implicit bit
+and three rounding bits — its *true* size, stated as arithmetic over
+the parameters. Nothing in this file is a `u64`: products are
+`u(max(2*M+2, M+5) + 1)`, signed exponent math is `i(max(E, 8) + 2)`.
+The code assumes nothing about the machine's word size; fitting these
+widths onto a target's words is the width-lowering pass's job (64-bit
+words today). A side effect worth knowing: the verifier's width bound
+becomes each operation's honest limit — `add` requires M+5 ≤ 64 (so it
+covers f64), `mul` requires 2M+2 ≤ 64 (f32 and below).
 
-That last possibility is not left as a principle. probe's test suite
-runs `fp_add` at (8, 23) — the f32 shape — and compares it against the
-real f32 hardware of the machine, across hundreds of thousands of
-cases including all the nasty ones (numbers so small they lose the
-leading-1, additions that cancel almost everything, results that
-overflow to infinity). **The hand-built integer version and the silicon
-agree, bit for bit.** So "use the instruction if you have it" is a pure
-optimization: either path is the same function.
+The rest of `add` — alignment with guard/round/sticky bits, subnormal
+handling, renormalization after carries and cancellation, round to
+nearest even — is about a hundred more lines of the same kind. `sub`
+is five lines (flip b's sign, call `add`). Read the file; it reads
+like the algorithm.
 
-One consequence worth savoring: with the `--softfloat` flag, all float
-hardware is off-limits — and your fp8 dot product still runs, still
-bit-exact, on a processor with no floating-point unit at all.
+## 4. The platform rule, in actual machine code
 
-## 4. Why you can trust it
+The selection rule: **if the target has a native instruction for the
+format, use it; otherwise fall through to group softfloat.** Here is
+that rule in the emitted arm64 code for two adds, disassembled
+(`f32` first):
 
-fp8 has exactly 256 possible values. So probe doesn't test a sample of
-additions — it tests **all of them**. Every one of the 65,536 possible
-pairs is added and multiplied, and checked against a *separate*
-implementation that computes the answer a completely different way.
-Two independent methods, total agreement. Small formats don't get
-"probably right"; they get checked completely.
+```
+	fadd	s10, s8, s9
+```
 
-Day-to-day tests are simpler. You write the expected answers next to
-the code, in comments that start with `;!`:
+One instruction — the learned `fadd` encoding. And `float(4, 3)`:
+
+```
+	bl	#3208
+```
+
+A call — into `softfloat_add__4_3`, the E=4, M=3 instance of the
+function you just read, compiled to pure integer code. Same source
+shape, two mechanisms, one rule.
+
+The `fadd` encoding itself was never copied from a manual. From
+`targets/arm64.encodings.json`, learned by probing an assembler and
+verified against it:
+
+```
+{"template": "fadd {s}, {s}, {s}", "fixed": "0x1e202800", "verified": 65,
+ "rejected": 0, "fields": [
+  {"slot": "{s}", "kind": "linear", "signed": false, "bits": [0, 1, 2, 3, 4]},
+  {"slot": "{s}", "kind": "linear", "signed": false, "bits": [5, 6, 7, 8, 9]},
+  {"slot": "{s}", "kind": "linear", "signed": false, "bits": [16, 17, 18, 19, 20]}]}
+```
+
+## 5. Why any of this is believable
+
+The project's rule is that nothing is trusted without an independent
+referee, and floats get three kinds:
+
+- **Exhaustion.** fp8 has 256 values, so `cargo test` checks *every*
+  add and mul pair — 131,072 cases — against a separate Rust
+  implementation that computes the answers a different way
+  (`fp8_exhaustive_add_mul` in `src/scalar.rs`).
+- **Silicon.** The same generic `add`, instantiated at (8, 23) — the
+  f32 shape — is compared against this machine's actual FPU over
+  hundreds of thousands of cases, including subnormal boundaries,
+  cancellation ladders, and overflow (`f32_diy_vs_fpu`). The
+  hand-built integer version and the hardware agree bit for bit —
+  which is what makes "use the native instruction" a pure
+  optimization.
+- **Four machines.** Expected answers live next to the code as `;!`
+  directives — from `suite/menagerie.ssa`:
 
 ```
 ;! f8add 0x38 0x40 -> 0x44
 ;! h_third -> 0x3555
 ```
 
-(The first says: `f8add` of the fp8 bit patterns for 1.0 and 2.0 must
-give the pattern for 3.0. The second: the constant 1/3, rounded into
-fp16, must come out as 0x3555.)
-
-and one command checks them — on your CPU, in WebAssembly, and on two
-emulated machines (RISC-V and ARM under qemu). Same code, same
-expected answers, four independent referees:
+  (fp8: 1.0 + 2.0 must give exactly 3.0; the constant 1/3 must round
+  into fp16 as 0x3555.) The same directives run natively, in
+  WebAssembly, and on emulated RISC-V and ARM:
 
 ```sh
-cargo run -- test              # native
+cargo run -- test
 cargo run -- test wasm
 cargo run -- test riscv
 cargo run -- test arm-qemu
+cargo run -- --softfloat test    # all float hardware forbidden
 ```
 
-## 5. Looking inside a float
+That last flag is the platform rule pushed to its limit: with no FPU
+at all, the fp8 dot products still run, still bit-exact, as pure
+integer code.
 
-Because formats are just bits, probe lets you take one apart. The
-fields you saw `fp_add` use come from a packed struct that describes
-the layout with the same `(E, M)` parameters (from `lib/float.ssa`):
+## 6. The same recipe, different numbers
 
-```
-type $fp(E, M) = { frac: u(M), exp: u(E), sign: u1 }
-```
-
-and any float value exposes them directly. From `suite/generic.ssa`:
-
-```
-fn fp8_exp(b: u64) -> u64 {
-    v: u8 = trunc b
-    x: float(4, 3) = bitcast v
-    r: u64 = ext x.exp
-    ret r
-}
-```
-
-`bitcast` reinterprets bits without changing them (`trunc` and `ext`
-narrow and widen). It's a nice way to *learn* how floats work: parse
-one by hand, poke at its fields, put it back together.
-
-## 6. The other kind of number: exact fractions
-
-Floats round. Sometimes you'd rather they didn't. probe's second number
-library stores fractions exactly — a numerator over a denominator, like
-you learned in school:
+`lib/rational.ssa` is exact-fraction arithmetic built the same way —
+a struct and a library, no compiler support:
 
 ```
 type $rat = { num: half, den: uhalf }
 ```
 
-`1/3` stays `1/3`. Adding `1/2 + 1/3` gives exactly `5/6`. The test
-suite sums `1 + 1/2 + 1/3 + 1/4` and demands exactly `25/12`. When a
-result can't be stored exactly, you don't get a quietly rounded value —
-you get a special "not a rational" marker that spreads through later
-math, so you always know.
+`half`/`uhalf` resolve to half the machine word, because a product
+needs twice the bits of its factors — the same width-relationship idea
+as `u(2*M+2)`, fixed at one ratio. `1/2 + 1/3` is exactly `5/6`; the
+suite demands `1 + 1/2 + 1/3 + 1/4 -> 25, 12`, exactly; unrepresentable
+results become a NaN-like "not a rational" marker instead of rounding.
+And `--scalar=rat` runs float-looking programs in exact fractions.
 
-Two details connect back to what you've seen:
+## 7. Where to read next
 
-- Those field types, `half` and `uhalf`, mean "half a machine word."
-  Why half? Because multiplying two fractions multiplies their parts,
-  and a product needs **twice the bits** of its inputs. Half-word
-  pieces guarantee the math always fits in a machine word. Build for a
-  64-bit machine and fractions use 32-bit parts; build with `--int=i32`
-  and the *same file* uses 16-bit parts, still correct.
-- There is no compiler code for rationals — the whole thing is a
-  library in probe's own language (`lib/rational.ssa`, ~200 readable
-  lines), just like `fp_add`. New kinds of numbers are libraries here,
-  not compiler features. There's even a flag, `--scalar=rat`, that runs
-  your floating-point-looking code in exact fractions instead.
+- `lib/float.ssa` — this tour's subject, whole. Start at `group
+  softfloat`.
+- `suite/menagerie.ssa`, `suite/generic.ssa` — the family exercised;
+  `suite/wide.ssa` — 128-bit integers via multi-word structs.
+- `ssa.md` — the full language reference (types, sugar, generics,
+  groups).
+- `future-work.md` — where this is heading: the platform model
+  (instruction selection as overload resolution, with `emit`-bodied
+  platform functions shadowing groups like softfloat).
 
-## 7. Try it
-
-```sh
-# run the whole test suite (the ;! lines everywhere)
-cargo run -- test
-
-# fp8: 1.0 + 2.0  (0x38 + 0x40 -> 68 = 0x44 = 3.0)
-cargo run -- run suite/menagerie.ssa f8add 56 64
-
-# the same suite with all float hardware forbidden
-cargo run -- --softfloat test
-
-# exact fractions: 1 + 1/2 + 1/3 + 1/4 -> 25, 12
-cargo run -- run suite/rational.ssa t_harmonic 4
-
-# see what the compiler actually sees (sugar expanded, blocks explicit)
-cargo run -- parse suite/menagerie.ssa
-
-# the exhaustive fp8 sweep and the DIY-vs-FPU comparison live in here
-cargo test
-```
-
-Good next reads: `lib/float.ssa` (the float family's whole
-implementation — `fp_add` is the intricate one, and now you can read
-it), `suite/menagerie.ssa` (the family in action), `lib/rational.ssa`
-(the fraction library), and `ssa.md` (the full language reference).
-The habit to take with you: every claim here is backed by a test you
+And the habit that holds it together: every claim above is a test you
 can run, and "it works" always means "independent things agree, bit
 for bit."
