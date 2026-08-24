@@ -479,6 +479,17 @@ core. Verification is exhaustive where the formats are small: every
 fp8 add and mul pair is checked bit-exact against an independent
 reference in cargo test.
 
+## Groups
+
+`group name { fn ... }` collects related functions under a namespace:
+members register as `name_member` (so `add` in `group softfloat` is
+`softfloat_add` — member names may shadow opcode names, since the
+definition position is unambiguous), and calls between members resolve
+group-locally first (`sub` calls `add(nb, a)` and gets its sibling).
+The softfloat group in lib/float.ssa is the working example: the
+default implementations of the float operations, shadowed by native
+instructions where the target has them.
+
 ## Width-parametric types and functions
 
 Types may take width parameters in round brackets, and any type

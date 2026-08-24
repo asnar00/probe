@@ -999,6 +999,7 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         struct_inst_rev: HashMap::new(),
         fn_insts: HashMap::new(),
         fn_worklist: Vec::new(),
+        current_group: None,
     };
     let mut module = Module::default();
     // phase 1: type declarations and function signatures, so call sugar
@@ -1007,11 +1008,17 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
     while !p.at_end() {
         if matches!(p.peek(), Some(Tok::Ident(k)) if k == "type") {
             p.parse_type_decl()?;
+        } else if matches!(p.peek(), Some(Tok::Ident(k)) if k == "group") {
+            p.enter_group()?;
+        } else if matches!(p.peek(), Some(Tok::RBrace)) && p.current_group.is_some() {
+            p.current_group = None;
+            p.pos += 1;
         } else {
             p.prescan_signature()?;
         }
         p.skip_newlines();
     }
+    p.current_group = None;
     p.pos = 0;
     // phase 2: bodies (type declarations were fully handled in phase 1;
     // width-generic templates are skipped — instances parse on demand)
@@ -1019,7 +1026,13 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
     while !p.at_end() {
         if matches!(p.peek(), Some(Tok::Ident(k)) if k == "type") {
             p.skip_line();
-        } else if matches!(p.toks.get(p.pos + 1).map(|(t, _)| t), Some(Tok::Global(n) | Tok::Ident(n)) if p.gfns.contains_key(n))
+        } else if matches!(p.peek(), Some(Tok::Ident(k)) if k == "group") {
+            p.enter_group()?;
+        } else if matches!(p.peek(), Some(Tok::RBrace)) && p.current_group.is_some() {
+            p.current_group = None;
+            p.pos += 1;
+        } else if matches!(p.toks.get(p.pos + 1).map(|(t, _)| t), Some(Tok::Global(n) | Tok::Ident(n))
+            if p.gfns.contains_key(&p.qualify(n)))
         {
             let (_, hi) = p.function_range()?;
             p.pos = hi + 1;
@@ -1028,6 +1041,7 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         }
         p.skip_newlines();
     }
+    p.current_group = None;
     // monomorphization: parse queued instances (which may queue more)
     let mut spins = 0;
     while let Some((gname, vals, mangled)) = p.fn_worklist.pop() {
@@ -1039,7 +1053,8 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
             });
         }
         let g = &p.gfns[&gname];
-        let (lo, params) = (g.lo, g.params.clone());
+        let (lo, params, grp) = (g.lo, g.params.clone(), g.group.clone());
+        p.current_group = grp;
         let save_env = std::mem::take(&mut p.wenv);
         for (par, &v) in params.iter().zip(&vals) {
             p.wenv.insert(par.clone(), v);
@@ -1052,6 +1067,7 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         p.pos = save_pos;
         p.wenv = save_env;
         p.inst_name = None;
+        p.current_group = None;
         p.fn_insts.insert(mangled, true);
     }
     let rc = std::rc::Rc::new(p.structs);
@@ -1084,6 +1100,10 @@ struct Parser {
     struct_inst_rev: HashMap<u16, (String, Vec<i64>)>,
     fn_insts: HashMap<String, bool>, // mangled -> body parsed yet
     fn_worklist: Vec<(String, Vec<i64>, String)>,
+    /// the enclosing `group name { ... }`, if any: member functions are
+    /// registered as {group}_{name} (so `add` in group softfloat is
+    /// softfloat_add), and calls resolve group-locally first
+    current_group: Option<String>,
 }
 
 /// a width expression inside a parametric type: `i(N)`, `u(2*N)`,
@@ -1109,6 +1129,8 @@ impl WExpr {
                     '+' => a + b,
                     '-' => a - b,
                     '*' => a * b,
+                    'M' => a.max(b),
+                    'm' => a.min(b),
                     _ => {
                         if b == 0 {
                             return Err("division by zero in a width expression".into());
@@ -1226,6 +1248,7 @@ enum SymTy {
 /// re-parsing under a parameter environment (monomorphization)
 struct GenericFn {
     params: Vec<String>,
+    group: Option<String>,
     lo: usize,
     sig_params: Vec<SymTy>,
     sig_rets: Vec<SymTy>,
@@ -1538,6 +1561,18 @@ impl Parser {
     fn parse_wfactor(&mut self) -> Result<WExpr, ParseError> {
         match self.next()? {
             Tok::Int(n) => Ok(WExpr::Lit(n)),
+            Tok::Ident(p)
+                if (p == "max" || p == "min")
+                    && matches!(self.peek(), Some(Tok::LParen)) =>
+            {
+                self.pos += 1;
+                let a = self.parse_wexpr()?;
+                self.expect(Tok::Comma)?;
+                let b = self.parse_wexpr()?;
+                self.expect(Tok::RParen)?;
+                let op = if p == "max" { 'M' } else { 'm' };
+                Ok(WExpr::Bin(op, Box::new(a), Box::new(b)))
+            }
             Tok::Ident(p) => Ok(WExpr::Par(p)),
             Tok::LParen => {
                 let e = self.parse_wexpr()?;
@@ -1607,12 +1642,45 @@ impl Parser {
 
     /// `type $name = { field: iN, ... }` — fields are declared low-first
     /// and must be integer widths; the total may not exceed 64 bits
+    /// consume `group name {` and set the group context
+    fn enter_group(&mut self) -> Result<(), ParseError> {
+        self.pos += 1; // 'group'
+        let name = self.expect_ident()?;
+        self.expect(Tok::LBrace)?;
+        if self.current_group.is_some() {
+            return Err(self.err("groups do not nest".to_string()));
+        }
+        self.current_group = Some(name);
+        self.skip_newlines();
+        Ok(())
+    }
+
+    /// a declared name, qualified by the enclosing group
+    fn qualify(&self, name: &str) -> String {
+        match &self.current_group {
+            Some(g) => format!("{}_{}", g, name),
+            None => name.to_string(),
+        }
+    }
+
+    /// resolve a call target group-locally: inside `group g`, `add` means
+    /// g_add if such a member exists
+    fn group_fn(&self, name: &str) -> Option<String> {
+        let g = self.current_group.as_ref()?;
+        let q = format!("{}_{}", g, name);
+        if self.sigs.contains_key(&q) || self.gfns.contains_key(&q) {
+            Some(q)
+        } else {
+            None
+        }
+    }
+
     /// words a bare (sigil-less) value name may not shadow
     fn is_reserved(name: &str) -> bool {
         Parser::is_opcode(name)
             || matches!(
                 name,
-                "fn" | "type"
+                "fn" | "type" | "group"
                     | "ret"
                     | "if"
                     | "else"
@@ -1686,7 +1754,7 @@ impl Parser {
         let (lo, hi) = self.function_range()?;
         self.pos += 1; // past `fn`
         let name = match self.next()? {
-            Tok::Global(n) | Tok::Ident(n) => n,
+            Tok::Global(n) | Tok::Ident(n) => self.qualify(&n),
             t => {
                 self.pos -= 1;
                 return Err(self.err(format!("expected a function name, found {}", t)));
@@ -1742,6 +1810,7 @@ impl Parser {
                 name,
                 GenericFn {
                     params: free,
+                    group: self.current_group.clone(),
                     lo,
                     sig_params: params,
                     sig_rets: rets,
@@ -2288,6 +2357,10 @@ impl Parser {
         let vlen = scope.values.len() as u32;
         let ast = self.expr_level(scope, 0)?;
         match ast {
+            ast @ EAst::Bin(..) if Parser::const_eval(&ast).is_some() => {
+                let v = Parser::const_eval(&ast).unwrap();
+                self.lit_inst(ty, dst, &Tok::Int(v))
+            }
             EAst::Bin(sym, l, r) => {
                 let op = self.expr_op(ty, sym)?;
                 let lhs = self.emit_expr(scope, ty, *l)?;
@@ -2366,12 +2439,60 @@ impl Parser {
         }
     }
 
+    /// host-side value of an all-literal expression tree, if it is one —
+    /// so (1 << E) - 1 means the number, not a narrow-width computation
+    fn const_eval(e: &EAst) -> Option<i64> {
+        match e {
+            EAst::Lit(Tok::Int(n)) => Some(*n),
+            EAst::Bin(sym, l, r) => {
+                let (a, b) = (Parser::const_eval(l)?, Parser::const_eval(r)?);
+                Some(match *sym {
+                    "+" => a.wrapping_add(b),
+                    "-" => a.wrapping_sub(b),
+                    "*" => a.wrapping_mul(b),
+                    "/" => {
+                        if b == 0 {
+                            return None;
+                        }
+                        a / b
+                    }
+                    "%" => {
+                        if b == 0 {
+                            return None;
+                        }
+                        a % b
+                    }
+                    "&" => a & b,
+                    "|" => a | b,
+                    "^" => a ^ b,
+                    "<<" => {
+                        if !(0..64).contains(&b) {
+                            return None;
+                        }
+                        ((a as u64) << b) as i64
+                    }
+                    ">>" => {
+                        if !(0..64).contains(&b) {
+                            return None;
+                        }
+                        ((a as u64) >> b) as i64
+                    }
+                    _ => return None,
+                })
+            }
+            _ => None,
+        }
+    }
+
     fn emit_expr(
         &mut self,
         scope: &mut FuncScope,
         ty: Type,
         e: EAst,
     ) -> Result<ValueId, ParseError> {
+        if let Some(v) = Parser::const_eval(&e) {
+            return self.synth_lit(scope, ty, &Tok::Int(v));
+        }
         match e {
             EAst::V(id) => Ok(id),
             EAst::Lit(tok) => self.synth_lit(scope, ty, &tok),
@@ -2554,7 +2675,7 @@ impl Parser {
                 if matches!(&t2, Tok::Global(_))
                     || matches!(&t2, Tok::Ident(k) if k == "call")
                     || matches!((&t2, self.peek()), (Tok::Ident(k), Some(Tok::LParen))
-                        if !Parser::is_reserved(k)) =>
+                        if !Parser::is_reserved(k) || self.group_fn(k).is_some()) =>
             {
                 if !matches!(&t2, Tok::Ident(k) if k == "call") {
                     self.pos -= 1; // parse_call_tail reads the name itself
@@ -2988,7 +3109,7 @@ impl Parser {
                 let callish = matches!(self.peek(), Some(Tok::Global(_)))
                     || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
                     || matches!(self.peek(), Some(Tok::Ident(k))
-                        if !Parser::is_reserved(k)
+                        if (!Parser::is_reserved(k) || self.group_fn(k).is_some())
                             && !self.wenv.contains_key(k)
                             && matches!(self.toks.get(self.pos + 1).map(|(t, _)| t), Some(Tok::LParen)));
                 let wpar =
@@ -3249,7 +3370,7 @@ impl Parser {
                 if (matches!(self.peek(), Some(Tok::Global(_)))
                     || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
                     || matches!(self.peek(), Some(Tok::Ident(k))
-                        if !Parser::is_reserved(k)
+                        if (!Parser::is_reserved(k) || self.group_fn(k).is_some())
                             && !scope.value_ids.contains_key(k.as_str())
                             && matches!(self.toks.get(self.pos + 1).map(|(t, _)| t), Some(Tok::LParen))))
                     && !self.line_has_op()
@@ -3290,6 +3411,7 @@ impl Parser {
                 return Err(self.err(format!("expected a function name, found {}", t)));
             }
         };
+        let callee = self.group_fn(&callee).unwrap_or(callee);
         // width-generic callee: @f(args) infers parameters from argument
         // types; @f(4, 3)(args) states them explicitly (required when the
         // signature can't be inverted, e.g. a u(E+M+1) argument)
@@ -3437,7 +3559,7 @@ impl Parser {
                 let callish = matches!(self.peek(), Some(Tok::Global(_)))
                     || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
                     || matches!(self.peek(), Some(Tok::Ident(k))
-                        if !Parser::is_reserved(k)
+                        if (!Parser::is_reserved(k) || self.group_fn(k).is_some())
                             && !self.wenv.contains_key(k)
                             && matches!(self.toks.get(self.pos + 1).map(|(t, _)| t), Some(Tok::LParen)));
                 let wpar =
@@ -3574,7 +3696,7 @@ impl Parser {
                     if (matches!(self.peek(), Some(Tok::Global(_)))
                         || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
                         || matches!(self.peek(), Some(Tok::Ident(k))
-                            if !Parser::is_reserved(k)
+                            if (!Parser::is_reserved(k) || self.group_fn(k).is_some())
                                 && !scope.value_ids.contains_key(k.as_str())
                                 && matches!(self.toks.get(self.pos + 1).map(|(t, _)| t), Some(Tok::LParen))))
                         && !self.line_has_op()

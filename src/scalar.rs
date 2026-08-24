@@ -77,22 +77,22 @@ pub fn link(src: &str, policy: &Policy) -> String {
     // small floats: link the generic conversion library and force the
     // instances for every float(E, M) pair the source mentions
     let pairs = small_float_pairs(&out);
-    let direct = ["fp_to_f64", "fp_from_f64", "fp_add", "fp_sub", "fp_mul", "fp_qnan"]
+    let direct = ["softfloat_to_f64", "softfloat_from_f64", "softfloat_add", "softfloat_sub", "softfloat_mul", "softfloat_qnan"]
         .iter()
         .any(|n| out.contains(n));
-    if (!pairs.is_empty() || direct) && !out.contains("fn fp_to_f64") {
+    if (!pairs.is_empty() || direct) && !out.contains("group softfloat") {
         out.push('\n');
         out.push_str(FLOAT_LIB);
         for (e, m) in pairs {
             out.push_str(&format!(
                 "\nfn __fp_force_{e}_{m}(x: f64) -> f64 {{\n    \
-                 b: u{t} = fp_from_f64({e}, {m})(x)\n    \
+                 b: u{t} = softfloat_from_f64({e}, {m})(x)\n    \
                  xf: float({e}, {m}) = bitcast b\n    \
-                 c: float({e}, {m}) = fp_add(xf, xf)\n    \
-                 d: float({e}, {m}) = fp_sub(c, xf)\n    \
-                 g: float({e}, {m}) = fp_mul(d, xf)\n    \
+                 c: float({e}, {m}) = softfloat_add(xf, xf)\n    \
+                 d: float({e}, {m}) = softfloat_sub(c, xf)\n    \
+                 g: float({e}, {m}) = softfloat_mul(d, xf)\n    \
                  gb: u{t} = bitcast g\n    \
-                 ret fp_to_f64({e}, {m})(gb)\n}}\n",
+                 ret softfloat_to_f64({e}, {m})(gb)\n}}\n",
                 e = e,
                 m = m,
                 t = e + m + 1
@@ -105,7 +105,7 @@ pub fn link(src: &str, policy: &Policy) -> String {
 /// reference conversions in Rust, mirroring lib/float.ssa: used for
 /// small-float constants at lowering time and as the independent
 /// referee in the exhaustive tests
-pub fn rust_fp_to_f64(bits: u64, e: u32, m: u32) -> f64 {
+pub fn rust_softfloat_to_f64(bits: u64, e: u32, m: u32) -> f64 {
     let s = (bits >> (e + m)) & 1;
     let ex = (bits >> m) & ((1 << e) - 1);
     let f = bits & ((1 << m) - 1);
@@ -133,7 +133,7 @@ pub fn rust_fp_to_f64(bits: u64, e: u32, m: u32) -> f64 {
     f64::from_bits(r)
 }
 
-pub fn rust_fp_from_f64(x: f64, e: u32, m: u32) -> u64 {
+pub fn rust_softfloat_from_f64(x: f64, e: u32, m: u32) -> u64 {
     let b = x.to_bits();
     let s = (b >> 63) & 1;
     let ed = (b >> 52) & 0x7ff;
@@ -254,7 +254,7 @@ pub fn lower_small_floats(module: &mut Module) -> Result<(), String> {
         lower_fp_function(func);
     }
     // the conversion instances must have been linked in
-    if !module.funcs.iter().any(|f| f.name.starts_with("fp_to_f64__")) {
+    if !module.funcs.iter().any(|f| f.name.starts_with("softfloat_to_f64__")) {
         return Err(
             "small floats used, but the conversion library was not linked              (float(E, M) must appear literally in the source text)"
                 .into(),
@@ -293,7 +293,7 @@ fn lower_fp_function(func: &mut ssa::Function) {
             let t = tmp(func, ntmp, Type::F64);
             out.push(Inst::Call {
                 dsts: vec![t],
-                callee: format!("fp_to_f64__{}_{}", e, m),
+                callee: format!("softfloat_to_f64__{}_{}", e, m),
                 args: vec![v],
             });
             t
@@ -303,7 +303,7 @@ fn lower_fp_function(func: &mut ssa::Function) {
                 Inst::FConst { dst, bits } => match is_fp(func.ty(dst)) {
                     Some((e, m)) => out.push(Inst::IConst {
                         dst,
-                        imm: rust_fp_from_f64(f64::from_bits(bits), e, m) as i64,
+                        imm: rust_softfloat_from_f64(f64::from_bits(bits), e, m) as i64,
                     }),
                     None => out.push(Inst::FConst { dst, bits }),
                 },
@@ -318,9 +318,9 @@ fn lower_fp_function(func: &mut ssa::Function) {
                     // exposing a native instruction for the format would
                     // shadow these calls.
                     let diy = match op {
-                        ssa::BinOp::FAdd => Some("fp_add"),
-                        ssa::BinOp::FSub => Some("fp_sub"),
-                        ssa::BinOp::FMul => Some("fp_mul"),
+                        ssa::BinOp::FAdd => Some("softfloat_add"),
+                        ssa::BinOp::FSub => Some("softfloat_sub"),
+                        ssa::BinOp::FMul => Some("softfloat_mul"),
                         _ => None,
                     };
                     if let Some(name) = diy {
@@ -341,7 +341,7 @@ fn lower_fp_function(func: &mut ssa::Function) {
                         });
                         out.push(Inst::Call {
                             dsts: vec![dst],
-                            callee: format!("fp_from_f64__{}_{}", em.0, em.1),
+                            callee: format!("softfloat_from_f64__{}_{}", em.0, em.1),
                             args: vec![tr],
                         });
                     }
@@ -392,7 +392,7 @@ fn lower_fp_function(func: &mut ssa::Function) {
                             };
                             out.push(Inst::Call {
                                 dsts: vec![dst],
-                                callee: format!("fp_from_f64__{}_{}", em.0, em.1),
+                                callee: format!("softfloat_from_f64__{}_{}", em.0, em.1),
                                 args: vec![t],
                             });
                         }
@@ -400,7 +400,7 @@ fn lower_fp_function(func: &mut ssa::Function) {
                             let t = promote(func, &mut out, &mut ntmp, src, sem);
                             out.push(Inst::Call {
                                 dsts: vec![dst],
-                                callee: format!("fp_from_f64__{}_{}", dem.0, dem.1),
+                                callee: format!("softfloat_from_f64__{}_{}", dem.0, dem.1),
                                 args: vec![t],
                             });
                         }
@@ -413,7 +413,7 @@ fn lower_fp_function(func: &mut ssa::Function) {
                             });
                             out.push(Inst::Call {
                                 dsts: vec![dst],
-                                callee: format!("fp_from_f64__{}_{}", em.0, em.1),
+                                callee: format!("softfloat_from_f64__{}_{}", em.0, em.1),
                                 args: vec![t],
                             });
                         }
@@ -657,10 +657,10 @@ mod tests {
         let same = |got: u64, want: u64| got == want || (is_nan8(got) && is_nan8(want));
         for a in 0..256u64 {
             for b in 0..256u64 {
-                let xa = rust_fp_to_f64(a, 4, 3);
-                let xb = rust_fp_to_f64(b, 4, 3);
-                let want_add = rust_fp_from_f64(xa + xb, 4, 3);
-                let want_mul = rust_fp_from_f64(xa * xb, 4, 3);
+                let xa = rust_softfloat_to_f64(a, 4, 3);
+                let xb = rust_softfloat_to_f64(b, 4, 3);
+                let want_add = rust_softfloat_from_f64(xa + xb, 4, 3);
+                let want_mul = rust_softfloat_from_f64(xa * xb, 4, 3);
                 let got_add = j.call("add8", &[a as i64, b as i64]).unwrap() as u64 & 0xff;
                 let got_mul = j.call("mul8", &[a as i64, b as i64]).unwrap() as u64 & 0xff;
                 assert!(
@@ -687,14 +687,14 @@ mod tests {
             "fn a32(a: u32, b: u32) -> u32 {\n\
                  xa: f32 = bitcast a\n\
                  xb: f32 = bitcast b\n\
-                 s: f32 = fp_add(xa, xb)\n\
+                 s: f32 = softfloat_add(xa, xb)\n\
                  r: u32 = bitcast s\n\
                  ret r\n\
              }\n\
              fn m32(a: u32, b: u32) -> u32 {\n\
                  xa: f32 = bitcast a\n\
                  xb: f32 = bitcast b\n\
-                 s: f32 = fp_mul(xa, xb)\n\
+                 s: f32 = softfloat_mul(xa, xb)\n\
                  r: u32 = bitcast s\n\
                  ret r\n\
              }\n",
@@ -765,7 +765,7 @@ mod tests {
                 if ef == emax && ff != 0 {
                     continue; // NaN payloads quiet by design
                 }
-                let back = rust_fp_from_f64(rust_fp_to_f64(bits, e, m), e, m);
+                let back = rust_softfloat_from_f64(rust_softfloat_to_f64(bits, e, m), e, m);
                 assert_eq!(back, bits, "float({},{}) roundtrip of {:#x}", e, m, bits);
             }
         }

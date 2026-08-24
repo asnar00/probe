@@ -87,13 +87,16 @@ so emit.rs's hand-written dispatch tables become data, --softfloat
 becomes "a platform that exports no float functions", and porting a
 target approaches "learn the JSON, write the platform file".
 
-Landed toward it: the fallthrough half — fp_add/fp_sub/fp_mul(E, M) as
-direct bitwise generics (full subnormals, guard/round/sticky RNE),
-called directly by small-float lowering with no f64 dependency, and
-proven equivalent to the native path at (8, 23) against the M1 FPU.
-Next steps: fp_div direct; route --softfloat's f32/f64 add/sub through
-fp_add(8,23)/(11,52) and retire the duplicated runtime (f64 mul/div
-need $wide products); then the emit meta-instruction itself.
+Landed toward it: `group softfloat` in lib/float.ssa — ONE `add` (and
+sub/mul), the operation's default definition, direct bitwise, full
+subnormals, with every temporary at its TRUE parametric width (no u64
+assumption anywhere: u(M+5) significands, u(max(2M+2, M+5)+1) products,
+i(max(E, 8)+2) exponents — a 32- or 16-bit-word target only needs the
+width lowering re-aimed). Proven equivalent to the native path at
+(8, 23) against the M1 FPU, exhaustively at fp8. Next steps: div
+direct; route --softfloat's f32/f64 add/sub through the group and
+retire the duplicated hand-written runtime; the emit meta-instruction;
+then per-format capability tables driving op lowering generally.
 
 ## Vectors and SIMD
 
