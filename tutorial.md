@@ -48,10 +48,11 @@ family, and the familiar sizes are just two members of it.
 
 ## 2. Using one
 
-Here's a complete probe function that adds two fp8 numbers:
+Here's a complete probe function that adds two fp8 numbers — this is
+`add8` from `suite/menagerie.ssa`, verbatim:
 
 ```
-fn f8add(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
+fn add8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
     s: float(4, 3) = a + b
     ret s
 }
@@ -67,8 +68,8 @@ Three things to know about the language, and then you can read it:
   compilers use it internally because it makes programs easy to check.)
 
 And it really is arithmetic: `+`, `*`, comparisons, constants, and
-conversions all work on every format in the family. This computes a dot
-product in 8-bit floats:
+conversions all work on every format in the family. This line (from
+`f8dot`, same file) computes a dot product in 8-bit floats:
 
 ```
 s: float(4, 3) = xa * xb + xc * xd
@@ -88,21 +89,50 @@ cases with one rule:
   up; add; round to the nearest representable value.
 
 The library isn't written per format. It's written **once**, with `E`
-and `M` as parameters, in probe's own language:
+and `M` as parameters, in probe's own language. These are the opening
+lines of the real `fp_add` in `lib/float.ssa`:
 
 ```
-fn fp_add(a: u(E+M+1), b: u(E+M+1)) -> u(E+M+1) {
-    ...
-    e: u64 = b >> M & ((1 << E) - 1)     ; pull out the exponent
-    ...
+fn fp_add(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    ; unpack: a float's fields are directly accessible
+    sa: u1 = a.sign
+    sb: u1 = b.sign
+    ea: u64 = ext a.exp
+    eb: u64 = ext b.exp
+    fa: u64 = ext a.frac
+    fb: u64 = ext b.frac
 ```
 
-`u(E+M+1)` reads as "an unsigned integer as wide as the whole float" —
-widths can be *arithmetic over parameters*, so signatures state facts
-like "as wide as sign+exponent+fraction" and the compiler checks them
-at every size. When you use `float(4, 3)`, the compiler stamps out this
-function with E=4, M=3. One function covers fp8, fp16, bf16 — and, in
-principle, f32 itself.
+A float's fields — sign, exponent, fraction — are read straight off the
+value, and `ext` widens them into ordinary integers to work on. A bit
+further down, two of the algorithm's nicer moments (still verbatim; the
+`;` lines are its own comments):
+
+```
+    ; order so x has the larger magnitude — IEEE layouts compare as
+    ; plain integers
+    maga: u64 = ea << M | fa
+    magb: u64 = eb << M | fb
+    swap: u1 = maga < magb
+```
+
+```
+    ; effective add or subtract, by sign agreement
+    ms0: u64, rs: u1 = if xs == ys {
+        msum: u64 = mx3 + my3
+        yield msum, xs
+    } else {
+        mdiff: u64 = mx3 - my3
+        yield mdiff, xs
+    }
+```
+
+The rest — aligning the smaller number, renormalizing after carries and
+cancellations, rounding to nearest-even — is another eighty lines of
+the same kind, ending in a constructor that builds the result float
+from its fields. When you use `float(4, 3)`, the compiler stamps out
+this function with E=4, M=3. One function covers fp8, fp16, bf16 — and,
+in principle, f32 itself.
 
 That last possibility is not left as a principle. probe's test suite
 runs `fp_add` at (8, 23) — the f32 shape — and compares it against the
@@ -130,9 +160,13 @@ Day-to-day tests are simpler. You write the expected answers next to
 the code, in comments that start with `;!`:
 
 ```
-;! f8add 0x38 0x40 -> 0x44        ; 1.0 + 2.0 = 3.0, in fp8 bits
-;! h_third -> 0x3555              ; 1/3 rounded to fp16
+;! f8add 0x38 0x40 -> 0x44
+;! h_third -> 0x3555
 ```
+
+(The first says: `f8add` of the fp8 bit patterns for 1.0 and 2.0 must
+give the pattern for 3.0. The second: the constant 1/3, rounded into
+fp16, must come out as 0x3555.)
 
 and one command checks them — on your CPU, in WebAssembly, and on two
 emulated machines (RISC-V and ARM under qemu). Same code, same
@@ -147,24 +181,28 @@ cargo run -- test arm-qemu
 
 ## 5. Looking inside a float
 
-Because formats are just bits, probe lets you take one apart. A packed
-struct names the bit fields, and the same `(E, M)` parameters describe
-its layout:
+Because formats are just bits, probe lets you take one apart. The
+fields you saw `fp_add` use come from a packed struct that describes
+the layout with the same `(E, M)` parameters (from `lib/float.ssa`):
 
 ```
 type $fp(E, M) = { frac: u(M), exp: u(E), sign: u1 }
+```
 
-fn fp8_exp(b: u8) -> u4 {
-    p: $fp(4, 3) = bitcast b        ; same 8 bits, structured view
-    e: u4 = extract p, exp          ; read a field by name
-    ret e
+and any float value exposes them directly. From `suite/generic.ssa`:
+
+```
+fn fp8_exp(b: u64) -> u64 {
+    v: u8 = trunc b
+    x: float(4, 3) = bitcast v
+    r: u64 = ext x.exp
+    ret r
 }
 ```
 
-`bitcast` reinterprets bits without changing them, and `extract` reads
-a named field. This is exactly how `fp_add` is written, and it's a nice
-way to *learn* how floats work: parse one by hand, poke at its fields,
-put it back together.
+`bitcast` reinterprets bits without changing them (`trunc` and `ext`
+narrow and widen). It's a nice way to *learn* how floats work: parse
+one by hand, poke at its fields, put it back together.
 
 ## 6. The other kind of number: exact fractions
 
