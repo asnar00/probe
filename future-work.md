@@ -73,6 +73,28 @@ Backend sketch:
   Architecture** XML (see reference/README.md) — an independent scorecard
   the learner never consults during learning.
 
+## The platform model
+
+The direction (user-proposed): a *platform* is an object exposing
+concretely-typed functions whose bodies are a single `emit`
+meta-instruction populated from the learned encodings JSON —
+`add(f32, f32) -> f32 { emit "fadd {s}, {s}, {s}" }`. Instruction
+selection becomes overload resolution: a platform function shadows the
+DIY generic library (fp_add(E, M), rationals, softfloat); anything the
+platform doesn't export falls through to the library and compiles as
+integer code. Inlining an emit-bodied function IS instruction emission,
+so emit.rs's hand-written dispatch tables become data, --softfloat
+becomes "a platform that exports no float functions", and porting a
+target approaches "learn the JSON, write the platform file".
+
+Landed toward it: the fallthrough half — fp_add/fp_sub/fp_mul(E, M) as
+direct bitwise generics (full subnormals, guard/round/sticky RNE),
+called directly by small-float lowering with no f64 dependency, and
+proven equivalent to the native path at (8, 23) against the M1 FPU.
+Next steps: fp_div direct; route --softfloat's f32/f64 add/sub through
+fp_add(8,23)/(11,52) and retire the duplicated runtime (f64 mul/div
+need $wide products); then the emit meta-instruction itself.
+
 ## Vectors and SIMD
 
 - **NEON emission is live**: arm64 keeps vectors whole in d registers

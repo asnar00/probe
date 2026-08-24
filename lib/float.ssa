@@ -3,9 +3,12 @@
 ; bits — float(8, 23) is f32, float(11, 52) is f64, float(5, 10) is
 ; fp16, float(8, 7) is bf16, float(4, 3) is fp8 e4m3 (IEEE-style: top
 ; exponent reserved for inf/NaN; the finite-only "FN" variant is future
-; work). Arithmetic on small floats promotes to f64, computes natively,
-; and demotes with round-to-nearest-even — correctly rounded for every
-; M <= 24 by the double-rounding theorem (2(M+1)+2 <= 53).
+; work). add/sub/mul are DIRECT bitwise algorithms (fp_add/fp_sub/
+; fp_mul below): pure integer code, generic over the format, verified
+; exhaustively at fp8 and bit-for-bit against the M1 FPU at (8, 23).
+; div (and comparisons/conversions) still route through f64 via
+; fp_to_f64/fp_from_f64 — correctly rounded for every M <= 24 by the
+; double-rounding theorem (2(M+1)+2 <= 53).
 ;
 ; Width parameters appear as widths (u(E+M+1)) and as VALUES (shift
 ; amounts, masks) — instantiation is explicit (fp_to_f64(4, 3)(b))
@@ -142,4 +145,288 @@ fn fp_from_f64(x: f64) -> u(E+M+1) {
     r4: u64 = st | keep4
     o4: u(E+M+1) = trunc r4
     ret o4
+}
+
+; ---------------------------------------------------------------------------
+; DIY arithmetic: direct bitwise add/sub/mul, generic over (E, M), pure
+; integer code — no f64 detour, no FPU assumption. This is the universal
+; fallthrough of the platform model: when a target exposes a native
+; instruction for a format (f32/f64 on FPU targets), that shadows these;
+; otherwise the ops lower to calls to these instances. Full subnormal
+; support, round to nearest even via guard/round/sticky bits.
+; fp_add works for every M <= 52 (f64 included); fp_mul needs the double-
+; width product to fit u64, so M <= 31 (f32 and below).
+
+; canonical quiet NaN
+fn fp_qnan() -> u(E+M+1) {
+    n: u64 = ((1 << E) - 1) << M | 1 << (M - 1)
+    r: u(E+M+1) = trunc n
+    ret r
+}
+
+; shared tail: round to nearest even (3 extra bits: guard/round/sticky),
+; pack sign/exponent/fraction, detect overflow. The implicit bit makes
+; the exponent arithmetic absorb a rounding carry, and a subnormal that
+; rounds up to 2^M lands exactly on the minimum normal encoding.
+fn fp_pack(ms1: u64, xe1: u64, rs: u64) -> u(E+M+1) {
+    lsb: u64 = ms1 >> 3 & 1
+    g: u64 = ms1 >> 2 & 1
+    rr: u64 = ms1 >> 1 & 1
+    stk: u64 = ms1 & 1
+    rup: u64 = g & (rr | stk | lsb)
+    ms2: u64 = (ms1 >> 3) + rup
+    emax: u64 = (1 << E) - 1
+    isn: u1 = ms2 >> M != 0
+    packed: u64 = if isn {
+        pn: u64 = ((xe1 - 1) << M) + ms2
+        yield pn
+    } else {
+        yield ms2
+    }
+    ef: u64 = packed >> M
+    if ef >= emax {
+        inf: u64 = rs << (E + M) | emax << M
+        ri: u(E+M+1) = trunc inf
+        ret ri
+    }
+    res: u64 = rs << (E + M) | packed
+    ro: u(E+M+1) = trunc res
+    ret ro
+}
+
+fn fp_add(a: u(E+M+1), b: u(E+M+1)) -> u(E+M+1) {
+    au: u64 = ext a
+    bu: u64 = ext b
+    sa: u64 = au >> (E + M) & 1
+    sb: u64 = bu >> (E + M) & 1
+    maga: u64 = au & ((1 << (E + M)) - 1)
+    magb: u64 = bu & ((1 << (E + M)) - 1)
+    emax: u64 = (1 << E) - 1
+    ea: u64 = maga >> M
+    eb: u64 = magb >> M
+    fa: u64 = maga & ((1 << M) - 1)
+    fb: u64 = magb & ((1 << M) - 1)
+    if ea == emax {
+        if fa != 0 { ret fp_qnan(E, M)() }
+    }
+    if eb == emax {
+        if fb != 0 { ret fp_qnan(E, M)() }
+    }
+    if ea == emax {
+        if eb == emax {
+            ; inf + inf: same sign passes through, opposite is NaN
+            if sa != sb { ret fp_qnan(E, M)() }
+        }
+        ra: u(E+M+1) = trunc au
+        ret ra
+    }
+    if eb == emax {
+        rb: u(E+M+1) = trunc bu
+        ret rb
+    }
+    ; order so 'x' has the larger magnitude (magnitude bits compare as
+    ; plain integers — a property of the IEEE layout)
+    swap: u1 = maga < magb
+    xe0: u64, xf: u64, xs: u64, ye0: u64, yf: u64, ys: u64 = if swap {
+        yield eb, fb, sb, ea, fa, sa
+    } else {
+        yield ea, fa, sa, eb, fb, sb
+    }
+    ; significands with the implicit bit; subnormals live at exponent 1
+    mx: u64, xe: u64 = if xe0 == 0 {
+        one1: u64 = 1
+        yield xf, one1
+    } else {
+        mi1: u64 = xf | 1 << M
+        yield mi1, xe0
+    }
+    my: u64, ye: u64 = if ye0 == 0 {
+        one2: u64 = 1
+        yield yf, one2
+    } else {
+        mi2: u64 = yf | 1 << M
+        yield mi2, ye0
+    }
+    ; align the smaller operand, keeping guard/round/sticky
+    mx3: u64 = mx << 3
+    my3i: u64 = my << 3
+    d: u64 = xe - ye
+    my3: u64 = if d > M + 4 {
+        nz: u1 = my3i != 0
+        st1: u64 = ext nz
+        yield st1
+    } else {
+        low1: u64 = my3i & ((1 << d) - 1)
+        ls1: u1 = low1 != 0
+        lv1: u64 = ext ls1
+        shp: u64 = my3i >> d | lv1
+        yield shp
+    }
+    ; effective add or subtract, by sign agreement
+    ms0: u64, rs: u64 = if xs == ys {
+        msum: u64 = mx3 + my3
+        yield msum, xs
+    } else {
+        mdiff: u64 = mx3 - my3
+        yield mdiff, xs
+    }
+    if ms0 == 0 {
+        ; exact cancellation is +0, but -0 + -0 keeps its sign
+        zs: u64 = if xs == ys {
+            yield xs
+        } else {
+            z0: u64 = 0
+            yield z0
+        }
+        zv: u64 = zs << (E + M)
+        rz: u(E+M+1) = trunc zv
+        ret rz
+    }
+    ; renormalize: a carry shifts right once (sticky-preserving), a
+    ; cancellation shifts left until normal or the subnormal floor
+    ms1: u64, xe1: u64 = if ms0 >> (M + 4) == 1 {
+        stb: u64 = ms0 & 1
+        msr2: u64 = ms0 >> 1 | stb
+        xer: u64 = xe + 1
+        yield msr2, xer
+    } else {
+        msl2: u64, xel: u64 = loop(mm: u64 = ms0, ee: u64 = xe) {
+            topb: u64 = mm >> (M + 3)
+            if topb == 1 { break mm, ee }
+            if ee == 1 { break mm, ee }
+            mm2: u64 = mm << 1
+            ee2: u64 = ee - 1
+            continue mm2, ee2
+        }
+        yield msl2, xel
+    }
+    ret fp_pack(E, M)(ms1, xe1, rs)
+}
+
+fn fp_sub(a: u(E+M+1), b: u(E+M+1)) -> u(E+M+1) {
+    bu: u64 = ext b
+    bf: u64 = bu ^ 1 << (E + M)
+    b2: u(E+M+1) = trunc bf
+    ret fp_add(E, M)(a, b2)
+}
+
+fn fp_mul(a: u(E+M+1), b: u(E+M+1)) -> u(E+M+1) {
+    au: u64 = ext a
+    bu: u64 = ext b
+    sa: u64 = au >> (E + M) & 1
+    sb: u64 = bu >> (E + M) & 1
+    sr: u64 = sa ^ sb
+    maga: u64 = au & ((1 << (E + M)) - 1)
+    magb: u64 = bu & ((1 << (E + M)) - 1)
+    emax: u64 = (1 << E) - 1
+    ea: u64 = maga >> M
+    eb: u64 = magb >> M
+    fa: u64 = maga & ((1 << M) - 1)
+    fb: u64 = magb & ((1 << M) - 1)
+    if ea == emax {
+        if fa != 0 { ret fp_qnan(E, M)() }
+    }
+    if eb == emax {
+        if fb != 0 { ret fp_qnan(E, M)() }
+    }
+    if ea == emax {
+        if magb == 0 { ret fp_qnan(E, M)() }
+        inf1: u64 = sr << (E + M) | emax << M
+        r1: u(E+M+1) = trunc inf1
+        ret r1
+    }
+    if eb == emax {
+        if maga == 0 { ret fp_qnan(E, M)() }
+        inf2: u64 = sr << (E + M) | emax << M
+        r2: u(E+M+1) = trunc inf2
+        ret r2
+    }
+    if maga == 0 {
+        z1: u64 = sr << (E + M)
+        rz1: u(E+M+1) = trunc z1
+        ret rz1
+    }
+    if magb == 0 {
+        z2: u64 = sr << (E + M)
+        rz2: u(E+M+1) = trunc z2
+        ret rz2
+    }
+    ; normalized significands with signed exponents (subnormals go
+    ; negative after normalization)
+    ma: u64, xea: i64 = if ea == 0 {
+        mn1: u64, kk1: u64 = loop(mm: u64 = fa, k: u64 = 0) {
+            top: u64 = mm >> M
+            if top == 1 { break mm, k }
+            mm2: u64 = mm << 1
+            k2: u64 = k + 1
+            continue mm2, k2
+        }
+        ki1: i64 = bitcast kk1
+        en1: i64 = 1 - ki1
+        yield mn1, en1
+    } else {
+        mi1: u64 = fa | 1 << M
+        ei1: i64 = bitcast ea
+        yield mi1, ei1
+    }
+    mb: u64, xeb: i64 = if eb == 0 {
+        mn2: u64, kk2: u64 = loop(mmb: u64 = fb, kb: u64 = 0) {
+            topx: u64 = mmb >> M
+            if topx == 1 { break mmb, kb }
+            mmb2: u64 = mmb << 1
+            kb2: u64 = kb + 1
+            continue mmb2, kb2
+        }
+        ki2: i64 = bitcast kk2
+        en2: i64 = 1 - ki2
+        yield mn2, en2
+    } else {
+        mi2: u64 = fb | 1 << M
+        ei2: i64 = bitcast eb
+        yield mi2, ei2
+    }
+    prod: u64 = ma * mb
+    biasi: i64 = (1 << (E - 1)) - 1
+    pe: i64 = xea + xeb - biasi
+    ; bring the top bit to position M+3, folding underflow into the
+    ; same shift (the exponent floor is 1)
+    top2: u64 = prod >> (2 * M + 1)
+    sh0: i64, pe0: i64 = if top2 == 1 {
+        s1: i64 = M - 2
+        p1: i64 = pe + 1
+        yield s1, p1
+    } else {
+        s2: i64 = M - 3
+        yield s2, pe
+    }
+    need: i64 = if pe0 < 1 {
+        n1: i64 = 1 - pe0
+        yield n1
+    } else {
+        n0: i64 = 0
+        yield n0
+    }
+    sh1: i64 = sh0 + need
+    pe1: i64 = pe0 + need
+    if sh1 >= 54 {
+        ; deep underflow: everything rounds away
+        z3: u64 = sr << (E + M)
+        rz3: u(E+M+1) = trunc z3
+        ret rz3
+    }
+    ms1: u64 = if sh1 <= 0 {
+        lsh: i64 = 0 - sh1
+        lshu: u64 = bitcast lsh
+        msl: u64 = prod << lshu
+        yield msl
+    } else {
+        shu: u64 = bitcast sh1
+        low: u64 = prod & ((1 << shu) - 1)
+        hs: u1 = low != 0
+        hv: u64 = ext hs
+        msr: u64 = prod >> shu | hv
+        yield msr
+    }
+    peu: u64 = bitcast pe1
+    ret fp_pack(E, M)(ms1, peu, sr)
 }

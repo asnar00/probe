@@ -77,14 +77,20 @@ pub fn link(src: &str, policy: &Policy) -> String {
     // small floats: link the generic conversion library and force the
     // instances for every float(E, M) pair the source mentions
     let pairs = small_float_pairs(&out);
-    if !pairs.is_empty() && !out.contains("fn @fp_to_f64") {
+    let direct = ["fp_to_f64", "fp_from_f64", "fp_add", "fp_sub", "fp_mul", "fp_qnan"]
+        .iter()
+        .any(|n| out.contains(n));
+    if (!pairs.is_empty() || direct) && !out.contains("fn fp_to_f64") {
         out.push('\n');
         out.push_str(FLOAT_LIB);
         for (e, m) in pairs {
             out.push_str(&format!(
-                "\nfn @__fp_force_{e}_{m}(%x: f64) -> f64 {{\n    \
-                 %b: u{t} = @fp_from_f64({e}, {m})(%x)\n    \
-                 ret @fp_to_f64({e}, {m})(%b)\n}}\n",
+                "\nfn __fp_force_{e}_{m}(x: f64) -> f64 {{\n    \
+                 b: u{t} = fp_from_f64({e}, {m})(x)\n    \
+                 c: u{t} = fp_add({e}, {m})(b, b)\n    \
+                 d: u{t} = fp_sub({e}, {m})(c, b)\n    \
+                 g: u{t} = fp_mul({e}, {m})(d, b)\n    \
+                 ret fp_to_f64({e}, {m})(g)\n}}\n",
                 e = e,
                 m = m,
                 t = e + m + 1
@@ -303,20 +309,40 @@ fn lower_fp_function(func: &mut ssa::Function) {
                     if op.is_float() && is_fp(func.ty(dst)).is_some() =>
                 {
                     let em = is_fp(func.ty(dst)).unwrap();
-                    let ta = promote(func, &mut out, &mut ntmp, lhs, em);
-                    let tb = promote(func, &mut out, &mut ntmp, rhs, em);
-                    let tr = tmp(func, &mut ntmp, Type::F64);
-                    out.push(Inst::Bin {
-                        op,
-                        dst: tr,
-                        lhs: ta,
-                        rhs: tb,
-                    });
-                    out.push(Inst::Call {
-                        dsts: vec![dst],
-                        callee: format!("fp_from_f64__{}_{}", em.0, em.1),
-                        args: vec![tr],
-                    });
+                    // add/sub/mul go to the DIY generic library directly:
+                    // pure integer code, no f64 detour, full subnormals.
+                    // (div still promotes; its DIY algorithm is future
+                    // work.) This is the platform fallthrough: a target
+                    // exposing a native instruction for the format would
+                    // shadow these calls.
+                    let diy = match op {
+                        ssa::BinOp::FAdd => Some("fp_add"),
+                        ssa::BinOp::FSub => Some("fp_sub"),
+                        ssa::BinOp::FMul => Some("fp_mul"),
+                        _ => None,
+                    };
+                    if let Some(name) = diy {
+                        out.push(Inst::Call {
+                            dsts: vec![dst],
+                            callee: format!("{}__{}_{}", name, em.0, em.1),
+                            args: vec![lhs, rhs],
+                        });
+                    } else {
+                        let ta = promote(func, &mut out, &mut ntmp, lhs, em);
+                        let tb = promote(func, &mut out, &mut ntmp, rhs, em);
+                        let tr = tmp(func, &mut ntmp, Type::F64);
+                        out.push(Inst::Bin {
+                            op,
+                            dst: tr,
+                            lhs: ta,
+                            rhs: tb,
+                        });
+                        out.push(Inst::Call {
+                            dsts: vec![dst],
+                            callee: format!("fp_from_f64__{}_{}", em.0, em.1),
+                            args: vec![tr],
+                        });
+                    }
                 }
                 Inst::FCmp {
                     cond,
@@ -623,6 +649,10 @@ mod tests {
                  ret %r\n\
              }\n",
         );
+        // NaN sign/payload is outside the spec (ours canonicalize):
+        // NaNs compare as a class, everything else bit-exact
+        let is_nan8 = |v: u64| (v >> 3) & 0xf == 0xf && v & 7 != 0;
+        let same = |got: u64, want: u64| got == want || (is_nan8(got) && is_nan8(want));
         for a in 0..256u64 {
             for b in 0..256u64 {
                 let xa = rust_fp_to_f64(a, 4, 3);
@@ -631,17 +661,80 @@ mod tests {
                 let want_mul = rust_fp_from_f64(xa * xb, 4, 3);
                 let got_add = j.call("add8", &[a as i64, b as i64]).unwrap() as u64 & 0xff;
                 let got_mul = j.call("mul8", &[a as i64, b as i64]).unwrap() as u64 & 0xff;
-                assert_eq!(
-                    got_add, want_add,
+                assert!(
+                    same(got_add, want_add),
                     "fp8 {:#04x} + {:#04x}: got {:#04x}, want {:#04x}",
                     a, b, got_add, want_add
                 );
-                assert_eq!(
-                    got_mul, want_mul,
+                assert!(
+                    same(got_mul, want_mul),
                     "fp8 {:#04x} * {:#04x}: got {:#04x}, want {:#04x}",
                     a, b, got_mul, want_mul
                 );
             }
+        }
+    }
+
+    /// the DIY generic add/mul at (8, 23) against the real f32 hardware:
+    /// the same generic SSA that runs fp8 on integer-only cores must
+    /// reproduce the M1's FPU bit-for-bit at f32. Random pairs plus
+    /// directed edges (subnormals, cancellation, overflow, zeros, inf).
+    #[test]
+    fn f32_diy_vs_fpu() {
+        let j = jit(
+            "fn a32(a: u32, b: u32) -> u32 { ret fp_add(8, 23)(a, b) }\n\
+             fn m32(a: u32, b: u32) -> u32 { ret fp_mul(8, 23)(a, b) }\n",
+        );
+        let is_nan = |v: u32| (v >> 23) & 0xff == 0xff && v & 0x7fffff != 0;
+        let same = |g: u32, w: u32| g == w || (is_nan(g) && is_nan(w));
+        let mut check = |a: u32, b: u32| {
+            let wa = (f32::from_bits(a) + f32::from_bits(b)).to_bits();
+            let wm = (f32::from_bits(a) * f32::from_bits(b)).to_bits();
+            let ga = j.call("a32", &[a as i64, b as i64]).unwrap() as u64 as u32;
+            let gm = j.call("m32", &[a as i64, b as i64]).unwrap() as u64 as u32;
+            assert!(
+                same(ga, wa),
+                "f32 {:#010x} + {:#010x}: DIY {:#010x}, FPU {:#010x}",
+                a, b, ga, wa
+            );
+            assert!(
+                same(gm, wm),
+                "f32 {:#010x} * {:#010x}: DIY {:#010x}, FPU {:#010x}",
+                a, b, gm, wm
+            );
+        };
+        // directed edges: zeros, subnormal min/max, normal min/max, one,
+        // inf, NaN, and sign variants of each
+        let edges: Vec<u32> = [
+            0x00000000u32, 0x00000001, 0x007fffff, 0x00800000, 0x00800001,
+            0x3f800000, 0x3f800001, 0x7f7fffff, 0x7f800000, 0x7fc00001,
+            0x34000000, 0x33ffffff, 0x4b800000,
+        ]
+        .iter()
+        .flat_map(|&v| [v, v | 0x8000_0000])
+        .collect();
+        for &a in &edges {
+            for &b in &edges {
+                check(a, b);
+            }
+        }
+        // cancellation ladders: a + (-a +/- k ulps)
+        for k in 0..8u32 {
+            let a = 0x3f80_0000u32 + k;
+            check(a, (a ^ 0x8000_0000).wrapping_add(1));
+            check(a, (a ^ 0x8000_0000).wrapping_sub(1));
+            check(a, a ^ 0x8000_0000);
+        }
+        // random sweep
+        let mut x = 0x243F6A8885A308D3u64;
+        let mut rnd = move || {
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            (x.wrapping_mul(0x2545F4914F6CDD1D) >> 32) as u32
+        };
+        for _ in 0..200_000 {
+            check(rnd(), rnd());
         }
     }
 
