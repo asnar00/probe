@@ -408,6 +408,7 @@ pub fn run_dir_at(
             let mut module = ssa::parse(&src).map_err(|e| e.to_string())?;
             ssa::resolve_types(&mut module, &policy);
             crate::scalar::scalarize(&mut module)?;
+            crate::scalar::lower_small_floats(&mut module)?;
             ssa::verify(&module).map_err(|errs| errs.join("; "))?;
             let wrappers = prepare_cases(&module, &mut cases)?;
             let full_src = if wrappers.is_empty() {
@@ -418,6 +419,7 @@ pub fn run_dir_at(
             let mut module = ssa::parse(&full_src).map_err(|e| e.to_string())?;
             ssa::resolve_types(&mut module, &policy);
             crate::scalar::scalarize(&mut module)?;
+            crate::scalar::lower_small_floats(&mut module)?;
             if soft {
                 softfloat::soften(&mut module)?;
             }
@@ -904,6 +906,7 @@ fn run_riscv(
         let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);
         crate::scalar::scalarize(&mut m2)?;
+        crate::scalar::lower_small_floats(&mut m2)?;
         if soft {
             softfloat::soften(&mut m2)?;
         }
@@ -983,6 +986,7 @@ fn run_arm_qemu(
         let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);
         crate::scalar::scalarize(&mut m2)?;
+        crate::scalar::lower_small_floats(&mut m2)?;
         if soft {
             softfloat::soften(&mut m2)?;
         }

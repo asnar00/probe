@@ -1,0 +1,105 @@
+; the small-float menagerie: float(E, M) is the whole family — f32 IS
+; float(8, 23), f64 IS float(11, 52), and float(4, 3) / float(5, 10) /
+; float(8, 7) are fp8 e4m3 / fp16 / bf16, first-class arithmetic types.
+; Their ops lower to promote -> f64 op -> demote (correctly rounded for
+; M <= 24), with conversions from the width-generic lib/float.ssa —
+; instantiated per format, exhaustively verified in cargo test (every
+; fp8 add/mul pair against an independent reference, bit-exact).
+;! f8add 0x38 0x40 -> 0x44
+;! f8add 0x30 0x30 -> 0x38
+;! f8add 0x2 0x2 -> 0x4
+;! f8dot 0x38 0x40 0x38 0x38 -> 0x44
+;! h15 -> 0x3e00
+;! h_third -> 0x3555
+;! bfmul 0x3fc0 0x4000 -> 0x4040
+;! f8cmp 0x38 0x40 -> 1
+;! f8cmp 0x40 0x38 -> 0
+;! f8toi 0x44 -> 3
+;! itof8 3 -> 0x44
+;! promo8 0x38 -> 0x3c00
+
+fn @f8add(%a: u64, %b: u64) -> u64 {
+    %pa: u8 = trunc %a
+    %pb: u8 = trunc %b
+    %xa: float(4, 3) = bitcast %pa
+    %xb: float(4, 3) = bitcast %pb
+    %s: float(4, 3) = %xa + %xb
+    %c: u8 = bitcast %s
+    %r: u64 = ext %c
+    ret %r
+}
+
+; subnormal + subnormal stays exact
+fn @f8dot(%a: u64, %b: u64, %c: u64, %d: u64) -> u64 {
+    %qa: u8 = trunc %a
+    %qb: u8 = trunc %b
+    %qc: u8 = trunc %c
+    %qd: u8 = trunc %d
+    %xa: float(4, 3) = bitcast %qa
+    %xb: float(4, 3) = bitcast %qb
+    %xc: float(4, 3) = bitcast %qc
+    %xd: float(4, 3) = bitcast %qd
+    %s: float(4, 3) = %xa * %xb + %xc * %xd
+    %o: u8 = bitcast %s
+    %r: u64 = ext %o
+    ret %r
+}
+
+; constants demote at compile time (round to nearest even)
+fn @h15() -> u64 {
+    %h: float(5, 10) = fconst 1.5
+    %b: u16 = bitcast %h
+    %r: u64 = ext %b
+    ret %r
+}
+
+fn @h_third() -> u64 {
+    %h: float(5, 10) = fconst 0.333333333333333333
+    %b: u16 = bitcast %h
+    %r: u64 = ext %b
+    ret %r
+}
+
+fn @bfmul(%a: u64, %b: u64) -> u64 {
+    %pa: u16 = trunc %a
+    %pb: u16 = trunc %b
+    %xa: float(8, 7) = bitcast %pa
+    %xb: float(8, 7) = bitcast %pb
+    %p: float(8, 7) = %xa * %xb
+    %c: u16 = bitcast %p
+    %r: u64 = ext %c
+    ret %r
+}
+
+fn @f8cmp(%a: u64, %b: u64) -> u1 {
+    %pa: u8 = trunc %a
+    %pb: u8 = trunc %b
+    %xa: float(4, 3) = bitcast %pa
+    %xb: float(4, 3) = bitcast %pb
+    %r: u1 = %xa < %xb
+    ret %r
+}
+
+fn @f8toi(%a: u64) -> i64 {
+    %pa: u8 = trunc %a
+    %xa: float(4, 3) = bitcast %pa
+    %r: i64 = ftoi %xa
+    ret %r
+}
+
+fn @itof8(%n: i64) -> u64 {
+    %x: float(4, 3) = itof %n
+    %c: u8 = bitcast %x
+    %r: u64 = ext %c
+    ret %r
+}
+
+; fpromote climbs the family: fp8 -> fp16
+fn @promo8(%a: u64) -> u64 {
+    %pa: u8 = trunc %a
+    %xa: float(4, 3) = bitcast %pa
+    %h: float(5, 10) = fpromote %xa
+    %b: u16 = bitcast %h
+    %r: u64 = ext %b
+    ret %r
+}

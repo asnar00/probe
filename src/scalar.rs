@@ -10,6 +10,54 @@
 use crate::ssa::{self, CastOp, FCond, Inst, Module, Policy, ScalarPolicy, Type, ValueId};
 
 pub const RAT_LIB: &str = include_str!("../lib/rational.ssa");
+pub const FLOAT_LIB: &str = include_str!("../lib/float.ssa");
+
+/// the non-native float(E, M) pairs a source mentions, by text scan —
+/// each needs conversion-function instances, forced by a linked trailer
+fn small_float_pairs(src: &str) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    let b = src.as_bytes();
+    let mut i = 0;
+    while let Some(p) = src[i..].find("float") {
+        let mut j = i + p + 5;
+        while j < b.len() && (b[j] == b' ') {
+            j += 1;
+        }
+        if j >= b.len() || b[j] != b'(' {
+            i += p + 5;
+            continue;
+        }
+        j += 1;
+        let num = |j: &mut usize| -> Option<u32> {
+            while *j < b.len() && b[*j] == b' ' {
+                *j += 1;
+            }
+            let s = *j;
+            while *j < b.len() && b[*j].is_ascii_digit() {
+                *j += 1;
+            }
+            if *j == s {
+                return None;
+            }
+            src[s..*j].parse().ok()
+        };
+        let e = num(&mut j);
+        while j < b.len() && b[j] == b' ' {
+            j += 1;
+        }
+        if e.is_some() && j < b.len() && b[j] == b',' {
+            j += 1;
+            let m = num(&mut j);
+            if let (Some(e), Some(m)) = (e, m) {
+                if (e, m) != (8, 23) && (e, m) != (11, 52) && !out.contains(&(e, m)) {
+                    out.push((e, m));
+                }
+            }
+        }
+        i += p + 5;
+    }
+    out
+}
 
 /// Textually link the rational library into a source file when it is (or
 /// may become) needed: the file uses `$rat` / `@rat_*` directly, or the
@@ -20,12 +68,98 @@ pub fn link(src: &str, policy: &Policy) -> String {
     }
     let uses_rat = src.contains("$rat") || src.contains("@rat_");
     let needs_scalar = policy.scalar == ScalarPolicy::Rat && src.contains("scalar");
-    if uses_rat || needs_scalar {
+    let mut out = if uses_rat || needs_scalar {
         // prepended: the parser must know $rat before its first use
         format!("{}\n{}", RAT_LIB, src)
     } else {
         src.to_string()
+    };
+    // small floats: link the generic conversion library and force the
+    // instances for every float(E, M) pair the source mentions
+    let pairs = small_float_pairs(&out);
+    if !pairs.is_empty() && !out.contains("fn @fp_to_f64") {
+        out.push('\n');
+        out.push_str(FLOAT_LIB);
+        for (e, m) in pairs {
+            out.push_str(&format!(
+                "\nfn @__fp_force_{e}_{m}(%x: f64) -> f64 {{\n    \
+                 %b: u{t} = @fp_from_f64({e}, {m})(%x)\n    \
+                 ret @fp_to_f64({e}, {m})(%b)\n}}\n",
+                e = e,
+                m = m,
+                t = e + m + 1
+            ));
+        }
     }
+    out
+}
+
+/// reference conversions in Rust, mirroring lib/float.ssa: used for
+/// small-float constants at lowering time and as the independent
+/// referee in the exhaustive tests
+pub fn rust_fp_to_f64(bits: u64, e: u32, m: u32) -> f64 {
+    let s = (bits >> (e + m)) & 1;
+    let ex = (bits >> m) & ((1 << e) - 1);
+    let f = bits & ((1 << m) - 1);
+    let sd = s << 63;
+    let emax = (1u64 << e) - 1;
+    let bias = (1u64 << (e - 1)) - 1;
+    let r = if ex == emax {
+        sd | 0x7ff0000000000000 | (f << (52 - m))
+    } else if ex == 0 {
+        if f == 0 {
+            sd
+        } else {
+            let mut k = 0u64;
+            let mut ff = f;
+            while (ff >> m) != 1 {
+                ff <<= 1;
+                k += 1;
+            }
+            let ed = 1024 - bias - k;
+            sd | (ed << 52) | ((ff & ((1 << m) - 1)) << (52 - m))
+        }
+    } else {
+        sd | ((ex + (1023 - bias)) << 52) | (f << (52 - m))
+    };
+    f64::from_bits(r)
+}
+
+pub fn rust_fp_from_f64(x: f64, e: u32, m: u32) -> u64 {
+    let b = x.to_bits();
+    let s = (b >> 63) & 1;
+    let ed = (b >> 52) & 0x7ff;
+    let fd = b & 0xfffffffffffff;
+    let st = s << (e + m);
+    let emaxt = (1u64 << e) - 1;
+    if ed == 0x7ff {
+        let ff = if fd == 0 { 0 } else { 1 << (m - 1) };
+        return st | (emaxt << m) | ff;
+    }
+    if ed == 0 {
+        return st; // f64 subnormals: below every target's range
+    }
+    let bias = (1i64 << (e - 1)) - 1;
+    let et = ed as i64 - 1023 + bias;
+    if et >= emaxt as i64 {
+        return st | (emaxt << m);
+    }
+    let m53 = fd | (1 << 52);
+    let rne = |keep: u64, dropped: u64, half: u64| -> u64 {
+        keep + (u64::from(dropped > half) | (u64::from(dropped == half) & keep & 1))
+    };
+    if et >= 1 {
+        let sh = 52 - m;
+        let keep2 = rne(m53 >> sh, m53 & ((1 << sh) - 1), 1 << (sh - 1));
+        return st + ((et as u64 - 1) << m) + keep2;
+    }
+    let sh = (52 - m) as i64 + (1 - et);
+    if sh >= 54 {
+        return st;
+    }
+    let sh = sh as u64;
+    let keep2 = rne(m53 >> sh, m53 & ((1 << sh) - 1), 1 << (sh - 1));
+    st | keep2
 }
 
 /// Convert an f64 to an exact (num, den) pair that fits $rat's fields
@@ -74,6 +208,230 @@ fn gcd(mut a: u64, mut b: u64) -> u64 {
         (a, b) = (b, a % b);
     }
     a
+}
+
+/// Lower small-float (float(E, M)) values: arithmetic promotes to f64,
+/// computes natively, and demotes back through the width-generic
+/// conversion instances the linker forced; constants demote at compile
+/// time via the Rust reference; values retype to their bit patterns.
+/// Runs before soften, so on FPU-less targets the f64 ops soften in turn.
+pub fn lower_small_floats(module: &mut Module) -> Result<(), String> {
+    let any = module.funcs.iter().any(|f| {
+        f.values.iter().any(|v| matches!(v.ty, Type::FP(..)))
+            || f.rets.iter().any(|t| matches!(t, Type::FP(..)))
+    });
+    if !any {
+        return Ok(());
+    }
+    let mut errs = Vec::new();
+    for func in &mut module.funcs {
+        for b in &func.blocks {
+            for inst in &b.insts {
+                if let Inst::Bin { op, dst, .. } = inst {
+                    if !op.is_float() && matches!(func.ty(*dst), Type::FP(..)) {
+                        errs.push(format!(
+                            "@{}: {} on a small-float value (float types take                              float operations)",
+                            func.name,
+                            op.name()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    if !errs.is_empty() {
+        return Err(errs.join("; "));
+    }
+    for func in &mut module.funcs {
+        lower_fp_function(func);
+    }
+    // the conversion instances must have been linked in
+    if !module.funcs.iter().any(|f| f.name.starts_with("fp_to_f64__")) {
+        return Err(
+            "small floats used, but the conversion library was not linked              (float(E, M) must appear literally in the source text)"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn lower_fp_function(func: &mut ssa::Function) {
+    use std::collections::HashMap;
+    let mut subst: HashMap<ValueId, ValueId> = HashMap::new();
+    let mut ntmp = 0u32;
+    let is_fp = |t: Type| match t {
+        Type::FP(e, m) => Some((e as u32, m as u32)),
+        _ => None,
+    };
+    for b in 0..func.blocks.len() {
+        let insts = std::mem::take(&mut func.blocks[b].insts);
+        let mut out = Vec::with_capacity(insts.len());
+        fn tmp(func: &mut ssa::Function, ntmp: &mut u32, ty: Type) -> ValueId {
+            *ntmp += 1;
+            func.values.push(ssa::ValueData {
+                name: format!("fp{}", ntmp),
+                ty,
+            });
+            ValueId(func.values.len() as u32 - 1)
+        }
+        // promote an FP-typed value to a fresh f64 temp
+        fn promote(
+            func: &mut ssa::Function,
+            out: &mut Vec<Inst>,
+            ntmp: &mut u32,
+            v: ValueId,
+            (e, m): (u32, u32),
+        ) -> ValueId {
+            let t = tmp(func, ntmp, Type::F64);
+            out.push(Inst::Call {
+                dsts: vec![t],
+                callee: format!("fp_to_f64__{}_{}", e, m),
+                args: vec![v],
+            });
+            t
+        }
+        for inst in insts {
+            match inst {
+                Inst::FConst { dst, bits } => match is_fp(func.ty(dst)) {
+                    Some((e, m)) => out.push(Inst::IConst {
+                        dst,
+                        imm: rust_fp_from_f64(f64::from_bits(bits), e, m) as i64,
+                    }),
+                    None => out.push(Inst::FConst { dst, bits }),
+                },
+                Inst::Bin { op, dst, lhs, rhs }
+                    if op.is_float() && is_fp(func.ty(dst)).is_some() =>
+                {
+                    let em = is_fp(func.ty(dst)).unwrap();
+                    let ta = promote(func, &mut out, &mut ntmp, lhs, em);
+                    let tb = promote(func, &mut out, &mut ntmp, rhs, em);
+                    let tr = tmp(func, &mut ntmp, Type::F64);
+                    out.push(Inst::Bin {
+                        op,
+                        dst: tr,
+                        lhs: ta,
+                        rhs: tb,
+                    });
+                    out.push(Inst::Call {
+                        dsts: vec![dst],
+                        callee: format!("fp_from_f64__{}_{}", em.0, em.1),
+                        args: vec![tr],
+                    });
+                }
+                Inst::FCmp {
+                    cond,
+                    dst,
+                    lhs,
+                    rhs,
+                } if is_fp(func.ty(lhs)).is_some() => {
+                    let em = is_fp(func.ty(lhs)).unwrap();
+                    let ta = promote(func, &mut out, &mut ntmp, lhs, em);
+                    let tb = promote(func, &mut out, &mut ntmp, rhs, em);
+                    out.push(Inst::FCmp {
+                        cond,
+                        dst,
+                        lhs: ta,
+                        rhs: tb,
+                    });
+                }
+                Inst::Cast { op, dst, src } => {
+                    let (sf, df) = (is_fp(func.ty(src)), is_fp(func.ty(dst)));
+                    match (op, sf, df) {
+                        // promote/demote ladders through f64
+                        (CastOp::Fpromote | CastOp::Fdemote, Some(em), None) => {
+                            let t = promote(func, &mut out, &mut ntmp, src, em);
+                            if func.ty(dst) == Type::F64 {
+                                subst.insert(dst, t);
+                            } else {
+                                out.push(Inst::Cast {
+                                    op: CastOp::Fdemote,
+                                    dst,
+                                    src: t,
+                                });
+                            }
+                        }
+                        (CastOp::Fpromote | CastOp::Fdemote, None, Some(em)) => {
+                            let t = if func.ty(src) == Type::F64 {
+                                src
+                            } else {
+                                let t = tmp(func, &mut ntmp, Type::F64);
+                                out.push(Inst::Cast {
+                                    op: CastOp::Fpromote,
+                                    dst: t,
+                                    src,
+                                });
+                                t
+                            };
+                            out.push(Inst::Call {
+                                dsts: vec![dst],
+                                callee: format!("fp_from_f64__{}_{}", em.0, em.1),
+                                args: vec![t],
+                            });
+                        }
+                        (CastOp::Fpromote | CastOp::Fdemote, Some(sem), Some(dem)) => {
+                            let t = promote(func, &mut out, &mut ntmp, src, sem);
+                            out.push(Inst::Call {
+                                dsts: vec![dst],
+                                callee: format!("fp_from_f64__{}_{}", dem.0, dem.1),
+                                args: vec![t],
+                            });
+                        }
+                        (CastOp::Itof, _, Some(em)) => {
+                            let t = tmp(func, &mut ntmp, Type::F64);
+                            out.push(Inst::Cast {
+                                op: CastOp::Itof,
+                                dst: t,
+                                src,
+                            });
+                            out.push(Inst::Call {
+                                dsts: vec![dst],
+                                callee: format!("fp_from_f64__{}_{}", em.0, em.1),
+                                args: vec![t],
+                            });
+                        }
+                        (CastOp::Ftoi, Some(em), _) => {
+                            let t = promote(func, &mut out, &mut ntmp, src, em);
+                            out.push(Inst::Cast {
+                                op: CastOp::Ftoi,
+                                dst,
+                                src: t,
+                            });
+                        }
+                        (CastOp::Bitcast, Some((e, m)), _) | (CastOp::Bitcast, _, Some((e, m))) => {
+                            // after retyping, an FP<->uN bitcast may become
+                            // an identity
+                            let post = |t: Type| match t {
+                                Type::FP(e2, m2) => Type::U(e2 + m2 + 1),
+                                t => t,
+                            };
+                            let _ = (e, m);
+                            if post(func.ty(src)) == post(func.ty(dst)) {
+                                subst.insert(dst, src);
+                            } else {
+                                out.push(Inst::Cast { op, dst, src });
+                            }
+                        }
+                        _ => out.push(Inst::Cast { op, dst, src }),
+                    }
+                }
+                other => out.push(other),
+            }
+        }
+        func.blocks[b].insts = out;
+    }
+    if !subst.is_empty() {
+        crate::lower::substitute(func, &subst);
+    }
+    for v in &mut func.values {
+        if let Type::FP(e, m) = v.ty {
+            v.ty = Type::U(e + m + 1);
+        }
+    }
+    for r in &mut func.rets {
+        if let Type::FP(e, m) = *r {
+            *r = Type::U(e + m + 1);
+        }
+    }
 }
 
 /// Rewrite float-opcode operations on `$rat`-typed values into calls to
@@ -219,5 +577,90 @@ fn scalarize_function(func: &mut ssa::Function, rat: Type, hw: u32, errs: &mut V
             }
         }
         func.blocks[b].insts = out;
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn jit(src: &str) -> crate::emit::jit::JitCode {
+        let policy = Policy::new(Type::I(64), Type::F64).unwrap();
+        let src = link(src, &policy);
+        let mut m = ssa::parse(&src).expect("parses");
+        ssa::resolve_types(&mut m, &policy);
+        scalarize(&mut m).expect("scalarizes");
+        lower_small_floats(&mut m).expect("small floats lower");
+        ssa::verify(&m).expect("verifies");
+        crate::lower::lower_native(&mut m);
+        crate::opt::optimize(&mut m, crate::opt::MAX_LEVEL);
+        ssa::verify(&m).expect("verifies post-lower");
+        let enc = crate::emit::Encoder::load("targets/arm64.encodings.json").unwrap();
+        let c = crate::emit::compile(&m, &enc).expect("compiles");
+        crate::emit::jit::JitCode::new(&c).expect("maps")
+    }
+
+    /// every fp8 e4m3 addition and multiplication, exhaustively, against
+    /// the independent Rust reference (promote to f64, compute, demote
+    /// RNE) — 65536 pairs per op, bit-exact
+    #[test]
+    fn fp8_exhaustive_add_mul() {
+        let j = jit(
+            "fn @add8(%a: u8, %b: u8) -> u8 {\n\
+                 %xa: float(4, 3) = bitcast %a\n\
+                 %xb: float(4, 3) = bitcast %b\n\
+                 %s: float(4, 3) = %xa + %xb\n\
+                 %r: u8 = bitcast %s\n\
+                 ret %r\n\
+             }\n\
+             fn @mul8(%a: u8, %b: u8) -> u8 {\n\
+                 %xa: float(4, 3) = bitcast %a\n\
+                 %xb: float(4, 3) = bitcast %b\n\
+                 %s: float(4, 3) = %xa * %xb\n\
+                 %r: u8 = bitcast %s\n\
+                 ret %r\n\
+             }\n",
+        );
+        for a in 0..256u64 {
+            for b in 0..256u64 {
+                let xa = rust_fp_to_f64(a, 4, 3);
+                let xb = rust_fp_to_f64(b, 4, 3);
+                let want_add = rust_fp_from_f64(xa + xb, 4, 3);
+                let want_mul = rust_fp_from_f64(xa * xb, 4, 3);
+                let got_add = j.call("add8", &[a as i64, b as i64]).unwrap() as u64 & 0xff;
+                let got_mul = j.call("mul8", &[a as i64, b as i64]).unwrap() as u64 & 0xff;
+                assert_eq!(
+                    got_add, want_add,
+                    "fp8 {:#04x} + {:#04x}: got {:#04x}, want {:#04x}",
+                    a, b, got_add, want_add
+                );
+                assert_eq!(
+                    got_mul, want_mul,
+                    "fp8 {:#04x} * {:#04x}: got {:#04x}, want {:#04x}",
+                    a, b, got_mul, want_mul
+                );
+            }
+        }
+    }
+
+    /// every fp8 and fp16 value roundtrips f64 exactly (NaN payloads
+    /// collapse to the quiet NaN by design and are skipped)
+    #[test]
+    fn small_float_roundtrip_exhaustive() {
+        for &(e, m) in &[(4u32, 3u32), (5, 10), (8, 7), (5, 2)] {
+            let total = e + m + 1;
+            let emax = (1u64 << e) - 1;
+            for bits in 0..(1u64 << total) {
+                let ef = (bits >> m) & emax;
+                let ff = bits & ((1 << m) - 1);
+                if ef == emax && ff != 0 {
+                    continue; // NaN payloads quiet by design
+                }
+                let back = rust_fp_from_f64(rust_fp_to_f64(bits, e, m), e, m);
+                assert_eq!(back, bits, "float({},{}) roundtrip of {:#x}", e, m, bits);
+            }
+        }
     }
 }

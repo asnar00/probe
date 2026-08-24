@@ -40,8 +40,12 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `iN`  | any-width integer, N in 2..=63 (e.g. `i5`, `i52`)        |
 | `$name` | packed bitfield struct (see *Structs*), <= 64 bits     |
 | `TxN`   | short vector: N lanes of T (see *Vectors*), <= 64 bits |
-| `f32` | 32-bit IEEE float                                        |
-| `f64` | 64-bit IEEE float                                        |
+| `f32` | 32-bit IEEE float — the same type as `float(8, 23)`      |
+| `f64` | 64-bit IEEE float — the same type as `float(11, 52)`     |
+| `float(E, M)` | the float family: 1 sign, E exponent, M mantissa |
+|       | bits. Non-native instances (`float(4, 3)` = fp8 e4m3,    |
+|       | `float(5, 10)` = fp16, `float(8, 7)` = bf16; E<=8, M<=24)|
+|       | are storage formats with full arithmetic (see below)     |
 | `int` | abstract integer — resolved to a concrete width by the   |
 |       | target's replacement policy (see *Abstract numeric types*) |
 | `float` | abstract float — resolved like `int` (`--float=f32|f64`) |
@@ -444,6 +448,27 @@ is an expression atom (`%r: u1 = @f(%x) == 0`) and an `if` condition
 
 There is deliberately no bare-copy form (`%v: ty = %x` is an error —
 SSA has no copy opcode) and no unary minus on values (write `0 - %x`).
+
+### The small-float menagerie
+
+`float(E, M)` names the whole IEEE-style family, and `f32`/`f64` are
+its two native members (the parser canonicalizes `float(8, 23)` to
+`f32`). Every other instance in range (E 2..=8, M 1..=24) is a
+first-class arithmetic type: `fadd`/`fmul`/comparisons/`fconst`/
+`itof`/`ftoi` all work, `fpromote`/`fdemote` climb between any two
+formats (wider-or-equal in both parameters), and `bitcast` crosses to
+the u(E+M+1) bit pattern.
+
+Arithmetic lowers to promote -> native f64 op -> demote with round to
+nearest even — correctly rounded in one step for every M <= 24 by the
+double-rounding theorem — using conversion functions instantiated from
+the width-generic lib/float.ssa (subnormals exact; NaN payloads
+collapse to the quiet NaN; the finite-only e4m3 "FN" variant is future
+work). Constants demote at compile time. On FPU-less targets the f64
+ops soften in turn — fp8 arithmetic runs on an integer-only RISC-V
+core. Verification is exhaustive where the formats are small: every
+fp8 add and mul pair is checked bit-exact against an independent
+reference in cargo test.
 
 ## Width-parametric types and functions
 

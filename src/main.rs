@@ -234,6 +234,7 @@ fn load_module(
     let mut module = ssa::parse(&src).map_err(|e| format!("{}: {}", path, e))?;
     ssa::resolve_types(&mut module, &policy);
     scalar::scalarize(&mut module)?;
+    scalar::lower_small_floats(&mut module)?;
     if soft {
         softfloat::soften(&mut module)?;
     }
@@ -365,6 +366,7 @@ fn cmd_live(path: &str, fname: &str, fargs: &[i64], policy: ssa::Policy) -> Exit
                     let mut m = ssa::parse(&src).map_err(|e| e.to_string())?;
                     ssa::resolve_types(&mut m, &policy);
                     scalar::scalarize(&mut m)?;
+                    scalar::lower_small_floats(&mut m)?;
                     ssa::verify(&m).map_err(|e| e.join("; "))?;
                     lower::lower_native(&mut m);
                     Ok(m)

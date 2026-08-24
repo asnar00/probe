@@ -31,6 +31,14 @@ pub enum Type {
     Int,
     Uint,
     Float,
+    /// a small IEEE-style float: 1 sign bit, `e` exponent bits, `m`
+    /// mantissa bits. float(8, 23) IS F32 and float(11, 52) IS F64
+    /// (canonicalized at parse); other instances — float(5, 10) = fp16,
+    /// float(8, 7) = bf16, float(4, 3) = fp8 e4m3 — are storage formats
+    /// whose arithmetic lowers to promote -> f64 op -> demote (correctly
+    /// rounded for m <= 24), with conversions from the width-generic
+    /// lib/float.ssa. Lowered away before emission.
+    FP(u8, u8),
     /// abstract half-word integers: resolved to HALF the `int` policy's
     /// width (i32/u32 under int=i64, i16/u16 under int=i32). The point is
     /// stating a width *relationship*: a struct of `half` fields with
@@ -138,6 +146,7 @@ impl Type {
             Type::UHalf => "uhalf".into(),
             Type::Struct(_) => "$struct".into(), // callers with a table print the name
             Type::Vec(n, e) => format!("{}x{}", e.ty().name(), n),
+            Type::FP(e, m) => format!("float({}, {})", e, m),
         }
     }
 
@@ -225,7 +234,7 @@ impl Type {
     }
 
     pub fn is_float(self) -> bool {
-        matches!(self, Type::F32 | Type::F64)
+        matches!(self, Type::F32 | Type::F64 | Type::FP(..))
     }
 
     /// Register-class choice for allocation, staging, and calls: floats
@@ -1310,6 +1319,26 @@ impl Parser {
             };
         }
         let s = self.expect_ident()?;
+        // the float family: float(8, 23) is f32, float(11, 52) is f64,
+        // anything else a small-float storage format
+        if s == "float" && matches!(self.peek(), Some(Tok::LParen)) {
+            let args = self.parse_width_args()?;
+            if args.len() != 2 {
+                return Err(self.err("float(E, M) takes two parameters".to_string()));
+            }
+            let (e, m) = (args[0], args[1]);
+            return match (e, m) {
+                (8, 23) => Ok(Type::F32),
+                (11, 52) => Ok(Type::F64),
+                (e, m) if (2..=11).contains(&e) && (1..=24).contains(&m) => {
+                    Ok(Type::FP(e as u8, m as u8))
+                }
+                _ => Err(self.err(format!(
+                    "float({}, {}) is out of range (E in 2..=11, M in 1..=24,                      or the native (8, 23) / (11, 52))",
+                    e, m
+                ))),
+            };
+        }
         // parametric integer widths: i(N), u(2*N), evaluated in the
         // current instantiation's environment
         if (s == "i" || s == "u") && matches!(self.peek(), Some(Tok::LParen)) {
@@ -1685,6 +1714,35 @@ impl Parser {
         Ok(mangled)
     }
 
+    /// does `( ... ) (` follow — an explicit width-argument group before
+    /// the real argument list? (No %values inside the first group.)
+    fn explicit_widths_ahead(&self) -> bool {
+        let mut i = self.pos;
+        let Some((Tok::LParen, _)) = self.toks.get(i) else {
+            return false;
+        };
+        i += 1;
+        let mut depth = 1usize;
+        while let Some((t, _)) = self.toks.get(i) {
+            match t {
+                Tok::LParen => depth += 1,
+                Tok::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(
+                            self.toks.get(i + 1).map(|(t, _)| t),
+                            Some(Tok::LParen)
+                        );
+                    }
+                }
+                Tok::Value(_) | Tok::Newline => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
     /// solve a generic call's width parameters by matching argument types
     /// against the symbolic signature, then instantiate
     fn solve_generic_call(
@@ -1851,7 +1909,10 @@ impl Parser {
         ty: Type,
         tok: &Tok,
     ) -> Result<ValueId, ParseError> {
-        let floatish = matches!(ty, Type::F32 | Type::F64 | Type::Float | Type::Scalar);
+        let floatish = matches!(
+            ty,
+            Type::F32 | Type::F64 | Type::Float | Type::Scalar | Type::FP(..)
+        );
         let inst_for = |dst: ValueId| -> Result<Inst, String> {
             match (tok, floatish) {
                 (Tok::Int(n), false) => Ok(Inst::IConst { dst, imm: *n }),
@@ -1954,7 +2015,10 @@ impl Parser {
             })?;
         let lhs = self.emit_expr(scope, sty, l)?;
         let rhs = self.emit_expr(scope, sty, r)?;
-        let floatish = matches!(sty, Type::F32 | Type::F64 | Type::Float | Type::Scalar);
+        let floatish = matches!(
+            sty,
+            Type::F32 | Type::F64 | Type::Float | Type::Scalar | Type::FP(..)
+        );
         if floatish {
             let cond = match sym {
                 "<" => FCond::Olt,
@@ -2003,7 +2067,10 @@ impl Parser {
 
     /// operator for the level's symbol, chosen by the result type
     fn expr_op(&self, ty: Type, sym: &str) -> Result<BinOp, ParseError> {
-        let floatish = matches!(ty, Type::F32 | Type::F64 | Type::Float | Type::Scalar)
+        let floatish = matches!(
+            ty,
+            Type::F32 | Type::F64 | Type::Float | Type::Scalar | Type::FP(..)
+        )
             || matches!(ty, Type::Vec(_, VecElem::F32));
         let op = match (sym, floatish) {
             ("+", true) => BinOp::FAdd,
@@ -2091,6 +2158,14 @@ impl Parser {
     }
 
     fn expr_atom(&mut self, scope: &mut FuncScope) -> Result<EAst, ParseError> {
+        // width parameters are literals inside a generic instance:
+        // %mask: u64 = (1 << M) - 1
+        if let Some(Tok::Ident(p)) = self.peek() {
+            if let Some(&v) = self.wenv.get(p) {
+                self.pos += 1;
+                return Ok(EAst::Lit(Tok::Int(v)));
+            }
+        }
         match self.next()? {
             Tok::Value(name) => {
                 let id = scope.value_ids.get(&name).copied().ok_or_else(|| {
@@ -2145,7 +2220,10 @@ impl Parser {
 
     /// a constant-defining instruction for a literal, typed by `ty`
     fn lit_inst(&self, ty: Type, dst: ValueId, tok: &Tok) -> Result<Inst, ParseError> {
-        let floatish = matches!(ty, Type::F32 | Type::F64 | Type::Float | Type::Scalar);
+        let floatish = matches!(
+            ty,
+            Type::F32 | Type::F64 | Type::Float | Type::Scalar | Type::FP(..)
+        );
         match (tok, floatish) {
             (Tok::Int(n), false) => Ok(Inst::IConst { dst, imm: *n }),
             (Tok::Int(n), true) => Ok(Inst::FConst {
@@ -2501,7 +2579,10 @@ impl Parser {
                 // expression with a call atom). 'call' stays accepted.
                 let callish = matches!(self.peek(), Some(Tok::Global(_)))
                     || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call");
+                let wpar =
+                    matches!(self.peek(), Some(Tok::Ident(k)) if self.wenv.contains_key(k));
                 let expr = (!matches!(self.peek(), Some(Tok::Ident(_))) && !callish)
+                    || wpar
                     || (callish && dsts.len() == 1 && self.line_has_op());
                 let inst = if expr {
                     // expression sugar: %v: ty = %a * %b + 1
@@ -2746,9 +2827,39 @@ impl Parser {
                 return Err(self.err(format!("expected a function name, found {}", t)));
             }
         };
-        // width-generic callee: parse the arguments, solve the width
-        // parameters from their types, and instantiate (memoized)
+        // width-generic callee: @f(args) infers parameters from argument
+        // types; @f(4, 3)(args) states them explicitly (required when the
+        // signature can't be inverted, e.g. a u(E+M+1) argument)
         if self.gfns.contains_key(&callee) {
+            if self.explicit_widths_ahead() {
+                let vals = self.parse_width_args()?;
+                let mangled = self.request_fn_inst(&callee, &vals)?;
+                let ptys = self.sigs[&mangled].0.clone();
+                self.expect(Tok::LParen)?;
+                let mut args = Vec::new();
+                if !self.eat(&Tok::RParen) {
+                    loop {
+                        match self.peek() {
+                            Some(Tok::Int(_)) | Some(Tok::FloatLit(_)) => {
+                                let Some(&ty) = ptys.get(args.len()) else {
+                                    return Err(self.err(format!(
+                                        "too many arguments to @{}",
+                                        mangled
+                                    )));
+                                };
+                                let tok = self.next()?.clone();
+                                args.push(self.synth_lit(scope, ty, &tok)?);
+                            }
+                            _ => args.push(self.expect_value(scope)?),
+                        }
+                        if self.eat(&Tok::RParen) {
+                            break;
+                        }
+                        self.expect(Tok::Comma)?;
+                    }
+                }
+                return Ok((mangled, args));
+            }
             self.expect(Tok::LParen)?;
             let mut args = Vec::new();
             if !self.eat(&Tok::RParen) {
@@ -2856,7 +2967,10 @@ impl Parser {
                 self.expect(Tok::Equals)?;
                 let callish = matches!(self.peek(), Some(Tok::Global(_)))
                     || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call");
+                let wpar =
+                    matches!(self.peek(), Some(Tok::Ident(k)) if self.wenv.contains_key(k));
                 let expr = (!matches!(self.peek(), Some(Tok::Ident(_))) && !callish)
+                    || wpar
                     || (callish && dsts.len() == 1 && self.line_has_op());
                 if callish && !expr {
                     if matches!(self.peek(), Some(Tok::Ident(_))) {
@@ -3695,7 +3809,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     let n = n as u32;
                     *imm >= -(1i64 << (n - 1)) && *imm < (1i64 << n)
                 }
-                Type::F32 | Type::F64 => false, // use fconst
+                Type::F32 | Type::F64 | Type::FP(..) => false, // use fconst
                 Type::Struct(_) | Type::Vec(..) => false, // use pack
                 Type::Int | Type::Uint | Type::Float | Type::Scalar | Type::Half
                 | Type::UHalf => {
@@ -3805,8 +3919,34 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 },
                 CastOp::Itof => int_wide(ts) && td.is_float(),
                 CastOp::Ftoi => ts.is_float() && int_wide(td),
-                CastOp::Fpromote => ts == Type::F32 && td == Type::F64,
-                CastOp::Fdemote => ts == Type::F64 && td == Type::F32,
+                CastOp::Fpromote => {
+                    let em = |t: Type| match t {
+                        Type::F32 => Some((8i32, 23i32)),
+                        Type::F64 => Some((11, 52)),
+                        Type::FP(e, m) => Some((e as i32, m as i32)),
+                        _ => None,
+                    };
+                    match (em(ts), em(td)) {
+                        (Some((es, ms)), Some((ed, md))) => {
+                            ts != td && es <= ed && ms <= md
+                        }
+                        _ => false,
+                    }
+                }
+                CastOp::Fdemote => {
+                    let em = |t: Type| match t {
+                        Type::F32 => Some((8i32, 23i32)),
+                        Type::F64 => Some((11, 52)),
+                        Type::FP(e, m) => Some((e as i32, m as i32)),
+                        _ => None,
+                    };
+                    match (em(ts), em(td)) {
+                        (Some((es, ms)), Some((ed, md))) => {
+                            ts != td && es >= ed && ms >= md
+                        }
+                        _ => false,
+                    }
+                }
                 CastOp::Bitcast => {
                     // same total width, different type: signedness flips,
                     // int<->float, int<->struct
@@ -3822,6 +3962,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                             }
                         }
                         Type::Vec(n, e) => Some(n as u32 * e.bits()),
+                        Type::FP(e, m) => Some(e as u32 + m as u32 + 1),
                         t => t.width(),
                     };
                     ts != td && w(ts).is_some() && w(ts) == w(td)

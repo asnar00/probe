@@ -104,10 +104,11 @@ Backend sketch:
 - **Parametric type aliases** (`type $r16 = $rat(16)`), inference from
   return-type context, and literal args to generic calls (defer literal
   typing until parameters solve).
-- **The $fp(E, M) op library**: promote/demote written once over
-  (E, M) — collapses softfloat's duplicated f64/f32 code and delivers
-  the whole small-float menagerie (fp8/fp4/bf16) with exhaustive
-  per-instance verification.
+- **Menagerie follow-ons**: the finite-only e4m3 "FN" variant (no inf,
+  one NaN); float(2, 1) fp4 lanes in vectors + the nvfp4 block format;
+  collapsing softfloat's duplicated f64/f32 runtime into the generic
+  library; E > 8 non-native formats (need f64-subnormal handling in
+  promote).
 - **$rat(N) library**: the rational library generic over N, subsuming
   the half/uhalf version once W lands.
 
