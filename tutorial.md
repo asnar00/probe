@@ -34,7 +34,9 @@ with `--int=i64` (the default) and a `$rat` is i32/u32; build with
 `--int=i32` and it's i16/u16. The library doesn't know its own size —
 you'll see below how it's written so the *arithmetic stays correct at
 any width*, which is why "half" is the right abstraction and not just
-a convenience.
+a convenience. (It's also a fixed special case of something fully
+general — width-parametric types like `$fp(E, M)` — which section 7
+gets to.)
 
 Third, this struct fits in a register. probe lowers packed structs to
 shift-and-mask code on an ordinary integer, so a `$rat` value travels
@@ -263,7 +265,55 @@ point is plugged in for CPUs with no FPU. (Yes, you can stack them:
 float-conversion path is itself software floats, on a 32-bit integer
 policy. It passes.)
 
-## 7. Things to try
+## 7. Widths as parameters: the same idea, fully general
+
+`half` fixed one ratio into the type system. The general mechanism is
+**width-parametric types and functions**: parameters in round brackets,
+and width *expressions* in any type position.
+
+```
+type $fp(E, M) = { frac: u(M), exp: u(E), sign: u1 }
+
+fn @mulwide(%a: u(N), %b: u(N)) -> u(2*N) {
+    %aw: u(2*N) = ext %a
+    %bw: u(2*N) = ext %b
+    ret %aw * %bw
+}
+```
+
+`$fp(4, 3)` instantiates the struct at concrete widths (that's the fp8
+e4m3 layout; `$fp(5, 10)` is fp16, `$fp(11, 52)` is the IEEE double —
+one declaration is the whole family). A function whose signature has
+free parameters is generic: call `@mulwide` with two `u16` values and
+the parser infers `N = 16`, stamping out an ordinary function behind
+the scenes (monomorphization — the verifier and backends never know).
+Look at that return type: `u(2*N)`. That's `rat_add`'s overflow
+argument — *products need twice the width* — stated in a signature and
+checked at every instantiation, rather than hoped about in a comment.
+
+The float story completes the thought. `float(E, M)` names the float
+family as arithmetic types, and the native ones are just its members:
+`f32` **is** `float(8, 23)`, `f64` **is** `float(11, 52)`. The rest —
+`float(4, 3)` = fp8, `float(5, 10)` = fp16, `float(8, 7)` = bf16 —
+compute by promoting to f64, using the hardware, and demoting with
+round-to-nearest-even:
+
+```
+fn @f8dot(%xa: float(4, 3), %xb: float(4, 3),
+          %xc: float(4, 3), %xd: float(4, 3)) -> float(4, 3) {
+    %s: float(4, 3) = %xa * %xb + %xc * %xd
+    ret %s
+}
+```
+
+The promote/demote conversions are themselves one width-generic SSA
+library (`lib/float.ssa` — two functions for every format that will
+ever exist), and because fp8 has only 256 values, its arithmetic is
+verified *exhaustively*: every possible add and mul, bit-exact against
+an independent reference. Small formats don't get sampled confidence;
+they get total enumeration.
+
+## 8. Things to try
 
 - **Trace a value.** `cargo run -- parse suite/rational.ssa` prints the
   desugared, flat form — see what the one-line guards and expressions
@@ -274,11 +324,15 @@ policy. It passes.)
   is an afternoon exercise, and the directive syntax makes the tests
   cheap: decide the answers with pencil and paper (or better, a Python
   `fractions` one-liner), write `;!` lines, done.
+- **Meet the menagerie.** `cargo run -- test` runs `suite/menagerie.ssa`
+  with the rest; try `cargo run -- run suite/menagerie.ssa f8add 56 64`
+  (fp8: 1.0 + 2.0 = 3.0 = 0x44), and `cargo test` includes the
+  exhaustive fp8 sweep.
 - **Steal the recipe.** The library pattern — a struct for layout, SSA
   functions for semantics, canonical forms for cheap equality, an error
-  value that propagates, directives for truth — is how fixed-point,
-  fp8, and interval arithmetic will arrive too. `future-work.md` has
-  the map.
+  value that propagates, directives for truth — is how fixed-point and
+  interval arithmetic will arrive too, and exactly how fp8/fp16/bf16
+  just did (`suite/menagerie.ssa`). `future-work.md` has the map.
 
 The whole library is ~220 lines. Read it end to end with this page
 beside you, and you'll have met most of the language: types that carry
