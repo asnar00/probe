@@ -15,68 +15,68 @@
 ;! lshrt -1 60 -> 15
 ;! ashrt -8 2 -> -2
 
-fn @add(%a: i64, %b: i64) -> i64 {
+fn @add(a: i64, b: i64) -> i64 {
 ^entry:
-    %r: i64 = iadd %a, %b
-    ret %r
+    r: i64 = iadd a, b
+    ret r
 }
-fn @sub(%a: i64, %b: i64) -> i64 {
+fn @sub(a: i64, b: i64) -> i64 {
 ^entry:
-    %r: i64 = isub %a, %b
-    ret %r
+    r: i64 = isub a, b
+    ret r
 }
-fn @mul(%a: i64, %b: i64) -> i64 {
+fn @mul(a: i64, b: i64) -> i64 {
 ^entry:
-    %r: i64 = imul %a, %b
-    ret %r
+    r: i64 = imul a, b
+    ret r
 }
-fn @sdivt(%a: i64, %b: i64) -> i64 {
+fn sdivt(a: i64, b: i64) -> i64 {
 ^entry:
-    %r: i64 = div %a, %b
-    ret %r
+    r: i64 = div a, b
+    ret r
 }
-fn @udivt(%a: u64, %b: u64) -> u64 {
+fn udivt(a: u64, b: u64) -> u64 {
 ^entry:
-    %r: u64 = div %a, %b
-    ret %r
+    r: u64 = div a, b
+    ret r
 }
-fn @sremt(%a: i64, %b: i64) -> i64 {
+fn sremt(a: i64, b: i64) -> i64 {
 ^entry:
-    %r: i64 = rem %a, %b
-    ret %r
+    r: i64 = rem a, b
+    ret r
 }
-fn @uremt(%a: u64, %b: u64) -> u64 {
+fn uremt(a: u64, b: u64) -> u64 {
 ^entry:
-    %r: u64 = rem %a, %b
-    ret %r
+    r: u64 = rem a, b
+    ret r
 }
-fn @andt(%a: i64, %b: i64) -> i64 {
+fn andt(a: i64, b: i64) -> i64 {
 ^entry:
-    %r: i64 = and %a, %b
-    ret %r
+    r: i64 = and a, b
+    ret r
 }
-fn @ort(%a: i64, %b: i64) -> i64 {
+fn ort(a: i64, b: i64) -> i64 {
 ^entry:
-    %r: i64 = or %a, %b
-    ret %r
+    r: i64 = or a, b
+    ret r
 }
-fn @xort(%a: i64, %b: i64) -> i64 {
+fn xort(a: i64, b: i64) -> i64 {
 ^entry:
-    %r: i64 = xor %a, %b
-    ret %r
+    r: i64 = xor a, b
+    ret r
 }
-fn @shlt(%a: i64, %b: i64) -> i64 {
+fn shlt(a: i64, b: i64) -> i64 {
 ^entry:
-    %r: i64 = shl %a, %b
-    ret %r
+    r: i64 = shl a, b
+    ret r
 }
-fn @lshrt(%a: u64, %b: u64) -> u64 {
+fn lshrt(a: u64, b: u64) -> u64 {
 ^entry:
-    %r: u64 = shr %a, %b
-    ret %r
+    r: u64 = shr a, b
+    ret r
 }
-fn @ashrt(%a: i64, %b: i64) -> i64 {
+fn ashrt(a: i64, b: i64) -> i64 {
 ^entry:
-    %r: i64 = shr %a, %b
-    ret %r
+    r: i64 = shr a, b
+    ret r
 }

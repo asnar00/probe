@@ -5,33 +5,33 @@
 ;! ascale 3 -> 1.5
 ;! amix 2.0 6.0 -> 5.0
 
-fn @aavg(%a: float, %b: float) -> float {
+fn aavg(a: float, b: float) -> float {
 ^entry:
-    %s: float = fadd %a, %b
-    %two: float = fconst 2.0
-    %r: float = fdiv %s, %two
-    ret %r
+    s: float = fadd a, b
+    two: float = fconst 2.0
+    r: float = fdiv s, two
+    ret r
 }
 
 ; int -> abstract float via policy width
-fn @ascale(%n: int) -> float {
+fn ascale(n: int) -> float {
 ^entry:
-    %f: float = itof %n
-    %h: float = fconst 0.5
-    %r: float = fmul %f, %h
-    ret %r
+    f: float = itof n
+    h: float = fconst 0.5
+    r: float = fmul f, h
+    ret r
 }
 
 ; abstract float with comparison and branch
-fn @amix(%a: float, %b: float) -> float {
-    %lt: u1 = fcmp.olt %a, %b
-    %r: float = if %lt {
-        %m: float = fadd %a, %b
-        %h: float = fconst 0.625
-        %s: float = fmul %m, %h
-        yield %s
+fn amix(a: float, b: float) -> float {
+    lt: u1 = fcmp.olt a, b
+    r: float = if lt {
+        m: float = fadd a, b
+        h: float = fconst 0.625
+        s: float = fmul m, h
+        yield s
     } else {
-        yield %a
+        yield a
     }
-    ret %r
+    ret r
 }

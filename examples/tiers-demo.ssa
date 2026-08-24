@@ -1,23 +1,23 @@
 ; a function with obvious slack: constant chains that fold away, dead
 ; computation, and structured ifs whose lowered arms are pure forwarders
 ;! shipping 3 -> 1940
-fn @shipping(%items: int) -> int {
+fn shipping(items: int) -> int {
     ; constant configuration, foldable to nothing
-    %base: int = iconst 500
-    %per_kg: int = iconst 12
-    %kg_per_item: int = iconst 40
-    %rate: int = imul %per_kg, %kg_per_item
-    %surcharge: int = iconst 17
-    %unused: int = imul %surcharge, %rate    ; dead: never used
-    %cost0: int = imul %rate, %items
-    %cost: int = iadd %cost0, %base
+    base: int = iconst 500
+    per_kg: int = iconst 12
+    kg_per_item: int = iconst 40
+    rate: int = imul per_kg, kg_per_item
+    surcharge: int = iconst 17
+    unused: int = imul surcharge, rate    ; dead: never used
+    cost0: int = imul rate, items
+    cost: int = iadd cost0, base
     ; forwarding-arm if: lowered arms are empty jumps
-    %limit: int = iconst 100000
-    %big: u1 = icmp.gt %cost, %limit
-    %capped: int = if %big {
-        yield %limit
+    limit: int = iconst 100000
+    big: u1 = icmp.gt cost, limit
+    capped: int = if big {
+        yield limit
     } else {
-        yield %cost
+        yield cost
     }
-    ret %capped
+    ret capped
 }

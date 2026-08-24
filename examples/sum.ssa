@@ -1,16 +1,16 @@
 ; sum of 0..n
-fn @sum(%n: int) -> int {
+fn sum(n: int) -> int {
 ^entry:
-    %zero: int = iconst 0
-    jmp ^loop(%zero, %zero)
-^loop(%i: int, %acc: int):
-    %done: u1 = icmp.ge %i, %n
-    br %done, ^exit, ^body
+    zero: int = iconst 0
+    jmp ^loop(zero, zero)
+^loop(i: int, acc: int):
+    done: u1 = icmp.ge i, n
+    br done, ^exit, ^body
 ^body:
-    %acc2: int = iadd %acc, %i
-    %one: int = iconst 1
-    %i2: int = iadd %i, %one
-    jmp ^loop(%i2, %acc2)
+    acc2: int = iadd acc, i
+    one: int = iconst 1
+    %i2: int = iadd i, one
+    jmp ^loop(%i2, acc2)
 ^exit:
-    ret %acc
+    ret acc
 }

@@ -9,35 +9,35 @@
 ;! sextbit 6 -> 0
 ;! zextbit 7 -> 1
 
-fn @sext32(%a: i32) -> i64 {
+fn sext32(a: i32) -> i64 {
 ^entry:
-    %r: i64 = ext %a
-    ret %r
+    r: i64 = ext a
+    ret r
 }
-fn @zext32(%a: u32) -> u64 {
+fn zext32(a: u32) -> u64 {
 ^entry:
-    %r: u64 = ext %a
-    ret %r
+    r: u64 = ext a
+    ret r
 }
-fn @trunc64(%a: i64) -> i32 {
+fn trunc64(a: i64) -> i32 {
 ^entry:
-    %r: i32 = trunc %a
-    ret %r
+    r: i32 = trunc a
+    ret r
 }
-fn @bit(%a: u64) -> u1 {
+fn bit(a: u64) -> u1 {
 ^entry:
-    %r: u1 = trunc %a
-    ret %r
+    r: u1 = trunc a
+    ret r
 }
-fn @sextbit(%a: i64) -> i64 {
+fn sextbit(a: i64) -> i64 {
 ^entry:
-    %b: i1 = trunc %a
-    %r: i64 = ext %b
-    ret %r
+    b: i1 = trunc a
+    r: i64 = ext b
+    ret r
 }
-fn @zextbit(%a: u64) -> u64 {
+fn zextbit(a: u64) -> u64 {
 ^entry:
-    %b: u1 = trunc %a
-    %r: u64 = ext %b
-    ret %r
+    b: u1 = trunc a
+    r: u64 = ext b
+    ret r
 }

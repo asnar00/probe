@@ -7,79 +7,79 @@
 ;! dot i64[1,2,3] i64[4,5,6] 3 -> 32
 ;! store32 i32[0,7] 5 -> 12
 
-fn @rw(%p: ptr, %v: i64) -> i64 {
+fn rw(p: ptr, v: i64) -> i64 {
 ^entry:
-    store %v, %p
-    %r: i64 = load %p
-    ret %r
+    store v, p
+    r: i64 = load p
+    ret r
 }
 
-fn @first(%p: ptr) -> i64 {
+fn first(p: ptr) -> i64 {
 ^entry:
-    %r: i64 = load %p
-    ret %r
+    r: i64 = load p
+    ret r
 }
 
-fn @second(%p: ptr) -> i64 {
+fn second(p: ptr) -> i64 {
 ^entry:
-    %eight: i64 = iconst 8
-    %q: ptr = ptradd %p, %eight
-    %r: i64 = load %q
-    ret %r
+    eight: i64 = iconst 8
+    q: ptr = ptradd p, eight
+    r: i64 = load q
+    ret r
 }
 
-fn @sum4(%p: ptr) -> i32 {
+fn sum4(p: ptr) -> i32 {
 ^entry:
-    %zero32: i32 = iconst 0
-    %zero: i64 = iconst 0
-    jmp ^loop(%zero, %zero32)
-^loop(%i: i64, %acc: i32):
-    %four: i64 = iconst 4
-    %done: u1 = icmp.ge %i, %four
-    br %done, ^exit, ^body
+    zero32: i32 = iconst 0
+    zero: i64 = iconst 0
+    jmp ^loop(zero, zero32)
+^loop(i: i64, acc: i32):
+    four: i64 = iconst 4
+    done: u1 = icmp.ge i, four
+    br done, ^exit, ^body
 ^body:
-    %off: i64 = imul %i, %four
-    %q: ptr = ptradd %p, %off
-    %v: i32 = load %q
-    %acc2: i32 = iadd %acc, %v
-    %one: i64 = iconst 1
-    %i2: i64 = iadd %i, %one
-    jmp ^loop(%i2, %acc2)
+    off: i64 = imul i, four
+    q: ptr = ptradd p, off
+    v: i32 = load q
+    acc2: i32 = iadd acc, v
+    one: i64 = iconst 1
+    %i2: i64 = iadd i, one
+    jmp ^loop(%i2, acc2)
 ^exit:
-    ret %acc
+    ret acc
 }
 
-fn @dot(%p: ptr, %q: ptr, %n: i64) -> i64 {
+fn dot(p: ptr, q: ptr, n: i64) -> i64 {
 ^entry:
-    %zero: i64 = iconst 0
-    jmp ^loop(%zero, %zero)
-^loop(%i: i64, %acc: i64):
-    %done: u1 = icmp.ge %i, %n
-    br %done, ^exit, ^body
+    zero: i64 = iconst 0
+    jmp ^loop(zero, zero)
+^loop(i: i64, acc: i64):
+    done: u1 = icmp.ge i, n
+    br done, ^exit, ^body
 ^body:
-    %eight: i64 = iconst 8
-    %off: i64 = imul %i, %eight
-    %pa: ptr = ptradd %p, %off
-    %qa: ptr = ptradd %q, %off
-    %a: i64 = load %pa
-    %b: i64 = load %qa
-    %m: i64 = imul %a, %b
-    %acc2: i64 = iadd %acc, %m
-    %one: i64 = iconst 1
-    %i2: i64 = iadd %i, %one
-    jmp ^loop(%i2, %acc2)
+    eight: i64 = iconst 8
+    off: i64 = imul i, eight
+    pa: ptr = ptradd p, off
+    qa: ptr = ptradd q, off
+    a: i64 = load pa
+    b: i64 = load qa
+    m: i64 = imul a, b
+    acc2: i64 = iadd acc, m
+    one: i64 = iconst 1
+    %i2: i64 = iadd i, one
+    jmp ^loop(%i2, acc2)
 ^exit:
-    ret %acc
+    ret acc
 }
 
 ; store an i32 into slot 0, then return buf[0] + buf[1]
-fn @store32(%p: ptr, %v: i32) -> i32 {
+fn store32(p: ptr, v: i32) -> i32 {
 ^entry:
-    store %v, %p
-    %a: i32 = load %p
-    %four: i64 = iconst 4
-    %q: ptr = ptradd %p, %four
-    %b: i32 = load %q
-    %r: i32 = iadd %a, %b
-    ret %r
+    store v, p
+    a: i32 = load p
+    four: i64 = iconst 4
+    q: ptr = ptradd p, four
+    b: i32 = load q
+    r: i32 = iadd a, b
+    ret r
 }

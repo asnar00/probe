@@ -1,5 +1,5 @@
 ; ergonomic sugar, designed for cheap authorship: literal operands
-; (iadd %i, 1 - the constant's type comes from the result or the other
+; (iadd i, 1 - the constant's type comes from the result or the other
 ; operand) and expression right-hand sides with C precedence, desugared
 ; to flat SSA at parse time (one-way, like structured control flow).
 ; The opcode family still comes from the declared type - '/' is signed
@@ -26,92 +26,92 @@
 ;! geo5 -> 121
 
 ; 2x^2 - 3x + 1, one line
-fn @poly(%x: int) -> int {
-    %p: int = 2 * %x * %x - 3 * %x + 1
-    ret %p
+fn poly(x: int) -> int {
+    p: int = 2 * x * x - 3 * x + 1
+    ret p
 }
 
-fn @mix(%a: int, %b: int) -> int {
-    %r: int = (%a + %b) * 4 - (%a & 255) + %b % 7
-    ret %r
+fn mix(a: int, b: int) -> int {
+    r: int = (a + b) * 4 - (a & 255) + b % 7
+    ret r
 }
 
-fn @fexpr(%x: float) -> float {
-    %r: float = (%x + 1.5) * 0.5
-    ret %r
+fn fexpr(x: float) -> float {
+    r: float = (x + 1.5) * 0.5
+    ret r
 }
 
 ; 3x^3 + 2x^2 + x + 3 by Horner's rule: ((3x + 2)x + 1)x + 3
-fn @horner(%x: int) -> int {
-    %r: int = ((3 * %x + 2) * %x + 1) * %x + 3
-    ret %r
+fn horner(x: int) -> int {
+    r: int = ((3 * x + 2) * x + 1) * x + 3
+    ret r
 }
 
 ; bitwise levels: | below ^ below & below shifts
-fn @bits(%x: uint) -> uint {
-    %r: uint = %x >> 5 | 0x80
-    ret %r
+fn bits(x: uint) -> uint {
+    r: uint = x >> 5 | 0x80
+    ret r
 }
 
 ; a literal comparison operand takes the other side's type
-fn @cmplit(%x: int) -> u1 {
-    %r: u1 = %x == 42
-    ret %r
+fn cmplit(x: int) -> u1 {
+    r: u1 = x == 42
+    ret r
 }
 
 ; guards: comparison conditions, one-line arms, literal and call rets
-fn @clamp(%x: int, %lo: int, %hi: int) -> int {
-    if %x > %hi { ret %hi }
-    if %x < %lo { ret %lo }
-    ret %x
+fn clamp(x: int, lo: int, hi: int) -> int {
+    if x > hi { ret hi }
+    if x < lo { ret lo }
+    ret x
 }
 
-fn @vclamp(%x: int) -> int {
-    ret @clamp(%x, 0, 100)
+fn vclamp(x: int) -> int {
+    ret clamp(x, 0, 100)
 }
 
 ; call sugar: as a condition, as an expression atom, with literal args
-fn @is_even(%x: int) -> u1 {
-    %r: u1 = %x & 1 == 0
-    ret %r
+fn is_even(x: int) -> u1 {
+    r: u1 = x & 1 == 0
+    ret r
 }
 
-fn @haltstep(%x: int) -> int {
-    if @is_even(%x) { ret %x / 2 }
-    ret 3 * %x + 1
+fn haltstep(x: int) -> int {
+    if is_even(x) { ret x / 2 }
+    ret 3 * x + 1
 }
 
-fn @neareven(%x: int) -> u1 {
-    %r: u1 = @haltstep(%x) == 4
-    ret %r
+fn neareven(x: int) -> u1 {
+    r: u1 = haltstep(x) == 4
+    ret r
 }
 
-fn @collatz(%n0: int) -> int {
-    %steps: int = loop(%n: int = %n0, %k: int = 0) {
-        if %n == 1 { break %k }
-        %odd: u1 = %n & 1 == 1
-        %k2: int = %k + 1
-        if %odd {
-            %n2: int = 3 * %n + 1
-            continue %n2, %k2
+fn collatz(n0: int) -> int {
+    steps: int = loop(n: int = n0, k: int = 0) {
+        if n == 1 { break k }
+        odd: u1 = n & 1 == 1
+        k2: int = k + 1
+        if odd {
+            n2: int = 3 * n + 1
+            continue n2, k2
         }
-        %h: int = %n / 2
-        continue %h, %k2
+        h: int = n / 2
+        continue h, k2
     }
-    ret %steps
+    ret steps
 }
 
 ; literal loop inits, literal step, expression body
-fn @geo5() -> int {
-    %m: int = loop(%i: int = 0, %acc: int = 1) {
-        %done: u1 = icmp.ge %i, 4
-        if %done {
-            break %acc
+fn geo5() -> int {
+    m: int = loop(i: int = 0, acc: int = 1) {
+        done: u1 = icmp.ge i, 4
+        if done {
+            break acc
         }
-        %acc2: int = %acc * 3
-        %i2: int = %i + 1
-        continue %i2, %acc2
+        acc2: int = acc * 3
+        %i2: int = i + 1
+        continue %i2, acc2
     }
-    %r: int = %m + 40
-    ret %r
+    r: int = m + 40
+    ret r
 }

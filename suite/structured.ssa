@@ -15,106 +15,106 @@
 ;! smul 0 9 -> 0
 ;! sminmax 9 4 -> 4, 9
 
-fn @ssum(%n: int) -> int {
-    %zero: int = iconst 0
-    %r: int = loop(%i: int = %zero, %acc: int = %zero) {
-        %done: u1 = icmp.ge %i, %n
-        if %done {
-            break %acc
+fn ssum(n: int) -> int {
+    zero: int = iconst 0
+    r: int = loop(i: int = zero, acc: int = zero) {
+        done: u1 = icmp.ge i, n
+        if done {
+            break acc
         }
-        %one: int = iconst 1
-        %acc2: int = iadd %acc, %i
-        %i2: int = iadd %i, %one
-        continue %i2, %acc2
+        one: int = iconst 1
+        acc2: int = iadd acc, i
+        %i2: int = iadd i, one
+        continue %i2, acc2
     }
-    ret %r
+    ret r
 }
 
-fn @sgcd(%a: int, %b: int) -> int {
-    %g: int = loop(%x: int = %a, %y: int = %b) {
-        %zero: int = iconst 0
-        %done: u1 = icmp.eq %y, %zero
-        if %done {
-            break %x
+fn sgcd(a: int, b: int) -> int {
+    g: int = loop(x: int = a, y: int = b) {
+        zero: int = iconst 0
+        done: u1 = icmp.eq y, zero
+        if done {
+            break x
         }
-        %r: int = rem %x, %y
-        continue %y, %r
+        r: int = rem x, y
+        continue y, r
     }
-    ret %g
+    ret g
 }
 
-fn @sfib(%n: int) -> int {
-    %two: int = iconst 2
-    %small: u1 = icmp.lt %n, %two
-    if %small {
-        ret %n
+fn sfib(n: int) -> int {
+    two: int = iconst 2
+    small: u1 = icmp.lt n, two
+    if small {
+        ret n
     }
-    %one: int = iconst 1
-    %n1: int = isub %n, %one
-    %a: int = @sfib(%n1)
-    %n2: int = isub %n, %two
-    %b: int = @sfib(%n2)
-    %r: int = iadd %a, %b
-    ret %r
+    one: int = iconst 1
+    n1: int = isub n, one
+    a: int = sfib(n1)
+    n2: int = isub n, two
+    b: int = sfib(n2)
+    r: int = iadd a, b
+    ret r
 }
 
-fn @sabs(%a: int) -> int {
-    %zero: int = iconst 0
-    %neg: u1 = icmp.lt %a, %zero
-    %r: int = if %neg {
-        %n: int = isub %zero, %a
-        yield %n
+fn sabs(a: int) -> int {
+    zero: int = iconst 0
+    neg: u1 = icmp.lt a, zero
+    r: int = if neg {
+        n: int = isub zero, a
+        yield n
     } else {
-        yield %a
+        yield a
     }
-    ret %r
+    ret r
 }
 
-fn @sclamp(%v: int, %lo: int, %hi: int) -> int {
-    %below: u1 = icmp.lt %v, %lo
-    %r: int = if %below {
-        yield %lo
+fn sclamp(v: int, lo: int, hi: int) -> int {
+    below: u1 = icmp.lt v, lo
+    r: int = if below {
+        yield lo
     } else {
-        %above: u1 = icmp.gt %v, %hi
-        %s: int = if %above {
-            yield %hi
+        above: u1 = icmp.gt v, hi
+        s: int = if above {
+            yield hi
         } else {
-            yield %v
+            yield v
         }
-        yield %s
+        yield s
     }
-    ret %r
+    ret r
 }
 
 ; multiplication by repeated addition: nested loops
-fn @smul(%a: int, %b: int) -> int {
-    %zero: int = iconst 0
-    %one: int = iconst 1
-    %total: int = loop(%i: int = %zero, %t: int = %zero) {
-        %done: u1 = icmp.ge %i, %a
-        if %done {
-            break %t
+fn smul(a: int, b: int) -> int {
+    zero: int = iconst 0
+    one: int = iconst 1
+    total: int = loop(i: int = zero, t: int = zero) {
+        done: u1 = icmp.ge i, a
+        if done {
+            break t
         }
-        %t2: int = loop(%j: int = %zero, %s: int = %t) {
-            %jdone: u1 = icmp.ge %j, %b
-            if %jdone {
-                break %s
+        t2: int = loop(j: int = zero, s: int = t) {
+            jdone: u1 = icmp.ge j, b
+            if jdone {
+                break s
             }
-            %s2: int = iadd %s, %one
-            %j2: int = iadd %j, %one
-            continue %j2, %s2
+            s2: int = iadd s, one
+            j2: int = iadd j, one
+            continue j2, s2
         }
-        %i2: int = iadd %i, %one
-        continue %i2, %t2
+        %i2: int = iadd i, one
+        continue %i2, t2
     }
-    ret %total
+    ret total
 }
 
 ; structured functions with multiple returns work too
-fn @sminmax(%a: int, %b: int) -> (int, int) {
-    %lt: u1 = icmp.lt %a, %b
-    if %lt {
-        ret %a, %b
+fn sminmax(a: int, b: int) -> (int, int) {
+    lt: u1 = icmp.lt a, b
+    if lt {
+        ret a, b
     }
-    ret %b, %a
+    ret b, a
 }

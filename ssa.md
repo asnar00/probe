@@ -12,7 +12,7 @@ things we can learn ARM64 encodings for by probing LLVM.
   target block (the Cranelift / MLIR style). This keeps "where does this value
   come from" local to the branch instruction and makes the emitter simpler.
 - **Types live on variables, not opcodes — signedness included.** Every value
-  definition is written `%name: ty = op ...`, and a type like `u5` or `i32`
+  definition is written `name: ty = op ...`, and a type like `u5` or `i32`
   carries both width and signedness. `div`, `rem`, `shr`, ordered `icmp`,
   `ext`, `itof`/`ftoi` all take their behavior from their operand types, so
   there is exactly one opcode per operation and the data layout states the
@@ -23,9 +23,9 @@ things we can learn ARM64 encodings for by probing LLVM.
 ## Lexical
 
 - Comments: `;` to end of line.
-- Values: `%name` — name is `[A-Za-z0-9_]+`. Each value is defined exactly once.
+- Values: `name` — name is `[A-Za-z0-9_]+`. Each value is defined exactly once.
 - Blocks: `^name` — same name rules.
-- Functions: `@name`.
+- Functions: `name`.
 - Integer literals: decimal, optionally negative (`42`, `-7`), or hex (`0x2a`).
 - Whitespace is insignificant except as a separator; newlines end instructions.
 
@@ -57,10 +57,10 @@ things we can learn ARM64 encodings for by probing LLVM.
 ## Structure
 
 ```
-fn @name(%a: i64, %b: ptr) -> i64 {
+fn name(a: i64, b: ptr) -> i64 {
 ^entry:
     ...
-^next(%x: i64):
+^next(x: i64):
     ...
 }
 ```
@@ -81,7 +81,7 @@ fn @name(%a: i64, %b: ptr) -> i64 {
 Every value-defining instruction declares its result's type:
 
 ```
-%name: ty = op operands...
+name: ty = op operands...
 ```
 
 Instructions with no result (`store`, result-less `call`, terminators) have no
@@ -90,42 +90,42 @@ left-hand side.
 ### Constants
 
 ```
-%v: i64 = iconst 42
-%p: ptr = iconst 0          ; null
-%u: ptr = iconst 0x10000000 ; a raw address — MMIO registers, fixed buffers
+v: i64 = iconst 42
+p: ptr = iconst 0          ; null
+u: ptr = iconst 0x10000000 ; a raw address — MMIO registers, fixed buffers
 ```
 
-### Integer arithmetic and bitwise ops
+### Arithmetic and bitwise ops
 
-Both operands and the result must share one integer type (width >= 2).
-Values wrap at 2^N; shift amounts are taken mod N. Where signedness
-matters, the type decides — one opcode each:
+Both operands and the result must share one type. There is **one opcode
+per operation**: the type decides everything — `add` on integers is a
+two's-complement add (wrapping at 2^N), on floats an IEEE add; `div` is
+signed for iN, unsigned for uN, floating for floats. The bitwise ops
+and `rem` are integer-only; shift amounts are taken mod N.
 
 ```
-%v: i64 = iadd %a, %b       ; two's-complement: sign-agnostic
-%v: i64 = isub %a, %b
-%v: i64 = imul %a, %b
-%v: i64 = div %a, %b        ; signed for iN operands, unsigned for uN
-%v: i64 = rem %a, %b        ; likewise
-%v: i64 = and %a, %b
-%v: u64 = or  %a, %b
-%v: u64 = xor %a, %b
-%v: u64 = shl %a, %b        ; sign-agnostic
-%v: u64 = shr %a, %b        ; zero-fill for uN, sign-fill for iN
+v: i64 = add a, b        ; integer add — the same opcode is fadd on floats
+v: f64 = mul x, y        ; float multiply, because the type is f64
+v: i64 = div a, b        ; signed (iN) / unsigned (uN) / float (fN)
+v: i64 = rem a, b
+v: u64 = and a, b        ; also or, xor
+v: u64 = shl a, b        ; shr: zero-fill for uN, sign-fill for iN
 ```
+
+(The legacy spellings `iadd`/`fadd`/`isub`/`fsub`/`imul`/`fmul`/`fdiv`
+remain accepted.)
 
 Odd widths lower to 64-bit container code before emission: unsigned
 values live zero-extended, signed values sign-extended — so callers pass
 and receive natural values (-6 as an `i5` argument is just -6).
 
-### Float arithmetic
+### Float constants
 
-Both operands and the result must share a float type. Float literals
-require a decimal point (or exponent); `fconst` also accepts integers.
+Float literals require a decimal point (or exponent); `fconst` also
+accepts integers.
 
 ```
-%v: f64 = fconst 2.5
-%v: f64 = fadd %a, %b       ; also fsub, fmul, fdiv
+v: f64 = fconst 2.5
 ```
 
 ### Comparison
@@ -134,8 +134,8 @@ Operands must share an integer type (or `ptr`, which compares unsigned);
 the result is `u1`.
 
 ```
-%c: u1 = icmp.eq %a, %b     ; also: ne
-%c: u1 = icmp.lt %a, %b     ; lt le gt ge — signedness from the operands
+c: u1 = icmp.eq a, b     ; also: ne
+c: u1 = icmp.lt a, b     ; lt le gt ge — signedness from the operands
 ```
 
 ### Width changes
@@ -144,9 +144,9 @@ The source and result types determine the conversion; the opcode only picks
 how new bits are filled.
 
 ```
-%v: i64 = ext %a            ; widen; the fill follows the SOURCE's sign
-%v: i32 = trunc %a          ; truncate (sign-agnostic: keeps low bits)
-%v: u64 = bitcast %a        ; same-width reinterpretation (sign flip,
+v: i64 = ext a            ; widen; the fill follows the SOURCE's sign
+v: i32 = trunc a          ; truncate (sign-agnostic: keeps low bits)
+v: u64 = bitcast a        ; same-width reinterpretation (sign flip,
                             ; int<->float, int<->struct)
 ```
 
@@ -156,17 +156,17 @@ Float comparisons are *ordered* (false when either side is NaN), except
 `une`, which is true on NaN:
 
 ```
-%c: u1 = fcmp.oeq %a, %b    ; also: une olt ole ogt oge
+c: u1 = fcmp.oeq a, b    ; also: une olt ole ogt oge
 ```
 
 Float conversions carry direction and signedness in the opcode; widths
 come from the value types as usual:
 
 ```
-%f: f64 = itof %n           ; int -> float; signedness from the int type
-%n: i64 = ftoi %f           ; float -> int, rounds toward zero
-%d: f64 = fpromote %s       ; f32 -> f64
-%s: f32 = fdemote %d        ; f64 -> f32
+f: f64 = itof n           ; int -> float; signedness from the int type
+n: i64 = ftoi f           ; float -> int, rounds toward zero
+d: f64 = fpromote s       ; f32 -> f64
+s: f32 = fdemote d        ; f64 -> f32
 ```
 
 The int side of `itof`/`ftoi` must be 32 or 64 bits wide.
@@ -177,9 +177,9 @@ The address operand must be `ptr`. The access width is the result type (loads)
 or the stored value's type (stores): `i32`, `i64`, or `ptr` (64 bits).
 
 ```
-%v: i64 = load %addr
-store %v, %addr
-%p: ptr = ptradd %base, %off    ; %base: ptr, %off: i64
+v: i64 = load addr
+store v, addr
+p: ptr = ptradd base, off    ; base: ptr, off: i64
 ```
 
 ### Structs
@@ -201,10 +201,10 @@ fields or words). Field access is by name either way:
 ```
 type $fp = { frac: u52, exp: u11, sign: u1 }
 
-%p: $fp = bitcast %x            ; x: f64 — same 64 bits, structured view
-%e: i11 = extract %p, exp       ; read a field
-%q: $fp = insert %p, frac, %f2  ; copy with one field replaced
-%r: $fp = pack %s, %e, %f       ; build from all fields, in order
+p: $fp = bitcast x            ; x: f64 — same 64 bits, structured view
+e: i11 = extract p, exp       ; read a field
+q: $fp = insert p, frac, f2  ; copy with one field replaced
+r: $fp = pack s, e, f       ; build from all fields, in order
 ```
 
 Structs lower to shift/mask code on their carrier integer before emission
@@ -222,8 +222,8 @@ type is a vector — lanes wrap, divide, shift, and take their signedness
 independently, per the element type:
 
 ```
-%s: i16x4 = iadd %a, %b         ; four independent 16-bit adds
-%q: i32x2 = div %a, %d          ; signed lanes: signed divides
+s: i16x4 = iadd a, b         ; four independent 16-bit adds
+q: i32x2 = div a, d          ; signed lanes: signed divides
 ```
 
 Lane access reuses the struct ops with an integer lane index in place of
@@ -231,9 +231,9 @@ a field name; `pack` takes lanes in order, lane 0 first. `bitcast`
 converts a vector to and from any equal-width scalar.
 
 ```
-%x: f32 = extract %v, 0
-%w: u16x4 = insert %v, 2, %n
-%v: i16x2 = pack %a0, %a1
+x: f32 = extract v, 0
+w: u16x4 = insert v, 2, n
+v: i16x2 = pack a0, a1
 ```
 
 Two lowerings exist. The portable tier scalarizes: each vector type
@@ -259,24 +259,24 @@ keyword is needed. Signatures are checked against the module if the
 function is defined here, taken on trust if external.
 
 ```
-%v: i64 = @f(%a, %b)                ; call with one result
-%q: i64, %r: i64 = @divmod(%a, %b)  ; call with two results
-@g(%a)                              ; call with results ignored (or none)
+v: i64 = f(a, b)                ; call with one result
+q: i64, r: i64 = divmod(a, b)  ; call with two results
+g(a)                              ; call with results ignored (or none)
 ```
 
 A call binds either *all* of the callee's return values or *none* of
 them (a call is the only form that may define more than one value).
-The legacy `call @f(...)` spelling is still accepted.
+The legacy `call f(...)` spelling is still accepted.
 
 ### Terminators
 
 Branch arguments must match the target block's parameters in count and type.
 
 ```
-jmp ^next(%a, %b)
-br %c, ^then(%a), ^else()   ; %c: i1 — empty parens may be omitted
-ret %v                      ; one return value
-ret %q, %r                  ; multiple return values
+jmp ^next(a, b)
+br c, ^then(a), ^else()   ; c: i1 — empty parens may be omitted
+ret v                      ; one return value
+ret q, r                  ; multiple return values
 ret                         ; none
 ```
 
@@ -284,20 +284,20 @@ ret                         ; none
 
 ```
 ; sum of 0..n
-fn @sum(%n: i64) -> i64 {
+fn sum(n: i64) -> i64 {
 ^entry:
-    %zero: i64 = iconst 0
-    jmp ^loop(%zero, %zero)
-^loop(%i: i64, %acc: i64):
-    %done: i1 = icmp.sge %i, %n
-    br %done, ^exit, ^body
+    zero: i64 = iconst 0
+    jmp ^loop(zero, zero)
+^loop(i: i64, acc: i64):
+    done: i1 = icmp.sge i, n
+    br done, ^exit, ^body
 ^body:
-    %acc2: i64 = iadd %acc, %i
-    %one:  i64 = iconst 1
-    %i2:   i64 = iadd %i, %one
-    jmp ^loop(%i2, %acc2)
+    acc2: i64 = iadd acc, i
+    one:  i64 = iconst 1
+    %i2:   i64 = iadd i, one
+    jmp ^loop(%i2, acc2)
 ^exit:
-    ret %acc
+    ret acc
 }
 ```
 
@@ -334,9 +334,9 @@ written as trunc/ext round-trips (narrow, re-widen, compare) instead of
 magic constants.
 
 ```
-fn @gcd(%a: int, %b: int) -> int {     ; width chosen per target/policy
+fn gcd(a: int, b: int) -> int {     ; width chosen per target/policy
     ...
-    %r: int = srem %x, %y              ; same ops, abstractly typed
+    r: int = srem x, y              ; same ops, abstractly typed
 ```
 
 - Abstract and concrete types mix freely (`i1` conditions, `ptr`
@@ -363,8 +363,8 @@ decides what they mean:
 - `--scalar=rat`: scalar values become the rational library's `$rat`
   struct (`{ num: i32, den: u32 }`, lib/rational.ssa — linked in
   textually), and a pass rewrites the float opcodes into library calls:
-  `fadd` -> `@rat_add`, `fcmp.olt` -> `@rat_lt`, `itof %n` ->
-  `@rat_make(%n, 1)`, `ftoi` -> `@rat_to_int`, and `fconst` becomes the
+  `fadd` -> `rat_add`, `fcmp.olt` -> `rat_lt`, `itof n` ->
+  `rat_make(n, 1)`, `ftoi` -> `rat_to_int`, and `fconst` becomes the
   exact `num/den` pair (every finite float is a dyadic rational; a
   constant too precise to fit is a compile-time error). NaN-adjacent
   behavior maps to NaR (`den == 0`): ordered comparisons false, `une`
@@ -384,7 +384,7 @@ the printer prints flat form.
 
 **Literal operands.** Anywhere an arithmetic operand, comparison
 operand, or loop initializer is expected, a literal may stand in for a
-value; the parser synthesizes the `iconst`/`fconst` (`%c1`, `%c2`, ...)
+value; the parser synthesizes the `iconst`/`fconst` (`c1`, `c2`, ...)
 just before the use. The literal's type comes from the result (for
 arithmetic), the other operand (for comparisons), or the declared
 variable (for loop inits) — a comparison of two literals is an error,
@@ -392,10 +392,10 @@ since nothing fixes the width. An integer literal in a float position
 becomes a float constant, as with `fconst`.
 
 ```
-%i2: int = iadd %i, 1
-%done: u1 = icmp.ge %i, 4
-%s: scalar = loop(%i: int = 0, %acc: scalar = 0.0) { ...
-%k: i64 = 42                    ; a bare literal is iconst/fconst
+%i2: int = iadd i, 1
+done: u1 = icmp.ge i, 4
+s: scalar = loop(i: int = 0, acc: scalar = 0.0) { ...
+k: i64 = 42                    ; a bare literal is iconst/fconst
 ```
 
 **Expressions.** A definition whose right-hand side is not an opcode is
@@ -408,9 +408,9 @@ type each operation is elementwise. The tree desugars to ordinary flat
 instructions at parse time.
 
 ```
-%p: scalar = 2.0 * %xf * %xf - 3.0 * %xf + 1.0
-%r: uint = %x >> 5 | 0x80
-%t: i64 = %a * %dgi + %c * %bgi
+p: scalar = 2.0 * xf * xf - 3.0 * xf + 1.0
+r: uint = x >> 5 | 0x80
+t: i64 = a * dgi + c * bgi
 ```
 
 **Comparisons.** The comparison operators `< <= > >= == !=` form a
@@ -421,33 +421,33 @@ be a literal), and picks `icmp` or ordered `fcmp` — with signedness, as
 ever, from the type:
 
 ```
-%done: u1 = %i >= %n
-%odd: u1 = %n & 1 == 1
-if %x > %hi { ret %hi }
+done: u1 = i >= n
+odd: u1 = n & 1 == 1
+if x > hi { ret hi }
 ```
 
 **Statement-position sugar.** `break`, `continue`, `yield`, and `ret`
 accept literals, typed positionally by what they feed (loop variables,
-bound results, the function's return types). `ret call @f(...)` returns
+bound results, the function's return types). `ret call f(...)` returns
 a call's results directly. A block containing one short statement can
 close on the same line — together these make a guard a single line:
 
 ```
-if %xnar { ret call @rat_nar() }
-if %y == 0 { break %x }
-loop(%i: int = 0, %acc: scalar = 0.0) { ...
+if xnar { ret call rat_nar() }
+if y == 0 { break x }
+loop(i: int = 0, acc: scalar = 0.0) { ...
 ```
 
 **Call sugar.** Parsing is two-phase (all signatures are read before
 any body), so calls compose with the rest: literal arguments take the
-callee's parameter types (`@clamp(%x, 0, 100)`); a single-result call
-is an expression atom (`%r: u1 = @f(%x) == 0`) and an `if` condition
-(`if @rat_is_nar(%x) { ret @rat_nar() }`); and
+callee's parameter types (`clamp(x, 0, 100)`); a single-result call
+is an expression atom (`r: u1 = f(x) == 0`) and an `if` condition
+(`if rat_is_nar(x) { ret rat_nar() }`); and
 `break`/`continue`/`yield`/`ret` operands are full expressions
-(`ret %x / 2`, `ret @sq(%x) + 1`).
+(`ret x / 2`, `ret sq(x) + 1`).
 
-There is deliberately no bare-copy form (`%v: ty = %x` is an error —
-SSA has no copy opcode) and no unary minus on values (write `0 - %x`).
+There is deliberately no bare-copy form (`v: ty = x` is an error —
+SSA has no copy opcode) and no unary minus on values (write `0 - x`).
 
 ### The small-float menagerie
 
@@ -480,8 +480,8 @@ literals, `+ - * /`, and parens:
 type $fp(E, M) = { frac: u(M), exp: u(E), sign: u1 }
 type $rat(N)  = { num: i(N), den: u(N) }
 
-fn @mulwide(%a: u(N), %b: u(N)) -> u(2*N) {
-    %aw: u(2*N) = ext %a
+fn mulwide(a: u(N), b: u(N)) -> u(2*N) {
+    aw: u(2*N) = ext a
     ...
 }
 ```
@@ -490,13 +490,13 @@ A struct instantiates by explicit arguments (`$fp(4, 3)` — the fp8
 e4m3 layout; `$fp(5, 10)` is fp16, `$fp(11, 52)` is the double). A
 function whose signature has free width parameters is **generic**: it
 parses once as a template, and each call site infers the parameters
-from the argument types (`@sq(%x)` with an `i16` argument instantiates
+from the argument types (`sq(x)` with an `i16` argument instantiates
 N=16) and monomorphizes on demand — instances are ordinary functions
 and structs with mangled names (`sq__16`, `fp__4_3`), so the verifier,
 lowering, and every backend see nothing new. Generics may call
 generics; parameters propagate through inference.
 
-The point is stating width **relationships**: `u(2*N)` in `@mulwide`'s
+The point is stating width **relationships**: `u(2*N)` in `mulwide`'s
 signature makes "products need twice the width" checkable, the same
 invariant `half`/`uhalf` hardcode at one ratio. Restrictions: a
 parameter must be inferable from some argument position that names it
@@ -521,16 +521,16 @@ of writing to variables, preserving SSA.
 ### if
 
 ```
-if %c {                         ; plain: arms fall through to what follows
+if c {                         ; plain: arms fall through to what follows
     ...
 }
 
-if %c { ... } else { ... }      ; either arm may end with break/continue/ret
+if c { ... } else { ... }      ; either arm may end with break/continue/ret
 
-%r: i64 = if %c {               ; value-yielding: results bound on the left,
-    yield %a                    ; each arm must end with 'yield' (matching
+r: i64 = if c {               ; value-yielding: results bound on the left,
+    yield a                    ; each arm must end with 'yield' (matching
 } else {                        ; count and types), and else is required
-    yield %b
+    yield b
 }
 ```
 
@@ -540,13 +540,13 @@ to a join block whose parameters are the bound results.
 ### loop
 
 ```
-%sum: i64 = loop(%i: i64 = %zero, %acc: i64 = %zero) {
-    %done: i1 = icmp.sge %i, %n
-    if %done {
-        break %acc              ; exit the loop, yielding its results
+sum: i64 = loop(i: i64 = zero, acc: i64 = zero) {
+    done: i1 = icmp.sge i, n
+    if done {
+        break acc              ; exit the loop, yielding its results
     }
     ...
-    continue %i2, %acc2         ; back edge: new values for the loop vars
+    continue %i2, acc2         ; back edge: new values for the loop vars
 }
 ```
 

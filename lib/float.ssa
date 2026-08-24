@@ -8,7 +8,7 @@
 ; M <= 24 by the double-rounding theorem (2(M+1)+2 <= 53).
 ;
 ; Width parameters appear as widths (u(E+M+1)) and as VALUES (shift
-; amounts, masks) — instantiation is explicit (@fp_to_f64(4, 3)(%b))
+; amounts, masks) — instantiation is explicit (fp_to_f64(4, 3)(b))
 ; because E and M cannot be inferred from the total width alone.
 ;
 ; Scope notes (documented, verified): f64 subnormal inputs to
@@ -16,130 +16,130 @@
 ; range); NaN payloads collapse to a quiet NaN.
 
 ; small float -> f64 (exact: every float(E<=11, M<=52) value is an f64)
-fn @fp_to_f64(%bits: u(E+M+1)) -> f64 {
-    %b: u64 = ext %bits
-    %s: u64 = %b >> (E + M) & 1
-    %e: u64 = %b >> M & ((1 << E) - 1)
-    %f: u64 = %b & ((1 << M) - 1)
-    %sd: u64 = %s << 63
-    %emax: u64 = (1 << E) - 1
-    if %e == %emax {
+fn fp_to_f64(bits: u(E+M+1)) -> f64 {
+    b: u64 = ext bits
+    s: u64 = b >> (E + M) & 1
+    e: u64 = b >> M & ((1 << E) - 1)
+    f: u64 = b & ((1 << M) - 1)
+    sd: u64 = s << 63
+    emax: u64 = (1 << E) - 1
+    if e == emax {
         ; inf / NaN: top exponent, payload up-shifted
-        %fd: u64 = %f << (52 - M)
-        %r1: u64 = %sd | 0x7ff0000000000000 | %fd
-        %x1: f64 = bitcast %r1
-        ret %x1
+        fd: u64 = f << (52 - M)
+        r1: u64 = sd | 0x7ff0000000000000 | fd
+        x1: f64 = bitcast r1
+        ret x1
     }
-    %bias: u64 = (1 << (E - 1)) - 1
-    if %e == 0 {
-        if %f == 0 {
-            %xz: f64 = bitcast %sd
-            ret %xz
+    bias: u64 = (1 << (E - 1)) - 1
+    if e == 0 {
+        if f == 0 {
+            xz: f64 = bitcast sd
+            ret xz
         }
     }
-    %en: u64, %fm: u64 = if %e == 0 {
+    en: u64, fm: u64 = if e == 0 {
         ; subnormal: normalize to 1.xxx, adjusting the exponent
-        %nl: u64, %nf: u64 = loop(%k: u64 = 0, %ff: u64 = %f) {
-            %top: u64 = %ff >> M
-            if %top == 1 { break %k, %ff }
-            %ff2: u64 = %ff << 1
-            %k2: u64 = %k + 1
-            continue %k2, %ff2
+        nl: u64, nf: u64 = loop(k: u64 = 0, ff: u64 = f) {
+            top: u64 = ff >> M
+            if top == 1 { break k, ff }
+            ff2: u64 = ff << 1
+            k2: u64 = k + 1
+            continue k2, ff2
         }
-        %ed: u64 = 1024 - %bias - %nl
-        %fs: u64 = %nf & ((1 << M) - 1)
-        yield %ed, %fs
+        ed: u64 = 1024 - bias - nl
+        fs: u64 = nf & ((1 << M) - 1)
+        yield ed, fs
     } else {
-        %ed2: u64 = %e - %bias + 1023
-        yield %ed2, %f
+        ed2: u64 = e - bias + 1023
+        yield ed2, f
     }
-    %fd2: u64 = %fm << (52 - M)
-    %r: u64 = %sd | %en << 52 | %fd2
-    %x: f64 = bitcast %r
-    ret %x
+    fd2: u64 = fm << (52 - M)
+    r: u64 = sd | en << 52 | fd2
+    x: f64 = bitcast r
+    ret x
 }
 
 ; f64 -> small float, round to nearest, ties to even
-fn @fp_from_f64(%x: f64) -> u(E+M+1) {
-    %b: u64 = bitcast %x
-    %s: u64 = %b >> 63 & 1
-    %ed: u64 = %b >> 52 & 0x7ff
-    %fd: u64 = %b & 0xfffffffffffff
-    %st: u64 = %s << (E + M)
-    %emaxt: u64 = (1 << E) - 1
-    if %ed == 0x7ff {
+fn fp_from_f64(x: f64) -> u(E+M+1) {
+    b: u64 = bitcast x
+    s: u64 = b >> 63 & 1
+    ed: u64 = b >> 52 & 0x7ff
+    fd: u64 = b & 0xfffffffffffff
+    st: u64 = s << (E + M)
+    emaxt: u64 = (1 << E) - 1
+    if ed == 0x7ff {
         ; f64 inf/NaN -> target inf / quiet NaN
-        %ff: u64 = if %fd == 0 {
-            %z0: u64 = 0
-            yield %z0
+        ff: u64 = if fd == 0 {
+            z0: u64 = 0
+            yield z0
         } else {
-            %q: u64 = 1 << (M - 1)
-            yield %q
+            q: u64 = 1 << (M - 1)
+            yield q
         }
-        %r1: u64 = %st | %emaxt << M | %ff
-        %o1: u(E+M+1) = trunc %r1
-        ret %o1
+        r1: u64 = st | emaxt << M | ff
+        o1: u(E+M+1) = trunc r1
+        ret o1
     }
-    if %ed == 0 {
+    if ed == 0 {
         ; f64 subnormals sit far below the target's range: signed zero
-        %o0: u(E+M+1) = trunc %st
-        ret %o0
+        o0: u(E+M+1) = trunc st
+        ret o0
     }
-    %bias: u64 = (1 << (E - 1)) - 1
-    %edi: i64 = bitcast %ed
-    %biasi: i64 = bitcast %bias
-    %et: i64 = %edi - 1023 + %biasi
-    %emaxi: i64 = bitcast %emaxt
-    if %et >= %emaxi {
+    bias: u64 = (1 << (E - 1)) - 1
+    edi: i64 = bitcast ed
+    biasi: i64 = bitcast bias
+    et: i64 = edi - 1023 + biasi
+    emaxi: i64 = bitcast emaxt
+    if et >= emaxi {
         ; overflow: infinity
-        %ri: u64 = %st | %emaxt << M
-        %oi: u(E+M+1) = trunc %ri
-        ret %oi
+        ri: u64 = st | emaxt << M
+        oi: u(E+M+1) = trunc ri
+        ret oi
     }
-    %m53: u64 = %fd | 1 << 52
-    if %et >= 1 {
+    m53: u64 = fd | 1 << 52
+    if et >= 1 {
         ; normal target: round the 53-bit mantissa to M+1 bits
-        %sh: u64 = 52 - M
-        %keep: u64 = %m53 >> %sh
-        %dropped: u64 = %m53 & ((1 << %sh) - 1)
-        %half: u64 = 1 << (%sh - 1)
-        %rup: u1 = %dropped > %half
-        %tie: u1 = %dropped == %half
-        %ru: u64 = ext %rup
-        %ti: u64 = ext %tie
-        %odd: u64 = %keep & 1
-        %inc: u64 = %ru | %ti & %odd
-        %keep2: u64 = %keep + %inc
+        sh: u64 = 52 - M
+        keep: u64 = m53 >> sh
+        dropped: u64 = m53 & ((1 << sh) - 1)
+        %half: u64 = 1 << (sh - 1)
+        rup: u1 = dropped > %half
+        tie: u1 = dropped == %half
+        ru: u64 = ext rup
+        ti: u64 = ext tie
+        odd: u64 = keep & 1
+        inc: u64 = ru | ti & odd
+        keep2: u64 = keep + inc
         ; the implicit bit makes the exponent arithmetic absorb a
         ; rounding carry: st + (et-1)<<M + keep2 encodes the result,
         ; and a carry to 2^(M+1) lands as et+1 automatically (et+1 =
         ; emax then encodes infinity, which is the correct overflow)
-        %eu: u64 = bitcast %et
-        %r2: u64 = %st + ((%eu - 1) << M) + %keep2
-        %o2: u(E+M+1) = trunc %r2
-        ret %o2
+        eu: u64 = bitcast et
+        r2: u64 = st + ((eu - 1) << M) + keep2
+        o2: u(E+M+1) = trunc r2
+        ret o2
     }
     ; subnormal target: shift further by the exponent deficit
-    %extrai: i64 = 1 - %et
-    %shi: i64 = 52 - M + %extrai
-    if %shi >= 54 {
+    extrai: i64 = 1 - et
+    shi: i64 = 52 - M + extrai
+    if shi >= 54 {
         ; everything rounds away: signed zero
-        %o3: u(E+M+1) = trunc %st
-        ret %o3
+        o3: u(E+M+1) = trunc st
+        ret o3
     }
-    %shu: u64 = bitcast %shi
-    %keep3: u64 = %m53 >> %shu
-    %drop3: u64 = %m53 & ((1 << %shu) - 1)
-    %half3: u64 = 1 << (%shu - 1)
-    %rup3: u1 = %drop3 > %half3
-    %tie3: u1 = %drop3 == %half3
-    %ru3: u64 = ext %rup3
-    %ti3: u64 = ext %tie3
-    %odd3: u64 = %keep3 & 1
-    %inc3: u64 = %ru3 | %ti3 & %odd3
-    %keep4: u64 = %keep3 + %inc3
+    shu: u64 = bitcast shi
+    keep3: u64 = m53 >> shu
+    drop3: u64 = m53 & ((1 << shu) - 1)
+    half3: u64 = 1 << (shu - 1)
+    rup3: u1 = drop3 > half3
+    tie3: u1 = drop3 == half3
+    ru3: u64 = ext rup3
+    ti3: u64 = ext tie3
+    odd3: u64 = keep3 & 1
+    inc3: u64 = ru3 | ti3 & odd3
+    keep4: u64 = keep3 + inc3
     ; a round-up to 2^M lands exactly on the minimum normal encoding
-    %r4: u64 = %st | %keep4
-    %o4: u(E+M+1) = trunc %r4
-    ret %o4
+    r4: u64 = st | keep4
+    o4: u(E+M+1) = trunc r4
+    ret o4
 }

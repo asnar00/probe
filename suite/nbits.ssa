@@ -18,110 +18,110 @@
 ;! add33 4294967295 1 -> 4294967296
 ;! sum17 1000 -> 106284
 
-fn @add5(%a: u5, %b: u5) -> u5 {
+fn add5(a: u5, b: u5) -> u5 {
 ^entry:
-    %r: u5 = iadd %a, %b
-    ret %r
+    r: u5 = iadd a, b
+    ret r
 }
 
-fn @mul7(%a: u7, %b: u7) -> u7 {
+fn mul7(a: u7, b: u7) -> u7 {
 ^entry:
-    %r: u7 = imul %a, %b
-    ret %r
+    r: u7 = imul a, b
+    ret r
 }
 
 ; -6 / 2 = -3
-fn @sdiv5(%a: i5, %b: i5) -> i5 {
+fn sdiv5(a: i5, b: i5) -> i5 {
 ^entry:
-    %r: i5 = div %a, %b
-    ret %r
+    r: i5 = div a, b
+    ret r
 }
 
 ; same, sign-extended out to i64 for a readable answer
-fn @sdiv5s(%a: i5, %b: i5) -> i64 {
+fn sdiv5s(a: i5, b: i5) -> i64 {
 ^entry:
-    %r: i5 = div %a, %b
-    %w: i64 = ext %r
-    ret %w
+    r: i5 = div a, b
+    w: i64 = ext r
+    ret w
 }
 
 ; unsigned: 26 / 2
-fn @udiv5(%a: u5, %b: u5) -> u5 {
+fn udiv5(a: u5, b: u5) -> u5 {
 ^entry:
-    %r: u5 = div %a, %b
-    ret %r
+    r: u5 = div a, b
+    ret r
 }
 
-fn @slt5(%a: i5, %b: i5) -> u1 {
+fn slt5(a: i5, b: i5) -> u1 {
 ^entry:
-    %r: u1 = icmp.lt %a, %b
-    ret %r
+    r: u1 = icmp.lt a, b
+    ret r
 }
 
-fn @ult5(%a: u5, %b: u5) -> u1 {
+fn ult5(a: u5, b: u5) -> u1 {
 ^entry:
-    %r: u1 = icmp.lt %a, %b
-    ret %r
+    r: u1 = icmp.lt a, b
+    ret r
 }
 
 ; shift amounts reduce mod the width: 7 mod 5 = 2
-fn @shl5(%a: u5, %b: u5) -> u5 {
+fn shl5(a: u5, b: u5) -> u5 {
 ^entry:
-    %r: u5 = shl %a, %b
-    ret %r
+    r: u5 = shl a, b
+    ret r
 }
 
-fn @ashr5s(%a: i5, %b: i5) -> i64 {
+fn ashr5s(a: i5, b: i5) -> i64 {
 ^entry:
-    %r: i5 = shr %a, %b
-    %w: i64 = ext %r
-    ret %w
+    r: i5 = shr a, b
+    w: i64 = ext r
+    ret w
 }
 
-fn @sx5(%a: i5) -> i64 {
+fn sx5(a: i5) -> i64 {
 ^entry:
-    %r: i64 = ext %a
-    ret %r
+    r: i64 = ext a
+    ret r
 }
 
-fn @zx5(%a: u5) -> u64 {
+fn zx5(a: u5) -> u64 {
 ^entry:
-    %r: u64 = ext %a
-    ret %r
+    r: u64 = ext a
+    ret r
 }
 
-fn @tr5(%a: i64) -> i5 {
+fn tr5(a: i64) -> i5 {
 ^entry:
-    %r: i5 = trunc %a
-    ret %r
+    r: i5 = trunc a
+    ret r
 }
 
 ; sign carries through the widening
-fn @sx5to12(%a: i5) -> i12 {
+fn sx5to12(a: i5) -> i12 {
 ^entry:
-    %r: i12 = ext %a
-    ret %r
+    r: i12 = ext a
+    ret r
 }
 
 ; a width bigger than 32: wraps at 2^33
-fn @add33(%a: u33, %b: u33) -> u33 {
+fn add33(a: u33, b: u33) -> u33 {
 ^entry:
-    %r: u33 = iadd %a, %b
-    ret %r
+    r: u33 = iadd a, b
+    ret r
 }
 
 ; loop arithmetic in i17: sum of 0..999 = 499500, mod 2^17 = 106284
-fn @sum17(%n: u17) -> u17 {
-    %zero: u17 = iconst 0
-    %r: u17 = loop(%i: u17 = %zero, %acc: u17 = %zero) {
-        %done: u1 = icmp.ge %i, %n
-        if %done {
-            break %acc
+fn sum17(n: u17) -> u17 {
+    zero: u17 = iconst 0
+    r: u17 = loop(i: u17 = zero, acc: u17 = zero) {
+        done: u1 = icmp.ge i, n
+        if done {
+            break acc
         }
-        %one: u17 = iconst 1
-        %acc2: u17 = iadd %acc, %i
-        %i2: u17 = iadd %i, %one
-        continue %i2, %acc2
+        one: u17 = iconst 1
+        acc2: u17 = iadd acc, i
+        %i2: u17 = iadd i, one
+        continue %i2, acc2
     }
-    ret %r
+    ret r
 }

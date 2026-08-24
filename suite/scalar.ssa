@@ -19,71 +19,71 @@
 ;! s_less_half 1 2 -> 0
 
 ; a + (b - a)/2, truncated to int
-fn @s_lerp(%a: int, %b: int) -> int {
-    %af: scalar = itof %a
-    %bf: scalar = itof %b
-    %m: scalar = %af + (%bf - %af) * 0.5
-    %r: int = ftoi %m
-    ret %r
+fn s_lerp(a: int, b: int) -> int {
+    af: scalar = itof a
+    bf: scalar = itof b
+    m: scalar = af + (bf - af) * 0.5
+    r: int = ftoi m
+    ret r
 }
 
-fn @s_avg4(%a: int, %b: int, %c: int, %d: int) -> int {
-    %af: scalar = itof %a
-    %bf: scalar = itof %b
-    %cf: scalar = itof %c
-    %df: scalar = itof %d
-    %m: scalar = (%af + %bf + %cf + %df) * 0.25
-    %r: int = ftoi %m
-    ret %r
+fn s_avg4(a: int, b: int, c: int, d: int) -> int {
+    af: scalar = itof a
+    bf: scalar = itof b
+    cf: scalar = itof c
+    df: scalar = itof d
+    m: scalar = (af + bf + cf + df) * 0.25
+    r: int = ftoi m
+    ret r
 }
 
 ; 2x^2 - 3x + 1
-fn @s_poly(%x: int) -> int {
-    %xf: scalar = itof %x
-    %p: scalar = 2.0 * %xf * %xf - 3.0 * %xf + 1.0
-    %r: int = ftoi %p
-    ret %r
+fn s_poly(x: int) -> int {
+    xf: scalar = itof x
+    p: scalar = 2.0 * xf * xf - 3.0 * xf + 1.0
+    r: int = ftoi p
+    ret r
 }
 
-fn @s_max3(%a: int, %b: int, %c: int) -> int {
-    %af: scalar = itof %a
-    %bf: scalar = itof %b
-    %cf: scalar = itof %c
-    %ab: u1 = %af > %bf
-    %m1: scalar = if %ab {
-        yield %af
+fn s_max3(a: int, b: int, c: int) -> int {
+    af: scalar = itof a
+    bf: scalar = itof b
+    cf: scalar = itof c
+    ab: u1 = af > bf
+    m1: scalar = if ab {
+        yield af
     } else {
-        yield %bf
+        yield bf
     }
-    %mc: u1 = %m1 > %cf
-    %m2: scalar = if %mc {
-        yield %m1
+    mc: u1 = m1 > cf
+    m2: scalar = if mc {
+        yield m1
     } else {
-        yield %cf
+        yield cf
     }
-    %r: int = ftoi %m2
-    ret %r
+    r: int = ftoi m2
+    ret r
 }
 
 ; (1 + 1/2 + 1/4 + 1/8) * 8 = 15, a scalar accumulator in a loop
-fn @s_geo() -> int {
-    %s: scalar = loop(%i: int = 0, %acc: scalar = 0.0, %x: scalar = 1.0) {
-        if %i >= 4 { break %acc }
-        %acc2: scalar = %acc + %x
-        %x2: scalar = %x * 0.5
-        %i2: int = %i + 1
-        continue %i2, %acc2, %x2
+fn s_geo() -> int {
+    s: scalar = loop(i: int = 0, acc: scalar = 0.0, x: scalar = 1.0) {
+        if i >= 4 { break acc }
+        acc2: scalar = acc + x
+        x2: scalar = x * 0.5
+        %i2: int = i + 1
+        continue %i2, acc2, x2
     }
-    %sc: scalar = %s * 8.0
-    %r: int = ftoi %sc
-    ret %r
+    sc: scalar = s * 8.0
+    r: int = ftoi sc
+    ret r
 }
 
 ; is a/b < 1/2?
-fn @s_less_half(%a: int, %b: int) -> u1 {
-    %af: scalar = itof %a
-    %bf: scalar = itof %b
-    %q: scalar = %af / %bf
-    %r: u1 = %q < 0.5
-    ret %r
+fn s_less_half(a: int, b: int) -> u1 {
+    af: scalar = itof a
+    bf: scalar = itof b
+    q: scalar = af / bf
+    r: u1 = q < 0.5
+    ret r
 }

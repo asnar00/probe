@@ -289,7 +289,19 @@ const BINOPS: &[(&str, BinOp)] = &[
 
 impl BinOp {
     pub fn name(self) -> &'static str {
-        BINOPS.iter().find(|(_, op)| *op == self).unwrap().0
+        // one name per operation; the types make it unambiguous
+        match self {
+            BinOp::IAdd | BinOp::FAdd => "add",
+            BinOp::ISub | BinOp::FSub => "sub",
+            BinOp::IMul | BinOp::FMul => "mul",
+            BinOp::Div | BinOp::FDiv => "div",
+            BinOp::Rem => "rem",
+            BinOp::And => "and",
+            BinOp::Or => "or",
+            BinOp::Xor => "xor",
+            BinOp::Shl => "shl",
+            BinOp::Shr => "shr",
+        }
     }
 
     pub fn is_float(self) -> bool {
@@ -1007,7 +1019,7 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
     while !p.at_end() {
         if matches!(p.peek(), Some(Tok::Ident(k)) if k == "type") {
             p.skip_line();
-        } else if matches!(p.toks.get(p.pos + 1).map(|(t, _)| t), Some(Tok::Global(n)) if p.gfns.contains_key(n))
+        } else if matches!(p.toks.get(p.pos + 1).map(|(t, _)| t), Some(Tok::Global(n) | Tok::Ident(n)) if p.gfns.contains_key(n))
         {
             let (_, hi) = p.function_range()?;
             p.pos = hi + 1;
@@ -1121,6 +1133,25 @@ impl WExpr {
                 r.params(out);
             }
         }
+    }
+}
+
+/// bare names are the canonical spelling; the legacy '%' sigil remains
+/// as the escape for names that collide with reserved words (i2, add...)
+fn fmt_name(name: &str) -> String {
+    if Parser::is_reserved(name) {
+        format!("%{}", name)
+    } else {
+        name.to_string()
+    }
+}
+
+/// like fmt_name, but with '@' as the function-name escape
+fn fmt_fn_name(name: &str) -> String {
+    if Parser::is_reserved(name) {
+        format!("@{}", name)
+    } else {
+        name.to_string()
     }
 }
 
@@ -1531,6 +1562,43 @@ impl Parser {
 
     /// `type $name = { field: iN, ... }` — fields are declared low-first
     /// and must be integer widths; the total may not exceed 64 bits
+    /// words a bare (sigil-less) value name may not shadow
+    fn is_reserved(name: &str) -> bool {
+        Parser::is_opcode(name)
+            || matches!(
+                name,
+                "fn" | "type"
+                    | "ret"
+                    | "if"
+                    | "else"
+                    | "loop"
+                    | "break"
+                    | "continue"
+                    | "yield"
+                    | "call"
+                    | "jmp"
+                    | "br"
+                    | "float"
+            )
+            || Type::from_name(name).is_some()
+    }
+
+    fn is_opcode(name: &str) -> bool {
+        name.starts_with("icmp.")
+            || name.starts_with("fcmp.")
+            || name.starts_with("b.")
+            || matches!(
+                name,
+                "add" | "sub" | "mul" | "div" | "rem"
+                    | "iconst" | "fconst"
+                    | "ext" | "trunc" | "itof" | "ftoi"
+                    | "fpromote" | "fdemote" | "bitcast"
+                    | "load" | "store" | "ptradd"
+                    | "extract" | "pack" | "insert"
+            )
+            || BINOPS.iter().any(|(n, _)| *n == name)
+    }
+
     /// does the rest of this line contain an expression operator? Used to
     /// route `%r: u1 = call @f(%x) == 0` to the expression parser while
     /// keeping plain call bindings on the direct path.
@@ -1569,7 +1637,7 @@ impl Parser {
         let (lo, hi) = self.function_range()?;
         self.pos += 1; // past `fn`
         let name = match self.next()? {
-            Tok::Global(n) => n,
+            Tok::Global(n) | Tok::Ident(n) => n,
             t => {
                 self.pos -= 1;
                 return Err(self.err(format!("expected a function name, found {}", t)));
@@ -1580,7 +1648,7 @@ impl Parser {
         if !self.eat(&Tok::RParen) {
             loop {
                 match self.next()? {
-                    Tok::Value(_) => {}
+                    Tok::Value(_) | Tok::Ident(_) => {}
                     t => {
                         self.pos -= 1;
                         return Err(self.err(format!("expected a parameter, found {}", t)));
@@ -2193,20 +2261,29 @@ impl Parser {
                 return Ok(EAst::Lit(Tok::Int(v)));
             }
         }
+        // a name directly followed by '(' is a call, not a value
+        let callish = matches!(
+            (self.peek(), self.toks.get(self.pos + 1).map(|(t, _)| t)),
+            (Some(Tok::Ident(k)), Some(Tok::LParen)) if !Parser::is_reserved(k)
+        );
         match self.next()? {
-            Tok::Value(name) => {
+            Tok::Value(name) | Tok::Ident(name)
+                if !callish || matches!(self.toks[self.pos - 1].0, Tok::Value(_)) =>
+            {
                 let id = scope.value_ids.get(&name).copied().ok_or_else(|| {
                     self.pos -= 1;
-                    self.err(format!("use of undefined value '%{}'", name))
+                    self.err(format!("use of undefined value '{}'", name))
                 })?;
                 Ok(EAst::V(id))
             }
             t @ (Tok::Int(_) | Tok::FloatLit(_)) => Ok(EAst::Lit(t)),
             t2 @ (Tok::Global(_) | Tok::Ident(_))
                 if matches!(&t2, Tok::Global(_))
-                    || matches!(&t2, Tok::Ident(k) if k == "call") =>
+                    || matches!(&t2, Tok::Ident(k) if k == "call")
+                    || matches!((&t2, self.peek()), (Tok::Ident(k), Some(Tok::LParen))
+                        if !Parser::is_reserved(k)) =>
             {
-                if matches!(&t2, Tok::Global(_)) {
+                if !matches!(&t2, Tok::Ident(k) if k == "call") {
                     self.pos -= 1; // parse_call_tail reads the name itself
                 }
                 let (callee, args) = self.parse_call_tail(scope)?;
@@ -2294,10 +2371,12 @@ impl Parser {
 
     fn expect_value(&mut self, scope: &FuncScope) -> Result<ValueId, ParseError> {
         match self.next()? {
-            Tok::Value(name) => scope.value_ids.get(&name).copied().ok_or_else(|| {
-                self.pos -= 1;
-                self.err(format!("use of undefined value '%{}'", name))
-            }),
+            Tok::Value(name) | Tok::Ident(name) => {
+                scope.value_ids.get(&name).copied().ok_or_else(|| {
+                    self.pos -= 1;
+                    self.err(format!("use of undefined value '{}'", name))
+                })
+            }
             t => {
                 self.pos -= 1;
                 Err(self.err(format!("expected a value, found {}", t)))
@@ -2340,8 +2419,16 @@ impl Parser {
         };
         let mut i = lo;
         while i + 2 <= hi {
-            if let (Tok::Value(name), Tok::Colon) = (&self.toks[i].0, &self.toks[i + 1].0) {
-                let name = name.clone();
+            let is_def = match (&self.toks[i].0, &self.toks[i + 1].0) {
+                (Tok::Value(_), Tok::Colon) => true,
+                (Tok::Ident(n), Tok::Colon) => !Parser::is_reserved(n),
+                _ => false,
+            };
+            if is_def {
+                let name = match &self.toks[i].0 {
+                    Tok::Value(n) | Tok::Ident(n) => n.clone(),
+                    _ => unreachable!(),
+                };
                 let line = self.toks[i].1;
                 // parse the type through the full type parser so
                 // parametric forms (i(N), $fp(4,3)) instantiate here too
@@ -2416,7 +2503,7 @@ impl Parser {
 
         let inst_name = self.inst_name.take();
         let name = match self.next()? {
-            Tok::Global(n) => n,
+            Tok::Global(n) | Tok::Ident(n) => n,
             t => {
                 self.pos -= 1;
                 return Err(self.err(format!("expected a function name, found {}", t)));
@@ -2583,15 +2670,20 @@ impl Parser {
     }
 
     fn parse_inst(&mut self, scope: &mut FuncScope) -> Result<Inst, ParseError> {
+        // a bare identifier followed by ':' opens a definition
+        let bare_def = matches!(
+            (self.peek(), self.toks.get(self.pos + 1).map(|(t, _)| t)),
+            (Some(Tok::Ident(n)), Some(Tok::Colon)) if !Parser::is_reserved(n)
+        );
         match self.next()? {
-            // %dst: ty [, %dst2: ty ...] = op ...
-            Tok::Value(name) => {
+            // dst: ty [, dst2: ty ...] = op ...
+            Tok::Value(name) | Tok::Ident(name) if bare_def || matches!(self.toks[self.pos - 1].0, Tok::Value(_)) => {
                 let mut dsts = vec![self.def_id(scope, &name)?];
                 self.expect(Tok::Colon)?;
                 self.expect_type()?;
                 while self.eat(&Tok::Comma) {
                     match self.next()? {
-                        Tok::Value(n) => dsts.push(self.def_id(scope, &n)?),
+                        Tok::Value(n) | Tok::Ident(n) => dsts.push(self.def_id(scope, &n)?),
                         t => {
                             self.pos -= 1;
                             return Err(self.err(format!("expected a value, found {}", t)));
@@ -2605,11 +2697,18 @@ impl Parser {
                 // call form unless operators follow (then it's an
                 // expression with a call atom). 'call' stays accepted.
                 let callish = matches!(self.peek(), Some(Tok::Global(_)))
-                    || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call");
+                    || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
+                    || matches!(self.peek(), Some(Tok::Ident(k))
+                        if !Parser::is_reserved(k)
+                            && !self.wenv.contains_key(k)
+                            && matches!(self.toks.get(self.pos + 1).map(|(t, _)| t), Some(Tok::LParen)));
                 let wpar =
                     matches!(self.peek(), Some(Tok::Ident(k)) if self.wenv.contains_key(k));
+                let bare_val = matches!(self.peek(), Some(Tok::Ident(k))
+                    if !Parser::is_reserved(k) && !callish);
                 let expr = (!matches!(self.peek(), Some(Tok::Ident(_))) && !callish)
                     || wpar
+                    || bare_val
                     || (callish && dsts.len() == 1 && self.line_has_op());
                 let inst = if expr {
                     // expression sugar: %v: ty = %a * %b + 1
@@ -2618,7 +2717,7 @@ impl Parser {
                     }
                     self.parse_expr_into(dsts[0], scope)?
                 } else if callish {
-                    if matches!(self.peek(), Some(Tok::Ident(_))) {
+                    if matches!(self.peek(), Some(Tok::Ident(k)) if k == "call") {
                         self.pos += 1; // legacy 'call' keyword
                     }
                     let (callee, args) = self.parse_call_tail(scope)?;
@@ -2637,8 +2736,18 @@ impl Parser {
                 self.expect(Tok::Newline)?;
                 Ok(inst)
             }
-            // op with no result
+            // op with no result — or a bare call statement name(...)
             Tok::Ident(op) => {
+                if !Parser::is_reserved(&op) && matches!(self.peek(), Some(Tok::LParen)) {
+                    self.pos -= 1;
+                    let (callee, args) = self.parse_call_tail(scope)?;
+                    self.expect(Tok::Newline)?;
+                    return Ok(Inst::Call {
+                        dsts: Vec::new(),
+                        callee,
+                        args,
+                    });
+                }
                 let inst = self.parse_plain_op(&op, scope)?;
                 self.expect(Tok::Newline)?;
                 Ok(inst)
@@ -2662,6 +2771,37 @@ impl Parser {
     }
 
     fn parse_def_op(&mut self, op: &str, dst: ValueId, scope: &mut FuncScope) -> Result<Inst, ParseError> {
+        // add/sub/mul/div are one opcode each: the result type decides
+        // integer or float (rem, and the bitwise ops, are integer-only)
+        let poly = {
+            let ty = scope.values[dst.0 as usize].ty;
+            let floatish = matches!(
+                ty,
+                Type::F32 | Type::F64 | Type::Float | Type::Scalar | Type::FP(..)
+            ) || matches!(ty, Type::Vec(_, VecElem::F32));
+            match (op, floatish) {
+                ("add", true) => Some(BinOp::FAdd),
+                ("add", false) => Some(BinOp::IAdd),
+                ("sub", true) => Some(BinOp::FSub),
+                ("sub", false) => Some(BinOp::ISub),
+                ("mul", true) => Some(BinOp::FMul),
+                ("mul", false) => Some(BinOp::IMul),
+                ("div", true) => Some(BinOp::FDiv),
+                _ => None,
+            }
+        };
+        if let Some(bin) = poly {
+            let ty = scope.values[dst.0 as usize].ty;
+            let lhs = self.operand(scope, ty)?;
+            self.expect(Tok::Comma)?;
+            let rhs = self.operand(scope, ty)?;
+            return Ok(Inst::Bin {
+                op: bin,
+                dst,
+                lhs,
+                rhs,
+            });
+        }
         if let Some((_, bin)) = BINOPS.iter().find(|(n, _)| *n == op) {
             let ty = scope.values[dst.0 as usize].ty;
             let lhs = self.operand(scope, ty)?;
@@ -2815,10 +2955,14 @@ impl Parser {
                 // `ret @f(...)`: return the callee's results directly
                 // (with an operator after, it's an expression instead)
                 if (matches!(self.peek(), Some(Tok::Global(_)))
-                    || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call"))
+                    || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
+                    || matches!(self.peek(), Some(Tok::Ident(k))
+                        if !Parser::is_reserved(k)
+                            && !scope.value_ids.contains_key(k.as_str())
+                            && matches!(self.toks.get(self.pos + 1).map(|(t, _)| t), Some(Tok::LParen))))
                     && !self.line_has_op()
                 {
-                    if matches!(self.peek(), Some(Tok::Ident(_))) {
+                    if matches!(self.peek(), Some(Tok::Ident(k)) if k == "call") {
                         self.pos += 1;
                     }
                     let rets = scope.rets.clone();
@@ -2848,7 +2992,7 @@ impl Parser {
         scope: &mut FuncScope,
     ) -> Result<(String, Vec<ValueId>), ParseError> {
         let callee = match self.next()? {
-            Tok::Global(n) => n,
+            Tok::Global(n) | Tok::Ident(n) => n,
             t => {
                 self.pos -= 1;
                 return Err(self.err(format!("expected a function name, found {}", t)));
@@ -2975,14 +3119,20 @@ impl Parser {
     }
 
     fn parse_struct_stmt(&mut self, scope: &mut FuncScope, st: &mut StructEmit) -> Result<bool, ParseError> {
+        let bare_def = matches!(
+            (self.peek(), self.toks.get(self.pos + 1).map(|(t, _)| t)),
+            (Some(Tok::Ident(n)), Some(Tok::Colon)) if !Parser::is_reserved(n)
+        );
         match self.next()? {
-            Tok::Value(name) => {
+            Tok::Value(name) | Tok::Ident(name)
+                if bare_def || matches!(self.toks[self.pos - 1].0, Tok::Value(_)) =>
+            {
                 let mut dsts = vec![self.def_id(scope, &name)?];
                 self.expect(Tok::Colon)?;
                 self.expect_type()?;
                 while self.eat(&Tok::Comma) {
                     match self.next()? {
-                        Tok::Value(n) => dsts.push(self.def_id(scope, &n)?),
+                        Tok::Value(n) | Tok::Ident(n) => dsts.push(self.def_id(scope, &n)?),
                         t => {
                             self.pos -= 1;
                             return Err(self.err(format!("expected a value, found {}", t)));
@@ -2993,14 +3143,21 @@ impl Parser {
                 }
                 self.expect(Tok::Equals)?;
                 let callish = matches!(self.peek(), Some(Tok::Global(_)))
-                    || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call");
+                    || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
+                    || matches!(self.peek(), Some(Tok::Ident(k))
+                        if !Parser::is_reserved(k)
+                            && !self.wenv.contains_key(k)
+                            && matches!(self.toks.get(self.pos + 1).map(|(t, _)| t), Some(Tok::LParen)));
                 let wpar =
                     matches!(self.peek(), Some(Tok::Ident(k)) if self.wenv.contains_key(k));
+                let bare_val = matches!(self.peek(), Some(Tok::Ident(k))
+                    if !Parser::is_reserved(k) && !callish);
                 let expr = (!matches!(self.peek(), Some(Tok::Ident(_))) && !callish)
                     || wpar
+                    || bare_val
                     || (callish && dsts.len() == 1 && self.line_has_op());
                 if callish && !expr {
-                    if matches!(self.peek(), Some(Tok::Ident(_))) {
+                    if matches!(self.peek(), Some(Tok::Ident(k)) if k == "call") {
                         self.pos += 1; // legacy 'call' keyword
                     }
                     let (callee, args) = self.parse_call_tail(scope)?;
@@ -3120,10 +3277,14 @@ impl Parser {
                     // `ret @f(...)`: return the callee's results
                     // (with an operator after, it's an expression instead)
                     if (matches!(self.peek(), Some(Tok::Global(_)))
-                        || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call"))
+                        || matches!(self.peek(), Some(Tok::Ident(k)) if k == "call")
+                        || matches!(self.peek(), Some(Tok::Ident(k))
+                            if !Parser::is_reserved(k)
+                                && !scope.value_ids.contains_key(k.as_str())
+                                && matches!(self.toks.get(self.pos + 1).map(|(t, _)| t), Some(Tok::LParen))))
                         && !self.line_has_op()
                     {
-                        if matches!(self.peek(), Some(Tok::Ident(_))) {
+                        if matches!(self.peek(), Some(Tok::Ident(k)) if k == "call") {
                             self.pos += 1;
                         }
                         let rets = scope.rets.clone();
@@ -3163,6 +3324,21 @@ impl Parser {
                 "jmp" | "br" => Err(self.err(
                     "jmp/br are not allowed in a structured function; use if/loop/break/continue",
                 )),
+                _ if matches!(self.peek(), Some(Tok::LParen)) => {
+                    // bare call statement: name(...) with results ignored
+                    self.pos -= 1;
+                    let (callee, args) = self.parse_call_tail(scope)?;
+                    for p in self.pending.drain(..) {
+                        st.push(p);
+                    }
+                    st.push(Inst::Call {
+                        dsts: Vec::new(),
+                        callee,
+                        args,
+                    });
+                    self.end_stmt()?;
+                    Ok(false)
+                }
                 _ => Err(self.err(format!("unknown opcode '{}'", op))),
             },
             t => {
@@ -3299,7 +3475,7 @@ impl Parser {
         if !self.eat(&Tok::RParen) {
             loop {
                 match self.next()? {
-                    Tok::Value(n) => params.push(self.def_id(scope, &n)?),
+                    Tok::Value(n) | Tok::Ident(n) => params.push(self.def_id(scope, &n)?),
                     t => {
                         self.pos -= 1;
                         return Err(self.err(format!("expected a loop variable, found {}", t)));
@@ -3487,12 +3663,12 @@ impl Function {
     }
 
     fn fmt_value(&self, id: ValueId) -> String {
-        format!("%{}", self.value(id).name)
+        fmt_name(&self.value(id).name)
     }
 
     fn fmt_def(&self, id: ValueId) -> String {
         let v = self.value(id);
-        format!("%{}: {}", v.name, self.ty_name(v.ty))
+        format!("{}: {}", fmt_name(&v.name), self.ty_name(v.ty))
     }
 
     fn fmt_args(&self, args: &[ValueId]) -> String {
@@ -3520,7 +3696,7 @@ impl fmt::Display for Function {
             .map(|&p| self.fmt_def(p))
             .collect::<Vec<_>>()
             .join(", ");
-        write!(f, "fn @{}({})", self.name, params)?;
+        write!(f, "fn {}({})", fmt_fn_name(&self.name), params)?;
         match self.rets.len() {
             0 => {}
             1 => write!(f, " -> {}", self.ty_name(self.rets[0]))?,
@@ -3640,7 +3816,7 @@ impl Function {
                 )
             }
             Inst::Call { dsts, callee, args } => {
-                let call = format!("@{}({})", callee, self.fmt_args(args));
+                let call = format!("{}({})", fmt_fn_name(callee), self.fmt_args(args));
                 if dsts.is_empty() {
                     call
                 } else {
@@ -4320,7 +4496,7 @@ fn @bad(%a: i64, %b: i32) -> i64 {
 ";
         let m = parse(src).expect("parse succeeds; verify should fail");
         let errs = verify(&m).unwrap_err();
-        assert!(errs[0].contains("iadd"), "got: {:?}", errs);
+        assert!(errs[0].contains("add"), "got: {:?}", errs);
     }
 
     #[test]

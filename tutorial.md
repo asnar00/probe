@@ -51,16 +51,16 @@ family, and the familiar sizes are just two members of it.
 Here's a complete probe function that adds two fp8 numbers:
 
 ```
-fn @f8add(%a: float(4, 3), %b: float(4, 3)) -> float(4, 3) {
-    %s: float(4, 3) = %a + %b
-    ret %s
+fn f8add(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
+    s: float(4, 3) = a + b
+    ret s
 }
 ```
 
 Three things to know about the language, and then you can read it:
 
 - Names starting with `%` are values, and `@` marks a function.
-- Every value states its type when it's created: `%s: float(4, 3) = ...`.
+- Every value states its type when it's created: `s: float(4, 3) = ...`.
   Types do a lot of work in probe — there's one `+`, one `/`, one `<`,
   and each looks at the types of its operands to decide what kind of
   add, divide, or compare it is.
@@ -72,7 +72,7 @@ conversions all work on every format in the family. This computes a dot
 product in 8-bit floats:
 
 ```
-%s: float(4, 3) = %xa * %xb + %xc * %xd
+s: float(4, 3) = xa * xb + xc * xd
 ```
 
 ## 3. How it works: borrow a bigger float
@@ -95,9 +95,9 @@ here's the good part: they're written **once**, for all formats at the
 same time. probe lets a function take widths as parameters:
 
 ```
-fn @fp_to_f64(%bits: u(E+M+1)) -> f64 {
-    %b: u64 = ext %bits
-    %e: u64 = %b >> M & ((1 << E) - 1)      ; pull out the exponent
+fn fp_to_f64(bits: u(E+M+1)) -> f64 {
+    b: u64 = ext bits
+    e: u64 = b >> M & ((1 << E) - 1)      ; pull out the exponent
     ...
 ```
 
@@ -154,10 +154,10 @@ its layout:
 ```
 type $fp(E, M) = { frac: u(M), exp: u(E), sign: u1 }
 
-fn @fp8_exp(%b: u8) -> u4 {
-    %p: $fp(4, 3) = bitcast %b      ; same 8 bits, structured view
-    %e: u4 = extract %p, exp        ; read a field by name
-    ret %e
+fn fp8_exp(b: u8) -> u4 {
+    p: $fp(4, 3) = bitcast b      ; same 8 bits, structured view
+    e: u4 = extract p, exp        ; read a field by name
+    ret e
 }
 ```
 
