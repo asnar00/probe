@@ -1908,4 +1908,60 @@ entry:
             }
         }
     }
+
+    /// The platform decides per width: on arm64, `add` on f32 is the FPU
+    /// (one fadd, no call) while `add` on f16 is the SSA library (a call,
+    /// no fadd) — and both are right.
+    #[test]
+    fn platform_mixes_native_f32_with_emulated_f16() {
+        let lib = include_str!("../suite/float.ssa");
+        let src = format!(
+            "{}\nfn sum32(a: f32, b: f32) -> f32 {{\n    r: f32 = add a, b\n    ret r\n}}\nfn sum16(a: f16, b: f16) -> f16 {{\n    r: f16 = add a, b\n    ret r\n}}\n",
+            lib.replace("type f32 = float(8, 23)\n", "type f32 = float(8, 23)\ntype f16 = float(5, 10)\n")
+        );
+        let module = crate::ssa::parse(&src).expect("parse");
+        crate::ssa::verify(&module).expect("verify");
+        let enc = Encoder::load("targets/arm64.encodings.json").expect("encodings");
+        let compiled = compile_with(&module, &enc, &Platform::arm64()).expect("compile");
+        // the words of one function
+        let words = |name: &str| -> Vec<u32> {
+            let mut offs: Vec<usize> = compiled.funcs.values().copied().collect();
+            offs.sort();
+            let at = compiled.funcs[name];
+            let end = offs.iter().find(|&&o| o > at).copied().unwrap_or(compiled.code.len());
+            (at..end)
+                .step_by(4)
+                .map(|i| u32::from_le_bytes(compiled.code[i..i + 4].try_into().unwrap()))
+                .collect()
+        };
+        // fadd {s}, {s}, {s} as learned: fixed 0x1e202800, registers in
+        // bits 0-4, 5-9, 16-20; bl is fixed 0x94000000 over a 26-bit offset
+        let is_fadd_s = |w: u32| w & 0xffe0_fc00 == 0x1e20_2800;
+        let is_bl = |w: u32| w & 0xfc00_0000 == 0x9400_0000;
+        let w32 = words("sum32");
+        let w16 = words("sum16");
+        assert!(w32.iter().any(|&w| is_fadd_s(w)), "sum32 should use the FPU: {:x?}", w32);
+        assert!(!w32.iter().any(|&w| is_bl(w)), "sum32 should not call: {:x?}", w32);
+        assert!(w16.iter().any(|&w| is_bl(w)), "sum16 should call the library: {:x?}", w16);
+        assert!(!w16.iter().any(|&w| is_fadd_s(w)), "sum16 should not use the FPU: {:x?}", w16);
+        // the dispatched call reuses the named instantiation from the library
+        let sum16 = module.func("sum16").unwrap();
+        let callee = sum16.blocks.iter().flat_map(|b| &b.insts).find_map(|i| match i {
+            crate::ssa::Inst::Call { callee, .. } => Some(callee.clone()),
+            _ => None,
+        });
+        assert_eq!(callee.as_deref(), Some("fadd16"));
+        // and both are right: f32 against the FPU, f16 against the reference
+        let j = jit::JitCode::new(&compiled).expect("jit");
+        for (a, b) in [(1.0f32, 2.0f32), (0.1, 0.2), (1.0, 1e-8), (3.0, -1.0), (f32::MAX, f32::MAX)] {
+            let want = (a + b).to_bits() as i64;
+            let got = native_result(Repr::U(32), j.call("sum32", &[a.to_bits() as i64, b.to_bits() as i64]).unwrap());
+            assert_eq!(got, want, "{} + {}", a, b);
+        }
+        for (a, b) in [(0x3c00u64, 0x4000u64), (0x3c00, 0x3c00), (0x0001, 0x0001), (0x7bff, 0x7bff), (0x3c00, 0xbc00)] {
+            let want = round_to(5, 10, to_f64(5, 10, a) + to_f64(5, 10, b));
+            let got = native_result(Repr::U(16), j.call("sum16", &[a as i64, b as i64]).unwrap()) as u64;
+            assert_eq!(got, want, "f16 {:#x} + {:#x}", a, b);
+        }
+    }
 }
