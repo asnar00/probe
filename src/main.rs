@@ -43,7 +43,7 @@ fn main() -> ExitCode {
         }
         Some("compile") if args.len() >= 2 => cmd_compile(&args[1], level, int),
         Some("live") if args.len() >= 3 => {
-            let fargs: Result<Vec<i64>, _> = args[3..].iter().map(|a| a.parse()).collect();
+            let fargs: Result<Vec<i64>, _> = args[3..].iter().map(|a| parse_arg(a)).collect();
             match fargs {
                 Ok(fargs) => cmd_live(&args[1], &args[2], &fargs, int),
                 Err(_) => fail("function arguments must be integers"),
@@ -51,7 +51,7 @@ fn main() -> ExitCode {
         }
         Some("tiers") if args.len() >= 2 => cmd_tiers(&args[1], int),
         Some("run") if args.len() >= 3 => {
-            let fargs: Result<Vec<i64>, _> = args[3..].iter().map(|a| a.parse()).collect();
+            let fargs: Result<Vec<i64>, _> = args[3..].iter().map(|a| parse_arg(a)).collect();
             match fargs {
                 Ok(fargs) => cmd_run(&args[1], &args[2], &fargs, level, int),
                 Err(_) => fail("function arguments must be integers"),
@@ -97,6 +97,20 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// a function argument on the command line: decimal or 0x hex, negatives allowed
+fn parse_arg(a: &str) -> Result<i64, ()> {
+    let (neg, t) = match a.strip_prefix('-') {
+        Some(t) => (true, t),
+        None => (false, a),
+    };
+    let v = match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        Some(h) => u64::from_str_radix(h, 16),
+        None => t.parse::<u64>(),
+    }
+    .map_err(|_| ())? as i64;
+    Ok(if neg { v.wrapping_neg() } else { v })
 }
 
 fn cmd_parse(path: &str, int: ssa::Type) -> ExitCode {

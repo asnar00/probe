@@ -86,6 +86,8 @@ Backend sketch:
   SSA is possible today, with zero compiler changes.
 - Memory for odd widths: a `u5` can't be loaded or stored; a load of the
   containing byte plus `bitcast`/`get` covers it by hand for now.
+- Parametric *functions* (a `fn add(a: u(N), b: u(N))` monomorphized per
+  width) — types are parametric now, functions are not.
 - Pack literals (`iconst` on a pack type, or field-named construction);
   `icmp.eq` on packs without a `bitcast` first.
 - Narrow shifts by the width or more are unspecified (the hardware shift

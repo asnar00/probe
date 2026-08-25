@@ -39,7 +39,9 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `iN`    | signed integer of N bits, 1 ≤ N ≤ 64 (`i1`, `i5`, `i32`, `i64`) |
 | `uN`    | unsigned integer of N bits (`u1` is the boolean, `u23`, `u64`) |
 | `ptr`   | pointer (64-bit natively; a 32-bit offset on wasm)         |
-| `name` | a pack: bitfields packed into at most 64 bits (see *Packs*) |
+| `name`, `name(8, 23)` | a declared type, plain or instantiated with widths (see *Type declarations*) |
+| `pack { ... }` | bitfields packed into at most 64 bits (see *Packs*) |
+| `i(expr)`, `u(expr)` | an integer whose width is an expression — inside type declarations |
 | `int`, `uint` | abstract integers — resolved to a concrete width by the target's replacement policy (see *Abstract numeric types*) |
 
 Any width works anywhere a value lives — registers, block parameters,
@@ -187,19 +189,43 @@ value can — parameters, block parameters, returns, memory if it is 8, 16,
 32, or 64 bits wide.
 
 ```
-type rgb = pack { r: u5, g: u6, b: u5 }       ; 16 bits: r = bits 0-4, g = 5-10, b = 11-15
+type rgb = pack { r: u5, g: u6, b: u5 }      ; 16 bits: r = bits 0-4, g = 5-10, b = 11-15
 type pix = pack { c: rgb, a: u8 }            ; 24 bits, nested
 
-c: rgb = pack r, g, b              ; one value per field, in order
-g: u6 = get c, g                      ; read a field (iN fields sign-extend)
-d: rgb = set c, g, g2               ; a copy with one field replaced
-r: u5, g: u6, b: u5 = unpack c      ; every field at once
-w: u16 = bitcast c                    ; the raw bits, and back again
+c: rgb = pack r, g, b                        ; one value per field, in order
+g: u6 = get c, g                             ; read a field (iN fields sign-extend)
+d: rgb = set c, g, g2                        ; a copy with one field replaced
+r: u5, g: u6, b: u5 = unpack c               ; every field at once
+w: u16 = bitcast c                           ; the raw bits, and back again
 ```
 
-Declarations may appear anywhere at the top level; a pack must be declared
-before it is used as a field of another. `unpack` is, with `call`, the only
-instruction that defines several values.
+Packs are compared structurally: two spellings of the same layout are the
+same type. `unpack` is, with `call`, the only instruction that defines
+several values.
+
+### Type declarations
+
+`type` names a type, optionally with integer parameters that stand for
+widths. The right-hand side is any type expression: a pack, `i(expr)` or
+`u(expr)` with a width expression over the parameters (`+ - *` and
+parentheses), a builtin, or another declared type instantiated with
+arguments.
+
+```
+type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }
+type f32 = float(8, 23)
+type f16 = float(5, 10)
+type bits(E, M) = u(E + M + 1)
+type byte = u8
+```
+
+A parametric type is instantiated wherever it is used with arguments —
+`x: float(8, 23)`, `y: bits(5, 10)` — and an alias is instantiated where
+it is declared. `f32`, `float(8, 23)`, and `pack { mantissa: u23,
+exponent: u8, sign: u1 }` are one type; it prints under the first name it
+was given. Declarations may appear anywhere at the top level; each may
+refer only to types declared before it. Functions themselves are not
+parametric: every value has a concrete type.
 
 ## Example
 

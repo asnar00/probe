@@ -28,7 +28,10 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   64 bits, signed or unsigned (`i5`, `u23`, `i64`, plus `ptr`) — signedness
   lives in the type, so there is one `div`, one `shr`, one `icmp.lt`;
   `pack` types that lay bitfields out lowest-bits-first in up to 64 bits
-  (`pack rgb { r: u5, g: u6, b: u5 }`, nestable, storable); block
+  (`type rgb = pack { r: u5, g: u6, b: u5 }`, nestable, storable), and
+  parametric declarations instantiated by width — `type float(E, M) =
+  pack { mantissa: u(M), exponent: u(E), sign: u1 }`, `type f32 =
+  float(8, 23)`; block
   parameters instead of phi nodes; multiple return values; an optional
   structured front-end (`if`/`loop`/`break`/`continue`/`yield`) that
   lowers to the flat block graph at parse time; and abstract `int`/`uint`
@@ -66,7 +69,7 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   slot with slack, calls routed through counting trampolines, so an edited
   function recompiles in place and a hot one is promoted through the full
   pipeline without disturbing its neighbours.
-- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 162
+- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 174
   cases with expectations embedded as `;! gcd 48 36 -> 12` directives, run
   identically against every backend — including arm64 under
   qemu-system-aarch64 as an independent second referee for the same bytes
@@ -104,9 +107,10 @@ cargo run -- -O0 run examples/sum.ssa sum 100
 cargo run -- --int=i32 run suite/abstract.ssa agcd 1071 462   # -> 21
 cargo run -- --int=i32 test wasm
 
-# narrow types and packs
+# narrow types, packs, parametric types
 cargo run -- run suite/bits.ssa add5 15 1          # i5: 15 + 1 -> -16
 cargo run -- run suite/packs.ssa mkrgb 31 63 1     # -> 4095 (b:g:r = 1:63:31)
+cargo run -- run suite/types.ssa f32exp 0x40490fdb # f32 = float(8, 23): pi's exponent, 128
 
 # the incremental compiler. Edit the file while this runs — changed
 # functions recompile in place at level 0, and functions that get hot
