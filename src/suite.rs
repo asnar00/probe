@@ -490,7 +490,7 @@ fn helpers(uart: u64) -> String {
 fn __pch(c: u64) {{
 entry:
     u: ptr = iconst {}
-    c32: u32 = trunc c
+    c32: u32 = conv c
     store c32, u
     ret
 }}
@@ -510,7 +510,7 @@ loop(sh: u64):
     n: u64 = and t, m
     nine: u64 = iconst 9
     big: u1 = icmp.gt n, nine
-    bigi: u64 = ext big
+    bigi: u64 = conv big
     gap: u64 = iconst 39
     adj: u64 = mul bigi, gap
     z: u64 = iconst 48
@@ -568,7 +568,7 @@ fn gen_driver(
                         // packs have no literals: build the bits, then bitcast
                         let w = func.width(pty).unwrap();
                         let bits = tmp(&mut s, &format!("u{}", w), format!("iconst {}", v));
-                        argv.push(tmp(&mut s, &func.tyname(pty), format!("bitcast {}", bits)));
+                        argv.push(tmp(&mut s, &func.tyname(pty), format!("cast {}", bits)));
                     } else {
                         argv.push(tmp(&mut s, &pty.name(), format!("iconst {}", v)));
                     }
@@ -615,17 +615,17 @@ fn gen_driver(
             let repr = func.repr(*rt);
             let mut v = r.clone();
             if func.pack(*rt).is_some() {
-                v = tmp(&mut s, &format!("u{}", repr.bits()), format!("bitcast {}", v));
+                v = tmp(&mut s, &format!("u{}", repr.bits()), format!("cast {}", v));
             }
             if repr.signed() {
                 if repr.bits() < 64 {
-                    v = tmp(&mut s, "i64", format!("ext {}", v));
+                    v = tmp(&mut s, "i64", format!("conv {}", v));
                 }
-                v = tmp(&mut s, "u64", format!("bitcast {}", v));
+                v = tmp(&mut s, "u64", format!("cast {}", v));
             } else if repr.bits() < 64 {
-                v = tmp(&mut s, "u64", format!("ext {}", v));
+                v = tmp(&mut s, "u64", format!("conv {}", v));
             } else if *rt == ssa::Type::Ptr {
-                v = tmp(&mut s, "u64", format!("bitcast {}", v));
+                v = tmp(&mut s, "u64", format!("cast {}", v));
             }
             s.push_str(&format!("    __phex({})\n", v));
         }

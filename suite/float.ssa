@@ -195,8 +195,8 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     zero_w: u(M + 5) = iconst 0
     one_w: u(M + 5) = iconst 1
     three: u(M + 5) = iconst 3
-    fa0: u(M + 5) = ext ma
-    fb0: u(M + 5) = ext mb
+    fa0: u(M + 5) = conv ma
+    fb0: u(M + 5) = conv mb
     fa1: u(M + 5) = if ea0 {
         yield fa0
     } else {
@@ -236,12 +236,12 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     fh3: u(M + 5) = shl fh, three
     fl3: u(M + 5) = shl fl, three
     de: u(E) = sub xh, xl
-    d: u(M + 5) = ext de
+    d: u(M + 5) = conv de
     wmax: u(M + 5) = iconst M + 5
     far: u1 = icmp.ge d, wmax
     fl_al: u(M + 5) = if far {
         nz: u1 = icmp.ne fl3, zero_w
-        nzw: u(M + 5) = ext nz
+        nzw: u(M + 5) = conv nz
         yield nzw
     } else {
         shifted: u(M + 5) = shr fl3, d
@@ -249,7 +249,7 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
         mask: u(M + 5) = sub m1, one_w
         lost: u(M + 5) = and fl3, mask
         st: u1 = icmp.ne lost, zero_w
-        stw: u(M + 5) = ext st
+        stw: u(M + 5) = conv st
         al: u(M + 5) = or shifted, stw
         yield al
     }
@@ -311,7 +311,7 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     odd: u1 = icmp.ne odd_w, zero_w
     tie_up: u1 = and eq4, odd
     round_up: u1 = or gt, tie_up
-    upw: u(M + 5) = ext round_up
+    upw: u(M + 5) = conv round_up
     mant1: u(M + 5) = add mant0, upw
     ovf_bit: u(M + 5) = iconst 1 << (M + 1)
     o: u(M + 5) = and mant1, ovf_bit
@@ -337,7 +337,7 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
         i: float(E, M) = pack zero_m, emax, sh
         ret i
     }
-    mfield: u(M) = trunc fm
+    mfield: u(M) = conv fm
     r: float(E, M) = pack mfield, ex, sh
     ret r
 }
@@ -362,9 +362,9 @@ fn fnorm(E, M)(m: u(M), e: u(E)) -> (i32, u(M + 5)) {
     one_w: u(M + 5) = iconst 1
     zero_e: u(E) = iconst 0
     one32: i32 = iconst 1
-    f0: u(M + 5) = ext m
+    f0: u(M + 5) = conv m
     subn: u1 = icmp.eq e, zero_e
-    x0: i32 = ext e
+    x0: i32 = conv e
     xr: i32, fr: u(M + 5) = if subn {
         xl: i32, fl: u(M + 5) = loop(x: i32 = one32, f: u(M + 5) = f0) {
             h: u(M + 5) = and f, hidden
@@ -418,17 +418,17 @@ fn fpack(E, M)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
         far: u1 = icmp.ge d32, wmax32
         f3: u(M + 5) = if far {
             nz: u1 = icmp.ne f1, zero_w
-            nzw: u(M + 5) = ext nz
+            nzw: u(M + 5) = conv nz
             yield nzw
         } else {
-            d64: u64 = ext d32
-            d: u(M + 5) = trunc d64
+            d64: u64 = conv d32
+            d: u(M + 5) = conv d64
             shifted: u(M + 5) = shr f1, d
             m1: u(M + 5) = shl one_w, d
             mask: u(M + 5) = sub m1, one_w
             lost: u(M + 5) = and f1, mask
             st: u1 = icmp.ne lost, zero_w
-            stw: u(M + 5) = ext st
+            stw: u(M + 5) = conv st
             al: u(M + 5) = or shifted, stw
             yield al
         }
@@ -447,7 +447,7 @@ fn fpack(E, M)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
     odd: u1 = icmp.ne odd_w, zero_w
     tie_up: u1 = and eq4, odd
     round_up: u1 = or gt, tie_up
-    upw: u(M + 5) = ext round_up
+    upw: u(M + 5) = conv round_up
     mant1: u(M + 5) = add mant0, upw
     ovf_bit: u(M + 5) = iconst 1 << (M + 1)
     o: u(M + 5) = and mant1, ovf_bit
@@ -470,12 +470,12 @@ fn fpack(E, M)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
         ret i
     }
     ex: u(E) = if is_norm {
-        xe: u(E) = trunc x3
+        xe: u(E) = conv x3
         yield xe
     } else {
         yield zero_e
     }
-    mfield: u(M) = trunc fm
+    mfield: u(M) = conv fm
     r: float(E, M) = pack mfield, ex, s
     ret r
 }
@@ -525,8 +525,8 @@ fn mul(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     }
     xa: i32, fa: u(M + 5) = fnorm(E, M)(ma, ea)
     xb: i32, fb: u(M + 5) = fnorm(E, M)(mb, eb)
-    fa64: u64 = ext fa
-    fb64: u64 = ext fb
+    fa64: u64 = conv fa
+    fb64: u64 = conv fb
     ; halves of k bits
     kk: u64 = iconst (M + 2) >> 1
     kmask: u64 = iconst (1 << ((M + 2) >> 1)) - 1
@@ -560,9 +560,9 @@ fn mul(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     lost: u64 = and low, smask
     zero64: u64 = iconst 0
     st: u1 = icmp.ne lost, zero64
-    stw: u64 = ext st
+    stw: u64 = conv st
     r2: u64 = or r1, stw
-    r: u(M + 5) = trunc r2
+    r: u(M + 5) = conv r2
     bias32: i32 = iconst (1 << (E - 1)) - 1
     x1: i32 = add xa, xb
     x: i32 = sub x1, bias32
@@ -621,7 +621,7 @@ fn div(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     one32: i32 = iconst 1
     steps: i32 = iconst M + 4
     ge0: u1 = icmp.ge fa, fb
-    q0: u(M + 5) = ext ge0
+    q0: u(M + 5) = conv ge0
     r0: u(M + 5) = if ge0 {
         d0: u(M + 5) = sub fa, fb
         yield d0
@@ -647,7 +647,7 @@ fn div(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
         continue i2, q3, r3
     }
     st: u1 = icmp.ne rem, zero_w
-    stw: u(M + 5) = ext st
+    stw: u(M + 5) = conv st
     f: u(M + 5) = or q, stw
     bias32: i32 = iconst (1 << (E - 1)) - 1
     x1: i32 = sub xa, xb
@@ -691,8 +691,8 @@ fn sqrt(E, M)(a: float(E, M)) -> float(E, M) {
     e2: i32 = sub e, par
     half: i32 = shr e2, one32
     x: i32 = add half, bias32
-    p64: u64 = ext par
-    pw: u(M + 5) = trunc p64
+    p64: u64 = conv par
+    pw: u(M + 5) = conv p64
     f: u(M + 5) = shl f0, pw
     ; the radicand's window: M + 2 (+1 if M is odd) bits, fed two at a time,
     ; then zeros; M + 4 steps give a root with its units bit at M + 3
@@ -716,7 +716,7 @@ fn sqrt(E, M)(a: float(E, M)) -> float(E, M) {
         bits: u(M + 5) = and pair, three
         w2: u(M + 5) = shl w, two
         w3: u(M + 5) = and w2, wmask
-        bits_r: u(M + 8) = ext bits
+        bits_r: u(M + 8) = conv bits
         r2a: u(M + 8) = shl r, two_r
         r2: u(M + 8) = or r2a, bits_r
         q2: u(M + 8) = shl q, one_r
@@ -734,9 +734,9 @@ fn sqrt(E, M)(a: float(E, M)) -> float(E, M) {
         continue i2, w3, q3, r3
     }
     st: u1 = icmp.ne rem, zero_r
-    stw: u(M + 8) = ext st
+    stw: u(M + 8) = conv st
     rootst: u(M + 8) = or root, stw
-    res_f: u(M + 5) = trunc rootst
+    res_f: u(M + 5) = conv rootst
     res: float(E, M) = fpack(E, M)(zero1, x, res_f)
     ret res
 }

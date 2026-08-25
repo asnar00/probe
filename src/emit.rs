@@ -1356,7 +1356,7 @@ entry:
         let j = jit(r"
 fn half_ext(a: i32) -> i64 {
 entry:
-    w: i64 = ext a
+    w: i64 = conv a
     two: i64 = iconst 2
     h: i64 = div w, two
     ret h
@@ -1373,8 +1373,8 @@ entry:
 fn mask(a: i64, b: i64) -> i64 {
 entry:
     lt: u1 = icmp.lt a, b
-    s: i1 = bitcast lt
-    m: i64 = ext s
+    s: i1 = cast lt
+    m: i64 = conv s
     ret m
 }
 ");
@@ -1588,13 +1588,7 @@ entry:
         let mut cases = Vec::new();
         for &from in &types {
             for &to in &types {
-                let op = if to.bits() > from.bits() {
-                    "ext"
-                } else if to.bits() < from.bits() {
-                    "trunc"
-                } else {
-                    "bitcast"
-                };
+                let op = if to.bits() == from.bits() { "cast" } else { "conv" };
                 let fname = format!("{}_{}_{}", op, name(from), name(to));
                 src.push_str(&format!(
                     "fn {f}(a: {s}) -> {d} {{\nentry:\n    r: {d} = {op} a\n    ret r\n}}\n",
@@ -1642,34 +1636,34 @@ entry:
 fn unpack_sum(c: rgb) -> u64 {
 entry:
     r: u5, g: u6, b: u5 = unpack c
-    r6: u64 = ext r
-    g6: u64 = ext g
-    b6: u64 = ext b
+    r6: u64 = conv r
+    g6: u64 = conv g
+    b6: u64 = conv b
     x: u64 = add r6, g6
     y: u64 = add x, b6
     ret y
 }
 fn nested(s: i3, w: u16, t: i9, f: u1) -> (i64, i64) {
 entry:
-    c: rgb = bitcast w
+    c: rgb = cast w
     m: mix = pack s, c, t, f
     s2: i3 = get m, s
     t2: i9 = get m, t
-    sw: i64 = ext s2
-    tw: i64 = ext t2
+    sw: i64 = conv s2
+    tw: i64 = conv t2
     ret sw, tw
 }
 fn nested_bits(s: i3, w: u16, t: i9, f: u1) -> u64 {
 entry:
-    c: rgb = bitcast w
+    c: rgb = cast w
     m: mix = pack s, c, t, f
     c2: rgb = get m, c
-    cw: u16 = bitcast c2
+    cw: u16 = cast c2
     f2: u1 = get m, flag
-    cw64: u64 = ext cw
-    f64: u64 = ext f2
-    bits: u29 = bitcast m
-    all: u64 = ext bits
+    cw64: u64 = conv cw
+    f64: u64 = conv f2
+    bits: u29 = cast m
+    all: u64 = conv bits
     x: u64 = xor all, cw64
     y: u64 = xor x, f64
     ret y
@@ -1679,12 +1673,12 @@ entry:
     store v, p
     one: i64 = iconst 1
     q: ptr = ptradd p, one
-    u: u8 = bitcast v
+    u: u8 = cast v
     store u, q
     a: i8 = load p
     b: u8 = load q
-    aw: i64 = ext a
-    bw: i64 = ext b
+    aw: i64 = conv a
+    bw: i64 = conv b
     r: i64 = sub aw, bw
     ret r
 }
@@ -1693,12 +1687,12 @@ entry:
     store v, p
     two: i64 = iconst 2
     q: ptr = ptradd p, two
-    u: u16 = bitcast v
+    u: u16 = cast v
     store u, q
     a: i16 = load p
     b: u16 = load q
-    aw: i64 = ext a
-    bw: i64 = ext b
+    aw: i64 = conv a
+    bw: i64 = conv b
     r: i64 = sub aw, bw
     ret r
 }

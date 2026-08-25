@@ -138,9 +138,9 @@ The source and result types determine everything; the opcode says which
 direction you meant, and the verifier holds you to it.
 
 ```
-v: i64 = ext a            ; widen: sign-fills from an iN, zero-fills from a uN
-v: u8  = trunc a          ; narrow: keeps the low bits
-v: u5  = bitcast a        ; same width, reinterpreted (i5 <-> u5, pack <-> uN, ptr <-> i64/u64)
+v: i64 = conv a            ; widen: sign-fills from an iN, zero-fills from a uN
+v: u8  = conv a          ; narrow: keeps the low bits
+v: u5  = cast a        ; same width, reinterpreted (i5 <-> u5, pack <-> uN, ptr <-> i64/u64)
 ```
 
 The result is always a proper value of its type: `ext` of an `i5` holding
@@ -204,7 +204,7 @@ c: rgb = pack r, g, b                        ; one value per field, in order
 g: u6 = get c, g                             ; read a field (iN fields sign-extend)
 d: rgb = set c, g, g2                        ; a copy with one field replaced
 r: u5, g: u6, b: u5 = unpack c               ; every field at once
-w: u16 = bitcast c                           ; the raw bits, and back again
+w: u16 = cast c                           ; the raw bits, and back again
 ```
 
 Packs are compared structurally: two spellings of the same layout are the

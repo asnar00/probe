@@ -79,6 +79,6 @@ fn aeven(n: int) -> u1 {
     one: int = iconst 1
     bit: int = and n, one
     flip: int = xor bit, one
-    r: u1 = trunc flip
+    r: u1 = conv flip
     ret r
 }

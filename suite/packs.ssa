@@ -43,9 +43,9 @@ entry:
 fn unpacksum(c: rgb) -> u64 {
 entry:
     r: u5, g: u6, b: u5 = unpack c
-    rw: u64 = ext r
-    gw: u64 = ext g
-    bw: u64 = ext b
+    rw: u64 = conv r
+    gw: u64 = conv g
+    bw: u64 = conv b
     s1: u64 = add rw, gw
     s2: u64 = add s1, bw
     ret s2
@@ -88,13 +88,13 @@ entry:
 fn sigmk(v: i12, e: i4) -> u16 {
 entry:
     s: sig = pack v, e
-    bits: u16 = bitcast s
+    bits: u16 = cast s
     ret bits
 }
 fn sigset(s: sig, v: i12) -> u16 {
 entry:
     t: sig = set s, v, v
-    bits: u16 = bitcast t
+    bits: u16 = cast t
     ret bits
 }
 ; a 64-bit pack with 32-bit fields

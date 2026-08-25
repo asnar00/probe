@@ -15,45 +15,45 @@
 
 fn sext32(a: i32) -> i64 {
 entry:
-    r: i64 = ext a
+    r: i64 = conv a
     ret r
 }
 fn zext32(a: u32) -> u64 {
 entry:
-    r: u64 = ext a
+    r: u64 = conv a
     ret r
 }
 fn trunc64(a: i64) -> i32 {
 entry:
-    r: i32 = trunc a
+    r: i32 = conv a
     ret r
 }
 fn utrunc64(a: i64) -> u32 {
 entry:
-    r: u32 = trunc a
+    r: u32 = conv a
     ret r
 }
 fn bit(a: i64) -> u1 {
 entry:
-    r: u1 = trunc a
+    r: u1 = conv a
     ret r
 }
 ; a signed 1-bit value is 0 or -1: ext replicates the bit
 fn sextbit(a: i64) -> i64 {
 entry:
-    b: i1 = trunc a
-    r: i64 = ext b
+    b: i1 = conv a
+    r: i64 = conv b
     ret r
 }
 fn zextbit(a: i64) -> i64 {
 entry:
-    b: u1 = trunc a
-    r: i64 = ext b
+    b: u1 = conv a
+    r: i64 = conv b
     ret r
 }
 ; i32 -> u32 keeps the bits and changes the value's reading
 fn recast(a: i32) -> u32 {
 entry:
-    r: u32 = bitcast a
+    r: u32 = cast a
     ret r
 }

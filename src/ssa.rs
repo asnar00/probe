@@ -350,20 +350,19 @@ impl Cond {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CastOp {
-    /// widen, filling by the *source* type's signedness
-    Ext,
-    /// narrow to the result type's width
-    Trunc,
-    /// reinterpret the same number of bits as another type
-    Bitcast,
+    /// the value crosses over: widen by the source's signedness, narrow to
+    /// the low bits, re-read at the same width (between packs, or a pack
+    /// and an integer, a library generic named `conv` does it)
+    Conv,
+    /// the bits stay, the reading changes: same width, any types
+    Cast,
 }
 
 impl CastOp {
     pub fn name(self) -> &'static str {
         match self {
-            CastOp::Ext => "ext",
-            CastOp::Trunc => "trunc",
-            CastOp::Bitcast => "bitcast",
+            CastOp::Conv => "conv",
+            CastOp::Cast => "cast",
         }
     }
 }
@@ -882,8 +881,11 @@ struct GenericFn {
     name: String,
     params: Vec<String>,
     lo: usize,
-    /// the declared type of its first value parameter, for opcode dispatch
+    /// the declared type of its first value parameter and of its first
+    /// result, for opcode dispatch (several generics may share a name and
+    /// differ here: `conv` from i(W) and from u(W))
     first_param: Option<TypeExpr>,
+    ret: Option<TypeExpr>,
 }
 
 struct Parser {
@@ -892,8 +894,8 @@ struct Parser {
     types: Vec<TypeDef>,
     packs: Vec<PackDef>,
     generics: Vec<GenericFn>,
-    /// (generic, args) -> the instance's function name
-    instances: HashMap<(String, Vec<i64>), String>,
+    /// (generic index, args) -> the instance's function name
+    instances: HashMap<(usize, Vec<i64>), String>,
     /// instances requested but not yet parsed: (generic index, args, name)
     pending: Vec<(usize, Vec<i64>, String)>,
     /// the parameter bindings of the body being parsed (empty outside generics)
@@ -1075,9 +1077,6 @@ impl Parser {
         let (lo, hi) = self.function_range()?;
         self.expect_ident()?; // fn
         let name = self.expect_ident()?;
-        if self.generics.iter().any(|g| g.name == name) {
-            return Err(self.err(format!("generic function '{}' is defined more than once", name)));
-        }
         self.expect(Tok::LParen)?;
         let mut params = Vec::new();
         loop {
@@ -1093,11 +1092,30 @@ impl Parser {
             (Some(Tok::Ident(_)), Some(Tok::Colon)) => Some(self.type_expr_at(self.pos + 2, &params)?.0),
             _ => None,
         };
+        // and the first result's: past the parameter list, `-> ty` or `-> (ty, ...)`
+        let mut j = self.pos;
+        let mut depth = 1;
+        while depth > 0 {
+            match self.toks.get(j).map(|t| &t.0) {
+                Some(Tok::LParen) => depth += 1,
+                Some(Tok::RParen) => depth -= 1,
+                None => return Err(self.err("unterminated parameter list".to_string())),
+                _ => {}
+            }
+            j += 1;
+        }
+        let ret = if self.toks.get(j).map(|t| &t.0) == Some(&Tok::Arrow) {
+            let at = if self.toks.get(j + 1).map(|t| &t.0) == Some(&Tok::LParen) { j + 2 } else { j + 1 };
+            Some(self.type_expr_at(at, &params)?.0)
+        } else {
+            None
+        };
         self.generics.push(GenericFn {
             name,
             params,
             lo,
             first_param,
+            ret,
         });
         self.pos = hi + 1;
         Ok(())
@@ -1132,28 +1150,34 @@ impl Parser {
         Ok(args)
     }
 
-    /// the name of generic(args), instantiating it if new
+    /// the name of generic(args), instantiating it if new; by name, the
+    /// generic must be the only one of that name taking that many arguments
     fn request_instance(&mut self, generic: &str, args: Vec<i64>, name: Option<String>) -> Result<String, ParseError> {
-        let g = self
-            .generics
-            .iter()
-            .position(|g| g.name == generic)
-            .ok_or_else(|| self.err(format!("'{}' is not a generic function", generic)))?;
-        if self.generics[g].params.len() != args.len() {
-            return Err(self.err(format!(
-                "'{}' takes {} parameter(s), given {}",
-                generic,
-                self.generics[g].params.len(),
-                args.len()
-            )));
+        let candidates: Vec<usize> = (0..self.generics.len())
+            .filter(|&g| self.generics[g].name == generic && self.generics[g].params.len() == args.len())
+            .collect();
+        if self.generics.iter().all(|g| g.name != generic) {
+            return Err(self.err(format!("'{}' is not a generic function", generic)));
         }
-        let key = (generic.to_string(), args.clone());
+        match candidates.len() {
+            0 => Err(self.err(format!("no '{}' takes {} parameter(s)", generic, args.len()))),
+            1 => self.request_instance_of(candidates[0], args, name),
+            _ => Err(self.err(format!(
+                "'{}' has several forms taking {} parameter(s); apply it as an operation so the types choose",
+                generic,
+                args.len()
+            ))),
+        }
+    }
+
+    fn request_instance_of(&mut self, g: usize, args: Vec<i64>, name: Option<String>) -> Result<String, ParseError> {
+        let key = (g, args.clone());
         if let Some(existing) = self.instances.get(&key) {
             if let Some(n) = name {
                 if *existing != n {
                     return Err(self.err(format!(
                         "'{}' is already instantiated as '{}'",
-                        generic, existing
+                        self.generics[g].name, existing
                     )));
                 }
             }
@@ -1161,11 +1185,65 @@ impl Parser {
         }
         let name = name.unwrap_or_else(|| {
             let a: Vec<String> = args.iter().map(|v| v.to_string()).collect();
-            format!("{}_{}", generic, a.join("_"))
+            let base = format!("{}_{}", self.generics[g].name, a.join("_"));
+            if self.instances.values().any(|n| *n == base) {
+                format!("{}_{}", base, g) // another form of the same name got it
+            } else {
+                base
+            }
         });
         self.instances.insert(key, name.clone());
         self.pending.push((g, args, name.clone()));
         Ok(name)
+    }
+
+    /// Match a declared type against a concrete one, binding width
+    /// parameters: `float(E, M)` against a pack from float(8, 23) binds E
+    /// and M; `i(W)` against i32 binds W; builtins must be equal.
+    fn unify(&self, expr: &TypeExpr, ty: Type, binds: &mut Vec<(String, i64)>) -> bool {
+        let bind = |p: &str, v: i64, binds: &mut Vec<(String, i64)>| match binds.iter().find(|(n, _)| n == p) {
+            Some((_, w)) => *w == v,
+            None => {
+                binds.push((p.to_string(), v));
+                true
+            }
+        };
+        match expr {
+            TypeExpr::Named { name, args } if args.is_empty() => match Type::from_name(name) {
+                Some(t) => t == ty,
+                None => matches!(ty, Type::Pack(i) if self.packs[i as usize].name == *name),
+            },
+            TypeExpr::Named { name, args } => {
+                let Type::Pack(i) = ty else {
+                    return false;
+                };
+                let Some((oname, vals)) = &self.packs[i as usize].origin else {
+                    return false;
+                };
+                if oname != name || vals.len() != args.len() {
+                    return false;
+                }
+                args.iter().zip(vals).all(|(e, &v)| match e {
+                    IntExpr::Param(p) => bind(p, v, binds),
+                    IntExpr::Lit(l) => *l == v,
+                    _ => false,
+                })
+            }
+            TypeExpr::Int { signed, bits } => {
+                let Type::Int { signed: s, bits: b } = ty else {
+                    return false;
+                };
+                if s != *signed {
+                    return false;
+                }
+                match bits {
+                    IntExpr::Param(p) => bind(p, b as i64, binds),
+                    IntExpr::Lit(l) => *l == b as i64,
+                    _ => false,
+                }
+            }
+            TypeExpr::Pack(_) => false,
+        }
     }
 
     /// skip to the end of the current line (a declaration already parsed)
@@ -1865,9 +1943,8 @@ impl Parser {
             // name takes the pack's origin type: `add` on a float(8, 23)
             // is a call to add(8, 23) — the library, or the platform's
             // instruction for it
-            if let Type::Pack(i) = scope.values[lhs.0 as usize].ty {
-                let origin = self.packs[i as usize].origin.clone();
-                let callee = self.dispatch(op, origin.as_ref(), &self.packs[i as usize].name.clone())?;
+            if scope.values[lhs.0 as usize].ty.is_pack() {
+                let callee = self.dispatch(op, scope.values[lhs.0 as usize].ty, scope.values[dst.0 as usize].ty)?;
                 return Ok(Inst::Call {
                     dsts: vec![dst],
                     callee,
@@ -1906,13 +1983,20 @@ impl Parser {
                 let imm = e.eval(&self.env).map_err(|m| self.err(m))?;
                 Ok(Inst::IConst { dst, imm })
             }
-            "ext" | "trunc" | "bitcast" => {
-                let cast = match op {
-                    "ext" => CastOp::Ext,
-                    "trunc" => CastOp::Trunc,
-                    _ => CastOp::Bitcast,
-                };
+            "conv" | "cast" => {
                 let src = self.expect_value(scope)?;
+                let (ts, td) = (scope.values[src.0 as usize].ty, scope.values[dst.0 as usize].ty);
+                // a conversion touching a pack is the library's: conv from
+                // float(E, M) to i(W), from u(W) to float(E, M), ...
+                if op == "conv" && (ts.is_pack() || td.is_pack()) {
+                    let callee = self.dispatch(op, ts, td)?;
+                    return Ok(Inst::Call {
+                        dsts: vec![dst],
+                        callee,
+                        args: vec![src],
+                    });
+                }
+                let cast = if op == "conv" { CastOp::Conv } else { CastOp::Cast };
                 Ok(Inst::Cast { op: cast, dst, src })
             }
             "pack" => {
@@ -1963,11 +2047,10 @@ impl Parser {
                 let Some(&first) = args.first() else {
                     return Err(self.err(format!("unknown opcode '{}'", op)));
                 };
-                let Type::Pack(i) = scope.values[first.0 as usize].ty else {
+                if !scope.values[first.0 as usize].ty.is_pack() {
                     return Err(self.err(format!("unknown opcode '{}'", op)));
-                };
-                let origin = self.packs[i as usize].origin.clone();
-                let callee = self.dispatch(op, origin.as_ref(), &self.packs[i as usize].name.clone())?;
+                }
+                let callee = self.dispatch(op, scope.values[first.0 as usize].ty, scope.values[dst.0 as usize].ty)?;
                 Ok(Inst::Call {
                     dsts: vec![dst],
                     callee,
@@ -1977,34 +2060,47 @@ impl Parser {
         }
     }
 
-    /// the instance of generic `op` for a pack of the given origin: the
-    /// generic named `op` whose first parameter is `origin(P, Q, ...)`
-    fn dispatch(&mut self, op: &str, origin: Option<&(String, Vec<i64>)>, tyname: &str) -> Result<String, ParseError> {
-        let Some((gname, args)) = origin else {
-            return Err(self.err(format!(
-                "'{}' on {}: only packs instantiated from a generic type can be operated on",
-                op, tyname
-            )));
+    /// The instance of operation `op` for a source type and a result type:
+    /// the generic named `op` whose first parameter matches the source and
+    /// whose first result matches the destination, with the width
+    /// parameters those matches bind.
+    fn dispatch(&mut self, op: &str, src: Type, dst: Type) -> Result<String, ParseError> {
+        let tyname = |p: &Parser, t: Type| match t {
+            Type::Pack(i) => p.packs[i as usize].name.clone(),
+            t => t.name(),
         };
-        let found = self.generics.iter().position(|g| {
-            g.name == op
-                && matches!(&g.first_param, Some(TypeExpr::Named { name, args: a })
-                    if name == gname
-                        && a.len() == g.params.len()
-                        && a.iter().zip(&g.params).all(|(e, p)| *e == IntExpr::Param(p.clone())))
-        });
-        if found.is_none() {
-            return Err(self.err(format!(
-                "no '{}' for {}: define fn {}({})(a: {}({}), ...) or a platform op",
-                op,
-                tyname,
-                op,
-                (0..args.len()).map(|i| ((b'E' + i as u8) as char).to_string()).collect::<Vec<_>>().join(", "),
-                gname,
-                (0..args.len()).map(|i| ((b'E' + i as u8) as char).to_string()).collect::<Vec<_>>().join(", "),
-            )));
+        for g in 0..self.generics.len() {
+            if self.generics[g].name != op {
+                continue;
+            }
+            let (Some(first), ret) = (self.generics[g].first_param.clone(), self.generics[g].ret.clone()) else {
+                continue;
+            };
+            let mut binds = Vec::new();
+            if !self.unify(&first, src, &mut binds) {
+                continue;
+            }
+            if let Some(r) = ret {
+                if !self.unify(&r, dst, &mut binds) {
+                    continue;
+                }
+            }
+            let params = self.generics[g].params.clone();
+            let args: Option<Vec<i64>> = params
+                .iter()
+                .map(|p| binds.iter().find(|(n, _)| n == p).map(|(_, v)| *v))
+                .collect();
+            if let Some(args) = args {
+                return self.request_instance_of(g, args, None);
+            }
         }
-        self.request_instance(op, args.clone(), None)
+        Err(self.err(format!(
+            "no '{}' from {} to {}: define a generic fn {} whose first parameter and result match",
+            op,
+            tyname(self, src),
+            tyname(self, dst),
+            op
+        )))
     }
 
     /// a field name of the pack-typed value `of`, resolved to its index
@@ -2860,9 +2956,8 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             let (td, ts) = (func.ty(*dst), func.ty(*src));
             let (wd, ws) = (func.width(td), func.width(ts));
             let ok = match op {
-                CastOp::Ext => td.is_int() && ts.is_int() && wd > ws,
-                CastOp::Trunc => td.is_int() && ts.is_int() && wd < ws,
-                CastOp::Bitcast => {
+                CastOp::Conv => td.is_int() && ts.is_int(),
+                CastOp::Cast => {
                     (td.is_int() || td.is_pack() || td == Type::Ptr)
                         && (ts.is_int() || ts.is_pack() || ts == Type::Ptr)
                         && wd == ws
@@ -2870,9 +2965,8 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             };
             if !ok {
                 let why = match op {
-                    CastOp::Ext => "ext widens an integer to a wider integer type",
-                    CastOp::Trunc => "trunc narrows an integer to a narrower integer type",
-                    CastOp::Bitcast => "bitcast needs two types of the same width",
+                    CastOp::Conv => "conv between integers converts the value; other conversions are library operations",
+                    CastOp::Cast => "cast needs two types of the same width",
                 };
                 errs.push(ctx(format!(
                     "{} from {} to {} is not valid: {}",
@@ -3144,7 +3238,7 @@ entry:
 fn use(p: ptr) -> i64 {
 entry:
     v: i32 = get(p)
-    w: i64 = ext v
+    w: i64 = conv v
     eight: i64 = iconst 8
     q: ptr = ptradd p, eight
     store w, q
@@ -3331,11 +3425,11 @@ fn fade(p: pix, a: u8) -> (pix, u16) {
 entry:
     q: pix = set p, a, a
     c: rgb = get q, c
-    w: u16 = bitcast c
+    w: u16 = cast c
     r: u5, g: u6, b: u5 = unpack c
-    x: i5 = bitcast r
-    y: i7 = ext x
-    z: u3 = trunc g
+    x: i5 = cast r
+    y: i7 = conv x
+    z: u3 = conv g
     ret q, w
 }
 ";
@@ -3358,11 +3452,13 @@ entry:
         assert!(parse("fn f(a: u65) {\n    ret\n}").is_err());
         assert!(parse("type p = pack { a: u40, b: u25 }\n").is_err()); // 65 bits
         assert!(parse("type p = pack { a: u4 }\nfn f(p: p) -> u4 {\n    x: u4 = get p, nope\n    ret x\n}").is_err());
-        // bitcast must preserve width; ext must widen
-        let m = parse("fn f(a: i8) -> u16 {\n    b: u16 = bitcast a\n    ret b\n}").unwrap();
+        // cast must preserve width; conv goes any way between integers, and
+        // is a library operation as soon as a pack is involved
+        let m = parse("fn f(a: i8) -> u16 {\n    b: u16 = cast a\n    ret b\n}").unwrap();
         assert!(verify(&m).is_err());
-        let m = parse("fn f(a: i8) -> i8 {\n    b: i8 = ext a\n    ret b\n}").unwrap();
-        assert!(verify(&m).is_err());
+        let m = parse("fn f(a: i8) -> i8 {\n    b: i8 = conv a\n    ret b\n}").unwrap();
+        assert!(verify(&m).is_ok());
+        assert!(parse("type p = pack { a: u8 }\nfn f(a: i8) -> p {\n    b: p = conv a\n    ret b\n}").is_err());
         // memory only at 8/16/32/64
         let m = parse("fn f(p: ptr) -> u5 {\n    b: u5 = load p\n    ret b\n}").unwrap();
         assert!(verify(&m).is_err());
@@ -3377,7 +3473,7 @@ entry:
 
     #[test]
     fn uint_resolves_with_int() {
-        let mut m = parse("fn f(a: uint, b: int) -> uint {\n    c: uint = bitcast b\n    ret a\n}").unwrap();
+        let mut m = parse("fn f(a: uint, b: int) -> uint {\n    c: uint = cast b\n    ret a\n}").unwrap();
         resolve_types(&mut m, &Policy::new(Type::I32).unwrap());
         verify(&m).expect("verify");
         assert_eq!(m.funcs[0].rets, vec![Type::int(false, 32)]);
@@ -3401,7 +3497,7 @@ fn same(f: float(8, 23)) -> f32 {
     ret f
 }
 fn raw(f: f32) -> bits(8, 23) {
-    r: bits(8, 23) = bitcast f
+    r: bits(8, 23) = cast f
     ret r
 }
 fn half(f: f16, b: byte, w: word(2 * 6)) -> (u5, u8, u12) {

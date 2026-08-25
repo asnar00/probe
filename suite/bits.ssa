@@ -142,42 +142,42 @@ entry:
 ; ext fills by the source's signedness; the result is canonical for its type
 fn ext5to8(a: i5) -> i8 {
 entry:
-    r: i8 = ext a
+    r: i8 = conv a
     ret r
 }
 fn uext5to8(a: u5) -> u8 {
 entry:
-    r: u8 = ext a
+    r: u8 = conv a
     ret r
 }
 fn ext5tou8(a: i5) -> u8 {
 entry:
-    r: u8 = ext a
+    r: u8 = conv a
     ret r
 }
 fn uext5toi8(a: u5) -> i8 {
 entry:
-    r: i8 = ext a
+    r: i8 = conv a
     ret r
 }
 fn trunc8to5(a: i8) -> i5 {
 entry:
-    r: i5 = trunc a
+    r: i5 = conv a
     ret r
 }
 fn utrunc8to5(a: u8) -> u5 {
 entry:
-    r: u5 = trunc a
+    r: u5 = conv a
     ret r
 }
 fn bitcast5(a: i5) -> u5 {
 entry:
-    r: u5 = bitcast a
+    r: u5 = cast a
     ret r
 }
 fn bitcastu5(a: u5) -> i5 {
 entry:
-    r: i5 = bitcast a
+    r: i5 = cast a
     ret r
 }
 ; narrow values through calls stay canonical on both sides
@@ -214,7 +214,7 @@ fn sumbytes_u8() -> u16 {
     zero: u8 = iconst 0
     acc0: u16 = iconst 0
     r: u16 = loop(i: u8 = zero, acc: u16 = acc0) {
-        w: u16 = ext i
+        w: u16 = conv i
         acc2: u16 = add acc, w
         max: u8 = iconst 255
         done: u1 = icmp.eq i, max
@@ -246,10 +246,10 @@ entry:
     b: i8 = load p1
     c: i8 = load p2
     d: i8 = load p3
-    aw: i64 = ext a
-    bw: i64 = ext b
-    cw: i64 = ext c
-    dw: i64 = ext d
+    aw: i64 = conv a
+    bw: i64 = conv b
+    cw: i64 = conv c
+    dw: i64 = conv d
     s1: i64 = add aw, bw
     s2: i64 = add s1, cw
     s3: i64 = add s2, dw
@@ -261,8 +261,8 @@ entry:
     p1: ptr = ptradd p, one
     a: u8 = load p
     b: u8 = load p1
-    aw: u64 = ext a
-    bw: u64 = ext b
+    aw: u64 = conv a
+    bw: u64 = conv b
     s: u64 = add aw, bw
     ret s
 }
@@ -272,8 +272,8 @@ entry:
     p1: ptr = ptradd p, two
     a: i16 = load p
     b: i16 = load p1
-    aw: i64 = ext a
-    bw: i64 = ext b
+    aw: i64 = conv a
+    bw: i64 = conv b
     s: i64 = add aw, bw
     ret s
 }
@@ -283,8 +283,8 @@ entry:
     p1: ptr = ptradd p, two
     a: u16 = load p
     b: u16 = load p1
-    aw: u64 = ext a
-    bw: u64 = ext b
+    aw: u64 = conv a
+    bw: u64 = conv b
     s: u64 = add aw, bw
     ret s
 }

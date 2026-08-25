@@ -46,7 +46,7 @@ fn f32mk(m: u23, e: u8, s: u1) -> f32 {
 }
 ; the raw bits, as the parametric width u(E + M + 1)
 fn f32bits(f: f32) -> bits(8, 23) {
-    b: bits(8, 23) = bitcast f
+    b: bits(8, 23) = cast f
     ret b
 }
 fn f16exp(f: f16) -> u5 {
@@ -64,8 +64,8 @@ fn samewidth(f: float(5, 10)) -> u5 {
     ret e
 }
 fn bytesum(a: byte, b: byte) -> u16 {
-    aw: u16 = ext a
-    bw: u16 = ext b
+    aw: u16 = conv a
+    bw: u16 = conv b
     s: u16 = add aw, bw
     ret s
 }

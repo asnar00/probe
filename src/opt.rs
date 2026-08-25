@@ -565,7 +565,7 @@ entry:
     b: i64 = iconst 7
     c: i64 = mul a, b
     d: u1 = icmp.lt a, b
-    e: i64 = ext d
+    e: i64 = conv d
     r: i64 = add c, e
     ret r
 }

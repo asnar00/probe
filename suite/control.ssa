@@ -84,7 +84,7 @@ loop(x: i64, steps: i64):
 step:
     two: i64 = iconst 2
     parity: i64 = and x, one
-    odd: u1 = trunc parity
+    odd: u1 = conv parity
     s2: i64 = add steps, one
     br odd, odd, even
 odd:
