@@ -2,7 +2,7 @@
 fn fib(n: i64) -> i64 {
 entry:
     two: i64 = iconst 2
-    small: u1 = icmp.lt n, two
+    small: u1 = cmp.lt n, two
     br small, base, rec
 base:
     ret n

@@ -83,6 +83,17 @@ inst fmul.d {f}, {f}, {f}
 inst fdiv.d {f}, {f}, {f}
 inst fsqrt.s {f}, {f}
 inst fsqrt.d {f}, {f}
+inst fneg.s {f}, {f}
+inst fneg.d {f}, {f}
+inst fabs.s {f}, {f}
+inst fabs.d {f}, {f}
+; compares write 0/1 to an integer register; NaN gives 0
+inst feq.s {r}, {f}, {f}
+inst flt.s {r}, {f}, {f}
+inst fle.s {r}, {f}, {f}
+inst feq.d {r}, {f}, {f}
+inst flt.d {r}, {f}, {f}
+inst fle.d {r}, {f}, {f}
 ; conversions between the float widths and from integers (float -> int
 ; is left to the library: the hardware returns the maximum integer for
 ; NaN where the library, arm64, and wasm give 0)

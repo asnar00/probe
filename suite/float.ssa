@@ -1,6 +1,6 @@
 ; IEEE-style floating point as packs plus integer instructions: generic
-; add, sub, mul, div, sqrt over float(E, M), and conv between floats and
-; to and from integers, instantiated for every format below.
+; add, sub, mul, div, sqrt, neg, abs, the six comparisons, and conv between
+; floats and to and from integers, instantiated for every format below.
 ; Round to nearest even, subnormals, signed zeros, infinities; every NaN
 ; comes out as the canonical quiet NaN. Because the generics are named
 ; after the opcodes and take float(E, M), the plain opcodes on any float
@@ -52,6 +52,34 @@ fn fsqrt64 = sqrt(11, 52)
 ;! sum3 1065353216 1073741824 1077936128 -> 1086324736
 ;! sum64 4607182418800017408 4611686018427387904 -> 4613937818241073152
 ;! sum8 56 56 -> 64
+;! lt32 1065353216 1073741824 -> 1
+;! lt32 1073741824 1065353216 -> 0
+;! lt32 2147483648 0 -> 0
+;! lt32 2143289344 1065353216 -> 0
+;! lt32 3212836864 1065353216 -> 1
+;! le32 1073741824 1073741824 -> 1
+;! le32 2143289344 2143289344 -> 0
+;! gt32 2139095040 2123789977 -> 1
+;! ge32 2147483648 0 -> 1
+;! eq32 2147483648 0 -> 1
+;! eq32 2143289344 2143289344 -> 0
+;! ne32 2143289344 2143289344 -> 1
+;! ne32 1065353216 1065353216 -> 0
+;! lt64 18318360957983683996 118622047889322841 -> 1
+;! ge64 118622047889322841 18318360957983683996 -> 1
+;! eq64 4591870180066957722 4591870180066957722 -> 1
+;! lt16 49152 48128 -> 1
+;! lt8 56 64 -> 1
+;! gt8 56 64 -> 0
+;! neg32 1069547520 -> 3217031168
+;! neg32 2143289344 -> 4290772992
+;! abs32 3217031168 -> 1069547520
+;! abs64 9223372036854775808 -> 0
+;! neg16 0 -> 32768
+;! clamp01 1069547520 -> 1065353216
+;! clamp01 3217031168 -> 0
+;! clamp01 1048576000 -> 1048576000
+;! clamp01 2143289344 -> 0
 ;! f32tof64 1036831949 -> 4591870180174331904
 ;! f32tof64 1 -> 3936146074321813504
 ;! f32tof64 4286578688 -> 18442240474082181120
@@ -214,6 +242,86 @@ fn f16toi32(a: f16) -> i32 {
     ret r
 }
 
+; comparisons and sign operations by the opcode
+fn lt32(a: f32, b: f32) -> u1 {
+    r: u1 = cmp.lt a, b
+    ret r
+}
+fn le32(a: f32, b: f32) -> u1 {
+    r: u1 = cmp.le a, b
+    ret r
+}
+fn gt32(a: f32, b: f32) -> u1 {
+    r: u1 = cmp.gt a, b
+    ret r
+}
+fn ge32(a: f32, b: f32) -> u1 {
+    r: u1 = cmp.ge a, b
+    ret r
+}
+fn eq32(a: f32, b: f32) -> u1 {
+    r: u1 = cmp.eq a, b
+    ret r
+}
+fn ne32(a: f32, b: f32) -> u1 {
+    r: u1 = cmp.ne a, b
+    ret r
+}
+fn lt64(a: f64, b: f64) -> u1 {
+    r: u1 = cmp.lt a, b
+    ret r
+}
+fn ge64(a: f64, b: f64) -> u1 {
+    r: u1 = cmp.ge a, b
+    ret r
+}
+fn eq64(a: f64, b: f64) -> u1 {
+    r: u1 = cmp.eq a, b
+    ret r
+}
+fn lt16(a: f16, b: f16) -> u1 {
+    r: u1 = cmp.lt a, b
+    ret r
+}
+fn lt8(a: float(4, 3), b: float(4, 3)) -> u1 {
+    r: u1 = cmp.lt a, b
+    ret r
+}
+fn gt8(a: float(4, 3), b: float(4, 3)) -> u1 {
+    r: u1 = cmp.gt a, b
+    ret r
+}
+fn neg32(a: f32) -> f32 {
+    r: f32 = neg a
+    ret r
+}
+fn abs32(a: f32) -> f32 {
+    r: f32 = abs a
+    ret r
+}
+fn abs64(a: f64) -> f64 {
+    r: f64 = abs a
+    ret r
+}
+fn neg16(a: f16) -> f16 {
+    r: f16 = neg a
+    ret r
+}
+; clamp to [0, 1]: NaN falls through both tests to 0
+fn clamp01(a: f32) -> f32 {
+    zero: f32 = iconst 0
+    one: f32 = iconst 1065353216
+    hi: u1 = cmp.gt a, one
+    if hi {
+        ret one
+    }
+    ok: u1 = cmp.ge a, zero
+    if ok {
+        ret a
+    }
+    ret zero
+}
+
 ; a library-defined operation, by its name: sqrt is not an integer opcode
 fn root32(a: f32) -> f32 {
     r: f32 = sqrt a
@@ -261,17 +369,17 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     one_e: u(E) = iconst 1
 
     ; --- NaN and infinity ---
-    a_top: u1 = icmp.eq ea, emax
-    b_top: u1 = icmp.eq eb, emax
+    a_top: u1 = cmp.eq ea, emax
+    b_top: u1 = cmp.eq eb, emax
     if a_top {
-        a_nan: u1 = icmp.ne ma, zero_m
+        a_nan: u1 = cmp.ne ma, zero_m
         if a_nan {
             n1: float(E, M) = fnan(E, M)()
             ret n1
         }
         if b_top {
-            b_nan: u1 = icmp.ne mb, zero_m
-            opp: u1 = icmp.ne sa, sb
+            b_nan: u1 = cmp.ne mb, zero_m
+            opp: u1 = cmp.ne sa, sb
             bad: u1 = or b_nan, opp
             if bad {
                 n2: float(E, M) = fnan(E, M)()
@@ -281,7 +389,7 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
         ret a
     }
     if b_top {
-        b_nan2: u1 = icmp.ne mb, zero_m
+        b_nan2: u1 = cmp.ne mb, zero_m
         if b_nan2 {
             n3: float(E, M) = fnan(E, M)()
             ret n3
@@ -290,11 +398,11 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     }
 
     ; --- zeros ---
-    ea0: u1 = icmp.eq ea, zero_e
-    ma0: u1 = icmp.eq ma, zero_m
+    ea0: u1 = cmp.eq ea, zero_e
+    ma0: u1 = cmp.eq ma, zero_m
     a_zero: u1 = and ea0, ma0
-    eb0: u1 = icmp.eq eb, zero_e
-    mb0: u1 = icmp.eq mb, zero_m
+    eb0: u1 = cmp.eq eb, zero_e
+    mb0: u1 = cmp.eq mb, zero_m
     b_zero: u1 = and eb0, mb0
     if a_zero {
         if b_zero {
@@ -340,9 +448,9 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     }
 
     ; --- order the operands so h has the larger magnitude ---
-    lt_e: u1 = icmp.lt xa, xb
-    eq_e: u1 = icmp.eq xa, xb
-    lt_f: u1 = icmp.lt fa1, fb1
+    lt_e: u1 = cmp.lt xa, xb
+    eq_e: u1 = cmp.eq xa, xb
+    lt_f: u1 = cmp.lt fa1, fb1
     eq_lt: u1 = and eq_e, lt_f
     swap: u1 = or lt_e, eq_lt
     xh: u(E), xl: u(E), fh: u(M + 5), fl: u(M + 5), sh: u1, sl: u1 = if swap {
@@ -357,9 +465,9 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     de: u(E) = sub xh, xl
     d: u(M + 5) = conv de
     wmax: u(M + 5) = iconst M + 5
-    far: u1 = icmp.ge d, wmax
+    far: u1 = cmp.ge d, wmax
     fl_al: u(M + 5) = if far {
-        nz: u1 = icmp.ne fl3, zero_w
+        nz: u1 = cmp.ne fl3, zero_w
         nzw: u(M + 5) = conv nz
         yield nzw
     } else {
@@ -367,14 +475,14 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
         m1: u(M + 5) = shl one_w, d
         mask: u(M + 5) = sub m1, one_w
         lost: u(M + 5) = and fl3, mask
-        st: u1 = icmp.ne lost, zero_w
+        st: u1 = cmp.ne lost, zero_w
         stw: u(M + 5) = conv st
         al: u(M + 5) = or shifted, stw
         yield al
     }
 
     ; --- add or subtract magnitudes ---
-    diff: u1 = icmp.ne sh, sl
+    diff: u1 = cmp.ne sh, sl
     sum: u(M + 5) = if diff {
         s1: u(M + 5) = sub fh3, fl_al
         yield s1
@@ -382,7 +490,7 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
         s2: u(M + 5) = add fh3, fl_al
         yield s2
     }
-    sum0: u1 = icmp.eq sum, zero_w
+    sum0: u1 = cmp.eq sum, zero_w
     if sum0 {
         pz: u1 = iconst 0
         z2: float(E, M) = pack zero_m, zero_e, pz
@@ -394,7 +502,7 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     carry_bit: u(M + 5) = iconst 1 << (M + 4)
     top_bit: u(M + 5) = iconst 1 << (M + 3)
     c: u(M + 5) = and sum, carry_bit
-    has_c: u1 = icmp.ne c, zero_w
+    has_c: u1 = cmp.ne c, zero_w
     nx: u(E), nf: u(M + 5) = if has_c {
         low: u(M + 5) = and sum, one_w
         sh1: u(M + 5) = shr sum, one_w
@@ -404,11 +512,11 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     } else {
         xl2: u(E), fl2: u(M + 5) = loop(x: u(E) = xh, f: u(M + 5) = sum) {
             t: u(M + 5) = and f, top_bit
-            up: u1 = icmp.ne t, zero_w
+            up: u1 = cmp.ne t, zero_w
             if up {
                 break x, f
             }
-            xmin: u1 = icmp.eq x, one_e
+            xmin: u1 = cmp.eq x, one_e
             if xmin {
                 break x, f
             }
@@ -424,17 +532,17 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     four: u(M + 5) = iconst 4
     rbits: u(M + 5) = and nf, seven
     mant0: u(M + 5) = shr nf, three
-    gt: u1 = icmp.gt rbits, four
-    eq4: u1 = icmp.eq rbits, four
+    gt: u1 = cmp.gt rbits, four
+    eq4: u1 = cmp.eq rbits, four
     odd_w: u(M + 5) = and mant0, one_w
-    odd: u1 = icmp.ne odd_w, zero_w
+    odd: u1 = cmp.ne odd_w, zero_w
     tie_up: u1 = and eq4, odd
     round_up: u1 = or gt, tie_up
     upw: u(M + 5) = conv round_up
     mant1: u(M + 5) = add mant0, upw
     ovf_bit: u(M + 5) = iconst 1 << (M + 1)
     o: u(M + 5) = and mant1, ovf_bit
-    has_o: u1 = icmp.ne o, zero_w
+    has_o: u1 = cmp.ne o, zero_w
     fx: u(E), fm: u(M + 5) = if has_o {
         m2: u(M + 5) = shr mant1, one_w
         x3: u(E) = add nx, one_e
@@ -445,13 +553,13 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
 
     ; --- encode: normal when the hidden bit is up, else subnormal ---
     hid: u(M + 5) = and fm, hidden
-    is_norm: u1 = icmp.ne hid, zero_w
+    is_norm: u1 = cmp.ne hid, zero_w
     ex: u(E) = if is_norm {
         yield fx
     } else {
         yield zero_e
     }
-    inf: u1 = icmp.ge ex, emax
+    inf: u1 = cmp.ge ex, emax
     if inf {
         i: float(E, M) = pack zero_m, emax, sh
         ret i
@@ -482,12 +590,12 @@ fn fnorm(E, M)(m: u(M), e: u(E)) -> (i32, u(M + 5)) {
     zero_e: u(E) = iconst 0
     one32: i32 = iconst 1
     f0: u(M + 5) = conv m
-    subn: u1 = icmp.eq e, zero_e
+    subn: u1 = cmp.eq e, zero_e
     x0: i32 = conv e
     xr: i32, fr: u(M + 5) = if subn {
         xl: i32, fl: u(M + 5) = loop(x: i32 = one32, f: u(M + 5) = f0) {
             h: u(M + 5) = and f, hidden
-            up: u1 = icmp.ne h, zero_w
+            up: u1 = cmp.ne h, zero_w
             if up {
                 break x, f
             }
@@ -519,7 +627,7 @@ fn fpack(E, M)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
     emax: u(E) = iconst (1 << E) - 1
     ; a carry shifts right, folding into sticky
     c: u(M + 5) = and f0, carry_bit
-    has_c: u1 = icmp.ne c, zero_w
+    has_c: u1 = cmp.ne c, zero_w
     x1: i32, f1: u(M + 5) = if has_c {
         low: u(M + 5) = and f0, one_w
         sh1: u(M + 5) = shr f0, one_w
@@ -530,13 +638,13 @@ fn fpack(E, M)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
         yield x0, f0
     }
     ; below the normal range: shift right by the shortfall, with sticky
-    small: u1 = icmp.lt x1, one32
+    small: u1 = cmp.lt x1, one32
     x2: i32, f2: u(M + 5) = if small {
         d32: i32 = sub one32, x1
         wmax32: i32 = iconst M + 5
-        far: u1 = icmp.ge d32, wmax32
+        far: u1 = cmp.ge d32, wmax32
         f3: u(M + 5) = if far {
-            nz: u1 = icmp.ne f1, zero_w
+            nz: u1 = cmp.ne f1, zero_w
             nzw: u(M + 5) = conv nz
             yield nzw
         } else {
@@ -546,7 +654,7 @@ fn fpack(E, M)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
             m1: u(M + 5) = shl one_w, d
             mask: u(M + 5) = sub m1, one_w
             lost: u(M + 5) = and f1, mask
-            st: u1 = icmp.ne lost, zero_w
+            st: u1 = cmp.ne lost, zero_w
             stw: u(M + 5) = conv st
             al: u(M + 5) = or shifted, stw
             yield al
@@ -560,17 +668,17 @@ fn fpack(E, M)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
     four: u(M + 5) = iconst 4
     rbits: u(M + 5) = and f2, seven
     mant0: u(M + 5) = shr f2, three
-    gt: u1 = icmp.gt rbits, four
-    eq4: u1 = icmp.eq rbits, four
+    gt: u1 = cmp.gt rbits, four
+    eq4: u1 = cmp.eq rbits, four
     odd_w: u(M + 5) = and mant0, one_w
-    odd: u1 = icmp.ne odd_w, zero_w
+    odd: u1 = cmp.ne odd_w, zero_w
     tie_up: u1 = and eq4, odd
     round_up: u1 = or gt, tie_up
     upw: u(M + 5) = conv round_up
     mant1: u(M + 5) = add mant0, upw
     ovf_bit: u(M + 5) = iconst 1 << (M + 1)
     o: u(M + 5) = and mant1, ovf_bit
-    has_o: u1 = icmp.ne o, zero_w
+    has_o: u1 = cmp.ne o, zero_w
     x3: i32, fm: u(M + 5) = if has_o {
         m2: u(M + 5) = shr mant1, one_w
         xo: i32 = add x2, one32
@@ -580,9 +688,9 @@ fn fpack(E, M)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
     }
     ; encode: normal when the hidden bit is up, else subnormal
     hid: u(M + 5) = and fm, hidden
-    is_norm: u1 = icmp.ne hid, zero_w
+    is_norm: u1 = cmp.ne hid, zero_w
     emax32: i32 = iconst (1 << E) - 1
-    inf: u1 = icmp.ge x3, emax32
+    inf: u1 = cmp.ge x3, emax32
     big: u1 = and is_norm, inf
     if big {
         i: float(E, M) = pack zero_m, emax, s
@@ -610,22 +718,22 @@ fn mul(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     zero_e: u(E) = iconst 0
     zero_m: u(M) = iconst 0
     s: u1 = xor sa, sb
-    a_top: u1 = icmp.eq ea, emax
-    b_top: u1 = icmp.eq eb, emax
-    a_nan0: u1 = icmp.ne ma, zero_m
+    a_top: u1 = cmp.eq ea, emax
+    b_top: u1 = cmp.eq eb, emax
+    a_nan0: u1 = cmp.ne ma, zero_m
     a_nan: u1 = and a_top, a_nan0
-    b_nan0: u1 = icmp.ne mb, zero_m
+    b_nan0: u1 = cmp.ne mb, zero_m
     b_nan: u1 = and b_top, b_nan0
     any_nan: u1 = or a_nan, b_nan
     if any_nan {
         n1: float(E, M) = fnan(E, M)()
         ret n1
     }
-    ea0: u1 = icmp.eq ea, zero_e
-    ma0: u1 = icmp.eq ma, zero_m
+    ea0: u1 = cmp.eq ea, zero_e
+    ma0: u1 = cmp.eq ma, zero_m
     a_zero: u1 = and ea0, ma0
-    eb0: u1 = icmp.eq eb, zero_e
-    mb0: u1 = icmp.eq mb, zero_m
+    eb0: u1 = cmp.eq eb, zero_e
+    mb0: u1 = cmp.eq mb, zero_m
     b_zero: u1 = and eb0, mb0
     any_inf: u1 = or a_top, b_top
     if any_inf {
@@ -678,7 +786,7 @@ fn mul(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     r1: u64 = add r0, lowsh
     lost: u64 = and low, smask
     zero64: u64 = iconst 0
-    st: u1 = icmp.ne lost, zero64
+    st: u1 = cmp.ne lost, zero64
     stw: u64 = conv st
     r2: u64 = or r1, stw
     r: u(M + 5) = conv r2
@@ -698,19 +806,19 @@ fn div(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     zero_e: u(E) = iconst 0
     zero_m: u(M) = iconst 0
     s: u1 = xor sa, sb
-    a_top: u1 = icmp.eq ea, emax
-    b_top: u1 = icmp.eq eb, emax
-    a_nan0: u1 = icmp.ne ma, zero_m
+    a_top: u1 = cmp.eq ea, emax
+    b_top: u1 = cmp.eq eb, emax
+    a_nan0: u1 = cmp.ne ma, zero_m
     a_nan: u1 = and a_top, a_nan0
-    b_nan0: u1 = icmp.ne mb, zero_m
+    b_nan0: u1 = cmp.ne mb, zero_m
     b_nan: u1 = and b_top, b_nan0
     any_nan: u1 = or a_nan, b_nan
     both_inf: u1 = and a_top, b_top
-    ea0: u1 = icmp.eq ea, zero_e
-    ma0: u1 = icmp.eq ma, zero_m
+    ea0: u1 = cmp.eq ea, zero_e
+    ma0: u1 = cmp.eq ma, zero_m
     a_zero: u1 = and ea0, ma0
-    eb0: u1 = icmp.eq eb, zero_e
-    mb0: u1 = icmp.eq mb, zero_m
+    eb0: u1 = cmp.eq eb, zero_e
+    mb0: u1 = cmp.eq mb, zero_m
     b_zero: u1 = and eb0, mb0
     both_zero: u1 = and a_zero, b_zero
     bad0: u1 = or any_nan, both_inf
@@ -739,7 +847,7 @@ fn div(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     zero32: i32 = iconst 0
     one32: i32 = iconst 1
     steps: i32 = iconst M + 4
-    ge0: u1 = icmp.ge fa, fb
+    ge0: u1 = cmp.ge fa, fb
     q0: u(M + 5) = conv ge0
     r0: u(M + 5) = if ge0 {
         d0: u(M + 5) = sub fa, fb
@@ -748,13 +856,13 @@ fn div(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
         yield fa
     }
     q: u(M + 5), rem: u(M + 5) = loop(i: i32 = zero32, qq: u(M + 5) = q0, rr: u(M + 5) = r0) {
-        done: u1 = icmp.eq i, steps
+        done: u1 = cmp.eq i, steps
         if done {
             break qq, rr
         }
         r2: u(M + 5) = shl rr, one_w
         q2: u(M + 5) = shl qq, one_w
-        ge: u1 = icmp.ge r2, fb
+        ge: u1 = cmp.ge r2, fb
         r3: u(M + 5), q3: u(M + 5) = if ge {
             rs: u(M + 5) = sub r2, fb
             qs: u(M + 5) = or q2, one_w
@@ -765,7 +873,7 @@ fn div(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
         i2: i32 = add i, one32
         continue i2, q3, r3
     }
-    st: u1 = icmp.ne rem, zero_w
+    st: u1 = cmp.ne rem, zero_w
     stw: u(M + 5) = conv st
     f: u(M + 5) = or q, stw
     bias32: i32 = iconst (1 << (E - 1)) - 1
@@ -784,11 +892,11 @@ fn sqrt(E, M)(a: float(E, M)) -> float(E, M) {
     zero_e: u(E) = iconst 0
     zero_m: u(M) = iconst 0
     zero1: u1 = iconst 0
-    a_top: u1 = icmp.eq ea, emax
-    a_nan0: u1 = icmp.ne ma, zero_m
+    a_top: u1 = cmp.eq ea, emax
+    a_nan0: u1 = cmp.ne ma, zero_m
     a_nan: u1 = and a_top, a_nan0
-    ea0: u1 = icmp.eq ea, zero_e
-    ma0: u1 = icmp.eq ma, zero_m
+    ea0: u1 = cmp.eq ea, zero_e
+    ma0: u1 = cmp.eq ma, zero_m
     a_zero: u1 = and ea0, ma0
     if a_zero {
         ret a
@@ -827,7 +935,7 @@ fn sqrt(E, M)(a: float(E, M)) -> float(E, M) {
     zero32: i32 = iconst 0
     steps: i32 = iconst M + 4
     root: u(M + 8), rem: u(M + 8) = loop(i: i32 = zero32, w: u(M + 5) = w0, q: u(M + 8) = zero_r, r: u(M + 8) = zero_r) {
-        done: u1 = icmp.eq i, steps
+        done: u1 = cmp.eq i, steps
         if done {
             break q, r
         }
@@ -841,7 +949,7 @@ fn sqrt(E, M)(a: float(E, M)) -> float(E, M) {
         q2: u(M + 8) = shl q, one_r
         trial0: u(M + 8) = shl q, two_r
         trial: u(M + 8) = or trial0, one_r
-        ge: u1 = icmp.ge r2, trial
+        ge: u1 = cmp.ge r2, trial
         r3: u(M + 8), q3: u(M + 8) = if ge {
             rs: u(M + 8) = sub r2, trial
             qs: u(M + 8) = or q2, one_r
@@ -852,7 +960,7 @@ fn sqrt(E, M)(a: float(E, M)) -> float(E, M) {
         i2: i32 = add i, one32
         continue i2, w3, q3, r3
     }
-    st: u1 = icmp.ne rem, zero_r
+    st: u1 = cmp.ne rem, zero_r
     stw: u(M + 8) = conv st
     rootst: u(M + 8) = or root, stw
     res_f: u(M + 5) = conv rootst
@@ -873,9 +981,9 @@ fn conv(E, M, F, N)(a: float(E, M)) -> float(F, N) {
     emax_n: u(F) = iconst (1 << F) - 1
     zero_en: u(F) = iconst 0
     zero_mn: u(N) = iconst 0
-    a_top: u1 = icmp.eq ea, emax
+    a_top: u1 = cmp.eq ea, emax
     if a_top {
-        a_nan: u1 = icmp.ne ma, zero_m
+        a_nan: u1 = cmp.ne ma, zero_m
         if a_nan {
             n: float(F, N) = fnan(F, N)()
             ret n
@@ -883,8 +991,8 @@ fn conv(E, M, F, N)(a: float(E, M)) -> float(F, N) {
         inf_r: float(F, N) = pack zero_mn, emax_n, sa
         ret inf_r
     }
-    ea0: u1 = icmp.eq ea, zero_e
-    ma0: u1 = icmp.eq ma, zero_m
+    ea0: u1 = cmp.eq ea, zero_e
+    ma0: u1 = cmp.eq ma, zero_m
     a_zero: u1 = and ea0, ma0
     if a_zero {
         z: float(F, N) = pack zero_mn, zero_en, sa
@@ -898,7 +1006,7 @@ fn conv(E, M, F, N)(a: float(E, M)) -> float(F, N) {
     srmask: u64 = iconst (1 << ((M - N - 3) - ((M - N - 3) & ((M - N - 3) >> 63)))) - 1
     zero64: u64 = iconst 0
     lost: u64 = and f64, srmask
-    st: u1 = icmp.ne lost, zero64
+    st: u1 = cmp.ne lost, zero64
     stw: u64 = conv st
     t0: u64 = shr f64, sr
     t1: u64 = shl t0, sl
@@ -921,13 +1029,13 @@ fn fint(E, M)(s: u1, mag: u64) -> float(E, M) {
     one32: i32 = iconst 1
     zero_e: u(E) = iconst 0
     zero_m: u(M) = iconst 0
-    is0: u1 = icmp.eq mag, zero64
+    is0: u1 = cmp.eq mag, zero64
     if is0 {
         z: float(E, M) = pack zero_m, zero_e, s
         ret z
     }
     p: i32 = loop(v: u64 = mag, c: i32 = zero32) {
-        small: u1 = icmp.le v, one64
+        small: u1 = cmp.le v, one64
         if small {
             break c
         }
@@ -936,7 +1044,7 @@ fn fint(E, M)(s: u1, mag: u64) -> float(E, M) {
         continue v2, c2
     }
     thr: i32 = iconst M + 3
-    big: u1 = icmp.gt p, thr
+    big: u1 = cmp.gt p, thr
     t: u64 = if big {
         sh: i32 = sub p, thr
         sh64: u64 = conv sh
@@ -944,7 +1052,7 @@ fn fint(E, M)(s: u1, mag: u64) -> float(E, M) {
         m1: u64 = shl one64, sh64
         mask: u64 = sub m1, one64
         lost: u64 = and mag, mask
-        st: u1 = icmp.ne lost, zero64
+        st: u1 = cmp.ne lost, zero64
         stw: u64 = conv st
         al: u64 = or shifted, stw
         yield al
@@ -964,7 +1072,7 @@ fn fint(E, M)(s: u1, mag: u64) -> float(E, M) {
 fn conv(W, E, M)(a: i(W)) -> float(E, M) {
     zero_i: i(W) = iconst 0
     zero_u: u(W) = iconst 0
-    neg: u1 = icmp.lt a, zero_i
+    neg: u1 = cmp.lt a, zero_i
     au: u(W) = cast a
     mag: u(W) = if neg {
         m: u(W) = sub zero_u, au
@@ -992,19 +1100,19 @@ fn fmag(E, M)(ma: u(M), ea: u(E)) -> u64 {
     bias32: i32 = iconst (1 << (E - 1)) - 1
     e: i32 = sub x, bias32
     zero32: i32 = iconst 0
-    below1: u1 = icmp.lt e, zero32
+    below1: u1 = cmp.lt e, zero32
     if below1 {
         ret zero64
     }
     sixty4: i32 = iconst 64
-    huge: u1 = icmp.ge e, sixty4
+    huge: u1 = cmp.ge e, sixty4
     if huge {
         all: u64 = iconst -1
         ret all
     }
     f64: u64 = conv f
     m32: i32 = iconst M
-    left: u1 = icmp.ge e, m32
+    left: u1 = cmp.ge e, m32
     mag: u64 = if left {
         sh: i32 = sub e, m32
         sh64: u64 = conv sh
@@ -1028,9 +1136,9 @@ fn conv(E, M, W)(a: float(E, M)) -> i(W) {
     zero_r: i(W) = iconst 0
     maxpos: i(W) = iconst (1 << (W - 1)) - 1
     minneg: i(W) = iconst 0 - (1 << (W - 1))
-    a_top: u1 = icmp.eq ea, emax
+    a_top: u1 = cmp.eq ea, emax
     if a_top {
-        a_nan: u1 = icmp.ne ma, zero_m
+        a_nan: u1 = cmp.ne ma, zero_m
         if a_nan {
             ret zero_r
         }
@@ -1039,8 +1147,8 @@ fn conv(E, M, W)(a: float(E, M)) -> i(W) {
         }
         ret maxpos
     }
-    ea0: u1 = icmp.eq ea, zero_e
-    ma0: u1 = icmp.eq ma, zero_m
+    ea0: u1 = cmp.eq ea, zero_e
+    ma0: u1 = cmp.eq ma, zero_m
     a_zero: u1 = and ea0, ma0
     if a_zero {
         ret zero_r
@@ -1049,7 +1157,7 @@ fn conv(E, M, W)(a: float(E, M)) -> i(W) {
     zero64: u64 = iconst 0
     if sa {
         limit_n: u64 = iconst 1 << (W - 1)
-        over_n: u1 = icmp.gt mag, limit_n
+        over_n: u1 = cmp.gt mag, limit_n
         if over_n {
             ret minneg
         }
@@ -1058,7 +1166,7 @@ fn conv(E, M, W)(a: float(E, M)) -> i(W) {
         ret rn
     }
     limit_p: u64 = iconst (1 << (W - 1)) - 1
-    over_p: u1 = icmp.gt mag, limit_p
+    over_p: u1 = cmp.gt mag, limit_p
     if over_p {
         ret maxpos
     }
@@ -1076,9 +1184,9 @@ fn conv(E, M, W)(a: float(E, M)) -> u(W) {
     zero_r: u(W) = iconst 0
     ; all ones, spelled to survive W = 64 (1 << 64 would wrap)
     maxv: u(W) = iconst ((1 << (W - 1)) - 1) * 2 + 1
-    a_top: u1 = icmp.eq ea, emax
+    a_top: u1 = cmp.eq ea, emax
     if a_top {
-        a_nan: u1 = icmp.ne ma, zero_m
+        a_nan: u1 = cmp.ne ma, zero_m
         bad: u1 = or a_nan, sa
         if bad {
             ret zero_r
@@ -1088,18 +1196,141 @@ fn conv(E, M, W)(a: float(E, M)) -> u(W) {
     if sa {
         ret zero_r
     }
-    ea0: u1 = icmp.eq ea, zero_e
-    ma0: u1 = icmp.eq ma, zero_m
+    ea0: u1 = cmp.eq ea, zero_e
+    ma0: u1 = cmp.eq ma, zero_m
     a_zero: u1 = and ea0, ma0
     if a_zero {
         ret zero_r
     }
     mag: u64 = fmag(E, M)(ma, ea)
     limit: u64 = iconst ((1 << (W - 1)) - 1) * 2 + 1
-    over: u1 = icmp.gt mag, limit
+    over: u1 = cmp.gt mag, limit
     if over {
         ret maxv
     }
     r: u(W) = conv mag
+    ret r
+}
+
+; --- comparison ---
+; the ordering of a and b: -1 below, 0 equal (so -0 equals +0), 1 above,
+; 2 unordered (a NaN on either side). The six predicates read it.
+fn fcmp(E, M)(a: float(E, M), b: float(E, M)) -> i32 {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    mb: u(M), eb: u(E), sb: u1 = unpack b
+    emax: u(E) = iconst (1 << E) - 1
+    zero_m: u(M) = iconst 0
+    zero_mag: u(E + M) = iconst 0
+    below: i32 = iconst -1
+    equal: i32 = iconst 0
+    above: i32 = iconst 1
+    unordered: i32 = iconst 2
+    a_top: u1 = cmp.eq ea, emax
+    a_nan0: u1 = cmp.ne ma, zero_m
+    a_nan: u1 = and a_top, a_nan0
+    b_top: u1 = cmp.eq eb, emax
+    b_nan0: u1 = cmp.ne mb, zero_m
+    b_nan: u1 = and b_top, b_nan0
+    any_nan: u1 = or a_nan, b_nan
+    if any_nan {
+        ret unordered
+    }
+    ; a magnitude orders like its bits: exponent above mantissa
+    ma_w: u(E + M) = conv ma
+    mb_w: u(E + M) = conv mb
+    ea_w: u(E + M) = conv ea
+    eb_w: u(E + M) = conv eb
+    msh: u(E + M) = iconst M
+    ea_s: u(E + M) = shl ea_w, msh
+    eb_s: u(E + M) = shl eb_w, msh
+    mag_a: u(E + M) = or ea_s, ma_w
+    mag_b: u(E + M) = or eb_s, mb_w
+    a_zero: u1 = cmp.eq mag_a, zero_mag
+    b_zero: u1 = cmp.eq mag_b, zero_mag
+    both_zero: u1 = and a_zero, b_zero
+    if both_zero {
+        ret equal
+    }
+    ; signed magnitudes as if on a number line: a zero takes the other's side
+    sa_eff: u1 = if a_zero {
+        yield sb
+    } else {
+        yield sa
+    }
+    opposite: u1 = cmp.ne sa_eff, sb
+    if opposite {
+        if sa_eff {
+            ret below
+        }
+        ret above
+    }
+    ; same sign: compare magnitudes, flipped for negatives
+    a_less: u1 = cmp.lt mag_a, mag_b
+    a_more: u1 = cmp.gt mag_a, mag_b
+    if a_less {
+        if sa_eff {
+            ret above
+        }
+        ret below
+    }
+    if a_more {
+        if sa_eff {
+            ret below
+        }
+        ret above
+    }
+    ret equal
+}
+
+fn lt(E, M)(a: float(E, M), b: float(E, M)) -> u1 {
+    t: i32 = fcmp(E, M)(a, b)
+    below: i32 = iconst -1
+    r: u1 = cmp.eq t, below
+    ret r
+}
+fn le(E, M)(a: float(E, M), b: float(E, M)) -> u1 {
+    t: i32 = fcmp(E, M)(a, b)
+    zero: i32 = iconst 0
+    r: u1 = cmp.le t, zero
+    ret r
+}
+fn gt(E, M)(a: float(E, M), b: float(E, M)) -> u1 {
+    t: i32 = fcmp(E, M)(a, b)
+    one: i32 = iconst 1
+    r: u1 = cmp.eq t, one
+    ret r
+}
+fn ge(E, M)(a: float(E, M), b: float(E, M)) -> u1 {
+    t: i32 = fcmp(E, M)(a, b)
+    ; 0 or 1, but not -1 or 2: as unsigned, at most 1
+    tu: u32 = cast t
+    one: u32 = iconst 1
+    r: u1 = cmp.le tu, one
+    ret r
+}
+fn eq(E, M)(a: float(E, M), b: float(E, M)) -> u1 {
+    t: i32 = fcmp(E, M)(a, b)
+    zero: i32 = iconst 0
+    r: u1 = cmp.eq t, zero
+    ret r
+}
+fn ne(E, M)(a: float(E, M), b: float(E, M)) -> u1 {
+    t: i32 = fcmp(E, M)(a, b)
+    zero: i32 = iconst 0
+    r: u1 = cmp.ne t, zero
+    ret r
+}
+
+; --- sign ---
+fn neg(E, M)(a: float(E, M)) -> float(E, M) {
+    s: u1 = get a, sign
+    one: u1 = iconst 1
+    ns: u1 = xor s, one
+    r: float(E, M) = set a, sign, ns
+    ret r
+}
+fn abs(E, M)(a: float(E, M)) -> float(E, M) {
+    zero: u1 = iconst 0
+    r: float(E, M) = set a, sign, zero
     ret r
 }

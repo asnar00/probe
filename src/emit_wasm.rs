@@ -276,7 +276,7 @@ impl WEmit<'_> {
             self.konst(r, k)?;
             self.op(&format!("{}.shr_s", p), None)
         } else {
-            self.konst(r, (1i64 << n) - 1)?;
+            self.konst(r, ((1u64 << n) - 1) as i64)?;
             self.op(&format!("{}.and", p), None)
         }
     }
@@ -334,7 +334,7 @@ impl WEmit<'_> {
         }
         let cr = Repr::U(c);
         if w < c {
-            self.konst(cr, (1i64 << w) - 1)?;
+            self.konst(cr, ((1u64 << w) - 1) as i64)?;
             self.op(&format!("{}.and", p), None)?;
         }
         if off > 0 {
@@ -467,6 +467,17 @@ fn native_seq(op: Native, l0: i64, l1: i64) -> Vec<(&'static str, Option<i64>)> 
             seq.extend([(t, None), (to_i, None)]);
             seq
         }
+        Native::Cmp { cond, bits } => {
+            let reinterp = if bits == 32 { "f32.reinterpret_i32" } else { "f64.reinterpret_i64" };
+            let t: &'static str = Box::leak(format!("f{}.{}", bits, cond.name()).into_boxed_str());
+            vec![
+                ("local.get {}", Some(l0)),
+                (reinterp, None),
+                ("local.get {}", Some(l1)),
+                (reinterp, None),
+                (t, None),
+            ]
+        }
         Native::Conv { from, to } => {
             let reinterp_in = |k: Kind| if k.bits() == 32 { "f32.reinterpret_i32" } else { "f64.reinterpret_i64" };
             let reinterp_out = |k: Kind| if k.bits() == 32 { "i32.reinterpret_f32" } else { "i64.reinterpret_f64" };
@@ -521,6 +532,8 @@ fn fp_keys(op: Native) -> (&'static str, &'static str, &'static str) {
         FOp::Mul => "mul",
         FOp::Div => "div",
         FOp::Sqrt => "sqrt",
+        FOp::Neg => "neg",
+        FOp::Abs => "abs",
     };
     let fop: &'static str = Box::leak(format!("f{}.{}", bits, name).into_boxed_str());
     if bits == 32 {
@@ -624,7 +637,7 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             let w = e.func.width(fty).unwrap();
             let r = e.repr(*src);
             let c = r.container();
-            let mask = if w >= 64 { -1i64 } else { (1i64 << w) - 1 } << off;
+            let mask = if w >= 64 { -1i64 } else { ((1u64 << w) - 1) as i64 } << off;
             e.get(*src)?;
             e.konst(r, !mask)?;
             e.op(&format!("{}.and", pfx(r)), None)?;

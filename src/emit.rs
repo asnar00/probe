@@ -858,12 +858,25 @@ fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
         (FOp::Mul, 32) => ("fmov {s}, {w}", "fmul {s}, {s}, {s}", "fmov {w}, {s}"),
         (FOp::Div, 32) => ("fmov {s}, {w}", "fdiv {s}, {s}, {s}", "fmov {w}, {s}"),
         (FOp::Sqrt, 32) => ("fmov {s}, {w}", "fsqrt {s}, {s}", "fmov {w}, {s}"),
+        (FOp::Neg, 32) => ("fmov {s}, {w}", "fneg {s}, {s}", "fmov {w}, {s}"),
+        (FOp::Abs, 32) => ("fmov {s}, {w}", "fabs {s}, {s}", "fmov {w}, {s}"),
         (FOp::Add, _) => ("fmov {d}, {x}", "fadd {d}, {d}, {d}", "fmov {x}, {d}"),
         (FOp::Sub, _) => ("fmov {d}, {x}", "fsub {d}, {d}, {d}", "fmov {x}, {d}"),
         (FOp::Mul, _) => ("fmov {d}, {x}", "fmul {d}, {d}, {d}", "fmov {x}, {d}"),
         (FOp::Div, _) => ("fmov {d}, {x}", "fdiv {d}, {d}, {d}", "fmov {x}, {d}"),
         (FOp::Sqrt, _) => ("fmov {d}, {x}", "fsqrt {d}, {d}", "fmov {x}, {d}"),
+        (FOp::Neg, _) => ("fmov {d}, {x}", "fneg {d}, {d}", "fmov {x}, {d}"),
+        (FOp::Abs, _) => ("fmov {d}, {x}", "fabs {d}, {d}", "fmov {x}, {d}"),
     }
+}
+
+/// cset's enum choices, in the template's order, so a sequence can name
+/// a condition without an Encoder in hand
+const CSET_NAMED: &str = CSET;
+const CSET_CHOICES: [&str; 10] = ["eq", "ne", "lt", "le", "gt", "ge", "lo", "ls", "hi", "hs"];
+const CSET_INDEX: [i64; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+fn cc_index(cc: &str) -> usize {
+    CSET_CHOICES.iter().position(|c| *c == cc).unwrap()
 }
 
 /// the instruction sequence for a platform op: integer registers in
@@ -881,6 +894,28 @@ fn native_seq(op: Native, rd: i64, rl: i64, rr: i64) -> Vec<(&'static str, Vec<i
             }
             seq.push((to_i, vec![rd, 16]));
             seq
+        }
+        Native::Cmp { cond, bits } => {
+            // fcmp sets NZCV; these conditions read it as IEEE wants
+            let (fmov_in, fcmp) = if bits == 32 {
+                ("fmov {s}, {w}", "fcmp {s}, {s}")
+            } else {
+                ("fmov {d}, {x}", "fcmp {d}, {d}")
+            };
+            let cc = match cond {
+                Cond::Eq => "eq",
+                Cond::Ne => "ne",
+                Cond::Lt => "lo",
+                Cond::Le => "ls",
+                Cond::Gt => "gt",
+                Cond::Ge => "ge",
+            };
+            vec![
+                (fmov_in, vec![16, rl]),
+                (fmov_in, vec![17, rr]),
+                (fcmp, vec![16, 17]),
+                (CSET_NAMED, vec![rd, CSET_INDEX[cc_index(cc)]]),
+            ]
         }
         Native::Conv { from, to } => {
             let fmov_in = |k: Kind| if k.bits() == 32 { "fmov {s}, {w}" } else { "fmov {d}, {x}" };
@@ -1422,7 +1457,7 @@ entry:
         let j = jit(r"
 fn mask(a: i64, b: i64) -> i64 {
 entry:
-    lt: u1 = icmp.lt a, b
+    lt: u1 = cmp.lt a, b
     s: i1 = cast lt
     m: i64 = conv s
     ret m
@@ -1461,7 +1496,7 @@ entry:
     jmp loop(zero, zero32)
 loop(i: i64, acc: i32):
     four: i64 = iconst 4
-    done: u1 = icmp.ge i, four
+    done: u1 = cmp.ge i, four
     br done, exit, body
 body:
     off: i64 = mul i, four
@@ -1565,7 +1600,7 @@ entry:
             }
             for (name, _) in &conds {
                 src.push_str(&format!(
-                    "fn c_{n}(a: {t}, b: {t}) -> u1 {{\nentry:\n    r: u1 = icmp.{n} a, b\n    ret r\n}}\n",
+                    "fn c_{n}(a: {t}, b: {t}) -> u1 {{\nentry:\n    r: u1 = cmp.{n} a, b\n    ret r\n}}\n",
                     n = name,
                     t = ty
                 ));
@@ -1606,7 +1641,7 @@ entry:
                     for &b in &vals {
                         let want = fold_cmp(*cond, r, a, b) as i64;
                         let got = native_result(Repr::U(1), j.call(&format!("c_{}", name), &[a, b]).unwrap());
-                        assert_eq!(got, want, "{} icmp.{} {} {}", ty, name, a, b);
+                        assert_eq!(got, want, "{} cmp.{} {} {}", ty, name, a, b);
                     }
                 }
             }
@@ -2149,6 +2184,65 @@ entry:
                 }
             }
         }
+        let check = |name: &str, arg: i64, want: u64, r: Repr, e: u32, m: u32| {
+            let got = native_result(r, j.call(name, &[arg]).unwrap()) as u64;
+            if e > 0 && is_nan_bits(e, m, want) {
+                assert!(is_nan_bits(e, m, got), "{}({:#x}): got {:#x}, want NaN", name, arg, got);
+            } else {
+                assert_eq!(got, want, "{}({:#x})", name, arg);
+            }
+        };
+        // --- comparisons, neg, abs: f32/f64 against Rust, fp8 exhaustively
+        // against the exact values ---
+        let conds = ["eq", "ne", "lt", "le", "gt", "ge"];
+        let judge = |c: &str, o: Option<std::cmp::Ordering>| -> u64 {
+            use std::cmp::Ordering::*;
+            (match (c, o) {
+                ("eq", Some(Equal)) | ("le", Some(Equal)) | ("ge", Some(Equal)) => true,
+                ("lt", Some(Less)) | ("le", Some(Less)) => true,
+                ("gt", Some(Greater)) | ("ge", Some(Greater)) => true,
+                ("ne", o) => o != Some(Equal),
+                _ => false,
+            }) as u64
+        };
+        let v32 = patterns(8, 23, 60, &mut rnd);
+        for &a in &v32 {
+            let fa = f32::from_bits(a as u32);
+            check("neg32", a as i64, (-fa).to_bits() as u64, Repr::U(32), 8, 23);
+            check("abs32", a as i64, fa.abs().to_bits() as u64, Repr::U(32), 8, 23);
+            for &b in &v32 {
+                let fb = f32::from_bits(b as u32);
+                for c in conds {
+                    let want = judge(c, fa.partial_cmp(&fb));
+                    let got = native_result(Repr::U(1), j.call(&format!("{}32", c), &[a as i64, b as i64]).unwrap()) as u64;
+                    assert_eq!(got, want, "f32 {:#x} {} {:#x}", a, c, b);
+                }
+            }
+        }
+        let v64 = patterns(11, 52, 60, &mut rnd);
+        for &a in &v64 {
+            let fa = f64::from_bits(a);
+            check("abs64", a as i64, fa.abs().to_bits(), Repr::U(64), 11, 52);
+            for &b in &v64 {
+                let fb = f64::from_bits(b);
+                for c in ["lt", "ge", "eq"] {
+                    let want = judge(c, fa.partial_cmp(&fb));
+                    let got = native_result(Repr::U(1), j.call(&format!("{}64", c), &[a as i64, b as i64]).unwrap()) as u64;
+                    assert_eq!(got, want, "f64 {:#x} {} {:#x}", a, c, b);
+                }
+            }
+        }
+        for a in 0..256u64 {
+            for b in 0..256u64 {
+                let (fa, fb) = (to_f64(4, 3, a), to_f64(4, 3, b));
+                for c in ["lt", "gt"] {
+                    let want = judge(c, fa.partial_cmp(&fb));
+                    let got = native_result(Repr::U(1), j.call(&format!("{}8", c), &[a as i64, b as i64]).unwrap()) as u64;
+                    assert_eq!(got, want, "fp8 {:#x} {} {:#x}", a, c, b);
+                }
+            }
+        }
+
         // --- conversions: f32/f64 and the integer kinds against Rust's `as`
         // (round to nearest in, truncate-saturate-NaN-to-0 out) ---
         let v32 = patterns(8, 23, 200, &mut rnd);
@@ -2160,14 +2254,6 @@ entry:
                 v.push((rnd() >> (rnd() % 64)) as i64);
             }
             v
-        };
-        let check = |name: &str, arg: i64, want: u64, r: Repr, e: u32, m: u32| {
-            let got = native_result(r, j.call(name, &[arg]).unwrap()) as u64;
-            if e > 0 && is_nan_bits(e, m, want) {
-                assert!(is_nan_bits(e, m, got), "{}({:#x}): got {:#x}, want NaN", name, arg, got);
-            } else {
-                assert_eq!(got, want, "{}({:#x})", name, arg);
-            }
         };
         for &a in &v32 {
             let f = f32::from_bits(a as u32);

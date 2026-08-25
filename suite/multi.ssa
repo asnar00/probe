@@ -16,7 +16,7 @@ entry:
 
 fn minmax(a: i64, b: i64) -> (i64, i64) {
 entry:
-    lt: u1 = icmp.lt a, b
+    lt: u1 = cmp.lt a, b
     br lt, ab, ba
 ab:
     ret a, b

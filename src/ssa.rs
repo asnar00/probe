@@ -748,7 +748,7 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
             }
             c if c.is_ascii_alphabetic() || c == '_' => {
                 let mut s = lex_name(&mut chars);
-                // opcode suffixes like icmp.slt lex as one identifier
+                // opcode suffixes like cmp.slt lex as one identifier
                 while chars.peek() == Some(&'.') {
                     chars.next();
                     s.push('.');
@@ -1958,7 +1958,7 @@ impl Parser {
                 rhs,
             });
         }
-        if let Some(cc) = op.strip_prefix("icmp.") {
+        if let Some(cc) = op.strip_prefix("cmp.") {
             let cond = CONDS
                 .iter()
                 .find(|(n, _)| *n == cc)
@@ -1967,6 +1967,15 @@ impl Parser {
             let lhs = self.expect_value(scope)?;
             self.expect(Tok::Comma)?;
             let rhs = self.expect_value(scope)?;
+            // on a pack, `cmp.lt` is the library's `lt` for that type
+            if scope.values[lhs.0 as usize].ty.is_pack() {
+                let callee = self.dispatch(cond.name(), scope.values[lhs.0 as usize].ty, scope.values[dst.0 as usize].ty)?;
+                return Ok(Inst::Call {
+                    dsts: vec![dst],
+                    callee,
+                    args: vec![lhs, rhs],
+                });
+            }
             return Ok(Inst::ICmp {
                 cond,
                 dst,
@@ -2652,7 +2661,7 @@ impl Function {
                 lhs,
                 rhs,
             } => format!(
-                "{} = icmp.{} {}, {}",
+                "{} = cmp.{} {}, {}",
                 self.fmt_def(*dst),
                 cond.name(),
                 self.fmt_value(*lhs),
@@ -2891,9 +2900,9 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             let ok = match ty {
                 Type::Int { bits, .. } if bits < 64 => {
                     // either reading of the literal must fit: signed or unsigned
-                    let lo = -(1i64 << (bits - 1));
-                    let hi = 1i64 << bits;
-                    (lo..hi).contains(imm)
+                    let lo = -(1i128 << (bits - 1));
+                    let hi = 1i128 << bits;
+                    (lo..hi).contains(&(*imm as i128))
                 }
                 // ptr constants are raw addresses (MMIO, fixed buffers) —
                 // meaningful wherever ptr is an address-space index
@@ -2937,7 +2946,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             let (td, tl, tr) = (func.ty(*dst), func.ty(*lhs), func.ty(*rhs));
             if td != Type::U1 {
                 errs.push(ctx(format!(
-                    "icmp.{} result {} must be u1, not {}",
+                    "cmp.{} result {} must be u1, not {}",
                     cond.name(),
                     name(*dst),
                     tn(td)
@@ -2945,7 +2954,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             }
             if tl != tr || !(tl.is_int() || tl == Type::Ptr) {
                 errs.push(ctx(format!(
-                    "icmp.{}: operands must share an integer or ptr type; got {} and {}",
+                    "cmp.{}: operands must share an integer or ptr type; got {} and {}",
                     cond.name(),
                     tn(tl),
                     tn(tr)
@@ -3195,7 +3204,7 @@ entry:
     zero: i64 = iconst 0
     jmp loop(zero, zero)
 loop(i: i64, acc: i64):
-    done: u1 = icmp.ge i, n
+    done: u1 = cmp.ge i, n
     br done, exit, body
 body:
     acc2: i64 = add acc, i
@@ -3325,7 +3334,7 @@ entry:
 fn sum(n: i64) -> i64 {
     zero: i64 = iconst 0
     r: i64 = loop(i: i64 = zero, acc: i64 = zero) {
-        done: u1 = icmp.ge i, n
+        done: u1 = cmp.ge i, n
         if done {
             break acc
         }
@@ -3465,9 +3474,9 @@ entry:
         let m = parse("fn f(p: ptr) -> u16 {\n    b: u16 = load p\n    ret b\n}").unwrap();
         assert!(verify(&m).is_ok());
         // icmp results are u1, and iconst must fit
-        let m = parse("fn f(a: u5) -> u1 {\n    k: u5 = iconst 40\n    c: u1 = icmp.lt a, k\n    ret c\n}").unwrap();
+        let m = parse("fn f(a: u5) -> u1 {\n    k: u5 = iconst 40\n    c: u1 = cmp.lt a, k\n    ret c\n}").unwrap();
         assert!(verify(&m).is_err());
-        let m = parse("fn f(a: i5) -> u1 {\n    k: i5 = iconst -16\n    c: u1 = icmp.lt a, k\n    ret c\n}").unwrap();
+        let m = parse("fn f(a: i5) -> u1 {\n    k: i5 = iconst -16\n    c: u1 = cmp.lt a, k\n    ret c\n}").unwrap();
         assert!(verify(&m).is_ok());
     }
 
@@ -3544,7 +3553,7 @@ type word(N) = u(N)
 fn wrap(N)(a: word(N), b: word(N)) -> word(N) {
     s: word(N) = add a, b
     top: word(N) = iconst (1 << (N - 1)) - 1
-    big: u1 = icmp.gt s, top
+    big: u1 = cmp.gt s, top
     r: word(N) = if big {
         d: word(N) = halve(N)(s)
         yield d

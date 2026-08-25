@@ -4,7 +4,7 @@ entry:
     jmp loop(a, b)
 loop(x: i64, y: i64):
     zero: i64 = iconst 0
-    done: u1 = icmp.eq y, zero
+    done: u1 = cmp.eq y, zero
     br done, exit, step
 step:
     r: i64 = rem x, y

@@ -79,9 +79,9 @@ Backend sketch:
 - An `alloca`-style op for function-local scratch memory (today all memory
   comes from the caller).
 - Floats: `suite/float.ssa` has generic add/sub/mul/div over packs, and
-  the platform maps the f32/f64 instances to hardware, and sqrt and conv
-  the same. Comparisons (`icmp` on floats by the same dispatch) and fma
-  belong beside them in the same style, each with its platform entry. f16 on arm64 (FEAT_FP16) is one table line plus the `h` templates.
+  the platform maps the f32/f64 instances to hardware; sqrt, neg, abs,
+  the comparisons, and conv the same. fma and min/max (with their NaN
+  rules) belong beside them in the same style. f16 on arm64 (FEAT_FP16) is one table line plus the `h` templates.
 - Platforms as data: the native table lives in `src/platform.rs`; a
   per-target file listing native instantiations next to the probe seed
   would let a target be described entirely outside the compiler.
@@ -90,7 +90,7 @@ Backend sketch:
   module-level DCE.
 - Memory for odd widths: a `u5` can't be loaded or stored; a load of the
   containing byte plus `bitcast`/`get` covers it by hand for now.
-- Field-named pack construction; `icmp.eq` on packs without a `bitcast`.
+- Field-named pack construction; `cmp.eq` on packs without a `bitcast`.
 - Generic instantiation is by re-parsing the template per instance; a
   generic that is instantiated many times pays the parse each time.
 - Narrow shifts by the width or more are unspecified (the hardware shift

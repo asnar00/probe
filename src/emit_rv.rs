@@ -408,6 +408,27 @@ fn native_seq(op: Native, rd: i64, rl: i64, rr: i64) -> Vec<(&'static str, Vec<i
             }
             seq
         }
+        Native::Cmp { cond, bits } => {
+            let fmv_in = if bits == 32 { "fmv.w.x {f}, {r}" } else { "fmv.d.x {f}, {r}" };
+            let (feq, flt, fle) = if bits == 32 {
+                ("feq.s {r}, {f}, {f}", "flt.s {r}, {f}, {f}", "fle.s {r}, {f}, {f}")
+            } else {
+                ("feq.d {r}, {f}, {f}", "flt.d {r}, {f}, {f}", "fle.d {r}, {f}, {f}")
+            };
+            let mut seq = vec![(fmv_in, vec![0, rl]), (fmv_in, vec![1, rr])];
+            match cond {
+                Cond::Eq => seq.push((feq, vec![rd, 0, 1])),
+                Cond::Ne => {
+                    seq.push((feq, vec![rd, 0, 1]));
+                    seq.push(("xori {r}, {r}, {i -2048..2047}", vec![rd, rd, 1]));
+                }
+                Cond::Lt => seq.push((flt, vec![rd, 0, 1])),
+                Cond::Le => seq.push((fle, vec![rd, 0, 1])),
+                Cond::Gt => seq.push((flt, vec![rd, 1, 0])),
+                Cond::Ge => seq.push((fle, vec![rd, 1, 0])),
+            }
+            seq
+        }
         Native::Conv { from, to } => {
             let fmv_in = |k: Kind| if k.bits() == 32 { "fmv.w.x {f}, {r}" } else { "fmv.d.x {f}, {r}" };
             let fmv_out = |k: Kind| if k.bits() == 32 { "fmv.x.w {r}, {f}" } else { "fmv.x.d {r}, {f}" };
@@ -451,11 +472,15 @@ fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
         (FOp::Mul, 32) => "fmul.s {f}, {f}, {f}",
         (FOp::Div, 32) => "fdiv.s {f}, {f}, {f}",
         (FOp::Sqrt, 32) => "fsqrt.s {f}, {f}",
+        (FOp::Neg, 32) => "fneg.s {f}, {f}",
+        (FOp::Abs, 32) => "fabs.s {f}, {f}",
         (FOp::Add, _) => "fadd.d {f}, {f}, {f}",
         (FOp::Sub, _) => "fsub.d {f}, {f}, {f}",
         (FOp::Mul, _) => "fmul.d {f}, {f}, {f}",
         (FOp::Div, _) => "fdiv.d {f}, {f}, {f}",
         (FOp::Sqrt, _) => "fsqrt.d {f}, {f}",
+        (FOp::Neg, _) => "fneg.d {f}, {f}",
+        (FOp::Abs, _) => "fabs.d {f}, {f}",
     };
     if bits == 32 {
         ("fmv.w.x {f}, {r}", fop, "fmv.x.w {r}, {f}")
@@ -596,7 +621,7 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             let rv = e.src_reg(*val, T1)?;
             let rd = e.dst_reg(*dst, T0);
             e.place(T2, rv, off, w)?; // the new field, in position
-            let mask = if w >= 64 { -1i64 } else { (1i64 << w) - 1 } << off;
+            let mask = if w >= 64 { -1i64 } else { ((1u64 << w) - 1) as i64 } << off;
             e.iconst(T1, !mask)?;
             e.emit("and {r}, {r}, {r}", &[T1, rs, T1])?;
             e.emit("or {r}, {r}, {r}", &[rd, T1, T2])?;

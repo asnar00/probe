@@ -35,7 +35,7 @@ entry:
     jmp loop(zero, zero32)
 loop(i: i64, acc: i32):
     four: i64 = iconst 4
-    done: u1 = icmp.ge i, four
+    done: u1 = cmp.ge i, four
     br done, exit, body
 body:
     off: i64 = mul i, four
@@ -54,7 +54,7 @@ entry:
     zero: i64 = iconst 0
     jmp loop(zero, zero)
 loop(i: i64, acc: i64):
-    done: u1 = icmp.ge i, n
+    done: u1 = cmp.ge i, n
     br done, exit, body
 body:
     eight: i64 = iconst 8

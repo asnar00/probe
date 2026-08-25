@@ -102,6 +102,22 @@ inst f64.mul :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
 inst f64.div :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
 inst f32.sqrt :: sig=(param f32) (result f32) :: pre=local.get 0
 inst f64.sqrt :: sig=(param f64) (result f64) :: pre=local.get 0
+inst f32.neg :: sig=(param f32) (result f32) :: pre=local.get 0
+inst f64.neg :: sig=(param f64) (result f64) :: pre=local.get 0
+inst f32.abs :: sig=(param f32) (result f32) :: pre=local.get 0
+inst f64.abs :: sig=(param f64) (result f64) :: pre=local.get 0
+inst f32.eq :: sig=(param f32 f32) (result i32) :: pre=local.get 0, local.get 1
+inst f32.ne :: sig=(param f32 f32) (result i32) :: pre=local.get 0, local.get 1
+inst f32.lt :: sig=(param f32 f32) (result i32) :: pre=local.get 0, local.get 1
+inst f32.le :: sig=(param f32 f32) (result i32) :: pre=local.get 0, local.get 1
+inst f32.gt :: sig=(param f32 f32) (result i32) :: pre=local.get 0, local.get 1
+inst f32.ge :: sig=(param f32 f32) (result i32) :: pre=local.get 0, local.get 1
+inst f64.eq :: sig=(param f64 f64) (result i32) :: pre=local.get 0, local.get 1
+inst f64.ne :: sig=(param f64 f64) (result i32) :: pre=local.get 0, local.get 1
+inst f64.lt :: sig=(param f64 f64) (result i32) :: pre=local.get 0, local.get 1
+inst f64.le :: sig=(param f64 f64) (result i32) :: pre=local.get 0, local.get 1
+inst f64.gt :: sig=(param f64 f64) (result i32) :: pre=local.get 0, local.get 1
+inst f64.ge :: sig=(param f64 f64) (result i32) :: pre=local.get 0, local.get 1
 inst f64.promote_f32 :: sig=(param f32) (result f64) :: pre=local.get 0
 inst f32.demote_f64 :: sig=(param f64) (result f32) :: pre=local.get 0
 inst f32.convert_i32_s :: sig=(param i32) (result f32) :: pre=local.get 0

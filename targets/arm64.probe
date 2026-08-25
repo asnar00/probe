@@ -159,6 +159,14 @@ inst fmul {d}, {d}, {d}
 inst fdiv {d}, {d}, {d}
 inst fsqrt {s}, {s}
 inst fsqrt {d}, {d}
+inst fneg {s}, {s}
+inst fneg {d}, {d}
+inst fabs {s}, {s}
+inst fabs {d}, {d}
+; compare sets NZCV; cset with lo/ls/gt/ge/eq/ne reads it as IEEE wants
+; (unordered is false for all but ne)
+inst fcmp {s}, {s}
+inst fcmp {d}, {d}
 ; conversions: between the two float widths, and to and from integers
 ; (round to nearest for int -> float, truncate toward zero, saturating,
 ; for float -> int)

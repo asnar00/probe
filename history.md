@@ -117,7 +117,7 @@ which was which — before `:` a value is defined, after `:` a type is
 named, after `call` a function, after `jmp`/`br` a block, and a label is
 a name opening a line and followed by `:` — so the lexer now has one word
 token and the parser's prescans apply that rule. `fn sum(n: i64)`,
-`done: u1 = icmp.ge i, n`, `br done, exit, body`. Old prefixes are
+`done: u1 = cmp.ge i, n`, `br done, exit, body`. Old prefixes are
 rejected with a message. Suite, examples, tests, harness, and docs
 converted; 162/162 on all four paths.
 
@@ -133,7 +133,7 @@ skips them. `i32`/`i64` keep the hardware's mod-32/64.
 ### Any-width integers and packs — `542b9a5` · 2026-08-25
 
 Types are now `iN`/`uN` for any N from 1 to 64, and signedness lives in
-the type: one `div`, one `rem`, one `shr`, one `icmp.lt`, `ext` fills by
+the type: one `div`, one `rem`, one `shr`, one `cmp.lt`, `ext` fills by
 the source's signedness, `bitcast` reinterprets. `u1` is the boolean.
 `pack rgb { r: u5, g: u6, b: u5 }` packs bitfields lowest-bits-first
 into ≤64 bits — nestable, storable at 8/16/32/64 bits — with `pack`,

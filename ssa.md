@@ -15,7 +15,7 @@ things we can learn ARM64 encodings for by probing LLVM.
   `name: ty = op ...` — the same form as function and block parameters. Opcodes
   are pure operations with no type suffixes, which keeps the opcode set small;
   the verifier checks that operand and result types are consistent. Signedness
-  is part of the type too: there is one `div`, one `shr`, one `icmp.lt`, and
+  is part of the type too: there is one `div`, one `shr`, one `cmp.lt`, and
   `i5` versus `u5` says which one you mean. And there is one `add`: on an
   integer it is the integer instruction, on a `float(8, 23)` it is whatever
   the library's `add(E, M)` says — or the platform's `fadd`.
@@ -123,13 +123,15 @@ Division by zero is target-dependent (wasm traps, the CPUs return 0);
 
 ### Comparison
 
-Operands must share an integer or `ptr` type; the result is `u1`. The
-condition is part of the opcode; the ordering is signed for `iN` and
-unsigned for `uN` and `ptr`.
+Operands must share a type; the result is `u1`. The condition is part of
+the opcode; on integers the ordering is signed for `iN` and unsigned for
+`uN` and `ptr`. On a pack, `cmp.lt` is the library's `lt` for that type
+(the float library's six predicates give IEEE's answers: everything but
+`ne` is false when a NaN is involved, and -0 equals +0).
 
 ```
-c: u1 = icmp.eq a, b    ; also: ne
-c: u1 = icmp.lt a, b    ; also: le gt ge
+c: u1 = cmp.eq a, b    ; also: ne
+c: u1 = cmp.lt a, b    ; also: le gt ge
 ```
 
 ### Conversion and reinterpretation
@@ -282,8 +284,8 @@ adds operations, and a platform adds instructions.
 A library instantiation defines what an operation *means*; a platform
 says which of them the target has hardware for. Each backend carries a
 table of generic instantiations it implements natively — today
-`add`, `sub`, `mul`, `div`, and `sqrt` on `float(8, 23)` and
-`float(11, 52)`, and `conv` between those and to and from 32/64-bit
+`add`, `sub`, `mul`, `div`, `sqrt`, `neg`, `abs`, the six comparisons,
+on `float(8, 23)` and `float(11, 52)`, and `conv` between those and to and from 32/64-bit
 integers (float to int stays in the library on riscv64, whose hardware
 gives the maximum integer for NaN where the library gives 0), on all
 three targets — and when it
@@ -303,7 +305,7 @@ entry:
     zero: i64 = iconst 0
     jmp loop(zero, zero)
 loop(i: i64, acc: i64):
-    done: u1 = icmp.ge i, n
+    done: u1 = cmp.ge i, n
     br done, exit, body
 body:
     acc2: i64 = add acc, i
@@ -379,7 +381,7 @@ to a join block whose parameters are the bound results.
 
 ```
 sum: i64 = loop(i: i64 = zero, acc: i64 = zero) {
-    done: u1 = icmp.ge i, n
+    done: u1 = cmp.ge i, n
     if done {
         break acc              ; exit the loop, yielding its results
     }

@@ -18,7 +18,7 @@
 fn agcd(a: int, b: int) -> int {
     g: int = loop(x: int = a, y: int = b) {
         zero: int = iconst 0
-        done: u1 = icmp.eq y, zero
+        done: u1 = cmp.eq y, zero
         if done {
             break x
         }
@@ -31,7 +31,7 @@ fn agcd(a: int, b: int) -> int {
 fn asum(n: int) -> int {
     zero: int = iconst 0
     r: int = loop(i: int = zero, acc: int = zero) {
-        done: u1 = icmp.ge i, n
+        done: u1 = cmp.ge i, n
         if done {
             break acc
         }
@@ -45,7 +45,7 @@ fn asum(n: int) -> int {
 
 fn afib(n: int) -> int {
     two: int = iconst 2
-    small: u1 = icmp.lt n, two
+    small: u1 = cmp.lt n, two
     if small {
         ret n
     }
@@ -60,11 +60,11 @@ fn afib(n: int) -> int {
 
 ; abstract and concrete types mix freely: u1 conditions, int arithmetic
 fn aclamp(v: int, lo: int, hi: int) -> int {
-    below: u1 = icmp.lt v, lo
+    below: u1 = cmp.lt v, lo
     r: int = if below {
         yield lo
     } else {
-        above: u1 = icmp.gt v, hi
+        above: u1 = cmp.gt v, hi
         s: int = if above {
             yield hi
         } else {

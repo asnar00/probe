@@ -11,7 +11,7 @@
 //! against; `--soft` compiles with an empty platform so both paths stay
 //! comparable.
 
-use crate::ssa::{Function, Module, Type};
+use crate::ssa::{Cond, Function, Module, Type};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -22,12 +22,14 @@ pub enum FOp {
     Mul,
     Div,
     Sqrt,
+    Neg,
+    Abs,
 }
 
 impl FOp {
     pub fn arity(self) -> usize {
         match self {
-            FOp::Sqrt => 1,
+            FOp::Sqrt | FOp::Neg | FOp::Abs => 1,
             _ => 2,
         }
     }
@@ -66,6 +68,9 @@ pub enum Native {
     Arith { op: FOp, bits: u32 },
     /// a value conversion between kinds
     Conv { from: Kind, to: Kind },
+    /// an IEEE comparison of two floats to a u1 (unordered is false,
+    /// except for ne)
+    Cmp { cond: Cond, bits: u32 },
 }
 
 pub struct Platform {
@@ -98,15 +103,33 @@ impl Platform {
             return Platform::none();
         }
         Platform {
-            ops: [("add", FOp::Add), ("sub", FOp::Sub), ("mul", FOp::Mul), ("div", FOp::Div), ("sqrt", FOp::Sqrt)]
-                .into_iter()
-                .flat_map(|(name, op)| {
-                    [
-                        (name, vec![8, 23], Native::Arith { op, bits: 32 }),
-                        (name, vec![11, 52], Native::Arith { op, bits: 64 }),
-                    ]
-                })
-                .collect(),
+            ops: [
+                ("add", FOp::Add),
+                ("sub", FOp::Sub),
+                ("mul", FOp::Mul),
+                ("div", FOp::Div),
+                ("sqrt", FOp::Sqrt),
+                ("neg", FOp::Neg),
+                ("abs", FOp::Abs),
+            ]
+            .into_iter()
+            .flat_map(|(name, op)| {
+                [
+                    (name, vec![8, 23], Native::Arith { op, bits: 32 }),
+                    (name, vec![11, 52], Native::Arith { op, bits: 64 }),
+                ]
+            })
+            .chain(
+                [("eq", Cond::Eq), ("ne", Cond::Ne), ("lt", Cond::Lt), ("le", Cond::Le), ("gt", Cond::Gt), ("ge", Cond::Ge)]
+                    .into_iter()
+                    .flat_map(|(name, cond)| {
+                        [
+                            (name, vec![8, 23], Native::Cmp { cond, bits: 32 }),
+                            (name, vec![11, 52], Native::Cmp { cond, bits: 64 }),
+                        ]
+                    }),
+            )
+            .collect(),
             convs,
         }
     }
@@ -186,13 +209,15 @@ impl Platform {
             .iter()
             .find(|(g, a, _)| g == generic && a == args)
             .map(|(_, _, op)| *op)?;
-        let Native::Arith { op: fop, bits } = op else {
-            return None;
+        let (arity, bits, ret_float) = match op {
+            Native::Arith { op: fop, bits } => (fop.arity(), bits, true),
+            Native::Cmp { bits, .. } => (2, bits, false),
+            Native::Conv { .. } => return None,
         };
         let is_float = |t: Type| matches!(Platform::kind(f, t), Some(k) if k.is_float() && k.bits() == bits);
-        let shape_ok = f.params.len() == fop.arity()
+        let shape_ok = f.params.len() == arity
             && f.params.iter().all(|&p| is_float(f.ty(p)))
-            && is_float(f.rets[0]);
+            && if ret_float { is_float(f.rets[0]) } else { f.rets[0] == Type::U1 };
         shape_ok.then_some(op)
     }
 

@@ -281,7 +281,7 @@ fn low_mask(bits: u32) -> i64 {
     if bits >= 64 {
         -1
     } else {
-        (1i64 << bits) - 1
+        ((1u64 << bits) - 1) as i64
     }
 }
 
@@ -564,7 +564,7 @@ entry:
     a: i64 = iconst 6
     b: i64 = iconst 7
     c: i64 = mul a, b
-    d: u1 = icmp.lt a, b
+    d: u1 = cmp.lt a, b
     e: i64 = conv d
     r: i64 = add c, e
     ret r
@@ -585,7 +585,7 @@ entry:
 fn count(n: i64) -> i64 {
     zero: i64 = iconst 0
     r: i64 = loop(i: i64 = zero) {
-        done: u1 = icmp.ge i, n
+        done: u1 = cmp.ge i, n
         if done {
             break i
         }
@@ -622,7 +622,7 @@ fn count(n: i64) -> i64 {
 fn g(a: i64, b: i64) -> i64 {
 entry:
     two: i64 = iconst 2
-    c: u1 = icmp.lt a, b
+    c: u1 = cmp.lt a, b
     br c, x, y
 x:
     jmp join(two)

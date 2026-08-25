@@ -4,7 +4,7 @@ entry:
     zero: i64 = iconst 0
     jmp loop(zero, zero)
 loop(i: i64, acc: i64):
-    done: u1 = icmp.ge i, n
+    done: u1 = cmp.ge i, n
     br done, exit, body
 body:
     acc2: i64 = add acc, i

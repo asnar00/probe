@@ -26,7 +26,7 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
 
 - **An SSA IR** (`ssa.md`, `src/ssa.rs`): integers of any width from 1 to
   64 bits, signed or unsigned (`i5`, `u23`, `i64`, plus `ptr`) — signedness
-  lives in the type, so there is one `div`, one `shr`, one `icmp.lt`;
+  lives in the type, so there is one `div`, one `shr`, one `cmp.lt`;
   `pack` types that lay bitfields out lowest-bits-first in up to 64 bits
   (`type rgb = pack { r: u5, g: u6, b: u5 }`, nestable, storable), and
   parametric declarations instantiated by width — `type float(E, M) =
@@ -56,8 +56,8 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
     *spell* instructions and nothing else.
 - **A platform per backend** (`src/platform.rs`): the generic
   instantiations the target implements natively (`add`/`sub`/`mul`/`div`/
-  `sqrt` on `float(8, 23)` and `float(11, 52)`, and `conv` between those
-  and 32/64-bit integers). Compiling such an instance, or a call to one, emits the
+  `sqrt`/`neg`/`abs`/`cmp.*` on `float(8, 23)` and `float(11, 52)`, and
+  `conv` between those and 32/64-bit integers). Compiling such an instance, or a call to one, emits the
   hardware sequence instead of the SSA body; `--soft` turns that off, and
   the library remains the reference the hardware path is checked against.
 - **Three backends**, none of which contain a single hand-written opcode:
@@ -79,7 +79,7 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   slot with slack, calls routed through counting trampolines, so an edited
   function recompiles in place and a hot one is promoted through the full
   pipeline without disturbing its neighbours.
-- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 274
+- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 302
   cases with expectations embedded as `;! gcd 48 36 -> 12` directives, run
   identically against every backend — including arm64 under
   qemu-system-aarch64 as an independent second referee for the same bytes
@@ -122,7 +122,7 @@ cargo run -- run suite/bits.ssa add5 15 1          # i5: 15 + 1 -> -16
 cargo run -- run suite/packs.ssa mkrgb 31 63 1     # -> 4095 (b:g:r = 1:63:31)
 cargo run -- run suite/types.ssa f32exp 0x40490fdb # f32 = float(8, 23): pi's exponent, 128
 
-# floating point is a library: generic add/sub/mul/div/sqrt/conv over float(E, M),
+# floating point is a library: add/sub/mul/div/sqrt/neg/abs/cmp/conv over float(E, M),
 # done with integer instructions, instantiated for fp8/fp16/bf16/f32/f64
 # and checked against the FPU. On a platform with hardware for it, fadd32
 # *is* the instruction; --soft keeps the library body
@@ -144,14 +144,14 @@ are checked in, so the backends and suite work without re-learning.
 ## Status
 
 Integers of every width, packed bitfields, parametric types and
-functions, and floating-point add/sub/mul/div/sqrt/conv as a pure-SSA library that
+functions, and floating-point arithmetic, comparison, and conversion as a pure-SSA library that
 the platform swaps for hardware where it has it, on three targets,
 everything differentially verified: the suite on four execution paths,
 every narrow-type op against the const-folder's model over every value
 pair, and the softfloat ops against the FPU for f32/f64 and against an
 exact reference exhaustively for fp8. What is
-deliberately not here yet, from `future-work.md`: float compares in the
-library, indirect
+deliberately not here yet, from `future-work.md`: fma, float literals,
+indirect
 calls / function pointers, external (libc) calls from JIT'd code, a
 dominance check in the verifier, and differential testing against clang
 to close the semantic loop the way the prober closed the encoding loop.

@@ -509,7 +509,7 @@ loop(sh: u64):
     m: u64 = iconst 15
     n: u64 = and t, m
     nine: u64 = iconst 9
-    big: u1 = icmp.gt n, nine
+    big: u1 = cmp.gt n, nine
     bigi: u64 = conv big
     gap: u64 = iconst 39
     adj: u64 = mul bigi, gap
@@ -518,7 +518,7 @@ loop(sh: u64):
     c: u64 = add c1, adj
     __pch(c)
     zero: u64 = iconst 0
-    done: u1 = icmp.eq sh, zero
+    done: u1 = cmp.eq sh, zero
     four: u64 = iconst 4
     sh2: u64 = sub sh, four
     br done, exit, loop(sh2)
