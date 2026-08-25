@@ -6,6 +6,17 @@ has the full story for any of them.
 
 ---
 
+### min, max, fma — `da83428` · 2026-08-26
+
+`min`/`max` (IEEE minimum/maximum: NaN propagates, -0 below +0) and
+`fma` with a single rounding: the exact product and the addend meet in
+a two-word accumulator with eight guard bits, built from a few
+`add128`/`shr128`-style helpers written in the SSA itself. On the
+platforms: `fmin`/`fmax`/`fmadd` (arm64), `fmadd` (riscv64, whose
+`fmin` drops NaNs and so stays in the library), `f32.min`/`max` (wasm,
+which has no fma). Bit-exact against `mul_add` and an exact reference.
+327/327 on all four paths, both ways.
+
 ### The suite, with the sugar — `c1d472d` · 2026-08-26
 
 The suite and the float library rewritten with literal operands: 139
