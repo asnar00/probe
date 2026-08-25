@@ -16,13 +16,13 @@
 ;! sminmax 9 4 -> 4, 9
 
 fn ssum(n: i64) -> i64 {
-    zero: i64 = iconst 0
+    zero: i64 = const 0
     r: i64 = loop(i: i64 = zero, acc: i64 = zero) {
         done: u1 = cmp.ge i, n
         if done {
             break acc
         }
-        one: i64 = iconst 1
+        one: i64 = const 1
         acc2: i64 = add acc, i
         i2: i64 = add i, one
         continue i2, acc2
@@ -32,7 +32,7 @@ fn ssum(n: i64) -> i64 {
 
 fn sgcd(a: i64, b: i64) -> i64 {
     g: i64 = loop(x: i64 = a, y: i64 = b) {
-        zero: i64 = iconst 0
+        zero: i64 = const 0
         done: u1 = cmp.eq y, zero
         if done {
             break x
@@ -44,12 +44,12 @@ fn sgcd(a: i64, b: i64) -> i64 {
 }
 
 fn sfib(n: i64) -> i64 {
-    two: i64 = iconst 2
+    two: i64 = const 2
     small: u1 = cmp.lt n, two
     if small {
         ret n
     }
-    one: i64 = iconst 1
+    one: i64 = const 1
     n1: i64 = sub n, one
     a: i64 = sfib(n1)
     n2: i64 = sub n, two
@@ -59,7 +59,7 @@ fn sfib(n: i64) -> i64 {
 }
 
 fn sabs(a: i64) -> i64 {
-    zero: i64 = iconst 0
+    zero: i64 = const 0
     neg: u1 = cmp.lt a, zero
     r: i64 = if neg {
         n: i64 = sub zero, a
@@ -88,8 +88,8 @@ fn sclamp(v: i64, lo: i64, hi: i64) -> i64 {
 
 ; multiplication by repeated addition: nested loops
 fn smul(a: i64, b: i64) -> i64 {
-    zero: i64 = iconst 0
-    one: i64 = iconst 1
+    zero: i64 = const 0
+    one: i64 = const 1
     total: i64 = loop(i: i64 = zero, t: i64 = zero) {
         done: u1 = cmp.ge i, a
         if done {

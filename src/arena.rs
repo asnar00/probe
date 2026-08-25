@@ -359,7 +359,7 @@ mod tests {
     fn incremental_replace_and_grow() {
         let mut a = arena();
         let m1 = parse(
-            "fn val() -> i64 {\ne:\n    v: i64 = iconst 1\n    ret v\n}\n\
+            "fn val() -> i64 {\ne:\n    v: i64 = const 1\n    ret v\n}\n\
              fn twice() -> i64 {\ne:\n    a: i64 = val()\n    b: i64 = add a, a\n    ret b\n}\n",
         );
         a.sync(&m1.funcs, 0).expect("install");
@@ -368,7 +368,7 @@ mod tests {
 
         // small edit: recompiles in place, twice untouched but sees it
         let m2 = parse(
-            "fn val() -> i64 {\ne:\n    v: i64 = iconst 21\n    ret v\n}\n\
+            "fn val() -> i64 {\ne:\n    v: i64 = const 21\n    ret v\n}\n\
              fn twice() -> i64 {\ne:\n    a: i64 = val()\n    b: i64 = add a, a\n    ret b\n}\n",
         );
         let done = a.sync(&m2.funcs, 0).expect("sync");
@@ -378,11 +378,11 @@ mod tests {
 
         // big edit: outgrows the slot, relocates, trampoline hides the move
         // a long straight-line chain (level 0 folds nothing, so it all emits)
-        let mut big = String::from("fn val() -> i64 {\ne:\n    v0: i64 = iconst 2\n");
+        let mut big = String::from("fn val() -> i64 {\ne:\n    v0: i64 = const 2\n");
         for i in 1..=20 {
             big.push_str(&format!("    v{}: i64 = add v{}, v{}\n", i, i - 1, i - 1));
         }
-        big.push_str("    ten: i64 = iconst 1048576\n    r: i64 = div v20, ten\n    ret r\n}\n");
+        big.push_str("    ten: i64 = const 1048576\n    r: i64 = div v20, ten\n    ret r\n}\n");
         // 2^21 / 2^20 = 2 -> twice = 4... keep the arithmetic honest below
         let m3 = parse(&format!(
             "{}fn twice() -> i64 {{\ne:\n    a: i64 = val()\n    b: i64 = add a, a\n    ret b\n}}\n",

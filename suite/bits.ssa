@@ -183,7 +183,7 @@ entry:
 ; narrow values through calls stay canonical on both sides
 fn negate5(a: i5) -> i5 {
 entry:
-    zero: i5 = iconst 0
+    zero: i5 = const 0
     r: i5 = sub zero, a
     ret r
 }
@@ -194,16 +194,16 @@ entry:
 }
 ; count increments of an i5 from 0 until it wraps negative
 fn count5() -> i64 {
-    zero: i5 = iconst 0
-    n0: i64 = iconst 0
+    zero: i5 = const 0
+    n0: i64 = const 0
     r: i64 = loop(i: i5 = zero, n: i64 = n0) {
         neg: u1 = cmp.lt i, zero
         if neg {
             break n
         }
-        one: i5 = iconst 1
+        one: i5 = const 1
         i2: i5 = add i, one
-        n1: i64 = iconst 1
+        n1: i64 = const 1
         n2: i64 = add n, n1
         continue i2, n2
     }
@@ -211,17 +211,17 @@ fn count5() -> i64 {
 }
 ; sum of every u8 value, accumulated in a u16
 fn sumbytes_u8() -> u16 {
-    zero: u8 = iconst 0
-    acc0: u16 = iconst 0
+    zero: u8 = const 0
+    acc0: u16 = const 0
     r: u16 = loop(i: u8 = zero, acc: u16 = acc0) {
         w: u16 = conv i
         acc2: u16 = add acc, w
-        max: u8 = iconst 255
+        max: u8 = const 255
         done: u1 = cmp.eq i, max
         if done {
             break acc2
         }
-        one: u8 = iconst 1
+        one: u8 = const 1
         i2: u8 = add i, one
         continue i2, acc2
     }
@@ -236,9 +236,9 @@ entry:
 ; 8- and 16-bit memory, sign- and zero-extending loads
 fn sumbytes(p: ptr) -> i64 {
 entry:
-    one: i64 = iconst 1
-    two: i64 = iconst 2
-    three: i64 = iconst 3
+    one: i64 = const 1
+    two: i64 = const 2
+    three: i64 = const 3
     p1: ptr = ptradd p, one
     p2: ptr = ptradd p, two
     p3: ptr = ptradd p, three
@@ -257,7 +257,7 @@ entry:
 }
 fn sumubytes(p: ptr) -> u64 {
 entry:
-    one: i64 = iconst 1
+    one: i64 = const 1
     p1: ptr = ptradd p, one
     a: u8 = load p
     b: u8 = load p1
@@ -268,7 +268,7 @@ entry:
 }
 fn sumhalves(p: ptr) -> i64 {
 entry:
-    two: i64 = iconst 2
+    two: i64 = const 2
     p1: ptr = ptradd p, two
     a: i16 = load p
     b: i16 = load p1
@@ -279,7 +279,7 @@ entry:
 }
 fn sumuhalves(p: ptr) -> u64 {
 entry:
-    two: i64 = iconst 2
+    two: i64 = const 2
     p1: ptr = ptradd p, two
     a: u16 = load p
     b: u16 = load p1

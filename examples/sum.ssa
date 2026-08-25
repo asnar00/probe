@@ -1,14 +1,14 @@
 ; sum of 0..n
 fn sum(n: i64) -> i64 {
 entry:
-    zero: i64 = iconst 0
+    zero: i64 = const 0
     jmp loop(zero, zero)
 loop(i: i64, acc: i64):
     done: u1 = cmp.ge i, n
     br done, exit, body
 body:
     acc2: i64 = add acc, i
-    one: i64 = iconst 1
+    one: i64 = const 1
     i2: i64 = add i, one
     jmp loop(i2, acc2)
 exit:

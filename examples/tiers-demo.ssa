@@ -3,16 +3,16 @@
 ;! shipping 3 -> 1940
 fn shipping(items: i64) -> i64 {
     ; constant configuration, foldable to nothing
-    base: i64 = iconst 500
-    per_kg: i64 = iconst 12
-    kg_per_item: i64 = iconst 40
+    base: i64 = const 500
+    per_kg: i64 = const 12
+    kg_per_item: i64 = const 40
     rate: i64 = mul per_kg, kg_per_item
-    surcharge: i64 = iconst 17
+    surcharge: i64 = const 17
     unused: i64 = mul surcharge, rate    ; dead: never used
     cost0: i64 = mul rate, items
     cost: i64 = add cost0, base
     ; forwarding-arm if: lowered arms are empty jumps
-    limit: i64 = iconst 100000
+    limit: i64 = const 100000
     big: u1 = cmp.gt cost, limit
     capped: i64 = if big {
         yield limit

@@ -35,7 +35,8 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   (`fn add(E, M)(a: float(E, M), b: float(E, M))`, `fn fadd32 =
   add(8, 23)`) — so `add x, y` on two `f32` values is that function, or
   the platform's instruction, and a library can add operations of its
-  own (`sqrt x`); block
+  own (`sqrt x`); literals wherever the type is known (`add a, 1`,
+  `mul x, 0.5`, `ret 0`), with float literals rounded exactly; block
   parameters instead of phi nodes; multiple return values; an optional
   structured front-end (`if`/`loop`/`break`/`continue`/`yield`) that
   lowers to the flat block graph at parse time; and abstract `int`/`uint`
@@ -150,7 +151,7 @@ everything differentially verified: the suite on four execution paths,
 every narrow-type op against the const-folder's model over every value
 pair, and the softfloat ops against the FPU for f32/f64 and against an
 exact reference exhaustively for fp8. What is
-deliberately not here yet, from `future-work.md`: fma, float literals,
+deliberately not here yet, from `future-work.md`: fma, min/max,
 indirect
 calls / function pointers, external (libc) calls from JIT'd code, a
 dominance check in the verifier, and differential testing against clang

@@ -35,7 +35,7 @@ fn f32sign(f: f32) -> u1 {
 ; doubling a float is incrementing its exponent
 fn f32double(f: f32) -> f32 {
     e: u8 = get f, exponent
-    one: u8 = iconst 1
+    one: u8 = const 1
     e2: u8 = add e, one
     g: f32 = set f, exponent, e2
     ret g
@@ -54,7 +54,7 @@ fn f16exp(f: f16) -> u5 {
     ret e
 }
 fn f16neg(f: f16) -> f16 {
-    one: u1 = iconst 1
+    one: u1 = const 1
     g: f16 = set f, sign, one
     ret g
 }

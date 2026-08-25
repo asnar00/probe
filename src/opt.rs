@@ -561,8 +561,8 @@ mod tests {
         let src = r"
 fn f() -> i64 {
 entry:
-    a: i64 = iconst 6
-    b: i64 = iconst 7
+    a: i64 = const 6
+    b: i64 = const 7
     c: i64 = mul a, b
     d: u1 = cmp.lt a, b
     e: i64 = conv d
@@ -571,7 +571,7 @@ entry:
 }
 ";
         let m = opt_at(src, super::MAX_LEVEL);
-        // everything folds to iconst 43 (42 + the u1 comparison), dead consts removed
+        // everything folds to const 43 (42 + the u1 comparison), dead consts removed
         let insts = &m.funcs[0].blocks[0].insts;
         assert_eq!(insts.len(), 2, "{}", m);
         assert!(matches!(insts[0], ssa::Inst::IConst { imm: 43, .. }), "{}", m);
@@ -583,13 +583,13 @@ entry:
         // are pure forwarders; simplify-cfg must thread and drop them
         let src = r"
 fn count(n: i64) -> i64 {
-    zero: i64 = iconst 0
+    zero: i64 = const 0
     r: i64 = loop(i: i64 = zero) {
         done: u1 = cmp.ge i, n
         if done {
             break i
         }
-        one: i64 = iconst 1
+        one: i64 = const 1
         i2: i64 = add i, one
         continue i2
     }
@@ -621,7 +621,7 @@ fn count(n: i64) -> i64 {
         let src = r"
 fn g(a: i64, b: i64) -> i64 {
 entry:
-    two: i64 = iconst 2
+    two: i64 = const 2
     c: u1 = cmp.lt a, b
     br c, x, y
 x:

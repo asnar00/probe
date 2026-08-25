@@ -127,7 +127,7 @@ entry:
 }
 fn packstore(p: ptr, g: u6) -> u16 {
 entry:
-    zero: u5 = iconst 0
+    zero: u5 = const 0
     c: rgb = pack zero, g, zero
     store c, p
     bits: u16 = load p

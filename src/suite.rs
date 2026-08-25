@@ -489,7 +489,7 @@ fn helpers(uart: u64) -> String {
         r"
 fn __pch(c: u64) {{
 entry:
-    u: ptr = iconst {}
+    u: ptr = const {}
     c32: u32 = conv c
     store c32, u
     ret
@@ -502,24 +502,24 @@ entry:
 const PHEX: &str = r"
 fn __phex(v: u64) {
 entry:
-    sh0: u64 = iconst 60
+    sh0: u64 = const 60
     jmp loop(sh0)
 loop(sh: u64):
     t: u64 = shr v, sh
-    m: u64 = iconst 15
+    m: u64 = const 15
     n: u64 = and t, m
-    nine: u64 = iconst 9
+    nine: u64 = const 9
     big: u1 = cmp.gt n, nine
     bigi: u64 = conv big
-    gap: u64 = iconst 39
+    gap: u64 = const 39
     adj: u64 = mul bigi, gap
-    z: u64 = iconst 48
+    z: u64 = const 48
     c1: u64 = add n, z
     c: u64 = add c1, adj
     __pch(c)
-    zero: u64 = iconst 0
+    zero: u64 = const 0
     done: u1 = cmp.eq sh, zero
-    four: u64 = iconst 4
+    four: u64 = const 4
     sh2: u64 = sub sh, four
     br done, exit, loop(sh2)
 exit:
@@ -567,10 +567,10 @@ fn gen_driver(
                     if func.pack(pty).is_some() {
                         // packs have no literals: build the bits, then bitcast
                         let w = func.width(pty).unwrap();
-                        let bits = tmp(&mut s, &format!("u{}", w), format!("iconst {}", v));
+                        let bits = tmp(&mut s, &format!("u{}", w), format!("const {}", v));
                         argv.push(tmp(&mut s, &func.tyname(pty), format!("cast {}", bits)));
                     } else {
-                        argv.push(tmp(&mut s, &pty.name(), format!("iconst {}", v)));
+                        argv.push(tmp(&mut s, &pty.name(), format!("const {}", v)));
                     }
                 }
                 ArgSpec::Arr { bytes, vals } => {
@@ -579,12 +579,12 @@ fn gen_driver(
                     let base = heap;
                     let ety = format!("i{}", b * 8);
                     for (k, v) in vals.iter().enumerate() {
-                        let d = tmp(&mut s, &ety, format!("iconst {}", opt::norm(ssa::Repr::S(b as u32 * 8), *v)));
-                        let p = tmp(&mut s, "ptr", format!("iconst {}", base + b * k as u64));
+                        let d = tmp(&mut s, &ety, format!("const {}", opt::norm(ssa::Repr::S(b as u32 * 8), *v)));
+                        let p = tmp(&mut s, "ptr", format!("const {}", base + b * k as u64));
                         s.push_str(&format!("    store {}, {}\n", d, p));
                     }
                     heap += b * vals.len() as u64;
-                    argv.push(tmp(&mut s, "ptr", format!("iconst {}", base)));
+                    argv.push(tmp(&mut s, "ptr", format!("const {}", base)));
                 }
             }
         }
@@ -607,7 +607,7 @@ fn gen_driver(
         // print results: 16 hex digits each, space-separated, newline after
         for (i, (r, rt)) in rets.iter().enumerate() {
             if i > 0 {
-                let sp = tmp(&mut s, "u64", "iconst 32".into());
+                let sp = tmp(&mut s, "u64", "const 32".into());
                 s.push_str(&format!("    __pch({})\n", sp));
             }
             // the canonical 64-bit value of the result, as a u64 for printing:
@@ -629,7 +629,7 @@ fn gen_driver(
             }
             s.push_str(&format!("    __phex({})\n", v));
         }
-        let nl = tmp(&mut s, "u64", "iconst 10".into());
+        let nl = tmp(&mut s, "u64", "const 10".into());
         s.push_str(&format!("    __pch({})\n", nl));
     }
     s.push_str(exit_ssa);
@@ -710,7 +710,7 @@ fn run_riscv(
 
     let prepared = (|| -> Result<Vec<u8>, String> {
         let exit_ssa = format!(
-            "    __f1: i32 = iconst 21845\n    __f2: ptr = iconst {}\n    store __f1, __f2\n",
+            "    __f1: i32 = const 21845\n    __f2: ptr = const {}\n    store __f1, __f2\n",
             RV_FINISHER
         );
         let driver = gen_driver(module, cases, RV_HEAP, &exit_ssa)?;

@@ -7,26 +7,26 @@
 
 fn c0() -> i64 {
 entry:
-    r: i64 = iconst 0
+    r: i64 = const 0
     ret r
 }
 fn cneg1() -> i64 {
 entry:
-    r: i64 = iconst -1
+    r: i64 = const -1
     ret r
 }
 fn cbeef() -> i64 {
 entry:
-    r: i64 = iconst 0xdeadbeef
+    r: i64 = const 0xdeadbeef
     ret r
 }
 fn cbig() -> i64 {
 entry:
-    r: i64 = iconst 0x123456789abcdef0
+    r: i64 = const 0x123456789abcdef0
     ret r
 }
 fn cmin() -> i64 {
 entry:
-    r: i64 = iconst -9223372036854775808
+    r: i64 = const -9223372036854775808
     ret r
 }

@@ -44,7 +44,7 @@ reference (fp8 exhaustively). 235/235 on all four paths, both ways.
 
 `r: f32 = fadd32(a, b)`, `touch(q)`, `q: i64, r: i64 = divmod(a, b)`. A
 name followed by `(` in operation position is a call — no opcode is ever
-followed by one, `iconst (expr)` and `loop(...)` aside — so the keyword
+followed by one, `const (expr)` and `loop(...)` aside — so the keyword
 said nothing. It is now rejected with a note that it is implied. Explicit
 instantiations read the same way: `add(8, 23)(x, y)`. 218/218 on all
 four paths, both ways.
@@ -99,7 +99,7 @@ plus the CSR/system-register writes that switch the FPU on bare metal.
 `fn fadd(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M)` is a
 template; `fn fadd32 = fadd(8, 23)` and `fadd(5, 10)(x, y)`
 instantiate it, by re-parsing the body with E and M bound, so `u(M + 5)`
-and `iconst (1 << E) - 1` are concrete inside. With that, `suite/float.ssa`
+and `const (1 << E) - 1` are concrete inside. With that, `suite/float.ssa`
 writes IEEE addition once — round-to-nearest-even, subnormals, signed
 zeros, infinities, canonical NaN — using only integer instructions, and
 instantiates it for fp8, fp16, bf16, f32, f64. The compiler learned

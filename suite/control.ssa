@@ -13,14 +13,14 @@
 
 fn sum(n: i64) -> i64 {
 entry:
-    zero: i64 = iconst 0
+    zero: i64 = const 0
     jmp loop(zero, zero)
 loop(i: i64, acc: i64):
     done: u1 = cmp.ge i, n
     br done, exit, body
 body:
     acc2: i64 = add acc, i
-    one: i64 = iconst 1
+    one: i64 = const 1
     i2: i64 = add i, one
     jmp loop(i2, acc2)
 exit:
@@ -31,7 +31,7 @@ fn gcd(a: i64, b: i64) -> i64 {
 entry:
     jmp loop(a, b)
 loop(x: i64, y: i64):
-    zero: i64 = iconst 0
+    zero: i64 = const 0
     done: u1 = cmp.eq y, zero
     br done, exit, step
 step:
@@ -43,13 +43,13 @@ exit:
 
 fn fib(n: i64) -> i64 {
 entry:
-    two: i64 = iconst 2
+    two: i64 = const 2
     small: u1 = cmp.lt n, two
     br small, base, rec
 base:
     ret n
 rec:
-    one: i64 = iconst 1
+    one: i64 = const 1
     n1: i64 = sub n, one
     a: i64 = fib(n1)
     n2: i64 = sub n, two
@@ -75,20 +75,20 @@ entry:
 ; steps to reach 1: n -> n/2 (even) | 3n+1 (odd)
 fn collatz(n: i64) -> i64 {
 entry:
-    zero: i64 = iconst 0
+    zero: i64 = const 0
     jmp loop(n, zero)
 loop(x: i64, steps: i64):
-    one: i64 = iconst 1
+    one: i64 = const 1
     done: u1 = cmp.eq x, one
     br done, exit, step
 step:
-    two: i64 = iconst 2
+    two: i64 = const 2
     parity: i64 = and x, one
     odd: u1 = conv parity
     s2: i64 = add steps, one
     br odd, odd, even
 odd:
-    three: i64 = iconst 3
+    three: i64 = const 3
     t: i64 = mul x, three
     t1: i64 = add t, one
     jmp loop(t1, s2)

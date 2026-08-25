@@ -1442,7 +1442,7 @@ entry:
 fn half_ext(a: i32) -> i64 {
 entry:
     w: i64 = conv a
-    two: i64 = iconst 2
+    two: i64 = const 2
     h: i64 = div w, two
     ret h
 }
@@ -1491,11 +1491,11 @@ entry:
         let j = jit(r"
 fn sum4(p: ptr) -> i32 {
 entry:
-    zero32: i32 = iconst 0
-    zero: i64 = iconst 0
+    zero32: i32 = const 0
+    zero: i64 = const 0
     jmp loop(zero, zero32)
 loop(i: i64, acc: i32):
-    four: i64 = iconst 4
+    four: i64 = const 4
     done: u1 = cmp.ge i, four
     br done, exit, body
 body:
@@ -1503,7 +1503,7 @@ body:
     q: ptr = ptradd p, off
     v: i32 = load q
     acc2: i32 = add acc, v
-    one: i64 = iconst 1
+    one: i64 = const 1
     i2: i64 = add i, one
     jmp loop(i2, acc2)
 exit:
@@ -1534,7 +1534,7 @@ entry:
         let j = jit(r"
 fn neg() -> i64 {
 entry:
-    m: i64 = iconst -42
+    m: i64 = const -42
     ret m
 }
 ");
@@ -1756,7 +1756,7 @@ entry:
 fn bytes(p: ptr, v: i8) -> i64 {
 entry:
     store v, p
-    one: i64 = iconst 1
+    one: i64 = const 1
     q: ptr = ptradd p, one
     u: u8 = cast v
     store u, q
@@ -1770,7 +1770,7 @@ entry:
 fn halves(p: ptr, v: i16) -> i64 {
 entry:
     store v, p
-    two: i64 = iconst 2
+    two: i64 = const 2
     q: ptr = ptradd p, two
     u: u16 = cast v
     store u, q

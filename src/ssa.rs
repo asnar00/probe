@@ -223,6 +223,230 @@ impl fmt::Display for TypeExpr {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Literals: exact conversion of a decimal or integer to a float(E, M)
+
+/// a natural number of any size, little-endian base 2^32 — enough bignum
+/// to round a decimal literal correctly, and nothing more
+#[derive(Clone, Debug)]
+struct Big(Vec<u32>);
+
+impl Big {
+    fn from_u64(v: u64) -> Big {
+        let mut b = Big(vec![v as u32, (v >> 32) as u32]);
+        b.trim();
+        b
+    }
+    fn trim(&mut self) {
+        while self.0.last() == Some(&0) {
+            self.0.pop();
+        }
+    }
+    fn is_zero(&self) -> bool {
+        self.0.is_empty()
+    }
+    fn mul_small(&mut self, m: u32) {
+        let mut carry = 0u64;
+        for limb in &mut self.0 {
+            let v = *limb as u64 * m as u64 + carry;
+            *limb = v as u32;
+            carry = v >> 32;
+        }
+        if carry > 0 {
+            self.0.push(carry as u32);
+        }
+    }
+    fn add_small(&mut self, a: u32) {
+        let mut carry = a as u64;
+        for limb in &mut self.0 {
+            if carry == 0 {
+                break;
+            }
+            let v = *limb as u64 + carry;
+            *limb = v as u32;
+            carry = v >> 32;
+        }
+        if carry > 0 {
+            self.0.push(carry as u32);
+        }
+    }
+    fn bits(&self) -> u64 {
+        match self.0.last() {
+            None => 0,
+            Some(&top) => (self.0.len() as u64 - 1) * 32 + (32 - top.leading_zeros() as u64),
+        }
+    }
+    fn bit(&self, i: u64) -> bool {
+        self.0.get((i / 32) as usize).is_some_and(|l| l >> (i % 32) & 1 == 1)
+    }
+    fn shl1_or(&mut self, bit: bool) {
+        let mut carry = bit as u32;
+        for limb in &mut self.0 {
+            let next = *limb >> 31;
+            *limb = (*limb << 1) | carry;
+            carry = next;
+        }
+        if carry > 0 {
+            self.0.push(carry);
+        }
+    }
+    fn cmp(&self, other: &Big) -> std::cmp::Ordering {
+        self.0.len().cmp(&other.0.len()).then_with(|| {
+            for i in (0..self.0.len()).rev() {
+                match self.0[i].cmp(&other.0[i]) {
+                    std::cmp::Ordering::Equal => continue,
+                    o => return o,
+                }
+            }
+            std::cmp::Ordering::Equal
+        })
+    }
+    fn sub_assign(&mut self, other: &Big) {
+        let mut borrow = 0i64;
+        for i in 0..self.0.len() {
+            let v = self.0[i] as i64 - *other.0.get(i).unwrap_or(&0) as i64 - borrow;
+            if v < 0 {
+                self.0[i] = (v + (1 << 32)) as u32;
+                borrow = 1;
+            } else {
+                self.0[i] = v as u32;
+                borrow = 0;
+            }
+        }
+        self.trim();
+    }
+}
+
+/// a decimal literal as (negative, digits, power of ten): `-1.5e-3` is
+/// (true, 15, -4)
+fn parse_decimal(text: &str) -> Result<(bool, Big, i64), String> {
+    let (neg, t) = match text.strip_prefix('-') {
+        Some(t) => (true, t),
+        None => (false, text),
+    };
+    let (mant, exp) = match t.find(['e', 'E']) {
+        Some(i) => (&t[..i], t[i + 1..].parse::<i64>().map_err(|_| format!("bad exponent in '{}'", text))?),
+        None => (t, 0),
+    };
+    let (int, frac) = match mant.split_once('.') {
+        Some((a, b)) => (a, b),
+        None => (mant, ""),
+    };
+    if (int.is_empty() && frac.is_empty()) || !int.bytes().all(|b| b.is_ascii_digit()) || !frac.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("bad float literal '{}'", text));
+    }
+    let mut digits = Big(Vec::new());
+    for b in int.bytes().chain(frac.bytes()) {
+        digits.mul_small(10);
+        digits.add_small((b - b'0') as u32);
+    }
+    Ok((neg, digits, exp - frac.len() as i64))
+}
+
+/// the bits of the float(E, M) nearest (ties to even) to sign * mant * 2^exp,
+/// where `sticky` says something nonzero below mant's unit was dropped
+pub fn float_bits(e: u32, m: u32, sign: bool, mut mant: u128, exp: i64, mut sticky: bool) -> u64 {
+    let emax = (1u64 << e) - 1;
+    let bias = (1i64 << (e - 1)) - 1;
+    let s = sign as u64;
+    if mant == 0 {
+        return s << (e + m);
+    }
+    let top = 127 - mant.leading_zeros() as i64;
+    let mut shift = top - m as i64;
+    let mut x = exp + shift + m as i64 + bias; // biased exponent of the unit at bit M
+    if x < 1 {
+        shift += 1 - x;
+        x = 1;
+    }
+    let mut round = false;
+    if shift > 0 {
+        if shift >= 128 {
+            sticky |= mant != 0;
+            mant = 0;
+        } else {
+            let dropped = mant & ((1u128 << shift) - 1);
+            let half = 1u128 << (shift - 1);
+            round = dropped & half != 0;
+            sticky |= dropped & (half - 1) != 0;
+            mant >>= shift;
+        }
+    } else if shift < 0 {
+        mant <<= -shift;
+    }
+    if round && (sticky || mant & 1 == 1) {
+        mant += 1;
+    }
+    if mant >> (m + 1) != 0 {
+        mant >>= 1;
+        x += 1;
+    }
+    let (fexp, fmant) = if mant >> m != 0 {
+        (x as u64, (mant as u64) & ((1u64 << m) - 1))
+    } else {
+        (0, mant as u64)
+    };
+    if fexp >= emax {
+        return (s << (e + m)) | (emax << m);
+    }
+    (s << (e + m)) | (fexp << m) | fmant
+}
+
+/// a decimal literal, correctly rounded to float(E, M)
+pub fn decimal_to_float(text: &str, e: u32, m: u32) -> Result<u64, String> {
+    let (neg, digits, pow10) = parse_decimal(text)?;
+    if digits.is_zero() {
+        return Ok((neg as u64) << (e + m));
+    }
+    // value = num / den, one of them a power of ten
+    let mut num = digits;
+    let mut den = Big::from_u64(1);
+    for _ in 0..pow10.max(0) {
+        num.mul_small(10);
+    }
+    for _ in 0..(-pow10).max(0) {
+        den.mul_small(10);
+    }
+    // long division to about M + 6 quotient bits: the numerator is scaled
+    // up (more bits) or down (low bits dropped into the sticky) so the
+    // quotient lands in that range; the remainder is the sticky
+    let want = m as i64 + 6;
+    let scale = want + den.bits() as i64 - num.bits() as i64 + 1; // may be negative
+    let nbits = num.bits() as i64 + scale; // quotient bits to produce
+    let mut rem = Big(Vec::new());
+    let mut q: u128 = 0;
+    let mut sticky = false;
+    for i in (0..nbits).rev() {
+        let src = i - scale; // the numerator bit feeding this step
+        let bit = src >= 0 && num.bit(src as u64);
+        rem.shl1_or(bit);
+        q <<= 1;
+        if rem.cmp(&den) != std::cmp::Ordering::Less {
+            rem.sub_assign(&den);
+            q |= 1;
+        }
+    }
+    // numerator bits below the ones fed in
+    for i in 0..(-scale).max(0) {
+        sticky |= num.bit(i as u64);
+    }
+    Ok(float_bits(e, m, neg, q, -scale, sticky || !rem.is_zero()))
+}
+
+/// an integer literal as a float(E, M), rounded to nearest even
+pub fn int_to_float(v: i64, e: u32, m: u32) -> u64 {
+    float_bits(e, m, v < 0, v.unsigned_abs() as u128, 0, false)
+}
+
+/// a literal as written
+#[derive(Clone, Debug, PartialEq)]
+enum Lit {
+    Int(i64),
+    Dec(String),
+    Inf(bool),
+    NaN,
+}
+
 /// `type name(params) = expr`
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeDef {
@@ -457,6 +681,9 @@ impl Inst {
 pub struct ValueData {
     pub name: String,
     pub ty: Type,
+    /// a literal written inline as an operand: the value is defined by a
+    /// hidden `const` and printed back as the literal
+    pub literal: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -588,6 +815,7 @@ enum Tok {
     Newline,
     Ident(String), // every word: keywords, opcodes, values, blocks, functions, types
     Int(i64),
+    Float(String), // 1.5, 2e10, -1.0e-3: kept as text, converted by the type it lands in
     Colon,
     Comma,
     LParen,
@@ -611,6 +839,7 @@ impl fmt::Display for Tok {
             Tok::Newline => write!(f, "end of line"),
             Tok::Ident(s) => write!(f, "'{}'", s),
             Tok::Int(n) => write!(f, "'{}'", n),
+            Tok::Float(s) => write!(f, "'{}'", s),
             Tok::Colon => write!(f, "':'"),
             Tok::Comma => write!(f, "','"),
             Tok::LParen => write!(f, "'('"),
@@ -712,8 +941,11 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                     chars.next();
                     toks.push((Tok::Arrow, line));
                 } else if chars.peek().is_some_and(|c| c.is_ascii_digit()) {
-                    let n = lex_int(&mut chars).map_err(|m| err(line, m))?;
-                    toks.push((Tok::Int(n.wrapping_neg()), line));
+                    match lex_number(&mut chars).map_err(|m| err(line, m))? {
+                        Tok::Int(n) => toks.push((Tok::Int(n.wrapping_neg()), line)),
+                        Tok::Float(s) => toks.push((Tok::Float(format!("-{}", s)), line)),
+                        _ => unreachable!(),
+                    }
                 } else {
                     toks.push((Tok::Minus, line));
                 }
@@ -743,8 +975,8 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                 toks.push((if c == '<' { Tok::ShiftL } else { Tok::ShiftR }, line));
             }
             '0'..='9' => {
-                let n = lex_int(&mut chars).map_err(|m| err(line, m))?;
-                toks.push((Tok::Int(n), line));
+                let t = lex_number(&mut chars).map_err(|m| err(line, m))?;
+                toks.push((t, line));
             }
             c if c.is_ascii_alphabetic() || c == '_' => {
                 let mut s = lex_name(&mut chars);
@@ -778,7 +1010,9 @@ fn lex_name(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
     s
 }
 
-fn lex_int(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<i64, String> {
+/// an integer (decimal or 0x hex) or a decimal float: digits with a
+/// fraction (`1.5`), an exponent (`2e10`, `1e-3`), or both
+fn lex_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<Tok, String> {
     let mut s = String::new();
     while let Some(&c) = chars.peek() {
         if c.is_ascii_alphanumeric() {
@@ -788,8 +1022,49 @@ fn lex_int(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<i64, Stri
             break;
         }
     }
+    if s.starts_with("0x") || s.starts_with("0X") {
+        return lex_int_text(&s).map(Tok::Int);
+    }
+    let mut is_float = false;
+    if chars.peek() == Some(&'.') {
+        let mut look = chars.clone();
+        look.next();
+        if look.peek().is_some_and(|c| c.is_ascii_digit()) {
+            chars.next();
+            s.push('.');
+            while let Some(&c) = chars.peek() {
+                if c.is_ascii_alphanumeric() {
+                    s.push(c);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            is_float = true;
+        }
+    }
+    // an exponent's sign: `1e-3` stops the word at the '-'
+    if (s.ends_with('e') || s.ends_with('E')) && matches!(chars.peek(), Some('-') | Some('+')) {
+        s.push(chars.next().unwrap());
+        while let Some(&c) = chars.peek() {
+            if c.is_ascii_digit() {
+                s.push(c);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+    }
+    if is_float || s.contains('e') || s.contains('E') {
+        parse_decimal(&s)?; // validate now; the value depends on the type
+        return Ok(Tok::Float(s));
+    }
+    lex_int_text(&s).map(Tok::Int)
+}
+
+fn lex_int_text(s: &str) -> Result<i64, String> {
     // parse as u64 so full-width bit patterns (and i64::MIN's magnitude
-    // before negation) are representable; iconst semantics are bit-level
+    // before negation) are representable; const semantics are bit-level
     let v = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         u64::from_str_radix(hex, 16)
     } else {
@@ -813,6 +1088,9 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         instances: HashMap::new(),
         pending: Vec::new(),
         env: Vec::new(),
+        consts: Vec::new(),
+        cur_rets: Vec::new(),
+        sigs: HashMap::new(),
     };
     // pass 1: type declarations and generic functions, wherever they
     // appear, so functions can use them regardless of order (a type
@@ -830,6 +1108,7 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
             }
             Item::Fn => {
                 let (_, hi) = p.function_range()?;
+                p.record_signature()?;
                 p.pos = hi + 1;
             }
         }
@@ -881,9 +1160,11 @@ struct GenericFn {
     name: String,
     params: Vec<String>,
     lo: usize,
-    /// the declared type of its first value parameter and of its first
-    /// result, for opcode dispatch (several generics may share a name and
-    /// differ here: `conv` from i(W) and from u(W))
+    /// the declared types of its value parameters and of its first result,
+    /// for opcode dispatch (several generics may share a name and differ
+    /// here: `conv` from i(W) and from u(W)) and for typing literal
+    /// arguments at call sites
+    param_types: Vec<TypeExpr>,
     first_param: Option<TypeExpr>,
     ret: Option<TypeExpr>,
 }
@@ -900,6 +1181,14 @@ struct Parser {
     pending: Vec<(usize, Vec<i64>, String)>,
     /// the parameter bindings of the body being parsed (empty outside generics)
     env: Vec<(String, i64)>,
+    /// hidden `const`s for literal operands of the instruction being parsed,
+    /// emitted just before it
+    consts: Vec<Inst>,
+    /// the return types of the function being parsed, to type `ret 0`
+    cur_rets: Vec<Type>,
+    /// parameter types of plain functions (from pass 1) and of instances
+    /// (as they are requested), to type literal call arguments
+    sigs: HashMap<String, Vec<Type>>,
 }
 
 /// nesting guard for type declarations that instantiate themselves
@@ -919,6 +1208,7 @@ const DUMMY_BLOCK: BlockId = BlockId(u32::MAX);
 struct LoopFrame {
     header: BlockId,
     breaks: Vec<(usize, usize)>, // (block, inst) of Jmps to patch to the exit
+    rets: Vec<Type>,             // what `break` yields
 }
 
 /// Block-graph builder for structured bodies.
@@ -927,8 +1217,8 @@ struct StructEmit {
     cur: usize,
     loop_stack: Vec<LoopFrame>,
     /// One frame per enclosing value-yielding position: edges waiting to be
-    /// patched to an if's join block.
-    yield_stack: Vec<Vec<(usize, usize)>>,
+    /// patched to an if's join block, and the types it yields
+    yield_stack: Vec<(Vec<(usize, usize)>, Vec<Type>)>,
 }
 
 impl StructEmit {
@@ -968,6 +1258,22 @@ struct FuncScope {
     value_ids: HashMap<String, ValueId>,
     block_ids: HashMap<String, BlockId>,
     block_names: Vec<String>,
+    /// each block's parameters, from the prescan, so a branch to a later
+    /// block can type its literal arguments
+    block_params: Vec<Vec<ValueId>>,
+}
+
+impl FuncScope {
+    /// a hidden value for a literal operand
+    fn synth(&mut self, ty: Type, bits: i64) -> ValueId {
+        let id = ValueId(self.values.len() as u32);
+        self.values.push(ValueData {
+            name: format!("#{}", self.values.len()),
+            ty,
+            literal: Some(bits),
+        });
+        id
+    }
 }
 
 impl Parser {
@@ -1086,24 +1392,29 @@ impl Parser {
             }
             self.expect(Tok::Comma)?;
         }
-        // the first value parameter's type: `(a: float(E, M), ...`
+        // the value parameters' types: `(a: float(E, M), b: u(W))`
         self.expect(Tok::LParen)?;
-        let first_param = match (self.toks.get(self.pos).map(|t| &t.0), self.toks.get(self.pos + 1).map(|t| &t.0)) {
-            (Some(Tok::Ident(_)), Some(Tok::Colon)) => Some(self.type_expr_at(self.pos + 2, &params)?.0),
-            _ => None,
-        };
-        // and the first result's: past the parameter list, `-> ty` or `-> (ty, ...)`
+        let mut param_types = Vec::new();
         let mut j = self.pos;
-        let mut depth = 1;
-        while depth > 0 {
-            match self.toks.get(j).map(|t| &t.0) {
-                Some(Tok::LParen) => depth += 1,
-                Some(Tok::RParen) => depth -= 1,
-                None => return Err(self.err("unterminated parameter list".to_string())),
-                _ => {}
+        loop {
+            match (self.toks.get(j).map(|t| &t.0), self.toks.get(j + 1).map(|t| &t.0)) {
+                (Some(Tok::Ident(_)), Some(Tok::Colon)) => {
+                    let (te, next) = self.type_expr_at(j + 2, &params)?;
+                    param_types.push(te);
+                    j = next;
+                    if self.toks.get(j).map(|t| &t.0) == Some(&Tok::Comma) {
+                        j += 1;
+                    }
+                }
+                (Some(Tok::RParen), _) => {
+                    j += 1;
+                    break;
+                }
+                _ => return Err(self.err("bad parameter list".to_string())),
             }
-            j += 1;
         }
+        let first_param = param_types.first().cloned();
+        // and the first result's: `-> ty` or `-> (ty, ...)`
         let ret = if self.toks.get(j).map(|t| &t.0) == Some(&Tok::Arrow) {
             let at = if self.toks.get(j + 1).map(|t| &t.0) == Some(&Tok::LParen) { j + 2 } else { j + 1 };
             Some(self.type_expr_at(at, &params)?.0)
@@ -1114,10 +1425,35 @@ impl Parser {
             name,
             params,
             lo,
+            param_types,
             first_param,
             ret,
         });
         self.pos = hi + 1;
+        Ok(())
+    }
+
+    /// pass 1, a plain function: remember its parameter types under its
+    /// name, so a literal argument at a call site knows its type
+    fn record_signature(&mut self) -> Result<(), ParseError> {
+        let at = self.pos;
+        self.expect_ident()?; // fn
+        let name = self.expect_ident()?;
+        self.expect(Tok::LParen)?;
+        let mut tys = Vec::new();
+        if !self.eat(&Tok::RParen) {
+            loop {
+                self.expect_ident()?;
+                self.expect(Tok::Colon)?;
+                tys.push(self.expect_type()?);
+                if self.eat(&Tok::RParen) {
+                    break;
+                }
+                self.expect(Tok::Comma)?;
+            }
+        }
+        self.sigs.insert(name, tys);
+        self.pos = at;
         Ok(())
     }
 
@@ -1193,6 +1529,14 @@ impl Parser {
             }
         });
         self.instances.insert(key, name.clone());
+        // its parameter types, for literal arguments at call sites
+        let env: Vec<(String, i64)> = self.generics[g].params.iter().cloned().zip(args.iter().copied()).collect();
+        let ptys = self.generics[g].param_types.clone();
+        let mut tys = Vec::new();
+        for te in &ptys {
+            tys.push(self.instantiate(te, &env, 0).map_err(|m| self.err(m))?);
+        }
+        self.sigs.insert(name.clone(), tys);
         self.pending.push((g, args, name.clone()));
         Ok(name)
     }
@@ -1616,16 +1960,154 @@ impl Parser {
         }
     }
 
-    fn expect_value(&mut self, scope: &FuncScope) -> Result<ValueId, ParseError> {
-        match self.next()? {
-            Tok::Ident(name) => scope.value_ids.get(&name).copied().ok_or_else(|| {
-                self.pos -= 1;
-                self.err(format!("use of undefined value '{}'", name))
-            }),
-            t => {
-                self.pos -= 1;
-                Err(self.err(format!("expected a value, found {}", t)))
+    fn expect_value(&mut self, scope: &mut FuncScope) -> Result<ValueId, ParseError> {
+        self.parse_operand(scope, None)
+    }
+
+    /// A value, or a literal standing in for one. A literal takes the type
+    /// the context wants, or the one written after it (`1: u8`); it becomes
+    /// a hidden value defined by a `const` emitted just before the
+    /// instruction.
+    fn parse_operand(&mut self, scope: &mut FuncScope, want: Option<Type>) -> Result<ValueId, ParseError> {
+        if let Some(Tok::Ident(name)) = self.peek() {
+            if let Some(&id) = scope.value_ids.get(name) {
+                self.pos += 1;
+                return Ok(id);
             }
+        }
+        let at = self.pos;
+        let Some(lit) = self.parse_lit()? else {
+            let t = self.next()?;
+            self.pos -= 1;
+            return Err(self.err(match t {
+                Tok::Ident(n) => format!("use of undefined value '{}'", n),
+                t => format!("expected a value, found {}", t),
+            }));
+        };
+        let ty = if self.eat(&Tok::Colon) {
+            self.expect_type()?
+        } else {
+            match want {
+                Some(t) => t,
+                None => {
+                    self.pos = at;
+                    return Err(self.err("a literal needs a type here: write it as `1: i64`".to_string()));
+                }
+            }
+        };
+        let bits = self.literal_bits(&lit, ty).map_err(|m| {
+            self.pos = at;
+            self.err(m)
+        })?;
+        let id = scope.synth(ty, bits);
+        self.consts.push(Inst::IConst { dst: id, imm: bits });
+        Ok(id)
+    }
+
+    /// a literal token, if one is next: an integer, a decimal, `inf`,
+    /// `-inf`, `nan`
+    fn parse_lit(&mut self) -> Result<Option<Lit>, ParseError> {
+        Ok(match self.peek().cloned() {
+            Some(Tok::Int(v)) => {
+                self.pos += 1;
+                Some(Lit::Int(v))
+            }
+            Some(Tok::Float(t)) => {
+                self.pos += 1;
+                Some(Lit::Dec(t))
+            }
+            Some(Tok::Ident(n)) if n == "inf" || n == "nan" => {
+                self.pos += 1;
+                Some(if n == "inf" { Lit::Inf(false) } else { Lit::NaN })
+            }
+            Some(Tok::Minus) if matches!(self.toks.get(self.pos + 1).map(|t| &t.0), Some(Tok::Ident(n)) if n == "inf") => {
+                self.pos += 2;
+                Some(Lit::Inf(true))
+            }
+            _ => None,
+        })
+    }
+
+    /// the bits of a literal in a type: an integer as itself (or the bit
+    /// pattern of a pack); on a float, the nearest float to the number
+    fn literal_bits(&self, lit: &Lit, ty: Type) -> Result<i64, String> {
+        if let Some((e, m)) = self.float_params(ty) {
+            return Ok(match lit {
+                Lit::Int(v) => int_to_float(*v, e, m) as i64,
+                Lit::Dec(t) => decimal_to_float(t, e, m)? as i64,
+                Lit::Inf(neg) => (((*neg as u64) << (e + m)) | (((1u64 << e) - 1) << m)) as i64,
+                Lit::NaN => ((((1u64 << e) - 1) << m) | (1u64 << (m - 1))) as i64,
+            });
+        }
+        match lit {
+            Lit::Int(v) => Ok(*v),
+            _ => Err(format!("a float literal needs a float type, not {}", self.tyname_of(ty))),
+        }
+    }
+
+    /// (E, M) if the type is a `float(E, M)` pack
+    fn float_params(&self, ty: Type) -> Option<(u32, u32)> {
+        let Type::Pack(i) = ty else {
+            return None;
+        };
+        match &self.packs[i as usize].origin {
+            Some((name, args)) if name == "float" && args.len() == 2 => Some((args[0] as u32, args[1] as u32)),
+            _ => None,
+        }
+    }
+
+    fn tyname_of(&self, ty: Type) -> String {
+        match ty {
+            Type::Pack(i) => self.packs[i as usize].name.clone(),
+            t => t.name(),
+        }
+    }
+
+    /// two operands where a literal takes its type from the other operand
+    /// (or from `want`, when the instruction fixes it)
+    fn parse_pair(&mut self, scope: &mut FuncScope, want: Option<Type>) -> Result<(ValueId, ValueId), ParseError> {
+        // a literal first: read the second operand first to learn its type
+        let first_is_lit = !matches!(self.peek(), Some(Tok::Ident(n)) if scope.value_ids.contains_key(n));
+        if first_is_lit && want.is_none() {
+            let at = self.pos;
+            let Some(lit) = self.parse_lit()? else {
+                return Err(self.err("expected a value".to_string()));
+            };
+            if self.eat(&Tok::Colon) {
+                let ty = self.expect_type()?;
+                let bits = self.literal_bits(&lit, ty).map_err(|m| self.err(m))?;
+                let lhs = scope.synth(ty, bits);
+                self.consts.push(Inst::IConst { dst: lhs, imm: bits });
+                self.expect(Tok::Comma)?;
+                let rhs = self.parse_operand(scope, Some(ty))?;
+                return Ok((lhs, rhs));
+            }
+            self.expect(Tok::Comma)?;
+            let rhs = self.parse_operand(scope, None)?;
+            let ty = scope.values[rhs.0 as usize].ty;
+            let bits = self.literal_bits(&lit, ty).map_err(|m| {
+                self.pos = at;
+                self.err(m)
+            })?;
+            let lhs = scope.synth(ty, bits);
+            self.consts.push(Inst::IConst { dst: lhs, imm: bits });
+            return Ok((lhs, rhs));
+        }
+        let lhs = self.parse_operand(scope, want)?;
+        self.expect(Tok::Comma)?;
+        let rhs = self.parse_operand(scope, Some(scope.values[lhs.0 as usize].ty))?;
+        Ok((lhs, rhs))
+    }
+
+    /// structured form: the pending consts, then the instruction
+    fn emit(&mut self, st: &mut StructEmit, inst: Inst) -> (usize, usize) {
+        self.flush(st);
+        st.push(inst)
+    }
+
+    fn flush(&mut self, st: &mut StructEmit) {
+        for c in self.consts.drain(..) {
+            st.push(c);
         }
     }
 
@@ -1660,6 +2142,7 @@ impl Parser {
             value_ids: HashMap::new(),
             block_ids: HashMap::new(),
             block_names: Vec::new(),
+            block_params: Vec::new(),
         };
         let mut i = lo;
         while i + 2 <= hi {
@@ -1678,7 +2161,11 @@ impl Parser {
                 }
                 let id = ValueId(scope.values.len() as u32);
                 scope.value_ids.insert(name.clone(), id);
-                scope.values.push(ValueData { name, ty });
+                scope.values.push(ValueData {
+                    name,
+                    ty,
+                    literal: None,
+                });
                 i = next;
             } else {
                 i += 1;
@@ -1706,6 +2193,35 @@ impl Parser {
                 let id = BlockId(scope.block_names.len() as u32);
                 scope.block_ids.insert(name.clone(), id);
                 scope.block_names.push(name);
+                // its parameters: `name(a: ty, b: ty):`
+                let mut params = Vec::new();
+                if self.toks.get(i + 1).map(|t| &t.0) == Some(&Tok::LParen) {
+                    let mut j = i + 2;
+                    while let (Some(Tok::Ident(n)), Some(Tok::Colon)) =
+                        (self.toks.get(j).map(|t| &t.0), self.toks.get(j + 1).map(|t| &t.0))
+                    {
+                        if let Some(&id) = scope.value_ids.get(n) {
+                            params.push(id);
+                        }
+                        // skip the type: to the next comma at depth 0, or the close
+                        let mut depth = 0;
+                        j += 2;
+                        loop {
+                            match self.toks.get(j).map(|t| &t.0) {
+                                Some(Tok::LParen) => depth += 1,
+                                Some(Tok::RParen) if depth > 0 => depth -= 1,
+                                Some(Tok::RParen) | Some(Tok::Newline) | None => break,
+                                Some(Tok::Comma) if depth == 0 => {
+                                    j += 1;
+                                    break;
+                                }
+                                _ => {}
+                            }
+                            j += 1;
+                        }
+                    }
+                }
+                scope.block_params.push(params);
             }
         }
         Ok(())
@@ -1778,7 +2294,7 @@ impl Parser {
         let mut params = Vec::new();
         if !self.eat(&Tok::RParen) {
             loop {
-                let id = self.expect_value(&scope)?;
+                let id = self.expect_value(&mut scope)?;
                 self.expect(Tok::Colon)?;
                 self.expect_type()?; // already recorded by the prescan
                 params.push(id);
@@ -1807,12 +2323,13 @@ impl Parser {
 
         self.expect(Tok::LBrace)?;
         self.skip_newlines();
+        self.cur_rets = rets.clone();
 
         // A body that opens with statements instead of a label is in
         // structured form; it parses via if/loop constructs and lowers to
         // the same block graph on the fly.
         if self.label_at(self.pos).is_none() && !matches!(self.peek(), Some(Tok::RBrace)) {
-            let blocks = self.parse_structured_body(&scope)?;
+            let blocks = self.parse_structured_body(&mut scope)?;
             return Ok(Function {
                 name,
                 params,
@@ -1836,7 +2353,7 @@ impl Parser {
                     let mut bparams = Vec::new();
                     if self.eat(&Tok::LParen) && !self.eat(&Tok::RParen) {
                         loop {
-                            let id = self.expect_value(&scope)?;
+                            let id = self.expect_value(&mut scope)?;
                             self.expect(Tok::Colon)?;
                             self.expect_type()?;
                             bparams.push(id);
@@ -1859,7 +2376,8 @@ impl Parser {
                     let block = blocks
                         .last_mut()
                         .ok_or_else(|| self.err("instruction before the first block label"))?;
-                    let inst = self.parse_inst(&scope)?;
+                    let inst = self.parse_inst(&mut scope)?;
+                    block.insts.append(&mut self.consts);
                     block.insts.push(inst);
                     self.skip_newlines();
                 }
@@ -1880,7 +2398,7 @@ impl Parser {
 
     /// Look up a value being *defined*; the prescan registered it iff the
     /// definition is well-formed (`name: ty`), so a miss is a syntax error.
-    fn def_id(&self, scope: &FuncScope, name: &str) -> Result<ValueId, ParseError> {
+    fn def_id(&self, scope: &mut FuncScope, name: &str) -> Result<ValueId, ParseError> {
         scope.value_ids.get(name).copied().ok_or_else(|| {
             self.err(format!(
                 "definition of '{}' is missing its ': type' annotation",
@@ -1889,7 +2407,7 @@ impl Parser {
         })
     }
 
-    fn parse_inst(&mut self, scope: &FuncScope) -> Result<Inst, ParseError> {
+    fn parse_inst(&mut self, scope: &mut FuncScope) -> Result<Inst, ParseError> {
         match self.next()? {
             // dst: ty [, dst2: ty ...] = op ...
             Tok::Ident(name) if matches!(self.peek(), Some(Tok::Colon)) => {
@@ -1934,11 +2452,10 @@ impl Parser {
         }
     }
 
-    fn parse_def_op(&mut self, op: &str, dst: ValueId, scope: &FuncScope) -> Result<Inst, ParseError> {
+    fn parse_def_op(&mut self, op: &str, dst: ValueId, scope: &mut FuncScope) -> Result<Inst, ParseError> {
         if let Some((_, bin)) = BINOPS.iter().find(|(n, _)| *n == op) {
-            let lhs = self.expect_value(scope)?;
-            self.expect(Tok::Comma)?;
-            let rhs = self.expect_value(scope)?;
+            let dty = scope.values[dst.0 as usize].ty;
+            let (lhs, rhs) = self.parse_pair(scope, Some(dty))?;
             // on a pack, the opcode is whatever generic function of that
             // name takes the pack's origin type: `add` on a float(8, 23)
             // is a call to add(8, 23) — the library, or the platform's
@@ -1964,9 +2481,7 @@ impl Parser {
                 .find(|(n, _)| *n == cc)
                 .map(|(_, c)| *c)
                 .ok_or_else(|| self.err(format!("unknown comparison condition '{}'", cc)))?;
-            let lhs = self.expect_value(scope)?;
-            self.expect(Tok::Comma)?;
-            let rhs = self.expect_value(scope)?;
+            let (lhs, rhs) = self.parse_pair(scope, None)?;
             // on a pack, `cmp.lt` is the library's `lt` for that type
             if scope.values[lhs.0 as usize].ty.is_pack() {
                 let callee = self.dispatch(cond.name(), scope.values[lhs.0 as usize].ty, scope.values[dst.0 as usize].ty)?;
@@ -1984,14 +2499,28 @@ impl Parser {
             });
         }
         match op {
-            "iconst" => {
-                // a literal, or in a generic an expression over its parameters
+            "const" => {
+                let dty = scope.values[dst.0 as usize].ty;
+                if self.float_params(dty).is_some() {
+                    // a number: 1.5, 2, -inf, nan — rounded to the float type
+                    let at = self.pos;
+                    let Some(lit) = self.parse_lit()? else {
+                        return Err(self.err("expected a number".to_string()));
+                    };
+                    let imm = self.literal_bits(&lit, dty).map_err(|m| {
+                        self.pos = at;
+                        self.err(m)
+                    })?;
+                    return Ok(Inst::IConst { dst, imm });
+                }
+                // an integer, or in a generic an expression over its parameters
                 let params: Vec<String> = self.env.iter().map(|(n, _)| n.clone()).collect();
                 let (e, next) = self.int_expr_at(self.pos, &params)?;
                 self.pos = next;
                 let imm = e.eval(&self.env).map_err(|m| self.err(m))?;
                 Ok(Inst::IConst { dst, imm })
             }
+            "iconst" => Err(self.err("'iconst' is spelled 'const' (and takes 1.5, inf, nan on a float)".to_string())),
             "conv" | "cast" => {
                 let src = self.expect_value(scope)?;
                 let (ts, td) = (scope.values[src.0 as usize].ty, scope.values[dst.0 as usize].ty);
@@ -2009,7 +2538,11 @@ impl Parser {
                 Ok(Inst::Cast { op: cast, dst, src })
             }
             "pack" => {
-                let args = self.parse_value_list(scope)?;
+                let wants: Vec<Type> = match scope.values[dst.0 as usize].ty {
+                    Type::Pack(i) => self.packs[i as usize].fields.iter().map(|(_, t)| *t).collect(),
+                    _ => Vec::new(),
+                };
+                let args = self.parse_value_list(scope, &wants)?;
                 Ok(Inst::Pack { dst, args })
             }
             "unpack" => {
@@ -2030,7 +2563,11 @@ impl Parser {
                 self.expect(Tok::Comma)?;
                 let field = self.expect_field(scope, src)?;
                 self.expect(Tok::Comma)?;
-                let val = self.expect_value(scope)?;
+                let fty = match scope.values[src.0 as usize].ty {
+                    Type::Pack(i) => Some(self.packs[i as usize].fields[field as usize].1),
+                    _ => None,
+                };
+                let val = self.parse_operand(scope, fty)?;
                 Ok(Inst::Set {
                     dst,
                     src,
@@ -2045,14 +2582,14 @@ impl Parser {
             "ptradd" => {
                 let base = self.expect_value(scope)?;
                 self.expect(Tok::Comma)?;
-                let off = self.expect_value(scope)?;
+                let off = self.parse_operand(scope, Some(Type::I64))?;
                 Ok(Inst::PtrAdd { dst, base, off })
             }
             "call" => Err(self.err("'call' is implied: write name(args)".to_string())),
             _ => {
                 // a library-defined operation: `sqrt a` on a float is the
                 // generic sqrt(E, M) taking float(E, M), any arity
-                let args = self.parse_value_list(scope)?;
+                let args = self.parse_value_list(scope, &[])?;
                 let Some(&first) = args.first() else {
                     return Err(self.err(format!("unknown opcode '{}'", op)));
                 };
@@ -2113,7 +2650,7 @@ impl Parser {
     }
 
     /// a field name of the pack-typed value `of`, resolved to its index
-    fn expect_field(&mut self, scope: &FuncScope, of: ValueId) -> Result<u32, ParseError> {
+    fn expect_field(&mut self, scope: &mut FuncScope, of: ValueId) -> Result<u32, ParseError> {
         let fname = self.expect_ident()?;
         let ty = scope.values[of.0 as usize].ty;
         let Type::Pack(i) = ty else {
@@ -2135,7 +2672,7 @@ impl Parser {
         })
     }
 
-    fn parse_plain_op(&mut self, op: &str, scope: &FuncScope) -> Result<Inst, ParseError> {
+    fn parse_plain_op(&mut self, op: &str, scope: &mut FuncScope) -> Result<Inst, ParseError> {
         match op {
             "store" => {
                 let val = self.expect_value(scope)?;
@@ -2156,7 +2693,7 @@ impl Parser {
                 Ok(Inst::Jmp { target, args })
             }
             "br" => {
-                let cond = self.expect_value(scope)?;
+                let cond = self.parse_operand(scope, Some(Type::U1))?;
                 self.expect(Tok::Comma)?;
                 let (then_target, then_args) = self.parse_branch_target(scope)?;
                 self.expect(Tok::Comma)?;
@@ -2170,13 +2707,8 @@ impl Parser {
                 })
             }
             "ret" => {
-                let mut vals = Vec::new();
-                if matches!(self.peek(), Some(Tok::Ident(_))) {
-                    vals.push(self.expect_value(scope)?);
-                    while self.eat(&Tok::Comma) {
-                        vals.push(self.expect_value(scope)?);
-                    }
-                }
+                let wants = self.cur_rets.clone();
+                let vals = self.parse_value_list(scope, &wants)?;
                 Ok(Inst::Ret { vals })
             }
             "call" => Err(self.err("'call' is implied: write name(args)".to_string())),
@@ -2191,10 +2723,10 @@ impl Parser {
     /// spelled like an opcode, as in `add(8, 23)(x, y)`. Only `iconst
     /// (expr)` and `loop(...)` take a parenthesis and mean something else.
     fn is_call(&self, op: &str) -> bool {
-        !matches!(op, "iconst" | "loop" | "call") && matches!(self.peek(), Some(Tok::LParen))
+        !matches!(op, "const" | "iconst" | "loop" | "call") && matches!(self.peek(), Some(Tok::LParen))
     }
 
-    fn parse_call_tail(&mut self, callee: String, scope: &FuncScope) -> Result<(String, Vec<ValueId>), ParseError> {
+    fn parse_call_tail(&mut self, callee: String, scope: &mut FuncScope) -> Result<(String, Vec<ValueId>), ParseError> {
         let mut callee = callee;
         // `g(8, 23)(a, b)`: the first group is width arguments when it
         // opens with a literal, a parameter, or a parenthesis
@@ -2209,10 +2741,12 @@ impl Parser {
             callee = self.request_instance(&callee, args, None)?;
         }
         self.expect(Tok::LParen)?;
+        let wants: Vec<Type> = self.sigs.get(&callee).cloned().unwrap_or_default();
         let mut args = Vec::new();
         if !self.eat(&Tok::RParen) {
             loop {
-                args.push(self.expect_value(scope)?);
+                let want = wants.get(args.len()).copied();
+                args.push(self.parse_operand(scope, want)?);
                 if self.eat(&Tok::RParen) {
                     break;
                 }
@@ -2228,7 +2762,7 @@ impl Parser {
     // easy direction — the reverse (CFG -> structured, the "relooper"
     // problem) is what structured-only targets like wasm force on you.
 
-    fn parse_structured_body(&mut self, scope: &FuncScope) -> Result<Vec<Block>, ParseError> {
+    fn parse_structured_body(&mut self, scope: &mut FuncScope) -> Result<Vec<Block>, ParseError> {
         let mut st = StructEmit {
             blocks: Vec::new(),
             cur: 0,
@@ -2244,7 +2778,7 @@ impl Parser {
     /// Parse statements up to (not consuming) the closing '}'. Returns
     /// whether every path through them terminated (ret/break/continue/yield,
     /// or an if whose arms all terminate).
-    fn parse_struct_stmts(&mut self, scope: &FuncScope, st: &mut StructEmit) -> Result<bool, ParseError> {
+    fn parse_struct_stmts(&mut self, scope: &mut FuncScope, st: &mut StructEmit) -> Result<bool, ParseError> {
         self.skip_newlines();
         loop {
             if matches!(self.peek(), Some(Tok::RBrace)) {
@@ -2261,7 +2795,7 @@ impl Parser {
         }
     }
 
-    fn parse_struct_stmt(&mut self, scope: &FuncScope, st: &mut StructEmit) -> Result<bool, ParseError> {
+    fn parse_struct_stmt(&mut self, scope: &mut FuncScope, st: &mut StructEmit) -> Result<bool, ParseError> {
         match self.next()? {
             Tok::Ident(name) if matches!(self.peek(), Some(Tok::Colon)) => {
                 let mut dsts = vec![self.def_id(scope, &name)?];
@@ -2280,11 +2814,11 @@ impl Parser {
                     "loop" => return self.parse_struct_loop(scope, st, dsts),
                     _ if self.is_call(&op) => {
                         let (callee, args) = self.parse_call_tail(op, scope)?;
-                        st.push(Inst::Call { dsts, callee, args });
+                        self.emit(st, Inst::Call { dsts, callee, args });
                     }
                     "unpack" => {
                         let src = self.expect_value(scope)?;
-                        st.push(Inst::Unpack { dsts, src });
+                        self.emit(st, Inst::Unpack { dsts, src });
                     }
                     _ => {
                         if dsts.len() > 1 {
@@ -2294,7 +2828,7 @@ impl Parser {
                             )));
                         }
                         let inst = self.parse_def_op(&op, dsts[0], scope)?;
-                        st.push(inst);
+                        self.emit(st, inst);
                     }
                 }
                 self.expect(Tok::Newline)?;
@@ -2304,11 +2838,12 @@ impl Parser {
                 "if" => self.parse_struct_if(scope, st, Vec::new()),
                 "loop" => self.parse_struct_loop(scope, st, Vec::new()),
                 "break" => {
-                    let vals = self.parse_value_list(scope)?;
-                    if st.loop_stack.is_empty() {
+                    let Some(frame) = st.loop_stack.last() else {
                         return Err(self.err("'break' outside a loop"));
-                    }
-                    let at = st.push(Inst::Jmp {
+                    };
+                    let wants = frame.rets.clone();
+                    let vals = self.parse_value_list(scope, &wants)?;
+                    let at = self.emit(st, Inst::Jmp {
                         target: DUMMY_BLOCK,
                         args: vals,
                     });
@@ -2317,12 +2852,17 @@ impl Parser {
                     Ok(true)
                 }
                 "continue" => {
-                    let vals = self.parse_value_list(scope)?;
                     let Some(frame) = st.loop_stack.last() else {
                         return Err(self.err("'continue' outside a loop"));
                     };
                     let header = frame.header;
-                    st.push(Inst::Jmp {
+                    let wants: Vec<Type> = st.blocks[header.0 as usize]
+                        .params
+                        .iter()
+                        .map(|&p| scope.values[p.0 as usize].ty)
+                        .collect();
+                    let vals = self.parse_value_list(scope, &wants)?;
+                    self.emit(st, Inst::Jmp {
                         target: header,
                         args: vals,
                     });
@@ -2330,33 +2870,35 @@ impl Parser {
                     Ok(true)
                 }
                 "yield" => {
-                    let vals = self.parse_value_list(scope)?;
-                    if st.yield_stack.is_empty() {
+                    let Some(frame) = st.yield_stack.last() else {
                         return Err(self.err("'yield' outside an if"));
-                    }
-                    let at = st.push(Inst::Jmp {
+                    };
+                    let wants = frame.1.clone();
+                    let vals = self.parse_value_list(scope, &wants)?;
+                    let at = self.emit(st, Inst::Jmp {
                         target: DUMMY_BLOCK,
                         args: vals,
                     });
-                    st.yield_stack.last_mut().unwrap().push(at);
+                    st.yield_stack.last_mut().unwrap().0.push(at);
                     self.expect(Tok::Newline)?;
                     Ok(true)
                 }
                 "ret" => {
-                    let vals = self.parse_value_list(scope)?;
-                    st.push(Inst::Ret { vals });
+                    let wants = self.cur_rets.clone();
+                    let vals = self.parse_value_list(scope, &wants)?;
+                    self.emit(st, Inst::Ret { vals });
                     self.expect(Tok::Newline)?;
                     Ok(true)
                 }
                 "store" => {
                     let inst = self.parse_plain_op(&op, scope)?;
-                    st.push(inst);
+                    self.emit(st, inst);
                     self.expect(Tok::Newline)?;
                     Ok(false)
                 }
                 _ if self.is_call(&op) => {
                     let inst = self.parse_plain_op(&op, scope)?;
-                    st.push(inst);
+                    self.emit(st, inst);
                     self.expect(Tok::Newline)?;
                     Ok(false)
                 }
@@ -2374,17 +2916,19 @@ impl Parser {
 
     fn parse_struct_if(
         &mut self,
-        scope: &FuncScope,
+        scope: &mut FuncScope,
         st: &mut StructEmit,
         dsts: Vec<ValueId>,
     ) -> Result<bool, ParseError> {
-        let cond = self.expect_value(scope)?;
+        let cond = self.parse_operand(scope, Some(Type::U1))?;
+        self.flush(st); // the condition's consts belong before the branch
         self.expect(Tok::LBrace)?;
         self.expect(Tok::Newline)?;
 
         let before = st.cur;
         let then_b = st.new_block(Vec::new());
-        st.yield_stack.push(Vec::new()); // collects edges into the join
+        let dst_types: Vec<Type> = dsts.iter().map(|&d| scope.values[d.0 as usize].ty).collect();
+        st.yield_stack.push((Vec::new(), dst_types)); // collects edges into the join
 
         st.cur = then_b.0 as usize;
         let t_then = self.parse_struct_stmts(scope, st)?;
@@ -2397,7 +2941,7 @@ impl Parser {
                 target: DUMMY_BLOCK,
                 args: Vec::new(),
             });
-            st.yield_stack.last_mut().unwrap().push(at);
+            st.yield_stack.last_mut().unwrap().0.push(at);
         }
 
         if matches!(self.peek(), Some(Tok::Ident(k)) if k == "else") {
@@ -2418,7 +2962,7 @@ impl Parser {
                     target: DUMMY_BLOCK,
                     args: Vec::new(),
                 });
-                st.yield_stack.last_mut().unwrap().push(at);
+                st.yield_stack.last_mut().unwrap().0.push(at);
             }
             st.blocks[before].insts.push(Inst::Br {
                 cond,
@@ -2440,11 +2984,11 @@ impl Parser {
                 else_args: Vec::new(),
             });
             let at = (before, st.blocks[before].insts.len() - 1);
-            st.yield_stack.last_mut().unwrap().push(at);
+            st.yield_stack.last_mut().unwrap().0.push(at);
         }
         self.expect(Tok::Newline)?;
 
-        let pending = st.yield_stack.pop().unwrap();
+        let (pending, _) = st.yield_stack.pop().unwrap();
         if pending.is_empty() {
             Ok(true) // every arm terminated; nothing can follow
         } else {
@@ -2459,7 +3003,7 @@ impl Parser {
 
     fn parse_struct_loop(
         &mut self,
-        scope: &FuncScope,
+        scope: &mut FuncScope,
         st: &mut StructEmit,
         dsts: Vec<ValueId>,
     ) -> Result<bool, ParseError> {
@@ -2471,9 +3015,9 @@ impl Parser {
                 let n = self.expect_ident()?;
                 params.push(self.def_id(scope, &n)?);
                 self.expect(Tok::Colon)?;
-                self.expect_type()?;
+                let pty = self.expect_type()?;
                 self.expect(Tok::Equals)?;
-                inits.push(self.expect_value(scope)?);
+                inits.push(self.parse_operand(scope, Some(pty))?);
                 if self.eat(&Tok::RParen) {
                     break;
                 }
@@ -2484,13 +3028,15 @@ impl Parser {
         self.expect(Tok::Newline)?;
 
         let header = st.new_block(params);
-        st.push(Inst::Jmp {
+        self.emit(st, Inst::Jmp {
             target: header,
             args: inits,
         });
+        let rets: Vec<Type> = dsts.iter().map(|&d| scope.values[d.0 as usize].ty).collect();
         st.loop_stack.push(LoopFrame {
             header,
             breaks: Vec::new(),
+            rets,
         });
         st.cur = header.0 as usize;
         let terminated = self.parse_struct_stmts(scope, st)?;
@@ -2515,12 +3061,16 @@ impl Parser {
         }
     }
 
-    fn parse_value_list(&mut self, scope: &FuncScope) -> Result<Vec<ValueId>, ParseError> {
+    /// comma-separated operands, each literal typed by position from `wants`
+    fn parse_value_list(&mut self, scope: &mut FuncScope, wants: &[Type]) -> Result<Vec<ValueId>, ParseError> {
         let mut vals = Vec::new();
-        if matches!(self.peek(), Some(Tok::Ident(_))) {
-            vals.push(self.expect_value(scope)?);
-            while self.eat(&Tok::Comma) {
-                vals.push(self.expect_value(scope)?);
+        if matches!(self.peek(), Some(Tok::Ident(_)) | Some(Tok::Int(_)) | Some(Tok::Float(_)) | Some(Tok::Minus)) {
+            loop {
+                let want = wants.get(vals.len()).copied();
+                vals.push(self.parse_operand(scope, want)?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
             }
         }
         Ok(vals)
@@ -2528,7 +3078,7 @@ impl Parser {
 
     fn parse_branch_target(
         &mut self,
-        scope: &FuncScope,
+        scope: &mut FuncScope,
     ) -> Result<(BlockId, Vec<ValueId>), ParseError> {
         let target = match self.next()? {
             Tok::Ident(name) => scope.block_ids.get(&name).copied().ok_or_else(|| {
@@ -2542,8 +3092,13 @@ impl Parser {
         };
         let mut args = Vec::new();
         if self.eat(&Tok::LParen) && !self.eat(&Tok::RParen) {
+            let wants: Vec<Type> = scope.block_params[target.0 as usize]
+                .iter()
+                .map(|&p| scope.values[p.0 as usize].ty)
+                .collect();
             loop {
-                args.push(self.expect_value(scope)?);
+                let want = wants.get(args.len()).copied();
+                args.push(self.parse_operand(scope, want)?);
                 if self.eat(&Tok::RParen) {
                     break;
                 }
@@ -2574,7 +3129,76 @@ impl fmt::Display for Module {
 
 impl Function {
     fn fmt_value(&self, id: ValueId) -> String {
-        self.value(id).name.clone()
+        let v = self.value(id);
+        match v.literal {
+            Some(bits) => self.literal_text(v.ty, bits),
+            None => v.name.clone(),
+        }
+    }
+
+    /// a value where a literal would have nothing to type it: printed
+    /// with its type, `200: u8`
+    fn fmt_value_typed(&self, id: ValueId) -> String {
+        let v = self.value(id);
+        match v.literal {
+            Some(bits) => format!("{}: {}", self.literal_text(v.ty, bits), self.tyname(v.ty)),
+            None => v.name.clone(),
+        }
+    }
+
+    /// (E, M) if the type is a float(E, M) pack
+    pub fn float_params(&self, ty: Type) -> Option<(u32, u32)> {
+        match &self.pack(ty)?.origin {
+            Some((name, args)) if name == "float" && args.len() == 2 => Some((args[0] as u32, args[1] as u32)),
+            _ => None,
+        }
+    }
+
+    /// a constant as source text: a float as the shortest decimal that
+    /// reads back to the same value, anything else as its integer
+    fn literal_text(&self, ty: Type, bits: i64) -> String {
+        let Some((e, m)) = self.float_params(ty) else {
+            return bits.to_string();
+        };
+        let bits = bits as u64;
+        let emax = (1u64 << e) - 1;
+        let (sign, exp, mant) = (bits >> (e + m) & 1, (bits >> m) & emax, bits & ((1u64 << m) - 1));
+        if exp == emax {
+            return if mant != 0 { "nan".into() } else if sign == 1 { "-inf".into() } else { "inf".into() };
+        }
+        // the value is exact in f64 for every E <= 11, M <= 52; print the
+        // shortest decimal (fixed or exponent form) that rounds back to
+        // these bits at this width
+        let bias = (1i64 << (e - 1)) - 1;
+        let mag = if exp == 0 {
+            mant as f64 * 2f64.powi((1 - bias - m as i64) as i32)
+        } else {
+            (mant | (1u64 << m)) as f64 * 2f64.powi((exp as i64 - bias - m as i64) as i32)
+        };
+        let v = if sign == 1 { -mag } else { mag };
+        let back = |s: &str| decimal_to_float(s, e, m).ok() == Some(bits);
+        let fixed = (0..=40usize)
+            .map(|p| {
+                let mut s = format!("{:.*}", p, v);
+                if !s.contains('.') {
+                    s.push_str(".0");
+                }
+                s
+            })
+            .find(|s| back(s));
+        let sci = (0..=40usize).map(|p| format!("{:.*e}", p, v)).find(|s| back(s));
+        match (fixed, sci) {
+            (Some(f), Some(s)) => {
+                if f.len() <= s.len() + 2 {
+                    f
+                } else {
+                    s
+                }
+            }
+            (Some(f), None) => f,
+            (None, Some(s)) => s,
+            (None, None) => format!("{:?}", v),
+        }
     }
 
     fn fmt_def(&self, id: ValueId) -> String {
@@ -2637,6 +3261,12 @@ impl fmt::Display for Function {
                 writeln!(f, "{}({}):", block.name, ps)?;
             }
             for inst in &block.insts {
+                // a literal's hidden const prints at its use instead
+                if let Inst::IConst { dst, .. } = inst {
+                    if self.value(*dst).literal.is_some() {
+                        continue;
+                    }
+                }
                 writeln!(f, "    {}", self.fmt_inst(inst))?;
             }
         }
@@ -2647,7 +3277,11 @@ impl fmt::Display for Function {
 impl Function {
     fn fmt_inst(&self, inst: &Inst) -> String {
         match inst {
-            Inst::IConst { dst, imm } => format!("{} = iconst {}", self.fmt_def(*dst), imm),
+            Inst::IConst { dst, imm } => format!(
+                "{} = const {}",
+                self.fmt_def(*dst),
+                self.literal_text(self.ty(*dst), *imm)
+            ),
             Inst::Bin { op, dst, lhs, rhs } => format!(
                 "{} = {} {}, {}",
                 self.fmt_def(*dst),
@@ -2671,7 +3305,7 @@ impl Function {
                 "{} = {} {}",
                 self.fmt_def(*dst),
                 op.name(),
-                self.fmt_value(*src)
+                self.fmt_value_typed(*src)
             ),
             Inst::Pack { dst, args } => {
                 format!("{} = pack {}", self.fmt_def(*dst), self.fmt_args(args))
@@ -2702,7 +3336,7 @@ impl Function {
                 format!("{} = load {}", self.fmt_def(*dst), self.fmt_value(*addr))
             }
             Inst::Store { val, addr } => {
-                format!("store {}, {}", self.fmt_value(*val), self.fmt_value(*addr))
+                format!("store {}, {}", self.fmt_value_typed(*val), self.fmt_value(*addr))
             }
             Inst::PtrAdd { dst, base, off } => format!(
                 "{} = ptradd {}, {}",
@@ -3201,14 +3835,14 @@ mod tests {
 ; sum of 0..n
 fn sum(n: i64) -> i64 {
 entry:
-    zero: i64 = iconst 0
+    zero: i64 = const 0
     jmp loop(zero, zero)
 loop(i: i64, acc: i64):
     done: u1 = cmp.ge i, n
     br done, exit, body
 body:
     acc2: i64 = add acc, i
-    one: i64 = iconst 1
+    one: i64 = const 1
     i2: i64 = add i, one
     jmp loop(i2, acc2)
 exit:
@@ -3248,7 +3882,7 @@ fn use(p: ptr) -> i64 {
 entry:
     v: i32 = get(p)
     w: i64 = conv v
-    eight: i64 = iconst 8
+    eight: i64 = const 8
     q: ptr = ptradd p, eight
     store w, q
     touch(q)
@@ -3332,13 +3966,13 @@ entry:
     fn structured_lowers_and_verifies() {
         let src = r"
 fn sum(n: i64) -> i64 {
-    zero: i64 = iconst 0
+    zero: i64 = const 0
     r: i64 = loop(i: i64 = zero, acc: i64 = zero) {
         done: u1 = cmp.ge i, n
         if done {
             break acc
         }
-        one: i64 = iconst 1
+        one: i64 = const 1
         a2: i64 = add acc, i
         i2: i64 = add i, one
         continue i2, a2
@@ -3381,7 +4015,7 @@ fn bad(c: u1, a: i64, b: i32) -> i64 {
         assert!(parse("fn f() {\n    break\n}").is_err());
         // loop body falling through
         assert!(parse(
-            "fn f(n: i64) {\n    loop(i: i64 = n) {\n        z: i64 = iconst 0\n    }\n    ret\n}"
+            "fn f(n: i64) {\n    loop(i: i64 = n) {\n        z: i64 = const 0\n    }\n    ret\n}"
         )
         .is_err());
         // unreachable code after ret
@@ -3404,7 +4038,7 @@ entry:
 a:
     jmp join(x)
 b:
-    x: i64 = iconst 7
+    x: i64 = const 7
     jmp join(x)
 join(r: i64):
     ret r
@@ -3473,10 +4107,10 @@ entry:
         assert!(verify(&m).is_err());
         let m = parse("fn f(p: ptr) -> u16 {\n    b: u16 = load p\n    ret b\n}").unwrap();
         assert!(verify(&m).is_ok());
-        // icmp results are u1, and iconst must fit
-        let m = parse("fn f(a: u5) -> u1 {\n    k: u5 = iconst 40\n    c: u1 = cmp.lt a, k\n    ret c\n}").unwrap();
+        // icmp results are u1, and const must fit
+        let m = parse("fn f(a: u5) -> u1 {\n    k: u5 = const 40\n    c: u1 = cmp.lt a, k\n    ret c\n}").unwrap();
         assert!(verify(&m).is_err());
-        let m = parse("fn f(a: i5) -> u1 {\n    k: i5 = iconst -16\n    c: u1 = cmp.lt a, k\n    ret c\n}").unwrap();
+        let m = parse("fn f(a: i5) -> u1 {\n    k: i5 = const -16\n    c: u1 = cmp.lt a, k\n    ret c\n}").unwrap();
         assert!(verify(&m).is_ok());
     }
 
@@ -3552,7 +4186,7 @@ fn half(f: f16, b: byte, w: word(2 * 6)) -> (u5, u8, u12) {
 type word(N) = u(N)
 fn wrap(N)(a: word(N), b: word(N)) -> word(N) {
     s: word(N) = add a, b
-    top: word(N) = iconst (1 << (N - 1)) - 1
+    top: word(N) = const (1 << (N - 1)) - 1
     big: u1 = cmp.gt s, top
     r: word(N) = if big {
         d: word(N) = halve(N)(s)
@@ -3563,7 +4197,7 @@ fn wrap(N)(a: word(N), b: word(N)) -> word(N) {
     ret r
 }
 fn halve(N)(a: word(N)) -> word(N) {
-    one: word(N) = iconst 1
+    one: word(N) = const 1
     h: word(N) = shr a, one
     ret h
 }
@@ -3590,5 +4224,109 @@ fn use12(a: u12) -> u12 {
         // errors: unknown generic, arity, an alias that clashes
         assert!(parse("fn f = nope(1)\n").is_err());
         assert!(parse("fn g(N)(a: u(N)) -> u(N) {\n    ret a\n}\nfn h = g(1, 2)\n").is_err());
+    }
+
+    #[test]
+    fn literal_operands_take_the_type_from_context() {
+        let src = r"
+type rgb = pack { r: u5, g: u6, b: u5 }
+fn f(a: i64, p: ptr, c: rgb) -> i64 {
+entry:
+    b: i64 = add a, 1
+    lt: u1 = cmp.lt 0, b
+    q: ptr = ptradd p, 8
+    d: rgb = set c, g, 63
+    e: rgb = pack 1, 2, 3
+    x: u8 = conv 200: u8
+    m: i64 = g(b, 2)
+    jmp next(m, 7)
+next(v: i64, w: i64):
+    br lt, done(v), done(0)
+done(z: i64):
+    ret z
+}
+fn g(a: i64, b: i64) -> i64 {
+    r: i64 = mul a, b
+    ret r
+}
+fn h(n: i64) -> i64 {
+    r: i64 = loop(i: i64 = 0, acc: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break acc
+        }
+        acc2: i64 = add acc, i
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    nz: u1 = cmp.ne r, 0
+    k: i64 = if nz {
+        yield 1
+    } else {
+        yield 0
+    }
+    ret k
+}
+";
+        let m = parse(src).expect("parse");
+        verify(&m).expect("verify");
+        // the printed form shows the literals inline and round-trips
+        let printed = m.to_string();
+        assert!(printed.contains("b: i64 = add a, 1\n"), "{}", printed);
+        assert!(printed.contains("jmp next(m, 7)\n"), "{}", printed);
+        assert!(printed.contains("x: u8 = conv 200: u8\n"), "{}", printed);
+        assert!(!printed.contains('#'), "hidden values must not print: {}", printed);
+        let m2 = parse(&printed).expect("reparse");
+        verify(&m2).expect("reverify");
+        assert_eq!(printed, m2.to_string());
+        // a literal with nothing to type it is an error, and a float
+        // literal needs a float
+        assert!(parse("fn f(p: ptr) {\n    store 1, p\n    ret\n}").is_err());
+        assert!(parse("fn f(a: i64) -> i64 {\n    b: i64 = add a, 1.5\n    ret b\n}").is_err());
+        let m = parse("fn f(a: i64) -> i64 {\n    b: i64 = add a, 1\n    ret b\n}").unwrap();
+        verify(&m).expect("verify");
+    }
+
+    #[test]
+    fn decimal_literals_round_correctly() {
+        // Rust's from_str is correctly rounded: the oracle for f32 and f64
+        let texts = [
+            "0.1", "0.2", "0.3", "1.5", "2", "3.14159265358979", "1e-40", "1e-45", "1.4e-45", "7e-46", "1e38", "3.4028235e38",
+            "3.4028236e38", "1e39", "16777217", "16777219", "0.000000059604645", "5e-324", "2.5e-324", "1e-323", "1.7976931348623157e308",
+            "1.8e308", "123456789012345678901234567890", "0.1000000000000000055511151231257827", "-0.0", "-2.5", "9007199254740993",
+            "1.00000011920928955078125", "1.000000178813934326171875", "8388609", "4.9e-324", "2.2250738585072014e-308", "2.2250738585072009e-308",
+        ];
+        for t in texts {
+            let want32 = t.parse::<f32>().unwrap().to_bits() as u64;
+            let want64 = t.parse::<f64>().unwrap().to_bits();
+            assert_eq!(decimal_to_float(t, 8, 23).unwrap(), want32, "f32 {}", t);
+            assert_eq!(decimal_to_float(t, 11, 52).unwrap(), want64, "f64 {}", t);
+        }
+        // and a float type reads them as values, an integer type as bits
+        let src = r"
+type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }
+type f32 = float(8, 23)
+fn f() -> (f32, f32, f32, f32, u32) {
+    a: f32 = const 0.1
+    b: f32 = const -inf
+    c: f32 = const nan
+    d: f32 = const 3
+    e: u32 = const 0x3dcccccd
+    ret a, b, c, d, e
+}
+";
+        let m = parse(src).expect("parse");
+        verify(&m).expect("verify");
+        let f = &m.funcs[0];
+        let consts: Vec<i64> = f.blocks[0].insts.iter().filter_map(|i| match i {
+            Inst::IConst { imm, .. } => Some(*imm),
+            _ => None,
+        }).collect();
+        assert_eq!(consts, vec![0x3dcccccd, 0xff800000, 0x7fc00000, 0x40400000, 0x3dcccccd]);
+        let printed = m.to_string();
+        assert!(printed.contains("a: f32 = const 0.1\n"), "{}", printed);
+        assert!(printed.contains("b: f32 = const -inf\n"), "{}", printed);
+        assert!(printed.contains("d: f32 = const 3.0\n"), "{}", printed);
+        assert_eq!(printed, parse(&printed).unwrap().to_string());
     }
 }

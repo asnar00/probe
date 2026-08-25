@@ -32,6 +32,8 @@ things we can learn ARM64 encodings for by probing LLVM.
   value, after `:` names a type, before `(` names a function being called,
   after `jmp`/`br` names a block. Each value is defined exactly once.
 - Integer literals: decimal, optionally negative (`42`, `-7`), or hex (`0x2a`).
+  Float literals: a decimal with a fraction or an exponent (`1.5`, `2e10`,
+  `-1.0e-3`), plus `inf`, `-inf`, `nan`.
 - Whitespace is insignificant except as a separator; newlines end instructions.
 
 ## Types
@@ -90,12 +92,38 @@ left-hand side.
 ### Constants
 
 ```
-v: i64 = iconst 42
-p: ptr = iconst 0          ; null
-u: ptr = iconst 0x10000000 ; a raw address — MMIO registers, fixed buffers
-c: rgb = iconst 4095       ; a pack, by its bit pattern
-w: u(M) = iconst (1 << M) - 1   ; inside a generic: an expression over its parameters
+v: i64 = const 42
+p: ptr = const 0          ; null
+u: ptr = const 0x10000000 ; a raw address — MMIO registers, fixed buffers
+c: rgb = const 4095       ; a pack, by its bit pattern
+w: u(M) = const (1 << M) - 1   ; inside a generic: an expression over its parameters
+x: f32 = const 0.1        ; a float, by its value: the nearest f32, exactly rounded
+y: f16 = const 3          ; 3.0
+z: f64 = const -inf       ; also inf, nan
 ```
+
+On a `float(E, M)` the literal is a number, converted to the nearest
+value of that type (ties to even, subnormals included) — the same bits the
+FPU would produce from the same decimal. Its bit pattern is a `cast` from
+an integer away.
+
+**Literals as operands.** Anywhere an operand's type is fixed by context,
+a literal may stand in for a value: the other operand of `add`, `cmp`,
+and friends; a pack's field; a call's parameter; a block's parameter; the
+function's return type; the loop variable's declared type.
+
+```
+b: i64 = add a, 1
+lt: u1 = cmp.lt 0, b
+half: f32 = mul x, 0.5
+jmp loop(0, 0)
+ret 0
+r: i64 = g(b, 2)
+```
+
+Where nothing fixes the type — a stored value, a `conv` source — write it
+after the literal: `store 1: u8, p`. A literal becomes a hidden `const`
+just before the instruction; `probe parse` prints it back inline.
 
 ### Integer arithmetic and bitwise ops
 
@@ -247,12 +275,12 @@ A function can take the same kind of width parameters, in a group before
 its value parameters. It is a template: nothing is compiled until it is
 instantiated, either by name or at a call site, and each instantiation is
 an ordinary function whose body was parsed with the parameters bound —
-so `u(M + 5)` is a concrete type there, and `iconst` may be a width
+so `u(M + 5)` is a concrete type there, and `const` may be a width
 expression.
 
 ```
 fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
-    hidden: u(M + 5) = iconst 1 << M
+    hidden: u(M + 5) = const 1 << M
     ...
     n: float(E, M) = fnan(E, M)()      ; instantiates fnan for this E, M
     ...
@@ -265,7 +293,7 @@ s: f16 = add x, y                           ; the same, by dispatch
 Instantiations are shared: `add(8, 23)` anywhere is `fadd32` once that
 name exists. `probe parse` prints the instantiated functions and not the
 templates — like structured control flow, generics are sugar the parser
-lowers. A pack literal `iconst` is its bit pattern.
+lowers. A pack literal `const` is its bit pattern.
 
 **Dispatch.** A generic function whose first parameter and first result
 are written in terms of its own width parameters *is* an operation of
@@ -302,14 +330,14 @@ library canonicalizes, hardware propagates — as on any real platform.
 ; sum of 0..n
 fn sum(n: i64) -> i64 {
 entry:
-    zero: i64 = iconst 0
+    zero: i64 = const 0
     jmp loop(zero, zero)
 loop(i: i64, acc: i64):
     done: u1 = cmp.ge i, n
     br done, exit, body
 body:
     acc2: i64 = add acc, i
-    one:  i64 = iconst 1
+    one:  i64 = const 1
     i2:   i64 = add i, one
     jmp loop(i2, acc2)
 exit:
@@ -416,7 +444,7 @@ terminator), same as flat form.
 2. Every block ends with exactly one terminator; no instruction follows it.
 3. Branch argument counts and types match the target block's parameters.
 4. Operand types obey each instruction's typing rule above; `br` conditions
-   and `icmp` results are `u1`; `iconst` literals fit their type under
+   and `icmp` results are `u1`; `const` literals fit their type under
    either the signed or the unsigned reading.
 5. The entry block has no parameters and is not the target of any branch.
 6. `ret` operands match the function's declared return types in count and
