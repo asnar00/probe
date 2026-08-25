@@ -114,6 +114,10 @@ pub struct PackDef {
     pub fields: Vec<(String, Type)>,
     pub offsets: Vec<u32>,
     pub width: u32,
+    /// the generic type and arguments this pack was instantiated from, if
+    /// any — what an opcode on the pack dispatches on (`add` on a
+    /// `float(8, 23)` finds `add(E, M)`)
+    pub origin: Option<(String, Vec<i64>)>,
 }
 
 impl PackDef {
@@ -294,9 +298,9 @@ pub enum BinOp {
 }
 
 const BINOPS: &[(&str, BinOp)] = &[
-    ("iadd", BinOp::IAdd),
-    ("isub", BinOp::ISub),
-    ("imul", BinOp::IMul),
+    ("add", BinOp::IAdd),
+    ("sub", BinOp::ISub),
+    ("mul", BinOp::IMul),
     ("div", BinOp::Div),
     ("rem", BinOp::Rem),
     ("and", BinOp::And),
@@ -859,6 +863,8 @@ struct GenericFn {
     name: String,
     params: Vec<String>,
     lo: usize,
+    /// the declared type of its first value parameter, for opcode dispatch
+    first_param: Option<TypeExpr>,
 }
 
 struct Parser {
@@ -1062,7 +1068,18 @@ impl Parser {
             }
             self.expect(Tok::Comma)?;
         }
-        self.generics.push(GenericFn { name, params, lo });
+        // the first value parameter's type: `(a: float(E, M), ...`
+        self.expect(Tok::LParen)?;
+        let first_param = match (self.toks.get(self.pos).map(|t| &t.0), self.toks.get(self.pos + 1).map(|t| &t.0)) {
+            (Some(Tok::Ident(_)), Some(Tok::Colon)) => Some(self.type_expr_at(self.pos + 2, &params)?.0),
+            _ => None,
+        };
+        self.generics.push(GenericFn {
+            name,
+            params,
+            lo,
+            first_param,
+        });
         self.pos = hi + 1;
         Ok(())
     }
@@ -1405,15 +1422,21 @@ impl Parser {
                 }
                 let before = self.packs.len();
                 let ty = self.instantiate(&def.body, &inner, depth + 1)?;
-                // a pack born from this instantiation is named by it
+                // a pack born from this instantiation is named by it and
+                // remembers where it came from
                 if let Type::Pack(i) = ty {
+                    let vals: Vec<i64> = inner.iter().map(|(_, v)| *v).collect();
+                    let p = &mut self.packs[i as usize];
                     if i as usize >= before {
-                        let vals: Vec<String> = inner.iter().map(|(_, v)| v.to_string()).collect();
-                        self.packs[i as usize].name = if vals.is_empty() {
+                        p.name = if vals.is_empty() {
                             name.clone()
                         } else {
-                            format!("{}({})", name, vals.join(", "))
+                            let a: Vec<String> = vals.iter().map(|v| v.to_string()).collect();
+                            format!("{}({})", name, a.join(", "))
                         };
+                    }
+                    if p.origin.is_none() && !def.params.is_empty() {
+                        p.origin = Some((name.clone(), vals));
                     }
                 }
                 Ok(ty)
@@ -1470,6 +1493,7 @@ impl Parser {
                     fields: out,
                     offsets,
                     width,
+                    origin: None,
                 });
                 Ok(Type::Pack(id))
             }
@@ -1799,6 +1823,19 @@ impl Parser {
             let lhs = self.expect_value(scope)?;
             self.expect(Tok::Comma)?;
             let rhs = self.expect_value(scope)?;
+            // on a pack, the opcode is whatever generic function of that
+            // name takes the pack's origin type: `add` on a float(8, 23)
+            // is a call to add(8, 23) — the library, or the platform's
+            // instruction for it
+            if let Type::Pack(i) = scope.values[lhs.0 as usize].ty {
+                let origin = self.packs[i as usize].origin.clone();
+                let callee = self.dispatch(op, origin.as_ref(), &self.packs[i as usize].name.clone())?;
+                return Ok(Inst::Call {
+                    dsts: vec![dst],
+                    callee,
+                    args: vec![lhs, rhs],
+                });
+            }
             return Ok(Inst::Bin {
                 op: *bin,
                 dst,
@@ -1882,6 +1919,36 @@ impl Parser {
             }
             _ => Err(self.err(format!("unknown opcode '{}'", op))),
         }
+    }
+
+    /// the instance of generic `op` for a pack of the given origin: the
+    /// generic named `op` whose first parameter is `origin(P, Q, ...)`
+    fn dispatch(&mut self, op: &str, origin: Option<&(String, Vec<i64>)>, tyname: &str) -> Result<String, ParseError> {
+        let Some((gname, args)) = origin else {
+            return Err(self.err(format!(
+                "'{}' on {}: only packs instantiated from a generic type can be operated on",
+                op, tyname
+            )));
+        };
+        let found = self.generics.iter().position(|g| {
+            g.name == op
+                && matches!(&g.first_param, Some(TypeExpr::Named { name, args: a })
+                    if name == gname
+                        && a.len() == g.params.len()
+                        && a.iter().zip(&g.params).all(|(e, p)| *e == IntExpr::Param(p.clone())))
+        });
+        if found.is_none() {
+            return Err(self.err(format!(
+                "no '{}' for {}: define fn {}({})(a: {}({}), ...) or a platform op",
+                op,
+                tyname,
+                op,
+                (0..args.len()).map(|i| ((b'E' + i as u8) as char).to_string()).collect::<Vec<_>>().join(", "),
+                gname,
+                (0..args.len()).map(|i| ((b'E' + i as u8) as char).to_string()).collect::<Vec<_>>().join(", "),
+            )));
+        }
+        self.request_instance(op, args.clone(), None)
     }
 
     /// a field name of the pack-typed value `of`, resolved to its index
@@ -2967,9 +3034,9 @@ loop(i: i64, acc: i64):
     done: u1 = icmp.ge i, n
     br done, exit, body
 body:
-    acc2: i64 = iadd acc, i
+    acc2: i64 = add acc, i
     one: i64 = iconst 1
-    i2: i64 = iadd i, one
+    i2: i64 = add i, one
     jmp loop(i2, acc2)
 exit:
     ret acc
@@ -3026,13 +3093,13 @@ entry:
         let src = r"
 fn bad(a: i64, b: i32) -> i64 {
 entry:
-    c: i64 = iadd a, b
+    c: i64 = add a, b
     ret c
 }
 ";
         let m = parse(src).expect("parse succeeds; verify should fail");
         let errs = verify(&m).unwrap_err();
-        assert!(errs[0].contains("iadd"), "got: {:?}", errs);
+        assert!(errs[0].contains("add"), "got: {:?}", errs);
     }
 
     #[test]
@@ -3055,7 +3122,7 @@ next(x: i32):
         let src = r"
 fn bad(a: i64) -> i64 {
 entry:
-    b: i64 = iadd a, a
+    b: i64 = add a, a
 }
 ";
         let m = parse(src).expect("parse");
@@ -3068,8 +3135,8 @@ entry:
         let src = r"
 fn bad(a: i64) -> i64 {
 entry:
-    b: i64 = iadd a, a
-    b: i64 = iadd a, a
+    b: i64 = add a, a
+    b: i64 = add a, a
     ret b
 }
 ";
@@ -3081,7 +3148,7 @@ entry:
         let src = r"
 fn bad(a: i64) -> i64 {
 entry:
-    b: i64 = iadd a, nope
+    b: i64 = add a, nope
     ret b
 }
 ";
@@ -3099,8 +3166,8 @@ fn sum(n: i64) -> i64 {
             break acc
         }
         one: i64 = iconst 1
-        a2: i64 = iadd acc, i
-        i2: i64 = iadd i, one
+        a2: i64 = add acc, i
+        i2: i64 = add i, one
         continue i2, a2
     }
     ret r
@@ -3309,7 +3376,7 @@ fn half(f: f16, b: byte, w: word(2 * 6)) -> (u5, u8, u12) {
         let src = r"
 type word(N) = u(N)
 fn wrap(N)(a: word(N), b: word(N)) -> word(N) {
-    s: word(N) = iadd a, b
+    s: word(N) = add a, b
     top: word(N) = iconst (1 << (N - 1)) - 1
     big: u1 = icmp.gt s, top
     r: word(N) = if big {

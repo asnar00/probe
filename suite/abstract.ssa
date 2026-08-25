@@ -36,8 +36,8 @@ fn asum(n: int) -> int {
             break acc
         }
         one: int = iconst 1
-        acc2: int = iadd acc, i
-        i2: int = iadd i, one
+        acc2: int = add acc, i
+        i2: int = add i, one
         continue i2, acc2
     }
     ret r
@@ -50,11 +50,11 @@ fn afib(n: int) -> int {
         ret n
     }
     one: int = iconst 1
-    n1: int = isub n, one
+    n1: int = sub n, one
     a: int = call afib(n1)
-    n2: int = isub n, two
+    n2: int = sub n, two
     b: int = call afib(n2)
-    r: int = iadd a, b
+    r: int = add a, b
     ret r
 }
 

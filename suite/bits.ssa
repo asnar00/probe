@@ -45,22 +45,22 @@
 
 fn add5(a: i5, b: i5) -> i5 {
 entry:
-    r: i5 = iadd a, b
+    r: i5 = add a, b
     ret r
 }
 fn uadd5(a: u5, b: u5) -> u5 {
 entry:
-    r: u5 = iadd a, b
+    r: u5 = add a, b
     ret r
 }
 fn mul5(a: i5, b: i5) -> i5 {
 entry:
-    r: i5 = imul a, b
+    r: i5 = mul a, b
     ret r
 }
 fn umul3(a: u3, b: u3) -> u3 {
 entry:
-    r: u3 = imul a, b
+    r: u3 = mul a, b
     ret r
 }
 fn div5(a: i5, b: i5) -> i5 {
@@ -116,27 +116,27 @@ entry:
 }
 fn add1(a: i1, b: i1) -> i1 {
 entry:
-    r: i1 = iadd a, b
+    r: i1 = add a, b
     ret r
 }
 fn uadd1(a: u1, b: u1) -> u1 {
 entry:
-    r: u1 = iadd a, b
+    r: u1 = add a, b
     ret r
 }
 fn add12(a: i12, b: i12) -> i12 {
 entry:
-    r: i12 = iadd a, b
+    r: i12 = add a, b
     ret r
 }
 fn add40(a: i40, b: i40) -> i40 {
 entry:
-    r: i40 = iadd a, b
+    r: i40 = add a, b
     ret r
 }
 fn uadd40(a: u40, b: u40) -> u40 {
 entry:
-    r: u40 = iadd a, b
+    r: u40 = add a, b
     ret r
 }
 ; ext fills by the source's signedness; the result is canonical for its type
@@ -184,7 +184,7 @@ entry:
 fn negate5(a: i5) -> i5 {
 entry:
     zero: i5 = iconst 0
-    r: i5 = isub zero, a
+    r: i5 = sub zero, a
     ret r
 }
 fn neg5(a: i5) -> i5 {
@@ -202,9 +202,9 @@ fn count5() -> i64 {
             break n
         }
         one: i5 = iconst 1
-        i2: i5 = iadd i, one
+        i2: i5 = add i, one
         n1: i64 = iconst 1
-        n2: i64 = iadd n, n1
+        n2: i64 = add n, n1
         continue i2, n2
     }
     ret r
@@ -215,14 +215,14 @@ fn sumbytes_u8() -> u16 {
     acc0: u16 = iconst 0
     r: u16 = loop(i: u8 = zero, acc: u16 = acc0) {
         w: u16 = ext i
-        acc2: u16 = iadd acc, w
+        acc2: u16 = add acc, w
         max: u8 = iconst 255
         done: u1 = icmp.eq i, max
         if done {
             break acc2
         }
         one: u8 = iconst 1
-        i2: u8 = iadd i, one
+        i2: u8 = add i, one
         continue i2, acc2
     }
     ret r
@@ -250,9 +250,9 @@ entry:
     bw: i64 = ext b
     cw: i64 = ext c
     dw: i64 = ext d
-    s1: i64 = iadd aw, bw
-    s2: i64 = iadd s1, cw
-    s3: i64 = iadd s2, dw
+    s1: i64 = add aw, bw
+    s2: i64 = add s1, cw
+    s3: i64 = add s2, dw
     ret s3
 }
 fn sumubytes(p: ptr) -> u64 {
@@ -263,7 +263,7 @@ entry:
     b: u8 = load p1
     aw: u64 = ext a
     bw: u64 = ext b
-    s: u64 = iadd aw, bw
+    s: u64 = add aw, bw
     ret s
 }
 fn sumhalves(p: ptr) -> i64 {
@@ -274,7 +274,7 @@ entry:
     b: i16 = load p1
     aw: i64 = ext a
     bw: i64 = ext b
-    s: i64 = iadd aw, bw
+    s: i64 = add aw, bw
     ret s
 }
 fn sumuhalves(p: ptr) -> u64 {
@@ -285,7 +285,7 @@ entry:
     b: u16 = load p1
     aw: u64 = ext a
     bw: u64 = ext b
-    s: u64 = iadd aw, bw
+    s: u64 = add aw, bw
     ret s
 }
 fn loadu32(p: ptr) -> u32 {

@@ -6,11 +6,11 @@ fn shipping(items: i64) -> i64 {
     base: i64 = iconst 500
     per_kg: i64 = iconst 12
     kg_per_item: i64 = iconst 40
-    rate: i64 = imul per_kg, kg_per_item
+    rate: i64 = mul per_kg, kg_per_item
     surcharge: i64 = iconst 17
-    unused: i64 = imul surcharge, rate    ; dead: never used
-    cost0: i64 = imul rate, items
-    cost: i64 = iadd cost0, base
+    unused: i64 = mul surcharge, rate    ; dead: never used
+    cost0: i64 = mul rate, items
+    cost: i64 = add cost0, base
     ; forwarding-arm if: lowered arms are empty jumps
     limit: i64 = iconst 100000
     big: u1 = icmp.gt cost, limit

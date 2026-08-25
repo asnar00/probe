@@ -2,7 +2,7 @@
 //! SSA functions it stands in for.
 //!
 //! Semantics live in SSA libraries (suite/float.ssa defines what
-//! `fadd(8, 23)` means, with integer instructions). A platform lists the
+//! `add(8, 23)` on a float(8, 23) means, with integer instructions). A platform lists the
 //! generic instantiations it has hardware for; when an emitter meets a
 //! call to one of them it emits the instruction sequence instead of the
 //! call — and the instance itself compiles to that sequence, so callers
@@ -43,8 +43,8 @@ impl Platform {
         }
         Platform {
             ops: vec![
-                ("fadd", vec![8, 23], Native::FAdd32),
-                ("fadd", vec![11, 52], Native::FAdd64),
+                ("add", vec![8, 23], Native::FAdd32),
+                ("add", vec![11, 52], Native::FAdd64),
             ],
         }
     }

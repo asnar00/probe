@@ -512,15 +512,15 @@ loop(sh: u64):
     big: u1 = icmp.gt n, nine
     bigi: u64 = ext big
     gap: u64 = iconst 39
-    adj: u64 = imul bigi, gap
+    adj: u64 = mul bigi, gap
     z: u64 = iconst 48
-    c1: u64 = iadd n, z
-    c: u64 = iadd c1, adj
+    c1: u64 = add n, z
+    c: u64 = add c1, adj
     call __pch(c)
     zero: u64 = iconst 0
     done: u1 = icmp.eq sh, zero
     four: u64 = iconst 4
-    sh2: u64 = isub sh, four
+    sh2: u64 = sub sh, four
     br done, exit, loop(sh2)
 exit:
     ret

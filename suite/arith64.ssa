@@ -17,17 +17,17 @@
 
 fn add(a: i64, b: i64) -> i64 {
 entry:
-    r: i64 = iadd a, b
+    r: i64 = add a, b
     ret r
 }
 fn sub(a: i64, b: i64) -> i64 {
 entry:
-    r: i64 = isub a, b
+    r: i64 = sub a, b
     ret r
 }
 fn mul(a: i64, b: i64) -> i64 {
 entry:
-    r: i64 = imul a, b
+    r: i64 = mul a, b
     ret r
 }
 fn sdivt(a: i64, b: i64) -> i64 {

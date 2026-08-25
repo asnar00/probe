@@ -19,9 +19,9 @@ loop(i: i64, acc: i64):
     done: u1 = icmp.ge i, n
     br done, exit, body
 body:
-    acc2: i64 = iadd acc, i
+    acc2: i64 = add acc, i
     one: i64 = iconst 1
-    i2: i64 = iadd i, one
+    i2: i64 = add i, one
     jmp loop(i2, acc2)
 exit:
     ret acc
@@ -50,17 +50,17 @@ base:
     ret n
 rec:
     one: i64 = iconst 1
-    n1: i64 = isub n, one
+    n1: i64 = sub n, one
     a: i64 = call fib(n1)
-    n2: i64 = isub n, two
+    n2: i64 = sub n, two
     b: i64 = call fib(n2)
-    r: i64 = iadd a, b
+    r: i64 = add a, b
     ret r
 }
 
 fn square(x: i64) -> i64 {
 entry:
-    r: i64 = imul x, x
+    r: i64 = mul x, x
     ret r
 }
 
@@ -68,7 +68,7 @@ fn hypot2(a: i64, b: i64) -> i64 {
 entry:
     aa: i64 = call square(a)
     bb: i64 = call square(b)
-    s: i64 = iadd aa, bb
+    s: i64 = add aa, bb
     ret s
 }
 
@@ -85,12 +85,12 @@ step:
     two: i64 = iconst 2
     parity: i64 = and x, one
     odd: u1 = trunc parity
-    s2: i64 = iadd steps, one
+    s2: i64 = add steps, one
     br odd, odd, even
 odd:
     three: i64 = iconst 3
-    t: i64 = imul x, three
-    t1: i64 = iadd t, one
+    t: i64 = mul x, three
+    t1: i64 = add t, one
     jmp loop(t1, s2)
 even:
     h: i64 = div x, two

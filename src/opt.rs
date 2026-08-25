@@ -563,10 +563,10 @@ fn f() -> i64 {
 entry:
     a: i64 = iconst 6
     b: i64 = iconst 7
-    c: i64 = imul a, b
+    c: i64 = mul a, b
     d: u1 = icmp.lt a, b
     e: i64 = ext d
-    r: i64 = iadd c, e
+    r: i64 = add c, e
     ret r
 }
 ";
@@ -590,7 +590,7 @@ fn count(n: i64) -> i64 {
             break i
         }
         one: i64 = iconst 1
-        i2: i64 = iadd i, one
+        i2: i64 = add i, one
         continue i2
     }
     ret r
@@ -627,7 +627,7 @@ entry:
 x:
     jmp join(two)
 y:
-    d: i64 = imul a, two
+    d: i64 = mul a, two
     jmp join(d)
 join(v: i64):
     ret v

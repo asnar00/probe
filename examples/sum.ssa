@@ -7,9 +7,9 @@ loop(i: i64, acc: i64):
     done: u1 = icmp.ge i, n
     br done, exit, body
 body:
-    acc2: i64 = iadd acc, i
+    acc2: i64 = add acc, i
     one: i64 = iconst 1
-    i2: i64 = iadd i, one
+    i2: i64 = add i, one
     jmp loop(i2, acc2)
 exit:
     ret acc

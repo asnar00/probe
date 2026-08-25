@@ -8,10 +8,10 @@ base:
     ret n
 rec:
     one: i64 = iconst 1
-    n1: i64 = isub n, one
+    n1: i64 = sub n, one
     a: i64 = call fib(n1)
-    n2: i64 = isub n, two
+    n2: i64 = sub n, two
     b: i64 = call fib(n2)
-    r: i64 = iadd a, b
+    r: i64 = add a, b
     ret r
 }

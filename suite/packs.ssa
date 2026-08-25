@@ -46,8 +46,8 @@ entry:
     rw: u64 = ext r
     gw: u64 = ext g
     bw: u64 = ext b
-    s1: u64 = iadd rw, gw
-    s2: u64 = iadd s1, bw
+    s1: u64 = add rw, gw
+    s2: u64 = add s1, bw
     ret s2
 }
 ; packs travel through calls like any value

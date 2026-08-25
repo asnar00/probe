@@ -1,14 +1,18 @@
 ; IEEE-style floating point as packs plus integer instructions: one generic
-; addition, fadd(E, M), instantiated for every format below. Round to
+; addition, add(E, M), instantiated for every format below. Round to
 ; nearest even, subnormals, signed zeros, infinities; every NaN comes out
-; as the canonical quiet NaN.
+; as the canonical quiet NaN. Because the generic is named `add` and takes
+; float(E, M), the plain opcode `add` on any float dispatches to it — and
+; a platform with hardware for that width substitutes the instruction.
 type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }
+type f32 = float(8, 23)
+type f64 = float(11, 52)
 
-fn fadd8 = fadd(4, 3)
-fn fadd16 = fadd(5, 10)
-fn faddb16 = fadd(8, 7)
-fn fadd32 = fadd(8, 23)
-fn fadd64 = fadd(11, 52)
+fn fadd8 = add(4, 3)
+fn fadd16 = add(5, 10)
+fn faddb16 = add(8, 7)
+fn fadd32 = add(8, 23)
+fn fadd64 = add(11, 52)
 
 ;! fadd8 56 56 -> 64
 ;! fadd8 60 60 -> 68
@@ -24,6 +28,24 @@ fn fadd64 = fadd(11, 52)
 ;! fadd32 1 1 -> 2
 ;! fadd32 2139095039 2139095039 -> 2139095040
 ;! fadd64 4607182418800017408 4611686018427387904 -> 4613937818241073152
+;! sum3 1065353216 1073741824 1077936128 -> 1086324736
+;! sum64 4607182418800017408 4611686018427387904 -> 4613937818241073152
+;! sum8 56 56 -> 64
+
+; `add` on floats, three times over: 1.0 + 2.0 + 3.0 = 6.0
+fn sum3(a: f32, b: f32, c: f32) -> f32 {
+    ab: f32 = add a, b
+    r: f32 = add ab, c
+    ret r
+}
+fn sum64(a: f64, b: f64) -> f64 {
+    r: f64 = add a, b
+    ret r
+}
+fn sum8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
+    r: float(4, 3) = add a, b
+    ret r
+}
 
 ; the canonical quiet NaN of a format
 fn fnan(E, M)() -> float(E, M) {
@@ -34,7 +56,7 @@ fn fnan(E, M)() -> float(E, M) {
     ret r
 }
 
-fn fadd(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     ma: u(M), ea: u(E), sa: u1 = unpack a
     mb: u(M), eb: u(E), sb: u1 = unpack b
     emax: u(E) = iconst (1 << E) - 1
@@ -136,7 +158,7 @@ fn fadd(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     ; --- align: three guard bits, the smaller shifted right with sticky ---
     fh3: u(M + 5) = shl fh, three
     fl3: u(M + 5) = shl fl, three
-    de: u(E) = isub xh, xl
+    de: u(E) = sub xh, xl
     d: u(M + 5) = ext de
     wmax: u(M + 5) = iconst M + 5
     far: u1 = icmp.ge d, wmax
@@ -147,7 +169,7 @@ fn fadd(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     } else {
         shifted: u(M + 5) = shr fl3, d
         m1: u(M + 5) = shl one_w, d
-        mask: u(M + 5) = isub m1, one_w
+        mask: u(M + 5) = sub m1, one_w
         lost: u(M + 5) = and fl3, mask
         st: u1 = icmp.ne lost, zero_w
         stw: u(M + 5) = ext st
@@ -158,10 +180,10 @@ fn fadd(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     ; --- add or subtract magnitudes ---
     diff: u1 = icmp.ne sh, sl
     sum: u(M + 5) = if diff {
-        s1: u(M + 5) = isub fh3, fl_al
+        s1: u(M + 5) = sub fh3, fl_al
         yield s1
     } else {
-        s2: u(M + 5) = iadd fh3, fl_al
+        s2: u(M + 5) = add fh3, fl_al
         yield s2
     }
     sum0: u1 = icmp.eq sum, zero_w
@@ -181,7 +203,7 @@ fn fadd(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
         low: u(M + 5) = and sum, one_w
         sh1: u(M + 5) = shr sum, one_w
         f1: u(M + 5) = or sh1, low
-        x1: u(E) = iadd xh, one_e
+        x1: u(E) = add xh, one_e
         yield x1, f1
     } else {
         xl2: u(E), fl2: u(M + 5) = loop(x: u(E) = xh, f: u(M + 5) = sum) {
@@ -195,7 +217,7 @@ fn fadd(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
                 break x, f
             }
             f2: u(M + 5) = shl f, one_w
-            x2: u(E) = isub x, one_e
+            x2: u(E) = sub x, one_e
             continue x2, f2
         }
         yield xl2, fl2
@@ -213,13 +235,13 @@ fn fadd(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     tie_up: u1 = and eq4, odd
     round_up: u1 = or gt, tie_up
     upw: u(M + 5) = ext round_up
-    mant1: u(M + 5) = iadd mant0, upw
+    mant1: u(M + 5) = add mant0, upw
     ovf_bit: u(M + 5) = iconst 1 << (M + 1)
     o: u(M + 5) = and mant1, ovf_bit
     has_o: u1 = icmp.ne o, zero_w
     fx: u(E), fm: u(M + 5) = if has_o {
         m2: u(M + 5) = shr mant1, one_w
-        x3: u(E) = iadd nx, one_e
+        x3: u(E) = add nx, one_e
         yield x3, m2
     } else {
         yield nx, mant1

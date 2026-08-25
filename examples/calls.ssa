@@ -1,6 +1,6 @@
 fn square(x: i64) -> i64 {
 entry:
-    r: i64 = imul x, x
+    r: i64 = mul x, x
     ret r
 }
 
@@ -9,6 +9,6 @@ fn hypot2(a: i64, b: i64) -> i64 {
 entry:
     aa: i64 = call square(a)
     bb: i64 = call square(b)
-    s: i64 = iadd aa, bb
+    s: i64 = add aa, bb
     ret s
 }

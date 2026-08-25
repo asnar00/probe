@@ -32,8 +32,9 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   parametric declarations instantiated by width — `type float(E, M) =
   pack { mantissa: u(M), exponent: u(E), sign: u1 }`, `type f32 =
   float(8, 23)` — and generic functions monomorphized the same way
-  (`fn fadd(E, M)(a: float(E, M), b: float(E, M))`, `fn fadd32 =
-  fadd(8, 23)`); block
+  (`fn add(E, M)(a: float(E, M), b: float(E, M))`, `fn fadd32 =
+  add(8, 23)`) — so `add x, y` on two `f32` values is that function, or
+  the platform's instruction; block
   parameters instead of phi nodes; multiple return values; an optional
   structured front-end (`if`/`loop`/`break`/`continue`/`yield`) that
   lowers to the flat block graph at parse time; and abstract `int`/`uint`
@@ -53,8 +54,8 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
     seed files (`targets/*.probe`, read by `src/target.rs`) say how to
     *spell* instructions and nothing else.
 - **A platform per backend** (`src/platform.rs`): the generic
-  instantiations the target implements natively (`fadd(8, 23)`,
-  `fadd(11, 52)`). Compiling such an instance, or a call to one, emits the
+  instantiations the target implements natively (`add(8, 23)`,
+  `add(11, 52)` on floats). Compiling such an instance, or a call to one, emits the
   hardware sequence instead of the SSA body; `--soft` turns that off, and
   the library remains the reference the hardware path is checked against.
 - **Three backends**, none of which contain a single hand-written opcode:
@@ -76,7 +77,7 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   slot with slack, calls routed through counting trampolines, so an edited
   function recompiles in place and a hot one is promoted through the full
   pipeline without disturbing its neighbours.
-- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 188
+- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 191
   cases with expectations embedded as `;! gcd 48 36 -> 12` directives, run
   identically against every backend — including arm64 under
   qemu-system-aarch64 as an independent second referee for the same bytes

@@ -38,12 +38,12 @@ loop(i: i64, acc: i32):
     done: u1 = icmp.ge i, four
     br done, exit, body
 body:
-    off: i64 = imul i, four
+    off: i64 = mul i, four
     q: ptr = ptradd p, off
     v: i32 = load q
-    acc2: i32 = iadd acc, v
+    acc2: i32 = add acc, v
     one: i64 = iconst 1
-    i2: i64 = iadd i, one
+    i2: i64 = add i, one
     jmp loop(i2, acc2)
 exit:
     ret acc
@@ -58,15 +58,15 @@ loop(i: i64, acc: i64):
     br done, exit, body
 body:
     eight: i64 = iconst 8
-    off: i64 = imul i, eight
+    off: i64 = mul i, eight
     pa: ptr = ptradd p, off
     qa: ptr = ptradd q, off
     a: i64 = load pa
     b: i64 = load qa
-    m: i64 = imul a, b
-    acc2: i64 = iadd acc, m
+    m: i64 = mul a, b
+    acc2: i64 = add acc, m
     one: i64 = iconst 1
-    i2: i64 = iadd i, one
+    i2: i64 = add i, one
     jmp loop(i2, acc2)
 exit:
     ret acc
@@ -80,6 +80,6 @@ entry:
     four: i64 = iconst 4
     q: ptr = ptradd p, four
     b: i32 = load q
-    r: i32 = iadd a, b
+    r: i32 = add a, b
     ret r
 }

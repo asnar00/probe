@@ -16,7 +16,9 @@ things we can learn ARM64 encodings for by probing LLVM.
   are pure operations with no type suffixes, which keeps the opcode set small;
   the verifier checks that operand and result types are consistent. Signedness
   is part of the type too: there is one `div`, one `shr`, one `icmp.lt`, and
-  `i5` versus `u5` says which one you mean.
+  `i5` versus `u5` says which one you mean. And there is one `add`: on an
+  integer it is the integer instruction, on a `float(8, 23)` it is whatever
+  the library's `add(E, M)` says — or the platform's `fadd`.
 - **No nesting, no expressions.** One instruction per line, every intermediate
   value named. This is the layer *below* everything clever.
 - **No sigils.** `sum`, `entry`, `n`, `f32` are all plain words; the grammar
@@ -97,13 +99,16 @@ w: u(M) = iconst (1 << M) - 1   ; inside a generic: an expression over its param
 
 ### Integer arithmetic and bitwise ops
 
-Both operands and the result must all have the same integer type. Results
-wrap at the type's width; the type's signedness selects the operation.
+Both operands and the result must all have the same type. On integers,
+results wrap at the type's width and the type's signedness selects the
+operation. On a pack instantiated from a generic type, the opcode is
+dispatched to the generic function of the same name that takes that type
+(see *Generic functions*).
 
 ```
-v: i5 = iadd a, b
-v: i5 = isub a, b
-v: i5 = imul a, b
+v: i5 = add a, b
+v: i5 = sub a, b
+v: i5 = mul a, b
 v: i5 = div a, b        ; signed for iN, unsigned for uN (truncating)
 v: i5 = rem a, b        ; remainder, sign follows the dividend for iN
 v: i5 = and a, b
@@ -238,27 +243,35 @@ so `u(M + 5)` is a concrete type there, and `iconst` may be a width
 expression.
 
 ```
-fn fadd(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     hidden: u(M + 5) = iconst 1 << M
     ...
     n: float(E, M) = call fnan(E, M)()      ; instantiates fnan for this E, M
     ...
 }
-fn fadd32 = fadd(8, 23)                     ; a named instantiation
-r: f16 = call fadd(5, 10)(x, y)             ; an anonymous one, fadd_5_10
+fn fadd32 = add(8, 23)                      ; a named instantiation
+r: f16 = call add(5, 10)(x, y)              ; an anonymous one, add_5_10
+s: f16 = add x, y                           ; the same, by dispatch
 ```
 
-Instantiations are shared: `fadd(8, 23)` anywhere is `fadd32` once that
+Instantiations are shared: `add(8, 23)` anywhere is `fadd32` once that
 name exists. `probe parse` prints the instantiated functions and not the
 templates — like structured control flow, generics are sugar the parser
 lowers. A pack literal `iconst` is its bit pattern.
+
+**Dispatch.** A generic function named after an opcode, whose first
+parameter is a generic type applied to the function's own parameters
+(`add(E, M)` taking `float(E, M)`), *is* that opcode for every
+instantiation of the type: `add x, y` on two `f16` values lowers to
+`call add(5, 10)(x, y)`. The opcode set never grows — a library adds
+meanings, and a platform adds instructions.
 
 ### Platforms
 
 A library instantiation defines what an operation *means*; a platform
 says which of them the target has hardware for. Each backend carries a
 table of generic instantiations it implements natively — today
-`fadd(8, 23)` and `fadd(11, 52)` on all three targets — and when it
+`add(8, 23)` and `add(11, 52)` on all three targets — and when it
 compiles such an instance, or a call to one, it emits the instruction
 sequence (arm64 `fmov`/`fadd`/`fmov`, riscv `fmv`/`fadd.s`, wasm
 `f32.add` between reinterprets) instead of the SSA body. The library body
@@ -278,9 +291,9 @@ loop(i: i64, acc: i64):
     done: u1 = icmp.ge i, n
     br done, exit, body
 body:
-    acc2: i64 = iadd acc, i
+    acc2: i64 = add acc, i
     one:  i64 = iconst 1
-    i2:   i64 = iadd i, one
+    i2:   i64 = add i, one
     jmp loop(i2, acc2)
 exit:
     ret acc

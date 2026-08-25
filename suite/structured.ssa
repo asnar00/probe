@@ -23,8 +23,8 @@ fn ssum(n: i64) -> i64 {
             break acc
         }
         one: i64 = iconst 1
-        acc2: i64 = iadd acc, i
-        i2: i64 = iadd i, one
+        acc2: i64 = add acc, i
+        i2: i64 = add i, one
         continue i2, acc2
     }
     ret r
@@ -50,11 +50,11 @@ fn sfib(n: i64) -> i64 {
         ret n
     }
     one: i64 = iconst 1
-    n1: i64 = isub n, one
+    n1: i64 = sub n, one
     a: i64 = call sfib(n1)
-    n2: i64 = isub n, two
+    n2: i64 = sub n, two
     b: i64 = call sfib(n2)
-    r: i64 = iadd a, b
+    r: i64 = add a, b
     ret r
 }
 
@@ -62,7 +62,7 @@ fn sabs(a: i64) -> i64 {
     zero: i64 = iconst 0
     neg: u1 = icmp.lt a, zero
     r: i64 = if neg {
-        n: i64 = isub zero, a
+        n: i64 = sub zero, a
         yield n
     } else {
         yield a
@@ -100,11 +100,11 @@ fn smul(a: i64, b: i64) -> i64 {
             if jdone {
                 break s
             }
-            s2: i64 = iadd s, one
-            j2: i64 = iadd j, one
+            s2: i64 = add s, one
+            j2: i64 = add j, one
             continue j2, s2
         }
-        i2: i64 = iadd i, one
+        i2: i64 = add i, one
         continue i2, t2
     }
     ret total

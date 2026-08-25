@@ -1337,8 +1337,8 @@ mod tests {
         let j = jit(r"
 fn addmul(a: i32, b: i32) -> i32 {
 entry:
-    s: i32 = iadd a, b
-    p: i32 = imul s, b
+    s: i32 = add a, b
+    p: i32 = mul s, b
     ret p
 }
 ");
@@ -1413,12 +1413,12 @@ loop(i: i64, acc: i32):
     done: u1 = icmp.ge i, four
     br done, exit, body
 body:
-    off: i64 = imul i, four
+    off: i64 = mul i, four
     q: ptr = ptradd p, off
     v: i32 = load q
-    acc2: i32 = iadd acc, v
+    acc2: i32 = add acc, v
     one: i64 = iconst 1
-    i2: i64 = iadd i, one
+    i2: i64 = add i, one
     jmp loop(i2, acc2)
 exit:
     ret acc
@@ -1464,9 +1464,9 @@ entry:
         use crate::opt::{fold_bin, fold_cmp, norm};
         use crate::ssa::{BinOp, Cond};
         let ops = [
-            ("iadd", BinOp::IAdd),
-            ("isub", BinOp::ISub),
-            ("imul", BinOp::IMul),
+            ("add", BinOp::IAdd),
+            ("sub", BinOp::ISub),
+            ("mul", BinOp::IMul),
             ("div", BinOp::Div),
             ("rem", BinOp::Rem),
             ("and", BinOp::And),
@@ -1644,8 +1644,8 @@ entry:
     r6: u64 = ext r
     g6: u64 = ext g
     b6: u64 = ext b
-    x: u64 = iadd r6, g6
-    y: u64 = iadd x, b6
+    x: u64 = add r6, g6
+    y: u64 = add x, b6
     ret y
 }
 fn nested(s: i3, w: u16, t: i9, f: u1) -> (i64, i64) {
@@ -1684,7 +1684,7 @@ entry:
     b: u8 = load q
     aw: i64 = ext a
     bw: i64 = ext b
-    r: i64 = isub aw, bw
+    r: i64 = sub aw, bw
     ret r
 }
 fn halves(p: ptr, v: i16) -> i64 {
@@ -1698,7 +1698,7 @@ entry:
     b: u16 = load q
     aw: i64 = ext a
     bw: i64 = ext b
-    r: i64 = isub aw, bw
+    r: i64 = sub aw, bw
     ret r
 }
 ");

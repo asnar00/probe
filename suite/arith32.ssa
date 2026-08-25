@@ -11,12 +11,12 @@
 
 fn add32(a: i32, b: i32) -> i32 {
 entry:
-    r: i32 = iadd a, b
+    r: i32 = add a, b
     ret r
 }
 fn mul32(a: i32, b: i32) -> i32 {
 entry:
-    r: i32 = imul a, b
+    r: i32 = mul a, b
     ret r
 }
 fn sdiv32(a: i32, b: i32) -> i32 {
@@ -41,11 +41,11 @@ entry:
 }
 fn uadd32(a: u32, b: u32) -> u32 {
 entry:
-    r: u32 = iadd a, b
+    r: u32 = add a, b
     ret r
 }
 fn umul32(a: u32, b: u32) -> u32 {
 entry:
-    r: u32 = imul a, b
+    r: u32 = mul a, b
     ret r
 }

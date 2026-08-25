@@ -28,7 +28,7 @@ ba:
 fn recombine(a: i64, b: i64) -> i64 {
 entry:
     q: i64, r: i64 = call divmod(a, b)
-    t: i64 = imul q, b
-    s: i64 = iadd t, r
+    t: i64 = mul q, b
+    s: i64 = add t, r
     ret s
 }
