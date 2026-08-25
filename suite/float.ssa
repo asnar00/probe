@@ -1,0 +1,244 @@
+; IEEE-style floating point as packs plus integer instructions: one generic
+; addition, fadd(E, M), instantiated for every format below. Round to
+; nearest even, subnormals, signed zeros, infinities; every NaN comes out
+; as the canonical quiet NaN.
+type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }
+
+fn fadd8 = fadd(4, 3)
+fn fadd16 = fadd(5, 10)
+fn faddb16 = fadd(8, 7)
+fn fadd32 = fadd(8, 23)
+fn fadd64 = fadd(11, 52)
+
+;! fadd8 56 56 -> 64
+;! fadd8 60 60 -> 68
+;! fadd16 15360 16384 -> 16896
+;! faddb16 16256 16384 -> 16448
+;! fadd32 1065353216 1073741824 -> 1077936128
+;! fadd32 1036831949 1045220557 -> 1050253722
+;! fadd32 1065353216 864026624 -> 1065353216
+;! fadd32 1065353216 868220928 -> 1065353217
+;! fadd32 1077936128 3212836864 -> 1073741824
+;! fadd32 2139095040 4286578688 -> 2143289344
+;! fadd32 1065353216 3212836864 -> 0
+;! fadd32 1 1 -> 2
+;! fadd32 2139095039 2139095039 -> 2139095040
+;! fadd64 4607182418800017408 4611686018427387904 -> 4613937818241073152
+
+; the canonical quiet NaN of a format
+fn fnan(E, M)() -> float(E, M) {
+    m: u(M) = iconst 1 << (M - 1)
+    e: u(E) = iconst (1 << E) - 1
+    s: u1 = iconst 0
+    r: float(E, M) = pack m, e, s
+    ret r
+}
+
+fn fadd(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    mb: u(M), eb: u(E), sb: u1 = unpack b
+    emax: u(E) = iconst (1 << E) - 1
+    zero_e: u(E) = iconst 0
+    zero_m: u(M) = iconst 0
+    one_e: u(E) = iconst 1
+
+    ; --- NaN and infinity ---
+    a_top: u1 = icmp.eq ea, emax
+    b_top: u1 = icmp.eq eb, emax
+    if a_top {
+        a_nan: u1 = icmp.ne ma, zero_m
+        if a_nan {
+            n1: float(E, M) = call fnan(E, M)()
+            ret n1
+        }
+        if b_top {
+            b_nan: u1 = icmp.ne mb, zero_m
+            opp: u1 = icmp.ne sa, sb
+            bad: u1 = or b_nan, opp
+            if bad {
+                n2: float(E, M) = call fnan(E, M)()
+                ret n2
+            }
+        }
+        ret a
+    }
+    if b_top {
+        b_nan2: u1 = icmp.ne mb, zero_m
+        if b_nan2 {
+            n3: float(E, M) = call fnan(E, M)()
+            ret n3
+        }
+        ret b
+    }
+
+    ; --- zeros ---
+    ea0: u1 = icmp.eq ea, zero_e
+    ma0: u1 = icmp.eq ma, zero_m
+    a_zero: u1 = and ea0, ma0
+    eb0: u1 = icmp.eq eb, zero_e
+    mb0: u1 = icmp.eq mb, zero_m
+    b_zero: u1 = and eb0, mb0
+    if a_zero {
+        if b_zero {
+            sz: u1 = and sa, sb
+            z: float(E, M) = pack zero_m, zero_e, sz
+            ret z
+        }
+        ret b
+    }
+    if b_zero {
+        ret a
+    }
+
+    ; --- significands with the hidden bit, in M + 5 bits: hidden, M
+    ; mantissa bits, three guard bits, one carry bit ---
+    hidden: u(M + 5) = iconst 1 << M
+    zero_w: u(M + 5) = iconst 0
+    one_w: u(M + 5) = iconst 1
+    three: u(M + 5) = iconst 3
+    fa0: u(M + 5) = ext ma
+    fb0: u(M + 5) = ext mb
+    fa1: u(M + 5) = if ea0 {
+        yield fa0
+    } else {
+        ha: u(M + 5) = or fa0, hidden
+        yield ha
+    }
+    xa: u(E) = if ea0 {
+        yield one_e
+    } else {
+        yield ea
+    }
+    fb1: u(M + 5) = if eb0 {
+        yield fb0
+    } else {
+        hb: u(M + 5) = or fb0, hidden
+        yield hb
+    }
+    xb: u(E) = if eb0 {
+        yield one_e
+    } else {
+        yield eb
+    }
+
+    ; --- order the operands so h has the larger magnitude ---
+    lt_e: u1 = icmp.lt xa, xb
+    eq_e: u1 = icmp.eq xa, xb
+    lt_f: u1 = icmp.lt fa1, fb1
+    eq_lt: u1 = and eq_e, lt_f
+    swap: u1 = or lt_e, eq_lt
+    xh: u(E), xl: u(E), fh: u(M + 5), fl: u(M + 5), sh: u1, sl: u1 = if swap {
+        yield xb, xa, fb1, fa1, sb, sa
+    } else {
+        yield xa, xb, fa1, fb1, sa, sb
+    }
+
+    ; --- align: three guard bits, the smaller shifted right with sticky ---
+    fh3: u(M + 5) = shl fh, three
+    fl3: u(M + 5) = shl fl, three
+    de: u(E) = isub xh, xl
+    d: u(M + 5) = ext de
+    wmax: u(M + 5) = iconst M + 5
+    far: u1 = icmp.ge d, wmax
+    fl_al: u(M + 5) = if far {
+        nz: u1 = icmp.ne fl3, zero_w
+        nzw: u(M + 5) = ext nz
+        yield nzw
+    } else {
+        shifted: u(M + 5) = shr fl3, d
+        m1: u(M + 5) = shl one_w, d
+        mask: u(M + 5) = isub m1, one_w
+        lost: u(M + 5) = and fl3, mask
+        st: u1 = icmp.ne lost, zero_w
+        stw: u(M + 5) = ext st
+        al: u(M + 5) = or shifted, stw
+        yield al
+    }
+
+    ; --- add or subtract magnitudes ---
+    diff: u1 = icmp.ne sh, sl
+    sum: u(M + 5) = if diff {
+        s1: u(M + 5) = isub fh3, fl_al
+        yield s1
+    } else {
+        s2: u(M + 5) = iadd fh3, fl_al
+        yield s2
+    }
+    sum0: u1 = icmp.eq sum, zero_w
+    if sum0 {
+        pz: u1 = iconst 0
+        z2: float(E, M) = pack zero_m, zero_e, pz
+        ret z2
+    }
+
+    ; --- normalize: a carry shifts right (folding into sticky); otherwise
+    ; shift left until the hidden bit is up or the exponent bottoms out ---
+    carry_bit: u(M + 5) = iconst 1 << (M + 4)
+    top_bit: u(M + 5) = iconst 1 << (M + 3)
+    c: u(M + 5) = and sum, carry_bit
+    has_c: u1 = icmp.ne c, zero_w
+    nx: u(E), nf: u(M + 5) = if has_c {
+        low: u(M + 5) = and sum, one_w
+        sh1: u(M + 5) = shr sum, one_w
+        f1: u(M + 5) = or sh1, low
+        x1: u(E) = iadd xh, one_e
+        yield x1, f1
+    } else {
+        xl2: u(E), fl2: u(M + 5) = loop(x: u(E) = xh, f: u(M + 5) = sum) {
+            t: u(M + 5) = and f, top_bit
+            up: u1 = icmp.ne t, zero_w
+            if up {
+                break x, f
+            }
+            xmin: u1 = icmp.eq x, one_e
+            if xmin {
+                break x, f
+            }
+            f2: u(M + 5) = shl f, one_w
+            x2: u(E) = isub x, one_e
+            continue x2, f2
+        }
+        yield xl2, fl2
+    }
+
+    ; --- round to nearest even on the three guard bits ---
+    seven: u(M + 5) = iconst 7
+    four: u(M + 5) = iconst 4
+    rbits: u(M + 5) = and nf, seven
+    mant0: u(M + 5) = shr nf, three
+    gt: u1 = icmp.gt rbits, four
+    eq4: u1 = icmp.eq rbits, four
+    odd_w: u(M + 5) = and mant0, one_w
+    odd: u1 = icmp.ne odd_w, zero_w
+    tie_up: u1 = and eq4, odd
+    round_up: u1 = or gt, tie_up
+    upw: u(M + 5) = ext round_up
+    mant1: u(M + 5) = iadd mant0, upw
+    ovf_bit: u(M + 5) = iconst 1 << (M + 1)
+    o: u(M + 5) = and mant1, ovf_bit
+    has_o: u1 = icmp.ne o, zero_w
+    fx: u(E), fm: u(M + 5) = if has_o {
+        m2: u(M + 5) = shr mant1, one_w
+        x3: u(E) = iadd nx, one_e
+        yield x3, m2
+    } else {
+        yield nx, mant1
+    }
+
+    ; --- encode: normal when the hidden bit is up, else subnormal ---
+    hid: u(M + 5) = and fm, hidden
+    is_norm: u1 = icmp.ne hid, zero_w
+    ex: u(E) = if is_norm {
+        yield fx
+    } else {
+        yield zero_e
+    }
+    inf: u1 = icmp.ge ex, emax
+    if inf {
+        i: float(E, M) = pack zero_m, emax, sh
+        ret i
+    }
+    mfield: u(M) = trunc fm
+    r: float(E, M) = pack mfield, ex, sh
+    ret r
+}

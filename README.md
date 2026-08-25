@@ -31,7 +31,9 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   (`type rgb = pack { r: u5, g: u6, b: u5 }`, nestable, storable), and
   parametric declarations instantiated by width — `type float(E, M) =
   pack { mantissa: u(M), exponent: u(E), sign: u1 }`, `type f32 =
-  float(8, 23)`; block
+  float(8, 23)` — and generic functions monomorphized the same way
+  (`fn fadd(E, M)(a: float(E, M), b: float(E, M))`, `fn fadd32 =
+  fadd(8, 23)`); block
   parameters instead of phi nodes; multiple return values; an optional
   structured front-end (`if`/`loop`/`break`/`continue`/`yield`) that
   lowers to the flat block graph at parse time; and abstract `int`/`uint`
@@ -69,7 +71,7 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   slot with slack, calls routed through counting trampolines, so an edited
   function recompiles in place and a hot one is promoted through the full
   pipeline without disturbing its neighbours.
-- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 174
+- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 188
   cases with expectations embedded as `;! gcd 48 36 -> 12` directives, run
   identically against every backend — including arm64 under
   qemu-system-aarch64 as an independent second referee for the same bytes
@@ -112,6 +114,11 @@ cargo run -- run suite/bits.ssa add5 15 1          # i5: 15 + 1 -> -16
 cargo run -- run suite/packs.ssa mkrgb 31 63 1     # -> 4095 (b:g:r = 1:63:31)
 cargo run -- run suite/types.ssa f32exp 0x40490fdb # f32 = float(8, 23): pi's exponent, 128
 
+# floating point is a library: one generic add over float(E, M), done with
+# integer instructions, instantiated for fp8/fp16/bf16/f32/f64 and checked
+# against the FPU
+cargo run -- run suite/float.ssa fadd32 0x3dcccccd 0x3e4ccccd   # 0.1 + 0.2 -> 0x3e99999a
+
 # the incremental compiler. Edit the file while this runs — changed
 # functions recompile in place at level 0, and functions that get hot
 # are automatically promoted through the full pass pipeline.
@@ -126,11 +133,15 @@ are checked in, so the backends and suite work without re-learning.
 
 ## Status
 
-Integers of every width and packed bitfields, three targets, everything
-differentially verified (the arm64 backend additionally checks every
-narrow-type op against the const-folder's model over every value pair). What is
-deliberately not here yet, from `future-work.md`: floats (the types are
-reserved; `float` will join `int` in the replacement policy), indirect
+Integers of every width, packed bitfields, parametric types and
+functions, and floating-point addition as a pure-SSA library, on three
+targets, everything differentially verified: the suite on four execution
+paths, every narrow-type op against the const-folder's model over every
+value pair, and the softfloat add against the FPU for f32/f64 and against
+an independent reference exhaustively for fp8. What is
+deliberately not here yet, from `future-work.md`: hardware floats (the
+softfloat library covers the semantics; an `f32` that lowers to `fadd`
+instructions is a backend matter), indirect
 calls / function pointers, external (libc) calls from JIT'd code, a
 dominance check in the verifier, and differential testing against clang
 to close the semantic loop the way the prober closed the encoding loop.

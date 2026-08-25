@@ -91,6 +91,8 @@ left-hand side.
 v: i64 = iconst 42
 p: ptr = iconst 0          ; null
 u: ptr = iconst 0x10000000 ; a raw address — MMIO registers, fixed buffers
+c: rgb = iconst 4095       ; a pack, by its bit pattern
+w: u(M) = iconst (1 << M) - 1   ; inside a generic: an expression over its parameters
 ```
 
 ### Integer arithmetic and bitwise ops
@@ -224,8 +226,32 @@ A parametric type is instantiated wherever it is used with arguments —
 it is declared. `f32`, `float(8, 23)`, and `pack { mantissa: u23,
 exponent: u8, sign: u1 }` are one type; it prints under the first name it
 was given. Declarations may appear anywhere at the top level; each may
-refer only to types declared before it. Functions themselves are not
-parametric: every value has a concrete type.
+refer only to types declared before it.
+
+### Generic functions
+
+A function can take the same kind of width parameters, in a group before
+its value parameters. It is a template: nothing is compiled until it is
+instantiated, either by name or at a call site, and each instantiation is
+an ordinary function whose body was parsed with the parameters bound —
+so `u(M + 5)` is a concrete type there, and `iconst` may be a width
+expression.
+
+```
+fn fadd(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    hidden: u(M + 5) = iconst 1 << M
+    ...
+    n: float(E, M) = call fnan(E, M)()      ; instantiates fnan for this E, M
+    ...
+}
+fn fadd32 = fadd(8, 23)                     ; a named instantiation
+r: f16 = call fadd(5, 10)(x, y)             ; an anonymous one, fadd_5_10
+```
+
+Instantiations are shared: `fadd(8, 23)` anywhere is `fadd32` once that
+name exists. `probe parse` prints the instantiated functions and not the
+templates — like structured control flow, generics are sugar the parser
+lowers. A pack literal `iconst` is its bit pattern.
 
 ## Example
 

@@ -131,6 +131,8 @@ pub enum IntExpr {
     Add(Box<IntExpr>, Box<IntExpr>),
     Sub(Box<IntExpr>, Box<IntExpr>),
     Mul(Box<IntExpr>, Box<IntExpr>),
+    Shl(Box<IntExpr>, Box<IntExpr>),
+    Shr(Box<IntExpr>, Box<IntExpr>),
 }
 
 impl IntExpr {
@@ -145,14 +147,17 @@ impl IntExpr {
             IntExpr::Add(a, b) => a.eval(env)?.wrapping_add(b.eval(env)?),
             IntExpr::Sub(a, b) => a.eval(env)?.wrapping_sub(b.eval(env)?),
             IntExpr::Mul(a, b) => a.eval(env)?.wrapping_mul(b.eval(env)?),
+            IntExpr::Shl(a, b) => a.eval(env)?.wrapping_shl(b.eval(env)? as u32),
+            IntExpr::Shr(a, b) => a.eval(env)?.wrapping_shr(b.eval(env)? as u32),
         })
     }
 
     fn prec(&self) -> u8 {
         match self {
-            IntExpr::Lit(_) | IntExpr::Param(_) => 2,
-            IntExpr::Mul(..) => 1,
-            IntExpr::Add(..) | IntExpr::Sub(..) => 0,
+            IntExpr::Lit(_) | IntExpr::Param(_) => 3,
+            IntExpr::Mul(..) => 2,
+            IntExpr::Add(..) | IntExpr::Sub(..) => 1,
+            IntExpr::Shl(..) | IntExpr::Shr(..) => 0,
         }
     }
 }
@@ -169,9 +174,11 @@ impl fmt::Display for IntExpr {
         match self {
             IntExpr::Lit(v) => write!(f, "{}", v),
             IntExpr::Param(p) => write!(f, "{}", p),
-            IntExpr::Add(a, b) => write!(f, "{} + {}", side(a, 0), side(b, 1)),
-            IntExpr::Sub(a, b) => write!(f, "{} - {}", side(a, 0), side(b, 1)),
-            IntExpr::Mul(a, b) => write!(f, "{} * {}", side(a, 1), side(b, 2)),
+            IntExpr::Add(a, b) => write!(f, "{} + {}", side(a, 1), side(b, 2)),
+            IntExpr::Sub(a, b) => write!(f, "{} - {}", side(a, 1), side(b, 2)),
+            IntExpr::Mul(a, b) => write!(f, "{} * {}", side(a, 2), side(b, 3)),
+            IntExpr::Shl(a, b) => write!(f, "{} << {}", side(a, 0), side(b, 1)),
+            IntExpr::Shr(a, b) => write!(f, "{} >> {}", side(a, 0), side(b, 1)),
         }
     }
 }
@@ -579,6 +586,8 @@ enum Tok {
     Plus,
     Minus,
     Star,
+    ShiftL,
+    ShiftR,
 }
 
 impl fmt::Display for Tok {
@@ -598,6 +607,8 @@ impl fmt::Display for Tok {
             Tok::Plus => write!(f, "'+'"),
             Tok::Minus => write!(f, "'-'"),
             Tok::Star => write!(f, "'*'"),
+            Tok::ShiftL => write!(f, "'<<'"),
+            Tok::ShiftR => write!(f, "'>>'"),
         }
     }
 }
@@ -698,6 +709,14 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                 chars.next();
                 toks.push((Tok::Star, line));
             }
+            '<' | '>' => {
+                chars.next();
+                if chars.peek() != Some(&c) {
+                    return Err(err(line, format!("expected '{}{}'", c, c)));
+                }
+                chars.next();
+                toks.push((if c == '<' { Tok::ShiftL } else { Tok::ShiftR }, line));
+            }
             '0'..='9' => {
                 let n = lex_int(&mut chars).map_err(|m| err(line, m))?;
                 toks.push((Tok::Int(n), line));
@@ -765,31 +784,60 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         pos: 0,
         types: Vec::new(),
         packs: Vec::new(),
+        generics: Vec::new(),
+        instances: HashMap::new(),
+        pending: Vec::new(),
+        env: Vec::new(),
     };
-    // pass 1: type declarations, wherever they appear, so functions can
-    // use types declared later in the file (a declaration may only refer
-    // to types declared before it)
+    // pass 1: type declarations and generic functions, wherever they
+    // appear, so functions can use them regardless of order (a type
+    // declaration may only refer to types declared before it)
     let mut funcs = Vec::new();
+    let mut aliases: Vec<usize> = Vec::new(); // token positions of `fn x = g(..)`
     p.skip_newlines();
     while !p.at_end() {
-        if matches!(p.peek(), Some(Tok::Ident(k)) if k == "type") {
-            p.parse_type_decl()?;
-        } else {
-            let (_, hi) = p.function_range()?;
-            p.pos = hi + 1;
+        match p.item_kind() {
+            Item::Type => p.parse_type_decl()?,
+            Item::Generic => p.record_generic()?,
+            Item::Alias => {
+                aliases.push(p.pos);
+                p.skip_line();
+            }
+            Item::Fn => {
+                let (_, hi) = p.function_range()?;
+                p.pos = hi + 1;
+            }
         }
         p.skip_newlines();
+    }
+    // named instantiations first, so call sites reuse them
+    for at in aliases {
+        p.pos = at;
+        p.parse_alias()?;
     }
     // pass 2: functions
     p.pos = 0;
     p.skip_newlines();
     while !p.at_end() {
-        if matches!(p.peek(), Some(Tok::Ident(k)) if k == "type") {
-            p.skip_line();
-        } else {
-            funcs.push(p.parse_function()?);
+        match p.item_kind() {
+            Item::Type | Item::Alias => p.skip_line(),
+            Item::Generic => {
+                let (_, hi) = p.function_range()?;
+                p.pos = hi + 1;
+            }
+            Item::Fn => funcs.push(p.parse_function(None)?),
         }
         p.skip_newlines();
+    }
+    // pass 3: instantiate what was asked for, including what those
+    // instantiations ask for in turn
+    while let Some((g, args, name)) = p.pending.pop() {
+        let (lo, params) = (p.generics[g].lo, p.generics[g].params.clone());
+        p.env = params.into_iter().zip(args).collect();
+        p.pos = lo;
+        let f = p.parse_function(Some(name))?;
+        p.env.clear();
+        funcs.push(f);
     }
     let packs = std::sync::Arc::new(p.packs.clone());
     for f in &mut funcs {
@@ -801,15 +849,36 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
     })
 }
 
+/// a parametric function: its token range, re-parsed per instantiation
+struct GenericFn {
+    name: String,
+    params: Vec<String>,
+    lo: usize,
+}
+
 struct Parser {
     toks: Vec<(Tok, usize)>,
     pos: usize,
     types: Vec<TypeDef>,
     packs: Vec<PackDef>,
+    generics: Vec<GenericFn>,
+    /// (generic, args) -> the instance's function name
+    instances: HashMap<(String, Vec<i64>), String>,
+    /// instances requested but not yet parsed: (generic index, args, name)
+    pending: Vec<(usize, Vec<i64>, String)>,
+    /// the parameter bindings of the body being parsed (empty outside generics)
+    env: Vec<(String, i64)>,
 }
 
 /// nesting guard for type declarations that instantiate themselves
 const MAX_TYPE_DEPTH: usize = 32;
+
+enum Item {
+    Type,
+    Generic,
+    Alias,
+    Fn,
+}
 
 /// Placeholder branch target inside structured constructs; every one is
 /// patched to the real join/exit block before parsing of the construct ends.
@@ -935,9 +1004,127 @@ impl Parser {
     }
 
     fn expect_type(&mut self) -> Result<Type, ParseError> {
-        let (ty, next) = self.type_at(self.pos, &[], 0)?;
+        let env = self.env.clone();
+        let (ty, next) = self.type_at(self.pos, &env, 0)?;
         self.pos = next;
         Ok(ty)
+    }
+
+    /// what starts at the current position: `type ...`, `fn g(P, Q)(...)`,
+    /// `fn x = g(...)`, or a plain `fn`
+    fn item_kind(&self) -> Item {
+        let at = |k: usize| self.toks.get(self.pos + k).map(|t| &t.0);
+        if matches!(at(0), Some(Tok::Ident(k)) if k == "type") {
+            return Item::Type;
+        }
+        if at(2) == Some(&Tok::Equals) {
+            return Item::Alias;
+        }
+        // fn name ( idents , ... ) (   -- a parameter list followed by another
+        if at(2) == Some(&Tok::LParen) {
+            let mut j = self.pos + 3;
+            loop {
+                match at(j - self.pos) {
+                    Some(Tok::Ident(_)) | Some(Tok::Comma) => j += 1,
+                    Some(Tok::RParen) => {
+                        return if at(j + 1 - self.pos) == Some(&Tok::LParen) {
+                            Item::Generic
+                        } else {
+                            Item::Fn
+                        };
+                    }
+                    _ => return Item::Fn,
+                }
+            }
+        }
+        Item::Fn
+    }
+
+    /// `fn name(P, Q)(...) { ... }`: remember the range for later
+    fn record_generic(&mut self) -> Result<(), ParseError> {
+        let (lo, hi) = self.function_range()?;
+        self.expect_ident()?; // fn
+        let name = self.expect_ident()?;
+        if self.generics.iter().any(|g| g.name == name) {
+            return Err(self.err(format!("generic function '{}' is defined more than once", name)));
+        }
+        self.expect(Tok::LParen)?;
+        let mut params = Vec::new();
+        loop {
+            params.push(self.expect_ident()?);
+            if self.eat(&Tok::RParen) {
+                break;
+            }
+            self.expect(Tok::Comma)?;
+        }
+        self.generics.push(GenericFn { name, params, lo });
+        self.pos = hi + 1;
+        Ok(())
+    }
+
+    /// `fn name = generic(args)`: a named instantiation
+    fn parse_alias(&mut self) -> Result<(), ParseError> {
+        self.expect_ident()?; // fn
+        let name = self.expect_ident()?;
+        self.expect(Tok::Equals)?;
+        let generic = self.expect_ident()?;
+        let args = self.instance_args()?;
+        self.expect(Tok::Newline)?;
+        self.request_instance(&generic, args, Some(name))?;
+        Ok(())
+    }
+
+    /// `(expr, expr)` of a generic's arguments, evaluated in the current env
+    fn instance_args(&mut self) -> Result<Vec<i64>, ParseError> {
+        self.expect(Tok::LParen)?;
+        let params: Vec<String> = self.env.iter().map(|(n, _)| n.clone()).collect();
+        let mut args = Vec::new();
+        loop {
+            let (e, next) = self.int_expr_at(self.pos, &params)?;
+            self.pos = next;
+            args.push(e.eval(&self.env).map_err(|m| self.err(m))?);
+            if self.eat(&Tok::RParen) {
+                break;
+            }
+            self.expect(Tok::Comma)?;
+        }
+        Ok(args)
+    }
+
+    /// the name of generic(args), instantiating it if new
+    fn request_instance(&mut self, generic: &str, args: Vec<i64>, name: Option<String>) -> Result<String, ParseError> {
+        let g = self
+            .generics
+            .iter()
+            .position(|g| g.name == generic)
+            .ok_or_else(|| self.err(format!("'{}' is not a generic function", generic)))?;
+        if self.generics[g].params.len() != args.len() {
+            return Err(self.err(format!(
+                "'{}' takes {} parameter(s), given {}",
+                generic,
+                self.generics[g].params.len(),
+                args.len()
+            )));
+        }
+        let key = (generic.to_string(), args.clone());
+        if let Some(existing) = self.instances.get(&key) {
+            if let Some(n) = name {
+                if *existing != n {
+                    return Err(self.err(format!(
+                        "'{}' is already instantiated as '{}'",
+                        generic, existing
+                    )));
+                }
+            }
+            return Ok(existing.clone());
+        }
+        let name = name.unwrap_or_else(|| {
+            let a: Vec<String> = args.iter().map(|v| v.to_string()).collect();
+            format!("{}_{}", generic, a.join("_"))
+        });
+        self.instances.insert(key, name.clone());
+        self.pending.push((g, args, name.clone()));
+        Ok(name)
     }
 
     /// skip to the end of the current line (a declaration already parsed)
@@ -1078,8 +1265,28 @@ impl Parser {
         ))
     }
 
-    /// width expression: term (('+'|'-') term)*, term: atom ('*' atom)*
+    /// width expression: sum (('<<'|'>>') sum)*, sum: term (('+'|'-') term)*,
+    /// term: atom ('*' atom)*
     fn int_expr_at(&self, i: usize, params: &[String]) -> Result<(IntExpr, usize), ParseError> {
+        let (mut lhs, mut j) = self.int_sum_at(i, params)?;
+        loop {
+            match self.toks.get(j).map(|t| &t.0) {
+                Some(Tok::ShiftL) => {
+                    let (rhs, next) = self.int_sum_at(j + 1, params)?;
+                    lhs = IntExpr::Shl(Box::new(lhs), Box::new(rhs));
+                    j = next;
+                }
+                Some(Tok::ShiftR) => {
+                    let (rhs, next) = self.int_sum_at(j + 1, params)?;
+                    lhs = IntExpr::Shr(Box::new(lhs), Box::new(rhs));
+                    j = next;
+                }
+                _ => return Ok((lhs, j)),
+            }
+        }
+    }
+
+    fn int_sum_at(&self, i: usize, params: &[String]) -> Result<(IntExpr, usize), ParseError> {
         let (mut lhs, mut j) = self.int_term_at(i, params)?;
         loop {
             match self.toks.get(j).map(|t| &t.0) {
@@ -1142,10 +1349,12 @@ impl Parser {
         }
     }
 
-    /// parse and instantiate a type at token `i` (no parameters in scope)
+    /// parse and instantiate a type at token `i`; `env` binds the width
+    /// parameters in scope (a generic function's, while its body parses)
     fn type_at(&mut self, i: usize, env: &[(String, i64)], depth: usize) -> Result<(Type, usize), ParseError> {
         let line = self.toks.get(i).map(|t| t.1).unwrap_or(0);
-        let (expr, next) = self.type_expr_at(i, &[])?;
+        let params: Vec<String> = env.iter().map(|(n, _)| n.clone()).collect();
+        let (expr, next) = self.type_expr_at(i, &params)?;
         let ty = self.instantiate(&expr, env, depth).map_err(|msg| ParseError { line, msg })?;
         Ok((ty, next))
     }
@@ -1314,7 +1523,8 @@ impl Parser {
             {
                 let name = name.clone();
                 let line = self.toks[i].1;
-                let (ty, next) = self.type_at(i + 2, &[], 0)?;
+                let env = self.env.clone();
+                let (ty, next) = self.type_at(i + 2, &env, 0)?;
                 if scope.value_ids.contains_key(&name) {
                     return Err(ParseError {
                         line,
@@ -1396,7 +1606,9 @@ impl Parser {
 
     // -- grammar -------------------------------------------------------------
 
-    fn parse_function(&mut self) -> Result<Function, ParseError> {
+    /// A function; for an instantiation of a generic, `instance` is the
+    /// name it gets and the env is already bound
+    fn parse_function(&mut self, instance: Option<String>) -> Result<Function, ParseError> {
         let kw = self.expect_ident()?;
         if kw != "fn" {
             self.pos -= 1;
@@ -1408,7 +1620,13 @@ impl Parser {
         self.prescan_blocks(lo, hi, &mut scope)?;
         self.pos += 1; // past `fn`
 
-        let name = self.expect_ident()?;
+        let mut name = self.expect_ident()?;
+        if let Some(n) = instance {
+            // skip the (P, Q) group; the env already binds them
+            self.expect(Tok::LParen)?;
+            while !matches!(self.next()?, Tok::RParen) {}
+            name = n;
+        }
 
         // parameters: names resolve via the prescan; re-parse for order
         self.expect(Tok::LParen)?;
@@ -1598,13 +1816,14 @@ impl Parser {
             });
         }
         match op {
-            "iconst" => match self.next()? {
-                Tok::Int(imm) => Ok(Inst::IConst { dst, imm }),
-                t => {
-                    self.pos -= 1;
-                    Err(self.err(format!("expected an integer literal, found {}", t)))
-                }
-            },
+            "iconst" => {
+                // a literal, or in a generic an expression over its parameters
+                let params: Vec<String> = self.env.iter().map(|(n, _)| n.clone()).collect();
+                let (e, next) = self.int_expr_at(self.pos, &params)?;
+                self.pos = next;
+                let imm = e.eval(&self.env).map_err(|m| self.err(m))?;
+                Ok(Inst::IConst { dst, imm })
+            }
             "ext" | "trunc" | "bitcast" => {
                 let cast = match op {
                     "ext" => CastOp::Ext,
@@ -1733,7 +1952,19 @@ impl Parser {
     }
 
     fn parse_call_tail(&mut self, scope: &FuncScope) -> Result<(String, Vec<ValueId>), ParseError> {
-        let callee = self.expect_ident()?;
+        let mut callee = self.expect_ident()?;
+        // `call g(8, 23)(a, b)`: the first group is width arguments when it
+        // opens with a literal, a parameter, or a parenthesis
+        let is_inst = matches!(self.peek(), Some(Tok::LParen))
+            && match self.toks.get(self.pos + 1).map(|t| &t.0) {
+                Some(Tok::Int(_)) | Some(Tok::LParen) => true,
+                Some(Tok::Ident(n)) => self.env.iter().any(|(p, _)| p == n),
+                _ => false,
+            };
+        if is_inst {
+            let args = self.instance_args()?;
+            callee = self.request_instance(&callee, args, None)?;
+        }
         self.expect(Tok::LParen)?;
         let mut args = Vec::new();
         if !self.eat(&Tok::RParen) {
@@ -2427,7 +2658,11 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 // ptr constants are raw addresses (MMIO, fixed buffers) —
                 // meaningful wherever ptr is an address-space index
                 Type::Int { .. } | Type::Ptr => true,
-                Type::Pack(_) => false,
+                // a pack literal is its bit pattern
+                Type::Pack(_) => match func.width(ty) {
+                    Some(w) if w < 64 => (0..1i64 << w).contains(imm),
+                    _ => true,
+                },
                 Type::AInt | Type::AUInt => unreachable!("rejected by rule 0"),
             };
             if !ok {
@@ -3060,5 +3295,51 @@ fn half(f: f16, b: byte, w: word(2 * 6)) -> (u5, u8, u12) {
         // a block label whose params use parenthesized types still parses
         let m = parse("fn f(n: u(8)) -> u8 {\nentry:\n    jmp next(n)\nnext(x: u(4 + 4)):\n    ret x\n}").expect("parse");
         verify(&m).expect("verify");
+    }
+
+    #[test]
+    fn generic_functions_instantiate() {
+        let src = r"
+type word(N) = u(N)
+fn wrap(N)(a: word(N), b: word(N)) -> word(N) {
+    s: word(N) = iadd a, b
+    top: word(N) = iconst (1 << (N - 1)) - 1
+    big: u1 = icmp.gt s, top
+    r: word(N) = if big {
+        d: word(N) = call halve(N)(s)
+        yield d
+    } else {
+        yield s
+    }
+    ret r
+}
+fn halve(N)(a: word(N)) -> word(N) {
+    one: word(N) = iconst 1
+    h: word(N) = shr a, one
+    ret h
+}
+fn wrap8 = wrap(8)
+fn use12(a: u12) -> u12 {
+    r: u12 = call wrap(4 * 3)(a, a)
+    ret r
+}
+";
+        let m = parse(src).expect("parse");
+        verify(&m).expect("verify");
+        let names: Vec<&str> = m.funcs.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"wrap8"), "{:?}", names);
+        assert!(names.contains(&"wrap_12"), "{:?}", names);
+        assert!(names.contains(&"halve_8") && names.contains(&"halve_12"), "{:?}", names);
+        assert!(!names.iter().any(|n| *n == "wrap" || *n == "halve"), "{:?}", names);
+        let w8 = m.func("wrap8").unwrap();
+        assert_eq!(w8.rets, vec![Type::int(false, 8)]);
+        // the lowered module is plain and round-trips
+        let printed = m.to_string();
+        let m2 = parse(&printed).expect("reparse");
+        verify(&m2).expect("reverify");
+        assert_eq!(printed, m2.to_string());
+        // errors: unknown generic, arity, an alias that clashes
+        assert!(parse("fn f = nope(1)\n").is_err());
+        assert!(parse("fn g(N)(a: u(N)) -> u(N) {\n    ret a\n}\nfn h = g(1, 2)\n").is_err());
     }
 }

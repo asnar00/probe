@@ -78,18 +78,17 @@ Backend sketch:
 - External calls (libc symbols) from JIT'd code.
 - An `alloca`-style op for function-local scratch memory (today all memory
   comes from the caller).
-- Floats (`f32`/`f64`) — types are reserved in the spec; every target has
-  probeable instruction groups for them. When they land, abstract `float`
-  joins `int` in the replacement policy (one new Policy field plus a
-  resolution arm). Their layouts are already packs
-  (`pack f32 { m: u23, e: u8, s: u1 }`), so a softfloat library in plain
-  SSA is possible today, with zero compiler changes.
+- Floats: `suite/float.ssa` is a correct generic `fadd(E, M)` over packs;
+  `fsub`, `fmul`, `fdiv`, comparisons, and int<->float conversions belong
+  beside it, in the same style. Hardware floats are then a backend matter:
+  recognize `float(8, 23)` and `float(11, 52)` and lower calls to the
+  library to `fadd s0, s1, s2` from probed encodings, verified against
+  the library that defines the semantics.
 - Memory for odd widths: a `u5` can't be loaded or stored; a load of the
   containing byte plus `bitcast`/`get` covers it by hand for now.
-- Parametric *functions* (a `fn add(a: u(N), b: u(N))` monomorphized per
-  width) — types are parametric now, functions are not.
-- Pack literals (`iconst` on a pack type, or field-named construction);
-  `icmp.eq` on packs without a `bitcast` first.
+- Field-named pack construction; `icmp.eq` on packs without a `bitcast`.
+- Generic instantiation is by re-parsing the template per instance; a
+  generic that is instantiated many times pays the parse each time.
 - Narrow shifts by the width or more are unspecified (the hardware shift
   in the container, then re-normalized) — deliberately, to keep them one
   instruction.

@@ -1652,4 +1652,168 @@ entry:
         assert_eq!(buf[0], 0xfb);
         assert_eq!(buf[1], 0xff);
     }
+
+    /// Round a finite, nonzero f64 to the nearest float(E, M) (ties to
+    /// even), including subnormals and overflow to infinity. Used as the
+    /// reference for formats the FPU doesn't have; the f64 sum of two such
+    /// values is exact, so a single rounding is the correctly rounded sum.
+    fn round_to(e: u32, m: u32, v: f64) -> u64 {
+        let emax = (1u64 << e) - 1;
+        let bias = (1i64 << (e - 1)) - 1;
+        let bits = v.to_bits();
+        let sign = bits >> 63;
+        if v.is_nan() {
+            return (emax << m) | (1u64 << (m - 1));
+        }
+        if v.is_infinite() {
+            return (sign << (e + m)) | (emax << m);
+        }
+        if v == 0.0 {
+            return sign << (e + m);
+        }
+        let e64 = ((bits >> 52) & 0x7ff) as i64;
+        let frac = bits & ((1u64 << 52) - 1);
+        // f64 subnormals don't arise from sums of narrow formats
+        assert!(e64 != 0, "f64 subnormal in reference");
+        let sig = frac | (1u64 << 52); // 53 bits
+        let mut x = e64 - 1023 + bias; // target biased exponent
+        // shift the 53-bit significand down to M + 1 bits (hidden + M),
+        // further if the target is subnormal
+        let mut shift = 52 - m as i64;
+        if x < 1 {
+            shift += 1 - x;
+            x = 1;
+        }
+        let (mut mant, round, sticky) = if shift >= 64 {
+            (0u64, false, sig != 0)
+        } else if shift == 0 {
+            (sig, false, false)
+        } else {
+            let dropped = sig & ((1u64 << shift) - 1);
+            let half = 1u64 << (shift - 1);
+            (sig >> shift, dropped & half != 0, dropped & (half - 1) != 0)
+        };
+        if round && (sticky || mant & 1 == 1) {
+            mant += 1;
+        }
+        if mant >> (m + 1) != 0 {
+            mant >>= 1;
+            x += 1;
+        }
+        let (exp, mant) = if mant >> m != 0 {
+            (x as u64, mant & ((1u64 << m) - 1))
+        } else {
+            (0, mant) // subnormal (x == 1)
+        };
+        if exp >= emax {
+            return (sign << (e + m)) | (emax << m);
+        }
+        (sign << (e + m)) | (exp << m) | mant
+    }
+
+    fn to_f64(e: u32, m: u32, bits: u64) -> f64 {
+        let emax = (1u64 << e) - 1;
+        let bias = (1i64 << (e - 1)) - 1;
+        let sign = if bits >> (e + m) & 1 == 1 { -1.0 } else { 1.0 };
+        let exp = (bits >> m) & emax;
+        let mant = bits & ((1u64 << m) - 1);
+        if exp == emax {
+            return if mant == 0 { sign * f64::INFINITY } else { f64::NAN };
+        }
+        if exp == 0 {
+            return sign * (mant as f64) * 2f64.powi((1 - bias - m as i64) as i32);
+        }
+        sign * ((mant | (1u64 << m)) as f64) * 2f64.powi((exp as i64 - bias - m as i64) as i32)
+    }
+
+    fn is_nan_bits(e: u32, m: u32, bits: u64) -> bool {
+        let emax = (1u64 << e) - 1;
+        (bits >> m) & emax == emax && bits & ((1u64 << m) - 1) != 0
+    }
+
+    /// The generic softfloat add against the FPU (f32, f64) and against
+    /// an independent reference (fp8 exhaustively, fp16 and bf16 densely).
+    #[test]
+    fn softfloat_add_matches_hardware_and_reference() {
+        let j = jit(include_str!("../suite/float.ssa"));
+        let mask = |w: u32| if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        // interesting bit patterns for a format of width w: specials,
+        // boundaries, and random values with random exponents
+        let patterns = |e: u32, m: u32, n: usize, rnd: &mut dyn FnMut() -> u64| -> Vec<u64> {
+            let w = e + m + 1;
+            let emax = (1u64 << e) - 1;
+            let mut v = vec![
+                0,
+                1u64 << (w - 1),                    // -0
+                1,                                  // min subnormal
+                (1u64 << m) - 1,                    // max subnormal
+                1u64 << m,                          // min normal
+                ((emax - 1) << m) | ((1u64 << m) - 1), // max finite
+                emax << m,                          // +inf
+                (emax << m) | (1u64 << (w - 1)),    // -inf
+                (emax << m) | 1,                    // NaN
+                ((emax / 2) << m),                  // 1.0
+            ];
+            for _ in 0..n {
+                let r = rnd();
+                v.push(r & mask(w));
+                // values near each other in magnitude cancel interestingly
+                let x = v[v.len() - 1];
+                v.push((x ^ (1u64 << (w - 1)) ^ (r >> 40 & 3)) & mask(w));
+            }
+            v
+        };
+        // --- f32 and f64: the FPU is the oracle ---
+        let vals = patterns(8, 23, 300, &mut rnd);
+        for &a in &vals {
+            for &b in &vals {
+                let want = (f32::from_bits(a as u32) + f32::from_bits(b as u32)).to_bits() as u64;
+                let got = native_result(Repr::U(32), j.call("fadd32", &[a as i64, b as i64]).unwrap()) as u64;
+                if is_nan_bits(8, 23, want) {
+                    assert!(is_nan_bits(8, 23, got), "f32 {:#x} + {:#x}: got {:#x}, want NaN", a, b, got);
+                } else {
+                    assert_eq!(got, want, "f32 {:#x} + {:#x}", a, b);
+                }
+            }
+        }
+        let vals = patterns(11, 52, 200, &mut rnd);
+        for &a in &vals {
+            for &b in &vals {
+                let want = (f64::from_bits(a) + f64::from_bits(b)).to_bits();
+                let got = j.call("fadd64", &[a as i64, b as i64]).unwrap() as u64;
+                if is_nan_bits(11, 52, want) {
+                    assert!(is_nan_bits(11, 52, got), "f64 {:#x} + {:#x}: got {:#x}, want NaN", a, b, got);
+                } else {
+                    assert_eq!(got, want, "f64 {:#x} + {:#x}", a, b);
+                }
+            }
+        }
+        // --- fp8 exhaustive, fp16 / bf16 dense: the f64 reference ---
+        for (name, e, m, n) in [("fadd8", 4u32, 3u32, 0usize), ("fadd16", 5, 10, 400), ("faddb16", 8, 7, 400)] {
+            let w = e + m + 1;
+            let vals: Vec<u64> = if n == 0 {
+                (0..1u64 << w).collect()
+            } else {
+                patterns(e, m, n, &mut rnd)
+            };
+            for &a in &vals {
+                for &b in &vals {
+                    let want = round_to(e, m, to_f64(e, m, a) + to_f64(e, m, b));
+                    let got = native_result(Repr::U(w), j.call(name, &[a as i64, b as i64]).unwrap()) as u64;
+                    if is_nan_bits(e, m, want) {
+                        assert!(is_nan_bits(e, m, got), "{} {:#x} + {:#x}: got {:#x}, want NaN", name, a, b, got);
+                    } else {
+                        assert_eq!(got, want, "{} {:#x} + {:#x}", name, a, b);
+                    }
+                }
+            }
+        }
+    }
 }
