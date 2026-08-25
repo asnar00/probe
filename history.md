@@ -6,6 +6,17 @@ has the full story for any of them.
 
 ---
 
+### const by type, literals as operands — `9b05c3e` · 2026-08-26
+
+`iconst` is `const`, and the type decides: bits for an integer or a
+pack, a number for a float — `x: f32 = const 0.1` is the nearest f32,
+exactly rounded (decimal to binary by a small bignum, checked against
+Rust's `from_str`); `-inf` and `nan` too. And a literal can stand in
+for a value wherever the context fixes its type: `add a, 1`,
+`cmp.lt 0, b`, `mul x, 0.5`, `jmp loop(0, 0)`, `ret 0`, `g(b, 2)`, with
+`200: u8` when nothing does. Hidden consts carry them; the printer
+shows them inline again. 302/302 on all four paths.
+
 ### cmp on floats, neg, abs — `aa1829b` · 2026-08-25
 
 `icmp` is `cmp`, and on floats `cmp.lt` is the library's `lt(E, M)`:
