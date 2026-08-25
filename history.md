@@ -6,7 +6,7 @@ has the full story for any of them.
 
 ---
 
-### Any-width integers and packs — `PENDING` · 2026-08-25
+### Any-width integers and packs — `542b9a5` · 2026-08-25
 
 Types are now `iN`/`uN` for any N from 1 to 64, and signedness lives in
 the type: one `div`, one `rem`, one `shr`, one `icmp.lt`, `ext` fills by
