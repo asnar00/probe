@@ -79,6 +79,12 @@ inst i64.load offset={i 0..1000000} :: sig=(param i32) (result i64) :: pre=local
 inst i64.store offset={i 0..1000000} :: sig=(param i32 i64) :: pre=local.get 0, local.get 1
 inst i32.load offset={i 0..1000000} :: sig=(param i32) (result i32) :: pre=local.get 0
 inst i32.store offset={i 0..1000000} :: sig=(param i32 i32) :: pre=local.get 0, local.get 1
+inst i32.load8_s offset={i 0..1000000} :: sig=(param i32) (result i32) :: pre=local.get 0
+inst i32.load8_u offset={i 0..1000000} :: sig=(param i32) (result i32) :: pre=local.get 0
+inst i32.load16_s offset={i 0..1000000} :: sig=(param i32) (result i32) :: pre=local.get 0
+inst i32.load16_u offset={i 0..1000000} :: sig=(param i32) (result i32) :: pre=local.get 0
+inst i32.store8 offset={i 0..1000000} :: sig=(param i32 i32) :: pre=local.get 0, local.get 1
+inst i32.store16 offset={i 0..1000000} :: sig=(param i32 i32) :: pre=local.get 0, local.get 1
 
 ; --- stack management (learned early so control-flow probes can use it) ---
 inst drop :: sig=(param i64) :: pre=local.get 0

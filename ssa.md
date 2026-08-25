@@ -14,7 +14,9 @@ things we can learn ARM64 encodings for by probing LLVM.
 - **Types live on variables, not opcodes.** Every value definition is written
   `%name: ty = op ...` — the same form as function and block parameters. Opcodes
   are pure operations with no type suffixes, which keeps the opcode set small;
-  the verifier checks that operand and result types are consistent.
+  the verifier checks that operand and result types are consistent. Signedness
+  is part of the type too: there is one `div`, one `shr`, one `icmp.lt`, and
+  `i5` versus `u5` says which one you mean.
 - **No nesting, no expressions.** One instruction per line, every intermediate
   value named. This is the layer *below* everything clever.
 
@@ -24,22 +26,27 @@ things we can learn ARM64 encodings for by probing LLVM.
 - Values: `%name` — name is `[A-Za-z0-9_]+`. Each value is defined exactly once.
 - Blocks: `^name` — same name rules.
 - Functions: `@name`.
+- Pack types: `$name` (declared with `pack`, see *Packs*).
 - Integer literals: decimal, optionally negative (`42`, `-7`), or hex (`0x2a`).
 - Whitespace is insignificant except as a separator; newlines end instructions.
 
 ## Types
 
-| type  | meaning                                                  |
-|-------|----------------------------------------------------------|
-| `i1`  | boolean (result of `icmp`)                               |
-| `i32` | 32-bit integer                                           |
-| `i64` | 64-bit integer                                           |
-| `ptr` | pointer (64-bit on our target)                           |
-| `int` | abstract integer — resolved to a concrete width by the   |
-|       | target's replacement policy (see *Abstract numeric types*) |
+| type    | meaning                                                    |
+|---------|------------------------------------------------------------|
+| `iN`    | signed integer of N bits, 1 ≤ N ≤ 64 (`i1`, `i5`, `i32`, `i64`) |
+| `uN`    | unsigned integer of N bits (`u1` is the boolean, `u23`, `u64`) |
+| `ptr`   | pointer (64-bit natively; a 32-bit offset on wasm)         |
+| `$name` | a pack: bitfields packed into at most 64 bits (see *Packs*) |
+| `int`, `uint` | abstract integers — resolved to a concrete width by the target's replacement policy (see *Abstract numeric types*) |
+
+Any width works anywhere a value lives — registers, block parameters,
+calls, packs. Memory is the exception: only 8-, 16-, 32-, and 64-bit types
+can be loaded and stored.
 
 Floats are reserved for a later version (`float` will join `int` as an
-abstract type when they land).
+abstract type when they land); their bit layouts are already expressible
+as packs.
 
 ## Structure
 
@@ -84,57 +91,62 @@ left-hand side.
 
 ### Integer arithmetic and bitwise ops
 
-Both operands and the result must all have the same type (`i32` or `i64`).
+Both operands and the result must all have the same integer type. Results
+wrap at the type's width; the type's signedness selects the operation.
 
 ```
-%v: i64 = iadd %a, %b
-%v: i64 = isub %a, %b
-%v: i64 = imul %a, %b
-%v: i64 = sdiv %a, %b       ; signed divide
-%v: i64 = udiv %a, %b       ; unsigned divide
-%v: i64 = srem %a, %b       ; signed remainder
-%v: i64 = urem %a, %b       ; unsigned remainder
-%v: i64 = and  %a, %b
-%v: i64 = or   %a, %b
-%v: i64 = xor  %a, %b
-%v: i64 = shl  %a, %b       ; shift amount taken mod bit-width
-%v: i64 = lshr %a, %b       ; logical (zero-fill) shift right
-%v: i64 = ashr %a, %b       ; arithmetic (sign-fill) shift right
+%v: i5 = iadd %a, %b
+%v: i5 = isub %a, %b
+%v: i5 = imul %a, %b
+%v: i5 = div %a, %b        ; signed for iN, unsigned for uN (truncating)
+%v: i5 = rem %a, %b        ; remainder, sign follows the dividend for iN
+%v: i5 = and %a, %b
+%v: i5 = or  %a, %b
+%v: i5 = xor %a, %b
+%v: i5 = shl %a, %b        ; shift amount taken mod the width
+%v: i5 = shr %a, %b        ; arithmetic (sign-fill) for iN, logical for uN
 ```
+
+Division by zero is target-dependent (wasm traps, the CPUs return 0);
+`MIN div -1` wraps to `MIN` at every width.
 
 ### Comparison
 
-Operands must share a type (`i32`, `i64`, or `ptr`); the result is `i1`. The
-condition is part of the opcode (it selects an operation, not a type).
+Operands must share an integer or `ptr` type; the result is `u1`. The
+condition is part of the opcode; the ordering is signed for `iN` and
+unsigned for `uN` and `ptr`.
 
 ```
-%c: i1 = icmp.eq  %a, %b    ; also: ne
-%c: i1 = icmp.slt %a, %b    ; signed:   slt sle sgt sge
-%c: i1 = icmp.ult %a, %b    ; unsigned: ult ule ugt uge
+%c: u1 = icmp.eq %a, %b    ; also: ne
+%c: u1 = icmp.lt %a, %b    ; also: le gt ge
 ```
 
-### Width changes
+### Width changes and reinterpretation
 
-The source and result types determine the conversion; the opcode only picks
-how new bits are filled.
+The source and result types determine everything; the opcode says which
+direction you meant, and the verifier holds you to it.
 
 ```
-%v: i64 = sext %a           ; sign-extend  (result wider than source)
-%v: i64 = zext %a           ; zero-extend  (result wider than source)
-%v: i32 = trunc %a          ; truncate     (result narrower than source)
+%v: i64 = ext %a            ; widen: sign-fills from an iN, zero-fills from a uN
+%v: u8  = trunc %a          ; narrow: keeps the low bits
+%v: u5  = bitcast %a        ; same width, reinterpreted (i5 <-> u5, pack <-> uN, ptr <-> i64/u64)
 ```
 
-Widths are ranked `i1 < i32 < i64`; `ptr` takes no part in width changes.
+The result is always a proper value of its type: `ext` of an `i5` holding
+-3 into a `u8` gives 253, `bitcast` of it into `u5` gives 29.
 
 ### Memory
 
 The address operand must be `ptr`. The access width is the result type (loads)
-or the stored value's type (stores): `i32`, `i64`, or `ptr` (64 bits).
+or the stored value's type (stores), which must be 8, 16, 32, or 64 bits
+wide — an integer, a pack, or `ptr`. Loads of `iN` sign-extend, of `uN`
+zero-extend.
 
 ```
 %v: i64 = load %addr
+%b: u8  = load %addr
 store %v, %addr
-%p: ptr = ptradd %base, %off    ; %base: ptr, %off: i64
+%p: ptr = ptradd %base, %off    ; %base: ptr, %off: i64 or u64
 ```
 
 ### Calls
@@ -149,7 +161,7 @@ call @g(%a)                           ; call with results ignored (or none)
 ```
 
 A call binds either *all* of the callee's return values or *none* of them
-(`call` is the only instruction that may define more than one value).
+(`call` and `unpack` are the only instructions that define more than one value).
 
 ### Terminators
 
@@ -157,11 +169,35 @@ Branch arguments must match the target block's parameters in count and type.
 
 ```
 jmp ^next(%a, %b)
-br %c, ^then(%a), ^else()   ; %c: i1 — empty parens may be omitted
+br %c, ^then(%a), ^else()   ; %c: u1 — empty parens may be omitted
 ret %v                      ; one return value
 ret %q, %r                  ; multiple return values
 ret                         ; none
 ```
+
+### Packs
+
+A `pack` is a record of bitfields laid out **lowest bits first**: the first
+field occupies bit 0 upward, the next starts where it ends, and the total
+must fit in 64 bits. Fields are integers or other packs; a pack value is
+carried as the unsigned integer of its total width and can go anywhere a
+value can — parameters, block parameters, returns, memory if it is 8, 16,
+32, or 64 bits wide.
+
+```
+pack $rgb { r: u5, g: u6, b: u5 }       ; 16 bits: r = bits 0-4, g = 5-10, b = 11-15
+pack $pix { c: $rgb, a: u8 }            ; 24 bits, nested
+
+%c: $rgb = pack %r, %g, %b              ; one value per field, in order
+%g: u6 = get %c, g                      ; read a field (iN fields sign-extend)
+%d: $rgb = set %c, g, %g2               ; a copy with one field replaced
+%r: u5, %g: u6, %b: u5 = unpack %c      ; every field at once
+%w: u16 = bitcast %c                    ; the raw bits, and back again
+```
+
+Declarations may appear anywhere at the top level; a pack must be declared
+before it is used as a field of another. `unpack` is, with `call`, the only
+instruction that defines several values.
 
 ## Example
 
@@ -172,7 +208,7 @@ fn @sum(%n: i64) -> i64 {
     %zero: i64 = iconst 0
     jmp ^loop(%zero, %zero)
 ^loop(%i: i64, %acc: i64):
-    %done: i1 = icmp.sge %i, %n
+    %done: u1 = icmp.ge %i, %n
     br %done, ^exit, ^body
 ^body:
     %acc2: i64 = iadd %acc, %i
@@ -190,6 +226,7 @@ fn @sum(%n: i64) -> i64 {
 a width — the compiler does, at compile time, by a *replacement policy*
 derived from the target (its natural register width, or a size-oriented
 choice like i32 on wasm32) and from user concerns (`--int=i32|i64`).
+`uint` is its unsigned twin and always takes the same width.
 Because types live on variables, resolution is a single rewrite of the
 value tables before verification; opcodes, instructions, and everything
 downstream see only concrete types.
@@ -197,12 +234,12 @@ downstream see only concrete types.
 ```
 fn @gcd(%a: int, %b: int) -> int {     ; width chosen per target/policy
     ...
-    %r: int = srem %x, %y              ; same ops, abstractly typed
+    %r: int = rem %x, %y               ; same ops, abstractly typed
 ```
 
 - Abstract and concrete types mix freely (`i1` conditions, `ptr`
   addresses, explicit `i32`/`i64` where a width is required).
-- A width-change cast (`sext`/`zext`/`trunc`) between `int` and a concrete
+- A width-change cast (`ext`/`trunc`) between `int` and a concrete
   type is only valid under policies where the widths actually differ — the
   verifier checks the resolved program, so such code ties itself to a
   policy. Policy-portable code keeps casts among concrete types.
@@ -247,7 +284,7 @@ to a join block whose parameters are the bound results.
 
 ```
 %sum: i64 = loop(%i: i64 = %zero, %acc: i64 = %zero) {
-    %done: i1 = icmp.sge %i, %n
+    %done: u1 = icmp.ge %i, %n
     if %done {
         break %acc              ; exit the loop, yielding its results
     }
@@ -281,7 +318,9 @@ terminator), same as flat form.
    instruction result).
 2. Every block ends with exactly one terminator; no instruction follows it.
 3. Branch argument counts and types match the target block's parameters.
-4. Operand types obey each instruction's typing rule above.
+4. Operand types obey each instruction's typing rule above; `br` conditions
+   and `icmp` results are `u1`; `iconst` literals fit their type under
+   either the signed or the unsigned reading.
 5. The entry block has no parameters and is not the target of any branch.
 6. `ret` operands match the function's declared return types in count and
    type; a result-binding call matches the callee's return types the same way.

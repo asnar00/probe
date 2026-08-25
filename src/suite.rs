@@ -37,8 +37,21 @@ pub enum Backend {
 
 enum ArgSpec {
     Int(i64),
-    ArrI64(Vec<i64>),
-    ArrI32(Vec<i32>),
+    /// an array argument: element width in bytes, values (canonical)
+    Arr { bytes: usize, vals: Vec<i64> },
+}
+
+impl ArgSpec {
+    /// the array's bytes, little-endian
+    fn to_bytes(&self) -> Vec<u8> {
+        match self {
+            ArgSpec::Int(_) => Vec::new(),
+            ArgSpec::Arr { bytes, vals } => vals
+                .iter()
+                .flat_map(|v| v.to_le_bytes()[..*bytes].to_vec())
+                .collect(),
+        }
+    }
 }
 
 struct Case {
@@ -89,15 +102,21 @@ fn parse_case(line: &str) -> Result<Case, String> {
         .to_string();
     let mut args = Vec::new();
     for tok in &toks[1..] {
-        if let Some(body) = tok.strip_prefix("i64[").and_then(|t| t.strip_suffix(']')) {
+        // typed arrays: i8[..] u8[..] i16[..] u16[..] i32[..] u32[..] i64[..] u64[..]
+        let arr = tok.split_once('[').and_then(|(ty, rest)| {
+            let body = rest.strip_suffix(']')?;
+            let bytes = match ty {
+                "i8" | "u8" => 1,
+                "i16" | "u16" => 2,
+                "i32" | "u32" => 4,
+                "i64" | "u64" => 8,
+                _ => return None,
+            };
+            Some((bytes, body))
+        });
+        if let Some((bytes, body)) = arr {
             let vals: Result<Vec<i64>, _> = body.split(',').map(|v| parse_int(v.trim())).collect();
-            args.push(ArgSpec::ArrI64(vals?));
-        } else if let Some(body) = tok.strip_prefix("i32[").and_then(|t| t.strip_suffix(']')) {
-            let vals: Result<Vec<i32>, _> = body
-                .split(',')
-                .map(|v| parse_int(v.trim()).map(|x| x as i32))
-                .collect();
-            args.push(ArgSpec::ArrI32(vals?));
+            args.push(ArgSpec::Arr { bytes, vals: vals? });
         } else {
             args.push(ArgSpec::Int(parse_int(tok)?));
         }
@@ -289,25 +308,41 @@ fn run_native(
     };
     for case in cases {
         // materialize array args as live buffers, kept alive through the call
-        let mut bufs64: Vec<Vec<i64>> = Vec::new();
-        let mut bufs32: Vec<Vec<i32>> = Vec::new();
+        let mut bufs: Vec<Vec<u64>> = Vec::new(); // u64-aligned backing store
         let mut argv = Vec::new();
         for a in &case.args {
             match a {
                 ArgSpec::Int(v) => argv.push(*v),
-                ArgSpec::ArrI64(vals) => {
-                    bufs64.push(vals.clone());
-                    argv.push(bufs64.last().unwrap().as_ptr() as i64);
-                }
-                ArgSpec::ArrI32(vals) => {
-                    bufs32.push(vals.clone());
-                    argv.push(bufs32.last().unwrap().as_ptr() as i64);
+                arr => {
+                    let bytes = arr.to_bytes();
+                    let mut words = vec![0u64; bytes.len().div_ceil(8).max(1)];
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            bytes.as_ptr(),
+                            words.as_mut_ptr() as *mut u8,
+                            bytes.len(),
+                        );
+                    }
+                    bufs.push(words);
+                    argv.push(bufs.last().unwrap().as_ptr() as i64);
                 }
             }
         }
+        // a register holds the canonical value only up to the type's
+        // container: read x0/x1 through the declared return types
+        let rets: Vec<ssa::Repr> = module
+            .func(&case.func)
+            .map(|f| f.rets.iter().map(|&t| f.repr(t)).collect())
+            .unwrap_or_default();
+        let fix = |i: usize, x: i64| match rets.get(i) {
+            Some(r) if r.container() == 32 => opt::norm(*r, x as u32 as i64),
+            _ => x,
+        };
         let got: Result<Vec<i64>, String> = match case.expected.len() {
-            1 => jit.call(&case.func, &argv).map(|v| vec![v]),
-            2 => jit.call2(&case.func, &argv).map(|(a, b)| vec![a, b]),
+            1 => jit.call(&case.func, &argv).map(|v| vec![fix(0, v)]),
+            2 => jit
+                .call2(&case.func, &argv)
+                .map(|(a, b)| vec![fix(0, a), fix(1, b)]),
             n => Err(format!("{} expected values not supported by the runner", n)),
         };
         finish_case(report, name, case, got);
@@ -358,22 +393,22 @@ fn run_wasm(
             if j > 0 {
                 spec.push(',');
             }
-            let pty = func.params.get(j).map(|&p| func.ty(p));
+            let pty = func.params.get(j).map(|&p| emit_wasm::wrepr(func, func.ty(p)));
             match a {
                 ArgSpec::Int(v) => {
                     let t = match pty {
-                        Some(ssa::Type::I64) => "i64",
+                        Some(r) if r.container() == 64 => "i64",
                         _ => "i32",
                     };
                     spec.push_str(&format!("{{\"t\":\"{}\",\"v\":\"{}\"}}", t, v));
                 }
-                ArgSpec::ArrI64(vals) => {
+                ArgSpec::Arr { bytes, vals } => {
                     let vs: Vec<String> = vals.iter().map(|v| format!("\"{}\"", v)).collect();
-                    spec.push_str(&format!("{{\"t\":\"ptr\",\"a64\":[{}]}}", vs.join(",")));
-                }
-                ArgSpec::ArrI32(vals) => {
-                    let vs: Vec<String> = vals.iter().map(|v| format!("\"{}\"", v)).collect();
-                    spec.push_str(&format!("{{\"t\":\"ptr\",\"a32\":[{}]}}", vs.join(",")));
+                    spec.push_str(&format!(
+                        "{{\"t\":\"ptr\",\"a{}\":[{}]}}",
+                        bytes * 8,
+                        vs.join(",")
+                    ));
                 }
             }
         }
@@ -382,7 +417,13 @@ fn run_wasm(
             if j > 0 {
                 spec.push(',');
             }
-            spec.push_str(if t == ssa::Type::I64 { "\"i64\"" } else { "\"i32\"" });
+            // how the driver prints an i32 result: sign- or zero-extended
+            let r = emit_wasm::wrepr(func, t);
+            spec.push_str(match (r.container(), r.signed()) {
+                (64, _) => "\"i64\"",
+                (_, true) => "\"i32\"",
+                _ => "\"u32\"",
+            });
         }
         spec.push_str("]}");
     }
@@ -446,10 +487,10 @@ const ARM_HEAP: u64 = 0x4140_0000;
 fn helpers(uart: u64) -> String {
     format!(
         r"
-fn @__pch(%c: i64) {{
+fn @__pch(%c: u64) {{
 ^entry:
     %u: ptr = iconst {}
-    %c32: i32 = trunc %c
+    %c32: u32 = trunc %c
     store %c32, %u
     ret
 }}
@@ -459,27 +500,27 @@ fn @__pch(%c: i64) {{
 }
 
 const PHEX: &str = r"
-fn @__phex(%v: i64) {
+fn @__phex(%v: u64) {
 ^entry:
-    %sh0: i64 = iconst 60
+    %sh0: u64 = iconst 60
     jmp ^loop(%sh0)
-^loop(%sh: i64):
-    %t: i64 = lshr %v, %sh
-    %m: i64 = iconst 15
-    %n: i64 = and %t, %m
-    %nine: i64 = iconst 9
-    %big: i1 = icmp.sgt %n, %nine
-    %bigi: i64 = zext %big
-    %gap: i64 = iconst 39
-    %adj: i64 = imul %bigi, %gap
-    %z: i64 = iconst 48
-    %c1: i64 = iadd %n, %z
-    %c: i64 = iadd %c1, %adj
+^loop(%sh: u64):
+    %t: u64 = shr %v, %sh
+    %m: u64 = iconst 15
+    %n: u64 = and %t, %m
+    %nine: u64 = iconst 9
+    %big: u1 = icmp.gt %n, %nine
+    %bigi: u64 = ext %big
+    %gap: u64 = iconst 39
+    %adj: u64 = imul %bigi, %gap
+    %z: u64 = iconst 48
+    %c1: u64 = iadd %n, %z
+    %c: u64 = iadd %c1, %adj
     call @__pch(%c)
-    %zero: i64 = iconst 0
-    %done: i1 = icmp.eq %sh, %zero
-    %four: i64 = iconst 4
-    %sh2: i64 = isub %sh, %four
+    %zero: u64 = iconst 0
+    %done: u1 = icmp.eq %sh, %zero
+    %four: u64 = iconst 4
+    %sh2: u64 = isub %sh, %four
     br %done, ^exit, ^loop(%sh2)
 ^exit:
     ret
@@ -523,29 +564,26 @@ fn gen_driver(
                 .ok_or_else(|| format!("too many args in '{}'", case.text))?;
             match a {
                 ArgSpec::Int(v) => {
-                    let ty = pty.name();
-                    argv.push(tmp(&mut s, ty, format!("iconst {}", v)));
+                    if func.pack(pty).is_some() {
+                        // packs have no literals: build the bits, then bitcast
+                        let w = func.width(pty).unwrap();
+                        let bits = tmp(&mut s, &format!("u{}", w), format!("iconst {}", v));
+                        argv.push(tmp(&mut s, &func.tyname(pty), format!("bitcast {}", bits)));
+                    } else {
+                        argv.push(tmp(&mut s, &pty.name(), format!("iconst {}", v)));
+                    }
                 }
-                ArgSpec::ArrI64(vals) => {
-                    heap = (heap + 7) & !7;
+                ArgSpec::Arr { bytes, vals } => {
+                    let b = *bytes as u64;
+                    heap = (heap + b - 1) & !(b - 1);
                     let base = heap;
+                    let ety = format!("i{}", b * 8);
                     for (k, v) in vals.iter().enumerate() {
-                        let d = tmp(&mut s, "i64", format!("iconst {}", v));
-                        let p = tmp(&mut s, "ptr", format!("iconst {}", base + 8 * k as u64));
+                        let d = tmp(&mut s, &ety, format!("iconst {}", opt::norm(ssa::Repr::S(b as u32 * 8), *v)));
+                        let p = tmp(&mut s, "ptr", format!("iconst {}", base + b * k as u64));
                         s.push_str(&format!("    store {}, {}\n", d, p));
                     }
-                    heap += 8 * vals.len() as u64;
-                    argv.push(tmp(&mut s, "ptr", format!("iconst {}", base)));
-                }
-                ArgSpec::ArrI32(vals) => {
-                    heap = (heap + 3) & !3;
-                    let base = heap;
-                    for (k, v) in vals.iter().enumerate() {
-                        let d = tmp(&mut s, "i32", format!("iconst {}", v));
-                        let p = tmp(&mut s, "ptr", format!("iconst {}", base + 4 * k as u64));
-                        s.push_str(&format!("    store {}, {}\n", d, p));
-                    }
-                    heap += 4 * vals.len() as u64;
+                    heap += b * vals.len() as u64;
                     argv.push(tmp(&mut s, "ptr", format!("iconst {}", base)));
                 }
             }
@@ -558,7 +596,7 @@ fn gen_driver(
         }
         let defs: Vec<String> = rets
             .iter()
-            .map(|(r, t)| format!("{}: {}", r, t.name()))
+            .map(|(r, t)| format!("{}: {}", r, func.tyname(*t)))
             .collect();
         s.push_str(&format!(
             "    {} = call @{}({})\n",
@@ -569,17 +607,29 @@ fn gen_driver(
         // print results: 16 hex digits each, space-separated, newline after
         for (i, (r, rt)) in rets.iter().enumerate() {
             if i > 0 {
-                let sp = tmp(&mut s, "i64", "iconst 32".into());
+                let sp = tmp(&mut s, "u64", "iconst 32".into());
                 s.push_str(&format!("    call @__pch({})\n", sp));
             }
-            let printable = match rt {
-                ssa::Type::I64 => r.clone(),
-                // zext to the suite's zero-extended convention for sub-64 types
-                _ => tmp(&mut s, "i64", format!("zext {}", r)),
-            };
-            s.push_str(&format!("    call @__phex({})\n", printable));
+            // the canonical 64-bit value of the result, as a u64 for printing:
+            // signed types sign-extend, everything else zero-extends
+            let repr = func.repr(*rt);
+            let mut v = r.clone();
+            if func.pack(*rt).is_some() {
+                v = tmp(&mut s, &format!("u{}", repr.bits()), format!("bitcast {}", v));
+            }
+            if repr.signed() {
+                if repr.bits() < 64 {
+                    v = tmp(&mut s, "i64", format!("ext {}", v));
+                }
+                v = tmp(&mut s, "u64", format!("bitcast {}", v));
+            } else if repr.bits() < 64 {
+                v = tmp(&mut s, "u64", format!("ext {}", v));
+            } else if *rt == ssa::Type::Ptr {
+                v = tmp(&mut s, "u64", format!("bitcast {}", v));
+            }
+            s.push_str(&format!("    call @__phex({})\n", v));
         }
-        let nl = tmp(&mut s, "i64", "iconst 10".into());
+        let nl = tmp(&mut s, "u64", "iconst 10".into());
         s.push_str(&format!("    call @__pch({})\n", nl));
     }
     s.push_str(exit_ssa);

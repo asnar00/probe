@@ -18,11 +18,15 @@
 //!     sp + 16 + 8k      save area for the k-th used callee-saved register
 //!     spill_base + 8i   slot for the i-th spilled value
 //!
-//! 32-bit (i32) ops use the w-register templates; w-ops zero the high half,
-//! so slots always hold values zero-extended to 64 bits and are always
-//! loaded/stored as x registers. i1 values are 0/1 in a full slot.
+//! Types up to 32 bits live in w registers, wider ones in x registers, and
+//! every value is kept *canonical* in its container: sign-extended for
+//! `iN`, zero-extended for `uN`/ptr/packs (see `ssa::Repr`). Slots are
+//! always moved as x registers (bit copies preserve canonical form; the
+//! high half of a w value is don't-care). Operations that can carry out
+//! of an N-bit type re-normalize with sbfm/ubfm, which is also what
+//! packs' get/set/pack lower to.
 
-use crate::ssa::{BinOp, BlockId, CastOp, Cond, Function, Inst, Module, Type, ValueId};
+use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, ValueId};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -382,19 +386,35 @@ pub struct Compiled {
 const LDR_SP: &str = "ldr {x}, [sp, #{i 0..32760 /8}]";
 const STR_SP: &str = "str {x}, [sp, #{i 0..32760 /8}]";
 const CSET: &str = "cset {x}, {e eq|ne|lt|le|gt|ge|lo|ls|hi|hs}";
+const SBFM_W: &str = "sbfm {w}, {w}, #{i 0..31}, #{i 0..31}";
+const UBFM_W: &str = "ubfm {w}, {w}, #{i 0..31}, #{i 0..31}";
+const BFM_W: &str = "bfm {w}, {w}, #{i 0..31}, #{i 0..31}";
+const SBFM_X: &str = "sbfm {x}, {x}, #{i 0..63}, #{i 0..63}";
+const UBFM_X: &str = "ubfm {x}, {x}, #{i 0..63}, #{i 0..63}";
+const BFM_X: &str = "bfm {x}, {x}, #{i 0..63}, #{i 0..63}";
 
-fn cond_name(c: Cond) -> &'static str {
-    match c {
-        Cond::Eq => "eq",
-        Cond::Ne => "ne",
-        Cond::Slt => "lt",
-        Cond::Sle => "le",
-        Cond::Sgt => "gt",
-        Cond::Sge => "ge",
-        Cond::Ult => "lo",
-        Cond::Ule => "ls",
-        Cond::Ugt => "hi",
-        Cond::Uge => "hs",
+/// the condition code for a comparison, by the operands' signedness
+fn cond_name(c: Cond, signed: bool) -> &'static str {
+    match (c, signed) {
+        (Cond::Eq, _) => "eq",
+        (Cond::Ne, _) => "ne",
+        (Cond::Lt, true) => "lt",
+        (Cond::Le, true) => "le",
+        (Cond::Gt, true) => "gt",
+        (Cond::Ge, true) => "ge",
+        (Cond::Lt, false) => "lo",
+        (Cond::Le, false) => "ls",
+        (Cond::Gt, false) => "hi",
+        (Cond::Ge, false) => "hs",
+    }
+}
+
+/// pick the x or w form of a template by container width
+fn xw(container: u32, x: &'static str, w: &'static str) -> &'static str {
+    if container == 32 {
+        w
+    } else {
+        x
     }
 }
 
@@ -611,6 +631,104 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    fn repr(&self, v: ValueId) -> Repr {
+        self.func.repr(self.func.ty(v))
+    }
+
+    fn movw(&mut self, dst: i64, src: i64) -> Result<(), String> {
+        if dst != src {
+            self.emit("mov {w}, {w}", &[dst, src])?;
+        }
+        Ok(())
+    }
+
+    /// a plain register copy in the container width of `r`
+    fn mov_in(&mut self, r: Repr, dst: i64, src: i64) -> Result<(), String> {
+        if r.container() == 32 {
+            self.movw(dst, src)
+        } else {
+            self.mov(dst, src)
+        }
+    }
+
+    /// rd = the canonical form of the bits in rs, for a value of type `r`
+    /// (sign- or zero-extend the low N bits within the container)
+    fn norm(&mut self, rd: i64, rs: i64, r: Repr) -> Result<(), String> {
+        let n = r.bits();
+        let c = r.container();
+        if n == c {
+            return self.mov_in(r, rd, rs);
+        }
+        let t = match (r.signed(), c) {
+            (true, 32) => SBFM_W,
+            (false, 32) => UBFM_W,
+            (true, _) => SBFM_X,
+            (false, _) => UBFM_X,
+        };
+        self.emit(t, &[rd, rs, 0, n as i64 - 1]).map(|_| ())
+    }
+
+    /// rd = the value in rs converted from canonical `from` to canonical
+    /// `to` (ext, trunc, and bitcast are all this, by the verifier's rules)
+    fn cast(&mut self, rd: i64, rs: i64, from: Repr, to: Repr) -> Result<(), String> {
+        match (from.container(), to.container()) {
+            (32, 64) => {
+                // widen the container by the source's signedness, then fix
+                // up the one case that changes representation (signed -> unsigned)
+                if from.signed() {
+                    self.emit("sxtw {x}, {w}", &[rd, rs])?;
+                } else {
+                    self.emit("mov {w}, {w}", &[rd, rs])?;
+                }
+                if !from.fits_in(to) {
+                    self.norm(rd, rd, to)?;
+                }
+                Ok(())
+            }
+            (64, 32) => self.norm(rd, rs, to),
+            _ => {
+                if from.fits_in(to) {
+                    self.mov_in(to, rd, rs)
+                } else {
+                    self.norm(rd, rs, to)
+                }
+            }
+        }
+    }
+
+    /// x12 = the shift amount in rr taken mod n (n not the container width)
+    fn shift_amount(&mut self, rr: i64, n: u32, c: u32) -> Result<i64, String> {
+        if n.is_power_of_two() {
+            let k = n.trailing_zeros() as i64; // keep the low k bits
+            self.emit(xw(c, UBFM_X, UBFM_W), &[12, rr, 0, k - 1])?;
+        } else {
+            self.emit(xw(c, "movz {x}, #{i 0..65535}", "movz {w}, #{i 0..65535}"), &[12, n as i64])?;
+            self.emit(xw(c, "udiv {x}, {x}, {x}", "udiv {w}, {w}, {w}"), &[13, rr, 12])?;
+            self.emit(
+                xw(c, "msub {x}, {x}, {x}, {x}", "msub {w}, {w}, {w}, {w}"),
+                &[12, 13, 12, rr],
+            )?;
+        }
+        Ok(12)
+    }
+
+    /// insert the low `w` bits of rv into rd at bit `off` (rd keeps its other bits)
+    fn insert(&mut self, c: u32, rd: i64, rv: i64, off: u32, w: u32) -> Result<(), String> {
+        let immr = ((c - off) % c) as i64;
+        self.emit(xw(c, BFM_X, BFM_W), &[rd, rv, immr, w as i64 - 1]).map(|_| ())
+    }
+
+    /// rd = field of `w` bits at `off` in rs, sign- or zero-extended per `signed`
+    fn extract(&mut self, c: u32, rd: i64, rs: i64, off: u32, w: u32, signed: bool) -> Result<(), String> {
+        let t = match (signed, c) {
+            (true, 32) => SBFM_W,
+            (false, 32) => UBFM_W,
+            (true, _) => SBFM_X,
+            (false, _) => UBFM_X,
+        };
+        self.emit(t, &[rd, rs, off as i64, (off + w) as i64 - 1]).map(|_| ())
+    }
+
     fn epilogue(&mut self) -> Result<(), String> {
         for (k, pair) in self.alloc.used_regs.clone().chunks(2).enumerate() {
             match pair {
@@ -628,17 +746,6 @@ impl FnEmit<'_> {
         self.emit("ret", &[])?;
         Ok(())
     }
-}
-
-/// pick the x or w form of a template by operand type
-macro_rules! xw {
-    ($ty:expr, $x:expr, $w:expr) => {
-        if $ty == Type::I32 {
-            $w
-        } else {
-            $x
-        }
-    };
 }
 
 /// pool for the allocator: callee-saved x19..x28 — values placed here
@@ -745,7 +852,13 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
     match inst {
         Inst::IConst { dst, imm } => {
             let rd = e.dst_reg(*dst, 9);
-            let v = *imm as u64;
+            let r = e.repr(*dst);
+            // materialize the canonical form; a 32-bit container only
+            // needs its low half
+            let mut v = crate::opt::norm(r, *imm) as u64;
+            if r.container() == 32 {
+                v &= 0xffff_ffff;
+            }
             let chunks: Vec<(i64, u16)> = (0..4).map(|i| (i, (v >> (16 * i)) as u16)).collect();
             let movz = [
                 "movz {x}, #{i 0..65535}",
@@ -774,39 +887,72 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             e.finish(*dst, rd)
         }
         Inst::Bin { op, dst, lhs, rhs } => {
-            let ty = e.func.ty(*dst);
+            let r = e.repr(*dst);
+            let (n, c) = (r.bits(), r.container());
+            let full = n == c; // the hardware wraps at exactly this width
             let rl = e.src_reg(*lhs, 9)?;
             let rr = e.src_reg(*rhs, 10)?;
             let rd = e.dst_reg(*dst, 9);
-            let simple: Option<&'static str> = match op {
-                BinOp::IAdd => Some(xw!(ty, "add {x}, {x}, {x}", "add {w}, {w}, {w}")),
-                BinOp::ISub => Some(xw!(ty, "sub {x}, {x}, {x}", "sub {w}, {w}, {w}")),
-                BinOp::IMul => Some(xw!(ty, "mul {x}, {x}, {x}", "mul {w}, {w}, {w}")),
-                BinOp::SDiv => Some(xw!(ty, "sdiv {x}, {x}, {x}", "sdiv {w}, {w}, {w}")),
-                BinOp::UDiv => Some(xw!(ty, "udiv {x}, {x}, {x}", "udiv {w}, {w}, {w}")),
-                BinOp::And => Some(xw!(ty, "and {x}, {x}, {x}", "and {w}, {w}, {w}")),
-                BinOp::Or => Some(xw!(ty, "orr {x}, {x}, {x}", "orr {w}, {w}, {w}")),
-                BinOp::Xor => Some(xw!(ty, "eor {x}, {x}, {x}", "eor {w}, {w}, {w}")),
-                BinOp::Shl => Some(xw!(ty, "lsl {x}, {x}, {x}", "lsl {w}, {w}, {w}")),
-                BinOp::LShr => Some(xw!(ty, "lsr {x}, {x}, {x}", "lsr {w}, {w}, {w}")),
-                BinOp::AShr => Some(xw!(ty, "asr {x}, {x}, {x}", "asr {w}, {w}, {w}")),
-                BinOp::SRem | BinOp::URem => None,
-            };
-            match simple {
-                Some(t) => {
+            match op {
+                BinOp::IAdd | BinOp::ISub | BinOp::IMul | BinOp::And | BinOp::Or | BinOp::Xor => {
+                    let t = match op {
+                        BinOp::IAdd => xw(c, "add {x}, {x}, {x}", "add {w}, {w}, {w}"),
+                        BinOp::ISub => xw(c, "sub {x}, {x}, {x}", "sub {w}, {w}, {w}"),
+                        BinOp::IMul => xw(c, "mul {x}, {x}, {x}", "mul {w}, {w}, {w}"),
+                        BinOp::And => xw(c, "and {x}, {x}, {x}", "and {w}, {w}, {w}"),
+                        BinOp::Or => xw(c, "orr {x}, {x}, {x}", "orr {w}, {w}, {w}"),
+                        _ => xw(c, "eor {x}, {x}, {x}", "eor {w}, {w}, {w}"),
+                    };
                     e.emit(t, &[rd, rl, rr])?;
+                    // bitwise ops of canonical values are canonical; the
+                    // arithmetic ones can carry out of a narrow type
+                    if !full && !matches!(op, BinOp::And | BinOp::Or | BinOp::Xor) {
+                        e.norm(rd, rd, r)?;
+                    }
                 }
-                None => {
+                BinOp::Div => {
+                    let t = if r.signed() {
+                        xw(c, "sdiv {x}, {x}, {x}", "sdiv {w}, {w}, {w}")
+                    } else {
+                        xw(c, "udiv {x}, {x}, {x}", "udiv {w}, {w}, {w}")
+                    };
+                    e.emit(t, &[rd, rl, rr])?;
+                    // MIN / -1 overflows a narrow signed type; wrap it
+                    if !full && r.signed() {
+                        e.norm(rd, rd, r)?;
+                    }
+                }
+                BinOp::Rem => {
                     // r = a - (a div b) * b; the quotient goes via x11
-                    let div = match op {
-                        BinOp::SRem => xw!(ty, "sdiv {x}, {x}, {x}", "sdiv {w}, {w}, {w}"),
-                        _ => xw!(ty, "udiv {x}, {x}, {x}", "udiv {w}, {w}, {w}"),
+                    let div = if r.signed() {
+                        xw(c, "sdiv {x}, {x}, {x}", "sdiv {w}, {w}, {w}")
+                    } else {
+                        xw(c, "udiv {x}, {x}, {x}", "udiv {w}, {w}, {w}")
                     };
                     e.emit(div, &[11, rl, rr])?;
                     e.emit(
-                        xw!(ty, "msub {x}, {x}, {x}, {x}", "msub {w}, {w}, {w}, {w}"),
+                        xw(c, "msub {x}, {x}, {x}, {x}", "msub {w}, {w}, {w}, {w}"),
                         &[rd, 11, rr, rl],
                     )?;
+                }
+                BinOp::Shl | BinOp::Shr => {
+                    let t = match (op, r.signed()) {
+                        (BinOp::Shl, _) => xw(c, "lsl {x}, {x}, {x}", "lsl {w}, {w}, {w}"),
+                        (_, true) => xw(c, "asr {x}, {x}, {x}", "asr {w}, {w}, {w}"),
+                        (_, false) => xw(c, "lsr {x}, {x}, {x}", "lsr {w}, {w}, {w}"),
+                    };
+                    if full {
+                        e.emit(t, &[rd, rl, rr])?;
+                    } else if n == 1 {
+                        e.mov_in(r, rd, rl)?; // any amount mod 1 is 0
+                    } else {
+                        // amount mod n, then shift; only shl can carry out
+                        let ra = e.shift_amount(rr, n, c)?;
+                        e.emit(t, &[rd, rl, ra])?;
+                        if *op == BinOp::Shl {
+                            e.norm(rd, rd, r)?;
+                        }
+                    }
                 }
             }
             e.finish(*dst, rd)
@@ -817,73 +963,113 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             lhs,
             rhs,
         } => {
-            let ty = e.func.ty(*lhs);
+            let r = e.repr(*lhs);
             let rl = e.src_reg(*lhs, 9)?;
             let rr = e.src_reg(*rhs, 10)?;
-            e.emit(xw!(ty, "cmp {x}, {x}", "cmp {w}, {w}"), &[rl, rr])?;
+            e.emit(xw(r.container(), "cmp {x}, {x}", "cmp {w}, {w}"), &[rl, rr])?;
             let rd = e.dst_reg(*dst, 9);
-            let ci = e.enc.enum_index(CSET, cond_name(*cond))?;
+            let ci = e.enc.enum_index(CSET, cond_name(*cond, r.signed()))?;
             e.emit(CSET, &[rd, ci])?;
             e.finish(*dst, rd)
         }
-        Inst::Cast { op, dst, src } => {
-            let from = e.func.ty(*src);
-            let to = e.func.ty(*dst);
+        Inst::Cast { dst, src, .. } => {
+            let from = e.repr(*src);
+            let to = e.repr(*dst);
             let rs = e.src_reg(*src, 9)?;
             let rd = e.dst_reg(*dst, 10);
-            match (op, from, to) {
-                (CastOp::Sext, Type::I1, Type::I64) => {
-                    e.emit("sbfx {x}, {x}, #0, #1", &[rd, rs])?;
-                }
-                (CastOp::Sext, Type::I1, Type::I32) => {
-                    e.emit("sbfx {w}, {w}, #0, #1", &[rd, rs])?;
-                }
-                (CastOp::Sext, Type::I32, Type::I64) => {
-                    e.emit("sxtw {x}, {w}", &[rd, rs])?;
-                }
-                (CastOp::Zext, Type::I1, _) => {
-                    e.emit("and {x}, {x}, #1", &[rd, rs])?;
-                }
-                (CastOp::Zext, Type::I32, Type::I64) => {
-                    e.emit("mov {w}, {w}", &[rd, rs])?; // clears the high half
-                }
-                (CastOp::Trunc, _, Type::I32) => {
-                    e.emit("mov {w}, {w}", &[rd, rs])?;
-                }
-                (CastOp::Trunc, _, Type::I1) => {
-                    e.emit("and {x}, {x}, #1", &[rd, rs])?;
-                }
-                _ => return Err(format!("unsupported cast {:?} -> {:?}", from, to)),
-            }
+            e.cast(rd, rs, from, to)?;
             e.finish(*dst, rd)
         }
-        Inst::Load { dst, addr } => {
+        Inst::Get { dst, src, field } => {
+            let (off, fty) = e.func.field(e.func.ty(*src), *field).unwrap();
+            let fr = e.func.repr(fty);
+            let c = e.repr(*src).container();
+            let rs = e.src_reg(*src, 9)?;
+            let rd = e.dst_reg(*dst, 10);
+            e.extract(c, rd, rs, off, fr.bits(), fr.signed())?;
+            e.finish(*dst, rd)
+        }
+        Inst::Set {
+            dst,
+            src,
+            field,
+            val,
+        } => {
+            let (off, fty) = e.func.field(e.func.ty(*src), *field).unwrap();
+            let w = e.func.width(fty).unwrap();
+            let r = e.repr(*src);
+            let rs = e.src_reg(*src, 9)?;
+            let rv = e.src_reg(*val, 10)?;
+            let rd = e.dst_reg(*dst, 11);
+            // build in a register that is neither source
+            let t = if rd == rv { 12 } else { rd };
+            e.mov_in(r, t, rs)?;
+            e.insert(r.container(), t, rv, off, w)?;
+            e.mov_in(r, rd, t)?;
+            e.finish(*dst, rd)
+        }
+        Inst::Pack { dst, args } => {
+            let r = e.repr(*dst);
+            let c = r.container();
             let ty = e.func.ty(*dst);
+            let rd = e.dst_reg(*dst, 9);
+            // accumulate in x12: the first field zero-extended, the rest inserted
+            for (k, &a) in args.iter().enumerate() {
+                let (off, fty) = e.func.field(ty, k as u32).unwrap();
+                let w = e.func.width(fty).unwrap();
+                let ra = e.src_reg(a, 10)?;
+                if k == 0 {
+                    e.extract(c, 12, ra, 0, w, false)?;
+                } else {
+                    e.insert(c, 12, ra, off, w)?;
+                }
+            }
+            e.mov_in(r, rd, 12)?;
+            e.finish(*dst, rd)
+        }
+        Inst::Unpack { dsts, src } => {
+            let ty = e.func.ty(*src);
+            let c = e.repr(*src).container();
+            let rs = e.src_reg(*src, 9)?;
+            // results may be allocated over the source; read from a copy
+            e.mov(12, rs)?;
+            for (k, &d) in dsts.iter().enumerate() {
+                let (off, fty) = e.func.field(ty, k as u32).unwrap();
+                let fr = e.func.repr(fty);
+                let rd = e.dst_reg(d, 10);
+                e.extract(c, rd, 12, off, fr.bits(), fr.signed())?;
+                e.finish(d, rd)?;
+            }
+            Ok(())
+        }
+        Inst::Load { dst, addr } => {
+            let r = e.repr(*dst);
             let ra = e.src_reg(*addr, 9)?;
             let rd = e.dst_reg(*dst, 10);
-            e.emit(
-                xw!(
-                    ty,
-                    "ldr {x}, [{x}, #{i 0..32760 /8}]",
-                    "ldr {w}, [{x}, #{i 0..16380 /4}]"
-                ),
-                &[rd, ra, 0],
-            )?;
+            let t = match (r.bits(), r.signed()) {
+                (8, false) => "ldrb {w}, [{x}, #{i 0..4095}]",
+                (8, true) => "ldrsb {w}, [{x}, #{i 0..4095}]",
+                (16, false) => "ldrh {w}, [{x}, #{i 0..8190 /2}]",
+                (16, true) => "ldrsh {w}, [{x}, #{i 0..8190 /2}]",
+                (32, _) => "ldr {w}, [{x}, #{i 0..16380 /4}]",
+                (64, _) => "ldr {x}, [{x}, #{i 0..32760 /8}]",
+                (n, _) => return Err(format!("no {}-bit memory access", n)),
+            };
+            e.emit(t, &[rd, ra, 0])?;
             e.finish(*dst, rd)
         }
         Inst::Store { val, addr } => {
-            let ty = e.func.ty(*val);
+            let r = e.repr(*val);
             let rv = e.src_reg(*val, 10)?;
             let ra = e.src_reg(*addr, 9)?;
-            e.emit(
-                xw!(
-                    ty,
-                    "str {x}, [{x}, #{i 0..32760 /8}]",
-                    "str {w}, [{x}, #{i 0..16380 /4}]"
-                ),
-                &[rv, ra, 0],
-            )
-            .map(|_| ())
+            let t = match r.bits() {
+                8 => "strb {w}, [{x}, #{i 0..4095}]",
+                16 => "strh {w}, [{x}, #{i 0..8190 /2}]",
+                32 => "str {w}, [{x}, #{i 0..16380 /4}]",
+                64 => "str {x}, [{x}, #{i 0..32760 /8}]",
+                n => return Err(format!("no {}-bit memory access", n)),
+            };
+            e.emit(t, &[rv, ra, 0]).map(|_| ())
         }
         Inst::PtrAdd { dst, base, off } => {
             let rb = e.src_reg(*base, 9)?;
@@ -925,13 +1111,13 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
         } => {
             let rc = e.src_reg(*cond, 9)?;
             // cbz -> (else path, emitted after the then path); patched below
-            let cbz_at = e.emit("cbz {x}, #{i -1048576..1048572 /4}", &[rc, 0])?;
+            let cbz_at = e.emit("cbz {w}, #{i -1048576..1048572 /4}", &[rc, 0])?;
             e.branch_args(*then_target, then_args)?;
             e.branch("b #{i -134217728..134217724 /4}", vec![0], 0, *then_target)?;
             let else_here = e.code.len() as i64 - cbz_at as i64;
             e.patch(
                 cbz_at,
-                "cbz {x}, #{i -1048576..1048572 /4}",
+                "cbz {w}, #{i -1048576..1048572 /4}",
                 &[rc, else_here],
             )?;
             e.branch_args(*else_target, else_args)?;
@@ -1077,6 +1263,7 @@ pub mod jit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssa::Repr;
 
     fn jit(src: &str) -> jit::JitCode {
         let module = crate::ssa::parse(src).expect("parse");
@@ -1084,6 +1271,16 @@ mod tests {
         let enc = Encoder::load("targets/arm64.encodings.json").expect("encodings");
         let compiled = compile(&module, &enc).expect("compile");
         jit::JitCode::new(&compiled).expect("jit map")
+    }
+
+    /// what the harness sees: x0 normalized by the returned type (a w
+    /// value's high half is don't-care)
+    fn native_result(r: Repr, x0: i64) -> i64 {
+        if r.container() == 32 {
+            crate::opt::norm(r, x0 as u32 as i64)
+        } else {
+            x0
+        }
     }
 
     #[test]
@@ -1096,28 +1293,28 @@ fn @addmul(%a: i32, %b: i32) -> i32 {
     ret %p
 }
 ");
-        assert_eq!(j.call("addmul", &[3, 4]).unwrap(), 28);
-        // i32 semantics: results wrap at 32 bits and stay zero-extended
+        assert_eq!(native_result(Repr::S(32), j.call("addmul", &[3, 4]).unwrap()), 28);
+        // i32 semantics: results wrap at 32 bits
         assert_eq!(
-            j.call("addmul", &[0x7fffffff, 1]).unwrap(),
-            ((0x80000000u64.wrapping_mul(1)) & 0xffffffff) as i64
+            native_result(Repr::S(32), j.call("addmul", &[0x7fffffff, 1]).unwrap()),
+            i32::MIN as i64
         );
     }
 
     #[test]
     fn casts_of_negatives() {
         let j = jit(r"
-fn @half_sext(%a: i32) -> i64 {
+fn @half_ext(%a: i32) -> i64 {
 ^entry:
-    %w: i64 = sext %a
+    %w: i64 = ext %a
     %two: i64 = iconst 2
-    %h: i64 = sdiv %w, %two
+    %h: i64 = div %w, %two
     ret %h
 }
 ");
-        // %a arrives zero-extended; sext must recover the sign from bit 31
-        assert_eq!(j.call("half_sext", &[0xfffffff6]).unwrap(), -5); // -10 / 2
-        assert_eq!(j.call("half_sext", &[10]).unwrap(), 5);
+        // %a arrives as a 32-bit pattern; ext must recover the sign from bit 31
+        assert_eq!(j.call("half_ext", &[0xfffffff6]).unwrap(), -5); // -10 / 2
+        assert_eq!(j.call("half_ext", &[10]).unwrap(), 5);
     }
 
     #[test]
@@ -1125,8 +1322,9 @@ fn @half_sext(%a: i32) -> i64 {
         let j = jit(r"
 fn @mask(%a: i64, %b: i64) -> i64 {
 ^entry:
-    %lt: i1 = icmp.slt %a, %b
-    %m: i64 = sext %lt
+    %lt: u1 = icmp.lt %a, %b
+    %s: i1 = bitcast %lt
+    %m: i64 = ext %s
     ret %m
 }
 ");
@@ -1163,7 +1361,7 @@ fn @sum4(%p: ptr) -> i32 {
     jmp ^loop(%zero, %zero32)
 ^loop(%i: i64, %acc: i32):
     %four: i64 = iconst 4
-    %done: i1 = icmp.sge %i, %four
+    %done: u1 = icmp.ge %i, %four
     br %done, ^exit, ^body
 ^body:
     %off: i64 = imul %i, %four
@@ -1184,11 +1382,11 @@ fn @sum4(%p: ptr) -> i32 {
     #[test]
     fn shifts_rems_unsigned() {
         let j = jit(r"
-fn @mix(%a: i64, %b: i64) -> i64 {
+fn @mix(%a: u64, %b: u64) -> u64 {
 ^entry:
-    %sh: i64 = shl %a, %b
-    %r: i64 = urem %sh, %a
-    %x: i64 = xor %r, %b
+    %sh: u64 = shl %a, %b
+    %r: u64 = rem %sh, %a
+    %x: u64 = xor %r, %b
     ret %x
 }
 ");
@@ -1206,5 +1404,273 @@ fn @neg() -> i64 {
 }
 ");
         assert_eq!(j.call("neg", &[]).unwrap(), -42);
+    }
+
+    /// Every binary op and comparison on a set of narrow types, over every
+    /// pair of values (or a dense sample for the wide ones), against the
+    /// const-folder's N-bit model — the JIT and the model must agree bit
+    /// for bit.
+    #[test]
+    fn narrow_types_exhaustive_against_model() {
+        use crate::opt::{fold_bin, fold_cmp, norm};
+        use crate::ssa::{BinOp, Cond};
+        let ops = [
+            ("iadd", BinOp::IAdd),
+            ("isub", BinOp::ISub),
+            ("imul", BinOp::IMul),
+            ("div", BinOp::Div),
+            ("rem", BinOp::Rem),
+            ("and", BinOp::And),
+            ("or", BinOp::Or),
+            ("xor", BinOp::Xor),
+            ("shl", BinOp::Shl),
+            ("shr", BinOp::Shr),
+        ];
+        let conds = [
+            ("eq", Cond::Eq),
+            ("ne", Cond::Ne),
+            ("lt", Cond::Lt),
+            ("le", Cond::Le),
+            ("gt", Cond::Gt),
+            ("ge", Cond::Ge),
+        ];
+        for r in [
+            Repr::S(1),
+            Repr::U(1),
+            Repr::S(3),
+            Repr::U(3),
+            Repr::S(5),
+            Repr::U(5),
+            Repr::S(6),
+            Repr::U(6),
+            Repr::S(8),
+            Repr::U(8),
+            Repr::S(12),
+            Repr::U(12),
+            Repr::S(32),
+            Repr::U(32),
+            Repr::S(33),
+            Repr::U(40),
+            Repr::S(64),
+            Repr::U(64),
+        ] {
+            let ty = if r.signed() { format!("i{}", r.bits()) } else { format!("u{}", r.bits()) };
+            let mut src = String::new();
+            for (name, _) in &ops {
+                src.push_str(&format!(
+                    "fn @{n}(%a: {t}, %b: {t}) -> {t} {{\n^entry:\n    %r: {t} = {n} %a, %b\n    ret %r\n}}\n",
+                    n = name,
+                    t = ty
+                ));
+            }
+            for (name, _) in &conds {
+                src.push_str(&format!(
+                    "fn @c_{n}(%a: {t}, %b: {t}) -> u1 {{\n^entry:\n    %r: u1 = icmp.{n} %a, %b\n    ret %r\n}}\n",
+                    n = name,
+                    t = ty
+                ));
+            }
+            let j = jit(&src);
+            // the value set: exhaustive up to 8 bits, else a spread of edges
+            let vals: Vec<i64> = if r.bits() <= 8 {
+                let n = 1i64 << r.bits();
+                (0..n).map(|v| norm(r, v)).collect()
+            } else {
+                let n = r.bits();
+                let mut v = vec![0i64, 1, 2, 3, 5, 7, -1, -2, -3, 100, -100, 12345, -12345];
+                let half = 1i64 << (n - 1);
+                v.extend([half, half.wrapping_sub(1), half.wrapping_add(1)]);
+                if n < 64 {
+                    v.extend([(1i64 << n) - 1, (1i64 << n) - 2, 1i64 << (n - 2)]);
+                }
+                v.extend([i64::MAX, i64::MIN, 0x5555_5555_5555_5555, -0x5555_5555_5555_5555]);
+                v.into_iter().map(|v| norm(r, v)).collect()
+            };
+            for (name, op) in &ops {
+                for &a in &vals {
+                    for &b in &vals {
+                        let Some(want) = fold_bin(*op, r, a, b) else {
+                            continue; // division by zero / 64-bit MIN/-1: not modeled
+                        };
+                        let got = native_result(r, j.call(name, &[a, b]).unwrap());
+                        assert_eq!(
+                            got, want,
+                            "{} {} {} {}: jit {} vs model {}",
+                            ty, name, a, b, got, want
+                        );
+                    }
+                }
+            }
+            for (name, cond) in &conds {
+                for &a in &vals {
+                    for &b in &vals {
+                        let want = fold_cmp(*cond, r, a, b) as i64;
+                        let got = native_result(Repr::U(1), j.call(&format!("c_{}", name), &[a, b]).unwrap());
+                        assert_eq!(got, want, "{} icmp.{} {} {}", ty, name, a, b);
+                    }
+                }
+            }
+        }
+    }
+
+    /// ext / trunc / bitcast between many type pairs, against the model
+    #[test]
+    fn casts_exhaustive_against_model() {
+        use crate::opt::norm;
+        let types = [
+            Repr::S(1),
+            Repr::U(1),
+            Repr::S(5),
+            Repr::U(5),
+            Repr::S(8),
+            Repr::U(8),
+            Repr::S(20),
+            Repr::U(20),
+            Repr::S(32),
+            Repr::U(32),
+            Repr::S(45),
+            Repr::U(45),
+            Repr::S(64),
+            Repr::U(64),
+        ];
+        let name = |r: Repr| if r.signed() { format!("i{}", r.bits()) } else { format!("u{}", r.bits()) };
+        let mut src = String::new();
+        let mut cases = Vec::new();
+        for &from in &types {
+            for &to in &types {
+                let op = if to.bits() > from.bits() {
+                    "ext"
+                } else if to.bits() < from.bits() {
+                    "trunc"
+                } else {
+                    "bitcast"
+                };
+                let fname = format!("{}_{}_{}", op, name(from), name(to));
+                src.push_str(&format!(
+                    "fn @{f}(%a: {s}) -> {d} {{\n^entry:\n    %r: {d} = {op} %a\n    ret %r\n}}\n",
+                    f = fname,
+                    s = name(from),
+                    d = name(to),
+                    op = op
+                ));
+                cases.push((fname, from, to));
+            }
+        }
+        let j = jit(&src);
+        let raw = [0i64, 1, 2, 7, -1, -2, 15, 16, 31, -16, 127, -128, 255, 1000, -1000, 0x7fff_ffff, -0x8000_0000, 0xffff_ffff, 1 << 40, -(1 << 40), i64::MAX, i64::MIN];
+        for (fname, from, to) in &cases {
+            for &v in &raw {
+                let a = norm(*from, v); // callers pass canonical values
+                let want = norm(*to, a);
+                let got = native_result(*to, j.call(fname, &[a]).unwrap());
+                assert_eq!(got, want, "{} of {}", fname, a);
+            }
+        }
+    }
+
+    #[test]
+    fn packs_and_narrow_memory() {
+        let j = jit(r"
+pack $rgb { r: u5, g: u6, b: u5 }
+pack $mix { s: i3, c: $rgb, t: i9, flag: u1 }
+
+fn @mk(%r: u5, %g: u6, %b: u5) -> $rgb {
+^entry:
+    %c: $rgb = pack %r, %g, %b
+    ret %c
+}
+fn @g(%c: $rgb) -> u6 {
+^entry:
+    %g: u6 = get %c, g
+    ret %g
+}
+fn @setg(%c: $rgb, %g: u6) -> $rgb {
+^entry:
+    %d: $rgb = set %c, g, %g
+    ret %d
+}
+fn @unpack_sum(%c: $rgb) -> u64 {
+^entry:
+    %r: u5, %g: u6, %b: u5 = unpack %c
+    %r6: u64 = ext %r
+    %g6: u64 = ext %g
+    %b6: u64 = ext %b
+    %x: u64 = iadd %r6, %g6
+    %y: u64 = iadd %x, %b6
+    ret %y
+}
+fn @nested(%s: i3, %w: u16, %t: i9, %f: u1) -> (i64, i64) {
+^entry:
+    %c: $rgb = bitcast %w
+    %m: $mix = pack %s, %c, %t, %f
+    %s2: i3 = get %m, s
+    %t2: i9 = get %m, t
+    %sw: i64 = ext %s2
+    %tw: i64 = ext %t2
+    ret %sw, %tw
+}
+fn @nested_bits(%s: i3, %w: u16, %t: i9, %f: u1) -> u64 {
+^entry:
+    %c: $rgb = bitcast %w
+    %m: $mix = pack %s, %c, %t, %f
+    %c2: $rgb = get %m, c
+    %cw: u16 = bitcast %c2
+    %f2: u1 = get %m, flag
+    %cw64: u64 = ext %cw
+    %f64: u64 = ext %f2
+    %bits: u29 = bitcast %m
+    %all: u64 = ext %bits
+    %x: u64 = xor %all, %cw64
+    %y: u64 = xor %x, %f64
+    ret %y
+}
+fn @bytes(%p: ptr, %v: i8) -> i64 {
+^entry:
+    store %v, %p
+    %one: i64 = iconst 1
+    %q: ptr = ptradd %p, %one
+    %u: u8 = bitcast %v
+    store %u, %q
+    %a: i8 = load %p
+    %b: u8 = load %q
+    %aw: i64 = ext %a
+    %bw: i64 = ext %b
+    %r: i64 = isub %aw, %bw
+    ret %r
+}
+fn @halves(%p: ptr, %v: i16) -> i64 {
+^entry:
+    store %v, %p
+    %two: i64 = iconst 2
+    %q: ptr = ptradd %p, %two
+    %u: u16 = bitcast %v
+    store %u, %q
+    %a: i16 = load %p
+    %b: u16 = load %q
+    %aw: i64 = ext %a
+    %bw: i64 = ext %b
+    %r: i64 = isub %aw, %bw
+    ret %r
+}
+");
+        let rgb = |r: i64, g: i64, b: i64| r | (g << 5) | (b << 11);
+        assert_eq!(native_result(Repr::U(16), j.call("mk", &[31, 63, 1]).unwrap()), rgb(31, 63, 1));
+        assert_eq!(native_result(Repr::U(6), j.call("g", &[rgb(9, 42, 3)]).unwrap()), 42);
+        assert_eq!(native_result(Repr::U(16), j.call("setg", &[rgb(9, 42, 3), 7]).unwrap()), rgb(9, 7, 3));
+        assert_eq!(j.call("unpack_sum", &[rgb(9, 42, 3)]).unwrap(), 54);
+        // nested: s in bits 0-2, c in 3-18, t in 19-27, flag at 28
+        assert_eq!(j.call2("nested", &[-3, rgb(1, 2, 3), -200, 1]).unwrap(), (-3, -200));
+        let m = (5i64) | (rgb(1, 2, 3) << 3) | (((-200i64) & 0x1ff) << 19) | (1 << 28);
+        assert_eq!(
+            j.call("nested_bits", &[-3, rgb(1, 2, 3), -200, 1]).unwrap(),
+            m ^ rgb(1, 2, 3) ^ 1
+        );
+        let mut buf = [0u8; 8];
+        assert_eq!(j.call("bytes", &[buf.as_mut_ptr() as i64, -5]).unwrap(), -5 - 251);
+        assert_eq!(buf[0], 0xfb);
+        let mut buf = [0u8; 8];
+        assert_eq!(j.call("halves", &[buf.as_mut_ptr() as i64, -5]).unwrap(), -5 - 65531);
+        assert_eq!(buf[0], 0xfb);
+        assert_eq!(buf[1], 0xff);
     }
 }

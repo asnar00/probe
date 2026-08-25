@@ -8,11 +8,11 @@
 //! genuinely RISC-V:
 //!
 //! - No flags register: icmp lowers to slt/sltu/xor/sltiu sequences.
-//! - i32 convention: slots hold values *sign-extended* to 64 bits — that is
-//!   what the W-instructions and lw produce naturally. (Unsigned i32
-//!   comparisons still work: sign-extension preserves unsigned 32-bit
-//!   order in the unsigned 64-bit domain.) The execution harness
-//!   normalizes i32 results to the suite's zero-extended convention.
+//! - One register size: every value is canonical in 64 bits — `iN`
+//!   sign-extended, `uN`/ptr/packs zero-extended (see `ssa::Repr`). i32
+//!   uses the W-instructions, which produce exactly that; every other
+//!   narrow type is a 64-bit op followed by a shift pair (or andi) that
+//!   re-normalizes. Fields of packs are shift pairs too.
 //! - Conditional branches reach only ±4K, so `br` lowers to a two-word
 //!   skip (`beq cond, x0, +8` over a `jal`) with ±1MB range.
 //!
@@ -23,7 +23,7 @@
 
 use crate::emit::{Compiled, Encoder};
 use crate::regalloc::{self, Loc};
-use crate::ssa::{BinOp, BlockId, CastOp, Cond, Function, Inst, Module, Type, ValueId};
+use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, ValueId};
 
 /// pool for the allocator: callee-saved s2..s11 (x18..x27) — values placed
 /// here survive calls by construction
@@ -34,7 +34,12 @@ const RA: i64 = 1;
 const SP: i64 = 2;
 const T0: i64 = 5;
 const T1: i64 = 6;
+const T2: i64 = 7;
 const A0: i64 = 10;
+const SLLI: &str = "slli {r}, {r}, {i 0..63}";
+const SRLI: &str = "srli {r}, {r}, {i 0..63}";
+const SRAI: &str = "srai {r}, {r}, {i 0..63}";
+const ANDI: &str = "andi {r}, {r}, {i -2048..2047}";
 
 const ADDI: &str = "addi {r}, {r}, {i -2048..2047}";
 const LD: &str = "ld {r}, {i -2048..2047}({r})";
@@ -217,6 +222,57 @@ impl RvEmit<'_> {
         Ok(())
     }
 
+    fn repr(&self, v: ValueId) -> Repr {
+        self.func.repr(self.func.ty(v))
+    }
+
+    /// rd = the canonical 64-bit form of the low N bits of rs
+    fn norm(&mut self, rd: i64, rs: i64, r: Repr) -> Result<(), String> {
+        let n = r.bits();
+        match (r.signed(), n) {
+            (_, 64) => self.mov(rd, rs),
+            (true, 32) => self.emit("addiw {r}, {r}, {i -2048..2047}", &[rd, rs, 0]).map(|_| ()),
+            (false, n) if n <= 11 => self.emit(ANDI, &[rd, rs, (1i64 << n) - 1]).map(|_| ()),
+            (signed, n) => {
+                let k = 64 - n as i64;
+                self.emit(SLLI, &[rd, rs, k])?;
+                self.emit(if signed { SRAI } else { SRLI }, &[rd, rd, k]).map(|_| ())
+            }
+        }
+    }
+
+    /// rd = rs converted between canonical forms
+    fn cast(&mut self, rd: i64, rs: i64, from: Repr, to: Repr) -> Result<(), String> {
+        if from.fits_in(to) {
+            self.mov(rd, rs)
+        } else {
+            self.norm(rd, rs, to)
+        }
+    }
+
+    /// t2 = the shift amount in rr taken mod n
+    fn shift_amount(&mut self, rr: i64, n: u32) -> Result<i64, String> {
+        if n.is_power_of_two() {
+            self.emit(ANDI, &[T2, rr, n as i64 - 1])?;
+        } else {
+            self.iconst(T2, n as i64)?;
+            self.emit("remu {r}, {r}, {r}", &[T2, rr, T2])?;
+        }
+        Ok(T2)
+    }
+
+    /// rd = the `w`-bit field at `off` in rs, sign- or zero-extended
+    fn extract(&mut self, rd: i64, rs: i64, off: u32, w: u32, signed: bool) -> Result<(), String> {
+        self.emit(SLLI, &[rd, rs, 64 - (off + w) as i64])?;
+        self.emit(if signed { SRAI } else { SRLI }, &[rd, rd, 64 - w as i64]).map(|_| ())
+    }
+
+    /// rd = the low `w` bits of rv, moved to bit `off`, zero elsewhere
+    fn place(&mut self, rd: i64, rv: i64, off: u32, w: u32) -> Result<(), String> {
+        self.emit(SLLI, &[rd, rv, 64 - w as i64])?;
+        self.emit(SRLI, &[rd, rd, 64 - (off + w) as i64]).map(|_| ())
+    }
+
     fn epilogue(&mut self) -> Result<(), String> {
         for (k, &r) in self.alloc.used_regs.clone().iter().enumerate() {
             self.emit(LD, &[r, 16 + 8 * k as i64, SP])?;
@@ -245,7 +301,7 @@ impl RvEmit<'_> {
                 self.emit(ADDI, &[reg, ZERO, byte])?;
                 started = true;
             } else {
-                self.emit("slli {r}, {r}, {i 0..63}", &[reg, reg, 8])?;
+                self.emit(SLLI, &[reg, reg, 8])?;
                 if byte != 0 {
                     self.emit(ADDI, &[reg, reg, byte])?;
                 }
@@ -320,82 +376,33 @@ fn compile_function(
     Ok(())
 }
 
-fn bin_template(op: BinOp, ty: Type) -> &'static str {
-    let w = ty == Type::I32;
-    match op {
-        BinOp::IAdd => {
-            if w {
-                "addw {r}, {r}, {r}"
-            } else {
-                "add {r}, {r}, {r}"
-            }
-        }
-        BinOp::ISub => {
-            if w {
-                "subw {r}, {r}, {r}"
-            } else {
-                "sub {r}, {r}, {r}"
-            }
-        }
-        BinOp::IMul => {
-            if w {
-                "mulw {r}, {r}, {r}"
-            } else {
-                "mul {r}, {r}, {r}"
-            }
-        }
-        BinOp::SDiv => {
-            if w {
-                "divw {r}, {r}, {r}"
-            } else {
-                "div {r}, {r}, {r}"
-            }
-        }
-        BinOp::UDiv => {
-            if w {
-                "divuw {r}, {r}, {r}"
-            } else {
-                "divu {r}, {r}, {r}"
-            }
-        }
-        BinOp::SRem => {
-            if w {
-                "remw {r}, {r}, {r}"
-            } else {
-                "rem {r}, {r}, {r}"
-            }
-        }
-        BinOp::URem => {
-            if w {
-                "remuw {r}, {r}, {r}"
-            } else {
-                "remu {r}, {r}, {r}"
-            }
-        }
-        BinOp::And => "and {r}, {r}, {r}",
-        BinOp::Or => "or {r}, {r}, {r}",
-        BinOp::Xor => "xor {r}, {r}, {r}",
-        BinOp::Shl => {
-            if w {
-                "sllw {r}, {r}, {r}"
-            } else {
-                "sll {r}, {r}, {r}"
-            }
-        }
-        BinOp::LShr => {
-            if w {
-                "srlw {r}, {r}, {r}"
-            } else {
-                "srl {r}, {r}, {r}"
-            }
-        }
-        BinOp::AShr => {
-            if w {
-                "sraw {r}, {r}, {r}"
-            } else {
-                "sra {r}, {r}, {r}"
-            }
-        }
+/// the 64-bit or W form of an op; W forms sign-extend, i.e. produce
+/// canonical i32 for free
+fn bin_template(op: BinOp, signed: bool, w: bool) -> &'static str {
+    match (op, signed, w) {
+        (BinOp::IAdd, _, false) => "add {r}, {r}, {r}",
+        (BinOp::IAdd, _, true) => "addw {r}, {r}, {r}",
+        (BinOp::ISub, _, false) => "sub {r}, {r}, {r}",
+        (BinOp::ISub, _, true) => "subw {r}, {r}, {r}",
+        (BinOp::IMul, _, false) => "mul {r}, {r}, {r}",
+        (BinOp::IMul, _, true) => "mulw {r}, {r}, {r}",
+        (BinOp::Div, true, false) => "div {r}, {r}, {r}",
+        (BinOp::Div, true, true) => "divw {r}, {r}, {r}",
+        (BinOp::Div, false, false) => "divu {r}, {r}, {r}",
+        (BinOp::Div, false, true) => "divuw {r}, {r}, {r}",
+        (BinOp::Rem, true, false) => "rem {r}, {r}, {r}",
+        (BinOp::Rem, true, true) => "remw {r}, {r}, {r}",
+        (BinOp::Rem, false, false) => "remu {r}, {r}, {r}",
+        (BinOp::Rem, false, true) => "remuw {r}, {r}, {r}",
+        (BinOp::And, _, _) => "and {r}, {r}, {r}",
+        (BinOp::Or, _, _) => "or {r}, {r}, {r}",
+        (BinOp::Xor, _, _) => "xor {r}, {r}, {r}",
+        (BinOp::Shl, _, false) => "sll {r}, {r}, {r}",
+        (BinOp::Shl, _, true) => "sllw {r}, {r}, {r}",
+        (BinOp::Shr, true, false) => "sra {r}, {r}, {r}",
+        (BinOp::Shr, true, true) => "sraw {r}, {r}, {r}",
+        (BinOp::Shr, false, false) => "srl {r}, {r}, {r}",
+        (BinOp::Shr, false, true) => "srlw {r}, {r}, {r}",
     }
 }
 
@@ -405,21 +412,43 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
     const XORI: &str = "xori {r}, {r}, {i -2048..2047}";
     match inst {
         Inst::IConst { dst, imm } => {
-            // i32 constants live sign-extended, per the W convention
-            let v = if e.func.ty(*dst) == Type::I32 {
-                *imm as i32 as i64
-            } else {
-                *imm
-            };
+            let v = crate::opt::norm(e.repr(*dst), *imm);
             let rd = e.dst_reg(*dst, T0);
             e.iconst(rd, v)?;
             e.finish(*dst, rd)
         }
         Inst::Bin { op, dst, lhs, rhs } => {
+            let r = e.repr(*dst);
+            let n = r.bits();
+            // i32 gets the W instructions (canonical for free); u32 and
+            // every other narrow type compute in 64 bits and re-normalize
+            let w = n == 32 && r.signed();
+            let full = n == 64 || w;
             let rl = e.src_reg(*lhs, T0)?;
             let rr = e.src_reg(*rhs, T1)?;
             let rd = e.dst_reg(*dst, T0);
-            e.emit(bin_template(*op, e.func.ty(*dst)), &[rd, rl, rr])?;
+            let t = bin_template(*op, r.signed(), w);
+            match op {
+                BinOp::Shl | BinOp::Shr if !full => {
+                    if n == 1 {
+                        e.mov(rd, rl)?; // any amount mod 1 is 0
+                    } else {
+                        let ra = e.shift_amount(rr, n)?;
+                        e.emit(t, &[rd, rl, ra])?;
+                        if *op == BinOp::Shl {
+                            e.norm(rd, rd, r)?;
+                        }
+                    }
+                }
+                _ => {
+                    e.emit(t, &[rd, rl, rr])?;
+                    let carries = matches!(op, BinOp::IAdd | BinOp::ISub | BinOp::IMul)
+                        || (*op == BinOp::Div && r.signed()); // MIN / -1
+                    if !full && carries {
+                        e.norm(rd, rd, r)?;
+                    }
+                }
+            }
             e.finish(*dst, rd)
         }
         Inst::ICmp {
@@ -428,37 +457,25 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             lhs,
             rhs,
         } => {
+            let signed = e.repr(*lhs).signed();
             let rl = e.src_reg(*lhs, T0)?;
             let rr = e.src_reg(*rhs, T1)?;
             let rd = e.dst_reg(*dst, T0);
-            // sign-extended i32 values compare correctly with 64-bit slt/sltu
+            let slt = if signed { SLT } else { SLTU };
+            // canonical values compare correctly with the 64-bit slt/sltu
             match cond {
-                Cond::Slt => {
-                    e.emit(SLT, &[rd, rl, rr])?;
+                Cond::Lt => {
+                    e.emit(slt, &[rd, rl, rr])?;
                 }
-                Cond::Ult => {
-                    e.emit(SLTU, &[rd, rl, rr])?;
+                Cond::Gt => {
+                    e.emit(slt, &[rd, rr, rl])?;
                 }
-                Cond::Sgt => {
-                    e.emit(SLT, &[rd, rr, rl])?;
-                }
-                Cond::Ugt => {
-                    e.emit(SLTU, &[rd, rr, rl])?;
-                }
-                Cond::Sge => {
-                    e.emit(SLT, &[rd, rl, rr])?;
+                Cond::Ge => {
+                    e.emit(slt, &[rd, rl, rr])?;
                     e.emit(XORI, &[rd, rd, 1])?;
                 }
-                Cond::Uge => {
-                    e.emit(SLTU, &[rd, rl, rr])?;
-                    e.emit(XORI, &[rd, rd, 1])?;
-                }
-                Cond::Sle => {
-                    e.emit(SLT, &[rd, rr, rl])?;
-                    e.emit(XORI, &[rd, rd, 1])?;
-                }
-                Cond::Ule => {
-                    e.emit(SLTU, &[rd, rr, rl])?;
+                Cond::Le => {
+                    e.emit(slt, &[rd, rr, rl])?;
                     e.emit(XORI, &[rd, rd, 1])?;
                 }
                 Cond::Eq => {
@@ -472,52 +489,100 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             }
             e.finish(*dst, rd)
         }
-        Inst::Cast { op, dst, src } => {
-            let from = e.func.ty(*src);
-            let to = e.func.ty(*dst);
+        Inst::Cast { dst, src, .. } => {
+            let from = e.repr(*src);
+            let to = e.repr(*dst);
             let rs = e.src_reg(*src, T0)?;
             let rd = e.dst_reg(*dst, T1);
-            match (op, from, to) {
-                // i1 is 0/1; sign-extension is negation
-                (CastOp::Sext, Type::I1, _) => {
-                    e.emit("sub {r}, {r}, {r}", &[rd, ZERO, rs])?;
-                }
-                // i32 values are already sign-extended
-                (CastOp::Sext, Type::I32, Type::I64) | (CastOp::Zext, Type::I1, _) => {
-                    e.mov(rd, rs)?;
-                }
-                (CastOp::Zext, Type::I32, Type::I64) => {
-                    e.emit("slli {r}, {r}, {i 0..63}", &[rd, rs, 32])?;
-                    e.emit("srli {r}, {r}, {i 0..63}", &[rd, rd, 32])?;
-                }
-                (CastOp::Trunc, Type::I64, Type::I32) => {
-                    e.emit("addiw {r}, {r}, {i -2048..2047}", &[rd, rs, 0])?;
-                }
-                (CastOp::Trunc, _, Type::I1) => {
-                    e.emit("andi {r}, {r}, {i -2048..2047}", &[rd, rs, 1])?;
-                }
-                _ => return Err(format!("unsupported cast {:?} -> {:?}", from, to)),
-            }
+            e.cast(rd, rs, from, to)?;
             e.finish(*dst, rd)
         }
+        Inst::Get { dst, src, field } => {
+            let (off, fty) = e.func.field(e.func.ty(*src), *field).unwrap();
+            let fr = e.func.repr(fty);
+            let rs = e.src_reg(*src, T0)?;
+            let rd = e.dst_reg(*dst, T1);
+            e.extract(rd, rs, off, fr.bits(), fr.signed())?;
+            e.finish(*dst, rd)
+        }
+        Inst::Set {
+            dst,
+            src,
+            field,
+            val,
+        } => {
+            let (off, fty) = e.func.field(e.func.ty(*src), *field).unwrap();
+            let w = e.func.width(fty).unwrap();
+            let rs = e.src_reg(*src, T0)?;
+            let rv = e.src_reg(*val, T1)?;
+            let rd = e.dst_reg(*dst, T0);
+            e.place(T2, rv, off, w)?; // the new field, in position
+            let mask = if w >= 64 { -1i64 } else { (1i64 << w) - 1 } << off;
+            e.iconst(T1, !mask)?;
+            e.emit("and {r}, {r}, {r}", &[T1, rs, T1])?;
+            e.emit("or {r}, {r}, {r}", &[rd, T1, T2])?;
+            e.finish(*dst, rd)
+        }
+        Inst::Pack { dst, args } => {
+            let ty = e.func.ty(*dst);
+            let rd = e.dst_reg(*dst, T0);
+            // accumulate in t2; every source is read through t0/t1
+            for (k, &a) in args.iter().enumerate() {
+                let (off, fty) = e.func.field(ty, k as u32).unwrap();
+                let w = e.func.width(fty).unwrap();
+                let ra = e.src_reg(a, T0)?;
+                if k == 0 {
+                    e.place(T2, ra, off, w)?;
+                } else {
+                    e.place(T1, ra, off, w)?;
+                    e.emit("or {r}, {r}, {r}", &[T2, T2, T1])?;
+                }
+            }
+            e.mov(rd, T2)?;
+            e.finish(*dst, rd)
+        }
+        Inst::Unpack { dsts, src } => {
+            let ty = e.func.ty(*src);
+            let rs = e.src_reg(*src, T0)?;
+            e.mov(T2, rs)?; // results may be allocated over the source
+            for (k, &d) in dsts.iter().enumerate() {
+                let (off, fty) = e.func.field(ty, k as u32).unwrap();
+                let fr = e.func.repr(fty);
+                let rd = e.dst_reg(d, T1);
+                e.extract(rd, T2, off, fr.bits(), fr.signed())?;
+                e.finish(d, rd)?;
+            }
+            Ok(())
+        }
         Inst::Load { dst, addr } => {
+            let r = e.repr(*dst);
             let ra = e.src_reg(*addr, T0)?;
             let rd = e.dst_reg(*dst, T1);
-            if e.func.ty(*dst) == Type::I32 {
-                e.emit("lw {r}, {i -2048..2047}({r})", &[rd, 0, ra])?;
-            } else {
-                e.emit(LD, &[rd, 0, ra])?;
-            }
+            let t = match (r.bits(), r.signed()) {
+                (8, true) => "lb {r}, {i -2048..2047}({r})",
+                (8, false) => "lbu {r}, {i -2048..2047}({r})",
+                (16, true) => "lh {r}, {i -2048..2047}({r})",
+                (16, false) => "lhu {r}, {i -2048..2047}({r})",
+                (32, true) => "lw {r}, {i -2048..2047}({r})",
+                (32, false) => "lwu {r}, {i -2048..2047}({r})",
+                (64, _) => LD,
+                (n, _) => return Err(format!("no {}-bit memory access", n)),
+            };
+            e.emit(t, &[rd, 0, ra])?;
             e.finish(*dst, rd)
         }
         Inst::Store { val, addr } => {
+            let r = e.repr(*val);
             let rv = e.src_reg(*val, T1)?;
             let ra = e.src_reg(*addr, T0)?;
-            if e.func.ty(*val) == Type::I32 {
-                e.emit("sw {r}, {i -2048..2047}({r})", &[rv, 0, ra])?;
-            } else {
-                e.emit(SD, &[rv, 0, ra])?;
-            }
+            let t = match r.bits() {
+                8 => "sb {r}, {i -2048..2047}({r})",
+                16 => "sh {r}, {i -2048..2047}({r})",
+                32 => "sw {r}, {i -2048..2047}({r})",
+                64 => SD,
+                n => return Err(format!("no {}-bit memory access", n)),
+            };
+            e.emit(t, &[rv, 0, ra])?;
             Ok(())
         }
         Inst::PtrAdd { dst, base, off } => {

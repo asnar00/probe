@@ -13,25 +13,44 @@ pub struct ValueId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct BlockId(pub u32);
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Type {
-    I1,
-    I32,
-    I64,
+    /// a concrete integer, `iN` (signed) or `uN` (unsigned), 1 <= N <= 64
+    Int { signed: bool, bits: u8 },
+    /// pointer (64-bit on our native targets, a 32-bit offset on wasm)
     Ptr,
-    /// abstract integer: resolved to a concrete type by the target's
+    /// a pack: bitfields laid out lowest-bits-first, by index into the
+    /// module's pack table (see `PackDef`)
+    Pack(u32),
+    /// abstract integers: resolved to a concrete width by the target's
     /// replacement policy before verification (see `resolve_types`)
-    Int,
+    AInt,
+    AUInt,
 }
 
 impl Type {
-    pub fn name(self) -> &'static str {
+    pub const I32: Type = Type::Int { signed: true, bits: 32 };
+    pub const I64: Type = Type::Int { signed: true, bits: 64 };
+    pub const U1: Type = Type::Int { signed: false, bits: 1 };
+    pub const U64: Type = Type::Int { signed: false, bits: 64 };
+
+    pub fn int(signed: bool, bits: u32) -> Type {
+        Type::Int {
+            signed,
+            bits: bits as u8,
+        }
+    }
+
+    /// The type's spelling; packs print as `$#index` here — `Function::tyname`
+    /// has the declared name.
+    pub fn name(self) -> String {
         match self {
-            Type::I1 => "i1",
-            Type::I32 => "i32",
-            Type::I64 => "i64",
-            Type::Ptr => "ptr",
-            Type::Int => "int",
+            Type::Int { signed: true, bits } => format!("i{}", bits),
+            Type::Int { signed: false, bits } => format!("u{}", bits),
+            Type::Ptr => "ptr".into(),
+            Type::Pack(i) => format!("$#{}", i),
+            Type::AInt => "int".into(),
+            Type::AUInt => "uint".into(),
         }
     }
 
@@ -40,33 +59,115 @@ impl Type {
         Type::from_name(s)
     }
 
+    /// `iN`, `uN`, `ptr`, `int`, `uint`; pack names resolve in the parser
     fn from_name(s: &str) -> Option<Type> {
         match s {
-            "i1" => Some(Type::I1),
-            "i32" => Some(Type::I32),
-            "i64" => Some(Type::I64),
-            "ptr" => Some(Type::Ptr),
-            "int" => Some(Type::Int),
+            "ptr" => return Some(Type::Ptr),
+            "int" => return Some(Type::AInt),
+            "uint" => return Some(Type::AUInt),
+            _ => {}
+        }
+        let (signed, rest) = match s.as_bytes().first()? {
+            b'i' => (true, &s[1..]),
+            b'u' => (false, &s[1..]),
+            _ => return None,
+        };
+        if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) || rest.starts_with('0') {
+            return None;
+        }
+        let bits: u32 = rest.parse().ok()?;
+        if (1..=64).contains(&bits) {
+            Some(Type::int(signed, bits))
+        } else {
+            None
+        }
+    }
+
+    pub fn is_int(self) -> bool {
+        matches!(self, Type::Int { .. })
+    }
+
+    pub fn is_pack(self) -> bool {
+        matches!(self, Type::Pack(_))
+    }
+
+    pub fn is_abstract(self) -> bool {
+        matches!(self, Type::AInt | Type::AUInt)
+    }
+
+    /// width in bits, when it doesn't depend on the pack table
+    pub fn int_bits(self) -> Option<u32> {
+        match self {
+            Type::Int { bits, .. } => Some(bits as u32),
+            Type::Ptr => Some(64),
             _ => None,
         }
     }
+}
 
-    /// Width rank for sext/zext/trunc rules; ptr takes no part in width changes.
-    fn rank(self) -> Option<u32> {
+/// A pack declaration: `pack $name { f: ty, ... }`. Fields occupy
+/// consecutive bits from bit 0 upward; the whole pack is at most 64 bits
+/// and is carried around as the unsigned integer of that width.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PackDef {
+    pub name: String,
+    pub fields: Vec<(String, Type)>,
+    pub offsets: Vec<u32>,
+    pub width: u32,
+}
+
+impl PackDef {
+    pub fn field(&self, name: &str) -> Option<usize> {
+        self.fields.iter().position(|(n, _)| n == name)
+    }
+}
+
+/// Bit width of a type given the pack table (abstract types have none).
+pub fn type_width(ty: Type, packs: &[PackDef]) -> Option<u32> {
+    match ty {
+        Type::Pack(i) => packs.get(i as usize).map(|p| p.width),
+        t => t.int_bits(),
+    }
+}
+
+/// How a value of a type is held in a register or local: as an N-bit
+/// quantity that is sign-extended (`S`) or zero-extended (`U`) to the
+/// container it lives in. Pointers and packs are unsigned bit patterns.
+/// Every emitter keeps every value in this canonical form, which is what
+/// lets compares, divides, and calls stay one instruction.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Repr {
+    S(u32),
+    U(u32),
+}
+
+impl Repr {
+    pub fn bits(self) -> u32 {
         match self {
-            Type::I1 => Some(0),
-            Type::I32 => Some(1),
-            Type::I64 => Some(2),
-            Type::Ptr | Type::Int => None,
+            Repr::S(n) | Repr::U(n) => n,
         }
     }
-
-    fn is_arith(self) -> bool {
-        matches!(self, Type::I32 | Type::I64)
+    pub fn signed(self) -> bool {
+        matches!(self, Repr::S(_))
     }
-
-    fn is_memory(self) -> bool {
-        matches!(self, Type::I32 | Type::I64 | Type::Ptr)
+    /// 32 for types up to 32 bits, else 64 — the register/local width a
+    /// backend with two integer sizes uses
+    pub fn container(self) -> u32 {
+        if self.bits() <= 32 {
+            32
+        } else {
+            64
+        }
+    }
+    /// is a canonical value of `self` already a canonical value of `to`,
+    /// with no re-normalization? (widening within one signedness; an
+    /// unsigned value widening into a strictly larger signed type)
+    pub fn fits_in(self, to: Repr) -> bool {
+        match (self, to) {
+            (Repr::S(a), Repr::S(b)) | (Repr::U(a), Repr::U(b)) => a <= b,
+            (Repr::U(a), Repr::S(b)) => a < b,
+            (Repr::S(_), Repr::U(_)) => false,
+        }
     }
 }
 
@@ -75,32 +176,26 @@ pub enum BinOp {
     IAdd,
     ISub,
     IMul,
-    SDiv,
-    UDiv,
-    SRem,
-    URem,
+    Div,
+    Rem,
     And,
     Or,
     Xor,
     Shl,
-    LShr,
-    AShr,
+    Shr,
 }
 
 const BINOPS: &[(&str, BinOp)] = &[
     ("iadd", BinOp::IAdd),
     ("isub", BinOp::ISub),
     ("imul", BinOp::IMul),
-    ("sdiv", BinOp::SDiv),
-    ("udiv", BinOp::UDiv),
-    ("srem", BinOp::SRem),
-    ("urem", BinOp::URem),
+    ("div", BinOp::Div),
+    ("rem", BinOp::Rem),
     ("and", BinOp::And),
     ("or", BinOp::Or),
     ("xor", BinOp::Xor),
     ("shl", BinOp::Shl),
-    ("lshr", BinOp::LShr),
-    ("ashr", BinOp::AShr),
+    ("shr", BinOp::Shr),
 ];
 
 impl BinOp {
@@ -113,27 +208,19 @@ impl BinOp {
 pub enum Cond {
     Eq,
     Ne,
-    Slt,
-    Sle,
-    Sgt,
-    Sge,
-    Ult,
-    Ule,
-    Ugt,
-    Uge,
+    Lt,
+    Le,
+    Gt,
+    Ge,
 }
 
 const CONDS: &[(&str, Cond)] = &[
     ("eq", Cond::Eq),
     ("ne", Cond::Ne),
-    ("slt", Cond::Slt),
-    ("sle", Cond::Sle),
-    ("sgt", Cond::Sgt),
-    ("sge", Cond::Sge),
-    ("ult", Cond::Ult),
-    ("ule", Cond::Ule),
-    ("ugt", Cond::Ugt),
-    ("uge", Cond::Uge),
+    ("lt", Cond::Lt),
+    ("le", Cond::Le),
+    ("gt", Cond::Gt),
+    ("ge", Cond::Ge),
 ];
 
 impl Cond {
@@ -144,17 +231,20 @@ impl Cond {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CastOp {
-    Sext,
-    Zext,
+    /// widen, filling by the *source* type's signedness
+    Ext,
+    /// narrow to the result type's width
     Trunc,
+    /// reinterpret the same number of bits as another type
+    Bitcast,
 }
 
 impl CastOp {
     pub fn name(self) -> &'static str {
         match self {
-            CastOp::Sext => "sext",
-            CastOp::Zext => "zext",
+            CastOp::Ext => "ext",
             CastOp::Trunc => "trunc",
+            CastOp::Bitcast => "bitcast",
         }
     }
 }
@@ -181,6 +271,29 @@ pub enum Inst {
         op: CastOp,
         dst: ValueId,
         src: ValueId,
+    },
+    /// build a pack from one value per field, in declaration order
+    Pack {
+        dst: ValueId,
+        args: Vec<ValueId>,
+    },
+    /// split a pack into one value per field, in declaration order
+    Unpack {
+        dsts: Vec<ValueId>,
+        src: ValueId,
+    },
+    /// read one field of a pack
+    Get {
+        dst: ValueId,
+        src: ValueId,
+        field: u32,
+    },
+    /// a copy of a pack with one field replaced
+    Set {
+        dst: ValueId,
+        src: ValueId,
+        field: u32,
+        val: ValueId,
     },
     Load {
         dst: ValueId,
@@ -242,6 +355,8 @@ pub struct Function {
     pub rets: Vec<Type>,
     pub values: Vec<ValueData>,
     pub blocks: Vec<Block>,
+    /// the module's pack table, shared so a function can be compiled alone
+    pub packs: std::sync::Arc<Vec<PackDef>>,
 }
 
 impl Function {
@@ -252,10 +367,47 @@ impl Function {
     pub fn ty(&self, id: ValueId) -> Type {
         self.value(id).ty
     }
+
+    pub fn pack(&self, ty: Type) -> Option<&PackDef> {
+        match ty {
+            Type::Pack(i) => self.packs.get(i as usize),
+            _ => None,
+        }
+    }
+
+    /// the type's spelling with pack names resolved
+    pub fn tyname(&self, ty: Type) -> String {
+        match self.pack(ty) {
+            Some(p) => format!("${}", p.name),
+            None => ty.name(),
+        }
+    }
+
+    pub fn width(&self, ty: Type) -> Option<u32> {
+        type_width(ty, &self.packs)
+    }
+
+    /// canonical register form of a (concrete) type
+    pub fn repr(&self, ty: Type) -> Repr {
+        match ty {
+            Type::Int { signed: true, bits } => Repr::S(bits as u32),
+            Type::Int { signed: false, bits } => Repr::U(bits as u32),
+            Type::Ptr => Repr::U(64),
+            Type::Pack(_) => Repr::U(self.width(ty).unwrap_or(64)),
+            Type::AInt | Type::AUInt => unreachable!("abstract types are resolved before use"),
+        }
+    }
+
+    /// (offset, type) of field `i` of a pack-typed value
+    pub fn field(&self, ty: Type, i: u32) -> Option<(u32, Type)> {
+        let p = self.pack(ty)?;
+        Some((p.offsets[i as usize], p.fields[i as usize].1))
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Module {
+    pub packs: Vec<PackDef>,
     pub funcs: Vec<Function>,
 }
 
@@ -265,10 +417,10 @@ impl Module {
     }
 }
 
-/// The replacement policy for abstract numeric types: what `int` becomes
-/// on this compilation. Targets supply defaults (their natural width, or a
-/// size-oriented choice); the user can override. `float` joins when
-/// concrete floats do.
+/// The replacement policy for abstract numeric types: what `int` (and its
+/// unsigned twin `uint`) become on this compilation. Targets supply
+/// defaults (their natural width, or a size-oriented choice); the user can
+/// override. `float` joins when concrete floats do.
 #[derive(Clone, Copy)]
 pub struct Policy {
     pub int: Type,
@@ -281,6 +433,14 @@ impl Policy {
             t => Err(format!("'int' cannot resolve to {}", t.name())),
         }
     }
+
+    fn resolve(&self, ty: Type) -> Type {
+        match ty {
+            Type::AInt => self.int,
+            Type::AUInt => Type::int(false, self.int.int_bits().unwrap()),
+            t => t,
+        }
+    }
 }
 
 /// Resolve abstract types to concrete ones. Because types live on values,
@@ -289,14 +449,10 @@ impl Policy {
 pub fn resolve_types(module: &mut Module, policy: &Policy) {
     for func in &mut module.funcs {
         for v in &mut func.values {
-            if v.ty == Type::Int {
-                v.ty = policy.int;
-            }
+            v.ty = policy.resolve(v.ty);
         }
         for r in &mut func.rets {
-            if *r == Type::Int {
-                *r = policy.int;
-            }
+            *r = policy.resolve(*r);
         }
     }
 }
@@ -311,6 +467,7 @@ enum Tok {
     Value(String),  // %x
     Block(String),  // ^x
     Global(String), // @x
+    TypeName(String), // $x
     Int(i64),
     Colon,
     Comma,
@@ -330,6 +487,7 @@ impl fmt::Display for Tok {
             Tok::Value(s) => write!(f, "'%{}'", s),
             Tok::Block(s) => write!(f, "'^{}'", s),
             Tok::Global(s) => write!(f, "'@{}'", s),
+            Tok::TypeName(s) => write!(f, "'${}'", s),
             Tok::Int(n) => write!(f, "'{}'", n),
             Tok::Colon => write!(f, "':'"),
             Tok::Comma => write!(f, "','"),
@@ -385,7 +543,7 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                     chars.next();
                 }
             }
-            '%' | '^' | '@' => {
+            '%' | '^' | '@' | '$' => {
                 chars.next();
                 let name = lex_name(&mut chars);
                 if name.is_empty() {
@@ -395,6 +553,7 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                     match c {
                         '%' => Tok::Value(name),
                         '^' => Tok::Block(name),
+                        '$' => Tok::TypeName(name),
                         _ => Tok::Global(name),
                     },
                     line,
@@ -502,19 +661,52 @@ fn lex_int(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<i64, Stri
 
 pub fn parse(src: &str) -> Result<Module, ParseError> {
     let toks = lex(src)?;
-    let mut p = Parser { toks, pos: 0 };
-    let mut module = Module::default();
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        packs: Vec::new(),
+        pack_ids: HashMap::new(),
+    };
+    // pass 1: pack declarations, wherever they appear, so functions can
+    // use packs declared later in the file (a pack's own fields must be
+    // declared before it, since its width depends on theirs)
+    let mut funcs = Vec::new();
     p.skip_newlines();
     while !p.at_end() {
-        module.funcs.push(p.parse_function()?);
+        if matches!(p.peek(), Some(Tok::Ident(k)) if k == "pack") {
+            p.parse_pack_decl()?;
+        } else {
+            let (_, hi) = p.function_range()?;
+            p.pos = hi + 1;
+        }
         p.skip_newlines();
     }
-    Ok(module)
+    // pass 2: functions
+    p.pos = 0;
+    p.skip_newlines();
+    while !p.at_end() {
+        if matches!(p.peek(), Some(Tok::Ident(k)) if k == "pack") {
+            p.skip_pack_decl()?;
+        } else {
+            funcs.push(p.parse_function()?);
+        }
+        p.skip_newlines();
+    }
+    let packs = std::sync::Arc::new(p.packs.clone());
+    for f in &mut funcs {
+        f.packs = packs.clone();
+    }
+    Ok(Module {
+        packs: p.packs,
+        funcs,
+    })
 }
 
 struct Parser {
     toks: Vec<(Tok, usize)>,
     pos: usize,
+    packs: Vec<PackDef>,
+    pack_ids: HashMap<String, u32>,
 }
 
 /// Placeholder branch target inside structured constructs; every one is
@@ -641,11 +833,100 @@ impl Parser {
     }
 
     fn expect_type(&mut self) -> Result<Type, ParseError> {
-        let s = self.expect_ident()?;
-        Type::from_name(&s).ok_or_else(|| {
-            self.pos -= 1;
-            self.err(format!("unknown type '{}'", s))
-        })
+        match self.next()? {
+            Tok::Ident(s) => Type::from_name(&s).ok_or_else(|| {
+                self.pos -= 1;
+                self.err(format!("unknown type '{}'", s))
+            }),
+            Tok::TypeName(n) => self.pack_type(&n).ok_or_else(|| {
+                self.pos -= 1;
+                self.err(format!("unknown pack type '${}'", n))
+            }),
+            t => {
+                self.pos -= 1;
+                Err(self.err(format!("expected a type, found {}", t)))
+            }
+        }
+    }
+
+    /// skip over a `pack` declaration already parsed in pass 1
+    fn skip_pack_decl(&mut self) -> Result<(), ParseError> {
+        while !matches!(self.next()?, Tok::RBrace) {}
+        self.expect(Tok::Newline)
+    }
+
+    fn pack_type(&self, name: &str) -> Option<Type> {
+        self.pack_ids.get(name).map(|&i| Type::Pack(i))
+    }
+
+    /// `pack $name { field: ty, ... }` — fields may span lines
+    fn parse_pack_decl(&mut self) -> Result<(), ParseError> {
+        self.expect_ident()?; // 'pack'
+        let name = match self.next()? {
+            Tok::TypeName(n) => n,
+            t => {
+                self.pos -= 1;
+                return Err(self.err(format!("expected a pack name like '$rgb', found {}", t)));
+            }
+        };
+        if self.pack_ids.contains_key(&name) {
+            return Err(self.err(format!("pack '${}' is declared more than once", name)));
+        }
+        self.expect(Tok::LBrace)?;
+        let mut fields: Vec<(String, Type)> = Vec::new();
+        let mut offsets = Vec::new();
+        let mut width = 0u32;
+        loop {
+            self.skip_newlines();
+            if self.eat(&Tok::RBrace) {
+                break;
+            }
+            let fname = self.expect_ident()?;
+            if fields.iter().any(|(n, _)| *n == fname) {
+                return Err(self.err(format!("field '{}' appears twice in ${}", fname, name)));
+            }
+            self.expect(Tok::Colon)?;
+            let ty = self.expect_type()?;
+            let w = match ty {
+                Type::Int { bits, .. } => bits as u32,
+                Type::Pack(i) => self.packs[i as usize].width,
+                t => {
+                    return Err(self.err(format!(
+                        "pack field '{}' must be an integer or pack type, not {}",
+                        fname,
+                        t.name()
+                    )))
+                }
+            };
+            offsets.push(width);
+            width += w;
+            fields.push((fname, ty));
+            self.skip_newlines();
+            if !self.eat(&Tok::Comma) {
+                self.skip_newlines();
+                self.expect(Tok::RBrace)?;
+                break;
+            }
+        }
+        if fields.is_empty() {
+            return Err(self.err(format!("pack '${}' has no fields", name)));
+        }
+        if width > 64 {
+            return Err(self.err(format!(
+                "pack '${}' is {} bits wide; packs fit in 64",
+                name, width
+            )));
+        }
+        self.expect(Tok::Newline)?;
+        let id = self.packs.len() as u32;
+        self.pack_ids.insert(name.clone(), id);
+        self.packs.push(PackDef {
+            name,
+            fields,
+            offsets,
+            width,
+        });
+        Ok(())
     }
 
     fn expect_value(&mut self, scope: &FuncScope) -> Result<ValueId, ParseError> {
@@ -697,16 +978,22 @@ impl Parser {
         while i + 2 <= hi {
             if let (Tok::Value(name), Tok::Colon) = (&self.toks[i].0, &self.toks[i + 1].0) {
                 let line = self.toks[i].1;
-                let Tok::Ident(tyname) = &self.toks[i + 2].0 else {
-                    return Err(ParseError {
+                let ty = match &self.toks[i + 2].0 {
+                    Tok::Ident(tyname) => Type::from_name(tyname).ok_or_else(|| ParseError {
                         line,
-                        msg: format!("expected a type after '%{}:'", name),
-                    });
+                        msg: format!("unknown type '{}'", tyname),
+                    })?,
+                    Tok::TypeName(pname) => self.pack_type(pname).ok_or_else(|| ParseError {
+                        line,
+                        msg: format!("unknown pack type '${}'", pname),
+                    })?,
+                    _ => {
+                        return Err(ParseError {
+                            line,
+                            msg: format!("expected a type after '%{}:'", name),
+                        })
+                    }
                 };
-                let ty = Type::from_name(tyname).ok_or_else(|| ParseError {
-                    line,
-                    msg: format!("unknown type '{}'", tyname),
-                })?;
                 if scope.value_ids.contains_key(name) {
                     return Err(ParseError {
                         line,
@@ -822,6 +1109,7 @@ impl Parser {
                 rets,
                 values: scope.values,
                 blocks,
+                packs: Default::default(),
             });
         }
 
@@ -876,6 +1164,7 @@ impl Parser {
             rets,
             values: scope.values,
             blocks,
+            packs: Default::default(),
         })
     }
 
@@ -913,11 +1202,14 @@ impl Parser {
                 let inst = if op == "call" {
                     let (callee, args) = self.parse_call_tail(scope)?;
                     Inst::Call { dsts, callee, args }
+                } else if op == "unpack" {
+                    let src = self.expect_value(scope)?;
+                    Inst::Unpack { dsts, src }
                 } else if dsts.len() == 1 {
                     self.parse_def_op(&op, dsts[0], scope)?
                 } else {
                     return Err(self.err(format!(
-                        "only 'call' can define multiple values, not '{}'",
+                        "only 'call' and 'unpack' can define multiple values, not '{}'",
                         op
                     )));
                 };
@@ -973,14 +1265,44 @@ impl Parser {
                     Err(self.err(format!("expected an integer literal, found {}", t)))
                 }
             },
-            "sext" | "zext" | "trunc" => {
+            "ext" | "trunc" | "bitcast" => {
                 let cast = match op {
-                    "sext" => CastOp::Sext,
-                    "zext" => CastOp::Zext,
-                    _ => CastOp::Trunc,
+                    "ext" => CastOp::Ext,
+                    "trunc" => CastOp::Trunc,
+                    _ => CastOp::Bitcast,
                 };
                 let src = self.expect_value(scope)?;
                 Ok(Inst::Cast { op: cast, dst, src })
+            }
+            "pack" => {
+                let args = self.parse_value_list(scope)?;
+                Ok(Inst::Pack { dst, args })
+            }
+            "unpack" => {
+                let src = self.expect_value(scope)?;
+                Ok(Inst::Unpack {
+                    dsts: vec![dst],
+                    src,
+                })
+            }
+            "get" => {
+                let src = self.expect_value(scope)?;
+                self.expect(Tok::Comma)?;
+                let field = self.expect_field(scope, src)?;
+                Ok(Inst::Get { dst, src, field })
+            }
+            "set" => {
+                let src = self.expect_value(scope)?;
+                self.expect(Tok::Comma)?;
+                let field = self.expect_field(scope, src)?;
+                self.expect(Tok::Comma)?;
+                let val = self.expect_value(scope)?;
+                Ok(Inst::Set {
+                    dst,
+                    src,
+                    field,
+                    val,
+                })
             }
             "load" => {
                 let addr = self.expect_value(scope)?;
@@ -994,6 +1316,29 @@ impl Parser {
             }
             _ => Err(self.err(format!("unknown opcode '{}'", op))),
         }
+    }
+
+    /// a field name of the pack-typed value `of`, resolved to its index
+    fn expect_field(&mut self, scope: &FuncScope, of: ValueId) -> Result<u32, ParseError> {
+        let fname = self.expect_ident()?;
+        let ty = scope.values[of.0 as usize].ty;
+        let Type::Pack(i) = ty else {
+            self.pos -= 1;
+            return Err(self.err(format!(
+                "'%{}' is {}, not a pack; it has no field '{}'",
+                scope.values[of.0 as usize].name,
+                ty.name(),
+                fname
+            )));
+        };
+        let (found, pname) = {
+            let def = &self.packs[i as usize];
+            (def.field(&fname), def.name.clone())
+        };
+        found.map(|k| k as u32).ok_or_else(|| {
+            self.pos -= 1;
+            self.err(format!("pack '${}' has no field '{}'", pname, fname))
+        })
     }
 
     fn parse_plain_op(&mut self, op: &str, scope: &FuncScope) -> Result<Inst, ParseError> {
@@ -1134,10 +1479,14 @@ impl Parser {
                         let (callee, args) = self.parse_call_tail(scope)?;
                         st.push(Inst::Call { dsts, callee, args });
                     }
+                    "unpack" => {
+                        let src = self.expect_value(scope)?;
+                        st.push(Inst::Unpack { dsts, src });
+                    }
                     _ => {
                         if dsts.len() > 1 {
                             return Err(self.err(format!(
-                                "only 'call' can define multiple values, not '{}'",
+                                "only 'call' and 'unpack' can define multiple values, not '{}'",
                                 op
                             )));
                         }
@@ -1406,8 +1755,22 @@ impl Parser {
 
 impl fmt::Display for Module {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for p in &self.packs {
+            let fields: Vec<String> = p
+                .fields
+                .iter()
+                .map(|(n, t)| {
+                    let tn = match *t {
+                        Type::Pack(i) => format!("${}", self.packs[i as usize].name),
+                        t => t.name(),
+                    };
+                    format!("{}: {}", n, tn)
+                })
+                .collect();
+            writeln!(f, "pack ${} {{ {} }}", p.name, fields.join(", "))?;
+        }
         for (i, func) in self.funcs.iter().enumerate() {
-            if i > 0 {
+            if i > 0 || !self.packs.is_empty() {
                 writeln!(f)?;
             }
             write!(f, "{}", func)?;
@@ -1423,7 +1786,14 @@ impl Function {
 
     fn fmt_def(&self, id: ValueId) -> String {
         let v = self.value(id);
-        format!("%{}: {}", v.name, v.ty.name())
+        format!("%{}: {}", v.name, self.tyname(v.ty))
+    }
+
+    fn fmt_field(&self, of: ValueId, field: u32) -> String {
+        match self.pack(self.ty(of)) {
+            Some(p) => p.fields[field as usize].0.clone(),
+            None => format!("#{}", field),
+        }
     }
 
     fn fmt_args(&self, args: &[ValueId]) -> String {
@@ -1454,9 +1824,9 @@ impl fmt::Display for Function {
         write!(f, "fn @{}({})", self.name, params)?;
         match self.rets.len() {
             0 => {}
-            1 => write!(f, " -> {}", self.rets[0].name())?,
+            1 => write!(f, " -> {}", self.tyname(self.rets[0]))?,
             _ => {
-                let ts: Vec<&str> = self.rets.iter().map(|t| t.name()).collect();
+                let ts: Vec<String> = self.rets.iter().map(|&t| self.tyname(t)).collect();
                 write!(f, " -> ({})", ts.join(", "))?;
             }
         }
@@ -1509,6 +1879,31 @@ impl Function {
                 self.fmt_def(*dst),
                 op.name(),
                 self.fmt_value(*src)
+            ),
+            Inst::Pack { dst, args } => {
+                format!("{} = pack {}", self.fmt_def(*dst), self.fmt_args(args))
+            }
+            Inst::Unpack { dsts, src } => {
+                let defs: Vec<String> = dsts.iter().map(|&d| self.fmt_def(d)).collect();
+                format!("{} = unpack {}", defs.join(", "), self.fmt_value(*src))
+            }
+            Inst::Get { dst, src, field } => format!(
+                "{} = get {}, {}",
+                self.fmt_def(*dst),
+                self.fmt_value(*src),
+                self.fmt_field(*src, *field)
+            ),
+            Inst::Set {
+                dst,
+                src,
+                field,
+                val,
+            } => format!(
+                "{} = set {}, {}, {}",
+                self.fmt_def(*dst),
+                self.fmt_value(*src),
+                self.fmt_field(*src, *field),
+                self.fmt_value(*val)
             ),
             Inst::Load { dst, addr } => {
                 format!("{} = load {}", self.fmt_def(*dst), self.fmt_value(*addr))
@@ -1580,10 +1975,20 @@ fn verify_function(module: &Module, func: &Function, errs: &mut Vec<String>) {
 
     // rule 0: abstract types are resolved before verification
     for v in &func.values {
-        if v.ty == Type::Int {
+        if v.ty.is_abstract() {
             errs.push(ctx(format!(
-                "value '%{}' has unresolved abstract type 'int' (run type resolution first)",
-                v.name
+                "value '%{}' has unresolved abstract type '{}' (run type resolution first)",
+                v.name,
+                v.ty.name()
+            )));
+            return;
+        }
+    }
+    for r in &func.rets {
+        if r.is_abstract() {
+            errs.push(ctx(format!(
+                "return type '{}' is unresolved (run type resolution first)",
+                r.name()
             )));
             return;
         }
@@ -1658,9 +2063,12 @@ fn inst_dsts(inst: &Inst) -> Vec<ValueId> {
         | Inst::Bin { dst, .. }
         | Inst::ICmp { dst, .. }
         | Inst::Cast { dst, .. }
+        | Inst::Pack { dst, .. }
+        | Inst::Get { dst, .. }
+        | Inst::Set { dst, .. }
         | Inst::Load { dst, .. }
         | Inst::PtrAdd { dst, .. } => vec![*dst],
-        Inst::Call { dsts, .. } => dsts.clone(),
+        Inst::Call { dsts, .. } | Inst::Unpack { dsts, .. } => dsts.clone(),
         _ => vec![],
     }
 }
@@ -1686,37 +2094,49 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
     let ctx = |msg: String| format!("@{}: ^{}: {}", func.name, block.name, msg);
     let name = |id: ValueId| format!("%{}", func.value(id).name);
 
+    let tn = |t: Type| func.tyname(t);
+    let is_memory = |t: Type| {
+        t == Type::Ptr
+            || ((t.is_int() || t.is_pack())
+                && matches!(func.width(t), Some(8) | Some(16) | Some(32) | Some(64)))
+    };
+
     match inst {
         Inst::IConst { dst, imm } => {
             let ty = func.ty(*dst);
             let ok = match ty {
-                Type::I1 => (0..=1).contains(imm),
-                Type::I32 => i32::try_from(*imm).is_ok() || u32::try_from(*imm).is_ok(),
+                Type::Int { bits, .. } if bits < 64 => {
+                    // either reading of the literal must fit: signed or unsigned
+                    let lo = -(1i64 << (bits - 1));
+                    let hi = 1i64 << bits;
+                    (lo..hi).contains(imm)
+                }
                 // ptr constants are raw addresses (MMIO, fixed buffers) —
                 // meaningful wherever ptr is an address-space index
-                Type::I64 | Type::Ptr => true,
-                Type::Int => unreachable!("rejected by rule 0"),
+                Type::Int { .. } | Type::Ptr => true,
+                Type::Pack(_) => false,
+                Type::AInt | Type::AUInt => unreachable!("rejected by rule 0"),
             };
             if !ok {
                 errs.push(ctx(format!(
                     "iconst {} does not fit in type {}",
                     imm,
-                    ty.name()
+                    tn(ty)
                 )));
             }
         }
         Inst::Bin { op, dst, lhs, rhs } => {
             let (td, tl, tr) = (func.ty(*dst), func.ty(*lhs), func.ty(*rhs));
-            if !td.is_arith() || tl != td || tr != td {
+            if !td.is_int() || tl != td || tr != td {
                 errs.push(ctx(format!(
-                    "{}: operands and result must share an arithmetic type; got {}: {}, {}: {}, {}: {}",
+                    "{}: operands and result must share an integer type; got {}: {}, {}: {}, {}: {}",
                     op.name(),
                     name(*dst),
-                    td.name(),
+                    tn(td),
                     name(*lhs),
-                    tl.name(),
+                    tn(tl),
                     name(*rhs),
-                    tr.name()
+                    tn(tr)
                 )));
             }
         }
@@ -1727,49 +2147,159 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             rhs,
         } => {
             let (td, tl, tr) = (func.ty(*dst), func.ty(*lhs), func.ty(*rhs));
-            if td != Type::I1 {
+            if td != Type::U1 {
                 errs.push(ctx(format!(
-                    "icmp.{} result {} must be i1, not {}",
+                    "icmp.{} result {} must be u1, not {}",
                     cond.name(),
                     name(*dst),
-                    td.name()
+                    tn(td)
                 )));
             }
-            if tl != tr || !tl.is_memory() {
+            if tl != tr || !(tl.is_int() || tl == Type::Ptr) {
                 errs.push(ctx(format!(
-                    "icmp.{}: operands must share a type (i32/i64/ptr); got {} and {}",
+                    "icmp.{}: operands must share an integer or ptr type; got {} and {}",
                     cond.name(),
-                    tl.name(),
-                    tr.name()
+                    tn(tl),
+                    tn(tr)
                 )));
             }
         }
         Inst::Cast { op, dst, src } => {
             let (td, ts) = (func.ty(*dst), func.ty(*src));
-            let ok = match (ts.rank(), td.rank()) {
-                (Some(rs), Some(rd)) => match op {
-                    CastOp::Sext | CastOp::Zext => rd > rs,
-                    CastOp::Trunc => rd < rs,
-                },
-                _ => false,
+            let (wd, ws) = (func.width(td), func.width(ts));
+            let ok = match op {
+                CastOp::Ext => td.is_int() && ts.is_int() && wd > ws,
+                CastOp::Trunc => td.is_int() && ts.is_int() && wd < ws,
+                CastOp::Bitcast => {
+                    (td.is_int() || td.is_pack() || td == Type::Ptr)
+                        && (ts.is_int() || ts.is_pack() || ts == Type::Ptr)
+                        && wd == ws
+                }
             };
             if !ok {
+                let why = match op {
+                    CastOp::Ext => "ext widens an integer to a wider integer type",
+                    CastOp::Trunc => "trunc narrows an integer to a narrower integer type",
+                    CastOp::Bitcast => "bitcast needs two types of the same width",
+                };
                 errs.push(ctx(format!(
-                    "{} from {} to {} is not a valid width change",
+                    "{} from {} to {} is not valid: {}",
                     op.name(),
-                    ts.name(),
-                    td.name()
+                    tn(ts),
+                    tn(td),
+                    why
                 )));
+            }
+        }
+        Inst::Pack { dst, args } => {
+            let td = func.ty(*dst);
+            match func.pack(td) {
+                None => errs.push(ctx(format!(
+                    "pack result {} must have a pack type, not {}",
+                    name(*dst),
+                    tn(td)
+                ))),
+                Some(p) => {
+                    let want: Vec<Type> = p.fields.iter().map(|(_, t)| *t).collect();
+                    let got: Vec<Type> = args.iter().map(|&a| func.ty(a)).collect();
+                    if want != got {
+                        errs.push(ctx(format!(
+                            "pack ${}: argument types ({}) do not match its fields ({})",
+                            p.name,
+                            got.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", "),
+                            want.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", ")
+                        )));
+                    }
+                }
+            }
+        }
+        Inst::Unpack { dsts, src } => {
+            let ts = func.ty(*src);
+            match func.pack(ts) {
+                None => errs.push(ctx(format!(
+                    "unpack of {} needs a pack, not {}",
+                    name(*src),
+                    tn(ts)
+                ))),
+                Some(p) => {
+                    let want: Vec<Type> = p.fields.iter().map(|(_, t)| *t).collect();
+                    let got: Vec<Type> = dsts.iter().map(|&d| func.ty(d)).collect();
+                    if want != got {
+                        errs.push(ctx(format!(
+                            "unpack ${}: result types ({}) do not match its fields ({})",
+                            p.name,
+                            got.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", "),
+                            want.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", ")
+                        )));
+                    }
+                }
+            }
+        }
+        Inst::Get { dst, src, field } => {
+            let ts = func.ty(*src);
+            match func.field(ts, *field) {
+                None => errs.push(ctx(format!(
+                    "get: {} is {}, which has no field #{}",
+                    name(*src),
+                    tn(ts),
+                    field
+                ))),
+                Some((_, ft)) if ft != func.ty(*dst) => errs.push(ctx(format!(
+                    "get: field {} of {} is {}, but {} is {}",
+                    func.fmt_field(*src, *field),
+                    name(*src),
+                    tn(ft),
+                    name(*dst),
+                    tn(func.ty(*dst))
+                ))),
+                _ => {}
+            }
+        }
+        Inst::Set {
+            dst,
+            src,
+            field,
+            val,
+        } => {
+            let ts = func.ty(*src);
+            match func.field(ts, *field) {
+                None => errs.push(ctx(format!(
+                    "set: {} is {}, which has no field #{}",
+                    name(*src),
+                    tn(ts),
+                    field
+                ))),
+                Some((_, ft)) => {
+                    if ft != func.ty(*val) {
+                        errs.push(ctx(format!(
+                            "set: field {} of {} is {}, but {} is {}",
+                            func.fmt_field(*src, *field),
+                            name(*src),
+                            tn(ft),
+                            name(*val),
+                            tn(func.ty(*val))
+                        )));
+                    }
+                    if func.ty(*dst) != ts {
+                        errs.push(ctx(format!(
+                            "set: result {} must be {} like {}, not {}",
+                            name(*dst),
+                            tn(ts),
+                            name(*src),
+                            tn(func.ty(*dst))
+                        )));
+                    }
+                }
             }
         }
         Inst::Load { dst, addr } => {
             if func.ty(*addr) != Type::Ptr {
                 errs.push(ctx(format!("load address {} must be ptr", name(*addr))));
             }
-            if !func.ty(*dst).is_memory() {
+            if !is_memory(func.ty(*dst)) {
                 errs.push(ctx(format!(
-                    "load result must be i32/i64/ptr, not {}",
-                    func.ty(*dst).name()
+                    "load result must be ptr or an 8/16/32/64-bit integer or pack, not {}",
+                    tn(func.ty(*dst))
                 )));
             }
         }
@@ -1777,20 +2307,20 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             if func.ty(*addr) != Type::Ptr {
                 errs.push(ctx(format!("store address {} must be ptr", name(*addr))));
             }
-            if !func.ty(*val).is_memory() {
+            if !is_memory(func.ty(*val)) {
                 errs.push(ctx(format!(
-                    "stored value must be i32/i64/ptr, not {}",
-                    func.ty(*val).name()
+                    "stored value must be ptr or an 8/16/32/64-bit integer or pack, not {}",
+                    tn(func.ty(*val))
                 )));
             }
         }
         Inst::PtrAdd { dst, base, off } => {
             if func.ty(*dst) != Type::Ptr
                 || func.ty(*base) != Type::Ptr
-                || func.ty(*off) != Type::I64
+                || !matches!(func.ty(*off), Type::I64 | Type::U64)
             {
                 errs.push(ctx(
-                    "ptradd requires result: ptr, base: ptr, offset: i64".into()
+                    "ptradd requires result: ptr, base: ptr, offset: i64 or u64".into()
                 ));
             }
         }
@@ -1802,8 +2332,8 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     errs.push(ctx(format!(
                         "call @{}: argument types ({}) do not match parameters ({})",
                         callee,
-                        got.iter().map(|t| t.name()).collect::<Vec<_>>().join(", "),
-                        want.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")
+                        got.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", "),
+                        want.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", ")
                     )));
                 }
                 // results may bind all of the callee's return values or none
@@ -1813,11 +2343,11 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                         errs.push(ctx(format!(
                             "call @{}: result types ({}) do not match return types ({})",
                             callee,
-                            dt.iter().map(|t| t.name()).collect::<Vec<_>>().join(", "),
+                            dt.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", "),
                             target
                                 .rets
                                 .iter()
-                                .map(|t| t.name())
+                                .map(|&t| tn(t))
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         )));
@@ -1827,11 +2357,11 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
         }
         Inst::Jmp { .. } | Inst::Br { .. } => {
             if let Inst::Br { cond, .. } = inst {
-                if func.ty(*cond) != Type::I1 {
+                if func.ty(*cond) != Type::U1 {
                     errs.push(ctx(format!(
-                        "br condition {} must be i1, not {}",
+                        "br condition {} must be u1, not {}",
                         name(*cond),
-                        func.ty(*cond).name()
+                        tn(func.ty(*cond))
                     )));
                 }
             }
@@ -1843,8 +2373,8 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     errs.push(ctx(format!(
                         "branch to ^{}: argument types ({}) do not match block parameters ({})",
                         tblock.name,
-                        got.iter().map(|t| t.name()).collect::<Vec<_>>().join(", "),
-                        want.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")
+                        got.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", "),
+                        want.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", ")
                     )));
                 }
             }
@@ -1854,10 +2384,10 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             if got != func.rets {
                 errs.push(ctx(format!(
                     "ret types ({}) do not match the function's return types ({})",
-                    got.iter().map(|t| t.name()).collect::<Vec<_>>().join(", "),
+                    got.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", "),
                     func.rets
                         .iter()
-                        .map(|t| t.name())
+                        .map(|&t| tn(t))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )));
@@ -1879,7 +2409,7 @@ fn @sum(%n: i64) -> i64 {
     %zero: i64 = iconst 0
     jmp ^loop(%zero, %zero)
 ^loop(%i: i64, %acc: i64):
-    %done: i1 = icmp.sge %i, %n
+    %done: u1 = icmp.ge %i, %n
     br %done, ^exit, ^body
 ^body:
     %acc2: i64 = iadd %acc, %i
@@ -1922,7 +2452,7 @@ fn @get(%p: ptr) -> i32 {
 fn @use(%p: ptr) -> i64 {
 ^entry:
     %v: i32 = call @get(%p)
-    %w: i64 = sext %v
+    %w: i64 = ext %v
     %eight: i64 = iconst 8
     %q: ptr = ptradd %p, %eight
     store %w, %q
@@ -2009,7 +2539,7 @@ fn @bad(%a: i64) -> i64 {
 fn @sum(%n: i64) -> i64 {
     %zero: i64 = iconst 0
     %r: i64 = loop(%i: i64 = %zero, %acc: i64 = %zero) {
-        %done: i1 = icmp.sge %i, %n
+        %done: u1 = icmp.ge %i, %n
         if %done {
             break %acc
         }
@@ -2035,7 +2565,7 @@ fn @sum(%n: i64) -> i64 {
     #[test]
     fn structured_if_yield_types_checked() {
         let src = r"
-fn @bad(%c: i1, %a: i64, %b: i32) -> i64 {
+fn @bad(%c: u1, %a: i64, %b: i32) -> i64 {
     %r: i64 = if %c {
         yield %a
     } else {
@@ -2063,7 +2593,7 @@ fn @bad(%c: i1, %a: i64, %b: i32) -> i64 {
         assert!(parse("fn @f() {\n    ret\n    ret\n}").is_err());
         // value-yielding if without else
         assert!(parse(
-            "fn @f(%c: i1, %a: i64) -> i64 {\n    %r: i64 = if %c {\n        yield %a\n    }\n    ret %r\n}"
+            "fn @f(%c: u1, %a: i64) -> i64 {\n    %r: i64 = if %c {\n        yield %a\n    }\n    ret %r\n}"
         )
         .is_err());
     }
@@ -2073,7 +2603,7 @@ fn @bad(%c: i1, %a: i64, %b: i32) -> i64 {
         // %x is defined textually after its use; the prescan makes this fine
         // (dominance is the emitter's problem, per the spec).
         let src = r"
-fn @fwd(%c: i1) -> i64 {
+fn @fwd(%c: u1) -> i64 {
 ^entry:
     br %c, ^a, ^b
 ^a:
@@ -2087,5 +2617,76 @@ fn @fwd(%c: i1) -> i64 {
 ";
         let m = parse(src).expect("parse");
         verify(&m).expect("verify");
+    }
+
+    #[test]
+    fn narrow_types_and_packs_round_trip() {
+        let src = r"
+pack $rgb { r: u5, g: u6, b: u5 }
+pack $pix { c: $rgb, a: u8 }
+
+fn @mk(%r: u5, %g: u6, %b: u5) -> $rgb {
+^entry:
+    %c: $rgb = pack %r, %g, %b
+    ret %c
+}
+fn @green(%c: $rgb) -> u6 {
+^entry:
+    %g: u6 = get %c, g
+    ret %g
+}
+fn @fade(%p: $pix, %a: u8) -> ($pix, u16) {
+^entry:
+    %q: $pix = set %p, a, %a
+    %c: $rgb = get %q, c
+    %w: u16 = bitcast %c
+    %r: u5, %g: u6, %b: u5 = unpack %c
+    %x: i5 = bitcast %r
+    %y: i7 = ext %x
+    %z: u3 = trunc %g
+    ret %q, %w
+}
+";
+        let m = parse(src).expect("parse");
+        verify(&m).expect("verify");
+        assert_eq!(m.packs[0].width, 16);
+        assert_eq!(m.packs[0].offsets, vec![0, 5, 11]);
+        assert_eq!(m.packs[1].width, 24);
+        let printed = m.to_string();
+        let m2 = parse(&printed).expect("reparse");
+        verify(&m2).expect("reverify");
+        assert_eq!(printed, m2.to_string());
+        assert!(printed.starts_with("pack $rgb { r: u5, g: u6, b: u5 }\n"));
+    }
+
+    #[test]
+    fn rejects_bad_widths_and_fields() {
+        assert!(parse("fn @f(%a: i0) {\n    ret\n}").is_err());
+        assert!(parse("fn @f(%a: u65) {\n    ret\n}").is_err());
+        assert!(parse("pack $p { a: u40, b: u25 }\n").is_err()); // 65 bits
+        assert!(parse("pack $p { a: u4 }\nfn @f(%p: $p) -> u4 {\n    %x: u4 = get %p, nope\n    ret %x\n}").is_err());
+        // bitcast must preserve width; ext must widen
+        let m = parse("fn @f(%a: i8) -> u16 {\n    %b: u16 = bitcast %a\n    ret %b\n}").unwrap();
+        assert!(verify(&m).is_err());
+        let m = parse("fn @f(%a: i8) -> i8 {\n    %b: i8 = ext %a\n    ret %b\n}").unwrap();
+        assert!(verify(&m).is_err());
+        // memory only at 8/16/32/64
+        let m = parse("fn @f(%p: ptr) -> u5 {\n    %b: u5 = load %p\n    ret %b\n}").unwrap();
+        assert!(verify(&m).is_err());
+        let m = parse("fn @f(%p: ptr) -> u16 {\n    %b: u16 = load %p\n    ret %b\n}").unwrap();
+        assert!(verify(&m).is_ok());
+        // icmp results are u1, and iconst must fit
+        let m = parse("fn @f(%a: u5) -> u1 {\n    %k: u5 = iconst 40\n    %c: u1 = icmp.lt %a, %k\n    ret %c\n}").unwrap();
+        assert!(verify(&m).is_err());
+        let m = parse("fn @f(%a: i5) -> u1 {\n    %k: i5 = iconst -16\n    %c: u1 = icmp.lt %a, %k\n    ret %c\n}").unwrap();
+        assert!(verify(&m).is_ok());
+    }
+
+    #[test]
+    fn uint_resolves_with_int() {
+        let mut m = parse("fn @f(%a: uint, %b: int) -> uint {\n    %c: uint = bitcast %b\n    ret %a\n}").unwrap();
+        resolve_types(&mut m, &Policy::new(Type::I32).unwrap());
+        verify(&m).expect("verify");
+        assert_eq!(m.funcs[0].rets, vec![Type::int(false, 32)]);
     }
 }

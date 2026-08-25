@@ -36,7 +36,14 @@ pub(crate) fn inst_uses(inst: &Inst, out: &mut Vec<ValueId>) {
             out.push(*lhs);
             out.push(*rhs);
         }
-        Inst::Cast { src, .. } => out.push(*src),
+        Inst::Cast { src, .. } | Inst::Unpack { src, .. } | Inst::Get { src, .. } => {
+            out.push(*src)
+        }
+        Inst::Pack { args, .. } => out.extend(args),
+        Inst::Set { src, val, .. } => {
+            out.push(*src);
+            out.push(*val);
+        }
         Inst::Load { addr, .. } => out.push(*addr),
         Inst::Store { val, addr } => {
             out.push(*val);
@@ -68,9 +75,12 @@ pub(crate) fn inst_defs(inst: &Inst, out: &mut Vec<ValueId>) {
         | Inst::Bin { dst, .. }
         | Inst::ICmp { dst, .. }
         | Inst::Cast { dst, .. }
+        | Inst::Pack { dst, .. }
+        | Inst::Get { dst, .. }
+        | Inst::Set { dst, .. }
         | Inst::Load { dst, .. }
         | Inst::PtrAdd { dst, .. } => out.push(*dst),
-        Inst::Call { dsts, .. } => out.extend(dsts),
+        Inst::Call { dsts, .. } | Inst::Unpack { dsts, .. } => out.extend(dsts),
         _ => {}
     }
 }

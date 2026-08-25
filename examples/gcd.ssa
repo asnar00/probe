@@ -1,13 +1,13 @@
-; Euclid's algorithm — exercises srem and a swap-shaped loop-carried pair
+; Euclid's algorithm — exercises rem and a swap-shaped loop-carried pair
 fn @gcd(%a: i64, %b: i64) -> i64 {
 ^entry:
     jmp ^loop(%a, %b)
 ^loop(%x: i64, %y: i64):
     %zero: i64 = iconst 0
-    %done: i1 = icmp.eq %y, %zero
+    %done: u1 = icmp.eq %y, %zero
     br %done, ^exit, ^step
 ^step:
-    %r: i64 = srem %x, %y
+    %r: i64 = rem %x, %y
     jmp ^loop(%y, %r)
 ^exit:
     ret %x

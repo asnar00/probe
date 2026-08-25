@@ -24,13 +24,17 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
 
 ## What's here
 
-- **An SSA IR** (`ssa.md`, `src/ssa.rs`): typed integer values (`i1`,
-  `i32`, `i64`, `ptr`), block parameters instead of phi nodes, multiple
-  return values, an optional structured front-end
-  (`if`/`loop`/`break`/`continue`/`yield`) that lowers to the flat block
-  graph at parse time, and an abstract `int` type resolved to a concrete
-  width by a per-target replacement policy (`--int=i32|i64` to override).
-  No floats yet; `float` is designed to slot in beside `int`.
+- **An SSA IR** (`ssa.md`, `src/ssa.rs`): integers of any width from 1 to
+  64 bits, signed or unsigned (`i5`, `u23`, `i64`, plus `ptr`) — signedness
+  lives in the type, so there is one `div`, one `shr`, one `icmp.lt`;
+  `pack` types that lay bitfields out lowest-bits-first in up to 64 bits
+  (`pack $rgb { r: u5, g: u6, b: u5 }`, nestable, storable); block
+  parameters instead of phi nodes; multiple return values; an optional
+  structured front-end (`if`/`loop`/`break`/`continue`/`yield`) that
+  lowers to the flat block graph at parse time; and abstract `int`/`uint`
+  types resolved to a concrete width by a per-target replacement policy
+  (`--int=i32|i64` to override). No floats yet; their bit layouts are
+  already expressible as packs.
 - **Two learners**:
   - `src/learn.rs` for fixed-width register ISAs: one-hot probes XORed
     against a baseline map each operand bit to its encoding bit — which
@@ -62,7 +66,7 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   slot with slack, calls routed through counting trampolines, so an edited
   function recompiles in place and a hot one is promoted through the full
   pipeline without disturbing its neighbours.
-- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 96
+- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 164
   cases with expectations embedded as `;! gcd 48 36 -> 12` directives, run
   identically against every backend — including arm64 under
   qemu-system-aarch64 as an independent second referee for the same bytes
@@ -100,6 +104,10 @@ cargo run -- -O0 run examples/sum.ssa sum 100
 cargo run -- --int=i32 run suite/abstract.ssa agcd 1071 462   # -> 21
 cargo run -- --int=i32 test wasm
 
+# narrow types and packs
+cargo run -- run suite/bits.ssa add5 15 1          # i5: 15 + 1 -> -16
+cargo run -- run suite/packs.ssa mkrgb 31 63 1     # -> 4095 (b:g:r = 1:63:31)
+
 # the incremental compiler. Edit the file while this runs — changed
 # functions recompile in place at level 0, and functions that get hot
 # are automatically promoted through the full pass pipeline.
@@ -114,7 +122,9 @@ are checked in, so the backends and suite work without re-learning.
 
 ## Status
 
-Integer-only, three targets, everything differentially verified. What is
+Integers of every width and packed bitfields, three targets, everything
+differentially verified (the arm64 backend additionally checks every
+narrow-type op against the const-folder's model over every value pair). What is
 deliberately not here yet, from `future-work.md`: floats (the types are
 reserved; `float` will join `int` in the replacement policy), indirect
 calls / function pointers, external (libc) calls from JIT'd code, a

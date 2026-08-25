@@ -1,4 +1,4 @@
-; 64-bit arithmetic, one op per function
+; 64-bit arithmetic, one op per function; signedness comes from the types
 ;! add 3 4 -> 7
 ;! add -3 4 -> 1
 ;! sub 3 10 -> -7
@@ -13,7 +13,7 @@
 ;! xort 12 10 -> 6
 ;! shlt 3 62 -> -4611686018427387904
 ;! lshrt -1 60 -> 15
-;! ashrt -8 2 -> -2
+;! shrt -8 2 -> -2
 
 fn @add(%a: i64, %b: i64) -> i64 {
 ^entry:
@@ -32,22 +32,22 @@ fn @mul(%a: i64, %b: i64) -> i64 {
 }
 fn @sdivt(%a: i64, %b: i64) -> i64 {
 ^entry:
-    %r: i64 = sdiv %a, %b
+    %r: i64 = div %a, %b
     ret %r
 }
-fn @udivt(%a: i64, %b: i64) -> i64 {
+fn @udivt(%a: u64, %b: u64) -> u64 {
 ^entry:
-    %r: i64 = udiv %a, %b
+    %r: u64 = div %a, %b
     ret %r
 }
 fn @sremt(%a: i64, %b: i64) -> i64 {
 ^entry:
-    %r: i64 = srem %a, %b
+    %r: i64 = rem %a, %b
     ret %r
 }
-fn @uremt(%a: i64, %b: i64) -> i64 {
+fn @uremt(%a: u64, %b: u64) -> u64 {
 ^entry:
-    %r: i64 = urem %a, %b
+    %r: u64 = rem %a, %b
     ret %r
 }
 fn @andt(%a: i64, %b: i64) -> i64 {
@@ -70,13 +70,13 @@ fn @shlt(%a: i64, %b: i64) -> i64 {
     %r: i64 = shl %a, %b
     ret %r
 }
-fn @lshrt(%a: i64, %b: i64) -> i64 {
+fn @lshrt(%a: u64, %b: u64) -> u64 {
 ^entry:
-    %r: i64 = lshr %a, %b
+    %r: u64 = shr %a, %b
     ret %r
 }
-fn @ashrt(%a: i64, %b: i64) -> i64 {
+fn @shrt(%a: i64, %b: i64) -> i64 {
 ^entry:
-    %r: i64 = ashr %a, %b
+    %r: i64 = shr %a, %b
     ret %r
 }

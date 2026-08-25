@@ -18,10 +18,12 @@
 //! file format — the analogue of the Mach-O/mmap layer on arm64 — not the
 //! instruction encoding.
 //!
-//! Types: i64 -> i64; i32/i1 -> i32 (i1 as 0/1); ptr -> i32 (an offset
-//! into the module's linear memory).
+//! Types: anything up to 32 bits is an i32 local, wider is i64; ptr is an
+//! i32 offset into the module's linear memory. Values are canonical in
+//! their local (`iN` sign-extended, `uN`/ptr/packs zero-extended, see
+//! `ssa::Repr`); narrow results re-normalize with a shift pair or a mask.
 
-use crate::ssa::{BinOp, CastOp, Cond, Function, Inst, Module, Type, ValueId};
+use crate::ssa::{BinOp, Cond, Function, Inst, Module, Repr, ValueId};
 use crate::wlearn::{encode_pieces, uleb, Piece};
 use std::collections::HashMap;
 
@@ -104,16 +106,31 @@ fn normalize_key(template: &str) -> String {
 // ---------------------------------------------------------------------------
 // Compilation
 
-fn valtype(ty: Type) -> u8 {
-    match ty {
-        Type::I64 => 0x7E,
-        Type::I32 | Type::I1 | Type::Ptr => 0x7F,
-        Type::Int => unreachable!("abstract types are resolved before emission"),
+/// a value's representation on wasm: as in `Function::repr`, except that
+/// pointers are 32-bit offsets into linear memory
+pub fn wrepr(f: &Function, ty: crate::ssa::Type) -> Repr {
+    if ty == crate::ssa::Type::Ptr {
+        Repr::U(32)
+    } else {
+        f.repr(ty)
     }
 }
 
-fn is64(ty: Type) -> bool {
-    ty == Type::I64
+fn valtype(r: Repr) -> u8 {
+    if r.container() == 64 {
+        0x7E
+    } else {
+        0x7F
+    }
+}
+
+/// "i32" or "i64": the instruction prefix for a value's container
+fn pfx(r: Repr) -> &'static str {
+    if r.container() == 64 {
+        "i64"
+    } else {
+        "i32"
+    }
 }
 
 pub fn compile(module: &Module, enc: &WEncoder) -> Result<Vec<u8>, String> {
@@ -127,8 +144,8 @@ pub fn compile(module: &Module, enc: &WEncoder) -> Result<Vec<u8>, String> {
     let mut types: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let mut ftype = Vec::new();
     for f in module.funcs.iter() {
-        let params: Vec<u8> = f.params.iter().map(|&p| valtype(f.ty(p))).collect();
-        let results: Vec<u8> = f.rets.iter().map(|&t| valtype(t)).collect();
+        let params: Vec<u8> = f.params.iter().map(|&p| valtype(wrepr(f, f.ty(p)))).collect();
+        let results: Vec<u8> = f.rets.iter().map(|&t| valtype(wrepr(f, t))).collect();
         let sig = (params, results);
         let idx = match types.iter().position(|t| *t == sig) {
             Some(i) => i,
@@ -225,6 +242,101 @@ impl WEmit<'_> {
         self.op("local.set {}", Some(idx))
     }
 
+    fn repr(&self, v: ValueId) -> Repr {
+        wrepr(self.func, self.func.ty(v))
+    }
+
+    fn konst(&mut self, r: Repr, v: i64) -> Result<(), String> {
+        if r.container() == 64 {
+            self.op("i64.const {}", Some(v))
+        } else {
+            self.op("i32.const {}", Some(v as i32 as i64))
+        }
+    }
+
+    /// re-normalize the stack top (in r's container) to canonical `r`
+    fn norm(&mut self, r: Repr) -> Result<(), String> {
+        let n = r.bits();
+        let c = r.container();
+        if n == c {
+            return Ok(());
+        }
+        let p = pfx(r);
+        if r.signed() {
+            let k = (c - n) as i64;
+            self.konst(r, k)?;
+            self.op(&format!("{}.shl", p), None)?;
+            self.konst(r, k)?;
+            self.op(&format!("{}.shr_s", p), None)
+        } else {
+            self.konst(r, (1i64 << n) - 1)?;
+            self.op(&format!("{}.and", p), None)
+        }
+    }
+
+    /// stack top: a canonical `from` value; leave a canonical `to` value
+    fn cast(&mut self, from: Repr, to: Repr) -> Result<(), String> {
+        match (from.container(), to.container()) {
+            (32, 64) => {
+                self.op(
+                    if from.signed() { "i64.extend_i32_s" } else { "i64.extend_i32_u" },
+                    None,
+                )?;
+                if !from.fits_in(to) {
+                    self.norm(to)?;
+                }
+                Ok(())
+            }
+            (64, 32) => {
+                self.op("i32.wrap_i64", None)?;
+                self.norm(to)
+            }
+            _ => {
+                if from.fits_in(to) {
+                    Ok(())
+                } else {
+                    self.norm(to)
+                }
+            }
+        }
+    }
+
+    /// stack top: a pack of container `c`; leave field (off, w) as canonical `fr`
+    fn extract(&mut self, c: u32, off: u32, fr: Repr) -> Result<(), String> {
+        let p = if c == 64 { "i64" } else { "i32" };
+        if off > 0 {
+            if c == 64 {
+                self.op("i64.const {}", Some(off as i64))?;
+            } else {
+                self.op("i32.const {}", Some(off as i64))?;
+            }
+            self.op(&format!("{}.shr_u", p), None)?;
+        }
+        if c == 64 && fr.container() == 32 {
+            self.op("i32.wrap_i64", None)?;
+        }
+        self.norm(fr)
+    }
+
+    /// stack top: a canonical value of `vr`; leave its low `w` bits moved
+    /// to `off` in a container of `c`, zero elsewhere
+    fn place(&mut self, c: u32, vr: Repr, off: u32, w: u32) -> Result<(), String> {
+        let p = if c == 64 { "i64" } else { "i32" };
+        if c == 64 && vr.container() == 32 {
+            self.op("i64.extend_i32_u", None)?;
+        }
+        let cr = Repr::U(c);
+        if w < c {
+            self.konst(cr, (1i64 << w) - 1)?;
+            self.op(&format!("{}.and", p), None)?;
+        }
+        if off > 0 {
+            self.konst(cr, off as i64)?;
+            self.op(&format!("{}.shl", p), None)?;
+        }
+        Ok(())
+    }
+
     /// jump to SSA block `target`: pass args, set the label, br to the
     /// dispatcher loop. `extra_depth` counts if/else nesting at this point.
     fn jump(
@@ -268,7 +380,7 @@ fn compile_function(
         if local_of[id] < 0 {
             local_of[id] = next;
             next += 1;
-            extra_types.push(valtype(func.ty(ValueId(id as u32))));
+            extra_types.push(valtype(wrepr(func, func.ty(ValueId(id as u32)))));
         }
     }
     let label_local = next;
@@ -324,55 +436,82 @@ fn compile_function(
     Ok(body)
 }
 
-fn binop_key(op: BinOp, ty: Type) -> String {
-    let base = match op {
-        BinOp::IAdd => "add",
-        BinOp::ISub => "sub",
-        BinOp::IMul => "mul",
-        BinOp::SDiv => "div_s",
-        BinOp::UDiv => "div_u",
-        BinOp::SRem => "rem_s",
-        BinOp::URem => "rem_u",
-        BinOp::And => "and",
-        BinOp::Or => "or",
-        BinOp::Xor => "xor",
-        BinOp::Shl => "shl",
-        BinOp::LShr => "shr_u",
-        BinOp::AShr => "shr_s",
+fn binop_key(op: BinOp, r: Repr) -> String {
+    let base = match (op, r.signed()) {
+        (BinOp::IAdd, _) => "add",
+        (BinOp::ISub, _) => "sub",
+        (BinOp::IMul, _) => "mul",
+        (BinOp::Div, true) => "div_s",
+        (BinOp::Div, false) => "div_u",
+        (BinOp::Rem, true) => "rem_s",
+        (BinOp::Rem, false) => "rem_u",
+        (BinOp::And, _) => "and",
+        (BinOp::Or, _) => "or",
+        (BinOp::Xor, _) => "xor",
+        (BinOp::Shl, _) => "shl",
+        (BinOp::Shr, true) => "shr_s",
+        (BinOp::Shr, false) => "shr_u",
     };
-    format!("{}.{}", if is64(ty) { "i64" } else { "i32" }, base)
+    format!("{}.{}", pfx(r), base)
 }
 
-fn cmp_key(cond: Cond, ty: Type) -> String {
-    let base = match cond {
-        Cond::Eq => "eq",
-        Cond::Ne => "ne",
-        Cond::Slt => "lt_s",
-        Cond::Sle => "le_s",
-        Cond::Sgt => "gt_s",
-        Cond::Sge => "ge_s",
-        Cond::Ult => "lt_u",
-        Cond::Ule => "le_u",
-        Cond::Ugt => "gt_u",
-        Cond::Uge => "ge_u",
+fn cmp_key(cond: Cond, r: Repr) -> String {
+    let base = match (cond, r.signed()) {
+        (Cond::Eq, _) => "eq",
+        (Cond::Ne, _) => "ne",
+        (Cond::Lt, true) => "lt_s",
+        (Cond::Le, true) => "le_s",
+        (Cond::Gt, true) => "gt_s",
+        (Cond::Ge, true) => "ge_s",
+        (Cond::Lt, false) => "lt_u",
+        (Cond::Le, false) => "le_u",
+        (Cond::Gt, false) => "gt_u",
+        (Cond::Ge, false) => "ge_u",
     };
-    format!("{}.{}", if is64(ty) { "i64" } else { "i32" }, base)
+    format!("{}.{}", pfx(r), base)
 }
 
 fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), String> {
     match inst {
         Inst::IConst { dst, imm } => {
-            if is64(e.func.ty(*dst)) {
-                e.op("i64.const {}", Some(*imm))?;
-            } else {
-                e.op("i32.const {}", Some(*imm as i32 as i64))?;
-            }
+            let r = e.repr(*dst);
+            e.konst(r, crate::opt::norm(r, *imm))?;
             e.set(*dst)
         }
         Inst::Bin { op, dst, lhs, rhs } => {
+            let r = e.repr(*dst);
+            let (n, c) = (r.bits(), r.container());
+            let full = n == c;
             e.get(*lhs)?;
-            e.get(*rhs)?;
-            e.op(&binop_key(*op, e.func.ty(*dst)), None)?;
+            match op {
+                BinOp::Shl | BinOp::Shr if !full => {
+                    if n == 1 {
+                        // any amount mod 1 is 0: the value passes through
+                    } else {
+                        e.get(*rhs)?;
+                        if n.is_power_of_two() {
+                            e.konst(r, n as i64 - 1)?;
+                            e.op(&format!("{}.and", pfx(r)), None)?;
+                        } else {
+                            e.konst(r, n as i64)?;
+                            e.op(&format!("{}.rem_u", pfx(r)), None)?;
+                        }
+                        e.op(&binop_key(*op, r), None)?;
+                        if *op == BinOp::Shl {
+                            e.norm(r)?;
+                        }
+                    }
+                }
+                _ => {
+                    e.get(*rhs)?;
+                    e.op(&binop_key(*op, r), None)?;
+                    let carries = matches!(op, BinOp::IAdd | BinOp::ISub | BinOp::IMul)
+                        || (*op == BinOp::Div && r.signed());
+                    if !full && carries {
+                        e.norm(r)?;
+                    }
+                }
+            }
             e.set(*dst)
         }
         Inst::ICmp {
@@ -383,72 +522,97 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
         } => {
             e.get(*lhs)?;
             e.get(*rhs)?;
-            e.op(&cmp_key(*cond, e.func.ty(*lhs)), None)?;
+            e.op(&cmp_key(*cond, e.repr(*lhs)), None)?;
             e.set(*dst)
         }
-        Inst::Cast { op, dst, src } => {
-            let from = e.func.ty(*src);
-            let to = e.func.ty(*dst);
-            match (op, from, to) {
-                // i1 sign-extension: 0/1 -> 0/-1, computed as 0 - v
-                (CastOp::Sext, Type::I1, Type::I64) => {
-                    e.op("i64.const {}", Some(0))?;
-                    e.get(*src)?;
-                    e.op("i64.extend_i32_u", None)?;
-                    e.op("i64.sub", None)?;
+        Inst::Cast { dst, src, .. } => {
+            let from = e.repr(*src);
+            let to = e.repr(*dst);
+            e.get(*src)?;
+            e.cast(from, to)?;
+            e.set(*dst)
+        }
+        Inst::Get { dst, src, field } => {
+            let (off, fty) = e.func.field(e.func.ty(*src), *field).unwrap();
+            let fr = e.func.repr(fty);
+            let c = e.repr(*src).container();
+            e.get(*src)?;
+            e.extract(c, off, fr)?;
+            e.set(*dst)
+        }
+        Inst::Set {
+            dst,
+            src,
+            field,
+            val,
+        } => {
+            let (off, fty) = e.func.field(e.func.ty(*src), *field).unwrap();
+            let w = e.func.width(fty).unwrap();
+            let r = e.repr(*src);
+            let c = r.container();
+            let mask = if w >= 64 { -1i64 } else { (1i64 << w) - 1 } << off;
+            e.get(*src)?;
+            e.konst(r, !mask)?;
+            e.op(&format!("{}.and", pfx(r)), None)?;
+            e.get(*val)?;
+            e.place(c, e.repr(*val), off, w)?;
+            e.op(&format!("{}.or", pfx(r)), None)?;
+            e.set(*dst)
+        }
+        Inst::Pack { dst, args } => {
+            let ty = e.func.ty(*dst);
+            let r = e.repr(*dst);
+            let c = r.container();
+            for (k, &a) in args.iter().enumerate() {
+                let (off, fty) = e.func.field(ty, k as u32).unwrap();
+                let w = e.func.width(fty).unwrap();
+                e.get(a)?;
+                e.place(c, e.repr(a), off, w)?;
+                if k > 0 {
+                    e.op(&format!("{}.or", pfx(r)), None)?;
                 }
-                (CastOp::Sext, Type::I1, Type::I32) => {
-                    e.op("i32.const {}", Some(0))?;
-                    e.get(*src)?;
-                    e.op("i32.sub", None)?;
-                }
-                (CastOp::Sext, Type::I32, Type::I64) => {
-                    e.get(*src)?;
-                    e.op("i64.extend_i32_s", None)?;
-                }
-                (CastOp::Zext, Type::I1, Type::I64) | (CastOp::Zext, Type::I32, Type::I64) => {
-                    e.get(*src)?;
-                    e.op("i64.extend_i32_u", None)?;
-                }
-                (CastOp::Zext, Type::I1, Type::I32) => {
-                    e.get(*src)?; // already a 0/1 i32
-                }
-                (CastOp::Trunc, Type::I64, Type::I32) => {
-                    e.get(*src)?;
-                    e.op("i32.wrap_i64", None)?;
-                }
-                (CastOp::Trunc, Type::I64, Type::I1) => {
-                    e.get(*src)?;
-                    e.op("i32.wrap_i64", None)?;
-                    e.op("i32.const {}", Some(1))?;
-                    e.op("i32.and", None)?;
-                }
-                (CastOp::Trunc, Type::I32, Type::I1) => {
-                    e.get(*src)?;
-                    e.op("i32.const {}", Some(1))?;
-                    e.op("i32.and", None)?;
-                }
-                _ => return Err(format!("unsupported cast {:?} -> {:?}", from, to)),
             }
             e.set(*dst)
+        }
+        Inst::Unpack { dsts, src } => {
+            let ty = e.func.ty(*src);
+            let c = e.repr(*src).container();
+            for (k, &d) in dsts.iter().enumerate() {
+                let (off, fty) = e.func.field(ty, k as u32).unwrap();
+                let fr = e.func.repr(fty);
+                e.get(*src)?;
+                e.extract(c, off, fr)?;
+                e.set(d)?;
+            }
+            Ok(())
         }
         Inst::Load { dst, addr } => {
+            let r = e.repr(*dst);
             e.get(*addr)?;
-            if is64(e.func.ty(*dst)) {
-                e.op("i64.load offset={}", Some(0))?;
-            } else {
-                e.op("i32.load offset={}", Some(0))?;
-            }
+            let t = match (r.bits(), r.signed()) {
+                (8, true) => "i32.load8_s offset={}",
+                (8, false) => "i32.load8_u offset={}",
+                (16, true) => "i32.load16_s offset={}",
+                (16, false) => "i32.load16_u offset={}",
+                (32, _) => "i32.load offset={}",
+                (64, _) => "i64.load offset={}",
+                (n, _) => return Err(format!("no {}-bit memory access", n)),
+            };
+            e.op(t, Some(0))?;
             e.set(*dst)
         }
         Inst::Store { val, addr } => {
+            let r = e.repr(*val);
             e.get(*addr)?;
             e.get(*val)?;
-            if is64(e.func.ty(*val)) {
-                e.op("i64.store offset={}", Some(0))
-            } else {
-                e.op("i32.store offset={}", Some(0))
-            }
+            let t = match r.bits() {
+                8 => "i32.store8 offset={}",
+                16 => "i32.store16 offset={}",
+                32 => "i32.store offset={}",
+                64 => "i64.store offset={}",
+                n => return Err(format!("no {}-bit memory access", n)),
+            };
+            e.op(t, Some(0))
         }
         Inst::PtrAdd { dst, base, off } => {
             e.get(*base)?;

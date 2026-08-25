@@ -35,7 +35,14 @@ inst lui {r}, {i 0..1048575}
 inst ld {r}, {i -2048..2047}({r})
 inst sd {r}, {i -2048..2047}({r})
 inst lw {r}, {i -2048..2047}({r})
+inst lwu {r}, {i -2048..2047}({r})
 inst sw {r}, {i -2048..2047}({r})
+inst lb {r}, {i -2048..2047}({r})
+inst lbu {r}, {i -2048..2047}({r})
+inst lh {r}, {i -2048..2047}({r})
+inst lhu {r}, {i -2048..2047}({r})
+inst sb {r}, {i -2048..2047}({r})
+inst sh {r}, {i -2048..2047}({r})
 
 ; scrambled-immediate territory
 inst beq {r}, {r}, {i -4096..4094 /2}

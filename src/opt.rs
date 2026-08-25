@@ -15,7 +15,7 @@
 //! gradual work is (function, pass).
 
 use crate::regalloc::{inst_defs, inst_uses};
-use crate::ssa::{BinOp, BlockId, CastOp, Cond, Function, Inst, Module, Type, ValueId};
+use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, ValueId};
 
 pub type PassFn = fn(&mut Function);
 
@@ -172,19 +172,20 @@ fn const_fold(func: &mut Function) {
         for block in &func.blocks {
             for inst in &block.insts {
                 if let Inst::IConst { dst, imm } = inst {
-                    consts[dst.0 as usize] = Some(*imm);
+                    consts[dst.0 as usize] = Some(norm(func.repr(func.ty(*dst)), *imm));
                 }
             }
         }
         let get = |v: ValueId| consts[v.0 as usize];
-        let mut changed = false;
-        for block in &mut func.blocks {
-            for inst in &mut block.insts {
+        // decide every replacement on the immutable function, then apply
+        let mut new_insts: Vec<(usize, usize, Vec<Inst>)> = Vec::new();
+        for (bi, block) in func.blocks.iter().enumerate() {
+            for (ii, inst) in block.insts.iter().enumerate() {
                 let folded: Option<(ValueId, i64)> = match inst {
                     Inst::Bin { op, dst, lhs, rhs } => match (get(*lhs), get(*rhs)) {
                         (Some(a), Some(b)) => {
-                            fold_bin(*op, func.values[dst.0 as usize].ty, a, b)
-                                .map(|v| (*dst, v))
+                            let r = func.repr(func.values[dst.0 as usize].ty);
+                            fold_bin(*op, r, a, b).map(|v| (*dst, v))
                         }
                         _ => None,
                     },
@@ -195,111 +196,166 @@ fn const_fold(func: &mut Function) {
                         rhs,
                     } => match (get(*lhs), get(*rhs)) {
                         (Some(a), Some(b)) => {
-                            let ty = func.values[lhs.0 as usize].ty;
-                            Some((*dst, fold_cmp(*cond, ty, a, b) as i64))
+                            let r = func.repr(func.values[lhs.0 as usize].ty);
+                            Some((*dst, fold_cmp(*cond, r, a, b) as i64))
                         }
                         _ => None,
                     },
-                    Inst::Cast { op, dst, src } => get(*src).map(|a| {
-                        let from = func.values[src.0 as usize].ty;
-                        let to = func.values[dst.0 as usize].ty;
-                        (*dst, fold_cast(*op, from, to, a))
+                    // every cast of a canonical value is "re-normalize for
+                    // the destination": ext keeps the value (or reinterprets
+                    // a negative as unsigned), trunc keeps the low bits,
+                    // bitcast keeps all the bits
+                    Inst::Cast { dst, src, .. } => get(*src).map(|a| {
+                        let to = func.repr(func.values[dst.0 as usize].ty);
+                        (*dst, norm(to, a))
                     }),
+                    Inst::Get { dst, src, field } => get(*src).map(|a| {
+                        let (off, fty) = func.field(func.ty(*src), *field).unwrap();
+                        let r = func.repr(fty);
+                        (*dst, norm(r, a >> off))
+                    }),
+                    Inst::Set {
+                        dst,
+                        src,
+                        field,
+                        val,
+                    } => match (get(*src), get(*val)) {
+                        (Some(a), Some(v)) => {
+                            let (off, fty) = func.field(func.ty(*src), *field).unwrap();
+                            let w = func.width(fty).unwrap();
+                            let mask = low_mask(w) << off;
+                            let r = func.repr(func.ty(*dst));
+                            Some((*dst, norm(r, (a & !mask) | ((v << off) & mask))))
+                        }
+                        _ => None,
+                    },
+                    Inst::Pack { dst, args } => {
+                        let vals: Option<Vec<i64>> = args.iter().map(|&a| get(a)).collect();
+                        vals.map(|vals| {
+                            let p = func.pack(func.ty(*dst)).unwrap();
+                            let mut acc = 0i64;
+                            for (k, v) in vals.iter().enumerate() {
+                                let w = func.width(p.fields[k].1).unwrap();
+                                acc |= (v & low_mask(w)) << p.offsets[k];
+                            }
+                            (*dst, norm(func.repr(func.ty(*dst)), acc))
+                        })
+                    }
+                    Inst::Unpack { dsts, src } => {
+                        if let Some(a) = get(*src) {
+                            let ty = func.ty(*src);
+                            let consts: Vec<Inst> = dsts
+                                .iter()
+                                .enumerate()
+                                .map(|(k, &d)| {
+                                    let (off, fty) = func.field(ty, k as u32).unwrap();
+                                    Inst::IConst {
+                                        dst: d,
+                                        imm: norm(func.repr(fty), a >> off),
+                                    }
+                                })
+                                .collect();
+                            new_insts.push((bi, ii, consts));
+                        }
+                        None
+                    }
                     _ => None,
                 };
                 if let Some((dst, imm)) = folded {
-                    *inst = Inst::IConst { dst, imm };
-                    changed = true;
+                    new_insts.push((bi, ii, vec![Inst::IConst { dst, imm }]));
                 }
             }
         }
-        if !changed {
+        if new_insts.is_empty() {
             break;
         }
+        // later indices first, so an unpack's several iconsts don't shift
+        // the positions still to be replaced
+        for (bi, ii, consts) in new_insts.into_iter().rev() {
+            func.blocks[bi].insts.splice(ii..ii + 1, consts);
+        }
     }
 }
 
-fn norm(ty: Type, v: i64) -> i64 {
-    match ty {
-        Type::I32 => (v as u32) as i64, // stored zero-extended
-        Type::I1 => v & 1,
-        _ => v,
-    }
-}
-
-fn fold_bin(op: BinOp, ty: Type, a: i64, b: i64) -> Option<i64> {
-    let v = if ty == Type::I32 {
-        let (a, b) = (a as i32, b as i32);
-        let r: i32 = match op {
-            BinOp::IAdd => a.wrapping_add(b),
-            BinOp::ISub => a.wrapping_sub(b),
-            BinOp::IMul => a.wrapping_mul(b),
-            BinOp::SDiv | BinOp::SRem if b == 0 || (a == i32::MIN && b == -1) => return None,
-            BinOp::UDiv | BinOp::URem if b == 0 => return None,
-            BinOp::SDiv => a.wrapping_div(b),
-            BinOp::UDiv => ((a as u32) / (b as u32)) as i32,
-            BinOp::SRem => a.wrapping_rem(b),
-            BinOp::URem => ((a as u32) % (b as u32)) as i32,
-            BinOp::And => a & b,
-            BinOp::Or => a | b,
-            BinOp::Xor => a ^ b,
-            BinOp::Shl => a.wrapping_shl(b as u32 & 31),
-            BinOp::LShr => ((a as u32) >> (b as u32 & 31)) as i32,
-            BinOp::AShr => a >> (b as u32 & 31),
-        };
-        r as i64
+fn low_mask(bits: u32) -> i64 {
+    if bits >= 64 {
+        -1
     } else {
-        match op {
-            BinOp::IAdd => a.wrapping_add(b),
-            BinOp::ISub => a.wrapping_sub(b),
-            BinOp::IMul => a.wrapping_mul(b),
-            BinOp::SDiv | BinOp::SRem if b == 0 || (a == i64::MIN && b == -1) => return None,
-            BinOp::UDiv | BinOp::URem if b == 0 => return None,
-            BinOp::SDiv => a.wrapping_div(b),
-            BinOp::UDiv => ((a as u64) / (b as u64)) as i64,
-            BinOp::SRem => a.wrapping_rem(b),
-            BinOp::URem => ((a as u64) % (b as u64)) as i64,
-            BinOp::And => a & b,
-            BinOp::Or => a | b,
-            BinOp::Xor => a ^ b,
-            BinOp::Shl => a.wrapping_shl(b as u32 & 63),
-            BinOp::LShr => ((a as u64) >> (b as u64 & 63)) as i64,
-            BinOp::AShr => a >> (b as u64 & 63),
+        (1i64 << bits) - 1
+    }
+}
+
+/// The canonical i64 holding an N-bit value: sign-extended for signed
+/// types, zero-extended for unsigned (this is also the value every backend
+/// keeps in a register, and what the suite prints).
+pub fn norm(r: Repr, v: i64) -> i64 {
+    let n = r.bits();
+    if n >= 64 {
+        return v;
+    }
+    let shift = 64 - n;
+    match r {
+        Repr::S(_) => (v << shift) >> shift,
+        Repr::U(_) => ((v as u64) << shift >> shift) as i64,
+    }
+}
+
+/// N-bit arithmetic on canonical values: compute in 64 bits, then
+/// re-normalize — exactly the emitters' strategy, so this doubles as the
+/// reference model the exhaustive backend tests compare against.
+pub fn fold_bin(op: BinOp, r: Repr, a: i64, b: i64) -> Option<i64> {
+    let n = r.bits();
+    let signed = r.signed();
+    let v = match op {
+        BinOp::IAdd => a.wrapping_add(b),
+        BinOp::ISub => a.wrapping_sub(b),
+        BinOp::IMul => a.wrapping_mul(b),
+        BinOp::Div | BinOp::Rem if b == 0 => return None,
+        // the only 64-bit overflow; narrow MIN/-1 wraps like the hardware
+        BinOp::Div | BinOp::Rem if signed && n == 64 && a == i64::MIN && b == -1 => return None,
+        BinOp::Div => {
+            if signed {
+                a.wrapping_div(b)
+            } else {
+                ((a as u64) / (b as u64)) as i64
+            }
+        }
+        BinOp::Rem => {
+            if signed {
+                a.wrapping_rem(b)
+            } else {
+                ((a as u64) % (b as u64)) as i64
+            }
+        }
+        BinOp::And => a & b,
+        BinOp::Or => a | b,
+        BinOp::Xor => a ^ b,
+        // shift amounts are taken mod the type's width
+        BinOp::Shl => a.wrapping_shl(((b as u64) % n as u64) as u32),
+        BinOp::Shr => {
+            let k = ((b as u64) % n as u64) as u32;
+            if signed {
+                a >> k
+            } else {
+                ((a as u64) >> k) as i64
+            }
         }
     };
-    Some(norm(ty, v))
+    Some(norm(r, v))
 }
 
-fn fold_cmp(cond: Cond, ty: Type, a: i64, b: i64) -> bool {
-    let (sa, sb, ua, ub) = if ty == Type::I32 {
-        (a as i32 as i64, b as i32 as i64, (a as u32) as u64, (b as u32) as u64)
-    } else {
-        (a, b, a as u64, b as u64)
-    };
+pub fn fold_cmp(cond: Cond, r: Repr, a: i64, b: i64) -> bool {
+    let (ua, ub) = (a as u64, b as u64);
+    let lt = if r.signed() { a < b } else { ua < ub };
+    let gt = if r.signed() { a > b } else { ua > ub };
     match cond {
-        Cond::Eq => ua == ub,
-        Cond::Ne => ua != ub,
-        Cond::Slt => sa < sb,
-        Cond::Sle => sa <= sb,
-        Cond::Sgt => sa > sb,
-        Cond::Sge => sa >= sb,
-        Cond::Ult => ua < ub,
-        Cond::Ule => ua <= ub,
-        Cond::Ugt => ua > ub,
-        Cond::Uge => ua >= ub,
+        Cond::Eq => a == b,
+        Cond::Ne => a != b,
+        Cond::Lt => lt,
+        Cond::Le => !gt,
+        Cond::Gt => gt,
+        Cond::Ge => !lt,
     }
-}
-
-fn fold_cast(op: CastOp, from: Type, to: Type, a: i64) -> i64 {
-    let v = match (op, from) {
-        (CastOp::Sext, Type::I1) => -(a & 1),
-        (CastOp::Sext, Type::I32) => a as i32 as i64,
-        (CastOp::Zext, Type::I1) => a & 1,
-        (CastOp::Zext, Type::I32) => (a as u32) as i64,
-        (CastOp::Trunc, _) => a,
-        _ => a,
-    };
-    norm(to, v)
 }
 
 // ---------------------------------------------------------------------------
@@ -323,12 +379,14 @@ fn dce(func: &mut Function) {
         Inst::IConst { .. }
         | Inst::ICmp { .. }
         | Inst::Cast { .. }
+        | Inst::Pack { .. }
+        | Inst::Unpack { .. }
+        | Inst::Get { .. }
+        | Inst::Set { .. }
         | Inst::PtrAdd { .. }
         | Inst::Load { .. } => true,
         Inst::Bin { op, rhs, .. } => match op {
-            BinOp::SDiv | BinOp::UDiv | BinOp::SRem | BinOp::URem => {
-                matches!(consts[rhs.0 as usize], Some(v) if v != 0)
-            }
+            BinOp::Div | BinOp::Rem => matches!(consts[rhs.0 as usize], Some(v) if v != 0),
             _ => true,
         },
         _ => false,
@@ -500,17 +558,17 @@ fn @f() -> i64 {
     %a: i64 = iconst 6
     %b: i64 = iconst 7
     %c: i64 = imul %a, %b
-    %d: i1 = icmp.slt %a, %b
-    %e: i64 = sext %d
+    %d: u1 = icmp.lt %a, %b
+    %e: i64 = ext %d
     %r: i64 = iadd %c, %e
     ret %r
 }
 ";
         let m = opt_at(src, super::MAX_LEVEL);
-        // everything folds to iconst 41, dead consts removed
+        // everything folds to iconst 43 (42 + the u1 comparison), dead consts removed
         let insts = &m.funcs[0].blocks[0].insts;
         assert_eq!(insts.len(), 2, "{}", m);
-        assert!(matches!(insts[0], ssa::Inst::IConst { imm: 41, .. }), "{}", m);
+        assert!(matches!(insts[0], ssa::Inst::IConst { imm: 43, .. }), "{}", m);
     }
 
     #[test]
@@ -521,7 +579,7 @@ fn @f() -> i64 {
 fn @count(%n: i64) -> i64 {
     %zero: i64 = iconst 0
     %r: i64 = loop(%i: i64 = %zero) {
-        %done: i1 = icmp.sge %i, %n
+        %done: u1 = icmp.ge %i, %n
         if %done {
             break %i
         }
@@ -558,7 +616,7 @@ fn @count(%n: i64) -> i64 {
 fn @g(%a: i64, %b: i64) -> i64 {
 ^entry:
     %two: i64 = iconst 2
-    %c: i1 = icmp.slt %a, %b
+    %c: u1 = icmp.lt %a, %b
     br %c, ^x, ^y
 ^x:
     jmp ^join(%two)

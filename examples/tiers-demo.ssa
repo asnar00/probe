@@ -13,7 +13,7 @@ fn @shipping(%items: i64) -> i64 {
     %cost: i64 = iadd %cost0, %base
     ; forwarding-arm if: lowered arms are empty jumps
     %limit: i64 = iconst 100000
-    %big: i1 = icmp.sgt %cost, %limit
+    %big: u1 = icmp.gt %cost, %limit
     %capped: i64 = if %big {
         yield %limit
     } else {

@@ -255,16 +255,24 @@ fn cmd_compile(path: &str, level: usize, int: ssa::Type) -> ExitCode {
 
 fn cmd_run(path: &str, fname: &str, fargs: &[i64], level: usize, int: ssa::Type) -> ExitCode {
     let result = load_module(path, level, int).and_then(|module| {
-        let nrets = module
+        let f = module
             .func(fname)
-            .map(|f| f.rets.len())
             .ok_or_else(|| format!("no function @{} in {}", fname, path))?;
+        let rets: Vec<ssa::Repr> = f.rets.iter().map(|&t| f.repr(t)).collect();
+        // a register holds the canonical value only up to the type's
+        // container: read the result through the declared return type
+        let fix = |i: usize, x: i64| match rets.get(i) {
+            Some(r) if r.container() == 32 => opt::norm(*r, x as u32 as i64),
+            _ => x,
+        };
         let enc = emit::Encoder::load(ENCODINGS)?;
         let compiled = emit::compile(&module, &enc)?;
         let jit = emit::jit::JitCode::new(&compiled)?;
-        match nrets {
-            2 => jit.call2(fname, fargs).map(|(a, b)| format!("{}, {}", a, b)),
-            n if n <= 1 => jit.call(fname, fargs).map(|v| v.to_string()),
+        match rets.len() {
+            2 => jit
+                .call2(fname, fargs)
+                .map(|(a, b)| format!("{}, {}", fix(0, a), fix(1, b))),
+            n if n <= 1 => jit.call(fname, fargs).map(|v| fix(0, v).to_string()),
             n => Err(format!("{} return values not supported by the runner", n)),
         }
     });

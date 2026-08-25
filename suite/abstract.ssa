@@ -18,11 +18,11 @@
 fn @agcd(%a: int, %b: int) -> int {
     %g: int = loop(%x: int = %a, %y: int = %b) {
         %zero: int = iconst 0
-        %done: i1 = icmp.eq %y, %zero
+        %done: u1 = icmp.eq %y, %zero
         if %done {
             break %x
         }
-        %r: int = srem %x, %y
+        %r: int = rem %x, %y
         continue %y, %r
     }
     ret %g
@@ -31,7 +31,7 @@ fn @agcd(%a: int, %b: int) -> int {
 fn @asum(%n: int) -> int {
     %zero: int = iconst 0
     %r: int = loop(%i: int = %zero, %acc: int = %zero) {
-        %done: i1 = icmp.sge %i, %n
+        %done: u1 = icmp.ge %i, %n
         if %done {
             break %acc
         }
@@ -45,7 +45,7 @@ fn @asum(%n: int) -> int {
 
 fn @afib(%n: int) -> int {
     %two: int = iconst 2
-    %small: i1 = icmp.slt %n, %two
+    %small: u1 = icmp.lt %n, %two
     if %small {
         ret %n
     }
@@ -58,13 +58,13 @@ fn @afib(%n: int) -> int {
     ret %r
 }
 
-; abstract and concrete types mix freely: i1 conditions, int arithmetic
+; abstract and concrete types mix freely: u1 conditions, int arithmetic
 fn @aclamp(%v: int, %lo: int, %hi: int) -> int {
-    %below: i1 = icmp.slt %v, %lo
+    %below: u1 = icmp.lt %v, %lo
     %r: int = if %below {
         yield %lo
     } else {
-        %above: i1 = icmp.sgt %v, %hi
+        %above: u1 = icmp.gt %v, %hi
         %s: int = if %above {
             yield %hi
         } else {
@@ -75,10 +75,10 @@ fn @aclamp(%v: int, %lo: int, %hi: int) -> int {
     ret %r
 }
 
-fn @aeven(%n: int) -> i1 {
+fn @aeven(%n: int) -> u1 {
     %one: int = iconst 1
     %bit: int = and %n, %one
     %flip: int = xor %bit, %one
-    %r: i1 = trunc %flip
+    %r: u1 = trunc %flip
     ret %r
 }

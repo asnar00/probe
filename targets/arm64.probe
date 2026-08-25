@@ -73,6 +73,7 @@ inst str {w}, [{x}, #{i 0..16380 /4}]
 inst ldr {x}, [{x}, {x}]
 inst str {x}, [{x}, {x}]
 inst ldrsw {x}, [{x}, #{i 0..16380 /4}]
+inst ldr {w}, [{x}, {x}]
 
 ; --- branches (pc-relative, signed offsets) ---
 inst b #{i -134217728..134217724 /4}
@@ -110,12 +111,25 @@ inst csel {w}, {w}, {w}, {e eq|ne|lt|le|gt|ge|lo|ls|hi|hs}
 inst cbz {w}, #{i -1048576..1048572 /4}
 inst cbnz {w}, #{i -1048576..1048572 /4}
 
-; --- i1 casts: fixed logical/bitfield immediates baked into the template ---
-; zext from i1 = mask to the low bit; sext from i1 = replicate the low bit
-inst and {w}, {w}, #1
-inst and {x}, {x}, #1
-inst sbfx {w}, {w}, #0, #1
-inst sbfx {x}, {x}, #0, #1
+; --- bitfield moves: the machinery behind every narrow type ---
+; sbfm/ubfm with raw immr/imms are linear (the sbfx/ubfx/bfi aliases fold
+; lsb+width into imms, which is not); the emitter computes the raw fields.
+; sbfm #0,#N-1 sign-extends an N-bit value, ubfm #0,#N-1 zero-extends,
+; ubfm #lsb,#lsb+w-1 extracts a field, bfm #(-lsb mod size),#w-1 inserts one.
+inst sbfm {w}, {w}, #{i 0..31}, #{i 0..31}
+inst ubfm {w}, {w}, #{i 0..31}, #{i 0..31}
+inst bfm {w}, {w}, #{i 0..31}, #{i 0..31}
+inst sbfm {x}, {x}, #{i 0..63}, #{i 0..63}
+inst ubfm {x}, {x}, #{i 0..63}, #{i 0..63}
+inst bfm {x}, {x}, #{i 0..63}, #{i 0..63}
+
+; --- byte and halfword memory (8/16-bit types, sign- or zero-extending) ---
+inst ldrb {w}, [{x}, #{i 0..4095}]
+inst ldrsb {w}, [{x}, #{i 0..4095}]
+inst ldrh {w}, [{x}, #{i 0..8190 /2}]
+inst ldrsh {w}, [{x}, #{i 0..8190 /2}]
+inst strb {w}, [{x}, #{i 0..4095}]
+inst strh {w}, [{x}, #{i 0..8190 /2}]
 
 ; --- stack and frame machinery (spills, prologue/epilogue) ---
 ; sp isn't in the x class (encoding 31 means sp/zr by context), so it
