@@ -6,6 +6,15 @@ has the full story for any of them.
 
 ---
 
+### Narrow shifts just shift — `a987671` · 2026-08-25
+
+Shifting an `i5` by 5 or more no longer takes the amount mod 5 (which
+cost a `ubfm`, or a `udiv`/`msub` for non-power-of-two widths): the
+backends emit the container's shift and re-normalize, and amounts at or
+past the width are unspecified — buyer beware, like any overflow. The
+const-folder leaves those shifts alone and the exhaustive arm64 test
+skips them. `i32`/`i64` keep the hardware's mod-32/64.
+
 ### Any-width integers and packs — `542b9a5` · 2026-08-25
 
 Types are now `iN`/`uN` for any N from 1 to 64, and signedness lives in
