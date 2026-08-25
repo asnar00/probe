@@ -21,6 +21,16 @@ pub enum FOp {
     Sub,
     Mul,
     Div,
+    Sqrt,
+}
+
+impl FOp {
+    pub fn arity(self) -> usize {
+        match self {
+            FOp::Sqrt => 1,
+            _ => 2,
+        }
+    }
 }
 
 /// a floating-point op the platform has, on 32- or 64-bit floats
@@ -51,7 +61,7 @@ impl Platform {
             return Platform::none();
         }
         Platform {
-            ops: [("add", FOp::Add), ("sub", FOp::Sub), ("mul", FOp::Mul), ("div", FOp::Div)]
+            ops: [("add", FOp::Add), ("sub", FOp::Sub), ("mul", FOp::Mul), ("div", FOp::Div), ("sqrt", FOp::Sqrt)]
                 .into_iter()
                 .flat_map(|(name, op)| {
                     [
@@ -86,7 +96,7 @@ impl Platform {
             .find(|(g, a, _)| g == generic && a == args)
             .map(|(_, _, op)| *op)?;
         let is_float = |t: Type| f.pack(t).is_some() && f.width(t) == Some(op.bits);
-        let shape_ok = f.params.len() == 2
+        let shape_ok = f.params.len() == op.op.arity()
             && f.rets.len() == 1
             && f.params.iter().all(|&p| is_float(f.ty(p)))
             && is_float(f.rets[0]);

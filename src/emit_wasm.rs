@@ -379,7 +379,12 @@ fn compile_function(
         // this function *is* a platform instruction: params -> result
         let (to_f, add, to_i) = fp_keys(op);
         let mut body = vec![0u8]; // no extra locals
-        for (key, v) in [("local.get {}", Some(0)), (to_f, None), ("local.get {}", Some(1)), (to_f, None), (add, None), (to_i, None)] {
+        let mut seq = vec![("local.get {}", Some(0)), (to_f, None)];
+        if op.op.arity() == 2 {
+            seq.extend([("local.get {}", Some(1)), (to_f, None)]);
+        }
+        seq.extend([(add, None), (to_i, None)]);
+        for (key, v) in seq {
             enc.op(key, v, &mut body)?;
         }
         body.push(enc.end);
@@ -462,6 +467,7 @@ fn fp_keys(op: Native) -> (&'static str, &'static str, &'static str) {
         FOp::Sub => "sub",
         FOp::Mul => "mul",
         FOp::Div => "div",
+        FOp::Sqrt => "sqrt",
     };
     let fop: &'static str = Box::leak(format!("f{}.{}", op.bits, name).into_boxed_str());
     if op.bits == 32 {
@@ -645,8 +651,10 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             let (to_f, add, to_i) = fp_keys(op);
             e.get(args[0])?;
             e.op(to_f, None)?;
-            e.get(args[1])?;
-            e.op(to_f, None)?;
+            if op.op.arity() == 2 {
+                e.get(args[1])?;
+                e.op(to_f, None)?;
+            }
             e.op(add, None)?;
             e.op(to_i, None)?;
             e.set(dst)

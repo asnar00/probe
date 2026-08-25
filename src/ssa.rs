@@ -1956,7 +1956,24 @@ impl Parser {
                 Ok(Inst::PtrAdd { dst, base, off })
             }
             "call" => Err(self.err("'call' is implied: write name(args)".to_string())),
-            _ => Err(self.err(format!("unknown opcode '{}'", op))),
+            _ => {
+                // a library-defined operation: `sqrt a` on a float is the
+                // generic sqrt(E, M) taking float(E, M), any arity
+                let args = self.parse_value_list(scope)?;
+                let Some(&first) = args.first() else {
+                    return Err(self.err(format!("unknown opcode '{}'", op)));
+                };
+                let Type::Pack(i) = scope.values[first.0 as usize].ty else {
+                    return Err(self.err(format!("unknown opcode '{}'", op)));
+                };
+                let origin = self.packs[i as usize].origin.clone();
+                let callee = self.dispatch(op, origin.as_ref(), &self.packs[i as usize].name.clone())?;
+                Ok(Inst::Call {
+                    dsts: vec![dst],
+                    callee,
+                    args,
+                })
+            }
         }
     }
 

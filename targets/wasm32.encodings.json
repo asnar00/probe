@@ -78,6 +78,8 @@
     {"template": "f64.sub", "verified": 1, "pieces": [{"fixed": "a1"}]},
     {"template": "f64.mul", "verified": 1, "pieces": [{"fixed": "a2"}]},
     {"template": "f64.div", "verified": 1, "pieces": [{"fixed": "a3"}]},
+    {"template": "f32.sqrt", "verified": 1, "pieces": [{"fixed": "91"}]},
+    {"template": "f64.sqrt", "verified": 1, "pieces": [{"fixed": "9f"}]},
     {"template": "drop", "verified": 1, "pieces": [{"fixed": "1a"}]},
     {"template": "block", "verified": 1, "pieces": [{"fixed": "0240"}]},
     {"template": "loop", "verified": 1, "pieces": [{"fixed": "0340"}]},

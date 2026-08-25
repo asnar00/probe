@@ -81,6 +81,8 @@ inst fadd.d {f}, {f}, {f}
 inst fsub.d {f}, {f}, {f}
 inst fmul.d {f}, {f}, {f}
 inst fdiv.d {f}, {f}, {f}
+inst fsqrt.s {f}, {f}
+inst fsqrt.d {f}, {f}
 inst fmv.w.x {f}, {r}
 inst fmv.x.w {r}, {f}
 inst fmv.d.x {f}, {r}

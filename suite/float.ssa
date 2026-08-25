@@ -1,5 +1,5 @@
 ; IEEE-style floating point as packs plus integer instructions: generic
-; add, sub, mul, div over float(E, M), instantiated for every format below.
+; add, sub, mul, div, sqrt over float(E, M), instantiated for every format below.
 ; Round to nearest even, subnormals, signed zeros, infinities; every NaN
 ; comes out as the canonical quiet NaN. Because the generics are named
 ; after the opcodes and take float(E, M), the plain opcodes on any float
@@ -27,6 +27,11 @@ fn fdiv8 = div(4, 3)
 fn fdiv16 = div(5, 10)
 fn fdiv32 = div(8, 23)
 fn fdiv64 = div(11, 52)
+fn fsqrt8 = sqrt(4, 3)
+fn fsqrt16 = sqrt(5, 10)
+fn fsqrtb16 = sqrt(8, 7)
+fn fsqrt32 = sqrt(8, 23)
+fn fsqrt64 = sqrt(11, 52)
 
 ;! fadd8 56 56 -> 64
 ;! fadd8 60 60 -> 68
@@ -45,6 +50,23 @@ fn fdiv64 = div(11, 52)
 ;! sum3 1065353216 1073741824 1077936128 -> 1086324736
 ;! sum64 4607182418800017408 4611686018427387904 -> 4613937818241073152
 ;! sum8 56 56 -> 64
+;! fsqrt32 1082130432 -> 1073741824
+;! fsqrt32 1073741824 -> 1068827891
+;! fsqrt32 0 -> 0
+;! fsqrt32 2147483648 -> 2147483648
+;! fsqrt32 3212836864 -> 2143289344
+;! fsqrt32 2139095040 -> 2139095040
+;! fsqrt32 1 -> 439682291
+;! fsqrt32 71362 -> 507307239
+;! fsqrt32 2139081118 -> 1602217166
+;! fsqrt16 16384 -> 15784
+;! fsqrt16 1 -> 3072
+;! fsqrt64 4611686018427387904 -> 4609047870845172685
+;! fsqrt64 20240225330731 -> 2288155682980613038
+;! fsqrt8 72 -> 64
+;! fsqrt8 56 -> 56
+;! fsqrtb16 16256 -> 16256
+;! root32 1091567616 -> 1077936128
 ;! fsub32 1077936128 1065353216 -> 1073741824
 ;! fsub32 1065353216 1065353216 -> 0
 ;! fsub32 1050253722 1036831949 -> 1045220558
@@ -72,6 +94,12 @@ fn fdiv64 = div(11, 52)
 ;! fdiv64 4607182418800017408 4613937818241073152 -> 4599676419421066581
 ;! fdiv8 56 60 -> 51
 ;! ops32 1075838976 1056964608 -> 1053609165
+
+; a library-defined operation, by its name: sqrt is not an integer opcode
+fn root32(a: f32) -> f32 {
+    r: f32 = sqrt a
+    ret r
+}
 
 ; every opcode on floats: ((a - b) * b) / a
 fn ops32(a: f32, b: f32) -> f32 {
@@ -626,5 +654,89 @@ fn div(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     x2: i32 = add x1, bias32
     x: i32 = sub x2, one32
     res: float(E, M) = fpack(E, M)(s, x, f)
+    ret res
+}
+
+; --- square root: digit by digit, two bits of the radicand per step, so
+; the remainder never needs more than M + 8 bits ---
+fn sqrt(E, M)(a: float(E, M)) -> float(E, M) {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    emax: u(E) = iconst (1 << E) - 1
+    zero_e: u(E) = iconst 0
+    zero_m: u(M) = iconst 0
+    zero1: u1 = iconst 0
+    a_top: u1 = icmp.eq ea, emax
+    a_nan0: u1 = icmp.ne ma, zero_m
+    a_nan: u1 = and a_top, a_nan0
+    ea0: u1 = icmp.eq ea, zero_e
+    ma0: u1 = icmp.eq ma, zero_m
+    a_zero: u1 = and ea0, ma0
+    if a_zero {
+        ret a
+    }
+    neg: u1 = or a_nan, sa
+    if neg {
+        n: float(E, M) = fnan(E, M)()
+        ret n
+    }
+    if a_top {
+        ret a
+    }
+    x0: i32, f0: u(M + 5) = fnorm(E, M)(ma, ea)
+    ; an even unbiased exponent: shift the significand up one if it is odd
+    bias32: i32 = iconst (1 << (E - 1)) - 1
+    one32: i32 = iconst 1
+    e: i32 = sub x0, bias32
+    par: i32 = and e, one32
+    e2: i32 = sub e, par
+    half: i32 = shr e2, one32
+    x: i32 = add half, bias32
+    p64: u64 = ext par
+    pw: u(M + 5) = trunc p64
+    f: u(M + 5) = shl f0, pw
+    ; the radicand's window: M + 2 (+1 if M is odd) bits, fed two at a time,
+    ; then zeros; M + 4 steps give a root with its units bit at M + 3
+    wpad: u(M + 5) = iconst M & 1
+    w0: u(M + 5) = shl f, wpad
+    wmask: u(M + 5) = iconst (1 << (M + 2 + (M & 1))) - 1
+    wtop: u(M + 5) = iconst M + (M & 1)
+    three: u(M + 5) = iconst 3
+    two: u(M + 5) = iconst 2
+    zero_r: u(M + 8) = iconst 0
+    one_r: u(M + 8) = iconst 1
+    two_r: u(M + 8) = iconst 2
+    zero32: i32 = iconst 0
+    steps: i32 = iconst M + 4
+    root: u(M + 8), rem: u(M + 8) = loop(i: i32 = zero32, w: u(M + 5) = w0, q: u(M + 8) = zero_r, r: u(M + 8) = zero_r) {
+        done: u1 = icmp.eq i, steps
+        if done {
+            break q, r
+        }
+        pair: u(M + 5) = shr w, wtop
+        bits: u(M + 5) = and pair, three
+        w2: u(M + 5) = shl w, two
+        w3: u(M + 5) = and w2, wmask
+        bits_r: u(M + 8) = ext bits
+        r2a: u(M + 8) = shl r, two_r
+        r2: u(M + 8) = or r2a, bits_r
+        q2: u(M + 8) = shl q, one_r
+        trial0: u(M + 8) = shl q, two_r
+        trial: u(M + 8) = or trial0, one_r
+        ge: u1 = icmp.ge r2, trial
+        r3: u(M + 8), q3: u(M + 8) = if ge {
+            rs: u(M + 8) = sub r2, trial
+            qs: u(M + 8) = or q2, one_r
+            yield rs, qs
+        } else {
+            yield r2, q2
+        }
+        i2: i32 = add i, one32
+        continue i2, w3, q3, r3
+    }
+    st: u1 = icmp.ne rem, zero_r
+    stw: u(M + 8) = ext st
+    rootst: u(M + 8) = or root, stw
+    res_f: u(M + 5) = trunc rootst
+    res: float(E, M) = fpack(E, M)(zero1, x, res_f)
     ret res
 }

@@ -260,20 +260,21 @@ name exists. `probe parse` prints the instantiated functions and not the
 templates — like structured control flow, generics are sugar the parser
 lowers. A pack literal `iconst` is its bit pattern.
 
-**Dispatch.** A generic function named after an opcode, whose first
-parameter is a generic type applied to the function's own parameters
-(`add(E, M)` taking `float(E, M)`), *is* that opcode for every
-instantiation of the type: `add x, y` on two `f16` values lowers to
-`add(5, 10)(x, y)`. The opcode set never grows — a library adds
-meanings, and a platform adds instructions.
+**Dispatch.** A generic function whose first parameter is a generic type
+applied to the function's own parameters (`add(E, M)` taking
+`float(E, M)`) *is* an operation of that name on every instantiation of
+the type, with whatever arity it declares: `add x, y` on two `f16`
+values lowers to `add(5, 10)(x, y)`, and `sqrt x` — not an integer
+opcode at all — to `sqrt(5, 10)(x)`. The opcode set never grows: a
+library adds operations, and a platform adds instructions.
 
 ### Platforms
 
 A library instantiation defines what an operation *means*; a platform
 says which of them the target has hardware for. Each backend carries a
 table of generic instantiations it implements natively — today
-`add`, `sub`, `mul`, and `div` on `float(8, 23)` and `float(11, 52)`, on
-all three targets — and when it
+`add`, `sub`, `mul`, `div`, and `sqrt` on `float(8, 23)` and
+`float(11, 52)`, on all three targets — and when it
 compiles such an instance, or a call to one, it emits the instruction
 sequence (arm64 `fmov`/`fadd`/`fmov`, riscv `fmv`/`fadd.s`, wasm
 `f32.add` between reinterprets) instead of the SSA body. The library body

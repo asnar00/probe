@@ -100,6 +100,8 @@ inst f64.add :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
 inst f64.sub :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
 inst f64.mul :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
 inst f64.div :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
+inst f32.sqrt :: sig=(param f32) (result f32) :: pre=local.get 0
+inst f64.sqrt :: sig=(param f64) (result f64) :: pre=local.get 0
 
 ; --- stack management (learned early so control-flow probes can use it) ---
 inst drop :: sig=(param i64) :: pre=local.get 0

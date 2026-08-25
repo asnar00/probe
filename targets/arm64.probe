@@ -157,6 +157,8 @@ inst fadd {d}, {d}, {d}
 inst fsub {d}, {d}, {d}
 inst fmul {d}, {d}, {d}
 inst fdiv {d}, {d}, {d}
+inst fsqrt {s}, {s}
+inst fsqrt {d}, {d}
 inst fmov {s}, {w}
 inst fmov {w}, {s}
 inst fmov {d}, {x}

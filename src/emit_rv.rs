@@ -324,12 +324,11 @@ fn compile_function(
     if let Some(&op) = natives.get(&func.name) {
         // this function *is* a platform instruction: a0, a1 -> a0, no frame
         let (to_f, fop, to_i) = fp_templates(op);
-        let mut seq: Vec<(&str, Vec<i64>)> = vec![
-            (to_f, vec![0, A0]),
-            (to_f, vec![1, A0 + 1]),
-            (fop, vec![0, 0, 1]),
-            (to_i, vec![A0, 0]),
-        ];
+        let mut seq: Vec<(&str, Vec<i64>)> = if op.op.arity() == 2 {
+            vec![(to_f, vec![0, A0]), (to_f, vec![1, A0 + 1]), (fop, vec![0, 0, 1]), (to_i, vec![A0, 0])]
+        } else {
+            vec![(to_f, vec![0, A0]), (fop, vec![0, 0]), (to_i, vec![A0, 0])]
+        };
         if op.bits == 32 {
             // zero-extend: fmv.x.w sign-extends
             seq.push((SLLI, vec![A0, A0, 32]));
@@ -402,10 +401,12 @@ fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
         (FOp::Sub, 32) => "fsub.s {f}, {f}, {f}",
         (FOp::Mul, 32) => "fmul.s {f}, {f}, {f}",
         (FOp::Div, 32) => "fdiv.s {f}, {f}, {f}",
+        (FOp::Sqrt, 32) => "fsqrt.s {f}, {f}",
         (FOp::Add, _) => "fadd.d {f}, {f}, {f}",
         (FOp::Sub, _) => "fsub.d {f}, {f}, {f}",
         (FOp::Mul, _) => "fmul.d {f}, {f}, {f}",
         (FOp::Div, _) => "fdiv.d {f}, {f}, {f}",
+        (FOp::Sqrt, _) => "fsqrt.d {f}, {f}",
     };
     if op.bits == 32 {
         ("fmv.w.x {f}, {r}", fop, "fmv.x.w {r}, {f}")
@@ -628,13 +629,17 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             let Some(&dst) = dsts.first() else {
                 return Ok(());
             };
-            let rl = e.src_reg(args[0], T0)?;
-            let rr = e.src_reg(args[1], T1)?;
-            let rd = e.dst_reg(dst, T0);
             let (to_f, fop, to_i) = fp_templates(op);
+            let rl = e.src_reg(args[0], T0)?;
             e.emit(to_f, &[0, rl])?;
-            e.emit(to_f, &[1, rr])?;
-            e.emit(fop, &[0, 0, 1])?;
+            if op.op.arity() == 2 {
+                let rr = e.src_reg(args[1], T1)?;
+                e.emit(to_f, &[1, rr])?;
+                e.emit(fop, &[0, 0, 1])?;
+            } else {
+                e.emit(fop, &[0, 0])?;
+            }
+            let rd = e.dst_reg(dst, T0);
             e.emit(to_i, &[rd, 0])?;
             if op.bits == 32 {
                 e.norm(rd, rd, Repr::U(32))?; // fmv.x.w sign-extends

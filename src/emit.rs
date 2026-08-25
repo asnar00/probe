@@ -854,10 +854,12 @@ fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
         (FOp::Sub, 32) => ("fmov {s}, {w}", "fsub {s}, {s}, {s}", "fmov {w}, {s}"),
         (FOp::Mul, 32) => ("fmov {s}, {w}", "fmul {s}, {s}, {s}", "fmov {w}, {s}"),
         (FOp::Div, 32) => ("fmov {s}, {w}", "fdiv {s}, {s}, {s}", "fmov {w}, {s}"),
+        (FOp::Sqrt, 32) => ("fmov {s}, {w}", "fsqrt {s}, {s}", "fmov {w}, {s}"),
         (FOp::Add, _) => ("fmov {d}, {x}", "fadd {d}, {d}, {d}", "fmov {x}, {d}"),
         (FOp::Sub, _) => ("fmov {d}, {x}", "fsub {d}, {d}, {d}", "fmov {x}, {d}"),
         (FOp::Mul, _) => ("fmov {d}, {x}", "fmul {d}, {d}, {d}", "fmov {x}, {d}"),
         (FOp::Div, _) => ("fmov {d}, {x}", "fdiv {d}, {d}, {d}", "fmov {x}, {d}"),
+        (FOp::Sqrt, _) => ("fmov {d}, {x}", "fsqrt {d}, {d}", "fmov {x}, {d}"),
     }
 }
 
@@ -865,15 +867,13 @@ fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
 /// argument registers, result in x0, and return
 fn native_body(enc: &Encoder, op: Native, code: &mut Vec<u8>) -> Result<(), String> {
     let (to_f, fop, to_i) = fp_templates(op);
-    let seq: [(&str, &[i64]); 5] = [
-        (to_f, &[16, 0]),
-        (to_f, &[17, 1]),
-        (fop, &[16, 16, 17]),
-        (to_i, &[0, 16]),
-        ("ret", &[]),
-    ];
+    let seq: Vec<(&str, Vec<i64>)> = if op.op.arity() == 2 {
+        vec![(to_f, vec![16, 0]), (to_f, vec![17, 1]), (fop, vec![16, 16, 17]), (to_i, vec![0, 16]), ("ret", vec![])]
+    } else {
+        vec![(to_f, vec![16, 0]), (fop, vec![16, 16]), (to_i, vec![0, 16]), ("ret", vec![])]
+    };
     for (t, v) in seq {
-        code.extend_from_slice(&enc.encode(t, v)?.to_le_bytes());
+        code.extend_from_slice(&enc.encode(t, &v)?.to_le_bytes());
     }
     Ok(())
 }
@@ -1109,14 +1109,18 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             let Some(&dst) = dsts.first() else {
                 return Ok(()); // result unused: nothing to compute
             };
-            let rl = e.src_reg(args[0], 9)?;
-            let rr = e.src_reg(args[1], 10)?;
-            let rd = e.dst_reg(dst, 9);
             // through v16/v17 (caller-saved, never allocated)
             let (to_f, fop, to_i) = fp_templates(op);
+            let rl = e.src_reg(args[0], 9)?;
             e.emit(to_f, &[16, rl])?;
-            e.emit(to_f, &[17, rr])?;
-            e.emit(fop, &[16, 16, 17])?;
+            if op.op.arity() == 2 {
+                let rr = e.src_reg(args[1], 10)?;
+                e.emit(to_f, &[17, rr])?;
+                e.emit(fop, &[16, 16, 17])?;
+            } else {
+                e.emit(fop, &[16, 16])?;
+            }
+            let rd = e.dst_reg(dst, 9);
             e.emit(to_i, &[rd, 16])?;
             e.finish(dst, rd)
         }
@@ -1864,6 +1868,50 @@ entry:
         (sign << (e + m)) | (fexp << m) | fmant
     }
 
+    fn isqrt128(n: u128) -> u128 {
+        if n < 2 {
+            return n;
+        }
+        let mut x = 1u128 << ((128 - n.leading_zeros()).div_ceil(2));
+        loop {
+            let y = (x + n / x) / 2;
+            if y >= x {
+                return x;
+            }
+            x = y;
+        }
+    }
+
+    /// the exact square root in float(E, M), for the narrow formats
+    fn ref_sqrt(e: u32, m: u32, a: u64) -> u64 {
+        let nan = ((1u64 << e) - 1) << m | (1u64 << (m - 1));
+        if is_nan_bits(e, m, a) {
+            return nan;
+        }
+        let sa = a >> (e + m) & 1;
+        match parts(e, m, a) {
+            None => {
+                if sa == 1 {
+                    nan
+                } else {
+                    a
+                }
+            }
+            Some((_, 0, _)) => a, // +-0
+            Some(_) if sa == 1 => nan,
+            Some((_, mant, exp)) => {
+                // sqrt(mant * 2^exp): make the exponent even, then an integer
+                // root of mant << 2k with a sticky for the remainder
+                let (mant, exp) = if exp & 1 != 0 { (mant << 1, exp - 1) } else { (mant, exp) };
+                let k = 50;
+                let n = mant << (2 * k);
+                let r = isqrt128(n);
+                let sticky = r * r != n;
+                round_parts(e, m, 0, r, exp / 2 - k, sticky)
+            }
+        }
+    }
+
     /// the exact result of a op b in float(E, M), for the narrow formats
     fn ref_op(e: u32, m: u32, op: &str, a: u64, b: u64) -> u64 {
         let nan = ((1u64 << e) - 1) << m | (1u64 << (m - 1));
@@ -2010,6 +2058,15 @@ entry:
             _ => a / b,
         };
         let vals = patterns(8, 23, 160, &mut rnd);
+        for &a in &vals {
+            let want = f32::from_bits(a as u32).sqrt().to_bits() as u64;
+            let got = native_result(Repr::U(32), j.call("fsqrt32", &[a as i64]).unwrap()) as u64;
+            if is_nan_bits(8, 23, want) {
+                assert!(is_nan_bits(8, 23, got), "f32 sqrt {:#x}: got {:#x}, want NaN", a, got);
+            } else {
+                assert_eq!(got, want, "f32 sqrt {:#x}", a);
+            }
+        }
         for op in ops {
             let name = format!("f{}32", op);
             for &a in &vals {
@@ -2025,6 +2082,15 @@ entry:
             }
         }
         let vals = patterns(11, 52, 120, &mut rnd);
+        for &a in &vals {
+            let want = f64::from_bits(a).sqrt().to_bits();
+            let got = j.call("fsqrt64", &[a as i64]).unwrap() as u64;
+            if is_nan_bits(11, 52, want) {
+                assert!(is_nan_bits(11, 52, got), "f64 sqrt {:#x}: got {:#x}, want NaN", a, got);
+            } else {
+                assert_eq!(got, want, "f64 sqrt {:#x}", a);
+            }
+        }
         for op in ops {
             let name = format!("f{}64", op);
             for &a in &vals {
@@ -2047,6 +2113,16 @@ entry:
             } else {
                 patterns(e, m, n, &mut rnd)
             };
+            let name = format!("fsqrt{}", suffix);
+            for &a in &vals {
+                let want = ref_sqrt(e, m, a);
+                let got = native_result(Repr::U(w), j.call(&name, &[a as i64]).unwrap()) as u64;
+                if is_nan_bits(e, m, want) {
+                    assert!(is_nan_bits(e, m, got), "{} {:#x}: got {:#x}, want NaN", name, a, got);
+                } else {
+                    assert_eq!(got, want, "{} {:#x}", name, a);
+                }
+            }
             for op in ops {
                 let name = format!("f{}{}", op, suffix);
                 if j.call(&name, &[0, 0]).is_err() {
