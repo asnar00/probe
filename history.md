@@ -6,6 +6,18 @@ has the full story for any of them.
 
 ---
 
+### Parametric types — `7b9175a` · 2026-08-25
+
+`type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }`,
+then `type f32 = float(8, 23)` and `type f16 = float(5, 10)`: a `type`
+declaration takes integer parameters that stand for widths, and its
+body is a pack, an `i(expr)`/`u(expr)` with `+ - *` over the parameters,
+a builtin, or another declared type applied to arguments. Instantiation
+happens at use (`x: float(8, 23)`) or at an alias; packs are interned
+structurally so every spelling of a layout is one type. Functions stay
+monomorphic. `suite/types.ssa` pulls pi's exponent out of an f32 and
+doubles it by incrementing the field; 174/174 on all four paths.
+
 ### The sigils retire — `2467869` · 2026-08-25
 
 `%v`, `^b`, `@f`, `$t` become `v`, `b`, `f`, `t`. Position already said
