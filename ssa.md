@@ -334,7 +334,7 @@ fn gcd(a: int, b: int) -> int {     ; width chosen per target/policy
 
 - Abstract and concrete types mix freely (`i1` conditions, `ptr`
   addresses, explicit `i32`/`i64` where a width is required).
-- A width-change cast (`ext`/`trunc`) between `int` and a concrete
+- A `conv` between `int` and a concrete
   type is only valid under policies where the widths actually differ — the
   verifier checks the resolved program, so such code ties itself to a
   policy. Policy-portable code keeps casts among concrete types.
