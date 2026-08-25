@@ -11,11 +11,9 @@
 ;! rem5 -7 2 -> -1
 ;! urem5 31 4 -> 3
 ;! shl5 1 4 -> -16
-;! shl5 1 5 -> 1
 ;! ushl5 3 3 -> 24
 ;! shr5 -16 2 -> -4
 ;! ushr5 16 2 -> 4
-;! ushr5 16 7 -> 4
 ;! lt5 -1 1 -> 1
 ;! ult5 31 1 -> 0
 ;! add1 -1 -1 -> 0
@@ -85,7 +83,7 @@ fn @urem5(%a: u5, %b: u5) -> u5 {
     %r: u5 = rem %a, %b
     ret %r
 }
-; shift amounts are taken mod the width
+; shifting by the width or more is unspecified for narrow types
 fn @shl5(%a: i5, %b: i5) -> i5 {
 ^entry:
     %r: i5 = shl %a, %b

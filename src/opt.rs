@@ -330,18 +330,24 @@ pub fn fold_bin(op: BinOp, r: Repr, a: i64, b: i64) -> Option<i64> {
         BinOp::And => a & b,
         BinOp::Or => a | b,
         BinOp::Xor => a ^ b,
-        // shift amounts are taken mod the type's width
-        BinOp::Shl => a.wrapping_shl(((b as u64) % n as u64) as u32),
-        BinOp::Shr => {
+        // the hardware masks 32/64-bit amounts; for narrower types an
+        // amount >= n is unspecified, so it is left unfolded
+        BinOp::Shl | BinOp::Shr if (n == 32 || n == 64) => {
             let k = ((b as u64) % n as u64) as u32;
-            if signed {
-                a >> k
-            } else {
-                ((a as u64) >> k) as i64
-            }
+            shift(op, signed, a, k)
         }
+        BinOp::Shl | BinOp::Shr if (b as u64) >= n as u64 => return None,
+        BinOp::Shl | BinOp::Shr => shift(op, signed, a, b as u32),
     };
     Some(norm(r, v))
+}
+
+fn shift(op: BinOp, signed: bool, a: i64, k: u32) -> i64 {
+    match op {
+        BinOp::Shl => a.wrapping_shl(k),
+        _ if signed => a >> k,
+        _ => ((a as u64) >> k) as i64,
+    }
 }
 
 pub fn fold_cmp(cond: Cond, r: Repr, a: i64, b: i64) -> bool {

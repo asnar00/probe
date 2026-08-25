@@ -696,22 +696,6 @@ impl FnEmit<'_> {
         }
     }
 
-    /// x12 = the shift amount in rr taken mod n (n not the container width)
-    fn shift_amount(&mut self, rr: i64, n: u32, c: u32) -> Result<i64, String> {
-        if n.is_power_of_two() {
-            let k = n.trailing_zeros() as i64; // keep the low k bits
-            self.emit(xw(c, UBFM_X, UBFM_W), &[12, rr, 0, k - 1])?;
-        } else {
-            self.emit(xw(c, "movz {x}, #{i 0..65535}", "movz {w}, #{i 0..65535}"), &[12, n as i64])?;
-            self.emit(xw(c, "udiv {x}, {x}, {x}", "udiv {w}, {w}, {w}"), &[13, rr, 12])?;
-            self.emit(
-                xw(c, "msub {x}, {x}, {x}, {x}", "msub {w}, {w}, {w}, {w}"),
-                &[12, 13, 12, rr],
-            )?;
-        }
-        Ok(12)
-    }
-
     /// insert the low `w` bits of rv into rd at bit `off` (rd keeps its other bits)
     fn insert(&mut self, c: u32, rd: i64, rv: i64, off: u32, w: u32) -> Result<(), String> {
         let immr = ((c - off) % c) as i64;
@@ -941,17 +925,12 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                         (_, true) => xw(c, "asr {x}, {x}, {x}", "asr {w}, {w}, {w}"),
                         (_, false) => xw(c, "lsr {x}, {x}, {x}", "lsr {w}, {w}, {w}"),
                     };
-                    if full {
-                        e.emit(t, &[rd, rl, rr])?;
-                    } else if n == 1 {
-                        e.mov_in(r, rd, rl)?; // any amount mod 1 is 0
-                    } else {
-                        // amount mod n, then shift; only shl can carry out
-                        let ra = e.shift_amount(rr, n, c)?;
-                        e.emit(t, &[rd, rl, ra])?;
-                        if *op == BinOp::Shl {
-                            e.norm(rd, rd, r)?;
-                        }
+                    // the hardware shift in the container; amounts >= n
+                    // are unspecified for narrow types, so nothing more is
+                    // owed than re-normalizing what shl pushed out
+                    e.emit(t, &[rd, rl, rr])?;
+                    if !full && *op == BinOp::Shl {
+                        e.norm(rd, rd, r)?;
                     }
                 }
             }

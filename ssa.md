@@ -103,7 +103,7 @@ wrap at the type's width; the type's signedness selects the operation.
 %v: i5 = and %a, %b
 %v: i5 = or  %a, %b
 %v: i5 = xor %a, %b
-%v: i5 = shl %a, %b        ; shift amount taken mod the width
+%v: i5 = shl %a, %b        ; amount mod 32/64 for those widths; >= N unspecified otherwise
 %v: i5 = shr %a, %b        ; arithmetic (sign-fill) for iN, logical for uN
 ```
 

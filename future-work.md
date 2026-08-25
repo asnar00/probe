@@ -88,5 +88,6 @@ Backend sketch:
   containing byte plus `bitcast`/`get` covers it by hand for now.
 - Pack literals (`iconst` on a pack type, or field-named construction);
   `icmp.eq` on packs without a `bitcast` first.
-- Narrow shifts take the amount mod the width (uniform with i32/i64);
-  non-power-of-two widths pay a `udiv`/`msub` (or `remu`) for it.
+- Narrow shifts by the width or more are unspecified (the hardware shift
+  in the container, then re-normalized) — deliberately, to keep them one
+  instruction.

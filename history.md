@@ -16,7 +16,7 @@ into ≤64 bits — nestable, storable at 8/16/32/64 bits — with `pack`,
 `unpack`, `get`, `set`. Every backend keeps values *canonical* in their
 container (sign- or zero-extended) and re-normalizes after ops that can
 carry out, using freshly probed `sbfm`/`ubfm`/`bfm`, byte/halfword
-loads, and wasm's narrow loads. 164/164 on all four paths; an exhaustive
+loads, and wasm's narrow loads. 162/162 on all four paths; an exhaustive
 JIT-vs-model test covers every op on eighteen widths.
 
 ### Abstract `int` — `1f795ad` + `acd4764` · 2026-08-23

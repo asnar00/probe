@@ -250,17 +250,6 @@ impl RvEmit<'_> {
         }
     }
 
-    /// t2 = the shift amount in rr taken mod n
-    fn shift_amount(&mut self, rr: i64, n: u32) -> Result<i64, String> {
-        if n.is_power_of_two() {
-            self.emit(ANDI, &[T2, rr, n as i64 - 1])?;
-        } else {
-            self.iconst(T2, n as i64)?;
-            self.emit("remu {r}, {r}, {r}", &[T2, rr, T2])?;
-        }
-        Ok(T2)
-    }
-
     /// rd = the `w`-bit field at `off` in rs, sign- or zero-extended
     fn extract(&mut self, rd: i64, rs: i64, off: u32, w: u32, signed: bool) -> Result<(), String> {
         self.emit(SLLI, &[rd, rs, 64 - (off + w) as i64])?;
@@ -429,20 +418,11 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             let rd = e.dst_reg(*dst, T0);
             let t = bin_template(*op, r.signed(), w);
             match op {
-                BinOp::Shl | BinOp::Shr if !full => {
-                    if n == 1 {
-                        e.mov(rd, rl)?; // any amount mod 1 is 0
-                    } else {
-                        let ra = e.shift_amount(rr, n)?;
-                        e.emit(t, &[rd, rl, ra])?;
-                        if *op == BinOp::Shl {
-                            e.norm(rd, rd, r)?;
-                        }
-                    }
-                }
                 _ => {
+                    // shifts by >= n are unspecified for narrow types: the
+                    // hardware shift, then re-normalize what can carry out
                     e.emit(t, &[rd, rl, rr])?;
-                    let carries = matches!(op, BinOp::IAdd | BinOp::ISub | BinOp::IMul)
+                    let carries = matches!(op, BinOp::IAdd | BinOp::ISub | BinOp::IMul | BinOp::Shl)
                         || (*op == BinOp::Div && r.signed()); // MIN / -1
                     if !full && carries {
                         e.norm(rd, rd, r)?;

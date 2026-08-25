@@ -483,34 +483,14 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             let (n, c) = (r.bits(), r.container());
             let full = n == c;
             e.get(*lhs)?;
-            match op {
-                BinOp::Shl | BinOp::Shr if !full => {
-                    if n == 1 {
-                        // any amount mod 1 is 0: the value passes through
-                    } else {
-                        e.get(*rhs)?;
-                        if n.is_power_of_two() {
-                            e.konst(r, n as i64 - 1)?;
-                            e.op(&format!("{}.and", pfx(r)), None)?;
-                        } else {
-                            e.konst(r, n as i64)?;
-                            e.op(&format!("{}.rem_u", pfx(r)), None)?;
-                        }
-                        e.op(&binop_key(*op, r), None)?;
-                        if *op == BinOp::Shl {
-                            e.norm(r)?;
-                        }
-                    }
-                }
-                _ => {
-                    e.get(*rhs)?;
-                    e.op(&binop_key(*op, r), None)?;
-                    let carries = matches!(op, BinOp::IAdd | BinOp::ISub | BinOp::IMul)
-                        || (*op == BinOp::Div && r.signed());
-                    if !full && carries {
-                        e.norm(r)?;
-                    }
-                }
+            // shifts by >= n are unspecified for narrow types: the container
+            // shift, then re-normalize what can carry out
+            e.get(*rhs)?;
+            e.op(&binop_key(*op, r), None)?;
+            let carries = matches!(op, BinOp::IAdd | BinOp::ISub | BinOp::IMul | BinOp::Shl)
+                || (*op == BinOp::Div && r.signed());
+            if !full && carries {
+                e.norm(r)?;
             }
             e.set(*dst)
         }
