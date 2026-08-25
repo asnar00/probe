@@ -51,9 +51,9 @@ base:
 rec:
     one: i64 = iconst 1
     n1: i64 = sub n, one
-    a: i64 = call fib(n1)
+    a: i64 = fib(n1)
     n2: i64 = sub n, two
-    b: i64 = call fib(n2)
+    b: i64 = fib(n2)
     r: i64 = add a, b
     ret r
 }
@@ -66,8 +66,8 @@ entry:
 
 fn hypot2(a: i64, b: i64) -> i64 {
 entry:
-    aa: i64 = call square(a)
-    bb: i64 = call square(b)
+    aa: i64 = square(a)
+    bb: i64 = square(b)
     s: i64 = add aa, bb
     ret s
 }

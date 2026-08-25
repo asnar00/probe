@@ -1826,8 +1826,8 @@ impl Parser {
                 }
                 self.expect(Tok::Equals)?;
                 let op = self.expect_ident()?;
-                let inst = if op == "call" {
-                    let (callee, args) = self.parse_call_tail(scope)?;
+                let inst = if self.is_call(&op) {
+                    let (callee, args) = self.parse_call_tail(op, scope)?;
                     Inst::Call { dsts, callee, args }
                 } else if op == "unpack" {
                     let src = self.expect_value(scope)?;
@@ -1836,7 +1836,7 @@ impl Parser {
                     self.parse_def_op(&op, dsts[0], scope)?
                 } else {
                     return Err(self.err(format!(
-                        "only 'call' and 'unpack' can define multiple values, not '{}'",
+                        "only calls and 'unpack' can define multiple values, not '{}'",
                         op
                     )));
                 };
@@ -1955,6 +1955,7 @@ impl Parser {
                 let off = self.expect_value(scope)?;
                 Ok(Inst::PtrAdd { dst, base, off })
             }
+            "call" => Err(self.err("'call' is implied: write name(args)".to_string())),
             _ => Err(self.err(format!("unknown opcode '{}'", op))),
         }
     }
@@ -2020,8 +2021,8 @@ impl Parser {
                 let addr = self.expect_value(scope)?;
                 Ok(Inst::Store { val, addr })
             }
-            "call" => {
-                let (callee, args) = self.parse_call_tail(scope)?;
+            _ if self.is_call(op) => {
+                let (callee, args) = self.parse_call_tail(op.to_string(), scope)?;
                 Ok(Inst::Call {
                     dsts: Vec::new(),
                     callee,
@@ -2056,6 +2057,7 @@ impl Parser {
                 }
                 Ok(Inst::Ret { vals })
             }
+            "call" => Err(self.err("'call' is implied: write name(args)".to_string())),
             _ => Err(self.err(format!(
                 "unknown opcode '{}' (or missing 'dst: ty =' before it)",
                 op
@@ -2063,9 +2065,16 @@ impl Parser {
         }
     }
 
-    fn parse_call_tail(&mut self, scope: &FuncScope) -> Result<(String, Vec<ValueId>), ParseError> {
-        let mut callee = self.expect_ident()?;
-        // `call g(8, 23)(a, b)`: the first group is width arguments when it
+    /// a name followed by '(' in operation position is a call — even one
+    /// spelled like an opcode, as in `add(8, 23)(x, y)`. Only `iconst
+    /// (expr)` and `loop(...)` take a parenthesis and mean something else.
+    fn is_call(&self, op: &str) -> bool {
+        !matches!(op, "iconst" | "loop" | "call") && matches!(self.peek(), Some(Tok::LParen))
+    }
+
+    fn parse_call_tail(&mut self, callee: String, scope: &FuncScope) -> Result<(String, Vec<ValueId>), ParseError> {
+        let mut callee = callee;
+        // `g(8, 23)(a, b)`: the first group is width arguments when it
         // opens with a literal, a parameter, or a parenthesis
         let is_inst = matches!(self.peek(), Some(Tok::LParen))
             && match self.toks.get(self.pos + 1).map(|t| &t.0) {
@@ -2147,8 +2156,8 @@ impl Parser {
                 match op.as_str() {
                     "if" => return self.parse_struct_if(scope, st, dsts),
                     "loop" => return self.parse_struct_loop(scope, st, dsts),
-                    "call" => {
-                        let (callee, args) = self.parse_call_tail(scope)?;
+                    _ if self.is_call(&op) => {
+                        let (callee, args) = self.parse_call_tail(op, scope)?;
                         st.push(Inst::Call { dsts, callee, args });
                     }
                     "unpack" => {
@@ -2158,7 +2167,7 @@ impl Parser {
                     _ => {
                         if dsts.len() > 1 {
                             return Err(self.err(format!(
-                                "only 'call' and 'unpack' can define multiple values, not '{}'",
+                                "only calls and 'unpack' can define multiple values, not '{}'",
                                 op
                             )));
                         }
@@ -2217,7 +2226,13 @@ impl Parser {
                     self.expect(Tok::Newline)?;
                     Ok(true)
                 }
-                "store" | "call" => {
+                "store" => {
+                    let inst = self.parse_plain_op(&op, scope)?;
+                    st.push(inst);
+                    self.expect(Tok::Newline)?;
+                    Ok(false)
+                }
+                _ if self.is_call(&op) => {
                     let inst = self.parse_plain_op(&op, scope)?;
                     st.push(inst);
                     self.expect(Tok::Newline)?;
@@ -2574,7 +2589,7 @@ impl Function {
                 self.fmt_value(*off)
             ),
             Inst::Call { dsts, callee, args } => {
-                let call = format!("call {}({})", callee, self.fmt_args(args));
+                let call = format!("{}({})", callee, self.fmt_args(args));
                 if dsts.is_empty() {
                     call
                 } else {
@@ -3111,12 +3126,12 @@ entry:
 }
 fn use(p: ptr) -> i64 {
 entry:
-    v: i32 = call get(p)
+    v: i32 = get(p)
     w: i64 = ext v
     eight: i64 = iconst 8
     q: ptr = ptradd p, eight
     store w, q
-    call touch(q)
+    touch(q)
     ret w
 }
 ";
@@ -3418,7 +3433,7 @@ fn wrap(N)(a: word(N), b: word(N)) -> word(N) {
     top: word(N) = iconst (1 << (N - 1)) - 1
     big: u1 = icmp.gt s, top
     r: word(N) = if big {
-        d: word(N) = call halve(N)(s)
+        d: word(N) = halve(N)(s)
         yield d
     } else {
         yield s
@@ -3432,7 +3447,7 @@ fn halve(N)(a: word(N)) -> word(N) {
 }
 fn wrap8 = wrap(8)
 fn use12(a: u12) -> u12 {
-    r: u12 = call wrap(4 * 3)(a, a)
+    r: u12 = wrap(4 * 3)(a, a)
     ret r
 }
 ";

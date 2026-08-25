@@ -51,9 +51,9 @@ fn sfib(n: i64) -> i64 {
     }
     one: i64 = iconst 1
     n1: i64 = sub n, one
-    a: i64 = call sfib(n1)
+    a: i64 = sfib(n1)
     n2: i64 = sub n, two
-    b: i64 = call sfib(n2)
+    b: i64 = sfib(n2)
     r: i64 = add a, b
     ret r
 }

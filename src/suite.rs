@@ -516,7 +516,7 @@ loop(sh: u64):
     z: u64 = iconst 48
     c1: u64 = add n, z
     c: u64 = add c1, adj
-    call __pch(c)
+    __pch(c)
     zero: u64 = iconst 0
     done: u1 = icmp.eq sh, zero
     four: u64 = iconst 4
@@ -599,7 +599,7 @@ fn gen_driver(
             .map(|(r, t)| format!("{}: {}", r, func.tyname(*t)))
             .collect();
         s.push_str(&format!(
-            "    {} = call {}({})\n",
+            "    {} = {}({})\n",
             defs.join(", "),
             case.func,
             argv.join(", ")
@@ -608,7 +608,7 @@ fn gen_driver(
         for (i, (r, rt)) in rets.iter().enumerate() {
             if i > 0 {
                 let sp = tmp(&mut s, "u64", "iconst 32".into());
-                s.push_str(&format!("    call __pch({})\n", sp));
+                s.push_str(&format!("    __pch({})\n", sp));
             }
             // the canonical 64-bit value of the result, as a u64 for printing:
             // signed types sign-extend, everything else zero-extends
@@ -627,10 +627,10 @@ fn gen_driver(
             } else if *rt == ssa::Type::Ptr {
                 v = tmp(&mut s, "u64", format!("bitcast {}", v));
             }
-            s.push_str(&format!("    call __phex({})\n", v));
+            s.push_str(&format!("    __phex({})\n", v));
         }
         let nl = tmp(&mut s, "u64", "iconst 10".into());
-        s.push_str(&format!("    call __pch({})\n", nl));
+        s.push_str(&format!("    __pch({})\n", nl));
     }
     s.push_str(exit_ssa);
     s.push_str("    ret\n}\n");
@@ -781,7 +781,7 @@ fn run_arm_qemu(
     let prepared = (|| -> Result<Vec<u8>, String> {
         // exit through a stub whose body is patched below into a PSCI
         // SYSTEM_OFF hypervisor call (x0 = 0x84000008; hvc #0)
-        let driver = gen_driver(module, cases, ARM_HEAP, "    call __qemu_exit()\n")?;
+        let driver = gen_driver(module, cases, ARM_HEAP, "    __qemu_exit()\n")?;
         let stub = "fn __qemu_exit() {\nentry:\n    ret\n}\n";
         let full = format!("{}\n{}\n{}\n{}", driver, helpers(ARM_UART), stub, src);
         let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;

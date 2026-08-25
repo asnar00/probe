@@ -119,7 +119,7 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     if a_top {
         a_nan: u1 = icmp.ne ma, zero_m
         if a_nan {
-            n1: float(E, M) = call fnan(E, M)()
+            n1: float(E, M) = fnan(E, M)()
             ret n1
         }
         if b_top {
@@ -127,7 +127,7 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
             opp: u1 = icmp.ne sa, sb
             bad: u1 = or b_nan, opp
             if bad {
-                n2: float(E, M) = call fnan(E, M)()
+                n2: float(E, M) = fnan(E, M)()
                 ret n2
             }
         }
@@ -136,7 +136,7 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     if b_top {
         b_nan2: u1 = icmp.ne mb, zero_m
         if b_nan2 {
-            n3: float(E, M) = call fnan(E, M)()
+            n3: float(E, M) = fnan(E, M)()
             ret n3
         }
         ret b
@@ -320,7 +320,7 @@ fn sub(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     one: u1 = iconst 1
     nsb: u1 = xor sb, one
     nb: float(E, M) = set b, sign, nsb
-    r: float(E, M) = call add(E, M)(a, nb)
+    r: float(E, M) = add(E, M)(a, nb)
     ret r
 }
 
@@ -471,7 +471,7 @@ fn mul(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     b_nan: u1 = and b_top, b_nan0
     any_nan: u1 = or a_nan, b_nan
     if any_nan {
-        n1: float(E, M) = call fnan(E, M)()
+        n1: float(E, M) = fnan(E, M)()
         ret n1
     }
     ea0: u1 = icmp.eq ea, zero_e
@@ -484,7 +484,7 @@ fn mul(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     if any_inf {
         any_zero: u1 = or a_zero, b_zero
         if any_zero {
-            n2: float(E, M) = call fnan(E, M)()
+            n2: float(E, M) = fnan(E, M)()
             ret n2
         }
         i: float(E, M) = pack zero_m, emax, s
@@ -495,8 +495,8 @@ fn mul(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
         z: float(E, M) = pack zero_m, zero_e, s
         ret z
     }
-    xa: i32, fa: u(M + 5) = call fnorm(E, M)(ma, ea)
-    xb: i32, fb: u(M + 5) = call fnorm(E, M)(mb, eb)
+    xa: i32, fa: u(M + 5) = fnorm(E, M)(ma, ea)
+    xb: i32, fb: u(M + 5) = fnorm(E, M)(mb, eb)
     fa64: u64 = ext fa
     fb64: u64 = ext fb
     ; halves of k bits
@@ -538,7 +538,7 @@ fn mul(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     bias32: i32 = iconst (1 << (E - 1)) - 1
     x1: i32 = add xa, xb
     x: i32 = sub x1, bias32
-    res: float(E, M) = call fpack(E, M)(s, x, r)
+    res: float(E, M) = fpack(E, M)(s, x, r)
     ret res
 }
 
@@ -569,7 +569,7 @@ fn div(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     bad0: u1 = or any_nan, both_inf
     bad: u1 = or bad0, both_zero
     if bad {
-        n: float(E, M) = call fnan(E, M)()
+        n: float(E, M) = fnan(E, M)()
         ret n
     }
     to_inf: u1 = or a_top, b_zero
@@ -582,8 +582,8 @@ fn div(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
         z: float(E, M) = pack zero_m, zero_e, s
         ret z
     }
-    xa: i32, fa: u(M + 5) = call fnorm(E, M)(ma, ea)
-    xb: i32, fb: u(M + 5) = call fnorm(E, M)(mb, eb)
+    xa: i32, fa: u(M + 5) = fnorm(E, M)(ma, ea)
+    xb: i32, fb: u(M + 5) = fnorm(E, M)(mb, eb)
     ; q = floor(fa * 2^(M+4) / fb): the integer bit first (fa / fb is in
     ; (1/2, 2)), then M + 4 fraction bits by shift-and-subtract, the
     ; remainder always below fb
@@ -625,6 +625,6 @@ fn div(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     x1: i32 = sub xa, xb
     x2: i32 = add x1, bias32
     x: i32 = sub x2, one32
-    res: float(E, M) = call fpack(E, M)(s, x, f)
+    res: float(E, M) = fpack(E, M)(s, x, f)
     ret res
 }

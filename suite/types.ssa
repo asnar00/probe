@@ -60,7 +60,7 @@ fn f16neg(f: f16) -> f16 {
 }
 ; float(5, 10) is f16 by any spelling
 fn samewidth(f: float(5, 10)) -> u5 {
-    e: u5 = call f16exp(f)
+    e: u5 = f16exp(f)
     ret e
 }
 fn bytesum(a: byte, b: byte) -> u16 {

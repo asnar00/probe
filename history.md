@@ -33,7 +33,7 @@ Moving f16 to hardware would be one line in `src/platform.rs`.
 about the type: on integers it is the instruction, on a pack that came
 from a generic type it dispatches to the generic function of the same
 name taking that type. `add x, y` on two `f32` values is
-`call add(8, 23)(x, y)` — the softfloat library — and on a platform with
+`add(8, 23)(x, y)` — the softfloat library — and on a platform with
 hardware for that width, the `fadd` instruction. The opcode set never
 grows; libraries add meanings, platforms add instructions. 191/191 on
 all four paths, both ways.
@@ -54,7 +54,7 @@ plus the CSR/system-register writes that switch the FPU on bare metal.
 ### Generic functions, and floats as a library — `039de73` · 2026-08-25
 
 `fn fadd(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M)` is a
-template; `fn fadd32 = fadd(8, 23)` and `call fadd(5, 10)(x, y)`
+template; `fn fadd32 = fadd(8, 23)` and `fadd(5, 10)(x, y)`
 instantiate it, by re-parsing the body with E and M bound, so `u(M + 5)`
 and `iconst (1 << E) - 1` are concrete inside. With that, `suite/float.ssa`
 writes IEEE addition once — round-to-nearest-even, subnormals, signed

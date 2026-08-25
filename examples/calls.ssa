@@ -7,8 +7,8 @@ entry:
 ; hypot2(a,b) = a*a + b*b, via two calls
 fn hypot2(a: i64, b: i64) -> i64 {
 entry:
-    aa: i64 = call square(a)
-    bb: i64 = call square(b)
+    aa: i64 = square(a)
+    bb: i64 = square(b)
     s: i64 = add aa, bb
     ret s
 }

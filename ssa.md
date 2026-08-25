@@ -166,9 +166,9 @@ Callees are named symbols. Signatures are checked against the module if the
 function is defined here, taken on trust if external.
 
 ```
-v: i64 = call f(a, b)             ; call with one result
-q: i64, r: i64 = call divmod(a, b)  ; call with two results
-call g(a)                           ; call with results ignored (or none)
+v: i64 = f(a, b)             ; call with one result
+q: i64, r: i64 = divmod(a, b)  ; call with two results
+g(a)                           ; call with results ignored (or none)
 ```
 
 A call binds either *all* of the callee's return values or *none* of them
@@ -207,7 +207,7 @@ w: u16 = bitcast c                           ; the raw bits, and back again
 ```
 
 Packs are compared structurally: two spellings of the same layout are the
-same type. `unpack` is, with `call`, the only instruction that defines
+same type. `unpack` is, with calls, the only instruction that defines
 several values.
 
 ### Type declarations
@@ -246,11 +246,11 @@ expression.
 fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     hidden: u(M + 5) = iconst 1 << M
     ...
-    n: float(E, M) = call fnan(E, M)()      ; instantiates fnan for this E, M
+    n: float(E, M) = fnan(E, M)()      ; instantiates fnan for this E, M
     ...
 }
 fn fadd32 = add(8, 23)                      ; a named instantiation
-r: f16 = call add(5, 10)(x, y)              ; an anonymous one, add_5_10
+r: f16 = add(5, 10)(x, y)              ; an anonymous one, add_5_10
 s: f16 = add x, y                           ; the same, by dispatch
 ```
 
@@ -263,7 +263,7 @@ lowers. A pack literal `iconst` is its bit pattern.
 parameter is a generic type applied to the function's own parameters
 (`add(E, M)` taking `float(E, M)`), *is* that opcode for every
 instantiation of the type: `add x, y` on two `f16` values lowers to
-`call add(5, 10)(x, y)`. The opcode set never grows — a library adds
+`add(5, 10)(x, y)`. The opcode set never grows — a library adds
 meanings, and a platform adds instructions.
 
 ### Platforms

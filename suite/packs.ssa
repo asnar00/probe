@@ -59,7 +59,7 @@ entry:
 fn swap_rb(c: rgb) -> rgb {
 entry:
     r: u5, g: u6, b: u5 = unpack c
-    d: rgb = call swapped(r, g, b)
+    d: rgb = swapped(r, g, b)
     ret d
 }
 ; nested: pix holds a whole rgb in its low 16 bits

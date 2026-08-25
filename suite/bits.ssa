@@ -189,7 +189,7 @@ entry:
 }
 fn neg5(a: i5) -> i5 {
 entry:
-    r: i5 = call negate5(a)
+    r: i5 = negate5(a)
     ret r
 }
 ; count increments of an i5 from 0 until it wraps negative

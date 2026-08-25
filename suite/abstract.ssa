@@ -51,9 +51,9 @@ fn afib(n: int) -> int {
     }
     one: int = iconst 1
     n1: int = sub n, one
-    a: int = call afib(n1)
+    a: int = afib(n1)
     n2: int = sub n, two
-    b: int = call afib(n2)
+    b: int = afib(n2)
     r: int = add a, b
     ret r
 }
