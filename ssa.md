@@ -187,8 +187,8 @@ value can — parameters, block parameters, returns, memory if it is 8, 16,
 32, or 64 bits wide.
 
 ```
-pack rgb { r: u5, g: u6, b: u5 }       ; 16 bits: r = bits 0-4, g = 5-10, b = 11-15
-pack pix { c: rgb, a: u8 }            ; 24 bits, nested
+type rgb = pack { r: u5, g: u6, b: u5 }       ; 16 bits: r = bits 0-4, g = 5-10, b = 11-15
+type pix = pack { c: rgb, a: u8 }            ; 24 bits, nested
 
 c: rgb = pack r, g, b              ; one value per field, in order
 g: u6 = get c, g                      ; read a field (iN fields sign-extend)

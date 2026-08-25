@@ -1550,8 +1550,8 @@ entry:
     #[test]
     fn packs_and_narrow_memory() {
         let j = jit(r"
-pack rgb { r: u5, g: u6, b: u5 }
-pack mix { s: i3, c: rgb, t: i9, flag: u1 }
+type rgb = pack { r: u5, g: u6, b: u5 }
+type mix = pack { s: i3, c: rgb, t: i9, flag: u1 }
 
 fn mk(r: u5, g: u6, b: u5) -> rgb {
 entry:

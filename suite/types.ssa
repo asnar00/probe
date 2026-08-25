@@ -1,0 +1,75 @@
+; parametric types: declared once, instantiated by width. float(E, M) is
+; the IEEE layout (lowest bits first: mantissa, exponent, sign), so f32
+; and f16 are two instantiations of one declaration
+type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }
+type f32 = float(8, 23)
+type f16 = float(5, 10)
+type bits(E, M) = u(E + M + 1)
+type byte = u8
+type word(N) = u(N)
+;! f32exp 0x40490fdb -> 128
+;! f32mant 0x40490fdb -> 4788187
+;! f32sign 0xc0490fdb -> 1
+;! f32sign 0x40490fdb -> 0
+;! f32double 0x40490fdb -> 1086918619
+;! f32mk 4788187 128 0 -> 1078530011
+;! f32bits 0x40490fdb -> 1078530011
+;! f16exp 0x3c00 -> 15
+;! f16neg 0x3c00 -> 48128
+;! samewidth 0x3c00 -> 15
+;! bytesum 200 100 -> 300
+;! word12 4095 1 -> 0
+
+fn f32exp(f: f32) -> u8 {
+    e: u8 = get f, exponent
+    ret e
+}
+fn f32mant(f: f32) -> u23 {
+    m: u23 = get f, mantissa
+    ret m
+}
+fn f32sign(f: f32) -> u1 {
+    s: u1 = get f, sign
+    ret s
+}
+; doubling a float is incrementing its exponent
+fn f32double(f: f32) -> f32 {
+    e: u8 = get f, exponent
+    one: u8 = iconst 1
+    e2: u8 = iadd e, one
+    g: f32 = set f, exponent, e2
+    ret g
+}
+fn f32mk(m: u23, e: u8, s: u1) -> f32 {
+    f: f32 = pack m, e, s
+    ret f
+}
+; the raw bits, as the parametric width u(E + M + 1)
+fn f32bits(f: f32) -> bits(8, 23) {
+    b: bits(8, 23) = bitcast f
+    ret b
+}
+fn f16exp(f: f16) -> u5 {
+    e: u5 = get f, exponent
+    ret e
+}
+fn f16neg(f: f16) -> f16 {
+    one: u1 = iconst 1
+    g: f16 = set f, sign, one
+    ret g
+}
+; float(5, 10) is f16 by any spelling
+fn samewidth(f: float(5, 10)) -> u5 {
+    e: u5 = call f16exp(f)
+    ret e
+}
+fn bytesum(a: byte, b: byte) -> u16 {
+    aw: u16 = ext a
+    bw: u16 = ext b
+    s: u16 = iadd aw, bw
+    ret s
+}
+fn word12(a: word(12), b: word(6 * 2)) -> word(12) {
+    s: word(12) = iadd a, b
+    ret s
+}

@@ -1,10 +1,10 @@
 ; packs: bitfields laid out lowest-bits-first, carried as the unsigned
 ; integer of their total width, nestable, storable at 8/16/32/64 bits
-pack rgb { r: u5, g: u6, b: u5 }
-pack pix { c: rgb, a: u8 }
-pack sig { v: i12, e: i4 }
-pack wide { lo: u32, hi: u32 }
-pack flags { a: u1, b: u1, c: u1 }
+type rgb = pack { r: u5, g: u6, b: u5 }
+type pix = pack { c: rgb, a: u8 }
+type sig = pack { v: i12, e: i4 }
+type wide = pack { lo: u32, hi: u32 }
+type flags = pack { a: u1, b: u1, c: u1 }
 ;! mkrgb 31 63 1 -> 4095
 ;! getg 4095 -> 63
 ;! setr 4095 0 -> 4064

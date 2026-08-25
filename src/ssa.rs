@@ -48,7 +48,7 @@ impl Type {
             Type::Int { signed: true, bits } => format!("i{}", bits),
             Type::Int { signed: false, bits } => format!("u{}", bits),
             Type::Ptr => "ptr".into(),
-            Type::Pack(i) => format!("$#{}", i),
+            Type::Pack(i) => format!("#{}", i),
             Type::AInt => "int".into(),
             Type::AUInt => "uint".into(),
         }
@@ -119,6 +119,107 @@ pub struct PackDef {
 impl PackDef {
     pub fn field(&self, name: &str) -> Option<usize> {
         self.fields.iter().position(|(n, _)| n == name)
+    }
+}
+
+/// A width expression inside a type declaration: literals, the
+/// declaration's parameters, and `+ - *`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum IntExpr {
+    Lit(i64),
+    Param(String),
+    Add(Box<IntExpr>, Box<IntExpr>),
+    Sub(Box<IntExpr>, Box<IntExpr>),
+    Mul(Box<IntExpr>, Box<IntExpr>),
+}
+
+impl IntExpr {
+    fn eval(&self, env: &[(String, i64)]) -> Result<i64, String> {
+        Ok(match self {
+            IntExpr::Lit(v) => *v,
+            IntExpr::Param(p) => env
+                .iter()
+                .find(|(n, _)| n == p)
+                .map(|(_, v)| *v)
+                .ok_or_else(|| format!("unknown type parameter '{}'", p))?,
+            IntExpr::Add(a, b) => a.eval(env)?.wrapping_add(b.eval(env)?),
+            IntExpr::Sub(a, b) => a.eval(env)?.wrapping_sub(b.eval(env)?),
+            IntExpr::Mul(a, b) => a.eval(env)?.wrapping_mul(b.eval(env)?),
+        })
+    }
+
+    fn prec(&self) -> u8 {
+        match self {
+            IntExpr::Lit(_) | IntExpr::Param(_) => 2,
+            IntExpr::Mul(..) => 1,
+            IntExpr::Add(..) | IntExpr::Sub(..) => 0,
+        }
+    }
+}
+
+impl fmt::Display for IntExpr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let side = |e: &IntExpr, min: u8| {
+            if e.prec() < min {
+                format!("({})", e)
+            } else {
+                e.to_string()
+            }
+        };
+        match self {
+            IntExpr::Lit(v) => write!(f, "{}", v),
+            IntExpr::Param(p) => write!(f, "{}", p),
+            IntExpr::Add(a, b) => write!(f, "{} + {}", side(a, 0), side(b, 1)),
+            IntExpr::Sub(a, b) => write!(f, "{} - {}", side(a, 0), side(b, 1)),
+            IntExpr::Mul(a, b) => write!(f, "{} * {}", side(a, 1), side(b, 2)),
+        }
+    }
+}
+
+/// The right-hand side of a `type` declaration, before instantiation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TypeExpr {
+    /// `i(expr)` / `u(expr)`
+    Int { signed: bool, bits: IntExpr },
+    /// a builtin (`i5`, `ptr`), a declared type, or an instantiation `float(8, 23)`
+    Named { name: String, args: Vec<IntExpr> },
+    Pack(Vec<(String, TypeExpr)>),
+}
+
+impl fmt::Display for TypeExpr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            TypeExpr::Int { signed, bits } => {
+                write!(f, "{}({})", if *signed { "i" } else { "u" }, bits)
+            }
+            TypeExpr::Named { name, args } if args.is_empty() => write!(f, "{}", name),
+            TypeExpr::Named { name, args } => {
+                let a: Vec<String> = args.iter().map(|e| e.to_string()).collect();
+                write!(f, "{}({})", name, a.join(", "))
+            }
+            TypeExpr::Pack(fields) => {
+                let fs: Vec<String> = fields.iter().map(|(n, t)| format!("{}: {}", n, t)).collect();
+                write!(f, "pack {{ {} }}", fs.join(", "))
+            }
+        }
+    }
+}
+
+/// `type name(params) = expr`
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypeDef {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: TypeExpr,
+}
+
+impl fmt::Display for TypeDef {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.params.is_empty() {
+            write!(f, "type {} = {}", self.name, self.body)
+        } else {
+            write!(f, "type {}({}) = {}", self.name, self.params.join(", "), self.body)
+        }
     }
 }
 
@@ -407,7 +508,9 @@ impl Function {
 
 #[derive(Clone, Debug, Default)]
 pub struct Module {
-    pub packs: Vec<PackDef>,
+    /// declarations as written (every instantiated pack lives in each
+    /// function's shared `packs` table)
+    pub types: Vec<TypeDef>,
     pub funcs: Vec<Function>,
 }
 
@@ -473,6 +576,9 @@ enum Tok {
     RBrace,
     Arrow,
     Equals,
+    Plus,
+    Minus,
+    Star,
 }
 
 impl fmt::Display for Tok {
@@ -489,6 +595,9 @@ impl fmt::Display for Tok {
             Tok::RBrace => write!(f, "'}}'"),
             Tok::Arrow => write!(f, "'->'"),
             Tok::Equals => write!(f, "'='"),
+            Tok::Plus => write!(f, "'+'"),
+            Tok::Minus => write!(f, "'-'"),
+            Tok::Star => write!(f, "'*'"),
         }
     }
 }
@@ -578,8 +687,16 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                     let n = lex_int(&mut chars).map_err(|m| err(line, m))?;
                     toks.push((Tok::Int(n.wrapping_neg()), line));
                 } else {
-                    return Err(err(line, "expected '->' or a number after '-'".into()));
+                    toks.push((Tok::Minus, line));
                 }
+            }
+            '+' => {
+                chars.next();
+                toks.push((Tok::Plus, line));
+            }
+            '*' => {
+                chars.next();
+                toks.push((Tok::Star, line));
             }
             '0'..='9' => {
                 let n = lex_int(&mut chars).map_err(|m| err(line, m))?;
@@ -646,17 +763,17 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
     let mut p = Parser {
         toks,
         pos: 0,
+        types: Vec::new(),
         packs: Vec::new(),
-        pack_ids: HashMap::new(),
     };
-    // pass 1: pack declarations, wherever they appear, so functions can
-    // use packs declared later in the file (a pack's own fields must be
-    // declared before it, since its width depends on theirs)
+    // pass 1: type declarations, wherever they appear, so functions can
+    // use types declared later in the file (a declaration may only refer
+    // to types declared before it)
     let mut funcs = Vec::new();
     p.skip_newlines();
     while !p.at_end() {
-        if matches!(p.peek(), Some(Tok::Ident(k)) if k == "pack") {
-            p.parse_pack_decl()?;
+        if matches!(p.peek(), Some(Tok::Ident(k)) if k == "type") {
+            p.parse_type_decl()?;
         } else {
             let (_, hi) = p.function_range()?;
             p.pos = hi + 1;
@@ -667,8 +784,8 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
     p.pos = 0;
     p.skip_newlines();
     while !p.at_end() {
-        if matches!(p.peek(), Some(Tok::Ident(k)) if k == "pack") {
-            p.skip_pack_decl()?;
+        if matches!(p.peek(), Some(Tok::Ident(k)) if k == "type") {
+            p.skip_line();
         } else {
             funcs.push(p.parse_function()?);
         }
@@ -679,7 +796,7 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         f.packs = packs.clone();
     }
     Ok(Module {
-        packs: p.packs,
+        types: p.types,
         funcs,
     })
 }
@@ -687,9 +804,12 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
 struct Parser {
     toks: Vec<(Tok, usize)>,
     pos: usize,
+    types: Vec<TypeDef>,
     packs: Vec<PackDef>,
-    pack_ids: HashMap<String, u32>,
 }
+
+/// nesting guard for type declarations that instantiate themselves
+const MAX_TYPE_DEPTH: usize = 32;
 
 /// Placeholder branch target inside structured constructs; every one is
 /// patched to the real join/exit block before parsing of the construct ends.
@@ -815,96 +935,331 @@ impl Parser {
     }
 
     fn expect_type(&mut self) -> Result<Type, ParseError> {
-        match self.next()? {
-            Tok::Ident(s) => self.type_named(&s).ok_or_else(|| {
-                self.pos -= 1;
-                self.err(format!("unknown type '{}'", s))
-            }),
-            t => {
-                self.pos -= 1;
-                Err(self.err(format!("expected a type, found {}", t)))
-            }
-        }
+        let (ty, next) = self.type_at(self.pos, &[], 0)?;
+        self.pos = next;
+        Ok(ty)
     }
 
-    /// builtin types first (`i5`, `u8`, `ptr`, `int`, `uint`), then packs
-    fn type_named(&self, name: &str) -> Option<Type> {
-        Type::from_name(name).or_else(|| self.pack_type(name))
+    /// skip to the end of the current line (a declaration already parsed)
+    fn skip_line(&mut self) {
+        while !matches!(self.next(), Ok(Tok::Newline) | Err(_)) {}
     }
 
-    /// skip over a `pack` declaration already parsed in pass 1
-    fn skip_pack_decl(&mut self) -> Result<(), ParseError> {
-        while !matches!(self.next()?, Tok::RBrace) {}
-        self.expect(Tok::Newline)
-    }
-
-    fn pack_type(&self, name: &str) -> Option<Type> {
-        self.pack_ids.get(name).map(|&i| Type::Pack(i))
-    }
-
-    /// `pack name { field: ty, ... }` — fields may span lines
-    fn parse_pack_decl(&mut self) -> Result<(), ParseError> {
-        self.expect_ident()?; // 'pack'
+    /// `type name = expr` or `type name(P, Q) = expr`, on one line
+    fn parse_type_decl(&mut self) -> Result<(), ParseError> {
+        self.expect_ident()?; // 'type'
         let name = self.expect_ident()?;
-        if self.type_named(&name).is_some() {
+        if Type::from_name(&name).is_some() || self.types.iter().any(|t| t.name == name) {
             self.pos -= 1;
             return Err(self.err(format!("type '{}' is already defined", name)));
         }
-        self.expect(Tok::LBrace)?;
-        let mut fields: Vec<(String, Type)> = Vec::new();
-        let mut offsets = Vec::new();
-        let mut width = 0u32;
-        loop {
-            self.skip_newlines();
-            if self.eat(&Tok::RBrace) {
-                break;
-            }
-            let fname = self.expect_ident()?;
-            if fields.iter().any(|(n, _)| *n == fname) {
-                return Err(self.err(format!("field '{}' appears twice in {}", fname, name)));
-            }
-            self.expect(Tok::Colon)?;
-            let ty = self.expect_type()?;
-            let w = match ty {
-                Type::Int { bits, .. } => bits as u32,
-                Type::Pack(i) => self.packs[i as usize].width,
-                t => {
-                    return Err(self.err(format!(
-                        "pack field '{}' must be an integer or pack type, not {}",
-                        fname,
-                        t.name()
-                    )))
+        let mut params = Vec::new();
+        if self.eat(&Tok::LParen) {
+            loop {
+                params.push(self.expect_ident()?);
+                if self.eat(&Tok::RParen) {
+                    break;
                 }
-            };
-            offsets.push(width);
-            width += w;
-            fields.push((fname, ty));
-            self.skip_newlines();
-            if !self.eat(&Tok::Comma) {
-                self.skip_newlines();
-                self.expect(Tok::RBrace)?;
-                break;
+                self.expect(Tok::Comma)?;
             }
         }
-        if fields.is_empty() {
-            return Err(self.err(format!("pack '{}' has no fields", name)));
-        }
-        if width > 64 {
-            return Err(self.err(format!(
-                "pack '{}' is {} bits wide; packs fit in 64",
-                name, width
-            )));
-        }
+        self.expect(Tok::Equals)?;
+        let (body, next) = self.type_expr_at(self.pos, &params)?;
+        self.pos = next;
         self.expect(Tok::Newline)?;
-        let id = self.packs.len() as u32;
-        self.pack_ids.insert(name.clone(), id);
-        self.packs.push(PackDef {
-            name,
-            fields,
-            offsets,
-            width,
-        });
+        // a plain alias is instantiated now, so its errors surface here and
+        // a fresh pack takes the alias as its name
+        if params.is_empty() {
+            let before = self.packs.len();
+            let ty = self.instantiate(&body, &[], 0).map_err(|m| self.err(m))?;
+            if let Type::Pack(i) = ty {
+                if i as usize >= before {
+                    self.packs[i as usize].name = name.clone();
+                }
+            }
+        }
+        self.types.push(TypeDef { name, params, body });
         Ok(())
+    }
+
+    /// Parse a type expression starting at token `i`; `params` are the
+    /// names allowed in width expressions. Returns the expression and the
+    /// index after it.
+    fn type_expr_at(&self, i: usize, params: &[String]) -> Result<(TypeExpr, usize), ParseError> {
+        let at = |i: usize| self.toks.get(i).map(|t| &t.0);
+        let line = self.toks.get(i).map(|t| t.1).unwrap_or(0);
+        let err = |msg: String| ParseError { line, msg };
+        let Some(Tok::Ident(name)) = at(i) else {
+            return Err(err(format!(
+                "expected a type, found {}",
+                at(i).map(|t| t.to_string()).unwrap_or("end of input".into())
+            )));
+        };
+        if name == "pack" {
+            if at(i + 1) != Some(&Tok::LBrace) {
+                return Err(err("expected '{' after 'pack'".into()));
+            }
+            let mut j = i + 2;
+            let mut fields: Vec<(String, TypeExpr)> = Vec::new();
+            loop {
+                while at(j) == Some(&Tok::Newline) {
+                    j += 1;
+                }
+                if at(j) == Some(&Tok::RBrace) {
+                    j += 1;
+                    break;
+                }
+                let Some(Tok::Ident(fname)) = at(j) else {
+                    return Err(err("expected a field name".into()));
+                };
+                if fields.iter().any(|(n, _)| n == fname) {
+                    return Err(err(format!("field '{}' appears twice", fname)));
+                }
+                if at(j + 1) != Some(&Tok::Colon) {
+                    return Err(err(format!("expected ':' after field '{}'", fname)));
+                }
+                let (fty, next) = self.type_expr_at(j + 2, params)?;
+                fields.push((fname.clone(), fty));
+                j = next;
+                while at(j) == Some(&Tok::Newline) {
+                    j += 1;
+                }
+                if at(j) == Some(&Tok::Comma) {
+                    j += 1;
+                } else if at(j) != Some(&Tok::RBrace) {
+                    return Err(err("expected ',' or '}' after a field".into()));
+                }
+            }
+            if fields.is_empty() {
+                return Err(err("a pack needs at least one field".into()));
+            }
+            return Ok((TypeExpr::Pack(fields), j));
+        }
+        // name, name(args), i(expr), u(expr)
+        if at(i + 1) == Some(&Tok::LParen) {
+            let mut args = Vec::new();
+            let mut j = i + 2;
+            loop {
+                let (e, next) = self.int_expr_at(j, params)?;
+                args.push(e);
+                j = next;
+                match at(j) {
+                    Some(Tok::Comma) => j += 1,
+                    Some(Tok::RParen) => {
+                        j += 1;
+                        break;
+                    }
+                    _ => return Err(err("expected ',' or ')' in a type's arguments".into())),
+                }
+            }
+            if (name == "i" || name == "u") && args.len() == 1 {
+                return Ok((
+                    TypeExpr::Int {
+                        signed: name == "i",
+                        bits: args.pop().unwrap(),
+                    },
+                    j,
+                ));
+            }
+            return Ok((
+                TypeExpr::Named {
+                    name: name.clone(),
+                    args,
+                },
+                j,
+            ));
+        }
+        Ok((
+            TypeExpr::Named {
+                name: name.clone(),
+                args: Vec::new(),
+            },
+            i + 1,
+        ))
+    }
+
+    /// width expression: term (('+'|'-') term)*, term: atom ('*' atom)*
+    fn int_expr_at(&self, i: usize, params: &[String]) -> Result<(IntExpr, usize), ParseError> {
+        let (mut lhs, mut j) = self.int_term_at(i, params)?;
+        loop {
+            match self.toks.get(j).map(|t| &t.0) {
+                Some(Tok::Plus) => {
+                    let (rhs, next) = self.int_term_at(j + 1, params)?;
+                    lhs = IntExpr::Add(Box::new(lhs), Box::new(rhs));
+                    j = next;
+                }
+                Some(Tok::Minus) => {
+                    let (rhs, next) = self.int_term_at(j + 1, params)?;
+                    lhs = IntExpr::Sub(Box::new(lhs), Box::new(rhs));
+                    j = next;
+                }
+                // `E-1` lexes as E then the literal -1
+                Some(Tok::Int(v)) if *v < 0 => {
+                    lhs = IntExpr::Sub(Box::new(lhs), Box::new(IntExpr::Lit(-*v)));
+                    j += 1;
+                }
+                _ => return Ok((lhs, j)),
+            }
+        }
+    }
+
+    fn int_term_at(&self, i: usize, params: &[String]) -> Result<(IntExpr, usize), ParseError> {
+        let (mut lhs, mut j) = self.int_atom_at(i, params)?;
+        while self.toks.get(j).map(|t| &t.0) == Some(&Tok::Star) {
+            let (rhs, next) = self.int_atom_at(j + 1, params)?;
+            lhs = IntExpr::Mul(Box::new(lhs), Box::new(rhs));
+            j = next;
+        }
+        Ok((lhs, j))
+    }
+
+    fn int_atom_at(&self, i: usize, params: &[String]) -> Result<(IntExpr, usize), ParseError> {
+        let line = self.toks.get(i).map(|t| t.1).unwrap_or(0);
+        match self.toks.get(i).map(|t| &t.0) {
+            Some(Tok::Int(v)) => Ok((IntExpr::Lit(*v), i + 1)),
+            Some(Tok::Ident(p)) if params.contains(p) => Ok((IntExpr::Param(p.clone()), i + 1)),
+            Some(Tok::Ident(p)) => Err(ParseError {
+                line,
+                msg: format!("'{}' is not a parameter of this type", p),
+            }),
+            Some(Tok::LParen) => {
+                let (e, j) = self.int_expr_at(i + 1, params)?;
+                if self.toks.get(j).map(|t| &t.0) != Some(&Tok::RParen) {
+                    return Err(ParseError {
+                        line,
+                        msg: "expected ')' in a width expression".into(),
+                    });
+                }
+                Ok((e, j + 1))
+            }
+            t => Err(ParseError {
+                line,
+                msg: format!(
+                    "expected a width, found {}",
+                    t.map(|t| t.to_string()).unwrap_or("end of input".into())
+                ),
+            }),
+        }
+    }
+
+    /// parse and instantiate a type at token `i` (no parameters in scope)
+    fn type_at(&mut self, i: usize, env: &[(String, i64)], depth: usize) -> Result<(Type, usize), ParseError> {
+        let line = self.toks.get(i).map(|t| t.1).unwrap_or(0);
+        let (expr, next) = self.type_expr_at(i, &[])?;
+        let ty = self.instantiate(&expr, env, depth).map_err(|msg| ParseError { line, msg })?;
+        Ok((ty, next))
+    }
+
+    /// Evaluate a type expression to a concrete `Type`, creating (or
+    /// finding) the packs it denotes. Packs are interned structurally, so
+    /// every spelling of the same layout is the same type.
+    fn instantiate(&mut self, expr: &TypeExpr, env: &[(String, i64)], depth: usize) -> Result<Type, String> {
+        if depth > MAX_TYPE_DEPTH {
+            return Err("type declarations nest too deeply (is a type defined in terms of itself?)".into());
+        }
+        match expr {
+            TypeExpr::Int { signed, bits } => {
+                let n = bits.eval(env)?;
+                if !(1..=64).contains(&n) {
+                    return Err(format!("{} has {} bits; widths run from 1 to 64", expr, n));
+                }
+                Ok(Type::int(*signed, n as u32))
+            }
+            TypeExpr::Named { name, args } => {
+                if args.is_empty() {
+                    if let Some(t) = Type::from_name(name) {
+                        return Ok(t);
+                    }
+                }
+                let def = self
+                    .types
+                    .iter()
+                    .find(|t| t.name == *name)
+                    .cloned()
+                    .ok_or_else(|| format!("unknown type '{}'", name))?;
+                if def.params.len() != args.len() {
+                    return Err(format!(
+                        "type '{}' takes {} parameter(s), given {}",
+                        name,
+                        def.params.len(),
+                        args.len()
+                    ));
+                }
+                let mut inner = Vec::new();
+                for (p, a) in def.params.iter().zip(args) {
+                    inner.push((p.clone(), a.eval(env)?));
+                }
+                let before = self.packs.len();
+                let ty = self.instantiate(&def.body, &inner, depth + 1)?;
+                // a pack born from this instantiation is named by it
+                if let Type::Pack(i) = ty {
+                    if i as usize >= before {
+                        let vals: Vec<String> = inner.iter().map(|(_, v)| v.to_string()).collect();
+                        self.packs[i as usize].name = if vals.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{}({})", name, vals.join(", "))
+                        };
+                    }
+                }
+                Ok(ty)
+            }
+            TypeExpr::Pack(fields) => {
+                let mut out: Vec<(String, Type)> = Vec::new();
+                let mut offsets = Vec::new();
+                let mut width = 0u32;
+                for (fname, fexpr) in fields {
+                    let fty = self.instantiate(fexpr, env, depth + 1)?;
+                    let w = match fty {
+                        Type::Int { bits, .. } => bits as u32,
+                        Type::Pack(i) => self.packs[i as usize].width,
+                        t => {
+                            return Err(format!(
+                                "pack field '{}' must be an integer or pack type, not {}",
+                                fname,
+                                t.name()
+                            ))
+                        }
+                    };
+                    offsets.push(width);
+                    width += w;
+                    out.push((fname.clone(), fty));
+                }
+                if width > 64 {
+                    return Err(format!("{} is {} bits wide; packs fit in 64", expr, width));
+                }
+                if let Some(i) = self.packs.iter().position(|p| p.fields == out) {
+                    return Ok(Type::Pack(i as u32));
+                }
+                let id = self.packs.len() as u32;
+                // the structural spelling; an enclosing alias or
+                // instantiation renames it
+                let name = TypeExpr::Pack(
+                    out.iter()
+                        .map(|(n, t)| {
+                            (
+                                n.clone(),
+                                TypeExpr::Named {
+                                    name: match t {
+                                        Type::Pack(i) => self.packs[*i as usize].name.clone(),
+                                        t => t.name(),
+                                    },
+                                    args: Vec::new(),
+                                },
+                            )
+                        })
+                        .collect(),
+                )
+                .to_string();
+                self.packs.push(PackDef {
+                    name,
+                    fields: out,
+                    offsets,
+                    width,
+                });
+                Ok(Type::Pack(id))
+            }
+        }
     }
 
     fn expect_value(&mut self, scope: &FuncScope) -> Result<ValueId, ParseError> {
@@ -945,7 +1300,7 @@ impl Parser {
     /// Every value definition in the format is the pattern `name : type` —
     /// function params, block params, and instruction results alike. One scan
     /// over the function's tokens builds the whole value table.
-    fn prescan_values(&self, lo: usize, hi: usize) -> Result<FuncScope, ParseError> {
+    fn prescan_values(&mut self, lo: usize, hi: usize) -> Result<FuncScope, ParseError> {
         let mut scope = FuncScope {
             values: Vec::new(),
             value_ids: HashMap::new(),
@@ -954,15 +1309,13 @@ impl Parser {
         };
         let mut i = lo;
         while i + 2 <= hi {
-            if let (Tok::Ident(name), Tok::Colon, Tok::Ident(tyname)) =
+            if let (Tok::Ident(name), Tok::Colon, Tok::Ident(_)) =
                 (&self.toks[i].0, &self.toks[i + 1].0, &self.toks[i + 2].0)
             {
+                let name = name.clone();
                 let line = self.toks[i].1;
-                let ty = self.type_named(tyname).ok_or_else(|| ParseError {
-                    line,
-                    msg: format!("unknown type '{}'", tyname),
-                })?;
-                if scope.value_ids.contains_key(name) {
+                let (ty, next) = self.type_at(i + 2, &[], 0)?;
+                if scope.value_ids.contains_key(&name) {
                     return Err(ParseError {
                         line,
                         msg: format!("value '{}' is defined more than once", name),
@@ -970,11 +1323,8 @@ impl Parser {
                 }
                 let id = ValueId(scope.values.len() as u32);
                 scope.value_ids.insert(name.clone(), id);
-                scope.values.push(ValueData {
-                    name: name.clone(),
-                    ty,
-                });
-                i += 3;
+                scope.values.push(ValueData { name, ty });
+                i = next;
             } else {
                 i += 1;
             }
@@ -1022,15 +1372,21 @@ impl Parser {
                 .then(|| name.clone()),
             Some(Tok::LParen) => {
                 let mut j = i + 2;
+                let mut depth = 1;
                 while let Some((t, _)) = self.toks.get(j) {
                     match t {
+                        Tok::LParen => depth += 1,
                         Tok::RParen => {
-                            return matches!(self.toks.get(j + 1).map(|t| &t.0), Some(Tok::Colon))
-                                .then(|| name.clone());
+                            depth -= 1;
+                            if depth == 0 {
+                                return matches!(self.toks.get(j + 1).map(|t| &t.0), Some(Tok::Colon))
+                                    .then(|| name.clone());
+                            }
                         }
                         Tok::Newline | Tok::LBrace | Tok::Equals => return None,
-                        _ => j += 1,
+                        _ => {}
                     }
+                    j += 1;
                 }
                 None
             }
@@ -1723,22 +2079,11 @@ impl Parser {
 
 impl fmt::Display for Module {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for p in &self.packs {
-            let fields: Vec<String> = p
-                .fields
-                .iter()
-                .map(|(n, t)| {
-                    let tn = match *t {
-                        Type::Pack(i) => self.packs[i as usize].name.clone(),
-                        t => t.name(),
-                    };
-                    format!("{}: {}", n, tn)
-                })
-                .collect();
-            writeln!(f, "pack {} {{ {} }}", p.name, fields.join(", "))?;
+        for t in &self.types {
+            writeln!(f, "{}", t)?;
         }
         for (i, func) in self.funcs.iter().enumerate() {
-            if i > 0 || !self.packs.is_empty() {
+            if i > 0 || !self.types.is_empty() {
                 writeln!(f)?;
             }
             write!(f, "{}", func)?;
@@ -2590,8 +2935,8 @@ join(r: i64):
     #[test]
     fn narrow_types_and_packs_round_trip() {
         let src = r"
-pack rgb { r: u5, g: u6, b: u5 }
-pack pix { c: rgb, a: u8 }
+type rgb = pack { r: u5, g: u6, b: u5 }
+type pix = pack { c: rgb, a: u8 }
 
 fn mk(r: u5, g: u6, b: u5) -> rgb {
 entry:
@@ -2617,22 +2962,23 @@ entry:
 ";
         let m = parse(src).expect("parse");
         verify(&m).expect("verify");
-        assert_eq!(m.packs[0].width, 16);
-        assert_eq!(m.packs[0].offsets, vec![0, 5, 11]);
-        assert_eq!(m.packs[1].width, 24);
+        let packs = &m.funcs[0].packs;
+        assert_eq!(packs[0].width, 16);
+        assert_eq!(packs[0].offsets, vec![0, 5, 11]);
+        assert_eq!(packs[1].width, 24);
         let printed = m.to_string();
         let m2 = parse(&printed).expect("reparse");
         verify(&m2).expect("reverify");
         assert_eq!(printed, m2.to_string());
-        assert!(printed.starts_with("pack rgb { r: u5, g: u6, b: u5 }\n"));
+        assert!(printed.starts_with("type rgb = pack { r: u5, g: u6, b: u5 }\n"), "{}", printed);
     }
 
     #[test]
     fn rejects_bad_widths_and_fields() {
         assert!(parse("fn f(a: i0) {\n    ret\n}").is_err());
         assert!(parse("fn f(a: u65) {\n    ret\n}").is_err());
-        assert!(parse("pack p { a: u40, b: u25 }\n").is_err()); // 65 bits
-        assert!(parse("pack p { a: u4 }\nfn f(p: p) -> u4 {\n    x: u4 = get p, nope\n    ret x\n}").is_err());
+        assert!(parse("type p = pack { a: u40, b: u25 }\n").is_err()); // 65 bits
+        assert!(parse("type p = pack { a: u4 }\nfn f(p: p) -> u4 {\n    x: u4 = get p, nope\n    ret x\n}").is_err());
         // bitcast must preserve width; ext must widen
         let m = parse("fn f(a: i8) -> u16 {\n    b: u16 = bitcast a\n    ret b\n}").unwrap();
         assert!(verify(&m).is_err());
@@ -2656,5 +3002,63 @@ entry:
         resolve_types(&mut m, &Policy::new(Type::I32).unwrap());
         verify(&m).expect("verify");
         assert_eq!(m.funcs[0].rets, vec![Type::int(false, 32)]);
+    }
+
+    #[test]
+    fn parametric_types() {
+        let src = r"
+type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }
+type f32 = float(8, 23)
+type f16 = float(5, 10)
+type bits(E, M) = u(E + M + 1)
+type byte = u8
+type word(N) = u(N)
+
+fn exp32(f: f32) -> u8 {
+    e: u8 = get f, exponent
+    ret e
+}
+fn same(f: float(8, 23)) -> f32 {
+    ret f
+}
+fn raw(f: f32) -> bits(8, 23) {
+    r: bits(8, 23) = bitcast f
+    ret r
+}
+fn half(f: f16, b: byte, w: word(2 * 6)) -> (u5, u8, u12) {
+    e: u5 = get f, exponent
+    ret e, b, w
+}
+";
+        let m = parse(src).expect("parse");
+        verify(&m).expect("verify");
+        // f32 and float(8, 23) are one type, named by the alias
+        let f = m.func("same").unwrap();
+        assert_eq!(f.ty(f.params[0]), f.rets[0]);
+        assert_eq!(f.tyname(f.rets[0]), "f32");
+        assert_eq!(m.funcs[0].packs.iter().filter(|p| p.width == 32).count(), 1);
+        assert_eq!(m.func("raw").unwrap().rets[0], Type::int(false, 32));
+        assert_eq!(m.func("half").unwrap().rets[2], Type::int(false, 12));
+        // declarations print as written, and the whole thing round-trips
+        let printed = m.to_string();
+        assert!(printed.starts_with("type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }\ntype f32 = float(8, 23)\n"), "{}", printed);
+        assert!(printed.contains("type bits(E, M) = u(E + M + 1)\n"), "{}", printed);
+        assert!(printed.contains("fn half(f: f16, b: byte, w: word(2 * 6)) -> (u5, u8, u12)") || printed.contains("fn half(f: f16, b: u8, w: u12)"), "{}", printed);
+        let m2 = parse(&printed).expect("reparse");
+        verify(&m2).expect("reverify");
+        assert_eq!(printed, m2.to_string());
+    }
+
+    #[test]
+    fn parametric_type_errors() {
+        // wrong arity, bad width, unknown parameter, self-reference
+        assert!(parse("type w(N) = u(N)\nfn f(a: w) {\n    ret\n}").is_err());
+        assert!(parse("type w(N) = u(N)\nfn f(a: w(70)) {\n    ret\n}").is_err());
+        assert!(parse("type w(N) = u(M)\n").is_err());
+        assert!(parse("type loop(N) = pack { a: loop(N) }\nfn f(a: loop(1)) {\n    ret\n}").is_err());
+        assert!(parse("type big = pack { a: u(64), b: u(1) }\n").is_err());
+        // a block label whose params use parenthesized types still parses
+        let m = parse("fn f(n: u(8)) -> u8 {\nentry:\n    jmp next(n)\nnext(x: u(4 + 4)):\n    ret x\n}").expect("parse");
+        verify(&m).expect("verify");
     }
 }
