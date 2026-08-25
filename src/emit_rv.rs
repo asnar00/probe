@@ -23,7 +23,9 @@
 
 use crate::emit::{Compiled, Encoder};
 use crate::regalloc::{self, Loc};
+use crate::platform::{Native, Platform};
 use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, ValueId};
+use std::collections::HashMap;
 
 /// pool for the allocator: callee-saved s2..s11 (x18..x27) — values placed
 /// here survive calls by construction
@@ -60,13 +62,18 @@ struct Fixup {
 }
 
 pub fn compile(module: &Module, enc: &Encoder) -> Result<Compiled, String> {
+    compile_with(module, enc, &Platform::riscv64())
+}
+
+pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Result<Compiled, String> {
+    let natives = platform.natives(module);
     let mut code: Vec<u8> = Vec::new();
     let mut funcs = std::collections::HashMap::new();
     let mut call_fixups: Vec<Fixup> = Vec::new();
 
     for func in &module.funcs {
         funcs.insert(func.name.clone(), code.len());
-        compile_function(func, enc, &mut code, &mut call_fixups)
+        compile_function(func, enc, &natives, &mut code, &mut call_fixups)
             .map_err(|e| format!("{}: {}", func.name, e))?;
     }
     for fix in call_fixups {
@@ -87,6 +94,7 @@ pub fn compile(module: &Module, enc: &Encoder) -> Result<Compiled, String> {
 struct RvEmit<'a> {
     enc: &'a Encoder,
     func: &'a Function,
+    natives: &'a HashMap<String, Native>,
     code: &'a mut Vec<u8>,
     frame: i64,
     alloc: &'a regalloc::Alloc,
@@ -309,9 +317,34 @@ impl RvEmit<'_> {
 fn compile_function(
     func: &Function,
     enc: &Encoder,
+    natives: &HashMap<String, Native>,
     code: &mut Vec<u8>,
     call_fixups: &mut Vec<Fixup>,
 ) -> Result<(), String> {
+    if let Some(&op) = natives.get(&func.name) {
+        // this function *is* a platform instruction: a0, a1 -> a0, no frame
+        let seq: Vec<(&str, Vec<i64>)> = match op {
+            Native::FAdd32 => vec![
+                ("fmv.w.x {f}, {r}", vec![0, A0]),
+                ("fmv.w.x {f}, {r}", vec![1, A0 + 1]),
+                ("fadd.s {f}, {f}, {f}", vec![0, 0, 1]),
+                ("fmv.x.w {r}, {f}", vec![A0, 0]),
+                (SLLI, vec![A0, A0, 32]), // zero-extend: fmv.x.w sign-extends
+                (SRLI, vec![A0, A0, 32]),
+            ],
+            Native::FAdd64 => vec![
+                ("fmv.d.x {f}, {r}", vec![0, A0]),
+                ("fmv.d.x {f}, {r}", vec![1, A0 + 1]),
+                ("fadd.d {f}, {f}, {f}", vec![0, 0, 1]),
+                ("fmv.x.d {r}, {f}", vec![A0, 0]),
+            ],
+        };
+        for (t, v) in seq {
+            code.extend_from_slice(&enc.encode(t, &v)?.to_le_bytes());
+        }
+        code.extend_from_slice(&enc.encode("jalr {r}, {i -2048..2047}({r})", &[ZERO, 0, RA])?.to_le_bytes());
+        return Ok(());
+    }
     let alloc = regalloc::allocate(func, REG_POOL);
     let nsaved = alloc.used_regs.len() as i64;
     let spill_base = 16 + 8 * nsaved;
@@ -326,6 +359,7 @@ fn compile_function(
     let mut e = RvEmit {
         enc,
         func,
+        natives,
         code,
         frame,
         alloc: &alloc,
@@ -571,6 +605,33 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             let rd = e.dst_reg(*dst, T0);
             e.emit("add {r}, {r}, {r}", &[rd, rb, ro])?;
             e.finish(*dst, rd)
+        }
+        Inst::Call { dsts, callee, args } if e.natives.contains_key(callee) => {
+            // the platform has this one: the instruction instead of the call,
+            // through ft0/ft1 (f0/f1, caller-saved)
+            let op = e.natives[callee];
+            let Some(&dst) = dsts.first() else {
+                return Ok(());
+            };
+            let rl = e.src_reg(args[0], T0)?;
+            let rr = e.src_reg(args[1], T1)?;
+            let rd = e.dst_reg(dst, T0);
+            match op {
+                Native::FAdd32 => {
+                    e.emit("fmv.w.x {f}, {r}", &[0, rl])?;
+                    e.emit("fmv.w.x {f}, {r}", &[1, rr])?;
+                    e.emit("fadd.s {f}, {f}, {f}", &[0, 0, 1])?;
+                    e.emit("fmv.x.w {r}, {f}", &[rd, 0])?;
+                    e.norm(rd, rd, Repr::U(32))?; // fmv.x.w sign-extends
+                }
+                Native::FAdd64 => {
+                    e.emit("fmv.d.x {f}, {r}", &[0, rl])?;
+                    e.emit("fmv.d.x {f}, {r}", &[1, rr])?;
+                    e.emit("fadd.d {f}, {f}, {f}", &[0, 0, 1])?;
+                    e.emit("fmv.x.d {r}, {f}", &[rd, 0])?;
+                }
+            }
+            e.finish(dst, rd)
         }
         Inst::Call { dsts, callee, args } => {
             if args.len() > 8 {

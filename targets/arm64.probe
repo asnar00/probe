@@ -6,6 +6,8 @@ width 4
 
 reg x = x0..x30
 reg w = w0..w30
+reg s = s0..s31
+reg d = d0..d31
 
 ; --- three-register ALU ---
 inst add {x}, {x}, {x}
@@ -144,6 +146,18 @@ inst stp {x}, {x}, [sp, #{i -512..504 /8}]
 inst ldp {x}, {x}, [sp, #{i -512..504 /8}]
 inst mov x29, sp
 inst mov sp, x29
+
+; --- floating point: the platform's native fadd, and moves in and out of
+; the integer registers our values live in ---
+inst fadd {s}, {s}, {s}
+inst fadd {d}, {d}, {d}
+inst fmov {s}, {w}
+inst fmov {w}, {s}
+inst fmov {d}, {x}
+inst fmov {x}, {d}
+; enabling the FPU on bare metal (cpacr_el1.FPEN), and the barrier after
+inst msr cpacr_el1, {x}
+inst isb
 
 ; --- hypervisor call: the qemu bare-metal harness exits via PSCI ---
 inst hvc #{i 0..65535}

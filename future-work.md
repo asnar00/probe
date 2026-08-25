@@ -78,12 +78,16 @@ Backend sketch:
 - External calls (libc symbols) from JIT'd code.
 - An `alloca`-style op for function-local scratch memory (today all memory
   comes from the caller).
-- Floats: `suite/float.ssa` is a correct generic `fadd(E, M)` over packs;
+- Floats: `suite/float.ssa` is a correct generic `fadd(E, M)` over packs,
+  and the platform maps `fadd(8, 23)`/`fadd(11, 52)` to hardware.
   `fsub`, `fmul`, `fdiv`, comparisons, and int<->float conversions belong
-  beside it, in the same style. Hardware floats are then a backend matter:
-  recognize `float(8, 23)` and `float(11, 52)` and lower calls to the
-  library to `fadd s0, s1, s2` from probed encodings, verified against
-  the library that defines the semantics.
+  beside it in the same style, each with its platform entry.
+- Platforms as data: the native table lives in `src/platform.rs`; a
+  per-target file listing native instantiations next to the probe seed
+  would let a target be described entirely outside the compiler.
+- Native calls keep the library instance in the module even when every
+  call to it was replaced; dropping unreferenced instances is a small
+  module-level DCE.
 - Memory for odd widths: a `u5` can't be loaded or stored; a load of the
   containing byte plus `bitcast`/`get` covers it by hand for now.
 - Field-named pack construction; `icmp.eq` on packs without a `bitcast`.

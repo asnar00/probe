@@ -3,10 +3,11 @@
 ; across the encoding; the per-bit learner should handle them unchanged.
 
 triple riscv64
-attr +m
+attr +m,+f,+d
 width 4
 
 reg r = x0..x31
+reg f = f0..f31
 
 inst add {r}, {r}, {r}
 inst sub {r}, {r}, {r}
@@ -69,3 +70,14 @@ inst sllw {r}, {r}, {r}
 inst srlw {r}, {r}, {r}
 inst sraw {r}, {r}, {r}
 inst addiw {r}, {r}, {i -2048..2047}
+
+; --- floating point (F and D): native fadd, and moves to and from the
+; integer registers our values live in ---
+inst fadd.s {f}, {f}, {f}
+inst fadd.d {f}, {f}, {f}
+inst fmv.w.x {f}, {r}
+inst fmv.x.w {r}, {f}
+inst fmv.d.x {f}, {r}
+inst fmv.x.d {r}, {f}
+; enabling the FPU on bare metal: set mstatus.FS through a CSR write
+inst csrrs {r}, {i 0..4095}, {r}

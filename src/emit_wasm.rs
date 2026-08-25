@@ -23,6 +23,7 @@
 //! their local (`iN` sign-extended, `uN`/ptr/packs zero-extended, see
 //! `ssa::Repr`); narrow results re-normalize with a shift pair or a mask.
 
+use crate::platform::{Native, Platform};
 use crate::ssa::{BinOp, Cond, Function, Inst, Module, Repr, ValueId};
 use crate::wlearn::{encode_pieces, uleb, Piece};
 use std::collections::HashMap;
@@ -134,6 +135,11 @@ fn pfx(r: Repr) -> &'static str {
 }
 
 pub fn compile(module: &Module, enc: &WEncoder) -> Result<Vec<u8>, String> {
+    compile_with(module, enc, &Platform::wasm32())
+}
+
+pub fn compile_with(module: &Module, enc: &WEncoder, platform: &Platform) -> Result<Vec<u8>, String> {
+    let natives = platform.natives(module);
     // function name -> (index, result count), in module order
     let mut findex = HashMap::new();
     for (i, f) in module.funcs.iter().enumerate() {
@@ -160,7 +166,7 @@ pub fn compile(module: &Module, enc: &WEncoder) -> Result<Vec<u8>, String> {
     let mut bodies = Vec::new();
     for f in &module.funcs {
         bodies.push(
-            compile_function(f, enc, &findex).map_err(|e| format!("{}: {}", f.name, e))?,
+            compile_function(f, enc, &findex, &natives).map_err(|e| format!("{}: {}", f.name, e))?,
         );
     }
 
@@ -218,6 +224,7 @@ struct WEmit<'a> {
     enc: &'a WEncoder,
     func: &'a Function,
     findex: &'a HashMap<String, (i64, usize)>,
+    natives: &'a HashMap<String, Native>,
     code: Vec<u8>,
     local_of: Vec<i64>, // ValueId -> wasm local index
     label_local: i64,
@@ -366,7 +373,21 @@ fn compile_function(
     func: &Function,
     enc: &WEncoder,
     findex: &HashMap<String, (i64, usize)>,
+    natives: &HashMap<String, Native>,
 ) -> Result<Vec<u8>, String> {
+    if let Some(&op) = natives.get(&func.name) {
+        // this function *is* a platform instruction: params -> result
+        let (to_f, add, to_i) = match op {
+            Native::FAdd32 => ("f32.reinterpret_i32", "f32.add", "i32.reinterpret_f32"),
+            Native::FAdd64 => ("f64.reinterpret_i64", "f64.add", "i64.reinterpret_f64"),
+        };
+        let mut body = vec![0u8]; // no extra locals
+        for (key, v) in [("local.get {}", Some(0)), (to_f, None), ("local.get {}", Some(1)), (to_f, None), (add, None), (to_i, None)] {
+            enc.op(key, v, &mut body)?;
+        }
+        body.push(enc.end);
+        return Ok(body);
+    }
     // locals: params first (that's the wasm rule), then the other SSA
     // values in id order, then the dispatcher's label local (i32)
     let n = func.values.len();
@@ -390,6 +411,7 @@ fn compile_function(
         enc,
         func,
         findex,
+        natives,
         code: Vec::new(),
         local_of,
         label_local,
@@ -600,6 +622,24 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             e.op("i32.wrap_i64", None)?;
             e.op("i32.add", None)?;
             e.set(*dst)
+        }
+        Inst::Call { dsts, callee, args } if e.natives.contains_key(callee) => {
+            // the platform has this one: the instruction instead of the call
+            let op = e.natives[callee];
+            let Some(&dst) = dsts.first() else {
+                return Ok(());
+            };
+            let (to_f, add, to_i) = match op {
+                Native::FAdd32 => ("f32.reinterpret_i32", "f32.add", "i32.reinterpret_f32"),
+                Native::FAdd64 => ("f64.reinterpret_i64", "f64.add", "i64.reinterpret_f64"),
+            };
+            e.get(args[0])?;
+            e.op(to_f, None)?;
+            e.get(args[1])?;
+            e.op(to_f, None)?;
+            e.op(add, None)?;
+            e.op(to_i, None)?;
+            e.set(dst)
         }
         Inst::Call { dsts, callee, args } => {
             for &a in args {

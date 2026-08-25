@@ -465,6 +465,9 @@ pub struct Function {
     pub blocks: Vec<Block>,
     /// the module's pack table, shared so a function can be compiled alone
     pub packs: std::sync::Arc<Vec<PackDef>>,
+    /// for an instantiated generic: (generic name, width arguments) — what
+    /// a platform matches on to substitute a native instruction
+    pub instance: Option<(String, Vec<i64>)>,
 }
 
 impl Function {
@@ -833,10 +836,12 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
     // instantiations ask for in turn
     while let Some((g, args, name)) = p.pending.pop() {
         let (lo, params) = (p.generics[g].lo, p.generics[g].params.clone());
-        p.env = params.into_iter().zip(args).collect();
+        let generic = p.generics[g].name.clone();
+        p.env = params.into_iter().zip(args.iter().copied()).collect();
         p.pos = lo;
-        let f = p.parse_function(Some(name))?;
+        let mut f = p.parse_function(Some(name))?;
         p.env.clear();
+        f.instance = Some((generic, args));
         funcs.push(f);
     }
     let packs = std::sync::Arc::new(p.packs.clone());
@@ -1675,6 +1680,7 @@ impl Parser {
                 values: scope.values,
                 blocks,
                 packs: Default::default(),
+                instance: None,
             });
         }
 
@@ -1728,6 +1734,7 @@ impl Parser {
             values: scope.values,
             blocks,
             packs: Default::default(),
+            instance: None,
         })
     }
 

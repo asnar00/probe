@@ -729,8 +729,12 @@ fn run_riscv(
             (SLLI, [2, 2, 8]),
             (ADDI, [2, 2, 0x80]),
             (SLLI, [2, 2, 16]),
+            // enable the FPU (mstatus.FS = initial) for the platform's fadd
+            ("lui {r}, {i 0..1048575}", [5, 0x2, 0]),
+            ("csrrs {r}, {i 0..4095}, {r}", [0, 0x300, 5]),
         ] {
-            bin.extend(enc.encode(t, &v)?.to_le_bytes());
+            let n = if t.starts_with("lui") { 2 } else { 3 };
+            bin.extend(enc.encode(t, &v[..n])?.to_le_bytes());
         }
         bin.extend(&compiled.code);
         Ok(bin)
@@ -787,6 +791,10 @@ fn run_arm_qemu(
         let compiled = emit::compile(&m2, enc)?;
         // preamble: sp = 0x41000000 via x29 (sp itself isn't a movz target)
         let mut bin = Vec::new();
+        // enable the FPU (cpacr_el1.FPEN = 0b11) for the platform's fadd
+        bin.extend(enc.encode("movz {x}, #{i 0..65535}, lsl #16", &[0, 0x0030])?.to_le_bytes());
+        bin.extend(enc.encode("msr cpacr_el1, {x}", &[0])?.to_le_bytes());
+        bin.extend(enc.encode("isb", &[])?.to_le_bytes());
         bin.extend(
             enc.encode("movz {x}, #{i 0..65535}, lsl #16", &[29, 0x4100])?
                 .to_le_bytes(),

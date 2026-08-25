@@ -4,6 +4,7 @@ mod emit_rv;
 mod emit_wasm;
 mod learn;
 mod opt;
+mod platform;
 mod oracle;
 mod regalloc;
 mod ssa;
@@ -24,6 +25,9 @@ fn main() -> ExitCode {
             false
         } else if let Some(t) = a.strip_prefix("--int=") {
             int_override = ssa::Type::from_name_pub(t);
+            false
+        } else if a == "--soft" {
+            platform::set_soft(true);
             false
         } else {
             true
@@ -93,7 +97,9 @@ fn main() -> ExitCode {
             eprintln!("       probe tiers <file.ssa>");
             eprintln!("       probe live <file.ssa> <function> [args...]");
             eprintln!("       (-O<n> selects the optimization level on any command;");
-            eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy)");
+            eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy;");
+            eprintln!("        --soft compiles every library call as a call, ignoring the");
+            eprintln!("        platform's native instructions)");
             ExitCode::FAILURE
         }
     }
@@ -334,6 +340,7 @@ fn cmd_live(path: &str, fname: &str, fargs: &[i64], int: ssa::Type) -> ExitCode 
                 match parsed {
                     Ok(m) => {
                         let t0 = std::time::Instant::now();
+                        ar.natives = platform::Platform::arm64().natives(&m);
                         match ar.sync(&m.funcs, 0) {
                             Ok(done) => {
                                 let dt = t0.elapsed().as_secs_f64() * 1e6;

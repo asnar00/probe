@@ -50,6 +50,8 @@ pub struct Arena {
     counters: Box<[std::cell::UnsafeCell<u64>; MAX_FUNCS]>,
     n_funcs: usize,
     enc: Encoder,
+    /// callee name -> native op, per the platform; set when a module loads
+    pub natives: HashMap<String, crate::platform::Native>,
 }
 
 pub struct Installed {
@@ -81,6 +83,7 @@ impl Arena {
             counters: Box::new([const { std::cell::UnsafeCell::new(0) }; MAX_FUNCS]),
             n_funcs: 0,
             enc,
+            natives: HashMap::new(),
         })
     }
 
@@ -204,7 +207,7 @@ impl Arena {
         // once at the likely base and only recompile if placement changes
         let tail = (self.cursor + 15) & !15;
         let trial_base = if old_slot != usize::MAX { old_slot } else { tail };
-        let code = compile_one(&opt_func, &self.enc, trial_base as i64, &resolve)?;
+        let code = compile_one(&opt_func, &self.enc, &self.natives, trial_base as i64, &resolve)?;
 
         let (slot, cap, in_place) = if old_slot != usize::MAX && code.len() <= old_cap {
             (old_slot, old_cap, true)
@@ -215,7 +218,7 @@ impl Arena {
         let code = if slot == trial_base {
             code
         } else {
-            compile_one(&opt_func, &self.enc, slot as i64, &resolve)?
+            compile_one(&opt_func, &self.enc, &self.natives, slot as i64, &resolve)?
         };
         self.write(slot, &code);
 

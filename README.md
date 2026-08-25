@@ -52,6 +52,11 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   - Both talk to an assembler only through `src/oracle.rs`; the per-target
     seed files (`targets/*.probe`, read by `src/target.rs`) say how to
     *spell* instructions and nothing else.
+- **A platform per backend** (`src/platform.rs`): the generic
+  instantiations the target implements natively (`fadd(8, 23)`,
+  `fadd(11, 52)`). Compiling such an instance, or a call to one, emits the
+  hardware sequence instead of the SSA body; `--soft` turns that off, and
+  the library remains the reference the hardware path is checked against.
 - **Three backends**, none of which contain a single hand-written opcode:
   - `arm64` (`src/emit.rs`) — JIT: mmap/MAP_JIT on Apple Silicon, run
     in-process
@@ -116,8 +121,10 @@ cargo run -- run suite/types.ssa f32exp 0x40490fdb # f32 = float(8, 23): pi's ex
 
 # floating point is a library: one generic add over float(E, M), done with
 # integer instructions, instantiated for fp8/fp16/bf16/f32/f64 and checked
-# against the FPU
+# against the FPU. On a platform with hardware for it, fadd32 *is* the
+# instruction; --soft keeps the library body
 cargo run -- run suite/float.ssa fadd32 0x3dcccccd 0x3e4ccccd   # 0.1 + 0.2 -> 0x3e99999a
+cargo run -- --soft run suite/float.ssa fadd32 0x3dcccccd 0x3e4ccccd   # same answer, ~100 instructions
 
 # the incremental compiler. Edit the file while this runs — changed
 # functions recompile in place at level 0, and functions that get hot
@@ -139,9 +146,9 @@ targets, everything differentially verified: the suite on four execution
 paths, every narrow-type op against the const-folder's model over every
 value pair, and the softfloat add against the FPU for f32/f64 and against
 an independent reference exhaustively for fp8. What is
-deliberately not here yet, from `future-work.md`: hardware floats (the
-softfloat library covers the semantics; an `f32` that lowers to `fadd`
-instructions is a backend matter), indirect
+deliberately not here yet, from `future-work.md`: more of the float
+library (`fsub`, `fmul`, `fdiv`, compares, conversions) and their
+platform entries, indirect
 calls / function pointers, external (libc) calls from JIT'd code, a
 dominance check in the verifier, and differential testing against clang
 to close the semantic loop the way the prober closed the encoding loop.

@@ -26,6 +26,7 @@
 //! of an N-bit type re-normalize with sbfm/ubfm, which is also what
 //! packs' get/set/pack lower to.
 
+use crate::platform::{Native, Platform};
 use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, ValueId};
 use std::collections::HashMap;
 
@@ -432,13 +433,18 @@ struct Fixup {
 }
 
 pub fn compile(module: &Module, enc: &Encoder) -> Result<Compiled, String> {
+    compile_with(module, enc, &Platform::arm64())
+}
+
+pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Result<Compiled, String> {
+    let natives = platform.natives(module);
     let mut code: Vec<u8> = Vec::new();
     let mut funcs = HashMap::new();
     let mut call_fixups: Vec<Fixup> = Vec::new();
 
     for func in &module.funcs {
         funcs.insert(func.name.clone(), code.len());
-        compile_function(func, enc, &mut code, &mut call_fixups)
+        compile_function(func, enc, &natives, &mut code, &mut call_fixups)
             .map_err(|e| format!("{}: {}", func.name, e))?;
     }
 
@@ -467,6 +473,7 @@ pub fn compile(module: &Module, enc: &Encoder) -> Result<Compiled, String> {
 struct FnEmit<'a> {
     enc: &'a Encoder,
     func: &'a Function,
+    natives: &'a HashMap<String, Native>,
     code: &'a mut Vec<u8>,
     frame: i64,
     alloc: &'a crate::regalloc::Alloc,
@@ -742,12 +749,13 @@ const REG_POOL: &[i64] = &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
 pub fn compile_one(
     func: &Function,
     enc: &Encoder,
+    natives: &HashMap<String, Native>,
     base: i64,
     resolve: &dyn Fn(&str) -> Option<i64>,
 ) -> Result<Vec<u8>, String> {
     let mut code = Vec::new();
     let mut fixups = Vec::new();
-    compile_function(func, enc, &mut code, &mut fixups)
+    compile_function(func, enc, natives, &mut code, &mut fixups)
         .map_err(|e| format!("{}: {}", func.name, e))?;
     for fix in fixups {
         let FixTarget::Func(name) = &fix.target else {
@@ -765,9 +773,15 @@ pub fn compile_one(
 fn compile_function(
     func: &Function,
     enc: &Encoder,
+    natives: &HashMap<String, Native>,
     code: &mut Vec<u8>,
     call_fixups: &mut Vec<Fixup>,
 ) -> Result<(), String> {
+    if let Some(&op) = natives.get(&func.name) {
+        // this function *is* a platform instruction: x0, x1 -> x0, no frame
+        native_body(enc, op, code)?;
+        return Ok(());
+    }
     let alloc = crate::regalloc::allocate(func, REG_POOL);
     let nsaved = alloc.used_regs.len() as i64;
     let spill_base = 16 + 8 * nsaved;
@@ -782,6 +796,7 @@ fn compile_function(
     let mut e = FnEmit {
         enc,
         func,
+        natives,
         code,
         frame,
         alloc: &alloc,
@@ -828,6 +843,31 @@ fn compile_function(
             }
             FixTarget::Func(_) => call_fixups.push(fix),
         }
+    }
+    Ok(())
+}
+
+/// the whole body of a natively implemented function: the sequence on the
+/// argument registers, result in x0, and return
+fn native_body(enc: &Encoder, op: Native, code: &mut Vec<u8>) -> Result<(), String> {
+    let seq: &[(&str, &[i64])] = match op {
+        Native::FAdd32 => &[
+            ("fmov {s}, {w}", &[16, 0]),
+            ("fmov {s}, {w}", &[17, 1]),
+            ("fadd {s}, {s}, {s}", &[16, 16, 17]),
+            ("fmov {w}, {s}", &[0, 16]),
+            ("ret", &[]),
+        ],
+        Native::FAdd64 => &[
+            ("fmov {d}, {x}", &[16, 0]),
+            ("fmov {d}, {x}", &[17, 1]),
+            ("fadd {d}, {d}, {d}", &[16, 16, 17]),
+            ("fmov {x}, {d}", &[0, 16]),
+            ("ret", &[]),
+        ],
+    };
+    for (t, v) in seq {
+        code.extend_from_slice(&enc.encode(t, v)?.to_le_bytes());
     }
     Ok(())
 }
@@ -1057,6 +1097,32 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             e.emit("add {x}, {x}, {x}", &[rd, rb, ro])?;
             e.finish(*dst, rd)
         }
+        Inst::Call { dsts, callee, args } if e.natives.contains_key(callee) => {
+            // the platform has this one: the instruction instead of the call
+            let op = e.natives[callee];
+            let Some(&dst) = dsts.first() else {
+                return Ok(()); // result unused: nothing to compute
+            };
+            let rl = e.src_reg(args[0], 9)?;
+            let rr = e.src_reg(args[1], 10)?;
+            let rd = e.dst_reg(dst, 9);
+            // through v16/v17 (caller-saved, never allocated)
+            match op {
+                Native::FAdd32 => {
+                    e.emit("fmov {s}, {w}", &[16, rl])?;
+                    e.emit("fmov {s}, {w}", &[17, rr])?;
+                    e.emit("fadd {s}, {s}, {s}", &[16, 16, 17])?;
+                    e.emit("fmov {w}, {s}", &[rd, 16])?;
+                }
+                Native::FAdd64 => {
+                    e.emit("fmov {d}, {x}", &[16, rl])?;
+                    e.emit("fmov {d}, {x}", &[17, rr])?;
+                    e.emit("fadd {d}, {d}, {d}", &[16, 16, 17])?;
+                    e.emit("fmov {x}, {d}", &[rd, 16])?;
+                }
+            }
+            e.finish(dst, rd)
+        }
         Inst::Call { dsts, callee, args } => {
             if args.len() > 8 {
                 return Err("more than 8 call arguments not supported yet".into());
@@ -1245,10 +1311,14 @@ mod tests {
     use crate::ssa::Repr;
 
     fn jit(src: &str) -> jit::JitCode {
+        jit_on(src, &Platform::arm64())
+    }
+
+    fn jit_on(src: &str, platform: &Platform) -> jit::JitCode {
         let module = crate::ssa::parse(src).expect("parse");
         crate::ssa::verify(&module).expect("verify");
         let enc = Encoder::load("targets/arm64.encodings.json").expect("encodings");
-        let compiled = compile(&module, &enc).expect("compile");
+        let compiled = compile_with(&module, &enc, platform).expect("compile");
         jit::JitCode::new(&compiled).expect("jit map")
     }
 
@@ -1732,10 +1802,32 @@ entry:
     }
 
     /// The generic softfloat add against the FPU (f32, f64) and against
-    /// an independent reference (fp8 exhaustively, fp16 and bf16 densely).
+    /// an independent reference (fp8 exhaustively, fp16 and bf16 densely) —
+    /// once compiled as the library (every fadd a call into SSA) and once
+    /// on the platform (fadd32/fadd64 as the hardware instruction).
     #[test]
     fn softfloat_add_matches_hardware_and_reference() {
-        let j = jit(include_str!("../suite/float.ssa"));
+        let src = include_str!("../suite/float.ssa");
+        let module = crate::ssa::parse(src).expect("parse");
+        let enc = Encoder::load("targets/arm64.encodings.json").expect("encodings");
+        let soft = compile_with(&module, &enc, &Platform::none()).expect("compile");
+        let hard = compile_with(&module, &enc, &Platform::arm64()).expect("compile");
+        assert_ne!(soft.code, hard.code, "the platform must change the code for fadd32/fadd64");
+        // fadd32 on the platform is four instructions plus frame: much
+        // smaller than the library instance
+        let size = |c: &Compiled, n: &str| {
+            let mut offs: Vec<usize> = c.funcs.values().copied().collect();
+            offs.sort();
+            let at = c.funcs[n];
+            offs.iter().find(|&&o| o > at).map(|&o| o - at).unwrap_or(c.code.len() - at)
+        };
+        assert!(size(&hard, "fadd32") < size(&soft, "fadd32") / 4, "{} vs {}", size(&hard, "fadd32"), size(&soft, "fadd32"));
+        for platform in [Platform::none(), Platform::arm64()] {
+            softfloat_check(&jit_on(src, &platform));
+        }
+    }
+
+    fn softfloat_check(j: &jit::JitCode) {
         let mask = |w: u32| if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
         let mut seed = 0x9e3779b97f4a7c15u64;
         let mut rnd = || {

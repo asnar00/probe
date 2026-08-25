@@ -253,6 +253,19 @@ name exists. `probe parse` prints the instantiated functions and not the
 templates — like structured control flow, generics are sugar the parser
 lowers. A pack literal `iconst` is its bit pattern.
 
+### Platforms
+
+A library instantiation defines what an operation *means*; a platform
+says which of them the target has hardware for. Each backend carries a
+table of generic instantiations it implements natively — today
+`fadd(8, 23)` and `fadd(11, 52)` on all three targets — and when it
+compiles such an instance, or a call to one, it emits the instruction
+sequence (arm64 `fmov`/`fadd`/`fmov`, riscv `fmv`/`fadd.s`, wasm
+`f32.add` between reinterprets) instead of the SSA body. The library body
+remains the reference: `--soft` compiles with an empty platform, and the
+two must agree. NaN payloads are the one place they may differ — the
+library canonicalizes, hardware propagates — as on any real platform.
+
 ## Example
 
 ```
