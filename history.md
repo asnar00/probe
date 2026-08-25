@@ -6,6 +6,15 @@ has the full story for any of them.
 
 ---
 
+### `call` retires — `3cc7b8e` · 2026-08-25
+
+`r: f32 = fadd32(a, b)`, `touch(q)`, `q: i64, r: i64 = divmod(a, b)`. A
+name followed by `(` in operation position is a call — no opcode is ever
+followed by one, `iconst (expr)` and `loop(...)` aside — so the keyword
+said nothing. It is now rejected with a note that it is implied. Explicit
+instantiations read the same way: `add(8, 23)(x, y)`. 218/218 on all
+four paths, both ways.
+
 ### Float sub, mul, div — `da2c139` · 2026-08-25
 
 The library grows `sub` (add of the negation), `mul`, and `div` over
