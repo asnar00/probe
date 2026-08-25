@@ -29,8 +29,8 @@ things we can learn ARM64 encodings for by probing LLVM.
 - Comments: `;` to end of line.
 - Names: `[A-Za-z0-9_]+`, for values, blocks, functions, and types alike.
   No prefixes — position says which is which: a name before `:` defines a
-  value, after `:` names a type, after `call` names a function, after
-  `jmp`/`br` names a block. Each value is defined exactly once.
+  value, after `:` names a type, before `(` names a function being called,
+  after `jmp`/`br` names a block. Each value is defined exactly once.
 - Integer literals: decimal, optionally negative (`42`, `-7`), or hex (`0x2a`).
 - Whitespace is insignificant except as a separator; newlines end instructions.
 
@@ -84,7 +84,7 @@ Every value-defining instruction declares its result's type:
 name: ty = op operands...
 ```
 
-Instructions with no result (`store`, result-less `call`, terminators) have no
+Instructions with no result (`store`, result-less calls, terminators) have no
 left-hand side.
 
 ### Constants
@@ -162,8 +162,9 @@ p: ptr = ptradd base, off    ; base: ptr, off: i64 or u64
 
 ### Calls
 
-Callees are named symbols. Signatures are checked against the module if the
-function is defined here, taken on trust if external.
+A name followed by an argument list is a call — no opcode is ever
+followed by `(`, so no keyword is needed. Signatures are checked against
+the module if the function is defined here, taken on trust if external.
 
 ```
 v: i64 = f(a, b)             ; call with one result
@@ -172,7 +173,7 @@ g(a)                           ; call with results ignored (or none)
 ```
 
 A call binds either *all* of the callee's return values or *none* of them
-(`call` and `unpack` are the only instructions that define more than one value).
+(calls and `unpack` are the only instructions that define more than one value).
 
 ### Terminators
 
