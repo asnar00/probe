@@ -54,8 +54,8 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
     seed files (`targets/*.probe`, read by `src/target.rs`) say how to
     *spell* instructions and nothing else.
 - **A platform per backend** (`src/platform.rs`): the generic
-  instantiations the target implements natively (`add(8, 23)`,
-  `add(11, 52)` on floats). Compiling such an instance, or a call to one, emits the
+  instantiations the target implements natively (`add`/`sub`/`mul`/`div`
+  on `float(8, 23)` and `float(11, 52)`). Compiling such an instance, or a call to one, emits the
   hardware sequence instead of the SSA body; `--soft` turns that off, and
   the library remains the reference the hardware path is checked against.
 - **Three backends**, none of which contain a single hand-written opcode:
@@ -77,7 +77,7 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   slot with slack, calls routed through counting trampolines, so an edited
   function recompiles in place and a hot one is promoted through the full
   pipeline without disturbing its neighbours.
-- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 191
+- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 218
   cases with expectations embedded as `;! gcd 48 36 -> 12` directives, run
   identically against every backend — including arm64 under
   qemu-system-aarch64 as an independent second referee for the same bytes
@@ -120,10 +120,10 @@ cargo run -- run suite/bits.ssa add5 15 1          # i5: 15 + 1 -> -16
 cargo run -- run suite/packs.ssa mkrgb 31 63 1     # -> 4095 (b:g:r = 1:63:31)
 cargo run -- run suite/types.ssa f32exp 0x40490fdb # f32 = float(8, 23): pi's exponent, 128
 
-# floating point is a library: one generic add over float(E, M), done with
-# integer instructions, instantiated for fp8/fp16/bf16/f32/f64 and checked
-# against the FPU. On a platform with hardware for it, fadd32 *is* the
-# instruction; --soft keeps the library body
+# floating point is a library: generic add/sub/mul/div over float(E, M),
+# done with integer instructions, instantiated for fp8/fp16/bf16/f32/f64
+# and checked against the FPU. On a platform with hardware for it, fadd32
+# *is* the instruction; --soft keeps the library body
 cargo run -- run suite/float.ssa fadd32 0x3dcccccd 0x3e4ccccd   # 0.1 + 0.2 -> 0x3e99999a
 cargo run -- --soft run suite/float.ssa fadd32 0x3dcccccd 0x3e4ccccd   # same answer, ~100 instructions
 
@@ -142,14 +142,14 @@ are checked in, so the backends and suite work without re-learning.
 ## Status
 
 Integers of every width, packed bitfields, parametric types and
-functions, and floating-point addition as a pure-SSA library, on three
-targets, everything differentially verified: the suite on four execution
-paths, every narrow-type op against the const-folder's model over every
-value pair, and the softfloat add against the FPU for f32/f64 and against
-an independent reference exhaustively for fp8. What is
-deliberately not here yet, from `future-work.md`: more of the float
-library (`fsub`, `fmul`, `fdiv`, compares, conversions) and their
-platform entries, indirect
+functions, and floating-point add/sub/mul/div as a pure-SSA library that
+the platform swaps for hardware where it has it, on three targets,
+everything differentially verified: the suite on four execution paths,
+every narrow-type op against the const-folder's model over every value
+pair, and the softfloat ops against the FPU for f32/f64 and against an
+exact reference exhaustively for fp8. What is
+deliberately not here yet, from `future-work.md`: float compares and
+conversions in the library, indirect
 calls / function pointers, external (libc) calls from JIT'd code, a
 dominance check in the verifier, and differential testing against clang
 to close the semantic loop the way the prober closed the encoding loop.

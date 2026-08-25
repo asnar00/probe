@@ -1,9 +1,10 @@
-; IEEE-style floating point as packs plus integer instructions: one generic
-; addition, add(E, M), instantiated for every format below. Round to
-; nearest even, subnormals, signed zeros, infinities; every NaN comes out
-; as the canonical quiet NaN. Because the generic is named `add` and takes
-; float(E, M), the plain opcode `add` on any float dispatches to it — and
-; a platform with hardware for that width substitutes the instruction.
+; IEEE-style floating point as packs plus integer instructions: generic
+; add, sub, mul, div over float(E, M), instantiated for every format below.
+; Round to nearest even, subnormals, signed zeros, infinities; every NaN
+; comes out as the canonical quiet NaN. Because the generics are named
+; after the opcodes and take float(E, M), the plain opcodes on any float
+; dispatch to them — and a platform with hardware for that width
+; substitutes the instruction.
 type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }
 type f32 = float(8, 23)
 type f64 = float(11, 52)
@@ -13,6 +14,19 @@ fn fadd16 = add(5, 10)
 fn faddb16 = add(8, 7)
 fn fadd32 = add(8, 23)
 fn fadd64 = add(11, 52)
+fn fsub8 = sub(4, 3)
+fn fsub16 = sub(5, 10)
+fn fsub32 = sub(8, 23)
+fn fsub64 = sub(11, 52)
+fn fmul8 = mul(4, 3)
+fn fmul16 = mul(5, 10)
+fn fmulb16 = mul(8, 7)
+fn fmul32 = mul(8, 23)
+fn fmul64 = mul(11, 52)
+fn fdiv8 = div(4, 3)
+fn fdiv16 = div(5, 10)
+fn fdiv32 = div(8, 23)
+fn fdiv64 = div(11, 52)
 
 ;! fadd8 56 56 -> 64
 ;! fadd8 60 60 -> 68
@@ -31,6 +45,41 @@ fn fadd64 = add(11, 52)
 ;! sum3 1065353216 1073741824 1077936128 -> 1086324736
 ;! sum64 4607182418800017408 4611686018427387904 -> 4613937818241073152
 ;! sum8 56 56 -> 64
+;! fsub32 1077936128 1065353216 -> 1073741824
+;! fsub32 1065353216 1065353216 -> 0
+;! fsub32 1050253722 1036831949 -> 1045220558
+;! fsub16 16384 14336 -> 15872
+;! fsub64 4607182418800017408 4472406533629990549 -> 4607182418791010209
+;! fsub8 60 56 -> 48
+;! fmul32 1069547520 1073741824 -> 1077936128
+;! fmul32 1036831949 1045220557 -> 1017370379
+;! fmul32 1900671690 1900671690 -> 2139095040
+;! fmul32 228737632 228737632 -> 0
+;! fmul32 3221225472 0 -> 2147483648
+;! fmul16 15872 15872 -> 16512
+;! fmul16 5145 5145 -> 17
+;! fmulb16 16256 16384 -> 16384
+;! fmul8 60 60 -> 65
+;! fmul64 4591870180066957722 4596373779694328218 -> 4581421828931458172
+;! fmul64 2213095475689254516 2213095475689254516 -> 2024
+;! fdiv32 1065353216 1077936128 -> 1051372203
+;! fdiv32 1065353216 0 -> 2139095040
+;! fdiv32 0 0 -> 2143289344
+;! fdiv32 228737632 1900671690 -> 0
+;! fdiv32 3233808384 1082130432 -> 3217031168
+;! fdiv16 15360 16896 -> 13653
+;! fdiv16 1007 16384 -> 504
+;! fdiv64 4607182418800017408 4613937818241073152 -> 4599676419421066581
+;! fdiv8 56 60 -> 51
+;! ops32 1075838976 1056964608 -> 1053609165
+
+; every opcode on floats: ((a - b) * b) / a
+fn ops32(a: f32, b: f32) -> f32 {
+    d: f32 = sub a, b
+    m: f32 = mul d, b
+    q: f32 = div m, a
+    ret q
+}
 
 ; `add` on floats, three times over: 1.0 + 2.0 + 3.0 = 6.0
 fn sum3(a: f32, b: f32, c: f32) -> f32 {
@@ -263,4 +312,319 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     mfield: u(M) = trunc fm
     r: float(E, M) = pack mfield, ex, sh
     ret r
+}
+
+; --- subtraction is addition of the negation ---
+fn sub(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    sb: u1 = get b, sign
+    one: u1 = iconst 1
+    nsb: u1 = xor sb, one
+    nb: float(E, M) = set b, sign, nsb
+    r: float(E, M) = call add(E, M)(a, nb)
+    ret r
+}
+
+; --- shared by mul and div ---
+
+; a finite, nonzero operand as (signed biased exponent, significand with
+; the hidden bit at bit M): subnormals are shifted up into that form
+fn fnorm(E, M)(m: u(M), e: u(E)) -> (i32, u(M + 5)) {
+    hidden: u(M + 5) = iconst 1 << M
+    zero_w: u(M + 5) = iconst 0
+    one_w: u(M + 5) = iconst 1
+    zero_e: u(E) = iconst 0
+    one32: i32 = iconst 1
+    f0: u(M + 5) = ext m
+    subn: u1 = icmp.eq e, zero_e
+    x0: i32 = ext e
+    xr: i32, fr: u(M + 5) = if subn {
+        xl: i32, fl: u(M + 5) = loop(x: i32 = one32, f: u(M + 5) = f0) {
+            h: u(M + 5) = and f, hidden
+            up: u1 = icmp.ne h, zero_w
+            if up {
+                break x, f
+            }
+            f2: u(M + 5) = shl f, one_w
+            x2: i32 = sub x, one32
+            continue x2, f2
+        }
+        yield xl, fl
+    } else {
+        fh: u(M + 5) = or f0, hidden
+        yield x0, fh
+    }
+    ret xr, fr
+}
+
+; encode sign, a signed biased exponent, and a significand whose units bit
+; is bit M + 3 (bit M + 4 a carry; bits 0-2 guard, sticky folded into bit
+; 0): shift subnormals down with sticky, round to nearest even, overflow
+; to infinity
+fn fpack(E, M)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
+    zero_w: u(M + 5) = iconst 0
+    one_w: u(M + 5) = iconst 1
+    three: u(M + 5) = iconst 3
+    hidden: u(M + 5) = iconst 1 << M
+    carry_bit: u(M + 5) = iconst 1 << (M + 4)
+    one32: i32 = iconst 1
+    zero_e: u(E) = iconst 0
+    zero_m: u(M) = iconst 0
+    emax: u(E) = iconst (1 << E) - 1
+    ; a carry shifts right, folding into sticky
+    c: u(M + 5) = and f0, carry_bit
+    has_c: u1 = icmp.ne c, zero_w
+    x1: i32, f1: u(M + 5) = if has_c {
+        low: u(M + 5) = and f0, one_w
+        sh1: u(M + 5) = shr f0, one_w
+        fc: u(M + 5) = or sh1, low
+        xc: i32 = add x0, one32
+        yield xc, fc
+    } else {
+        yield x0, f0
+    }
+    ; below the normal range: shift right by the shortfall, with sticky
+    small: u1 = icmp.lt x1, one32
+    x2: i32, f2: u(M + 5) = if small {
+        d32: i32 = sub one32, x1
+        wmax32: i32 = iconst M + 5
+        far: u1 = icmp.ge d32, wmax32
+        f3: u(M + 5) = if far {
+            nz: u1 = icmp.ne f1, zero_w
+            nzw: u(M + 5) = ext nz
+            yield nzw
+        } else {
+            d64: u64 = ext d32
+            d: u(M + 5) = trunc d64
+            shifted: u(M + 5) = shr f1, d
+            m1: u(M + 5) = shl one_w, d
+            mask: u(M + 5) = sub m1, one_w
+            lost: u(M + 5) = and f1, mask
+            st: u1 = icmp.ne lost, zero_w
+            stw: u(M + 5) = ext st
+            al: u(M + 5) = or shifted, stw
+            yield al
+        }
+        yield one32, f3
+    } else {
+        yield x1, f1
+    }
+    ; round to nearest even on the three guard bits
+    seven: u(M + 5) = iconst 7
+    four: u(M + 5) = iconst 4
+    rbits: u(M + 5) = and f2, seven
+    mant0: u(M + 5) = shr f2, three
+    gt: u1 = icmp.gt rbits, four
+    eq4: u1 = icmp.eq rbits, four
+    odd_w: u(M + 5) = and mant0, one_w
+    odd: u1 = icmp.ne odd_w, zero_w
+    tie_up: u1 = and eq4, odd
+    round_up: u1 = or gt, tie_up
+    upw: u(M + 5) = ext round_up
+    mant1: u(M + 5) = add mant0, upw
+    ovf_bit: u(M + 5) = iconst 1 << (M + 1)
+    o: u(M + 5) = and mant1, ovf_bit
+    has_o: u1 = icmp.ne o, zero_w
+    x3: i32, fm: u(M + 5) = if has_o {
+        m2: u(M + 5) = shr mant1, one_w
+        xo: i32 = add x2, one32
+        yield xo, m2
+    } else {
+        yield x2, mant1
+    }
+    ; encode: normal when the hidden bit is up, else subnormal
+    hid: u(M + 5) = and fm, hidden
+    is_norm: u1 = icmp.ne hid, zero_w
+    emax32: i32 = iconst (1 << E) - 1
+    inf: u1 = icmp.ge x3, emax32
+    big: u1 = and is_norm, inf
+    if big {
+        i: float(E, M) = pack zero_m, emax, s
+        ret i
+    }
+    ex: u(E) = if is_norm {
+        xe: u(E) = trunc x3
+        yield xe
+    } else {
+        yield zero_e
+    }
+    mfield: u(M) = trunc fm
+    r: float(E, M) = pack mfield, ex, s
+    ret r
+}
+
+; --- multiplication ---
+; The product of two (M + 1)-bit significands has 2M + 2 bits, more than
+; a 64-bit value holds for f64; it is built from halves of k = ceil((M+1)/2)
+; bits, and only its top M + 5 bits plus a sticky are ever formed.
+fn mul(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    mb: u(M), eb: u(E), sb: u1 = unpack b
+    emax: u(E) = iconst (1 << E) - 1
+    zero_e: u(E) = iconst 0
+    zero_m: u(M) = iconst 0
+    s: u1 = xor sa, sb
+    a_top: u1 = icmp.eq ea, emax
+    b_top: u1 = icmp.eq eb, emax
+    a_nan0: u1 = icmp.ne ma, zero_m
+    a_nan: u1 = and a_top, a_nan0
+    b_nan0: u1 = icmp.ne mb, zero_m
+    b_nan: u1 = and b_top, b_nan0
+    any_nan: u1 = or a_nan, b_nan
+    if any_nan {
+        n1: float(E, M) = call fnan(E, M)()
+        ret n1
+    }
+    ea0: u1 = icmp.eq ea, zero_e
+    ma0: u1 = icmp.eq ma, zero_m
+    a_zero: u1 = and ea0, ma0
+    eb0: u1 = icmp.eq eb, zero_e
+    mb0: u1 = icmp.eq mb, zero_m
+    b_zero: u1 = and eb0, mb0
+    any_inf: u1 = or a_top, b_top
+    if any_inf {
+        any_zero: u1 = or a_zero, b_zero
+        if any_zero {
+            n2: float(E, M) = call fnan(E, M)()
+            ret n2
+        }
+        i: float(E, M) = pack zero_m, emax, s
+        ret i
+    }
+    any_zero2: u1 = or a_zero, b_zero
+    if any_zero2 {
+        z: float(E, M) = pack zero_m, zero_e, s
+        ret z
+    }
+    xa: i32, fa: u(M + 5) = call fnorm(E, M)(ma, ea)
+    xb: i32, fb: u(M + 5) = call fnorm(E, M)(mb, eb)
+    fa64: u64 = ext fa
+    fb64: u64 = ext fb
+    ; halves of k bits
+    kk: u64 = iconst (M + 2) >> 1
+    kmask: u64 = iconst (1 << ((M + 2) >> 1)) - 1
+    ah: u64 = shr fa64, kk
+    al: u64 = and fa64, kmask
+    bh: u64 = shr fb64, kk
+    bl: u64 = and fb64, kmask
+    hh: u64 = mul ah, bh
+    m1: u64 = mul ah, bl
+    m2: u64 = mul al, bh
+    mid: u64 = add m1, m2
+    ll: u64 = mul al, bl
+    ; product = hh << 2k + mid << k + ll; wanted: product >> (M - 3) and a
+    ; sticky for what falls below. With s = M - 3: the mid term moves left
+    ; by k - s or right by s - k, whichever is nonnegative
+    sl: u64 = iconst (((M + 2) >> 1) - (M - 3)) - ((((M + 2) >> 1) - (M - 3)) & ((((M + 2) >> 1) - (M - 3)) >> 63))
+    sr: u64 = iconst ((M - 3) - ((M + 2) >> 1)) - (((M - 3) - ((M + 2) >> 1)) & (((M - 3) - ((M + 2) >> 1)) >> 63))
+    srmask: u64 = iconst (1 << (((M - 3) - ((M + 2) >> 1)) - (((M - 3) - ((M + 2) >> 1)) & (((M - 3) - ((M + 2) >> 1)) >> 63)))) - 1
+    ss: u64 = iconst M - 3
+    smask: u64 = iconst (1 << (M - 3)) - 1
+    hsh: u64 = iconst 2 * ((M + 2) >> 1) - (M - 3)
+    midlo: u64 = and mid, srmask
+    midlo_k: u64 = shl midlo, kk
+    low: u64 = add midlo_k, ll
+    lowsh: u64 = shr low, ss
+    midhi: u64 = shr mid, sr
+    midhi2: u64 = shl midhi, sl
+    hhs: u64 = shl hh, hsh
+    r0: u64 = add hhs, midhi2
+    r1: u64 = add r0, lowsh
+    lost: u64 = and low, smask
+    zero64: u64 = iconst 0
+    st: u1 = icmp.ne lost, zero64
+    stw: u64 = ext st
+    r2: u64 = or r1, stw
+    r: u(M + 5) = trunc r2
+    bias32: i32 = iconst (1 << (E - 1)) - 1
+    x1: i32 = add xa, xb
+    x: i32 = sub x1, bias32
+    res: float(E, M) = call fpack(E, M)(s, x, r)
+    ret res
+}
+
+; --- division: restoring long division, one quotient bit per step, so
+; nothing wider than M + 5 bits is ever needed ---
+fn div(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    mb: u(M), eb: u(E), sb: u1 = unpack b
+    emax: u(E) = iconst (1 << E) - 1
+    zero_e: u(E) = iconst 0
+    zero_m: u(M) = iconst 0
+    s: u1 = xor sa, sb
+    a_top: u1 = icmp.eq ea, emax
+    b_top: u1 = icmp.eq eb, emax
+    a_nan0: u1 = icmp.ne ma, zero_m
+    a_nan: u1 = and a_top, a_nan0
+    b_nan0: u1 = icmp.ne mb, zero_m
+    b_nan: u1 = and b_top, b_nan0
+    any_nan: u1 = or a_nan, b_nan
+    both_inf: u1 = and a_top, b_top
+    ea0: u1 = icmp.eq ea, zero_e
+    ma0: u1 = icmp.eq ma, zero_m
+    a_zero: u1 = and ea0, ma0
+    eb0: u1 = icmp.eq eb, zero_e
+    mb0: u1 = icmp.eq mb, zero_m
+    b_zero: u1 = and eb0, mb0
+    both_zero: u1 = and a_zero, b_zero
+    bad0: u1 = or any_nan, both_inf
+    bad: u1 = or bad0, both_zero
+    if bad {
+        n: float(E, M) = call fnan(E, M)()
+        ret n
+    }
+    to_inf: u1 = or a_top, b_zero
+    if to_inf {
+        inf_r: float(E, M) = pack zero_m, emax, s
+        ret inf_r
+    }
+    to_zero: u1 = or b_top, a_zero
+    if to_zero {
+        z: float(E, M) = pack zero_m, zero_e, s
+        ret z
+    }
+    xa: i32, fa: u(M + 5) = call fnorm(E, M)(ma, ea)
+    xb: i32, fb: u(M + 5) = call fnorm(E, M)(mb, eb)
+    ; q = floor(fa * 2^(M+4) / fb): the integer bit first (fa / fb is in
+    ; (1/2, 2)), then M + 4 fraction bits by shift-and-subtract, the
+    ; remainder always below fb
+    zero_w: u(M + 5) = iconst 0
+    one_w: u(M + 5) = iconst 1
+    zero32: i32 = iconst 0
+    one32: i32 = iconst 1
+    steps: i32 = iconst M + 4
+    ge0: u1 = icmp.ge fa, fb
+    q0: u(M + 5) = ext ge0
+    r0: u(M + 5) = if ge0 {
+        d0: u(M + 5) = sub fa, fb
+        yield d0
+    } else {
+        yield fa
+    }
+    q: u(M + 5), rem: u(M + 5) = loop(i: i32 = zero32, qq: u(M + 5) = q0, rr: u(M + 5) = r0) {
+        done: u1 = icmp.eq i, steps
+        if done {
+            break qq, rr
+        }
+        r2: u(M + 5) = shl rr, one_w
+        q2: u(M + 5) = shl qq, one_w
+        ge: u1 = icmp.ge r2, fb
+        r3: u(M + 5), q3: u(M + 5) = if ge {
+            rs: u(M + 5) = sub r2, fb
+            qs: u(M + 5) = or q2, one_w
+            yield rs, qs
+        } else {
+            yield r2, q2
+        }
+        i2: i32 = add i, one32
+        continue i2, q3, r3
+    }
+    st: u1 = icmp.ne rem, zero_w
+    stw: u(M + 5) = ext st
+    f: u(M + 5) = or q, stw
+    bias32: i32 = iconst (1 << (E - 1)) - 1
+    x1: i32 = sub xa, xb
+    x2: i32 = add x1, bias32
+    x: i32 = sub x2, one32
+    res: float(E, M) = call fpack(E, M)(s, x, f)
+    ret res
 }

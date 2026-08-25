@@ -150,7 +150,13 @@ inst mov sp, x29
 ; --- floating point: the platform's native fadd, and moves in and out of
 ; the integer registers our values live in ---
 inst fadd {s}, {s}, {s}
+inst fsub {s}, {s}, {s}
+inst fmul {s}, {s}, {s}
+inst fdiv {s}, {s}, {s}
 inst fadd {d}, {d}, {d}
+inst fsub {d}, {d}, {d}
+inst fmul {d}, {d}, {d}
+inst fdiv {d}, {d}, {d}
 inst fmov {s}, {w}
 inst fmov {w}, {s}
 inst fmov {d}, {x}

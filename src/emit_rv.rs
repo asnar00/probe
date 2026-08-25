@@ -23,7 +23,7 @@
 
 use crate::emit::{Compiled, Encoder};
 use crate::regalloc::{self, Loc};
-use crate::platform::{Native, Platform};
+use crate::platform::{FOp, Native, Platform};
 use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, ValueId};
 use std::collections::HashMap;
 
@@ -323,22 +323,18 @@ fn compile_function(
 ) -> Result<(), String> {
     if let Some(&op) = natives.get(&func.name) {
         // this function *is* a platform instruction: a0, a1 -> a0, no frame
-        let seq: Vec<(&str, Vec<i64>)> = match op {
-            Native::FAdd32 => vec![
-                ("fmv.w.x {f}, {r}", vec![0, A0]),
-                ("fmv.w.x {f}, {r}", vec![1, A0 + 1]),
-                ("fadd.s {f}, {f}, {f}", vec![0, 0, 1]),
-                ("fmv.x.w {r}, {f}", vec![A0, 0]),
-                (SLLI, vec![A0, A0, 32]), // zero-extend: fmv.x.w sign-extends
-                (SRLI, vec![A0, A0, 32]),
-            ],
-            Native::FAdd64 => vec![
-                ("fmv.d.x {f}, {r}", vec![0, A0]),
-                ("fmv.d.x {f}, {r}", vec![1, A0 + 1]),
-                ("fadd.d {f}, {f}, {f}", vec![0, 0, 1]),
-                ("fmv.x.d {r}, {f}", vec![A0, 0]),
-            ],
-        };
+        let (to_f, fop, to_i) = fp_templates(op);
+        let mut seq: Vec<(&str, Vec<i64>)> = vec![
+            (to_f, vec![0, A0]),
+            (to_f, vec![1, A0 + 1]),
+            (fop, vec![0, 0, 1]),
+            (to_i, vec![A0, 0]),
+        ];
+        if op.bits == 32 {
+            // zero-extend: fmv.x.w sign-extends
+            seq.push((SLLI, vec![A0, A0, 32]));
+            seq.push((SRLI, vec![A0, A0, 32]));
+        }
         for (t, v) in seq {
             code.extend_from_slice(&enc.encode(t, &v)?.to_le_bytes());
         }
@@ -397,6 +393,25 @@ fn compile_function(
         }
     }
     Ok(())
+}
+
+/// (move in, the op, move out) for a platform float op
+fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
+    let fop = match (op.op, op.bits) {
+        (FOp::Add, 32) => "fadd.s {f}, {f}, {f}",
+        (FOp::Sub, 32) => "fsub.s {f}, {f}, {f}",
+        (FOp::Mul, 32) => "fmul.s {f}, {f}, {f}",
+        (FOp::Div, 32) => "fdiv.s {f}, {f}, {f}",
+        (FOp::Add, _) => "fadd.d {f}, {f}, {f}",
+        (FOp::Sub, _) => "fsub.d {f}, {f}, {f}",
+        (FOp::Mul, _) => "fmul.d {f}, {f}, {f}",
+        (FOp::Div, _) => "fdiv.d {f}, {f}, {f}",
+    };
+    if op.bits == 32 {
+        ("fmv.w.x {f}, {r}", fop, "fmv.x.w {r}, {f}")
+    } else {
+        ("fmv.d.x {f}, {r}", fop, "fmv.x.d {r}, {f}")
+    }
 }
 
 /// the 64-bit or W form of an op; W forms sign-extend, i.e. produce
@@ -616,20 +631,13 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             let rl = e.src_reg(args[0], T0)?;
             let rr = e.src_reg(args[1], T1)?;
             let rd = e.dst_reg(dst, T0);
-            match op {
-                Native::FAdd32 => {
-                    e.emit("fmv.w.x {f}, {r}", &[0, rl])?;
-                    e.emit("fmv.w.x {f}, {r}", &[1, rr])?;
-                    e.emit("fadd.s {f}, {f}, {f}", &[0, 0, 1])?;
-                    e.emit("fmv.x.w {r}, {f}", &[rd, 0])?;
-                    e.norm(rd, rd, Repr::U(32))?; // fmv.x.w sign-extends
-                }
-                Native::FAdd64 => {
-                    e.emit("fmv.d.x {f}, {r}", &[0, rl])?;
-                    e.emit("fmv.d.x {f}, {r}", &[1, rr])?;
-                    e.emit("fadd.d {f}, {f}, {f}", &[0, 0, 1])?;
-                    e.emit("fmv.x.d {r}, {f}", &[rd, 0])?;
-                }
+            let (to_f, fop, to_i) = fp_templates(op);
+            e.emit(to_f, &[0, rl])?;
+            e.emit(to_f, &[1, rr])?;
+            e.emit(fop, &[0, 0, 1])?;
+            e.emit(to_i, &[rd, 0])?;
+            if op.bits == 32 {
+                e.norm(rd, rd, Repr::U(32))?; // fmv.x.w sign-extends
             }
             e.finish(dst, rd)
         }

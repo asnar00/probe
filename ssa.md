@@ -271,7 +271,8 @@ meanings, and a platform adds instructions.
 A library instantiation defines what an operation *means*; a platform
 says which of them the target has hardware for. Each backend carries a
 table of generic instantiations it implements natively — today
-`add(8, 23)` and `add(11, 52)` on all three targets — and when it
+`add`, `sub`, `mul`, and `div` on `float(8, 23)` and `float(11, 52)`, on
+all three targets — and when it
 compiles such an instance, or a call to one, it emits the instruction
 sequence (arm64 `fmov`/`fadd`/`fmov`, riscv `fmv`/`fadd.s`, wasm
 `f32.add` between reinterprets) instead of the SSA body. The library body

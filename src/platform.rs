@@ -16,9 +16,18 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Native {
-    FAdd32,
-    FAdd64,
+pub enum FOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+/// a floating-point op the platform has, on 32- or 64-bit floats
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Native {
+    pub op: FOp,
+    pub bits: u32,
 }
 
 pub struct Platform {
@@ -42,10 +51,15 @@ impl Platform {
             return Platform::none();
         }
         Platform {
-            ops: vec![
-                ("add", vec![8, 23], Native::FAdd32),
-                ("add", vec![11, 52], Native::FAdd64),
-            ],
+            ops: [("add", FOp::Add), ("sub", FOp::Sub), ("mul", FOp::Mul), ("div", FOp::Div)]
+                .into_iter()
+                .flat_map(|(name, op)| {
+                    [
+                        (name, vec![8, 23], Native { op, bits: 32 }),
+                        (name, vec![11, 52], Native { op, bits: 64 }),
+                    ]
+                })
+                .collect(),
         }
     }
 
@@ -71,11 +85,7 @@ impl Platform {
             .iter()
             .find(|(g, a, _)| g == generic && a == args)
             .map(|(_, _, op)| *op)?;
-        let width = match op {
-            Native::FAdd32 => 32,
-            Native::FAdd64 => 64,
-        };
-        let is_float = |t: Type| f.pack(t).is_some() && f.width(t) == Some(width);
+        let is_float = |t: Type| f.pack(t).is_some() && f.width(t) == Some(op.bits);
         let shape_ok = f.params.len() == 2
             && f.rets.len() == 1
             && f.params.iter().all(|&p| is_float(f.ty(p)))

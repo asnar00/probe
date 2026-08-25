@@ -93,7 +93,13 @@ inst i32.reinterpret_f32 :: sig=(param f32) (result i32) :: pre=local.get 0
 inst f64.reinterpret_i64 :: sig=(param i64) (result f64) :: pre=local.get 0
 inst i64.reinterpret_f64 :: sig=(param f64) (result i64) :: pre=local.get 0
 inst f32.add :: sig=(param f32 f32) (result f32) :: pre=local.get 0, local.get 1
+inst f32.sub :: sig=(param f32 f32) (result f32) :: pre=local.get 0, local.get 1
+inst f32.mul :: sig=(param f32 f32) (result f32) :: pre=local.get 0, local.get 1
+inst f32.div :: sig=(param f32 f32) (result f32) :: pre=local.get 0, local.get 1
 inst f64.add :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
+inst f64.sub :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
+inst f64.mul :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
+inst f64.div :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
 
 ; --- stack management (learned early so control-flow probes can use it) ---
 inst drop :: sig=(param i64) :: pre=local.get 0

@@ -26,7 +26,7 @@
 //! of an N-bit type re-normalize with sbfm/ubfm, which is also what
 //! packs' get/set/pack lower to.
 
-use crate::platform::{Native, Platform};
+use crate::platform::{FOp, Native, Platform};
 use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, ValueId};
 use std::collections::HashMap;
 
@@ -847,25 +847,31 @@ fn compile_function(
     Ok(())
 }
 
+/// (move in, the op, move out) for a platform float op
+fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
+    match (op.op, op.bits) {
+        (FOp::Add, 32) => ("fmov {s}, {w}", "fadd {s}, {s}, {s}", "fmov {w}, {s}"),
+        (FOp::Sub, 32) => ("fmov {s}, {w}", "fsub {s}, {s}, {s}", "fmov {w}, {s}"),
+        (FOp::Mul, 32) => ("fmov {s}, {w}", "fmul {s}, {s}, {s}", "fmov {w}, {s}"),
+        (FOp::Div, 32) => ("fmov {s}, {w}", "fdiv {s}, {s}, {s}", "fmov {w}, {s}"),
+        (FOp::Add, _) => ("fmov {d}, {x}", "fadd {d}, {d}, {d}", "fmov {x}, {d}"),
+        (FOp::Sub, _) => ("fmov {d}, {x}", "fsub {d}, {d}, {d}", "fmov {x}, {d}"),
+        (FOp::Mul, _) => ("fmov {d}, {x}", "fmul {d}, {d}, {d}", "fmov {x}, {d}"),
+        (FOp::Div, _) => ("fmov {d}, {x}", "fdiv {d}, {d}, {d}", "fmov {x}, {d}"),
+    }
+}
+
 /// the whole body of a natively implemented function: the sequence on the
 /// argument registers, result in x0, and return
 fn native_body(enc: &Encoder, op: Native, code: &mut Vec<u8>) -> Result<(), String> {
-    let seq: &[(&str, &[i64])] = match op {
-        Native::FAdd32 => &[
-            ("fmov {s}, {w}", &[16, 0]),
-            ("fmov {s}, {w}", &[17, 1]),
-            ("fadd {s}, {s}, {s}", &[16, 16, 17]),
-            ("fmov {w}, {s}", &[0, 16]),
-            ("ret", &[]),
-        ],
-        Native::FAdd64 => &[
-            ("fmov {d}, {x}", &[16, 0]),
-            ("fmov {d}, {x}", &[17, 1]),
-            ("fadd {d}, {d}, {d}", &[16, 16, 17]),
-            ("fmov {x}, {d}", &[0, 16]),
-            ("ret", &[]),
-        ],
-    };
+    let (to_f, fop, to_i) = fp_templates(op);
+    let seq: [(&str, &[i64]); 5] = [
+        (to_f, &[16, 0]),
+        (to_f, &[17, 1]),
+        (fop, &[16, 16, 17]),
+        (to_i, &[0, 16]),
+        ("ret", &[]),
+    ];
     for (t, v) in seq {
         code.extend_from_slice(&enc.encode(t, v)?.to_le_bytes());
     }
@@ -1107,20 +1113,11 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             let rr = e.src_reg(args[1], 10)?;
             let rd = e.dst_reg(dst, 9);
             // through v16/v17 (caller-saved, never allocated)
-            match op {
-                Native::FAdd32 => {
-                    e.emit("fmov {s}, {w}", &[16, rl])?;
-                    e.emit("fmov {s}, {w}", &[17, rr])?;
-                    e.emit("fadd {s}, {s}, {s}", &[16, 16, 17])?;
-                    e.emit("fmov {w}, {s}", &[rd, 16])?;
-                }
-                Native::FAdd64 => {
-                    e.emit("fmov {d}, {x}", &[16, rl])?;
-                    e.emit("fmov {d}, {x}", &[17, rr])?;
-                    e.emit("fadd {d}, {d}, {d}", &[16, 16, 17])?;
-                    e.emit("fmov {x}, {d}", &[rd, 16])?;
-                }
-            }
+            let (to_f, fop, to_i) = fp_templates(op);
+            e.emit(to_f, &[16, rl])?;
+            e.emit(to_f, &[17, rr])?;
+            e.emit(fop, &[16, 16, 17])?;
+            e.emit(to_i, &[rd, 16])?;
             e.finish(dst, rd)
         }
         Inst::Call { dsts, callee, args } => {
@@ -1796,6 +1793,142 @@ entry:
         sign * ((mant | (1u64 << m)) as f64) * 2f64.powi((exp as i64 - bias - m as i64) as i32)
     }
 
+    /// exact reference: a finite value as sign, integer mantissa, and a
+    /// power-of-two exponent (value = mant * 2^exp)
+    fn parts(e: u32, m: u32, bits: u64) -> Option<(u64, u128, i64)> {
+        let emax = (1u64 << e) - 1;
+        let bias = (1i64 << (e - 1)) - 1;
+        let sign = bits >> (e + m) & 1;
+        let exp = (bits >> m) & emax;
+        let mant = bits & ((1u64 << m) - 1);
+        if exp == emax {
+            return None;
+        }
+        if exp == 0 {
+            Some((sign, mant as u128, 1 - bias - m as i64))
+        } else {
+            Some((sign, (mant | (1u64 << m)) as u128, exp as i64 - bias - m as i64))
+        }
+    }
+
+    /// round sign * mant * 2^exp (sticky: some nonzero amount below mant's
+    /// unit was dropped already) to float(E, M), nearest even
+    fn round_parts(e: u32, m: u32, sign: u64, mut mant: u128, mut exp: i64, mut sticky: bool) -> u64 {
+        let emax = (1u64 << e) - 1;
+        let bias = (1i64 << (e - 1)) - 1;
+        if mant == 0 {
+            return sign << (e + m);
+        }
+        // bring mant to exactly M + 1 significant bits, collecting round/sticky
+        let mut round = false;
+        let top = 127 - mant.leading_zeros() as i64; // position of the top bit
+        let mut shift = top - m as i64;
+        // biased exponent of the M+1-bit significand's unit at bit M
+        let mut x = exp + shift + m as i64 + bias;
+        if x < 1 {
+            shift += 1 - x;
+            x = 1;
+        }
+        if shift > 0 {
+            if shift >= 128 {
+                sticky |= mant != 0;
+                mant = 0;
+                round = false;
+            } else {
+                let dropped = mant & ((1u128 << shift) - 1);
+                let half = 1u128 << (shift - 1);
+                round = dropped & half != 0;
+                sticky |= dropped & (half - 1) != 0;
+                mant >>= shift;
+            }
+        } else if shift < 0 {
+            mant <<= -shift;
+        }
+        exp = 0;
+        let _ = exp;
+        if round && (sticky || mant & 1 == 1) {
+            mant += 1;
+        }
+        if mant >> (m + 1) != 0 {
+            mant >>= 1;
+            x += 1;
+        }
+        let (fexp, fmant) = if mant >> m != 0 {
+            (x as u64, (mant as u64) & ((1u64 << m) - 1))
+        } else {
+            (0, mant as u64)
+        };
+        if fexp >= emax {
+            return (sign << (e + m)) | (emax << m);
+        }
+        (sign << (e + m)) | (fexp << m) | fmant
+    }
+
+    /// the exact result of a op b in float(E, M), for the narrow formats
+    fn ref_op(e: u32, m: u32, op: &str, a: u64, b: u64) -> u64 {
+        let nan = ((1u64 << e) - 1) << m | (1u64 << (m - 1));
+        let inf = |s: u64| (s << (e + m)) | (((1u64 << e) - 1) << m);
+        if is_nan_bits(e, m, a) || is_nan_bits(e, m, b) {
+            return nan;
+        }
+        let pa = parts(e, m, a);
+        let pb = parts(e, m, b);
+        let sa = a >> (e + m) & 1;
+        let sb = b >> (e + m) & 1;
+        match op {
+            "add" | "sub" => {
+                let sb = if op == "sub" { sb ^ 1 } else { sb };
+                let b = if op == "sub" { b ^ (1u64 << (e + m)) } else { b };
+                match (pa, pb) {
+                    (None, None) => {
+                        if sa == sb {
+                            inf(sa)
+                        } else {
+                            nan
+                        }
+                    }
+                    (None, _) => inf(sa),
+                    (_, None) => inf(sb),
+                    (Some(_), Some(_)) => {
+                        // exact in f64 for these formats, single rounding after
+                        let v = to_f64(e, m, a) + to_f64(e, m, b);
+                        if v == 0.0 {
+                            let (za, zb) = (pa.unwrap().1 == 0, pb.unwrap().1 == 0);
+                            let s = if za && zb { sa & sb } else { 0 };
+                            return s << (e + m);
+                        }
+                        round_to(e, m, v)
+                    }
+                }
+            }
+            "mul" => {
+                let s = sa ^ sb;
+                match (pa, pb) {
+                    (None, Some((_, 0, _))) | (Some((_, 0, _)), None) => nan,
+                    (None, _) | (_, None) => inf(s),
+                    (Some((_, ma, xa)), Some((_, mb, xb))) => round_parts(e, m, s, ma * mb, xa + xb, false),
+                }
+            }
+            "div" => {
+                let s = sa ^ sb;
+                match (pa, pb) {
+                    (None, None) => nan,
+                    (Some((_, 0, _)), Some((_, 0, _))) => nan,
+                    (None, _) | (_, Some((_, 0, _))) => inf(s),
+                    (_, None) | (Some((_, 0, _)), _) => s << (e + m),
+                    (Some((_, ma, xa)), Some((_, mb, xb))) => {
+                        // q = ma * 2^100 / mb with a sticky for the remainder
+                        let num = ma << 100;
+                        let q = num / mb;
+                        let sticky = num % mb != 0;
+                        round_parts(e, m, s, q, xa - xb - 100, sticky)
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
     fn is_nan_bits(e: u32, m: u32, bits: u64) -> bool {
         let emax = (1u64 << e) - 1;
         (bits >> m) & emax == emax && bits & ((1u64 << m) - 1) != 0
@@ -1862,47 +1995,72 @@ entry:
             }
             v
         };
+        let ops = ["add", "sub", "mul", "div"];
         // --- f32 and f64: the FPU is the oracle ---
-        let vals = patterns(8, 23, 300, &mut rnd);
-        for &a in &vals {
-            for &b in &vals {
-                let want = (f32::from_bits(a as u32) + f32::from_bits(b as u32)).to_bits() as u64;
-                let got = native_result(Repr::U(32), j.call("fadd32", &[a as i64, b as i64]).unwrap()) as u64;
-                if is_nan_bits(8, 23, want) {
-                    assert!(is_nan_bits(8, 23, got), "f32 {:#x} + {:#x}: got {:#x}, want NaN", a, b, got);
-                } else {
-                    assert_eq!(got, want, "f32 {:#x} + {:#x}", a, b);
+        let f32op = |op: &str, a: f32, b: f32| match op {
+            "add" => a + b,
+            "sub" => a - b,
+            "mul" => a * b,
+            _ => a / b,
+        };
+        let f64op = |op: &str, a: f64, b: f64| match op {
+            "add" => a + b,
+            "sub" => a - b,
+            "mul" => a * b,
+            _ => a / b,
+        };
+        let vals = patterns(8, 23, 160, &mut rnd);
+        for op in ops {
+            let name = format!("f{}32", op);
+            for &a in &vals {
+                for &b in &vals {
+                    let want = f32op(op, f32::from_bits(a as u32), f32::from_bits(b as u32)).to_bits() as u64;
+                    let got = native_result(Repr::U(32), j.call(&name, &[a as i64, b as i64]).unwrap()) as u64;
+                    if is_nan_bits(8, 23, want) {
+                        assert!(is_nan_bits(8, 23, got), "f32 {:#x} {} {:#x}: got {:#x}, want NaN", a, op, b, got);
+                    } else {
+                        assert_eq!(got, want, "f32 {:#x} {} {:#x}", a, op, b);
+                    }
                 }
             }
         }
-        let vals = patterns(11, 52, 200, &mut rnd);
-        for &a in &vals {
-            for &b in &vals {
-                let want = (f64::from_bits(a) + f64::from_bits(b)).to_bits();
-                let got = j.call("fadd64", &[a as i64, b as i64]).unwrap() as u64;
-                if is_nan_bits(11, 52, want) {
-                    assert!(is_nan_bits(11, 52, got), "f64 {:#x} + {:#x}: got {:#x}, want NaN", a, b, got);
-                } else {
-                    assert_eq!(got, want, "f64 {:#x} + {:#x}", a, b);
+        let vals = patterns(11, 52, 120, &mut rnd);
+        for op in ops {
+            let name = format!("f{}64", op);
+            for &a in &vals {
+                for &b in &vals {
+                    let want = f64op(op, f64::from_bits(a), f64::from_bits(b)).to_bits();
+                    let got = j.call(&name, &[a as i64, b as i64]).unwrap() as u64;
+                    if is_nan_bits(11, 52, want) {
+                        assert!(is_nan_bits(11, 52, got), "f64 {:#x} {} {:#x}: got {:#x}, want NaN", a, op, b, got);
+                    } else {
+                        assert_eq!(got, want, "f64 {:#x} {} {:#x}", a, op, b);
+                    }
                 }
             }
         }
-        // --- fp8 exhaustive, fp16 / bf16 dense: the f64 reference ---
-        for (name, e, m, n) in [("fadd8", 4u32, 3u32, 0usize), ("fadd16", 5, 10, 400), ("faddb16", 8, 7, 400)] {
+        // --- fp8 exhaustive, fp16 / bf16 dense: the exact reference ---
+        for (suffix, e, m, n) in [("8", 4u32, 3u32, 0usize), ("16", 5, 10, 200), ("b16", 8, 7, 200)] {
             let w = e + m + 1;
             let vals: Vec<u64> = if n == 0 {
                 (0..1u64 << w).collect()
             } else {
                 patterns(e, m, n, &mut rnd)
             };
-            for &a in &vals {
-                for &b in &vals {
-                    let want = round_to(e, m, to_f64(e, m, a) + to_f64(e, m, b));
-                    let got = native_result(Repr::U(w), j.call(name, &[a as i64, b as i64]).unwrap()) as u64;
-                    if is_nan_bits(e, m, want) {
-                        assert!(is_nan_bits(e, m, got), "{} {:#x} + {:#x}: got {:#x}, want NaN", name, a, b, got);
-                    } else {
-                        assert_eq!(got, want, "{} {:#x} + {:#x}", name, a, b);
+            for op in ops {
+                let name = format!("f{}{}", op, suffix);
+                if j.call(&name, &[0, 0]).is_err() {
+                    continue; // bf16 has add and mul only
+                }
+                for &a in &vals {
+                    for &b in &vals {
+                        let want = ref_op(e, m, op, a, b);
+                        let got = native_result(Repr::U(w), j.call(&name, &[a as i64, b as i64]).unwrap()) as u64;
+                        if is_nan_bits(e, m, want) {
+                            assert!(is_nan_bits(e, m, got), "{} {:#x} {} {:#x}: got {:#x}, want NaN", name, a, op, b, got);
+                        } else {
+                            assert_eq!(got, want, "{} {:#x} {} {:#x}", name, a, op, b);
+                        }
                     }
                 }
             }

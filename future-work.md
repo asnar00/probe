@@ -78,10 +78,11 @@ Backend sketch:
 - External calls (libc symbols) from JIT'd code.
 - An `alloca`-style op for function-local scratch memory (today all memory
   comes from the caller).
-- Floats: `suite/float.ssa` is a correct generic `fadd(E, M)` over packs,
-  and the platform maps `fadd(8, 23)`/`fadd(11, 52)` to hardware.
-  `fsub`, `fmul`, `fdiv`, comparisons, and int<->float conversions belong
-  beside it in the same style, each with its platform entry.
+- Floats: `suite/float.ssa` has generic add/sub/mul/div over packs, and
+  the platform maps the f32/f64 instances to hardware. Comparisons
+  (`icmp` on floats by the same dispatch), int<->float conversions, sqrt,
+  and fma belong beside them in the same style, each with its platform
+  entry. f16 on arm64 (FEAT_FP16) is one table line plus the `h` templates.
 - Platforms as data: the native table lives in `src/platform.rs`; a
   per-target file listing native instantiations next to the probe seed
   would let a target be described entirely outside the compiler.

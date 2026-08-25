@@ -137,6 +137,8 @@ pub enum IntExpr {
     Mul(Box<IntExpr>, Box<IntExpr>),
     Shl(Box<IntExpr>, Box<IntExpr>),
     Shr(Box<IntExpr>, Box<IntExpr>),
+    And(Box<IntExpr>, Box<IntExpr>),
+    Or(Box<IntExpr>, Box<IntExpr>),
 }
 
 impl IntExpr {
@@ -153,15 +155,18 @@ impl IntExpr {
             IntExpr::Mul(a, b) => a.eval(env)?.wrapping_mul(b.eval(env)?),
             IntExpr::Shl(a, b) => a.eval(env)?.wrapping_shl(b.eval(env)? as u32),
             IntExpr::Shr(a, b) => a.eval(env)?.wrapping_shr(b.eval(env)? as u32),
+            IntExpr::And(a, b) => a.eval(env)? & b.eval(env)?,
+            IntExpr::Or(a, b) => a.eval(env)? | b.eval(env)?,
         })
     }
 
     fn prec(&self) -> u8 {
         match self {
-            IntExpr::Lit(_) | IntExpr::Param(_) => 3,
-            IntExpr::Mul(..) => 2,
-            IntExpr::Add(..) | IntExpr::Sub(..) => 1,
-            IntExpr::Shl(..) | IntExpr::Shr(..) => 0,
+            IntExpr::Lit(_) | IntExpr::Param(_) => 4,
+            IntExpr::Mul(..) => 3,
+            IntExpr::Add(..) | IntExpr::Sub(..) => 2,
+            IntExpr::Shl(..) | IntExpr::Shr(..) => 1,
+            IntExpr::And(..) | IntExpr::Or(..) => 0,
         }
     }
 }
@@ -178,11 +183,13 @@ impl fmt::Display for IntExpr {
         match self {
             IntExpr::Lit(v) => write!(f, "{}", v),
             IntExpr::Param(p) => write!(f, "{}", p),
-            IntExpr::Add(a, b) => write!(f, "{} + {}", side(a, 1), side(b, 2)),
-            IntExpr::Sub(a, b) => write!(f, "{} - {}", side(a, 1), side(b, 2)),
-            IntExpr::Mul(a, b) => write!(f, "{} * {}", side(a, 2), side(b, 3)),
-            IntExpr::Shl(a, b) => write!(f, "{} << {}", side(a, 0), side(b, 1)),
-            IntExpr::Shr(a, b) => write!(f, "{} >> {}", side(a, 0), side(b, 1)),
+            IntExpr::Add(a, b) => write!(f, "{} + {}", side(a, 2), side(b, 3)),
+            IntExpr::Sub(a, b) => write!(f, "{} - {}", side(a, 2), side(b, 3)),
+            IntExpr::Mul(a, b) => write!(f, "{} * {}", side(a, 3), side(b, 4)),
+            IntExpr::Shl(a, b) => write!(f, "{} << {}", side(a, 1), side(b, 2)),
+            IntExpr::Shr(a, b) => write!(f, "{} >> {}", side(a, 1), side(b, 2)),
+            IntExpr::And(a, b) => write!(f, "{} & {}", side(a, 0), side(b, 1)),
+            IntExpr::Or(a, b) => write!(f, "{} | {}", side(a, 0), side(b, 1)),
         }
     }
 }
@@ -595,6 +602,8 @@ enum Tok {
     Star,
     ShiftL,
     ShiftR,
+    Amp,
+    Pipe,
 }
 
 impl fmt::Display for Tok {
@@ -616,6 +625,8 @@ impl fmt::Display for Tok {
             Tok::Star => write!(f, "'*'"),
             Tok::ShiftL => write!(f, "'<<'"),
             Tok::ShiftR => write!(f, "'>>'"),
+            Tok::Amp => write!(f, "'&'"),
+            Tok::Pipe => write!(f, "'|'"),
         }
     }
 }
@@ -715,6 +726,14 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
             '*' => {
                 chars.next();
                 toks.push((Tok::Star, line));
+            }
+            '&' => {
+                chars.next();
+                toks.push((Tok::Amp, line));
+            }
+            '|' => {
+                chars.next();
+                toks.push((Tok::Pipe, line));
             }
             '<' | '>' => {
                 chars.next();
@@ -1287,9 +1306,28 @@ impl Parser {
         ))
     }
 
-    /// width expression: sum (('<<'|'>>') sum)*, sum: term (('+'|'-') term)*,
-    /// term: atom ('*' atom)*
+    /// width expression, lowest precedence first: `& |`, then `<< >>`,
+    /// then `+ -`, then `*`, then atoms
     fn int_expr_at(&self, i: usize, params: &[String]) -> Result<(IntExpr, usize), ParseError> {
+        let (mut lhs, mut j) = self.int_shift_at(i, params)?;
+        loop {
+            match self.toks.get(j).map(|t| &t.0) {
+                Some(Tok::Amp) => {
+                    let (rhs, next) = self.int_shift_at(j + 1, params)?;
+                    lhs = IntExpr::And(Box::new(lhs), Box::new(rhs));
+                    j = next;
+                }
+                Some(Tok::Pipe) => {
+                    let (rhs, next) = self.int_shift_at(j + 1, params)?;
+                    lhs = IntExpr::Or(Box::new(lhs), Box::new(rhs));
+                    j = next;
+                }
+                _ => return Ok((lhs, j)),
+            }
+        }
+    }
+
+    fn int_shift_at(&self, i: usize, params: &[String]) -> Result<(IntExpr, usize), ParseError> {
         let (mut lhs, mut j) = self.int_sum_at(i, params)?;
         loop {
             match self.toks.get(j).map(|t| &t.0) {

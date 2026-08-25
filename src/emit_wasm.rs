@@ -23,7 +23,7 @@
 //! their local (`iN` sign-extended, `uN`/ptr/packs zero-extended, see
 //! `ssa::Repr`); narrow results re-normalize with a shift pair or a mask.
 
-use crate::platform::{Native, Platform};
+use crate::platform::{FOp, Native, Platform};
 use crate::ssa::{BinOp, Cond, Function, Inst, Module, Repr, ValueId};
 use crate::wlearn::{encode_pieces, uleb, Piece};
 use std::collections::HashMap;
@@ -377,10 +377,7 @@ fn compile_function(
 ) -> Result<Vec<u8>, String> {
     if let Some(&op) = natives.get(&func.name) {
         // this function *is* a platform instruction: params -> result
-        let (to_f, add, to_i) = match op {
-            Native::FAdd32 => ("f32.reinterpret_i32", "f32.add", "i32.reinterpret_f32"),
-            Native::FAdd64 => ("f64.reinterpret_i64", "f64.add", "i64.reinterpret_f64"),
-        };
+        let (to_f, add, to_i) = fp_keys(op);
         let mut body = vec![0u8]; // no extra locals
         for (key, v) in [("local.get {}", Some(0)), (to_f, None), ("local.get {}", Some(1)), (to_f, None), (add, None), (to_i, None)] {
             enc.op(key, v, &mut body)?;
@@ -456,6 +453,22 @@ fn compile_function(
     body.extend(e.code);
     body.push(enc.end);
     Ok(body)
+}
+
+/// (reinterpret in, the op, reinterpret out) for a platform float op
+fn fp_keys(op: Native) -> (&'static str, &'static str, &'static str) {
+    let name = match op.op {
+        FOp::Add => "add",
+        FOp::Sub => "sub",
+        FOp::Mul => "mul",
+        FOp::Div => "div",
+    };
+    let fop: &'static str = Box::leak(format!("f{}.{}", op.bits, name).into_boxed_str());
+    if op.bits == 32 {
+        ("f32.reinterpret_i32", fop, "i32.reinterpret_f32")
+    } else {
+        ("f64.reinterpret_i64", fop, "i64.reinterpret_f64")
+    }
 }
 
 fn binop_key(op: BinOp, r: Repr) -> String {
@@ -629,10 +642,7 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             let Some(&dst) = dsts.first() else {
                 return Ok(());
             };
-            let (to_f, add, to_i) = match op {
-                Native::FAdd32 => ("f32.reinterpret_i32", "f32.add", "i32.reinterpret_f32"),
-                Native::FAdd64 => ("f64.reinterpret_i64", "f64.add", "i64.reinterpret_f64"),
-            };
+            let (to_f, add, to_i) = fp_keys(op);
             e.get(args[0])?;
             e.op(to_f, None)?;
             e.get(args[1])?;

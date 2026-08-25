@@ -74,7 +74,13 @@ inst addiw {r}, {r}, {i -2048..2047}
 ; --- floating point (F and D): native fadd, and moves to and from the
 ; integer registers our values live in ---
 inst fadd.s {f}, {f}, {f}
+inst fsub.s {f}, {f}, {f}
+inst fmul.s {f}, {f}, {f}
+inst fdiv.s {f}, {f}, {f}
 inst fadd.d {f}, {f}, {f}
+inst fsub.d {f}, {f}, {f}
+inst fmul.d {f}, {f}, {f}
+inst fdiv.d {f}, {f}, {f}
 inst fmv.w.x {f}, {r}
 inst fmv.x.w {r}, {f}
 inst fmv.d.x {f}, {r}
