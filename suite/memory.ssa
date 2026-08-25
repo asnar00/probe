@@ -30,20 +30,16 @@ entry:
 
 fn sum4(p: ptr) -> i32 {
 entry:
-    zero32: i32 = const 0
-    zero: i64 = const 0
-    jmp loop(zero, zero32)
+    jmp loop(0, 0)
 loop(i: i64, acc: i32):
-    four: i64 = const 4
-    done: u1 = cmp.ge i, four
+    done: u1 = cmp.ge i, 4
     br done, exit, body
 body:
-    off: i64 = mul i, four
+    off: i64 = mul i, 4
     q: ptr = ptradd p, off
     v: i32 = load q
     acc2: i32 = add acc, v
-    one: i64 = const 1
-    i2: i64 = add i, one
+    i2: i64 = add i, 1
     jmp loop(i2, acc2)
 exit:
     ret acc
@@ -51,22 +47,19 @@ exit:
 
 fn dot(p: ptr, q: ptr, n: i64) -> i64 {
 entry:
-    zero: i64 = const 0
-    jmp loop(zero, zero)
+    jmp loop(0, 0)
 loop(i: i64, acc: i64):
     done: u1 = cmp.ge i, n
     br done, exit, body
 body:
-    eight: i64 = const 8
-    off: i64 = mul i, eight
+    off: i64 = mul i, 8
     pa: ptr = ptradd p, off
     qa: ptr = ptradd q, off
     a: i64 = load pa
     b: i64 = load qa
     m: i64 = mul a, b
     acc2: i64 = add acc, m
-    one: i64 = const 1
-    i2: i64 = add i, one
+    i2: i64 = add i, 1
     jmp loop(i2, acc2)
 exit:
     ret acc

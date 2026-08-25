@@ -183,8 +183,7 @@ entry:
 ; narrow values through calls stay canonical on both sides
 fn negate5(a: i5) -> i5 {
 entry:
-    zero: i5 = const 0
-    r: i5 = sub zero, a
+    r: i5 = sub 0, a
     ret r
 }
 fn neg5(a: i5) -> i5 {
@@ -194,35 +193,27 @@ entry:
 }
 ; count increments of an i5 from 0 until it wraps negative
 fn count5() -> i64 {
-    zero: i5 = const 0
-    n0: i64 = const 0
-    r: i64 = loop(i: i5 = zero, n: i64 = n0) {
-        neg: u1 = cmp.lt i, zero
+    r: i64 = loop(i: i5 = 0, n: i64 = 0) {
+        neg: u1 = cmp.lt i, 0
         if neg {
             break n
         }
-        one: i5 = const 1
-        i2: i5 = add i, one
-        n1: i64 = const 1
-        n2: i64 = add n, n1
+        i2: i5 = add i, 1
+        n2: i64 = add n, 1
         continue i2, n2
     }
     ret r
 }
 ; sum of every u8 value, accumulated in a u16
 fn sumbytes_u8() -> u16 {
-    zero: u8 = const 0
-    acc0: u16 = const 0
-    r: u16 = loop(i: u8 = zero, acc: u16 = acc0) {
+    r: u16 = loop(i: u8 = 0, acc: u16 = 0) {
         w: u16 = conv i
         acc2: u16 = add acc, w
-        max: u8 = const 255
-        done: u1 = cmp.eq i, max
+        done: u1 = cmp.eq i, 255
         if done {
             break acc2
         }
-        one: u8 = const 1
-        i2: u8 = add i, one
+        i2: u8 = add i, 1
         continue i2, acc2
     }
     ret r

@@ -17,8 +17,7 @@
 
 fn agcd(a: int, b: int) -> int {
     g: int = loop(x: int = a, y: int = b) {
-        zero: int = const 0
-        done: u1 = cmp.eq y, zero
+        done: u1 = cmp.eq y, 0
         if done {
             break x
         }
@@ -29,30 +28,26 @@ fn agcd(a: int, b: int) -> int {
 }
 
 fn asum(n: int) -> int {
-    zero: int = const 0
-    r: int = loop(i: int = zero, acc: int = zero) {
+    r: int = loop(i: int = 0, acc: int = 0) {
         done: u1 = cmp.ge i, n
         if done {
             break acc
         }
-        one: int = const 1
         acc2: int = add acc, i
-        i2: int = add i, one
+        i2: int = add i, 1
         continue i2, acc2
     }
     ret r
 }
 
 fn afib(n: int) -> int {
-    two: int = const 2
-    small: u1 = cmp.lt n, two
+    small: u1 = cmp.lt n, 2
     if small {
         ret n
     }
-    one: int = const 1
-    n1: int = sub n, one
+    n1: int = sub n, 1
     a: int = afib(n1)
-    n2: int = sub n, two
+    n2: int = sub n, 2
     b: int = afib(n2)
     r: int = add a, b
     ret r
@@ -76,9 +71,8 @@ fn aclamp(v: int, lo: int, hi: int) -> int {
 }
 
 fn aeven(n: int) -> u1 {
-    one: int = const 1
-    bit: int = and n, one
-    flip: int = xor bit, one
+    bit: int = and n, 1
+    flip: int = xor bit, 1
     r: u1 = conv flip
     ret r
 }

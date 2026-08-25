@@ -3,8 +3,7 @@ fn gcd(a: i64, b: i64) -> i64 {
 entry:
     jmp loop(a, b)
 loop(x: i64, y: i64):
-    zero: i64 = const 0
-    done: u1 = cmp.eq y, zero
+    done: u1 = cmp.eq y, 0
     br done, exit, step
 step:
     r: i64 = rem x, y
