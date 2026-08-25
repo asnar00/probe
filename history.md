@@ -6,6 +6,17 @@ has the full story for any of them.
 
 ---
 
+### Float sub, mul, div — `da2c139` · 2026-08-25
+
+The library grows `sub` (add of the negation), `mul`, and `div` over
+`float(E, M)`, sharing `fnorm` and `fpack` (subnormals, round to nearest
+even, overflow). `mul` builds f64's 106-bit product from 27-bit halves
+without ever holding it; `div` is a restoring long division. The three
+platforms gain `fsub`/`fmul`/`fdiv` for f32 and f64, so on those widths
+the opcodes are instructions and on fp8/fp16/bf16 they are the library.
+Bit-exact against the FPU on f32/f64 and an exact reference exhaustively
+on fp8, all four ops. 218/218 on all four paths, both ways.
+
 ### Native f32, emulated f16, one module — `a71f9a7` · 2026-08-25
 
 A test that shows the platform choosing per width on arm64: `add` on two
