@@ -860,6 +860,9 @@ fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
         (FOp::Sqrt, 32) => ("fmov {s}, {w}", "fsqrt {s}, {s}", "fmov {w}, {s}"),
         (FOp::Neg, 32) => ("fmov {s}, {w}", "fneg {s}, {s}", "fmov {w}, {s}"),
         (FOp::Abs, 32) => ("fmov {s}, {w}", "fabs {s}, {s}", "fmov {w}, {s}"),
+        (FOp::Min, 32) => ("fmov {s}, {w}", "fmin {s}, {s}, {s}", "fmov {w}, {s}"),
+        (FOp::Max, 32) => ("fmov {s}, {w}", "fmax {s}, {s}, {s}", "fmov {w}, {s}"),
+        (FOp::Fma, 32) => ("fmov {s}, {w}", "fmadd {s}, {s}, {s}, {s}", "fmov {w}, {s}"),
         (FOp::Add, _) => ("fmov {d}, {x}", "fadd {d}, {d}, {d}", "fmov {x}, {d}"),
         (FOp::Sub, _) => ("fmov {d}, {x}", "fsub {d}, {d}, {d}", "fmov {x}, {d}"),
         (FOp::Mul, _) => ("fmov {d}, {x}", "fmul {d}, {d}, {d}", "fmov {x}, {d}"),
@@ -867,6 +870,9 @@ fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
         (FOp::Sqrt, _) => ("fmov {d}, {x}", "fsqrt {d}, {d}", "fmov {x}, {d}"),
         (FOp::Neg, _) => ("fmov {d}, {x}", "fneg {d}, {d}", "fmov {x}, {d}"),
         (FOp::Abs, _) => ("fmov {d}, {x}", "fabs {d}, {d}", "fmov {x}, {d}"),
+        (FOp::Min, _) => ("fmov {d}, {x}", "fmin {d}, {d}, {d}", "fmov {x}, {d}"),
+        (FOp::Max, _) => ("fmov {d}, {x}", "fmax {d}, {d}, {d}", "fmov {x}, {d}"),
+        (FOp::Fma, _) => ("fmov {d}, {x}", "fmadd {d}, {d}, {d}, {d}", "fmov {x}, {d}"),
     }
 }
 
@@ -880,17 +886,23 @@ fn cc_index(cc: &str) -> usize {
 }
 
 /// the instruction sequence for a platform op: integer registers in
-/// (rl, rr), integer register out (rd), FP scratch v16/v17
-fn native_seq(op: Native, rd: i64, rl: i64, rr: i64) -> Vec<(&'static str, Vec<i64>)> {
+/// (rl, rr, ra), integer register out (rd), FP scratch v16/v17/v18
+fn native_seq(op: Native, rd: i64, rl: i64, rr: i64, ra: i64) -> Vec<(&'static str, Vec<i64>)> {
     match op {
         Native::Arith { op: fop, .. } => {
             let (to_f, t, to_i) = fp_templates(op);
             let mut seq = vec![(to_f, vec![16, rl])];
-            if fop.arity() == 2 {
-                seq.push((to_f, vec![17, rr]));
-                seq.push((t, vec![16, 16, 17]));
-            } else {
-                seq.push((t, vec![16, 16]));
+            match fop.arity() {
+                3 => {
+                    seq.push((to_f, vec![17, rr]));
+                    seq.push((to_f, vec![18, ra]));
+                    seq.push((t, vec![16, 16, 17, 18]));
+                }
+                2 => {
+                    seq.push((to_f, vec![17, rr]));
+                    seq.push((t, vec![16, 16, 17]));
+                }
+                _ => seq.push((t, vec![16, 16])),
             }
             seq.push((to_i, vec![rd, 16]));
             seq
@@ -961,7 +973,7 @@ fn native_seq(op: Native, rd: i64, rl: i64, rr: i64) -> Vec<(&'static str, Vec<i
 /// the whole body of a natively implemented function: the sequence on the
 /// argument registers, result in x0, and return
 fn native_body(enc: &Encoder, op: Native, code: &mut Vec<u8>) -> Result<(), String> {
-    let mut seq = native_seq(op, 0, 0, 1);
+    let mut seq = native_seq(op, 0, 0, 1, 2);
     seq.push(("ret", vec![]));
     for (t, v) in seq {
         code.extend_from_slice(&enc.encode(t, &v)?.to_le_bytes());
@@ -1203,8 +1215,9 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             // through v16/v17 (caller-saved, never allocated)
             let rl = e.src_reg(args[0], 9)?;
             let rr = if args.len() > 1 { e.src_reg(args[1], 10)? } else { 0 };
+            let ra = if args.len() > 2 { e.src_reg(args[2], 11)? } else { 0 };
             let rd = e.dst_reg(dst, 9);
-            for (t, v) in native_seq(op, rd, rl, rr) {
+            for (t, v) in native_seq(op, rd, rl, rr, ra) {
                 e.emit(t, &v)?;
             }
             e.finish(dst, rd)
@@ -2192,6 +2205,132 @@ entry:
                 assert_eq!(got, want, "{}({:#x})", name, arg);
             }
         };
+        // --- fma against the FPU (f32, f64) and an exact i128 reference
+        // (f16); min/max against the IEEE rules ---
+        let v32 = patterns(8, 23, 40, &mut rnd);
+        for &a in &v32 {
+            for &b in &v32 {
+                for &c in &v32 {
+                    let (fa, fb, fc) = (f32::from_bits(a as u32), f32::from_bits(b as u32), f32::from_bits(c as u32));
+                    let want = fa.mul_add(fb, fc).to_bits() as u64;
+                    let got = native_result(Repr::U(32), j.call("fma32", &[a as i64, b as i64, c as i64]).unwrap()) as u64;
+                    if is_nan_bits(8, 23, want) {
+                        assert!(is_nan_bits(8, 23, got), "fma32 {:#x} {:#x} {:#x}: got {:#x}, want NaN", a, b, c, got);
+                    } else {
+                        assert_eq!(got, want, "fma32 {:#x} {:#x} {:#x}", a, b, c);
+                    }
+                }
+            }
+        }
+        let v64 = patterns(11, 52, 30, &mut rnd);
+        for &a in &v64 {
+            for &b in &v64 {
+                for &c in &v64 {
+                    let (fa, fb, fc) = (f64::from_bits(a), f64::from_bits(b), f64::from_bits(c));
+                    let want = fa.mul_add(fb, fc).to_bits();
+                    let got = j.call("fma64", &[a as i64, b as i64, c as i64]).unwrap() as u64;
+                    if is_nan_bits(11, 52, want) {
+                        assert!(is_nan_bits(11, 52, got), "fma64 {:#x} {:#x} {:#x}: got {:#x}, want NaN", a, b, c, got);
+                    } else {
+                        assert_eq!(got, want, "fma64 {:#x} {:#x} {:#x}", a, b, c);
+                    }
+                }
+            }
+        }
+        // f16: a * b + c exactly in i128 (the exponent range keeps every
+        // alignment under 128 bits), rounded once
+        let ref_fma16 = |a: u64, b: u64, c: u64| -> u64 {
+            let (e, m) = (5u32, 10u32);
+            let nan = ((1u64 << e) - 1) << m | (1u64 << (m - 1));
+            if is_nan_bits(e, m, a) || is_nan_bits(e, m, b) || is_nan_bits(e, m, c) {
+                return nan;
+            }
+            let (sa, sb, sc) = (a >> 15 & 1, b >> 15 & 1, c >> 15 & 1);
+            let sp = sa ^ sb;
+            let inf = |s: u64| (s << 15) | (0x1f << 10);
+            match (parts(e, m, a), parts(e, m, b), parts(e, m, c)) {
+                (None, Some((_, 0, _)), _) | (Some((_, 0, _)), None, _) => nan,
+                (None, _, pc) | (_, None, pc) => {
+                    if pc.is_none() && sc != sp {
+                        nan
+                    } else {
+                        inf(sp)
+                    }
+                }
+                (_, _, None) => c,
+                (Some((_, ma, xa)), Some((_, mb, xb)), Some((_, mc, xc))) => {
+                    let (pm, px) = (ma as i128 * mb as i128, xa + xb);
+                    if pm == 0 {
+                        return if mc == 0 { (sp & sc) << 15 } else { c };
+                    }
+                    let base = px.min(xc);
+                    let p = (pm << (px - base)) * if sp == 1 { -1 } else { 1 };
+                    let q = ((mc as i128) << (xc - base)) * if sc == 1 { -1 } else { 1 };
+                    let sum = p + q;
+                    if sum == 0 {
+                        return 0;
+                    }
+                    round_parts(e, m, (sum < 0) as u64, sum.unsigned_abs(), base, false)
+                }
+            }
+        };
+        let v16 = patterns(5, 10, 40, &mut rnd);
+        for &a in &v16 {
+            for &b in &v16 {
+                for &c in &v16 {
+                    let want = ref_fma16(a, b, c);
+                    let got = native_result(Repr::U(16), j.call("fma16", &[a as i64, b as i64, c as i64]).unwrap()) as u64;
+                    if is_nan_bits(5, 10, want) {
+                        assert!(is_nan_bits(5, 10, got), "fma16 {:#x} {:#x} {:#x}: got {:#x}, want NaN", a, b, c, got);
+                    } else {
+                        assert_eq!(got, want, "fma16 {:#x} {:#x} {:#x}", a, b, c);
+                    }
+                }
+            }
+        }
+        // min/max: IEEE minimum/maximum
+        let minmax = |is_min: bool, a: u64, b: u64, e: u32, m: u32| -> u64 {
+            let nan = ((1u64 << e) - 1) << m | (1u64 << (m - 1));
+            if is_nan_bits(e, m, a) || is_nan_bits(e, m, b) {
+                return nan;
+            }
+            let (fa, fb) = (to_f64(e, m, a), to_f64(e, m, b));
+            let key = |f: f64, bits: u64| (f, -((bits >> (e + m) & 1) as i64) as f64);
+            let (ka, kb) = (key(fa, a), key(fb, b));
+            if ka == kb {
+                return a;
+            }
+            if (ka < kb) == is_min {
+                a
+            } else {
+                b
+            }
+        };
+        for &a in &v32 {
+            for &b in &v32 {
+                for (name, is_min) in [("min32", true), ("max32", false)] {
+                    let want = minmax(is_min, a, b, 8, 23);
+                    let got = native_result(Repr::U(32), j.call(name, &[a as i64, b as i64]).unwrap()) as u64;
+                    if is_nan_bits(8, 23, want) {
+                        assert!(is_nan_bits(8, 23, got), "{} {:#x} {:#x}", name, a, b);
+                    } else {
+                        assert_eq!(got, want, "{} {:#x} {:#x}", name, a, b);
+                    }
+                }
+            }
+        }
+        for a in 0..256u64 {
+            for b in 0..256u64 {
+                let want = minmax(true, a, b, 4, 3);
+                let got = native_result(Repr::U(8), j.call("min8", &[a as i64, b as i64]).unwrap()) as u64;
+                if is_nan_bits(4, 3, want) {
+                    assert!(is_nan_bits(4, 3, got), "min8 {:#x} {:#x}", a, b);
+                } else {
+                    assert_eq!(got, want, "min8 {:#x} {:#x}", a, b);
+                }
+            }
+        }
+
         // --- comparisons, neg, abs: f32/f64 against Rust, fp8 exhaustively
         // against the exact values ---
         let conds = ["eq", "ne", "lt", "le", "gt", "ge"];

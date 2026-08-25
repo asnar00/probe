@@ -78,10 +78,12 @@ Backend sketch:
 - External calls (libc symbols) from JIT'd code.
 - An `alloca`-style op for function-local scratch memory (today all memory
   comes from the caller).
-- Floats: `suite/float.ssa` has generic add/sub/mul/div over packs, and
-  the platform maps the f32/f64 instances to hardware; sqrt, neg, abs,
-  the comparisons, and conv the same. fma and min/max (with their NaN
-  rules) belong beside them in the same style. f16 on arm64 (FEAT_FP16) is one table line plus the `h` templates.
+- Floats: `suite/float.ssa` has generic add/sub/mul/div/sqrt/neg/abs/
+  min/max/fma, the comparisons, and conversions over packs, with the
+  f32/f64 instances on hardware wherever the target's semantics agree.
+  Left: the NaN-payload question (the library canonicalizes, hardware
+  propagates — a platform could be asked to canonicalize), remainder and
+  rounding functions (`rem`, `floor`, `round`), and decimal formatting. f16 on arm64 (FEAT_FP16) is one table line plus the `h` templates.
 - Platforms as data: the native table lives in `src/platform.rs`; a
   per-target file listing native instantiations next to the probe seed
   would let a target be described entirely outside the compiler.

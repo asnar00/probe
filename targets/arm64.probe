@@ -163,6 +163,14 @@ inst fneg {s}, {s}
 inst fneg {d}, {d}
 inst fabs {s}, {s}
 inst fabs {d}, {d}
+; min/max propagate NaN and order -0 below +0 (IEEE minimum/maximum);
+; fmadd is a*b + c with one rounding
+inst fmin {s}, {s}, {s}
+inst fmax {s}, {s}, {s}
+inst fmin {d}, {d}, {d}
+inst fmax {d}, {d}, {d}
+inst fmadd {s}, {s}, {s}, {s}
+inst fmadd {d}, {d}, {d}, {d}
 ; compare sets NZCV; cset with lo/ls/gt/ge/eq/ne reads it as IEEE wants
 ; (unordered is false for all but ne)
 inst fcmp {s}, {s}

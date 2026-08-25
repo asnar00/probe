@@ -87,6 +87,11 @@ inst fneg.s {f}, {f}
 inst fneg.d {f}, {f}
 inst fabs.s {f}, {f}
 inst fabs.d {f}, {f}
+; fused multiply-add (fmin/fmax are left to the library: the hardware
+; returns the number when one operand is NaN, where the library, arm64,
+; and wasm return NaN)
+inst fmadd.s {f}, {f}, {f}, {f}
+inst fmadd.d {f}, {f}, {f}, {f}
 ; compares write 0/1 to an integer register; NaN gives 0
 inst feq.s {r}, {f}, {f}
 inst flt.s {r}, {f}, {f}

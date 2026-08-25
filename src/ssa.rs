@@ -2728,14 +2728,22 @@ impl Parser {
 
     fn parse_call_tail(&mut self, callee: String, scope: &mut FuncScope) -> Result<(String, Vec<ValueId>), ParseError> {
         let mut callee = callee;
-        // `g(8, 23)(a, b)`: the first group is width arguments when it
-        // opens with a literal, a parameter, or a parenthesis
-        let is_inst = matches!(self.peek(), Some(Tok::LParen))
-            && match self.toks.get(self.pos + 1).map(|t| &t.0) {
-                Some(Tok::Int(_)) | Some(Tok::LParen) => true,
-                Some(Tok::Ident(n)) => self.env.iter().any(|(p, _)| p == n),
-                _ => false,
-            };
+        // `g(8, 23)(a, b)`: the first group is width arguments when a
+        // second group follows it
+        let is_inst = matches!(self.peek(), Some(Tok::LParen)) && {
+            let mut j = self.pos + 1;
+            let mut depth = 1;
+            while depth > 0 {
+                match self.toks.get(j).map(|t| &t.0) {
+                    Some(Tok::LParen) => depth += 1,
+                    Some(Tok::RParen) => depth -= 1,
+                    Some(Tok::Newline) | None => break,
+                    _ => {}
+                }
+                j += 1;
+            }
+            depth == 0 && self.toks.get(j).map(|t| &t.0) == Some(&Tok::LParen)
+        };
         if is_inst {
             let args = self.instance_args()?;
             callee = self.request_instance(&callee, args, None)?;

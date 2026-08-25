@@ -24,12 +24,16 @@ pub enum FOp {
     Sqrt,
     Neg,
     Abs,
+    Min,
+    Max,
+    Fma,
 }
 
 impl FOp {
     pub fn arity(self) -> usize {
         match self {
             FOp::Sqrt | FOp::Neg | FOp::Abs => 1,
+            FOp::Fma => 3,
             _ => 2,
         }
     }
@@ -111,6 +115,9 @@ impl Platform {
                 ("sqrt", FOp::Sqrt),
                 ("neg", FOp::Neg),
                 ("abs", FOp::Abs),
+                ("min", FOp::Min),
+                ("max", FOp::Max),
+                ("fma", FOp::Fma),
             ]
             .into_iter()
             .flat_map(|(name, op)| {
@@ -132,6 +139,13 @@ impl Platform {
             .collect(),
             convs,
         }
+    }
+
+    /// without some arithmetic ops (a target whose instruction disagrees
+    /// with the library's definition keeps the library)
+    fn without(mut self, ops: &[FOp]) -> Platform {
+        self.ops.retain(|(_, _, n)| !matches!(n, Native::Arith { op, .. } if ops.contains(op)));
+        self
     }
 
     /// float <-> float and int -> float
@@ -161,13 +175,16 @@ impl Platform {
     }
 
     /// riscv64's float -> int gives the maximum integer for NaN where the
-    /// library gives 0, so those stay in the library
+    /// library gives 0, and its fmin/fmax return the number when one
+    /// operand is NaN where the library returns NaN: those stay in the
+    /// library
     pub fn riscv64() -> Platform {
-        Platform::with_floats(Platform::convs_widen_and_from_int())
+        Platform::with_floats(Platform::convs_widen_and_from_int()).without(&[FOp::Min, FOp::Max])
     }
 
+    /// wasm has no fused multiply-add
     pub fn wasm32() -> Platform {
-        Platform::with_floats(Platform::convs_all())
+        Platform::with_floats(Platform::convs_all()).without(&[FOp::Fma])
     }
 
     /// the kind of a type, if it is one the platform's instructions take:

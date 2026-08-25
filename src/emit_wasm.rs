@@ -378,7 +378,7 @@ fn compile_function(
     if let Some(&op) = natives.get(&func.name) {
         // this function *is* a platform instruction: params -> result
         let mut body = vec![0u8]; // no extra locals
-        for (key, v) in native_seq(op, 0, 1) {
+        for (key, v) in native_seq(op, 0, 1, 2) {
             enc.op(key, v, &mut body)?;
         }
         body.push(enc.end);
@@ -454,15 +454,18 @@ fn compile_function(
     Ok(body)
 }
 
-/// the ops for a platform op, reading locals l0 (and l1), leaving the
+/// the ops for a platform op, reading locals l0 (l1, l2), leaving the
 /// integer-typed result on the stack
-fn native_seq(op: Native, l0: i64, l1: i64) -> Vec<(&'static str, Option<i64>)> {
+fn native_seq(op: Native, l0: i64, l1: i64, l2: i64) -> Vec<(&'static str, Option<i64>)> {
     match op {
         Native::Arith { op: fop, .. } => {
             let (to_f, t, to_i) = fp_keys(op);
             let mut seq = vec![("local.get {}", Some(l0)), (to_f, None)];
-            if fop.arity() == 2 {
+            if fop.arity() >= 2 {
                 seq.extend([("local.get {}", Some(l1)), (to_f, None)]);
+            }
+            if fop.arity() == 3 {
+                seq.extend([("local.get {}", Some(l2)), (to_f, None)]);
             }
             seq.extend([(t, None), (to_i, None)]);
             seq
@@ -534,6 +537,9 @@ fn fp_keys(op: Native) -> (&'static str, &'static str, &'static str) {
         FOp::Sqrt => "sqrt",
         FOp::Neg => "neg",
         FOp::Abs => "abs",
+        FOp::Min => "min",
+        FOp::Max => "max",
+        FOp::Fma => unreachable!("not on the wasm platform"),
     };
     let fop: &'static str = Box::leak(format!("f{}.{}", bits, name).into_boxed_str());
     if bits == 32 {
@@ -716,7 +722,8 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             };
             let l0 = e.local_of[args[0].0 as usize];
             let l1 = args.get(1).map(|a| e.local_of[a.0 as usize]).unwrap_or(0);
-            for (key, v) in native_seq(op, l0, l1) {
+            let l2 = args.get(2).map(|a| e.local_of[a.0 as usize]).unwrap_or(0);
+            for (key, v) in native_seq(op, l0, l1, l2) {
                 e.op(key, v)?;
             }
             e.set(dst)

@@ -1,6 +1,7 @@
 ; IEEE-style floating point as packs plus integer instructions: generic
-; add, sub, mul, div, sqrt, neg, abs, the six comparisons, and conv between
-; floats and to and from integers, instantiated for every format below.
+; add, sub, mul, div, sqrt, neg, abs, min, max, fma, the six comparisons,
+; and conv between floats and to and from integers, instantiated for every
+; format below.
 ; Round to nearest even, subnormals, signed zeros, infinities; every NaN
 ; comes out as the canonical quiet NaN. Because the generics are named
 ; after the opcodes and take float(E, M), the plain opcodes on any float
@@ -52,6 +53,31 @@ fn fsqrt64 = sqrt(11, 52)
 ;! sum3 1065353216 1073741824 1077936128 -> 1086324736
 ;! sum64 4607182418800017408 4611686018427387904 -> 4613937818241073152
 ;! sum8 56 56 -> 64
+;! fma32 1065353216 1073741824 1077936128 -> 1084227584
+;! fma32 1065355264 1065355264 3212836864 -> 973079552
+;! fma32 1900671690 1900671690 4271273625 -> 2139095040
+;! fma32 1073741824 0 2147483648 -> 0
+;! fma32 2147483648 1065353216 2147483648 -> 2147483648
+;! fma32 2139095040 0 1065353216 -> 2143289344
+;! fma32 1069547520 3217031168 1074790400 -> 0
+;! fma32 507307272 507307272 1065353216 -> 1065353216
+;! fma32 1077936128 1036831949 3197737370 -> 2986344448
+;! fma64 4607182418833571840 4607182418833571840 13830554455654793216 -> 4490088828505161728
+;! fma64 4591870180066957722 4596373779694328218 4599075939470750515 -> 4599436227440940155
+;! fma64 1614679632300144556 1614679632300144556 118622047889322841 -> 118622047889322841
+;! fma16 15376 15376 48128 -> 10248
+;! fma16 15872 15872 13312 -> 16640
+;! fma8 60 60 192 -> 40
+;! min32 1065353216 1073741824 -> 1065353216
+;! min32 2147483648 0 -> 2147483648
+;! min32 0 2147483648 -> 2147483648
+;! max32 2147483648 0 -> 0
+;! min32 2143289344 1065353216 -> 2143289344
+;! max32 4286578688 1084227584 -> 1084227584
+;! max32 3225419776 3229614080 -> 3225419776
+;! min64 9094988921128908188 18318360957983683996 -> 18318360957983683996
+;! max16 15872 49152 -> 15872
+;! min8 56 64 -> 56
 ;! lt32 1065353216 1073741824 -> 1
 ;! lt32 1073741824 1065353216 -> 0
 ;! lt32 2147483648 0 -> 0
@@ -318,6 +344,43 @@ fn clamp01(a: f32) -> f32 {
         ret a
     }
     ret 0.0
+}
+
+fn fma32(a: f32, b: f32, c: f32) -> f32 {
+    r: f32 = fma a, b, c
+    ret r
+}
+fn fma64(a: f64, b: f64, c: f64) -> f64 {
+    r: f64 = fma a, b, c
+    ret r
+}
+fn fma16(a: f16, b: f16, c: f16) -> f16 {
+    r: f16 = fma a, b, c
+    ret r
+}
+fn fma8(a: float(4, 3), b: float(4, 3), c: float(4, 3)) -> float(4, 3) {
+    r: float(4, 3) = fma a, b, c
+    ret r
+}
+fn min32(a: f32, b: f32) -> f32 {
+    r: f32 = min a, b
+    ret r
+}
+fn max32(a: f32, b: f32) -> f32 {
+    r: f32 = max a, b
+    ret r
+}
+fn min64(a: f64, b: f64) -> f64 {
+    r: f64 = min a, b
+    ret r
+}
+fn max16(a: f16, b: f16) -> f16 {
+    r: f16 = max a, b
+    ret r
+}
+fn min8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
+    r: float(4, 3) = min a, b
+    ret r
 }
 
 ; a library-defined operation, by its name: sqrt is not an integer opcode
@@ -1249,5 +1312,313 @@ fn neg(E, M)(a: float(E, M)) -> float(E, M) {
 }
 fn abs(E, M)(a: float(E, M)) -> float(E, M) {
     r: float(E, M) = set a, sign, 0
+    ret r
+}
+
+; --- min and max: IEEE minimum/maximum, NaN propagating, -0 below +0 ---
+fn min(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    t: i32 = fcmp(E, M)(a, b)
+    un: u1 = cmp.eq t, 2
+    if un {
+        n: float(E, M) = fnan(E, M)()
+        ret n
+    }
+    lt: u1 = cmp.eq t, -1
+    if lt {
+        ret a
+    }
+    gt: u1 = cmp.eq t, 1
+    if gt {
+        ret b
+    }
+    sa: u1 = get a, sign
+    if sa {
+        ret a
+    }
+    ret b
+}
+fn max(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    t: i32 = fcmp(E, M)(a, b)
+    un: u1 = cmp.eq t, 2
+    if un {
+        n: float(E, M) = fnan(E, M)()
+        ret n
+    }
+    gt: u1 = cmp.eq t, 1
+    if gt {
+        ret a
+    }
+    lt: u1 = cmp.eq t, -1
+    if lt {
+        ret b
+    }
+    sa: u1 = get a, sign
+    if sa {
+        ret b
+    }
+    ret a
+}
+
+; --- two-word (128-bit) arithmetic on (hi, lo) pairs of u64, for fma ---
+fn add128(ah: u64, al: u64, bh: u64, bl: u64) -> (u64, u64) {
+    lo: u64 = add al, bl
+    carry: u1 = cmp.lt lo, al
+    c64: u64 = conv carry
+    h1: u64 = add ah, bh
+    hi: u64 = add h1, c64
+    ret hi, lo
+}
+fn sub128(ah: u64, al: u64, bh: u64, bl: u64) -> (u64, u64) {
+    lo: u64 = sub al, bl
+    borrow: u1 = cmp.lt al, bl
+    b64: u64 = conv borrow
+    h1: u64 = sub ah, bh
+    hi: u64 = sub h1, b64
+    ret hi, lo
+}
+fn lt128(ah: u64, al: u64, bh: u64, bl: u64) -> u1 {
+    hlt: u1 = cmp.lt ah, bh
+    heq: u1 = cmp.eq ah, bh
+    llt: u1 = cmp.lt al, bl
+    t: u1 = and heq, llt
+    r: u1 = or hlt, t
+    ret r
+}
+; right by any amount, with a sticky for what fell off
+fn shr128(ah: u64, al: u64, d: u64) -> (u64, u64, u1) {
+    z: u1 = cmp.eq d, 0
+    if z {
+        ret ah, al, 0
+    }
+    big: u1 = cmp.ge d, 128
+    if big {
+        any: u64 = or ah, al
+        st: u1 = cmp.ne any, 0
+        ret 0, 0, st
+    }
+    mid: u1 = cmp.ge d, 64
+    if mid {
+        d2: u64 = sub d, 64
+        lo2: u64 = shr ah, d2
+        m1: u64 = shl 1, d2
+        mask: u64 = sub m1, 1
+        lost: u64 = and ah, mask
+        s1: u1 = cmp.ne lost, 0
+        s2: u1 = cmp.ne al, 0
+        st2: u1 = or s1, s2
+        ret 0, lo2, st2
+    }
+    inv: u64 = sub 64, d
+    lo3a: u64 = shr al, d
+    lo3b: u64 = shl ah, inv
+    lo3: u64 = or lo3a, lo3b
+    hi3: u64 = shr ah, d
+    m2: u64 = shl 1, d
+    mask2: u64 = sub m2, 1
+    lost2: u64 = and al, mask2
+    st3: u1 = cmp.ne lost2, 0
+    ret hi3, lo3, st3
+}
+; left by 0..63
+fn shl128(ah: u64, al: u64, s: u64) -> (u64, u64) {
+    z: u1 = cmp.eq s, 0
+    if z {
+        ret ah, al
+    }
+    inv: u64 = sub 64, s
+    hia: u64 = shl ah, s
+    hib: u64 = shr al, inv
+    hi: u64 = or hia, hib
+    lo: u64 = shl al, s
+    ret hi, lo
+}
+; index of the top set bit of a nonzero pair
+fn msb128(ah: u64, al: u64) -> i32 {
+    hz: u1 = cmp.eq ah, 0
+    w: u64, base: i32 = if hz {
+        yield al, 0
+    } else {
+        yield ah, 64
+    }
+    p: i32 = loop(x: u64 = w, c: i32 = base) {
+        small: u1 = cmp.le x, 1
+        if small {
+            break c
+        }
+        x2: u64 = shr x, 1
+        c2: i32 = add c, 1
+        continue x2, c2
+    }
+    ret p
+}
+
+; --- fused multiply-add: a * b + c with one rounding ---
+; The exact product (2M + 2 bits) and the addend meet in a 128-bit
+; accumulator with eight guard bits below the product, so any alignment
+; shift of eight or less is exact and cancellation loses nothing; beyond
+; that the shifted operand is far smaller and a sticky suffices.
+fn fma(E, M)(a: float(E, M), b: float(E, M), c: float(E, M)) -> float(E, M) {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    mb: u(M), eb: u(E), sb: u1 = unpack b
+    mc: u(M), ec: u(E), sc: u1 = unpack c
+    emax: u(E) = const (1 << E) - 1
+    sp: u1 = xor sa, sb
+    a_top: u1 = cmp.eq ea, emax
+    b_top: u1 = cmp.eq eb, emax
+    c_top: u1 = cmp.eq ec, emax
+    a_nan0: u1 = cmp.ne ma, 0
+    a_nan: u1 = and a_top, a_nan0
+    b_nan0: u1 = cmp.ne mb, 0
+    b_nan: u1 = and b_top, b_nan0
+    c_nan0: u1 = cmp.ne mc, 0
+    c_nan: u1 = and c_top, c_nan0
+    nan1: u1 = or a_nan, b_nan
+    any_nan: u1 = or nan1, c_nan
+    if any_nan {
+        n: float(E, M) = fnan(E, M)()
+        ret n
+    }
+    ea0: u1 = cmp.eq ea, 0
+    ma0: u1 = cmp.eq ma, 0
+    a_zero: u1 = and ea0, ma0
+    eb0: u1 = cmp.eq eb, 0
+    mb0: u1 = cmp.eq mb, 0
+    b_zero: u1 = and eb0, mb0
+    ec0: u1 = cmp.eq ec, 0
+    mc0: u1 = cmp.eq mc, 0
+    c_zero: u1 = and ec0, mc0
+    p_inf: u1 = or a_top, b_top
+    if p_inf {
+        ab_zero: u1 = or a_zero, b_zero
+        if ab_zero {
+            n2: float(E, M) = fnan(E, M)()
+            ret n2
+        }
+        if c_top {
+            opp: u1 = cmp.ne sp, sc
+            if opp {
+                n3: float(E, M) = fnan(E, M)()
+                ret n3
+            }
+        }
+        i: float(E, M) = pack 0, emax, sp
+        ret i
+    }
+    if c_top {
+        ret c
+    }
+    p_zero: u1 = or a_zero, b_zero
+    if p_zero {
+        if c_zero {
+            sz: u1 = and sp, sc
+            z: float(E, M) = pack 0, 0, sz
+            ret z
+        }
+        ret c
+    }
+    if c_zero {
+        ; nothing to add: the product, rounded once
+        pr: float(E, M) = mul(E, M)(a, b)
+        ret pr
+    }
+    ; the product, exactly, as (hi, lo), from k-bit halves
+    xa: i32, fa: u(M + 5) = fnorm(E, M)(ma, ea)
+    xb: i32, fb: u(M + 5) = fnorm(E, M)(mb, eb)
+    fa64: u64 = conv fa
+    fb64: u64 = conv fb
+    kk: u64 = const (M + 2) >> 1
+    kmask: u64 = const (1 << ((M + 2) >> 1)) - 1
+    ah: u64 = shr fa64, kk
+    al: u64 = and fa64, kmask
+    bh: u64 = shr fb64, kk
+    bl: u64 = and fb64, kmask
+    hh: u64 = mul ah, bh
+    m1: u64 = mul ah, bl
+    m2: u64 = mul al, bh
+    ll: u64 = mul al, bl
+    mh1: u64, ml1: u64 = shl128(0, m1, kk)
+    mh2: u64, ml2: u64 = shl128(0, m2, kk)
+    kk2: u64 = const 2 * ((M + 2) >> 1)
+    hhh: u64, hhl: u64 = shl128(0, hh, kk2)
+    p1h: u64, p1l: u64 = add128(0, ll, mh1, ml1)
+    p2h: u64, p2l: u64 = add128(p1h, p1l, mh2, ml2)
+    p3h: u64, p3l: u64 = add128(p2h, p2l, hhh, hhl)
+    ; eight guard bits; the product's units bit is now at 2M + 8
+    ph: u64, pl: u64 = shl128(p3h, p3l, 8)
+    bias32: i32 = const (1 << (E - 1)) - 1
+    xab: i32 = add xa, xb
+    xp: i32 = sub xab, bias32
+    ; the addend in the same layout
+    xc: i32, fc: u(M + 5) = fnorm(E, M)(mc, ec)
+    fc64: u64 = conv fc
+    shc: u64 = const M + 8
+    ch: u64, cl: u64 = shl128(0, fc64, shc)
+    ; align to the larger exponent: u stays, v is shifted (with sticky)
+    pbig: u1 = cmp.ge xp, xc
+    uh: u64, ul: u64, vh: u64, vl: u64, st: u1, su: u1, sv: u1, x0: i32 = if pbig {
+        d1: i32 = sub xp, xc
+        d164: u64 = conv d1
+        vh1: u64, vl1: u64, st1: u1 = shr128(ch, cl, d164)
+        yield ph, pl, vh1, vl1, st1, sp, sc, xp
+    } else {
+        d2: i32 = sub xc, xp
+        d264: u64 = conv d2
+        vh2: u64, vl2: u64, st2: u1 = shr128(ph, pl, d264)
+        yield ch, cl, vh2, vl2, st2, sc, sp, xc
+    }
+    same: u1 = cmp.eq su, sv
+    rh: u64, rl: u64, rs: u1, stf: u1 = if same {
+        s1h: u64, s1l: u64 = add128(uh, ul, vh, vl)
+        yield s1h, s1l, su, st
+    } else {
+        vlt: u1 = lt128(vh, vl, uh, ul)
+        dh: u64, dl: u64, ds: u1, dst: u1 = if vlt {
+            ; u - v; a sticky under v means the true result is a little
+            ; smaller: take one more off and keep the sticky
+            d1h: u64, d1l: u64 = sub128(uh, ul, vh, vl)
+            eh: u64, el: u64 = if st {
+                d2h: u64, d2l: u64 = sub128(d1h, d1l, 0, 1)
+                yield d2h, d2l
+            } else {
+                yield d1h, d1l
+            }
+            yield eh, el, su, st
+        } else {
+            ; v - u: v was shifted by at most eight (or it would be
+            ; smaller), so it is exact
+            d3h: u64, d3l: u64 = sub128(vh, vl, uh, ul)
+            yield d3h, d3l, sv, 0
+        }
+        yield dh, dl, ds, dst
+    }
+    any: u64 = or rh, rl
+    is0: u1 = cmp.eq any, 0
+    if is0 {
+        z2: float(E, M) = pack 0, 0, 0
+        ret z2
+    }
+    ; normalize: the top bit to position M + 3, with a sticky
+    t: i32 = msb128(rh, rl)
+    target: i32 = const M + 3
+    down: u1 = cmp.gt t, target
+    fh: u64, fl: u64, st3: u1 = if down {
+        dd: i32 = sub t, target
+        dd64: u64 = conv dd
+        nh: u64, nl: u64, ns: u1 = shr128(rh, rl, dd64)
+        yield nh, nl, ns
+    } else {
+        du: i32 = sub target, t
+        du64: u64 = conv du
+        nh2: u64, nl2: u64 = shl128(rh, rl, du64)
+        yield nh2, nl2, 0
+    }
+    stall: u1 = or stf, st3
+    stw: u64 = conv stall
+    fl2: u64 = or fl, stw
+    f: u(M + 5) = conv fl2
+    units: i32 = const 2 * M + 8
+    x1: i32 = add x0, t
+    x: i32 = sub x1, units
+    r: float(E, M) = fpack(E, M)(rs, x, f)
     ret r
 }

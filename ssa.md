@@ -312,11 +312,14 @@ adds operations, and a platform adds instructions.
 A library instantiation defines what an operation *means*; a platform
 says which of them the target has hardware for. Each backend carries a
 table of generic instantiations it implements natively — today
-`add`, `sub`, `mul`, `div`, `sqrt`, `neg`, `abs`, the six comparisons,
-on `float(8, 23)` and `float(11, 52)`, and `conv` between those and to and from 32/64-bit
-integers (float to int stays in the library on riscv64, whose hardware
-gives the maximum integer for NaN where the library gives 0), on all
-three targets — and when it
+`add`, `sub`, `mul`, `div`, `sqrt`, `neg`, `abs`, `min`, `max`, `fma`,
+the six comparisons, on `float(8, 23)` and `float(11, 52)`, and `conv`
+between those and to and from 32/64-bit integers — with the exceptions a
+platform's own semantics force: riscv64 keeps float to int (its hardware
+gives the maximum integer for NaN where the library gives 0) and
+`min`/`max` (its `fmin` returns the number when one operand is NaN, the
+library returns NaN) in the library, and wasm has no fused
+multiply-add. On all three targets — and when it
 compiles such an instance, or a call to one, it emits the instruction
 sequence (arm64 `fmov`/`fadd`/`fmov`, riscv `fmv`/`fadd.s`, wasm
 `f32.add` between reinterprets) instead of the SSA body. The library body
