@@ -6,6 +6,19 @@ has the full story for any of them.
 
 ---
 
+### Platforms — `74b903d` · 2026-08-25
+
+A platform is the list of library instantiations a target has hardware
+for — `fadd(8, 23)` and `fadd(11, 52)` on all three. Each instantiated
+function now knows its (generic, args) identity, and a backend compiling
+one of these, or a call to one, emits the instruction sequence instead
+of the SSA body: `fadd32` on arm64 is `fmov`, `fmov`, `fadd`, `fmov`,
+`ret`. The library body stays the definition of the semantics; `--soft`
+compiles with an empty platform, and the two are checked against each
+other and the FPU. Newly probed: FP registers and adds on every target,
+plus the CSR/system-register writes that switch the FPU on bare metal.
+188/188 on all four paths, both ways.
+
 ### Generic functions, and floats as a library — `039de73` · 2026-08-25
 
 `fn fadd(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M)` is a
