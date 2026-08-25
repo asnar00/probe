@@ -6,6 +6,16 @@ has the full story for any of them.
 
 ---
 
+### sqrt, and operations a library invents — `b795912` · 2026-08-25
+
+`r: f32 = sqrt a`. Dispatch is now open-ended: any name applied to a pack
+finds the generic of that name that takes the pack's origin type, at
+whatever arity it declares, so `sqrt` exists for floats without the
+integer language knowing the word. The library's `sqrt(E, M)` is a
+digit-by-digit root that never needs more than M + 8 bits; the
+platforms map f32/f64 to `fsqrt`. Checked against the FPU and an exact
+reference (fp8 exhaustively). 235/235 on all four paths, both ways.
+
 ### `call` retires — `3cc7b8e` · 2026-08-25
 
 `r: f32 = fadd32(a, b)`, `touch(q)`, `q: i64, r: i64 = divmod(a, b)`. A
