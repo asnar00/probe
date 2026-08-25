@@ -6,6 +6,17 @@ has the full story for any of them.
 
 ---
 
+### One `add` — `e01e057` · 2026-08-25
+
+`iadd`/`isub`/`imul` are `add`/`sub`/`mul`, and the opcode says nothing
+about the type: on integers it is the instruction, on a pack that came
+from a generic type it dispatches to the generic function of the same
+name taking that type. `add x, y` on two `f32` values is
+`call add(8, 23)(x, y)` — the softfloat library — and on a platform with
+hardware for that width, the `fadd` instruction. The opcode set never
+grows; libraries add meanings, platforms add instructions. 191/191 on
+all four paths, both ways.
+
 ### Platforms — `74b903d` · 2026-08-25
 
 A platform is the list of library instantiations a target has hardware
