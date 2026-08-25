@@ -6,6 +6,21 @@ has the full story for any of them.
 
 ---
 
+### conv and cast — `0f2850f` (and the syntax before it)  · 2026-08-25
+
+Two opcodes for what used to be three: `conv` carries the value across
+(ext and trunc are gone — the widths always said which way), `cast`
+keeps the bits (was bitcast). `1.0 conv u32` is 1; `cast` is
+0x3f800000. Between a float and anything, `conv` is the library's:
+float(E, M) to float(F, N), i(W)/u(W) to float(E, M), float(E, M) to
+i(W)/u(W) (truncating, saturating, NaN to 0) — five generics sharing
+one name, chosen by the types on both sides now that dispatch matches
+the result type too and generics may overload. The platforms map every
+f32/f64/i32/u32/i64/u64 pair to `fcvt`/`scvtf`/`fcvtzs` and friends
+(riscv64 keeps float to int in the library over its NaN rule). Checked
+against Rust's `as` and the exact reference; 274/274 on all four paths,
+both ways.
+
 ### sqrt, and operations a library invents — `b795912` · 2026-08-25
 
 `r: f32 = sqrt a`. Dispatch is now open-ended: any name applied to a pack
