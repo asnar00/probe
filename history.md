@@ -6,6 +6,14 @@ has the full story for any of them.
 
 ---
 
+### The suite, with the sugar — `c1d472d` · 2026-08-26
+
+The suite and the float library rewritten with literal operands: 139
+named constants gone, 374 lines shorter, `cmp.ne ma, 0` and `pack 0, 0,
+sz` where there were `zero_m` and `zero_e` declarations. A mechanical
+pass, so the IR underneath is byte-for-byte the same and the matrix is
+unchanged: 302/302 on all four paths, both ways.
+
 ### const by type, literals as operands — `9b05c3e` · 2026-08-26
 
 `iconst` is `const`, and the type decides: bits for an integer or a
