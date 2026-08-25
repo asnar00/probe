@@ -6,6 +6,17 @@ has the full story for any of them.
 
 ---
 
+### The sigils retire — `2467869` · 2026-08-25
+
+`%v`, `^b`, `@f`, `$t` become `v`, `b`, `f`, `t`. Position already said
+which was which — before `:` a value is defined, after `:` a type is
+named, after `call` a function, after `jmp`/`br` a block, and a label is
+a name opening a line and followed by `:` — so the lexer now has one word
+token and the parser's prescans apply that rule. `fn sum(n: i64)`,
+`done: u1 = icmp.ge i, n`, `br done, exit, body`. Old prefixes are
+rejected with a message. Suite, examples, tests, harness, and docs
+converted; 162/162 on all four paths.
+
 ### Narrow shifts just shift — `a987671` · 2026-08-25
 
 Shifting an `i5` by 5 or more no longer takes the amount mod 5 (which
