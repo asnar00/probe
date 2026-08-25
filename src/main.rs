@@ -32,7 +32,7 @@ fn main() -> ExitCode {
     // native default: the machine's natural 64-bit width
     let int = int_override.unwrap_or(ssa::Type::I64);
     match args.first().map(String::as_str) {
-        Some("parse") if args.len() >= 2 => cmd_parse(&args[1]),
+        Some("parse") if args.len() >= 2 => cmd_parse(&args[1], int),
         Some("learn") if args.len() >= 2 => {
             let out = args
                 .iter()
@@ -99,15 +99,21 @@ fn main() -> ExitCode {
     }
 }
 
-fn cmd_parse(path: &str) -> ExitCode {
+fn cmd_parse(path: &str, int: ssa::Type) -> ExitCode {
     let src = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => return fail(&format!("{}: {}", path, e)),
     };
-    let module = match ssa::parse(&src) {
+    let mut module = match ssa::parse(&src) {
         Ok(m) => m,
         Err(e) => return fail(&format!("{}: {}", path, e)),
     };
+    // abstract types resolve under the same policy as every other command
+    let policy = match ssa::Policy::new(int) {
+        Ok(p) => p,
+        Err(e) => return fail(&e),
+    };
+    ssa::resolve_types(&mut module, &policy);
     if let Err(errs) = ssa::verify(&module) {
         for e in &errs {
             eprintln!("{}: {}", path, e);
