@@ -6,6 +6,15 @@ has the full story for any of them.
 
 ---
 
+### cmp on floats, neg, abs — `aa1829b` · 2026-08-25
+
+`icmp` is `cmp`, and on floats `cmp.lt` is the library's `lt(E, M)`:
+six predicates over one `fcmp` that orders by sign and magnitude bits,
+with IEEE's rules (-0 equals +0; a NaN makes everything false but `ne`).
+`neg` and `abs` touch the sign field. The platforms have `fcmp`+`cset`,
+`feq`/`flt`/`fle`, `f32.lt`, `fneg`, `fabs`. Two 63-bit overflow bugs
+surfaced and were fixed. 302/302 on all four paths, both ways.
+
 ### conv and cast — `0f2850f` (and the syntax before it)  · 2026-08-25
 
 Two opcodes for what used to be three: `conv` carries the value across
