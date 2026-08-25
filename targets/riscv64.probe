@@ -83,6 +83,19 @@ inst fmul.d {f}, {f}, {f}
 inst fdiv.d {f}, {f}, {f}
 inst fsqrt.s {f}, {f}
 inst fsqrt.d {f}, {f}
+; conversions between the float widths and from integers (float -> int
+; is left to the library: the hardware returns the maximum integer for
+; NaN where the library, arm64, and wasm give 0)
+inst fcvt.d.s {f}, {f}
+inst fcvt.s.d {f}, {f}
+inst fcvt.s.w {f}, {r}
+inst fcvt.s.wu {f}, {r}
+inst fcvt.s.l {f}, {r}
+inst fcvt.s.lu {f}, {r}
+inst fcvt.d.w {f}, {r}
+inst fcvt.d.wu {f}, {r}
+inst fcvt.d.l {f}, {r}
+inst fcvt.d.lu {f}, {r}
 inst fmv.w.x {f}, {r}
 inst fmv.x.w {r}, {f}
 inst fmv.d.x {f}, {r}

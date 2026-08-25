@@ -26,7 +26,7 @@
 //! of an N-bit type re-normalize with sbfm/ubfm, which is also what
 //! packs' get/set/pack lower to.
 
-use crate::platform::{FOp, Native, Platform};
+use crate::platform::{FOp, Kind, Native, Platform};
 use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, ValueId};
 use std::collections::HashMap;
 
@@ -847,9 +847,12 @@ fn compile_function(
     Ok(())
 }
 
-/// (move in, the op, move out) for a platform float op
+/// (move in, the op, move out) for a platform float arithmetic op
 fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
-    match (op.op, op.bits) {
+    let Native::Arith { op, bits } = op else {
+        unreachable!()
+    };
+    match (op, bits) {
         (FOp::Add, 32) => ("fmov {s}, {w}", "fadd {s}, {s}, {s}", "fmov {w}, {s}"),
         (FOp::Sub, 32) => ("fmov {s}, {w}", "fsub {s}, {s}, {s}", "fmov {w}, {s}"),
         (FOp::Mul, 32) => ("fmov {s}, {w}", "fmul {s}, {s}, {s}", "fmov {w}, {s}"),
@@ -863,15 +866,68 @@ fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
     }
 }
 
+/// the instruction sequence for a platform op: integer registers in
+/// (rl, rr), integer register out (rd), FP scratch v16/v17
+fn native_seq(op: Native, rd: i64, rl: i64, rr: i64) -> Vec<(&'static str, Vec<i64>)> {
+    match op {
+        Native::Arith { op: fop, .. } => {
+            let (to_f, t, to_i) = fp_templates(op);
+            let mut seq = vec![(to_f, vec![16, rl])];
+            if fop.arity() == 2 {
+                seq.push((to_f, vec![17, rr]));
+                seq.push((t, vec![16, 16, 17]));
+            } else {
+                seq.push((t, vec![16, 16]));
+            }
+            seq.push((to_i, vec![rd, 16]));
+            seq
+        }
+        Native::Conv { from, to } => {
+            let fmov_in = |k: Kind| if k.bits() == 32 { "fmov {s}, {w}" } else { "fmov {d}, {x}" };
+            let fmov_out = |k: Kind| if k.bits() == 32 { "fmov {w}, {s}" } else { "fmov {x}, {d}" };
+            match (from.is_float(), to.is_float()) {
+                (true, true) => vec![
+                    (fmov_in(from), vec![16, rl]),
+                    (if to == Kind::F64 { "fcvt {d}, {s}" } else { "fcvt {s}, {d}" }, vec![16, 16]),
+                    (fmov_out(to), vec![rd, 16]),
+                ],
+                (false, true) => {
+                    let t = match (from.signed(), from.bits(), to.bits()) {
+                        (true, 32, 32) => "scvtf {s}, {w}",
+                        (true, 64, 32) => "scvtf {s}, {x}",
+                        (true, 32, _) => "scvtf {d}, {w}",
+                        (true, _, _) => "scvtf {d}, {x}",
+                        (false, 32, 32) => "ucvtf {s}, {w}",
+                        (false, 64, 32) => "ucvtf {s}, {x}",
+                        (false, 32, _) => "ucvtf {d}, {w}",
+                        (false, _, _) => "ucvtf {d}, {x}",
+                    };
+                    vec![(t, vec![16, rl]), (fmov_out(to), vec![rd, 16])]
+                }
+                (true, false) => {
+                    let t = match (to.signed(), to.bits(), from.bits()) {
+                        (true, 32, 32) => "fcvtzs {w}, {s}",
+                        (true, 64, 32) => "fcvtzs {x}, {s}",
+                        (true, 32, _) => "fcvtzs {w}, {d}",
+                        (true, _, _) => "fcvtzs {x}, {d}",
+                        (false, 32, 32) => "fcvtzu {w}, {s}",
+                        (false, 64, 32) => "fcvtzu {x}, {s}",
+                        (false, 32, _) => "fcvtzu {w}, {d}",
+                        (false, _, _) => "fcvtzu {x}, {d}",
+                    };
+                    vec![(fmov_in(from), vec![16, rl]), (t, vec![rd, 16])]
+                }
+                (false, false) => unreachable!("int to int is not a platform op"),
+            }
+        }
+    }
+}
+
 /// the whole body of a natively implemented function: the sequence on the
 /// argument registers, result in x0, and return
 fn native_body(enc: &Encoder, op: Native, code: &mut Vec<u8>) -> Result<(), String> {
-    let (to_f, fop, to_i) = fp_templates(op);
-    let seq: Vec<(&str, Vec<i64>)> = if op.op.arity() == 2 {
-        vec![(to_f, vec![16, 0]), (to_f, vec![17, 1]), (fop, vec![16, 16, 17]), (to_i, vec![0, 16]), ("ret", vec![])]
-    } else {
-        vec![(to_f, vec![16, 0]), (fop, vec![16, 16]), (to_i, vec![0, 16]), ("ret", vec![])]
-    };
+    let mut seq = native_seq(op, 0, 0, 1);
+    seq.push(("ret", vec![]));
     for (t, v) in seq {
         code.extend_from_slice(&enc.encode(t, &v)?.to_le_bytes());
     }
@@ -1110,18 +1166,12 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                 return Ok(()); // result unused: nothing to compute
             };
             // through v16/v17 (caller-saved, never allocated)
-            let (to_f, fop, to_i) = fp_templates(op);
             let rl = e.src_reg(args[0], 9)?;
-            e.emit(to_f, &[16, rl])?;
-            if op.op.arity() == 2 {
-                let rr = e.src_reg(args[1], 10)?;
-                e.emit(to_f, &[17, rr])?;
-                e.emit(fop, &[16, 16, 17])?;
-            } else {
-                e.emit(fop, &[16, 16])?;
-            }
+            let rr = if args.len() > 1 { e.src_reg(args[1], 10)? } else { 0 };
             let rd = e.dst_reg(dst, 9);
-            e.emit(to_i, &[rd, 16])?;
+            for (t, v) in native_seq(op, rd, rl, rr) {
+                e.emit(t, &v)?;
+            }
             e.finish(dst, rd)
         }
         Inst::Call { dsts, callee, args } => {
@@ -2099,6 +2149,61 @@ entry:
                 }
             }
         }
+        // --- conversions: f32/f64 and the integer kinds against Rust's `as`
+        // (round to nearest in, truncate-saturate-NaN-to-0 out) ---
+        let v32 = patterns(8, 23, 200, &mut rnd);
+        let v64 = patterns(11, 52, 200, &mut rnd);
+        let ints: Vec<i64> = {
+            let mut v = vec![0i64, 1, -1, 7, -7, 16777216, 16777217, 16777219, -16777217, i32::MAX as i64, i32::MIN as i64, u32::MAX as i64, 1 << 40, -(1 << 40), (1 << 53) + 1, i64::MAX, i64::MIN, -1i64 << 62];
+            for _ in 0..100 {
+                v.push(rnd() as i64);
+                v.push((rnd() >> (rnd() % 64)) as i64);
+            }
+            v
+        };
+        let check = |name: &str, arg: i64, want: u64, r: Repr, e: u32, m: u32| {
+            let got = native_result(r, j.call(name, &[arg]).unwrap()) as u64;
+            if e > 0 && is_nan_bits(e, m, want) {
+                assert!(is_nan_bits(e, m, got), "{}({:#x}): got {:#x}, want NaN", name, arg, got);
+            } else {
+                assert_eq!(got, want, "{}({:#x})", name, arg);
+            }
+        };
+        for &a in &v32 {
+            let f = f32::from_bits(a as u32);
+            check("f32tof64", a as i64, (f as f64).to_bits(), Repr::U(64), 11, 52);
+            check("f32toi32", a as i64, (f as i32) as i64 as u64, Repr::S(32), 0, 0);
+            check("f32tou32", a as i64, (f as u32) as u64, Repr::U(32), 0, 0);
+            check("f32toi64", a as i64, (f as i64) as u64, Repr::S(64), 0, 0);
+            check("f32tof16", a as i64, round_to(5, 10, f as f64), Repr::U(16), 5, 10);
+            check("f32tof8", a as i64, round_to(4, 3, f as f64), Repr::U(8), 4, 3);
+        }
+        for &a in &v64 {
+            let f = f64::from_bits(a);
+            check("f64tof32", a as i64, (f as f32).to_bits() as u64, Repr::U(32), 8, 23);
+            check("f64toi64", a as i64, (f as i64) as u64, Repr::S(64), 0, 0);
+            check("f64tou64", a as i64, f as u64, Repr::U(64), 0, 0);
+        }
+        for &i in &ints {
+            check("i32tof32", i as i32 as i64, ((i as i32) as f32).to_bits() as u64, Repr::U(32), 8, 23);
+            check("u32tof32", i as u32 as i64, ((i as u32) as f32).to_bits() as u64, Repr::U(32), 8, 23);
+            check("i64tof32", i, (i as f32).to_bits() as u64, Repr::U(32), 8, 23);
+            check("u64tof64", i, ((i as u64) as f64).to_bits(), Repr::U(64), 11, 52);
+            check("i32tof64", i as i32 as i64, ((i as i32) as f64).to_bits(), Repr::U(64), 11, 52);
+            check("i64tof64", i, (i as f64).to_bits(), Repr::U(64), 11, 52);
+            check("i32tof16", i as i32 as i64, round_to(5, 10, (i as i32) as f64), Repr::U(16), 5, 10);
+        }
+        // fp16 -> f32 exactly, fp16 -> i32 by truncation, over every f16
+        for a in 0..1u64 << 16 {
+            let v = to_f64(5, 10, a);
+            check("f16tof32", a as i64, round_to(8, 23, v), Repr::U(32), 8, 23);
+            let want = if v.is_nan() { 0 } else { (v as i32) as i64 as u64 };
+            check("f16toi32", a as i64, want, Repr::S(32), 0, 0);
+        }
+        for a in 0..1u64 << 8 {
+            check("f8tof32", a as i64, round_to(8, 23, to_f64(4, 3, a)), Repr::U(32), 8, 23);
+        }
+
         // --- fp8 exhaustive, fp16 / bf16 dense: the exact reference ---
         for (suffix, e, m, n) in [("8", 4u32, 3u32, 0usize), ("16", 5, 10, 200), ("b16", 8, 7, 200)] {
             let w = e + m + 1;
@@ -2145,7 +2250,7 @@ entry:
         let lib = include_str!("../suite/float.ssa");
         let src = format!(
             "{}\nfn sum32(a: f32, b: f32) -> f32 {{\n    r: f32 = add a, b\n    ret r\n}}\nfn sum16(a: f16, b: f16) -> f16 {{\n    r: f16 = add a, b\n    ret r\n}}\n",
-            lib.replace("type f32 = float(8, 23)\n", "type f32 = float(8, 23)\ntype f16 = float(5, 10)\n")
+            lib
         );
         let module = crate::ssa::parse(&src).expect("parse");
         crate::ssa::verify(&module).expect("verify");

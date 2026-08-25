@@ -102,6 +102,24 @@ inst f64.mul :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
 inst f64.div :: sig=(param f64 f64) (result f64) :: pre=local.get 0, local.get 1
 inst f32.sqrt :: sig=(param f32) (result f32) :: pre=local.get 0
 inst f64.sqrt :: sig=(param f64) (result f64) :: pre=local.get 0
+inst f64.promote_f32 :: sig=(param f32) (result f64) :: pre=local.get 0
+inst f32.demote_f64 :: sig=(param f64) (result f32) :: pre=local.get 0
+inst f32.convert_i32_s :: sig=(param i32) (result f32) :: pre=local.get 0
+inst f32.convert_i32_u :: sig=(param i32) (result f32) :: pre=local.get 0
+inst f32.convert_i64_s :: sig=(param i64) (result f32) :: pre=local.get 0
+inst f32.convert_i64_u :: sig=(param i64) (result f32) :: pre=local.get 0
+inst f64.convert_i32_s :: sig=(param i32) (result f64) :: pre=local.get 0
+inst f64.convert_i32_u :: sig=(param i32) (result f64) :: pre=local.get 0
+inst f64.convert_i64_s :: sig=(param i64) (result f64) :: pre=local.get 0
+inst f64.convert_i64_u :: sig=(param i64) (result f64) :: pre=local.get 0
+inst i32.trunc_sat_f32_s :: sig=(param f32) (result i32) :: pre=local.get 0
+inst i32.trunc_sat_f32_u :: sig=(param f32) (result i32) :: pre=local.get 0
+inst i32.trunc_sat_f64_s :: sig=(param f64) (result i32) :: pre=local.get 0
+inst i32.trunc_sat_f64_u :: sig=(param f64) (result i32) :: pre=local.get 0
+inst i64.trunc_sat_f32_s :: sig=(param f32) (result i64) :: pre=local.get 0
+inst i64.trunc_sat_f32_u :: sig=(param f32) (result i64) :: pre=local.get 0
+inst i64.trunc_sat_f64_s :: sig=(param f64) (result i64) :: pre=local.get 0
+inst i64.trunc_sat_f64_u :: sig=(param f64) (result i64) :: pre=local.get 0
 
 ; --- stack management (learned early so control-flow probes can use it) ---
 inst drop :: sig=(param i64) :: pre=local.get 0

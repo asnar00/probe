@@ -23,7 +23,7 @@
 
 use crate::emit::{Compiled, Encoder};
 use crate::regalloc::{self, Loc};
-use crate::platform::{FOp, Native, Platform};
+use crate::platform::{FOp, Kind, Native, Platform};
 use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, ValueId};
 use std::collections::HashMap;
 
@@ -323,17 +323,7 @@ fn compile_function(
 ) -> Result<(), String> {
     if let Some(&op) = natives.get(&func.name) {
         // this function *is* a platform instruction: a0, a1 -> a0, no frame
-        let (to_f, fop, to_i) = fp_templates(op);
-        let mut seq: Vec<(&str, Vec<i64>)> = if op.op.arity() == 2 {
-            vec![(to_f, vec![0, A0]), (to_f, vec![1, A0 + 1]), (fop, vec![0, 0, 1]), (to_i, vec![A0, 0])]
-        } else {
-            vec![(to_f, vec![0, A0]), (fop, vec![0, 0]), (to_i, vec![A0, 0])]
-        };
-        if op.bits == 32 {
-            // zero-extend: fmv.x.w sign-extends
-            seq.push((SLLI, vec![A0, A0, 32]));
-            seq.push((SRLI, vec![A0, A0, 32]));
-        }
+        let seq = native_seq(op, A0, A0, A0 + 1);
         for (t, v) in seq {
             code.extend_from_slice(&enc.encode(t, &v)?.to_le_bytes());
         }
@@ -394,9 +384,68 @@ fn compile_function(
     Ok(())
 }
 
-/// (move in, the op, move out) for a platform float op
+/// the instruction sequence for a platform op: integer registers in
+/// (rl, rr), integer register out (rd), FP scratch f0/f1; 32-bit float
+/// results are zero-extended (fmv.x.w sign-extends)
+fn native_seq(op: Native, rd: i64, rl: i64, rr: i64) -> Vec<(&'static str, Vec<i64>)> {
+    let zext32 = |seq: &mut Vec<(&'static str, Vec<i64>)>| {
+        seq.push((SLLI, vec![rd, rd, 32]));
+        seq.push((SRLI, vec![rd, rd, 32]));
+    };
+    match op {
+        Native::Arith { op: fop, bits } => {
+            let (to_f, t, to_i) = fp_templates(op);
+            let mut seq = vec![(to_f, vec![0, rl])];
+            if fop.arity() == 2 {
+                seq.push((to_f, vec![1, rr]));
+                seq.push((t, vec![0, 0, 1]));
+            } else {
+                seq.push((t, vec![0, 0]));
+            }
+            seq.push((to_i, vec![rd, 0]));
+            if bits == 32 {
+                zext32(&mut seq);
+            }
+            seq
+        }
+        Native::Conv { from, to } => {
+            let fmv_in = |k: Kind| if k.bits() == 32 { "fmv.w.x {f}, {r}" } else { "fmv.d.x {f}, {r}" };
+            let fmv_out = |k: Kind| if k.bits() == 32 { "fmv.x.w {r}, {f}" } else { "fmv.x.d {r}, {f}" };
+            let mut seq = match (from.is_float(), to.is_float()) {
+                (true, true) => vec![
+                    (fmv_in(from), vec![0, rl]),
+                    (if to == Kind::F64 { "fcvt.d.s {f}, {f}" } else { "fcvt.s.d {f}, {f}" }, vec![0, 0]),
+                    (fmv_out(to), vec![rd, 0]),
+                ],
+                (false, true) => {
+                    let t = match (to.bits(), from.signed(), from.bits()) {
+                        (32, true, 32) => "fcvt.s.w {f}, {r}",
+                        (32, false, 32) => "fcvt.s.wu {f}, {r}",
+                        (32, true, _) => "fcvt.s.l {f}, {r}",
+                        (32, false, _) => "fcvt.s.lu {f}, {r}",
+                        (_, true, 32) => "fcvt.d.w {f}, {r}",
+                        (_, false, 32) => "fcvt.d.wu {f}, {r}",
+                        (_, true, _) => "fcvt.d.l {f}, {r}",
+                        (_, false, _) => "fcvt.d.lu {f}, {r}",
+                    };
+                    vec![(t, vec![0, rl]), (fmv_out(to), vec![rd, 0])]
+                }
+                _ => unreachable!("the riscv64 platform has no float -> int"),
+            };
+            if to.bits() == 32 {
+                zext32(&mut seq);
+            }
+            seq
+        }
+    }
+}
+
+/// (move in, the op, move out) for a platform float arithmetic op
 fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
-    let fop = match (op.op, op.bits) {
+    let Native::Arith { op, bits } = op else {
+        unreachable!()
+    };
+    let fop = match (op, bits) {
         (FOp::Add, 32) => "fadd.s {f}, {f}, {f}",
         (FOp::Sub, 32) => "fsub.s {f}, {f}, {f}",
         (FOp::Mul, 32) => "fmul.s {f}, {f}, {f}",
@@ -408,7 +457,7 @@ fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
         (FOp::Div, _) => "fdiv.d {f}, {f}, {f}",
         (FOp::Sqrt, _) => "fsqrt.d {f}, {f}",
     };
-    if op.bits == 32 {
+    if bits == 32 {
         ("fmv.w.x {f}, {r}", fop, "fmv.x.w {r}, {f}")
     } else {
         ("fmv.d.x {f}, {r}", fop, "fmv.x.d {r}, {f}")
@@ -629,20 +678,11 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             let Some(&dst) = dsts.first() else {
                 return Ok(());
             };
-            let (to_f, fop, to_i) = fp_templates(op);
             let rl = e.src_reg(args[0], T0)?;
-            e.emit(to_f, &[0, rl])?;
-            if op.op.arity() == 2 {
-                let rr = e.src_reg(args[1], T1)?;
-                e.emit(to_f, &[1, rr])?;
-                e.emit(fop, &[0, 0, 1])?;
-            } else {
-                e.emit(fop, &[0, 0])?;
-            }
+            let rr = if args.len() > 1 { e.src_reg(args[1], T1)? } else { 0 };
             let rd = e.dst_reg(dst, T0);
-            e.emit(to_i, &[rd, 0])?;
-            if op.bits == 32 {
-                e.norm(rd, rd, Repr::U(32))?; // fmv.x.w sign-extends
+            for (t, v) in native_seq(op, rd, rl, rr) {
+                e.emit(t, &v)?;
             }
             e.finish(dst, rd)
         }

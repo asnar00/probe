@@ -159,6 +159,27 @@ inst fmul {d}, {d}, {d}
 inst fdiv {d}, {d}, {d}
 inst fsqrt {s}, {s}
 inst fsqrt {d}, {d}
+; conversions: between the two float widths, and to and from integers
+; (round to nearest for int -> float, truncate toward zero, saturating,
+; for float -> int)
+inst fcvt {d}, {s}
+inst fcvt {s}, {d}
+inst scvtf {s}, {w}
+inst scvtf {s}, {x}
+inst scvtf {d}, {w}
+inst scvtf {d}, {x}
+inst ucvtf {s}, {w}
+inst ucvtf {s}, {x}
+inst ucvtf {d}, {w}
+inst ucvtf {d}, {x}
+inst fcvtzs {w}, {s}
+inst fcvtzs {x}, {s}
+inst fcvtzs {w}, {d}
+inst fcvtzs {x}, {d}
+inst fcvtzu {w}, {s}
+inst fcvtzu {x}, {s}
+inst fcvtzu {w}, {d}
+inst fcvtzu {x}, {d}
 inst fmov {s}, {w}
 inst fmov {w}, {s}
 inst fmov {d}, {x}
