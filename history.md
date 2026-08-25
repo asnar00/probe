@@ -6,6 +6,16 @@ has the full story for any of them.
 
 ---
 
+### Native f32, emulated f16, one module — `a71f9a7` · 2026-08-25
+
+A test that shows the platform choosing per width on arm64: `add` on two
+`f32` values compiles to `fmov`, `fmov`, `fadd s`, `fmov` with no call,
+while `add` on two `f16` values in the same module compiles to a `bl`
+into the library's `fadd16` (1632 bytes of integer code) with no `fadd`.
+The test inspects the machine code of both functions for the learned
+encodings and checks results against the FPU and the f16 reference.
+Moving f16 to hardware would be one line in `src/platform.rs`.
+
 ### One `add` — `e01e057` · 2026-08-25
 
 `iadd`/`isub`/`imul` are `add`/`sub`/`mul`, and the opcode says nothing
