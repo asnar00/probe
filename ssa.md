@@ -132,19 +132,24 @@ c: u1 = icmp.eq a, b    ; also: ne
 c: u1 = icmp.lt a, b    ; also: le gt ge
 ```
 
-### Width changes and reinterpretation
+### Conversion and reinterpretation
 
-The source and result types determine everything; the opcode says which
-direction you meant, and the verifier holds you to it.
+Two opcodes, and the types on both sides decide the rest. `conv` carries
+the *value* across: between integers it widens (sign-filling from an
+`iN`, zero-filling from a `uN`), narrows to the low bits, or re-reads at
+the same width; with a pack on either side it is the library's `conv`
+generic for that pair of types — `f32` to `f64`, `i32` to `f16`, `f64`
+to `u8` (see *Generic functions*). `cast` keeps the *bits* and changes
+the reading, between any two types of the same width.
 
 ```
-v: i64 = conv a            ; widen: sign-fills from an iN, zero-fills from a uN
-v: u8  = conv a          ; narrow: keeps the low bits
-v: u5  = cast a        ; same width, reinterpreted (i5 <-> u5, pack <-> uN, ptr <-> i64/u64)
+v: i64 = conv a            ; i8 -> i64: sign-extended
+v: u8  = conv a            ; i64 -> u8: the low byte
+v: f64 = conv a            ; f32 -> f64: the same number, exactly
+v: i32 = conv a            ; f32 -> i32: 1.0 -> 1, truncating, saturating, NaN -> 0
+v: u32 = cast a            ; f32 -> u32: 1.0 -> 0x3f800000
+v: u5  = cast a            ; i5 -> u5: -3 -> 29
 ```
-
-The result is always a proper value of its type: `ext` of an `i5` holding
--3 into a `u8` gives 253, `bitcast` of it into `u5` gives 29.
 
 ### Memory
 
@@ -260,13 +265,17 @@ name exists. `probe parse` prints the instantiated functions and not the
 templates — like structured control flow, generics are sugar the parser
 lowers. A pack literal `iconst` is its bit pattern.
 
-**Dispatch.** A generic function whose first parameter is a generic type
-applied to the function's own parameters (`add(E, M)` taking
-`float(E, M)`) *is* an operation of that name on every instantiation of
-the type, with whatever arity it declares: `add x, y` on two `f16`
-values lowers to `add(5, 10)(x, y)`, and `sqrt x` — not an integer
-opcode at all — to `sqrt(5, 10)(x)`. The opcode set never grows: a
-library adds operations, and a platform adds instructions.
+**Dispatch.** A generic function whose first parameter and first result
+are written in terms of its own width parameters *is* an operation of
+its name: applying that name to a value whose type matches the parameter
+— and whose declared result matches the result — instantiates it with
+the widths the match binds. `add x, y` on two `f16` values lowers to
+`add(5, 10)(x, y)`; `sqrt x` — not an integer opcode at all — to
+`sqrt(5, 10)(x)`; `r: f16 = conv x` with `x: i32` finds the `conv(W, E, M)`
+that takes `i(W)` and returns `float(E, M)`, binding all three. Generics
+may share a name when their signatures differ, which is how `conv` from
+`i(W)` and from `u(W)` coexist. The opcode set never grows: a library
+adds operations, and a platform adds instructions.
 
 ### Platforms
 
@@ -274,7 +283,10 @@ A library instantiation defines what an operation *means*; a platform
 says which of them the target has hardware for. Each backend carries a
 table of generic instantiations it implements natively — today
 `add`, `sub`, `mul`, `div`, and `sqrt` on `float(8, 23)` and
-`float(11, 52)`, on all three targets — and when it
+`float(11, 52)`, and `conv` between those and to and from 32/64-bit
+integers (float to int stays in the library on riscv64, whose hardware
+gives the maximum integer for NaN where the library gives 0), on all
+three targets — and when it
 compiles such an instance, or a call to one, it emits the instruction
 sequence (arm64 `fmov`/`fadd`/`fmov`, riscv `fmv`/`fadd.s`, wasm
 `f32.add` between reinterprets) instead of the SSA body. The library body
