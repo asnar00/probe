@@ -12,7 +12,7 @@
 //! internal calls included — so it can decide when a tier-0 function has
 //! earned a trip through the optimization pipeline.
 //!
-//! Layout:  [tramp @f][tramp @g]... [code @f + slack][code @g + slack]...
+//! Layout:  [tramp f][tramp g]... [code f + slack][code g + slack]...
 //! A grown function abandons its old slot for a fresh one at the tail;
 //! the trampoline retarget makes the move invisible.
 
@@ -284,7 +284,7 @@ impl Arena {
             .entries
             .get(name)
             .filter(|e| e.slot != usize::MAX)
-            .ok_or_else(|| format!("no function @{} installed", name))?;
+            .ok_or_else(|| format!("no function {} installed", name))?;
         // call through the trampoline so the invocation counts
         Ok(unsafe { self.base.add(e.tramp) })
     }
@@ -356,40 +356,40 @@ mod tests {
     fn incremental_replace_and_grow() {
         let mut a = arena();
         let m1 = parse(
-            "fn @val() -> i64 {\n^e:\n    %v: i64 = iconst 1\n    ret %v\n}\n\
-             fn @twice() -> i64 {\n^e:\n    %a: i64 = call @val()\n    %b: i64 = iadd %a, %a\n    ret %b\n}\n",
+            "fn val() -> i64 {\ne:\n    v: i64 = iconst 1\n    ret v\n}\n\
+             fn twice() -> i64 {\ne:\n    a: i64 = call val()\n    b: i64 = iadd a, a\n    ret b\n}\n",
         );
         a.sync(&m1.funcs, 0).expect("install");
         assert_eq!(a.call("twice", &[]).unwrap(), 2);
         assert!(a.calls("val") >= 1, "trampoline counter must tick");
 
-        // small edit: recompiles in place, @twice untouched but sees it
+        // small edit: recompiles in place, twice untouched but sees it
         let m2 = parse(
-            "fn @val() -> i64 {\n^e:\n    %v: i64 = iconst 21\n    ret %v\n}\n\
-             fn @twice() -> i64 {\n^e:\n    %a: i64 = call @val()\n    %b: i64 = iadd %a, %a\n    ret %b\n}\n",
+            "fn val() -> i64 {\ne:\n    v: i64 = iconst 21\n    ret v\n}\n\
+             fn twice() -> i64 {\ne:\n    a: i64 = call val()\n    b: i64 = iadd a, a\n    ret b\n}\n",
         );
         let done = a.sync(&m2.funcs, 0).expect("sync");
-        assert_eq!(done.len(), 1, "only @val changed");
+        assert_eq!(done.len(), 1, "only val changed");
         assert!(done[0].in_place, "same-size edit must reuse the slot");
         assert_eq!(a.call("twice", &[]).unwrap(), 42);
 
         // big edit: outgrows the slot, relocates, trampoline hides the move
         // a long straight-line chain (level 0 folds nothing, so it all emits)
-        let mut big = String::from("fn @val() -> i64 {\n^e:\n    %v0: i64 = iconst 2\n");
+        let mut big = String::from("fn val() -> i64 {\ne:\n    v0: i64 = iconst 2\n");
         for i in 1..=20 {
-            big.push_str(&format!("    %v{}: i64 = iadd %v{}, %v{}\n", i, i - 1, i - 1));
+            big.push_str(&format!("    v{}: i64 = iadd v{}, v{}\n", i, i - 1, i - 1));
         }
-        big.push_str("    %ten: i64 = iconst 1048576\n    %r: i64 = div %v20, %ten\n    ret %r\n}\n");
+        big.push_str("    ten: i64 = iconst 1048576\n    r: i64 = div v20, ten\n    ret r\n}\n");
         // 2^21 / 2^20 = 2 -> twice = 4... keep the arithmetic honest below
         let m3 = parse(&format!(
-            "{}fn @twice() -> i64 {{\n^e:\n    %a: i64 = call @val()\n    %b: i64 = iadd %a, %a\n    ret %b\n}}\n",
+            "{}fn twice() -> i64 {{\ne:\n    a: i64 = call val()\n    b: i64 = iadd a, a\n    ret b\n}}\n",
             big
         ));
         let done = a.sync(&m3.funcs, 0).expect("sync big");
         assert!(!done[0].in_place, "bigger body must relocate");
         assert_eq!(a.call("twice", &[]).unwrap(), 4); // (2 << 20 >> 20) * 2
 
-        // promotion: recompile hot @val at the top level, same trampoline
+        // promotion: recompile hot val at the top level, same trampoline
         let val = m3.funcs.iter().find(|f| f.name == "val").unwrap();
         let promoted = a.install(val, crate::opt::MAX_LEVEL).expect("promote");
         assert_eq!(promoted.level, crate::opt::MAX_LEVEL);

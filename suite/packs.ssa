@@ -1,10 +1,10 @@
 ; packs: bitfields laid out lowest-bits-first, carried as the unsigned
 ; integer of their total width, nestable, storable at 8/16/32/64 bits
-pack $rgb { r: u5, g: u6, b: u5 }
-pack $pix { c: $rgb, a: u8 }
-pack $sig { v: i12, e: i4 }
-pack $wide { lo: u32, hi: u32 }
-pack $flags { a: u1, b: u1, c: u1 }
+pack rgb { r: u5, g: u6, b: u5 }
+pack pix { c: rgb, a: u8 }
+pack sig { v: i12, e: i4 }
+pack wide { lo: u32, hi: u32 }
+pack flags { a: u1, b: u1, c: u1 }
 ;! mkrgb 31 63 1 -> 4095
 ;! getg 4095 -> 63
 ;! setr 4095 0 -> 4064
@@ -25,111 +25,111 @@ pack $flags { a: u1, b: u1, c: u1 }
 ;! packmem u16[4095,0] -> 63
 ;! packstore u16[0,0] 63 -> 2016
 
-fn @mkrgb(%r: u5, %g: u6, %b: u5) -> $rgb {
-^entry:
-    %c: $rgb = pack %r, %g, %b
-    ret %c
+fn mkrgb(r: u5, g: u6, b: u5) -> rgb {
+entry:
+    c: rgb = pack r, g, b
+    ret c
 }
-fn @getg(%c: $rgb) -> u6 {
-^entry:
-    %g: u6 = get %c, g
-    ret %g
+fn getg(c: rgb) -> u6 {
+entry:
+    g: u6 = get c, g
+    ret g
 }
-fn @setr(%c: $rgb, %r: u5) -> $rgb {
-^entry:
-    %d: $rgb = set %c, r, %r
-    ret %d
+fn setr(c: rgb, r: u5) -> rgb {
+entry:
+    d: rgb = set c, r, r
+    ret d
 }
-fn @unpacksum(%c: $rgb) -> u64 {
-^entry:
-    %r: u5, %g: u6, %b: u5 = unpack %c
-    %rw: u64 = ext %r
-    %gw: u64 = ext %g
-    %bw: u64 = ext %b
-    %s1: u64 = iadd %rw, %gw
-    %s2: u64 = iadd %s1, %bw
-    ret %s2
+fn unpacksum(c: rgb) -> u64 {
+entry:
+    r: u5, g: u6, b: u5 = unpack c
+    rw: u64 = ext r
+    gw: u64 = ext g
+    bw: u64 = ext b
+    s1: u64 = iadd rw, gw
+    s2: u64 = iadd s1, bw
+    ret s2
 }
 ; packs travel through calls like any value
-fn @swapped(%r: u5, %g: u6, %b: u5) -> $rgb {
-^entry:
-    %c: $rgb = pack %b, %g, %r
-    ret %c
+fn swapped(r: u5, g: u6, b: u5) -> rgb {
+entry:
+    c: rgb = pack b, g, r
+    ret c
 }
-fn @swap_rb(%c: $rgb) -> $rgb {
-^entry:
-    %r: u5, %g: u6, %b: u5 = unpack %c
-    %d: $rgb = call @swapped(%r, %g, %b)
-    ret %d
+fn swap_rb(c: rgb) -> rgb {
+entry:
+    r: u5, g: u6, b: u5 = unpack c
+    d: rgb = call swapped(r, g, b)
+    ret d
 }
-; nested: $pix holds a whole $rgb in its low 16 bits
-fn @alpha(%p: $pix) -> u8 {
-^entry:
-    %a: u8 = get %p, a
-    ret %a
+; nested: pix holds a whole rgb in its low 16 bits
+fn alpha(p: pix) -> u8 {
+entry:
+    a: u8 = get p, a
+    ret a
 }
-fn @pixg(%p: $pix) -> u6 {
-^entry:
-    %c: $rgb = get %p, c
-    %g: u6 = get %c, g
-    ret %g
+fn pixg(p: pix) -> u6 {
+entry:
+    c: rgb = get p, c
+    g: u6 = get c, g
+    ret g
 }
 ; signed fields sign-extend on the way out
-fn @sigv(%s: $sig) -> i12 {
-^entry:
-    %v: i12 = get %s, v
-    ret %v
+fn sigv(s: sig) -> i12 {
+entry:
+    v: i12 = get s, v
+    ret v
 }
-fn @sige(%s: $sig) -> i4 {
-^entry:
-    %e: i4 = get %s, e
-    ret %e
+fn sige(s: sig) -> i4 {
+entry:
+    e: i4 = get s, e
+    ret e
 }
-fn @sigmk(%v: i12, %e: i4) -> u16 {
-^entry:
-    %s: $sig = pack %v, %e
-    %bits: u16 = bitcast %s
-    ret %bits
+fn sigmk(v: i12, e: i4) -> u16 {
+entry:
+    s: sig = pack v, e
+    bits: u16 = bitcast s
+    ret bits
 }
-fn @sigset(%s: $sig, %v: i12) -> u16 {
-^entry:
-    %t: $sig = set %s, v, %v
-    %bits: u16 = bitcast %t
-    ret %bits
+fn sigset(s: sig, v: i12) -> u16 {
+entry:
+    t: sig = set s, v, v
+    bits: u16 = bitcast t
+    ret bits
 }
 ; a 64-bit pack with 32-bit fields
-fn @widehi(%w: $wide) -> u32 {
-^entry:
-    %h: u32 = get %w, hi
-    ret %h
+fn widehi(w: wide) -> u32 {
+entry:
+    h: u32 = get w, hi
+    ret h
 }
-fn @widelo(%w: $wide) -> u32 {
-^entry:
-    %l: u32 = get %w, lo
-    ret %l
+fn widelo(w: wide) -> u32 {
+entry:
+    l: u32 = get w, lo
+    ret l
 }
-fn @widemk(%lo: u32, %hi: u32) -> $wide {
-^entry:
-    %w: $wide = pack %lo, %hi
-    ret %w
+fn widemk(lo: u32, hi: u32) -> wide {
+entry:
+    w: wide = pack lo, hi
+    ret w
 }
-fn @flags(%a: u1, %b: u1, %c: u1) -> $flags {
-^entry:
-    %f: $flags = pack %a, %b, %c
-    ret %f
+fn flags(a: u1, b: u1, c: u1) -> flags {
+entry:
+    f: flags = pack a, b, c
+    ret f
 }
 ; 16-bit packs load and store as 16-bit memory
-fn @packmem(%p: ptr) -> u6 {
-^entry:
-    %c: $rgb = load %p
-    %g: u6 = get %c, g
-    ret %g
+fn packmem(p: ptr) -> u6 {
+entry:
+    c: rgb = load p
+    g: u6 = get c, g
+    ret g
 }
-fn @packstore(%p: ptr, %g: u6) -> u16 {
-^entry:
-    %zero: u5 = iconst 0
-    %c: $rgb = pack %zero, %g, %zero
-    store %c, %p
-    %bits: u16 = load %p
-    ret %bits
+fn packstore(p: ptr, g: u6) -> u16 {
+entry:
+    zero: u5 = iconst 0
+    c: rgb = pack zero, g, zero
+    store c, p
+    bits: u16 = load p
+    ret bits
 }

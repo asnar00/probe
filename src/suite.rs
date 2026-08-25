@@ -487,11 +487,11 @@ const ARM_HEAP: u64 = 0x4140_0000;
 fn helpers(uart: u64) -> String {
     format!(
         r"
-fn @__pch(%c: u64) {{
-^entry:
-    %u: ptr = iconst {}
-    %c32: u32 = trunc %c
-    store %c32, %u
+fn __pch(c: u64) {{
+entry:
+    u: ptr = iconst {}
+    c32: u32 = trunc c
+    store c32, u
     ret
 }}
 ",
@@ -500,34 +500,34 @@ fn @__pch(%c: u64) {{
 }
 
 const PHEX: &str = r"
-fn @__phex(%v: u64) {
-^entry:
-    %sh0: u64 = iconst 60
-    jmp ^loop(%sh0)
-^loop(%sh: u64):
-    %t: u64 = shr %v, %sh
-    %m: u64 = iconst 15
-    %n: u64 = and %t, %m
-    %nine: u64 = iconst 9
-    %big: u1 = icmp.gt %n, %nine
-    %bigi: u64 = ext %big
-    %gap: u64 = iconst 39
-    %adj: u64 = imul %bigi, %gap
-    %z: u64 = iconst 48
-    %c1: u64 = iadd %n, %z
-    %c: u64 = iadd %c1, %adj
-    call @__pch(%c)
-    %zero: u64 = iconst 0
-    %done: u1 = icmp.eq %sh, %zero
-    %four: u64 = iconst 4
-    %sh2: u64 = isub %sh, %four
-    br %done, ^exit, ^loop(%sh2)
-^exit:
+fn __phex(v: u64) {
+entry:
+    sh0: u64 = iconst 60
+    jmp loop(sh0)
+loop(sh: u64):
+    t: u64 = shr v, sh
+    m: u64 = iconst 15
+    n: u64 = and t, m
+    nine: u64 = iconst 9
+    big: u1 = icmp.gt n, nine
+    bigi: u64 = ext big
+    gap: u64 = iconst 39
+    adj: u64 = imul bigi, gap
+    z: u64 = iconst 48
+    c1: u64 = iadd n, z
+    c: u64 = iadd c1, adj
+    call __pch(c)
+    zero: u64 = iconst 0
+    done: u1 = icmp.eq sh, zero
+    four: u64 = iconst 4
+    sh2: u64 = isub sh, four
+    br done, exit, loop(sh2)
+exit:
     ret
 }
 ";
 
-/// Generate @__start: run every case, print each result as hex, then run
+/// Generate __start: run every case, print each result as hex, then run
 /// the target-specific exit statements.
 fn gen_driver(
     module: &ssa::Module,
@@ -535,12 +535,12 @@ fn gen_driver(
     heap_base: u64,
     exit_ssa: &str,
 ) -> Result<String, String> {
-    let mut s = String::from("fn @__start() {\n^entry:\n");
+    let mut s = String::from("fn __start() {\nentry:\n");
     let n = std::cell::Cell::new(0u32);
     let mut heap = heap_base;
     let tmp_name = || {
         n.set(n.get() + 1);
-        format!("%t{}", n.get())
+        format!("t{}", n.get())
     };
     let tmp = |s: &mut String, ty: &str, init: String| -> String {
         let name = tmp_name();
@@ -550,9 +550,9 @@ fn gen_driver(
     for case in cases {
         let func = module
             .func(&case.func)
-            .ok_or_else(|| format!("no function @{} for directive '{}'", case.func, case.text))?;
+            .ok_or_else(|| format!("no function {} for directive '{}'", case.func, case.text))?;
         if func.rets.is_empty() {
-            return Err(format!("@{} returns nothing; directives need results", case.func));
+            return Err(format!("{} returns nothing; directives need results", case.func));
         }
         // materialize arguments
         let mut argv = Vec::new();
@@ -599,7 +599,7 @@ fn gen_driver(
             .map(|(r, t)| format!("{}: {}", r, func.tyname(*t)))
             .collect();
         s.push_str(&format!(
-            "    {} = call @{}({})\n",
+            "    {} = call {}({})\n",
             defs.join(", "),
             case.func,
             argv.join(", ")
@@ -608,7 +608,7 @@ fn gen_driver(
         for (i, (r, rt)) in rets.iter().enumerate() {
             if i > 0 {
                 let sp = tmp(&mut s, "u64", "iconst 32".into());
-                s.push_str(&format!("    call @__pch({})\n", sp));
+                s.push_str(&format!("    call __pch({})\n", sp));
             }
             // the canonical 64-bit value of the result, as a u64 for printing:
             // signed types sign-extend, everything else zero-extends
@@ -627,10 +627,10 @@ fn gen_driver(
             } else if *rt == ssa::Type::Ptr {
                 v = tmp(&mut s, "u64", format!("bitcast {}", v));
             }
-            s.push_str(&format!("    call @__phex({})\n", v));
+            s.push_str(&format!("    call __phex({})\n", v));
         }
         let nl = tmp(&mut s, "u64", "iconst 10".into());
-        s.push_str(&format!("    call @__pch({})\n", nl));
+        s.push_str(&format!("    call __pch({})\n", nl));
     }
     s.push_str(exit_ssa);
     s.push_str("    ret\n}\n");
@@ -710,7 +710,7 @@ fn run_riscv(
 
     let prepared = (|| -> Result<Vec<u8>, String> {
         let exit_ssa = format!(
-            "    %__f1: i32 = iconst 21845\n    %__f2: ptr = iconst {}\n    store %__f1, %__f2\n",
+            "    __f1: i32 = iconst 21845\n    __f2: ptr = iconst {}\n    store __f1, __f2\n",
             RV_FINISHER
         );
         let driver = gen_driver(module, cases, RV_HEAP, &exit_ssa)?;
@@ -720,7 +720,7 @@ fn run_riscv(
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
         opt::optimize(&mut m2, level);
         let compiled = emit_rv::compile(&m2, enc)?;
-        // preamble: sp = 0x80800000 (mid-RAM), then fall into @__start
+        // preamble: sp = 0x80800000 (mid-RAM), then fall into __start
         let mut bin = Vec::new();
         const ADDI: &str = "addi {r}, {r}, {i -2048..2047}";
         const SLLI: &str = "slli {r}, {r}, {i 0..63}";
@@ -777,8 +777,8 @@ fn run_arm_qemu(
     let prepared = (|| -> Result<Vec<u8>, String> {
         // exit through a stub whose body is patched below into a PSCI
         // SYSTEM_OFF hypervisor call (x0 = 0x84000008; hvc #0)
-        let driver = gen_driver(module, cases, ARM_HEAP, "    call @__qemu_exit()\n")?;
-        let stub = "fn @__qemu_exit() {\n^entry:\n    ret\n}\n";
+        let driver = gen_driver(module, cases, ARM_HEAP, "    call __qemu_exit()\n")?;
+        let stub = "fn __qemu_exit() {\nentry:\n    ret\n}\n";
         let full = format!("{}\n{}\n{}\n{}", driver, helpers(ARM_UART), stub, src);
         let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);

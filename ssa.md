@@ -12,21 +12,23 @@ things we can learn ARM64 encodings for by probing LLVM.
   target block (the Cranelift / MLIR style). This keeps "where does this value
   come from" local to the branch instruction and makes the emitter simpler.
 - **Types live on variables, not opcodes.** Every value definition is written
-  `%name: ty = op ...` — the same form as function and block parameters. Opcodes
+  `name: ty = op ...` — the same form as function and block parameters. Opcodes
   are pure operations with no type suffixes, which keeps the opcode set small;
   the verifier checks that operand and result types are consistent. Signedness
   is part of the type too: there is one `div`, one `shr`, one `icmp.lt`, and
   `i5` versus `u5` says which one you mean.
 - **No nesting, no expressions.** One instruction per line, every intermediate
   value named. This is the layer *below* everything clever.
+- **No sigils.** `sum`, `entry`, `n`, `f32` are all plain words; the grammar
+  never needs a prefix to tell them apart, so there are none.
 
 ## Lexical
 
 - Comments: `;` to end of line.
-- Values: `%name` — name is `[A-Za-z0-9_]+`. Each value is defined exactly once.
-- Blocks: `^name` — same name rules.
-- Functions: `@name`.
-- Pack types: `$name` (declared with `pack`, see *Packs*).
+- Names: `[A-Za-z0-9_]+`, for values, blocks, functions, and types alike.
+  No prefixes — position says which is which: a name before `:` defines a
+  value, after `:` names a type, after `call` names a function, after
+  `jmp`/`br` names a block. Each value is defined exactly once.
 - Integer literals: decimal, optionally negative (`42`, `-7`), or hex (`0x2a`).
 - Whitespace is insignificant except as a separator; newlines end instructions.
 
@@ -37,7 +39,7 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `iN`    | signed integer of N bits, 1 ≤ N ≤ 64 (`i1`, `i5`, `i32`, `i64`) |
 | `uN`    | unsigned integer of N bits (`u1` is the boolean, `u23`, `u64`) |
 | `ptr`   | pointer (64-bit natively; a 32-bit offset on wasm)         |
-| `$name` | a pack: bitfields packed into at most 64 bits (see *Packs*) |
+| `name` | a pack: bitfields packed into at most 64 bits (see *Packs*) |
 | `int`, `uint` | abstract integers — resolved to a concrete width by the target's replacement policy (see *Abstract numeric types*) |
 
 Any width works anywhere a value lives — registers, block parameters,
@@ -51,10 +53,10 @@ as packs.
 ## Structure
 
 ```
-fn @name(%a: i64, %b: ptr) -> i64 {
-^entry:
+fn name(a: i64, b: ptr) -> i64 {
+entry:
     ...
-^next(%x: i64):
+next(x: i64):
     ...
 }
 ```
@@ -75,7 +77,7 @@ fn @name(%a: i64, %b: ptr) -> i64 {
 Every value-defining instruction declares its result's type:
 
 ```
-%name: ty = op operands...
+name: ty = op operands...
 ```
 
 Instructions with no result (`store`, result-less `call`, terminators) have no
@@ -84,9 +86,9 @@ left-hand side.
 ### Constants
 
 ```
-%v: i64 = iconst 42
-%p: ptr = iconst 0          ; null
-%u: ptr = iconst 0x10000000 ; a raw address — MMIO registers, fixed buffers
+v: i64 = iconst 42
+p: ptr = iconst 0          ; null
+u: ptr = iconst 0x10000000 ; a raw address — MMIO registers, fixed buffers
 ```
 
 ### Integer arithmetic and bitwise ops
@@ -95,16 +97,16 @@ Both operands and the result must all have the same integer type. Results
 wrap at the type's width; the type's signedness selects the operation.
 
 ```
-%v: i5 = iadd %a, %b
-%v: i5 = isub %a, %b
-%v: i5 = imul %a, %b
-%v: i5 = div %a, %b        ; signed for iN, unsigned for uN (truncating)
-%v: i5 = rem %a, %b        ; remainder, sign follows the dividend for iN
-%v: i5 = and %a, %b
-%v: i5 = or  %a, %b
-%v: i5 = xor %a, %b
-%v: i5 = shl %a, %b        ; amount mod 32/64 for those widths; >= N unspecified otherwise
-%v: i5 = shr %a, %b        ; arithmetic (sign-fill) for iN, logical for uN
+v: i5 = iadd a, b
+v: i5 = isub a, b
+v: i5 = imul a, b
+v: i5 = div a, b        ; signed for iN, unsigned for uN (truncating)
+v: i5 = rem a, b        ; remainder, sign follows the dividend for iN
+v: i5 = and a, b
+v: i5 = or  a, b
+v: i5 = xor a, b
+v: i5 = shl a, b        ; amount mod 32/64 for those widths; >= N unspecified otherwise
+v: i5 = shr a, b        ; arithmetic (sign-fill) for iN, logical for uN
 ```
 
 Division by zero is target-dependent (wasm traps, the CPUs return 0);
@@ -117,8 +119,8 @@ condition is part of the opcode; the ordering is signed for `iN` and
 unsigned for `uN` and `ptr`.
 
 ```
-%c: u1 = icmp.eq %a, %b    ; also: ne
-%c: u1 = icmp.lt %a, %b    ; also: le gt ge
+c: u1 = icmp.eq a, b    ; also: ne
+c: u1 = icmp.lt a, b    ; also: le gt ge
 ```
 
 ### Width changes and reinterpretation
@@ -127,9 +129,9 @@ The source and result types determine everything; the opcode says which
 direction you meant, and the verifier holds you to it.
 
 ```
-%v: i64 = ext %a            ; widen: sign-fills from an iN, zero-fills from a uN
-%v: u8  = trunc %a          ; narrow: keeps the low bits
-%v: u5  = bitcast %a        ; same width, reinterpreted (i5 <-> u5, pack <-> uN, ptr <-> i64/u64)
+v: i64 = ext a            ; widen: sign-fills from an iN, zero-fills from a uN
+v: u8  = trunc a          ; narrow: keeps the low bits
+v: u5  = bitcast a        ; same width, reinterpreted (i5 <-> u5, pack <-> uN, ptr <-> i64/u64)
 ```
 
 The result is always a proper value of its type: `ext` of an `i5` holding
@@ -143,10 +145,10 @@ wide — an integer, a pack, or `ptr`. Loads of `iN` sign-extend, of `uN`
 zero-extend.
 
 ```
-%v: i64 = load %addr
-%b: u8  = load %addr
-store %v, %addr
-%p: ptr = ptradd %base, %off    ; %base: ptr, %off: i64 or u64
+v: i64 = load addr
+b: u8  = load addr
+store v, addr
+p: ptr = ptradd base, off    ; base: ptr, off: i64 or u64
 ```
 
 ### Calls
@@ -155,9 +157,9 @@ Callees are named symbols. Signatures are checked against the module if the
 function is defined here, taken on trust if external.
 
 ```
-%v: i64 = call @f(%a, %b)             ; call with one result
-%q: i64, %r: i64 = call @divmod(%a, %b)  ; call with two results
-call @g(%a)                           ; call with results ignored (or none)
+v: i64 = call f(a, b)             ; call with one result
+q: i64, r: i64 = call divmod(a, b)  ; call with two results
+call g(a)                           ; call with results ignored (or none)
 ```
 
 A call binds either *all* of the callee's return values or *none* of them
@@ -168,10 +170,10 @@ A call binds either *all* of the callee's return values or *none* of them
 Branch arguments must match the target block's parameters in count and type.
 
 ```
-jmp ^next(%a, %b)
-br %c, ^then(%a), ^else()   ; %c: u1 — empty parens may be omitted
-ret %v                      ; one return value
-ret %q, %r                  ; multiple return values
+jmp next(a, b)
+br c, then(a), else()   ; c: u1 — empty parens may be omitted
+ret v                      ; one return value
+ret q, r                  ; multiple return values
 ret                         ; none
 ```
 
@@ -185,14 +187,14 @@ value can — parameters, block parameters, returns, memory if it is 8, 16,
 32, or 64 bits wide.
 
 ```
-pack $rgb { r: u5, g: u6, b: u5 }       ; 16 bits: r = bits 0-4, g = 5-10, b = 11-15
-pack $pix { c: $rgb, a: u8 }            ; 24 bits, nested
+pack rgb { r: u5, g: u6, b: u5 }       ; 16 bits: r = bits 0-4, g = 5-10, b = 11-15
+pack pix { c: rgb, a: u8 }            ; 24 bits, nested
 
-%c: $rgb = pack %r, %g, %b              ; one value per field, in order
-%g: u6 = get %c, g                      ; read a field (iN fields sign-extend)
-%d: $rgb = set %c, g, %g2               ; a copy with one field replaced
-%r: u5, %g: u6, %b: u5 = unpack %c      ; every field at once
-%w: u16 = bitcast %c                    ; the raw bits, and back again
+c: rgb = pack r, g, b              ; one value per field, in order
+g: u6 = get c, g                      ; read a field (iN fields sign-extend)
+d: rgb = set c, g, g2               ; a copy with one field replaced
+r: u5, g: u6, b: u5 = unpack c      ; every field at once
+w: u16 = bitcast c                    ; the raw bits, and back again
 ```
 
 Declarations may appear anywhere at the top level; a pack must be declared
@@ -203,20 +205,20 @@ instruction that defines several values.
 
 ```
 ; sum of 0..n
-fn @sum(%n: i64) -> i64 {
-^entry:
-    %zero: i64 = iconst 0
-    jmp ^loop(%zero, %zero)
-^loop(%i: i64, %acc: i64):
-    %done: u1 = icmp.ge %i, %n
-    br %done, ^exit, ^body
-^body:
-    %acc2: i64 = iadd %acc, %i
-    %one:  i64 = iconst 1
-    %i2:   i64 = iadd %i, %one
-    jmp ^loop(%i2, %acc2)
-^exit:
-    ret %acc
+fn sum(n: i64) -> i64 {
+entry:
+    zero: i64 = iconst 0
+    jmp loop(zero, zero)
+loop(i: i64, acc: i64):
+    done: u1 = icmp.ge i, n
+    br done, exit, body
+body:
+    acc2: i64 = iadd acc, i
+    one:  i64 = iconst 1
+    i2:   i64 = iadd i, one
+    jmp loop(i2, acc2)
+exit:
+    ret acc
 }
 ```
 
@@ -232,9 +234,9 @@ value tables before verification; opcodes, instructions, and everything
 downstream see only concrete types.
 
 ```
-fn @gcd(%a: int, %b: int) -> int {     ; width chosen per target/policy
+fn gcd(a: int, b: int) -> int {     ; width chosen per target/policy
     ...
-    %r: int = rem %x, %y               ; same ops, abstractly typed
+    r: int = rem x, y               ; same ops, abstractly typed
 ```
 
 - Abstract and concrete types mix freely (`i1` conditions, `ptr`
@@ -249,7 +251,7 @@ fn @gcd(%a: int, %b: int) -> int {     ; width chosen per target/policy
 
 ## Structured control flow
 
-A function body that opens with a statement instead of a `^label:` is in
+A function body that opens with a statement instead of a `label:` is in
 **structured form**: control flow is expressed with `if`/`loop` instead of
 labels and branches (`jmp`, `br`, and labels are not allowed there). This is
 sugar — the parser lowers it to the same block graph on the fly, so
@@ -264,16 +266,16 @@ of writing to variables, preserving SSA.
 ### if
 
 ```
-if %c {                         ; plain: arms fall through to what follows
+if c {                         ; plain: arms fall through to what follows
     ...
 }
 
-if %c { ... } else { ... }      ; either arm may end with break/continue/ret
+if c { ... } else { ... }      ; either arm may end with break/continue/ret
 
-%r: i64 = if %c {               ; value-yielding: results bound on the left,
-    yield %a                    ; each arm must end with 'yield' (matching
+r: i64 = if c {               ; value-yielding: results bound on the left,
+    yield a                    ; each arm must end with 'yield' (matching
 } else {                        ; count and types), and else is required
-    yield %b
+    yield b
 }
 ```
 
@@ -283,13 +285,13 @@ to a join block whose parameters are the bound results.
 ### loop
 
 ```
-%sum: i64 = loop(%i: i64 = %zero, %acc: i64 = %zero) {
-    %done: u1 = icmp.ge %i, %n
-    if %done {
-        break %acc              ; exit the loop, yielding its results
+sum: i64 = loop(i: i64 = zero, acc: i64 = zero) {
+    done: u1 = icmp.ge i, n
+    if done {
+        break acc              ; exit the loop, yielding its results
     }
     ...
-    continue %i2, %acc2         ; back edge: new values for the loop vars
+    continue i2, acc2         ; back edge: new values for the loop vars
 }
 ```
 

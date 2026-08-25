@@ -439,7 +439,7 @@ pub fn compile(module: &Module, enc: &Encoder) -> Result<Compiled, String> {
     for func in &module.funcs {
         funcs.insert(func.name.clone(), code.len());
         compile_function(func, enc, &mut code, &mut call_fixups)
-            .map_err(|e| format!("@{}: {}", func.name, e))?;
+            .map_err(|e| format!("{}: {}", func.name, e))?;
     }
 
     // cross-function fixups (bl)
@@ -453,7 +453,7 @@ pub fn compile(module: &Module, enc: &Encoder) -> Result<Compiled, String> {
                 let FixTarget::Func(name) = &fix.target else {
                     unreachable!()
                 };
-                format!("call to undefined function @{}", name)
+                format!("call to undefined function {}", name)
             })?;
         let mut values = fix.values;
         values[fix.imm_slot] = target as i64 - fix.at as i64;
@@ -748,12 +748,12 @@ pub fn compile_one(
     let mut code = Vec::new();
     let mut fixups = Vec::new();
     compile_function(func, enc, &mut code, &mut fixups)
-        .map_err(|e| format!("@{}: {}", func.name, e))?;
+        .map_err(|e| format!("{}: {}", func.name, e))?;
     for fix in fixups {
         let FixTarget::Func(name) = &fix.target else {
             unreachable!()
         };
-        let target = resolve(name).ok_or_else(|| format!("call to unknown function @{}", name))?;
+        let target = resolve(name).ok_or_else(|| format!("call to unknown function {}", name))?;
         let mut values = fix.values;
         values[fix.imm_slot] = target - (base + fix.at as i64);
         let word = enc.encode(fix.template, &values)?;
@@ -1180,7 +1180,7 @@ pub mod jit {
             let &off = self
                 .funcs
                 .get(name)
-                .ok_or_else(|| format!("no function @{} in module", name))?;
+                .ok_or_else(|| format!("no function {} in module", name))?;
             let p = unsafe { self.base.add(off) };
             macro_rules! call_as {
                 ($($t:ty),*) => { unsafe {
@@ -1212,7 +1212,7 @@ pub mod jit {
             let &off = self
                 .funcs
                 .get(name)
-                .ok_or_else(|| format!("no function @{} in module", name))?;
+                .ok_or_else(|| format!("no function {} in module", name))?;
             let p = unsafe { self.base.add(off) };
             macro_rules! call_as {
                 ($($t:ty),*) => { unsafe {
@@ -1265,11 +1265,11 @@ mod tests {
     #[test]
     fn i32_arithmetic_wraps() {
         let j = jit(r"
-fn @addmul(%a: i32, %b: i32) -> i32 {
-^entry:
-    %s: i32 = iadd %a, %b
-    %p: i32 = imul %s, %b
-    ret %p
+fn addmul(a: i32, b: i32) -> i32 {
+entry:
+    s: i32 = iadd a, b
+    p: i32 = imul s, b
+    ret p
 }
 ");
         assert_eq!(native_result(Repr::S(32), j.call("addmul", &[3, 4]).unwrap()), 28);
@@ -1283,15 +1283,15 @@ fn @addmul(%a: i32, %b: i32) -> i32 {
     #[test]
     fn casts_of_negatives() {
         let j = jit(r"
-fn @half_ext(%a: i32) -> i64 {
-^entry:
-    %w: i64 = ext %a
-    %two: i64 = iconst 2
-    %h: i64 = div %w, %two
-    ret %h
+fn half_ext(a: i32) -> i64 {
+entry:
+    w: i64 = ext a
+    two: i64 = iconst 2
+    h: i64 = div w, two
+    ret h
 }
 ");
-        // %a arrives as a 32-bit pattern; ext must recover the sign from bit 31
+        // a arrives as a 32-bit pattern; ext must recover the sign from bit 31
         assert_eq!(j.call("half_ext", &[0xfffffff6]).unwrap(), -5); // -10 / 2
         assert_eq!(j.call("half_ext", &[10]).unwrap(), 5);
     }
@@ -1299,12 +1299,12 @@ fn @half_ext(%a: i32) -> i64 {
     #[test]
     fn i1_sign_extension() {
         let j = jit(r"
-fn @mask(%a: i64, %b: i64) -> i64 {
-^entry:
-    %lt: u1 = icmp.lt %a, %b
-    %s: i1 = bitcast %lt
-    %m: i64 = ext %s
-    ret %m
+fn mask(a: i64, b: i64) -> i64 {
+entry:
+    lt: u1 = icmp.lt a, b
+    s: i1 = bitcast lt
+    m: i64 = ext s
+    ret m
 }
 ");
         assert_eq!(j.call("mask", &[1, 2]).unwrap(), -1);
@@ -1314,12 +1314,12 @@ fn @mask(%a: i64, %b: i64) -> i64 {
     #[test]
     fn memory_swap() {
         let j = jit(r"
-fn @swap(%p: ptr, %q: ptr) {
-^entry:
-    %a: i64 = load %p
-    %b: i64 = load %q
-    store %b, %p
-    store %a, %q
+fn swap(p: ptr, q: ptr) {
+entry:
+    a: i64 = load p
+    b: i64 = load q
+    store b, p
+    store a, q
     ret
 }
 ");
@@ -1333,25 +1333,25 @@ fn @swap(%p: ptr, %q: ptr) {
     #[test]
     fn i32_memory_and_ptradd() {
         let j = jit(r"
-fn @sum4(%p: ptr) -> i32 {
-^entry:
-    %zero32: i32 = iconst 0
-    %zero: i64 = iconst 0
-    jmp ^loop(%zero, %zero32)
-^loop(%i: i64, %acc: i32):
-    %four: i64 = iconst 4
-    %done: u1 = icmp.ge %i, %four
-    br %done, ^exit, ^body
-^body:
-    %off: i64 = imul %i, %four
-    %q: ptr = ptradd %p, %off
-    %v: i32 = load %q
-    %acc2: i32 = iadd %acc, %v
-    %one: i64 = iconst 1
-    %i2: i64 = iadd %i, %one
-    jmp ^loop(%i2, %acc2)
-^exit:
-    ret %acc
+fn sum4(p: ptr) -> i32 {
+entry:
+    zero32: i32 = iconst 0
+    zero: i64 = iconst 0
+    jmp loop(zero, zero32)
+loop(i: i64, acc: i32):
+    four: i64 = iconst 4
+    done: u1 = icmp.ge i, four
+    br done, exit, body
+body:
+    off: i64 = imul i, four
+    q: ptr = ptradd p, off
+    v: i32 = load q
+    acc2: i32 = iadd acc, v
+    one: i64 = iconst 1
+    i2: i64 = iadd i, one
+    jmp loop(i2, acc2)
+exit:
+    ret acc
 }
 ");
         let data: [i32; 4] = [10, 20, 30, 40];
@@ -1361,12 +1361,12 @@ fn @sum4(%p: ptr) -> i32 {
     #[test]
     fn shifts_rems_unsigned() {
         let j = jit(r"
-fn @mix(%a: u64, %b: u64) -> u64 {
-^entry:
-    %sh: u64 = shl %a, %b
-    %r: u64 = rem %sh, %a
-    %x: u64 = xor %r, %b
-    ret %x
+fn mix(a: u64, b: u64) -> u64 {
+entry:
+    sh: u64 = shl a, b
+    r: u64 = rem sh, a
+    x: u64 = xor r, b
+    ret x
 }
 ");
         // (7 << 3) = 56; 56 % 7 = 0; 0 ^ 3 = 3
@@ -1376,10 +1376,10 @@ fn @mix(%a: u64, %b: u64) -> u64 {
     #[test]
     fn negative_iconst() {
         let j = jit(r"
-fn @neg() -> i64 {
-^entry:
-    %m: i64 = iconst -42
-    ret %m
+fn neg() -> i64 {
+entry:
+    m: i64 = iconst -42
+    ret m
 }
 ");
         assert_eq!(j.call("neg", &[]).unwrap(), -42);
@@ -1437,14 +1437,14 @@ fn @neg() -> i64 {
             let mut src = String::new();
             for (name, _) in &ops {
                 src.push_str(&format!(
-                    "fn @{n}(%a: {t}, %b: {t}) -> {t} {{\n^entry:\n    %r: {t} = {n} %a, %b\n    ret %r\n}}\n",
+                    "fn {n}(a: {t}, b: {t}) -> {t} {{\nentry:\n    r: {t} = {n} a, b\n    ret r\n}}\n",
                     n = name,
                     t = ty
                 ));
             }
             for (name, _) in &conds {
                 src.push_str(&format!(
-                    "fn @c_{n}(%a: {t}, %b: {t}) -> u1 {{\n^entry:\n    %r: u1 = icmp.{n} %a, %b\n    ret %r\n}}\n",
+                    "fn c_{n}(a: {t}, b: {t}) -> u1 {{\nentry:\n    r: u1 = icmp.{n} a, b\n    ret r\n}}\n",
                     n = name,
                     t = ty
                 ));
@@ -1526,7 +1526,7 @@ fn @neg() -> i64 {
                 };
                 let fname = format!("{}_{}_{}", op, name(from), name(to));
                 src.push_str(&format!(
-                    "fn @{f}(%a: {s}) -> {d} {{\n^entry:\n    %r: {d} = {op} %a\n    ret %r\n}}\n",
+                    "fn {f}(a: {s}) -> {d} {{\nentry:\n    r: {d} = {op} a\n    ret r\n}}\n",
                     f = fname,
                     s = name(from),
                     d = name(to),
@@ -1550,86 +1550,86 @@ fn @neg() -> i64 {
     #[test]
     fn packs_and_narrow_memory() {
         let j = jit(r"
-pack $rgb { r: u5, g: u6, b: u5 }
-pack $mix { s: i3, c: $rgb, t: i9, flag: u1 }
+pack rgb { r: u5, g: u6, b: u5 }
+pack mix { s: i3, c: rgb, t: i9, flag: u1 }
 
-fn @mk(%r: u5, %g: u6, %b: u5) -> $rgb {
-^entry:
-    %c: $rgb = pack %r, %g, %b
-    ret %c
+fn mk(r: u5, g: u6, b: u5) -> rgb {
+entry:
+    c: rgb = pack r, g, b
+    ret c
 }
-fn @g(%c: $rgb) -> u6 {
-^entry:
-    %g: u6 = get %c, g
-    ret %g
+fn g(c: rgb) -> u6 {
+entry:
+    g: u6 = get c, g
+    ret g
 }
-fn @setg(%c: $rgb, %g: u6) -> $rgb {
-^entry:
-    %d: $rgb = set %c, g, %g
-    ret %d
+fn setg(c: rgb, g: u6) -> rgb {
+entry:
+    d: rgb = set c, g, g
+    ret d
 }
-fn @unpack_sum(%c: $rgb) -> u64 {
-^entry:
-    %r: u5, %g: u6, %b: u5 = unpack %c
-    %r6: u64 = ext %r
-    %g6: u64 = ext %g
-    %b6: u64 = ext %b
-    %x: u64 = iadd %r6, %g6
-    %y: u64 = iadd %x, %b6
-    ret %y
+fn unpack_sum(c: rgb) -> u64 {
+entry:
+    r: u5, g: u6, b: u5 = unpack c
+    r6: u64 = ext r
+    g6: u64 = ext g
+    b6: u64 = ext b
+    x: u64 = iadd r6, g6
+    y: u64 = iadd x, b6
+    ret y
 }
-fn @nested(%s: i3, %w: u16, %t: i9, %f: u1) -> (i64, i64) {
-^entry:
-    %c: $rgb = bitcast %w
-    %m: $mix = pack %s, %c, %t, %f
-    %s2: i3 = get %m, s
-    %t2: i9 = get %m, t
-    %sw: i64 = ext %s2
-    %tw: i64 = ext %t2
-    ret %sw, %tw
+fn nested(s: i3, w: u16, t: i9, f: u1) -> (i64, i64) {
+entry:
+    c: rgb = bitcast w
+    m: mix = pack s, c, t, f
+    s2: i3 = get m, s
+    t2: i9 = get m, t
+    sw: i64 = ext s2
+    tw: i64 = ext t2
+    ret sw, tw
 }
-fn @nested_bits(%s: i3, %w: u16, %t: i9, %f: u1) -> u64 {
-^entry:
-    %c: $rgb = bitcast %w
-    %m: $mix = pack %s, %c, %t, %f
-    %c2: $rgb = get %m, c
-    %cw: u16 = bitcast %c2
-    %f2: u1 = get %m, flag
-    %cw64: u64 = ext %cw
-    %f64: u64 = ext %f2
-    %bits: u29 = bitcast %m
-    %all: u64 = ext %bits
-    %x: u64 = xor %all, %cw64
-    %y: u64 = xor %x, %f64
-    ret %y
+fn nested_bits(s: i3, w: u16, t: i9, f: u1) -> u64 {
+entry:
+    c: rgb = bitcast w
+    m: mix = pack s, c, t, f
+    c2: rgb = get m, c
+    cw: u16 = bitcast c2
+    f2: u1 = get m, flag
+    cw64: u64 = ext cw
+    f64: u64 = ext f2
+    bits: u29 = bitcast m
+    all: u64 = ext bits
+    x: u64 = xor all, cw64
+    y: u64 = xor x, f64
+    ret y
 }
-fn @bytes(%p: ptr, %v: i8) -> i64 {
-^entry:
-    store %v, %p
-    %one: i64 = iconst 1
-    %q: ptr = ptradd %p, %one
-    %u: u8 = bitcast %v
-    store %u, %q
-    %a: i8 = load %p
-    %b: u8 = load %q
-    %aw: i64 = ext %a
-    %bw: i64 = ext %b
-    %r: i64 = isub %aw, %bw
-    ret %r
+fn bytes(p: ptr, v: i8) -> i64 {
+entry:
+    store v, p
+    one: i64 = iconst 1
+    q: ptr = ptradd p, one
+    u: u8 = bitcast v
+    store u, q
+    a: i8 = load p
+    b: u8 = load q
+    aw: i64 = ext a
+    bw: i64 = ext b
+    r: i64 = isub aw, bw
+    ret r
 }
-fn @halves(%p: ptr, %v: i16) -> i64 {
-^entry:
-    store %v, %p
-    %two: i64 = iconst 2
-    %q: ptr = ptradd %p, %two
-    %u: u16 = bitcast %v
-    store %u, %q
-    %a: i16 = load %p
-    %b: u16 = load %q
-    %aw: i64 = ext %a
-    %bw: i64 = ext %b
-    %r: i64 = isub %aw, %bw
-    ret %r
+fn halves(p: ptr, v: i16) -> i64 {
+entry:
+    store v, p
+    two: i64 = iconst 2
+    q: ptr = ptradd p, two
+    u: u16 = bitcast v
+    store u, q
+    a: i16 = load p
+    b: u16 = load q
+    aw: i64 = ext a
+    bw: i64 = ext b
+    r: i64 = isub aw, bw
+    ret r
 }
 ");
         let rgb = |r: i64, g: i64, b: i64| r | (g << 5) | (b << 11);

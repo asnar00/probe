@@ -160,7 +160,7 @@ pub fn compile(module: &Module, enc: &WEncoder) -> Result<Vec<u8>, String> {
     let mut bodies = Vec::new();
     for f in &module.funcs {
         bodies.push(
-            compile_function(f, enc, &findex).map_err(|e| format!("@{}: {}", f.name, e))?,
+            compile_function(f, enc, &findex).map_err(|e| format!("{}: {}", f.name, e))?,
         );
     }
 
@@ -608,7 +608,7 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             let (idx, nrets) = *e
                 .findex
                 .get(callee)
-                .ok_or_else(|| format!("call to undefined function @{}", callee))?;
+                .ok_or_else(|| format!("call to undefined function {}", callee))?;
             e.op("call {}", Some(idx))?;
             if dsts.is_empty() {
                 for _ in 0..nrets {

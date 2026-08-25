@@ -67,7 +67,7 @@ pub fn compile(module: &Module, enc: &Encoder) -> Result<Compiled, String> {
     for func in &module.funcs {
         funcs.insert(func.name.clone(), code.len());
         compile_function(func, enc, &mut code, &mut call_fixups)
-            .map_err(|e| format!("@{}: {}", func.name, e))?;
+            .map_err(|e| format!("{}: {}", func.name, e))?;
     }
     for fix in call_fixups {
         let FixTarget::Func(name) = &fix.target else {
@@ -75,7 +75,7 @@ pub fn compile(module: &Module, enc: &Encoder) -> Result<Compiled, String> {
         };
         let target = *funcs
             .get(name.as_str())
-            .ok_or_else(|| format!("call to undefined function @{}", name))?;
+            .ok_or_else(|| format!("call to undefined function {}", name))?;
         let mut values = fix.values;
         values[fix.imm_slot] = target as i64 - fix.at as i64;
         let word = enc.encode(JAL, &values)?;

@@ -105,7 +105,7 @@ impl Type {
     }
 }
 
-/// A pack declaration: `pack $name { f: ty, ... }`. Fields occupy
+/// A pack declaration: `pack name { f: ty, ... }`. Fields occupy
 /// consecutive bits from bit 0 upward; the whole pack is at most 64 bits
 /// and is carried around as the unsigned integer of that width.
 #[derive(Clone, Debug, PartialEq)]
@@ -378,7 +378,7 @@ impl Function {
     /// the type's spelling with pack names resolved
     pub fn tyname(&self, ty: Type) -> String {
         match self.pack(ty) {
-            Some(p) => format!("${}", p.name),
+            Some(p) => p.name.clone(),
             None => ty.name(),
         }
     }
@@ -463,11 +463,7 @@ pub fn resolve_types(module: &mut Module, policy: &Policy) {
 #[derive(Clone, PartialEq, Debug)]
 enum Tok {
     Newline,
-    Ident(String),  // fn, ret, iadd, icmp.slt, i64, ...
-    Value(String),  // %x
-    Block(String),  // ^x
-    Global(String), // @x
-    TypeName(String), // $x
+    Ident(String), // every word: keywords, opcodes, values, blocks, functions, types
     Int(i64),
     Colon,
     Comma,
@@ -484,10 +480,6 @@ impl fmt::Display for Tok {
         match self {
             Tok::Newline => write!(f, "end of line"),
             Tok::Ident(s) => write!(f, "'{}'", s),
-            Tok::Value(s) => write!(f, "'%{}'", s),
-            Tok::Block(s) => write!(f, "'^{}'", s),
-            Tok::Global(s) => write!(f, "'@{}'", s),
-            Tok::TypeName(s) => write!(f, "'${}'", s),
             Tok::Int(n) => write!(f, "'{}'", n),
             Tok::Colon => write!(f, "':'"),
             Tok::Comma => write!(f, "','"),
@@ -544,19 +536,9 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                 }
             }
             '%' | '^' | '@' | '$' => {
-                chars.next();
-                let name = lex_name(&mut chars);
-                if name.is_empty() {
-                    return Err(err(line, format!("expected a name after '{}'", c)));
-                }
-                toks.push((
-                    match c {
-                        '%' => Tok::Value(name),
-                        '^' => Tok::Block(name),
-                        '$' => Tok::TypeName(name),
-                        _ => Tok::Global(name),
-                    },
+                return Err(err(
                     line,
+                    format!("'{}' prefixes are gone: values, blocks, functions, and types are plain names", c),
                 ));
             }
             ':' => {
@@ -834,19 +816,20 @@ impl Parser {
 
     fn expect_type(&mut self) -> Result<Type, ParseError> {
         match self.next()? {
-            Tok::Ident(s) => Type::from_name(&s).ok_or_else(|| {
+            Tok::Ident(s) => self.type_named(&s).ok_or_else(|| {
                 self.pos -= 1;
                 self.err(format!("unknown type '{}'", s))
-            }),
-            Tok::TypeName(n) => self.pack_type(&n).ok_or_else(|| {
-                self.pos -= 1;
-                self.err(format!("unknown pack type '${}'", n))
             }),
             t => {
                 self.pos -= 1;
                 Err(self.err(format!("expected a type, found {}", t)))
             }
         }
+    }
+
+    /// builtin types first (`i5`, `u8`, `ptr`, `int`, `uint`), then packs
+    fn type_named(&self, name: &str) -> Option<Type> {
+        Type::from_name(name).or_else(|| self.pack_type(name))
     }
 
     /// skip over a `pack` declaration already parsed in pass 1
@@ -859,18 +842,13 @@ impl Parser {
         self.pack_ids.get(name).map(|&i| Type::Pack(i))
     }
 
-    /// `pack $name { field: ty, ... }` — fields may span lines
+    /// `pack name { field: ty, ... }` — fields may span lines
     fn parse_pack_decl(&mut self) -> Result<(), ParseError> {
         self.expect_ident()?; // 'pack'
-        let name = match self.next()? {
-            Tok::TypeName(n) => n,
-            t => {
-                self.pos -= 1;
-                return Err(self.err(format!("expected a pack name like '$rgb', found {}", t)));
-            }
-        };
-        if self.pack_ids.contains_key(&name) {
-            return Err(self.err(format!("pack '${}' is declared more than once", name)));
+        let name = self.expect_ident()?;
+        if self.type_named(&name).is_some() {
+            self.pos -= 1;
+            return Err(self.err(format!("type '{}' is already defined", name)));
         }
         self.expect(Tok::LBrace)?;
         let mut fields: Vec<(String, Type)> = Vec::new();
@@ -883,7 +861,7 @@ impl Parser {
             }
             let fname = self.expect_ident()?;
             if fields.iter().any(|(n, _)| *n == fname) {
-                return Err(self.err(format!("field '{}' appears twice in ${}", fname, name)));
+                return Err(self.err(format!("field '{}' appears twice in {}", fname, name)));
             }
             self.expect(Tok::Colon)?;
             let ty = self.expect_type()?;
@@ -909,11 +887,11 @@ impl Parser {
             }
         }
         if fields.is_empty() {
-            return Err(self.err(format!("pack '${}' has no fields", name)));
+            return Err(self.err(format!("pack '{}' has no fields", name)));
         }
         if width > 64 {
             return Err(self.err(format!(
-                "pack '${}' is {} bits wide; packs fit in 64",
+                "pack '{}' is {} bits wide; packs fit in 64",
                 name, width
             )));
         }
@@ -931,9 +909,9 @@ impl Parser {
 
     fn expect_value(&mut self, scope: &FuncScope) -> Result<ValueId, ParseError> {
         match self.next()? {
-            Tok::Value(name) => scope.value_ids.get(&name).copied().ok_or_else(|| {
+            Tok::Ident(name) => scope.value_ids.get(&name).copied().ok_or_else(|| {
                 self.pos -= 1;
-                self.err(format!("use of undefined value '%{}'", name))
+                self.err(format!("use of undefined value '{}'", name))
             }),
             t => {
                 self.pos -= 1;
@@ -964,7 +942,7 @@ impl Parser {
         Err(self.err("unterminated function: missing '}'"))
     }
 
-    /// Every value definition in the format is the pattern `%name : type` —
+    /// Every value definition in the format is the pattern `name : type` —
     /// function params, block params, and instruction results alike. One scan
     /// over the function's tokens builds the whole value table.
     fn prescan_values(&self, lo: usize, hi: usize) -> Result<FuncScope, ParseError> {
@@ -976,28 +954,18 @@ impl Parser {
         };
         let mut i = lo;
         while i + 2 <= hi {
-            if let (Tok::Value(name), Tok::Colon) = (&self.toks[i].0, &self.toks[i + 1].0) {
+            if let (Tok::Ident(name), Tok::Colon, Tok::Ident(tyname)) =
+                (&self.toks[i].0, &self.toks[i + 1].0, &self.toks[i + 2].0)
+            {
                 let line = self.toks[i].1;
-                let ty = match &self.toks[i + 2].0 {
-                    Tok::Ident(tyname) => Type::from_name(tyname).ok_or_else(|| ParseError {
-                        line,
-                        msg: format!("unknown type '{}'", tyname),
-                    })?,
-                    Tok::TypeName(pname) => self.pack_type(pname).ok_or_else(|| ParseError {
-                        line,
-                        msg: format!("unknown pack type '${}'", pname),
-                    })?,
-                    _ => {
-                        return Err(ParseError {
-                            line,
-                            msg: format!("expected a type after '%{}:'", name),
-                        })
-                    }
-                };
+                let ty = self.type_named(tyname).ok_or_else(|| ParseError {
+                    line,
+                    msg: format!("unknown type '{}'", tyname),
+                })?;
                 if scope.value_ids.contains_key(name) {
                     return Err(ParseError {
                         line,
-                        msg: format!("value '%{}' is defined more than once", name),
+                        msg: format!("value '{}' is defined more than once", name),
                     });
                 }
                 let id = ValueId(scope.values.len() as u32);
@@ -1014,7 +982,7 @@ impl Parser {
         Ok(scope)
     }
 
-    /// Block headers are `^name` at the start of a line (branch targets never
+    /// Block headers are `name` at the start of a line (branch targets never
     /// are). Collect them in order so branches can reference blocks forward.
     fn prescan_blocks(
         &self,
@@ -1023,22 +991,51 @@ impl Parser {
         scope: &mut FuncScope,
     ) -> Result<(), ParseError> {
         for i in lo..=hi {
-            if let Tok::Block(name) = &self.toks[i].0 {
-                let at_line_start = i == 0 || matches!(self.toks[i - 1].0, Tok::Newline);
-                if at_line_start {
-                    if scope.block_ids.contains_key(name) {
-                        return Err(ParseError {
-                            line: self.toks[i].1,
-                            msg: format!("block '^{}' is defined more than once", name),
-                        });
-                    }
-                    let id = BlockId(scope.block_names.len() as u32);
-                    scope.block_ids.insert(name.clone(), id);
-                    scope.block_names.push(name.clone());
+            if let Some(name) = self.label_at(i) {
+                if scope.block_ids.contains_key(&name) {
+                    return Err(ParseError {
+                        line: self.toks[i].1,
+                        msg: format!("block '{}' is defined more than once", name),
+                    });
                 }
+                let id = BlockId(scope.block_names.len() as u32);
+                scope.block_ids.insert(name.clone(), id);
+                scope.block_names.push(name);
             }
         }
         Ok(())
+    }
+
+    /// A block label starts a line: `name:` followed by a newline, or
+    /// `name(params):`. Definitions (`name: type = ...`) and structured
+    /// statements (`loop(...) {`) never look like that.
+    fn label_at(&self, i: usize) -> Option<String> {
+        let at_line_start = i == 0 || matches!(self.toks[i - 1].0, Tok::Newline);
+        let Tok::Ident(name) = &self.toks[i].0 else {
+            return None;
+        };
+        if !at_line_start {
+            return None;
+        }
+        match self.toks.get(i + 1).map(|t| &t.0) {
+            Some(Tok::Colon) => matches!(self.toks.get(i + 2).map(|t| &t.0), Some(Tok::Newline))
+                .then(|| name.clone()),
+            Some(Tok::LParen) => {
+                let mut j = i + 2;
+                while let Some((t, _)) = self.toks.get(j) {
+                    match t {
+                        Tok::RParen => {
+                            return matches!(self.toks.get(j + 1).map(|t| &t.0), Some(Tok::Colon))
+                                .then(|| name.clone());
+                        }
+                        Tok::Newline | Tok::LBrace | Tok::Equals => return None,
+                        _ => j += 1,
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
     }
 
     // -- grammar -------------------------------------------------------------
@@ -1055,13 +1052,7 @@ impl Parser {
         self.prescan_blocks(lo, hi, &mut scope)?;
         self.pos += 1; // past `fn`
 
-        let name = match self.next()? {
-            Tok::Global(n) => n,
-            t => {
-                self.pos -= 1;
-                return Err(self.err(format!("expected a function name, found {}", t)));
-            }
-        };
+        let name = self.expect_ident()?;
 
         // parameters: names resolve via the prescan; re-parse for order
         self.expect(Tok::LParen)?;
@@ -1098,10 +1089,10 @@ impl Parser {
         self.expect(Tok::LBrace)?;
         self.skip_newlines();
 
-        // A body that opens with statements instead of a ^label is in
+        // A body that opens with statements instead of a label is in
         // structured form; it parses via if/loop constructs and lowers to
         // the same block graph on the fly.
-        if !matches!(self.peek(), Some(Tok::Block(_)) | Some(Tok::RBrace)) {
+        if self.label_at(self.pos).is_none() && !matches!(self.peek(), Some(Tok::RBrace)) {
             let blocks = self.parse_structured_body(&scope)?;
             return Ok(Function {
                 name,
@@ -1120,10 +1111,8 @@ impl Parser {
                     self.pos += 1;
                     break;
                 }
-                Some(Tok::Block(_)) => {
-                    let Tok::Block(bname) = self.next()? else {
-                        unreachable!()
-                    };
+                Some(Tok::Ident(_)) if self.label_at(self.pos).is_some() => {
+                    let bname = self.expect_ident()?;
                     let mut bparams = Vec::new();
                     if self.eat(&Tok::LParen) && !self.eat(&Tok::RParen) {
                         loop {
@@ -1169,11 +1158,11 @@ impl Parser {
     }
 
     /// Look up a value being *defined*; the prescan registered it iff the
-    /// definition is well-formed (`%name: ty`), so a miss is a syntax error.
+    /// definition is well-formed (`name: ty`), so a miss is a syntax error.
     fn def_id(&self, scope: &FuncScope, name: &str) -> Result<ValueId, ParseError> {
         scope.value_ids.get(name).copied().ok_or_else(|| {
             self.err(format!(
-                "definition of '%{}' is missing its ': type' annotation",
+                "definition of '{}' is missing its ': type' annotation",
                 name
             ))
         })
@@ -1181,19 +1170,14 @@ impl Parser {
 
     fn parse_inst(&mut self, scope: &FuncScope) -> Result<Inst, ParseError> {
         match self.next()? {
-            // %dst: ty [, %dst2: ty ...] = op ...
-            Tok::Value(name) => {
+            // dst: ty [, dst2: ty ...] = op ...
+            Tok::Ident(name) if matches!(self.peek(), Some(Tok::Colon)) => {
                 let mut dsts = vec![self.def_id(scope, &name)?];
                 self.expect(Tok::Colon)?;
                 self.expect_type()?;
                 while self.eat(&Tok::Comma) {
-                    match self.next()? {
-                        Tok::Value(n) => dsts.push(self.def_id(scope, &n)?),
-                        t => {
-                            self.pos -= 1;
-                            return Err(self.err(format!("expected a value, found {}", t)));
-                        }
-                    }
+                    let n = self.expect_ident()?;
+                    dsts.push(self.def_id(scope, &n)?);
                     self.expect(Tok::Colon)?;
                     self.expect_type()?;
                 }
@@ -1325,7 +1309,7 @@ impl Parser {
         let Type::Pack(i) = ty else {
             self.pos -= 1;
             return Err(self.err(format!(
-                "'%{}' is {}, not a pack; it has no field '{}'",
+                "'{}' is {}, not a pack; it has no field '{}'",
                 scope.values[of.0 as usize].name,
                 ty.name(),
                 fname
@@ -1337,7 +1321,7 @@ impl Parser {
         };
         found.map(|k| k as u32).ok_or_else(|| {
             self.pos -= 1;
-            self.err(format!("pack '${}' has no field '{}'", pname, fname))
+            self.err(format!("pack '{}' has no field '{}'", pname, fname))
         })
     }
 
@@ -1377,7 +1361,7 @@ impl Parser {
             }
             "ret" => {
                 let mut vals = Vec::new();
-                if matches!(self.peek(), Some(Tok::Value(_))) {
+                if matches!(self.peek(), Some(Tok::Ident(_))) {
                     vals.push(self.expect_value(scope)?);
                     while self.eat(&Tok::Comma) {
                         vals.push(self.expect_value(scope)?);
@@ -1386,20 +1370,14 @@ impl Parser {
                 Ok(Inst::Ret { vals })
             }
             _ => Err(self.err(format!(
-                "unknown opcode '{}' (or missing '%dst: ty =' before it)",
+                "unknown opcode '{}' (or missing 'dst: ty =' before it)",
                 op
             ))),
         }
     }
 
     fn parse_call_tail(&mut self, scope: &FuncScope) -> Result<(String, Vec<ValueId>), ParseError> {
-        let callee = match self.next()? {
-            Tok::Global(n) => n,
-            t => {
-                self.pos -= 1;
-                return Err(self.err(format!("expected a function name, found {}", t)));
-            }
-        };
+        let callee = self.expect_ident()?;
         self.expect(Tok::LParen)?;
         let mut args = Vec::new();
         if !self.eat(&Tok::RParen) {
@@ -1427,7 +1405,7 @@ impl Parser {
             loop_stack: Vec::new(),
             yield_stack: Vec::new(),
         };
-        st.new_block(Vec::new()); // ^entry
+        st.new_block(Vec::new()); // entry
         self.parse_struct_stmts(scope, &mut st)?;
         self.expect(Tok::RBrace)?;
         Ok(st.blocks)
@@ -1455,18 +1433,13 @@ impl Parser {
 
     fn parse_struct_stmt(&mut self, scope: &FuncScope, st: &mut StructEmit) -> Result<bool, ParseError> {
         match self.next()? {
-            Tok::Value(name) => {
+            Tok::Ident(name) if matches!(self.peek(), Some(Tok::Colon)) => {
                 let mut dsts = vec![self.def_id(scope, &name)?];
                 self.expect(Tok::Colon)?;
                 self.expect_type()?;
                 while self.eat(&Tok::Comma) {
-                    match self.next()? {
-                        Tok::Value(n) => dsts.push(self.def_id(scope, &n)?),
-                        t => {
-                            self.pos -= 1;
-                            return Err(self.err(format!("expected a value, found {}", t)));
-                        }
-                    }
+                    let n = self.expect_ident()?;
+                    dsts.push(self.def_id(scope, &n)?);
                     self.expect(Tok::Colon)?;
                     self.expect_type()?;
                 }
@@ -1659,13 +1632,8 @@ impl Parser {
         let mut inits = Vec::new();
         if !self.eat(&Tok::RParen) {
             loop {
-                match self.next()? {
-                    Tok::Value(n) => params.push(self.def_id(scope, &n)?),
-                    t => {
-                        self.pos -= 1;
-                        return Err(self.err(format!("expected a loop variable, found {}", t)));
-                    }
-                }
+                let n = self.expect_ident()?;
+                params.push(self.def_id(scope, &n)?);
                 self.expect(Tok::Colon)?;
                 self.expect_type()?;
                 self.expect(Tok::Equals)?;
@@ -1713,7 +1681,7 @@ impl Parser {
 
     fn parse_value_list(&mut self, scope: &FuncScope) -> Result<Vec<ValueId>, ParseError> {
         let mut vals = Vec::new();
-        if matches!(self.peek(), Some(Tok::Value(_))) {
+        if matches!(self.peek(), Some(Tok::Ident(_))) {
             vals.push(self.expect_value(scope)?);
             while self.eat(&Tok::Comma) {
                 vals.push(self.expect_value(scope)?);
@@ -1727,9 +1695,9 @@ impl Parser {
         scope: &FuncScope,
     ) -> Result<(BlockId, Vec<ValueId>), ParseError> {
         let target = match self.next()? {
-            Tok::Block(name) => scope.block_ids.get(&name).copied().ok_or_else(|| {
+            Tok::Ident(name) => scope.block_ids.get(&name).copied().ok_or_else(|| {
                 self.pos -= 1;
-                self.err(format!("branch to undefined block '^{}'", name))
+                self.err(format!("branch to undefined block '{}'", name))
             })?,
             t => {
                 self.pos -= 1;
@@ -1761,13 +1729,13 @@ impl fmt::Display for Module {
                 .iter()
                 .map(|(n, t)| {
                     let tn = match *t {
-                        Type::Pack(i) => format!("${}", self.packs[i as usize].name),
+                        Type::Pack(i) => self.packs[i as usize].name.clone(),
                         t => t.name(),
                     };
                     format!("{}: {}", n, tn)
                 })
                 .collect();
-            writeln!(f, "pack ${} {{ {} }}", p.name, fields.join(", "))?;
+            writeln!(f, "pack {} {{ {} }}", p.name, fields.join(", "))?;
         }
         for (i, func) in self.funcs.iter().enumerate() {
             if i > 0 || !self.packs.is_empty() {
@@ -1781,12 +1749,12 @@ impl fmt::Display for Module {
 
 impl Function {
     fn fmt_value(&self, id: ValueId) -> String {
-        format!("%{}", self.value(id).name)
+        self.value(id).name.clone()
     }
 
     fn fmt_def(&self, id: ValueId) -> String {
         let v = self.value(id);
-        format!("%{}: {}", v.name, self.tyname(v.ty))
+        format!("{}: {}", v.name, self.tyname(v.ty))
     }
 
     fn fmt_field(&self, of: ValueId, field: u32) -> String {
@@ -1806,9 +1774,9 @@ impl Function {
     fn fmt_target(&self, target: BlockId, args: &[ValueId]) -> String {
         let name = &self.blocks[target.0 as usize].name;
         if args.is_empty() {
-            format!("^{}", name)
+            name.clone()
         } else {
-            format!("^{}({})", name, self.fmt_args(args))
+            format!("{}({})", name, self.fmt_args(args))
         }
     }
 }
@@ -1821,7 +1789,7 @@ impl fmt::Display for Function {
             .map(|&p| self.fmt_def(p))
             .collect::<Vec<_>>()
             .join(", ");
-        write!(f, "fn @{}({})", self.name, params)?;
+        write!(f, "fn {}({})", self.name, params)?;
         match self.rets.len() {
             0 => {}
             1 => write!(f, " -> {}", self.tyname(self.rets[0]))?,
@@ -1833,7 +1801,7 @@ impl fmt::Display for Function {
         writeln!(f, " {{")?;
         for block in &self.blocks {
             if block.params.is_empty() {
-                writeln!(f, "^{}:", block.name)?;
+                writeln!(f, "{}:", block.name)?;
             } else {
                 let ps = block
                     .params
@@ -1841,7 +1809,7 @@ impl fmt::Display for Function {
                     .map(|&p| self.fmt_def(p))
                     .collect::<Vec<_>>()
                     .join(", ");
-                writeln!(f, "^{}({}):", block.name, ps)?;
+                writeln!(f, "{}({}):", block.name, ps)?;
             }
             for inst in &block.insts {
                 writeln!(f, "    {}", self.fmt_inst(inst))?;
@@ -1918,7 +1886,7 @@ impl Function {
                 self.fmt_value(*off)
             ),
             Inst::Call { dsts, callee, args } => {
-                let call = format!("call @{}({})", callee, self.fmt_args(args));
+                let call = format!("call {}({})", callee, self.fmt_args(args));
                 if dsts.is_empty() {
                     call
                 } else {
@@ -1966,7 +1934,7 @@ pub fn verify(module: &Module) -> Result<(), Vec<String>> {
 }
 
 fn verify_function(module: &Module, func: &Function, errs: &mut Vec<String>) {
-    let ctx = |msg: String| format!("@{}: {}", func.name, msg);
+    let ctx = |msg: String| format!("{}: {}", func.name, msg);
 
     if func.blocks.is_empty() {
         errs.push(ctx("function has no blocks".into()));
@@ -1977,7 +1945,7 @@ fn verify_function(module: &Module, func: &Function, errs: &mut Vec<String>) {
     for v in &func.values {
         if v.ty.is_abstract() {
             errs.push(ctx(format!(
-                "value '%{}' has unresolved abstract type '{}' (run type resolution first)",
+                "value '{}' has unresolved abstract type '{}' (run type resolution first)",
                 v.name,
                 v.ty.name()
             )));
@@ -2001,7 +1969,7 @@ fn verify_function(module: &Module, func: &Function, errs: &mut Vec<String>) {
         *d += 1;
         if *d == 2 {
             errs.push(ctx(format!(
-                "value '%{}' is defined more than once",
+                "value '{}' is defined more than once",
                 func.value(id).name
             )));
         }
@@ -2027,7 +1995,7 @@ fn verify_function(module: &Module, func: &Function, errs: &mut Vec<String>) {
 
     // rules 2 & 5: exactly one terminator, at the end; entry never targeted
     for block in &func.blocks {
-        let bctx = |msg: String| ctx(format!("^{}: {}", block.name, msg));
+        let bctx = |msg: String| ctx(format!("{}: {}", block.name, msg));
         match block.insts.last() {
             None => errs.push(bctx("block is empty; must end with a terminator".into())),
             Some(last) if !last.is_terminator() => {
@@ -2091,8 +2059,8 @@ fn branch_targets(inst: &Inst) -> Vec<(BlockId, &[ValueId])> {
 }
 
 fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, errs: &mut Vec<String>) {
-    let ctx = |msg: String| format!("@{}: ^{}: {}", func.name, block.name, msg);
-    let name = |id: ValueId| format!("%{}", func.value(id).name);
+    let ctx = |msg: String| format!("{}: {}: {}", func.name, block.name, msg);
+    let name = |id: ValueId| func.value(id).name.clone();
 
     let tn = |t: Type| func.tyname(t);
     let is_memory = |t: Type| {
@@ -2204,7 +2172,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     let got: Vec<Type> = args.iter().map(|&a| func.ty(a)).collect();
                     if want != got {
                         errs.push(ctx(format!(
-                            "pack ${}: argument types ({}) do not match its fields ({})",
+                            "pack {}: argument types ({}) do not match its fields ({})",
                             p.name,
                             got.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", "),
                             want.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", ")
@@ -2226,7 +2194,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     let got: Vec<Type> = dsts.iter().map(|&d| func.ty(d)).collect();
                     if want != got {
                         errs.push(ctx(format!(
-                            "unpack ${}: result types ({}) do not match its fields ({})",
+                            "unpack {}: result types ({}) do not match its fields ({})",
                             p.name,
                             got.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", "),
                             want.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", ")
@@ -2330,7 +2298,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 let got: Vec<Type> = args.iter().map(|&a| func.ty(a)).collect();
                 if want != got {
                     errs.push(ctx(format!(
-                        "call @{}: argument types ({}) do not match parameters ({})",
+                        "call {}: argument types ({}) do not match parameters ({})",
                         callee,
                         got.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", "),
                         want.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", ")
@@ -2341,7 +2309,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     let dt: Vec<Type> = dsts.iter().map(|&d| func.ty(d)).collect();
                     if dt != target.rets {
                         errs.push(ctx(format!(
-                            "call @{}: result types ({}) do not match return types ({})",
+                            "call {}: result types ({}) do not match return types ({})",
                             callee,
                             dt.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", "),
                             target
@@ -2371,7 +2339,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 let got: Vec<Type> = args.iter().map(|&a| func.ty(a)).collect();
                 if want != got {
                     errs.push(ctx(format!(
-                        "branch to ^{}: argument types ({}) do not match block parameters ({})",
+                        "branch to {}: argument types ({}) do not match block parameters ({})",
                         tblock.name,
                         got.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", "),
                         want.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", ")
@@ -2404,20 +2372,20 @@ mod tests {
 
     const SUM: &str = r"
 ; sum of 0..n
-fn @sum(%n: i64) -> i64 {
-^entry:
-    %zero: i64 = iconst 0
-    jmp ^loop(%zero, %zero)
-^loop(%i: i64, %acc: i64):
-    %done: u1 = icmp.ge %i, %n
-    br %done, ^exit, ^body
-^body:
-    %acc2: i64 = iadd %acc, %i
-    %one: i64 = iconst 1
-    %i2: i64 = iadd %i, %one
-    jmp ^loop(%i2, %acc2)
-^exit:
-    ret %acc
+fn sum(n: i64) -> i64 {
+entry:
+    zero: i64 = iconst 0
+    jmp loop(zero, zero)
+loop(i: i64, acc: i64):
+    done: u1 = icmp.ge i, n
+    br done, exit, body
+body:
+    acc2: i64 = iadd acc, i
+    one: i64 = iconst 1
+    i2: i64 = iadd i, one
+    jmp loop(i2, acc2)
+exit:
+    ret acc
 }
 ";
 
@@ -2444,20 +2412,20 @@ fn @sum(%n: i64) -> i64 {
     #[test]
     fn calls_memory_and_casts() {
         let src = r"
-fn @get(%p: ptr) -> i32 {
-^entry:
-    %v: i32 = load %p
-    ret %v
+fn get(p: ptr) -> i32 {
+entry:
+    v: i32 = load p
+    ret v
 }
-fn @use(%p: ptr) -> i64 {
-^entry:
-    %v: i32 = call @get(%p)
-    %w: i64 = ext %v
-    %eight: i64 = iconst 8
-    %q: ptr = ptradd %p, %eight
-    store %w, %q
-    call @touch(%q)
-    ret %w
+fn use(p: ptr) -> i64 {
+entry:
+    v: i32 = call get(p)
+    w: i64 = ext v
+    eight: i64 = iconst 8
+    q: ptr = ptradd p, eight
+    store w, q
+    call touch(q)
+    ret w
 }
 ";
         let m = parse(src).expect("parse");
@@ -2469,10 +2437,10 @@ fn @use(%p: ptr) -> i64 {
     #[test]
     fn rejects_type_mismatch() {
         let src = r"
-fn @bad(%a: i64, %b: i32) -> i64 {
-^entry:
-    %c: i64 = iadd %a, %b
-    ret %c
+fn bad(a: i64, b: i32) -> i64 {
+entry:
+    c: i64 = iadd a, b
+    ret c
 }
 ";
         let m = parse(src).expect("parse succeeds; verify should fail");
@@ -2483,24 +2451,24 @@ fn @bad(%a: i64, %b: i32) -> i64 {
     #[test]
     fn rejects_branch_arg_mismatch() {
         let src = r"
-fn @bad(%a: i64) -> i64 {
-^entry:
-    jmp ^next(%a)
-^next(%x: i32):
-    ret %a
+fn bad(a: i64) -> i64 {
+entry:
+    jmp next(a)
+next(x: i32):
+    ret a
 }
 ";
         let m = parse(src).expect("parse");
         let errs = verify(&m).unwrap_err();
-        assert!(errs.iter().any(|e| e.contains("branch to ^next")), "got: {:?}", errs);
+        assert!(errs.iter().any(|e| e.contains("branch to next")), "got: {:?}", errs);
     }
 
     #[test]
     fn rejects_missing_terminator() {
         let src = r"
-fn @bad(%a: i64) -> i64 {
-^entry:
-    %b: i64 = iadd %a, %a
+fn bad(a: i64) -> i64 {
+entry:
+    b: i64 = iadd a, a
 }
 ";
         let m = parse(src).expect("parse");
@@ -2511,11 +2479,11 @@ fn @bad(%a: i64) -> i64 {
     #[test]
     fn rejects_double_definition() {
         let src = r"
-fn @bad(%a: i64) -> i64 {
-^entry:
-    %b: i64 = iadd %a, %a
-    %b: i64 = iadd %a, %a
-    ret %b
+fn bad(a: i64) -> i64 {
+entry:
+    b: i64 = iadd a, a
+    b: i64 = iadd a, a
+    ret b
 }
 ";
         assert!(parse(src).is_err());
@@ -2524,10 +2492,10 @@ fn @bad(%a: i64) -> i64 {
     #[test]
     fn rejects_undefined_value() {
         let src = r"
-fn @bad(%a: i64) -> i64 {
-^entry:
-    %b: i64 = iadd %a, %nope
-    ret %b
+fn bad(a: i64) -> i64 {
+entry:
+    b: i64 = iadd a, nope
+    ret b
 }
 ";
         assert!(parse(src).is_err());
@@ -2536,19 +2504,19 @@ fn @bad(%a: i64) -> i64 {
     #[test]
     fn structured_lowers_and_verifies() {
         let src = r"
-fn @sum(%n: i64) -> i64 {
-    %zero: i64 = iconst 0
-    %r: i64 = loop(%i: i64 = %zero, %acc: i64 = %zero) {
-        %done: u1 = icmp.ge %i, %n
-        if %done {
-            break %acc
+fn sum(n: i64) -> i64 {
+    zero: i64 = iconst 0
+    r: i64 = loop(i: i64 = zero, acc: i64 = zero) {
+        done: u1 = icmp.ge i, n
+        if done {
+            break acc
         }
-        %one: i64 = iconst 1
-        %a2: i64 = iadd %acc, %i
-        %i2: i64 = iadd %i, %one
-        continue %i2, %a2
+        one: i64 = iconst 1
+        a2: i64 = iadd acc, i
+        i2: i64 = iadd i, one
+        continue i2, a2
     }
-    ret %r
+    ret r
 }
 ";
         let m = parse(src).expect("parse");
@@ -2565,13 +2533,13 @@ fn @sum(%n: i64) -> i64 {
     #[test]
     fn structured_if_yield_types_checked() {
         let src = r"
-fn @bad(%c: u1, %a: i64, %b: i32) -> i64 {
-    %r: i64 = if %c {
-        yield %a
+fn bad(c: u1, a: i64, b: i32) -> i64 {
+    r: i64 = if c {
+        yield a
     } else {
-        yield %b
+        yield b
     }
-    ret %r
+    ret r
 }
 ";
         let m = parse(src).expect("parse");
@@ -2581,38 +2549,38 @@ fn @bad(%c: u1, %a: i64, %b: i32) -> i64 {
     #[test]
     fn structured_error_cases() {
         // yield outside an if
-        assert!(parse("fn @f() {\n    yield\n}").is_err());
+        assert!(parse("fn f() {\n    yield\n}").is_err());
         // break outside a loop
-        assert!(parse("fn @f() {\n    break\n}").is_err());
+        assert!(parse("fn f() {\n    break\n}").is_err());
         // loop body falling through
         assert!(parse(
-            "fn @f(%n: i64) {\n    loop(%i: i64 = %n) {\n        %z: i64 = iconst 0\n    }\n    ret\n}"
+            "fn f(n: i64) {\n    loop(i: i64 = n) {\n        z: i64 = iconst 0\n    }\n    ret\n}"
         )
         .is_err());
         // unreachable code after ret
-        assert!(parse("fn @f() {\n    ret\n    ret\n}").is_err());
+        assert!(parse("fn f() {\n    ret\n    ret\n}").is_err());
         // value-yielding if without else
         assert!(parse(
-            "fn @f(%c: u1, %a: i64) -> i64 {\n    %r: i64 = if %c {\n        yield %a\n    }\n    ret %r\n}"
+            "fn f(c: u1, a: i64) -> i64 {\n    r: i64 = if c {\n        yield a\n    }\n    ret r\n}"
         )
         .is_err());
     }
 
     #[test]
     fn forward_value_reference_across_blocks() {
-        // %x is defined textually after its use; the prescan makes this fine
+        // x is defined textually after its use; the prescan makes this fine
         // (dominance is the emitter's problem, per the spec).
         let src = r"
-fn @fwd(%c: u1) -> i64 {
-^entry:
-    br %c, ^a, ^b
-^a:
-    jmp ^join(%x)
-^b:
-    %x: i64 = iconst 7
-    jmp ^join(%x)
-^join(%r: i64):
-    ret %r
+fn fwd(c: u1) -> i64 {
+entry:
+    br c, a, b
+a:
+    jmp join(x)
+b:
+    x: i64 = iconst 7
+    jmp join(x)
+join(r: i64):
+    ret r
 }
 ";
         let m = parse(src).expect("parse");
@@ -2622,29 +2590,29 @@ fn @fwd(%c: u1) -> i64 {
     #[test]
     fn narrow_types_and_packs_round_trip() {
         let src = r"
-pack $rgb { r: u5, g: u6, b: u5 }
-pack $pix { c: $rgb, a: u8 }
+pack rgb { r: u5, g: u6, b: u5 }
+pack pix { c: rgb, a: u8 }
 
-fn @mk(%r: u5, %g: u6, %b: u5) -> $rgb {
-^entry:
-    %c: $rgb = pack %r, %g, %b
-    ret %c
+fn mk(r: u5, g: u6, b: u5) -> rgb {
+entry:
+    c: rgb = pack r, g, b
+    ret c
 }
-fn @green(%c: $rgb) -> u6 {
-^entry:
-    %g: u6 = get %c, g
-    ret %g
+fn green(c: rgb) -> u6 {
+entry:
+    g: u6 = get c, g
+    ret g
 }
-fn @fade(%p: $pix, %a: u8) -> ($pix, u16) {
-^entry:
-    %q: $pix = set %p, a, %a
-    %c: $rgb = get %q, c
-    %w: u16 = bitcast %c
-    %r: u5, %g: u6, %b: u5 = unpack %c
-    %x: i5 = bitcast %r
-    %y: i7 = ext %x
-    %z: u3 = trunc %g
-    ret %q, %w
+fn fade(p: pix, a: u8) -> (pix, u16) {
+entry:
+    q: pix = set p, a, a
+    c: rgb = get q, c
+    w: u16 = bitcast c
+    r: u5, g: u6, b: u5 = unpack c
+    x: i5 = bitcast r
+    y: i7 = ext x
+    z: u3 = trunc g
+    ret q, w
 }
 ";
         let m = parse(src).expect("parse");
@@ -2656,35 +2624,35 @@ fn @fade(%p: $pix, %a: u8) -> ($pix, u16) {
         let m2 = parse(&printed).expect("reparse");
         verify(&m2).expect("reverify");
         assert_eq!(printed, m2.to_string());
-        assert!(printed.starts_with("pack $rgb { r: u5, g: u6, b: u5 }\n"));
+        assert!(printed.starts_with("pack rgb { r: u5, g: u6, b: u5 }\n"));
     }
 
     #[test]
     fn rejects_bad_widths_and_fields() {
-        assert!(parse("fn @f(%a: i0) {\n    ret\n}").is_err());
-        assert!(parse("fn @f(%a: u65) {\n    ret\n}").is_err());
-        assert!(parse("pack $p { a: u40, b: u25 }\n").is_err()); // 65 bits
-        assert!(parse("pack $p { a: u4 }\nfn @f(%p: $p) -> u4 {\n    %x: u4 = get %p, nope\n    ret %x\n}").is_err());
+        assert!(parse("fn f(a: i0) {\n    ret\n}").is_err());
+        assert!(parse("fn f(a: u65) {\n    ret\n}").is_err());
+        assert!(parse("pack p { a: u40, b: u25 }\n").is_err()); // 65 bits
+        assert!(parse("pack p { a: u4 }\nfn f(p: p) -> u4 {\n    x: u4 = get p, nope\n    ret x\n}").is_err());
         // bitcast must preserve width; ext must widen
-        let m = parse("fn @f(%a: i8) -> u16 {\n    %b: u16 = bitcast %a\n    ret %b\n}").unwrap();
+        let m = parse("fn f(a: i8) -> u16 {\n    b: u16 = bitcast a\n    ret b\n}").unwrap();
         assert!(verify(&m).is_err());
-        let m = parse("fn @f(%a: i8) -> i8 {\n    %b: i8 = ext %a\n    ret %b\n}").unwrap();
+        let m = parse("fn f(a: i8) -> i8 {\n    b: i8 = ext a\n    ret b\n}").unwrap();
         assert!(verify(&m).is_err());
         // memory only at 8/16/32/64
-        let m = parse("fn @f(%p: ptr) -> u5 {\n    %b: u5 = load %p\n    ret %b\n}").unwrap();
+        let m = parse("fn f(p: ptr) -> u5 {\n    b: u5 = load p\n    ret b\n}").unwrap();
         assert!(verify(&m).is_err());
-        let m = parse("fn @f(%p: ptr) -> u16 {\n    %b: u16 = load %p\n    ret %b\n}").unwrap();
+        let m = parse("fn f(p: ptr) -> u16 {\n    b: u16 = load p\n    ret b\n}").unwrap();
         assert!(verify(&m).is_ok());
         // icmp results are u1, and iconst must fit
-        let m = parse("fn @f(%a: u5) -> u1 {\n    %k: u5 = iconst 40\n    %c: u1 = icmp.lt %a, %k\n    ret %c\n}").unwrap();
+        let m = parse("fn f(a: u5) -> u1 {\n    k: u5 = iconst 40\n    c: u1 = icmp.lt a, k\n    ret c\n}").unwrap();
         assert!(verify(&m).is_err());
-        let m = parse("fn @f(%a: i5) -> u1 {\n    %k: i5 = iconst -16\n    %c: u1 = icmp.lt %a, %k\n    ret %c\n}").unwrap();
+        let m = parse("fn f(a: i5) -> u1 {\n    k: i5 = iconst -16\n    c: u1 = icmp.lt a, k\n    ret c\n}").unwrap();
         assert!(verify(&m).is_ok());
     }
 
     #[test]
     fn uint_resolves_with_int() {
-        let mut m = parse("fn @f(%a: uint, %b: int) -> uint {\n    %c: uint = bitcast %b\n    ret %a\n}").unwrap();
+        let mut m = parse("fn f(a: uint, b: int) -> uint {\n    c: uint = bitcast b\n    ret a\n}").unwrap();
         resolve_types(&mut m, &Policy::new(Type::I32).unwrap());
         verify(&m).expect("verify");
         assert_eq!(m.funcs[0].rets, vec![Type::int(false, 32)]);

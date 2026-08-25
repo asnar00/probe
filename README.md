@@ -28,7 +28,7 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   64 bits, signed or unsigned (`i5`, `u23`, `i64`, plus `ptr`) — signedness
   lives in the type, so there is one `div`, one `shr`, one `icmp.lt`;
   `pack` types that lay bitfields out lowest-bits-first in up to 64 bits
-  (`pack $rgb { r: u5, g: u6, b: u5 }`, nestable, storable); block
+  (`pack rgb { r: u5, g: u6, b: u5 }`, nestable, storable); block
   parameters instead of phi nodes; multiple return values; an optional
   structured front-end (`if`/`loop`/`break`/`continue`/`yield`) that
   lowers to the flat block graph at parse time; and abstract `int`/`uint`

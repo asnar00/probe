@@ -5,8 +5,8 @@
 Add first-class function values to the SSA:
 
 ```
-%f: ptr = funcaddr @sq
-%r: i64 = calli %f(%x)        ; signature checked against uses, or annotated
+f: ptr = funcaddr sq
+r: i64 = calli f(x)        ; signature checked against uses, or annotated
 ```
 
 Backend sketch:
@@ -82,7 +82,7 @@ Backend sketch:
   probeable instruction groups for them. When they land, abstract `float`
   joins `int` in the replacement policy (one new Policy field plus a
   resolution arm). Their layouts are already packs
-  (`pack $f32 { m: u23, e: u8, s: u1 }`), so a softfloat library in plain
+  (`pack f32 { m: u23, e: u8, s: u1 }`), so a softfloat library in plain
   SSA is possible today, with zero compiler changes.
 - Memory for odd widths: a `u5` can't be loaded or stored; a load of the
   containing byte plus `bitcast`/`get` covers it by hand for now.

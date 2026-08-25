@@ -241,7 +241,7 @@ fn cmd_compile(path: &str, level: usize, int: ssa::Type) -> ExitCode {
                     .get(i + 1)
                     .map(|(_, o)| **o)
                     .unwrap_or(compiled.code.len());
-                println!("@{} ({} bytes):", name, end - off);
+                println!("{} ({} bytes):", name, end - off);
                 for at in (off..end).step_by(4) {
                     let w = u32::from_le_bytes(compiled.code[at..at + 4].try_into().unwrap());
                     println!("  {:6x}: {:08x}", at, w);
@@ -257,7 +257,7 @@ fn cmd_run(path: &str, fname: &str, fargs: &[i64], level: usize, int: ssa::Type)
     let result = load_module(path, level, int).and_then(|module| {
         let f = module
             .func(fname)
-            .ok_or_else(|| format!("no function @{} in {}", fname, path))?;
+            .ok_or_else(|| format!("no function {} in {}", fname, path))?;
         let rets: Vec<ssa::Repr> = f.rets.iter().map(|&t| f.repr(t)).collect();
         // a register holds the canonical value only up to the type's
         // container: read the result through the declared return type
@@ -325,7 +325,7 @@ fn cmd_live(path: &str, fname: &str, fargs: &[i64], int: ssa::Type) -> ExitCode 
                                 let dt = t0.elapsed().as_secs_f64() * 1e6;
                                 for i in &done {
                                     println!(
-                                        "  reload  @{:<12} {:>4} bytes  level 0  {}",
+                                        "  reload  {:<12} {:>4} bytes  level 0  {}",
                                         i.name,
                                         i.bytes,
                                         if i.in_place { "in place" } else { "relocated" }
@@ -352,7 +352,7 @@ fn cmd_live(path: &str, fname: &str, fargs: &[i64], int: ssa::Type) -> ExitCode 
                         let t0 = std::time::Instant::now();
                         match ar.install(f, opt::MAX_LEVEL) {
                             Ok(i) => println!(
-                                "  promote @{:<12} level {} after {} calls ({:.0}us, {} bytes, {})",
+                                "  promote {:<12} level {} after {} calls ({:.0}us, {} bytes, {})",
                                 i.name,
                                 i.level,
                                 calls,
@@ -360,7 +360,7 @@ fn cmd_live(path: &str, fname: &str, fargs: &[i64], int: ssa::Type) -> ExitCode 
                                 i.bytes,
                                 if i.in_place { "in place" } else { "relocated" }
                             ),
-                            Err(e) => println!("  promote @{} failed: {}", name, e),
+                            Err(e) => println!("  promote {} failed: {}", name, e),
                         }
                     }
                 }

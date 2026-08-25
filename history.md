@@ -20,7 +20,7 @@ skips them. `i32`/`i64` keep the hardware's mod-32/64.
 Types are now `iN`/`uN` for any N from 1 to 64, and signedness lives in
 the type: one `div`, one `rem`, one `shr`, one `icmp.lt`, `ext` fills by
 the source's signedness, `bitcast` reinterprets. `u1` is the boolean.
-`pack $rgb { r: u5, g: u6, b: u5 }` packs bitfields lowest-bits-first
+`pack rgb { r: u5, g: u6, b: u5 }` packs bitfields lowest-bits-first
 into ≤64 bits — nestable, storable at 8/16/32/64 bits — with `pack`,
 `unpack`, `get`, `set`. Every backend keeps values *canonical* in their
 container (sign- or zero-extended) and re-normalizes after ops that can

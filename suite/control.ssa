@@ -11,90 +11,90 @@
 ;! hypot2 3 4 -> 25
 ;! collatz 27 -> 111
 
-fn @sum(%n: i64) -> i64 {
-^entry:
-    %zero: i64 = iconst 0
-    jmp ^loop(%zero, %zero)
-^loop(%i: i64, %acc: i64):
-    %done: u1 = icmp.ge %i, %n
-    br %done, ^exit, ^body
-^body:
-    %acc2: i64 = iadd %acc, %i
-    %one: i64 = iconst 1
-    %i2: i64 = iadd %i, %one
-    jmp ^loop(%i2, %acc2)
-^exit:
-    ret %acc
+fn sum(n: i64) -> i64 {
+entry:
+    zero: i64 = iconst 0
+    jmp loop(zero, zero)
+loop(i: i64, acc: i64):
+    done: u1 = icmp.ge i, n
+    br done, exit, body
+body:
+    acc2: i64 = iadd acc, i
+    one: i64 = iconst 1
+    i2: i64 = iadd i, one
+    jmp loop(i2, acc2)
+exit:
+    ret acc
 }
 
-fn @gcd(%a: i64, %b: i64) -> i64 {
-^entry:
-    jmp ^loop(%a, %b)
-^loop(%x: i64, %y: i64):
-    %zero: i64 = iconst 0
-    %done: u1 = icmp.eq %y, %zero
-    br %done, ^exit, ^step
-^step:
-    %r: i64 = rem %x, %y
-    jmp ^loop(%y, %r)
-^exit:
-    ret %x
+fn gcd(a: i64, b: i64) -> i64 {
+entry:
+    jmp loop(a, b)
+loop(x: i64, y: i64):
+    zero: i64 = iconst 0
+    done: u1 = icmp.eq y, zero
+    br done, exit, step
+step:
+    r: i64 = rem x, y
+    jmp loop(y, r)
+exit:
+    ret x
 }
 
-fn @fib(%n: i64) -> i64 {
-^entry:
-    %two: i64 = iconst 2
-    %small: u1 = icmp.lt %n, %two
-    br %small, ^base, ^rec
-^base:
-    ret %n
-^rec:
-    %one: i64 = iconst 1
-    %n1: i64 = isub %n, %one
-    %a: i64 = call @fib(%n1)
-    %n2: i64 = isub %n, %two
-    %b: i64 = call @fib(%n2)
-    %r: i64 = iadd %a, %b
-    ret %r
+fn fib(n: i64) -> i64 {
+entry:
+    two: i64 = iconst 2
+    small: u1 = icmp.lt n, two
+    br small, base, rec
+base:
+    ret n
+rec:
+    one: i64 = iconst 1
+    n1: i64 = isub n, one
+    a: i64 = call fib(n1)
+    n2: i64 = isub n, two
+    b: i64 = call fib(n2)
+    r: i64 = iadd a, b
+    ret r
 }
 
-fn @square(%x: i64) -> i64 {
-^entry:
-    %r: i64 = imul %x, %x
-    ret %r
+fn square(x: i64) -> i64 {
+entry:
+    r: i64 = imul x, x
+    ret r
 }
 
-fn @hypot2(%a: i64, %b: i64) -> i64 {
-^entry:
-    %aa: i64 = call @square(%a)
-    %bb: i64 = call @square(%b)
-    %s: i64 = iadd %aa, %bb
-    ret %s
+fn hypot2(a: i64, b: i64) -> i64 {
+entry:
+    aa: i64 = call square(a)
+    bb: i64 = call square(b)
+    s: i64 = iadd aa, bb
+    ret s
 }
 
 ; steps to reach 1: n -> n/2 (even) | 3n+1 (odd)
-fn @collatz(%n: i64) -> i64 {
-^entry:
-    %zero: i64 = iconst 0
-    jmp ^loop(%n, %zero)
-^loop(%x: i64, %steps: i64):
-    %one: i64 = iconst 1
-    %done: u1 = icmp.eq %x, %one
-    br %done, ^exit, ^step
-^step:
-    %two: i64 = iconst 2
-    %parity: i64 = and %x, %one
-    %odd: u1 = trunc %parity
-    %s2: i64 = iadd %steps, %one
-    br %odd, ^odd, ^even
-^odd:
-    %three: i64 = iconst 3
-    %t: i64 = imul %x, %three
-    %t1: i64 = iadd %t, %one
-    jmp ^loop(%t1, %s2)
-^even:
-    %h: i64 = div %x, %two
-    jmp ^loop(%h, %s2)
-^exit:
-    ret %steps
+fn collatz(n: i64) -> i64 {
+entry:
+    zero: i64 = iconst 0
+    jmp loop(n, zero)
+loop(x: i64, steps: i64):
+    one: i64 = iconst 1
+    done: u1 = icmp.eq x, one
+    br done, exit, step
+step:
+    two: i64 = iconst 2
+    parity: i64 = and x, one
+    odd: u1 = trunc parity
+    s2: i64 = iadd steps, one
+    br odd, odd, even
+odd:
+    three: i64 = iconst 3
+    t: i64 = imul x, three
+    t1: i64 = iadd t, one
+    jmp loop(t1, s2)
+even:
+    h: i64 = div x, two
+    jmp loop(h, s2)
+exit:
+    ret steps
 }

@@ -15,70 +15,70 @@
 ;! aeven 10 -> 1
 ;! aeven 7 -> 0
 
-fn @agcd(%a: int, %b: int) -> int {
-    %g: int = loop(%x: int = %a, %y: int = %b) {
-        %zero: int = iconst 0
-        %done: u1 = icmp.eq %y, %zero
-        if %done {
-            break %x
+fn agcd(a: int, b: int) -> int {
+    g: int = loop(x: int = a, y: int = b) {
+        zero: int = iconst 0
+        done: u1 = icmp.eq y, zero
+        if done {
+            break x
         }
-        %r: int = rem %x, %y
-        continue %y, %r
+        r: int = rem x, y
+        continue y, r
     }
-    ret %g
+    ret g
 }
 
-fn @asum(%n: int) -> int {
-    %zero: int = iconst 0
-    %r: int = loop(%i: int = %zero, %acc: int = %zero) {
-        %done: u1 = icmp.ge %i, %n
-        if %done {
-            break %acc
+fn asum(n: int) -> int {
+    zero: int = iconst 0
+    r: int = loop(i: int = zero, acc: int = zero) {
+        done: u1 = icmp.ge i, n
+        if done {
+            break acc
         }
-        %one: int = iconst 1
-        %acc2: int = iadd %acc, %i
-        %i2: int = iadd %i, %one
-        continue %i2, %acc2
+        one: int = iconst 1
+        acc2: int = iadd acc, i
+        i2: int = iadd i, one
+        continue i2, acc2
     }
-    ret %r
+    ret r
 }
 
-fn @afib(%n: int) -> int {
-    %two: int = iconst 2
-    %small: u1 = icmp.lt %n, %two
-    if %small {
-        ret %n
+fn afib(n: int) -> int {
+    two: int = iconst 2
+    small: u1 = icmp.lt n, two
+    if small {
+        ret n
     }
-    %one: int = iconst 1
-    %n1: int = isub %n, %one
-    %a: int = call @afib(%n1)
-    %n2: int = isub %n, %two
-    %b: int = call @afib(%n2)
-    %r: int = iadd %a, %b
-    ret %r
+    one: int = iconst 1
+    n1: int = isub n, one
+    a: int = call afib(n1)
+    n2: int = isub n, two
+    b: int = call afib(n2)
+    r: int = iadd a, b
+    ret r
 }
 
 ; abstract and concrete types mix freely: u1 conditions, int arithmetic
-fn @aclamp(%v: int, %lo: int, %hi: int) -> int {
-    %below: u1 = icmp.lt %v, %lo
-    %r: int = if %below {
-        yield %lo
+fn aclamp(v: int, lo: int, hi: int) -> int {
+    below: u1 = icmp.lt v, lo
+    r: int = if below {
+        yield lo
     } else {
-        %above: u1 = icmp.gt %v, %hi
-        %s: int = if %above {
-            yield %hi
+        above: u1 = icmp.gt v, hi
+        s: int = if above {
+            yield hi
         } else {
-            yield %v
+            yield v
         }
-        yield %s
+        yield s
     }
-    ret %r
+    ret r
 }
 
-fn @aeven(%n: int) -> u1 {
-    %one: int = iconst 1
-    %bit: int = and %n, %one
-    %flip: int = xor %bit, %one
-    %r: u1 = trunc %flip
-    ret %r
+fn aeven(n: int) -> u1 {
+    one: int = iconst 1
+    bit: int = and n, one
+    flip: int = xor bit, one
+    r: u1 = trunc flip
+    ret r
 }

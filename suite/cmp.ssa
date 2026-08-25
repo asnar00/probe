@@ -12,53 +12,53 @@
 ;! ugt -1 1 -> 1
 ;! uge 1 -1 -> 0
 
-fn @eq(%a: i64, %b: i64) -> u1 {
-^entry:
-    %r: u1 = icmp.eq %a, %b
-    ret %r
+fn eq(a: i64, b: i64) -> u1 {
+entry:
+    r: u1 = icmp.eq a, b
+    ret r
 }
-fn @ne(%a: i64, %b: i64) -> u1 {
-^entry:
-    %r: u1 = icmp.ne %a, %b
-    ret %r
+fn ne(a: i64, b: i64) -> u1 {
+entry:
+    r: u1 = icmp.ne a, b
+    ret r
 }
-fn @slt(%a: i64, %b: i64) -> u1 {
-^entry:
-    %r: u1 = icmp.lt %a, %b
-    ret %r
+fn slt(a: i64, b: i64) -> u1 {
+entry:
+    r: u1 = icmp.lt a, b
+    ret r
 }
-fn @sle(%a: i64, %b: i64) -> u1 {
-^entry:
-    %r: u1 = icmp.le %a, %b
-    ret %r
+fn sle(a: i64, b: i64) -> u1 {
+entry:
+    r: u1 = icmp.le a, b
+    ret r
 }
-fn @sgt(%a: i64, %b: i64) -> u1 {
-^entry:
-    %r: u1 = icmp.gt %a, %b
-    ret %r
+fn sgt(a: i64, b: i64) -> u1 {
+entry:
+    r: u1 = icmp.gt a, b
+    ret r
 }
-fn @sge(%a: i64, %b: i64) -> u1 {
-^entry:
-    %r: u1 = icmp.ge %a, %b
-    ret %r
+fn sge(a: i64, b: i64) -> u1 {
+entry:
+    r: u1 = icmp.ge a, b
+    ret r
 }
-fn @ult(%a: u64, %b: u64) -> u1 {
-^entry:
-    %r: u1 = icmp.lt %a, %b
-    ret %r
+fn ult(a: u64, b: u64) -> u1 {
+entry:
+    r: u1 = icmp.lt a, b
+    ret r
 }
-fn @ule(%a: u64, %b: u64) -> u1 {
-^entry:
-    %r: u1 = icmp.le %a, %b
-    ret %r
+fn ule(a: u64, b: u64) -> u1 {
+entry:
+    r: u1 = icmp.le a, b
+    ret r
 }
-fn @ugt(%a: u64, %b: u64) -> u1 {
-^entry:
-    %r: u1 = icmp.gt %a, %b
-    ret %r
+fn ugt(a: u64, b: u64) -> u1 {
+entry:
+    r: u1 = icmp.gt a, b
+    ret r
 }
-fn @uge(%a: u64, %b: u64) -> u1 {
-^entry:
-    %r: u1 = icmp.ge %a, %b
-    ret %r
+fn uge(a: u64, b: u64) -> u1 {
+entry:
+    r: u1 = icmp.ge a, b
+    ret r
 }

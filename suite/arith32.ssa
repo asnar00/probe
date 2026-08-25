@@ -9,43 +9,43 @@
 ;! uadd32 0xffffffff 1 -> 0
 ;! umul32 0xffffffff 0xffffffff -> 1
 
-fn @add32(%a: i32, %b: i32) -> i32 {
-^entry:
-    %r: i32 = iadd %a, %b
-    ret %r
+fn add32(a: i32, b: i32) -> i32 {
+entry:
+    r: i32 = iadd a, b
+    ret r
 }
-fn @mul32(%a: i32, %b: i32) -> i32 {
-^entry:
-    %r: i32 = imul %a, %b
-    ret %r
+fn mul32(a: i32, b: i32) -> i32 {
+entry:
+    r: i32 = imul a, b
+    ret r
 }
-fn @sdiv32(%a: i32, %b: i32) -> i32 {
-^entry:
-    %r: i32 = div %a, %b
-    ret %r
+fn sdiv32(a: i32, b: i32) -> i32 {
+entry:
+    r: i32 = div a, b
+    ret r
 }
-fn @srem32(%a: i32, %b: i32) -> i32 {
-^entry:
-    %r: i32 = rem %a, %b
-    ret %r
+fn srem32(a: i32, b: i32) -> i32 {
+entry:
+    r: i32 = rem a, b
+    ret r
 }
-fn @lshr32(%a: u32, %b: u32) -> u32 {
-^entry:
-    %r: u32 = shr %a, %b
-    ret %r
+fn lshr32(a: u32, b: u32) -> u32 {
+entry:
+    r: u32 = shr a, b
+    ret r
 }
-fn @ashr32(%a: i32, %b: i32) -> i32 {
-^entry:
-    %r: i32 = shr %a, %b
-    ret %r
+fn ashr32(a: i32, b: i32) -> i32 {
+entry:
+    r: i32 = shr a, b
+    ret r
 }
-fn @uadd32(%a: u32, %b: u32) -> u32 {
-^entry:
-    %r: u32 = iadd %a, %b
-    ret %r
+fn uadd32(a: u32, b: u32) -> u32 {
+entry:
+    r: u32 = iadd a, b
+    ret r
 }
-fn @umul32(%a: u32, %b: u32) -> u32 {
-^entry:
-    %r: u32 = imul %a, %b
-    ret %r
+fn umul32(a: u32, b: u32) -> u32 {
+entry:
+    r: u32 = imul a, b
+    ret r
 }

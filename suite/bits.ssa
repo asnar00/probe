@@ -43,265 +43,265 @@
 ;! loadi32 i32[-1] -> -1
 ;! storebyte u8[0,0] 200 -> 200
 
-fn @add5(%a: i5, %b: i5) -> i5 {
-^entry:
-    %r: i5 = iadd %a, %b
-    ret %r
+fn add5(a: i5, b: i5) -> i5 {
+entry:
+    r: i5 = iadd a, b
+    ret r
 }
-fn @uadd5(%a: u5, %b: u5) -> u5 {
-^entry:
-    %r: u5 = iadd %a, %b
-    ret %r
+fn uadd5(a: u5, b: u5) -> u5 {
+entry:
+    r: u5 = iadd a, b
+    ret r
 }
-fn @mul5(%a: i5, %b: i5) -> i5 {
-^entry:
-    %r: i5 = imul %a, %b
-    ret %r
+fn mul5(a: i5, b: i5) -> i5 {
+entry:
+    r: i5 = imul a, b
+    ret r
 }
-fn @umul3(%a: u3, %b: u3) -> u3 {
-^entry:
-    %r: u3 = imul %a, %b
-    ret %r
+fn umul3(a: u3, b: u3) -> u3 {
+entry:
+    r: u3 = imul a, b
+    ret r
 }
-fn @div5(%a: i5, %b: i5) -> i5 {
-^entry:
-    %r: i5 = div %a, %b
-    ret %r
+fn div5(a: i5, b: i5) -> i5 {
+entry:
+    r: i5 = div a, b
+    ret r
 }
-fn @udiv5(%a: u5, %b: u5) -> u5 {
-^entry:
-    %r: u5 = div %a, %b
-    ret %r
+fn udiv5(a: u5, b: u5) -> u5 {
+entry:
+    r: u5 = div a, b
+    ret r
 }
-fn @rem5(%a: i5, %b: i5) -> i5 {
-^entry:
-    %r: i5 = rem %a, %b
-    ret %r
+fn rem5(a: i5, b: i5) -> i5 {
+entry:
+    r: i5 = rem a, b
+    ret r
 }
-fn @urem5(%a: u5, %b: u5) -> u5 {
-^entry:
-    %r: u5 = rem %a, %b
-    ret %r
+fn urem5(a: u5, b: u5) -> u5 {
+entry:
+    r: u5 = rem a, b
+    ret r
 }
 ; shifting by the width or more is unspecified for narrow types
-fn @shl5(%a: i5, %b: i5) -> i5 {
-^entry:
-    %r: i5 = shl %a, %b
-    ret %r
+fn shl5(a: i5, b: i5) -> i5 {
+entry:
+    r: i5 = shl a, b
+    ret r
 }
-fn @ushl5(%a: u5, %b: u5) -> u5 {
-^entry:
-    %r: u5 = shl %a, %b
-    ret %r
+fn ushl5(a: u5, b: u5) -> u5 {
+entry:
+    r: u5 = shl a, b
+    ret r
 }
-fn @shr5(%a: i5, %b: i5) -> i5 {
-^entry:
-    %r: i5 = shr %a, %b
-    ret %r
+fn shr5(a: i5, b: i5) -> i5 {
+entry:
+    r: i5 = shr a, b
+    ret r
 }
-fn @ushr5(%a: u5, %b: u5) -> u5 {
-^entry:
-    %r: u5 = shr %a, %b
-    ret %r
+fn ushr5(a: u5, b: u5) -> u5 {
+entry:
+    r: u5 = shr a, b
+    ret r
 }
-fn @lt5(%a: i5, %b: i5) -> u1 {
-^entry:
-    %r: u1 = icmp.lt %a, %b
-    ret %r
+fn lt5(a: i5, b: i5) -> u1 {
+entry:
+    r: u1 = icmp.lt a, b
+    ret r
 }
-fn @ult5(%a: u5, %b: u5) -> u1 {
-^entry:
-    %r: u1 = icmp.lt %a, %b
-    ret %r
+fn ult5(a: u5, b: u5) -> u1 {
+entry:
+    r: u1 = icmp.lt a, b
+    ret r
 }
-fn @add1(%a: i1, %b: i1) -> i1 {
-^entry:
-    %r: i1 = iadd %a, %b
-    ret %r
+fn add1(a: i1, b: i1) -> i1 {
+entry:
+    r: i1 = iadd a, b
+    ret r
 }
-fn @uadd1(%a: u1, %b: u1) -> u1 {
-^entry:
-    %r: u1 = iadd %a, %b
-    ret %r
+fn uadd1(a: u1, b: u1) -> u1 {
+entry:
+    r: u1 = iadd a, b
+    ret r
 }
-fn @add12(%a: i12, %b: i12) -> i12 {
-^entry:
-    %r: i12 = iadd %a, %b
-    ret %r
+fn add12(a: i12, b: i12) -> i12 {
+entry:
+    r: i12 = iadd a, b
+    ret r
 }
-fn @add40(%a: i40, %b: i40) -> i40 {
-^entry:
-    %r: i40 = iadd %a, %b
-    ret %r
+fn add40(a: i40, b: i40) -> i40 {
+entry:
+    r: i40 = iadd a, b
+    ret r
 }
-fn @uadd40(%a: u40, %b: u40) -> u40 {
-^entry:
-    %r: u40 = iadd %a, %b
-    ret %r
+fn uadd40(a: u40, b: u40) -> u40 {
+entry:
+    r: u40 = iadd a, b
+    ret r
 }
 ; ext fills by the source's signedness; the result is canonical for its type
-fn @ext5to8(%a: i5) -> i8 {
-^entry:
-    %r: i8 = ext %a
-    ret %r
+fn ext5to8(a: i5) -> i8 {
+entry:
+    r: i8 = ext a
+    ret r
 }
-fn @uext5to8(%a: u5) -> u8 {
-^entry:
-    %r: u8 = ext %a
-    ret %r
+fn uext5to8(a: u5) -> u8 {
+entry:
+    r: u8 = ext a
+    ret r
 }
-fn @ext5tou8(%a: i5) -> u8 {
-^entry:
-    %r: u8 = ext %a
-    ret %r
+fn ext5tou8(a: i5) -> u8 {
+entry:
+    r: u8 = ext a
+    ret r
 }
-fn @uext5toi8(%a: u5) -> i8 {
-^entry:
-    %r: i8 = ext %a
-    ret %r
+fn uext5toi8(a: u5) -> i8 {
+entry:
+    r: i8 = ext a
+    ret r
 }
-fn @trunc8to5(%a: i8) -> i5 {
-^entry:
-    %r: i5 = trunc %a
-    ret %r
+fn trunc8to5(a: i8) -> i5 {
+entry:
+    r: i5 = trunc a
+    ret r
 }
-fn @utrunc8to5(%a: u8) -> u5 {
-^entry:
-    %r: u5 = trunc %a
-    ret %r
+fn utrunc8to5(a: u8) -> u5 {
+entry:
+    r: u5 = trunc a
+    ret r
 }
-fn @bitcast5(%a: i5) -> u5 {
-^entry:
-    %r: u5 = bitcast %a
-    ret %r
+fn bitcast5(a: i5) -> u5 {
+entry:
+    r: u5 = bitcast a
+    ret r
 }
-fn @bitcastu5(%a: u5) -> i5 {
-^entry:
-    %r: i5 = bitcast %a
-    ret %r
+fn bitcastu5(a: u5) -> i5 {
+entry:
+    r: i5 = bitcast a
+    ret r
 }
 ; narrow values through calls stay canonical on both sides
-fn @negate5(%a: i5) -> i5 {
-^entry:
-    %zero: i5 = iconst 0
-    %r: i5 = isub %zero, %a
-    ret %r
+fn negate5(a: i5) -> i5 {
+entry:
+    zero: i5 = iconst 0
+    r: i5 = isub zero, a
+    ret r
 }
-fn @neg5(%a: i5) -> i5 {
-^entry:
-    %r: i5 = call @negate5(%a)
-    ret %r
+fn neg5(a: i5) -> i5 {
+entry:
+    r: i5 = call negate5(a)
+    ret r
 }
 ; count increments of an i5 from 0 until it wraps negative
-fn @count5() -> i64 {
-    %zero: i5 = iconst 0
-    %n0: i64 = iconst 0
-    %r: i64 = loop(%i: i5 = %zero, %n: i64 = %n0) {
-        %neg: u1 = icmp.lt %i, %zero
-        if %neg {
-            break %n
+fn count5() -> i64 {
+    zero: i5 = iconst 0
+    n0: i64 = iconst 0
+    r: i64 = loop(i: i5 = zero, n: i64 = n0) {
+        neg: u1 = icmp.lt i, zero
+        if neg {
+            break n
         }
-        %one: i5 = iconst 1
-        %i2: i5 = iadd %i, %one
-        %n1: i64 = iconst 1
-        %n2: i64 = iadd %n, %n1
-        continue %i2, %n2
+        one: i5 = iconst 1
+        i2: i5 = iadd i, one
+        n1: i64 = iconst 1
+        n2: i64 = iadd n, n1
+        continue i2, n2
     }
-    ret %r
+    ret r
 }
 ; sum of every u8 value, accumulated in a u16
-fn @sumbytes_u8() -> u16 {
-    %zero: u8 = iconst 0
-    %acc0: u16 = iconst 0
-    %r: u16 = loop(%i: u8 = %zero, %acc: u16 = %acc0) {
-        %w: u16 = ext %i
-        %acc2: u16 = iadd %acc, %w
-        %max: u8 = iconst 255
-        %done: u1 = icmp.eq %i, %max
-        if %done {
-            break %acc2
+fn sumbytes_u8() -> u16 {
+    zero: u8 = iconst 0
+    acc0: u16 = iconst 0
+    r: u16 = loop(i: u8 = zero, acc: u16 = acc0) {
+        w: u16 = ext i
+        acc2: u16 = iadd acc, w
+        max: u8 = iconst 255
+        done: u1 = icmp.eq i, max
+        if done {
+            break acc2
         }
-        %one: u8 = iconst 1
-        %i2: u8 = iadd %i, %one
-        continue %i2, %acc2
+        one: u8 = iconst 1
+        i2: u8 = iadd i, one
+        continue i2, acc2
     }
-    ret %r
+    ret r
 }
 ; abstract uint follows int's width; this case fits both
-fn @ushr(%a: uint, %b: uint) -> uint {
-^entry:
-    %r: uint = shr %a, %b
-    ret %r
+fn ushr(a: uint, b: uint) -> uint {
+entry:
+    r: uint = shr a, b
+    ret r
 }
 ; 8- and 16-bit memory, sign- and zero-extending loads
-fn @sumbytes(%p: ptr) -> i64 {
-^entry:
-    %one: i64 = iconst 1
-    %two: i64 = iconst 2
-    %three: i64 = iconst 3
-    %p1: ptr = ptradd %p, %one
-    %p2: ptr = ptradd %p, %two
-    %p3: ptr = ptradd %p, %three
-    %a: i8 = load %p
-    %b: i8 = load %p1
-    %c: i8 = load %p2
-    %d: i8 = load %p3
-    %aw: i64 = ext %a
-    %bw: i64 = ext %b
-    %cw: i64 = ext %c
-    %dw: i64 = ext %d
-    %s1: i64 = iadd %aw, %bw
-    %s2: i64 = iadd %s1, %cw
-    %s3: i64 = iadd %s2, %dw
-    ret %s3
+fn sumbytes(p: ptr) -> i64 {
+entry:
+    one: i64 = iconst 1
+    two: i64 = iconst 2
+    three: i64 = iconst 3
+    p1: ptr = ptradd p, one
+    p2: ptr = ptradd p, two
+    p3: ptr = ptradd p, three
+    a: i8 = load p
+    b: i8 = load p1
+    c: i8 = load p2
+    d: i8 = load p3
+    aw: i64 = ext a
+    bw: i64 = ext b
+    cw: i64 = ext c
+    dw: i64 = ext d
+    s1: i64 = iadd aw, bw
+    s2: i64 = iadd s1, cw
+    s3: i64 = iadd s2, dw
+    ret s3
 }
-fn @sumubytes(%p: ptr) -> u64 {
-^entry:
-    %one: i64 = iconst 1
-    %p1: ptr = ptradd %p, %one
-    %a: u8 = load %p
-    %b: u8 = load %p1
-    %aw: u64 = ext %a
-    %bw: u64 = ext %b
-    %s: u64 = iadd %aw, %bw
-    ret %s
+fn sumubytes(p: ptr) -> u64 {
+entry:
+    one: i64 = iconst 1
+    p1: ptr = ptradd p, one
+    a: u8 = load p
+    b: u8 = load p1
+    aw: u64 = ext a
+    bw: u64 = ext b
+    s: u64 = iadd aw, bw
+    ret s
 }
-fn @sumhalves(%p: ptr) -> i64 {
-^entry:
-    %two: i64 = iconst 2
-    %p1: ptr = ptradd %p, %two
-    %a: i16 = load %p
-    %b: i16 = load %p1
-    %aw: i64 = ext %a
-    %bw: i64 = ext %b
-    %s: i64 = iadd %aw, %bw
-    ret %s
+fn sumhalves(p: ptr) -> i64 {
+entry:
+    two: i64 = iconst 2
+    p1: ptr = ptradd p, two
+    a: i16 = load p
+    b: i16 = load p1
+    aw: i64 = ext a
+    bw: i64 = ext b
+    s: i64 = iadd aw, bw
+    ret s
 }
-fn @sumuhalves(%p: ptr) -> u64 {
-^entry:
-    %two: i64 = iconst 2
-    %p1: ptr = ptradd %p, %two
-    %a: u16 = load %p
-    %b: u16 = load %p1
-    %aw: u64 = ext %a
-    %bw: u64 = ext %b
-    %s: u64 = iadd %aw, %bw
-    ret %s
+fn sumuhalves(p: ptr) -> u64 {
+entry:
+    two: i64 = iconst 2
+    p1: ptr = ptradd p, two
+    a: u16 = load p
+    b: u16 = load p1
+    aw: u64 = ext a
+    bw: u64 = ext b
+    s: u64 = iadd aw, bw
+    ret s
 }
-fn @loadu32(%p: ptr) -> u32 {
-^entry:
-    %r: u32 = load %p
-    ret %r
+fn loadu32(p: ptr) -> u32 {
+entry:
+    r: u32 = load p
+    ret r
 }
-fn @loadi32(%p: ptr) -> i32 {
-^entry:
-    %r: i32 = load %p
-    ret %r
+fn loadi32(p: ptr) -> i32 {
+entry:
+    r: i32 = load p
+    ret r
 }
 ; a byte store must leave its neighbour alone: read back both as a u16
-fn @storebyte(%p: ptr, %v: u8) -> u16 {
-^entry:
-    store %v, %p
-    %r: u16 = load %p
-    ret %r
+fn storebyte(p: ptr, v: u8) -> u16 {
+entry:
+    store v, p
+    r: u16 = load p
+    ret r
 }

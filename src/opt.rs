@@ -44,7 +44,7 @@ pub fn optimize_function(func: &mut Function, level: usize) {
 // ---------------------------------------------------------------------------
 // simplify-cfg: thread branches through empty forwarding blocks
 //
-// Lowered `if` arms are often just `jmp ^join(...)`; threading each
+// Lowered `if` arms are often just `jmp join(...)`; threading each
 // predecessor edge straight to the join (substituting the forwarder's
 // parameters with the incoming arguments) removes a taken branch on every
 // backend, and the emptied blocks become unreachable and are dropped.
@@ -559,15 +559,15 @@ mod tests {
     #[test]
     fn folds_and_removes_constants() {
         let src = r"
-fn @f() -> i64 {
-^entry:
-    %a: i64 = iconst 6
-    %b: i64 = iconst 7
-    %c: i64 = imul %a, %b
-    %d: u1 = icmp.lt %a, %b
-    %e: i64 = ext %d
-    %r: i64 = iadd %c, %e
-    ret %r
+fn f() -> i64 {
+entry:
+    a: i64 = iconst 6
+    b: i64 = iconst 7
+    c: i64 = imul a, b
+    d: u1 = icmp.lt a, b
+    e: i64 = ext d
+    r: i64 = iadd c, e
+    ret r
 }
 ";
         let m = opt_at(src, super::MAX_LEVEL);
@@ -579,21 +579,21 @@ fn @f() -> i64 {
 
     #[test]
     fn threads_forwarding_blocks() {
-        // the structured lowering of `if %c { break }` produces arms that
+        // the structured lowering of `if c { break }` produces arms that
         // are pure forwarders; simplify-cfg must thread and drop them
         let src = r"
-fn @count(%n: i64) -> i64 {
-    %zero: i64 = iconst 0
-    %r: i64 = loop(%i: i64 = %zero) {
-        %done: u1 = icmp.ge %i, %n
-        if %done {
-            break %i
+fn count(n: i64) -> i64 {
+    zero: i64 = iconst 0
+    r: i64 = loop(i: i64 = zero) {
+        done: u1 = icmp.ge i, n
+        if done {
+            break i
         }
-        %one: i64 = iconst 1
-        %i2: i64 = iadd %i, %one
-        continue %i2
+        one: i64 = iconst 1
+        i2: i64 = iadd i, one
+        continue i2
     }
-    ret %r
+    ret r
 }
 ";
         let before = {
@@ -619,18 +619,18 @@ fn @count(%n: i64) -> i64 {
     #[test]
     fn all_levels_verify() {
         let src = r"
-fn @g(%a: i64, %b: i64) -> i64 {
-^entry:
-    %two: i64 = iconst 2
-    %c: u1 = icmp.lt %a, %b
-    br %c, ^x, ^y
-^x:
-    jmp ^join(%two)
-^y:
-    %d: i64 = imul %a, %two
-    jmp ^join(%d)
-^join(%v: i64):
-    ret %v
+fn g(a: i64, b: i64) -> i64 {
+entry:
+    two: i64 = iconst 2
+    c: u1 = icmp.lt a, b
+    br c, x, y
+x:
+    jmp join(two)
+y:
+    d: i64 = imul a, two
+    jmp join(d)
+join(v: i64):
+    ret v
 }
 ";
         for level in 0..=super::MAX_LEVEL {
