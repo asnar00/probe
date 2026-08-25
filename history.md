@@ -6,6 +6,19 @@ has the full story for any of them.
 
 ---
 
+### Generic functions, and floats as a library — `039de73` · 2026-08-25
+
+`fn fadd(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M)` is a
+template; `fn fadd32 = fadd(8, 23)` and `call fadd(5, 10)(x, y)`
+instantiate it, by re-parsing the body with E and M bound, so `u(M + 5)`
+and `iconst (1 << E) - 1` are concrete inside. With that, `suite/float.ssa`
+writes IEEE addition once — round-to-nearest-even, subnormals, signed
+zeros, infinities, canonical NaN — using only integer instructions, and
+instantiates it for fp8, fp16, bf16, f32, f64. The compiler learned
+nothing about floats. It matches the FPU bit-for-bit on f32/f64 over
+~140k pairs and an independent reference exhaustively on fp8; 188/188 on
+all four paths.
+
 ### Parametric types — `7b9175a` · 2026-08-25
 
 `type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }`,
