@@ -6,6 +6,26 @@ has the full story for any of them.
 
 ---
 
+### rounding modes, and TestFloat as the oracle — `b6a7bae` · 2026-08-26
+
+The library's float operations gain a third width parameter, `round`:
+0 nearest even, 1 toward zero, 2 down, 3 up, 4 nearest away. Only
+`fpack` ever rounds, so that is where the modes live — the rounding
+itself, overflow to infinity or to the largest finite depending on the
+side, the sign of an exact zero — and `add`, which used to round by
+hand, now goes through it too. A generic parameter nothing binds is
+filled by name from the enclosing instantiation or the policy, so
+`add x, y` and `add(8, 23)` keep working, `--round=up` changes a whole
+program, and `add(8, 23, 2)` pins one instance (`suite/round.ssa`).
+Platforms only claim the nearest-even instances.
+
+`probe testfloat` runs Berkeley TestFloat's vectors through the library
+and the hardware: 19.4 million cases per mode across f16/f32/f64 and
+every operation, and every one of the five modes comes back 0 wrong.
+`tools/get-testfloat.sh` builds the generator.
+
+---
+
 ### the fuzzer — `2978f8c` · 2026-08-26
 
 `probe fuzz [count] [--seed=hex] [--slow]`. Programs are random but
