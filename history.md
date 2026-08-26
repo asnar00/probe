@@ -6,6 +6,17 @@ has the full story for any of them.
 
 ---
 
+### decimal — `a54cdd5` · 2026-08-26
+
+`decimal(N, S)`: an `i(N)` significand at scale 10^S, so cents add
+exactly and 1000 × 0.10 is 100.00; `mul` and `div` round half away
+from zero in 128 bits. Written as a test of `formats.md` — the recipe
+held, with one addition: a constant like 10^S has no width-expression
+form, so it is a small generic helper (`pow10(S)()`) that the
+const-folder folds away.
+
+---
+
 ### wasm without the dispatcher — `7f3fb19` · 2026-08-26
 
 The wasm emitter used to turn every function into one big loop with a
