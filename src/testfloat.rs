@@ -112,9 +112,7 @@ pub fn run_at(only: &[String], level: usize, policy: ssa::Policy, tf_level: u8) 
         let mut module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| e.to_string())?;
         ssa::verify(&module).map_err(|e| e.join("; "))?;
         opt::optimize(&mut module, level);
-        platform::set_soft(true);
         let soft = emit::jit::JitCode::new(&emit::compile_with(&module, &enc, &platform::Platform::none())?)?;
-        platform::set_soft(false);
         let hard = emit::jit::JitCode::new(&emit::compile_with(&module, &enc, &platform::Platform::arm64())?)?;
         let native = platform::Platform::arm64();
         for op in &ops {

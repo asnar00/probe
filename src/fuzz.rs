@@ -402,6 +402,13 @@ fn arguments(rng: &mut Rng, ptys: &[Ty]) -> Vec<i64> {
 }
 
 pub fn fuzz(count: usize, seed: u64, slow: bool) -> Result<usize, String> {
+    fuzz_with(count, seed, slow, true)
+}
+
+/// `soft_run`: also run the whole thing with the platform off at the top
+/// level, which flips the process-wide --soft flag — fine from the
+/// command line, not from a test running beside others
+pub fn fuzz_with(count: usize, seed: u64, slow: bool, soft_run: bool) -> Result<usize, String> {
     let enc = emit::Encoder::load("targets/arm64.encodings.json")?;
     let dir = std::path::Path::new("target/fuzz");
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -413,7 +420,6 @@ pub fn fuzz(count: usize, seed: u64, slow: bool) -> Result<usize, String> {
         let s = seed.wrapping_add(n as u64);
         let (src, funcs) = program(s);
         // the reference: native, -O0, the platform off
-        platform::set_soft(true);
         let policy = ssa::Policy::new(Type::I64)?;
         let module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| format!("generated program did not parse (seed {}): {}\n{}", s, e, src))?;
         ssa::verify(&module).map_err(|e| format!("generated program did not verify (seed {}): {}\n{}", s, e.join("; "), src))?;
@@ -437,7 +443,9 @@ pub fn fuzz(count: usize, seed: u64, slow: bool) -> Result<usize, String> {
         for level in 0..=crate::opt::MAX_LEVEL {
             runs.push(("native", suite::Backend::Native, level, false));
         }
-        runs.push(("soft -O4", suite::Backend::Native, crate::opt::MAX_LEVEL, true));
+        if soft_run {
+            runs.push(("soft -O4", suite::Backend::Native, crate::opt::MAX_LEVEL, true));
+        }
         runs.push(("wasm", suite::Backend::Wasm, crate::opt::MAX_LEVEL, false));
         if slow {
             runs.push(("riscv", suite::Backend::Riscv, crate::opt::MAX_LEVEL, false));
@@ -445,13 +453,17 @@ pub fn fuzz(count: usize, seed: u64, slow: bool) -> Result<usize, String> {
         }
         let mut bad = Vec::new();
         for (name, backend, level, soft) in runs {
-            platform::set_soft(soft);
+            if soft_run {
+                platform::set_soft(soft);
+            }
             let report = suite::run_dir_at(work.to_str().unwrap(), backend, level, &|p| p)?;
             if report.failed > 0 {
                 bad.push(format!("{} -O{}:\n{}", name, level, report.log.lines().filter(|l| l.starts_with("FAIL")).collect::<Vec<_>>().join("\n")));
             }
         }
-        platform::set_soft(false);
+        if soft_run {
+            platform::set_soft(false);
+        }
         if bad.is_empty() {
             println!("  ok  seed {:016x}  ({} fn, {} lines)", s, funcs.len(), src.lines().count());
         } else {
@@ -469,6 +481,6 @@ mod tests {
     /// a short run: every configuration this machine has without qemu
     #[test]
     fn programs_agree_everywhere() {
-        assert_eq!(super::fuzz(12, 0x1000, false).unwrap(), 0);
+        assert_eq!(super::fuzz_with(12, 0x1000, false, false).unwrap(), 0);
     }
 }
