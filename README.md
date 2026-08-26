@@ -294,3 +294,7 @@ go), indirect calls and function values, external (libc) calls from
 JIT'd code, a dominance check in the verifier, and differential testing
 against clang to close the semantic loop the way the prober closed the
 encoding loop.
+
+## Credits where due
+
+Claude Fable 5 wrote all this code.
