@@ -128,6 +128,22 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   qemu-system-aarch64 as an independent second referee for the same bytes
   the M-series CPU runs.
 
+## Hello, world
+
+```sh
+cargo run -- boot os/hello.ssa          # riscv64 on qemu's virt machine
+cargo run -- boot os/hello.ssa arm      # aarch64, the same source
+hello world ᕦ(ツ)ᕤ
+```
+
+`os/hello.ssa` is the first operating system written in probe: a
+`data` string (an array of UTF-8 bytes), a loop storing each byte to
+the board's UART (`platform uart`, a constant from the platform file),
+and an exit through the board's finisher or a PSCI call (a platform
+rule with `hvc` as its body). No runtime, no linker script, no
+assembly: the image is the learned encodings and a five-instruction
+preamble that sets the stack pointer.
+
 ## Usage
 
 ```sh

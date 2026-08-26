@@ -39,6 +39,7 @@ const T2: i64 = 7;
 const A0: i64 = 10;
 const SLLI: &str = "slli {r}, {r}, {i 0..63}";
 const FLD: &str = "fld {f}, {i -2048..2047}({r})";
+const AUIPC: &str = "auipc {r}, {i 0..1048575}";
 const FSD: &str = "fsd {f}, {i -2048..2047}({r})";
 const FMV_D: &str = "fmv.d {f}, {f}";
 /// the float file's pool: fs0..fs11, callee-saved
@@ -56,6 +57,8 @@ const BEQ: &str = "beq {r}, {r}, {i -4096..4094 /2}";
 enum FixTarget {
     Block(BlockId),
     Func(String),
+    /// a data item, by name: an auipc/addi pair gets the distance to it
+    Data(String),
 }
 
 struct Fixup {
@@ -80,19 +83,41 @@ pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Resu
         compile_function(func, enc, &natives, &mut code, &mut call_fixups)
             .map_err(|e| format!("{}: {}", func.name, e))?;
     }
-    for fix in call_fixups {
-        let FixTarget::Func(name) = &fix.target else {
-            unreachable!()
-        };
-        let target = *funcs
-            .get(name.as_str())
-            .ok_or_else(|| format!("call to undefined function {}", name))?;
-        let mut values = fix.values;
-        values[fix.imm_slot] = target as i64 - fix.at as i64;
-        let word = enc.encode(JAL, &values)?;
-        code[fix.at..fix.at + 4].copy_from_slice(&word.to_le_bytes());
+    // data after the code, 8-aligned
+    let code_end = code.len();
+    while code.len() % 8 != 0 {
+        code.push(0);
     }
-    Ok(Compiled { code, funcs })
+    let (data, data_offsets) = crate::ssa::layout_data(module);
+    let data_base = code.len();
+    code.extend_from_slice(&data);
+
+    for fix in call_fixups {
+        match &fix.target {
+            FixTarget::Func(name) => {
+                let target = *funcs.get(name.as_str()).ok_or_else(|| format!("call to undefined function {}", name))?;
+                let mut values = fix.values;
+                values[fix.imm_slot] = target as i64 - fix.at as i64;
+                let word = enc.encode(JAL, &values)?;
+                code[fix.at..fix.at + 4].copy_from_slice(&word.to_le_bytes());
+            }
+            FixTarget::Data(name) => {
+                // auipc takes the page distance, addi the rest (the low
+                // part is signed, so the page rounds to nearest)
+                let target = data_base + *data_offsets.get(name.as_str()).ok_or_else(|| format!("no data named {}", name))?;
+                let delta = target as i64 - fix.at as i64;
+                let hi = (delta + 0x800) >> 12;
+                let lo = delta - (hi << 12);
+                let rd = fix.values[0];
+                let w1 = enc.encode(AUIPC, &[rd, hi & 0xfffff])?;
+                let w2 = enc.encode(ADDI, &[rd, rd, lo])?;
+                code[fix.at..fix.at + 4].copy_from_slice(&w1.to_le_bytes());
+                code[fix.at + 4..fix.at + 8].copy_from_slice(&w2.to_le_bytes());
+            }
+            FixTarget::Block(_) => unreachable!(),
+        }
+    }
+    Ok(Compiled { code, funcs, code_end, data_base })
 }
 
 struct RvEmit<'a> {
@@ -554,7 +579,7 @@ fn compile_function(
                 let word = e.enc.encode(JAL, &values)?;
                 e.code[fix.at..fix.at + 4].copy_from_slice(&word.to_le_bytes());
             }
-            FixTarget::Func(_) => call_fixups.push(fix),
+            FixTarget::Func(_) | FixTarget::Data(_) => call_fixups.push(fix),
         }
     }
     Ok(())
@@ -780,6 +805,19 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             e.emit(t, &[rv, imm, ra])?;
             Ok(())
         }
+        Inst::Addr { dst, name } => {
+            let rd = e.dst_reg(*dst, T0);
+            let at = e.emit(AUIPC, &[rd, 0])?;
+            e.emit(ADDI, &[rd, rd, 0])?;
+            e.fixups.push(Fixup { at, values: vec![rd, 0], imm_slot: 1, target: FixTarget::Data(name.clone()) });
+            e.finish(*dst, rd)
+        }
+        Inst::Platform { dst, name } => {
+            let v = *e.natives.consts.get(name).ok_or_else(|| format!("the platform has no constant '{}'", name))?;
+            let rd = e.dst_reg(*dst, T0);
+            e.iconst(rd, v)?;
+            e.finish(*dst, rd)
+        }
         Inst::PtrAdd { dst, base, off } => {
             let rb = e.src_reg(*base, T0)?;
             let ro = e.src_reg(*off, T1)?;
@@ -787,7 +825,7 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             e.emit("add {r}, {r}, {r}", &[rd, rb, ro])?;
             e.finish(*dst, rd)
         }
-        Inst::Call { dsts, callee, args } if e.natives.get(callee).is_some() => {
+        Inst::Call { dsts, callee, args } if e.natives.get(callee).is_some_and(|n| n.inline) => {
             // the platform has this one: the rule's sequence instead of
             // the call, each operand in its own file
             let natives: &Natives = e.natives;

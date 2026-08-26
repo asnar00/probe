@@ -231,6 +231,28 @@ offset on all three; the scaled index computes an address first where
 the target has no form for it). Whether a value spills to the stack is
 the allocator's business and invisible here.
 
+### Data, and the machine
+
+```
+data greeting = "hello world ᕦ(ツ)ᕤ\n"        ; an array of bytes, UTF-8, no terminator
+data table: array(i32, 4) = { 10, 20, 30, -40 }
+data buffer: array(u8, 256)                   ; zeros
+p: ptr = addr greeting                        ; its address
+n: i64 = len greeting                         ; its element count, a constant (24 here)
+uart: ptr = platform uart                     ; a constant the platform file provides
+```
+
+`data` is initialized memory — elements are integers of up to 64 bits at
+their natural size, little-endian — laid out after the code (8-aligned)
+and reached by a PC-relative address (`adr`, `auipc`/`addi`, a
+`data` segment on wasm). Under the JIT it is read-only; on bare metal it
+is the program's RAM. `platform name` is a constant from the platform
+file's `const` lines — a board's addresses (`uart`, `finisher` on qemu's
+virt machines) — resolved when the target is known, so one program can
+say `store c, uart` for two boards. `probe boot file.ssa [riscv|arm]`
+runs a program with a `fn __start()` on bare-metal qemu and prints what
+it wrote to the UART: `os/hello.ssa` is the first one.
+
 ### Calls
 
 A name followed by an argument list is a call — no opcode is ever

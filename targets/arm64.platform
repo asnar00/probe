@@ -25,6 +25,16 @@
 
 target arm64
 
+; the qemu virt board: a PL011 UART. There is no finisher device; the
+; machine is ended through PSCI (a hypervisor call with the SYSTEM_OFF
+; function id in x0), so `finisher` is a harmless RAM address that a
+; program written for riscv may store to, and `psci` the real exit
+ext virt
+const uart = 0x9000000
+const finisher = 0x41300000
+psci(code: u64) -> ()
+    hvc 0
+
 ext FP
 class s = f32
 class d = f64

@@ -1,0 +1,42 @@
+; hello, world — the first operating system written in probe.
+;
+; A bare-metal program for qemu's virt machine, riscv64 or aarch64:
+;   probe boot os/hello.ssa            (riscv64)
+;   probe boot os/hello.ssa arm        (aarch64)
+; fn __start() is the entry; the platform's constants are the board's
+; addresses; the greeting is a data item — an array of bytes, UTF-8 —
+; written to the UART one byte at a time; then the machine is ended.
+
+data greeting = "hello world ᕦ(ツ)ᕤ\n"
+
+fn __start() {
+    uart: ptr = platform uart
+    p: ptr = addr greeting
+    n: i64 = len greeting
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        c: u8 = load p, i, 1
+        c32: u32 = conv c
+        store c32, uart
+        i2: i64 = add i, 1
+        continue i2
+    }
+    exit()
+    ret
+}
+
+; end the machine: riscv's finisher takes 0x5555 for a clean exit; on
+; arm64 that store lands in spare RAM and psci() does the work (the
+; platform replaces its body with a hypervisor call)
+fn exit() {
+    f: ptr = platform finisher
+    store 0x5555: u32, f
+    psci(0x84000008)
+    ret
+}
+fn psci(code: u64) {
+    ret
+}

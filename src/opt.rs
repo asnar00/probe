@@ -390,6 +390,8 @@ fn dce(func: &mut Function) {
         | Inst::Get { .. }
         | Inst::Set { .. }
         | Inst::PtrAdd { .. }
+        | Inst::Addr { .. }
+        | Inst::Platform { .. }
         | Inst::Load { .. } => true,
         Inst::Bin { op, rhs, .. } => match op {
             BinOp::Div | BinOp::Rem => matches!(consts[rhs.0 as usize], Some(v) if v != 0),

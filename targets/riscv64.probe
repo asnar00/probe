@@ -123,3 +123,5 @@ inst fld {f}, {i -2048..2047}({r})
 inst fmv.x.d {r}, {f}
 ; enabling the FPU on bare metal: set mstatus.FS through a CSR write
 inst csrrs {r}, {i 0..4095}, {r}
+; the address of a data item: auipc's page plus an addi
+inst auipc {r}, {i 0..1048575}

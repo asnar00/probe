@@ -418,6 +418,10 @@ impl Encoder {
 pub struct Compiled {
     pub code: Vec<u8>,
     pub funcs: HashMap<String, usize>, // byte offset of each function
+    /// where the instructions end, and (after alignment padding) where
+    /// the data items begin
+    pub code_end: usize,
+    pub data_base: usize,
 }
 
 // templates, named once (the strings must match the seed file exactly)
@@ -459,6 +463,8 @@ fn xw(container: u32, x: &'static str, w: &'static str) -> &'static str {
 enum FixTarget {
     Block(BlockId),
     Func(String),
+    /// a data item, by name: `adr` gets the distance to it
+    Data(String),
 }
 
 struct Fixup {
@@ -485,26 +491,30 @@ pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Resu
             .map_err(|e| format!("{}: {}", func.name, e))?;
     }
 
-    // cross-function fixups (bl)
+    // data after the code, 8-aligned (read-only under the JIT's
+    // write-protected pages; writable on bare metal)
+    let code_end = code.len();
+    while code.len() % 8 != 0 {
+        code.push(0);
+    }
+    let (data, data_offsets) = crate::ssa::layout_data(module);
+    let data_base = code.len();
+    code.extend_from_slice(&data);
+
+    // cross-function fixups (bl) and data addresses (adr)
     for fix in call_fixups {
-        let target = *funcs
-            .get(match &fix.target {
-                FixTarget::Func(name) => name.as_str(),
-                _ => unreachable!(),
-            })
-            .ok_or_else(|| {
-                let FixTarget::Func(name) = &fix.target else {
-                    unreachable!()
-                };
-                format!("call to undefined function {}", name)
-            })?;
+        let target = match &fix.target {
+            FixTarget::Func(name) => *funcs.get(name.as_str()).ok_or_else(|| format!("call to undefined function {}", name))?,
+            FixTarget::Data(name) => data_base + *data_offsets.get(name.as_str()).ok_or_else(|| format!("no data named {}", name))?,
+            FixTarget::Block(_) => unreachable!(),
+        };
         let mut values = fix.values;
         values[fix.imm_slot] = target as i64 - fix.at as i64;
         let word = enc.encode(fix.template, &values)?;
         code[fix.at..fix.at + 4].copy_from_slice(&word.to_le_bytes());
     }
 
-    Ok(Compiled { code, funcs })
+    Ok(Compiled { code, funcs, code_end, data_base })
 }
 
 struct FnEmit<'a> {
@@ -955,6 +965,7 @@ const REG_POOL: &[i64] = &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
 /// the float file's pool: v8..v15, whose low 64 bits are callee-saved
 const F_POOL: &[i64] = &[8, 9, 10, 11, 12, 13, 14, 15];
 const LDR_D_SP: &str = "ldr {d}, [sp, #{i 0..32760 /8}]";
+const ADR: &str = "adr {x}, #{i -1048576..1048575}";
 const STR_D_SP: &str = "str {d}, [sp, #{i 0..32760 /8}]";
 
 /// Compile one function into a standalone buffer that will live at arena
@@ -972,8 +983,10 @@ pub fn compile_one(
     compile_function(func, enc, natives, &mut code, &mut fixups)
         .map_err(|e| format!("{}: {}", func.name, e))?;
     for fix in fixups {
-        let FixTarget::Func(name) = &fix.target else {
-            unreachable!()
+        let name = match &fix.target {
+            FixTarget::Func(name) => name,
+            FixTarget::Data(name) => return Err(format!("data ({}) is not supported in the incremental arena yet", name)),
+            FixTarget::Block(_) => unreachable!(),
         };
         let target = resolve(name).ok_or_else(|| format!("call to unknown function {}", name))?;
         let mut values = fix.values;
@@ -1063,7 +1076,7 @@ fn compile_function(
                 values[fix.imm_slot] = target as i64 - fix.at as i64;
                 e.patch(fix.at, fix.template, &values)?;
             }
-            FixTarget::Func(_) => call_fixups.push(fix),
+            FixTarget::Func(_) | FixTarget::Data(_) => call_fixups.push(fix),
         }
     }
     Ok(())
@@ -1311,6 +1324,18 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             };
             e.emit(t, &[rv, ra, imm]).map(|_| ())
         }
+        Inst::Addr { dst, name } => {
+            let rd = e.dst_reg(*dst, 9);
+            let at = e.emit(ADR, &[rd, 0])?;
+            e.fixups.push(Fixup { at, template: ADR, values: vec![rd, 0], imm_slot: 1, target: FixTarget::Data(name.clone()) });
+            e.finish(*dst, rd)
+        }
+        Inst::Platform { dst, name } => {
+            let v = *e.natives.consts.get(name).ok_or_else(|| format!("the platform has no constant '{}'", name))?;
+            let rd = e.dst_reg(*dst, 9);
+            e.emit_iconst(rd, v)?;
+            e.finish(*dst, rd)
+        }
         Inst::PtrAdd { dst, base, off } => {
             let rb = e.src_reg(*base, 9)?;
             let ro = e.src_reg(*off, 10)?;
@@ -1318,7 +1343,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             e.emit("add {x}, {x}, {x}", &[rd, rb, ro])?;
             e.finish(*dst, rd)
         }
-        Inst::Call { dsts, callee, args } if e.natives.get(callee).is_some() => {
+        Inst::Call { dsts, callee, args } if e.natives.get(callee).is_some_and(|n| n.inline) => {
             // the platform has this one: the rule's sequence instead of
             // the call, each operand in its own file
             let natives: &Natives = e.natives;

@@ -754,7 +754,95 @@ fn gen_driver(
 
 /// Run a qemu child with a hard deadline (a wrong branch in emitted code
 /// means an infinite loop); returns captured stdout.
-fn exec_qemu(mut cmd: Command, secs: u64) -> Result<String, String> {
+/// a bare-metal riscv64 image: sp = 0x80800000 (mid-RAM), the FPU on,
+/// then fall into the first function
+pub fn rv_image(compiled: &emit::Compiled, enc: &emit::Encoder) -> Result<Vec<u8>, String> {
+    let mut bin = Vec::new();
+    const ADDI: &str = "addi {r}, {r}, {i -2048..2047}";
+    const SLLI: &str = "slli {r}, {r}, {i 0..63}";
+    for (t, v) in [
+        (ADDI, [2i64, 0, 0x80]),
+        (SLLI, [2, 2, 8]),
+        (ADDI, [2, 2, 0x80]),
+        (SLLI, [2, 2, 16]),
+        // enable the FPU (mstatus.FS = initial) for the platform's fadd
+        ("lui {r}, {i 0..1048575}", [5, 0x2, 0]),
+        ("csrrs {r}, {i 0..4095}, {r}", [0, 0x300, 5]),
+    ] {
+        let n = if t.starts_with("lui") { 2 } else { 3 };
+        bin.extend(enc.encode(t, &v[..n])?.to_le_bytes());
+    }
+    bin.extend(&compiled.code);
+    Ok(bin)
+}
+
+const ARM_PREAMBLE_WORDS: usize = 6;
+
+/// a bare-metal aarch64 image: the FPU on (cpacr_el1.FPEN), sp =
+/// 0x41000000 via x29 (sp itself is not a movz target), then fall into
+/// the first function
+pub fn arm_image(compiled: &emit::Compiled, enc: &emit::Encoder) -> Result<Vec<u8>, String> {
+    let mut bin = Vec::new();
+    bin.extend(enc.encode("movz {x}, #{i 0..65535}, lsl #16", &[0, 0x0030])?.to_le_bytes());
+    bin.extend(enc.encode("msr cpacr_el1, {x}", &[0])?.to_le_bytes());
+    bin.extend(enc.encode("isb", &[])?.to_le_bytes());
+    bin.extend(enc.encode("movz {x}, #{i 0..65535}, lsl #16", &[29, 0x4100])?.to_le_bytes());
+    bin.extend(enc.encode("mov sp, x29", &[])?.to_le_bytes());
+    // a sixth word keeps the code (and the data after it) 8-aligned:
+    // with the MMU off every access is to device memory, and a 64-bit
+    // load from a 4-aligned address faults
+    bin.extend(enc.encode("mov {x}, {x}", &[0, 0])?.to_le_bytes());
+    debug_assert_eq!(bin.len(), ARM_PREAMBLE_WORDS * 4);
+    bin.extend(&compiled.code);
+    Ok(bin)
+}
+
+/// qemu's command line for a raw image on the virt machine
+pub fn qemu_command(target: &str, bin_path: &std::path::Path) -> Command {
+    let mut cmd;
+    if target == "riscv64" {
+        cmd = Command::new("qemu-system-riscv64");
+        cmd.args(["-machine", "virt", "-bios", "none", "-nographic", "-m", "128M"])
+            .arg("-device")
+            .arg(format!("loader,file={},addr=0x80000000", bin_path.display()));
+    } else {
+        cmd = Command::new("qemu-system-aarch64");
+        cmd.args(["-machine", "virt", "-cpu", "cortex-a57", "-nographic", "-m", "128M"])
+            .arg("-device")
+            .arg(format!("loader,file={},addr=0x40200000,cpu-num=0", bin_path.display()));
+    }
+    cmd
+}
+
+/// Boot a program on bare-metal qemu: its `__start` runs first (the
+/// preamble falls into the first function, so it is moved there); the
+/// output is what it wrote to the UART. The platform's constants
+/// (`platform uart`, `platform finisher`) are the board's addresses.
+pub fn boot(path: &str, target: &str, level: usize, policy: ssa::Policy) -> Result<String, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
+    let platform = crate::platform::Platform::load(target)?;
+    let policy = platform.adjust(policy);
+    let mut module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| e.to_string())?;
+    ssa::resolve_types(&mut module, &policy);
+    ssa::verify(&module).map_err(|e| e.join("; "))?;
+    let start = module.funcs.iter().position(|f| f.name == "__start").ok_or("a bootable program needs fn __start()")?;
+    let f = module.funcs.remove(start);
+    module.funcs.insert(0, f);
+    opt::optimize(&mut module, level);
+    let enc = emit::Encoder::load(&format!("targets/{}.encodings.json", target))?;
+    let bin = if target == "riscv64" {
+        rv_image(&emit_rv::compile_with(&module, &enc, &platform)?, &enc)?
+    } else {
+        arm_image(&emit::compile_with(&module, &enc, &platform)?, &enc)?
+    };
+    let scratch = std::env::temp_dir().join("probe-boot");
+    std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
+    let bin_path = scratch.join(format!("{}.{}.bin", std::path::Path::new(path).file_stem().unwrap().to_string_lossy(), target));
+    std::fs::write(&bin_path, &bin).map_err(|e| e.to_string())?;
+    exec_qemu(qemu_command(target, &bin_path), 30)
+}
+
+pub fn exec_qemu(mut cmd: Command, secs: u64) -> Result<String, String> {
     let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -835,24 +923,7 @@ fn run_riscv(
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
         opt::optimize(&mut m2, level);
         let compiled = emit_rv::compile(&m2, enc)?;
-        // preamble: sp = 0x80800000 (mid-RAM), then fall into __start
-        let mut bin = Vec::new();
-        const ADDI: &str = "addi {r}, {r}, {i -2048..2047}";
-        const SLLI: &str = "slli {r}, {r}, {i 0..63}";
-        for (t, v) in [
-            (ADDI, [2i64, 0, 0x80]),
-            (SLLI, [2, 2, 8]),
-            (ADDI, [2, 2, 0x80]),
-            (SLLI, [2, 2, 16]),
-            // enable the FPU (mstatus.FS = initial) for the platform's fadd
-            ("lui {r}, {i 0..1048575}", [5, 0x2, 0]),
-            ("csrrs {r}, {i 0..4095}, {r}", [0, 0x300, 5]),
-        ] {
-            let n = if t.starts_with("lui") { 2 } else { 3 };
-            bin.extend(enc.encode(t, &v[..n])?.to_le_bytes());
-        }
-        bin.extend(&compiled.code);
-        Ok(bin)
+        rv_image(&compiled, enc)
     })();
     let bin = match prepared {
         Ok(b) => b,
@@ -863,10 +934,7 @@ fn run_riscv(
         return fail_all(report, e.to_string());
     }
 
-    let mut cmd = Command::new("qemu-system-riscv64");
-    cmd.args(["-machine", "virt", "-bios", "none", "-nographic", "-m", "128M"])
-        .arg("-device")
-        .arg(format!("loader,file={},addr=0x80000000", bin_path.display()));
+    let cmd = qemu_command("riscv64", &bin_path);
     match exec_qemu(cmd, 30) {
         Ok(out) => check_hex_lines(&out, cases, name, report),
         Err(e) => fail_all(report, e),
@@ -904,19 +972,8 @@ fn run_arm_qemu(
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
         opt::optimize(&mut m2, level);
         let compiled = emit::compile(&m2, enc)?;
-        // preamble: sp = 0x41000000 via x29 (sp itself isn't a movz target)
-        let mut bin = Vec::new();
-        // enable the FPU (cpacr_el1.FPEN = 0b11) for the platform's fadd
-        bin.extend(enc.encode("movz {x}, #{i 0..65535}, lsl #16", &[0, 0x0030])?.to_le_bytes());
-        bin.extend(enc.encode("msr cpacr_el1, {x}", &[0])?.to_le_bytes());
-        bin.extend(enc.encode("isb", &[])?.to_le_bytes());
-        bin.extend(
-            enc.encode("movz {x}, #{i 0..65535}, lsl #16", &[29, 0x4100])?
-                .to_le_bytes(),
-        );
-        bin.extend(enc.encode("mov sp, x29", &[])?.to_le_bytes());
-        let preamble = bin.len();
-        bin.extend(&compiled.code);
+        let mut bin = arm_image(&compiled, enc)?;
+        let preamble = ARM_PREAMBLE_WORDS * 4;
         // patch the exit stub
         let off = preamble
             + compiled
@@ -943,13 +1000,7 @@ fn run_arm_qemu(
         return fail_all(report, e.to_string());
     }
 
-    let mut cmd = Command::new("qemu-system-aarch64");
-    cmd.args(["-machine", "virt", "-cpu", "cortex-a57", "-nographic", "-m", "128M"])
-        .arg("-device")
-        .arg(format!(
-            "loader,file={},addr=0x40200000,cpu-num=0",
-            bin_path.display()
-        ));
+    let cmd = qemu_command("arm64", &bin_path);
     match exec_qemu(cmd, 30) {
         Ok(out) => check_hex_lines(&out, cases, name, report),
         Err(e) => fail_all(report, e),
@@ -1030,6 +1081,15 @@ mod tests {
             let report = super::run_dir_at("suite", super::Backend::Native, crate::opt::MAX_LEVEL, &|p| p.with_scalar(family).unwrap())
                 .expect("suite runs");
             assert_eq!(report.failed, 0, "with scalar={}:\n{}", family, report.log);
+        }
+    }
+
+    /// the first operating system: hello world on both bare-metal machines
+    #[test]
+    fn hello_world_boots() {
+        for target in ["riscv64", "arm64"] {
+            let out = super::boot("os/hello.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap()).unwrap();
+            assert!(out.contains("hello world ᕦ(ツ)ᕤ"), "{}: {:?}", target, out);
         }
     }
 

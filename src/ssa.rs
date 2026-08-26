@@ -697,6 +697,17 @@ pub enum Inst {
         base: ValueId,
         off: ValueId,
     },
+    /// the address of a `data` item
+    Addr {
+        dst: ValueId,
+        name: String,
+    },
+    /// a constant the platform file provides (`const uart = 0x10000000`):
+    /// a board's address, resolved when the target is known
+    Platform {
+        dst: ValueId,
+        name: String,
+    },
     Call {
         dsts: Vec<ValueId>,
         callee: String,
@@ -810,11 +821,66 @@ impl Function {
     }
 }
 
+/// `data name = "..."` / `data name: array(T, N) = { ... }` / `data buf:
+/// array(u8, 256)`: initialized (or zeroed) memory the program can take
+/// the address of. Elements are integers stored at their natural size,
+/// little-endian; a string is its UTF-8 bytes, exactly, no terminator.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DataDef {
+    pub name: String,
+    pub elem: Type,
+    pub count: usize,
+    pub bytes: Vec<u8>,
+}
+
+impl fmt::Display for DataDef {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let size = self.elem.int_bits().unwrap_or(8).div_ceil(8) as usize;
+        if self.elem == Type::int(false, 8) {
+            if let Ok(s) = std::str::from_utf8(&self.bytes) {
+                if s.chars().all(|c| !c.is_control() || c == '\n') {
+                    return write!(f, "data {} = \"{}\"", self.name, s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n"));
+                }
+            }
+        }
+        write!(f, "data {}: array({}, {})", self.name, self.elem.name(), self.count)?;
+        if self.bytes.iter().any(|&b| b != 0) {
+            let vals: Vec<String> = self.bytes.chunks(size).map(|c| {
+                let mut v = 0i64;
+                for (i, b) in c.iter().enumerate() {
+                    v |= (*b as i64) << (8 * i);
+                }
+                v.to_string()
+            }).collect();
+            write!(f, " = {{ {} }}", vals.join(", "))?;
+        }
+        Ok(())
+    }
+}
+
+/// every data item laid out end to end, 8-aligned: (bytes, name -> offset)
+pub fn layout_data(m: &Module) -> (Vec<u8>, std::collections::HashMap<String, usize>) {
+    let mut bytes = Vec::new();
+    let mut offsets = std::collections::HashMap::new();
+    for d in &m.data {
+        while bytes.len() % 8 != 0 {
+            bytes.push(0);
+        }
+        offsets.insert(d.name.clone(), bytes.len());
+        bytes.extend_from_slice(&d.bytes);
+    }
+    while bytes.len() % 8 != 0 {
+        bytes.push(0);
+    }
+    (bytes, offsets)
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Module {
     /// declarations as written (every instantiated pack lives in each
     /// function's shared `packs` table)
     pub types: Vec<TypeDef>,
+    pub data: Vec<DataDef>,
     pub funcs: Vec<Function>,
     /// the library's `mul(64)` on u64, when the hardware has no multiply:
     /// what the wide lowering's word products call
@@ -985,6 +1051,7 @@ enum Tok {
     Ident(String), // every word: keywords, opcodes, values, blocks, functions, types
     Int(i64),
     Float(String), // 1.5, 2e10, -1.0e-3: kept as text, converted by the type it lands in
+    Str(String),   // "hello\n": a data initializer, UTF-8
     Colon,
     Comma,
     LParen,
@@ -1008,6 +1075,7 @@ impl fmt::Display for Tok {
             Tok::Newline => write!(f, "end of line"),
             Tok::Ident(s) => write!(f, "'{}'", s),
             Tok::Int(n) => write!(f, "'{}'", n),
+            Tok::Str(s) => write!(f, "\"{}\"", s),
             Tok::Float(s) => write!(f, "'{}'", s),
             Tok::Colon => write!(f, "':'"),
             Tok::Comma => write!(f, "','"),
@@ -1069,6 +1137,27 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                     }
                     chars.next();
                 }
+            }
+            '"' => {
+                chars.next();
+                let mut s = String::new();
+                loop {
+                    match chars.next() {
+                        Some('"') => break,
+                        Some('\\') => s.push(match chars.next() {
+                            Some('n') => '\n',
+                            Some('t') => '\t',
+                            Some('r') => '\r',
+                            Some('0') => '\0',
+                            Some('\\') => '\\',
+                            Some('"') => '"',
+                            other => return Err(err(line, format!("unknown escape \\{}", other.map(|c| c.to_string()).unwrap_or_default()))),
+                        }),
+                        Some('\n') | None => return Err(err(line, "unterminated string".into())),
+                        Some(c) => s.push(c),
+                    }
+                }
+                toks.push((Tok::Str(s), line));
             }
             '%' | '^' | '@' | '$' => {
                 return Err(err(
@@ -1286,6 +1375,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
         consts: Vec::new(),
         cur_rets: Vec::new(),
         sigs: HashMap::new(),
+        data: Vec::new(),
     };
     // pass 0: type declarations, wherever they appear (a declaration may
     // only refer to types declared before it), so that everything after
@@ -1301,7 +1391,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
                 decls.push(p.pos);
                 p.skip_line();
             }
-            Item::Alias => p.skip_line(),
+            Item::Alias | Item::Data => p.skip_line(),
             _ => {
                 let (_, hi) = p.function_range()?;
                 p.pos = hi + 1;
@@ -1339,6 +1429,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     while !p.at_end() {
         match p.item_kind() {
             Item::Type => p.skip_line(),
+            Item::Data => p.parse_data_decl()?,
             Item::Generic => p.record_generic()?,
             Item::Alias => {
                 aliases.push(p.pos);
@@ -1362,7 +1453,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     p.skip_newlines();
     while !p.at_end() {
         match p.item_kind() {
-            Item::Type | Item::Alias => p.skip_line(),
+            Item::Type | Item::Alias | Item::Data => p.skip_line(),
             Item::Generic => {
                 let (_, hi) = p.function_range()?;
                 p.pos = hi + 1;
@@ -1397,6 +1488,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     }
     let mut module = Module {
         types: p.types,
+        data: p.data,
         funcs,
         int_mul64: mul64,
     };
@@ -1445,6 +1537,8 @@ struct Parser {
     pending: Vec<(usize, Vec<i64>, String)>,
     /// the parameter bindings of the body being parsed (empty outside generics)
     env: Vec<(String, i64)>,
+    /// `data` declarations, in order
+    data: Vec<DataDef>,
     /// hidden `const`s for literal operands of the instruction being parsed,
     /// emitted just before it
     consts: Vec<Inst>,
@@ -1460,6 +1554,7 @@ const MAX_TYPE_DEPTH: usize = 32;
 
 enum Item {
     Type,
+    Data,
     Generic,
     Alias,
     Fn,
@@ -1640,6 +1735,9 @@ impl Parser {
         let at = |k: usize| self.toks.get(self.pos + k).map(|t| &t.0);
         if matches!(at(0), Some(Tok::Ident(k)) if k == "type") {
             return Item::Type;
+        }
+        if matches!(at(0), Some(Tok::Ident(k)) if k == "data") {
+            return Item::Data;
         }
         if at(2) == Some(&Tok::Equals) {
             return Item::Alias;
@@ -1898,6 +1996,97 @@ impl Parser {
     /// skip to the end of the current line (a declaration already parsed)
     fn skip_line(&mut self) {
         while !matches!(self.next(), Ok(Tok::Newline) | Err(_)) {}
+    }
+
+    /// `data name = "text"`, `data name: array(T, N) = { v, ... }`, or
+    /// `data name: array(T, N)` (zeros)
+    fn parse_data_decl(&mut self) -> Result<(), ParseError> {
+        self.expect_ident()?; // 'data'
+        let name = self.expect_ident()?;
+        if self.data.iter().any(|d| d.name == name) {
+            self.pos -= 1;
+            return Err(self.err(format!("data '{}' is already defined", name)));
+        }
+        let mut elem = Type::int(false, 8);
+        let mut count: Option<usize> = None;
+        if self.eat(&Tok::Colon) {
+            let kw = self.expect_ident()?;
+            if kw != "array" {
+                self.pos -= 1;
+                return Err(self.err(format!("data takes an array type, not {}", kw)));
+            }
+            self.expect(Tok::LParen)?;
+            let (te, next) = self.type_expr_at(self.pos, &[])?;
+            self.pos = next;
+            elem = self.instantiate(&te, &[], 0).map_err(|m| self.err(m))?;
+            self.expect(Tok::Comma)?;
+            match self.next()? {
+                Tok::Int(n) if n > 0 => count = Some(n as usize),
+                t => {
+                    self.pos -= 1;
+                    return Err(self.err(format!("array wants a positive count, not {}", t)));
+                }
+            }
+            self.expect(Tok::RParen)?;
+        }
+        let bits = match elem {
+            Type::Int { bits, .. } if bits <= 64 => bits as u32,
+            t => return Err(self.err(format!("data elements must be integers of at most 64 bits, not {}", t.name()))),
+        };
+        let size = bits.div_ceil(8).next_power_of_two() as usize;
+        let mut bytes = Vec::new();
+        let mut n = 0usize;
+        if self.eat(&Tok::Equals) {
+            match self.next()? {
+                Tok::Str(s) => {
+                    if size != 1 {
+                        self.pos -= 1;
+                        return Err(self.err("a string initializes an array of bytes".to_string()));
+                    }
+                    bytes = s.into_bytes();
+                    n = bytes.len();
+                }
+                Tok::LBrace => loop {
+                    self.skip_newlines();
+                    if self.eat(&Tok::RBrace) {
+                        break;
+                    }
+                    match self.next()? {
+                        Tok::Int(v) => {
+                            bytes.extend_from_slice(&v.to_le_bytes()[..size]);
+                            n += 1;
+                        }
+                        t => {
+                            self.pos -= 1;
+                            return Err(self.err(format!("expected an integer in the initializer, found {}", t)));
+                        }
+                    }
+                    self.skip_newlines();
+                    if !self.eat(&Tok::Comma) {
+                        self.skip_newlines();
+                        self.expect(Tok::RBrace)?;
+                        break;
+                    }
+                },
+                t => {
+                    self.pos -= 1;
+                    return Err(self.err(format!("expected a string or {{ values }}, found {}", t)));
+                }
+            }
+        }
+        match count {
+            Some(c) if n == 0 => {
+                bytes = vec![0; c * size];
+                n = c;
+            }
+            Some(c) if c != n => {
+                return Err(self.err(format!("data '{}' is declared with {} elements but initialized with {}", name, c, n)));
+            }
+            None if n == 0 => return Err(self.err(format!("data '{}' needs a size or an initializer", name))),
+            _ => {}
+        }
+        self.data.push(DataDef { name, elem, count: n, bytes });
+        Ok(())
     }
 
     /// `type name = expr` or `type name(P, Q) = expr`, on one line
@@ -3082,6 +3271,26 @@ impl Parser {
                 let (off, index) = self.parse_addressing(scope)?;
                 Ok(Inst::Load { dst, addr, off, index })
             }
+            "addr" => {
+                let name = self.expect_ident()?;
+                if !self.data.iter().any(|d| d.name == name) {
+                    self.pos -= 1;
+                    return Err(self.err(format!("no data named '{}'", name)));
+                }
+                Ok(Inst::Addr { dst, name })
+            }
+            "len" => {
+                let name = self.expect_ident()?;
+                let Some(d) = self.data.iter().find(|d| d.name == name) else {
+                    self.pos -= 1;
+                    return Err(self.err(format!("no data named '{}'", name)));
+                };
+                Ok(Inst::IConst { dst, imm: d.count as i128 })
+            }
+            "platform" => {
+                let name = self.expect_ident()?;
+                Ok(Inst::Platform { dst, name })
+            }
             "ptradd" => {
                 let base = self.expect_value(scope)?;
                 self.expect(Tok::Comma)?;
@@ -3636,8 +3845,11 @@ impl fmt::Display for Module {
         for t in &self.types {
             writeln!(f, "{}", t)?;
         }
+        for d in &self.data {
+            writeln!(f, "{}", d)?;
+        }
         for (i, func) in self.funcs.iter().enumerate() {
-            if i > 0 || !self.types.is_empty() {
+            if i > 0 || !self.types.is_empty() || !self.data.is_empty() {
                 writeln!(f)?;
             }
             write!(f, "{}", func)?;
@@ -3869,6 +4081,8 @@ impl Function {
             Inst::Store { val, addr, off, index } => {
                 format!("store {}, {}{}", self.fmt_value_typed(*val), self.fmt_value(*addr), self.fmt_addressing(*off, *index))
             }
+            Inst::Addr { dst, name } => format!("{} = addr {}", self.fmt_def(*dst), name),
+            Inst::Platform { dst, name } => format!("{} = platform {}", self.fmt_def(*dst), name),
             Inst::PtrAdd { dst, base, off } => format!(
                 "{} = ptradd {}, {}",
                 self.fmt_def(*dst),
@@ -4290,6 +4504,17 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     "stored value must be ptr or an 8/16/32/64-bit integer or pack, not {}",
                     tn(func.ty(*val))
                 )));
+            }
+        }
+        Inst::Addr { dst, .. } => {
+            if func.ty(*dst) != Type::Ptr {
+                errs.push(ctx(format!("addr gives a ptr, not {}", tn(func.ty(*dst)))));
+            }
+        }
+        Inst::Platform { dst, .. } => {
+            let t = func.ty(*dst);
+            if t != Type::Ptr && !t.is_int() {
+                errs.push(ctx(format!("a platform constant is a ptr or an integer, not {}", tn(t))));
             }
         }
         Inst::PtrAdd { dst, base, off } => {

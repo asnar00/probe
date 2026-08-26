@@ -20,7 +20,7 @@ pub fn footprint(module: &Module, target: &str, platform: &Platform) -> Result<B
         t => return Err(format!("no footprint for {} yet (fixed-width targets only)", t)),
     };
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    for chunk in compiled.code.chunks_exact(4) {
+    for chunk in compiled.code[..compiled.code_end].chunks_exact(4) {
         let word = u32::from_le_bytes(chunk.try_into().unwrap());
         let matches = enc.decode(word);
         let key = match matches.first() {

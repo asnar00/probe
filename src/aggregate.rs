@@ -270,6 +270,8 @@ impl Lower<'_> {
                 self.out.push(Inst::Store { val: r(self, val), addr: r(self, addr), off, index });
             }
             Inst::PtrAdd { dst, base, off } => self.out.push(Inst::PtrAdd { dst, base: r(self, base), off: r(self, off) }),
+            Inst::Addr { dst, name } => self.out.push(Inst::Addr { dst, name }),
+            Inst::Platform { dst, name } => self.out.push(Inst::Platform { dst, name }),
         }
         Ok(())
     }

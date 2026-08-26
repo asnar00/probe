@@ -136,6 +136,16 @@ fn main() -> ExitCode {
                 Err(_) => fail("function arguments must be integers"),
             }
         }
+        Some("boot") if args.len() >= 2 => {
+            let target = if args.iter().any(|a| a == "arm") { "arm64" } else { "riscv64" };
+            match suite::boot(&args[1], target, level, policy) {
+                Ok(out) => {
+                    print!("{}", out);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(&e),
+            }
+        }
         Some("footprint") if args.len() >= 2 => {
             let target = if args.iter().any(|a| a == "riscv") { "riscv64" } else { "arm64" };
             let result = (|| -> Result<(), String> {
@@ -279,6 +289,7 @@ fn main() -> ExitCode {
             eprintln!("       probe testfloat [f32|add|f16_to_i32...]");
             eprintln!("       probe scorecard [arm64|riscv64|wasm32]");
             eprintln!("       probe footprint <file.ssa> [riscv]     (--platform=NAME selects a variant everywhere)");
+            eprintln!("       probe boot <file.ssa> [riscv|arm]      bare metal on qemu: fn __start() runs, the UART is the output");
             eprintln!("       (-O<n> selects the optimization level on any command;");
             eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy,");
             eprintln!("        --float=f16|bf16|f32|f64|E,M the abstract 'float' one,");

@@ -100,6 +100,11 @@ pub struct Native {
     /// the class of each argument and of the result (None: integer)
     pub arg_class: Vec<Option<String>>,
     pub ret_class: Option<String>,
+    /// may a call site emit the rule in place? Only when every argument
+    /// is an operand of it; a rule that leaves an argument where the
+    /// calling convention put it (PSCI's code in x0 before `hvc`) is
+    /// reached by a real call, and is the function's body
+    pub inline: bool,
 }
 
 impl Native {
@@ -124,11 +129,13 @@ pub struct Natives {
     pub rules: HashMap<String, Native>,
     /// canonical type spelling -> class name
     pub classes: HashMap<String, String>,
+    /// the platform's constants: a board's addresses
+    pub consts: HashMap<String, i64>,
 }
 
 impl Natives {
     pub fn none() -> Natives {
-        Natives { rules: HashMap::new(), classes: HashMap::new() }
+        Natives { rules: HashMap::new(), classes: HashMap::new(), consts: HashMap::new() }
     }
     pub fn get(&self, callee: &str) -> Option<&Native> {
         self.rules.get(callee)
@@ -152,6 +159,8 @@ pub struct Platform {
     rules: Vec<(Rule, String)>,
     /// integer opcodes some group claims for the hardware
     builtins: Vec<(String, String)>,
+    /// `const name = value` lines: (name, value, group)
+    consts: Vec<(String, i64, String)>,
     /// groups this variant lacks
     without: Vec<String>,
 }
@@ -179,7 +188,7 @@ pub fn selected() -> Option<String> {
 
 impl Platform {
     pub fn none() -> Platform {
-        Platform { target: String::new(), name: "none".into(), classes: Vec::new(), rules: Vec::new(), builtins: Vec::new(), without: Vec::new() }
+        Platform { target: String::new(), name: "none".into(), classes: Vec::new(), rules: Vec::new(), builtins: Vec::new(), consts: Vec::new(), without: Vec::new() }
     }
 
     /// the platform for a target: the selected variant when it is one of
@@ -227,7 +236,7 @@ impl Platform {
     /// the extension groups declared, and whether each is present
     pub fn extensions(&self) -> Vec<(String, bool)> {
         let mut seen: Vec<String> = Vec::new();
-        for g in self.classes.iter().map(|(_, _, g)| g).chain(self.rules.iter().map(|(_, g)| g)).chain(self.builtins.iter().map(|(_, g)| g)) {
+        for g in self.classes.iter().map(|(_, _, g)| g).chain(self.rules.iter().map(|(_, g)| g)).chain(self.builtins.iter().map(|(_, g)| g)).chain(self.consts.iter().map(|(_, _, g)| g)) {
             if !g.is_empty() && !seen.contains(g) {
                 seen.push(g.clone());
             }
@@ -281,6 +290,7 @@ impl Platform {
                 p.classes.extend(base.classes);
                 rules.extend(base.rules);
                 p.builtins.extend(base.builtins);
+                p.consts.extend(base.consts);
                 p.without.extend(base.without);
             } else if words[0] == "ext" && words.len() == 2 {
                 group = words[1].to_string();
@@ -288,6 +298,9 @@ impl Platform {
                 for g in line.trim()[7..].split(',') {
                     p.without.push(g.trim().to_string());
                 }
+            } else if words[0] == "const" && words.len() == 4 && words[2] == "=" {
+                let v = parse_int(words[3]).ok_or_else(|| at(format!("bad constant '{}'", words[3])))?;
+                p.consts.push((words[1].to_string(), v, group.clone()));
             } else if words[0] == "builtin" {
                 for op in line.trim()[7..].split(',') {
                     p.builtins.push((op.trim().to_string(), group.clone()));
@@ -348,14 +361,20 @@ impl Platform {
         };
         let classes: HashMap<String, String> = self.classes.iter().filter(|(_, _, g)| self.present(g)).map(|(c, t, _)| (resolve(t), c.clone())).collect();
         let defaults = Policy::new(Type::I64).unwrap();
+        let consts: HashMap<String, i64> = self.consts.iter().filter(|(_, _, g)| self.present(g)).map(|(n, v, _)| (n.clone(), *v)).collect();
         let mut rules = HashMap::new();
         for f in &m.funcs {
-            let Some((generic, args)) = &f.instance else { continue };
-            if f.rets.len() != 1 {
+            // an instance of a generic, or a plain function the platform
+            // names outright (a board operation like PSCI's hvc)
+            let (generic, args): (String, Vec<i64>) = match &f.instance {
+                Some((g, a)) => (g.clone(), a.clone()),
+                None => (f.name.clone(), Vec::new()),
+            };
+            if f.rets.len() > 1 {
                 continue;
             }
             // parameters the types do not fix must be at their defaults
-            let fixed_by_types = f.instance_names.iter().zip(args).all(|(n, a)| match defaults.named(n) {
+            let fixed_by_types = f.instance_names.iter().zip(&args).all(|(n, a)| match defaults.named(n) {
                 Some(d) => *a == d,
                 None => true,
             });
@@ -363,29 +382,32 @@ impl Platform {
                 continue;
             }
             let ptys: Vec<String> = f.params.iter().map(|&p| canonical(f, f.ty(p))).collect();
-            let rty = canonical(f, f.rets[0]);
+            let rty = f.rets.first().map(|&t| canonical(f, t)).unwrap_or_else(|| "()".into());
             for (r, g) in &self.rules {
-                if !self.present(g) || r.generic != *generic || r.arg_types.len() != ptys.len() {
+                if !self.present(g) || r.generic != generic || r.arg_types.len() != ptys.len() {
                     continue;
                 }
-                if r.arg_types.iter().zip(&ptys).any(|(a, b)| resolve(a) != *b) || resolve(&r.ret_type) != rty {
+                let ret_matches = if rty == "()" { r.ret_type == "()" } else { resolve(&r.ret_type) == rty };
+                if r.arg_types.iter().zip(&ptys).any(|(a, b)| resolve(a) != *b) || !ret_matches {
                     continue;
                 }
                 let arg_bits: Vec<u32> = f.params.iter().map(|&p| f.width(f.ty(p)).unwrap_or(64)).collect();
-                let ret_bits = f.width(f.rets[0]).unwrap_or(64);
+                let ret_bits = f.rets.first().map(|&t| f.width(t).unwrap_or(64)).unwrap_or(0);
+                let inline = (0..ptys.len()).all(|i| r.lines.iter().any(|l| l.operands.contains(&Operand::Arg(i))));
                 let native = Native {
                     rule: r.clone(),
                     sig: format!("{}({}) -> {}", generic, ptys.join(", "), rty),
                     arg_bits,
                     ret_bits,
                     arg_class: ptys.iter().map(|t| classes.get(t).cloned()).collect(),
-                    ret_class: classes.get(&rty).cloned(),
+                    ret_class: if rty == "()" { None } else { classes.get(&rty).cloned() },
+                    inline,
                 };
                 rules.insert(f.name.clone(), native);
                 break;
             }
         }
-        Natives { rules, classes }
+        Natives { rules, classes, consts }
     }
 }
 
@@ -598,8 +620,10 @@ mod tests {
         let m = crate::ssa::parse_with(&crate::ssa::with_prelude("fn f(a: f32, b: f32) -> f32 {\n    r: f32 = add a, b\n    ret r\n}\n"), &crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap()).unwrap();
         assert!(!full.natives(&m).rules.is_empty());
         assert!(im.natives(&m).rules.is_empty() && im.natives(&m).classes.is_empty());
-        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 3);
-        assert_eq!(i.extensions().iter().filter(|(_, present)| *present).count(), 0);
+        // virt (the board's constants), M, F, D; rv64i keeps only virt
+        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 4);
+        assert_eq!(i.extensions().iter().filter(|(_, present)| *present).count(), 1);
+        assert_eq!(i.natives(&m).consts.get("uart"), Some(&0x10000000));
         let nofp = Platform::load_named("arm64-nofp").unwrap();
         assert!(nofp.natives(&m).classes.is_empty());
         assert!(Platform::parse("add(f32, f32) -> f32\n").is_err()); // no instructions

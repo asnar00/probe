@@ -28,7 +28,7 @@
 
 use crate::platform::{Native, Natives, Operand, Platform};
 use crate::ssa::{BinOp, Cond, Function, Inst, Module, Repr, ValueId};
-use crate::wlearn::{encode_pieces, uleb, Piece};
+use crate::wlearn::{encode_pieces, sleb, uleb, Piece};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -141,8 +141,13 @@ pub fn compile(module: &Module, enc: &WEncoder) -> Result<Vec<u8>, String> {
     compile_with(module, enc, &Platform::wasm32())
 }
 
+/// where `data` items live in linear memory: above the harness's heap
+/// (which starts near 0), within the first page
+const DATA_BASE: usize = 0x8000;
+
 pub fn compile_with(module: &Module, enc: &WEncoder, platform: &Platform) -> Result<Vec<u8>, String> {
     let natives = platform.natives(module);
+    let (data_bytes, data_offsets) = crate::ssa::layout_data(module);
     // function name -> (index, result count), in module order
     let mut findex = HashMap::new();
     for (i, f) in module.funcs.iter().enumerate() {
@@ -169,7 +174,7 @@ pub fn compile_with(module: &Module, enc: &WEncoder, platform: &Platform) -> Res
     let mut bodies = Vec::new();
     for f in &module.funcs {
         bodies.push(
-            compile_function(f, enc, &findex, &natives).map_err(|e| format!("{}: {}", f.name, e))?,
+            compile_function(f, enc, &findex, &natives, &data_offsets).map_err(|e| format!("{}: {}", f.name, e))?,
         );
     }
 
@@ -220,6 +225,18 @@ pub fn compile_with(module: &Module, enc: &WEncoder, platform: &Platform) -> Res
     }
     section(&mut out, 10, p);
 
+    // data section: one active segment at DATA_BASE
+    if !data_bytes.is_empty() {
+        let mut p = uleb(1);
+        p.push(0x00); // active, memory 0
+        p.push(0x41); // i32.const
+        p.extend(sleb(DATA_BASE as i64));
+        p.push(0x0b); // end
+        p.extend(uleb(data_bytes.len() as u64));
+        p.extend(&data_bytes);
+        section(&mut out, 11, p);
+    }
+
     Ok(out)
 }
 
@@ -228,6 +245,8 @@ struct WEmit<'a> {
     func: &'a Function,
     findex: &'a HashMap<String, (i64, usize)>,
     natives: &'a Natives,
+    /// data item -> offset in linear memory
+    data: &'a HashMap<String, usize>,
     code: Vec<u8>,
     /// per value: the platform's local class (`f32`/`f64`), if any
     classes: Vec<Option<String>>,
@@ -526,6 +545,7 @@ fn compile_function(
     enc: &WEncoder,
     findex: &HashMap<String, (i64, usize)>,
     natives: &Natives,
+    data: &HashMap<String, usize>,
 ) -> Result<Vec<u8>, String> {
     if let Some(native) = natives.get(&func.name) {
         // this function *is* a platform instruction: parameters arrive as
@@ -581,6 +601,7 @@ fn compile_function(
         func,
         findex,
         natives,
+        data,
         code: Vec::new(),
         classes,
         local_of,
@@ -849,6 +870,16 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             };
             e.op(t, Some(imm))
         }
+        Inst::Addr { dst, name } => {
+            let off = *e.data.get(name).ok_or_else(|| format!("no data named {}", name))?;
+            e.op("i32.const {}", Some((DATA_BASE + off) as i64))?;
+            e.set(*dst)
+        }
+        Inst::Platform { dst, name } => {
+            let v = *e.natives.consts.get(name).ok_or_else(|| format!("the platform has no constant '{}'", name))?;
+            e.konst(e.repr(*dst), v)?;
+            e.set(*dst)
+        }
         Inst::PtrAdd { dst, base, off } => {
             e.get(*base)?;
             e.get(*off)?;
@@ -856,7 +887,7 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             e.op("i32.add", None)?;
             e.set(*dst)
         }
-        Inst::Call { dsts, callee, args } if e.natives.get(callee).is_some() => {
+        Inst::Call { dsts, callee, args } if e.natives.get(callee).is_some_and(|n| n.inline) => {
             // the platform has this one: the rule's ops instead of the
             // call, floats staying floats on the stack
             let natives: &Natives = e.natives;

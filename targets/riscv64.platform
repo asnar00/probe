@@ -14,6 +14,12 @@
 
 target riscv64
 
+; the qemu virt board: a 16550 UART, and the test finisher that ends
+; the machine (store 0x5555 for exit code 0)
+ext virt
+const uart = 0x10000000
+const finisher = 0x100000
+
 ext M
 builtin mul, div, rem
 

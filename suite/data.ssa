@@ -1,0 +1,78 @@
+; data: initialized memory the program can take the address of. A string
+; is its UTF-8 bytes (no terminator); `len` is the element count; `addr`
+; a ptr to it. Arrays of wider integers store each element at its size,
+; little-endian; an uninitialized array is zeros.
+
+;! greeting_len -> 24
+;! greeting_byte 0 -> 104
+;! greeting_byte 12 -> 225
+;! greeting_byte 21 -> 149
+;! greeting_byte 23 -> 10
+;! table 0 -> 10
+;! table 3 -> -40
+;! table_sum -> 20
+;! zeros 5 -> 0
+;! word_at 1 -> 4294967295
+;! checksum -> 2807
+
+data greeting = "hello world ᕦ(ツ)ᕤ\n"
+data table: array(i32, 4) = { 10, 20, 30, -40 }
+data zeros: array(u8, 16)
+data words: array(u64, 2) = { 1, 4294967295 }
+
+fn greeting_len() -> i64 {
+    n: i64 = len greeting
+    ret n
+}
+fn greeting_byte(i: i64) -> u8 {
+    p: ptr = addr greeting
+    b: u8 = load p, i, 1
+    ret b
+}
+fn table(i: i64) -> i32 {
+    p: ptr = addr table
+    v: i32 = load p, i, 4
+    ret v
+}
+fn table_sum() -> i32 {
+    p: ptr = addr table
+    n: i64 = len table
+    s: i32 = loop(i: i64 = 0, acc: i32 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break acc
+        }
+        v: i32 = load p, i, 4
+        acc2: i32 = add acc, v
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret s
+}
+fn zeros(i: i64) -> u8 {
+    p: ptr = addr zeros
+    b: u8 = load p, i, 1
+    ret b
+}
+fn word_at(i: i64) -> u64 {
+    p: ptr = addr words
+    w: u64 = load p, i, 8
+    ret w
+}
+; the sum of the greeting's bytes
+fn checksum() -> i64 {
+    p: ptr = addr greeting
+    n: i64 = len greeting
+    s: i64 = loop(i: i64 = 0, acc: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break acc
+        }
+        b: u8 = load p, i, 1
+        b64: i64 = conv b
+        acc2: i64 = add acc, b64
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret s
+}

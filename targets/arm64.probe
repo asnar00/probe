@@ -41,6 +41,8 @@ inst movk {x}, #{i 0..65535}, lsl #16
 inst movk {x}, #{i 0..65535}, lsl #32
 inst movk {x}, #{i 0..65535}, lsl #48
 inst movn {x}, #{i 0..65535}
+; the address of a data item, relative to the instruction
+inst adr {x}, #{i -1048576..1048575}
 
 ; shift-by-constant: alias of ubfm/sbfm with a nonlinear encoding —
 ; expect these to be learned as lookup tables, not linear fields
