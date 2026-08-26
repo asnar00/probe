@@ -116,7 +116,7 @@ overlap, and the suite's bare-metal driver is one function per case.
 
 ---
 
-### platforms as rule files — `3181412` · 2026-08-26
+### platforms as rule files — `3181412` (+ `7032ac7`, a test-race fix) · 2026-08-26
 
 `targets/arm64.platform`, `riscv64.platform`, `wasm32.platform`: what a
 target does natively, as text. A rule is a library instance's full
@@ -282,7 +282,7 @@ with IEEE's rules (-0 equals +0; a NaN makes everything false but `ne`).
 `feq`/`flt`/`fle`, `f32.lt`, `fneg`, `fabs`. Two 63-bit overflow bugs
 surfaced and were fixed. 302/302 on all four paths, both ways.
 
-### conv and cast — `0f2850f` (and the syntax before it)  · 2026-08-25
+### conv and cast — `8eecfc7`, `0f2850f` (docs `424222c`, `cd4897e`) · 2026-08-25
 
 Two opcodes for what used to be three: `conv` carries the value across
 (ext and trunc are gone — the widths always said which way), `cast`
