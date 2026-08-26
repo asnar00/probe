@@ -42,9 +42,10 @@ pub fn has_wide(m: &Module) -> bool {
 }
 
 pub fn lower(m: &mut Module) -> Result<(), String> {
+    let mul_call = m.int_mul64.clone();
     for f in &mut m.funcs {
         if f.values.iter().any(|v| is_wide(f, v.ty)) || f.rets.iter().any(|&t| is_wide(f, t)) {
-            lower_function(f).map_err(|e| format!("{}: {}", f.name, e))?;
+            lower_function(f, mul_call.as_deref()).map_err(|e| format!("{}: {}", f.name, e))?;
         }
     }
     Ok(())
@@ -58,10 +59,12 @@ struct Lower<'a> {
     orig: HashMap<u32, Type>,
     /// constants, for shifts by a known amount
     consts: HashMap<u32, i128>,
+    /// the library's u64 multiply, on a target without one
+    mul_call: Option<String>,
     out: Vec<Inst>,
 }
 
-fn lower_function(f: &mut Function) -> Result<(), String> {
+fn lower_function(f: &mut Function, mul_call: Option<&str>) -> Result<(), String> {
     if f.wide_sig.is_none() {
         f.wide_sig = Some((f.params.iter().map(|&p| f.ty(p)).collect(), f.rets.clone()));
     }
@@ -71,7 +74,7 @@ fn lower_function(f: &mut Function) -> Result<(), String> {
         rets.extend(word_types(f, t));
     }
     f.rets = rets;
-    let mut lo = Lower { f, words: HashMap::new(), orig: HashMap::new(), consts: HashMap::new(), out: Vec::new() };
+    let mut lo = Lower { f, words: HashMap::new(), orig: HashMap::new(), consts: HashMap::new(), mul_call: mul_call.map(str::to_string), out: Vec::new() };
     // every wide value gets its words up front
     let n = lo.f.values.len();
     for i in 0..n {
@@ -151,6 +154,18 @@ impl Lower<'_> {
         let d = self.tmp(self.f.ty(a));
         self.out.push(Inst::Bin { op, dst: d, lhs: a, rhs: b });
         d
+    }
+
+    /// a u64 product: the instruction, or the library's mul(64)
+    fn mul_word(&mut self, a: ValueId, b: ValueId) -> ValueId {
+        match self.mul_call.clone() {
+            None => self.bin(BinOp::IMul, a, b),
+            Some(callee) => {
+                let d = self.tmp(Type::U64);
+                self.out.push(Inst::Call { dsts: vec![d], callee, args: vec![a, b] });
+                d
+            }
+        }
     }
 
     fn bin_imm(&mut self, op: BinOp, a: ValueId, imm: i64) -> ValueId {
@@ -285,10 +300,10 @@ impl Lower<'_> {
         let xh = self.bin_imm(BinOp::Shr, x, 32);
         let yl = self.bin_imm(BinOp::And, y, m32);
         let yh = self.bin_imm(BinOp::Shr, y, 32);
-        let ll = self.bin(BinOp::IMul, xl, yl);
-        let lh = self.bin(BinOp::IMul, xl, yh);
-        let hl = self.bin(BinOp::IMul, xh, yl);
-        let hh = self.bin(BinOp::IMul, xh, yh);
+        let ll = self.mul_word(xl, yl);
+        let lh = self.mul_word(xl, yh);
+        let hl = self.mul_word(xh, yl);
+        let hh = self.mul_word(xh, yh);
         let ll_hi = self.bin_imm(BinOp::Shr, ll, 32);
         let lh_lo = self.bin_imm(BinOp::And, lh, m32);
         let hl_lo = self.bin_imm(BinOp::And, hl, m32);

@@ -1,0 +1,6 @@
+; targets/rv64im.platform — a RISC-V core with integer multiply and
+; divide but no floating-point unit (no F, no D): every float operation
+; is the library's, in integer registers.
+target riscv64
+base riscv64
+without F, D

@@ -1,0 +1,6 @@
+; targets/rv64i.platform — the base integer core: no M, no F, no D.
+; `mul`, `div` and `rem` go to lib/wide.ssa's shift-and-add and
+; restoring-division generics; floats are the library's.
+target riscv64
+base riscv64
+without M, F, D

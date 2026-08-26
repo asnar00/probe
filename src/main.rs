@@ -3,6 +3,7 @@ mod arena;
 mod emit;
 mod emit_rv;
 mod emit_wasm;
+mod footprint;
 mod fuzz;
 mod scorecard;
 mod structure;
@@ -60,6 +61,9 @@ fn main() -> ExitCode {
         } else if let Some(t) = a.strip_prefix("--round=") {
             round = Some(t.to_string());
             false
+        } else if let Some(t) = a.strip_prefix("--platform=") {
+            platform::select(t);
+            false
         } else if a == "--soft" {
             platform::set_soft(true);
             false
@@ -100,6 +104,12 @@ fn main() -> ExitCode {
             Err(e) => return fail(&e),
         };
     }
+    // the native platform (or the selected variant of it) may lack
+    // integer instructions the parser would otherwise assume
+    policy = match platform::Platform::load("arm64") {
+        Ok(p) => p.adjust(policy),
+        Err(e) => return fail(&e),
+    };
     match args.first().map(String::as_str) {
         Some("parse") if args.len() >= 2 => cmd_parse(&args[1], policy),
         Some("learn") if args.len() >= 2 => {
@@ -124,6 +134,35 @@ fn main() -> ExitCode {
             match fargs {
                 Ok(fargs) => cmd_run(&args[1], &args[2], &fargs, level, policy),
                 Err(_) => fail("function arguments must be integers"),
+            }
+        }
+        Some("footprint") if args.len() >= 2 => {
+            let target = if args.iter().any(|a| a == "riscv") { "riscv64" } else { "arm64" };
+            let result = (|| -> Result<(), String> {
+                let platform = platform::Platform::load(target)?;
+                let policy = platform.adjust(policy);
+                let src = std::fs::read_to_string(&args[1]).map_err(|e| format!("{}: {}", args[1], e))?;
+                let mut module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| e.to_string())?;
+                ssa::resolve_types(&mut module, &policy);
+                ssa::verify(&module).map_err(|e| e.join("; "))?;
+                opt::optimize(&mut module, level);
+                let counts = footprint::footprint(&module, target, &platform)?;
+                let total: usize = counts.values().sum();
+                println!("{} on {} ({}): {} instructions, {} distinct templates", args[1], target, platform.name, total, counts.len());
+                let exts: Vec<String> = platform.extensions().iter().map(|(g, p)| format!("{}{}", g, if *p { "" } else { " (absent)" })).collect();
+                if !exts.is_empty() {
+                    println!("extensions: {}", exts.join(", "));
+                }
+                let mut rows: Vec<(&String, &usize)> = counts.iter().collect();
+                rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+                for (t, c) in rows {
+                    println!("{:>7}  {}", c, t);
+                }
+                Ok(())
+            })();
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => fail(&e),
             }
         }
         Some("scorecard") => {
@@ -239,6 +278,7 @@ fn main() -> ExitCode {
             eprintln!("       probe fuzz [count] [--seed=hex] [--slow]");
             eprintln!("       probe testfloat [f32|add|f16_to_i32...]");
             eprintln!("       probe scorecard [arm64|riscv64|wasm32]");
+            eprintln!("       probe footprint <file.ssa> [riscv]     (--platform=NAME selects a variant everywhere)");
             eprintln!("       (-O<n> selects the optimization level on any command;");
             eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy,");
             eprintln!("        --float=f16|bf16|f32|f64|E,M the abstract 'float' one,");

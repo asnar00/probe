@@ -295,6 +295,36 @@ impl Encoder {
         Ok(Encoder { insts })
     }
 
+    /// the templates whose fixed bits a word carries: the reverse of
+    /// encoding, for the footprint of compiled code
+    pub fn decode(&self, word: u32) -> Vec<&str> {
+        let mut out: Vec<(&str, u32)> = Vec::new();
+        for (t, spec) in &self.insts {
+            let mut field_mask = 0u64;
+            for (_, enc) in &spec.fields {
+                match enc {
+                    FieldEnc::Linear { bits, .. } => {
+                        for b in bits {
+                            field_mask |= 1 << b;
+                        }
+                    }
+                    FieldEnc::Table { entries } => {
+                        for e in entries {
+                            field_mask |= e;
+                        }
+                    }
+                }
+            }
+            let fixed_mask = !field_mask & 0xffff_ffff;
+            if (word as u64) & fixed_mask == spec.fixed & fixed_mask {
+                out.push((t.as_str(), fixed_mask.count_ones()));
+            }
+        }
+        // the most specific match first (most fixed bits)
+        out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        out.into_iter().map(|(t, _)| t).collect()
+    }
+
     /// every learned template's text
     pub fn templates(&self) -> Vec<&str> {
         let mut v: Vec<&str> = self.insts.keys().map(String::as_str).collect();

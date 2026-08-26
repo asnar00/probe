@@ -18,7 +18,14 @@
 ; checks both against TestFloat). Rules name the nearest-even instances,
 ; which is what the instructions compute; other rounding modes stay in
 ; the library.
+;
+; Variants: the file is one extension group, FP; `targets/arm64-nofp.
+; platform` is this target without it (an OS kernel that may not touch
+; the FP registers). `target` names the backend; a variant says `base`.
 
+target arm64
+
+ext FP
 class s = f32
 class d = f64
 

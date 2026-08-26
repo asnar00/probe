@@ -6,8 +6,19 @@
 ; operand is NaN; the library returns NaN) and float-to-integer (fcvt.w.s
 ; gives the maximum integer for NaN; the library gives 0). Those stay in
 ; the library.
+;
+; Variants: the groups are the RISC-V extensions — M (integer multiply
+; and divide, which the emitters otherwise assume), F (f32), D (f64).
+; `targets/rv64im.platform` is this target without F and D, `rv64i`
+; without M as well; on those the missing operations are the library's.
 
-class f = f32, f64
+target riscv64
+
+ext M
+builtin mul, div, rem
+
+ext F
+class f = f32
 
 ; --- arithmetic ---
 fadd.s {f}, {f}, {f} = add(f32, f32) -> f32
@@ -19,17 +30,6 @@ fneg.s {f}, {f} = neg(f32) -> f32
 fabs.s {f}, {f} = abs(f32) -> f32
 fmadd.s {f}, {f}, {f}, {f} = fma(f32, f32, f32) -> f32
 
-fadd.d {f}, {f}, {f} = add(f64, f64) -> f64
-fsub.d {f}, {f}, {f} = sub(f64, f64) -> f64
-fmul.d {f}, {f}, {f} = mul(f64, f64) -> f64
-fdiv.d {f}, {f}, {f} = div(f64, f64) -> f64
-fsqrt.d {f}, {f} = sqrt(f64) -> f64
-fneg.d {f}, {f} = neg(f64) -> f64
-fabs.d {f}, {f} = abs(f64) -> f64
-fmadd.d {f}, {f}, {f}, {f} = fma(f64, f64, f64) -> f64
-
-; --- comparison: feq/flt/fle give 0 for unordered; ne is not eq, and
-; gt/ge are lt/le with the operands swapped ---
 feq.s {r}, {f}, {f} = eq(f32, f32) -> u1
 ne(f32, f32) -> u1
     feq.s r, a, b
@@ -41,6 +41,24 @@ gt(f32, f32) -> u1
 ge(f32, f32) -> u1
     fle.s r, b, a
 
+fcvt.s.w {f}, {r} = conv(i32) -> f32
+fcvt.s.wu {f}, {r} = conv(u32) -> f32
+fcvt.s.l {f}, {r} = conv(i64) -> f32
+fcvt.s.lu {f}, {r} = conv(u64) -> f32
+
+ext D
+class f = f64
+fadd.d {f}, {f}, {f} = add(f64, f64) -> f64
+fsub.d {f}, {f}, {f} = sub(f64, f64) -> f64
+fmul.d {f}, {f}, {f} = mul(f64, f64) -> f64
+fdiv.d {f}, {f}, {f} = div(f64, f64) -> f64
+fsqrt.d {f}, {f} = sqrt(f64) -> f64
+fneg.d {f}, {f} = neg(f64) -> f64
+fabs.d {f}, {f} = abs(f64) -> f64
+fmadd.d {f}, {f}, {f}, {f} = fma(f64, f64, f64) -> f64
+
+; --- comparison: feq/flt/fle give 0 for unordered; ne is not eq, and
+; gt/ge are lt/le with the operands swapped ---
 feq.d {r}, {f}, {f} = eq(f64, f64) -> u1
 ne(f64, f64) -> u1
     feq.d r, a, b
@@ -55,11 +73,7 @@ ge(f64, f64) -> u1
 ; --- conversion: float to float, integer to float ---
 fcvt.d.s {f}, {f} = conv(f32) -> f64
 fcvt.s.d {f}, {f} = conv(f64) -> f32
-fcvt.s.w {f}, {r} = conv(i32) -> f32
 fcvt.d.w {f}, {r} = conv(i32) -> f64
-fcvt.s.wu {f}, {r} = conv(u32) -> f32
 fcvt.d.wu {f}, {r} = conv(u32) -> f64
-fcvt.s.l {f}, {r} = conv(i64) -> f32
 fcvt.d.l {f}, {r} = conv(i64) -> f64
-fcvt.s.lu {f}, {r} = conv(u64) -> f32
 fcvt.d.lu {f}, {r} = conv(u64) -> f64

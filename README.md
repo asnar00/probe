@@ -76,7 +76,12 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   Rules can only name templates the learner verified. Compiling such an
   instance, or a call to one, emits the rule instead of the SSA body;
   `--soft` turns that off, and the library remains the reference the
-  hardware path is checked against.
+  hardware path is checked against. ISA **variants** are files too:
+  groups (`ext M`, `ext F`, `ext D`) and a `without` line make
+  `targets/rv64i.platform` a RISC-V core with no multiplier or FPU, on
+  which `mul`/`div`/`rem` and every float op are the library's;
+  `--platform=rv64i` selects it everywhere, and `probe footprint` lists
+  the instructions a program really used, to prove it.
 - **Three backends**, none of which contain a single hand-written opcode:
   - `arm64` (`src/emit.rs`) — JIT: mmap/MAP_JIT on Apple Silicon, run
     in-process
@@ -185,6 +190,10 @@ cargo run -- scorecard                          # all three, rewriting targets/*
 cargo run -- testfloat                           # every op, f16/f32/f64, nearest even
 cargo run -- --round=down testfloat f32_add      # one op, one mode
 cargo run -- --round=zero run suite/round.ssa sumsq 0x3f800000 0x33800000
+
+# ISA variants: the same suite on a RISC-V core without M/F/D, and what a program uses
+cargo run -- --platform=rv64i test riscv
+cargo run -- --platform=rv64i footprint suite/float.ssa riscv
 
 # the fuzzer: N programs from a seed; a printed seed reproduces one program
 cargo run -- fuzz 300

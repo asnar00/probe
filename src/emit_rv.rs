@@ -377,8 +377,27 @@ impl RvEmit<'_> {
                 self.emit(SLLI, &[scratch2, ri, step.trailing_zeros() as i64])?;
                 self.emit("add {r}, {r}, {r}", &[scratch, rb, scratch2])?;
             } else if step > 1 {
-                self.iconst(scratch, step as i64)?;
-                self.emit("mul {r}, {r}, {r}", &[scratch2, ri, scratch])?;
+                // a stride that is no power of two (an array of structs): the
+                // index times each set bit, summed — no multiplier needed, so
+                // a core without M is served the same
+                let mut acc: Option<i64> = None;
+                let mut bits = step;
+                while bits != 0 {
+                    let k = bits.trailing_zeros();
+                    bits &= bits - 1;
+                    let term = if acc.is_none() { scratch2 } else { scratch };
+                    if k == 0 {
+                        self.mov(term, ri)?;
+                    } else {
+                        self.emit(SLLI, &[term, ri, k as i64])?;
+                    }
+                    match acc {
+                        None => acc = Some(term),
+                        Some(a) => {
+                            self.emit("add {r}, {r}, {r}", &[a, a, term])?;
+                        }
+                    }
+                }
                 let rb2 = self.src_reg(base, scratch)?;
                 self.emit("add {r}, {r}, {r}", &[scratch, rb2, scratch2])?;
             } else {

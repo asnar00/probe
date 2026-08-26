@@ -816,6 +816,9 @@ pub struct Module {
     /// function's shared `packs` table)
     pub types: Vec<TypeDef>,
     pub funcs: Vec<Function>,
+    /// the library's `mul(64)` on u64, when the hardware has no multiply:
+    /// what the wide lowering's word products call
+    pub int_mul64: Option<String>,
 }
 
 impl Module {
@@ -847,6 +850,11 @@ pub struct Policy {
     /// the value of a generic parameter named `round` that nothing binds:
     /// 0 nearest even, 1 toward zero, 2 down, 3 up, 4 nearest away
     pub round: i64,
+    /// does the target multiply and divide integers itself? A platform
+    /// variant without those instructions (a RISC-V core without M)
+    /// sends `mul`, `div` and `rem` to the library's generics instead
+    pub native_mul: bool,
+    pub native_div: bool,
 }
 
 pub const ROUNDS: [&str; 5] = ["even", "zero", "down", "up", "away"];
@@ -855,8 +863,8 @@ impl Policy {
     pub fn new(int: Type) -> Result<Policy, String> {
         match int {
             // the float of the same class as the integer: f32 with i32, f64 with i64
-            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16, rational: (16, 16), scalar: "float", round: 0 }),
-            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32, rational: (32, 32), scalar: "float", round: 0 }),
+            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16, rational: (16, 16), scalar: "float", round: 0, native_mul: true, native_div: true }),
+            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32, rational: (32, 32), scalar: "float", round: 0, native_mul: true, native_div: true }),
             t => Err(format!("'int' cannot resolve to {}", t.name())),
         }
     }
@@ -945,7 +953,7 @@ impl Policy {
         }
     }
 
-    fn resolve(&self, ty: Type) -> Type {
+    pub fn resolve(&self, ty: Type) -> Type {
         match ty {
             Type::AInt => self.int,
             Type::AUInt => Type::int(false, self.int.int_bits().unwrap()),
@@ -1363,6 +1371,13 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
         }
         p.skip_newlines();
     }
+    // a target without a multiplier: the wide lowering's word products
+    // call the library's mul(64) on u64, instantiated here
+    let mul64 = if !p.policy.native_mul && p.generics.iter().any(|g| g.name == "mul") {
+        Some(p.dispatch("mul", Type::U64, Type::U64)?)
+    } else {
+        None
+    };
     // pass 3: instantiate what was asked for, including what those
     // instantiations ask for in turn
     while let Some((g, args, name)) = p.pending.pop() {
@@ -1383,6 +1398,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     let mut module = Module {
         types: p.types,
         funcs,
+        int_mul64: mul64,
     };
     // values wider than a word: checked as written, then lowered to words
     // so that no backend ever sees one
@@ -2910,13 +2926,23 @@ impl Parser {
             // name takes the pack's origin type: `add` on a float(8, 23)
             // is a call to add(8, 23) — the library, or the platform's
             // instruction for it
-            // ... and so are `div`/`rem` on an integer wider than a word:
-            // lib/wide.ssa's div(W)/rem(W), loops the lowering unrolls
-            // into words like everything else
+            // ... and so are `div`/`rem` on an integer wider than a word
+            // (lib/wide.ssa's div(W)/rem(W), loops the lowering unrolls
+            // into words like everything else), and `mul`/`div`/`rem` at
+            // any width on a target whose hardware lacks them
             let lty = scope.values[lhs.0 as usize].ty;
-            let wide_divide = matches!(*bin, BinOp::Div | BinOp::Rem) && matches!(lty, Type::Int { bits, .. } if bits > 64);
-            if lty.is_pack() || wide_divide {
-                let callee = self.dispatch(op, scope.values[lhs.0 as usize].ty, scope.values[dst.0 as usize].ty)?;
+            // an abstract `int` dispatches at the policy's width
+            let (wide, int) = match self.policy.resolve(lty) {
+                Type::Int { bits, .. } => (bits > 64, true),
+                _ => (false, false),
+            };
+            let to_library = match *bin {
+                BinOp::Div | BinOp::Rem => int && (wide || !self.policy.native_div),
+                BinOp::IMul => int && !wide && !self.policy.native_mul,
+                _ => false,
+            };
+            if lty.is_pack() || to_library {
+                let callee = self.dispatch(op, self.policy.resolve(lty), self.policy.resolve(scope.values[dst.0 as usize].ty))?;
                 return Ok(Inst::Call {
                     dsts: vec![dst],
                     callee,

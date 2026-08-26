@@ -34,6 +34,27 @@
 //! and the instance itself compiles to the rule. The library body is the
 //! reference the hardware path is verified against; `--soft` compiles
 //! with an empty platform so both paths stay comparable.
+//!
+//! Variants. An ISA comes in variants — a RISC-V core without the F and
+//! D extensions, or without M; an arm64 kernel that may not touch the
+//! FP registers — so a platform file is grouped by extension and a
+//! variant is a file that names its target, a base, and what it lacks:
+//!
+//! ```text
+//! target riscv64
+//! base riscv64
+//! without M, F, D
+//! ```
+//!
+//! `ext NAME` starts a group; every `class`, rule and `builtin` line
+//! that follows belongs to it until the next `ext`. `builtin mul, div,
+//! rem` says which integer opcodes the emitters may assume of a group:
+//! a variant without it makes the parser dispatch those opcodes to the
+//! library's `mul(W)`/`div(W)`/`rem(W)` instead, so the same program
+//! runs on the smaller core, slower and correct. `--platform=NAME`
+//! selects a variant for every command; `probe footprint` shows which
+//! learned instructions a program actually used, which is how a variant
+//! is checked to keep its word.
 
 use crate::ssa::{Function, Module, Policy, Type};
 use std::collections::HashMap;
@@ -122,9 +143,17 @@ impl Natives {
 }
 
 pub struct Platform {
-    /// (class name, type as written)
-    classes: Vec<(String, String)>,
-    rules: Vec<Rule>,
+    /// the backend this platform is for
+    pub target: String,
+    /// this file's name (the variant), for messages
+    pub name: String,
+    /// (class name, type as written, extension group)
+    classes: Vec<(String, String, String)>,
+    rules: Vec<(Rule, String)>,
+    /// integer opcodes some group claims for the hardware
+    builtins: Vec<(String, String)>,
+    /// groups this variant lacks
+    without: Vec<String>,
 }
 
 /// set by `--soft`: every backend's default platform becomes empty
@@ -134,19 +163,80 @@ pub fn set_soft(soft: bool) {
     SOFT.store(soft, Ordering::Relaxed);
 }
 
+thread_local! {
+    /// set by `--platform=NAME`: the variant to use for its target. Per
+    /// thread, so tests choosing different cores do not see each other
+    static VARIANT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn select(name: &str) {
+    VARIANT.with(|v| *v.borrow_mut() = Some(name.to_string()));
+}
+
+pub fn selected() -> Option<String> {
+    VARIANT.with(|v| v.borrow().clone())
+}
+
 impl Platform {
     pub fn none() -> Platform {
-        Platform { classes: Vec::new(), rules: Vec::new() }
+        Platform { target: String::new(), name: "none".into(), classes: Vec::new(), rules: Vec::new(), builtins: Vec::new(), without: Vec::new() }
     }
 
-    /// the target's rule file, or nothing under --soft
+    /// the platform for a target: the selected variant when it is one of
+    /// this target's, else the target's own file; nothing under --soft
     pub fn load(target: &str) -> Result<Platform, String> {
         if SOFT.load(Ordering::Relaxed) {
             return Ok(Platform::none());
         }
-        let path = format!("targets/{}.platform", target);
+        if let Some(v) = selected() {
+            let p = Platform::load_named(&v)?;
+            if p.target == target {
+                return Ok(p);
+            }
+        }
+        Platform::load_named(target)
+    }
+
+    /// `targets/<name>.platform`, by name (a target's or a variant's)
+    pub fn load_named(name: &str) -> Result<Platform, String> {
+        let path = format!("targets/{}.platform", name);
         let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {}", path, e))?;
-        Platform::parse(&text).map_err(|e| format!("{}: {}", path, e))
+        let mut p = Platform::parse(&text).map_err(|e| format!("{}: {}", path, e))?;
+        p.name = name.to_string();
+        if p.target.is_empty() {
+            p.target = name.to_string();
+        }
+        Ok(p)
+    }
+
+    /// does the hardware have this integer opcode (`mul`, `div`, `rem`)?
+    /// A group that claims it and is lacking takes it away; a platform
+    /// that says nothing has everything
+    pub fn has_builtin(&self, op: &str) -> bool {
+        !self.builtins.iter().any(|(o, g)| o == op && self.without.contains(g))
+    }
+
+    /// the policy as this platform needs it: integer opcodes the hardware
+    /// lacks go to the library
+    pub fn adjust(&self, mut policy: Policy) -> Policy {
+        policy.native_mul = self.has_builtin("mul");
+        policy.native_div = self.has_builtin("div") && self.has_builtin("rem");
+        policy
+    }
+
+    /// the extension groups declared, and whether each is present
+    pub fn extensions(&self) -> Vec<(String, bool)> {
+        let mut seen: Vec<String> = Vec::new();
+        for g in self.classes.iter().map(|(_, _, g)| g).chain(self.rules.iter().map(|(_, g)| g)).chain(self.builtins.iter().map(|(_, g)| g)) {
+            if !g.is_empty() && !seen.contains(g) {
+                seen.push(g.clone());
+            }
+        }
+        seen.into_iter().map(|g| { let present = !self.without.contains(&g); (g, present) }).collect()
+    }
+
+    fn present(&self, group: &str) -> bool {
+        !self.without.contains(&group.to_string())
     }
 
     pub fn arm64() -> Platform {
@@ -162,24 +252,50 @@ impl Platform {
     }
 
     pub fn parse(text: &str) -> Result<Platform, String> {
-        let mut classes = Vec::new();
-        let mut rules: Vec<Rule> = Vec::new();
+        let mut p = Platform::none();
+        p.name = String::new();
+        let mut group = String::new();
+        let mut rules: Vec<(Rule, String)> = Vec::new();
         for (n, raw) in text.lines().enumerate() {
             let line = raw.split(';').next().unwrap().trim_end();
             if line.trim().is_empty() {
                 continue;
             }
             let at = |m: String| format!("line {}: {}", n + 1, m);
+            let words: Vec<&str> = line.split_whitespace().collect();
             if raw.starts_with(' ') || raw.starts_with('\t') {
-                let rule = rules.last_mut().ok_or_else(|| at("an instruction line before any rule header".into()))?;
+                let (rule, _) = rules.last_mut().ok_or_else(|| at("an instruction line before any rule header".into()))?;
                 if rule.lines.iter().any(|l| l.template.is_some()) {
                     return Err(at("a one-line rule takes no further instructions".into()));
                 }
                 rule.lines.push(parse_line(line.trim(), &rule.names).map_err(at)?);
+            } else if words[0] == "target" && words.len() == 2 {
+                p.target = words[1].to_string();
+            } else if words[0] == "base" && words.len() == 2 {
+                // inherit the base's groups; this file's lines follow
+                let base = Platform::load_named(words[1]).map_err(at)?;
+                if !p.target.is_empty() && base.target != p.target {
+                    return Err(at(format!("base {} is for {}, not {}", words[1], base.target, p.target)));
+                }
+                p.target = base.target.clone();
+                p.classes.extend(base.classes);
+                rules.extend(base.rules);
+                p.builtins.extend(base.builtins);
+                p.without.extend(base.without);
+            } else if words[0] == "ext" && words.len() == 2 {
+                group = words[1].to_string();
+            } else if words[0] == "without" {
+                for g in line.trim()[7..].split(',') {
+                    p.without.push(g.trim().to_string());
+                }
+            } else if words[0] == "builtin" {
+                for op in line.trim()[7..].split(',') {
+                    p.builtins.push((op.trim().to_string(), group.clone()));
+                }
             } else if let Some(rest) = line.trim().strip_prefix("class ") {
                 let (name, tys) = rest.split_once('=').ok_or_else(|| at("class wants 'class <name> = <type>, ...'".into()))?;
                 for t in tys.split(',') {
-                    classes.push((name.trim().to_string(), normalize(t)));
+                    p.classes.push((name.trim().to_string(), normalize(t), group.clone()));
                 }
             } else if line.contains('{') || (line.contains('=') && !line.trim().starts_with("class")) && line.split('=').next().unwrap().contains(' ') {
                 // `template = sig`
@@ -203,17 +319,18 @@ impl Platform {
                     operands.clear();
                 }
                 rule.lines.push(Line { template: Some(template), mnemonic, operands });
-                rules.push(rule);
+                rules.push((rule, group.clone()));
             } else {
-                rules.push(parse_header(line.trim()).map_err(at)?);
+                rules.push((parse_header(line.trim()).map_err(at)?, group.clone()));
             }
         }
-        for r in &rules {
+        for (r, _) in &rules {
             if r.lines.is_empty() {
                 return Err(format!("rule '{}' has no instructions", r.generic));
             }
         }
-        Ok(Platform { classes, rules })
+        p.rules = rules;
+        Ok(p)
     }
 
     /// the rules and classes as they apply to a module, its type
@@ -229,7 +346,7 @@ impl Platform {
             }
             t
         };
-        let classes: HashMap<String, String> = self.classes.iter().map(|(c, t)| (resolve(t), c.clone())).collect();
+        let classes: HashMap<String, String> = self.classes.iter().filter(|(_, _, g)| self.present(g)).map(|(c, t, _)| (resolve(t), c.clone())).collect();
         let defaults = Policy::new(Type::I64).unwrap();
         let mut rules = HashMap::new();
         for f in &m.funcs {
@@ -247,8 +364,8 @@ impl Platform {
             }
             let ptys: Vec<String> = f.params.iter().map(|&p| canonical(f, f.ty(p))).collect();
             let rty = canonical(f, f.rets[0]);
-            for r in &self.rules {
-                if r.generic != *generic || r.arg_types.len() != ptys.len() {
+            for (r, g) in &self.rules {
+                if !self.present(g) || r.generic != *generic || r.arg_types.len() != ptys.len() {
                     continue;
                 }
                 if r.arg_types.iter().zip(&ptys).any(|(a, b)| resolve(a) != *b) || resolve(&r.ret_type) != rty {
@@ -467,15 +584,29 @@ mod tests {
     #[test]
     fn rule_files_parse() {
         for t in ["arm64", "riscv64", "wasm32"] {
-            let p = Platform::load(t).unwrap();
+            let p = Platform::load_named(t).unwrap();
             assert!(p.rules.len() >= 38, "{}: {} rules", t, p.rules.len());
             assert!(!p.classes.is_empty(), "{}: no classes", t);
+            assert_eq!(p.target, t);
         }
+        // variants: what a base has, minus what the variant lacks
+        let full = Platform::load_named("riscv64").unwrap();
+        let im = Platform::load_named("rv64im").unwrap();
+        let i = Platform::load_named("rv64i").unwrap();
+        assert_eq!(im.target, "riscv64");
+        assert!(full.has_builtin("mul") && im.has_builtin("mul") && !i.has_builtin("div"));
+        let m = crate::ssa::parse_with(&crate::ssa::with_prelude("fn f(a: f32, b: f32) -> f32 {\n    r: f32 = add a, b\n    ret r\n}\n"), &crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap()).unwrap();
+        assert!(!full.natives(&m).rules.is_empty());
+        assert!(im.natives(&m).rules.is_empty() && im.natives(&m).classes.is_empty());
+        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 3);
+        assert_eq!(i.extensions().iter().filter(|(_, present)| *present).count(), 0);
+        let nofp = Platform::load_named("arm64-nofp").unwrap();
+        assert!(nofp.natives(&m).classes.is_empty());
         assert!(Platform::parse("add(f32, f32) -> f32\n").is_err()); // no instructions
         assert!(Platform::parse("    fcmp a, b\n").is_err()); // no header
         let p = Platform::parse("class s = f32\nfadd {s}, {s}, {s} = add(f32, f32) -> f32\nlt(f32, f32) -> u1\n    fcmp a, b\n    cset r, lo\n").unwrap();
         assert_eq!(p.rules.len(), 2);
-        assert_eq!(p.rules[0].lines[0].operands, vec![Operand::Ret, Operand::Arg(0), Operand::Arg(1)]);
-        assert_eq!(p.rules[1].lines[1].operands, vec![Operand::Ret, Operand::Lit("lo".into())]);
+        assert_eq!(p.rules[0].0.lines[0].operands, vec![Operand::Ret, Operand::Arg(0), Operand::Arg(1)]);
+        assert_eq!(p.rules[1].0.lines[1].operands, vec![Operand::Ret, Operand::Lit("lo".into())]);
     }
 }

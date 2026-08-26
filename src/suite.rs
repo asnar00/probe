@@ -211,7 +211,15 @@ pub fn run_dir_at(
     }
 
     let (fe, fm) = default_float(backend);
-    let policy = adjust(ssa::Policy::new(default_int(backend))?.with_float(fe, fm));
+    // the platform (the selected variant of the backend's target, if any)
+    // may lack integer instructions the parser would otherwise assume
+    let target = match backend {
+        Backend::Native | Backend::ArmQemu => "arm64",
+        Backend::Riscv => "riscv64",
+        Backend::Wasm => "wasm32",
+    };
+    let platform = crate::platform::Platform::load(target)?;
+    let policy = adjust(platform.adjust(ssa::Policy::new(default_int(backend))?.with_float(fe, fm)));
     let mut report = Report {
         passed: 0,
         failed: 0,
@@ -1022,6 +1030,17 @@ mod tests {
             let report = super::run_dir_at("suite", super::Backend::Native, crate::opt::MAX_LEVEL, &|p| p.with_scalar(family).unwrap())
                 .expect("suite runs");
             assert_eq!(report.failed, 0, "with scalar={}:\n{}", family, report.log);
+        }
+    }
+
+    /// the suite on the RISC-V cores without F/D and without M: floats,
+    /// multiplies and divides all in the library, results unchanged
+    #[test]
+    fn regression_suite_riscv_variants() {
+        for variant in ["rv64im", "rv64i"] {
+            crate::platform::select(variant);
+            let report = super::run_dir_at("suite", super::Backend::Riscv, crate::opt::MAX_LEVEL, &|p| p).expect("suite runs");
+            assert_eq!(report.failed, 0, "{}:\n{}", variant, report.log);
         }
     }
 

@@ -6,6 +6,9 @@
 ; Not here: fma (wasm has no fused multiply-add), so it stays in the
 ; library.
 
+target wasm32
+
+ext FP
 class f32 = f32
 class f64 = f64
 

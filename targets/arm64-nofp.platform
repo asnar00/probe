@@ -1,0 +1,6 @@
+; targets/arm64-nofp.platform — arm64 without the FP registers: what a
+; kernel or an interrupt handler may use. Floats are the library's, in
+; integer registers.
+target arm64
+base arm64
+without FP

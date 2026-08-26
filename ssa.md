@@ -434,7 +434,32 @@ NaN); wasm has no `fma`. When an emitter compiles such an instance, or
 a call to one, it emits the rule instead of the SSA body. A rule
 matches the nearest-even instance (`add(8, 23, 0)`), which is what the
 instructions compute; an instance in another rounding mode stays in the
-library. The library body remains the reference: `--soft` compiles with
+library.
+
+**Variants.** An ISA comes in variants, so a platform file is grouped by
+extension and a variant is a file that names its target, a base, and
+what it lacks:
+
+```
+target riscv64
+base riscv64
+without M, F, D
+```
+
+`ext NAME` starts a group in the base file (`targets/riscv64.platform`
+has `M`, `F`, `D`; `arm64.platform` has `FP`); the `class`, rule and
+`builtin` lines that follow belong to it. `builtin mul, div, rem` in
+the `M` group says which integer opcodes the emitters otherwise
+assume: on a variant without it the parser sends `mul`, `div` and `rem`
+to the library's `mul(W)`/`div(W)`/`rem(W)` generics (`lib/wide.ssa`),
+and the wide lowering's word products call `mul(64)` — the same
+program, slower, still correct. `--platform=NAME` selects a variant for
+every command (`rv64im`, `rv64i`, `arm64-nofp` exist today; a target's
+own name is the full ISA). `probe footprint file.ssa [riscv]` decodes
+the emitted code against the learned templates and lists what a
+program actually used, which is how a variant is checked to keep its
+word — the suite compiled for `rv64i` shows no `mul`, `div`, `rem` or
+`f*` instruction, and a test says so. The library body remains the reference: `--soft` compiles with
 an empty platform, and the two must agree — and both are checked
 against Berkeley TestFloat's vectors, bit for bit, in every mode, by
 `probe testfloat` (`tools/get-testfloat.sh` builds the generator). NaN payloads are the one place they may differ — the

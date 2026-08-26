@@ -109,3 +109,36 @@ fn rem(W)(a: i(W), b: i(W)) -> i(W) {
     r: i(W) = cast ms
     ret r
 }
+
+; --- multiplication without a multiplier ---
+; `mul` dispatches here when the platform variant has no multiply
+; instruction (a RISC-V core without M): shift-and-add over the type
+; itself, W steps at most, stopping when the multiplier runs out of bits.
+; Signed and unsigned products agree in their low W bits.
+fn mul(W)(a: u(W), b: u(W)) -> u(W) {
+    r: u(W) = loop(x: u(W) = a, y: u(W) = b, acc: u(W) = 0) {
+        done: u1 = cmp.eq y, 0
+        if done {
+            break acc
+        }
+        bit: u(W) = and y, 1
+        odd: u1 = cmp.ne bit, 0
+        acc2: u(W) = if odd {
+            s: u(W) = add acc, x
+            yield s
+        } else {
+            yield acc
+        }
+        x2: u(W) = shl x, 1
+        y2: u(W) = shr y, 1
+        continue x2, y2, acc2
+    }
+    ret r
+}
+fn mul(W)(a: i(W), b: i(W)) -> i(W) {
+    au: u(W) = cast a
+    bu: u(W) = cast b
+    p: u(W) = mul au, bu
+    r: i(W) = cast p
+    ret r
+}
