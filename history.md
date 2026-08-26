@@ -6,6 +6,17 @@ has the full story for any of them.
 
 ---
 
+### the recipe for a format — `40a0b66` · 2026-08-26
+
+`formats.md`: how to add a number format, in seven steps, with `time`
+as the example — a type, generics named after opcodes, `conv` for
+literals, a suite file checked against an independent oracle, and only
+optionally a policy family or platform rules. `/format <name>`
+scaffolds one. The point of the document is what it does not contain:
+no compiler changes.
+
+---
+
 ### time — `13514bd` · 2026-08-26
 
 `lib/time.ssa`: `type time = rational(64, 64)`, an exact number of
