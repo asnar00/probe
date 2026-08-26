@@ -6,6 +6,23 @@ has the full story for any of them.
 
 ---
 
+### encoding scorecards — `0afc68f` · 2026-08-26
+
+The learner derives encodings from an assembler's bytes and never reads
+a manual; `probe scorecard` is the manual, afterwards. It checks every
+learned template against the official inventory of its target — Arm's
+Machine Readable Architecture XML, riscv-opcodes, wabt's opcode table
+— by decoding the template's fixed word to an official encoding and
+requiring the learned fields to sit inside that encoding's operand
+fields: `add {x}, {x}, {x}` is `ADD_64_addsub_shift` with `Rd`,
+`Rn`, `Rm`; `beq` puts its scrambled immediate exactly in
+`bimm12hi+bimm12lo`. All 150 arm64, 90 riscv64 and 125 wasm32
+templates pass. The cards (`targets/*.scorecard.md`) also count what
+the inventory has that is not learned, by group and by mnemonic, which
+is the to-do list for the seed files.
+
+---
+
 ### rounding modes, and TestFloat as the oracle — `b6a7bae` · 2026-08-26
 
 The library's float operations gain a third width parameter, `round`:
