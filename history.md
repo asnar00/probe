@@ -6,6 +6,19 @@ has the full story for any of them.
 
 ---
 
+### a look outward — `5be74a6` · 2026-08-26
+
+`vectors.md`: a survey, before any vector work. The learner's
+assemblers turn out to reach NEON, SVE and SME, RVV, wasm SIMD — and
+AMD's GPU ISAs, matrix cores and fp8 included, so a GPU is a target
+probe could *learn* today even though nothing here could run it. Five
+execution models, from fixed SIMD to dataflow, measured against what
+the project already has; the AI format explosion (fp8 E4M3, fp6, fp4,
+MX blocks, NVFP4) as libraries; and an order: fixed-width vectors as a
+type and a register class first.
+
+---
+
 ### struct — `b38526d` · 2026-08-26
 
 `type point = struct { x: f32, y: f32, z: f32 }`. A `pack` is bits;
