@@ -25,7 +25,9 @@ pub enum Loc {
 
 pub struct Alloc {
     pub loc: Vec<Loc>,       // per ValueId
-    pub used_regs: Vec<i64>, // pool registers this function touches (sorted)
+    pub used_regs: Vec<i64>, // pool registers of class 0 this function touches (sorted)
+    /// per class, the pool registers touched (used_regs is class 0's)
+    pub used_by_class: Vec<Vec<i64>>,
     pub nslots: usize,
 }
 
@@ -97,7 +99,11 @@ fn successors(inst: &Inst) -> Vec<usize> {
     }
 }
 
-pub fn allocate(func: &Function, pool: &[i64]) -> Alloc {
+/// Register classes: `class_of[v]` indexes `pools`; each class gets its
+/// own linear scan over its own pool (a value's class is fixed by its
+/// type, so coalesced values always share one). Spill slots are one
+/// space for all classes.
+pub fn allocate_classes(func: &Function, class_of: &[usize], pools: &[&[i64]]) -> Alloc {
     let n = func.values.len();
     let nb = func.blocks.len();
 
@@ -295,11 +301,12 @@ pub fn allocate(func: &Function, pool: &[i64]) -> Alloc {
     }
 
     // ---- linear scan with furthest-end eviction, over coalesced roots ----
+    let mut loc = vec![Loc::Slot(usize::MAX); n];
+    for (class, pool) in pools.iter().enumerate() {
     let mut order: Vec<usize> = (0..n)
-        .filter(|&i| find(&mut uf, i) == i && start[i] != u32::MAX)
+        .filter(|&i| find(&mut uf, i) == i && start[i] != u32::MAX && class_of[i] == class)
         .collect();
     order.sort_by_key(|&i| start[i]);
-    let mut loc = vec![Loc::Slot(usize::MAX); n];
     let mut free: Vec<i64> = pool.to_vec();
     free.reverse(); // pop from the front of the pool first
     let mut active: Vec<(u32, usize, i64)> = Vec::new(); // (end, value, reg)
@@ -333,6 +340,7 @@ pub fn allocate(func: &Function, pool: &[i64]) -> Alloc {
         }
         // else: v stays spilled
     }
+    }
 
     // spill slots, shared by spilled values whose lifetimes do not
     // overlap (a root's interval covers its coalesced members): in start
@@ -362,18 +370,22 @@ pub fn allocate(func: &Function, pool: &[i64]) -> Alloc {
     }
 
     // ---- collect used registers ----
-    let mut used: Vec<i64> = Vec::new();
+    let mut used_by_class: Vec<Vec<i64>> = vec![Vec::new(); pools.len()];
     for i in 0..n {
         if let Loc::Reg(r) = loc[i] {
+            let used = &mut used_by_class[class_of[i]];
             if !used.contains(&r) {
                 used.push(r);
             }
         }
     }
-    used.sort_unstable();
+    for used in &mut used_by_class {
+        used.sort_unstable();
+    }
     Alloc {
         loc,
-        used_regs: used,
+        used_regs: used_by_class[0].clone(),
+        used_by_class,
         nslots,
     }
 }

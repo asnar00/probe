@@ -23,7 +23,7 @@
 //! their local (`iN` sign-extended, `uN`/ptr/packs zero-extended, see
 //! `ssa::Repr`); narrow results re-normalize with a shift pair or a mask.
 
-use crate::platform::{Operand, Platform, Rule};
+use crate::platform::{Native, Natives, Operand, Platform};
 use crate::ssa::{BinOp, Cond, Function, Inst, Module, Repr, ValueId};
 use crate::wlearn::{encode_pieces, uleb, Piece};
 use std::collections::HashMap;
@@ -224,8 +224,10 @@ struct WEmit<'a> {
     enc: &'a WEncoder,
     func: &'a Function,
     findex: &'a HashMap<String, (i64, usize)>,
-    natives: &'a HashMap<String, Rule>,
+    natives: &'a Natives,
     code: Vec<u8>,
+    /// per value: the platform's local class (`f32`/`f64`), if any
+    classes: Vec<Option<String>>,
     local_of: Vec<i64>, // ValueId -> wasm local index
     label_local: i64,
     nblocks: usize,
@@ -239,14 +241,38 @@ impl WEmit<'_> {
         r
     }
 
-    fn get(&mut self, v: ValueId) -> Result<(), String> {
+    fn is_f(&self, v: ValueId) -> bool {
+        self.classes[v.0 as usize].is_some()
+    }
+
+    /// push the local as it is (a float stays a float)
+    fn get_raw(&mut self, v: ValueId) -> Result<(), String> {
         let idx = self.local_of[v.0 as usize];
         self.op("local.get {}", Some(idx))
     }
 
-    fn set(&mut self, v: ValueId) -> Result<(), String> {
+    fn set_raw(&mut self, v: ValueId) -> Result<(), String> {
         let idx = self.local_of[v.0 as usize];
         self.op("local.set {}", Some(idx))
+    }
+
+    /// push v's bits: a float local reinterpreted to its integer form
+    fn get(&mut self, v: ValueId) -> Result<(), String> {
+        self.get_raw(v)?;
+        if self.is_f(v) {
+            let t = if self.repr(v).container() == 32 { "i32.reinterpret_f32" } else { "i64.reinterpret_f64" };
+            self.op(t, None)?;
+        }
+        Ok(())
+    }
+
+    /// pop v's bits into its local (reinterpreted to a float if it is one)
+    fn set(&mut self, v: ValueId) -> Result<(), String> {
+        if self.is_f(v) {
+            let t = if self.repr(v).container() == 32 { "f32.reinterpret_i32" } else { "f64.reinterpret_i64" };
+            self.op(t, None)?;
+        }
+        self.set_raw(v)
     }
 
     fn repr(&self, v: ValueId) -> Repr {
@@ -373,24 +399,39 @@ fn compile_function(
     func: &Function,
     enc: &WEncoder,
     findex: &HashMap<String, (i64, usize)>,
-    natives: &HashMap<String, Rule>,
+    natives: &Natives,
 ) -> Result<Vec<u8>, String> {
-    if let Some(rule) = natives.get(&func.name) {
-        // this function *is* a platform instruction: params -> result
+    if let Some(native) = natives.get(&func.name) {
+        // this function *is* a platform instruction: parameters arrive as
+        // bits (the calling convention), float ones are reinterpreted on
+        // the way in and the result on the way out
         let mut body = vec![0u8]; // no extra locals
-        let locals: Vec<i64> = (0..rule.arg_bits.len() as i64).collect();
-        for (key, v) in rule_seq(rule, &locals)? {
+        for (i, class) in native.arg_class.iter().enumerate() {
+            enc.op("local.get {}", Some(i as i64), &mut body)?;
+            if class.is_some() {
+                enc.op(if native.arg_bits[i] <= 32 { "f32.reinterpret_i32" } else { "f64.reinterpret_i64" }, None, &mut body)?;
+            }
+        }
+        for (key, v) in rule_seq(native)? {
             enc.op(&key, v, &mut body)?;
+        }
+        if native.ret_class.is_some() {
+            enc.op(if native.ret_bits <= 32 { "i32.reinterpret_f32" } else { "i64.reinterpret_f64" }, None, &mut body)?;
         }
         body.push(enc.end);
         return Ok(body);
     }
     // locals: params first (that's the wasm rule), then the other SSA
-    // values in id order, then the dispatcher's label local (i32)
+    // values in id order, then the dispatcher's label local (i32). A
+    // value of a float class gets a float local; a parameter of one gets
+    // a second local, filled from its integer parameter at entry.
+    let classes: Vec<Option<String>> = func.values.iter().map(|v| natives.class_of(func, v.ty).map(str::to_string)).collect();
     let n = func.values.len();
     let mut local_of = vec![-1i64; n];
     for (i, &p) in func.params.iter().enumerate() {
-        local_of[p.0 as usize] = i as i64;
+        if classes[p.0 as usize].is_none() {
+            local_of[p.0 as usize] = i as i64;
+        }
     }
     let mut next = func.params.len() as i64;
     let mut extra_types = Vec::new(); // declared locals, in order
@@ -398,7 +439,12 @@ fn compile_function(
         if local_of[id] < 0 {
             local_of[id] = next;
             next += 1;
-            extra_types.push(valtype(wrepr(func, func.ty(ValueId(id as u32)))));
+            let r = wrepr(func, func.ty(ValueId(id as u32)));
+            extra_types.push(match &classes[id] {
+                Some(_) if r.container() == 32 => 0x7D,
+                Some(_) => 0x7C,
+                None => valtype(r),
+            });
         }
     }
     let label_local = next;
@@ -410,10 +456,17 @@ fn compile_function(
         findex,
         natives,
         code: Vec::new(),
+        classes,
         local_of,
         label_local,
         nblocks: func.blocks.len(),
     };
+    for (i, &p) in func.params.iter().enumerate() {
+        if e.is_f(p) {
+            e.op("local.get {}", Some(i as i64))?;
+            e.set(p)?;
+        }
+    }
 
     // dispatcher skeleton: loop { block^N { chain } code_0 } ... }
     e.op("loop", None)?;
@@ -455,20 +508,20 @@ fn compile_function(
     Ok(body)
 }
 
-/// the ops for a platform rule, reading the argument locals given and
-/// leaving the result on the stack: a line is an op key, with a local
-/// index or a literal as its one immediate
-fn rule_seq(rule: &Rule, locals: &[i64]) -> Result<Vec<(String, Option<i64>)>, String> {
+/// the ops for a platform rule, the arguments already on the stack in
+/// order and the result left there: a line is an op key, with a
+/// literal as its one immediate at most
+fn rule_seq(native: &Native) -> Result<Vec<(String, Option<i64>)>, String> {
     let mut seq = Vec::new();
-    for line in &rule.lines {
+    for line in &native.rule.lines {
+        let key = line.template.clone().unwrap_or_else(|| line.mnemonic.clone());
         match line.operands.as_slice() {
-            [] => seq.push((line.mnemonic.clone(), None)),
-            [Operand::Arg(i)] => seq.push((format!("{} {{}}", line.mnemonic), Some(locals[*i]))),
+            [] => seq.push((key, None)),
             [Operand::Lit(l)] => {
-                let v = l.parse::<i64>().map_err(|_| format!("rule '{}': bad literal '{}'", rule.sig, l))?;
+                let v = l.parse::<i64>().map_err(|_| format!("rule '{}': bad literal '{}'", native.sig, l))?;
                 seq.push((format!("{} {{}}", line.mnemonic), Some(v)))
             }
-            _ => return Err(format!("rule '{}': wasm lines take one argument or literal at most", rule.sig)),
+            _ => return Err(format!("rule '{}': a wasm rule line is one op, with a literal at most", native.sig)),
         }
     }
     Ok(seq)
@@ -667,18 +720,21 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             e.op("i32.add", None)?;
             e.set(*dst)
         }
-        Inst::Call { dsts, callee, args } if e.natives.contains_key(callee) => {
-            // the platform has this one: the rule's ops instead of the call
-            let natives: &HashMap<String, Rule> = e.natives;
-            let rule = &natives[callee];
+        Inst::Call { dsts, callee, args } if e.natives.get(callee).is_some() => {
+            // the platform has this one: the rule's ops instead of the
+            // call, floats staying floats on the stack
+            let natives: &Natives = e.natives;
+            let native = natives.get(callee).unwrap();
             let Some(&dst) = dsts.first() else {
                 return Ok(());
             };
-            let locals: Vec<i64> = args.iter().map(|a| e.local_of[a.0 as usize]).collect();
-            for (key, v) in rule_seq(rule, &locals)? {
+            for &a in args {
+                if e.is_f(a) { e.get_raw(a)? } else { e.get(a)? }
+            }
+            for (key, v) in rule_seq(native)? {
                 e.op(&key, v)?;
             }
-            e.set(dst)
+            if e.is_f(dst) { e.set_raw(dst) } else { e.set(dst) }
         }
         Inst::Call { dsts, callee, args } => {
             for &a in args {

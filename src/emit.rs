@@ -26,7 +26,7 @@
 //! of an N-bit type re-normalize with sbfm/ubfm, which is also what
 //! packs' get/set/pack lower to.
 
-use crate::platform::{Operand, Platform, Rule};
+use crate::platform::{Native, Natives, Operand, Platform};
 use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, ValueId};
 use std::collections::HashMap;
 
@@ -480,10 +480,12 @@ pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Resu
 struct FnEmit<'a> {
     enc: &'a Encoder,
     func: &'a Function,
-    natives: &'a HashMap<String, Rule>,
+    natives: &'a Natives,
     code: &'a mut Vec<u8>,
     frame: i64,
     alloc: &'a crate::regalloc::Alloc,
+    /// per value: the platform's float register class (`s`/`d`), if any
+    classes: Vec<Option<String>>,
     spill_base: i64,
     block_offsets: Vec<Option<usize>>,
     fixups: Vec<Fixup>,
@@ -507,9 +509,59 @@ impl FnEmit<'_> {
         self.spill_base + 8 * idx as i64
     }
 
-    /// register currently holding v: its allocated register, or the spill
-    /// slot loaded into `scratch`
+    /// does v live in a float register?
+    fn is_f(&self, v: ValueId) -> bool {
+        self.classes[v.0 as usize].is_some()
+    }
+
+    /// x <- the bits of a float register (the value's width decides the form)
+    fn f_to_x(&mut self, x: i64, fr: i64, v: ValueId) -> Result<(), String> {
+        let t = if self.repr(v).container() == 32 { "fmov {w}, {s}" } else { "fmov {x}, {d}" };
+        self.emit(t, &[x, fr]).map(|_| ())
+    }
+
+    fn x_to_f(&mut self, fr: i64, x: i64, v: ValueId) -> Result<(), String> {
+        let t = if self.repr(v).container() == 32 { "fmov {s}, {w}" } else { "fmov {d}, {x}" };
+        self.emit(t, &[fr, x]).map(|_| ())
+    }
+
+    /// the float register holding v: its own, or the spill slot reloaded
+    /// into `fscratch` (v16..v19: caller-saved, never allocated)
+    fn src_freg(&mut self, v: ValueId, fscratch: i64) -> Result<i64, String> {
+        match self.alloc.loc[v.0 as usize] {
+            crate::regalloc::Loc::Reg(r) => Ok(r),
+            crate::regalloc::Loc::Slot(i) => {
+                let off = self.slot_off(i);
+                self.emit(LDR_D_SP, &[fscratch, off])?;
+                Ok(fscratch)
+            }
+        }
+    }
+
+    fn dst_freg(&self, v: ValueId, fscratch: i64) -> i64 {
+        match self.alloc.loc[v.0 as usize] {
+            crate::regalloc::Loc::Reg(r) => r,
+            crate::regalloc::Loc::Slot(_) => fscratch,
+        }
+    }
+
+    fn finish_f(&mut self, v: ValueId, fr: i64) -> Result<(), String> {
+        if let crate::regalloc::Loc::Slot(i) = self.alloc.loc[v.0 as usize] {
+            let off = self.slot_off(i);
+            self.emit(STR_D_SP, &[fr, off])?;
+        }
+        Ok(())
+    }
+
+    /// integer register currently holding v's bits: its allocated
+    /// register, the spill slot loaded into `scratch` — or, for a value
+    /// living in a float register, its bits moved into `scratch`
     fn src_reg(&mut self, v: ValueId, scratch: i64) -> Result<i64, String> {
+        if self.is_f(v) {
+            let fr = self.src_freg(v, 16)?;
+            self.f_to_x(scratch, fr, v)?;
+            return Ok(scratch);
+        }
         match self.alloc.loc[v.0 as usize] {
             crate::regalloc::Loc::Reg(r) => Ok(r),
             crate::regalloc::Loc::Slot(i) => {
@@ -520,16 +572,25 @@ impl FnEmit<'_> {
         }
     }
 
-    /// register a result should be computed into
+    /// integer register a result should be computed into
     fn dst_reg(&self, v: ValueId, scratch: i64) -> i64 {
+        if self.is_f(v) {
+            return scratch;
+        }
         match self.alloc.loc[v.0 as usize] {
             crate::regalloc::Loc::Reg(r) => r,
             crate::regalloc::Loc::Slot(_) => scratch,
         }
     }
 
-    /// after computing into dst_reg(v): spill if v lives on the stack
+    /// after computing bits into dst_reg(v): spill if v lives on the
+    /// stack, or move into its float register
     fn finish(&mut self, v: ValueId, reg: i64) -> Result<(), String> {
+        if self.is_f(v) {
+            let fr = self.dst_freg(v, 19);
+            self.x_to_f(fr, reg, v)?;
+            return self.finish_f(v, fr);
+        }
         if let crate::regalloc::Loc::Slot(i) = self.alloc.loc[v.0 as usize] {
             let off = self.slot_off(i);
             self.emit(STR_SP, &[reg, off])?;
@@ -548,6 +609,10 @@ impl FnEmit<'_> {
     /// Targets are x0..x17; sources are pool registers or slots — disjoint,
     /// so a sequence of these never clobbers a pending source.
     fn value_to(&mut self, target: i64, v: ValueId) -> Result<(), String> {
+        if self.is_f(v) {
+            let fr = self.src_freg(v, 16)?;
+            return self.f_to_x(target, fr, v);
+        }
         match self.alloc.loc[v.0 as usize] {
             crate::regalloc::Loc::Reg(r) => self.mov(target, r),
             crate::regalloc::Loc::Slot(i) => {
@@ -559,6 +624,11 @@ impl FnEmit<'_> {
 
     /// store a specific register into v's location
     fn value_from(&mut self, v: ValueId, source: i64) -> Result<(), String> {
+        if self.is_f(v) {
+            let fr = self.dst_freg(v, 16);
+            self.x_to_f(fr, source, v)?;
+            return self.finish_f(v, fr);
+        }
         match self.alloc.loc[v.0 as usize] {
             crate::regalloc::Loc::Reg(r) => self.mov(r, source),
             crate::regalloc::Loc::Slot(i) => {
@@ -589,13 +659,32 @@ impl FnEmit<'_> {
         Ok(())
     }
 
-    /// one location-to-location move (registers or spill slots)
+    /// one location-to-location move (registers or spill slots), in the
+    /// integer file or (`f`) the float file
     fn loc_move(
         &mut self,
+        f: bool,
         dst: crate::regalloc::Loc,
         src: crate::regalloc::Loc,
     ) -> Result<(), String> {
         use crate::regalloc::Loc;
+        if f {
+            return match (dst, src) {
+                (Loc::Reg(d), Loc::Reg(s)) => {
+                    if d != s {
+                        self.emit("fmov {d}, {d}", &[d, s])?;
+                    }
+                    Ok(())
+                }
+                (Loc::Reg(d), Loc::Slot(s)) => self.emit(LDR_D_SP, &[d, self.slot_off(s)]).map(|_| ()),
+                (Loc::Slot(d), Loc::Reg(s)) => self.emit(STR_D_SP, &[s, self.slot_off(d)]).map(|_| ()),
+                (Loc::Slot(d), Loc::Slot(s)) => {
+                    // transit through v17; v16 stays free for cycle breaking
+                    self.emit(LDR_D_SP, &[17, self.slot_off(s)])?;
+                    self.emit(STR_D_SP, &[17, self.slot_off(d)]).map(|_| ())
+                }
+            };
+        }
         match (dst, src) {
             (Loc::Reg(d), Loc::Reg(s)) => self.mov(d, s),
             (Loc::Reg(d), Loc::Slot(s)) => {
@@ -620,25 +709,26 @@ impl FnEmit<'_> {
     fn branch_args(&mut self, target: BlockId, args: &[ValueId]) -> Result<(), String> {
         use crate::regalloc::Loc;
         let params: Vec<ValueId> = self.func.blocks[target.0 as usize].params.clone();
-        let mut pending: Vec<(Loc, Loc)> = params
+        // (float file?, destination, source); the two files never alias
+        let mut pending: Vec<(bool, Loc, Loc)> = params
             .iter()
             .zip(args)
-            .map(|(&p, &a)| (self.alloc.loc[p.0 as usize], self.alloc.loc[a.0 as usize]))
-            .filter(|(d, s)| d != s)
+            .map(|(&p, &a)| (self.is_f(p), self.alloc.loc[p.0 as usize], self.alloc.loc[a.0 as usize]))
+            .filter(|(_, d, s)| d != s)
             .collect();
-        let scratch = Loc::Reg(9);
         while !pending.is_empty() {
             if let Some(i) = (0..pending.len())
-                .find(|&i| !pending.iter().any(|&(_, s)| s == pending[i].0))
+                .find(|&i| !pending.iter().any(|&(f, _, s)| f == pending[i].0 && s == pending[i].1))
             {
-                let (d, s) = pending.swap_remove(i);
-                self.loc_move(d, s)?;
+                let (f, d, s) = pending.swap_remove(i);
+                self.loc_move(f, d, s)?;
             } else {
-                // pure cycle: stash one source in the scratch register
-                let s = pending[0].1;
-                self.loc_move(scratch, s)?;
-                for m in pending.iter_mut().filter(|m| m.1 == s) {
-                    m.1 = scratch;
+                // pure cycle: stash one source in the file's scratch register
+                let (f, _, s) = pending[0];
+                let scratch = Loc::Reg(if f { 16 } else { 9 });
+                self.loc_move(f, scratch, s)?;
+                for m in pending.iter_mut().filter(|m| m.0 == f && m.2 == s) {
+                    m.2 = scratch;
                 }
             }
         }
@@ -728,6 +818,10 @@ impl FnEmit<'_> {
     }
 
     fn epilogue(&mut self) -> Result<(), String> {
+        let fbase = 16 + 8 * self.alloc.used_regs.len() as i64;
+        for (k, &fr) in self.alloc.used_by_class[1].clone().iter().enumerate() {
+            self.emit(LDR_D_SP, &[fr, fbase + 8 * k as i64])?;
+        }
         for (k, pair) in self.alloc.used_regs.clone().chunks(2).enumerate() {
             match pair {
                 [a, b] => {
@@ -749,6 +843,10 @@ impl FnEmit<'_> {
 /// pool for the allocator: callee-saved x19..x28 — values placed here
 /// survive calls by construction, so call sites need no spill logic
 const REG_POOL: &[i64] = &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
+/// the float file's pool: v8..v15, whose low 64 bits are callee-saved
+const F_POOL: &[i64] = &[8, 9, 10, 11, 12, 13, 14, 15];
+const LDR_D_SP: &str = "ldr {d}, [sp, #{i 0..32760 /8}]";
+const STR_D_SP: &str = "str {d}, [sp, #{i 0..32760 /8}]";
 
 /// Compile one function into a standalone buffer that will live at arena
 /// offset `base`; calls resolve through `resolve` (name -> arena offset of
@@ -756,7 +854,7 @@ const REG_POOL: &[i64] = &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
 pub fn compile_one(
     func: &Function,
     enc: &Encoder,
-    natives: &HashMap<String, Rule>,
+    natives: &Natives,
     base: i64,
     resolve: &dyn Fn(&str) -> Option<i64>,
 ) -> Result<Vec<u8>, String> {
@@ -780,17 +878,20 @@ pub fn compile_one(
 fn compile_function(
     func: &Function,
     enc: &Encoder,
-    natives: &HashMap<String, Rule>,
+    natives: &Natives,
     code: &mut Vec<u8>,
     call_fixups: &mut Vec<Fixup>,
 ) -> Result<(), String> {
-    if let Some(rule) = natives.get(&func.name) {
+    if let Some(native) = natives.get(&func.name) {
         // this function *is* a platform instruction: x0, x1 -> x0, no frame
-        native_body(enc, rule, code)?;
+        native_body(enc, native, code)?;
         return Ok(());
     }
-    let alloc = crate::regalloc::allocate(func, REG_POOL);
-    let nsaved = alloc.used_regs.len() as i64;
+    // values of a type the platform gives a float class live in v8..v15
+    let classes: Vec<Option<String>> = func.values.iter().map(|v| natives.class_of(func, v.ty).map(str::to_string)).collect();
+    let class_idx: Vec<usize> = classes.iter().map(|c| c.is_some() as usize).collect();
+    let alloc = crate::regalloc::allocate_classes(func, &class_idx, &[REG_POOL, F_POOL]);
+    let nsaved = alloc.used_regs.len() as i64 + alloc.used_by_class[1].len() as i64;
     let spill_base = 16 + 8 * nsaved;
     let frame = (spill_base + 8 * alloc.nslots as i64 + 15) & !15;
     if frame > 4095 {
@@ -807,6 +908,7 @@ fn compile_function(
         code,
         frame,
         alloc: &alloc,
+        classes,
         spill_base,
         block_offsets: vec![None; func.blocks.len()],
         fixups: Vec::new(),
@@ -826,6 +928,10 @@ fn compile_function(
             }
             _ => unreachable!(),
         }
+    }
+    let fbase = 16 + 8 * alloc.used_regs.len() as i64;
+    for (k, &fr) in alloc.used_by_class[1].iter().enumerate() {
+        e.emit(STR_D_SP, &[fr, fbase + 8 * k as i64])?;
     }
     for (i, &p) in func.params.iter().enumerate() {
         e.value_from(p, i as i64)?;
@@ -854,20 +960,18 @@ fn compile_function(
     Ok(())
 }
 
-/// the instruction sequence for a platform rule: arguments in the
-/// integer registers given, the result in rd, scratch floats in v16..
-/// (caller-saved, never allocated)
-fn rule_seq<'a>(enc: &'a Encoder, rule: &Rule, rd: i64, args: &[i64]) -> Result<Vec<(&'a str, Vec<i64>)>, String> {
+/// the instruction sequence for a platform rule: the arguments and the
+/// result in the registers given, each in its own class's file
+fn rule_seq<'a>(enc: &'a Encoder, native: &Native, rd: i64, args: &[i64]) -> Result<Vec<(&'a str, Vec<i64>)>, String> {
     let templates = enc.templates();
     let mut seq = Vec::new();
-    for line in &rule.lines {
-        let (t, vals) = crate::platform::resolve(rule, line, &templates)?;
+    for line in &native.rule.lines {
+        let (t, vals) = crate::platform::resolve(native, line, &templates)?;
         let v = vals
             .into_iter()
             .map(|(op, v)| match op {
                 Operand::Arg(i) => args[i],
                 Operand::Ret => rd,
-                Operand::Scratch(_, n) => 16 + n as i64,
                 Operand::Lit(_) => v,
             })
             .collect();
@@ -876,11 +980,27 @@ fn rule_seq<'a>(enc: &'a Encoder, rule: &Rule, rd: i64, args: &[i64]) -> Result<
     Ok(seq)
 }
 
-/// the whole body of a natively implemented function: the sequence on the
-/// argument registers, result in x0, and return
-fn native_body(enc: &Encoder, rule: &Rule, code: &mut Vec<u8>) -> Result<(), String> {
-    let args: Vec<i64> = (0..rule.arg_bits.len() as i64).collect();
-    let mut seq = rule_seq(enc, rule, 0, &args)?;
+/// the whole body of a natively implemented function: arguments arrive
+/// as bits in x0.. (the calling convention), float ones move to v16..,
+/// the rule runs, a float result comes back through x0
+fn native_body(enc: &Encoder, native: &Native, code: &mut Vec<u8>) -> Result<(), String> {
+    let mut seq: Vec<(&str, Vec<i64>)> = Vec::new();
+    let mut args = Vec::new();
+    for (i, class) in native.arg_class.iter().enumerate() {
+        if class.is_some() {
+            let t = if native.arg_bits[i] <= 32 { "fmov {s}, {w}" } else { "fmov {d}, {x}" };
+            seq.push((t, vec![16 + i as i64, i as i64]));
+            args.push(16 + i as i64);
+        } else {
+            args.push(i as i64);
+        }
+    }
+    let rd = if native.ret_class.is_some() { 19 } else { 0 };
+    seq.extend(rule_seq(enc, native, rd, &args)?);
+    if native.ret_class.is_some() {
+        let t = if native.ret_bits <= 32 { "fmov {w}, {s}" } else { "fmov {x}, {d}" };
+        seq.push((t, vec![0, 19]));
+    }
     seq.push(("ret", vec![]));
     for (t, v) in seq {
         code.extend_from_slice(&enc.encode(t, &v)?.to_le_bytes());
@@ -1113,22 +1233,24 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             e.emit("add {x}, {x}, {x}", &[rd, rb, ro])?;
             e.finish(*dst, rd)
         }
-        Inst::Call { dsts, callee, args } if e.natives.contains_key(callee) => {
-            // the platform has this one: the rule's sequence instead of the call
-            let natives: &HashMap<String, Rule> = e.natives;
-            let rule = &natives[callee];
+        Inst::Call { dsts, callee, args } if e.natives.get(callee).is_some() => {
+            // the platform has this one: the rule's sequence instead of
+            // the call, each operand in its own file
+            let natives: &Natives = e.natives;
+            let native = natives.get(callee).unwrap();
             let Some(&dst) = dsts.first() else {
                 return Ok(()); // result unused: nothing to compute
             };
             let mut regs = Vec::new();
             for (j, &a) in args.iter().enumerate() {
-                regs.push(e.src_reg(a, 9 + j as i64)?);
+                regs.push(if native.arg_class[j].is_some() { e.src_freg(a, 16 + j as i64)? } else { e.src_reg(a, 9 + j as i64)? });
             }
-            let rd = e.dst_reg(dst, 9);
-            for (t, v) in rule_seq(e.enc, rule, rd, &regs)? {
+            let ret_f = native.ret_class.is_some();
+            let rd = if ret_f { e.dst_freg(dst, 19) } else { e.dst_reg(dst, 9) };
+            for (t, v) in rule_seq(e.enc, native, rd, &regs)? {
                 e.emit(t, &v)?;
             }
-            e.finish(dst, rd)
+            if ret_f { e.finish_f(dst, rd) } else { e.finish(dst, rd) }
         }
         Inst::Call { dsts, callee, args } => {
             if args.len() > 8 {

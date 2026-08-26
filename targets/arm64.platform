@@ -1,285 +1,108 @@
-; targets/arm64.platform — the library instances this target computes
-; with its own instructions. A rule is a signature — the generic, its
-; width arguments, its parameter and result types, exactly as the library
-; instantiates it — then the learned templates that compute it. a, b, c
-; are the arguments and r the result, in integer registers (a float is
-; its bits); s0/s1/s2 and d0/d1/d2 are scratch float registers (v16..v18,
-; caller-saved, never allocated); anything else is a literal for an
-; immediate or condition slot. Each line must resolve to a template the
-; learner verified: `fmov s0, a` with a 32-bit `a` is `fmov {s}, {w}`.
+; targets/arm64.platform — what this target computes with its own
+; instructions, as rules over the library's operations and types.
 ;
-; The rules name the nearest-even instances (round = 0), which is what
-; the instructions compute; other rounding modes stay in the library.
-; The library remains the reference: --soft compiles with no rules and
-; the two must agree (probe testfloat checks both against TestFloat).
+;   class s = f32                          ; f32 values live in s registers
+;   fadd {s}, {s}, {s} = add(f32, f32) -> f32
+;
+; A `class` line gives the types named a register class — the slot letter
+; the learned templates use for it — so the allocator keeps such values
+; in that file and nothing moves between files except where a value
+; really changes class (a `cast` to its bits, a call boundary, a field
+; read). A one-line rule is a learned template and the library instance
+; it computes; the template's slots are the result, then the arguments,
+; in order. A rule that takes several instructions is a header with
+; indented lines over a, b, c and r, plus literals for condition and
+; immediate slots. Types are written by their program names (f32 is
+; float(8, 23) in lib/float.ssa). The library remains the reference:
+; --soft compiles with no rules and the two must agree (probe testfloat
+; checks both against TestFloat). Rules name the nearest-even instances,
+; which is what the instructions compute; other rounding modes stay in
+; the library.
+
+class s = f32
+class d = f64
 
 ; --- arithmetic ---
+fadd {s}, {s}, {s} = add(f32, f32) -> f32
+fsub {s}, {s}, {s} = sub(f32, f32) -> f32
+fmul {s}, {s}, {s} = mul(f32, f32) -> f32
+fdiv {s}, {s}, {s} = div(f32, f32) -> f32
+fsqrt {s}, {s} = sqrt(f32) -> f32
+fneg {s}, {s} = neg(f32) -> f32
+fabs {s}, {s} = abs(f32) -> f32
+fmin {s}, {s}, {s} = min(f32, f32) -> f32
+fmax {s}, {s}, {s} = max(f32, f32) -> f32
+fmadd {s}, {s}, {s}, {s} = fma(f32, f32, f32) -> f32
 
-add(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
-    fmov s0, a
-    fmov s1, b
-    fadd s0, s0, s1
-    fmov r, s0
-
-sub(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
-    fmov s0, a
-    fmov s1, b
-    fsub s0, s0, s1
-    fmov r, s0
-
-mul(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
-    fmov s0, a
-    fmov s1, b
-    fmul s0, s0, s1
-    fmov r, s0
-
-div(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
-    fmov s0, a
-    fmov s1, b
-    fdiv s0, s0, s1
-    fmov r, s0
-
-sqrt(8, 23, 0)(a: float(8, 23)) -> r: float(8, 23)
-    fmov s0, a
-    fsqrt s0, s0
-    fmov r, s0
-
-neg(8, 23, 0)(a: float(8, 23)) -> r: float(8, 23)
-    fmov s0, a
-    fneg s0, s0
-    fmov r, s0
-
-abs(8, 23, 0)(a: float(8, 23)) -> r: float(8, 23)
-    fmov s0, a
-    fabs s0, s0
-    fmov r, s0
-
-min(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
-    fmov s0, a
-    fmov s1, b
-    fmin s0, s0, s1
-    fmov r, s0
-
-max(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
-    fmov s0, a
-    fmov s1, b
-    fmax s0, s0, s1
-    fmov r, s0
-
-fma(8, 23, 0)(a: float(8, 23), b: float(8, 23), c: float(8, 23)) -> r: float(8, 23)
-    fmov s0, a
-    fmov s1, b
-    fmov s2, c
-    fmadd s0, s0, s1, s2
-    fmov r, s0
-
-add(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
-    fmov d0, a
-    fmov d1, b
-    fadd d0, d0, d1
-    fmov r, d0
-
-sub(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
-    fmov d0, a
-    fmov d1, b
-    fsub d0, d0, d1
-    fmov r, d0
-
-mul(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
-    fmov d0, a
-    fmov d1, b
-    fmul d0, d0, d1
-    fmov r, d0
-
-div(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
-    fmov d0, a
-    fmov d1, b
-    fdiv d0, d0, d1
-    fmov r, d0
-
-sqrt(11, 52, 0)(a: float(11, 52)) -> r: float(11, 52)
-    fmov d0, a
-    fsqrt d0, d0
-    fmov r, d0
-
-neg(11, 52, 0)(a: float(11, 52)) -> r: float(11, 52)
-    fmov d0, a
-    fneg d0, d0
-    fmov r, d0
-
-abs(11, 52, 0)(a: float(11, 52)) -> r: float(11, 52)
-    fmov d0, a
-    fabs d0, d0
-    fmov r, d0
-
-min(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
-    fmov d0, a
-    fmov d1, b
-    fmin d0, d0, d1
-    fmov r, d0
-
-max(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
-    fmov d0, a
-    fmov d1, b
-    fmax d0, d0, d1
-    fmov r, d0
-
-fma(11, 52, 0)(a: float(11, 52), b: float(11, 52), c: float(11, 52)) -> r: float(11, 52)
-    fmov d0, a
-    fmov d1, b
-    fmov d2, c
-    fmadd d0, d0, d1, d2
-    fmov r, d0
+fadd {d}, {d}, {d} = add(f64, f64) -> f64
+fsub {d}, {d}, {d} = sub(f64, f64) -> f64
+fmul {d}, {d}, {d} = mul(f64, f64) -> f64
+fdiv {d}, {d}, {d} = div(f64, f64) -> f64
+fsqrt {d}, {d} = sqrt(f64) -> f64
+fneg {d}, {d} = neg(f64) -> f64
+fabs {d}, {d} = abs(f64) -> f64
+fmin {d}, {d}, {d} = min(f64, f64) -> f64
+fmax {d}, {d}, {d} = max(f64, f64) -> f64
+fmadd {d}, {d}, {d}, {d} = fma(f64, f64, f64) -> f64
 
 ; --- comparison: fcmp sets NZCV, and these conditions read it as IEEE
 ; wants (unordered compares false, except ne) ---
-
-eq(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
-    fmov s0, a
-    fmov s1, b
-    fcmp s0, s1
+eq(f32, f32) -> u1
+    fcmp a, b
     cset r, eq
-
-ne(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
-    fmov s0, a
-    fmov s1, b
-    fcmp s0, s1
+ne(f32, f32) -> u1
+    fcmp a, b
     cset r, ne
-
-lt(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
-    fmov s0, a
-    fmov s1, b
-    fcmp s0, s1
+lt(f32, f32) -> u1
+    fcmp a, b
     cset r, lo
-
-le(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
-    fmov s0, a
-    fmov s1, b
-    fcmp s0, s1
+le(f32, f32) -> u1
+    fcmp a, b
     cset r, ls
-
-gt(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
-    fmov s0, a
-    fmov s1, b
-    fcmp s0, s1
+gt(f32, f32) -> u1
+    fcmp a, b
     cset r, gt
-
-ge(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
-    fmov s0, a
-    fmov s1, b
-    fcmp s0, s1
+ge(f32, f32) -> u1
+    fcmp a, b
     cset r, ge
 
-eq(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
-    fmov d0, a
-    fmov d1, b
-    fcmp d0, d1
+eq(f64, f64) -> u1
+    fcmp a, b
     cset r, eq
-
-ne(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
-    fmov d0, a
-    fmov d1, b
-    fcmp d0, d1
+ne(f64, f64) -> u1
+    fcmp a, b
     cset r, ne
-
-lt(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
-    fmov d0, a
-    fmov d1, b
-    fcmp d0, d1
+lt(f64, f64) -> u1
+    fcmp a, b
     cset r, lo
-
-le(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
-    fmov d0, a
-    fmov d1, b
-    fcmp d0, d1
+le(f64, f64) -> u1
+    fcmp a, b
     cset r, ls
-
-gt(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
-    fmov d0, a
-    fmov d1, b
-    fcmp d0, d1
+gt(f64, f64) -> u1
+    fcmp a, b
     cset r, gt
-
-ge(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
-    fmov d0, a
-    fmov d1, b
-    fcmp d0, d1
+ge(f64, f64) -> u1
+    fcmp a, b
     cset r, ge
 
 ; --- conversion: float to float, integer to float (rounded), float to
-; integer (toward zero, saturating, NaN to 0 — fcvtz's own rules, which
+; integer (toward zero, saturating, NaN to 0: fcvtz's own rules, which
 ; are the library's) ---
-
-conv(8, 23, 11, 52, 0)(a: float(8, 23)) -> r: float(11, 52)
-    fmov s0, a
-    fcvt d0, s0
-    fmov r, d0
-
-conv(11, 52, 8, 23, 0)(a: float(11, 52)) -> r: float(8, 23)
-    fmov d0, a
-    fcvt s0, d0
-    fmov r, s0
-
-conv(32, 8, 23, 0)(a: i32) -> r: float(8, 23)
-    scvtf s0, a
-    fmov r, s0
-
-conv(32, 11, 52, 0)(a: i32) -> r: float(11, 52)
-    scvtf d0, a
-    fmov r, d0
-
-conv(32, 8, 23, 0)(a: u32) -> r: float(8, 23)
-    ucvtf s0, a
-    fmov r, s0
-
-conv(32, 11, 52, 0)(a: u32) -> r: float(11, 52)
-    ucvtf d0, a
-    fmov r, d0
-
-conv(64, 8, 23, 0)(a: i64) -> r: float(8, 23)
-    scvtf s0, a
-    fmov r, s0
-
-conv(64, 11, 52, 0)(a: i64) -> r: float(11, 52)
-    scvtf d0, a
-    fmov r, d0
-
-conv(64, 8, 23, 0)(a: u64) -> r: float(8, 23)
-    ucvtf s0, a
-    fmov r, s0
-
-conv(64, 11, 52, 0)(a: u64) -> r: float(11, 52)
-    ucvtf d0, a
-    fmov r, d0
-
-conv(8, 23, 32)(a: float(8, 23)) -> r: i32
-    fmov s0, a
-    fcvtzs r, s0
-
-conv(8, 23, 32)(a: float(8, 23)) -> r: u32
-    fmov s0, a
-    fcvtzu r, s0
-
-conv(8, 23, 64)(a: float(8, 23)) -> r: i64
-    fmov s0, a
-    fcvtzs r, s0
-
-conv(8, 23, 64)(a: float(8, 23)) -> r: u64
-    fmov s0, a
-    fcvtzu r, s0
-
-conv(11, 52, 32)(a: float(11, 52)) -> r: i32
-    fmov d0, a
-    fcvtzs r, d0
-
-conv(11, 52, 32)(a: float(11, 52)) -> r: u32
-    fmov d0, a
-    fcvtzu r, d0
-
-conv(11, 52, 64)(a: float(11, 52)) -> r: i64
-    fmov d0, a
-    fcvtzs r, d0
-
-conv(11, 52, 64)(a: float(11, 52)) -> r: u64
-    fmov d0, a
-    fcvtzu r, d0
+fcvt {d}, {s} = conv(f32) -> f64
+fcvt {s}, {d} = conv(f64) -> f32
+scvtf {s}, {w} = conv(i32) -> f32
+scvtf {d}, {w} = conv(i32) -> f64
+ucvtf {s}, {w} = conv(u32) -> f32
+ucvtf {d}, {w} = conv(u32) -> f64
+scvtf {s}, {x} = conv(i64) -> f32
+scvtf {d}, {x} = conv(i64) -> f64
+ucvtf {s}, {x} = conv(u64) -> f32
+ucvtf {d}, {x} = conv(u64) -> f64
+fcvtzs {w}, {s} = conv(f32) -> i32
+fcvtzu {w}, {s} = conv(f32) -> u32
+fcvtzs {x}, {s} = conv(f32) -> i64
+fcvtzu {x}, {s} = conv(f32) -> u64
+fcvtzs {w}, {d} = conv(f64) -> i32
+fcvtzu {w}, {d} = conv(f64) -> u32
+fcvtzs {x}, {d} = conv(f64) -> i64
+fcvtzu {x}, {d} = conv(f64) -> u64

@@ -114,7 +114,7 @@ pub fn run_at(only: &[String], level: usize, policy: ssa::Policy, tf_level: u8) 
         opt::optimize(&mut module, level);
         let soft = emit::jit::JitCode::new(&emit::compile_with(&module, &enc, &platform::Platform::none())?)?;
         let hard = emit::jit::JitCode::new(&emit::compile_with(&module, &enc, &platform::Platform::arm64())?)?;
-        let native = platform::Platform::arm64();
+        let native = platform::Platform::arm64().natives(&module);
         for op in &ops {
             // conv to an integer truncates (round toward zero), which
             // TestFloat calls minMag
@@ -132,7 +132,7 @@ pub fn run_at(only: &[String], level: usize, policy: ssa::Policy, tf_level: u8) 
                 ssa::Inst::Call { callee, .. } => module.funcs.iter().find(|g| &g.name == callee),
                 _ => None,
             });
-            let on_platform = callee.map_or(false, |g| native.lookup(g).is_some());
+            let on_platform = callee.map_or(false, |g| native.get(&g.name).is_some());
             let mask = if op.result_bits == 64 { u64::MAX } else { (1u64 << op.result_bits) - 1 };
             let (mut n, mut bad_soft, mut bad_hard) = (0, 0, 0);
             let mut shown = 0;

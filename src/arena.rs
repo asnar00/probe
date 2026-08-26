@@ -51,7 +51,7 @@ pub struct Arena {
     n_funcs: usize,
     enc: Encoder,
     /// callee name -> native op, per the platform; set when a module loads
-    pub natives: HashMap<String, crate::platform::Rule>,
+    pub natives: crate::platform::Natives,
 }
 
 pub struct Installed {
@@ -83,7 +83,7 @@ impl Arena {
             counters: Box::new([const { std::cell::UnsafeCell::new(0) }; MAX_FUNCS]),
             n_funcs: 0,
             enc,
-            natives: HashMap::new(),
+            natives: crate::platform::Natives::none(),
         })
     }
 

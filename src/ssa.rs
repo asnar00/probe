@@ -728,6 +728,9 @@ pub struct Function {
     /// for an instantiated generic: (generic name, width arguments) — what
     /// a platform matches on to substitute a native instruction
     pub instance: Option<(String, Vec<i64>)>,
+    /// the generic's parameter names, one per width argument (`E`, `M`,
+    /// `round`), so a platform can tell which arguments came from types
+    pub instance_names: Vec<String>,
     /// for a function that took or returned values wider than a word:
     /// the (parameter types, result types) as written, before they were
     /// lowered to words (see wide.rs) — what a caller from outside sees
@@ -1341,6 +1344,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
         p.env = params.into_iter().zip(args.iter().copied()).collect();
         p.pos = lo;
         let mut f = p.parse_function(Some(name))?;
+        f.instance_names = p.env.iter().map(|(n, _)| n.clone()).collect();
         p.env.clear();
         f.instance = Some((generic, args));
         funcs.push(f);
@@ -2651,6 +2655,7 @@ impl Parser {
                 blocks,
                 packs: Default::default(),
                 instance: None,
+                instance_names: Vec::new(),
                 wide_sig: None,
             });
         }
@@ -2707,6 +2712,7 @@ impl Parser {
             blocks,
             packs: Default::default(),
             instance: None,
+                instance_names: Vec::new(),
                 wide_sig: None,
         })
     }

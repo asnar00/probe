@@ -23,9 +23,8 @@
 
 use crate::emit::{Compiled, Encoder};
 use crate::regalloc::{self, Loc};
-use crate::platform::{Operand, Platform, Rule};
+use crate::platform::{Native, Natives, Operand, Platform};
 use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, ValueId};
-use std::collections::HashMap;
 
 /// pool for the allocator: callee-saved s2..s11 (x18..x27) — values placed
 /// here survive calls by construction
@@ -39,6 +38,11 @@ const T1: i64 = 6;
 const T2: i64 = 7;
 const A0: i64 = 10;
 const SLLI: &str = "slli {r}, {r}, {i 0..63}";
+const FLD: &str = "fld {f}, {i -2048..2047}({r})";
+const FSD: &str = "fsd {f}, {i -2048..2047}({r})";
+const FMV_D: &str = "fmv.d {f}, {f}";
+/// the float file's pool: fs0..fs11, callee-saved
+const F_POOL: &[i64] = &[8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27];
 const SRLI: &str = "srli {r}, {r}, {i 0..63}";
 const SRAI: &str = "srai {r}, {r}, {i 0..63}";
 const ANDI: &str = "andi {r}, {r}, {i -2048..2047}";
@@ -94,10 +98,12 @@ pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Resu
 struct RvEmit<'a> {
     enc: &'a Encoder,
     func: &'a Function,
-    natives: &'a HashMap<String, Rule>,
+    natives: &'a Natives,
     code: &'a mut Vec<u8>,
     frame: i64,
     alloc: &'a regalloc::Alloc,
+    /// per value: the platform's float register class (`f`), if any
+    classes: Vec<Option<String>>,
     spill_base: i64,
     block_offsets: Vec<Option<usize>>,
     fixups: Vec<Fixup>,
@@ -115,7 +121,61 @@ impl RvEmit<'_> {
         self.spill_base + 8 * idx as i64
     }
 
+    fn is_f(&self, v: ValueId) -> bool {
+        self.classes[v.0 as usize].is_some()
+    }
+
+    /// x <- the bits of a float register; fmv.x.w sign-extends, so a
+    /// 32-bit value is re-normalized to its (unsigned) canonical form
+    fn f_to_x(&mut self, x: i64, fr: i64, v: ValueId) -> Result<(), String> {
+        let r = self.repr(v);
+        if r.container() == 32 {
+            self.emit("fmv.x.w {r}, {f}", &[x, fr])?;
+            self.norm(x, x, r)
+        } else {
+            self.emit("fmv.x.d {r}, {f}", &[x, fr]).map(|_| ())
+        }
+    }
+
+    fn x_to_f(&mut self, fr: i64, x: i64, v: ValueId) -> Result<(), String> {
+        let t = if self.repr(v).container() == 32 { "fmv.w.x {f}, {r}" } else { "fmv.d.x {f}, {r}" };
+        self.emit(t, &[fr, x]).map(|_| ())
+    }
+
+    /// the float register holding v: its own, or the spill slot reloaded
+    /// into `fscratch` (ft0..ft3 = f0..f3: caller-saved, never allocated)
+    fn src_freg(&mut self, v: ValueId, fscratch: i64) -> Result<i64, String> {
+        match self.alloc.loc[v.0 as usize] {
+            Loc::Reg(r) => Ok(r),
+            Loc::Slot(i) => {
+                let off = self.slot_off(i);
+                self.emit(FLD, &[fscratch, off, SP])?;
+                Ok(fscratch)
+            }
+        }
+    }
+
+    fn dst_freg(&self, v: ValueId, fscratch: i64) -> i64 {
+        match self.alloc.loc[v.0 as usize] {
+            Loc::Reg(r) => r,
+            Loc::Slot(_) => fscratch,
+        }
+    }
+
+    fn finish_f(&mut self, v: ValueId, fr: i64) -> Result<(), String> {
+        if let Loc::Slot(i) = self.alloc.loc[v.0 as usize] {
+            let off = self.slot_off(i);
+            self.emit(FSD, &[fr, off, SP])?;
+        }
+        Ok(())
+    }
+
     fn src_reg(&mut self, v: ValueId, scratch: i64) -> Result<i64, String> {
+        if self.is_f(v) {
+            let fr = self.src_freg(v, 0)?;
+            self.f_to_x(scratch, fr, v)?;
+            return Ok(scratch);
+        }
         match self.alloc.loc[v.0 as usize] {
             Loc::Reg(r) => Ok(r),
             Loc::Slot(i) => {
@@ -127,6 +187,9 @@ impl RvEmit<'_> {
     }
 
     fn dst_reg(&self, v: ValueId, scratch: i64) -> i64 {
+        if self.is_f(v) {
+            return scratch;
+        }
         match self.alloc.loc[v.0 as usize] {
             Loc::Reg(r) => r,
             Loc::Slot(_) => scratch,
@@ -134,6 +197,11 @@ impl RvEmit<'_> {
     }
 
     fn finish(&mut self, v: ValueId, reg: i64) -> Result<(), String> {
+        if self.is_f(v) {
+            let fr = self.dst_freg(v, 3);
+            self.x_to_f(fr, reg, v)?;
+            return self.finish_f(v, fr);
+        }
         if let Loc::Slot(i) = self.alloc.loc[v.0 as usize] {
             let off = self.slot_off(i);
             self.emit(SD, &[reg, off, SP])?;
@@ -151,6 +219,10 @@ impl RvEmit<'_> {
     /// place v into a specific register (targets a0..a7 / staging; sources
     /// are pool registers or slots — disjoint, so sequences never clobber)
     fn value_to(&mut self, target: i64, v: ValueId) -> Result<(), String> {
+        if self.is_f(v) {
+            let fr = self.src_freg(v, 0)?;
+            return self.f_to_x(target, fr, v);
+        }
         match self.alloc.loc[v.0 as usize] {
             Loc::Reg(r) => self.mov(target, r),
             Loc::Slot(i) => {
@@ -161,6 +233,11 @@ impl RvEmit<'_> {
     }
 
     fn value_from(&mut self, v: ValueId, source: i64) -> Result<(), String> {
+        if self.is_f(v) {
+            let fr = self.dst_freg(v, 0);
+            self.x_to_f(fr, source, v)?;
+            return self.finish_f(v, fr);
+        }
         match self.alloc.loc[v.0 as usize] {
             Loc::Reg(r) => self.mov(r, source),
             Loc::Slot(i) => {
@@ -182,8 +259,26 @@ impl RvEmit<'_> {
         Ok(())
     }
 
-    /// one location-to-location move (registers or spill slots)
-    fn loc_move(&mut self, dst: Loc, src: Loc) -> Result<(), String> {
+    /// one location-to-location move (registers or spill slots), in the
+    /// integer file or (`f`) the float file
+    fn loc_move(&mut self, f: bool, dst: Loc, src: Loc) -> Result<(), String> {
+        if f {
+            return match (dst, src) {
+                (Loc::Reg(d), Loc::Reg(s)) => {
+                    if d != s {
+                        self.emit(FMV_D, &[d, s])?;
+                    }
+                    Ok(())
+                }
+                (Loc::Reg(d), Loc::Slot(s)) => self.emit(FLD, &[d, self.slot_off(s), SP]).map(|_| ()),
+                (Loc::Slot(d), Loc::Reg(s)) => self.emit(FSD, &[s, self.slot_off(d), SP]).map(|_| ()),
+                (Loc::Slot(d), Loc::Slot(s)) => {
+                    // transit through ft1; ft0 stays free for cycle breaking
+                    self.emit(FLD, &[1, self.slot_off(s), SP])?;
+                    self.emit(FSD, &[1, self.slot_off(d), SP]).map(|_| ())
+                }
+            };
+        }
         match (dst, src) {
             (Loc::Reg(d), Loc::Reg(s)) => self.mov(d, s),
             (Loc::Reg(d), Loc::Slot(s)) => {
@@ -206,24 +301,24 @@ impl RvEmit<'_> {
     /// nobody still reads; break cycles by stashing one source in t0
     fn branch_args(&mut self, target: BlockId, args: &[ValueId]) -> Result<(), String> {
         let params: Vec<ValueId> = self.func.blocks[target.0 as usize].params.clone();
-        let mut pending: Vec<(Loc, Loc)> = params
+        let mut pending: Vec<(bool, Loc, Loc)> = params
             .iter()
             .zip(args)
-            .map(|(&p, &a)| (self.alloc.loc[p.0 as usize], self.alloc.loc[a.0 as usize]))
-            .filter(|(d, s)| d != s)
+            .map(|(&p, &a)| (self.is_f(p), self.alloc.loc[p.0 as usize], self.alloc.loc[a.0 as usize]))
+            .filter(|(_, d, s)| d != s)
             .collect();
-        let scratch = Loc::Reg(T0);
         while !pending.is_empty() {
             if let Some(i) =
-                (0..pending.len()).find(|&i| !pending.iter().any(|&(_, s)| s == pending[i].0))
+                (0..pending.len()).find(|&i| !pending.iter().any(|&(f, _, s)| f == pending[i].0 && s == pending[i].1))
             {
-                let (d, s) = pending.swap_remove(i);
-                self.loc_move(d, s)?;
+                let (f, d, s) = pending.swap_remove(i);
+                self.loc_move(f, d, s)?;
             } else {
-                let s = pending[0].1;
-                self.loc_move(scratch, s)?;
-                for m in pending.iter_mut().filter(|m| m.1 == s) {
-                    m.1 = scratch;
+                let (f, _, s) = pending[0];
+                let scratch = Loc::Reg(if f { 0 } else { T0 });
+                self.loc_move(f, scratch, s)?;
+                for m in pending.iter_mut().filter(|m| m.0 == f && m.2 == s) {
+                    m.2 = scratch;
                 }
             }
         }
@@ -274,6 +369,10 @@ impl RvEmit<'_> {
         for (k, &r) in self.alloc.used_regs.clone().iter().enumerate() {
             self.emit(LD, &[r, 16 + 8 * k as i64, SP])?;
         }
+        let fbase = 16 + 8 * self.alloc.used_regs.len() as i64;
+        for (k, &fr) in self.alloc.used_by_class[1].clone().iter().enumerate() {
+            self.emit(FLD, &[fr, fbase + 8 * k as i64, SP])?;
+        }
         self.emit(LD, &[RA, 0, SP])?;
         self.emit(ADDI, &[SP, SP, self.frame])?;
         self.emit("jalr {r}, {i -2048..2047}({r})", &[ZERO, 0, RA])?;
@@ -317,22 +416,45 @@ impl RvEmit<'_> {
 fn compile_function(
     func: &Function,
     enc: &Encoder,
-    natives: &HashMap<String, Rule>,
+    natives: &Natives,
     code: &mut Vec<u8>,
     call_fixups: &mut Vec<Fixup>,
 ) -> Result<(), String> {
-    if let Some(rule) = natives.get(&func.name) {
-        // this function *is* a platform instruction: a0, a1 -> a0, no frame
-        let args: Vec<i64> = (0..rule.arg_bits.len() as i64).map(|j| A0 + j).collect();
-        let seq = rule_seq(enc, rule, A0, &args)?;
+    if let Some(native) = natives.get(&func.name) {
+        // this function *is* a platform instruction: bits arrive in a0..,
+        // float ones move to ft0.., the rule runs, a float result comes
+        // back through a0 (zero-extended when 32 bits wide)
+        let mut seq: Vec<(&str, Vec<i64>)> = Vec::new();
+        let mut args = Vec::new();
+        for (i, class) in native.arg_class.iter().enumerate() {
+            if class.is_some() {
+                seq.push((if native.arg_bits[i] <= 32 { "fmv.w.x {f}, {r}" } else { "fmv.d.x {f}, {r}" }, vec![i as i64, A0 + i as i64]));
+                args.push(i as i64);
+            } else {
+                args.push(A0 + i as i64);
+            }
+        }
+        let rd = if native.ret_class.is_some() { 3 } else { A0 };
+        seq.extend(rule_seq(enc, native, rd, &args)?);
+        if native.ret_class.is_some() {
+            if native.ret_bits <= 32 {
+                seq.push(("fmv.x.w {r}, {f}", vec![A0, 3]));
+                seq.push((SLLI, vec![A0, A0, 32]));
+                seq.push((SRLI, vec![A0, A0, 32]));
+            } else {
+                seq.push(("fmv.x.d {r}, {f}", vec![A0, 3]));
+            }
+        }
         for (t, v) in seq {
             code.extend_from_slice(&enc.encode(t, &v)?.to_le_bytes());
         }
         code.extend_from_slice(&enc.encode("jalr {r}, {i -2048..2047}({r})", &[ZERO, 0, RA])?.to_le_bytes());
         return Ok(());
     }
-    let alloc = regalloc::allocate(func, REG_POOL);
-    let nsaved = alloc.used_regs.len() as i64;
+    let classes: Vec<Option<String>> = func.values.iter().map(|v| natives.class_of(func, v.ty).map(str::to_string)).collect();
+    let class_idx: Vec<usize> = classes.iter().map(|c| c.is_some() as usize).collect();
+    let alloc = regalloc::allocate_classes(func, &class_idx, &[REG_POOL, F_POOL]);
+    let nsaved = alloc.used_regs.len() as i64 + alloc.used_by_class[1].len() as i64;
     let spill_base = 16 + 8 * nsaved;
     let frame = (spill_base + 8 * alloc.nslots as i64 + 15) & !15;
     if frame > 2047 {
@@ -349,6 +471,7 @@ fn compile_function(
         code,
         frame,
         alloc: &alloc,
+        classes,
         spill_base,
         block_offsets: vec![None; func.blocks.len()],
         fixups: Vec::new(),
@@ -358,6 +481,10 @@ fn compile_function(
     e.emit(SD, &[RA, 0, SP])?;
     for (k, &r) in alloc.used_regs.iter().enumerate() {
         e.emit(SD, &[r, 16 + 8 * k as i64, SP])?;
+    }
+    let fbase = 16 + 8 * alloc.used_regs.len() as i64;
+    for (k, &fr) in alloc.used_by_class[1].iter().enumerate() {
+        e.emit(FSD, &[fr, fbase + 8 * k as i64, SP])?;
     }
     for (i, &p) in func.params.iter().enumerate() {
         e.value_from(p, A0 + i as i64)?;
@@ -385,20 +512,18 @@ fn compile_function(
     Ok(())
 }
 
-/// the instruction sequence for a platform rule: arguments in the
-/// integer registers given, the result in rd, scratch floats in f0..
-/// (ft0.., caller-saved)
-fn rule_seq<'a>(enc: &'a Encoder, rule: &Rule, rd: i64, args: &[i64]) -> Result<Vec<(&'a str, Vec<i64>)>, String> {
+/// the instruction sequence for a platform rule: the arguments and the
+/// result in the registers given, each in its own class's file
+fn rule_seq<'a>(enc: &'a Encoder, native: &Native, rd: i64, args: &[i64]) -> Result<Vec<(&'a str, Vec<i64>)>, String> {
     let templates = enc.templates();
     let mut seq = Vec::new();
-    for line in &rule.lines {
-        let (t, vals) = crate::platform::resolve(rule, line, &templates)?;
+    for line in &native.rule.lines {
+        let (t, vals) = crate::platform::resolve(native, line, &templates)?;
         let v = vals
             .into_iter()
             .map(|(op, v)| match op {
                 Operand::Arg(i) => args[i],
                 Operand::Ret => rd,
-                Operand::Scratch(_, n) => n as i64,
                 Operand::Lit(_) => v,
             })
             .collect();
@@ -614,22 +739,24 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             e.emit("add {r}, {r}, {r}", &[rd, rb, ro])?;
             e.finish(*dst, rd)
         }
-        Inst::Call { dsts, callee, args } if e.natives.contains_key(callee) => {
-            // the platform has this one: the rule's sequence instead of the call
-            let natives: &HashMap<String, Rule> = e.natives;
-            let rule = &natives[callee];
+        Inst::Call { dsts, callee, args } if e.natives.get(callee).is_some() => {
+            // the platform has this one: the rule's sequence instead of
+            // the call, each operand in its own file
+            let natives: &Natives = e.natives;
+            let native = natives.get(callee).unwrap();
             let Some(&dst) = dsts.first() else {
                 return Ok(());
             };
             let mut regs = Vec::new();
             for (j, &a) in args.iter().enumerate() {
-                regs.push(e.src_reg(a, [T0, T1, T2][j])?);
+                regs.push(if native.arg_class[j].is_some() { e.src_freg(a, j as i64)? } else { e.src_reg(a, [T0, T1, T2][j])? });
             }
-            let rd = e.dst_reg(dst, T0);
-            for (t, v) in rule_seq(e.enc, rule, rd, &regs)? {
+            let ret_f = native.ret_class.is_some();
+            let rd = if ret_f { e.dst_freg(dst, 3) } else { e.dst_reg(dst, T0) };
+            for (t, v) in rule_seq(e.enc, native, rd, &regs)? {
                 e.emit(t, &v)?;
             }
-            e.finish(dst, rd)
+            if ret_f { e.finish_f(dst, rd) } else { e.finish(dst, rd) }
         }
         Inst::Call { dsts, callee, args } => {
             if args.len() > 8 {

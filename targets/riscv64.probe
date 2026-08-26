@@ -115,6 +115,11 @@ inst fcvt.d.lu {f}, {r}
 inst fmv.w.x {f}, {r}
 inst fmv.x.w {r}, {f}
 inst fmv.d.x {f}, {r}
+; float values live in f registers of their own: register moves (fmv.d
+; copies all 64 bits, NaN boxing included), spills and reloads
+inst fmv.d {f}, {f}
+inst fsd {f}, {i -2048..2047}({r})
+inst fld {f}, {i -2048..2047}({r})
 inst fmv.x.d {r}, {f}
 ; enabling the FPU on bare metal: set mstatus.FS through a CSR write
 inst csrrs {r}, {i 0..4095}, {r}

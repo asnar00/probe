@@ -198,6 +198,12 @@ inst fcvtzu {w}, {d}
 inst fcvtzu {x}, {d}
 inst fmov {s}, {w}
 inst fmov {w}, {s}
+; float values live in s/d registers of their own: register moves, and
+; spills and reloads of the whole 64-bit register
+inst fmov {s}, {s}
+inst fmov {d}, {d}
+inst str {d}, [sp, #{i 0..32760 /8}]
+inst ldr {d}, [sp, #{i 0..32760 /8}]
 inst fmov {d}, {x}
 inst fmov {x}, {d}
 ; enabling the FPU on bare metal (cpacr_el1.FPEN), and the barrier after
