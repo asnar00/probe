@@ -45,21 +45,15 @@ fn mul(N)(a: unit(N), b: unit(N)) -> unit(N) {
     b64: u64 = conv bv
     max: u64 = const ((1 << (N - 1)) - 1) * 2 + 1
     half: u64 = shr max, 1
-    ah: u64 = shr a64, 32
-    al: u64 = and a64, 0xffffffff
-    bh: u64 = shr b64, 32
-    bl: u64 = and b64, 0xffffffff
-    hh: u64 = mul ah, bh
-    m1: u64 = mul ah, bl
-    m2: u64 = mul al, bh
-    ll: u64 = mul al, bl
-    mh1: u64, ml1: u64 = shl128(0, m1, 32)
-    mh2: u64, ml2: u64 = shl128(0, m2, 32)
-    p1h: u64, p1l: u64 = add128(0, ll, mh1, ml1)
-    p2h: u64, p2l: u64 = add128(p1h, p1l, mh2, ml2)
-    p3h: u64, p3l: u64 = add128(p2h, p2l, hh, 0)
-    ph: u64, pl: u64 = add128(p3h, p3l, 0, half)
-    q: u64, rem: u64 = udiv128(ph, pl, max)
+    ; (a * b + max / 2) / max, in 128 bits
+    aw: u128 = conv a64
+    bw: u128 = conv b64
+    p: u128 = mul aw, bw
+    hw: u128 = conv half
+    p2: u128 = add p, hw
+    mw: u128 = conv max
+    qw: u128 = div p2, mw
+    q: u64 = conv qw
     rv: u(N) = conv q
     r: unit(N) = pack rv
     ret r
@@ -86,23 +80,16 @@ fn div(N)(a: unit(N), b: unit(N)) -> unit(N) {
         one2: unit(N) = pack maxn
         ret one2
     }
-    nh: u64, nl: u64 = shl128(0, a64, 0)
-    ah: u64 = shr a64, 32
-    al: u64 = and a64, 0xffffffff
-    mh: u64 = shr max, 32
-    ml: u64 = and max, 0xffffffff
-    hh: u64 = mul ah, mh
-    m1: u64 = mul ah, ml
-    m2: u64 = mul al, mh
-    ll: u64 = mul al, ml
-    mh1: u64, ml1: u64 = shl128(0, m1, 32)
-    mh2: u64, ml2: u64 = shl128(0, m2, 32)
-    p1h: u64, p1l: u64 = add128(0, ll, mh1, ml1)
-    p2h: u64, p2l: u64 = add128(p1h, p1l, mh2, ml2)
-    p3h: u64, p3l: u64 = add128(p2h, p2l, hh, 0)
+    ; (a * max + b / 2) / b, in 128 bits
+    aw: u128 = conv a64
+    mw: u128 = conv max
+    p: u128 = mul aw, mw
     halfb: u64 = shr b64, 1
-    ph: u64, pl: u64 = add128(p3h, p3l, 0, halfb)
-    q: u64, rem: u64 = udiv128(ph, pl, b64)
+    hw: u128 = conv halfb
+    p2: u128 = add p, hw
+    bw: u128 = conv b64
+    qw: u128 = div p2, bw
+    q: u64 = conv qw
     rv: u(N) = conv q
     r: unit(N) = pack rv
     ret r
@@ -293,21 +280,15 @@ fn mul(N)(a: sunit(N), b: sunit(N)) -> sunit(N) {
     s: u1 = xor sa, sb
     max: u64 = const (1 << (N - 1)) - 1
     half: u64 = shr max, 1
-    ah: u64 = shr ma, 32
-    al: u64 = and ma, 0xffffffff
-    bh: u64 = shr mb, 32
-    bl: u64 = and mb, 0xffffffff
-    hh: u64 = mul ah, bh
-    m1: u64 = mul ah, bl
-    m2: u64 = mul al, bh
-    ll: u64 = mul al, bl
-    mh1: u64, ml1: u64 = shl128(0, m1, 32)
-    mh2: u64, ml2: u64 = shl128(0, m2, 32)
-    p1h: u64, p1l: u64 = add128(0, ll, mh1, ml1)
-    p2h: u64, p2l: u64 = add128(p1h, p1l, mh2, ml2)
-    p3h: u64, p3l: u64 = add128(p2h, p2l, hh, 0)
-    ph: u64, pl: u64 = add128(p3h, p3l, 0, half)
-    q: u64, rem: u64 = udiv128(ph, pl, max)
+    ; (a * b + max / 2) / max, in 128 bits
+    aw: u128 = conv ma
+    bw: u128 = conv mb
+    p: u128 = mul aw, bw
+    hw: u128 = conv half
+    p2: u128 = add p, hw
+    mw: u128 = conv max
+    qw: u128 = div p2, mw
+    q: u64 = conv qw
     over: u1 = cmp.gt q, max
     qm: u64 = if over {
         yield max
@@ -341,22 +322,15 @@ fn div(N)(a: sunit(N), b: sunit(N)) -> sunit(N) {
         yield max
     } else {
         ; (ma * max + mb / 2) / mb, ma and max both under 2^63
-        ah: u64 = shr ma, 32
-        al: u64 = and ma, 0xffffffff
-        mh: u64 = shr max, 32
-        ml: u64 = and max, 0xffffffff
-        hh: u64 = mul ah, mh
-        m1: u64 = mul ah, ml
-        m2: u64 = mul al, mh
-        ll: u64 = mul al, ml
-        mh1: u64, ml1: u64 = shl128(0, m1, 32)
-        mh2: u64, ml2: u64 = shl128(0, m2, 32)
-        p1h: u64, p1l: u64 = add128(0, ll, mh1, ml1)
-        p2h: u64, p2l: u64 = add128(p1h, p1l, mh2, ml2)
-        p3h: u64, p3l: u64 = add128(p2h, p2l, hh, 0)
+        aw: u128 = conv ma
+        mw: u128 = conv max
+        p: u128 = mul aw, mw
         halfb: u64 = shr mb, 1
-        ph: u64, pl: u64 = add128(p3h, p3l, 0, halfb)
-        qq: u64, rem: u64 = udiv128(ph, pl, mb)
+        hw: u128 = conv halfb
+        p2: u128 = add p, hw
+        bw: u128 = conv mb
+        qw: u128 = div p2, bw
+        qq: u64 = conv qw
         yield qq
     }
     qi: i64 = cast q

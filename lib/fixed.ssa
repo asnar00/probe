@@ -120,26 +120,17 @@ fn fxmk(I, F)(neg: u1, m64: u64) -> fixed(I, F) {
     ret r
 }
 
-; a * b: the full product from halves, shifted down by F, truncating
+; a * b: the full product in 128 bits, shifted down by F, truncating
 fn mul(I, F)(a: fixed(I, F), b: fixed(I, F)) -> fixed(I, F) {
     sa: u1, ma: u64 = fxmag(I, F)(a)
     sb: u1, mb: u64 = fxmag(I, F)(b)
     s: u1 = xor sa, sb
-    ah: u64 = shr ma, 32
-    al: u64 = and ma, 0xffffffff
-    bh: u64 = shr mb, 32
-    bl: u64 = and mb, 0xffffffff
-    hh: u64 = mul ah, bh
-    m1: u64 = mul ah, bl
-    m2: u64 = mul al, bh
-    ll: u64 = mul al, bl
-    mh1: u64, ml1: u64 = shl128(0, m1, 32)
-    mh2: u64, ml2: u64 = shl128(0, m2, 32)
-    p1h: u64, p1l: u64 = add128(0, ll, mh1, ml1)
-    p2h: u64, p2l: u64 = add128(p1h, p1l, mh2, ml2)
-    ph: u64, pl: u64 = add128(p2h, p2l, hh, 0)
-    f64v: u64 = const F
-    qh: u64, ql: u64, st: u1 = shr128(ph, pl, f64v)
+    aw: u128 = conv ma
+    bw: u128 = conv mb
+    p: u128 = mul aw, bw
+    fw: u128 = const F
+    qw: u128 = shr p, fw
+    ql: u64 = conv qw
     r: fixed(I, F) = fxmk(I, F)(s, ql)
     ret r
 }
@@ -167,9 +158,12 @@ fn div(I, F)(a: fixed(I, F), b: fixed(I, F)) -> fixed(I, F) {
         sat: fixed(I, F) = cast lim
         ret sat
     }
-    f64v: u64 = const F
-    nh: u64, nl: u64 = shl128(0, ma, f64v)
-    q: u64, rem: u64 = udiv128(nh, nl, mb)
+    aw: u128 = conv ma
+    fw: u128 = const F
+    n: u128 = shl aw, fw
+    bw: u128 = conv mb
+    qw: u128 = div n, bw
+    q: u64 = conv qw
     r: fixed(I, F) = fxmk(I, F)(s, q)
     ret r
 }

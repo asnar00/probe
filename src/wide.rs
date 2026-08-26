@@ -57,7 +57,7 @@ struct Lower<'a> {
     /// the original types of the wide values (their ids are retyped)
     orig: HashMap<u32, Type>,
     /// constants, for shifts by a known amount
-    consts: HashMap<u32, i64>,
+    consts: HashMap<u32, i128>,
     out: Vec<Inst>,
 }
 
@@ -141,7 +141,7 @@ impl Lower<'_> {
 
     fn cst(&mut self, ty: Type, imm: i64) -> ValueId {
         let d = self.tmp(ty);
-        self.out.push(Inst::IConst { dst: d, imm });
+        self.out.push(Inst::IConst { dst: d, imm: imm as i128 });
         d
     }
 
@@ -457,13 +457,12 @@ impl Lower<'_> {
     fn inst(&mut self, inst: Inst) -> Result<(), String> {
         match inst {
             Inst::IConst { dst, imm } if self.wide(dst) => {
+                // the 128-bit constant's words, then its sign beyond
                 self.consts.insert(dst.0, imm);
                 let ws = self.expand(dst);
-                let n = ws.len();
-                self.out.push(Inst::IConst { dst: ws[0], imm });
-                let fill = if imm < 0 { -1 } else { 0 };
-                for &w in &ws[1..n] {
-                    self.out.push(Inst::IConst { dst: w, imm: fill });
+                for (k, &w) in ws.iter().enumerate() {
+                    let word = if k < 2 { (imm >> (64 * k)) as i64 } else { (imm >> 127) as i64 };
+                    self.out.push(Inst::IConst { dst: w, imm: word as i128 });
                 }
             }
             Inst::IConst { dst, imm } => {
@@ -494,7 +493,7 @@ impl Lower<'_> {
                         let n = a.len();
                         let fill = if op == BinOp::Shr && self.signed(dst) { self.sign_fill(a[n - 1]) } else { self.cst(Type::U64, 0) };
                         match self.consts.get(&rhs.0).copied() {
-                            Some(k) if k >= 0 && (k as u32) < width => {
+                            Some(k) if k >= 0 && k < width as i128 => {
                                 if op == BinOp::Shl { self.shl_const(&a, k as u32) } else { self.shr_const(&a, k as u32, fill) }
                             }
                             Some(_) => return Err("shift by an amount outside the width".into()),

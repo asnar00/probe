@@ -358,9 +358,9 @@ fn fpack(E, M, round)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
 }
 
 ; --- multiplication ---
-; The product of two (M + 1)-bit significands has 2M + 2 bits, more than
-; a 64-bit value holds for f64; it is built from halves of k = ceil((M+1)/2)
-; bits, and only its top M + 5 bits plus a sticky are ever formed.
+; The product of two (M + 1)-bit significands has 2M + 2 bits: formed in
+; a type of that width (words, when it is wider than one), then its top
+; M + 5 bits are kept with a sticky for the rest.
 fn mul(E, M, round)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     ma: u(M), ea: u(E), sa: u1 = unpack a
     mb: u(M), eb: u(E), sb: u1 = unpack b
@@ -400,42 +400,16 @@ fn mul(E, M, round)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     }
     xa: i32, fa: u(M + 5) = fnorm(E, M)(ma, ea)
     xb: i32, fb: u(M + 5) = fnorm(E, M)(mb, eb)
-    fa64: u64 = conv fa
-    fb64: u64 = conv fb
-    ; halves of k bits
-    kk: u64 = const (M + 2) >> 1
-    kmask: u64 = const (1 << ((M + 2) >> 1)) - 1
-    ah: u64 = shr fa64, kk
-    al: u64 = and fa64, kmask
-    bh: u64 = shr fb64, kk
-    bl: u64 = and fb64, kmask
-    hh: u64 = mul ah, bh
-    m1: u64 = mul ah, bl
-    m2: u64 = mul al, bh
-    mid: u64 = add m1, m2
-    ll: u64 = mul al, bl
-    ; product = hh << 2k + mid << k + ll; wanted: product >> (M - 3) and a
-    ; sticky for what falls below. With s = M - 3: the mid term moves left
-    ; by k - s or right by s - k, whichever is nonnegative
-    sl: u64 = const (((M + 2) >> 1) - (M - 3)) - ((((M + 2) >> 1) - (M - 3)) & ((((M + 2) >> 1) - (M - 3)) >> 63))
-    sr: u64 = const ((M - 3) - ((M + 2) >> 1)) - (((M - 3) - ((M + 2) >> 1)) & (((M - 3) - ((M + 2) >> 1)) >> 63))
-    srmask: u64 = const (1 << (((M - 3) - ((M + 2) >> 1)) - (((M - 3) - ((M + 2) >> 1)) & (((M - 3) - ((M + 2) >> 1)) >> 63)))) - 1
-    ss: u64 = const M - 3
-    smask: u64 = const (1 << (M - 3)) - 1
-    hsh: u64 = const 2 * ((M + 2) >> 1) - (M - 3)
-    midlo: u64 = and mid, srmask
-    midlo_k: u64 = shl midlo, kk
-    low: u64 = add midlo_k, ll
-    lowsh: u64 = shr low, ss
-    midhi: u64 = shr mid, sr
-    midhi2: u64 = shl midhi, sl
-    hhs: u64 = shl hh, hsh
-    r0: u64 = add hhs, midhi2
-    r1: u64 = add r0, lowsh
-    lost: u64 = and low, smask
+    pa: u(2 * M + 10) = conv fa
+    pb: u(2 * M + 10) = conv fb
+    p: u(2 * M + 10) = mul pa, pb
+    ss: u(2 * M + 10) = const M - 3
+    top: u(2 * M + 10) = shr p, ss
+    smask: u(2 * M + 10) = const (1 << (M - 3)) - 1
+    lost: u(2 * M + 10) = and p, smask
     st: u1 = cmp.ne lost, 0
-    stw: u64 = conv st
-    r2: u64 = or r1, stw
+    stw: u(2 * M + 10) = conv st
+    r2: u(2 * M + 10) = or top, stw
     r: u(M + 5) = conv r2
     bias32: i32 = const (1 << (E - 1)) - 1
     x1: i32 = add xa, xb
@@ -626,17 +600,18 @@ fn conv(E, M, F, N, round)(a: float(E, M)) -> float(F, N) {
         ret z
     }
     x: i32, f: u(M + 5) = fnorm(E, M)(ma, ea)
-    f64: u64 = conv f
-    ; units bit from M to N + 3: left by N + 3 - M, or right by M - N - 3
-    sl: u64 = const (N + 3 - M) - ((N + 3 - M) & ((N + 3 - M) >> 63))
-    sr: u64 = const (M - N - 3) - ((M - N - 3) & ((M - N - 3) >> 63))
-    srmask: u64 = const (1 << ((M - N - 3) - ((M - N - 3) & ((M - N - 3) >> 63)))) - 1
-    lost: u64 = and f64, srmask
+    ; units bit from M to N + 3: left by N + 3 - M, or right by M - N - 3,
+    ; in a type that holds either significand
+    fw: u(M + N + 10) = conv f
+    sl: u(M + N + 10) = const (N + 3 - M) - ((N + 3 - M) & ((N + 3 - M) >> 63))
+    sr: u(M + N + 10) = const (M - N - 3) - ((M - N - 3) & ((M - N - 3) >> 63))
+    srmask: u(M + N + 10) = const (1 << ((M - N - 3) - ((M - N - 3) & ((M - N - 3) >> 63)))) - 1
+    lost: u(M + N + 10) = and fw, srmask
     st: u1 = cmp.ne lost, 0
-    stw: u64 = conv st
-    t0: u64 = shr f64, sr
-    t1: u64 = shl t0, sl
-    t: u64 = or t1, stw
+    stw: u(M + N + 10) = conv st
+    t0: u(M + N + 10) = shr fw, sr
+    t1: u(M + N + 10) = shl t0, sl
+    t: u(M + N + 10) = or t1, stw
     tn: u(N + 5) = conv t
     bias_s: i32 = const (1 << (E - 1)) - 1
     bias_d: i32 = const (1 << (F - 1)) - 1
@@ -663,23 +638,26 @@ fn fint(E, M, round)(s: u1, mag: u64) -> float(E, M) {
         c2: i32 = add c, 1
         continue v2, c2
     }
+    ; place the units bit at M + 3, in a type that holds a u64 at any
+    ; shift the width allows
+    magw: u(M + 69) = conv mag
     thr: i32 = const M + 3
     big: u1 = cmp.gt p, thr
-    t: u64 = if big {
+    t: u(M + 69) = if big {
         sh: i32 = sub p, thr
-        sh64: u64 = conv sh
-        shifted: u64 = shr mag, sh64
-        m1: u64 = shl 1, sh64
-        mask: u64 = sub m1, 1
-        lost: u64 = and mag, mask
+        shw: u(M + 69) = conv sh
+        shifted: u(M + 69) = shr magw, shw
+        m1: u(M + 69) = shl 1, shw
+        mask: u(M + 69) = sub m1, 1
+        lost: u(M + 69) = and magw, mask
         st: u1 = cmp.ne lost, 0
-        stw: u64 = conv st
-        al: u64 = or shifted, stw
+        stw: u(M + 69) = conv st
+        al: u(M + 69) = or shifted, stw
         yield al
     } else {
         sh2: i32 = sub thr, p
-        sh264: u64 = conv sh2
-        up: u64 = shl mag, sh264
+        sh2w: u(M + 69) = conv sh2
+        up: u(M + 69) = shl magw, sh2w
         yield up
     }
     tn: u(M + 5) = conv t
@@ -723,20 +701,21 @@ fn fmag(E, M)(ma: u(M), ea: u(E)) -> u64 {
     if huge {
         ret -1
     }
-    f64: u64 = conv f
+    fw: u(M + 69) = conv f
     m32: i32 = const M
     left: u1 = cmp.ge e, m32
-    mag: u64 = if left {
+    magw: u(M + 69) = if left {
         sh: i32 = sub e, m32
-        sh64: u64 = conv sh
-        up: u64 = shl f64, sh64
+        shw: u(M + 69) = conv sh
+        up: u(M + 69) = shl fw, shw
         yield up
     } else {
         sh2: i32 = sub m32, e
-        sh264: u64 = conv sh2
-        down: u64 = shr f64, sh264
+        sh2w: u(M + 69) = conv sh2
+        down: u(M + 69) = shr fw, sh2w
         yield down
     }
+    mag: u64 = conv magw
     ret mag
 }
 
@@ -972,10 +951,11 @@ fn max(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
 }
 
 ; --- fused multiply-add: a * b + c with one rounding ---
-; The exact product (2M + 2 bits) and the addend meet in a 128-bit
-; accumulator with eight guard bits below the product, so any alignment
-; shift of eight or less is exact and cancellation loses nothing; beyond
-; that the shifted operand is far smaller and a sticky suffices.
+; The exact product (2M + 2 bits) and the addend meet in an accumulator
+; of 2M + 20 bits with eight guard bits below the product, so any
+; alignment shift of eight or less is exact and cancellation loses
+; nothing; beyond that the shifted operand is far smaller and a sticky
+; suffices.
 fn fma(E, M, round)(a: float(E, M), b: float(E, M), c: float(E, M)) -> float(E, M) {
     ma: u(M), ea: u(E), sa: u1 = unpack a
     mb: u(M), eb: u(E), sb: u1 = unpack b
@@ -1045,78 +1025,72 @@ fn fma(E, M, round)(a: float(E, M), b: float(E, M), c: float(E, M)) -> float(E, 
         pr: float(E, M) = mul a, b
         ret pr
     }
-    ; the product, exactly, as (hi, lo), from k-bit halves
+    ; the product, exactly, with eight guard bits: its units bit at 2M + 8
     xa: i32, fa: u(M + 5) = fnorm(E, M)(ma, ea)
     xb: i32, fb: u(M + 5) = fnorm(E, M)(mb, eb)
-    fa64: u64 = conv fa
-    fb64: u64 = conv fb
-    kk: u64 = const (M + 2) >> 1
-    kmask: u64 = const (1 << ((M + 2) >> 1)) - 1
-    ah: u64 = shr fa64, kk
-    al: u64 = and fa64, kmask
-    bh: u64 = shr fb64, kk
-    bl: u64 = and fb64, kmask
-    hh: u64 = mul ah, bh
-    m1: u64 = mul ah, bl
-    m2: u64 = mul al, bh
-    ll: u64 = mul al, bl
-    mh1: u64, ml1: u64 = shl128(0, m1, kk)
-    mh2: u64, ml2: u64 = shl128(0, m2, kk)
-    kk2: u64 = const 2 * ((M + 2) >> 1)
-    hhh: u64, hhl: u64 = shl128(0, hh, kk2)
-    p1h: u64, p1l: u64 = add128(0, ll, mh1, ml1)
-    p2h: u64, p2l: u64 = add128(p1h, p1l, mh2, ml2)
-    p3h: u64, p3l: u64 = add128(p2h, p2l, hhh, hhl)
-    ; eight guard bits; the product's units bit is now at 2M + 8
-    ph: u64, pl: u64 = shl128(p3h, p3l, 8)
+    pa: u(2 * M + 20) = conv fa
+    pb: u(2 * M + 20) = conv fb
+    p0: u(2 * M + 20) = mul pa, pb
+    p: u(2 * M + 20) = shl p0, 8
     bias32: i32 = const (1 << (E - 1)) - 1
     xab: i32 = add xa, xb
     xp: i32 = sub xab, bias32
     ; the addend in the same layout
     xc: i32, fc: u(M + 5) = fnorm(E, M)(mc, ec)
-    fc64: u64 = conv fc
-    shc: u64 = const M + 8
-    ch: u64, cl: u64 = shl128(0, fc64, shc)
-    ; align to the larger exponent: u stays, v is shifted (with sticky)
+    fcw: u(2 * M + 20) = conv fc
+    shc: u(2 * M + 20) = const M + 8
+    cw: u(2 * M + 20) = shl fcw, shc
+    ; align to the larger exponent: u stays, v is shifted by d
     pbig: u1 = cmp.ge xp, xc
-    uh: u64, ul: u64, vh: u64, vl: u64, st: u1, su: u1, sv: u1, x0: i32 = if pbig {
+    u: u(2 * M + 20), v: u(2 * M + 20), d: i32, su: u1, sv: u1, x0: i32 = if pbig {
         d1: i32 = sub xp, xc
-        d164: u64 = conv d1
-        vh1: u64, vl1: u64, st1: u1 = shr128(ch, cl, d164)
-        yield ph, pl, vh1, vl1, st1, sp, sc, xp
+        yield p, cw, d1, sp, sc, xp
     } else {
         d2: i32 = sub xc, xp
-        d264: u64 = conv d2
-        vh2: u64, vl2: u64, st2: u1 = shr128(ph, pl, d264)
-        yield ch, cl, vh2, vl2, st2, sc, sp, xc
+        yield cw, p, d2, sc, sp, xc
+    }
+    ; the shift, with a sticky for what it loses (a shift past the
+    ; width loses everything)
+    wbits: i32 = const 2 * M + 20
+    far: u1 = cmp.ge d, wbits
+    vs: u(2 * M + 20), st: u1 = if far {
+        nz: u1 = cmp.ne v, 0
+        yield 0, nz
+    } else {
+        dw: u(2 * M + 20) = conv d
+        m1: u(2 * M + 20) = shl 1, dw
+        mask: u(2 * M + 20) = sub m1, 1
+        lost: u(2 * M + 20) = and v, mask
+        st1: u1 = cmp.ne lost, 0
+        sh: u(2 * M + 20) = shr v, dw
+        yield sh, st1
     }
     same: u1 = cmp.eq su, sv
-    rh: u64, rl: u64, rs: u1, stf: u1 = if same {
-        s1h: u64, s1l: u64 = add128(uh, ul, vh, vl)
-        yield s1h, s1l, su, st
+    acc: u(2 * M + 20), rs: u1, stf: u1 = if same {
+        s1: u(2 * M + 20) = add u, vs
+        yield s1, su, st
     } else {
-        vlt: u1 = lt128(vh, vl, uh, ul)
-        dh: u64, dl: u64, ds: u1, dst: u1 = if vlt {
+        vlt: u1 = cmp.lt vs, u
+        dr: u(2 * M + 20), ds: u1, dst: u1 = if vlt {
             ; u - v; a sticky under v means the true result is a little
             ; smaller: take one more off and keep the sticky
-            d1h: u64, d1l: u64 = sub128(uh, ul, vh, vl)
-            eh: u64, el: u64 = if st {
-                d2h: u64, d2l: u64 = sub128(d1h, d1l, 0, 1)
-                yield d2h, d2l
+            e1: u(2 * M + 20) = sub u, vs
+            e2: u(2 * M + 20) = if st {
+                e3: u(2 * M + 20) = sub e1, 1
+                yield e3
             } else {
-                yield d1h, d1l
+                yield e1
             }
-            yield eh, el, su, st
+            yield e2, su, st
         } else {
             ; v - u: v was shifted by at most eight (or it would be
             ; smaller), so it is exact
-            d3h: u64, d3l: u64 = sub128(vh, vl, uh, ul)
-            yield d3h, d3l, sv, 0
+            e4: u(2 * M + 20) = sub vs, u
+            yield e4, sv, 0
         }
-        yield dh, dl, ds, dst
+        yield dr, ds, dst
     }
-    any: u64 = or rh, rl
-    is0: u1 = cmp.eq any, 0
+    is0: u1 = cmp.eq acc, 0
     if is0 {
         mode1: u3 = const round
         zneg1: u1 = cmp.eq mode1, 2
@@ -1124,24 +1098,36 @@ fn fma(E, M, round)(a: float(E, M), b: float(E, M), c: float(E, M)) -> float(E, 
         ret z2
     }
     ; normalize: the top bit to position M + 3, with a sticky
-    t: i32 = msb128(rh, rl)
+    t: i32 = loop(tv: u(2 * M + 20) = acc, tc: i32 = 0) {
+        tsmall: u1 = cmp.le tv, 1
+        if tsmall {
+            break tc
+        }
+        tv2: u(2 * M + 20) = shr tv, 1
+        tc2: i32 = add tc, 1
+        continue tv2, tc2
+    }
     target: i32 = const M + 3
     down: u1 = cmp.gt t, target
-    fh: u64, fl: u64, st3: u1 = if down {
+    f0: u(2 * M + 20), st3: u1 = if down {
         dd: i32 = sub t, target
-        dd64: u64 = conv dd
-        nh: u64, nl: u64, ns: u1 = shr128(rh, rl, dd64)
-        yield nh, nl, ns
+        ddw: u(2 * M + 20) = conv dd
+        n1: u(2 * M + 20) = shl 1, ddw
+        nmask: u(2 * M + 20) = sub n1, 1
+        nlost: u(2 * M + 20) = and acc, nmask
+        ns: u1 = cmp.ne nlost, 0
+        nd: u(2 * M + 20) = shr acc, ddw
+        yield nd, ns
     } else {
         du: i32 = sub target, t
-        du64: u64 = conv du
-        nh2: u64, nl2: u64 = shl128(rh, rl, du64)
-        yield nh2, nl2, 0
+        duw: u(2 * M + 20) = conv du
+        nu: u(2 * M + 20) = shl acc, duw
+        yield nu, 0
     }
     stall: u1 = or stf, st3
-    stw: u64 = conv stall
-    fl2: u64 = or fl, stw
-    f: u(M + 5) = conv fl2
+    stw: u(2 * M + 20) = conv stall
+    f1: u(2 * M + 20) = or f0, stw
+    f: u(M + 5) = conv f1
     units: i32 = const 2 * M + 8
     x1: i32 = add x0, t
     x: i32 = sub x1, units

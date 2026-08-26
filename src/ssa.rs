@@ -161,6 +161,25 @@ impl IntExpr {
         })
     }
 
+    /// the same, at 128 bits: for a `const` on a wide value
+    fn eval128(&self, env: &[(String, i64)]) -> Result<i128, String> {
+        Ok(match self {
+            IntExpr::Lit(v) => *v as i128,
+            IntExpr::Param(p) => env
+                .iter()
+                .find(|(n, _)| n == p)
+                .map(|(_, v)| *v as i128)
+                .ok_or_else(|| format!("unknown type parameter '{}'", p))?,
+            IntExpr::Add(a, b) => a.eval128(env)?.wrapping_add(b.eval128(env)?),
+            IntExpr::Sub(a, b) => a.eval128(env)?.wrapping_sub(b.eval128(env)?),
+            IntExpr::Mul(a, b) => a.eval128(env)?.wrapping_mul(b.eval128(env)?),
+            IntExpr::Shl(a, b) => a.eval128(env)?.wrapping_shl(b.eval128(env)? as u32),
+            IntExpr::Shr(a, b) => a.eval128(env)?.wrapping_shr(b.eval128(env)? as u32),
+            IntExpr::And(a, b) => a.eval128(env)? & b.eval128(env)?,
+            IntExpr::Or(a, b) => a.eval128(env)? | b.eval128(env)?,
+        })
+    }
+
     fn prec(&self) -> u8 {
         match self {
             IntExpr::Lit(_) | IntExpr::Param(_) => 4,
@@ -596,7 +615,8 @@ impl CastOp {
 pub enum Inst {
     IConst {
         dst: ValueId,
-        imm: i64,
+        /// 128 bits, so a wide value's constants (`const 1 << 112`) fit
+        imm: i128,
     },
     Bin {
         op: BinOp,
@@ -2264,7 +2284,7 @@ impl Parser {
         if direct {
             let bits = self.literal_bits(lit, ty)?;
             let id = scope.synth(ty, (ty, bits));
-            self.consts.push(Inst::IConst { dst: id, imm: bits });
+            self.consts.push(Inst::IConst { dst: id, imm: bits as i128 });
             return Ok(id);
         }
         let src_ty = match lit {
@@ -2283,7 +2303,7 @@ impl Parser {
             .ok_or_else(|| format!("no conversion from a literal to {}", self.tyname_of(ty)))?;
         let bits = self.literal_bits(lit, src_ty)?;
         let src = scope.synth(src_ty, (src_ty, bits));
-        self.consts.push(Inst::IConst { dst: src, imm: bits });
+        self.consts.push(Inst::IConst { dst: src, imm: bits as i128 });
         let id = scope.synth(ty, (src_ty, bits));
         self.consts.push(Inst::Call {
             dsts: vec![id],
@@ -2832,13 +2852,13 @@ impl Parser {
                         self.pos = at;
                         self.err(m)
                     })?;
-                    return Ok(Inst::IConst { dst, imm });
+                    return Ok(Inst::IConst { dst, imm: imm as i128 });
                 }
                 // an integer, or in a generic an expression over its parameters
                 let params: Vec<String> = self.env.iter().map(|(n, _)| n.clone()).collect();
                 let (e, next) = self.int_expr_at(self.pos, &params)?;
                 self.pos = next;
-                let imm = e.eval(&self.env).map_err(|m| self.err(m))?;
+                let imm = e.eval128(&self.env).map_err(|m| self.err(m))?;
                 Ok(Inst::IConst { dst, imm })
             }
             "iconst" => Err(self.err("'iconst' is spelled 'const' (and takes 1.5, inf, nan on a float)".to_string())),
@@ -3467,7 +3487,7 @@ impl Function {
     fn fmt_value(&self, id: ValueId) -> String {
         let v = self.value(id);
         match v.literal {
-            Some((lt, bits)) => self.literal_text(lt, bits),
+            Some((lt, bits)) => self.literal_text(lt, bits as i128),
             None => v.name.clone(),
         }
     }
@@ -3481,7 +3501,7 @@ impl Function {
     fn fmt_value_typed(&self, id: ValueId) -> String {
         let v = self.value(id);
         match v.literal {
-            Some((lt, bits)) => format!("{}: {}", self.literal_text(lt, bits), self.tyname(v.ty)),
+            Some((lt, bits)) => format!("{}: {}", self.literal_text(lt, bits as i128), self.tyname(v.ty)),
             None => v.name.clone(),
         }
     }
@@ -3496,10 +3516,11 @@ impl Function {
 
     /// a constant as source text: a float as the shortest decimal that
     /// reads back to the same value, anything else as its integer
-    fn literal_text(&self, ty: Type, bits: i64) -> String {
+    fn literal_text(&self, ty: Type, bits: i128) -> String {
         let Some((e, m)) = self.float_params(ty) else {
             return bits.to_string();
         };
+        let bits = bits as i64;
         let bits = bits as u64;
         let emax = (1u64 << e) - 1;
         let (sign, exp, mant) = (bits >> (e + m) & 1, (bits >> m) & emax, bits & ((1u64 << m) - 1));
@@ -3879,14 +3900,16 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     // either reading of the literal must fit: signed or unsigned
                     let lo = -(1i128 << (bits - 1));
                     let hi = 1i128 << bits;
-                    (lo..hi).contains(&(*imm as i128))
+                    (lo..hi).contains(imm)
                 }
                 // ptr constants are raw addresses (MMIO, fixed buffers) —
                 // meaningful wherever ptr is an address-space index
                 Type::Int { .. } | Type::Ptr => true,
                 // a pack literal is its bit pattern
                 Type::Pack(_) => match func.width(ty) {
-                    Some(w) if w < 64 => (0..1i64 << w).contains(imm),
+                    // a 64-bit pack takes any 64-bit pattern (a negative i64
+                    // is one); narrower and wide ones fit their width
+                    Some(w) if w != 64 && w < 128 => (0..1i128 << w).contains(imm),
                     _ => true,
                 },
                 Type::AInt | Type::AUInt => unreachable!("rejected by rule 0"),
@@ -4664,7 +4687,7 @@ fn f() -> (f32, f32, f32, f32, u32) {
         verify(&m).expect("verify");
         let f = &m.funcs[0];
         let consts: Vec<i64> = f.blocks[0].insts.iter().filter_map(|i| match i {
-            Inst::IConst { imm, .. } => Some(*imm),
+            Inst::IConst { imm, .. } => Some(*imm as i64),
             _ => None,
         }).collect();
         assert_eq!(consts, vec![0x3dcccccd, 0xff800000, 0x7fc00000, 0x40400000, 0x3dcccccd]);

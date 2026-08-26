@@ -61,7 +61,12 @@ chains, schoolbook products, word-and-bit arrangement for shifts,
 lexicographic compares. `div` and `rem` alone go to the library
 (`lib/wide.ssa`'s `div(W)`/`rem(W)`, loops written over the wide type
 and lowered like everything else). `suite/wide.ssa` shows the shape:
-`;! add 1 0 2 0 -> 3, 0` is `add` on two `u128`s given as words.
+`;! add 1 0 2 0 -> 3, 0` is `add` on two `u128`s given as words. A
+`const` on a wide value takes a 128-bit width expression (`const 1 <<
+112`). The libraries use wide types wherever an intermediate outgrows a
+word — `float`'s `mul` forms the exact `2M + 2`-bit product in `u(2 * M
++ 10)`, `fixed`'s in `u128` — which is what lets one `add(E, M, round)`
+body serve `float(4, 3)` and `float(15, 112)` alike (`suite/f128.ssa`).
 
 Floats are reserved for a later version (`float` will join `int` as an
 abstract type when they land); their bit layouts are already expressible

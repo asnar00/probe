@@ -165,6 +165,8 @@ cargo run -- --float=f16 run suite/afloat.ssa hyp 3 4      # the same program, a
 cargo run -- run suite/fixed.ssa divf 7 2                   # fixed point (lib/fixed.ssa): 7 / 2 -> 3
 cargo run -- run suite/unit.ssa pct 50 50                   # unit fractions (lib/unit.ssa): 50% of 50% -> 25
 cargo run -- run suite/rational.ssa thirds 7               # rationals (lib/rational.ssa): (7 / 3) * 3 -> 7, exactly
+cargo run -- run suite/wide.ssa mul 0 1 0 1                # u128: (1 << 64) * (1 << 64) -> 0, 0 (mod 2^128); values are words, low first
+cargo run -- run suite/f128.ssa fdiv128 0 0x3fff000000000000 0 0x4000800000000000   # binary128 1 / 3, the same library body at 113 bits
 cargo run -- --scalar=rational run suite/scalar.ssa sweighted 20 80   # one program, any family
 
 # the scorecards (sh tools/get-isa-tables.sh once, to fetch the tables)
@@ -193,9 +195,11 @@ are checked in, so the backends and suite work without re-learning.
 
 ## Status
 
-Integers of every width, packed bitfields, parametric types and
-functions, and floating-point arithmetic, comparison, and conversion as a pure-SSA library that
-the platform swaps for hardware where it has it, on three targets,
+Integers of every width to 256 bits, packed bitfields, parametric types
+and functions, and floating-point arithmetic, comparison, and conversion
+as a pure-SSA library — one body per operation, instantiated from fp8 to
+binary128 — that the platform swaps for hardware where it has it, on
+three targets,
 everything differentially verified: the suite on four execution paths,
 every narrow-type op against the const-folder's model over every value
 pair, and the softfloat ops against the FPU for f32/f64 and against an

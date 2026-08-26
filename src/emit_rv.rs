@@ -443,7 +443,7 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
     const XORI: &str = "xori {r}, {r}, {i -2048..2047}";
     match inst {
         Inst::IConst { dst, imm } => {
-            let v = crate::opt::norm(e.repr(*dst), *imm);
+            let v = crate::opt::norm(e.repr(*dst), *imm as i64);
             let rd = e.dst_reg(*dst, T0);
             e.iconst(rd, v)?;
             e.finish(*dst, rd)

@@ -895,7 +895,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             let r = e.repr(*dst);
             // materialize the canonical form; a 32-bit container only
             // needs its low half
-            let mut v = crate::opt::norm(r, *imm) as u64;
+            let mut v = crate::opt::norm(r, *imm as i64) as u64;
             if r.container() == 32 {
                 v &= 0xffff_ffff;
             }

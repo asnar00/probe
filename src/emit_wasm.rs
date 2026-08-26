@@ -513,7 +513,7 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
     match inst {
         Inst::IConst { dst, imm } => {
             let r = e.repr(*dst);
-            e.konst(r, crate::opt::norm(r, *imm))?;
+            e.konst(r, crate::opt::norm(r, *imm as i64))?;
             e.set(*dst)
         }
         Inst::Bin { op, dst, lhs, rhs } => {

@@ -172,7 +172,7 @@ fn const_fold(func: &mut Function) {
         for block in &func.blocks {
             for inst in &block.insts {
                 if let Inst::IConst { dst, imm } = inst {
-                    consts[dst.0 as usize] = Some(norm(func.repr(func.ty(*dst)), *imm));
+                    consts[dst.0 as usize] = Some(norm(func.repr(func.ty(*dst)), *imm as i64));
                 }
             }
         }
@@ -251,7 +251,7 @@ fn const_fold(func: &mut Function) {
                                     let (off, fty) = func.field(ty, k as u32).unwrap();
                                     Inst::IConst {
                                         dst: d,
-                                        imm: norm(func.repr(fty), a >> off),
+                                        imm: norm(func.repr(fty), a >> off) as i128,
                                     }
                                 })
                                 .collect();
@@ -262,7 +262,7 @@ fn const_fold(func: &mut Function) {
                     _ => None,
                 };
                 if let Some((dst, imm)) = folded {
-                    new_insts.push((bi, ii, vec![Inst::IConst { dst, imm }]));
+                    new_insts.push((bi, ii, vec![Inst::IConst { dst, imm: imm as i128 }]));
                 }
             }
         }
@@ -377,7 +377,7 @@ fn dce(func: &mut Function) {
     for block in &func.blocks {
         for inst in &block.insts {
             if let Inst::IConst { dst, imm } = inst {
-                consts[dst.0 as usize] = Some(*imm);
+                consts[dst.0 as usize] = Some(*imm as i64);
             }
         }
     }
