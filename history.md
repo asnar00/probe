@@ -6,6 +6,22 @@ has the full story for any of them.
 
 ---
 
+### hello world ᕦ(ツ)ᕤ — `16cfa2b` · 2026-08-26
+
+`probe boot os/hello.ssa` (or `... arm`) and qemu's serial port says
+`hello world ᕦ(ツ)ᕤ`: the first operating system written in probe, on
+both bare-metal machines from one source. It needed four small things
+the IR did not have: `data` — a string is an array of UTF-8 bytes,
+initialized memory laid out after the code and reached PC-relative
+(`adr` and `auipc` newly learned); `addr` and `len` on it; `platform
+uart`, a constant the platform file provides per board; and a way to
+end the machine — riscv's finisher is a store, arm's PSCI is a `hvc`,
+which the platform supplies as the body of a plain function. Along the
+way: with the MMU off aarch64 faults on an unaligned 64-bit load, and
+the image's preamble had left the data four bytes off.
+
+---
+
 ### ISA variants — `2524621` · 2026-08-26
 
 A platform file is now grouped by extension, and a variant is three
