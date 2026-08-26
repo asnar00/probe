@@ -6,6 +6,18 @@ has the full story for any of them.
 
 ---
 
+### time — `13514bd` · 2026-08-26
+
+`lib/time.ssa`: `type time = rational(64, 64)`, an exact number of
+seconds, with `seconds`/`millis`/`micros`/`nanos`/`period` to make one
+and `to_*` to read one back. There is no arithmetic in the file — `add`,
+`mul`, `cmp` on a `time` are the rational library's by dispatch — so a
+sample period at 44100 Hz times 44100 is exactly one second and thirds
+and sixths add to a half. What made it possible: the rational library
+now works in 128 bits, so its parts can be 64 bits wide.
+
+---
+
 ### addressing modes — `9220416` · 2026-08-26
 
 `v: i64 = load p, 16` and `v: i32 = load p, i, 4` (base + index ×
