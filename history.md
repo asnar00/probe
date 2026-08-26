@@ -6,6 +6,22 @@ has the full story for any of them.
 
 ---
 
+### wasm without the dispatcher — `7f3fb19` · 2026-08-26
+
+The wasm emitter used to turn every function into one big loop with a
+`label` local and a chain of `br_if`s — a switch pretending to be
+control flow. Now `src/structure.rs` computes the dominator tree and
+the emitter nests from it: a loop header becomes a `loop`, a block
+that several paths reach becomes a `block` ending where it starts,
+conditionals are `if`/`else`, and branches are `br` to a label or the
+target emitted in place. Structured source (`if`/`loop` sugar) and the
+flat block form both produce reducible graphs, and the passes keep
+them so; a test checks the whole suite at every level. The dispatcher
+is kept only for an irreducible graph, which another test constructs
+by hand.
+
+---
+
 ### the recipe for a format — `40a0b66` · 2026-08-26
 
 `formats.md`: how to add a number format, in seven steps, with `time`
