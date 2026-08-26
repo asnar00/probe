@@ -6,6 +6,18 @@ has the full story for any of them.
 
 ---
 
+### The abstract float, and a prelude — `32511ac` · 2026-08-26
+
+`float` joins `int`: a bare `float` is `float(E, M)` for the policy's
+width — f64 on the register machines, f32 on wasm, `--float=f16|bf16|
+f32|f64|E,M` to choose — instantiated by the parser, since `float(E, M)`
+is the library's type, not the compiler's. `fn half(x: float) -> float`
+is written once and lands on the library or the platform's instruction
+at whatever width the policy picks. The float library is now
+`lib/float.ssa`, appended to every program as a prelude.
+`suite/afloat.ssa` runs the same programs at four widths; 337/337 on all
+four paths, both ways.
+
 ### min, max, fma — `da83428` · 2026-08-26
 
 `min`/`max` (IEEE minimum/maximum: NaN propagates, -0 below +0) and
