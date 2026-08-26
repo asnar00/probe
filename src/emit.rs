@@ -822,7 +822,7 @@ impl FnEmit<'_> {
     /// in range and aligned (arm64 scales it by the access size), else
     /// the address computed into `scratch` (with `scratch2` for the
     /// scaled index)
-    fn address(&mut self, base: ValueId, off: i64, index: Option<(ValueId, u8)>, size: u32, scratch: i64, scratch2: i64) -> Result<(i64, i64), String> {
+    fn address(&mut self, base: ValueId, off: i64, index: Option<(ValueId, u32)>, size: u32, scratch: i64, scratch2: i64) -> Result<(i64, i64), String> {
         let rb = self.src_reg(base, scratch)?;
         let max = 4095 * size as i64;
         match index {
@@ -840,8 +840,14 @@ impl FnEmit<'_> {
             }
             Some((i, step)) => {
                 let ri = self.src_reg(i, scratch2)?;
-                if step > 1 {
+                if step.is_power_of_two() && step > 1 {
                     self.emit("lsl {x}, {x}, #{i 0..63}", &[scratch2, ri, step.trailing_zeros() as i64])?;
+                    self.emit("add {x}, {x}, {x}", &[scratch, rb, scratch2])?;
+                } else if step > 1 {
+                    // an array of structs: a stride that is no power of two
+                    self.emit_iconst(scratch, step as i64)?;
+                    self.emit("mul {x}, {x}, {x}", &[scratch2, ri, scratch])?;
+                    let rb = self.src_reg(base, scratch)?;
                     self.emit("add {x}, {x}, {x}", &[scratch, rb, scratch2])?;
                 } else {
                     self.emit("add {x}, {x}, {x}", &[scratch, rb, ri])?;

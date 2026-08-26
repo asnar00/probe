@@ -62,7 +62,9 @@ struct Lower<'a> {
 }
 
 fn lower_function(f: &mut Function) -> Result<(), String> {
-    f.wide_sig = Some((f.params.iter().map(|&p| f.ty(p)).collect(), f.rets.clone()));
+    if f.wide_sig.is_none() {
+        f.wide_sig = Some((f.params.iter().map(|&p| f.ty(p)).collect(), f.rets.clone()));
+    }
     // rets first: word types of the declared results
     let mut rets = Vec::new();
     for &t in &f.rets {

@@ -1,3 +1,4 @@
+mod aggregate;
 mod arena;
 mod emit;
 mod emit_rv;

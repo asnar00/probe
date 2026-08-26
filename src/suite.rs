@@ -538,6 +538,108 @@ exit:
 
 /// Generate __start: run every case, print each result as hex, then run
 /// the target-specific exit statements.
+fn tmp_in(s: &mut String, n: &std::cell::Cell<u32>, ty: &str, init: String) -> String {
+    n.set(n.get() + 1);
+    let name = format!("t{}", n.get());
+    s.push_str(&format!("    {}: {} = {}\n", name, ty, init));
+    name
+}
+
+/// one argument of the written type from the directive's numbers
+fn materialize(
+    func: &ssa::Function,
+    ty: ssa::Type,
+    args: &mut std::slice::Iter<ArgSpec>,
+    s: &mut String,
+    n: &std::cell::Cell<u32>,
+    heap: &mut u64,
+    text: &str,
+) -> Result<String, String> {
+    if ty.is_struct() {
+        let p = func.pack(ty).unwrap().clone();
+        let mut fields = Vec::new();
+        for (_, fty) in &p.fields {
+            fields.push(materialize(func, *fty, args, s, n, heap, text)?);
+        }
+        return Ok(tmp_in(s, n, &func.tyname(ty), format!("pack {}", fields.join(", "))));
+    }
+    let w = func.width(ty).unwrap_or(64);
+    if w > 64 {
+        let words = w.div_ceil(64);
+        // a pack is assembled as its bits, then cast
+        let tn = if func.pack(ty).is_some() { format!("u{}", w) } else { func.tyname(ty) };
+        let mut acc: Option<String> = None;
+        for k in 0..words {
+            let Some(ArgSpec::Int(v)) = args.next() else {
+                return Err(format!("'{}': a {} takes {} words", text, tn, words));
+            };
+            let word = tmp_in(s, n, "u64", format!("const {}", v));
+            let wide = tmp_in(s, n, &tn, format!("conv {}", word));
+            let placed = if k == 0 { wide } else { tmp_in(s, n, &tn, format!("shl {}, {}", wide, 64 * k)) };
+            acc = Some(match acc {
+                None => placed,
+                Some(a) => tmp_in(s, n, &tn, format!("or {}, {}", a, placed)),
+            });
+        }
+        let bits = acc.unwrap();
+        return Ok(if func.pack(ty).is_some() { tmp_in(s, n, &func.tyname(ty), format!("cast {}", bits)) } else { bits });
+    }
+    let a = args.next().ok_or_else(|| format!("too few args in '{}'", text))?;
+    Ok(match a {
+        ArgSpec::Int(v) => {
+            if func.pack(ty).is_some() {
+                // packs have no literals: build the bits, then bitcast
+                let bits = tmp_in(s, n, &format!("u{}", w), format!("const {}", v));
+                tmp_in(s, n, &func.tyname(ty), format!("cast {}", bits))
+            } else {
+                tmp_in(s, n, &ty.name(), format!("const {}", v))
+            }
+        }
+        ArgSpec::Arr { bytes, vals } => {
+            let b = *bytes as u64;
+            *heap = (*heap + b - 1) & !(b - 1);
+            let base = *heap;
+            let ety = format!("i{}", b * 8);
+            for (k, v) in vals.iter().enumerate() {
+                let d = tmp_in(s, n, &ety, format!("const {}", opt::norm(ssa::Repr::S(b as u32 * 8), *v)));
+                let p = tmp_in(s, n, "ptr", format!("const {}", base + b * k as u64));
+                s.push_str(&format!("    store {}, {}\n", d, p));
+            }
+            *heap += b * vals.len() as u64;
+            tmp_in(s, n, "ptr", format!("const {}", base))
+        }
+    })
+}
+
+/// a result of the written type as the values to print: a struct's
+/// fields, a wide value's words, else itself
+fn flatten(func: &ssa::Function, ty: ssa::Type, name: String, s: &mut String, n: &std::cell::Cell<u32>, out: &mut Vec<(String, ssa::Type)>) {
+    if ty.is_struct() {
+        let p = func.pack(ty).unwrap().clone();
+        let names: Vec<String> = p.fields.iter().map(|_| { n.set(n.get() + 1); format!("t{}", n.get()) }).collect();
+        let defs: Vec<String> = names.iter().zip(&p.fields).map(|(nm, (_, t))| format!("{}: {}", nm, func.tyname(*t))).collect();
+        s.push_str(&format!("    {} = unpack {}\n", defs.join(", "), name));
+        for (nm, (_, fty)) in names.into_iter().zip(&p.fields) {
+            flatten(func, *fty, nm, s, n, out);
+        }
+        return;
+    }
+    let w = func.width(ty).unwrap_or(64);
+    if w > 64 {
+        let (tn, r) = if func.pack(ty).is_some() {
+            (format!("u{}", w), tmp_in(s, n, &format!("u{}", w), format!("cast {}", name)))
+        } else {
+            (func.tyname(ty), name.clone())
+        };
+        for k in 0..w.div_ceil(64) {
+            let sh = if k == 0 { r.clone() } else { tmp_in(s, n, &tn, format!("shr {}, {}", r, 64 * k)) };
+            out.push((tmp_in(s, n, "u64", format!("conv {}", sh)), ssa::Type::U64));
+        }
+        return;
+    }
+    out.push((name, ty));
+}
+
 fn gen_driver(
     module: &ssa::Module,
     cases: &[Case],
@@ -575,58 +677,12 @@ fn gen_driver(
             Some((p, r)) => (p.clone(), r.clone()),
             None => (func.params.iter().map(|&p| func.ty(p)).collect(), func.rets.clone()),
         };
-        // materialize arguments
+        // materialize arguments: a struct from its fields, a wide value
+        // from its words, a pack from its bits, an array into the heap
         let mut argv = Vec::new();
         let mut args = case.args.iter();
         for &pty in &ptys {
-            let w = func.width(pty).unwrap_or(64);
-            if w > 64 {
-                let n = w.div_ceil(64);
-                // a pack is assembled as its bits, then cast
-                let tn = if func.pack(pty).is_some() { format!("u{}", w) } else { func.tyname(pty) };
-                let mut acc: Option<String> = None;
-                for k in 0..n {
-                    let Some(ArgSpec::Int(v)) = args.next() else {
-                        return Err(format!("'{}': a {} takes {} words", case.text, tn, n));
-                    };
-                    let word = tmp(&mut s, "u64", format!("const {}", v));
-                    let wide = tmp(&mut s, &tn, format!("conv {}", word));
-                    let placed = if k == 0 { wide } else { tmp(&mut s, &tn, format!("shl {}, {}", wide, 64 * k)) };
-                    acc = Some(match acc {
-                        None => placed,
-                        Some(a) => tmp(&mut s, &tn, format!("or {}, {}", a, placed)),
-                    });
-                }
-                let bits = acc.unwrap();
-                argv.push(if func.pack(pty).is_some() { tmp(&mut s, &func.tyname(pty), format!("cast {}", bits)) } else { bits });
-                continue;
-            }
-            let a = args.next().ok_or_else(|| format!("too few args in '{}'", case.text))?;
-            match a {
-                ArgSpec::Int(v) => {
-                    if func.pack(pty).is_some() {
-                        // packs have no literals: build the bits, then bitcast
-                        let w = func.width(pty).unwrap();
-                        let bits = tmp(&mut s, &format!("u{}", w), format!("const {}", v));
-                        argv.push(tmp(&mut s, &func.tyname(pty), format!("cast {}", bits)));
-                    } else {
-                        argv.push(tmp(&mut s, &pty.name(), format!("const {}", v)));
-                    }
-                }
-                ArgSpec::Arr { bytes, vals } => {
-                    let b = *bytes as u64;
-                    heap = (heap + b - 1) & !(b - 1);
-                    let base = heap;
-                    let ety = format!("i{}", b * 8);
-                    for (k, v) in vals.iter().enumerate() {
-                        let d = tmp(&mut s, &ety, format!("const {}", opt::norm(ssa::Repr::S(b as u32 * 8), *v)));
-                        let p = tmp(&mut s, "ptr", format!("const {}", base + b * k as u64));
-                        s.push_str(&format!("    store {}, {}\n", d, p));
-                    }
-                    heap += b * vals.len() as u64;
-                    argv.push(tmp(&mut s, "ptr", format!("const {}", base)));
-                }
-            }
+            argv.push(materialize(func, pty, &mut args, &mut s, &n, &mut heap, &case.text)?);
         }
         if args.next().is_some() {
             return Err(format!("too many args in '{}'", case.text));
@@ -647,23 +703,10 @@ fn gen_driver(
             case.func,
             argv.join(", ")
         ));
-        // a wide result prints as its words
+        // a struct result prints as its fields, a wide one as its words
         let mut printed: Vec<(String, ssa::Type)> = Vec::new();
         for (r, rt) in &rets {
-            let w = func.width(*rt).unwrap_or(64);
-            if w > 64 {
-                let (tn, r) = if func.pack(*rt).is_some() {
-                    (format!("u{}", w), tmp(&mut s, &format!("u{}", w), format!("cast {}", r)))
-                } else {
-                    (func.tyname(*rt), r.clone())
-                };
-                for k in 0..w.div_ceil(64) {
-                    let sh = if k == 0 { r.clone() } else { tmp(&mut s, &tn, format!("shr {}, {}", r, 64 * k)) };
-                    printed.push((tmp(&mut s, "u64", format!("conv {}", sh)), ssa::Type::U64));
-                }
-            } else {
-                printed.push((r.clone(), *rt));
-            }
+            flatten(func, *rt, r.clone(), &mut s, &n, &mut printed);
         }
         let rets = printed;
         // print results: 16 hex digits each, space-separated, newline after

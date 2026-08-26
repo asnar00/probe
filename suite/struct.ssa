@@ -1,0 +1,95 @@
+; Structs: fields side by side, in registers as separate values and in
+; memory at natural offsets — never a bit pattern. A struct parameter is
+; its fields in order (a point is three f32 bit patterns here); a struct
+; result its fields. Dissolved into fields right after parsing
+; (src/aggregate.rs), so the backends never meet one.
+
+;! dot 1065353216 1073741824 1077936128 1082130432 1084227584 1086324736 -> 1107296256
+;! dot 1056964608 0 0 1082130432 0 0 -> 1073741824
+;! roundtrip i64[0,0,0,0] 7 -1234 -> -1222
+;! sum_v i32[1,10,2,20,3,30] 3 -> 60
+;! sum_c i32[1,2,3,4,5,6,7,8,9] 3 -> 18
+;! far 1065353216 1073741824 1077936128 1082130432 1084227584 1086324736 -> 1086324736
+;! moved 1065353216 1073741824 1077936128 1091567616 -> 1094713344
+
+type point = struct { x: f32, y: f32, z: f32 }
+type mixed = struct { tag: u8, n: i64, w: u128 }
+type item = struct { k: i32, v: i32 }
+type triple = struct { a: i32, b: i32, c: i32 }
+type line = struct { from: point, to: point }
+
+fn dot(a: point, b: point) -> f32 {
+    ax: f32 = get a, x
+    ay: f32 = get a, y
+    az: f32 = get a, z
+    bx: f32 = get b, x
+    by: f32 = get b, y
+    bz: f32 = get b, z
+    px: f32 = mul ax, bx
+    py: f32 = mul ay, by
+    pz: f32 = mul az, bz
+    s1: f32 = add px, py
+    s: f32 = add s1, pz
+    ret s
+}
+; a struct through memory: fields at byte offsets 0, 8, 16 (size 32)
+fn roundtrip(p: ptr, t: u8, n: i64) -> i64 {
+    s: mixed = pack t, n, 5
+    store s, p
+    r: mixed = load p
+    a: u8 = get r, tag
+    b: i64 = get r, n
+    w: u128 = get r, w
+    a64: i64 = conv a
+    w64: i64 = conv w
+    s1: i64 = add a64, b
+    s2: i64 = add s1, w64
+    ret s2
+}
+; an array of 8-byte structs: the stride is the struct's size
+fn sum_v(p: ptr, n: i64) -> i32 {
+    r: i32 = loop(i: i64 = 0, acc: i32 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break acc
+        }
+        it: item = load p, i, 8
+        v: i32 = get it, v
+        acc2: i32 = add acc, v
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret r
+}
+; ... and a 12-byte one: a stride that is no power of two
+fn sum_c(p: ptr, n: i64) -> i32 {
+    r: i32 = loop(i: i64 = 0, acc: i32 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break acc
+        }
+        t: triple = load p, i, 12
+        c: i32 = get t, c
+        acc2: i32 = add acc, c
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret r
+}
+; nested: a struct of structs, fields of fields
+fn far(a: point, b: point) -> f32 {
+    l: line = pack a, b
+    t: point = get l, to
+    r: f32 = get t, z
+    ret r
+}
+; set replaces one field
+fn moved(a: point, nz: f32) -> f32 {
+    m: point = set a, z, nz
+    x: f32 = get m, x
+    y: f32 = get m, y
+    z: f32 = get m, z
+    s1: f32 = add x, y
+    s: f32 = add s1, z
+    ret s
+}

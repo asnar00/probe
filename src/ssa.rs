@@ -23,6 +23,10 @@ pub enum Type {
     /// a pack: bitfields laid out lowest-bits-first, by index into the
     /// module's pack table (see `PackDef`)
     Pack(u32),
+    /// a struct: fields side by side in memory and in registers, never a
+    /// bit pattern — the same table, with `aggregate` set. Dissolved into
+    /// its fields right after parsing (see aggregate.rs)
+    Struct(u32),
     /// abstract integers: resolved to a concrete width by the target's
     /// replacement policy before verification (see `resolve_types`)
     AInt,
@@ -50,6 +54,7 @@ impl Type {
             Type::Int { signed: false, bits } => format!("u{}", bits),
             Type::Ptr => "ptr".into(),
             Type::Pack(i) => format!("#{}", i),
+            Type::Struct(i) => format!("struct#{}", i),
             Type::AInt => "int".into(),
             Type::AUInt => "uint".into(),
         }
@@ -92,6 +97,10 @@ impl Type {
         matches!(self, Type::Pack(_))
     }
 
+    pub fn is_struct(self) -> bool {
+        matches!(self, Type::Struct(_))
+    }
+
     pub fn is_abstract(self) -> bool {
         matches!(self, Type::AInt | Type::AUInt)
     }
@@ -119,6 +128,10 @@ pub struct PackDef {
     /// any — what an opcode on the pack dispatches on (`add` on a
     /// `float(8, 23)` finds `add(E, M)`)
     pub origin: Option<(String, Vec<i64>)>,
+    /// a struct: `offsets` are bytes and `size` its byte size; `width`
+    /// is size * 8 (only asked before it is dissolved into fields)
+    pub aggregate: bool,
+    pub size: u32,
 }
 
 impl PackDef {
@@ -222,6 +235,7 @@ pub enum TypeExpr {
     /// a builtin (`i5`, `ptr`), a declared type, or an instantiation `float(8, 23)`
     Named { name: String, args: Vec<IntExpr> },
     Pack(Vec<(String, TypeExpr)>),
+    Struct(Vec<(String, TypeExpr)>),
 }
 
 impl fmt::Display for TypeExpr {
@@ -238,6 +252,10 @@ impl fmt::Display for TypeExpr {
             TypeExpr::Pack(fields) => {
                 let fs: Vec<String> = fields.iter().map(|(n, t)| format!("{}: {}", n, t)).collect();
                 write!(f, "pack {{ {} }}", fs.join(", "))
+            }
+            TypeExpr::Struct(fields) => {
+                let fs: Vec<String> = fields.iter().map(|(n, t)| format!("{}: {}", n, t)).collect();
+                write!(f, "struct {{ {} }}", fs.join(", "))
             }
         }
     }
@@ -488,7 +506,7 @@ impl fmt::Display for TypeDef {
 /// Bit width of a type given the pack table (abstract types have none).
 pub fn type_width(ty: Type, packs: &[PackDef]) -> Option<u32> {
     match ty {
-        Type::Pack(i) => packs.get(i as usize).map(|p| p.width),
+        Type::Pack(i) | Type::Struct(i) => packs.get(i as usize).map(|p| p.width),
         t => t.int_bits(),
     }
 }
@@ -659,19 +677,20 @@ pub enum Inst {
         val: ValueId,
     },
     /// `load base`, `load base, off`, `load base, index, step`: the
-    /// address is base + off + index * step (step 1, 2, 4 or 8), which
-    /// is what a target's addressing modes take directly
+    /// address is base + off + index * step (a power of two is what a
+    /// target's addressing modes take; any other step, an array of
+    /// structs, multiplies first)
     Load {
         dst: ValueId,
         addr: ValueId,
         off: i64,
-        index: Option<(ValueId, u8)>,
+        index: Option<(ValueId, u32)>,
     },
     Store {
         val: ValueId,
         addr: ValueId,
         off: i64,
-        index: Option<(ValueId, u8)>,
+        index: Option<(ValueId, u32)>,
     },
     PtrAdd {
         dst: ValueId,
@@ -755,7 +774,7 @@ impl Function {
 
     pub fn pack(&self, ty: Type) -> Option<&PackDef> {
         match ty {
-            Type::Pack(i) => self.packs.get(i as usize),
+            Type::Pack(i) | Type::Struct(i) => self.packs.get(i as usize),
             _ => None,
         }
     }
@@ -779,6 +798,7 @@ impl Function {
             Type::Int { signed: false, bits } => Repr::U(bits as u32),
             Type::Ptr => Repr::U(64),
             Type::Pack(_) => Repr::U(self.width(ty).unwrap_or(64)),
+            Type::Struct(_) => unreachable!("structs are dissolved into fields before use"),
             Type::AInt | Type::AUInt => unreachable!("abstract types are resolved before use"),
         }
     }
@@ -1366,14 +1386,17 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     };
     // values wider than a word: checked as written, then lowered to words
     // so that no backend ever sees one
-    if crate::wide::has_wide(&module) {
-        // checked with the policy's types in place (abstract ones are
-        // never wide, so the lowering itself works on the module as is)
+    // structs and values wider than a word: checked as written, with the
+    // policy's types in place (abstract ones are neither), then dissolved
+    // — structs into fields, wide values into words — so that no backend
+    // ever meets one
+    if crate::aggregate::has_structs(&module) || crate::wide::has_wide(&module) {
         let mut checked = module.clone();
         resolve_types(&mut checked, policy);
         if let Err(errs) = verify(&checked) {
             return Err(ParseError { line: 0, msg: errs.join("; ") });
         }
+        crate::aggregate::lower(&mut module).map_err(|m| ParseError { line: 0, msg: m })?;
         crate::wide::lower(&mut module).map_err(|m| ParseError { line: 0, msg: m })?;
     }
     Ok(module)
@@ -1558,7 +1581,7 @@ impl Parser {
     }
 
     /// after a load's or store's base: nothing, `, off`, or `, index, step`
-    fn parse_addressing(&mut self, scope: &mut FuncScope) -> Result<(i64, Option<(ValueId, u8)>), ParseError> {
+    fn parse_addressing(&mut self, scope: &mut FuncScope) -> Result<(i64, Option<(ValueId, u32)>), ParseError> {
         if !self.eat(&Tok::Comma) {
             return Ok((0, None));
         }
@@ -1569,10 +1592,10 @@ impl Parser {
         let index = self.expect_value(scope)?;
         self.expect(Tok::Comma)?;
         let step = match self.next()? {
-            Tok::Int(n) if [1, 2, 4, 8].contains(&n) => n as u8,
+            Tok::Int(n) if n >= 1 && n <= u32::MAX as i64 => n as u32,
             t => {
                 self.pos -= 1;
-                return Err(self.err(format!("the index step must be 1, 2, 4 or 8, not {}", t)));
+                return Err(self.err(format!("the index step must be a positive size, not {}", t)));
             }
         };
         Ok((0, Some((index, step))))
@@ -1852,7 +1875,7 @@ impl Parser {
                     _ => false,
                 }
             }
-            TypeExpr::Pack(_) => false,
+            TypeExpr::Pack(_) | TypeExpr::Struct(_) => false,
         }
     }
 
@@ -1920,9 +1943,10 @@ impl Parser {
                 at(i).map(|t| t.to_string()).unwrap_or("end of input".into())
             )));
         };
-        if name == "pack" {
+        if name == "pack" || name == "struct" {
+            let is_struct = name == "struct";
             if at(i + 1) != Some(&Tok::LBrace) {
-                return Err(err("expected '{' after 'pack'".into()));
+                return Err(err(format!("expected '{{' after '{}'", name)));
             }
             let mut j = i + 2;
             let mut fields: Vec<(String, TypeExpr)> = Vec::new();
@@ -1956,9 +1980,9 @@ impl Parser {
                 }
             }
             if fields.is_empty() {
-                return Err(err("a pack needs at least one field".into()));
+                return Err(err(format!("a {} needs at least one field", if is_struct { "struct" } else { "pack" })));
             }
-            return Ok((TypeExpr::Pack(fields), j));
+            return Ok((if is_struct { TypeExpr::Struct(fields) } else { TypeExpr::Pack(fields) }, j));
         }
         // name, name(args), i(expr), u(expr)
         if at(i + 1) == Some(&Tok::LParen) {
@@ -2262,9 +2286,82 @@ impl Parser {
                     offsets,
                     width,
                     origin: None,
+                    aggregate: false,
+                    size: 0,
                 });
                 Ok(Type::Pack(id))
             }
+            TypeExpr::Struct(fields) => {
+                // fields at their natural alignment, in order; the size a
+                // multiple of the largest alignment
+                let mut out: Vec<(String, Type)> = Vec::new();
+                let mut offsets = Vec::new();
+                let mut size = 0u32;
+                let mut align = 1u32;
+                for (fname, fexpr) in fields {
+                    let fty = self.instantiate(fexpr, env, depth + 1)?;
+                    let (fsize, falign) = self.layout_of(fty).ok_or_else(|| format!("struct field '{}' cannot be {}", fname, fty.name()))?;
+                    size = size.div_ceil(falign) * falign;
+                    offsets.push(size);
+                    size += fsize;
+                    align = align.max(falign);
+                    out.push((fname.clone(), fty));
+                }
+                size = size.div_ceil(align) * align;
+                if let Some(i) = self.packs.iter().position(|p| p.aggregate && p.fields == out) {
+                    return Ok(Type::Struct(i as u32));
+                }
+                let id = self.packs.len() as u32;
+                let name = TypeExpr::Struct(
+                    out.iter()
+                        .map(|(n, t)| {
+                            (
+                                n.clone(),
+                                TypeExpr::Named {
+                                    name: self.tyname_of(*t),
+                                    args: Vec::new(),
+                                },
+                            )
+                        })
+                        .collect(),
+                )
+                .to_string();
+                self.packs.push(PackDef {
+                    name,
+                    fields: out,
+                    offsets,
+                    width: size * 8,
+                    origin: None,
+                    aggregate: true,
+                    size,
+                });
+                Ok(Type::Struct(id))
+            }
+        }
+    }
+
+    /// (byte size, alignment) of a type as a struct field: integers and
+    /// packs at their container size (words for a wide one), ptr 8, a
+    /// struct its own
+    fn layout_of(&self, ty: Type) -> Option<(u32, u32)> {
+        match ty {
+            Type::Int { bits, .. } => {
+                let b = bits as u32;
+                let size = if b <= 8 { 1 } else if b <= 16 { 2 } else if b <= 32 { 4 } else { 8 * b.div_ceil(64) };
+                Some((size, size.min(8)))
+            }
+            Type::Ptr => Some((8, 8)),
+            Type::Pack(i) => {
+                let w = self.packs[i as usize].width;
+                let size = if w <= 8 { 1 } else if w <= 16 { 2 } else if w <= 32 { 4 } else { 8 * w.div_ceil(64) };
+                Some((size, size.min(8)))
+            }
+            Type::Struct(i) => {
+                let p = &self.packs[i as usize];
+                let align = p.fields.iter().filter_map(|(_, t)| self.layout_of(*t)).map(|(_, a)| a).max().unwrap_or(1);
+                Some((p.size, align))
+            }
+            _ => None,
         }
     }
 
@@ -2411,7 +2508,7 @@ impl Parser {
 
     fn tyname_of(&self, ty: Type) -> String {
         match ty {
-            Type::Pack(i) => self.packs[i as usize].name.clone(),
+            Type::Pack(i) | Type::Struct(i) => self.packs[i as usize].name.clone(),
             t => t.name(),
         }
     }
@@ -2918,7 +3015,7 @@ impl Parser {
             }
             "pack" => {
                 let wants: Vec<Type> = match scope.values[dst.0 as usize].ty {
-                    Type::Pack(i) => self.packs[i as usize].fields.iter().map(|(_, t)| *t).collect(),
+                    Type::Pack(i) | Type::Struct(i) => self.packs[i as usize].fields.iter().map(|(_, t)| *t).collect(),
                     _ => Vec::new(),
                 };
                 let args = self.parse_value_list(scope, &wants)?;
@@ -2943,7 +3040,7 @@ impl Parser {
                 let field = self.expect_field(scope, src)?;
                 self.expect(Tok::Comma)?;
                 let fty = match scope.values[src.0 as usize].ty {
-                    Type::Pack(i) => Some(self.packs[i as usize].fields[field as usize].1),
+                    Type::Pack(i) | Type::Struct(i) => Some(self.packs[i as usize].fields[field as usize].1),
                     _ => None,
                 };
                 let val = self.parse_operand(scope, fty)?;
@@ -3040,10 +3137,10 @@ impl Parser {
     fn expect_field(&mut self, scope: &mut FuncScope, of: ValueId) -> Result<u32, ParseError> {
         let fname = self.expect_ident()?;
         let ty = scope.values[of.0 as usize].ty;
-        let Type::Pack(i) = ty else {
+        let (Type::Pack(i) | Type::Struct(i)) = ty else {
             self.pos -= 1;
             return Err(self.err(format!(
-                "'{}' is {}, not a pack; it has no field '{}'",
+                "'{}' is {}, not a pack or struct; it has no field '{}'",
                 scope.values[of.0 as usize].name,
                 ty.name(),
                 fname
@@ -3556,7 +3653,7 @@ impl Function {
 
     /// a constant as source text: a float as the shortest decimal that
     /// reads back to the same value, anything else as its integer
-    fn fmt_addressing(&self, off: i64, index: Option<(ValueId, u8)>) -> String {
+    fn fmt_addressing(&self, off: i64, index: Option<(ValueId, u32)>) -> String {
         match index {
             Some((i, step)) => format!(", {}, {}", self.fmt_value(i), step),
             None if off != 0 => format!(", {}", off),
@@ -3936,6 +4033,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
     let tn = |t: Type| func.tyname(t);
     let is_memory = |t: Type| {
         t == Type::Ptr
+            || t.is_struct()
             || ((t.is_int() || t.is_pack())
                 && matches!(func.width(t), Some(8) | Some(16) | Some(32) | Some(64) | Some(128) | Some(192) | Some(256)))
     };
@@ -3954,6 +4052,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 // meaningful wherever ptr is an address-space index
                 Type::Int { .. } | Type::Ptr => true,
                 // a pack literal is its bit pattern
+                Type::Struct(_) => false, // a struct has no literal
                 Type::Pack(_) => match func.width(ty) {
                     // a 64-bit pack takes any 64-bit pattern (a negative i64
                     // is one); narrower and wide ones fit their width

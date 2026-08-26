@@ -305,14 +305,17 @@ impl WEmit<'_> {
 
     /// push the address base + index * step (+ a negative off), and give
     /// the memarg offset: a non-negative off rides in the instruction
-    fn address(&mut self, base: ValueId, off: i64, index: Option<(ValueId, u8)>) -> Result<i64, String> {
+    fn address(&mut self, base: ValueId, off: i64, index: Option<(ValueId, u32)>) -> Result<i64, String> {
         self.get(base)?;
         if let Some((i, step)) = index {
             self.get(i)?;
             self.op("i32.wrap_i64", None)?;
-            if step > 1 {
+            if step.is_power_of_two() && step > 1 {
                 self.op("i32.const {}", Some(step.trailing_zeros() as i64))?;
                 self.op("i32.shl", None)?;
+            } else if step > 1 {
+                self.op("i32.const {}", Some(step as i64))?;
+                self.op("i32.mul", None)?;
             }
             self.op("i32.add", None)?;
         }

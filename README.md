@@ -29,6 +29,8 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   signedness lives in the type, so there is one `div`, one `shr`, one
   `cmp.lt`; above 64 bits a value is lowered to a row of words right
   after parsing (`src/wide.rs`), so no backend meets one;
+  `struct` types (fields side by side, dissolved into their fields after
+  parsing — never a bit pattern, so the layout is the compiler's);
   `pack` types that lay bitfields out lowest-bits-first in up to 256 bits
   (`type rgb = pack { r: u5, g: u6, b: u5 }`, nestable, storable), and
   parametric declarations instantiated by width — `type float(E, M) =

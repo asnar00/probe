@@ -45,6 +45,7 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `ptr`   | pointer (64-bit natively; a 32-bit offset on wasm)         |
 | `name`, `name(8, 23)` | a declared type, plain or instantiated with widths (see *Type declarations*) |
 | `pack { ... }` | bitfields packed into at most 256 bits (see *Packs*) |
+| `struct { ... }` | fields side by side, never a bit pattern (see *Structs*) |
 | `i(expr)`, `u(expr)` | an integer whose width is an expression — inside type declarations |
 | `int`, `uint`, `float`, `fixed`, `unit`, `sunit`, `rational`, `scalar` | abstract numbers — resolved to a concrete type by the target's replacement policy (see *Abstract numeric types*) |
 
@@ -281,6 +282,33 @@ w: u16 = cast c                           ; the raw bits, and back again
 Packs are compared structurally: two spellings of the same layout are the
 same type. `unpack` is, with calls, the only instruction that defines
 several values.
+
+### Structs
+
+```
+type point = struct { x: f32, y: f32, z: f32 }
+p: point = pack x, y, z
+z: f32 = get p, z
+q: point = set p, z, 1.0
+a: point = load base, i, 12     ; element i of an array of 12-byte structs
+store q, base, 16
+```
+
+A `struct` is a group of fields — integers, packs, `ptr`, wide values,
+other structs — side by side: in memory at their natural offsets (each
+field aligned to its size, the whole to its largest field), and in
+registers as separate values. It shares the pack vocabulary (`pack`,
+`unpack`, `get`, `set`, `load`, `store`, parameters, results, block
+parameters) and differs in one thing: it is never a bit pattern. There
+is no `cast` to or from a struct, no literal, no arithmetic dispatch —
+a program cannot observe how one is laid out, which is what leaves the
+layout to the compiler (an array of structs may be stored field-major
+one day without a program noticing). A struct is dissolved into its
+fields right after parsing (`src/aggregate.rs`): `pack`, `get`, `set`
+and `unpack` become names for values that already exist, a `load` or
+`store` becomes one per field at its offset, and a struct parameter is
+its fields in order — which is also how the suite passes one
+(`suite/struct.ssa`).
 
 ### Type declarations
 
