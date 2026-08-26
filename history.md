@@ -6,6 +6,17 @@ has the full story for any of them.
 
 ---
 
+### addressing modes — `9220416` · 2026-08-26
+
+`v: i64 = load p, 16` and `v: i32 = load p, i, 4` (base + index ×
+step), and the same on `store`. The SSA's memory model is unchanged —
+values are named registers without limit, `load` and `store` are the
+only two memory instructions, spilling is the allocator's business —
+but the address forms are now the ones the targets' instructions take,
+so an offset no longer costs a `ptradd` first.
+
+---
+
 ### float registers, and rules as single instructions — `3325600` · 2026-08-26
 
 The first rule files spelled every float op with moves around it —
