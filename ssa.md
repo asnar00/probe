@@ -46,7 +46,7 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `name`, `name(8, 23)` | a declared type, plain or instantiated with widths (see *Type declarations*) |
 | `pack { ... }` | bitfields packed into at most 64 bits (see *Packs*) |
 | `i(expr)`, `u(expr)` | an integer whose width is an expression — inside type declarations |
-| `int`, `uint` | abstract integers — resolved to a concrete width by the target's replacement policy (see *Abstract numeric types*) |
+| `int`, `uint`, `float` | abstract numbers — resolved to a concrete width by the target's replacement policy (see *Abstract numeric types*) |
 
 Any width works anywhere a value lives — registers, block parameters,
 calls, packs. Memory is the exception: only 8-, 16-, 32-, and 64-bit types
@@ -295,6 +295,11 @@ name exists. `probe parse` prints the instantiated functions and not the
 templates — like structured control flow, generics are sugar the parser
 lowers. A pack literal `const` is its bit pattern.
 
+**The prelude.** Every program compiled by probe gets `lib/*.ssa`
+appended (the float library lives in `lib/float.ssa`), so `float(E, M)`,
+`f32`, `f64`, `f16`, `bf16`, and the operations on them are always in
+scope; a file may re-declare a type identically.
+
 **Dispatch.** A generic function whose first parameter and first result
 are written in terms of its own width parameters *is* an operation of
 its name: applying that name to a value whose type matches the parameter
@@ -355,6 +360,15 @@ a width — the compiler does, at compile time, by a *replacement policy*
 derived from the target (its natural register width, or a size-oriented
 choice like i32 on wasm32) and from user concerns (`--int=i32|i64`).
 `uint` is its unsigned twin and always takes the same width.
+
+`float` is the same idea for the library's `float(E, M)`: a bare `float`
+is `float(E, M)` for the policy's E and M — `(11, 52)` on the register
+machines, `(8, 23)` on wasm32, or whatever `--float=f16|bf16|f32|f64|E,M`
+says — instantiated as the parser meets it (a parametric type's bare name
+is abstract when the policy has arguments for it). So `fn half(x: float)
+-> float { r: float = div x, 2.0 }` is written once, dispatches to the
+library's `div(E, M)` for the chosen width, and lands on the platform's
+`fdiv` where there is one.
 Because types live on variables, resolution is a single rewrite of the
 value tables before verification; opcodes, instructions, and everything
 downstream see only concrete types.
@@ -373,7 +387,10 @@ fn gcd(a: int, b: int) -> int {     ; width chosen per target/policy
   policy. Policy-portable code keeps casts among concrete types.
 - Memory keeps concrete types in portable code: a load of `int` changes
   access width with the policy.
-- `float` will join `int` when concrete float types land.
+- `float` code is policy-portable when its inputs and outputs are
+  integers or its values stay exactly representable at every width in
+  play (`suite/afloat.ssa`); the suite runs under both `int` policies and
+  both `float` policies to keep it so.
 
 ## Structured control flow
 

@@ -1,0 +1,1226 @@
+; probe's floating-point library: IEEE-style floats as packs plus integer
+; instructions. Generic add, sub, mul, div, sqrt, neg, abs, min, max, fma,
+; the six comparisons, and conv between floats and to and from integers,
+; over float(E, M). Round to nearest even, subnormals, signed zeros,
+; infinities; every NaN comes out as the canonical quiet NaN. Because the
+; generics are named after the opcodes and take float(E, M), the plain
+; opcodes on any float dispatch to them - and a platform with hardware for
+; that width substitutes the instruction.
+;
+; Every file compiled by probe gets lib/*.ssa appended: this is the prelude.
+type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }
+type f16 = float(5, 10)
+type bf16 = float(8, 7)
+type f32 = float(8, 23)
+type f64 = float(11, 52)
+
+; the canonical quiet NaN of a format
+fn fnan(E, M)() -> float(E, M) {
+    m: u(M) = const 1 << (M - 1)
+    e: u(E) = const (1 << E) - 1
+    r: float(E, M) = pack m, e, 0
+    ret r
+}
+
+fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    mb: u(M), eb: u(E), sb: u1 = unpack b
+    emax: u(E) = const (1 << E) - 1
+
+    ; --- NaN and infinity ---
+    a_top: u1 = cmp.eq ea, emax
+    b_top: u1 = cmp.eq eb, emax
+    if a_top {
+        a_nan: u1 = cmp.ne ma, 0
+        if a_nan {
+            n1: float(E, M) = fnan(E, M)()
+            ret n1
+        }
+        if b_top {
+            b_nan: u1 = cmp.ne mb, 0
+            opp: u1 = cmp.ne sa, sb
+            bad: u1 = or b_nan, opp
+            if bad {
+                n2: float(E, M) = fnan(E, M)()
+                ret n2
+            }
+        }
+        ret a
+    }
+    if b_top {
+        b_nan2: u1 = cmp.ne mb, 0
+        if b_nan2 {
+            n3: float(E, M) = fnan(E, M)()
+            ret n3
+        }
+        ret b
+    }
+
+    ; --- zeros ---
+    ea0: u1 = cmp.eq ea, 0
+    ma0: u1 = cmp.eq ma, 0
+    a_zero: u1 = and ea0, ma0
+    eb0: u1 = cmp.eq eb, 0
+    mb0: u1 = cmp.eq mb, 0
+    b_zero: u1 = and eb0, mb0
+    if a_zero {
+        if b_zero {
+            sz: u1 = and sa, sb
+            z: float(E, M) = pack 0, 0, sz
+            ret z
+        }
+        ret b
+    }
+    if b_zero {
+        ret a
+    }
+
+    ; --- significands with the hidden bit, in M + 5 bits: hidden, M
+    ; mantissa bits, three guard bits, one carry bit ---
+    hidden: u(M + 5) = const 1 << M
+    fa0: u(M + 5) = conv ma
+    fb0: u(M + 5) = conv mb
+    fa1: u(M + 5) = if ea0 {
+        yield fa0
+    } else {
+        ha: u(M + 5) = or fa0, hidden
+        yield ha
+    }
+    xa: u(E) = if ea0 {
+        yield 1
+    } else {
+        yield ea
+    }
+    fb1: u(M + 5) = if eb0 {
+        yield fb0
+    } else {
+        hb: u(M + 5) = or fb0, hidden
+        yield hb
+    }
+    xb: u(E) = if eb0 {
+        yield 1
+    } else {
+        yield eb
+    }
+
+    ; --- order the operands so h has the larger magnitude ---
+    lt_e: u1 = cmp.lt xa, xb
+    eq_e: u1 = cmp.eq xa, xb
+    lt_f: u1 = cmp.lt fa1, fb1
+    eq_lt: u1 = and eq_e, lt_f
+    swap: u1 = or lt_e, eq_lt
+    xh: u(E), xl: u(E), fh: u(M + 5), fl: u(M + 5), sh: u1, sl: u1 = if swap {
+        yield xb, xa, fb1, fa1, sb, sa
+    } else {
+        yield xa, xb, fa1, fb1, sa, sb
+    }
+
+    ; --- align: three guard bits, the smaller shifted right with sticky ---
+    fh3: u(M + 5) = shl fh, 3
+    fl3: u(M + 5) = shl fl, 3
+    de: u(E) = sub xh, xl
+    d: u(M + 5) = conv de
+    wmax: u(M + 5) = const M + 5
+    far: u1 = cmp.ge d, wmax
+    fl_al: u(M + 5) = if far {
+        nz: u1 = cmp.ne fl3, 0
+        nzw: u(M + 5) = conv nz
+        yield nzw
+    } else {
+        shifted: u(M + 5) = shr fl3, d
+        m1: u(M + 5) = shl 1, d
+        mask: u(M + 5) = sub m1, 1
+        lost: u(M + 5) = and fl3, mask
+        st: u1 = cmp.ne lost, 0
+        stw: u(M + 5) = conv st
+        al: u(M + 5) = or shifted, stw
+        yield al
+    }
+
+    ; --- add or subtract magnitudes ---
+    diff: u1 = cmp.ne sh, sl
+    sum: u(M + 5) = if diff {
+        s1: u(M + 5) = sub fh3, fl_al
+        yield s1
+    } else {
+        s2: u(M + 5) = add fh3, fl_al
+        yield s2
+    }
+    sum0: u1 = cmp.eq sum, 0
+    if sum0 {
+        z2: float(E, M) = pack 0, 0, 0
+        ret z2
+    }
+
+    ; --- normalize: a carry shifts right (folding into sticky); otherwise
+    ; shift left until the hidden bit is up or the exponent bottoms out ---
+    carry_bit: u(M + 5) = const 1 << (M + 4)
+    top_bit: u(M + 5) = const 1 << (M + 3)
+    c: u(M + 5) = and sum, carry_bit
+    has_c: u1 = cmp.ne c, 0
+    nx: u(E), nf: u(M + 5) = if has_c {
+        low: u(M + 5) = and sum, 1
+        sh1: u(M + 5) = shr sum, 1
+        f1: u(M + 5) = or sh1, low
+        x1: u(E) = add xh, 1
+        yield x1, f1
+    } else {
+        xl2: u(E), fl2: u(M + 5) = loop(x: u(E) = xh, f: u(M + 5) = sum) {
+            t: u(M + 5) = and f, top_bit
+            up: u1 = cmp.ne t, 0
+            if up {
+                break x, f
+            }
+            xmin: u1 = cmp.eq x, 1
+            if xmin {
+                break x, f
+            }
+            f2: u(M + 5) = shl f, 1
+            x2: u(E) = sub x, 1
+            continue x2, f2
+        }
+        yield xl2, fl2
+    }
+
+    ; --- round to nearest even on the three guard bits ---
+    rbits: u(M + 5) = and nf, 7
+    mant0: u(M + 5) = shr nf, 3
+    gt: u1 = cmp.gt rbits, 4
+    eq4: u1 = cmp.eq rbits, 4
+    odd_w: u(M + 5) = and mant0, 1
+    odd: u1 = cmp.ne odd_w, 0
+    tie_up: u1 = and eq4, odd
+    round_up: u1 = or gt, tie_up
+    upw: u(M + 5) = conv round_up
+    mant1: u(M + 5) = add mant0, upw
+    ovf_bit: u(M + 5) = const 1 << (M + 1)
+    o: u(M + 5) = and mant1, ovf_bit
+    has_o: u1 = cmp.ne o, 0
+    fx: u(E), fm: u(M + 5) = if has_o {
+        m2: u(M + 5) = shr mant1, 1
+        x3: u(E) = add nx, 1
+        yield x3, m2
+    } else {
+        yield nx, mant1
+    }
+
+    ; --- encode: normal when the hidden bit is up, else subnormal ---
+    hid: u(M + 5) = and fm, hidden
+    is_norm: u1 = cmp.ne hid, 0
+    ex: u(E) = if is_norm {
+        yield fx
+    } else {
+        yield 0
+    }
+    inf: u1 = cmp.ge ex, emax
+    if inf {
+        i: float(E, M) = pack 0, emax, sh
+        ret i
+    }
+    mfield: u(M) = conv fm
+    r: float(E, M) = pack mfield, ex, sh
+    ret r
+}
+
+; --- subtraction is addition of the negation ---
+fn sub(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    sb: u1 = get b, sign
+    nsb: u1 = xor sb, 1
+    nb: float(E, M) = set b, sign, nsb
+    r: float(E, M) = add(E, M)(a, nb)
+    ret r
+}
+
+; --- shared by mul and div ---
+
+; a finite, nonzero operand as (signed biased exponent, significand with
+; the hidden bit at bit M): subnormals are shifted up into that form
+fn fnorm(E, M)(m: u(M), e: u(E)) -> (i32, u(M + 5)) {
+    hidden: u(M + 5) = const 1 << M
+    f0: u(M + 5) = conv m
+    subn: u1 = cmp.eq e, 0
+    x0: i32 = conv e
+    xr: i32, fr: u(M + 5) = if subn {
+        xl: i32, fl: u(M + 5) = loop(x: i32 = 1, f: u(M + 5) = f0) {
+            h: u(M + 5) = and f, hidden
+            up: u1 = cmp.ne h, 0
+            if up {
+                break x, f
+            }
+            f2: u(M + 5) = shl f, 1
+            x2: i32 = sub x, 1
+            continue x2, f2
+        }
+        yield xl, fl
+    } else {
+        fh: u(M + 5) = or f0, hidden
+        yield x0, fh
+    }
+    ret xr, fr
+}
+
+; encode sign, a signed biased exponent, and a significand whose units bit
+; is bit M + 3 (bit M + 4 a carry; bits 0-2 guard, sticky folded into bit
+; 0): shift subnormals down with sticky, round to nearest even, overflow
+; to infinity
+fn fpack(E, M)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
+    hidden: u(M + 5) = const 1 << M
+    carry_bit: u(M + 5) = const 1 << (M + 4)
+    emax: u(E) = const (1 << E) - 1
+    ; a carry shifts right, folding into sticky
+    c: u(M + 5) = and f0, carry_bit
+    has_c: u1 = cmp.ne c, 0
+    x1: i32, f1: u(M + 5) = if has_c {
+        low: u(M + 5) = and f0, 1
+        sh1: u(M + 5) = shr f0, 1
+        fc: u(M + 5) = or sh1, low
+        xc: i32 = add x0, 1
+        yield xc, fc
+    } else {
+        yield x0, f0
+    }
+    ; below the normal range: shift right by the shortfall, with sticky
+    small: u1 = cmp.lt x1, 1
+    x2: i32, f2: u(M + 5) = if small {
+        d32: i32 = sub 1, x1
+        wmax32: i32 = const M + 5
+        far: u1 = cmp.ge d32, wmax32
+        f3: u(M + 5) = if far {
+            nz: u1 = cmp.ne f1, 0
+            nzw: u(M + 5) = conv nz
+            yield nzw
+        } else {
+            d64: u64 = conv d32
+            d: u(M + 5) = conv d64
+            shifted: u(M + 5) = shr f1, d
+            m1: u(M + 5) = shl 1, d
+            mask: u(M + 5) = sub m1, 1
+            lost: u(M + 5) = and f1, mask
+            st: u1 = cmp.ne lost, 0
+            stw: u(M + 5) = conv st
+            al: u(M + 5) = or shifted, stw
+            yield al
+        }
+        yield 1, f3
+    } else {
+        yield x1, f1
+    }
+    ; round to nearest even on the three guard bits
+    rbits: u(M + 5) = and f2, 7
+    mant0: u(M + 5) = shr f2, 3
+    gt: u1 = cmp.gt rbits, 4
+    eq4: u1 = cmp.eq rbits, 4
+    odd_w: u(M + 5) = and mant0, 1
+    odd: u1 = cmp.ne odd_w, 0
+    tie_up: u1 = and eq4, odd
+    round_up: u1 = or gt, tie_up
+    upw: u(M + 5) = conv round_up
+    mant1: u(M + 5) = add mant0, upw
+    ovf_bit: u(M + 5) = const 1 << (M + 1)
+    o: u(M + 5) = and mant1, ovf_bit
+    has_o: u1 = cmp.ne o, 0
+    x3: i32, fm: u(M + 5) = if has_o {
+        m2: u(M + 5) = shr mant1, 1
+        xo: i32 = add x2, 1
+        yield xo, m2
+    } else {
+        yield x2, mant1
+    }
+    ; encode: normal when the hidden bit is up, else subnormal
+    hid: u(M + 5) = and fm, hidden
+    is_norm: u1 = cmp.ne hid, 0
+    emax32: i32 = const (1 << E) - 1
+    inf: u1 = cmp.ge x3, emax32
+    big: u1 = and is_norm, inf
+    if big {
+        i: float(E, M) = pack 0, emax, s
+        ret i
+    }
+    ex: u(E) = if is_norm {
+        xe: u(E) = conv x3
+        yield xe
+    } else {
+        yield 0
+    }
+    mfield: u(M) = conv fm
+    r: float(E, M) = pack mfield, ex, s
+    ret r
+}
+
+; --- multiplication ---
+; The product of two (M + 1)-bit significands has 2M + 2 bits, more than
+; a 64-bit value holds for f64; it is built from halves of k = ceil((M+1)/2)
+; bits, and only its top M + 5 bits plus a sticky are ever formed.
+fn mul(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    mb: u(M), eb: u(E), sb: u1 = unpack b
+    emax: u(E) = const (1 << E) - 1
+    s: u1 = xor sa, sb
+    a_top: u1 = cmp.eq ea, emax
+    b_top: u1 = cmp.eq eb, emax
+    a_nan0: u1 = cmp.ne ma, 0
+    a_nan: u1 = and a_top, a_nan0
+    b_nan0: u1 = cmp.ne mb, 0
+    b_nan: u1 = and b_top, b_nan0
+    any_nan: u1 = or a_nan, b_nan
+    if any_nan {
+        n1: float(E, M) = fnan(E, M)()
+        ret n1
+    }
+    ea0: u1 = cmp.eq ea, 0
+    ma0: u1 = cmp.eq ma, 0
+    a_zero: u1 = and ea0, ma0
+    eb0: u1 = cmp.eq eb, 0
+    mb0: u1 = cmp.eq mb, 0
+    b_zero: u1 = and eb0, mb0
+    any_inf: u1 = or a_top, b_top
+    if any_inf {
+        any_zero: u1 = or a_zero, b_zero
+        if any_zero {
+            n2: float(E, M) = fnan(E, M)()
+            ret n2
+        }
+        i: float(E, M) = pack 0, emax, s
+        ret i
+    }
+    any_zero2: u1 = or a_zero, b_zero
+    if any_zero2 {
+        z: float(E, M) = pack 0, 0, s
+        ret z
+    }
+    xa: i32, fa: u(M + 5) = fnorm(E, M)(ma, ea)
+    xb: i32, fb: u(M + 5) = fnorm(E, M)(mb, eb)
+    fa64: u64 = conv fa
+    fb64: u64 = conv fb
+    ; halves of k bits
+    kk: u64 = const (M + 2) >> 1
+    kmask: u64 = const (1 << ((M + 2) >> 1)) - 1
+    ah: u64 = shr fa64, kk
+    al: u64 = and fa64, kmask
+    bh: u64 = shr fb64, kk
+    bl: u64 = and fb64, kmask
+    hh: u64 = mul ah, bh
+    m1: u64 = mul ah, bl
+    m2: u64 = mul al, bh
+    mid: u64 = add m1, m2
+    ll: u64 = mul al, bl
+    ; product = hh << 2k + mid << k + ll; wanted: product >> (M - 3) and a
+    ; sticky for what falls below. With s = M - 3: the mid term moves left
+    ; by k - s or right by s - k, whichever is nonnegative
+    sl: u64 = const (((M + 2) >> 1) - (M - 3)) - ((((M + 2) >> 1) - (M - 3)) & ((((M + 2) >> 1) - (M - 3)) >> 63))
+    sr: u64 = const ((M - 3) - ((M + 2) >> 1)) - (((M - 3) - ((M + 2) >> 1)) & (((M - 3) - ((M + 2) >> 1)) >> 63))
+    srmask: u64 = const (1 << (((M - 3) - ((M + 2) >> 1)) - (((M - 3) - ((M + 2) >> 1)) & (((M - 3) - ((M + 2) >> 1)) >> 63)))) - 1
+    ss: u64 = const M - 3
+    smask: u64 = const (1 << (M - 3)) - 1
+    hsh: u64 = const 2 * ((M + 2) >> 1) - (M - 3)
+    midlo: u64 = and mid, srmask
+    midlo_k: u64 = shl midlo, kk
+    low: u64 = add midlo_k, ll
+    lowsh: u64 = shr low, ss
+    midhi: u64 = shr mid, sr
+    midhi2: u64 = shl midhi, sl
+    hhs: u64 = shl hh, hsh
+    r0: u64 = add hhs, midhi2
+    r1: u64 = add r0, lowsh
+    lost: u64 = and low, smask
+    st: u1 = cmp.ne lost, 0
+    stw: u64 = conv st
+    r2: u64 = or r1, stw
+    r: u(M + 5) = conv r2
+    bias32: i32 = const (1 << (E - 1)) - 1
+    x1: i32 = add xa, xb
+    x: i32 = sub x1, bias32
+    res: float(E, M) = fpack(E, M)(s, x, r)
+    ret res
+}
+
+; --- division: restoring long division, one quotient bit per step, so
+; nothing wider than M + 5 bits is ever needed ---
+fn div(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    mb: u(M), eb: u(E), sb: u1 = unpack b
+    emax: u(E) = const (1 << E) - 1
+    s: u1 = xor sa, sb
+    a_top: u1 = cmp.eq ea, emax
+    b_top: u1 = cmp.eq eb, emax
+    a_nan0: u1 = cmp.ne ma, 0
+    a_nan: u1 = and a_top, a_nan0
+    b_nan0: u1 = cmp.ne mb, 0
+    b_nan: u1 = and b_top, b_nan0
+    any_nan: u1 = or a_nan, b_nan
+    both_inf: u1 = and a_top, b_top
+    ea0: u1 = cmp.eq ea, 0
+    ma0: u1 = cmp.eq ma, 0
+    a_zero: u1 = and ea0, ma0
+    eb0: u1 = cmp.eq eb, 0
+    mb0: u1 = cmp.eq mb, 0
+    b_zero: u1 = and eb0, mb0
+    both_zero: u1 = and a_zero, b_zero
+    bad0: u1 = or any_nan, both_inf
+    bad: u1 = or bad0, both_zero
+    if bad {
+        n: float(E, M) = fnan(E, M)()
+        ret n
+    }
+    to_inf: u1 = or a_top, b_zero
+    if to_inf {
+        inf_r: float(E, M) = pack 0, emax, s
+        ret inf_r
+    }
+    to_zero: u1 = or b_top, a_zero
+    if to_zero {
+        z: float(E, M) = pack 0, 0, s
+        ret z
+    }
+    xa: i32, fa: u(M + 5) = fnorm(E, M)(ma, ea)
+    xb: i32, fb: u(M + 5) = fnorm(E, M)(mb, eb)
+    ; q = floor(fa * 2^(M+4) / fb): the integer bit first (fa / fb is in
+    ; (1/2, 2)), then M + 4 fraction bits by shift-and-subtract, the
+    ; remainder always below fb
+    steps: i32 = const M + 4
+    ge0: u1 = cmp.ge fa, fb
+    q0: u(M + 5) = conv ge0
+    r0: u(M + 5) = if ge0 {
+        d0: u(M + 5) = sub fa, fb
+        yield d0
+    } else {
+        yield fa
+    }
+    q: u(M + 5), rem: u(M + 5) = loop(i: i32 = 0, qq: u(M + 5) = q0, rr: u(M + 5) = r0) {
+        done: u1 = cmp.eq i, steps
+        if done {
+            break qq, rr
+        }
+        r2: u(M + 5) = shl rr, 1
+        q2: u(M + 5) = shl qq, 1
+        ge: u1 = cmp.ge r2, fb
+        r3: u(M + 5), q3: u(M + 5) = if ge {
+            rs: u(M + 5) = sub r2, fb
+            qs: u(M + 5) = or q2, 1
+            yield rs, qs
+        } else {
+            yield r2, q2
+        }
+        i2: i32 = add i, 1
+        continue i2, q3, r3
+    }
+    st: u1 = cmp.ne rem, 0
+    stw: u(M + 5) = conv st
+    f: u(M + 5) = or q, stw
+    bias32: i32 = const (1 << (E - 1)) - 1
+    x1: i32 = sub xa, xb
+    x2: i32 = add x1, bias32
+    x: i32 = sub x2, 1
+    res: float(E, M) = fpack(E, M)(s, x, f)
+    ret res
+}
+
+; --- square root: digit by digit, two bits of the radicand per step, so
+; the remainder never needs more than M + 8 bits ---
+fn sqrt(E, M)(a: float(E, M)) -> float(E, M) {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    emax: u(E) = const (1 << E) - 1
+    a_top: u1 = cmp.eq ea, emax
+    a_nan0: u1 = cmp.ne ma, 0
+    a_nan: u1 = and a_top, a_nan0
+    ea0: u1 = cmp.eq ea, 0
+    ma0: u1 = cmp.eq ma, 0
+    a_zero: u1 = and ea0, ma0
+    if a_zero {
+        ret a
+    }
+    neg: u1 = or a_nan, sa
+    if neg {
+        n: float(E, M) = fnan(E, M)()
+        ret n
+    }
+    if a_top {
+        ret a
+    }
+    x0: i32, f0: u(M + 5) = fnorm(E, M)(ma, ea)
+    ; an even unbiased exponent: shift the significand up one if it is odd
+    bias32: i32 = const (1 << (E - 1)) - 1
+    e: i32 = sub x0, bias32
+    par: i32 = and e, 1
+    e2: i32 = sub e, par
+    half: i32 = shr e2, 1
+    x: i32 = add half, bias32
+    p64: u64 = conv par
+    pw: u(M + 5) = conv p64
+    f: u(M + 5) = shl f0, pw
+    ; the radicand's window: M + 2 (+1 if M is odd) bits, fed two at a time,
+    ; then zeros; M + 4 steps give a root with its units bit at M + 3
+    wpad: u(M + 5) = const M & 1
+    w0: u(M + 5) = shl f, wpad
+    wmask: u(M + 5) = const (1 << (M + 2 + (M & 1))) - 1
+    wtop: u(M + 5) = const M + (M & 1)
+    steps: i32 = const M + 4
+    root: u(M + 8), rem: u(M + 8) = loop(i: i32 = 0, w: u(M + 5) = w0, q: u(M + 8) = 0, r: u(M + 8) = 0) {
+        done: u1 = cmp.eq i, steps
+        if done {
+            break q, r
+        }
+        pair: u(M + 5) = shr w, wtop
+        bits: u(M + 5) = and pair, 3
+        w2: u(M + 5) = shl w, 2
+        w3: u(M + 5) = and w2, wmask
+        bits_r: u(M + 8) = conv bits
+        r2a: u(M + 8) = shl r, 2
+        r2: u(M + 8) = or r2a, bits_r
+        q2: u(M + 8) = shl q, 1
+        trial0: u(M + 8) = shl q, 2
+        trial: u(M + 8) = or trial0, 1
+        ge: u1 = cmp.ge r2, trial
+        r3: u(M + 8), q3: u(M + 8) = if ge {
+            rs: u(M + 8) = sub r2, trial
+            qs: u(M + 8) = or q2, 1
+            yield rs, qs
+        } else {
+            yield r2, q2
+        }
+        i2: i32 = add i, 1
+        continue i2, w3, q3, r3
+    }
+    st: u1 = cmp.ne rem, 0
+    stw: u(M + 8) = conv st
+    rootst: u(M + 8) = or root, stw
+    res_f: u(M + 5) = conv rootst
+    res: float(E, M) = fpack(E, M)(0, x, res_f)
+    ret res
+}
+
+; --- conversions ---
+
+; float -> float: re-express the significand at the target's precision
+; (exactly when widening, with a sticky when narrowing) and let fpack
+; round, saturate, and handle the target's subnormal range
+fn conv(E, M, F, N)(a: float(E, M)) -> float(F, N) {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    emax: u(E) = const (1 << E) - 1
+    emax_n: u(F) = const (1 << F) - 1
+    a_top: u1 = cmp.eq ea, emax
+    if a_top {
+        a_nan: u1 = cmp.ne ma, 0
+        if a_nan {
+            n: float(F, N) = fnan(F, N)()
+            ret n
+        }
+        inf_r: float(F, N) = pack 0, emax_n, sa
+        ret inf_r
+    }
+    ea0: u1 = cmp.eq ea, 0
+    ma0: u1 = cmp.eq ma, 0
+    a_zero: u1 = and ea0, ma0
+    if a_zero {
+        z: float(F, N) = pack 0, 0, sa
+        ret z
+    }
+    x: i32, f: u(M + 5) = fnorm(E, M)(ma, ea)
+    f64: u64 = conv f
+    ; units bit from M to N + 3: left by N + 3 - M, or right by M - N - 3
+    sl: u64 = const (N + 3 - M) - ((N + 3 - M) & ((N + 3 - M) >> 63))
+    sr: u64 = const (M - N - 3) - ((M - N - 3) & ((M - N - 3) >> 63))
+    srmask: u64 = const (1 << ((M - N - 3) - ((M - N - 3) & ((M - N - 3) >> 63)))) - 1
+    lost: u64 = and f64, srmask
+    st: u1 = cmp.ne lost, 0
+    stw: u64 = conv st
+    t0: u64 = shr f64, sr
+    t1: u64 = shl t0, sl
+    t: u64 = or t1, stw
+    tn: u(N + 5) = conv t
+    bias_s: i32 = const (1 << (E - 1)) - 1
+    bias_d: i32 = const (1 << (F - 1)) - 1
+    e: i32 = sub x, bias_s
+    xd: i32 = add e, bias_d
+    r: float(F, N) = fpack(F, N)(sa, xd, tn)
+    ret r
+}
+
+; an integer magnitude and sign as a float: find the top bit, place the
+; units bit at M + 3 with a sticky, and let fpack round
+fn fint(E, M)(s: u1, mag: u64) -> float(E, M) {
+    is0: u1 = cmp.eq mag, 0
+    if is0 {
+        z: float(E, M) = pack 0, 0, s
+        ret z
+    }
+    p: i32 = loop(v: u64 = mag, c: i32 = 0) {
+        small: u1 = cmp.le v, 1
+        if small {
+            break c
+        }
+        v2: u64 = shr v, 1
+        c2: i32 = add c, 1
+        continue v2, c2
+    }
+    thr: i32 = const M + 3
+    big: u1 = cmp.gt p, thr
+    t: u64 = if big {
+        sh: i32 = sub p, thr
+        sh64: u64 = conv sh
+        shifted: u64 = shr mag, sh64
+        m1: u64 = shl 1, sh64
+        mask: u64 = sub m1, 1
+        lost: u64 = and mag, mask
+        st: u1 = cmp.ne lost, 0
+        stw: u64 = conv st
+        al: u64 = or shifted, stw
+        yield al
+    } else {
+        sh2: i32 = sub thr, p
+        sh264: u64 = conv sh2
+        up: u64 = shl mag, sh264
+        yield up
+    }
+    tn: u(M + 5) = conv t
+    bias32: i32 = const (1 << (E - 1)) - 1
+    x: i32 = add p, bias32
+    r: float(E, M) = fpack(E, M)(s, x, tn)
+    ret r
+}
+
+fn conv(W, E, M)(a: i(W)) -> float(E, M) {
+    neg: u1 = cmp.lt a, 0
+    au: u(W) = cast a
+    mag: u(W) = if neg {
+        m: u(W) = sub 0, au
+        yield m
+    } else {
+        yield au
+    }
+    mag64: u64 = conv mag
+    r: float(E, M) = fint(E, M)(neg, mag64)
+    ret r
+}
+
+fn conv(W, E, M)(a: u(W)) -> float(E, M) {
+    mag64: u64 = conv a
+    r: float(E, M) = fint(E, M)(0, mag64)
+    ret r
+}
+
+; the integer part of a float's magnitude as a u64, saturated to all
+; ones for anything 2^64 and up; NaN and infinities handled by the callers
+fn fmag(E, M)(ma: u(M), ea: u(E)) -> u64 {
+    x: i32, f: u(M + 5) = fnorm(E, M)(ma, ea)
+    bias32: i32 = const (1 << (E - 1)) - 1
+    e: i32 = sub x, bias32
+    below1: u1 = cmp.lt e, 0
+    if below1 {
+        ret 0
+    }
+    huge: u1 = cmp.ge e, 64
+    if huge {
+        ret -1
+    }
+    f64: u64 = conv f
+    m32: i32 = const M
+    left: u1 = cmp.ge e, m32
+    mag: u64 = if left {
+        sh: i32 = sub e, m32
+        sh64: u64 = conv sh
+        up: u64 = shl f64, sh64
+        yield up
+    } else {
+        sh2: i32 = sub m32, e
+        sh264: u64 = conv sh2
+        down: u64 = shr f64, sh264
+        yield down
+    }
+    ret mag
+}
+
+; float -> signed integer: truncate toward zero, saturate, NaN is 0
+fn conv(E, M, W)(a: float(E, M)) -> i(W) {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    emax: u(E) = const (1 << E) - 1
+    maxpos: i(W) = const (1 << (W - 1)) - 1
+    minneg: i(W) = const 0 - (1 << (W - 1))
+    a_top: u1 = cmp.eq ea, emax
+    if a_top {
+        a_nan: u1 = cmp.ne ma, 0
+        if a_nan {
+            ret 0
+        }
+        if sa {
+            ret minneg
+        }
+        ret maxpos
+    }
+    ea0: u1 = cmp.eq ea, 0
+    ma0: u1 = cmp.eq ma, 0
+    a_zero: u1 = and ea0, ma0
+    if a_zero {
+        ret 0
+    }
+    mag: u64 = fmag(E, M)(ma, ea)
+    if sa {
+        limit_n: u64 = const 1 << (W - 1)
+        over_n: u1 = cmp.gt mag, limit_n
+        if over_n {
+            ret minneg
+        }
+        negm: u64 = sub 0, mag
+        rn: i(W) = conv negm
+        ret rn
+    }
+    limit_p: u64 = const (1 << (W - 1)) - 1
+    over_p: u1 = cmp.gt mag, limit_p
+    if over_p {
+        ret maxpos
+    }
+    rp: i(W) = conv mag
+    ret rp
+}
+
+; float -> unsigned integer: truncate toward zero, saturate, negatives
+; and NaN are 0
+fn conv(E, M, W)(a: float(E, M)) -> u(W) {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    emax: u(E) = const (1 << E) - 1
+    ; all ones, spelled to survive W = 64 (1 << 64 would wrap)
+    maxv: u(W) = const ((1 << (W - 1)) - 1) * 2 + 1
+    a_top: u1 = cmp.eq ea, emax
+    if a_top {
+        a_nan: u1 = cmp.ne ma, 0
+        bad: u1 = or a_nan, sa
+        if bad {
+            ret 0
+        }
+        ret maxv
+    }
+    if sa {
+        ret 0
+    }
+    ea0: u1 = cmp.eq ea, 0
+    ma0: u1 = cmp.eq ma, 0
+    a_zero: u1 = and ea0, ma0
+    if a_zero {
+        ret 0
+    }
+    mag: u64 = fmag(E, M)(ma, ea)
+    limit: u64 = const ((1 << (W - 1)) - 1) * 2 + 1
+    over: u1 = cmp.gt mag, limit
+    if over {
+        ret maxv
+    }
+    r: u(W) = conv mag
+    ret r
+}
+
+; --- comparison ---
+; the ordering of a and b: -1 below, 0 equal (so -0 equals +0), 1 above,
+; 2 unordered (a NaN on either side). The six predicates read it.
+fn fcmp(E, M)(a: float(E, M), b: float(E, M)) -> i32 {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    mb: u(M), eb: u(E), sb: u1 = unpack b
+    emax: u(E) = const (1 << E) - 1
+    a_top: u1 = cmp.eq ea, emax
+    a_nan0: u1 = cmp.ne ma, 0
+    a_nan: u1 = and a_top, a_nan0
+    b_top: u1 = cmp.eq eb, emax
+    b_nan0: u1 = cmp.ne mb, 0
+    b_nan: u1 = and b_top, b_nan0
+    any_nan: u1 = or a_nan, b_nan
+    if any_nan {
+        ret 2
+    }
+    ; a magnitude orders like its bits: exponent above mantissa
+    ma_w: u(E + M) = conv ma
+    mb_w: u(E + M) = conv mb
+    ea_w: u(E + M) = conv ea
+    eb_w: u(E + M) = conv eb
+    msh: u(E + M) = const M
+    ea_s: u(E + M) = shl ea_w, msh
+    eb_s: u(E + M) = shl eb_w, msh
+    mag_a: u(E + M) = or ea_s, ma_w
+    mag_b: u(E + M) = or eb_s, mb_w
+    a_zero: u1 = cmp.eq mag_a, 0
+    b_zero: u1 = cmp.eq mag_b, 0
+    both_zero: u1 = and a_zero, b_zero
+    if both_zero {
+        ret 0
+    }
+    ; signed magnitudes as if on a number line: a zero takes the other's side
+    sa_eff: u1 = if a_zero {
+        yield sb
+    } else {
+        yield sa
+    }
+    opposite: u1 = cmp.ne sa_eff, sb
+    if opposite {
+        if sa_eff {
+            ret -1
+        }
+        ret 1
+    }
+    ; same sign: compare magnitudes, flipped for negatives
+    a_less: u1 = cmp.lt mag_a, mag_b
+    a_more: u1 = cmp.gt mag_a, mag_b
+    if a_less {
+        if sa_eff {
+            ret 1
+        }
+        ret -1
+    }
+    if a_more {
+        if sa_eff {
+            ret -1
+        }
+        ret 1
+    }
+    ret 0
+}
+
+fn lt(E, M)(a: float(E, M), b: float(E, M)) -> u1 {
+    t: i32 = fcmp(E, M)(a, b)
+    r: u1 = cmp.eq t, -1
+    ret r
+}
+fn le(E, M)(a: float(E, M), b: float(E, M)) -> u1 {
+    t: i32 = fcmp(E, M)(a, b)
+    r: u1 = cmp.le t, 0
+    ret r
+}
+fn gt(E, M)(a: float(E, M), b: float(E, M)) -> u1 {
+    t: i32 = fcmp(E, M)(a, b)
+    r: u1 = cmp.eq t, 1
+    ret r
+}
+fn ge(E, M)(a: float(E, M), b: float(E, M)) -> u1 {
+    t: i32 = fcmp(E, M)(a, b)
+    ; 0 or 1, but not -1 or 2: as unsigned, at most 1
+    tu: u32 = cast t
+    r: u1 = cmp.le tu, 1
+    ret r
+}
+fn eq(E, M)(a: float(E, M), b: float(E, M)) -> u1 {
+    t: i32 = fcmp(E, M)(a, b)
+    r: u1 = cmp.eq t, 0
+    ret r
+}
+fn ne(E, M)(a: float(E, M), b: float(E, M)) -> u1 {
+    t: i32 = fcmp(E, M)(a, b)
+    r: u1 = cmp.ne t, 0
+    ret r
+}
+
+; --- sign ---
+fn neg(E, M)(a: float(E, M)) -> float(E, M) {
+    s: u1 = get a, sign
+    ns: u1 = xor s, 1
+    r: float(E, M) = set a, sign, ns
+    ret r
+}
+fn abs(E, M)(a: float(E, M)) -> float(E, M) {
+    r: float(E, M) = set a, sign, 0
+    ret r
+}
+
+; --- min and max: IEEE minimum/maximum, NaN propagating, -0 below +0 ---
+fn min(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    t: i32 = fcmp(E, M)(a, b)
+    un: u1 = cmp.eq t, 2
+    if un {
+        n: float(E, M) = fnan(E, M)()
+        ret n
+    }
+    lt: u1 = cmp.eq t, -1
+    if lt {
+        ret a
+    }
+    gt: u1 = cmp.eq t, 1
+    if gt {
+        ret b
+    }
+    sa: u1 = get a, sign
+    if sa {
+        ret a
+    }
+    ret b
+}
+fn max(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    t: i32 = fcmp(E, M)(a, b)
+    un: u1 = cmp.eq t, 2
+    if un {
+        n: float(E, M) = fnan(E, M)()
+        ret n
+    }
+    gt: u1 = cmp.eq t, 1
+    if gt {
+        ret a
+    }
+    lt: u1 = cmp.eq t, -1
+    if lt {
+        ret b
+    }
+    sa: u1 = get a, sign
+    if sa {
+        ret b
+    }
+    ret a
+}
+
+; --- two-word (128-bit) arithmetic on (hi, lo) pairs of u64, for fma ---
+fn add128(ah: u64, al: u64, bh: u64, bl: u64) -> (u64, u64) {
+    lo: u64 = add al, bl
+    carry: u1 = cmp.lt lo, al
+    c64: u64 = conv carry
+    h1: u64 = add ah, bh
+    hi: u64 = add h1, c64
+    ret hi, lo
+}
+fn sub128(ah: u64, al: u64, bh: u64, bl: u64) -> (u64, u64) {
+    lo: u64 = sub al, bl
+    borrow: u1 = cmp.lt al, bl
+    b64: u64 = conv borrow
+    h1: u64 = sub ah, bh
+    hi: u64 = sub h1, b64
+    ret hi, lo
+}
+fn lt128(ah: u64, al: u64, bh: u64, bl: u64) -> u1 {
+    hlt: u1 = cmp.lt ah, bh
+    heq: u1 = cmp.eq ah, bh
+    llt: u1 = cmp.lt al, bl
+    t: u1 = and heq, llt
+    r: u1 = or hlt, t
+    ret r
+}
+; right by any amount, with a sticky for what fell off
+fn shr128(ah: u64, al: u64, d: u64) -> (u64, u64, u1) {
+    z: u1 = cmp.eq d, 0
+    if z {
+        ret ah, al, 0
+    }
+    big: u1 = cmp.ge d, 128
+    if big {
+        any: u64 = or ah, al
+        st: u1 = cmp.ne any, 0
+        ret 0, 0, st
+    }
+    mid: u1 = cmp.ge d, 64
+    if mid {
+        d2: u64 = sub d, 64
+        lo2: u64 = shr ah, d2
+        m1: u64 = shl 1, d2
+        mask: u64 = sub m1, 1
+        lost: u64 = and ah, mask
+        s1: u1 = cmp.ne lost, 0
+        s2: u1 = cmp.ne al, 0
+        st2: u1 = or s1, s2
+        ret 0, lo2, st2
+    }
+    inv: u64 = sub 64, d
+    lo3a: u64 = shr al, d
+    lo3b: u64 = shl ah, inv
+    lo3: u64 = or lo3a, lo3b
+    hi3: u64 = shr ah, d
+    m2: u64 = shl 1, d
+    mask2: u64 = sub m2, 1
+    lost2: u64 = and al, mask2
+    st3: u1 = cmp.ne lost2, 0
+    ret hi3, lo3, st3
+}
+; left by 0..63
+fn shl128(ah: u64, al: u64, s: u64) -> (u64, u64) {
+    z: u1 = cmp.eq s, 0
+    if z {
+        ret ah, al
+    }
+    inv: u64 = sub 64, s
+    hia: u64 = shl ah, s
+    hib: u64 = shr al, inv
+    hi: u64 = or hia, hib
+    lo: u64 = shl al, s
+    ret hi, lo
+}
+; index of the top set bit of a nonzero pair
+fn msb128(ah: u64, al: u64) -> i32 {
+    hz: u1 = cmp.eq ah, 0
+    w: u64, base: i32 = if hz {
+        yield al, 0
+    } else {
+        yield ah, 64
+    }
+    p: i32 = loop(x: u64 = w, c: i32 = base) {
+        small: u1 = cmp.le x, 1
+        if small {
+            break c
+        }
+        x2: u64 = shr x, 1
+        c2: i32 = add c, 1
+        continue x2, c2
+    }
+    ret p
+}
+
+; --- fused multiply-add: a * b + c with one rounding ---
+; The exact product (2M + 2 bits) and the addend meet in a 128-bit
+; accumulator with eight guard bits below the product, so any alignment
+; shift of eight or less is exact and cancellation loses nothing; beyond
+; that the shifted operand is far smaller and a sticky suffices.
+fn fma(E, M)(a: float(E, M), b: float(E, M), c: float(E, M)) -> float(E, M) {
+    ma: u(M), ea: u(E), sa: u1 = unpack a
+    mb: u(M), eb: u(E), sb: u1 = unpack b
+    mc: u(M), ec: u(E), sc: u1 = unpack c
+    emax: u(E) = const (1 << E) - 1
+    sp: u1 = xor sa, sb
+    a_top: u1 = cmp.eq ea, emax
+    b_top: u1 = cmp.eq eb, emax
+    c_top: u1 = cmp.eq ec, emax
+    a_nan0: u1 = cmp.ne ma, 0
+    a_nan: u1 = and a_top, a_nan0
+    b_nan0: u1 = cmp.ne mb, 0
+    b_nan: u1 = and b_top, b_nan0
+    c_nan0: u1 = cmp.ne mc, 0
+    c_nan: u1 = and c_top, c_nan0
+    nan1: u1 = or a_nan, b_nan
+    any_nan: u1 = or nan1, c_nan
+    if any_nan {
+        n: float(E, M) = fnan(E, M)()
+        ret n
+    }
+    ea0: u1 = cmp.eq ea, 0
+    ma0: u1 = cmp.eq ma, 0
+    a_zero: u1 = and ea0, ma0
+    eb0: u1 = cmp.eq eb, 0
+    mb0: u1 = cmp.eq mb, 0
+    b_zero: u1 = and eb0, mb0
+    ec0: u1 = cmp.eq ec, 0
+    mc0: u1 = cmp.eq mc, 0
+    c_zero: u1 = and ec0, mc0
+    p_inf: u1 = or a_top, b_top
+    if p_inf {
+        ab_zero: u1 = or a_zero, b_zero
+        if ab_zero {
+            n2: float(E, M) = fnan(E, M)()
+            ret n2
+        }
+        if c_top {
+            opp: u1 = cmp.ne sp, sc
+            if opp {
+                n3: float(E, M) = fnan(E, M)()
+                ret n3
+            }
+        }
+        i: float(E, M) = pack 0, emax, sp
+        ret i
+    }
+    if c_top {
+        ret c
+    }
+    p_zero: u1 = or a_zero, b_zero
+    if p_zero {
+        if c_zero {
+            sz: u1 = and sp, sc
+            z: float(E, M) = pack 0, 0, sz
+            ret z
+        }
+        ret c
+    }
+    if c_zero {
+        ; nothing to add: the product, rounded once
+        pr: float(E, M) = mul(E, M)(a, b)
+        ret pr
+    }
+    ; the product, exactly, as (hi, lo), from k-bit halves
+    xa: i32, fa: u(M + 5) = fnorm(E, M)(ma, ea)
+    xb: i32, fb: u(M + 5) = fnorm(E, M)(mb, eb)
+    fa64: u64 = conv fa
+    fb64: u64 = conv fb
+    kk: u64 = const (M + 2) >> 1
+    kmask: u64 = const (1 << ((M + 2) >> 1)) - 1
+    ah: u64 = shr fa64, kk
+    al: u64 = and fa64, kmask
+    bh: u64 = shr fb64, kk
+    bl: u64 = and fb64, kmask
+    hh: u64 = mul ah, bh
+    m1: u64 = mul ah, bl
+    m2: u64 = mul al, bh
+    ll: u64 = mul al, bl
+    mh1: u64, ml1: u64 = shl128(0, m1, kk)
+    mh2: u64, ml2: u64 = shl128(0, m2, kk)
+    kk2: u64 = const 2 * ((M + 2) >> 1)
+    hhh: u64, hhl: u64 = shl128(0, hh, kk2)
+    p1h: u64, p1l: u64 = add128(0, ll, mh1, ml1)
+    p2h: u64, p2l: u64 = add128(p1h, p1l, mh2, ml2)
+    p3h: u64, p3l: u64 = add128(p2h, p2l, hhh, hhl)
+    ; eight guard bits; the product's units bit is now at 2M + 8
+    ph: u64, pl: u64 = shl128(p3h, p3l, 8)
+    bias32: i32 = const (1 << (E - 1)) - 1
+    xab: i32 = add xa, xb
+    xp: i32 = sub xab, bias32
+    ; the addend in the same layout
+    xc: i32, fc: u(M + 5) = fnorm(E, M)(mc, ec)
+    fc64: u64 = conv fc
+    shc: u64 = const M + 8
+    ch: u64, cl: u64 = shl128(0, fc64, shc)
+    ; align to the larger exponent: u stays, v is shifted (with sticky)
+    pbig: u1 = cmp.ge xp, xc
+    uh: u64, ul: u64, vh: u64, vl: u64, st: u1, su: u1, sv: u1, x0: i32 = if pbig {
+        d1: i32 = sub xp, xc
+        d164: u64 = conv d1
+        vh1: u64, vl1: u64, st1: u1 = shr128(ch, cl, d164)
+        yield ph, pl, vh1, vl1, st1, sp, sc, xp
+    } else {
+        d2: i32 = sub xc, xp
+        d264: u64 = conv d2
+        vh2: u64, vl2: u64, st2: u1 = shr128(ph, pl, d264)
+        yield ch, cl, vh2, vl2, st2, sc, sp, xc
+    }
+    same: u1 = cmp.eq su, sv
+    rh: u64, rl: u64, rs: u1, stf: u1 = if same {
+        s1h: u64, s1l: u64 = add128(uh, ul, vh, vl)
+        yield s1h, s1l, su, st
+    } else {
+        vlt: u1 = lt128(vh, vl, uh, ul)
+        dh: u64, dl: u64, ds: u1, dst: u1 = if vlt {
+            ; u - v; a sticky under v means the true result is a little
+            ; smaller: take one more off and keep the sticky
+            d1h: u64, d1l: u64 = sub128(uh, ul, vh, vl)
+            eh: u64, el: u64 = if st {
+                d2h: u64, d2l: u64 = sub128(d1h, d1l, 0, 1)
+                yield d2h, d2l
+            } else {
+                yield d1h, d1l
+            }
+            yield eh, el, su, st
+        } else {
+            ; v - u: v was shifted by at most eight (or it would be
+            ; smaller), so it is exact
+            d3h: u64, d3l: u64 = sub128(vh, vl, uh, ul)
+            yield d3h, d3l, sv, 0
+        }
+        yield dh, dl, ds, dst
+    }
+    any: u64 = or rh, rl
+    is0: u1 = cmp.eq any, 0
+    if is0 {
+        z2: float(E, M) = pack 0, 0, 0
+        ret z2
+    }
+    ; normalize: the top bit to position M + 3, with a sticky
+    t: i32 = msb128(rh, rl)
+    target: i32 = const M + 3
+    down: u1 = cmp.gt t, target
+    fh: u64, fl: u64, st3: u1 = if down {
+        dd: i32 = sub t, target
+        dd64: u64 = conv dd
+        nh: u64, nl: u64, ns: u1 = shr128(rh, rl, dd64)
+        yield nh, nl, ns
+    } else {
+        du: i32 = sub target, t
+        du64: u64 = conv du
+        nh2: u64, nl2: u64 = shl128(rh, rl, du64)
+        yield nh2, nl2, 0
+    }
+    stall: u1 = or stf, st3
+    stw: u64 = conv stall
+    fl2: u64 = or fl, stw
+    f: u(M + 5) = conv fl2
+    units: i32 = const 2 * M + 8
+    x1: i32 = add x0, t
+    x: i32 = sub x1, units
+    r: float(E, M) = fpack(E, M)(rs, x, f)
+    ret r
+}

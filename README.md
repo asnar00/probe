@@ -41,8 +41,9 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   structured front-end (`if`/`loop`/`break`/`continue`/`yield`) that
   lowers to the flat block graph at parse time; and abstract `int`/`uint`
   types resolved to a concrete width by a per-target replacement policy
-  (`--int=i32|i64` to override). No floats yet; their bit layouts are
-  already expressible as packs.
+  (`--int=i32|i64` to override), and an abstract `float` resolved the
+  same way (`--float=f16|bf16|f32|f64|E,M`) to the library's
+  `float(E, M)`.
 - **Two learners**:
   - `src/learn.rs` for fixed-width register ISAs: one-hot probes XORed
     against a baseline map each operand bit to its encoding bit — which
@@ -82,7 +83,7 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   slot with slack, calls routed through counting trampolines, so an edited
   function recompiles in place and a hot one is promoted through the full
   pipeline without disturbing its neighbours.
-- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 327
+- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 337
   cases with expectations embedded as `;! gcd 48 36 -> 12` directives, run
   identically against every backend — including arm64 under
   qemu-system-aarch64 as an independent second referee for the same bytes
@@ -125,12 +126,16 @@ cargo run -- run suite/bits.ssa add5 15 1          # i5: 15 + 1 -> -16
 cargo run -- run suite/packs.ssa mkrgb 31 63 1     # -> 4095 (b:g:r = 1:63:31)
 cargo run -- run suite/types.ssa f32exp 0x40490fdb # f32 = float(8, 23): pi's exponent, 128
 
-# floating point is a library: add/sub/mul/div/sqrt/neg/abs/min/max/fma/cmp/conv over float(E, M),
-# done with integer instructions, instantiated for fp8/fp16/bf16/f32/f64
-# and checked against the FPU. On a platform with hardware for it, fadd32
-# *is* the instruction; --soft keeps the library body
+# floating point is a library (lib/float.ssa, appended to every program):
+# add/sub/mul/div/sqrt/neg/abs/min/max/fma/cmp/conv over float(E, M), done
+# with integer instructions, instantiated for fp8/fp16/bf16/f32/f64 and
+# checked against the FPU. On a platform with hardware for it, fadd32 *is*
+# the instruction; --soft keeps the library body. A bare `float` is the
+# policy's width
 cargo run -- run suite/float.ssa fadd32 0x3dcccccd 0x3e4ccccd   # 0.1 + 0.2 -> 0x3e99999a
 cargo run -- --soft run suite/float.ssa fadd32 0x3dcccccd 0x3e4ccccd   # same answer, ~100 instructions
+cargo run -- run suite/afloat.ssa hyp 3 4                  # sqrt(3*3 + 4*4) over abstract floats -> 5
+cargo run -- --float=f16 run suite/afloat.ssa hyp 3 4      # the same program, at 16 bits
 
 # the incremental compiler. Edit the file while this runs — changed
 # functions recompile in place at level 0, and functions that get hot

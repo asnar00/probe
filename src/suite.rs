@@ -150,7 +150,7 @@ impl Report {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn run_dir(dir: &str, backend: Backend) -> Result<Report, String> {
-    run_dir_at(dir, backend, opt::MAX_LEVEL, None)
+    run_dir_at(dir, backend, opt::MAX_LEVEL, None, None)
 }
 
 /// Each target's default replacement policy for the abstract 'int' type:
@@ -163,11 +163,20 @@ fn default_int(backend: Backend) -> ssa::Type {
     }
 }
 
+/// and for the abstract 'float': f64 on the register machines, f32 on wasm32
+fn default_float(backend: Backend) -> (u32, u32) {
+    match backend {
+        Backend::Wasm => (8, 23),
+        _ => (11, 52),
+    }
+}
+
 pub fn run_dir_at(
     dir: &str,
     backend: Backend,
     level: usize,
     int_override: Option<ssa::Type>,
+    float_override: Option<(u32, u32)>,
 ) -> Result<Report, String> {
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {}", dir, e))?
@@ -202,7 +211,8 @@ pub fn run_dir_at(
             .map_err(|e| e.to_string())?;
     }
 
-    let policy = ssa::Policy::new(int_override.unwrap_or(default_int(backend)))?;
+    let (fe, fm) = float_override.unwrap_or(default_float(backend));
+    let policy = ssa::Policy::new(int_override.unwrap_or(default_int(backend)))?.with_float(fe, fm);
     let mut report = Report {
         passed: 0,
         failed: 0,
@@ -227,7 +237,7 @@ pub fn run_dir_at(
             if let Some(e) = bad_directive {
                 return Err(e);
             }
-            let mut module = ssa::parse(&src).map_err(|e| e.to_string())?;
+            let mut module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| e.to_string())?;
             ssa::resolve_types(&mut module, &policy);
             ssa::verify(&module).map_err(|errs| errs.join("; "))?;
             opt::optimize(&mut module, level);
@@ -714,8 +724,8 @@ fn run_riscv(
             RV_FINISHER
         );
         let driver = gen_driver(module, cases, RV_HEAP, &exit_ssa)?;
-        let full = format!("{}\n{}\n{}", driver, helpers(RV_UART), src);
-        let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
+        let full = format!("{}\n{}\n{}", driver, helpers(RV_UART), ssa::with_prelude(src));
+        let mut m2 = ssa::parse_with(&full, policy).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
         opt::optimize(&mut m2, level);
@@ -783,8 +793,8 @@ fn run_arm_qemu(
         // SYSTEM_OFF hypervisor call (x0 = 0x84000008; hvc #0)
         let driver = gen_driver(module, cases, ARM_HEAP, "    __qemu_exit()\n")?;
         let stub = "fn __qemu_exit() {\nentry:\n    ret\n}\n";
-        let full = format!("{}\n{}\n{}\n{}", driver, helpers(ARM_UART), stub, src);
-        let mut m2 = ssa::parse(&full).map_err(|e| format!("driver: {}", e))?;
+        let full = format!("{}\n{}\n{}\n{}", driver, helpers(ARM_UART), stub, ssa::with_prelude(src));
+        let mut m2 = ssa::parse_with(&full, policy).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
         opt::optimize(&mut m2, level);
@@ -869,7 +879,7 @@ mod tests {
     fn regression_suite_every_level() {
         // any prefix of the pass pipeline must be a correct stopping point
         for level in 0..=crate::opt::MAX_LEVEL {
-            let report = super::run_dir_at("suite", super::Backend::Native, level, None)
+            let report = super::run_dir_at("suite", super::Backend::Native, level, None, None)
                 .expect("suite runs");
             assert_eq!(report.failed, 0, "at level {}:\n{}", level, report.log);
         }
@@ -885,9 +895,27 @@ mod tests {
                 super::Backend::Native,
                 crate::opt::MAX_LEVEL,
                 Some(int),
+                None,
             )
             .expect("suite runs");
             assert_eq!(report.failed, 0, "with int={}:\n{}", int.name(), report.log);
+        }
+    }
+
+    #[test]
+    fn regression_suite_both_float_policies() {
+        // programs over the abstract 'float' must behave the same at
+        // every width the policy can choose (concrete ones are unaffected)
+        for (e, m) in [(8u32, 23u32), (11, 52)] {
+            let report = super::run_dir_at(
+                "suite",
+                super::Backend::Native,
+                crate::opt::MAX_LEVEL,
+                None,
+                Some((e, m)),
+            )
+            .expect("suite runs");
+            assert_eq!(report.failed, 0, "with float=({}, {}):\n{}", e, m, report.log);
         }
     }
 

@@ -2080,7 +2080,8 @@ entry:
     /// on the platform (fadd32/fadd64 as the hardware instruction).
     #[test]
     fn softfloat_add_matches_hardware_and_reference() {
-        let src = include_str!("../suite/float.ssa");
+        let src = format!("{}\n{}", include_str!("../suite/float.ssa"), include_str!("../lib/float.ssa"));
+        let src = src.as_str();
         let module = crate::ssa::parse(src).expect("parse");
         let enc = Encoder::load("targets/arm64.encodings.json").expect("encodings");
         let soft = compile_with(&module, &enc, &Platform::none()).expect("compile");
@@ -2472,7 +2473,7 @@ entry:
     /// no fadd) — and both are right.
     #[test]
     fn platform_mixes_native_f32_with_emulated_f16() {
-        let lib = include_str!("../suite/float.ssa");
+        let lib = format!("{}\n{}", include_str!("../suite/float.ssa"), include_str!("../lib/float.ssa"));
         let src = format!(
             "{}\nfn sum32(a: f32, b: f32) -> f32 {{\n    r: f32 = add a, b\n    ret r\n}}\nfn sum16(a: f16, b: f16) -> f16 {{\n    r: f16 = add a, b\n    ret r\n}}\n",
             lib

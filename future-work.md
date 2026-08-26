@@ -78,7 +78,7 @@ Backend sketch:
 - External calls (libc symbols) from JIT'd code.
 - An `alloca`-style op for function-local scratch memory (today all memory
   comes from the caller).
-- Floats: `suite/float.ssa` has generic add/sub/mul/div/sqrt/neg/abs/
+- Floats: `lib/float.ssa` has generic add/sub/mul/div/sqrt/neg/abs/
   min/max/fma, the comparisons, and conversions over packs, with the
   f32/f64 instances on hardware wherever the target's semantics agree.
   Left: the NaN-payload question (the library canonicalizes, hardware

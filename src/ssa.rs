@@ -768,19 +768,52 @@ impl Module {
 }
 
 /// The replacement policy for abstract numeric types: what `int` (and its
-/// unsigned twin `uint`) become on this compilation. Targets supply
-/// defaults (their natural width, or a size-oriented choice); the user can
-/// override. `float` joins when concrete floats do.
-#[derive(Clone, Copy)]
+/// unsigned twin `uint`) and `float` become on this compilation. Targets
+/// supply defaults (their natural width, or a size-oriented choice); the
+/// user can override. `int` is a builtin the verifier's pre-pass rewrites;
+/// `float` is the library's `float(E, M)`, so the parser instantiates a
+/// bare `float` with the policy's (E, M) as it meets it.
+#[derive(Clone, Copy, Debug)]
 pub struct Policy {
     pub int: Type,
+    /// (E, M) for a bare `float`
+    pub float: (u32, u32),
 }
 
 impl Policy {
     pub fn new(int: Type) -> Result<Policy, String> {
         match int {
-            Type::I32 | Type::I64 => Ok(Policy { int }),
+            // the float of the same class as the integer: f32 with i32, f64 with i64
+            Type::I32 => Ok(Policy { int, float: (8, 23) }),
+            Type::I64 => Ok(Policy { int, float: (11, 52) }),
             t => Err(format!("'int' cannot resolve to {}", t.name())),
+        }
+    }
+
+    pub fn with_float(mut self, e: u32, m: u32) -> Policy {
+        self.float = (e, m);
+        self
+    }
+
+    /// a `--float=` argument: f16, bf16, f32, f64, or `E,M`
+    pub fn float_from_arg(s: &str) -> Option<(u32, u32)> {
+        match s {
+            "f16" => Some((5, 10)),
+            "bf16" => Some((8, 7)),
+            "f32" => Some((8, 23)),
+            "f64" => Some((11, 52)),
+            _ => {
+                let (e, m) = s.split_once(',')?;
+                Some((e.trim().parse().ok()?, m.trim().parse().ok()?))
+            }
+        }
+    }
+
+    /// the arguments a bare parametric type name takes under this policy
+    fn default_args(&self, name: &str) -> Option<Vec<i64>> {
+        match name {
+            "float" => Some(vec![self.float.0 as i64, self.float.1 as i64]),
+            _ => None,
         }
     }
 
@@ -1077,11 +1110,37 @@ fn lex_int_text(s: &str) -> Result<i64, String> {
 // ---------------------------------------------------------------------------
 // Parser
 
+/// the prelude: every `lib/*.ssa`, in name order, appended to a program
+/// so its types and generics are always available (and appended, not
+/// prepended, so the program's own line numbers hold)
+pub fn with_prelude(src: &str) -> String {
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir("lib")
+        .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "ssa")).collect())
+        .unwrap_or_default();
+    files.sort();
+    let mut out = String::from(src);
+    for f in files {
+        if let Ok(t) = std::fs::read_to_string(&f) {
+            out.push('\n');
+            out.push_str(&t);
+        }
+    }
+    out
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn parse(src: &str) -> Result<Module, ParseError> {
+    parse_with(src, &Policy::new(Type::I64).unwrap())
+}
+
+/// parse under a policy: a bare `float` is `float(E, M)` for the policy's
+/// (E, M) (the policy's `int` is applied afterwards by `resolve_types`)
+pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     let toks = lex(src)?;
     let mut p = Parser {
         toks,
         pos: 0,
+        policy: *policy,
         types: Vec::new(),
         packs: Vec::new(),
         generics: Vec::new(),
@@ -1092,15 +1151,33 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         cur_rets: Vec::new(),
         sigs: HashMap::new(),
     };
-    // pass 1: type declarations and generic functions, wherever they
-    // appear, so functions can use them regardless of order (a type
-    // declaration may only refer to types declared before it)
+    // pass 0: type declarations, wherever they appear (a declaration may
+    // only refer to types declared before it), so that everything after
+    // — signatures, generics, bodies — can name any type regardless of
+    // order; the prelude is appended, so this matters
     let mut funcs = Vec::new();
     let mut aliases: Vec<usize> = Vec::new(); // token positions of `fn x = g(..)`
     p.skip_newlines();
     while !p.at_end() {
         match p.item_kind() {
             Item::Type => p.parse_type_decl()?,
+            _ => {
+                if matches!(p.item_kind(), Item::Alias) {
+                    p.skip_line();
+                } else {
+                    let (_, hi) = p.function_range()?;
+                    p.pos = hi + 1;
+                }
+            }
+        }
+        p.skip_newlines();
+    }
+    // pass 1: generic functions and plain signatures
+    p.pos = 0;
+    p.skip_newlines();
+    while !p.at_end() {
+        match p.item_kind() {
+            Item::Type => p.skip_line(),
             Item::Generic => p.record_generic()?,
             Item::Alias => {
                 aliases.push(p.pos);
@@ -1172,6 +1249,7 @@ struct GenericFn {
 struct Parser {
     toks: Vec<(Tok, usize)>,
     pos: usize,
+    policy: Policy,
     types: Vec<TypeDef>,
     packs: Vec<PackDef>,
     generics: Vec<GenericFn>,
@@ -1599,10 +1677,11 @@ impl Parser {
     fn parse_type_decl(&mut self) -> Result<(), ParseError> {
         self.expect_ident()?; // 'type'
         let name = self.expect_ident()?;
-        if Type::from_name(&name).is_some() || self.types.iter().any(|t| t.name == name) {
+        if Type::from_name(&name).is_some() {
             self.pos -= 1;
             return Err(self.err(format!("type '{}' is already defined", name)));
         }
+        let redeclared = self.types.iter().position(|t| t.name == name);
         let mut params = Vec::new();
         if self.eat(&Tok::LParen) {
             loop {
@@ -1617,6 +1696,14 @@ impl Parser {
         let (body, next) = self.type_expr_at(self.pos, &params)?;
         self.pos = next;
         self.expect(Tok::Newline)?;
+        // saying the same thing twice is fine (a file and the prelude may
+        // both declare float(E, M)); saying something else is not
+        if let Some(i) = redeclared {
+            if self.types[i].params == params && self.types[i].body == body {
+                return Ok(());
+            }
+            return Err(self.err(format!("type '{}' is already defined differently", name)));
+        }
         // a plain alias is instantiated now, so its errors surface here and
         // a fresh pack takes the alias as its name
         if params.is_empty() {
@@ -1868,17 +1955,37 @@ impl Parser {
                     .find(|t| t.name == *name)
                     .cloned()
                     .ok_or_else(|| format!("unknown type '{}'", name))?;
-                if def.params.len() != args.len() {
-                    return Err(format!(
-                        "type '{}' takes {} parameter(s), given {}",
-                        name,
-                        def.params.len(),
-                        args.len()
-                    ));
-                }
+                // a bare parametric name is abstract: the policy supplies
+                // its arguments (`float` is float(E, M) for the target's
+                // E, M)
+                let policy_args = if args.is_empty() && !def.params.is_empty() {
+                    self.policy.default_args(name)
+                } else {
+                    None
+                };
                 let mut inner = Vec::new();
-                for (p, a) in def.params.iter().zip(args) {
-                    inner.push((p.clone(), a.eval(env)?));
+                match &policy_args {
+                    Some(vals) => {
+                        if vals.len() != def.params.len() {
+                            return Err(format!("the policy gives '{}' {} argument(s); it takes {}", name, vals.len(), def.params.len()));
+                        }
+                        for (p, v) in def.params.iter().zip(vals) {
+                            inner.push((p.clone(), *v));
+                        }
+                    }
+                    None => {
+                        if def.params.len() != args.len() {
+                            return Err(format!(
+                                "type '{}' takes {} parameter(s), given {}",
+                                name,
+                                def.params.len(),
+                                args.len()
+                            ));
+                        }
+                        for (p, a) in def.params.iter().zip(args) {
+                            inner.push((p.clone(), a.eval(env)?));
+                        }
+                    }
                 }
                 let before = self.packs.len();
                 let ty = self.instantiate(&def.body, &inner, depth + 1)?;
@@ -2588,11 +2695,18 @@ impl Parser {
             "call" => Err(self.err("'call' is implied: write name(args)".to_string())),
             _ => {
                 // a library-defined operation: `sqrt a` on a float is the
-                // generic sqrt(E, M) taking float(E, M), any arity
-                let args = self.parse_value_list(scope, &[])?;
-                let Some(&first) = args.first() else {
+                // generic sqrt(E, M) taking float(E, M), any arity; the
+                // first operand is a value, and later literals take its type
+                // (`fma x, y, 0.0`)
+                if !matches!(self.peek(), Some(Tok::Ident(n)) if scope.value_ids.contains_key(n)) {
                     return Err(self.err(format!("unknown opcode '{}'", op)));
-                };
+                }
+                let first = self.parse_operand(scope, None)?;
+                let fty = scope.values[first.0 as usize].ty;
+                let mut args = vec![first];
+                while self.eat(&Tok::Comma) {
+                    args.push(self.parse_operand(scope, Some(fty))?);
+                }
                 if !scope.values[first.0 as usize].ty.is_pack() {
                     return Err(self.err(format!("unknown opcode '{}'", op)));
                 }
@@ -4336,5 +4450,33 @@ fn f() -> (f32, f32, f32, f32, u32) {
         assert!(printed.contains("b: f32 = const -inf\n"), "{}", printed);
         assert!(printed.contains("d: f32 = const 3.0\n"), "{}", printed);
         assert_eq!(printed, parse(&printed).unwrap().to_string());
+    }
+
+    #[test]
+    fn bare_float_follows_the_policy() {
+        let src = r"
+type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }
+fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+    ret a
+}
+fn twice(x: float) -> float {
+    r: float = add x, x
+    ret r
+}
+";
+        let m = parse_with(src, &Policy::new(Type::I64).unwrap()).expect("parse");
+        verify(&m).expect("verify");
+        let f = m.func("twice").unwrap();
+        assert_eq!(f.tyname(f.rets[0]), "float(11, 52)");
+        let m = parse_with(src, &Policy::new(Type::I32).unwrap()).expect("parse");
+        assert_eq!(m.func("twice").unwrap().tyname(m.func("twice").unwrap().rets[0]), "float(8, 23)");
+        let m = parse_with(src, &Policy::new(Type::I64).unwrap().with_float(5, 10)).expect("parse");
+        let f = m.func("twice").unwrap();
+        assert_eq!(f.tyname(f.rets[0]), "float(5, 10)");
+        assert!(m.funcs.iter().any(|f| f.name == "add_5_10"));
+        // a parametric type with no policy default still needs its arguments
+        assert!(parse("type w(N) = u(N)\nfn f(a: w) {\n    ret\n}").is_err());
+        assert_eq!(Policy::float_from_arg("bf16"), Some((8, 7)));
+        assert_eq!(Policy::float_from_arg("4,3"), Some((4, 3)));
     }
 }
