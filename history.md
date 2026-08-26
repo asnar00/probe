@@ -6,6 +6,17 @@ has the full story for any of them.
 
 ---
 
+### fixed point — `633d681` · 2026-08-26
+
+`lib/fixed.ssa`: `fixed(I, F)` as `pack { frac: u(F), int: i(I) }` with
+the arithmetic, comparisons, and conversions to and from integers and
+floats, all in integer instructions; and a bare `fixed` resolved by the
+policy (half the `int` width each side, `--fixed=I,F`) exactly as
+`float` is. Two libraries sharing `add`, `mul`, ... meant two parser
+adjustments: declarations may name types the prelude declares later,
+and by-name instantiation must be unambiguous (the float suite's
+aliases are wrappers now). 367/367 on all four paths, both ways.
+
 ### The abstract float, and a prelude — `32511ac` · 2026-08-26
 
 `float` joins `int`: a bare `float` is `float(E, M)` for the policy's
