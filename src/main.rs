@@ -23,6 +23,8 @@ fn main() -> ExitCode {
     let mut fixed_override: Option<(u32, u32)> = None;
     let mut unit_override: Option<u32> = None;
     let mut sunit_override: Option<u32> = None;
+    let mut rational_override: Option<(u32, u32)> = None;
+    let mut scalar_override: Option<String> = None;
     args.retain(|a| {
         if let Some(l) = a.strip_prefix("-O") {
             level = l.parse().unwrap_or(opt::MAX_LEVEL);
@@ -41,6 +43,12 @@ fn main() -> ExitCode {
             false
         } else if let Some(t) = a.strip_prefix("--sunit=") {
             sunit_override = t.parse().ok();
+            false
+        } else if let Some(t) = a.strip_prefix("--rational=") {
+            rational_override = ssa::Policy::fixed_from_arg(t);
+            false
+        } else if let Some(t) = a.strip_prefix("--scalar=") {
+            scalar_override = Some(t.to_string());
             false
         } else if a == "--soft" {
             platform::set_soft(true);
@@ -66,6 +74,15 @@ fn main() -> ExitCode {
     }
     if let Some(n) = sunit_override {
         policy = policy.with_sunit(n);
+    }
+    if let Some((n, d)) = rational_override {
+        policy = policy.with_rational(n, d);
+    }
+    if let Some(f) = &scalar_override {
+        policy = match policy.with_scalar(f) {
+            Some(p) => p,
+            None => return fail(&format!("--scalar={}: not one of {}", f, ssa::Policy::SCALARS.join(", "))),
+        };
     }
     match args.first().map(String::as_str) {
         Some("parse") if args.len() >= 2 => cmd_parse(&args[1], policy),
@@ -126,6 +143,12 @@ fn main() -> ExitCode {
                 if let Some(n) = sunit_override {
                     p = p.with_sunit(n);
                 }
+                if let Some((n, d)) = rational_override {
+                    p = p.with_rational(n, d);
+                }
+                if let Some(f) = &scalar_override {
+                    p = p.with_scalar(f).unwrap_or(p);
+                }
                 p
             }) {
                 Ok(report) => {
@@ -149,7 +172,9 @@ fn main() -> ExitCode {
             eprintln!("       (-O<n> selects the optimization level on any command;");
             eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy,");
             eprintln!("        --float=f16|bf16|f32|f64|E,M the abstract 'float' one,");
-            eprintln!("        --fixed=I,F the abstract 'fixed' one, --unit=N and --sunit=N the unit ones;");
+            eprintln!("        --fixed=I,F the abstract 'fixed' one, --unit=N and --sunit=N the unit ones,");
+            eprintln!("        --rational=N,D the rational one, --scalar=float|fixed|rational|unit|sunit");
+            eprintln!("        which family a bare 'scalar' is;");
             eprintln!("        --soft compiles every library call as a call, ignoring the");
             eprintln!("        platform's native instructions)");
             ExitCode::FAILURE

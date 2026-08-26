@@ -46,7 +46,7 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `name`, `name(8, 23)` | a declared type, plain or instantiated with widths (see *Type declarations*) |
 | `pack { ... }` | bitfields packed into at most 64 bits (see *Packs*) |
 | `i(expr)`, `u(expr)` | an integer whose width is an expression — inside type declarations |
-| `int`, `uint`, `float`, `fixed`, `unit`, `sunit` | abstract numbers — resolved to a concrete width by the target's replacement policy (see *Abstract numeric types*) |
+| `int`, `uint`, `float`, `fixed`, `unit`, `sunit`, `rational`, `scalar` | abstract numbers — resolved to a concrete type by the target's replacement policy (see *Abstract numeric types*) |
 
 Any width works anywhere a value lives — registers, block parameters,
 calls, packs. Memory is the exception: only 8-, 16-, 32-, and 64-bit types
@@ -124,6 +124,13 @@ r: i64 = g(b, 2)
 Where nothing fixes the type — a stored value, a `conv` source — write it
 after the literal: `store 1: u8, p`. A literal becomes a hidden `const`
 just before the instruction; `probe parse` prints it back inline.
+
+On a library number type (`fixed`, `rational`, `unit`, ... — any pack
+its library can `conv` into from `i64`), a literal is a *value*: `const
+0.5` on a `fixed(8, 8)` is 128/256, `mul x, 0.5` halves whatever `x` is,
+and `y: scalar = sub 1, x` means one minus `x` in every family. This
+costs nothing in the compiler: the literal is read as an `i64` or an
+`f64` and handed to the library's own `conv`, hidden like the `const`.
 
 ### Integer arithmetic and bitwise ops
 
@@ -386,8 +393,23 @@ reaches it from integers and floats, and back.
 0.0 at 0 and 1.0 at 2^N − 1, `sunit(N)` is −1.0 at −(2^(N−1) − 1) and
 1.0 at 2^(N−1) − 1. The scale is not a power of two, so a product is
 `(a·b + half) / max`, rounded; sums saturate at the ends of the range;
-`conv` goes to and from floats. Bare, they take the policy's N (half the
-`int` width; `--unit=N`, `--sunit=N`).
+`conv` goes to and from floats and integers. Bare, they take the policy's
+N (half the `int` width; `--unit=N`, `--sunit=N`).
+
+`rational(N, D)` (`lib/rational.ssa`) is `numerator / denominator`, an
+`i(N)` over a `u(D)`, kept reduced with a positive denominator; a zero
+denominator is *not a rational* (NaR) and propagates like NaN. Its
+arithmetic is exact while the reduced result fits, and halved down to an
+approximation when it doesn't; `conv` from a float takes the best
+approximation the widths allow, by continued fractions (`0.33333334f32`
+is `1/3` in `rational(8, 8)`, `3.14159` is `22/7`). Bare `rational` is
+the policy's `(N, D)` (`--rational=N,D`).
+
+`scalar` names a *family*: a bare `scalar` is whichever of `float`,
+`fixed`, `rational`, `unit`, `sunit` the policy says (`float` unless
+`--scalar=...`), itself bare, so that family's width applies. A program
+over `scalar` — `suite/scalar.ssa` — runs unchanged in every family; the
+suite runs it in all five.
 Because types live on variables, resolution is a single rewrite of the
 value tables before verification; opcodes, instructions, and everything
 downstream see only concrete types.

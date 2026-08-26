@@ -1,0 +1,83 @@
+; the abstract scalar: whichever family the policy names (float by
+; default; --scalar=fixed|rational|unit|sunit). These programs keep their
+; values within [0, 1], so unit can play too, and go in and out through
+; floats and percentages; they are exact in every family.
+;! ssum 25 50 -> 75
+;! sprod 50 50 -> 25
+;! shalf 50 -> 25
+;! smax 30 60 -> 60
+;! sless 25 50 -> 1
+;! sless 50 25 -> 0
+;! slit -> 75
+;! sconst 25 -> 100
+;! sweighted 20 80 -> 65
+
+fn from_pct(p: i32) -> scalar {
+    f: float = conv p
+    g: float = div f, 100.0
+    s: scalar = conv g
+    ret s
+}
+fn to_pct(s: scalar) -> i32 {
+    f: float = conv s
+    h: float = fma f, 100.0, 0.5
+    r: i32 = conv h
+    ret r
+}
+fn ssum(a: i32, b: i32) -> i32 {
+    x: scalar = from_pct(a)
+    y: scalar = from_pct(b)
+    s: scalar = add x, y
+    r: i32 = to_pct(s)
+    ret r
+}
+fn sprod(a: i32, b: i32) -> i32 {
+    x: scalar = from_pct(a)
+    y: scalar = from_pct(b)
+    p: scalar = mul x, y
+    r: i32 = to_pct(p)
+    ret r
+}
+; a literal in whatever scalar is
+fn shalf(a: i32) -> i32 {
+    x: scalar = from_pct(a)
+    h: scalar = mul x, 0.5
+    r: i32 = to_pct(h)
+    ret r
+}
+fn smax(a: i32, b: i32) -> i32 {
+    x: scalar = from_pct(a)
+    y: scalar = from_pct(b)
+    m: scalar = max x, y
+    r: i32 = to_pct(m)
+    ret r
+}
+fn sless(a: i32, b: i32) -> u1 {
+    x: scalar = from_pct(a)
+    y: scalar = from_pct(b)
+    r: u1 = cmp.lt x, y
+    ret r
+}
+fn slit() -> i32 {
+    x: scalar = const 0.75
+    r: i32 = to_pct(x)
+    ret r
+}
+; an integer literal is a value, in every family: 0.25 + 0.75 = 1
+fn sconst(a: i32) -> i32 {
+    x: scalar = from_pct(a)
+    y: scalar = sub 1, x
+    s: scalar = add x, y
+    r: i32 = to_pct(s)
+    ret r
+}
+; 0.25 a + 0.75 b
+fn sweighted(a: i32, b: i32) -> i32 {
+    x: scalar = from_pct(a)
+    y: scalar = from_pct(b)
+    wx: scalar = mul x, 0.25
+    wy: scalar = mul y, 0.75
+    s: scalar = add wx, wy
+    r: i32 = to_pct(s)
+    ret r
+}

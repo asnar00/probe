@@ -1,0 +1,117 @@
+; rationals (lib/rational.ssa): rational(8, 8) by its 16-bit patterns
+; (numerator in the low byte, denominator above), and programs over the
+; abstract rational that are exact at any width
+;! radd88 513 769 -> 1541
+;! radd88 513 767 -> 256
+;! radd88 1026 256 -> 513
+;! rsub88 513 769 -> 1537
+;! rmul88 513 769 -> 1537
+;! rdiv88 513 769 -> 515
+;! rdiv88 513 256 -> 0
+;! radd88 513 1 -> 0
+;! rneg88 513 -> 767
+;! rlt88 769 513 -> 1
+;! rlt88 513 769 -> 0
+;! req88 1026 513 -> 1
+;! rmax88 767 1023 -> 1023
+;! rmul88 356 356 -> 334
+;! rtoi 519 -> 3
+;! rtoi 761 -> -3
+;! rfromi -5 -> 507
+;! rtof32 769 -> 1051372203
+;! rfromf32 1056964608 -> 513
+;! rfromf32 1051372203 -> 769
+;! rfromf32 1061158912 -> 1027
+;! rfromf32 2143289344 -> 0
+;! rfromf32 1078530000 -> 1814
+;! thirds 7 -> 7
+;! harmonic -> 1
+;! mean 0 1 -> 50
+
+type r8 = rational(8, 8)
+
+fn radd88(a: r8, b: r8) -> r8 {
+    r: r8 = add a, b
+    ret r
+}
+fn rsub88(a: r8, b: r8) -> r8 {
+    r: r8 = sub a, b
+    ret r
+}
+fn rmul88(a: r8, b: r8) -> r8 {
+    r: r8 = mul a, b
+    ret r
+}
+fn rdiv88(a: r8, b: r8) -> r8 {
+    r: r8 = div a, b
+    ret r
+}
+fn rneg88(a: r8) -> r8 {
+    r: r8 = neg a
+    ret r
+}
+fn rlt88(a: r8, b: r8) -> u1 {
+    r: u1 = cmp.lt a, b
+    ret r
+}
+fn req88(a: r8, b: r8) -> u1 {
+    r: u1 = cmp.eq a, b
+    ret r
+}
+fn rmax88(a: r8, b: r8) -> r8 {
+    r: r8 = max a, b
+    ret r
+}
+fn rtoi(a: r8) -> i32 {
+    r: i32 = conv a
+    ret r
+}
+fn rfromi(a: i32) -> r8 {
+    r: r8 = conv a
+    ret r
+}
+fn rtof32(a: r8) -> f32 {
+    r: f32 = conv a
+    ret r
+}
+fn rfromf32(a: f32) -> r8 {
+    r: r8 = conv a
+    ret r
+}
+
+; --- the abstract rational: exact where floats are not ---
+; (n / 3) * 3 == n
+fn thirds(n: i32) -> i32 {
+    rn: rational = conv n
+    three: rational = conv 3: i32
+    t: rational = div rn, three
+    b: rational = mul t, three
+    r: i32 = conv b
+    ret r
+}
+; 1/2 + 1/3 + 1/6 == 1
+fn harmonic() -> i32 {
+    one: rational = conv 1: i32
+    two: rational = conv 2: i32
+    three: rational = conv 3: i32
+    six: rational = conv 6: i32
+    h: rational = div one, two
+    t: rational = div one, three
+    s: rational = div one, six
+    a: rational = add h, t
+    b: rational = add a, s
+    r: i32 = conv b
+    ret r
+}
+; the mean of two integers, in hundredths
+fn mean(a: i32, b: i32) -> i32 {
+    ra: rational = conv a
+    rb: rational = conv b
+    two: rational = conv 2: i32
+    hundred: rational = conv 100: i32
+    s: rational = add ra, rb
+    m: rational = div s, two
+    c: rational = mul m, hundred
+    r: i32 = conv c
+    ret r
+}

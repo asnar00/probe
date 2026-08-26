@@ -919,6 +919,15 @@ mod tests {
     }
 
     #[test]
+    fn regression_suite_scalar_families() {
+        for family in crate::ssa::Policy::SCALARS {
+            let report = super::run_dir_at("suite", super::Backend::Native, crate::opt::MAX_LEVEL, &|p| p.with_scalar(family).unwrap())
+                .expect("suite runs");
+            assert_eq!(report.failed, 0, "with scalar={}:\n{}", family, report.log);
+        }
+    }
+
+    #[test]
     fn regression_suite_unit_policies() {
         for n in [8u32, 16, 32] {
             let report = super::run_dir_at("suite", super::Backend::Native, crate::opt::MAX_LEVEL, &|p| p.with_unit(n).with_sunit(n))

@@ -176,6 +176,44 @@ fn conv(E, M, N)(a: float(E, M)) -> unit(N) {
     ret r
 }
 
+; from an integer: 0 or 1 (clamped); to an integer: 1 only at 1.0
+fn conv(W, N)(a: i(W)) -> unit(N) {
+    x: i64 = conv a
+    pos: u1 = cmp.gt x, 0
+    if pos {
+        maxn: u(N) = const ((1 << (N - 1)) - 1) * 2 + 1
+        one: unit(N) = pack maxn
+        ret one
+    }
+    z: unit(N) = pack 0
+    ret z
+}
+fn conv(W, N)(a: u(W)) -> unit(N) {
+    x: u64 = conv a
+    pos: u1 = cmp.gt x, 0
+    if pos {
+        maxn: u(N) = const ((1 << (N - 1)) - 1) * 2 + 1
+        one: unit(N) = pack maxn
+        ret one
+    }
+    z: unit(N) = pack 0
+    ret z
+}
+fn conv(N, W)(a: unit(N)) -> i(W) {
+    v: u(N) = get a, v
+    maxn: u(N) = const ((1 << (N - 1)) - 1) * 2 + 1
+    one: u1 = cmp.eq v, maxn
+    r: i(W) = conv one
+    ret r
+}
+fn conv(N, W)(a: unit(N)) -> u(W) {
+    v: u(N) = get a, v
+    maxn: u(N) = const ((1 << (N - 1)) - 1) * 2 + 1
+    one: u1 = cmp.eq v, maxn
+    r: u(W) = conv one
+    ret r
+}
+
 ; --- sunit ---
 ; saturate a 64-bit signed value into [-max, max]
 fn sclamp(N)(x: i64) -> sunit(N) {
@@ -401,5 +439,38 @@ fn conv(E, M, N)(a: float(E, M)) -> sunit(N) {
     y: float(E, M) = fma a, max_f, half
     i: i64 = conv y
     r: sunit(N) = sclamp(N)(i)
+    ret r
+}
+; from an integer: -1, 0, or 1 (clamped); to an integer: toward zero
+fn conv(W, N)(a: i(W)) -> sunit(N) {
+    x: i64 = conv a
+    max: i64 = const (1 << (N - 1)) - 1
+    m: i64 = mul x, max
+    r: sunit(N) = sclamp(N)(m)
+    ret r
+}
+fn conv(W, N)(a: u(W)) -> sunit(N) {
+    x: u64 = conv a
+    pos: u1 = cmp.gt x, 0
+    if pos {
+        max: i64 = const (1 << (N - 1)) - 1
+        r: sunit(N) = sclamp(N)(max)
+        ret r
+    }
+    z: sunit(N) = pack 0
+    ret z
+}
+fn conv(N, W)(a: sunit(N)) -> i(W) {
+    v: i(N) = get a, v
+    max: i(N) = const (1 << (N - 1)) - 1
+    q: i(N) = div v, max
+    r: i(W) = conv q
+    ret r
+}
+fn conv(N, W)(a: sunit(N)) -> u(W) {
+    v: i(N) = get a, v
+    max: i(N) = const (1 << (N - 1)) - 1
+    one: u1 = cmp.eq v, max
+    r: u(W) = conv one
     ret r
 }

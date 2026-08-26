@@ -681,9 +681,11 @@ impl Inst {
 pub struct ValueData {
     pub name: String,
     pub ty: Type,
-    /// a literal written inline as an operand: the value is defined by a
-    /// hidden `const` and printed back as the literal
-    pub literal: Option<i64>,
+    /// a literal written inline as an operand: defined by hidden
+    /// instructions and printed back as the literal — the type it was
+    /// read in (its own, or i64 / f64 when it was converted into a
+    /// library type) and the bits in that type
+    pub literal: Option<(Type, i64)>,
 }
 
 #[derive(Clone, Debug)]
@@ -783,14 +785,18 @@ pub struct Policy {
     /// N for a bare `unit` and `sunit`
     pub unit: u32,
     pub sunit: u32,
+    /// (N, D) for a bare `rational`
+    pub rational: (u32, u32),
+    /// the family a bare `scalar` means: float, fixed, rational, unit, sunit
+    pub scalar: &'static str,
 }
 
 impl Policy {
     pub fn new(int: Type) -> Result<Policy, String> {
         match int {
             // the float of the same class as the integer: f32 with i32, f64 with i64
-            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16 }),
-            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32 }),
+            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16, rational: (16, 16), scalar: "float" }),
+            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32, rational: (32, 32), scalar: "float" }),
             t => Err(format!("'int' cannot resolve to {}", t.name())),
         }
     }
@@ -813,6 +819,19 @@ impl Policy {
     pub fn with_sunit(mut self, n: u32) -> Policy {
         self.sunit = n;
         self
+    }
+
+    pub fn with_rational(mut self, n: u32, d: u32) -> Policy {
+        self.rational = (n, d);
+        self
+    }
+
+    pub const SCALARS: [&'static str; 5] = ["float", "fixed", "rational", "unit", "sunit"];
+
+    pub fn with_scalar(mut self, family: &str) -> Option<Policy> {
+        let f = Policy::SCALARS.iter().find(|f| **f == family)?;
+        self.scalar = f;
+        Some(self)
     }
 
     /// a `--fixed=` argument: `I,F`
@@ -842,6 +861,7 @@ impl Policy {
             "fixed" => Some(vec![self.fixed.0 as i64, self.fixed.1 as i64]),
             "unit" => Some(vec![self.unit as i64]),
             "sunit" => Some(vec![self.sunit as i64]),
+            "rational" => Some(vec![self.rational.0 as i64, self.rational.1 as i64]),
             _ => None,
         }
     }
@@ -1396,13 +1416,14 @@ struct FuncScope {
 }
 
 impl FuncScope {
-    /// a hidden value for a literal operand
-    fn synth(&mut self, ty: Type, bits: i64) -> ValueId {
+    /// a hidden value for a literal operand, recording the literal as
+    /// (type it was read in, bits)
+    fn synth(&mut self, ty: Type, lit: (Type, i64)) -> ValueId {
         let id = ValueId(self.values.len() as u32);
         self.values.push(ValueData {
             name: format!("#{}", self.values.len()),
             ty,
-            literal: Some(bits),
+            literal: Some(lit),
         });
         id
     }
@@ -2002,6 +2023,19 @@ impl Parser {
                     if let Some(t) = Type::from_name(name) {
                         return Ok(t);
                     }
+                    // `scalar` is whichever family the policy says, itself
+                    // bare, so that family's policy width applies
+                    if name == "scalar" && !self.types.iter().any(|t| t.name == "scalar") {
+                        let family = self.policy.scalar.to_string();
+                        return self.instantiate(
+                            &TypeExpr::Named {
+                                name: family,
+                                args: Vec::new(),
+                            },
+                            env,
+                            depth + 1,
+                        );
+                    }
                 }
                 let def = self
                     .types
@@ -2156,13 +2190,58 @@ impl Parser {
                 }
             }
         };
-        let bits = self.literal_bits(&lit, ty).map_err(|m| {
+        self.make_literal(scope, &lit, ty).map_err(|m| {
             self.pos = at;
             self.err(m)
-        })?;
-        let id = scope.synth(ty, bits);
-        self.consts.push(Inst::IConst { dst: id, imm: bits });
+        })
+    }
+
+    /// The hidden instructions for a literal of type `ty`: a `const` when
+    /// the type reads literals itself (integers, pointers, floats, plain
+    /// packs by bit pattern); for a library number type (fixed, rational,
+    /// unit, ...) a `const` in i64 or f64 followed by the library's own
+    /// `conv` into the type — so every family gets literals through its
+    /// conversion, and `x: scalar = const 0.5` means 0.5 whatever scalar is.
+    fn make_literal(&mut self, scope: &mut FuncScope, lit: &Lit, ty: Type) -> Result<ValueId, String> {
+        let direct = self.float_params(ty).is_some() || !ty.is_pack() || matches!(lit, Lit::Int(_)) && self.conv_from(ty, Type::I64).is_none();
+        if direct {
+            let bits = self.literal_bits(lit, ty)?;
+            let id = scope.synth(ty, (ty, bits));
+            self.consts.push(Inst::IConst { dst: id, imm: bits });
+            return Ok(id);
+        }
+        let src_ty = match lit {
+            Lit::Int(_) => Type::I64,
+            _ => self.instantiate(
+                &TypeExpr::Named {
+                    name: "float".into(),
+                    args: vec![IntExpr::Lit(11), IntExpr::Lit(52)],
+                },
+                &[],
+                0,
+            )?,
+        };
+        let callee = self
+            .conv_from(ty, src_ty)
+            .ok_or_else(|| format!("no conversion from a literal to {}", self.tyname_of(ty)))?;
+        let bits = self.literal_bits(lit, src_ty)?;
+        let src = scope.synth(src_ty, (src_ty, bits));
+        self.consts.push(Inst::IConst { dst: src, imm: bits });
+        let id = scope.synth(ty, (src_ty, bits));
+        self.consts.push(Inst::Call {
+            dsts: vec![id],
+            callee,
+            args: vec![src],
+        });
         Ok(id)
+    }
+
+    /// the library's `conv` into `ty` from `from`, if there is one
+    fn conv_from(&mut self, ty: Type, from: Type) -> Option<String> {
+        let at = self.pos;
+        let r = self.dispatch("conv", from, ty).ok();
+        self.pos = at;
+        r
     }
 
     /// a literal token, if one is next: an integer, a decimal, `inf`,
@@ -2236,9 +2315,7 @@ impl Parser {
             };
             if self.eat(&Tok::Colon) {
                 let ty = self.expect_type()?;
-                let bits = self.literal_bits(&lit, ty).map_err(|m| self.err(m))?;
-                let lhs = scope.synth(ty, bits);
-                self.consts.push(Inst::IConst { dst: lhs, imm: bits });
+                let lhs = self.make_literal(scope, &lit, ty).map_err(|m| self.err(m))?;
                 self.expect(Tok::Comma)?;
                 let rhs = self.parse_operand(scope, Some(ty))?;
                 return Ok((lhs, rhs));
@@ -2246,12 +2323,10 @@ impl Parser {
             self.expect(Tok::Comma)?;
             let rhs = self.parse_operand(scope, None)?;
             let ty = scope.values[rhs.0 as usize].ty;
-            let bits = self.literal_bits(&lit, ty).map_err(|m| {
+            let lhs = self.make_literal(scope, &lit, ty).map_err(|m| {
                 self.pos = at;
                 self.err(m)
             })?;
-            let lhs = scope.synth(ty, bits);
-            self.consts.push(Inst::IConst { dst: lhs, imm: bits });
             return Ok((lhs, rhs));
         }
         let lhs = self.parse_operand(scope, want)?;
@@ -2662,6 +2737,27 @@ impl Parser {
         match op {
             "const" => {
                 let dty = scope.values[dst.0 as usize].ty;
+                // a library number type: the literal through its conv
+                if dty.is_pack() && self.float_params(dty).is_none() && self.conv_from(dty, Type::I64).is_some() {
+                    let at = self.pos;
+                    let Some(lit) = self.parse_lit()? else {
+                        return Err(self.err("expected a number".to_string()));
+                    };
+                    let tmp = self.make_literal(scope, &lit, dty).map_err(|m| {
+                        self.pos = at;
+                        self.err(m)
+                    })?;
+                    // the last hidden instruction defines tmp; make it define dst instead
+                    let Some(Inst::Call { callee, args, .. }) = self.consts.pop() else {
+                        unreachable!()
+                    };
+                    let _ = tmp;
+                    return Ok(Inst::Call {
+                        dsts: vec![dst],
+                        callee,
+                        args,
+                    });
+                }
                 if self.float_params(dty).is_some() {
                     // a number: 1.5, 2, -inf, nan — rounded to the float type
                     let at = self.pos;
@@ -3307,9 +3403,13 @@ impl Function {
     fn fmt_value(&self, id: ValueId) -> String {
         let v = self.value(id);
         match v.literal {
-            Some(bits) => self.literal_text(v.ty, bits),
+            Some((lt, bits)) => self.literal_text(lt, bits),
             None => v.name.clone(),
         }
+    }
+
+    fn is_hidden(&self, id: ValueId) -> bool {
+        self.value(id).literal.is_some()
     }
 
     /// a value where a literal would have nothing to type it: printed
@@ -3317,7 +3417,7 @@ impl Function {
     fn fmt_value_typed(&self, id: ValueId) -> String {
         let v = self.value(id);
         match v.literal {
-            Some(bits) => format!("{}: {}", self.literal_text(v.ty, bits), self.tyname(v.ty)),
+            Some((lt, bits)) => format!("{}: {}", self.literal_text(lt, bits), self.tyname(v.ty)),
             None => v.name.clone(),
         }
     }
@@ -3437,11 +3537,10 @@ impl fmt::Display for Function {
                 writeln!(f, "{}({}):", block.name, ps)?;
             }
             for inst in &block.insts {
-                // a literal's hidden const prints at its use instead
-                if let Inst::IConst { dst, .. } = inst {
-                    if self.value(*dst).literal.is_some() {
-                        continue;
-                    }
+                // a literal's hidden instructions print at its use instead
+                let dsts = inst_dsts(inst);
+                if !dsts.is_empty() && dsts.iter().all(|&d| self.is_hidden(d)) {
+                    continue;
                 }
                 writeln!(f, "    {}", self.fmt_inst(inst))?;
             }
@@ -3520,6 +3619,10 @@ impl Function {
                 self.fmt_value(*base),
                 self.fmt_value(*off)
             ),
+            Inst::Call { dsts, callee, args } if args.len() == 1 && dsts.len() == 1 && self.is_hidden(args[0]) && callee.starts_with("conv_") => {
+                // a library-typed constant: `x: fixed = const 0.5`
+                format!("{} = const {}", self.fmt_def(dsts[0]), self.fmt_value(args[0]))
+            }
             Inst::Call { dsts, callee, args } => {
                 let call = format!("{}({})", callee, self.fmt_args(args));
                 if dsts.is_empty() {

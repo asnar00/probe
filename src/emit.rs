@@ -2629,4 +2629,70 @@ entry:
             assert_eq!(back, a, "ufromf32(utof32({}))", a);
         }
     }
+
+    /// rational(8, 8) against an exact model: reduced fractions, NaR on a
+    /// zero denominator, and halved down when the exact answer does not fit
+    #[test]
+    fn rationals_match_model() {
+        let src = crate::ssa::with_prelude(include_str!("../suite/rational.ssa"));
+        let j = jit(&src);
+        fn gcd(a: i64, b: i64) -> i64 {
+            if b == 0 { a } else { gcd(b, a % b) }
+        }
+        // the library's rule for a result n/d
+        let fit = |n: i64, d: i64| -> (i64, i64) {
+            if d == 0 {
+                return (0, 0);
+            }
+            if n == 0 {
+                return (0, 1);
+            }
+            let (neg, mut m, mut d) = (n < 0, n.abs(), d);
+            let g = gcd(m, d);
+            m /= g;
+            d /= g;
+            while m > 127 || d > 255 {
+                m >>= 1;
+                d >>= 1;
+                if d == 0 {
+                    d = 1;
+                }
+            }
+            let g = gcd(m, d);
+            (if neg { -(m / g) } else { m / g }, d / g)
+        };
+        let enc = |n: i64, d: i64| ((n as u8 as i64) | (d << 8)) as i64;
+        let dec = |bits: i64| ((bits as u8 as i8) as i64, (bits >> 8) & 0xff);
+        let mut seed = 0xfeed_beef_cafe_f00du64;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        // values: reduced fractions, plus a few unreduced and NaR
+        let mut vals: Vec<(i64, i64)> = vec![(0, 1), (1, 1), (-1, 1), (1, 2), (-1, 2), (1, 3), (2, 3), (127, 1), (-128, 1), (1, 255), (127, 255), (2, 4), (0, 0), (5, 0)];
+        for _ in 0..120 {
+            let n = (rnd() % 256) as i64 - 128;
+            let d = (rnd() % 255) as i64 + 1;
+            vals.push((n, d));
+        }
+        for &(an, ad) in &vals {
+            for &(bn, bd) in &vals {
+                let call = |name: &str| dec(native_result(Repr::U(16), j.call(name, &[enc(an, ad), enc(bn, bd)]).unwrap()));
+                if ad == 0 || bd == 0 {
+                    assert_eq!(call("radd88"), (0, 0), "NaR add {}/{} {}/{}", an, ad, bn, bd);
+                    assert_eq!(call("rmul88"), (0, 0), "NaR mul");
+                    continue;
+                }
+                assert_eq!(call("radd88"), fit(an * bd + bn * ad, ad * bd), "add {}/{} {}/{}", an, ad, bn, bd);
+                assert_eq!(call("rsub88"), fit(an * bd - bn * ad, ad * bd), "sub {}/{} {}/{}", an, ad, bn, bd);
+                assert_eq!(call("rmul88"), fit(an * bn, ad * bd), "mul {}/{} {}/{}", an, ad, bn, bd);
+                let want_div = if bn == 0 { (0, 0) } else { fit(an * bd * bn.signum(), ad * bn.abs()) };
+                assert_eq!(call("rdiv88"), want_div, "div {}/{} {}/{}", an, ad, bn, bd);
+                let lt = native_result(Repr::U(1), j.call("rlt88", &[enc(an, ad), enc(bn, bd)]).unwrap());
+                assert_eq!(lt, (an * bd < bn * ad) as i64, "lt {}/{} {}/{}", an, ad, bn, bd);
+            }
+        }
+    }
 }
