@@ -23,7 +23,7 @@
 //! their local (`iN` sign-extended, `uN`/ptr/packs zero-extended, see
 //! `ssa::Repr`); narrow results re-normalize with a shift pair or a mask.
 
-use crate::platform::{FOp, Kind, Native, Platform};
+use crate::platform::{Operand, Platform, Rule};
 use crate::ssa::{BinOp, Cond, Function, Inst, Module, Repr, ValueId};
 use crate::wlearn::{encode_pieces, uleb, Piece};
 use std::collections::HashMap;
@@ -224,7 +224,7 @@ struct WEmit<'a> {
     enc: &'a WEncoder,
     func: &'a Function,
     findex: &'a HashMap<String, (i64, usize)>,
-    natives: &'a HashMap<String, Native>,
+    natives: &'a HashMap<String, Rule>,
     code: Vec<u8>,
     local_of: Vec<i64>, // ValueId -> wasm local index
     label_local: i64,
@@ -373,13 +373,14 @@ fn compile_function(
     func: &Function,
     enc: &WEncoder,
     findex: &HashMap<String, (i64, usize)>,
-    natives: &HashMap<String, Native>,
+    natives: &HashMap<String, Rule>,
 ) -> Result<Vec<u8>, String> {
-    if let Some(&op) = natives.get(&func.name) {
+    if let Some(rule) = natives.get(&func.name) {
         // this function *is* a platform instruction: params -> result
         let mut body = vec![0u8]; // no extra locals
-        for (key, v) in native_seq(op, 0, 1, 2) {
-            enc.op(key, v, &mut body)?;
+        let locals: Vec<i64> = (0..rule.arg_bits.len() as i64).collect();
+        for (key, v) in rule_seq(rule, &locals)? {
+            enc.op(&key, v, &mut body)?;
         }
         body.push(enc.end);
         return Ok(body);
@@ -454,99 +455,23 @@ fn compile_function(
     Ok(body)
 }
 
-/// the ops for a platform op, reading locals l0 (l1, l2), leaving the
-/// integer-typed result on the stack
-fn native_seq(op: Native, l0: i64, l1: i64, l2: i64) -> Vec<(&'static str, Option<i64>)> {
-    match op {
-        Native::Arith { op: fop, .. } => {
-            let (to_f, t, to_i) = fp_keys(op);
-            let mut seq = vec![("local.get {}", Some(l0)), (to_f, None)];
-            if fop.arity() >= 2 {
-                seq.extend([("local.get {}", Some(l1)), (to_f, None)]);
+/// the ops for a platform rule, reading the argument locals given and
+/// leaving the result on the stack: a line is an op key, with a local
+/// index or a literal as its one immediate
+fn rule_seq(rule: &Rule, locals: &[i64]) -> Result<Vec<(String, Option<i64>)>, String> {
+    let mut seq = Vec::new();
+    for line in &rule.lines {
+        match line.operands.as_slice() {
+            [] => seq.push((line.mnemonic.clone(), None)),
+            [Operand::Arg(i)] => seq.push((format!("{} {{}}", line.mnemonic), Some(locals[*i]))),
+            [Operand::Lit(l)] => {
+                let v = l.parse::<i64>().map_err(|_| format!("rule '{}': bad literal '{}'", rule.sig, l))?;
+                seq.push((format!("{} {{}}", line.mnemonic), Some(v)))
             }
-            if fop.arity() == 3 {
-                seq.extend([("local.get {}", Some(l2)), (to_f, None)]);
-            }
-            seq.extend([(t, None), (to_i, None)]);
-            seq
-        }
-        Native::Cmp { cond, bits } => {
-            let reinterp = if bits == 32 { "f32.reinterpret_i32" } else { "f64.reinterpret_i64" };
-            let t: &'static str = Box::leak(format!("f{}.{}", bits, cond.name()).into_boxed_str());
-            vec![
-                ("local.get {}", Some(l0)),
-                (reinterp, None),
-                ("local.get {}", Some(l1)),
-                (reinterp, None),
-                (t, None),
-            ]
-        }
-        Native::Conv { from, to } => {
-            let reinterp_in = |k: Kind| if k.bits() == 32 { "f32.reinterpret_i32" } else { "f64.reinterpret_i64" };
-            let reinterp_out = |k: Kind| if k.bits() == 32 { "i32.reinterpret_f32" } else { "i64.reinterpret_f64" };
-            let mut seq = vec![("local.get {}", Some(l0))];
-            match (from.is_float(), to.is_float()) {
-                (true, true) => {
-                    seq.push((reinterp_in(from), None));
-                    seq.push((if to == Kind::F64 { "f64.promote_f32" } else { "f32.demote_f64" }, None));
-                    seq.push((reinterp_out(to), None));
-                }
-                (false, true) => {
-                    let t: &'static str = Box::leak(
-                        format!(
-                            "f{}.convert_i{}_{}",
-                            to.bits(),
-                            from.bits(),
-                            if from.signed() { "s" } else { "u" }
-                        )
-                        .into_boxed_str(),
-                    );
-                    seq.push((t, None));
-                    seq.push((reinterp_out(to), None));
-                }
-                (true, false) => {
-                    seq.push((reinterp_in(from), None));
-                    let t: &'static str = Box::leak(
-                        format!(
-                            "i{}.trunc_sat_f{}_{}",
-                            to.bits(),
-                            from.bits(),
-                            if to.signed() { "s" } else { "u" }
-                        )
-                        .into_boxed_str(),
-                    );
-                    seq.push((t, None));
-                }
-                (false, false) => unreachable!("int to int is not a platform op"),
-            }
-            seq
+            _ => return Err(format!("rule '{}': wasm lines take one argument or literal at most", rule.sig)),
         }
     }
-}
-
-/// (reinterpret in, the op, reinterpret out) for a platform float arithmetic op
-fn fp_keys(op: Native) -> (&'static str, &'static str, &'static str) {
-    let Native::Arith { op: fop, bits } = op else {
-        unreachable!()
-    };
-    let name = match fop {
-        FOp::Add => "add",
-        FOp::Sub => "sub",
-        FOp::Mul => "mul",
-        FOp::Div => "div",
-        FOp::Sqrt => "sqrt",
-        FOp::Neg => "neg",
-        FOp::Abs => "abs",
-        FOp::Min => "min",
-        FOp::Max => "max",
-        FOp::Fma => unreachable!("not on the wasm platform"),
-    };
-    let fop: &'static str = Box::leak(format!("f{}.{}", bits, name).into_boxed_str());
-    if bits == 32 {
-        ("f32.reinterpret_i32", fop, "i32.reinterpret_f32")
-    } else {
-        ("f64.reinterpret_i64", fop, "i64.reinterpret_f64")
-    }
+    Ok(seq)
 }
 
 fn binop_key(op: BinOp, r: Repr) -> String {
@@ -743,16 +668,15 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             e.set(*dst)
         }
         Inst::Call { dsts, callee, args } if e.natives.contains_key(callee) => {
-            // the platform has this one: the instruction instead of the call
-            let op = e.natives[callee];
+            // the platform has this one: the rule's ops instead of the call
+            let natives: &HashMap<String, Rule> = e.natives;
+            let rule = &natives[callee];
             let Some(&dst) = dsts.first() else {
                 return Ok(());
             };
-            let l0 = e.local_of[args[0].0 as usize];
-            let l1 = args.get(1).map(|a| e.local_of[a.0 as usize]).unwrap_or(0);
-            let l2 = args.get(2).map(|a| e.local_of[a.0 as usize]).unwrap_or(0);
-            for (key, v) in native_seq(op, l0, l1, l2) {
-                e.op(key, v)?;
+            let locals: Vec<i64> = args.iter().map(|a| e.local_of[a.0 as usize]).collect();
+            for (key, v) in rule_seq(rule, &locals)? {
+                e.op(&key, v)?;
             }
             e.set(dst)
         }

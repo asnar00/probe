@@ -1,0 +1,239 @@
+; targets/riscv64.platform — the library instances this target computes
+; with its own instructions (see targets/arm64.platform for the form).
+; f0/f1/f2 are scratch float registers (ft0..ft2, caller-saved). A 32-bit
+; result comes back through fmv.x.w, which sign-extends; the shift pair
+; zero-extends it to the canonical u32 form.
+;
+; Not here, deliberately: min/max (fmin/fmax return the number when one
+; operand is NaN; the library returns NaN) and float-to-integer (fcvt.w.s
+; gives the maximum integer for NaN; the library gives 0). Those stay in
+; the library.
+
+; --- arithmetic ---
+
+add(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
+    fmv.w.x f0, a
+    fmv.w.x f1, b
+    fadd.s f0, f0, f1
+    fmv.x.w r, f0
+    slli r, r, 32
+    srli r, r, 32
+
+sub(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
+    fmv.w.x f0, a
+    fmv.w.x f1, b
+    fsub.s f0, f0, f1
+    fmv.x.w r, f0
+    slli r, r, 32
+    srli r, r, 32
+
+mul(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
+    fmv.w.x f0, a
+    fmv.w.x f1, b
+    fmul.s f0, f0, f1
+    fmv.x.w r, f0
+    slli r, r, 32
+    srli r, r, 32
+
+div(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
+    fmv.w.x f0, a
+    fmv.w.x f1, b
+    fdiv.s f0, f0, f1
+    fmv.x.w r, f0
+    slli r, r, 32
+    srli r, r, 32
+
+sqrt(8, 23, 0)(a: float(8, 23)) -> r: float(8, 23)
+    fmv.w.x f0, a
+    fsqrt.s f0, f0
+    fmv.x.w r, f0
+    slli r, r, 32
+    srli r, r, 32
+
+neg(8, 23, 0)(a: float(8, 23)) -> r: float(8, 23)
+    fmv.w.x f0, a
+    fneg.s f0, f0
+    fmv.x.w r, f0
+    slli r, r, 32
+    srli r, r, 32
+
+abs(8, 23, 0)(a: float(8, 23)) -> r: float(8, 23)
+    fmv.w.x f0, a
+    fabs.s f0, f0
+    fmv.x.w r, f0
+    slli r, r, 32
+    srli r, r, 32
+
+fma(8, 23, 0)(a: float(8, 23), b: float(8, 23), c: float(8, 23)) -> r: float(8, 23)
+    fmv.w.x f0, a
+    fmv.w.x f1, b
+    fmv.w.x f2, c
+    fmadd.s f0, f0, f1, f2
+    fmv.x.w r, f0
+    slli r, r, 32
+    srli r, r, 32
+
+add(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
+    fmv.d.x f0, a
+    fmv.d.x f1, b
+    fadd.d f0, f0, f1
+    fmv.x.d r, f0
+
+sub(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
+    fmv.d.x f0, a
+    fmv.d.x f1, b
+    fsub.d f0, f0, f1
+    fmv.x.d r, f0
+
+mul(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
+    fmv.d.x f0, a
+    fmv.d.x f1, b
+    fmul.d f0, f0, f1
+    fmv.x.d r, f0
+
+div(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
+    fmv.d.x f0, a
+    fmv.d.x f1, b
+    fdiv.d f0, f0, f1
+    fmv.x.d r, f0
+
+sqrt(11, 52, 0)(a: float(11, 52)) -> r: float(11, 52)
+    fmv.d.x f0, a
+    fsqrt.d f0, f0
+    fmv.x.d r, f0
+
+neg(11, 52, 0)(a: float(11, 52)) -> r: float(11, 52)
+    fmv.d.x f0, a
+    fneg.d f0, f0
+    fmv.x.d r, f0
+
+abs(11, 52, 0)(a: float(11, 52)) -> r: float(11, 52)
+    fmv.d.x f0, a
+    fabs.d f0, f0
+    fmv.x.d r, f0
+
+fma(11, 52, 0)(a: float(11, 52), b: float(11, 52), c: float(11, 52)) -> r: float(11, 52)
+    fmv.d.x f0, a
+    fmv.d.x f1, b
+    fmv.d.x f2, c
+    fmadd.d f0, f0, f1, f2
+    fmv.x.d r, f0
+
+; --- comparison: feq/flt/fle give 0 for unordered; ne is not eq, and
+; gt/ge are lt/le with the operands swapped ---
+
+eq(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
+    fmv.w.x f0, a
+    fmv.w.x f1, b
+    feq.s r, f0, f1
+
+ne(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
+    fmv.w.x f0, a
+    fmv.w.x f1, b
+    feq.s r, f0, f1
+    xori r, r, 1
+
+lt(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
+    fmv.w.x f0, a
+    fmv.w.x f1, b
+    flt.s r, f0, f1
+
+le(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
+    fmv.w.x f0, a
+    fmv.w.x f1, b
+    fle.s r, f0, f1
+
+gt(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
+    fmv.w.x f0, a
+    fmv.w.x f1, b
+    flt.s r, f1, f0
+
+ge(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
+    fmv.w.x f0, a
+    fmv.w.x f1, b
+    fle.s r, f1, f0
+
+eq(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
+    fmv.d.x f0, a
+    fmv.d.x f1, b
+    feq.d r, f0, f1
+
+ne(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
+    fmv.d.x f0, a
+    fmv.d.x f1, b
+    feq.d r, f0, f1
+    xori r, r, 1
+
+lt(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
+    fmv.d.x f0, a
+    fmv.d.x f1, b
+    flt.d r, f0, f1
+
+le(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
+    fmv.d.x f0, a
+    fmv.d.x f1, b
+    fle.d r, f0, f1
+
+gt(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
+    fmv.d.x f0, a
+    fmv.d.x f1, b
+    flt.d r, f1, f0
+
+ge(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
+    fmv.d.x f0, a
+    fmv.d.x f1, b
+    fle.d r, f1, f0
+
+; --- conversion: float to float, integer to float ---
+
+conv(8, 23, 11, 52, 0)(a: float(8, 23)) -> r: float(11, 52)
+    fmv.w.x f0, a
+    fcvt.d.s f0, f0
+    fmv.x.d r, f0
+
+conv(11, 52, 8, 23, 0)(a: float(11, 52)) -> r: float(8, 23)
+    fmv.d.x f0, a
+    fcvt.s.d f0, f0
+    fmv.x.w r, f0
+    slli r, r, 32
+    srli r, r, 32
+
+conv(32, 8, 23, 0)(a: i32) -> r: float(8, 23)
+    fcvt.s.w f0, a
+    fmv.x.w r, f0
+    slli r, r, 32
+    srli r, r, 32
+
+conv(32, 11, 52, 0)(a: i32) -> r: float(11, 52)
+    fcvt.d.w f0, a
+    fmv.x.d r, f0
+
+conv(32, 8, 23, 0)(a: u32) -> r: float(8, 23)
+    fcvt.s.wu f0, a
+    fmv.x.w r, f0
+    slli r, r, 32
+    srli r, r, 32
+
+conv(32, 11, 52, 0)(a: u32) -> r: float(11, 52)
+    fcvt.d.wu f0, a
+    fmv.x.d r, f0
+
+conv(64, 8, 23, 0)(a: i64) -> r: float(8, 23)
+    fcvt.s.l f0, a
+    fmv.x.w r, f0
+    slli r, r, 32
+    srli r, r, 32
+
+conv(64, 11, 52, 0)(a: i64) -> r: float(11, 52)
+    fcvt.d.l f0, a
+    fmv.x.d r, f0
+
+conv(64, 8, 23, 0)(a: u64) -> r: float(8, 23)
+    fcvt.s.lu f0, a
+    fmv.x.w r, f0
+    slli r, r, 32
+    srli r, r, 32
+
+conv(64, 11, 52, 0)(a: u64) -> r: float(11, 52)
+    fcvt.d.lu f0, a
+    fmv.x.d r, f0

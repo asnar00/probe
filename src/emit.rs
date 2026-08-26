@@ -26,7 +26,7 @@
 //! of an N-bit type re-normalize with sbfm/ubfm, which is also what
 //! packs' get/set/pack lower to.
 
-use crate::platform::{FOp, Kind, Native, Platform};
+use crate::platform::{Operand, Platform, Rule};
 use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, ValueId};
 use std::collections::HashMap;
 
@@ -295,6 +295,13 @@ impl Encoder {
         Ok(Encoder { insts })
     }
 
+    /// every learned template's text
+    pub fn templates(&self) -> Vec<&str> {
+        let mut v: Vec<&str> = self.insts.keys().map(String::as_str).collect();
+        v.sort();
+        v
+    }
+
     /// Encode one instruction. `values` per slot: register number, actual
     /// immediate value (the encoder scales by the learned step), or enum
     /// choice index.
@@ -473,7 +480,7 @@ pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Resu
 struct FnEmit<'a> {
     enc: &'a Encoder,
     func: &'a Function,
-    natives: &'a HashMap<String, Native>,
+    natives: &'a HashMap<String, Rule>,
     code: &'a mut Vec<u8>,
     frame: i64,
     alloc: &'a crate::regalloc::Alloc,
@@ -483,7 +490,7 @@ struct FnEmit<'a> {
 }
 
 impl FnEmit<'_> {
-    fn emit(&mut self, template: &'static str, values: &[i64]) -> Result<usize, String> {
+    fn emit(&mut self, template: &str, values: &[i64]) -> Result<usize, String> {
         let at = self.code.len();
         let word = self.enc.encode(template, values)?;
         self.code.extend_from_slice(&word.to_le_bytes());
@@ -749,7 +756,7 @@ const REG_POOL: &[i64] = &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
 pub fn compile_one(
     func: &Function,
     enc: &Encoder,
-    natives: &HashMap<String, Native>,
+    natives: &HashMap<String, Rule>,
     base: i64,
     resolve: &dyn Fn(&str) -> Option<i64>,
 ) -> Result<Vec<u8>, String> {
@@ -773,13 +780,13 @@ pub fn compile_one(
 fn compile_function(
     func: &Function,
     enc: &Encoder,
-    natives: &HashMap<String, Native>,
+    natives: &HashMap<String, Rule>,
     code: &mut Vec<u8>,
     call_fixups: &mut Vec<Fixup>,
 ) -> Result<(), String> {
-    if let Some(&op) = natives.get(&func.name) {
+    if let Some(rule) = natives.get(&func.name) {
         // this function *is* a platform instruction: x0, x1 -> x0, no frame
-        native_body(enc, op, code)?;
+        native_body(enc, rule, code)?;
         return Ok(());
     }
     let alloc = crate::regalloc::allocate(func, REG_POOL);
@@ -847,133 +854,33 @@ fn compile_function(
     Ok(())
 }
 
-/// (move in, the op, move out) for a platform float arithmetic op
-fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
-    let Native::Arith { op, bits } = op else {
-        unreachable!()
-    };
-    match (op, bits) {
-        (FOp::Add, 32) => ("fmov {s}, {w}", "fadd {s}, {s}, {s}", "fmov {w}, {s}"),
-        (FOp::Sub, 32) => ("fmov {s}, {w}", "fsub {s}, {s}, {s}", "fmov {w}, {s}"),
-        (FOp::Mul, 32) => ("fmov {s}, {w}", "fmul {s}, {s}, {s}", "fmov {w}, {s}"),
-        (FOp::Div, 32) => ("fmov {s}, {w}", "fdiv {s}, {s}, {s}", "fmov {w}, {s}"),
-        (FOp::Sqrt, 32) => ("fmov {s}, {w}", "fsqrt {s}, {s}", "fmov {w}, {s}"),
-        (FOp::Neg, 32) => ("fmov {s}, {w}", "fneg {s}, {s}", "fmov {w}, {s}"),
-        (FOp::Abs, 32) => ("fmov {s}, {w}", "fabs {s}, {s}", "fmov {w}, {s}"),
-        (FOp::Min, 32) => ("fmov {s}, {w}", "fmin {s}, {s}, {s}", "fmov {w}, {s}"),
-        (FOp::Max, 32) => ("fmov {s}, {w}", "fmax {s}, {s}, {s}", "fmov {w}, {s}"),
-        (FOp::Fma, 32) => ("fmov {s}, {w}", "fmadd {s}, {s}, {s}, {s}", "fmov {w}, {s}"),
-        (FOp::Add, _) => ("fmov {d}, {x}", "fadd {d}, {d}, {d}", "fmov {x}, {d}"),
-        (FOp::Sub, _) => ("fmov {d}, {x}", "fsub {d}, {d}, {d}", "fmov {x}, {d}"),
-        (FOp::Mul, _) => ("fmov {d}, {x}", "fmul {d}, {d}, {d}", "fmov {x}, {d}"),
-        (FOp::Div, _) => ("fmov {d}, {x}", "fdiv {d}, {d}, {d}", "fmov {x}, {d}"),
-        (FOp::Sqrt, _) => ("fmov {d}, {x}", "fsqrt {d}, {d}", "fmov {x}, {d}"),
-        (FOp::Neg, _) => ("fmov {d}, {x}", "fneg {d}, {d}", "fmov {x}, {d}"),
-        (FOp::Abs, _) => ("fmov {d}, {x}", "fabs {d}, {d}", "fmov {x}, {d}"),
-        (FOp::Min, _) => ("fmov {d}, {x}", "fmin {d}, {d}, {d}", "fmov {x}, {d}"),
-        (FOp::Max, _) => ("fmov {d}, {x}", "fmax {d}, {d}, {d}", "fmov {x}, {d}"),
-        (FOp::Fma, _) => ("fmov {d}, {x}", "fmadd {d}, {d}, {d}, {d}", "fmov {x}, {d}"),
+/// the instruction sequence for a platform rule: arguments in the
+/// integer registers given, the result in rd, scratch floats in v16..
+/// (caller-saved, never allocated)
+fn rule_seq<'a>(enc: &'a Encoder, rule: &Rule, rd: i64, args: &[i64]) -> Result<Vec<(&'a str, Vec<i64>)>, String> {
+    let templates = enc.templates();
+    let mut seq = Vec::new();
+    for line in &rule.lines {
+        let (t, vals) = crate::platform::resolve(rule, line, &templates)?;
+        let v = vals
+            .into_iter()
+            .map(|(op, v)| match op {
+                Operand::Arg(i) => args[i],
+                Operand::Ret => rd,
+                Operand::Scratch(_, n) => 16 + n as i64,
+                Operand::Lit(_) => v,
+            })
+            .collect();
+        seq.push((t, v));
     }
-}
-
-/// cset's enum choices, in the template's order, so a sequence can name
-/// a condition without an Encoder in hand
-const CSET_NAMED: &str = CSET;
-const CSET_CHOICES: [&str; 10] = ["eq", "ne", "lt", "le", "gt", "ge", "lo", "ls", "hi", "hs"];
-const CSET_INDEX: [i64; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-fn cc_index(cc: &str) -> usize {
-    CSET_CHOICES.iter().position(|c| *c == cc).unwrap()
-}
-
-/// the instruction sequence for a platform op: integer registers in
-/// (rl, rr, ra), integer register out (rd), FP scratch v16/v17/v18
-fn native_seq(op: Native, rd: i64, rl: i64, rr: i64, ra: i64) -> Vec<(&'static str, Vec<i64>)> {
-    match op {
-        Native::Arith { op: fop, .. } => {
-            let (to_f, t, to_i) = fp_templates(op);
-            let mut seq = vec![(to_f, vec![16, rl])];
-            match fop.arity() {
-                3 => {
-                    seq.push((to_f, vec![17, rr]));
-                    seq.push((to_f, vec![18, ra]));
-                    seq.push((t, vec![16, 16, 17, 18]));
-                }
-                2 => {
-                    seq.push((to_f, vec![17, rr]));
-                    seq.push((t, vec![16, 16, 17]));
-                }
-                _ => seq.push((t, vec![16, 16])),
-            }
-            seq.push((to_i, vec![rd, 16]));
-            seq
-        }
-        Native::Cmp { cond, bits } => {
-            // fcmp sets NZCV; these conditions read it as IEEE wants
-            let (fmov_in, fcmp) = if bits == 32 {
-                ("fmov {s}, {w}", "fcmp {s}, {s}")
-            } else {
-                ("fmov {d}, {x}", "fcmp {d}, {d}")
-            };
-            let cc = match cond {
-                Cond::Eq => "eq",
-                Cond::Ne => "ne",
-                Cond::Lt => "lo",
-                Cond::Le => "ls",
-                Cond::Gt => "gt",
-                Cond::Ge => "ge",
-            };
-            vec![
-                (fmov_in, vec![16, rl]),
-                (fmov_in, vec![17, rr]),
-                (fcmp, vec![16, 17]),
-                (CSET_NAMED, vec![rd, CSET_INDEX[cc_index(cc)]]),
-            ]
-        }
-        Native::Conv { from, to } => {
-            let fmov_in = |k: Kind| if k.bits() == 32 { "fmov {s}, {w}" } else { "fmov {d}, {x}" };
-            let fmov_out = |k: Kind| if k.bits() == 32 { "fmov {w}, {s}" } else { "fmov {x}, {d}" };
-            match (from.is_float(), to.is_float()) {
-                (true, true) => vec![
-                    (fmov_in(from), vec![16, rl]),
-                    (if to == Kind::F64 { "fcvt {d}, {s}" } else { "fcvt {s}, {d}" }, vec![16, 16]),
-                    (fmov_out(to), vec![rd, 16]),
-                ],
-                (false, true) => {
-                    let t = match (from.signed(), from.bits(), to.bits()) {
-                        (true, 32, 32) => "scvtf {s}, {w}",
-                        (true, 64, 32) => "scvtf {s}, {x}",
-                        (true, 32, _) => "scvtf {d}, {w}",
-                        (true, _, _) => "scvtf {d}, {x}",
-                        (false, 32, 32) => "ucvtf {s}, {w}",
-                        (false, 64, 32) => "ucvtf {s}, {x}",
-                        (false, 32, _) => "ucvtf {d}, {w}",
-                        (false, _, _) => "ucvtf {d}, {x}",
-                    };
-                    vec![(t, vec![16, rl]), (fmov_out(to), vec![rd, 16])]
-                }
-                (true, false) => {
-                    let t = match (to.signed(), to.bits(), from.bits()) {
-                        (true, 32, 32) => "fcvtzs {w}, {s}",
-                        (true, 64, 32) => "fcvtzs {x}, {s}",
-                        (true, 32, _) => "fcvtzs {w}, {d}",
-                        (true, _, _) => "fcvtzs {x}, {d}",
-                        (false, 32, 32) => "fcvtzu {w}, {s}",
-                        (false, 64, 32) => "fcvtzu {x}, {s}",
-                        (false, 32, _) => "fcvtzu {w}, {d}",
-                        (false, _, _) => "fcvtzu {x}, {d}",
-                    };
-                    vec![(fmov_in(from), vec![16, rl]), (t, vec![rd, 16])]
-                }
-                (false, false) => unreachable!("int to int is not a platform op"),
-            }
-        }
-    }
+    Ok(seq)
 }
 
 /// the whole body of a natively implemented function: the sequence on the
 /// argument registers, result in x0, and return
-fn native_body(enc: &Encoder, op: Native, code: &mut Vec<u8>) -> Result<(), String> {
-    let mut seq = native_seq(op, 0, 0, 1, 2);
+fn native_body(enc: &Encoder, rule: &Rule, code: &mut Vec<u8>) -> Result<(), String> {
+    let args: Vec<i64> = (0..rule.arg_bits.len() as i64).collect();
+    let mut seq = rule_seq(enc, rule, 0, &args)?;
     seq.push(("ret", vec![]));
     for (t, v) in seq {
         code.extend_from_slice(&enc.encode(t, &v)?.to_le_bytes());
@@ -1207,17 +1114,18 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             e.finish(*dst, rd)
         }
         Inst::Call { dsts, callee, args } if e.natives.contains_key(callee) => {
-            // the platform has this one: the instruction instead of the call
-            let op = e.natives[callee];
+            // the platform has this one: the rule's sequence instead of the call
+            let natives: &HashMap<String, Rule> = e.natives;
+            let rule = &natives[callee];
             let Some(&dst) = dsts.first() else {
                 return Ok(()); // result unused: nothing to compute
             };
-            // through v16/v17 (caller-saved, never allocated)
-            let rl = e.src_reg(args[0], 9)?;
-            let rr = if args.len() > 1 { e.src_reg(args[1], 10)? } else { 0 };
-            let ra = if args.len() > 2 { e.src_reg(args[2], 11)? } else { 0 };
+            let mut regs = Vec::new();
+            for (j, &a) in args.iter().enumerate() {
+                regs.push(e.src_reg(a, 9 + j as i64)?);
+            }
             let rd = e.dst_reg(dst, 9);
-            for (t, v) in native_seq(op, rd, rl, rr, ra) {
+            for (t, v) in rule_seq(e.enc, rule, rd, &regs)? {
                 e.emit(t, &v)?;
             }
             e.finish(dst, rd)

@@ -51,7 +51,7 @@ pub struct Arena {
     n_funcs: usize,
     enc: Encoder,
     /// callee name -> native op, per the platform; set when a module loads
-    pub natives: HashMap<String, crate::platform::Native>,
+    pub natives: HashMap<String, crate::platform::Rule>,
 }
 
 pub struct Installed {

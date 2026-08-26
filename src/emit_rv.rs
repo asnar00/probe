@@ -23,7 +23,7 @@
 
 use crate::emit::{Compiled, Encoder};
 use crate::regalloc::{self, Loc};
-use crate::platform::{FOp, Kind, Native, Platform};
+use crate::platform::{Operand, Platform, Rule};
 use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, ValueId};
 use std::collections::HashMap;
 
@@ -94,7 +94,7 @@ pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Resu
 struct RvEmit<'a> {
     enc: &'a Encoder,
     func: &'a Function,
-    natives: &'a HashMap<String, Native>,
+    natives: &'a HashMap<String, Rule>,
     code: &'a mut Vec<u8>,
     frame: i64,
     alloc: &'a regalloc::Alloc,
@@ -317,13 +317,14 @@ impl RvEmit<'_> {
 fn compile_function(
     func: &Function,
     enc: &Encoder,
-    natives: &HashMap<String, Native>,
+    natives: &HashMap<String, Rule>,
     code: &mut Vec<u8>,
     call_fixups: &mut Vec<Fixup>,
 ) -> Result<(), String> {
-    if let Some(&op) = natives.get(&func.name) {
+    if let Some(rule) = natives.get(&func.name) {
         // this function *is* a platform instruction: a0, a1 -> a0, no frame
-        let seq = native_seq(op, A0, A0, A0 + 1, A0 + 2);
+        let args: Vec<i64> = (0..rule.arg_bits.len() as i64).map(|j| A0 + j).collect();
+        let seq = rule_seq(enc, rule, A0, &args)?;
         for (t, v) in seq {
             code.extend_from_slice(&enc.encode(t, &v)?.to_le_bytes());
         }
@@ -384,119 +385,26 @@ fn compile_function(
     Ok(())
 }
 
-/// the instruction sequence for a platform op: integer registers in
-/// (rl, rr, ra), integer register out (rd), FP scratch f0/f1/f2; 32-bit
-/// float results are zero-extended (fmv.x.w sign-extends)
-fn native_seq(op: Native, rd: i64, rl: i64, rr: i64, ra: i64) -> Vec<(&'static str, Vec<i64>)> {
-    let zext32 = |seq: &mut Vec<(&'static str, Vec<i64>)>| {
-        seq.push((SLLI, vec![rd, rd, 32]));
-        seq.push((SRLI, vec![rd, rd, 32]));
-    };
-    match op {
-        Native::Arith { op: fop, bits } => {
-            let (to_f, t, to_i) = fp_templates(op);
-            let mut seq = vec![(to_f, vec![0, rl])];
-            match fop.arity() {
-                3 => {
-                    seq.push((to_f, vec![1, rr]));
-                    seq.push((to_f, vec![2, ra]));
-                    seq.push((t, vec![0, 0, 1, 2]));
-                }
-                2 => {
-                    seq.push((to_f, vec![1, rr]));
-                    seq.push((t, vec![0, 0, 1]));
-                }
-                _ => seq.push((t, vec![0, 0])),
-            }
-            seq.push((to_i, vec![rd, 0]));
-            if bits == 32 {
-                zext32(&mut seq);
-            }
-            seq
-        }
-        Native::Cmp { cond, bits } => {
-            let fmv_in = if bits == 32 { "fmv.w.x {f}, {r}" } else { "fmv.d.x {f}, {r}" };
-            let (feq, flt, fle) = if bits == 32 {
-                ("feq.s {r}, {f}, {f}", "flt.s {r}, {f}, {f}", "fle.s {r}, {f}, {f}")
-            } else {
-                ("feq.d {r}, {f}, {f}", "flt.d {r}, {f}, {f}", "fle.d {r}, {f}, {f}")
-            };
-            let mut seq = vec![(fmv_in, vec![0, rl]), (fmv_in, vec![1, rr])];
-            match cond {
-                Cond::Eq => seq.push((feq, vec![rd, 0, 1])),
-                Cond::Ne => {
-                    seq.push((feq, vec![rd, 0, 1]));
-                    seq.push(("xori {r}, {r}, {i -2048..2047}", vec![rd, rd, 1]));
-                }
-                Cond::Lt => seq.push((flt, vec![rd, 0, 1])),
-                Cond::Le => seq.push((fle, vec![rd, 0, 1])),
-                Cond::Gt => seq.push((flt, vec![rd, 1, 0])),
-                Cond::Ge => seq.push((fle, vec![rd, 1, 0])),
-            }
-            seq
-        }
-        Native::Conv { from, to } => {
-            let fmv_in = |k: Kind| if k.bits() == 32 { "fmv.w.x {f}, {r}" } else { "fmv.d.x {f}, {r}" };
-            let fmv_out = |k: Kind| if k.bits() == 32 { "fmv.x.w {r}, {f}" } else { "fmv.x.d {r}, {f}" };
-            let mut seq = match (from.is_float(), to.is_float()) {
-                (true, true) => vec![
-                    (fmv_in(from), vec![0, rl]),
-                    (if to == Kind::F64 { "fcvt.d.s {f}, {f}" } else { "fcvt.s.d {f}, {f}" }, vec![0, 0]),
-                    (fmv_out(to), vec![rd, 0]),
-                ],
-                (false, true) => {
-                    let t = match (to.bits(), from.signed(), from.bits()) {
-                        (32, true, 32) => "fcvt.s.w {f}, {r}",
-                        (32, false, 32) => "fcvt.s.wu {f}, {r}",
-                        (32, true, _) => "fcvt.s.l {f}, {r}",
-                        (32, false, _) => "fcvt.s.lu {f}, {r}",
-                        (_, true, 32) => "fcvt.d.w {f}, {r}",
-                        (_, false, 32) => "fcvt.d.wu {f}, {r}",
-                        (_, true, _) => "fcvt.d.l {f}, {r}",
-                        (_, false, _) => "fcvt.d.lu {f}, {r}",
-                    };
-                    vec![(t, vec![0, rl]), (fmv_out(to), vec![rd, 0])]
-                }
-                _ => unreachable!("the riscv64 platform has no float -> int"),
-            };
-            if to.bits() == 32 {
-                zext32(&mut seq);
-            }
-            seq
-        }
+/// the instruction sequence for a platform rule: arguments in the
+/// integer registers given, the result in rd, scratch floats in f0..
+/// (ft0.., caller-saved)
+fn rule_seq<'a>(enc: &'a Encoder, rule: &Rule, rd: i64, args: &[i64]) -> Result<Vec<(&'a str, Vec<i64>)>, String> {
+    let templates = enc.templates();
+    let mut seq = Vec::new();
+    for line in &rule.lines {
+        let (t, vals) = crate::platform::resolve(rule, line, &templates)?;
+        let v = vals
+            .into_iter()
+            .map(|(op, v)| match op {
+                Operand::Arg(i) => args[i],
+                Operand::Ret => rd,
+                Operand::Scratch(_, n) => n as i64,
+                Operand::Lit(_) => v,
+            })
+            .collect();
+        seq.push((t, v));
     }
-}
-
-/// (move in, the op, move out) for a platform float arithmetic op
-fn fp_templates(op: Native) -> (&'static str, &'static str, &'static str) {
-    let Native::Arith { op, bits } = op else {
-        unreachable!()
-    };
-    let fop = match (op, bits) {
-        (FOp::Add, 32) => "fadd.s {f}, {f}, {f}",
-        (FOp::Sub, 32) => "fsub.s {f}, {f}, {f}",
-        (FOp::Mul, 32) => "fmul.s {f}, {f}, {f}",
-        (FOp::Div, 32) => "fdiv.s {f}, {f}, {f}",
-        (FOp::Sqrt, 32) => "fsqrt.s {f}, {f}",
-        (FOp::Neg, 32) => "fneg.s {f}, {f}",
-        (FOp::Abs, 32) => "fabs.s {f}, {f}",
-        (FOp::Fma, 32) => "fmadd.s {f}, {f}, {f}, {f}",
-        (FOp::Min, 32) | (FOp::Max, 32) => unreachable!("not on the riscv64 platform"),
-        (FOp::Add, _) => "fadd.d {f}, {f}, {f}",
-        (FOp::Sub, _) => "fsub.d {f}, {f}, {f}",
-        (FOp::Mul, _) => "fmul.d {f}, {f}, {f}",
-        (FOp::Div, _) => "fdiv.d {f}, {f}, {f}",
-        (FOp::Sqrt, _) => "fsqrt.d {f}, {f}",
-        (FOp::Neg, _) => "fneg.d {f}, {f}",
-        (FOp::Abs, _) => "fabs.d {f}, {f}",
-        (FOp::Fma, _) => "fmadd.d {f}, {f}, {f}, {f}",
-        (FOp::Min, _) | (FOp::Max, _) => unreachable!("not on the riscv64 platform"),
-    };
-    if bits == 32 {
-        ("fmv.w.x {f}, {r}", fop, "fmv.x.w {r}, {f}")
-    } else {
-        ("fmv.d.x {f}, {r}", fop, "fmv.x.d {r}, {f}")
-    }
+    Ok(seq)
 }
 
 /// the 64-bit or W form of an op; W forms sign-extend, i.e. produce
@@ -707,17 +615,18 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             e.finish(*dst, rd)
         }
         Inst::Call { dsts, callee, args } if e.natives.contains_key(callee) => {
-            // the platform has this one: the instruction instead of the call,
-            // through ft0/ft1 (f0/f1, caller-saved)
-            let op = e.natives[callee];
+            // the platform has this one: the rule's sequence instead of the call
+            let natives: &HashMap<String, Rule> = e.natives;
+            let rule = &natives[callee];
             let Some(&dst) = dsts.first() else {
                 return Ok(());
             };
-            let rl = e.src_reg(args[0], T0)?;
-            let rr = if args.len() > 1 { e.src_reg(args[1], T1)? } else { 0 };
-            let ra = if args.len() > 2 { e.src_reg(args[2], T2)? } else { 0 };
+            let mut regs = Vec::new();
+            for (j, &a) in args.iter().enumerate() {
+                regs.push(e.src_reg(a, [T0, T1, T2][j])?);
+            }
             let rd = e.dst_reg(dst, T0);
-            for (t, v) in native_seq(op, rd, rl, rr, ra) {
+            for (t, v) in rule_seq(e.enc, rule, rd, &regs)? {
                 e.emit(t, &v)?;
             }
             e.finish(dst, rd)

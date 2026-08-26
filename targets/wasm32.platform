@@ -1,0 +1,324 @@
+; targets/wasm32.platform — the library instances this target computes
+; with its own instructions (see targets/arm64.platform for the form).
+; wasm is a stack machine: a line is one op, `local.get a` pushes an
+; argument, and the rule leaves r on the stack for the emitter to store.
+; Floats travel as their bits, so every rule reinterprets on the way in
+; and out.
+;
+; Not here: fma (wasm has no fused multiply-add), so it stays in the
+; library.
+
+; --- arithmetic ---
+
+add(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
+    local.get a
+    f32.reinterpret_i32
+    local.get b
+    f32.reinterpret_i32
+    f32.add
+    i32.reinterpret_f32
+
+sub(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
+    local.get a
+    f32.reinterpret_i32
+    local.get b
+    f32.reinterpret_i32
+    f32.sub
+    i32.reinterpret_f32
+
+mul(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
+    local.get a
+    f32.reinterpret_i32
+    local.get b
+    f32.reinterpret_i32
+    f32.mul
+    i32.reinterpret_f32
+
+div(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
+    local.get a
+    f32.reinterpret_i32
+    local.get b
+    f32.reinterpret_i32
+    f32.div
+    i32.reinterpret_f32
+
+sqrt(8, 23, 0)(a: float(8, 23)) -> r: float(8, 23)
+    local.get a
+    f32.reinterpret_i32
+    f32.sqrt
+    i32.reinterpret_f32
+
+neg(8, 23, 0)(a: float(8, 23)) -> r: float(8, 23)
+    local.get a
+    f32.reinterpret_i32
+    f32.neg
+    i32.reinterpret_f32
+
+abs(8, 23, 0)(a: float(8, 23)) -> r: float(8, 23)
+    local.get a
+    f32.reinterpret_i32
+    f32.abs
+    i32.reinterpret_f32
+
+min(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
+    local.get a
+    f32.reinterpret_i32
+    local.get b
+    f32.reinterpret_i32
+    f32.min
+    i32.reinterpret_f32
+
+max(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
+    local.get a
+    f32.reinterpret_i32
+    local.get b
+    f32.reinterpret_i32
+    f32.max
+    i32.reinterpret_f32
+
+add(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
+    local.get a
+    f64.reinterpret_i64
+    local.get b
+    f64.reinterpret_i64
+    f64.add
+    i64.reinterpret_f64
+
+sub(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
+    local.get a
+    f64.reinterpret_i64
+    local.get b
+    f64.reinterpret_i64
+    f64.sub
+    i64.reinterpret_f64
+
+mul(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
+    local.get a
+    f64.reinterpret_i64
+    local.get b
+    f64.reinterpret_i64
+    f64.mul
+    i64.reinterpret_f64
+
+div(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
+    local.get a
+    f64.reinterpret_i64
+    local.get b
+    f64.reinterpret_i64
+    f64.div
+    i64.reinterpret_f64
+
+sqrt(11, 52, 0)(a: float(11, 52)) -> r: float(11, 52)
+    local.get a
+    f64.reinterpret_i64
+    f64.sqrt
+    i64.reinterpret_f64
+
+neg(11, 52, 0)(a: float(11, 52)) -> r: float(11, 52)
+    local.get a
+    f64.reinterpret_i64
+    f64.neg
+    i64.reinterpret_f64
+
+abs(11, 52, 0)(a: float(11, 52)) -> r: float(11, 52)
+    local.get a
+    f64.reinterpret_i64
+    f64.abs
+    i64.reinterpret_f64
+
+min(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
+    local.get a
+    f64.reinterpret_i64
+    local.get b
+    f64.reinterpret_i64
+    f64.min
+    i64.reinterpret_f64
+
+max(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: float(11, 52)
+    local.get a
+    f64.reinterpret_i64
+    local.get b
+    f64.reinterpret_i64
+    f64.max
+    i64.reinterpret_f64
+
+; --- comparison ---
+
+eq(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
+    local.get a
+    f32.reinterpret_i32
+    local.get b
+    f32.reinterpret_i32
+    f32.eq
+
+ne(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
+    local.get a
+    f32.reinterpret_i32
+    local.get b
+    f32.reinterpret_i32
+    f32.ne
+
+lt(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
+    local.get a
+    f32.reinterpret_i32
+    local.get b
+    f32.reinterpret_i32
+    f32.lt
+
+le(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
+    local.get a
+    f32.reinterpret_i32
+    local.get b
+    f32.reinterpret_i32
+    f32.le
+
+gt(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
+    local.get a
+    f32.reinterpret_i32
+    local.get b
+    f32.reinterpret_i32
+    f32.gt
+
+ge(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: u1
+    local.get a
+    f32.reinterpret_i32
+    local.get b
+    f32.reinterpret_i32
+    f32.ge
+
+eq(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
+    local.get a
+    f64.reinterpret_i64
+    local.get b
+    f64.reinterpret_i64
+    f64.eq
+
+ne(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
+    local.get a
+    f64.reinterpret_i64
+    local.get b
+    f64.reinterpret_i64
+    f64.ne
+
+lt(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
+    local.get a
+    f64.reinterpret_i64
+    local.get b
+    f64.reinterpret_i64
+    f64.lt
+
+le(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
+    local.get a
+    f64.reinterpret_i64
+    local.get b
+    f64.reinterpret_i64
+    f64.le
+
+gt(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
+    local.get a
+    f64.reinterpret_i64
+    local.get b
+    f64.reinterpret_i64
+    f64.gt
+
+ge(11, 52, 0)(a: float(11, 52), b: float(11, 52)) -> r: u1
+    local.get a
+    f64.reinterpret_i64
+    local.get b
+    f64.reinterpret_i64
+    f64.ge
+
+; --- conversion: float to float, integer to float, float to integer
+; (trunc_sat: toward zero, saturating, NaN to 0, as the library) ---
+
+conv(8, 23, 11, 52, 0)(a: float(8, 23)) -> r: float(11, 52)
+    local.get a
+    f32.reinterpret_i32
+    f64.promote_f32
+    i64.reinterpret_f64
+
+conv(11, 52, 8, 23, 0)(a: float(11, 52)) -> r: float(8, 23)
+    local.get a
+    f64.reinterpret_i64
+    f32.demote_f64
+    i32.reinterpret_f32
+
+conv(32, 8, 23, 0)(a: i32) -> r: float(8, 23)
+    local.get a
+    f32.convert_i32_s
+    i32.reinterpret_f32
+
+conv(32, 11, 52, 0)(a: i32) -> r: float(11, 52)
+    local.get a
+    f64.convert_i32_s
+    i64.reinterpret_f64
+
+conv(32, 8, 23, 0)(a: u32) -> r: float(8, 23)
+    local.get a
+    f32.convert_i32_u
+    i32.reinterpret_f32
+
+conv(32, 11, 52, 0)(a: u32) -> r: float(11, 52)
+    local.get a
+    f64.convert_i32_u
+    i64.reinterpret_f64
+
+conv(64, 8, 23, 0)(a: i64) -> r: float(8, 23)
+    local.get a
+    f32.convert_i64_s
+    i32.reinterpret_f32
+
+conv(64, 11, 52, 0)(a: i64) -> r: float(11, 52)
+    local.get a
+    f64.convert_i64_s
+    i64.reinterpret_f64
+
+conv(64, 8, 23, 0)(a: u64) -> r: float(8, 23)
+    local.get a
+    f32.convert_i64_u
+    i32.reinterpret_f32
+
+conv(64, 11, 52, 0)(a: u64) -> r: float(11, 52)
+    local.get a
+    f64.convert_i64_u
+    i64.reinterpret_f64
+
+conv(8, 23, 32)(a: float(8, 23)) -> r: i32
+    local.get a
+    f32.reinterpret_i32
+    i32.trunc_sat_f32_s
+
+conv(8, 23, 32)(a: float(8, 23)) -> r: u32
+    local.get a
+    f32.reinterpret_i32
+    i32.trunc_sat_f32_u
+
+conv(8, 23, 64)(a: float(8, 23)) -> r: i64
+    local.get a
+    f32.reinterpret_i32
+    i64.trunc_sat_f32_s
+
+conv(8, 23, 64)(a: float(8, 23)) -> r: u64
+    local.get a
+    f32.reinterpret_i32
+    i64.trunc_sat_f32_u
+
+conv(11, 52, 32)(a: float(11, 52)) -> r: i32
+    local.get a
+    f64.reinterpret_i64
+    i32.trunc_sat_f64_s
+
+conv(11, 52, 32)(a: float(11, 52)) -> r: u32
+    local.get a
+    f64.reinterpret_i64
+    i32.trunc_sat_f64_u
+
+conv(11, 52, 64)(a: float(11, 52)) -> r: i64
+    local.get a
+    f64.reinterpret_i64
+    i64.trunc_sat_f64_s
+
+conv(11, 52, 64)(a: float(11, 52)) -> r: u64
+    local.get a
+    f64.reinterpret_i64
+    i64.trunc_sat_f64_u

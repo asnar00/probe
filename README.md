@@ -59,14 +59,16 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   - Both talk to an assembler only through `src/oracle.rs`; the per-target
     seed files (`targets/*.probe`, read by `src/target.rs`) say how to
     *spell* instructions and nothing else.
-- **A platform per backend** (`src/platform.rs`): the generic
-  instantiations the target implements natively (`add`/`sub`/`mul`/`div`/
-  `sqrt`/`neg`/`abs`/`min`/`max`/`fma`/`cmp.*` on `float(8, 23)` and
-  `float(11, 52)`, and `conv` between those and 32/64-bit integers —
-  minus what a target's own semantics rule out: riscv64's NaN-dropping
-  `fmin`, wasm's missing fma). Compiling such an instance, or a call to one, emits the
-  hardware sequence instead of the SSA body; `--soft` turns that off, and
-  the library remains the reference the hardware path is checked against.
+- **A platform per backend, as a rule file** (`targets/*.platform`, read
+  by `src/platform.rs`): each library instance the target has hardware
+  for — `add(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)`
+  — followed by the learned templates that compute it (`fmov s0, a` /
+  `fmov s1, b` / `fadd s0, s0, s1` / `fmov r, s0`). Lines resolve
+  against the learned encodings by mnemonic and operand shape, so a
+  rule can only name verified instructions. Compiling such an instance,
+  or a call to one, emits the rule's sequence instead of the SSA body;
+  `--soft` turns that off, and the library remains the reference the
+  hardware path is checked against.
 - **Three backends**, none of which contain a single hand-written opcode:
   - `arm64` (`src/emit.rs`) — JIT: mmap/MAP_JIT on Apple Silicon, run
     in-process

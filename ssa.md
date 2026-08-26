@@ -340,21 +340,39 @@ adds operations, and a platform adds instructions.
 ### Platforms
 
 A library instantiation defines what an operation *means*; a platform
-says which of them the target has hardware for. Each backend carries a
-table of generic instantiations it implements natively — today
-`add`, `sub`, `mul`, `div`, `sqrt`, `neg`, `abs`, `min`, `max`, `fma`,
-the six comparisons, on `float(8, 23)` and `float(11, 52)`, and `conv`
-between those and to and from 32/64-bit integers — with the exceptions a
-platform's own semantics force: riscv64 keeps float to int (its hardware
-gives the maximum integer for NaN where the library gives 0) and
-`min`/`max` (its `fmin` returns the number when one operand is NaN, the
-library returns NaN) in the library, and wasm has no fused
-multiply-add. On all three targets — and when it
-compiles such an instance, or a call to one, it emits the instruction
-sequence (arm64 `fmov`/`fadd`/`fmov`, riscv `fmv`/`fadd.s`, wasm
-`f32.add` between reinterprets) instead of the SSA body. The tables name
-the nearest-even instances (`add(8, 23, 0)`), which is what the
-instructions do; an instance in another rounding mode stays in the
+says which of them the target has hardware for, as rules in
+`targets/<target>.platform`:
+
+```
+add(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
+    fmov s0, a
+    fmov s1, b
+    fadd s0, s0, s1
+    fmov r, s0
+```
+
+A rule is the instance's full signature — generic, width arguments,
+parameter and result types, as the library instantiates them — and the
+learned templates that compute it: `a`, `b`, `c` are the arguments and
+`r` the result in whatever integer registers (wasm: locals) the emitter
+chose, a float travelling as its bits; `s0`/`d0`/`f0` are scratch float
+registers; anything else is a literal for an immediate or condition
+slot (`cset r, lo`, `xori r, r, 1`). Each line is resolved against the
+target's learned templates by mnemonic and operand shape — `fmov s0, a`
+with a 32-bit `a` is `fmov {s}, {w}` — so a rule can only name
+instructions the learner verified, and a rule line the learner has no
+template for is an error, not a guess. The files today cover `add`,
+`sub`, `mul`, `div`, `sqrt`, `neg`, `abs`, `min`, `max`, `fma`, the six
+comparisons, on `float(8, 23)` and `float(11, 52)`, and `conv` between
+those and to and from 32/64-bit integers — minus what a target's own
+semantics rule out, which the file simply leaves out: riscv64 has no
+float-to-int rule (its `fcvt.w.s` gives the maximum integer for NaN
+where the library gives 0) and no `min`/`max` (its `fmin` returns the
+number when one operand is NaN, the library returns NaN); wasm has no
+`fma`. When an emitter compiles such an instance, or a call to one, it
+emits the rule's sequence instead of the SSA body. The rules name the
+nearest-even instances (`add(8, 23, 0)`), which is what the
+instructions compute; an instance in another rounding mode stays in the
 library. The library body remains the reference: `--soft` compiles with
 an empty platform, and the two must agree — and both are checked
 against Berkeley TestFloat's vectors, bit for bit, in every mode, by
