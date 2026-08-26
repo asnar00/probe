@@ -8,7 +8,10 @@
 //! idiomatic code.
 //!
 //! Control flow: wasm has no arbitrary branches, so each function becomes a
-//! dispatcher — one loop wrapping N nested blocks, a `label` local
+//! dispatcher (the fallback for an irreducible graph; a reducible one,
+//! which is all the parser and the passes produce, is emitted as nested
+//! block/loop/if from its dominator tree, see structure.rs) — one loop
+//! wrapping N nested blocks, a `label` local
 //! selecting the SSA block to run via a chain of br_ifs. A jump sets
 //! `label` and branches back to the loop. Ugly output, correct for any
 //! CFG, and immune to the relooper problem.
@@ -231,6 +234,19 @@ struct WEmit<'a> {
     local_of: Vec<i64>, // ValueId -> wasm local index
     label_local: i64,
     nblocks: usize,
+    /// structured emission: the enclosing labels, innermost last
+    ctx: Vec<Label>,
+}
+
+/// a wasm label in scope, for `br`
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Label {
+    /// a `block` that ends where SSA block n starts
+    Block(usize),
+    /// a `loop` whose start is SSA block n
+    Loop(usize),
+    /// an `if` arm (one label, never a branch target)
+    If,
 }
 
 impl WEmit<'_> {
@@ -391,6 +407,92 @@ impl WEmit<'_> {
         Ok(())
     }
 
+    /// pass branch arguments to a block's parameters: the stack is the
+    /// swap-safe staging area — push all, pop into the params in reverse
+    fn pass_args(&mut self, target: crate::ssa::BlockId, args: &[ValueId]) -> Result<(), String> {
+        for &a in args {
+            self.get(a)?;
+        }
+        let params: Vec<ValueId> = self.func.blocks[target.0 as usize].params.clone();
+        for &p in params.iter().rev() {
+            self.set(p)?;
+        }
+        Ok(())
+    }
+
+    /// emit SSA block `x` and everything it dominates, nested (see
+    /// structure.rs): a loop header inside a `loop`, its merge-node
+    /// children each inside a `block` that ends where the child begins
+    fn do_tree(&mut self, cfg: &crate::structure::Cfg, x: usize) -> Result<(), String> {
+        if cfg.loop_header[x] {
+            self.op("loop", None)?;
+            self.ctx.push(Label::Loop(x));
+            let merges: Vec<usize> = cfg.dom_children[x].iter().copied().filter(|&c| cfg.merge[c]).collect();
+            self.node_within(cfg, x, &merges)?;
+            self.ctx.pop();
+            self.op("end", None)?;
+            // a loop is left only by br to an enclosing label; after `end`
+            // the stack machine still wants an unreachable path closed
+            self.op("unreachable", None)
+        } else {
+            let merges: Vec<usize> = cfg.dom_children[x].iter().copied().filter(|&c| cfg.merge[c]).collect();
+            self.node_within(cfg, x, &merges)
+        }
+    }
+
+    /// `merges` in rpo order: the last (latest) is the outermost block
+    fn node_within(&mut self, cfg: &crate::structure::Cfg, x: usize, merges: &[usize]) -> Result<(), String> {
+        if let Some((&y, rest)) = merges.split_last() {
+            self.op("block", None)?;
+            self.ctx.push(Label::Block(y));
+            self.node_within(cfg, x, rest)?;
+            self.ctx.pop();
+            self.op("end", None)?;
+            return self.do_tree(cfg, y);
+        }
+        let block = &self.func.blocks[x];
+        let (last, body) = block.insts.split_last().ok_or("empty block")?;
+        for inst in body {
+            compile_inst(self, inst, x)?;
+        }
+        match last {
+            Inst::Jmp { target, args } => self.do_branch(cfg, *target, args),
+            Inst::Br { cond, then_target, then_args, else_target, else_args } => {
+                self.get(*cond)?;
+                self.op("if", None)?;
+                self.ctx.push(Label::If);
+                self.do_branch(cfg, *then_target, then_args)?;
+                self.op("else", None)?;
+                self.do_branch(cfg, *else_target, else_args)?;
+                self.ctx.pop();
+                self.op("end", None)?;
+                self.op("unreachable", None)
+            }
+            Inst::Ret { vals } => {
+                for &v in vals {
+                    self.get(v)?;
+                }
+                self.op("return", None)
+            }
+            other => compile_inst(self, other, x),
+        }
+    }
+
+    /// a branch to `target`: a back edge or a merge node is a `br` to its
+    /// label; anything else is emitted right here
+    fn do_branch(&mut self, cfg: &crate::structure::Cfg, target: crate::ssa::BlockId, args: &[ValueId]) -> Result<(), String> {
+        self.pass_args(target, args)?;
+        let t = target.0 as usize;
+        let want = if cfg.loop_header[t] && self.ctx.contains(&Label::Loop(t)) { Some(Label::Loop(t)) } else if cfg.merge[t] { Some(Label::Block(t)) } else { None };
+        match want {
+            Some(label) => {
+                let depth = self.ctx.iter().rev().position(|l| *l == label).ok_or_else(|| format!("no label for block {} in scope", t))?;
+                self.op("br {}", Some(depth as i64))
+            }
+            None => self.do_tree(cfg, t),
+        }
+    }
+
     /// jump to SSA block `target`: pass args, set the label, br to the
     /// dispatcher loop. `extra_depth` counts if/else nesting at this point.
     fn jump(
@@ -481,6 +583,7 @@ fn compile_function(
         local_of,
         label_local,
         nblocks: func.blocks.len(),
+        ctx: Vec::new(),
     };
     for (i, &p) in func.params.iter().enumerate() {
         if e.is_f(p) {
@@ -489,26 +592,35 @@ fn compile_function(
         }
     }
 
-    // dispatcher skeleton: loop { block^N { chain } code_0 } ... }
-    e.op("loop", None)?;
-    for _ in 0..e.nblocks {
-        e.op("block", None)?;
-    }
-    for i in 0..e.nblocks {
-        e.op("local.get {}", Some(e.label_local))?;
-        e.op("i32.const {}", Some(i as i64))?;
-        e.op("i32.eq", None)?;
-        e.op("br_if {}", Some(i as i64))?;
-    }
-    e.op("unreachable", None)?;
-    for (bi, block) in func.blocks.iter().enumerate() {
-        e.op("end", None)?; // close block bi; its code follows
-        for inst in &block.insts {
-            compile_inst(&mut e, inst, bi)?;
+    match crate::structure::Cfg::analyze(func) {
+        Some(cfg) => {
+            // the graph as nesting: loops, blocks, ifs, and br
+            e.do_tree(&cfg, 0)?;
+            e.op("unreachable", None)?;
+        }
+        None => {
+            // irreducible: a dispatcher loop { block^N { chain } code_0 } ... }
+            e.op("loop", None)?;
+            for _ in 0..e.nblocks {
+                e.op("block", None)?;
+            }
+            for i in 0..e.nblocks {
+                e.op("local.get {}", Some(e.label_local))?;
+                e.op("i32.const {}", Some(i as i64))?;
+                e.op("i32.eq", None)?;
+                e.op("br_if {}", Some(i as i64))?;
+            }
+            e.op("unreachable", None)?;
+            for (bi, block) in func.blocks.iter().enumerate() {
+                e.op("end", None)?; // close block bi; its code follows
+                for inst in &block.insts {
+                    compile_inst(&mut e, inst, bi)?;
+                }
+            }
+            e.op("end", None)?; // close the loop
+            e.op("unreachable", None)?;
         }
     }
-    e.op("end", None)?; // close the loop
-    e.op("unreachable", None)?;
 
     // body = locals declaration + code + end
     let mut body = Vec::new();

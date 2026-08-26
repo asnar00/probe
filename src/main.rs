@@ -4,6 +4,7 @@ mod emit_rv;
 mod emit_wasm;
 mod fuzz;
 mod scorecard;
+mod structure;
 mod testfloat;
 mod wide;
 mod learn;

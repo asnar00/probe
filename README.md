@@ -80,7 +80,9 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
     the runtime harness (UART printing, exit) generated in the project's
     own SSA
   - `wasm32` (`src/emit_wasm.rs`) — module emission, executed by node via
-    `src/driver.js`
+    `src/driver.js`; control flow becomes nested `block`/`loop`/`if`
+    from the dominator tree (`src/structure.rs`), a dispatcher loop
+    only for an irreducible graph
 - **A linear-scan register allocator** (`src/regalloc.rs`), target
   independent: the emitter hands it a callee-saved pool and gets back a
   register or spill slot per value.
