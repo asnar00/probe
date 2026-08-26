@@ -1,0 +1,144 @@
+; lib/decimal.ssa: decimal(N, S), an i(N) significand at scale 10^S. These
+; use money(32, 2) — cents — and give and expect significands (19.99 is
+; 1999). Expected values from Python's decimal module, ROUND_HALF_UP.
+
+;! dadd 10 20 -> 30
+;! dsub 10 20 -> -10
+;! dmul 10 20 -> 2
+;! ddiv 10 20 -> 50
+;! dlt 10 20 -> 1
+;! dadd 1999 1 -> 2000
+;! dsub 1999 1 -> 1998
+;! dmul 1999 1 -> 20
+;! ddiv 1999 1 -> 199900
+;! dlt 1999 1 -> 0
+;! dadd -525 250 -> -275
+;! dsub -525 250 -> -775
+;! dmul -525 250 -> -1313
+;! ddiv -525 250 -> -210
+;! dlt -525 250 -> 1
+;! dadd 12345678 -1 -> 12345677
+;! dsub 12345678 -1 -> 12345679
+;! dmul 12345678 -1 -> -123457
+;! ddiv 12345678 -1 -> -1234567800
+;! dlt 12345678 -1 -> 0
+;! dadd 7 300 -> 307
+;! dsub 7 300 -> -293
+;! dmul 7 300 -> 21
+;! ddiv 7 300 -> 2
+;! dlt 7 300 -> 1
+;! dadd 115 300 -> 415
+;! dsub 115 300 -> -185
+;! dmul 115 300 -> 345
+;! ddiv 115 300 -> 38
+;! dlt 115 300 -> 1
+;! dadd 250 250 -> 500
+;! dsub 250 250 -> 0
+;! dmul 250 250 -> 625
+;! ddiv 250 250 -> 100
+;! dlt 250 250 -> 0
+;! dadd -150 300 -> 150
+;! dsub -150 300 -> -450
+;! dmul -150 300 -> -450
+;! ddiv -150 300 -> -50
+;! dlt -150 300 -> 1
+;! ddiv 100 0 -> 0
+;! from_int 7 -> 700
+;! from_int -3 -> -300
+;! from_int 0 -> 0
+;! from_int 21474836 -> 2147483600
+;! to_int 1999 -> 19
+;! to_int -1 -> 0
+;! to_int 750 -> 7
+;! from_f64 4591870180066957722 -> 10
+;! from_f64 4613205983301625446 -> 268
+;! from_f64 -4616167100056621548 -> -100
+;! from_f64 4626319902466574909 -> 1999
+;! to_f64 1999 -> 4626319902466574909
+;! to_f64 -50 -> -4620693217682128896
+;! cents_lit  -> 1234
+;! sum_thousand_pennies  -> 10000
+
+type money = decimal(32, 2)
+
+fn dmk(m: i32) -> money {
+    r: money = pack m
+    ret r
+}
+fn dget(x: money) -> i32 {
+    r: i32 = get x, m
+    ret r
+}
+fn dadd(a: i32, b: i32) -> i32 {
+    x: money = dmk(a)
+    y: money = dmk(b)
+    s: money = add x, y
+    r: i32 = dget(s)
+    ret r
+}
+fn dsub(a: i32, b: i32) -> i32 {
+    x: money = dmk(a)
+    y: money = dmk(b)
+    s: money = sub x, y
+    r: i32 = dget(s)
+    ret r
+}
+fn dmul(a: i32, b: i32) -> i32 {
+    x: money = dmk(a)
+    y: money = dmk(b)
+    s: money = mul x, y
+    r: i32 = dget(s)
+    ret r
+}
+fn ddiv(a: i32, b: i32) -> i32 {
+    x: money = dmk(a)
+    y: money = dmk(b)
+    s: money = div x, y
+    r: i32 = dget(s)
+    ret r
+}
+fn dlt(a: i32, b: i32) -> u1 {
+    x: money = dmk(a)
+    y: money = dmk(b)
+    r: u1 = cmp.lt x, y
+    ret r
+}
+fn from_int(a: i64) -> i32 {
+    x: money = conv a
+    r: i32 = dget(x)
+    ret r
+}
+fn to_int(a: i32) -> i64 {
+    x: money = dmk(a)
+    r: i64 = conv x
+    ret r
+}
+fn from_f64(a: f64) -> i32 {
+    x: money = conv a
+    r: i32 = dget(x)
+    ret r
+}
+fn to_f64(a: i32) -> f64 {
+    x: money = dmk(a)
+    r: f64 = conv x
+    ret r
+}
+fn cents_lit() -> i32 {
+    x: money = const 12.34
+    r: i32 = dget(x)
+    ret r
+}
+; 1000 times 0.001 is not representable in cents; 1000 times 0.10 is 100.00
+fn sum_thousand_pennies() -> i32 {
+    t: money = loop(i: i32 = 0, acc: money = 0) {
+        done: u1 = cmp.ge i, 1000
+        if done {
+            break acc
+        }
+        acc2: money = add acc, 0.1
+        i2: i32 = add i, 1
+        continue i2, acc2
+    }
+    r: i32 = dget(t)
+    ret r
+}

@@ -1,0 +1,229 @@
+; probe's decimals: decimal(N, S) is m / 10^S for an i(N) significand m —
+; tenths, cents, micro-units — so sums are exact and 0.1 + 0.2 is 0.3.
+; add and sub wrap like the integer they are; mul and div round to
+; nearest, ties away from zero (the commercial rounding), in 128 bits;
+; division by zero is 0. Conversions: integers scale exactly, floats
+; round to the nearest representable value on the way in and divide on
+; the way out. N up to 64; S such that 10^S fits (S <= 18).
+type decimal(N, S) = pack { m: i(N) }
+
+; 10^S, by S doublings-and-then-some at run time (a width expression
+; has no power operator; the const-folder finishes the job)
+fn pow10(S)() -> i128 {
+    steps: i32 = const S
+    p: i128 = loop(i: i32 = 0, acc: i128 = 1) {
+        done: u1 = cmp.ge i, steps
+        if done {
+            break acc
+        }
+        acc2: i128 = mul acc, 10
+        i2: i32 = add i, 1
+        continue i2, acc2
+    }
+    ret p
+}
+
+; q = n / d rounded to nearest, ties away from zero; d = 0 gives 0
+fn ddivround(n: i128, d: i128) -> i128 {
+    dz: u1 = cmp.eq d, 0
+    if dz {
+        ret 0
+    }
+    nn: u1 = cmp.lt n, 0
+    dn: u1 = cmp.lt d, 0
+    na: i128 = if nn {
+        x: i128 = sub 0, n
+        yield x
+    } else {
+        yield n
+    }
+    da: i128 = if dn {
+        y: i128 = sub 0, d
+        yield y
+    } else {
+        yield d
+    }
+    half: i128 = shr da, 1
+    biased: i128 = add na, half
+    qa: i128 = div biased, da
+    neg: u1 = xor nn, dn
+    q: i128 = if neg {
+        z: i128 = sub 0, qa
+        yield z
+    } else {
+        yield qa
+    }
+    ret q
+}
+
+fn add(N, S)(a: decimal(N, S), b: decimal(N, S)) -> decimal(N, S) {
+    ma: i(N) = get a, m
+    mb: i(N) = get b, m
+    s: i(N) = add ma, mb
+    r: decimal(N, S) = pack s
+    ret r
+}
+fn sub(N, S)(a: decimal(N, S), b: decimal(N, S)) -> decimal(N, S) {
+    ma: i(N) = get a, m
+    mb: i(N) = get b, m
+    s: i(N) = sub ma, mb
+    r: decimal(N, S) = pack s
+    ret r
+}
+fn neg(N, S)(a: decimal(N, S)) -> decimal(N, S) {
+    ma: i(N) = get a, m
+    s: i(N) = sub 0, ma
+    r: decimal(N, S) = pack s
+    ret r
+}
+fn abs(N, S)(a: decimal(N, S)) -> decimal(N, S) {
+    ma: i(N) = get a, m
+    neg: u1 = cmp.lt ma, 0
+    s: i(N) = if neg {
+        x: i(N) = sub 0, ma
+        yield x
+    } else {
+        yield ma
+    }
+    r: decimal(N, S) = pack s
+    ret r
+}
+; (a * b) / 10^S, rounded
+fn mul(N, S)(a: decimal(N, S), b: decimal(N, S)) -> decimal(N, S) {
+    ma: i(N) = get a, m
+    mb: i(N) = get b, m
+    wa: i128 = conv ma
+    wb: i128 = conv mb
+    p: i128 = mul wa, wb
+    scale: i128 = pow10(S)()
+    q: i128 = ddivround(p, scale)
+    s: i(N) = conv q
+    r: decimal(N, S) = pack s
+    ret r
+}
+; (a * 10^S) / b, rounded
+fn div(N, S)(a: decimal(N, S), b: decimal(N, S)) -> decimal(N, S) {
+    ma: i(N) = get a, m
+    mb: i(N) = get b, m
+    wa: i128 = conv ma
+    wb: i128 = conv mb
+    scale: i128 = pow10(S)()
+    n: i128 = mul wa, scale
+    q: i128 = ddivround(n, wb)
+    s: i(N) = conv q
+    r: decimal(N, S) = pack s
+    ret r
+}
+fn lt(N, S)(a: decimal(N, S), b: decimal(N, S)) -> u1 {
+    ma: i(N) = get a, m
+    mb: i(N) = get b, m
+    r: u1 = cmp.lt ma, mb
+    ret r
+}
+fn le(N, S)(a: decimal(N, S), b: decimal(N, S)) -> u1 {
+    ma: i(N) = get a, m
+    mb: i(N) = get b, m
+    r: u1 = cmp.le ma, mb
+    ret r
+}
+fn gt(N, S)(a: decimal(N, S), b: decimal(N, S)) -> u1 {
+    ma: i(N) = get a, m
+    mb: i(N) = get b, m
+    r: u1 = cmp.gt ma, mb
+    ret r
+}
+fn ge(N, S)(a: decimal(N, S), b: decimal(N, S)) -> u1 {
+    ma: i(N) = get a, m
+    mb: i(N) = get b, m
+    r: u1 = cmp.ge ma, mb
+    ret r
+}
+fn eq(N, S)(a: decimal(N, S), b: decimal(N, S)) -> u1 {
+    ma: i(N) = get a, m
+    mb: i(N) = get b, m
+    r: u1 = cmp.eq ma, mb
+    ret r
+}
+fn ne(N, S)(a: decimal(N, S), b: decimal(N, S)) -> u1 {
+    ma: i(N) = get a, m
+    mb: i(N) = get b, m
+    r: u1 = cmp.ne ma, mb
+    ret r
+}
+fn min(N, S)(a: decimal(N, S), b: decimal(N, S)) -> decimal(N, S) {
+    less: u1 = lt a, b
+    if less {
+        ret a
+    }
+    ret b
+}
+fn max(N, S)(a: decimal(N, S), b: decimal(N, S)) -> decimal(N, S) {
+    more: u1 = gt a, b
+    if more {
+        ret a
+    }
+    ret b
+}
+
+; --- conversions ---
+fn conv(W, N, S)(a: i(W)) -> decimal(N, S) {
+    x: i128 = conv a
+    scale: i128 = pow10(S)()
+    mw: i128 = mul x, scale
+    s: i(N) = conv mw
+    r: decimal(N, S) = pack s
+    ret r
+}
+fn conv(W, N, S)(a: u(W)) -> decimal(N, S) {
+    x: i128 = conv a
+    scale: i128 = pow10(S)()
+    mw: i128 = mul x, scale
+    s: i(N) = conv mw
+    r: decimal(N, S) = pack s
+    ret r
+}
+; to an integer: toward zero
+fn conv(N, S, W)(a: decimal(N, S)) -> i(W) {
+    ma: i(N) = get a, m
+    x: i128 = conv ma
+    scale: i128 = pow10(S)()
+    q: i128 = div x, scale
+    r: i(W) = conv q
+    ret r
+}
+fn conv(N, S, W)(a: decimal(N, S)) -> u(W) {
+    ma: i(N) = get a, m
+    x: i128 = conv ma
+    scale: i128 = pow10(S)()
+    q: i128 = div x, scale
+    r: u(W) = conv q
+    ret r
+}
+; from a float: a * 10^S rounded to nearest, ties away from zero
+fn conv(E, M, N, S)(a: float(E, M)) -> decimal(N, S) {
+    scale: i128 = pow10(S)()
+    scale64: i64 = conv scale
+    fs: float(E, M) = conv scale64
+    x: float(E, M) = mul a, fs
+    neg: u1 = lt x, 0.0
+    y: float(E, M) = if neg {
+        d: float(E, M) = sub x, 0.5
+        yield d
+    } else {
+        u: float(E, M) = add x, 0.5
+        yield u
+    }
+    mi: i64 = conv y
+    s: i(N) = conv mi
+    r: decimal(N, S) = pack s
+    ret r
+}
+fn conv(N, S, E, M)(a: decimal(N, S)) -> float(E, M) {
+    ma: i(N) = get a, m
+    scale: i128 = pow10(S)()
+    scale64: i64 = conv scale
+    fm: float(E, M) = conv ma
+    fs: float(E, M) = conv scale64
+    r: float(E, M) = div fm, fs
+    ret r
+}

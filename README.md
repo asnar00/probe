@@ -50,7 +50,9 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   `rational(N, D)`; and `scalar`, which is whichever of those families
   the policy names (`--scalar=...`). `lib/time.ssa` is a `rational(64,
   64)` of seconds with units — a sample period at 44100 Hz times 44100
-  is exactly one second.
+  is exactly one second. `lib/decimal.ssa` is `decimal(N, S)`, an `i(N)`
+  significand at scale 10^S — cents that add exactly — written to
+  `formats.md`, the recipe for adding a format as a library.
 - **Two learners**:
   - `src/learn.rs` for fixed-width register ISAs: one-hot probes XORed
     against a baseline map each operand bit to its encoding bit — which

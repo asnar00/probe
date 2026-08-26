@@ -115,6 +115,16 @@ where its values live, and one line per instruction —
 `fadd {s}, {s}, {s} = add(f32, f32) -> f32`. The library stays the
 reference; `probe testfloat`-style oracles compare both.
 
+## What the first run of this recipe found
+
+`lib/decimal.ssa` (`decimal(N, S)`, an `i(N)` at scale 10^S) was written
+to this document in one sitting; the only friction: width expressions
+have no power operator, so a constant that depends on a parameter
+non-linearly (10^S) is a generic helper computing it at run time —
+`pow10(S)()` — which the const-folder then folds. Everything else —
+dispatch, literals through `conv`, wide intermediates, the suite
+harness giving and expecting significands — worked as described.
+
 ## 7. Write it down
 
 An entry in `history.md`, and the README's list if it is a family.
