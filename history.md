@@ -6,6 +6,16 @@ has the full story for any of them.
 
 ---
 
+### unit and sunit — `4ac4a9e` · 2026-08-26
+
+`lib/unit.ssa`: `unit(N)` runs 0.0 to 1.0 over 0 to 2^N−1, `sunit(N)`
+−1.0 to 1.0 over ±(2^(N−1)−1). The scale is not a power of two, so a
+product is `(a·b + half) / max`, rounded; sums saturate; `conv` goes
+through floats. The two-word helpers move to `lib/wide.ssa`, gaining a
+`udiv128` that fixed and unit share. Bare `unit`/`sunit` follow the
+policy (`--unit=N`, `--sunit=N`). Exhaustive against their models at 8
+bits; 413/413 on all four paths, both ways.
+
 ### fixed point — `633d681` · 2026-08-26
 
 `lib/fixed.ssa`: `fixed(I, F)` as `pack { frac: u(F), int: i(I) }` with
