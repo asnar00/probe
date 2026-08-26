@@ -1,0 +1,50 @@
+; Rounding modes. The library's float operations take a third width
+; parameter, `round`: 0 nearest even, 1 toward zero, 2 down, 3 up, 4
+; nearest away. Nothing binds it at an `add x, y`, so the policy supplies
+; it (--round=even|zero|down|up|away); an explicit instantiation names
+; it, and these hold under any policy. Verified against Berkeley TestFloat
+; in every mode by `probe testfloat`.
+
+; 1 + 2^-24 (a half ulp): even keeps 1, zero keeps 1, down keeps 1, up
+; goes to the next float, away rounds the tie up
+;! nearest 0x3f800000 0x33800000 -> 0x3f800000
+;! zero 0x3f800000 0x33800000 -> 0x3f800000
+;! down 0x3f800000 0x33800000 -> 0x3f800000
+;! up 0x3f800000 0x33800000 -> 0x3f800001
+;! away 0x3f800000 0x33800000 -> 0x3f800001
+; -1 - 2^-24: the mirror image
+;! down 0xbf800000 0xb3800000 -> 0xbf800001
+;! up 0xbf800000 0xb3800000 -> 0xbf800000
+;! zero 0xbf800000 0xb3800000 -> 0xbf800000
+; 1 + -1 is +0, except -0 when rounding down
+;! nearest 0x3f800000 0xbf800000 -> 0
+;! down 0x3f800000 0xbf800000 -> 0x80000000
+; overflow: max + max is infinity, or the largest finite where the mode
+; never rounds away from zero on that side
+;! nearest 0x7f7fffff 0x7f7fffff -> 0x7f800000
+;! zero 0x7f7fffff 0x7f7fffff -> 0x7f7fffff
+;! down 0x7f7fffff 0x7f7fffff -> 0x7f7fffff
+;! up 0x7f7fffff 0x7f7fffff -> 0x7f800000
+;! up 0xff7fffff 0xff7fffff -> 0xff7fffff
+fn nearest = add(8, 23, 0)
+fn zero = add(8, 23, 1)
+fn down = add(8, 23, 2)
+fn up = add(8, 23, 3)
+fn away = add(8, 23, 4)
+
+; the mode passes through: an f64 product rounded toward zero, then
+; converted to f32 rounding up (each is the library instance named)
+;! mulz 0x3ff0000000000001 0x3ff0000000000001 -> 0x3ff0000000000002
+;! tof32up 0x3ff0000000000001 -> 0x3f800001
+;! tof32down 0x3ff0000000000001 -> 0x3f800000
+fn mulz = mul(11, 52, 1)
+fn tof32up = conv(11, 52, 8, 23, 3)
+fn tof32down = conv(11, 52, 8, 23, 2)
+
+; a whole function under one mode, written once: the policy's (the suite
+; runs at the default, nearest even; --round=up makes this 0x3f800001)
+;! sumsq 0x3f800000 0x33800000 -> 0x3f800000
+fn sumsq(a: f32, b: f32) -> f32 {
+    r: f32 = add a, b
+    ret r
+}

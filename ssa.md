@@ -287,16 +287,28 @@ so `u(M + 5)` is a concrete type there, and `const` may be a width
 expression.
 
 ```
-fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
-    hidden: u(M + 5) = const 1 << M
+fn add(E, M, round)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     ...
-    n: float(E, M) = fnan(E, M)()      ; instantiates fnan for this E, M
+    n1: float(E, M) = fnan(E, M)()      ; instantiates fnan for this E, M
     ...
+    r: float(E, M) = fpack(E, M, round)(sh, nx32, nf)
+    ret r
 }
 fn fadd32 = add(8, 23)                      ; a named instantiation
-r: f16 = add(5, 10)(x, y)              ; an anonymous one, add_5_10
+r: f16 = add(5, 10)(x, y)              ; an anonymous one, add_5_10_0
 s: f16 = add x, y                           ; the same, by dispatch
 ```
+
+A parameter nothing binds is supplied by the policy when it has a value
+by that name: `round` is the one such name, 0 nearest even, 1 toward
+zero, 2 down, 3 up, 4 nearest away (`--round=even|zero|down|up|away`).
+That is why `add(8, 23)` and `add x, y` name two of the three
+parameters: the mode comes from the policy — or from the enclosing
+instantiation when a generic with a `round` of its own calls another,
+so `sub`'s `add a, nb` rounds as `sub` does. `add(8, 23, 2)` fixes it
+regardless of policy (`suite/round.ssa`). In the library every rounding
+decision is in `fpack`, and since the mode is a width parameter, all
+but one of its tests fold away in each instance.
 
 Instantiations are shared: `add(8, 23)` anywhere is `fadd32` once that
 name exists. `probe parse` prints the instantiated functions and not the
@@ -340,9 +352,13 @@ library returns NaN) in the library, and wasm has no fused
 multiply-add. On all three targets — and when it
 compiles such an instance, or a call to one, it emits the instruction
 sequence (arm64 `fmov`/`fadd`/`fmov`, riscv `fmv`/`fadd.s`, wasm
-`f32.add` between reinterprets) instead of the SSA body. The library body
-remains the reference: `--soft` compiles with an empty platform, and the
-two must agree. NaN payloads are the one place they may differ — the
+`f32.add` between reinterprets) instead of the SSA body. The tables name
+the nearest-even instances (`add(8, 23, 0)`), which is what the
+instructions do; an instance in another rounding mode stays in the
+library. The library body remains the reference: `--soft` compiles with
+an empty platform, and the two must agree — and both are checked
+against Berkeley TestFloat's vectors, bit for bit, in every mode, by
+`probe testfloat` (`tools/get-testfloat.sh` builds the generator). NaN payloads are the one place they may differ — the
 library canonicalizes, hardware propagates — as on any real platform.
 
 ## Example

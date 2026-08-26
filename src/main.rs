@@ -3,6 +3,7 @@ mod emit;
 mod emit_rv;
 mod emit_wasm;
 mod fuzz;
+mod testfloat;
 mod learn;
 mod opt;
 mod platform;
@@ -25,6 +26,7 @@ fn main() -> ExitCode {
     let mut unit_override: Option<u32> = None;
     let mut sunit_override: Option<u32> = None;
     let mut rational_override: Option<(u32, u32)> = None;
+    let mut round: Option<String> = None;
     let mut scalar_override: Option<String> = None;
     args.retain(|a| {
         if let Some(l) = a.strip_prefix("-O") {
@@ -50,6 +52,9 @@ fn main() -> ExitCode {
             false
         } else if let Some(t) = a.strip_prefix("--scalar=") {
             scalar_override = Some(t.to_string());
+            false
+        } else if let Some(t) = a.strip_prefix("--round=") {
+            round = Some(t.to_string());
             false
         } else if a == "--soft" {
             platform::set_soft(true);
@@ -85,6 +90,12 @@ fn main() -> ExitCode {
             None => return fail(&format!("--scalar={}: not one of {}", f, ssa::Policy::SCALARS.join(", "))),
         };
     }
+    if let Some(r) = &round {
+        policy = match policy.with_round(r) {
+            Ok(p) => p,
+            Err(e) => return fail(&e),
+        };
+    }
     match args.first().map(String::as_str) {
         Some("parse") if args.len() >= 2 => cmd_parse(&args[1], policy),
         Some("learn") if args.len() >= 2 => {
@@ -109,6 +120,17 @@ fn main() -> ExitCode {
             match fargs {
                 Ok(fargs) => cmd_run(&args[1], &args[2], &fargs, level, policy),
                 Err(_) => fail("function arguments must be integers"),
+            }
+        }
+        Some("testfloat") => {
+            let only: Vec<String> = args[1..].iter().filter(|a| !a.starts_with("--")).cloned().collect();
+            match testfloat::run(&only, level, policy) {
+                Ok(r) => {
+                    print!("{}", r.log);
+                    println!("{} cases, {} wrong", r.cases, r.failed);
+                    if r.failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+                }
+                Err(e) => fail(&e),
             }
         }
         Some("fuzz") => {
@@ -166,6 +188,9 @@ fn main() -> ExitCode {
                 if let Some(f) = &scalar_override {
                     p = p.with_scalar(f).unwrap_or(p);
                 }
+                if let Some(r) = &round {
+                    p = p.with_round(r).unwrap_or(p);
+                }
                 p
             }) {
                 Ok(report) => {
@@ -187,6 +212,7 @@ fn main() -> ExitCode {
             eprintln!("       probe tiers <file.ssa>");
             eprintln!("       probe live <file.ssa> <function> [args...]");
             eprintln!("       probe fuzz [count] [--seed=hex] [--slow]");
+            eprintln!("       probe testfloat [f32|add|f16_to_i32...]");
             eprintln!("       (-O<n> selects the optimization level on any command;");
             eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy,");
             eprintln!("        --float=f16|bf16|f32|f64|E,M the abstract 'float' one,");

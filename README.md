@@ -43,7 +43,7 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   types resolved to a concrete width by a per-target replacement policy
   (`--int=i32|i64` to override); abstract `float`, `fixed`, `unit`,
   `sunit`, and `rational` resolved the same way (`--float=f16|bf16|f32|
-  f64|E,M`, `--fixed=I,F`, `--unit=N`, `--sunit=N`, `--rational=N,D`) to
+  f64|E,M`, `--fixed=I,F`, `--unit=N`, `--sunit=N`, `--rational=N,D`, and `--round=` for the mode) to
   the libraries' `float(E, M)`, `fixed(I, F)`, `unit(N)`, `sunit(N)`,
   `rational(N, D)`; and `scalar`, which is whichever of those families
   the policy names (`--scalar=...`).
@@ -86,6 +86,11 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   slot with slack, calls routed through counting trampolines, so an edited
   function recompiles in place and a hot one is promoted through the full
   pipeline without disturbing its neighbours.
+- **An IEEE-754 oracle** (`src/testfloat.rs`): Berkeley TestFloat's
+  vectors — 19 million cases over f16/f32/f64, every operation, every
+  rounding mode (`--round=even|zero|down|up|away`, a generic parameter
+  the policy supplies) — run through the library instances and, where
+  the platform has the instruction, the hardware, compared bit for bit.
 - **A fuzzer** (`src/fuzz.rs`): random well-formed programs — every
   integer width, packs, floats through the library and the platform,
   value-yielding `if`s, bounded loops, calls — with their results at
@@ -150,6 +155,11 @@ cargo run -- run suite/fixed.ssa divf 7 2                   # fixed point (lib/f
 cargo run -- run suite/unit.ssa pct 50 50                   # unit fractions (lib/unit.ssa): 50% of 50% -> 25
 cargo run -- run suite/rational.ssa thirds 7               # rationals (lib/rational.ssa): (7 / 3) * 3 -> 7, exactly
 cargo run -- --scalar=rational run suite/scalar.ssa sweighted 20 80   # one program, any family
+
+# the IEEE-754 oracle (sh tools/get-testfloat.sh once, to build it)
+cargo run -- testfloat                           # every op, f16/f32/f64, nearest even
+cargo run -- --round=down testfloat f32_add      # one op, one mode
+cargo run -- --round=zero run suite/round.ssa sumsq 0x3f800000 0x33800000
 
 # the fuzzer: N programs from a seed; a printed seed reproduces one program
 cargo run -- fuzz 300

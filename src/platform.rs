@@ -122,8 +122,10 @@ impl Platform {
             .into_iter()
             .flat_map(|(name, op)| {
                 [
-                    (name, vec![8, 23], Native::Arith { op, bits: 32 }),
-                    (name, vec![11, 52], Native::Arith { op, bits: 64 }),
+                    // the trailing 0: rounding to nearest even, the
+                    // instructions' mode; other modes stay in the library
+                    (name, vec![8, 23, 0], Native::Arith { op, bits: 32 }),
+                    (name, vec![11, 52, 0], Native::Arith { op, bits: 64 }),
                 ]
             })
             .chain(
@@ -219,6 +221,10 @@ impl Platform {
         if generic == "conv" && f.params.len() == 1 {
             let from = Platform::kind(f, f.ty(f.params[0]))?;
             let to = Platform::kind(f, f.rets[0])?;
+            // a float result is rounded; only nearest even is native
+            if to.is_float() && args.last() != Some(&0) {
+                return None;
+            }
             return self.convs.contains(&(from, to)).then_some(Native::Conv { from, to });
         }
         let op = self

@@ -789,15 +789,39 @@ pub struct Policy {
     pub rational: (u32, u32),
     /// the family a bare `scalar` means: float, fixed, rational, unit, sunit
     pub scalar: &'static str,
+    /// the value of a generic parameter named `round` that nothing binds:
+    /// 0 nearest even, 1 toward zero, 2 down, 3 up, 4 nearest away
+    pub round: i64,
 }
+
+pub const ROUNDS: [&str; 5] = ["even", "zero", "down", "up", "away"];
 
 impl Policy {
     pub fn new(int: Type) -> Result<Policy, String> {
         match int {
             // the float of the same class as the integer: f32 with i32, f64 with i64
-            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16, rational: (16, 16), scalar: "float" }),
-            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32, rational: (32, 32), scalar: "float" }),
+            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16, rational: (16, 16), scalar: "float", round: 0 }),
+            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32, rational: (32, 32), scalar: "float", round: 0 }),
             t => Err(format!("'int' cannot resolve to {}", t.name())),
+        }
+    }
+
+    /// `--round=even|zero|down|up|away` (or the number)
+    pub fn with_round(mut self, arg: &str) -> Result<Policy, String> {
+        self.round = match ROUNDS.iter().position(|r| *r == arg) {
+            Some(i) => i as i64,
+            None => arg.parse::<i64>().ok().filter(|v| (0..5).contains(v)).ok_or_else(|| format!("--round= wants one of {}", ROUNDS.join("|")))?,
+        };
+        Ok(self)
+    }
+
+    /// a generic parameter the policy supplies when nothing binds it —
+    /// unless the generic being instantiated has one of the same name,
+    /// which is then passed on (`sub`'s `add a, nb` rounds as `sub` does)
+    pub fn named(&self, param: &str) -> Option<i64> {
+        match param {
+            "round" => Some(self.round),
+            _ => None,
         }
     }
 
@@ -1641,16 +1665,35 @@ impl Parser {
 
     /// the name of generic(args), instantiating it if new; by name, the
     /// generic must be the only one of that name taking that many arguments
+    /// the value for an unbound generic parameter: the enclosing
+    /// instantiation's parameter of that name, else the policy's
+    fn named(&self, param: &str) -> Option<i64> {
+        self.env.iter().find(|(n, _)| n == param).map(|(_, v)| *v).or_else(|| self.policy.named(param))
+    }
+
     fn request_instance(&mut self, generic: &str, args: Vec<i64>, name: Option<String>) -> Result<String, ParseError> {
+        // `add(8, 23)` for a `fn add(E, M, round)`: the trailing
+        // parameters the policy names are supplied by it
+        let fits = |p: &Parser, g: usize| {
+            let params = &p.generics[g].params;
+            params.len() >= args.len() && params[args.len()..].iter().all(|q| p.named(q).is_some())
+        };
         let candidates: Vec<usize> = (0..self.generics.len())
-            .filter(|&g| self.generics[g].name == generic && self.generics[g].params.len() == args.len())
+            .filter(|&g| self.generics[g].name == generic && fits(self, g))
             .collect();
         if self.generics.iter().all(|g| g.name != generic) {
             return Err(self.err(format!("'{}' is not a generic function", generic)));
         }
         match candidates.len() {
             0 => Err(self.err(format!("no '{}' takes {} parameter(s)", generic, args.len()))),
-            1 => self.request_instance_of(candidates[0], args, name),
+            1 => {
+                let g = candidates[0];
+                let mut args = args;
+                for q in &self.generics[g].params.clone()[args.len()..] {
+                    args.push(self.named(q).unwrap());
+                }
+                self.request_instance_of(g, args, name)
+            }
             _ => Err(self.err(format!(
                 "'{}' has several forms taking {} parameter(s); apply it as an operation so the types choose",
                 generic,
@@ -2898,7 +2941,7 @@ impl Parser {
             let params = self.generics[g].params.clone();
             let args: Option<Vec<i64>> = params
                 .iter()
-                .map(|p| binds.iter().find(|(n, _)| n == p).map(|(_, v)| *v))
+                .map(|p| binds.iter().find(|(n, _)| n == p).map(|(_, v)| *v).or_else(|| self.named(p)))
                 .collect();
             if let Some(args) = args {
                 return self.request_instance_of(g, args, None);
@@ -4630,7 +4673,7 @@ fn twice(x: float) -> float {
         let m = parse_with(src, &Policy::new(Type::I64).unwrap().with_float(5, 10)).expect("parse");
         let f = m.func("twice").unwrap();
         assert_eq!(f.tyname(f.rets[0]), "float(5, 10)");
-        assert!(m.funcs.iter().any(|f| f.name == "add_5_10"));
+        assert!(m.funcs.iter().any(|f| f.name == "add_5_10")); // this source's own add(E, M)
         // a parametric type with no policy default still needs its arguments
         assert!(parse("type w(N) = u(N)\nfn f(a: w) {\n    ret\n}").is_err());
         assert_eq!(Policy::float_from_arg("bf16"), Some((8, 7)));

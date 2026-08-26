@@ -2095,7 +2095,7 @@ entry:
             let at = c.funcs[n];
             offs.iter().find(|&&o| o > at).map(|&o| o - at).unwrap_or(c.code.len() - at)
         };
-        assert!(size(&hard, "add_8_23") < size(&soft, "add_8_23") / 4, "{} vs {}", size(&hard, "add_8_23"), size(&soft, "add_8_23"));
+        assert!(size(&hard, "add_8_23_0") < size(&soft, "add_8_23_0") / 4, "{} vs {}", size(&hard, "add_8_23_0"), size(&soft, "add_8_23_0"));
         for platform in [Platform::none(), Platform::arm64()] {
             softfloat_check(&jit_on(src, &platform));
         }
@@ -2509,7 +2509,7 @@ entry:
             crate::ssa::Inst::Call { callee, .. } => Some(callee.clone()),
             _ => None,
         });
-        assert_eq!(callee.as_deref(), Some("add_5_10"));
+        assert_eq!(callee.as_deref(), Some("add_5_10_0"));
         // and both are right: f32 against the FPU, f16 against the reference
         let j = jit::JitCode::new(&compiled).expect("jit");
         for (a, b) in [(1.0f32, 2.0f32), (0.1, 0.2), (1.0, 1e-8), (3.0, -1.0), (f32::MAX, f32::MAX)] {

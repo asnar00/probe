@@ -22,7 +22,7 @@ fn fnan(E, M)() -> float(E, M) {
     ret r
 }
 
-fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+fn add(E, M, round)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     ma: u(M), ea: u(E), sa: u1 = unpack a
     mb: u(M), eb: u(E), sb: u1 = unpack b
     emax: u(E) = const (1 << E) - 1
@@ -65,7 +65,13 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     b_zero: u1 = and eb0, mb0
     if a_zero {
         if b_zero {
-            sz: u1 = and sa, sb
+            ; zeros of one sign keep it; +0 + -0 is +0, or -0 rounding down
+            mode0: u3 = const round
+            zneg: u1 = cmp.eq mode0, 2
+            same: u1 = and sa, sb
+            opp0: u1 = xor sa, sb
+            oppd: u1 = and opp0, zneg
+            sz: u1 = or same, oppd
             z: float(E, M) = pack 0, 0, sz
             ret z
         }
@@ -148,7 +154,10 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     }
     sum0: u1 = cmp.eq sum, 0
     if sum0 {
-        z2: float(E, M) = pack 0, 0, 0
+        ; an exact zero sum is +0, or -0 when rounding down
+        mode1: u3 = const round
+        zneg1: u1 = cmp.eq mode1, 2
+        z2: float(E, M) = pack 0, 0, zneg1
         ret z2
     }
 
@@ -182,48 +191,14 @@ fn add(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
         yield xl2, fl2
     }
 
-    ; --- round to nearest even on the three guard bits ---
-    rbits: u(M + 5) = and nf, 7
-    mant0: u(M + 5) = shr nf, 3
-    gt: u1 = cmp.gt rbits, 4
-    eq4: u1 = cmp.eq rbits, 4
-    odd_w: u(M + 5) = and mant0, 1
-    odd: u1 = cmp.ne odd_w, 0
-    tie_up: u1 = and eq4, odd
-    round_up: u1 = or gt, tie_up
-    upw: u(M + 5) = conv round_up
-    mant1: u(M + 5) = add mant0, upw
-    ovf_bit: u(M + 5) = const 1 << (M + 1)
-    o: u(M + 5) = and mant1, ovf_bit
-    has_o: u1 = cmp.ne o, 0
-    fx: u(E), fm: u(M + 5) = if has_o {
-        m2: u(M + 5) = shr mant1, 1
-        x3: u(E) = add nx, 1
-        yield x3, m2
-    } else {
-        yield nx, mant1
-    }
-
-    ; --- encode: normal when the hidden bit is up, else subnormal ---
-    hid: u(M + 5) = and fm, hidden
-    is_norm: u1 = cmp.ne hid, 0
-    ex: u(E) = if is_norm {
-        yield fx
-    } else {
-        yield 0
-    }
-    inf: u1 = cmp.ge ex, emax
-    if inf {
-        i: float(E, M) = pack 0, emax, sh
-        ret i
-    }
-    mfield: u(M) = conv fm
-    r: float(E, M) = pack mfield, ex, sh
+    ; --- round and encode ---
+    nx32: i32 = conv nx
+    r: float(E, M) = fpack(E, M, round)(sh, nx32, nf)
     ret r
 }
 
 ; --- subtraction is addition of the negation ---
-fn sub(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+fn sub(E, M, round)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     sb: u1 = get b, sign
     nsb: u1 = xor sb, 1
     nb: float(E, M) = set b, sign, nsb
@@ -263,7 +238,7 @@ fn fnorm(E, M)(m: u(M), e: u(E)) -> (i32, u(M + 5)) {
 ; is bit M + 3 (bit M + 4 a carry; bits 0-2 guard, sticky folded into bit
 ; 0): shift subnormals down with sticky, round to nearest even, overflow
 ; to infinity
-fn fpack(E, M)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
+fn fpack(E, M, round)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
     hidden: u(M + 5) = const 1 << M
     carry_bit: u(M + 5) = const 1 << (M + 4)
     emax: u(E) = const (1 << E) - 1
@@ -305,15 +280,36 @@ fn fpack(E, M)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
     } else {
         yield x1, f1
     }
-    ; round to nearest even on the three guard bits
+    ; round on the three guard bits, by mode: 0 nearest even, 1 toward
+    ; zero, 2 down, 3 up, 4 nearest away. The mode is a width parameter,
+    ; so all but one of these tests fold away in every instance
+    mode: u3 = const round
     rbits: u(M + 5) = and f2, 7
     mant0: u(M + 5) = shr f2, 3
+    inexact: u1 = cmp.ne rbits, 0
     gt: u1 = cmp.gt rbits, 4
     eq4: u1 = cmp.eq rbits, 4
     odd_w: u(M + 5) = and mant0, 1
     odd: u1 = cmp.ne odd_w, 0
     tie_up: u1 = and eq4, odd
-    round_up: u1 = or gt, tie_up
+    even_up: u1 = or gt, tie_up
+    neg: u1 = cmp.ne s, 0
+    pos: u1 = cmp.eq s, 0
+    down_up: u1 = and inexact, neg
+    up_up: u1 = and inexact, pos
+    is_even: u1 = cmp.eq mode, 0
+    is_down: u1 = cmp.eq mode, 2
+    is_up: u1 = cmp.eq mode, 3
+    is_away: u1 = cmp.eq mode, 4
+    r_even: u1 = and is_even, even_up
+    r_down: u1 = and is_down, down_up
+    r_up: u1 = and is_up, up_up
+    r_away: u1 = and is_away, eq4
+    r_away2: u1 = or r_away, gt
+    r_away3: u1 = and is_away, r_away2
+    r01: u1 = or r_even, r_down
+    r02: u1 = or r01, r_up
+    round_up: u1 = or r02, r_away3
     upw: u(M + 5) = conv round_up
     mant1: u(M + 5) = add mant0, upw
     ovf_bit: u(M + 5) = const 1 << (M + 1)
@@ -333,8 +329,22 @@ fn fpack(E, M)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
     inf: u1 = cmp.ge x3, emax32
     big: u1 = and is_norm, inf
     if big {
-        i: float(E, M) = pack 0, emax, s
-        ret i
+        ; overflow goes to infinity, except that the modes that never
+        ; round away from zero on this side stop at the largest finite
+        to_inf0: u1 = or is_even, is_away
+        to_inf1: u1 = or to_inf0, r_up
+        to_inf2: u1 = and is_up, pos
+        to_inf3: u1 = and is_down, neg
+        to_inf4: u1 = or to_inf2, to_inf3
+        to_inf: u1 = or to_inf1, to_inf4
+        if to_inf {
+            i: float(E, M) = pack 0, emax, s
+            ret i
+        }
+        emax1: u(E) = const (1 << E) - 2
+        mmax: u(M) = const (1 << M) - 1
+        mx: float(E, M) = pack mmax, emax1, s
+        ret mx
     }
     ex: u(E) = if is_norm {
         xe: u(E) = conv x3
@@ -351,7 +361,7 @@ fn fpack(E, M)(s: u1, x0: i32, f0: u(M + 5)) -> float(E, M) {
 ; The product of two (M + 1)-bit significands has 2M + 2 bits, more than
 ; a 64-bit value holds for f64; it is built from halves of k = ceil((M+1)/2)
 ; bits, and only its top M + 5 bits plus a sticky are ever formed.
-fn mul(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+fn mul(E, M, round)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     ma: u(M), ea: u(E), sa: u1 = unpack a
     mb: u(M), eb: u(E), sb: u1 = unpack b
     emax: u(E) = const (1 << E) - 1
@@ -430,13 +440,13 @@ fn mul(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     bias32: i32 = const (1 << (E - 1)) - 1
     x1: i32 = add xa, xb
     x: i32 = sub x1, bias32
-    res: float(E, M) = fpack(E, M)(s, x, r)
+    res: float(E, M) = fpack(E, M, round)(s, x, r)
     ret res
 }
 
 ; --- division: restoring long division, one quotient bit per step, so
 ; nothing wider than M + 5 bits is ever needed ---
-fn div(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+fn div(E, M, round)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     ma: u(M), ea: u(E), sa: u1 = unpack a
     mb: u(M), eb: u(E), sb: u1 = unpack b
     emax: u(E) = const (1 << E) - 1
@@ -511,13 +521,13 @@ fn div(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     x1: i32 = sub xa, xb
     x2: i32 = add x1, bias32
     x: i32 = sub x2, 1
-    res: float(E, M) = fpack(E, M)(s, x, f)
+    res: float(E, M) = fpack(E, M, round)(s, x, f)
     ret res
 }
 
 ; --- square root: digit by digit, two bits of the radicand per step, so
 ; the remainder never needs more than M + 8 bits ---
-fn sqrt(E, M)(a: float(E, M)) -> float(E, M) {
+fn sqrt(E, M, round)(a: float(E, M)) -> float(E, M) {
     ma: u(M), ea: u(E), sa: u1 = unpack a
     emax: u(E) = const (1 << E) - 1
     a_top: u1 = cmp.eq ea, emax
@@ -585,7 +595,7 @@ fn sqrt(E, M)(a: float(E, M)) -> float(E, M) {
     stw: u(M + 8) = conv st
     rootst: u(M + 8) = or root, stw
     res_f: u(M + 5) = conv rootst
-    res: float(E, M) = fpack(E, M)(0, x, res_f)
+    res: float(E, M) = fpack(E, M, round)(0, x, res_f)
     ret res
 }
 
@@ -594,7 +604,7 @@ fn sqrt(E, M)(a: float(E, M)) -> float(E, M) {
 ; float -> float: re-express the significand at the target's precision
 ; (exactly when widening, with a sticky when narrowing) and let fpack
 ; round, saturate, and handle the target's subnormal range
-fn conv(E, M, F, N)(a: float(E, M)) -> float(F, N) {
+fn conv(E, M, F, N, round)(a: float(E, M)) -> float(F, N) {
     ma: u(M), ea: u(E), sa: u1 = unpack a
     emax: u(E) = const (1 << E) - 1
     emax_n: u(F) = const (1 << F) - 1
@@ -632,13 +642,13 @@ fn conv(E, M, F, N)(a: float(E, M)) -> float(F, N) {
     bias_d: i32 = const (1 << (F - 1)) - 1
     e: i32 = sub x, bias_s
     xd: i32 = add e, bias_d
-    r: float(F, N) = fpack(F, N)(sa, xd, tn)
+    r: float(F, N) = fpack(F, N, round)(sa, xd, tn)
     ret r
 }
 
 ; an integer magnitude and sign as a float: find the top bit, place the
 ; units bit at M + 3 with a sticky, and let fpack round
-fn fint(E, M)(s: u1, mag: u64) -> float(E, M) {
+fn fint(E, M, round)(s: u1, mag: u64) -> float(E, M) {
     is0: u1 = cmp.eq mag, 0
     if is0 {
         z: float(E, M) = pack 0, 0, s
@@ -675,11 +685,11 @@ fn fint(E, M)(s: u1, mag: u64) -> float(E, M) {
     tn: u(M + 5) = conv t
     bias32: i32 = const (1 << (E - 1)) - 1
     x: i32 = add p, bias32
-    r: float(E, M) = fpack(E, M)(s, x, tn)
+    r: float(E, M) = fpack(E, M, round)(s, x, tn)
     ret r
 }
 
-fn conv(W, E, M)(a: i(W)) -> float(E, M) {
+fn conv(W, E, M, round)(a: i(W)) -> float(E, M) {
     neg: u1 = cmp.lt a, 0
     au: u(W) = cast a
     mag: u(W) = if neg {
@@ -689,13 +699,13 @@ fn conv(W, E, M)(a: i(W)) -> float(E, M) {
         yield au
     }
     mag64: u64 = conv mag
-    r: float(E, M) = fint(E, M)(neg, mag64)
+    r: float(E, M) = fint(E, M, round)(neg, mag64)
     ret r
 }
 
-fn conv(W, E, M)(a: u(W)) -> float(E, M) {
+fn conv(W, E, M, round)(a: u(W)) -> float(E, M) {
     mag64: u64 = conv a
-    r: float(E, M) = fint(E, M)(0, mag64)
+    r: float(E, M) = fint(E, M, round)(0, mag64)
     ret r
 }
 
@@ -966,7 +976,7 @@ fn max(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
 ; accumulator with eight guard bits below the product, so any alignment
 ; shift of eight or less is exact and cancellation loses nothing; beyond
 ; that the shifted operand is far smaller and a sticky suffices.
-fn fma(E, M)(a: float(E, M), b: float(E, M), c: float(E, M)) -> float(E, M) {
+fn fma(E, M, round)(a: float(E, M), b: float(E, M), c: float(E, M)) -> float(E, M) {
     ma: u(M), ea: u(E), sa: u1 = unpack a
     mb: u(M), eb: u(E), sb: u1 = unpack b
     mc: u(M), ec: u(E), sc: u1 = unpack c
@@ -1019,7 +1029,12 @@ fn fma(E, M)(a: float(E, M), b: float(E, M), c: float(E, M)) -> float(E, M) {
     p_zero: u1 = or a_zero, b_zero
     if p_zero {
         if c_zero {
-            sz: u1 = and sp, sc
+            mode0: u3 = const round
+            zneg: u1 = cmp.eq mode0, 2
+            same0: u1 = and sp, sc
+            opp0: u1 = xor sp, sc
+            oppd: u1 = and opp0, zneg
+            sz: u1 = or same0, oppd
             z: float(E, M) = pack 0, 0, sz
             ret z
         }
@@ -1103,7 +1118,9 @@ fn fma(E, M)(a: float(E, M), b: float(E, M), c: float(E, M)) -> float(E, M) {
     any: u64 = or rh, rl
     is0: u1 = cmp.eq any, 0
     if is0 {
-        z2: float(E, M) = pack 0, 0, 0
+        mode1: u3 = const round
+        zneg1: u1 = cmp.eq mode1, 2
+        z2: float(E, M) = pack 0, 0, zneg1
         ret z2
     }
     ; normalize: the top bit to position M + 3, with a sticky
@@ -1128,6 +1145,6 @@ fn fma(E, M)(a: float(E, M), b: float(E, M), c: float(E, M)) -> float(E, M) {
     units: i32 = const 2 * M + 8
     x1: i32 = add x0, t
     x: i32 = sub x1, units
-    r: float(E, M) = fpack(E, M)(rs, x, f)
+    r: float(E, M) = fpack(E, M, round)(rs, x, f)
     ret r
 }
