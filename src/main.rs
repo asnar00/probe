@@ -2,6 +2,7 @@ mod arena;
 mod emit;
 mod emit_rv;
 mod emit_wasm;
+mod fuzz;
 mod learn;
 mod opt;
 mod platform;
@@ -110,6 +111,22 @@ fn main() -> ExitCode {
                 Err(_) => fail("function arguments must be integers"),
             }
         }
+        Some("fuzz") => {
+            let count = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(20);
+            let seed = args.iter().find_map(|a| a.strip_prefix("--seed=")).and_then(|s| u64::from_str_radix(s, 16).ok()).unwrap_or(1);
+            let slow = args.iter().any(|a| a == "--slow");
+            match fuzz::fuzz(count, seed, slow) {
+                Ok(0) => {
+                    println!("{} programs, every configuration agreed", count);
+                    ExitCode::SUCCESS
+                }
+                Ok(n) => {
+                    println!("{} of {} programs disagreed somewhere; see target/fuzz/", n, count);
+                    ExitCode::FAILURE
+                }
+                Err(e) => fail(&e),
+            }
+        }
         Some("test") => {
             let rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
             let backend = if rest.contains(&"wasm") {
@@ -169,6 +186,7 @@ fn main() -> ExitCode {
             eprintln!("       probe run <file.ssa> <function> [args...]");
             eprintln!("       probe tiers <file.ssa>");
             eprintln!("       probe live <file.ssa> <function> [args...]");
+            eprintln!("       probe fuzz [count] [--seed=hex] [--slow]");
             eprintln!("       (-O<n> selects the optimization level on any command;");
             eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy,");
             eprintln!("        --float=f16|bf16|f32|f64|E,M the abstract 'float' one,");

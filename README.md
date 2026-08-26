@@ -86,7 +86,14 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   slot with slack, calls routed through counting trampolines, so an edited
   function recompiles in place and a hot one is promoted through the full
   pipeline without disturbing its neighbours.
-- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 448
+- **A fuzzer** (`src/fuzz.rs`): random well-formed programs — every
+  integer width, packs, floats through the library and the platform,
+  value-yielding `if`s, bounded loops, calls — with their results at
+  native `-O0` and the platform off as the reference; every optimization
+  level, the platform, wasm, and (with `--slow`) both qemu machines must
+  agree. A disagreement is kept as a suite file that reproduces it. Its
+  first run found wasm trapping on `MIN div -1`, which the IR says wraps.
+- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 455
   cases with expectations embedded as `;! gcd 48 36 -> 12` directives, run
   identically against every backend — including arm64 under
   qemu-system-aarch64 as an independent second referee for the same bytes
@@ -143,6 +150,10 @@ cargo run -- run suite/fixed.ssa divf 7 2                   # fixed point (lib/f
 cargo run -- run suite/unit.ssa pct 50 50                   # unit fractions (lib/unit.ssa): 50% of 50% -> 25
 cargo run -- run suite/rational.ssa thirds 7               # rationals (lib/rational.ssa): (7 / 3) * 3 -> 7, exactly
 cargo run -- --scalar=rational run suite/scalar.ssa sweighted 20 80   # one program, any family
+
+# the fuzzer: N programs from a seed; a printed seed reproduces one program
+cargo run -- fuzz 300
+cargo run -- fuzz 1 --seed=65a47abe4364edd2 --slow   # the qemu machines too
 
 # the incremental compiler. Edit the file while this runs — changed
 # functions recompile in place at level 0, and functions that get hot

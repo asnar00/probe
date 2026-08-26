@@ -80,3 +80,13 @@ entry:
     r: i64 = shr a, b
     ret r
 }
+
+; MIN div -1 wraps to MIN on every target (wasm needs a guard: it traps)
+;! divmin -9223372036854775808 -1 -> -9223372036854775808
+;! divmin -9223372036854775808 1 -> -9223372036854775808
+;! divmin 100 -1 -> -100
+;! divmin 100 7 -> 14
+fn divmin(a: i64, b: i64) -> i64 {
+    q: i64 = div a, b
+    ret q
+}

@@ -154,7 +154,8 @@ v: i5 = shr a, b        ; arithmetic (sign-fill) for iN, logical for uN
 ```
 
 Division by zero is target-dependent (wasm traps, the CPUs return 0);
-`MIN div -1` wraps to `MIN` at every width.
+`MIN div -1` wraps to `MIN` at every width (the wasm emitter guards its
+trapping `div_s` to make that so).
 
 ### Comparison
 

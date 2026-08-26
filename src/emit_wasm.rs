@@ -598,6 +598,34 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             e.get(*lhs)?;
             // shifts by >= n are unspecified for narrow types: the container
             // shift, then re-normalize what can carry out
+            if *op == BinOp::Div && r.signed() && full {
+                // wasm traps on MIN / -1 where the IR (and the CPUs) wrap
+                // to MIN: divide by rhs + 2m instead, m = (rhs == -1), and
+                // conditionally negate the quotient, (q ^ -m) + m
+                let p = pfx(r);
+                let m = |e: &mut WEmit| -> Result<(), String> {
+                    e.get(*rhs)?;
+                    e.konst(r, -1)?;
+                    e.op(&format!("{}.eq", p), None)?;
+                    if c == 64 {
+                        e.op("i64.extend_i32_u", None)?;
+                    }
+                    Ok(())
+                };
+                m(e)?;
+                e.konst(r, 2)?;
+                e.op(&format!("{}.mul", p), None)?;
+                e.get(*rhs)?;
+                e.op(&format!("{}.add", p), None)?;
+                e.op(&binop_key(*op, r), None)?;
+                e.konst(r, 0)?;
+                m(e)?;
+                e.op(&format!("{}.sub", p), None)?;
+                e.op(&format!("{}.xor", p), None)?;
+                m(e)?;
+                e.op(&format!("{}.add", p), None)?;
+                return e.set(*dst);
+            }
             e.get(*rhs)?;
             e.op(&binop_key(*op, r), None)?;
             let carries = matches!(op, BinOp::IAdd | BinOp::ISub | BinOp::IMul | BinOp::Shl)

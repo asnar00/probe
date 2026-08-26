@@ -49,3 +49,12 @@ entry:
     r: u32 = mul a, b
     ret r
 }
+
+;! divmin32 -2147483648 -1 -> -2147483648
+;! divmin32 -2147483648 3 -> -715827882
+;! divmin32 -7 -1 -> 7
+fn divmin32(a: i32, b: i32) -> i64 {
+    q: i32 = div a, b
+    r: i64 = conv q
+    ret r
+}
