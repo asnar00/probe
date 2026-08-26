@@ -450,6 +450,12 @@ is abstract when the policy has arguments for it). So `fn half(x: float)
 library's `div(E, M)` for the chosen width, and lands on the platform's
 `fdiv` where there is one.
 
+`rational(N, D)` (`lib/rational.ssa`) is `numerator / denominator`, an
+`i(N)` over a `u(D)` kept reduced, with 128-bit intermediates so N and
+D go to 64; `lib/time.ssa` builds on `rational(64, 64)`: `type time`,
+`seconds`/`millis`/`micros`/`nanos`/`period` in, `to_*` out, and every
+operation the rational library's — exact, so nothing drifts.
+
 `fixed` is the same again for the library's `fixed(I, F)` — a
 two's-complement integer of I + F bits with F fraction bits, in
 `lib/fixed.ssa` — resolved to half the `int` width each side

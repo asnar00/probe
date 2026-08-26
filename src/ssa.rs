@@ -1367,7 +1367,11 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     // values wider than a word: checked as written, then lowered to words
     // so that no backend ever sees one
     if crate::wide::has_wide(&module) {
-        if let Err(errs) = verify(&module) {
+        // checked with the policy's types in place (abstract ones are
+        // never wide, so the lowering itself works on the module as is)
+        let mut checked = module.clone();
+        resolve_types(&mut checked, policy);
+        if let Err(errs) = verify(&checked) {
             return Err(ParseError { line: 0, msg: errs.join("; ") });
         }
         crate::wide::lower(&mut module).map_err(|m| ParseError { line: 0, msg: m })?;

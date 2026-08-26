@@ -1,0 +1,53 @@
+; probe's time: an exact number of seconds, as rational(64, 64) — so a
+; sample period at 44100 Hz times 44100 is exactly one second, thirds
+; and fifths add exactly, and a value converts to any unit without
+; drift. Every operation is the rational library's; this file only
+; names the type and gives it units.
+type time = rational(64, 64)
+
+fn seconds(n: i64) -> time {
+    t: time = conv n
+    ret t
+}
+; n / 10^k, exactly
+fn millis(n: i64) -> time {
+    t: time = conv n
+    r: time = div t, 1000
+    ret r
+}
+fn micros(n: i64) -> time {
+    t: time = conv n
+    r: time = div t, 1000000
+    ret r
+}
+fn nanos(n: i64) -> time {
+    t: time = conv n
+    r: time = div t, 1000000000
+    ret r
+}
+; the period of a frequency in hertz: 1 / n
+fn period(hz: i64) -> time {
+    f: time = conv hz
+    r: time = div 1, f
+    ret r
+}
+; to integer units, toward zero
+fn to_seconds(t: time) -> i64 {
+    r: i64 = conv t
+    ret r
+}
+fn to_millis(t: time) -> i64 {
+    m: time = mul t, 1000
+    r: i64 = conv m
+    ret r
+}
+fn to_micros(t: time) -> i64 {
+    m: time = mul t, 1000000
+    r: i64 = conv m
+    ret r
+}
+fn to_nanos(t: time) -> i64 {
+    m: time = mul t, 1000000000
+    r: i64 = conv m
+    ret r
+}

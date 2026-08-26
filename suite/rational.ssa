@@ -115,3 +115,53 @@ fn mean(a: i32, b: i32) -> i32 {
     r: i32 = conv c
     ret r
 }
+
+; --- rational(64, 64): products and sums whose 64-bit intermediates
+; would overflow; the library works in 128 bits. Results as (numerator,
+; denominator), the two fields of the reduced value. ---
+;! r64mul 1000000007 1000000009 1000000021 1000000033 -> 1000000028000000147, 1000000042000000297
+;! r64add 1000000007 1000000009 1000000021 1000000033 -> 2000000070000000420, 1000000042000000297
+;! r64sub 1000000007 1000000009 1000000021 1000000033 -> 10000000042, 1000000042000000297
+;! r64div 1000000007 1000000009 1000000021 1000000033 -> 1000000040000000231, 1000000030000000189
+;! r64add 1099511627777 3 2199023255555 5 -> 2418925581110, 3
+;! r64sub 1099511627777 3 2199023255555 5 -> -219902325556, 3
+;! r64div 1099511627777 3 2199023255555 5 -> 1099511627777, 1319413953333
+;! r64div -4611686018427387904 3 4611686018427387904 5 -> -5, 3
+type r64 = rational(64, 64)
+fn r64mk(a: i64, b: u64) -> r64 {
+    n: i64, d: u64 = if 1 {
+        yield a, b
+    } else {
+        yield a, b
+    }
+    p: r64 = pack n, d
+    ret p
+}
+fn r64mul(a: i64, b: u64, c: i64, e: u64) -> (i64, u64) {
+    x: r64 = r64mk(a, b)
+    y: r64 = r64mk(c, e)
+    r: r64 = mul x, y
+    n: i64, d: u64 = unpack r
+    ret n, d
+}
+fn r64add(a: i64, b: u64, c: i64, e: u64) -> (i64, u64) {
+    x: r64 = r64mk(a, b)
+    y: r64 = r64mk(c, e)
+    r: r64 = add x, y
+    n: i64, d: u64 = unpack r
+    ret n, d
+}
+fn r64sub(a: i64, b: u64, c: i64, e: u64) -> (i64, u64) {
+    x: r64 = r64mk(a, b)
+    y: r64 = r64mk(c, e)
+    r: r64 = sub x, y
+    n: i64, d: u64 = unpack r
+    ret n, d
+}
+fn r64div(a: i64, b: u64, c: i64, e: u64) -> (i64, u64) {
+    x: r64 = r64mk(a, b)
+    y: r64 = r64mk(c, e)
+    r: r64 = div x, y
+    n: i64, d: u64 = unpack r
+    ret n, d
+}

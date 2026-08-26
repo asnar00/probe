@@ -48,7 +48,9 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   f64|E,M`, `--fixed=I,F`, `--unit=N`, `--sunit=N`, `--rational=N,D`, and `--round=` for the mode) to
   the libraries' `float(E, M)`, `fixed(I, F)`, `unit(N)`, `sunit(N)`,
   `rational(N, D)`; and `scalar`, which is whichever of those families
-  the policy names (`--scalar=...`).
+  the policy names (`--scalar=...`). `lib/time.ssa` is a `rational(64,
+  64)` of seconds with units — a sample period at 44100 Hz times 44100
+  is exactly one second.
 - **Two learners**:
   - `src/learn.rs` for fixed-width register ISAs: one-hot probes XORed
     against a baseline map each operand bit to its encoding bit — which
@@ -165,6 +167,7 @@ cargo run -- --float=f16 run suite/afloat.ssa hyp 3 4      # the same program, a
 cargo run -- run suite/fixed.ssa divf 7 2                   # fixed point (lib/fixed.ssa): 7 / 2 -> 3
 cargo run -- run suite/unit.ssa pct 50 50                   # unit fractions (lib/unit.ssa): 50% of 50% -> 25
 cargo run -- run suite/rational.ssa thirds 7               # rationals (lib/rational.ssa): (7 / 3) * 3 -> 7, exactly
+cargo run -- run suite/time.ssa third_plus_sixth_ms           # lib/time.ssa: 1/3 s + 1/6 s, exactly, in ms -> 500
 cargo run -- run suite/wide.ssa mul 0 1 0 1                # u128: (1 << 64) * (1 << 64) -> 0, 0 (mod 2^128); values are words, low first
 cargo run -- run suite/f128.ssa fdiv128 0 0x3fff000000000000 0 0x4000800000000000   # binary128 1 / 3, the same library body at 113 bits
 cargo run -- --scalar=rational run suite/scalar.ssa sweighted 20 80   # one program, any family
