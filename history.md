@@ -6,6 +6,29 @@ has the full story for any of them.
 
 ---
 
+### float registers, and rules as single instructions — `3325600` · 2026-08-26
+
+The first rule files spelled every float op with moves around it —
+`fmov s0, a` / `fadd s0, s0, s1` / `fmov r, s0` — because every value
+lived in an integer register. Now a platform file declares where a
+type's values live and maps one instruction to one operation:
+
+```
+class s = f32
+fadd {s}, {s}, {s} = add(f32, f32) -> f32
+```
+
+The allocator has register classes (a linear scan per file, spill
+slots shared), the three emitters keep float values in float registers
+(arm64 `v8..v15`, riscv64 `fs0..fs11`, wasm `f32`/`f64` locals), and a
+chain of float operations compiles to just the instructions; a move
+between files happens only where a value really changes class. Types
+in rule files are written by their program names — `f32`, not
+`float(8, 23)`. Composite rules keep the indented form (`fcmp a, b` /
+`cset r, lo`).
+
+---
+
 ### binary128 from the same library — `85be481` · 2026-08-26
 
 `type f128 = float(15, 112)` and every float operation works, from the
