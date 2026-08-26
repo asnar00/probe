@@ -21,6 +21,8 @@ fn main() -> ExitCode {
     let mut int_override: Option<ssa::Type> = None;
     let mut float_override: Option<(u32, u32)> = None;
     let mut fixed_override: Option<(u32, u32)> = None;
+    let mut unit_override: Option<u32> = None;
+    let mut sunit_override: Option<u32> = None;
     args.retain(|a| {
         if let Some(l) = a.strip_prefix("-O") {
             level = l.parse().unwrap_or(opt::MAX_LEVEL);
@@ -33,6 +35,12 @@ fn main() -> ExitCode {
             false
         } else if let Some(t) = a.strip_prefix("--fixed=") {
             fixed_override = ssa::Policy::fixed_from_arg(t);
+            false
+        } else if let Some(t) = a.strip_prefix("--unit=") {
+            unit_override = t.parse().ok();
+            false
+        } else if let Some(t) = a.strip_prefix("--sunit=") {
+            sunit_override = t.parse().ok();
             false
         } else if a == "--soft" {
             platform::set_soft(true);
@@ -52,6 +60,12 @@ fn main() -> ExitCode {
     }
     if let Some((i, f)) = fixed_override {
         policy = policy.with_fixed(i, f);
+    }
+    if let Some(n) = unit_override {
+        policy = policy.with_unit(n);
+    }
+    if let Some(n) = sunit_override {
+        policy = policy.with_sunit(n);
     }
     match args.first().map(String::as_str) {
         Some("parse") if args.len() >= 2 => cmd_parse(&args[1], policy),
@@ -95,7 +109,25 @@ fn main() -> ExitCode {
                 .find(|a| **a != "wasm" && **a != "riscv" && **a != "arm-qemu")
                 .copied()
                 .unwrap_or("suite");
-            match suite::run_dir_at(dir, backend, level, int_override, float_override, fixed_override) {
+            match suite::run_dir_at(dir, backend, level, &|p| {
+                let mut p = p;
+                if let Some(t) = int_override {
+                    p.int = t;
+                }
+                if let Some((e, m)) = float_override {
+                    p = p.with_float(e, m);
+                }
+                if let Some((i, f)) = fixed_override {
+                    p = p.with_fixed(i, f);
+                }
+                if let Some(n) = unit_override {
+                    p = p.with_unit(n);
+                }
+                if let Some(n) = sunit_override {
+                    p = p.with_sunit(n);
+                }
+                p
+            }) {
                 Ok(report) => {
                     print!("{}", report.log);
                     if report.failed == 0 {
@@ -117,7 +149,7 @@ fn main() -> ExitCode {
             eprintln!("       (-O<n> selects the optimization level on any command;");
             eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy,");
             eprintln!("        --float=f16|bf16|f32|f64|E,M the abstract 'float' one,");
-            eprintln!("        --fixed=I,F the abstract 'fixed' one;");
+            eprintln!("        --fixed=I,F the abstract 'fixed' one, --unit=N and --sunit=N the unit ones;");
             eprintln!("        --soft compiles every library call as a call, ignoring the");
             eprintln!("        platform's native instructions)");
             ExitCode::FAILURE

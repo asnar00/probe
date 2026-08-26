@@ -46,7 +46,7 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `name`, `name(8, 23)` | a declared type, plain or instantiated with widths (see *Type declarations*) |
 | `pack { ... }` | bitfields packed into at most 64 bits (see *Packs*) |
 | `i(expr)`, `u(expr)` | an integer whose width is an expression — inside type declarations |
-| `int`, `uint`, `float`, `fixed` | abstract numbers — resolved to a concrete width by the target's replacement policy (see *Abstract numeric types*) |
+| `int`, `uint`, `float`, `fixed`, `unit`, `sunit` | abstract numbers — resolved to a concrete width by the target's replacement policy (see *Abstract numeric types*) |
 
 Any width works anywhere a value lives — registers, block parameters,
 calls, packs. Memory is the exception: only 8-, 16-, 32-, and 64-bit types
@@ -296,9 +296,10 @@ templates — like structured control flow, generics are sugar the parser
 lowers. A pack literal `const` is its bit pattern.
 
 **The prelude.** Every program compiled by probe gets `lib/*.ssa`
-appended (the float library is `lib/float.ssa`, fixed point
-`lib/fixed.ssa`), so `float(E, M)`, `fixed(I, F)`, `f32`, `f64`, `f16`,
-`bf16`, and the operations on them are always in scope; a file may
+appended (floats `lib/float.ssa`, fixed point `lib/fixed.ssa`, unit
+fractions `lib/unit.ssa`, two-word integer helpers `lib/wide.ssa`), so
+`float(E, M)`, `fixed(I, F)`, `unit(N)`, `sunit(N)`, `f32`, `f64`,
+`f16`, `bf16`, and the operations on them are always in scope; a file may
 re-declare a type identically, and may name a type the prelude declares
 after it. An explicit instantiation by name (`add(8, 23)`) needs the
 name to be unambiguous — `add` has a float and a fixed form, so apply
@@ -380,6 +381,13 @@ two's-complement integer of I + F bits with F fraction bits, in
 (`fixed(32, 32)` with i64, `fixed(16, 16)` with i32) or `--fixed=I,F`.
 Its operations are integer instructions all the way down; `conv`
 reaches it from integers and floats, and back.
+
+`unit` and `sunit` are fractions of one (`lib/unit.ssa`): `unit(N)` is
+0.0 at 0 and 1.0 at 2^N − 1, `sunit(N)` is −1.0 at −(2^(N−1) − 1) and
+1.0 at 2^(N−1) − 1. The scale is not a power of two, so a product is
+`(a·b + half) / max`, rounded; sums saturate at the ends of the range;
+`conv` goes to and from floats. Bare, they take the policy's N (half the
+`int` width; `--unit=N`, `--sunit=N`).
 Because types live on variables, resolution is a single rewrite of the
 value tables before verification; opcodes, instructions, and everything
 downstream see only concrete types.

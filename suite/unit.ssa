@@ -1,0 +1,164 @@
+; the unit types (lib/unit.ssa): unit(8) and sunit(8) by their bit
+; patterns, and programs over the abstract unit/sunit that are
+; policy-portable (percentages in and out, results exact at 8 bits and up)
+;! umul8 128 128 -> 64
+;! umul8 255 255 -> 255
+;! umul8 255 128 -> 128
+;! umul8 51 51 -> 10
+;! uadd8 200 100 -> 255
+;! uadd8 100 100 -> 200
+;! usub8 100 200 -> 0
+;! usub8 200 100 -> 100
+;! udiv8 128 255 -> 128
+;! udiv8 255 128 -> 255
+;! udiv8 0 0 -> 0
+;! udiv8 5 0 -> 255
+;! udiv8 51 204 -> 64
+;! ufromf32 1056964608 -> 128
+;! ufromf32 1065353216 -> 255
+;! ufromf32 1073741824 -> 255
+;! ufromf32 3212836864 -> 0
+;! ufromf32 1045220557 -> 51
+;! utof32 255 -> 1065353216
+;! utof32 51 -> 1045220557
+;! utof32 0 -> 0
+;! smul8 64 64 -> 32
+;! smul8 129 127 -> 129
+;! smul8 128 128 -> 127
+;! smul8 192 64 -> 224
+;! sadd8 100 100 -> 127
+;! sadd8 156 156 -> 129
+;! sneg8 128 -> 127
+;! sabs8 129 -> 127
+;! sdiv8 64 127 -> 64
+;! sdiv8 192 127 -> 192
+;! sdiv8 127 64 -> 127
+;! sdiv8 251 0 -> 129
+;! sfromf32 1056964608 -> 64
+;! sfromf32 3204448256 -> 192
+;! sfromf32 1065353216 -> 127
+;! sfromf32 3221225472 -> 129
+;! stof32 127 -> 1065353216
+;! stof32 129 -> 3212836864
+;! stof32 64 -> 1057030660
+;! pct 50 50 -> 25
+;! pct 100 30 -> 30
+;! pct 80 200 -> 80
+;! spct -50 50 -> -25
+;! spct -100 -100 -> 100
+;! lerp 0 100 25 -> 25
+
+type u8u = unit(8)
+type s8u = sunit(8)
+
+fn umul8(a: u8u, b: u8u) -> u8u {
+    r: u8u = mul a, b
+    ret r
+}
+fn uadd8(a: u8u, b: u8u) -> u8u {
+    r: u8u = add a, b
+    ret r
+}
+fn usub8(a: u8u, b: u8u) -> u8u {
+    r: u8u = sub a, b
+    ret r
+}
+fn udiv8(a: u8u, b: u8u) -> u8u {
+    r: u8u = div a, b
+    ret r
+}
+fn ufromf32(a: f32) -> u8u {
+    r: u8u = conv a
+    ret r
+}
+fn utof32(a: u8u) -> f32 {
+    r: f32 = conv a
+    ret r
+}
+fn smul8(a: s8u, b: s8u) -> s8u {
+    r: s8u = mul a, b
+    ret r
+}
+fn sadd8(a: s8u, b: s8u) -> s8u {
+    r: s8u = add a, b
+    ret r
+}
+fn sneg8(a: s8u) -> s8u {
+    r: s8u = neg a
+    ret r
+}
+fn sabs8(a: s8u) -> s8u {
+    r: s8u = abs a
+    ret r
+}
+fn sdiv8(a: s8u, b: s8u) -> s8u {
+    r: s8u = div a, b
+    ret r
+}
+fn sfromf32(a: f32) -> s8u {
+    r: s8u = conv a
+    ret r
+}
+fn stof32(a: s8u) -> f32 {
+    r: f32 = conv a
+    ret r
+}
+
+; --- the abstract unit and sunit: percentages in and out ---
+fn to_unit(p: i32) -> unit {
+    fp: float = conv p
+    f: float = div fp, 100.0
+    r: unit = conv f
+    ret r
+}
+fn from_unit(u: unit) -> i32 {
+    f: float = conv u
+    h: float = fma f, 100.0, 0.5
+    r: i32 = conv h
+    ret r
+}
+; a percent of a percent
+fn pct(a: i32, b: i32) -> i32 {
+    ua: unit = to_unit(a)
+    ub: unit = to_unit(b)
+    p: unit = mul ua, ub
+    r: i32 = from_unit(p)
+    ret r
+}
+fn to_sunit(p: i32) -> sunit {
+    fp: float = conv p
+    f: float = div fp, 100.0
+    r: sunit = conv f
+    ret r
+}
+fn from_sunit(u: sunit) -> i32 {
+    f: float = conv u
+    neg: u1 = cmp.lt f, 0.0
+    half: float = if neg {
+        yield -0.5
+    } else {
+        yield 0.5
+    }
+    h: float = fma f, 100.0, half
+    r: i32 = conv h
+    ret r
+}
+fn spct(a: i32, b: i32) -> i32 {
+    ua: sunit = to_sunit(a)
+    ub: sunit = to_sunit(b)
+    p: sunit = mul ua, ub
+    r: i32 = from_sunit(p)
+    ret r
+}
+; a + (b - a) * t, t a percentage
+fn lerp(a: i32, b: i32, t: i32) -> i32 {
+    ut: unit = to_unit(t)
+    fa: float = conv a
+    fb: float = conv b
+    d: float = sub fb, fa
+    ft: float = conv ut
+    m: float = fma d, ft, fa
+    h: float = add m, 0.5
+    r: i32 = conv h
+    ret r
+}

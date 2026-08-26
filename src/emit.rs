@@ -2080,7 +2080,7 @@ entry:
     /// on the platform (fadd32/fadd64 as the hardware instruction).
     #[test]
     fn softfloat_add_matches_hardware_and_reference() {
-        let src = format!("{}\n{}", include_str!("../suite/float.ssa"), include_str!("../lib/float.ssa"));
+        let src = crate::ssa::with_prelude(include_str!("../suite/float.ssa"));
         let src = src.as_str();
         let module = crate::ssa::parse(src).expect("parse");
         let enc = Encoder::load("targets/arm64.encodings.json").expect("encodings");
@@ -2473,7 +2473,7 @@ entry:
     /// no fadd) — and both are right.
     #[test]
     fn platform_mixes_native_f32_with_emulated_f16() {
-        let lib = format!("{}\n{}", include_str!("../suite/float.ssa"), include_str!("../lib/float.ssa"));
+        let lib = crate::ssa::with_prelude(include_str!("../suite/float.ssa"));
         let src = format!(
             "{}\nfn sum32(a: f32, b: f32) -> f32 {{\n    r: f32 = add a, b\n    ret r\n}}\nfn sum16(a: f16, b: f16) -> f16 {{\n    r: f16 = add a, b\n    ret r\n}}\n",
             lib
@@ -2574,6 +2574,59 @@ entry:
             assert_eq!(native_result(Repr::U(32), j.call("tof32", &[as_bits(a)]).unwrap()) as u32, f.to_bits(), "tof32 {}", a);
             let want_back = (f * 256.0) as i32 as i16;
             assert_eq!(back(native_result(Repr::U(16), j.call("fromf32", &[f.to_bits() as i64]).unwrap())), want_back, "fromf32 {}", a);
+        }
+    }
+
+    /// unit(8) and sunit(8) against their models, exhaustively
+    #[test]
+    fn unit_types_match_model() {
+        let src = crate::ssa::with_prelude(include_str!("../suite/unit.ssa"));
+        let j = jit(&src);
+        let max = 255i64;
+        for a in 0..256i64 {
+            for b in 0..256i64 {
+                let call = |name: &str| native_result(Repr::U(8), j.call(name, &[a, b]).unwrap());
+                assert_eq!(call("umul8"), (a * b + max / 2) / max, "umul8 {} {}", a, b);
+                assert_eq!(call("uadd8"), (a + b).min(max), "uadd8 {} {}", a, b);
+                assert_eq!(call("usub8"), (a - b).max(0), "usub8 {} {}", a, b);
+                let want_div = if b == 0 {
+                    if a == 0 { 0 } else { max }
+                } else if a >= b {
+                    max
+                } else {
+                    (a * max + b / 2) / b
+                };
+                assert_eq!(call("udiv8"), want_div, "udiv8 {} {}", a, b);
+            }
+        }
+        let m = 127i64;
+        let clamp = |x: i64| x.max(-m).min(m);
+        for a in -128..128i64 {
+            for b in -128..128i64 {
+                let bits = |v: i64| v as u8 as i64;
+                let call = |name: &str| native_result(Repr::U(8), j.call(name, &[bits(a), bits(b)]).unwrap()) as u8 as i8 as i64;
+                assert_eq!(call("sadd8"), clamp(a + b), "sadd8 {} {}", a, b);
+                let s = (a < 0) != (b < 0);
+                let q = ((a.abs() * b.abs() + m / 2) / m).min(m);
+                assert_eq!(call("smul8"), clamp(if s { -q } else { q }), "smul8 {} {}", a, b);
+                let want_div = if a == 0 {
+                    0
+                } else {
+                    let q = if b == 0 || a.abs() >= b.abs() { m } else { (a.abs() * m + b.abs() / 2) / b.abs() };
+                    clamp(if s { -q } else { q })
+                };
+                assert_eq!(call("sdiv8"), want_div, "sdiv8 {} {}", a, b);
+            }
+            let neg = native_result(Repr::U(8), j.call("sneg8", &[a as u8 as i64]).unwrap()) as u8 as i8 as i64;
+            assert_eq!(neg, clamp(-a), "sneg8 {}", a);
+            let f = native_result(Repr::U(32), j.call("stof32", &[a as u8 as i64]).unwrap()) as u32;
+            assert_eq!(f, (a as f32 / 127.0).to_bits(), "stof32 {}", a);
+        }
+        for a in 0..256i64 {
+            let f = native_result(Repr::U(32), j.call("utof32", &[a]).unwrap()) as u32;
+            assert_eq!(f, (a as f32 / 255.0).to_bits(), "utof32 {}", a);
+            let back = native_result(Repr::U(8), j.call("ufromf32", &[f as i64]).unwrap());
+            assert_eq!(back, a, "ufromf32(utof32({}))", a);
         }
     }
 }

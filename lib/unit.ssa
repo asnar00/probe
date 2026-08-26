@@ -1,0 +1,405 @@
+; probe's unit types: fractions of one in N bits.
+;   unit(N)  is 0.0 at 0 and 1.0 at 2^N - 1, as an unsigned integer;
+;   sunit(N) is -1.0 at -(2^(N-1) - 1) and 1.0 at 2^(N-1) - 1, as a signed
+;            integer (the most negative pattern is a little below -1.0)
+; The scale is not a power of two, so a product is (a * b + half) / max,
+; rounded; sums and differences saturate at the ends of the range; a
+; quotient saturates at 1.0. Conversions go through floats.
+type unit(N) = pack { v: u(N) }
+type sunit(N) = pack { v: i(N) }
+
+; --- unit ---
+fn add(N)(a: unit(N), b: unit(N)) -> unit(N) {
+    av: u(N) = get a, v
+    bv: u(N) = get b, v
+    a64: u64 = conv av
+    b64: u64 = conv bv
+    s: u64 = add a64, b64
+    max: u64 = const ((1 << (N - 1)) - 1) * 2 + 1
+    over: u1 = cmp.gt s, max
+    r64: u64 = if over {
+        yield max
+    } else {
+        yield s
+    }
+    rv: u(N) = conv r64
+    r: unit(N) = pack rv
+    ret r
+}
+fn sub(N)(a: unit(N), b: unit(N)) -> unit(N) {
+    av: u(N) = get a, v
+    bv: u(N) = get b, v
+    under: u1 = cmp.lt av, bv
+    if under {
+        z: unit(N) = pack 0
+        ret z
+    }
+    d: u(N) = sub av, bv
+    r: unit(N) = pack d
+    ret r
+}
+fn mul(N)(a: unit(N), b: unit(N)) -> unit(N) {
+    av: u(N) = get a, v
+    bv: u(N) = get b, v
+    a64: u64 = conv av
+    b64: u64 = conv bv
+    max: u64 = const ((1 << (N - 1)) - 1) * 2 + 1
+    half: u64 = shr max, 1
+    ah: u64 = shr a64, 32
+    al: u64 = and a64, 0xffffffff
+    bh: u64 = shr b64, 32
+    bl: u64 = and b64, 0xffffffff
+    hh: u64 = mul ah, bh
+    m1: u64 = mul ah, bl
+    m2: u64 = mul al, bh
+    ll: u64 = mul al, bl
+    mh1: u64, ml1: u64 = shl128(0, m1, 32)
+    mh2: u64, ml2: u64 = shl128(0, m2, 32)
+    p1h: u64, p1l: u64 = add128(0, ll, mh1, ml1)
+    p2h: u64, p2l: u64 = add128(p1h, p1l, mh2, ml2)
+    p3h: u64, p3l: u64 = add128(p2h, p2l, hh, 0)
+    ph: u64, pl: u64 = add128(p3h, p3l, 0, half)
+    q: u64, rem: u64 = udiv128(ph, pl, max)
+    rv: u(N) = conv q
+    r: unit(N) = pack rv
+    ret r
+}
+fn div(N)(a: unit(N), b: unit(N)) -> unit(N) {
+    av: u(N) = get a, v
+    bv: u(N) = get b, v
+    a64: u64 = conv av
+    b64: u64 = conv bv
+    maxn: u(N) = const ((1 << (N - 1)) - 1) * 2 + 1
+    max: u64 = conv maxn
+    bz: u1 = cmp.eq b64, 0
+    if bz {
+        az: u1 = cmp.eq a64, 0
+        if az {
+            z: unit(N) = pack 0
+            ret z
+        }
+        one: unit(N) = pack maxn
+        ret one
+    }
+    ge: u1 = cmp.ge a64, b64
+    if ge {
+        one2: unit(N) = pack maxn
+        ret one2
+    }
+    nh: u64, nl: u64 = shl128(0, a64, 0)
+    ah: u64 = shr a64, 32
+    al: u64 = and a64, 0xffffffff
+    mh: u64 = shr max, 32
+    ml: u64 = and max, 0xffffffff
+    hh: u64 = mul ah, mh
+    m1: u64 = mul ah, ml
+    m2: u64 = mul al, mh
+    ll: u64 = mul al, ml
+    mh1: u64, ml1: u64 = shl128(0, m1, 32)
+    mh2: u64, ml2: u64 = shl128(0, m2, 32)
+    p1h: u64, p1l: u64 = add128(0, ll, mh1, ml1)
+    p2h: u64, p2l: u64 = add128(p1h, p1l, mh2, ml2)
+    p3h: u64, p3l: u64 = add128(p2h, p2l, hh, 0)
+    halfb: u64 = shr b64, 1
+    ph: u64, pl: u64 = add128(p3h, p3l, 0, halfb)
+    q: u64, rem: u64 = udiv128(ph, pl, b64)
+    rv: u(N) = conv q
+    r: unit(N) = pack rv
+    ret r
+}
+fn lt(N)(a: unit(N), b: unit(N)) -> u1 {
+    av: u(N) = get a, v
+    bv: u(N) = get b, v
+    r: u1 = cmp.lt av, bv
+    ret r
+}
+fn le(N)(a: unit(N), b: unit(N)) -> u1 {
+    av: u(N) = get a, v
+    bv: u(N) = get b, v
+    r: u1 = cmp.le av, bv
+    ret r
+}
+fn gt(N)(a: unit(N), b: unit(N)) -> u1 {
+    av: u(N) = get a, v
+    bv: u(N) = get b, v
+    r: u1 = cmp.gt av, bv
+    ret r
+}
+fn ge(N)(a: unit(N), b: unit(N)) -> u1 {
+    av: u(N) = get a, v
+    bv: u(N) = get b, v
+    r: u1 = cmp.ge av, bv
+    ret r
+}
+fn eq(N)(a: unit(N), b: unit(N)) -> u1 {
+    av: u(N) = get a, v
+    bv: u(N) = get b, v
+    r: u1 = cmp.eq av, bv
+    ret r
+}
+fn ne(N)(a: unit(N), b: unit(N)) -> u1 {
+    av: u(N) = get a, v
+    bv: u(N) = get b, v
+    r: u1 = cmp.ne av, bv
+    ret r
+}
+fn min(N)(a: unit(N), b: unit(N)) -> unit(N) {
+    lt: u1 = cmp.lt a, b
+    if lt {
+        ret a
+    }
+    ret b
+}
+fn max(N)(a: unit(N), b: unit(N)) -> unit(N) {
+    gt: u1 = cmp.gt a, b
+    if gt {
+        ret a
+    }
+    ret b
+}
+; to a float: the bits over the maximum; from a float: rounded, clamped
+; to [0, 1] (the integer conversion saturates and sends NaN to 0)
+fn conv(N, E, M)(a: unit(N)) -> float(E, M) {
+    av: u(N) = get a, v
+    f: float(E, M) = conv av
+    max_i: i64 = const ((1 << (N - 1)) - 1) * 2 + 1
+    max_f: float(E, M) = conv max_i
+    r: float(E, M) = div f, max_f
+    ret r
+}
+fn conv(E, M, N)(a: float(E, M)) -> unit(N) {
+    max_i: i64 = const ((1 << (N - 1)) - 1) * 2 + 1
+    max_f: float(E, M) = conv max_i
+    y: float(E, M) = fma a, max_f, 0.5
+    v: u(N) = conv y
+    r: unit(N) = pack v
+    ret r
+}
+
+; --- sunit ---
+; saturate a 64-bit signed value into [-max, max]
+fn sclamp(N)(x: i64) -> sunit(N) {
+    max: i64 = const (1 << (N - 1)) - 1
+    min: i64 = const 0 - ((1 << (N - 1)) - 1)
+    hi: u1 = cmp.gt x, max
+    lo: u1 = cmp.lt x, min
+    y: i64 = if hi {
+        yield max
+    } else {
+        z: i64 = if lo {
+            yield min
+        } else {
+            yield x
+        }
+        yield z
+    }
+    v: i(N) = conv y
+    r: sunit(N) = pack v
+    ret r
+}
+fn add(N)(a: sunit(N), b: sunit(N)) -> sunit(N) {
+    av: i(N) = get a, v
+    bv: i(N) = get b, v
+    a64: i64 = conv av
+    b64: i64 = conv bv
+    s: i64 = add a64, b64
+    r: sunit(N) = sclamp(N)(s)
+    ret r
+}
+fn sub(N)(a: sunit(N), b: sunit(N)) -> sunit(N) {
+    av: i(N) = get a, v
+    bv: i(N) = get b, v
+    a64: i64 = conv av
+    b64: i64 = conv bv
+    s: i64 = sub a64, b64
+    r: sunit(N) = sclamp(N)(s)
+    ret r
+}
+fn neg(N)(a: sunit(N)) -> sunit(N) {
+    av: i(N) = get a, v
+    a64: i64 = conv av
+    n: i64 = sub 0, a64
+    r: sunit(N) = sclamp(N)(n)
+    ret r
+}
+fn abs(N)(a: sunit(N)) -> sunit(N) {
+    av: i(N) = get a, v
+    a64: i64 = conv av
+    neg: u1 = cmp.lt a64, 0
+    m: i64 = if neg {
+        n: i64 = sub 0, a64
+        yield n
+    } else {
+        yield a64
+    }
+    r: sunit(N) = sclamp(N)(m)
+    ret r
+}
+; sign and magnitude as a u64
+fn smag(N)(a: sunit(N)) -> (u1, u64) {
+    av: i(N) = get a, v
+    a64: i64 = conv av
+    neg: u1 = cmp.lt a64, 0
+    m: i64 = if neg {
+        n: i64 = sub 0, a64
+        yield n
+    } else {
+        yield a64
+    }
+    mu: u64 = cast m
+    ret neg, mu
+}
+fn mul(N)(a: sunit(N), b: sunit(N)) -> sunit(N) {
+    sa: u1, ma: u64 = smag(N)(a)
+    sb: u1, mb: u64 = smag(N)(b)
+    s: u1 = xor sa, sb
+    max: u64 = const (1 << (N - 1)) - 1
+    half: u64 = shr max, 1
+    ah: u64 = shr ma, 32
+    al: u64 = and ma, 0xffffffff
+    bh: u64 = shr mb, 32
+    bl: u64 = and mb, 0xffffffff
+    hh: u64 = mul ah, bh
+    m1: u64 = mul ah, bl
+    m2: u64 = mul al, bh
+    ll: u64 = mul al, bl
+    mh1: u64, ml1: u64 = shl128(0, m1, 32)
+    mh2: u64, ml2: u64 = shl128(0, m2, 32)
+    p1h: u64, p1l: u64 = add128(0, ll, mh1, ml1)
+    p2h: u64, p2l: u64 = add128(p1h, p1l, mh2, ml2)
+    p3h: u64, p3l: u64 = add128(p2h, p2l, hh, 0)
+    ph: u64, pl: u64 = add128(p3h, p3l, 0, half)
+    q: u64, rem: u64 = udiv128(ph, pl, max)
+    over: u1 = cmp.gt q, max
+    qm: u64 = if over {
+        yield max
+    } else {
+        yield q
+    }
+    qi: i64 = cast qm
+    v: i64 = if s {
+        n: i64 = sub 0, qi
+        yield n
+    } else {
+        yield qi
+    }
+    r: sunit(N) = sclamp(N)(v)
+    ret r
+}
+fn div(N)(a: sunit(N), b: sunit(N)) -> sunit(N) {
+    sa: u1, ma: u64 = smag(N)(a)
+    sb: u1, mb: u64 = smag(N)(b)
+    s: u1 = xor sa, sb
+    max: u64 = const (1 << (N - 1)) - 1
+    bz: u1 = cmp.eq mb, 0
+    az: u1 = cmp.eq ma, 0
+    if az {
+        z: sunit(N) = pack 0
+        ret z
+    }
+    ge: u1 = cmp.ge ma, mb
+    sat: u1 = or bz, ge
+    q: u64 = if sat {
+        yield max
+    } else {
+        ; (ma * max + mb / 2) / mb, ma and max both under 2^63
+        ah: u64 = shr ma, 32
+        al: u64 = and ma, 0xffffffff
+        mh: u64 = shr max, 32
+        ml: u64 = and max, 0xffffffff
+        hh: u64 = mul ah, mh
+        m1: u64 = mul ah, ml
+        m2: u64 = mul al, mh
+        ll: u64 = mul al, ml
+        mh1: u64, ml1: u64 = shl128(0, m1, 32)
+        mh2: u64, ml2: u64 = shl128(0, m2, 32)
+        p1h: u64, p1l: u64 = add128(0, ll, mh1, ml1)
+        p2h: u64, p2l: u64 = add128(p1h, p1l, mh2, ml2)
+        p3h: u64, p3l: u64 = add128(p2h, p2l, hh, 0)
+        halfb: u64 = shr mb, 1
+        ph: u64, pl: u64 = add128(p3h, p3l, 0, halfb)
+        qq: u64, rem: u64 = udiv128(ph, pl, mb)
+        yield qq
+    }
+    qi: i64 = cast q
+    v: i64 = if s {
+        n: i64 = sub 0, qi
+        yield n
+    } else {
+        yield qi
+    }
+    r: sunit(N) = sclamp(N)(v)
+    ret r
+}
+fn lt(N)(a: sunit(N), b: sunit(N)) -> u1 {
+    av: i(N) = get a, v
+    bv: i(N) = get b, v
+    r: u1 = cmp.lt av, bv
+    ret r
+}
+fn le(N)(a: sunit(N), b: sunit(N)) -> u1 {
+    av: i(N) = get a, v
+    bv: i(N) = get b, v
+    r: u1 = cmp.le av, bv
+    ret r
+}
+fn gt(N)(a: sunit(N), b: sunit(N)) -> u1 {
+    av: i(N) = get a, v
+    bv: i(N) = get b, v
+    r: u1 = cmp.gt av, bv
+    ret r
+}
+fn ge(N)(a: sunit(N), b: sunit(N)) -> u1 {
+    av: i(N) = get a, v
+    bv: i(N) = get b, v
+    r: u1 = cmp.ge av, bv
+    ret r
+}
+fn eq(N)(a: sunit(N), b: sunit(N)) -> u1 {
+    av: i(N) = get a, v
+    bv: i(N) = get b, v
+    r: u1 = cmp.eq av, bv
+    ret r
+}
+fn ne(N)(a: sunit(N), b: sunit(N)) -> u1 {
+    av: i(N) = get a, v
+    bv: i(N) = get b, v
+    r: u1 = cmp.ne av, bv
+    ret r
+}
+fn min(N)(a: sunit(N), b: sunit(N)) -> sunit(N) {
+    lt: u1 = cmp.lt a, b
+    if lt {
+        ret a
+    }
+    ret b
+}
+fn max(N)(a: sunit(N), b: sunit(N)) -> sunit(N) {
+    gt: u1 = cmp.gt a, b
+    if gt {
+        ret a
+    }
+    ret b
+}
+fn conv(N, E, M)(a: sunit(N)) -> float(E, M) {
+    av: i(N) = get a, v
+    f: float(E, M) = conv av
+    max_i: i64 = const (1 << (N - 1)) - 1
+    max_f: float(E, M) = conv max_i
+    r: float(E, M) = div f, max_f
+    ret r
+}
+fn conv(E, M, N)(a: float(E, M)) -> sunit(N) {
+    max_i: i64 = const (1 << (N - 1)) - 1
+    max_f: float(E, M) = conv max_i
+    neg: u1 = cmp.lt a, 0.0
+    half: float(E, M) = if neg {
+        yield -0.5
+    } else {
+        yield 0.5
+    }
+    y: float(E, M) = fma a, max_f, half
+    i: i64 = conv y
+    r: sunit(N) = sclamp(N)(i)
+    ret r
+}

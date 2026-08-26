@@ -169,28 +169,7 @@ fn div(I, F)(a: fixed(I, F), b: fixed(I, F)) -> fixed(I, F) {
     }
     f64v: u64 = const F
     nh: u64, nl: u64 = shl128(0, ma, f64v)
-    ; 128 steps of shift-and-subtract; the quotient's low word is the result
-    q: u64 = loop(i: i32 = 0, rh: u64 = 0, rl: u64 = 0, qq: u64 = 0, xh: u64 = nh, xl: u64 = nl) {
-        done: u1 = cmp.eq i, 128
-        if done {
-            break qq
-        }
-        top: u64 = shr xh, 63
-        xh2: u64, xl2: u64 = shl128(xh, xl, 1)
-        rh2: u64, rl2: u64 = shl128(rh, rl, 1)
-        rl3: u64 = or rl2, top
-        ge: u1 = lt128(rh2, rl3, 0, mb)
-        q2: u64 = shl qq, 1
-        rh4: u64, rl4: u64, q3: u64 = if ge {
-            yield rh2, rl3, q2
-        } else {
-            dh: u64, dl: u64 = sub128(rh2, rl3, 0, mb)
-            q4: u64 = or q2, 1
-            yield dh, dl, q4
-        }
-        i2: i32 = add i, 1
-        continue i2, rh4, rl4, q3, xh2, xl2
-    }
+    q: u64, rem: u64 = udiv128(nh, nl, mb)
     r: fixed(I, F) = fxmk(I, F)(s, q)
     ret r
 }

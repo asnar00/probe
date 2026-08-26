@@ -1,0 +1,122 @@
+; probe's wide-integer helpers: two-word (128-bit) arithmetic on (hi, lo)
+; pairs of u64, for the libraries whose intermediate results outgrow 64
+; bits (float's fma, fixed's and unit's products and quotients).
+
+fn add128(ah: u64, al: u64, bh: u64, bl: u64) -> (u64, u64) {
+    lo: u64 = add al, bl
+    carry: u1 = cmp.lt lo, al
+    c64: u64 = conv carry
+    h1: u64 = add ah, bh
+    hi: u64 = add h1, c64
+    ret hi, lo
+}
+fn sub128(ah: u64, al: u64, bh: u64, bl: u64) -> (u64, u64) {
+    lo: u64 = sub al, bl
+    borrow: u1 = cmp.lt al, bl
+    b64: u64 = conv borrow
+    h1: u64 = sub ah, bh
+    hi: u64 = sub h1, b64
+    ret hi, lo
+}
+fn lt128(ah: u64, al: u64, bh: u64, bl: u64) -> u1 {
+    hlt: u1 = cmp.lt ah, bh
+    heq: u1 = cmp.eq ah, bh
+    llt: u1 = cmp.lt al, bl
+    t: u1 = and heq, llt
+    r: u1 = or hlt, t
+    ret r
+}
+; right by any amount, with a sticky for what fell off
+fn shr128(ah: u64, al: u64, d: u64) -> (u64, u64, u1) {
+    z: u1 = cmp.eq d, 0
+    if z {
+        ret ah, al, 0
+    }
+    big: u1 = cmp.ge d, 128
+    if big {
+        any: u64 = or ah, al
+        st: u1 = cmp.ne any, 0
+        ret 0, 0, st
+    }
+    mid: u1 = cmp.ge d, 64
+    if mid {
+        d2: u64 = sub d, 64
+        lo2: u64 = shr ah, d2
+        m1: u64 = shl 1, d2
+        mask: u64 = sub m1, 1
+        lost: u64 = and ah, mask
+        s1: u1 = cmp.ne lost, 0
+        s2: u1 = cmp.ne al, 0
+        st2: u1 = or s1, s2
+        ret 0, lo2, st2
+    }
+    inv: u64 = sub 64, d
+    lo3a: u64 = shr al, d
+    lo3b: u64 = shl ah, inv
+    lo3: u64 = or lo3a, lo3b
+    hi3: u64 = shr ah, d
+    m2: u64 = shl 1, d
+    mask2: u64 = sub m2, 1
+    lost2: u64 = and al, mask2
+    st3: u1 = cmp.ne lost2, 0
+    ret hi3, lo3, st3
+}
+; left by 0..63
+fn shl128(ah: u64, al: u64, s: u64) -> (u64, u64) {
+    z: u1 = cmp.eq s, 0
+    if z {
+        ret ah, al
+    }
+    inv: u64 = sub 64, s
+    hia: u64 = shl ah, s
+    hib: u64 = shr al, inv
+    hi: u64 = or hia, hib
+    lo: u64 = shl al, s
+    ret hi, lo
+}
+; index of the top set bit of a nonzero pair
+fn msb128(ah: u64, al: u64) -> i32 {
+    hz: u1 = cmp.eq ah, 0
+    w: u64, base: i32 = if hz {
+        yield al, 0
+    } else {
+        yield ah, 64
+    }
+    p: i32 = loop(x: u64 = w, c: i32 = base) {
+        small: u1 = cmp.le x, 1
+        if small {
+            break c
+        }
+        x2: u64 = shr x, 1
+        c2: i32 = add c, 1
+        continue x2, c2
+    }
+    ret p
+}
+
+; (hi, lo) / d for a nonzero 64-bit d: the quotient's low word and the
+; remainder, by 128 steps of shift-and-subtract
+fn udiv128(nh: u64, nl: u64, d: u64) -> (u64, u64) {
+    q: u64, r: u64 = loop(i: i32 = 0, rh: u64 = 0, rl: u64 = 0, qq: u64 = 0, xh: u64 = nh, xl: u64 = nl) {
+        done: u1 = cmp.eq i, 128
+        if done {
+            break qq, rl
+        }
+        top: u64 = shr xh, 63
+        xh2: u64, xl2: u64 = shl128(xh, xl, 1)
+        rh2: u64, rl2: u64 = shl128(rh, rl, 1)
+        rl3: u64 = or rl2, top
+        below: u1 = lt128(rh2, rl3, 0, d)
+        q2: u64 = shl qq, 1
+        rh4: u64, rl4: u64, q3: u64 = if below {
+            yield rh2, rl3, q2
+        } else {
+            dh: u64, dl: u64 = sub128(rh2, rl3, 0, d)
+            q4: u64 = or q2, 1
+            yield dh, dl, q4
+        }
+        i2: i32 = add i, 1
+        continue i2, rh4, rl4, q3, xh2, xl2
+    }
+    ret q, r
+}

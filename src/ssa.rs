@@ -780,14 +780,17 @@ pub struct Policy {
     pub float: (u32, u32),
     /// (I, F) for a bare `fixed`
     pub fixed: (u32, u32),
+    /// N for a bare `unit` and `sunit`
+    pub unit: u32,
+    pub sunit: u32,
 }
 
 impl Policy {
     pub fn new(int: Type) -> Result<Policy, String> {
         match int {
             // the float of the same class as the integer: f32 with i32, f64 with i64
-            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16) }),
-            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32) }),
+            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16 }),
+            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32 }),
             t => Err(format!("'int' cannot resolve to {}", t.name())),
         }
     }
@@ -799,6 +802,16 @@ impl Policy {
 
     pub fn with_fixed(mut self, i: u32, f: u32) -> Policy {
         self.fixed = (i, f);
+        self
+    }
+
+    pub fn with_unit(mut self, n: u32) -> Policy {
+        self.unit = n;
+        self
+    }
+
+    pub fn with_sunit(mut self, n: u32) -> Policy {
+        self.sunit = n;
         self
     }
 
@@ -827,6 +840,8 @@ impl Policy {
         match name {
             "float" => Some(vec![self.float.0 as i64, self.float.1 as i64]),
             "fixed" => Some(vec![self.fixed.0 as i64, self.fixed.1 as i64]),
+            "unit" => Some(vec![self.unit as i64]),
+            "sunit" => Some(vec![self.sunit as i64]),
             _ => None,
         }
     }
