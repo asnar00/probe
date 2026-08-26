@@ -421,6 +421,7 @@ pub struct Compiled {
     /// where the instructions end, and (after alignment padding) where
     /// the data items begin
     pub code_end: usize,
+    #[allow(dead_code)]
     pub data_base: usize,
 }
 
