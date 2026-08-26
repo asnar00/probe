@@ -6,6 +6,21 @@ has the full story for any of them.
 
 ---
 
+### struct — `b38526d` · 2026-08-26
+
+`type point = struct { x: f32, y: f32, z: f32 }`. A `pack` is bits;
+a `struct` is fields side by side — at natural offsets in memory, as
+separate values in registers — and never a bit pattern: no `cast`, no
+literal, no arithmetic. That one refusal is what leaves the layout to
+the compiler. Right after parsing every struct value dissolves into its
+fields (`src/aggregate.rs`): `pack`, `get`, `set` and `unpack` become
+names for values that already exist, so `get (get l, to), z` on a line
+of two points compiles to nothing at all; a `load` or `store` becomes
+one per field at its offset, and `load p, i, 12` walks an array of
+12-byte structs. The suite passes a struct as its fields.
+
+---
+
 ### decimal — `a54cdd5` · 2026-08-26
 
 `decimal(N, S)`: an `i(N)` significand at scale 10^S, so cents add
