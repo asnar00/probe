@@ -76,3 +76,46 @@ entry:
     r: i32 = add a, b
     ret r
 }
+
+; --- addressing: base + off, base + index * step ---
+; i64[10,20,30,40] is a pointer to four little-endian words
+;! ad_word1 i64[10,20,30,40] -> 20
+;! ad_at i64[10,20,30,40] 3 -> 40
+;! ad_back i64[10,20,30,40] -> 20
+;! ad_at32 i32[5,6,7,8] 2 -> 7
+;! ad_at8 i8[-1,2,-3,4] 2 -> -3
+;! ad_put i32[0,0,0,0] 3 77 -> 77
+;! ad_put_off i64[1,2,3] 9 -> 10
+fn ad_word1(p: ptr) -> i64 {
+    v: i64 = load p, 8
+    ret v
+}
+fn ad_at(p: ptr, i: i64) -> i64 {
+    v: i64 = load p, i, 8
+    ret v
+}
+fn ad_back(p: ptr) -> i64 {
+    q: ptr = ptradd p, 24
+    v: i64 = load q, -16
+    ret v
+}
+fn ad_at32(p: ptr, i: i64) -> i32 {
+    v: i32 = load p, i, 4
+    ret v
+}
+fn ad_at8(p: ptr, i: i64) -> i8 {
+    v: i8 = load p, i, 1
+    ret v
+}
+fn ad_put(p: ptr, i: i64, v: i32) -> i32 {
+    store v, p, i, 4
+    r: i32 = load p, 12
+    ret r
+}
+fn ad_put_off(p: ptr, v: i64) -> i64 {
+    store v, p, 16
+    a: i64 = load p
+    b: i64 = load p, 16
+    s: i64 = add a, b
+    ret s
+}

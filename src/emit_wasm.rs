@@ -287,6 +287,27 @@ impl WEmit<'_> {
         }
     }
 
+    /// push the address base + index * step (+ a negative off), and give
+    /// the memarg offset: a non-negative off rides in the instruction
+    fn address(&mut self, base: ValueId, off: i64, index: Option<(ValueId, u8)>) -> Result<i64, String> {
+        self.get(base)?;
+        if let Some((i, step)) = index {
+            self.get(i)?;
+            self.op("i32.wrap_i64", None)?;
+            if step > 1 {
+                self.op("i32.const {}", Some(step.trailing_zeros() as i64))?;
+                self.op("i32.shl", None)?;
+            }
+            self.op("i32.add", None)?;
+        }
+        if off < 0 {
+            self.op("i32.const {}", Some(off as i32 as i64))?;
+            self.op("i32.add", None)?;
+            return Ok(0);
+        }
+        Ok(off)
+    }
+
     /// re-normalize the stack top (in r's container) to canonical `r`
     fn norm(&mut self, r: Repr) -> Result<(), String> {
         let n = r.bits();
@@ -685,9 +706,9 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             }
             Ok(())
         }
-        Inst::Load { dst, addr } => {
+        Inst::Load { dst, addr, off, index } => {
             let r = e.repr(*dst);
-            e.get(*addr)?;
+            let imm = e.address(*addr, *off, *index)?;
             let t = match (r.bits(), r.signed()) {
                 (8, true) => "i32.load8_s offset={}",
                 (8, false) => "i32.load8_u offset={}",
@@ -697,12 +718,12 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
                 (64, _) => "i64.load offset={}",
                 (n, _) => return Err(format!("no {}-bit memory access", n)),
             };
-            e.op(t, Some(0))?;
+            e.op(t, Some(imm))?;
             e.set(*dst)
         }
-        Inst::Store { val, addr } => {
+        Inst::Store { val, addr, off, index } => {
             let r = e.repr(*val);
-            e.get(*addr)?;
+            let imm = e.address(*addr, *off, *index)?;
             e.get(*val)?;
             let t = match r.bits() {
                 8 => "i32.store8 offset={}",
@@ -711,7 +732,7 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
                 64 => "i64.store offset={}",
                 n => return Err(format!("no {}-bit memory access", n)),
             };
-            e.op(t, Some(0))
+            e.op(t, Some(imm))
         }
         Inst::PtrAdd { dst, base, off } => {
             e.get(*base)?;

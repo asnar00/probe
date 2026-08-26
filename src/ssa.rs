@@ -658,13 +658,20 @@ pub enum Inst {
         field: u32,
         val: ValueId,
     },
+    /// `load base`, `load base, off`, `load base, index, step`: the
+    /// address is base + off + index * step (step 1, 2, 4 or 8), which
+    /// is what a target's addressing modes take directly
     Load {
         dst: ValueId,
         addr: ValueId,
+        off: i64,
+        index: Option<(ValueId, u8)>,
     },
     Store {
         val: ValueId,
         addr: ValueId,
+        off: i64,
+        index: Option<(ValueId, u8)>,
     },
     PtrAdd {
         dst: ValueId,
@@ -1544,6 +1551,27 @@ impl Parser {
 
     fn skip_newlines(&mut self) {
         while self.eat(&Tok::Newline) {}
+    }
+
+    /// after a load's or store's base: nothing, `, off`, or `, index, step`
+    fn parse_addressing(&mut self, scope: &mut FuncScope) -> Result<(i64, Option<(ValueId, u8)>), ParseError> {
+        if !self.eat(&Tok::Comma) {
+            return Ok((0, None));
+        }
+        if let Some(Tok::Int(_)) = self.peek() {
+            let Tok::Int(off) = self.next()? else { unreachable!() };
+            return Ok((off, None));
+        }
+        let index = self.expect_value(scope)?;
+        self.expect(Tok::Comma)?;
+        let step = match self.next()? {
+            Tok::Int(n) if [1, 2, 4, 8].contains(&n) => n as u8,
+            t => {
+                self.pos -= 1;
+                return Err(self.err(format!("the index step must be 1, 2, 4 or 8, not {}", t)));
+            }
+        };
+        Ok((0, Some((index, step))))
     }
 
     fn expect_ident(&mut self) -> Result<String, ParseError> {
@@ -2924,7 +2952,8 @@ impl Parser {
             }
             "load" => {
                 let addr = self.expect_value(scope)?;
-                Ok(Inst::Load { dst, addr })
+                let (off, index) = self.parse_addressing(scope)?;
+                Ok(Inst::Load { dst, addr, off, index })
             }
             "ptradd" => {
                 let base = self.expect_value(scope)?;
@@ -3032,7 +3061,8 @@ impl Parser {
                 let val = self.expect_value(scope)?;
                 self.expect(Tok::Comma)?;
                 let addr = self.expect_value(scope)?;
-                Ok(Inst::Store { val, addr })
+                let (off, index) = self.parse_addressing(scope)?;
+                Ok(Inst::Store { val, addr, off, index })
             }
             _ if self.is_call(op) => {
                 let (callee, args) = self.parse_call_tail(op.to_string(), scope)?;
@@ -3522,6 +3552,14 @@ impl Function {
 
     /// a constant as source text: a float as the shortest decimal that
     /// reads back to the same value, anything else as its integer
+    fn fmt_addressing(&self, off: i64, index: Option<(ValueId, u8)>) -> String {
+        match index {
+            Some((i, step)) => format!(", {}, {}", self.fmt_value(i), step),
+            None if off != 0 => format!(", {}", off),
+            None => String::new(),
+        }
+    }
+
     fn literal_text(&self, ty: Type, bits: i128) -> String {
         let Some((e, m)) = self.float_params(ty) else {
             return bits.to_string();
@@ -3698,11 +3736,11 @@ impl Function {
                 self.fmt_field(*src, *field),
                 self.fmt_value(*val)
             ),
-            Inst::Load { dst, addr } => {
-                format!("{} = load {}", self.fmt_def(*dst), self.fmt_value(*addr))
+            Inst::Load { dst, addr, off, index } => {
+                format!("{} = load {}{}", self.fmt_def(*dst), self.fmt_value(*addr), self.fmt_addressing(*off, *index))
             }
-            Inst::Store { val, addr } => {
-                format!("store {}, {}", self.fmt_value_typed(*val), self.fmt_value(*addr))
+            Inst::Store { val, addr, off, index } => {
+                format!("store {}, {}{}", self.fmt_value_typed(*val), self.fmt_value(*addr), self.fmt_addressing(*off, *index))
             }
             Inst::PtrAdd { dst, base, off } => format!(
                 "{} = ptradd {}, {}",
@@ -4093,9 +4131,14 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 }
             }
         }
-        Inst::Load { dst, addr } => {
+        Inst::Load { dst, addr, index, .. } => {
             if func.ty(*addr) != Type::Ptr {
                 errs.push(ctx(format!("load address {} must be ptr", name(*addr))));
+            }
+            if let Some((i, _)) = index {
+                if !matches!(func.ty(*i), Type::I64 | Type::U64) {
+                    errs.push(ctx(format!("load index {} must be i64 or u64", name(*i))));
+                }
             }
             if !is_memory(func.ty(*dst)) {
                 errs.push(ctx(format!(
@@ -4104,9 +4147,14 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 )));
             }
         }
-        Inst::Store { val, addr } => {
+        Inst::Store { val, addr, index, .. } => {
             if func.ty(*addr) != Type::Ptr {
                 errs.push(ctx(format!("store address {} must be ptr", name(*addr))));
+            }
+            if let Some((i, _)) = index {
+                if !matches!(func.ty(*i), Type::I64 | Type::U64) {
+                    errs.push(ctx(format!("store index {} must be i64 or u64", name(*i))));
+                }
             }
             if !is_memory(func.ty(*val)) {
                 errs.push(ctx(format!(

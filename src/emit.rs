@@ -817,6 +817,79 @@ impl FnEmit<'_> {
         self.emit(t, &[rd, rs, off as i64, (off + w) as i64 - 1]).map(|_| ())
     }
 
+    /// the base register and immediate for an access of `size` bytes at
+    /// base + off + index * step: the immediate form when the offset is
+    /// in range and aligned (arm64 scales it by the access size), else
+    /// the address computed into `scratch` (with `scratch2` for the
+    /// scaled index)
+    fn address(&mut self, base: ValueId, off: i64, index: Option<(ValueId, u8)>, size: u32, scratch: i64, scratch2: i64) -> Result<(i64, i64), String> {
+        let rb = self.src_reg(base, scratch)?;
+        let max = 4095 * size as i64;
+        match index {
+            None if off >= 0 && off <= max && off % size as i64 == 0 => Ok((rb, off)),
+            None => {
+                if (0..=4095).contains(&off) {
+                    self.emit("add {x}, {x}, #{i 0..4095}", &[scratch, rb, off])?;
+                } else if (-4095..0).contains(&off) {
+                    self.emit("sub {x}, {x}, #{i 0..4095}", &[scratch, rb, -off])?;
+                } else {
+                    self.emit_iconst(scratch2, off)?;
+                    self.emit("add {x}, {x}, {x}", &[scratch, rb, scratch2])?;
+                }
+                Ok((scratch, 0))
+            }
+            Some((i, step)) => {
+                let ri = self.src_reg(i, scratch2)?;
+                if step > 1 {
+                    self.emit("lsl {x}, {x}, #{i 0..63}", &[scratch2, ri, step.trailing_zeros() as i64])?;
+                    self.emit("add {x}, {x}, {x}", &[scratch, rb, scratch2])?;
+                } else {
+                    self.emit("add {x}, {x}, {x}", &[scratch, rb, ri])?;
+                }
+                if off != 0 {
+                    if (0..=4095).contains(&off) {
+                        self.emit("add {x}, {x}, #{i 0..4095}", &[scratch, scratch, off])?;
+                    } else {
+                        self.emit_iconst(scratch2, off)?;
+                        self.emit("add {x}, {x}, {x}", &[scratch, scratch, scratch2])?;
+                    }
+                }
+                Ok((scratch, 0))
+            }
+        }
+    }
+
+    /// materialize a 64-bit constant with movz/movk, one chunk per
+    /// nonzero 16 bits
+    fn emit_iconst(&mut self, rd: i64, v: i64) -> Result<(), String> {
+        let v = v as u64;
+        let movz = [
+            "movz {x}, #{i 0..65535}",
+            "movz {x}, #{i 0..65535}, lsl #16",
+            "movz {x}, #{i 0..65535}, lsl #32",
+            "movz {x}, #{i 0..65535}, lsl #48",
+        ];
+        let movk = [
+            "movk {x}, #{i 0..65535}",
+            "movk {x}, #{i 0..65535}, lsl #16",
+            "movk {x}, #{i 0..65535}, lsl #32",
+            "movk {x}, #{i 0..65535}, lsl #48",
+        ];
+        let mut first = true;
+        for i in 0..4 {
+            let c = (v >> (16 * i)) as u16;
+            if c == 0 {
+                continue;
+            }
+            self.emit(if first { movz[i] } else { movk[i] }, &[rd, c as i64])?;
+            first = false;
+        }
+        if first {
+            self.emit(movz[0], &[rd, 0])?; // the constant 0
+        }
+        Ok(())
+    }
+
     fn epilogue(&mut self) -> Result<(), String> {
         let fbase = 16 + 8 * self.alloc.used_regs.len() as i64;
         for (k, &fr) in self.alloc.used_by_class[1].clone().iter().enumerate() {
@@ -1019,31 +1092,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             if r.container() == 32 {
                 v &= 0xffff_ffff;
             }
-            let chunks: Vec<(i64, u16)> = (0..4).map(|i| (i, (v >> (16 * i)) as u16)).collect();
-            let movz = [
-                "movz {x}, #{i 0..65535}",
-                "movz {x}, #{i 0..65535}, lsl #16",
-                "movz {x}, #{i 0..65535}, lsl #32",
-                "movz {x}, #{i 0..65535}, lsl #48",
-            ];
-            let movk = [
-                "movk {x}, #{i 0..65535}",
-                "movk {x}, #{i 0..65535}, lsl #16",
-                "movk {x}, #{i 0..65535}, lsl #32",
-                "movk {x}, #{i 0..65535}, lsl #48",
-            ];
-            let mut first = true;
-            for &(i, c) in &chunks {
-                if c == 0 {
-                    continue;
-                }
-                let t = if first { movz[i as usize] } else { movk[i as usize] };
-                e.emit(t, &[rd, c as i64])?;
-                first = false;
-            }
-            if first {
-                e.emit(movz[0], &[rd, 0])?; // the constant 0
-            }
+            e.emit_iconst(rd, v as i64)?;
             e.finish(*dst, rd)
         }
         Inst::Bin { op, dst, lhs, rhs } => {
@@ -1197,9 +1246,9 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             }
             Ok(())
         }
-        Inst::Load { dst, addr } => {
+        Inst::Load { dst, addr, off, index } => {
             let r = e.repr(*dst);
-            let ra = e.src_reg(*addr, 9)?;
+            let (ra, imm) = e.address(*addr, *off, *index, r.bits() / 8, 9, 11)?;
             let rd = e.dst_reg(*dst, 10);
             let t = match (r.bits(), r.signed()) {
                 (8, false) => "ldrb {w}, [{x}, #{i 0..4095}]",
@@ -1210,13 +1259,13 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                 (64, _) => "ldr {x}, [{x}, #{i 0..32760 /8}]",
                 (n, _) => return Err(format!("no {}-bit memory access", n)),
             };
-            e.emit(t, &[rd, ra, 0])?;
+            e.emit(t, &[rd, ra, imm])?;
             e.finish(*dst, rd)
         }
-        Inst::Store { val, addr } => {
+        Inst::Store { val, addr, off, index } => {
             let r = e.repr(*val);
             let rv = e.src_reg(*val, 10)?;
-            let ra = e.src_reg(*addr, 9)?;
+            let (ra, imm) = e.address(*addr, *off, *index, r.bits() / 8, 9, 11)?;
             let t = match r.bits() {
                 8 => "strb {w}, [{x}, #{i 0..4095}]",
                 16 => "strh {w}, [{x}, #{i 0..8190 /2}]",
@@ -1224,7 +1273,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                 64 => "str {x}, [{x}, #{i 0..32760 /8}]",
                 n => return Err(format!("no {}-bit memory access", n)),
             };
-            e.emit(t, &[rv, ra, 0]).map(|_| ())
+            e.emit(t, &[rv, ra, imm]).map(|_| ())
         }
         Inst::PtrAdd { dst, base, off } => {
             let rb = e.src_reg(*base, 9)?;

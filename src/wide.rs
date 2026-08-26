@@ -602,36 +602,20 @@ impl Lower<'_> {
                 let row: Vec<ValueId> = row.into_iter().map(|w| w.unwrap_or_else(|| self.cst(Type::U64, 0))).collect();
                 self.define(dst, &row);
             }
-            Inst::Load { dst, addr } if self.wide(dst) => {
+            Inst::Load { dst, addr, off, index } if self.wide(dst) => {
                 let n = self.expand(dst).len();
                 let mut row = Vec::new();
                 for i in 0..n {
-                    let a = if i == 0 {
-                        addr
-                    } else {
-                        let off = self.cst(Type::I64, 8 * i as i64);
-                        let p = self.tmp(Type::Ptr);
-                        self.out.push(Inst::PtrAdd { dst: p, base: addr, off });
-                        p
-                    };
                     let w = self.tmp(Type::U64);
-                    self.out.push(Inst::Load { dst: w, addr: a });
+                    self.out.push(Inst::Load { dst: w, addr, off: off + 8 * i as i64, index });
                     row.push(w);
                 }
                 self.define(dst, &row);
             }
-            Inst::Store { val, addr } if self.wide(val) => {
+            Inst::Store { val, addr, off, index } if self.wide(val) => {
                 let v = self.views(val);
                 for (i, &w) in v.iter().enumerate() {
-                    let a = if i == 0 {
-                        addr
-                    } else {
-                        let off = self.cst(Type::I64, 8 * i as i64);
-                        let p = self.tmp(Type::Ptr);
-                        self.out.push(Inst::PtrAdd { dst: p, base: addr, off });
-                        p
-                    };
-                    self.out.push(Inst::Store { val: w, addr: a });
+                    self.out.push(Inst::Store { val: w, addr, off: off + 8 * i as i64, index });
                 }
             }
             Inst::Call { dsts, callee, args } => {

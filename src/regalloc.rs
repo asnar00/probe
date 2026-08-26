@@ -46,10 +46,18 @@ pub(crate) fn inst_uses(inst: &Inst, out: &mut Vec<ValueId>) {
             out.push(*src);
             out.push(*val);
         }
-        Inst::Load { addr, .. } => out.push(*addr),
-        Inst::Store { val, addr } => {
+        Inst::Load { addr, index, .. } => {
+            out.push(*addr);
+            if let Some((i, _)) = index {
+                out.push(*i);
+            }
+        }
+        Inst::Store { val, addr, index, .. } => {
             out.push(*val);
             out.push(*addr);
+            if let Some((i, _)) = index {
+                out.push(*i);
+            }
         }
         Inst::PtrAdd { base, off, .. } => {
             out.push(*base);

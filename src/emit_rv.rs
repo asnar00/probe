@@ -365,6 +365,30 @@ impl RvEmit<'_> {
         self.emit(SRLI, &[rd, rd, 64 - (off + w) as i64]).map(|_| ())
     }
 
+    /// the base register and 12-bit immediate for an access at base +
+    /// off + index * step: the immediate form when the offset fits,
+    /// else the address computed into `scratch` (`scratch2` for the
+    /// scaled index or a wide offset)
+    fn address(&mut self, base: ValueId, off: i64, index: Option<(ValueId, u8)>, scratch: i64, scratch2: i64) -> Result<(i64, i64), String> {
+        let mut rb = self.src_reg(base, scratch)?;
+        if let Some((i, step)) = index {
+            let ri = self.src_reg(i, scratch2)?;
+            if step > 1 {
+                self.emit(SLLI, &[scratch2, ri, step.trailing_zeros() as i64])?;
+                self.emit("add {r}, {r}, {r}", &[scratch, rb, scratch2])?;
+            } else {
+                self.emit("add {r}, {r}, {r}", &[scratch, rb, ri])?;
+            }
+            rb = scratch;
+        }
+        if (-2048..=2047).contains(&off) {
+            return Ok((rb, off));
+        }
+        self.iconst(scratch2, off)?;
+        self.emit("add {r}, {r}, {r}", &[scratch, rb, scratch2])?;
+        Ok((scratch, 0))
+    }
+
     fn epilogue(&mut self) -> Result<(), String> {
         for (k, &r) in self.alloc.used_regs.clone().iter().enumerate() {
             self.emit(LD, &[r, 16 + 8 * k as i64, SP])?;
@@ -701,9 +725,9 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             }
             Ok(())
         }
-        Inst::Load { dst, addr } => {
+        Inst::Load { dst, addr, off, index } => {
             let r = e.repr(*dst);
-            let ra = e.src_reg(*addr, T0)?;
+            let (ra, imm) = e.address(*addr, *off, *index, T0, T2)?;
             let rd = e.dst_reg(*dst, T1);
             let t = match (r.bits(), r.signed()) {
                 (8, true) => "lb {r}, {i -2048..2047}({r})",
@@ -715,13 +739,13 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
                 (64, _) => LD,
                 (n, _) => return Err(format!("no {}-bit memory access", n)),
             };
-            e.emit(t, &[rd, 0, ra])?;
+            e.emit(t, &[rd, imm, ra])?;
             e.finish(*dst, rd)
         }
-        Inst::Store { val, addr } => {
+        Inst::Store { val, addr, off, index } => {
             let r = e.repr(*val);
             let rv = e.src_reg(*val, T1)?;
-            let ra = e.src_reg(*addr, T0)?;
+            let (ra, imm) = e.address(*addr, *off, *index, T0, T2)?;
             let t = match r.bits() {
                 8 => "sb {r}, {i -2048..2047}({r})",
                 16 => "sh {r}, {i -2048..2047}({r})",
@@ -729,7 +753,7 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
                 64 => SD,
                 n => return Err(format!("no {}-bit memory access", n)),
             };
-            e.emit(t, &[rv, 0, ra])?;
+            e.emit(t, &[rv, imm, ra])?;
             Ok(())
         }
         Inst::PtrAdd { dst, base, off } => {

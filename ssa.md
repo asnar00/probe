@@ -217,8 +217,18 @@ zero-extend.
 v: i64 = load addr
 b: u8  = load addr
 store v, addr
+v: i64 = load base, 16         ; base + 16
+v: i32 = load base, i, 4       ; base + i * 4 (i: i64 or u64; step 1, 2, 4 or 8)
+store v, base, i, 4
 p: ptr = ptradd base, off    ; base: ptr, off: i64 or u64
 ```
+
+Values are an unbounded set of named registers; `load` and `store` are
+the only way in and out of memory, and the two addressing forms are what
+the targets' load and store instructions take themselves (an immediate
+offset on all three; the scaled index computes an address first where
+the target has no form for it). Whether a value spills to the stack is
+the allocator's business and invisible here.
 
 ### Calls
 
