@@ -6,6 +6,28 @@ has the full story for any of them.
 
 ---
 
+### wide values — `4357f56` · 2026-08-26
+
+`i128`, `u256`, a 136-bit pack: any integer or pack up to 256 bits.
+Nothing changed in the backends. A wide value is checked as written,
+then lowered to a row of 64-bit words right after parsing (`src/wide.rs`)
+— carry chains for `add`/`sub`, schoolbook products for `mul`, word
+arrangement for shifts (a branchless logarithmic select when the amount
+is a runtime value), lexicographic compares, sign-filled extensions,
+masked field access for packs, word-by-word memory. `div` and `rem` are
+the exception: they dispatch to `lib/wide.ssa`'s `div(W)`/`rem(W)`,
+restoring-division loops written in SSA over the wide type itself and
+lowered like anything else. A `u128` parameter is two word parameters
+and a `u128` result two results, which is what the suite directives
+give and expect (`suite/wide.ssa`, 130 cases against Python's integers,
+plus 400 random rows against Rust's `u128` in a test).
+
+Two things surfaced by the first 256-bit multiply: the register
+allocator now shares spill slots between values whose lifetimes do not
+overlap, and the suite's bare-metal driver is one function per case.
+
+---
+
 ### platforms as rule files — `3181412` · 2026-08-26
 
 `targets/arm64.platform`, `riscv64.platform`, `wasm32.platform`: what a
