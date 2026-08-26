@@ -41,9 +41,9 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   structured front-end (`if`/`loop`/`break`/`continue`/`yield`) that
   lowers to the flat block graph at parse time; and abstract `int`/`uint`
   types resolved to a concrete width by a per-target replacement policy
-  (`--int=i32|i64` to override), and an abstract `float` resolved the
-  same way (`--float=f16|bf16|f32|f64|E,M`) to the library's
-  `float(E, M)`.
+  (`--int=i32|i64` to override), and abstract `float` and `fixed`
+  resolved the same way (`--float=f16|bf16|f32|f64|E,M`, `--fixed=I,F`)
+  to the libraries' `float(E, M)` and `fixed(I, F)`.
 - **Two learners**:
   - `src/learn.rs` for fixed-width register ISAs: one-hot probes XORed
     against a baseline map each operand bit to its encoding bit — which
@@ -83,7 +83,7 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   slot with slack, calls routed through counting trampolines, so an edited
   function recompiles in place and a hot one is promoted through the full
   pipeline without disturbing its neighbours.
-- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 337
+- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 367
   cases with expectations embedded as `;! gcd 48 36 -> 12` directives, run
   identically against every backend — including arm64 under
   qemu-system-aarch64 as an independent second referee for the same bytes
@@ -136,6 +136,7 @@ cargo run -- run suite/float.ssa fadd32 0x3dcccccd 0x3e4ccccd   # 0.1 + 0.2 -> 0
 cargo run -- --soft run suite/float.ssa fadd32 0x3dcccccd 0x3e4ccccd   # same answer, ~100 instructions
 cargo run -- run suite/afloat.ssa hyp 3 4                  # sqrt(3*3 + 4*4) over abstract floats -> 5
 cargo run -- --float=f16 run suite/afloat.ssa hyp 3 4      # the same program, at 16 bits
+cargo run -- run suite/fixed.ssa divf 7 2                   # fixed point (lib/fixed.ssa): 7 / 2 -> 3
 
 # the incremental compiler. Edit the file while this runs — changed
 # functions recompile in place at level 0, and functions that get hot

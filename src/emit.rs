@@ -2095,7 +2095,7 @@ entry:
             let at = c.funcs[n];
             offs.iter().find(|&&o| o > at).map(|&o| o - at).unwrap_or(c.code.len() - at)
         };
-        assert!(size(&hard, "fadd32") < size(&soft, "fadd32") / 4, "{} vs {}", size(&hard, "fadd32"), size(&soft, "fadd32"));
+        assert!(size(&hard, "add_8_23") < size(&soft, "add_8_23") / 4, "{} vs {}", size(&hard, "add_8_23"), size(&soft, "add_8_23"));
         for platform in [Platform::none(), Platform::arm64()] {
             softfloat_check(&jit_on(src, &platform));
         }
@@ -2509,7 +2509,7 @@ entry:
             crate::ssa::Inst::Call { callee, .. } => Some(callee.clone()),
             _ => None,
         });
-        assert_eq!(callee.as_deref(), Some("fadd16"));
+        assert_eq!(callee.as_deref(), Some("add_5_10"));
         // and both are right: f32 against the FPU, f16 against the reference
         let j = jit::JitCode::new(&compiled).expect("jit");
         for (a, b) in [(1.0f32, 2.0f32), (0.1, 0.2), (1.0, 1e-8), (3.0, -1.0), (f32::MAX, f32::MAX)] {
@@ -2521,6 +2521,59 @@ entry:
             let want = round_to(5, 10, to_f64(5, 10, a) + to_f64(5, 10, b));
             let got = native_result(Repr::U(16), j.call("sum16", &[a as i64, b as i64]).unwrap()) as u64;
             assert_eq!(got, want, "f16 {:#x} + {:#x}", a, b);
+        }
+    }
+
+    /// fixed(8, 8) against an exact model: mul and div truncate toward
+    /// zero, div by zero saturates, add wraps
+    #[test]
+    fn fixed_point_matches_model() {
+        let src = crate::ssa::with_prelude(include_str!("../suite/fixed.ssa"));
+        let j = jit(&src);
+        let mut seed = 0x1234_5678_9abc_def1u64;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut vals: Vec<i16> = vec![0, 1, -1, 256, -256, 384, -384, 127, -128, i16::MAX, i16::MIN, 0x7f00, -0x7f00, 3, -3];
+        for _ in 0..150 {
+            vals.push(rnd() as i16);
+        }
+        let as_bits = |v: i16| v as u16 as i64;
+        let back = |x: i64| x as u16 as i16;
+        for &a in &vals {
+            for &b in &vals {
+                let want_add = a.wrapping_add(b);
+                let got = back(native_result(Repr::U(16), j.call("fadd88", &[as_bits(a), as_bits(b)]).unwrap()));
+                assert_eq!(got, want_add, "fadd88 {} {}", a, b);
+                // truncating mul: (a * b) / 256 toward zero, wrapped to 16 bits
+                let p = a as i64 * b as i64;
+                let want_mul = (p / 256) as i16; // Rust's / truncates toward zero
+                let got = back(native_result(Repr::U(16), j.call("fmul88", &[as_bits(a), as_bits(b)]).unwrap()));
+                assert_eq!(got, want_mul, "fmul88 {} {}", a, b);
+                let want_div = if b == 0 {
+                    if a == 0 {
+                        0
+                    } else if a < 0 {
+                        i16::MIN
+                    } else {
+                        i16::MAX
+                    }
+                } else {
+                    ((a as i64 * 256) / b as i64) as i16
+                };
+                let got = back(native_result(Repr::U(16), j.call("fdiv88", &[as_bits(a), as_bits(b)]).unwrap()));
+                assert_eq!(got, want_div, "fdiv88 {} {}", a, b);
+            }
+            // conversions: to int floors; to float is exact; from float truncates toward zero
+            let want_int = (a as i32) >> 8;
+            assert_eq!(native_result(Repr::S(32), j.call("toint88", &[as_bits(a)]).unwrap()) as i32, want_int, "toint88 {}", a);
+            let f = a as f32 / 256.0;
+            assert_eq!(native_result(Repr::U(32), j.call("tof32", &[as_bits(a)]).unwrap()) as u32, f.to_bits(), "tof32 {}", a);
+            let want_back = (f * 256.0) as i32 as i16;
+            assert_eq!(back(native_result(Repr::U(16), j.call("fromf32", &[f.to_bits() as i64]).unwrap())), want_back, "fromf32 {}", a);
         }
     }
 }

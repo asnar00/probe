@@ -46,7 +46,7 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `name`, `name(8, 23)` | a declared type, plain or instantiated with widths (see *Type declarations*) |
 | `pack { ... }` | bitfields packed into at most 64 bits (see *Packs*) |
 | `i(expr)`, `u(expr)` | an integer whose width is an expression — inside type declarations |
-| `int`, `uint`, `float` | abstract numbers — resolved to a concrete width by the target's replacement policy (see *Abstract numeric types*) |
+| `int`, `uint`, `float`, `fixed` | abstract numbers — resolved to a concrete width by the target's replacement policy (see *Abstract numeric types*) |
 
 Any width works anywhere a value lives — registers, block parameters,
 calls, packs. Memory is the exception: only 8-, 16-, 32-, and 64-bit types
@@ -296,9 +296,13 @@ templates — like structured control flow, generics are sugar the parser
 lowers. A pack literal `const` is its bit pattern.
 
 **The prelude.** Every program compiled by probe gets `lib/*.ssa`
-appended (the float library lives in `lib/float.ssa`), so `float(E, M)`,
-`f32`, `f64`, `f16`, `bf16`, and the operations on them are always in
-scope; a file may re-declare a type identically.
+appended (the float library is `lib/float.ssa`, fixed point
+`lib/fixed.ssa`), so `float(E, M)`, `fixed(I, F)`, `f32`, `f64`, `f16`,
+`bf16`, and the operations on them are always in scope; a file may
+re-declare a type identically, and may name a type the prelude declares
+after it. An explicit instantiation by name (`add(8, 23)`) needs the
+name to be unambiguous — `add` has a float and a fixed form, so apply
+it as an operation and let the types choose.
 
 **Dispatch.** A generic function whose first parameter and first result
 are written in terms of its own width parameters *is* an operation of
@@ -369,6 +373,13 @@ is abstract when the policy has arguments for it). So `fn half(x: float)
 -> float { r: float = div x, 2.0 }` is written once, dispatches to the
 library's `div(E, M)` for the chosen width, and lands on the platform's
 `fdiv` where there is one.
+
+`fixed` is the same again for the library's `fixed(I, F)` — a
+two's-complement integer of I + F bits with F fraction bits, in
+`lib/fixed.ssa` — resolved to half the `int` width each side
+(`fixed(32, 32)` with i64, `fixed(16, 16)` with i32) or `--fixed=I,F`.
+Its operations are integer instructions all the way down; `conv`
+reaches it from integers and floats, and back.
 Because types live on variables, resolution is a single rewrite of the
 value tables before verification; opcodes, instructions, and everything
 downstream see only concrete types.

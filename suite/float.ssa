@@ -1,28 +1,97 @@
 ; the float library (lib/float.ssa) instantiated for fp8, fp16, bf16, f32,
-; f64, and exercised through named instantiations and the plain opcodes
-fn fadd8 = add(4, 3)
-fn fadd16 = add(5, 10)
-fn faddb16 = add(8, 7)
-fn fadd32 = add(8, 23)
-fn fadd64 = add(11, 52)
-fn fsub8 = sub(4, 3)
-fn fsub16 = sub(5, 10)
-fn fsub32 = sub(8, 23)
-fn fsub64 = sub(11, 52)
-fn fmul8 = mul(4, 3)
-fn fmul16 = mul(5, 10)
-fn fmulb16 = mul(8, 7)
-fn fmul32 = mul(8, 23)
-fn fmul64 = mul(11, 52)
-fn fdiv8 = div(4, 3)
-fn fdiv16 = div(5, 10)
-fn fdiv32 = div(8, 23)
-fn fdiv64 = div(11, 52)
-fn fsqrt8 = sqrt(4, 3)
-fn fsqrt16 = sqrt(5, 10)
-fn fsqrtb16 = sqrt(8, 7)
-fn fsqrt32 = sqrt(8, 23)
-fn fsqrt64 = sqrt(11, 52)
+; f64 through the plain opcodes
+fn fadd8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
+    r: float(4, 3) = add a, b
+    ret r
+}
+fn fadd16(a: float(5, 10), b: float(5, 10)) -> float(5, 10) {
+    r: float(5, 10) = add a, b
+    ret r
+}
+fn faddb16(a: float(8, 7), b: float(8, 7)) -> float(8, 7) {
+    r: float(8, 7) = add a, b
+    ret r
+}
+fn fadd32(a: float(8, 23), b: float(8, 23)) -> float(8, 23) {
+    r: float(8, 23) = add a, b
+    ret r
+}
+fn fadd64(a: float(11, 52), b: float(11, 52)) -> float(11, 52) {
+    r: float(11, 52) = add a, b
+    ret r
+}
+fn fsub8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
+    r: float(4, 3) = sub a, b
+    ret r
+}
+fn fsub16(a: float(5, 10), b: float(5, 10)) -> float(5, 10) {
+    r: float(5, 10) = sub a, b
+    ret r
+}
+fn fsub32(a: float(8, 23), b: float(8, 23)) -> float(8, 23) {
+    r: float(8, 23) = sub a, b
+    ret r
+}
+fn fsub64(a: float(11, 52), b: float(11, 52)) -> float(11, 52) {
+    r: float(11, 52) = sub a, b
+    ret r
+}
+fn fmul8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
+    r: float(4, 3) = mul a, b
+    ret r
+}
+fn fmul16(a: float(5, 10), b: float(5, 10)) -> float(5, 10) {
+    r: float(5, 10) = mul a, b
+    ret r
+}
+fn fmulb16(a: float(8, 7), b: float(8, 7)) -> float(8, 7) {
+    r: float(8, 7) = mul a, b
+    ret r
+}
+fn fmul32(a: float(8, 23), b: float(8, 23)) -> float(8, 23) {
+    r: float(8, 23) = mul a, b
+    ret r
+}
+fn fmul64(a: float(11, 52), b: float(11, 52)) -> float(11, 52) {
+    r: float(11, 52) = mul a, b
+    ret r
+}
+fn fdiv8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
+    r: float(4, 3) = div a, b
+    ret r
+}
+fn fdiv16(a: float(5, 10), b: float(5, 10)) -> float(5, 10) {
+    r: float(5, 10) = div a, b
+    ret r
+}
+fn fdiv32(a: float(8, 23), b: float(8, 23)) -> float(8, 23) {
+    r: float(8, 23) = div a, b
+    ret r
+}
+fn fdiv64(a: float(11, 52), b: float(11, 52)) -> float(11, 52) {
+    r: float(11, 52) = div a, b
+    ret r
+}
+fn fsqrt8(a: float(4, 3)) -> float(4, 3) {
+    r: float(4, 3) = sqrt a
+    ret r
+}
+fn fsqrt16(a: float(5, 10)) -> float(5, 10) {
+    r: float(5, 10) = sqrt a
+    ret r
+}
+fn fsqrtb16(a: float(8, 7)) -> float(8, 7) {
+    r: float(8, 7) = sqrt a
+    ret r
+}
+fn fsqrt32(a: float(8, 23)) -> float(8, 23) {
+    r: float(8, 23) = sqrt a
+    ret r
+}
+fn fsqrt64(a: float(11, 52)) -> float(11, 52) {
+    r: float(11, 52) = sqrt a
+    ret r
+}
 
 ;! fadd8 56 56 -> 64
 ;! fadd8 60 60 -> 68

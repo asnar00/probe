@@ -778,14 +778,16 @@ pub struct Policy {
     pub int: Type,
     /// (E, M) for a bare `float`
     pub float: (u32, u32),
+    /// (I, F) for a bare `fixed`
+    pub fixed: (u32, u32),
 }
 
 impl Policy {
     pub fn new(int: Type) -> Result<Policy, String> {
         match int {
             // the float of the same class as the integer: f32 with i32, f64 with i64
-            Type::I32 => Ok(Policy { int, float: (8, 23) }),
-            Type::I64 => Ok(Policy { int, float: (11, 52) }),
+            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16) }),
+            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32) }),
             t => Err(format!("'int' cannot resolve to {}", t.name())),
         }
     }
@@ -793,6 +795,17 @@ impl Policy {
     pub fn with_float(mut self, e: u32, m: u32) -> Policy {
         self.float = (e, m);
         self
+    }
+
+    pub fn with_fixed(mut self, i: u32, f: u32) -> Policy {
+        self.fixed = (i, f);
+        self
+    }
+
+    /// a `--fixed=` argument: `I,F`
+    pub fn fixed_from_arg(s: &str) -> Option<(u32, u32)> {
+        let (i, f) = s.split_once(',')?;
+        Some((i.trim().parse().ok()?, f.trim().parse().ok()?))
     }
 
     /// a `--float=` argument: f16, bf16, f32, f64, or `E,M`
@@ -813,6 +826,7 @@ impl Policy {
     fn default_args(&self, name: &str) -> Option<Vec<i64>> {
         match name {
             "float" => Some(vec![self.float.0 as i64, self.float.1 as i64]),
+            "fixed" => Some(vec![self.fixed.0 as i64, self.fixed.1 as i64]),
             _ => None,
         }
     }
@@ -1157,20 +1171,45 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     // order; the prelude is appended, so this matters
     let mut funcs = Vec::new();
     let mut aliases: Vec<usize> = Vec::new(); // token positions of `fn x = g(..)`
+    let mut decls: Vec<usize> = Vec::new(); // token positions of `type ...`
     p.skip_newlines();
     while !p.at_end() {
         match p.item_kind() {
-            Item::Type => p.parse_type_decl()?,
+            Item::Type => {
+                decls.push(p.pos);
+                p.skip_line();
+            }
+            Item::Alias => p.skip_line(),
             _ => {
-                if matches!(p.item_kind(), Item::Alias) {
-                    p.skip_line();
-                } else {
-                    let (_, hi) = p.function_range()?;
-                    p.pos = hi + 1;
-                }
+                let (_, hi) = p.function_range()?;
+                p.pos = hi + 1;
             }
         }
         p.skip_newlines();
+    }
+    // declarations may name types declared later (a file's `type q8 =
+    // fixed(8, 8)` precedes the appended prelude's `fixed`): keep trying
+    // the ones that failed on an unknown type while any succeeds
+    let mut remaining = decls;
+    loop {
+        let mut failed: Vec<(usize, ParseError)> = Vec::new();
+        for &at in &remaining {
+            p.pos = at;
+            if let Err(e) = p.parse_type_decl() {
+                if e.msg.starts_with("unknown type") || e.msg.starts_with("unknown pack type") {
+                    failed.push((at, e));
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+        if failed.is_empty() {
+            break;
+        }
+        if failed.len() == remaining.len() {
+            return Err(failed.remove(0).1);
+        }
+        remaining = failed.into_iter().map(|(at, _)| at).collect();
     }
     // pass 1: generic functions and plain signatures
     p.pos = 0;

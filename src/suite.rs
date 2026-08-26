@@ -150,7 +150,7 @@ impl Report {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn run_dir(dir: &str, backend: Backend) -> Result<Report, String> {
-    run_dir_at(dir, backend, opt::MAX_LEVEL, None, None)
+    run_dir_at(dir, backend, opt::MAX_LEVEL, None, None, None)
 }
 
 /// Each target's default replacement policy for the abstract 'int' type:
@@ -177,6 +177,7 @@ pub fn run_dir_at(
     level: usize,
     int_override: Option<ssa::Type>,
     float_override: Option<(u32, u32)>,
+    fixed_override: Option<(u32, u32)>,
 ) -> Result<Report, String> {
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {}", dir, e))?
@@ -212,7 +213,10 @@ pub fn run_dir_at(
     }
 
     let (fe, fm) = float_override.unwrap_or(default_float(backend));
-    let policy = ssa::Policy::new(int_override.unwrap_or(default_int(backend)))?.with_float(fe, fm);
+    let mut policy = ssa::Policy::new(int_override.unwrap_or(default_int(backend)))?.with_float(fe, fm);
+    if let Some((i, f)) = fixed_override {
+        policy = policy.with_fixed(i, f);
+    }
     let mut report = Report {
         passed: 0,
         failed: 0,
@@ -879,7 +883,7 @@ mod tests {
     fn regression_suite_every_level() {
         // any prefix of the pass pipeline must be a correct stopping point
         for level in 0..=crate::opt::MAX_LEVEL {
-            let report = super::run_dir_at("suite", super::Backend::Native, level, None, None)
+            let report = super::run_dir_at("suite", super::Backend::Native, level, None, None, None)
                 .expect("suite runs");
             assert_eq!(report.failed, 0, "at level {}:\n{}", level, report.log);
         }
@@ -895,6 +899,7 @@ mod tests {
                 super::Backend::Native,
                 crate::opt::MAX_LEVEL,
                 Some(int),
+                None,
                 None,
             )
             .expect("suite runs");
@@ -913,9 +918,26 @@ mod tests {
                 crate::opt::MAX_LEVEL,
                 None,
                 Some((e, m)),
+                None,
             )
             .expect("suite runs");
             assert_eq!(report.failed, 0, "with float=({}, {}):\n{}", e, m, report.log);
+        }
+    }
+
+    #[test]
+    fn regression_suite_both_fixed_policies() {
+        for (i, f) in [(16u32, 16u32), (32, 32), (24, 8)] {
+            let report = super::run_dir_at(
+                "suite",
+                super::Backend::Native,
+                crate::opt::MAX_LEVEL,
+                None,
+                None,
+                Some((i, f)),
+            )
+            .expect("suite runs");
+            assert_eq!(report.failed, 0, "with fixed=({}, {}):\n{}", i, f, report.log);
         }
     }
 

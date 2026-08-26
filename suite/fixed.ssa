@@ -1,0 +1,141 @@
+; the fixed-point library (lib/fixed.ssa): fixed(8, 8) by its 16-bit
+; patterns, and programs over the abstract 'fixed' that are policy-portable
+; (integers in and out, results exact at every width the policy picks)
+;! fmul88 384 512 -> 768
+;! fmul88 65152 512 -> 64768
+;! fmul88 384 384 -> 576
+;! fdiv88 768 512 -> 384
+;! fdiv88 256 768 -> 85
+;! fdiv88 65280 768 -> 65451
+;! fdiv88 256 0 -> 32767
+;! fdiv88 65280 0 -> 32768
+;! fadd88 384 512 -> 896
+;! fsub88 384 512 -> 65408
+;! fneg88 384 -> 65152
+;! flt88 384 512 -> 1
+;! flt88 512 384 -> 0
+;! fmax88 384 65152 -> 384
+;! toint88 896 -> 3
+;! toint88 65408 -> -1
+;! fromint88 3 -> 768
+;! fromint88 -2 -> 65024
+;! fromf32 1067450368 -> 320
+;! tof32 384 -> 1069547520
+;! mulf 3 4 -> 12
+;! mulf -3 4 -> -12
+;! divf 7 2 -> 3
+;! divf -7 2 -> -4
+;! avg 3 4 -> 3
+;! quarter 1 -> 1
+;! absf -5 -> 5
+;! viafloat 7 -> 7
+;! viafloat -9 -> -9
+;! frac 5 2 -> 128
+
+type q8 = fixed(8, 8)
+
+fn fmul88(a: q8, b: q8) -> q8 {
+    r: q8 = mul a, b
+    ret r
+}
+fn fdiv88(a: q8, b: q8) -> q8 {
+    r: q8 = div a, b
+    ret r
+}
+fn fadd88(a: q8, b: q8) -> q8 {
+    r: q8 = add a, b
+    ret r
+}
+fn fsub88(a: q8, b: q8) -> q8 {
+    r: q8 = sub a, b
+    ret r
+}
+fn fneg88(a: q8) -> q8 {
+    r: q8 = neg a
+    ret r
+}
+fn flt88(a: q8, b: q8) -> u1 {
+    r: u1 = cmp.lt a, b
+    ret r
+}
+fn fmax88(a: q8, b: q8) -> q8 {
+    r: q8 = max a, b
+    ret r
+}
+fn toint88(a: q8) -> i32 {
+    r: i32 = conv a
+    ret r
+}
+fn fromint88(a: i32) -> q8 {
+    r: q8 = conv a
+    ret r
+}
+fn fromf32(a: f32) -> q8 {
+    r: q8 = conv a
+    ret r
+}
+fn tof32(a: q8) -> f32 {
+    r: f32 = conv a
+    ret r
+}
+
+; --- the abstract fixed: whatever width the policy picks ---
+fn mulf(a: i32, b: i32) -> i32 {
+    fa: fixed = conv a
+    fb: fixed = conv b
+    p: fixed = mul fa, fb
+    r: i32 = conv p
+    ret r
+}
+; toward minus infinity on the way back to an integer
+fn divf(a: i32, b: i32) -> i32 {
+    fa: fixed = conv a
+    fb: fixed = conv b
+    q: fixed = div fa, fb
+    r: i32 = conv q
+    ret r
+}
+fn avg(a: i32, b: i32) -> i32 {
+    fa: fixed = conv a
+    fb: fixed = conv b
+    s: fixed = add fa, fb
+    two: fixed = conv 2: i32
+    h: fixed = div s, two
+    r: i32 = conv h
+    ret r
+}
+; (x / 2 / 2) * 4
+fn quarter(x: i32) -> i32 {
+    fx: fixed = conv x
+    two: fixed = conv 2: i32
+    h: fixed = div fx, two
+    q: fixed = div h, two
+    four: fixed = conv 4: i32
+    y: fixed = mul q, four
+    r: i32 = conv y
+    ret r
+}
+fn absf(a: i32) -> i32 {
+    fa: fixed = conv a
+    m: fixed = abs fa
+    r: i32 = conv m
+    ret r
+}
+; int -> float -> fixed -> float -> int
+fn viafloat(a: i32) -> i32 {
+    f: float = conv a
+    x: fixed = conv f
+    g: float = conv x
+    r: i32 = conv g
+    ret r
+}
+; the fraction field of 5 / 2 is one half, in F bits: here as a 16-bit
+; pattern read from a fixed(8, 8)
+fn frac(a: i32, b: i32) -> u16 {
+    fa: q8 = conv a
+    fb: q8 = conv b
+    q: q8 = div fa, fb
+    f: u8 = get q, frac
+    w: u16 = conv f
+    ret w
+}

@@ -227,7 +227,7 @@ fn sub(E, M)(a: float(E, M), b: float(E, M)) -> float(E, M) {
     sb: u1 = get b, sign
     nsb: u1 = xor sb, 1
     nb: float(E, M) = set b, sign, nsb
-    r: float(E, M) = add(E, M)(a, nb)
+    r: float(E, M) = add a, nb
     ret r
 }
 
@@ -1120,7 +1120,7 @@ fn fma(E, M)(a: float(E, M), b: float(E, M), c: float(E, M)) -> float(E, M) {
     }
     if c_zero {
         ; nothing to add: the product, rounded once
-        pr: float(E, M) = mul(E, M)(a, b)
+        pr: float(E, M) = mul a, b
         ret pr
     }
     ; the product, exactly, as (hi, lo), from k-bit halves

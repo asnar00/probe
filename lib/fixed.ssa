@@ -1,0 +1,244 @@
+; probe's fixed-point library: fixed(I, F) is a two's-complement integer of
+; I + F bits read with F fraction bits - value = bits / 2^F - laid out
+; lowest bits first: the fraction, then the integer part with the sign on
+; top. Arithmetic wraps like the integers underneath; mul and div truncate
+; toward zero; div by zero saturates. Conversions to and from floats go
+; through the float library, so `conv` reaches fixed from every number.
+type fixed(I, F) = pack { frac: u(F), int: i(I) }
+
+fn add(I, F)(a: fixed(I, F), b: fixed(I, F)) -> fixed(I, F) {
+    ai: i(I + F) = cast a
+    bi: i(I + F) = cast b
+    s: i(I + F) = add ai, bi
+    r: fixed(I, F) = cast s
+    ret r
+}
+fn sub(I, F)(a: fixed(I, F), b: fixed(I, F)) -> fixed(I, F) {
+    ai: i(I + F) = cast a
+    bi: i(I + F) = cast b
+    s: i(I + F) = sub ai, bi
+    r: fixed(I, F) = cast s
+    ret r
+}
+fn neg(I, F)(a: fixed(I, F)) -> fixed(I, F) {
+    ai: i(I + F) = cast a
+    n: i(I + F) = sub 0, ai
+    r: fixed(I, F) = cast n
+    ret r
+}
+fn abs(I, F)(a: fixed(I, F)) -> fixed(I, F) {
+    ai: i(I + F) = cast a
+    neg: u1 = cmp.lt ai, 0
+    m: i(I + F) = if neg {
+        n: i(I + F) = sub 0, ai
+        yield n
+    } else {
+        yield ai
+    }
+    r: fixed(I, F) = cast m
+    ret r
+}
+fn lt(I, F)(a: fixed(I, F), b: fixed(I, F)) -> u1 {
+    ai: i(I + F) = cast a
+    bi: i(I + F) = cast b
+    r: u1 = cmp.lt ai, bi
+    ret r
+}
+fn le(I, F)(a: fixed(I, F), b: fixed(I, F)) -> u1 {
+    ai: i(I + F) = cast a
+    bi: i(I + F) = cast b
+    r: u1 = cmp.le ai, bi
+    ret r
+}
+fn gt(I, F)(a: fixed(I, F), b: fixed(I, F)) -> u1 {
+    ai: i(I + F) = cast a
+    bi: i(I + F) = cast b
+    r: u1 = cmp.gt ai, bi
+    ret r
+}
+fn ge(I, F)(a: fixed(I, F), b: fixed(I, F)) -> u1 {
+    ai: i(I + F) = cast a
+    bi: i(I + F) = cast b
+    r: u1 = cmp.ge ai, bi
+    ret r
+}
+fn eq(I, F)(a: fixed(I, F), b: fixed(I, F)) -> u1 {
+    ai: i(I + F) = cast a
+    bi: i(I + F) = cast b
+    r: u1 = cmp.eq ai, bi
+    ret r
+}
+fn ne(I, F)(a: fixed(I, F), b: fixed(I, F)) -> u1 {
+    ai: i(I + F) = cast a
+    bi: i(I + F) = cast b
+    r: u1 = cmp.ne ai, bi
+    ret r
+}
+fn min(I, F)(a: fixed(I, F), b: fixed(I, F)) -> fixed(I, F) {
+    ai: i(I + F) = cast a
+    bi: i(I + F) = cast b
+    alt: u1 = cmp.lt ai, bi
+    if alt {
+        ret a
+    }
+    ret b
+}
+fn max(I, F)(a: fixed(I, F), b: fixed(I, F)) -> fixed(I, F) {
+    ai: i(I + F) = cast a
+    bi: i(I + F) = cast b
+    agt: u1 = cmp.gt ai, bi
+    if agt {
+        ret a
+    }
+    ret b
+}
+
+; sign and magnitude of the raw bits, the magnitude as a u64
+fn fxmag(I, F)(a: fixed(I, F)) -> (u1, u64) {
+    ai: i(I + F) = cast a
+    neg: u1 = cmp.lt ai, 0
+    mag: i(I + F) = if neg {
+        n: i(I + F) = sub 0, ai
+        yield n
+    } else {
+        yield ai
+    }
+    mu: u(I + F) = cast mag
+    m64: u64 = conv mu
+    ret neg, m64
+}
+; a magnitude and sign back to the type (wrapping)
+fn fxmk(I, F)(neg: u1, m64: u64) -> fixed(I, F) {
+    m: i(I + F) = conv m64
+    v: i(I + F) = if neg {
+        n: i(I + F) = sub 0, m
+        yield n
+    } else {
+        yield m
+    }
+    r: fixed(I, F) = cast v
+    ret r
+}
+
+; a * b: the full product from halves, shifted down by F, truncating
+fn mul(I, F)(a: fixed(I, F), b: fixed(I, F)) -> fixed(I, F) {
+    sa: u1, ma: u64 = fxmag(I, F)(a)
+    sb: u1, mb: u64 = fxmag(I, F)(b)
+    s: u1 = xor sa, sb
+    ah: u64 = shr ma, 32
+    al: u64 = and ma, 0xffffffff
+    bh: u64 = shr mb, 32
+    bl: u64 = and mb, 0xffffffff
+    hh: u64 = mul ah, bh
+    m1: u64 = mul ah, bl
+    m2: u64 = mul al, bh
+    ll: u64 = mul al, bl
+    mh1: u64, ml1: u64 = shl128(0, m1, 32)
+    mh2: u64, ml2: u64 = shl128(0, m2, 32)
+    p1h: u64, p1l: u64 = add128(0, ll, mh1, ml1)
+    p2h: u64, p2l: u64 = add128(p1h, p1l, mh2, ml2)
+    ph: u64, pl: u64 = add128(p2h, p2l, hh, 0)
+    f64v: u64 = const F
+    qh: u64, ql: u64, st: u1 = shr128(ph, pl, f64v)
+    r: fixed(I, F) = fxmk(I, F)(s, ql)
+    ret r
+}
+
+; a / b: (|a| << F) / |b| by restoring division, truncating; by zero
+; saturates to the largest magnitude of the sign
+fn div(I, F)(a: fixed(I, F), b: fixed(I, F)) -> fixed(I, F) {
+    sa: u1, ma: u64 = fxmag(I, F)(a)
+    sb: u1, mb: u64 = fxmag(I, F)(b)
+    s: u1 = xor sa, sb
+    bz: u1 = cmp.eq mb, 0
+    if bz {
+        az: u1 = cmp.eq ma, 0
+        if az {
+            z: fixed(I, F) = cast 0: i(I + F)
+            ret z
+        }
+        big: i(I + F) = const (1 << (I + F - 1)) - 1
+        small: i(I + F) = const 0 - (1 << (I + F - 1))
+        lim: i(I + F) = if s {
+            yield small
+        } else {
+            yield big
+        }
+        sat: fixed(I, F) = cast lim
+        ret sat
+    }
+    f64v: u64 = const F
+    nh: u64, nl: u64 = shl128(0, ma, f64v)
+    ; 128 steps of shift-and-subtract; the quotient's low word is the result
+    q: u64 = loop(i: i32 = 0, rh: u64 = 0, rl: u64 = 0, qq: u64 = 0, xh: u64 = nh, xl: u64 = nl) {
+        done: u1 = cmp.eq i, 128
+        if done {
+            break qq
+        }
+        top: u64 = shr xh, 63
+        xh2: u64, xl2: u64 = shl128(xh, xl, 1)
+        rh2: u64, rl2: u64 = shl128(rh, rl, 1)
+        rl3: u64 = or rl2, top
+        ge: u1 = lt128(rh2, rl3, 0, mb)
+        q2: u64 = shl qq, 1
+        rh4: u64, rl4: u64, q3: u64 = if ge {
+            yield rh2, rl3, q2
+        } else {
+            dh: u64, dl: u64 = sub128(rh2, rl3, 0, mb)
+            q4: u64 = or q2, 1
+            yield dh, dl, q4
+        }
+        i2: i32 = add i, 1
+        continue i2, rh4, rl4, q3, xh2, xl2
+    }
+    r: fixed(I, F) = fxmk(I, F)(s, q)
+    ret r
+}
+
+; --- conversions ---
+; integers: shift by F (toward minus infinity on the way to an integer)
+fn conv(I, F, W)(a: fixed(I, F)) -> i(W) {
+    ai: i(I + F) = cast a
+    fw: i(I + F) = const F
+    sh: i(I + F) = shr ai, fw
+    r: i(W) = conv sh
+    ret r
+}
+fn conv(I, F, W)(a: fixed(I, F)) -> u(W) {
+    ai: i(I + F) = cast a
+    fw: i(I + F) = const F
+    sh: i(I + F) = shr ai, fw
+    r: u(W) = conv sh
+    ret r
+}
+fn conv(W, I, F)(a: i(W)) -> fixed(I, F) {
+    x: i(I + F) = conv a
+    fw: i(I + F) = const F
+    y: i(I + F) = shl x, fw
+    r: fixed(I, F) = cast y
+    ret r
+}
+fn conv(W, I, F)(a: u(W)) -> fixed(I, F) {
+    x: i(I + F) = conv a
+    fw: i(I + F) = const F
+    y: i(I + F) = shl x, fw
+    r: fixed(I, F) = cast y
+    ret r
+}
+; floats: scale by 2^F (exact) and convert, either way
+fn conv(E, M, I, F)(a: float(E, M)) -> fixed(I, F) {
+    scale_i: i64 = const 1 << F
+    scale: float(E, M) = conv scale_i
+    s: float(E, M) = mul a, scale
+    bits: i(I + F) = conv s
+    r: fixed(I, F) = cast bits
+    ret r
+}
+fn conv(I, F, E, M)(a: fixed(I, F)) -> float(E, M) {
+    ai: i(I + F) = cast a
+    f: float(E, M) = conv ai
+    scale_i: i64 = const 1 << F
+    scale: float(E, M) = conv scale_i
+    r: float(E, M) = div f, scale
+    ret r
+}

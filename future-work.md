@@ -84,6 +84,8 @@ Backend sketch:
   Left: the NaN-payload question (the library canonicalizes, hardware
   propagates — a platform could be asked to canonicalize), remainder and
   rounding functions (`rem`, `floor`, `round`), and decimal formatting. f16 on arm64 (FEAT_FP16) is one table line plus the `h` templates.
+- Fixed point (`lib/fixed.ssa`) truncates toward zero in mul and div;
+  rounding variants, and a `sqrt`, would fit beside them.
 - Platforms as data: the native table lives in `src/platform.rs`; a
   per-target file listing native instantiations next to the probe seed
   would let a target be described entirely outside the compiler.
