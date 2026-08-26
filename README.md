@@ -86,6 +86,13 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
   slot with slack, calls routed through counting trampolines, so an edited
   function recompiles in place and a hot one is promoted through the full
   pipeline without disturbing its neighbours.
+- **Encoding scorecards** (`src/scorecard.rs`, `targets/*.scorecard.md`):
+  every learned template checked against the official inventory its
+  learner never saw — Arm's Machine Readable Architecture XML,
+  riscv-opcodes, wabt's opcode table (`tools/get-isa-tables.sh`): the
+  encoding the fixed bits decode to must exist and the learned fields
+  must be its operand fields. 150/150, 90/90, 125/125 — and the cards
+  list what the inventory has that is not learned yet.
 - **An IEEE-754 oracle** (`src/testfloat.rs`): Berkeley TestFloat's
   vectors — 19 million cases over f16/f32/f64, every operation, every
   rounding mode (`--round=even|zero|down|up|away`, a generic parameter
@@ -155,6 +162,9 @@ cargo run -- run suite/fixed.ssa divf 7 2                   # fixed point (lib/f
 cargo run -- run suite/unit.ssa pct 50 50                   # unit fractions (lib/unit.ssa): 50% of 50% -> 25
 cargo run -- run suite/rational.ssa thirds 7               # rationals (lib/rational.ssa): (7 / 3) * 3 -> 7, exactly
 cargo run -- --scalar=rational run suite/scalar.ssa sweighted 20 80   # one program, any family
+
+# the scorecards (sh tools/get-isa-tables.sh once, to fetch the tables)
+cargo run -- scorecard                          # all three, rewriting targets/*.scorecard.md
 
 # the IEEE-754 oracle (sh tools/get-testfloat.sh once, to build it)
 cargo run -- testfloat                           # every op, f16/f32/f64, nearest even

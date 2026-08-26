@@ -3,6 +3,7 @@ mod emit;
 mod emit_rv;
 mod emit_wasm;
 mod fuzz;
+mod scorecard;
 mod testfloat;
 mod learn;
 mod opt;
@@ -122,6 +123,27 @@ fn main() -> ExitCode {
                 Err(_) => fail("function arguments must be integers"),
             }
         }
+        Some("scorecard") => {
+            let targets: Vec<&str> = if args.len() >= 2 { vec![args[1].as_str()] } else { vec!["arm64", "riscv64", "wasm32"] };
+            let mut problems = 0;
+            for t in targets {
+                match scorecard::scorecard(t) {
+                    Ok(card) => {
+                        let path = format!("targets/{}.scorecard.md", t);
+                        if let Err(e) = std::fs::write(&path, &card.text) {
+                            return fail(&e.to_string());
+                        }
+                        let summary: Vec<&str> = card.text.lines().filter(|l| l.contains(" templates match ") || l.starts_with("| ") && !l.starts_with("| `") && !l.starts_with("| group") && !l.starts_with("| template")).collect();
+                        println!("{}: {} problem(s), written to {}
+  {}", t, card.problems, path, summary.join("
+  "));
+                        problems += card.problems;
+                    }
+                    Err(e) => return fail(&e),
+                }
+            }
+            if problems == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+        }
         Some("testfloat") => {
             let only: Vec<String> = args[1..].iter().filter(|a| !a.starts_with("--")).cloned().collect();
             match testfloat::run(&only, level, policy) {
@@ -213,6 +235,7 @@ fn main() -> ExitCode {
             eprintln!("       probe live <file.ssa> <function> [args...]");
             eprintln!("       probe fuzz [count] [--seed=hex] [--slow]");
             eprintln!("       probe testfloat [f32|add|f16_to_i32...]");
+            eprintln!("       probe scorecard [arm64|riscv64|wasm32]");
             eprintln!("       (-O<n> selects the optimization level on any command;");
             eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy,");
             eprintln!("        --float=f16|bf16|f32|f64|E,M the abstract 'float' one,");

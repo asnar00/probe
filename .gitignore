@@ -1,2 +1,5 @@
 /target
 /tools/berkeley-*
+/tools/ISA_A64_xml_*
+/tools/riscv-opcodes
+/tools/wabt
