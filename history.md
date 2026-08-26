@@ -6,6 +6,23 @@ has the full story for any of them.
 
 ---
 
+### ISA variants — `2524621` · 2026-08-26
+
+A platform file is now grouped by extension, and a variant is three
+lines: `target riscv64`, `base riscv64`, `without M, F, D`. Dropping F
+and D makes every float operation the library's; dropping M makes
+`mul`, `div` and `rem` library calls too (a shift-and-add `mul(W)`
+joins the division generics), the wide lowering included. `--platform=
+rv64i` selects a core for every command, and the same 736-case suite
+passes on qemu for `rv64im` and `rv64i`, and natively for `arm64-nofp`
+— slower, unchanged answers. `probe footprint` decodes what a program
+actually used against the learned templates, and a test proves the
+`rv64i` build of the whole suite touches nothing from M, F or D (it
+caught the emitter's own multiply in a struct stride). ARM's variants
+have their slot; only the no-FP one is populated.
+
+---
+
 ### a look outward — `5be74a6` · 2026-08-26
 
 `vectors.md`: a survey, before any vector work. The learner's
