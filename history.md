@@ -6,6 +6,25 @@ has the full story for any of them.
 
 ---
 
+### the fuzzer — `2978f8c` · 2026-08-26
+
+`probe fuzz [count] [--seed=hex] [--slow]`. Programs are random but
+well-formed by construction — every integer width, packs, floats via
+the library and the platform, value-yielding `if`s, bounded loops,
+calls between functions — and built so they can't fail for a boring
+reason: divisors are `or`ed with 1, shift amounts are literals under
+the width, floats come from integers so no NaN payload reaches the
+hardware. Native `-O0` with the platform off is the reference; every
+optimization level, the platform, wasm, and (`--slow`) both qemu
+machines are referees. Disagreements are kept as suite files under
+`target/fuzz/`, and a printed seed reproduces its program alone.
+
+First catch, within 300 programs: wasm's `div_s` traps on `MIN / -1`
+where the IR says wrap. The wasm emitter now guards it arithmetically
+(divide by `rhs + 2m`, `m = rhs == -1`, then conditionally negate).
+
+---
+
 ### rational, scalar, and literals everywhere — `55a2f74` · 2026-08-26
 
 `lib/rational.ssa`: `numerator / denominator`, reduced, a zero
