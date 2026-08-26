@@ -6,6 +6,21 @@ has the full story for any of them.
 
 ---
 
+### binary128 from the same library — `85be481` · 2026-08-26
+
+`type f128 = float(15, 112)` and every float operation works, from the
+generic bodies that already served fp8 to f64 — nothing in
+`lib/float.ssa` knows about 128 bits. What it took: constants that hold
+128 bits (`const 1 << 112` used to wrap), and the few places the library
+built products or shifted significands in hand-split `u64` pairs now
+just name a type wide enough (`u(2 * M + 10)` for a product) and let the
+lowering make words of it. `fixed` and `unit` multiply and divide in
+`u128` the same way, and the old 128-bit helper functions are gone.
+`suite/f128.ssa` checks add, sub, mul, div, sqrt, fma and conversions
+against exact rational arithmetic rounded at 113 bits.
+
+---
+
 ### wide values — `4357f56` · 2026-08-26
 
 `i128`, `u256`, a 136-bit pack: any integer or pack up to 256 bits.
