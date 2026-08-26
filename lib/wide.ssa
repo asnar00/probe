@@ -120,3 +120,110 @@ fn udiv128(nh: u64, nl: u64, d: u64) -> (u64, u64) {
     }
     ret q, r
 }
+
+; --- division on wide integers ---
+; `div`/`rem` on an integer wider than a word dispatch here (the other
+; operations are lowered to words directly). Restoring division: W
+; steps of shift-and-subtract over the wide type itself, which the
+; lowering turns into word operations. Division by zero gives q = 0,
+; r = a — the loop must end somewhere; the CPUs' answer differs anyway.
+
+fn udivrem(W)(a: u(W), b: u(W)) -> (u(W), u(W)) {
+    bz: u1 = cmp.eq b, 0
+    if bz {
+        ret 0, a
+    }
+    steps: i32 = const W
+    top_shift: u(W) = const W - 1
+    q: u(W), r: u(W) = loop(i: i32 = 0, qa: u(W) = 0, ra: u(W) = 0, x: u(W) = a) {
+        done: u1 = cmp.ge i, steps
+        if done {
+            break qa, ra
+        }
+        top: u(W) = shr x, top_shift
+        r1: u(W) = shl ra, 1
+        r2: u(W) = or r1, top
+        x2: u(W) = shl x, 1
+        q1: u(W) = shl qa, 1
+        fits: u1 = cmp.ge r2, b
+        r3: u(W), q2: u(W) = if fits {
+            rs: u(W) = sub r2, b
+            qs: u(W) = or q1, 1
+            yield rs, qs
+        } else {
+            yield r2, q1
+        }
+        i2: i32 = add i, 1
+        continue i2, q2, r3, x2
+    }
+    ret q, r
+}
+
+fn div(W)(a: u(W), b: u(W)) -> u(W) {
+    q: u(W), r: u(W) = udivrem(W)(a, b)
+    ret q
+}
+
+fn rem(W)(a: u(W), b: u(W)) -> u(W) {
+    q: u(W), r: u(W) = udivrem(W)(a, b)
+    ret r
+}
+
+; signed: divide magnitudes, then the quotient takes the signs' xor and
+; the remainder the dividend's (MIN / -1 wraps to MIN, as at every width)
+fn div(W)(a: i(W), b: i(W)) -> i(W) {
+    na: u1 = cmp.lt a, 0
+    nb: u1 = cmp.lt b, 0
+    au: u(W) = cast a
+    bu: u(W) = cast b
+    am: u(W) = if na {
+        n: u(W) = sub 0, au
+        yield n
+    } else {
+        yield au
+    }
+    bm: u(W) = if nb {
+        n2: u(W) = sub 0, bu
+        yield n2
+    } else {
+        yield bu
+    }
+    q: u(W) = div am, bm
+    neg: u1 = xor na, nb
+    qs: u(W) = if neg {
+        n3: u(W) = sub 0, q
+        yield n3
+    } else {
+        yield q
+    }
+    r: i(W) = cast qs
+    ret r
+}
+
+fn rem(W)(a: i(W), b: i(W)) -> i(W) {
+    na: u1 = cmp.lt a, 0
+    nb: u1 = cmp.lt b, 0
+    au: u(W) = cast a
+    bu: u(W) = cast b
+    am: u(W) = if na {
+        n: u(W) = sub 0, au
+        yield n
+    } else {
+        yield au
+    }
+    bm: u(W) = if nb {
+        n2: u(W) = sub 0, bu
+        yield n2
+    } else {
+        yield bu
+    }
+    m: u(W) = rem am, bm
+    ms: u(W) = if na {
+        n3: u(W) = sub 0, m
+        yield n3
+    } else {
+        yield m
+    }
+    r: i(W) = cast ms
+    ret r
+}

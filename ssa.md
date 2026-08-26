@@ -40,17 +40,28 @@ things we can learn ARM64 encodings for by probing LLVM.
 
 | type    | meaning                                                    |
 |---------|------------------------------------------------------------|
-| `iN`    | signed integer of N bits, 1 ≤ N ≤ 64 (`i1`, `i5`, `i32`, `i64`) |
+| `iN`    | signed integer of N bits, 1 ≤ N ≤ 256 (`i1`, `i5`, `i32`, `i64`, `i128`) |
 | `uN`    | unsigned integer of N bits (`u1` is the boolean, `u23`, `u64`) |
 | `ptr`   | pointer (64-bit natively; a 32-bit offset on wasm)         |
 | `name`, `name(8, 23)` | a declared type, plain or instantiated with widths (see *Type declarations*) |
-| `pack { ... }` | bitfields packed into at most 64 bits (see *Packs*) |
+| `pack { ... }` | bitfields packed into at most 256 bits (see *Packs*) |
 | `i(expr)`, `u(expr)` | an integer whose width is an expression — inside type declarations |
 | `int`, `uint`, `float`, `fixed`, `unit`, `sunit`, `rational`, `scalar` | abstract numbers — resolved to a concrete type by the target's replacement policy (see *Abstract numeric types*) |
 
 Any width works anywhere a value lives — registers, block parameters,
-calls, packs. Memory is the exception: only 8-, 16-, 32-, and 64-bit types
-can be loaded and stored.
+calls, packs. Memory is the exception: only 8-, 16-, 32-, 64-bit types
+and whole words above that (128, 192, 256) can be loaded and stored.
+
+A value wider than 64 bits is *wide*: it is written and checked like any
+other, then lowered to a row of 64-bit words, lowest first, right after
+parsing (`src/wide.rs`), so that no backend ever meets one. A `u128`
+parameter is two `u64` parameters, a `u128` result two results, and
+each operation becomes the word operations that compute it — carry
+chains, schoolbook products, word-and-bit arrangement for shifts,
+lexicographic compares. `div` and `rem` alone go to the library
+(`lib/wide.ssa`'s `div(W)`/`rem(W)`, loops written over the wide type
+and lowered like everything else). `suite/wide.ssa` shows the shape:
+`;! add 1 0 2 0 -> 3, 0` is `add` on two `u128`s given as words.
 
 Floats are reserved for a later version (`float` will join `int` as an
 abstract type when they land); their bit layouts are already expressible
@@ -193,7 +204,8 @@ v: u5  = cast a            ; i5 -> u5: -3 -> 29
 
 The address operand must be `ptr`. The access width is the result type (loads)
 or the stored value's type (stores), which must be 8, 16, 32, or 64 bits
-wide — an integer, a pack, or `ptr`. Loads of `iN` sign-extend, of `uN`
+wide — an integer, a pack, or `ptr` — or a wide value's whole words
+(128, 192, 256 bits, stored low word first). Loads of `iN` sign-extend, of `uN`
 zero-extend.
 
 ```
@@ -234,10 +246,11 @@ ret                         ; none
 
 A `pack` is a record of bitfields laid out **lowest bits first**: the first
 field occupies bit 0 upward, the next starts where it ends, and the total
-must fit in 64 bits. Fields are integers or other packs; a pack value is
-carried as the unsigned integer of its total width and can go anywhere a
-value can — parameters, block parameters, returns, memory if it is 8, 16,
-32, or 64 bits wide.
+must fit in 256 bits (above 64 it is a wide value, in words). Fields are
+integers or other packs; a pack value is carried as the unsigned integer
+of its total width and can go anywhere a value can — parameters, block
+parameters, returns, memory if it is 8, 16, 32, or 64 bits wide or whole
+words.
 
 ```
 type rgb = pack { r: u5, g: u6, b: u5 }      ; 16 bits: r = bits 0-4, g = 5-10, b = 11-15

@@ -5,6 +5,7 @@ mod emit_wasm;
 mod fuzz;
 mod scorecard;
 mod testfloat;
+mod wide;
 mod learn;
 mod opt;
 mod platform;

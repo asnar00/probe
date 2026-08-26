@@ -544,7 +544,10 @@ fn gen_driver(
     heap_base: u64,
     exit_ssa: &str,
 ) -> Result<String, String> {
-    let mut s = String::from("fn __start() {\nentry:\n");
+    // one function per case (a driver's frame would otherwise outgrow
+    // what a single function may spill), called in order from __start
+    let mut s = String::new();
+    let mut start = String::from("fn __start() {\nentry:\n");
     let n = std::cell::Cell::new(0u32);
     let mut heap = heap_base;
     let tmp_name = || {
@@ -556,21 +559,49 @@ fn gen_driver(
         s.push_str(&format!("    {}: {} = {}\n", name, ty, init));
         name
     };
-    for case in cases {
+    for (ci, case) in cases.iter().enumerate() {
+        s.push_str(&format!("fn __case{}() {{\nentry:\n", ci));
+        start.push_str(&format!("    __case{}()\n", ci));
         let func = module
             .func(&case.func)
             .ok_or_else(|| format!("no function {} for directive '{}'", case.func, case.text))?;
         if func.rets.is_empty() {
             return Err(format!("{} returns nothing; directives need results", case.func));
         }
+        // the signature as written: a value wider than a word is passed
+        // and returned as words (see wide.rs), so a directive gives one
+        // number per word, low first, and the driver assembles them
+        let (ptys, rtys): (Vec<ssa::Type>, Vec<ssa::Type>) = match &func.wide_sig {
+            Some((p, r)) => (p.clone(), r.clone()),
+            None => (func.params.iter().map(|&p| func.ty(p)).collect(), func.rets.clone()),
+        };
         // materialize arguments
         let mut argv = Vec::new();
-        for (j, a) in case.args.iter().enumerate() {
-            let pty = func
-                .params
-                .get(j)
-                .map(|&p| func.ty(p))
-                .ok_or_else(|| format!("too many args in '{}'", case.text))?;
+        let mut args = case.args.iter();
+        for &pty in &ptys {
+            let w = func.width(pty).unwrap_or(64);
+            if w > 64 {
+                let n = w.div_ceil(64);
+                // a pack is assembled as its bits, then cast
+                let tn = if func.pack(pty).is_some() { format!("u{}", w) } else { func.tyname(pty) };
+                let mut acc: Option<String> = None;
+                for k in 0..n {
+                    let Some(ArgSpec::Int(v)) = args.next() else {
+                        return Err(format!("'{}': a {} takes {} words", case.text, tn, n));
+                    };
+                    let word = tmp(&mut s, "u64", format!("const {}", v));
+                    let wide = tmp(&mut s, &tn, format!("conv {}", word));
+                    let placed = if k == 0 { wide } else { tmp(&mut s, &tn, format!("shl {}, {}", wide, 64 * k)) };
+                    acc = Some(match acc {
+                        None => placed,
+                        Some(a) => tmp(&mut s, &tn, format!("or {}, {}", a, placed)),
+                    });
+                }
+                let bits = acc.unwrap();
+                argv.push(if func.pack(pty).is_some() { tmp(&mut s, &func.tyname(pty), format!("cast {}", bits)) } else { bits });
+                continue;
+            }
+            let a = args.next().ok_or_else(|| format!("too few args in '{}'", case.text))?;
             match a {
                 ArgSpec::Int(v) => {
                     if func.pack(pty).is_some() {
@@ -597,9 +628,12 @@ fn gen_driver(
                 }
             }
         }
+        if args.next().is_some() {
+            return Err(format!("too many args in '{}'", case.text));
+        }
         // call, binding every result
         let mut rets = Vec::new();
-        for &rt in &func.rets {
+        for &rt in &rtys {
             let r = tmp_name();
             rets.push((r, rt));
         }
@@ -613,6 +647,25 @@ fn gen_driver(
             case.func,
             argv.join(", ")
         ));
+        // a wide result prints as its words
+        let mut printed: Vec<(String, ssa::Type)> = Vec::new();
+        for (r, rt) in &rets {
+            let w = func.width(*rt).unwrap_or(64);
+            if w > 64 {
+                let (tn, r) = if func.pack(*rt).is_some() {
+                    (format!("u{}", w), tmp(&mut s, &format!("u{}", w), format!("cast {}", r)))
+                } else {
+                    (func.tyname(*rt), r.clone())
+                };
+                for k in 0..w.div_ceil(64) {
+                    let sh = if k == 0 { r.clone() } else { tmp(&mut s, &tn, format!("shr {}, {}", r, 64 * k)) };
+                    printed.push((tmp(&mut s, "u64", format!("conv {}", sh)), ssa::Type::U64));
+                }
+            } else {
+                printed.push((r.clone(), *rt));
+            }
+        }
+        let rets = printed;
         // print results: 16 hex digits each, space-separated, newline after
         for (i, (r, rt)) in rets.iter().enumerate() {
             if i > 0 {
@@ -640,10 +693,12 @@ fn gen_driver(
         }
         let nl = tmp(&mut s, "u64", "const 10".into());
         s.push_str(&format!("    __pch({})\n", nl));
+        s.push_str("    ret\n}\n");
     }
-    s.push_str(exit_ssa);
-    s.push_str("    ret\n}\n");
-    Ok(s)
+    start.push_str(exit_ssa);
+    start.push_str("    ret\n}\n");
+    // __start first: the bare-metal preamble falls into the first function
+    Ok(format!("{}{}", start, s))
 }
 
 /// Run a qemu child with a hard deadline (a wrong branch in emitted code

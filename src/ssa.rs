@@ -15,8 +15,9 @@ pub struct BlockId(pub u32);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Type {
-    /// a concrete integer, `iN` (signed) or `uN` (unsigned), 1 <= N <= 64
-    Int { signed: bool, bits: u8 },
+    /// a concrete integer, `iN` (signed) or `uN` (unsigned), 1 <= N <= 256
+    /// (above 64, a row of words: see wide.rs)
+    Int { signed: bool, bits: u16 },
     /// pointer (64-bit on our native targets, a 32-bit offset on wasm)
     Ptr,
     /// a pack: bitfields laid out lowest-bits-first, by index into the
@@ -37,7 +38,7 @@ impl Type {
     pub fn int(signed: bool, bits: u32) -> Type {
         Type::Int {
             signed,
-            bits: bits as u8,
+            bits: bits as u16,
         }
     }
 
@@ -76,7 +77,7 @@ impl Type {
             return None;
         }
         let bits: u32 = rest.parse().ok()?;
-        if (1..=64).contains(&bits) {
+        if (1..=crate::wide::MAX_BITS).contains(&bits) {
             Some(Type::int(signed, bits))
         } else {
             None
@@ -707,6 +708,10 @@ pub struct Function {
     /// for an instantiated generic: (generic name, width arguments) — what
     /// a platform matches on to substitute a native instruction
     pub instance: Option<(String, Vec<i64>)>,
+    /// for a function that took or returned values wider than a word:
+    /// the (parameter types, result types) as written, before they were
+    /// lowered to words (see wide.rs) — what a caller from outside sees
+    pub wide_sig: Option<(Vec<Type>, Vec<Type>)>,
 }
 
 impl Function {
@@ -1324,10 +1329,19 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     for f in &mut funcs {
         f.packs = packs.clone();
     }
-    Ok(Module {
+    let mut module = Module {
         types: p.types,
         funcs,
-    })
+    };
+    // values wider than a word: checked as written, then lowered to words
+    // so that no backend ever sees one
+    if crate::wide::has_wide(&module) {
+        if let Err(errs) = verify(&module) {
+            return Err(ParseError { line: 0, msg: errs.join("; ") });
+        }
+        crate::wide::lower(&mut module).map_err(|m| ParseError { line: 0, msg: m })?;
+    }
+    Ok(module)
 }
 
 /// a parametric function: its token range, re-parsed per instantiation
@@ -2056,8 +2070,8 @@ impl Parser {
         match expr {
             TypeExpr::Int { signed, bits } => {
                 let n = bits.eval(env)?;
-                if !(1..=64).contains(&n) {
-                    return Err(format!("{} has {} bits; widths run from 1 to 64", expr, n));
+                if !(1..=crate::wide::MAX_BITS as i64).contains(&n) {
+                    return Err(format!("{} has {} bits; widths run from 1 to {}", expr, n, crate::wide::MAX_BITS));
                 }
                 Ok(Type::int(*signed, n as u32))
             }
@@ -2160,8 +2174,8 @@ impl Parser {
                     width += w;
                     out.push((fname.clone(), fty));
                 }
-                if width > 64 {
-                    return Err(format!("{} is {} bits wide; packs fit in 64", expr, width));
+                if width > crate::wide::MAX_BITS {
+                    return Err(format!("{} is {} bits wide; packs fit in {}", expr, width, crate::wide::MAX_BITS));
                 }
                 if let Some(i) = self.packs.iter().position(|p| p.fields == out) {
                     return Ok(Type::Pack(i as u32));
@@ -2617,6 +2631,7 @@ impl Parser {
                 blocks,
                 packs: Default::default(),
                 instance: None,
+                wide_sig: None,
             });
         }
 
@@ -2672,6 +2687,7 @@ impl Parser {
             blocks,
             packs: Default::default(),
             instance: None,
+                wide_sig: None,
         })
     }
 
@@ -2739,7 +2755,12 @@ impl Parser {
             // name takes the pack's origin type: `add` on a float(8, 23)
             // is a call to add(8, 23) — the library, or the platform's
             // instruction for it
-            if scope.values[lhs.0 as usize].ty.is_pack() {
+            // ... and so are `div`/`rem` on an integer wider than a word:
+            // lib/wide.ssa's div(W)/rem(W), loops the lowering unrolls
+            // into words like everything else
+            let lty = scope.values[lhs.0 as usize].ty;
+            let wide_divide = matches!(*bin, BinOp::Div | BinOp::Rem) && matches!(lty, Type::Int { bits, .. } if bits > 64);
+            if lty.is_pack() || wide_divide {
                 let callee = self.dispatch(op, scope.values[lhs.0 as usize].ty, scope.values[dst.0 as usize].ty)?;
                 return Ok(Inst::Call {
                     dsts: vec![dst],
@@ -3847,7 +3868,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
     let is_memory = |t: Type| {
         t == Type::Ptr
             || ((t.is_int() || t.is_pack())
-                && matches!(func.width(t), Some(8) | Some(16) | Some(32) | Some(64)))
+                && matches!(func.width(t), Some(8) | Some(16) | Some(32) | Some(64) | Some(128) | Some(192) | Some(256)))
     };
 
     match inst {
@@ -4414,8 +4435,9 @@ entry:
     #[test]
     fn rejects_bad_widths_and_fields() {
         assert!(parse("fn f(a: i0) {\n    ret\n}").is_err());
-        assert!(parse("fn f(a: u65) {\n    ret\n}").is_err());
-        assert!(parse("type p = pack { a: u40, b: u25 }\n").is_err()); // 65 bits
+        assert!(parse("fn f(a: u257) {\n    ret\n}").is_err());
+        assert!(parse("type p = pack { a: u200, b: u57 }\n").is_err()); // 257 bits
+        assert!(parse("fn f(a: u65) {\n    ret\n}").is_ok()); // wide: lowered to words
         assert!(parse("type p = pack { a: u4 }\nfn f(p: p) -> u4 {\n    x: u4 = get p, nope\n    ret x\n}").is_err());
         // cast must preserve width; conv goes any way between integers, and
         // is a library operation as soon as a pack is involved
@@ -4493,10 +4515,11 @@ fn half(f: f16, b: byte, w: word(2 * 6)) -> (u5, u8, u12) {
     fn parametric_type_errors() {
         // wrong arity, bad width, unknown parameter, self-reference
         assert!(parse("type w(N) = u(N)\nfn f(a: w) {\n    ret\n}").is_err());
-        assert!(parse("type w(N) = u(N)\nfn f(a: w(70)) {\n    ret\n}").is_err());
+        assert!(parse("type w(N) = u(N)\nfn f(a: w(300)) {\n    ret\n}").is_err());
+        assert!(parse("type w(N) = u(N)\nfn f(a: w(70)) {\n    ret\n}").is_ok()); // wide
         assert!(parse("type w(N) = u(M)\n").is_err());
         assert!(parse("type loop(N) = pack { a: loop(N) }\nfn f(a: loop(1)) {\n    ret\n}").is_err());
-        assert!(parse("type big = pack { a: u(64), b: u(1) }\n").is_err());
+        assert!(parse("type big = pack { a: u(200), b: u(57) }\n").is_err()); // 257 bits
         // a block label whose params use parenthesized types still parses
         let m = parse("fn f(n: u(8)) -> u8 {\nentry:\n    jmp next(n)\nnext(x: u(4 + 4)):\n    ret x\n}").expect("parse");
         verify(&m).expect("verify");

@@ -25,9 +25,11 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
 ## What's here
 
 - **An SSA IR** (`ssa.md`, `src/ssa.rs`): integers of any width from 1 to
-  64 bits, signed or unsigned (`i5`, `u23`, `i64`, plus `ptr`) — signedness
-  lives in the type, so there is one `div`, one `shr`, one `cmp.lt`;
-  `pack` types that lay bitfields out lowest-bits-first in up to 64 bits
+  256 bits, signed or unsigned (`i5`, `u23`, `i64`, `u128`, plus `ptr`) —
+  signedness lives in the type, so there is one `div`, one `shr`, one
+  `cmp.lt`; above 64 bits a value is lowered to a row of words right
+  after parsing (`src/wide.rs`), so no backend meets one;
+  `pack` types that lay bitfields out lowest-bits-first in up to 256 bits
   (`type rgb = pack { r: u5, g: u6, b: u5 }`, nestable, storable), and
   parametric declarations instantiated by width — `type float(E, M) =
   pack { mantissa: u(M), exponent: u(E), sign: u1 }`, `type f32 =

@@ -334,18 +334,24 @@ pub fn allocate(func: &Function, pool: &[i64]) -> Alloc {
         // else: v stays spilled
     }
 
-    // propagate root locations to coalesced members (shared slot included)
+    // spill slots, shared by spilled values whose lifetimes do not
+    // overlap (a root's interval covers its coalesced members): in start
+    // order, take a slot whose last occupant has ended, else a new one
     let mut root_slot: Vec<Option<usize>> = vec![None; n];
     let mut nslots = 0;
-    for i in 0..n {
-        let r = find(&mut uf, i);
-        if r != i {
-            continue;
-        }
-        if let Loc::Slot(_) = loc[i] {
-            root_slot[i] = Some(nslots);
-            nslots += 1;
-        }
+    let mut spilled: Vec<usize> = (0..n).filter(|&i| find(&mut uf, i) == i && matches!(loc[i], Loc::Slot(_))).collect();
+    spilled.sort_by_key(|&i| start[i]);
+    let mut free: Vec<(u32, usize)> = Vec::new(); // (end of last occupant, slot)
+    for i in spilled {
+        let slot = match free.iter().position(|&(e, _)| e < start[i]) {
+            Some(k) => free.swap_remove(k).1,
+            None => {
+                nslots += 1;
+                nslots - 1
+            }
+        };
+        root_slot[i] = Some(slot);
+        free.push((end[i], slot));
     }
     for i in 0..n {
         let r = find(&mut uf, i);

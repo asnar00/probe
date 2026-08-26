@@ -1271,7 +1271,9 @@ pub mod jit {
                 4 => call_as!(i64, i64, i64, i64),
                 5 => call_as!(i64, i64, i64, i64, i64),
                 6 => call_as!(i64, i64, i64, i64, i64, i64),
-                n => return Err(format!("{} arguments not supported", n)),
+                7 => call_as!(i64, i64, i64, i64, i64, i64, i64),
+                8 => call_as!(i64, i64, i64, i64, i64, i64, i64, i64),
+                n => return Err(format!("{} arguments not supported (x0-x7 carry 8)", n)),
             })
         }
 
@@ -1303,7 +1305,9 @@ pub mod jit {
                 4 => call_as!(i64, i64, i64, i64),
                 5 => call_as!(i64, i64, i64, i64, i64),
                 6 => call_as!(i64, i64, i64, i64, i64, i64),
-                n => return Err(format!("{} arguments not supported", n)),
+                7 => call_as!(i64, i64, i64, i64, i64, i64, i64),
+                8 => call_as!(i64, i64, i64, i64, i64, i64, i64, i64),
+                n => return Err(format!("{} arguments not supported (x0-x7 carry 8)", n)),
             };
             Ok((r.0, r.1))
         }
