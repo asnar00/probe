@@ -6,6 +6,32 @@ has the full story for any of them.
 
 ---
 
+### platforms as rule files — `3181412` · 2026-08-26
+
+`targets/arm64.platform`, `riscv64.platform`, `wasm32.platform`: what a
+target does natively, as text. A rule is a library instance's full
+signature and the learned templates that compute it —
+
+```
+add(8, 23, 0)(a: float(8, 23), b: float(8, 23)) -> r: float(8, 23)
+    fmov s0, a
+    fmov s1, b
+    fadd s0, s0, s1
+    fmov r, s0
+```
+
+— with `a`/`b`/`c` the arguments, `r` the result, `s0`/`d0`/`f0`
+scratch float registers, and literals for immediates and conditions
+(`cset r, lo`). Each line resolves against the learned encodings by
+mnemonic and operand shape, so a rule can only name instructions the
+learner verified, and a line it has no template for is an error. The
+three Rust tables and the `Native` enum they hung off are gone; an
+emitter keeps only the register assignment. Adding a native op is now
+an edit to a text file, and a target whose ops take several
+instructions (a stencil) is the same kind of edit.
+
+---
+
 ### encoding scorecards — `0afc68f` · 2026-08-26
 
 The learner derives encodings from an assembler's bytes and never reads
