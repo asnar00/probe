@@ -22,112 +22,6 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
                                                   targets/*.encodings.json  (learned, verified)
 ```
 
-## What's here
-
-- **An SSA IR** (`ssa.md`, `src/ssa.rs`): integers of any width from 1 to
-  256 bits, signed or unsigned (`i5`, `u23`, `i64`, `u128`, plus `ptr`) —
-  signedness lives in the type, so there is one `div`, one `shr`, one
-  `cmp.lt`; above 64 bits a value is lowered to a row of words right
-  after parsing (`src/wide.rs`), so no backend meets one;
-  `struct` types (fields side by side, dissolved into their fields after
-  parsing — never a bit pattern, so the layout is the compiler's);
-  `pack` types that lay bitfields out lowest-bits-first in up to 256 bits
-  (`type rgb = pack { r: u5, g: u6, b: u5 }`, nestable, storable), and
-  parametric declarations instantiated by width — `type float(E, M) =
-  pack { mantissa: u(M), exponent: u(E), sign: u1 }`, `type f32 =
-  float(8, 23)` — and generic functions monomorphized the same way
-  (`fn add(E, M)(a: float(E, M), b: float(E, M))`, `fn fadd32 =
-  add(8, 23)`) — so `add x, y` on two `f32` values is that function, or
-  the platform's instruction, and a library can add operations of its
-  own (`sqrt x`); literals wherever the type is known (`add a, 1`,
-  `mul x, 0.5`, `ret 0`), with float literals rounded exactly; block
-  parameters instead of phi nodes; multiple return values; an optional
-  structured front-end (`if`/`loop`/`break`/`continue`/`yield`) that
-  lowers to the flat block graph at parse time; and abstract `int`/`uint`
-  types resolved to a concrete width by a per-target replacement policy
-  (`--int=i32|i64` to override); abstract `float`, `fixed`, `unit`,
-  `sunit`, and `rational` resolved the same way (`--float=f16|bf16|f32|
-  f64|E,M`, `--fixed=I,F`, `--unit=N`, `--sunit=N`, `--rational=N,D`, and `--round=` for the mode) to
-  the libraries' `float(E, M)`, `fixed(I, F)`, `unit(N)`, `sunit(N)`,
-  `rational(N, D)`; and `scalar`, which is whichever of those families
-  the policy names (`--scalar=...`). `lib/time.ssa` is a `rational(64,
-  64)` of seconds with units — a sample period at 44100 Hz times 44100
-  is exactly one second. `lib/decimal.ssa` is `decimal(N, S)`, an `i(N)`
-  significand at scale 10^S — cents that add exactly — written to
-  `formats.md`, the recipe for adding a format as a library.
-- **Two learners**:
-  - `src/learn.rs` for fixed-width register ISAs: one-hot probes XORed
-    against a baseline map each operand bit to its encoding bit — which
-    handles RISC-V's scrambled branch immediates exactly as easily as
-    ARM's contiguous fields. Nonlinear small domains become lookup tables;
-    nonlinear large ones (ARM logical immediates) fail honestly.
-  - `src/wlearn.rs` for byte-oriented stack machines (wasm): templates are
-    fixed bytes plus LEB128 codecs at discovered positions, probed through
-    wat2wasm with a bootstrap chain of stack context.
-  - Both talk to an assembler only through `src/oracle.rs`; the per-target
-    seed files (`targets/*.probe`, read by `src/target.rs`) say how to
-    *spell* instructions and nothing else.
-- **A platform per backend, as a rule file** (`targets/*.platform`, read
-  by `src/platform.rs`): `class s = f32` says f32 values live in `s`
-  registers, and `fadd {s}, {s}, {s} = add(f32, f32) -> f32` maps one
-  learned instruction to the library operation it computes. The
-  allocator (`src/regalloc.rs`) keeps each value in its class's file,
-  so a chain of float operations compiles to the instructions alone.
-  Rules can only name templates the learner verified. Compiling such an
-  instance, or a call to one, emits the rule instead of the SSA body;
-  `--soft` turns that off, and the library remains the reference the
-  hardware path is checked against. ISA **variants** are files too:
-  groups (`ext M`, `ext F`, `ext D`) and a `without` line make
-  `targets/rv64i.platform` a RISC-V core with no multiplier or FPU, on
-  which `mul`/`div`/`rem` and every float op are the library's;
-  `--platform=rv64i` selects it everywhere, and `probe footprint` lists
-  the instructions a program really used, to prove it.
-- **Three backends**, none of which contain a single hand-written opcode:
-  - `arm64` (`src/emit.rs`) — JIT: mmap/MAP_JIT on Apple Silicon, run
-    in-process
-  - `riscv64` (`src/emit_rv.rs`) — bare-metal on qemu-system-riscv64, with
-    the runtime harness (UART printing, exit) generated in the project's
-    own SSA
-  - `wasm32` (`src/emit_wasm.rs`) — module emission, executed by node via
-    `src/driver.js`; control flow becomes nested `block`/`loop`/`if`
-    from the dominator tree (`src/structure.rs`), a dispatcher loop
-    only for an irreducible graph
-- **A linear-scan register allocator** (`src/regalloc.rs`), target
-  independent: the emitter hands it a callee-saved pool and gets back a
-  register or spill slot per value.
-- **An SSA pass pipeline** (`src/opt.rs`): simplify-cfg, const-fold, dce,
-  sink. Optimization levels are prefixes of that one list, so every level
-  is a correct stopping point and every pass is checked by the suite on
-  every backend.
-- **An incremental JIT arena** (`src/arena.rs`): each function in its own
-  slot with slack, calls routed through counting trampolines, so an edited
-  function recompiles in place and a hot one is promoted through the full
-  pipeline without disturbing its neighbours.
-- **Encoding scorecards** (`src/scorecard.rs`, `targets/*.scorecard.md`):
-  every learned template checked against the official inventory its
-  learner never saw — Arm's Machine Readable Architecture XML,
-  riscv-opcodes, wabt's opcode table (`tools/get-isa-tables.sh`): the
-  encoding the fixed bits decode to must exist and the learned fields
-  must be its operand fields. 150/150, 90/90, 125/125 — and the cards
-  list what the inventory has that is not learned yet.
-- **An IEEE-754 oracle** (`src/testfloat.rs`): Berkeley TestFloat's
-  vectors — 19 million cases over f16/f32/f64, every operation, every
-  rounding mode (`--round=even|zero|down|up|away`, a generic parameter
-  the policy supplies) — run through the library instances and, where
-  the platform has the instruction, the hardware, compared bit for bit.
-- **A fuzzer** (`src/fuzz.rs`): random well-formed programs — every
-  integer width, packs, floats through the library and the platform,
-  value-yielding `if`s, bounded loops, calls — with their results at
-  native `-O0` and the platform off as the reference; every optimization
-  level, the platform, wasm, and (with `--slow`) both qemu machines must
-  agree. A disagreement is kept as a suite file that reproduces it. Its
-  first run found wasm trapping on `MIN div -1`, which the IR says wraps.
-- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 455
-  cases with expectations embedded as `;! gcd 48 36 -> 12` directives, run
-  identically against every backend — including arm64 under
-  qemu-system-aarch64 as an independent second referee for the same bytes
-  the M-series CPU runs.
-
 ## Hello, world
 
 ```sh
@@ -141,8 +35,168 @@ hello world ᕦ(ツ)ᕤ
 the board's UART (`platform uart`, a constant from the platform file),
 and an exit through the board's finisher or a PSCI call (a platform
 rule with `hvc` as its body). No runtime, no linker script, no
-assembly: the image is the learned encodings and a five-instruction
+assembly: the image is the learned encodings and a six-instruction
 preamble that sets the stack pointer.
+
+## The IR
+
+`ssa.md` is the reference; `src/ssa.rs` the parser, verifier and
+printer. In outline:
+
+- **Integers of any width from 1 to 256 bits**, signed or unsigned
+  (`i5`, `u23`, `i64`, `u128`, plus `ptr`). Signedness lives in the
+  type, so there is one `div`, one `shr`, one `cmp.lt`. Above 64 bits a
+  value is lowered to a row of words right after parsing
+  (`src/wide.rs`), so no backend ever meets one.
+
+- **Packs**: bitfields laid out lowest-bits-first in up to 256 bits —
+  `type rgb = pack { r: u5, g: u6, b: u5 }` — nestable and storable.
+  A pack is its bit pattern.
+
+- **Structs**: fields side by side, in memory at natural offsets and in
+  registers as separate values. Never a bit pattern — no `cast`, no
+  literal — which leaves the layout to the compiler. Dissolved into
+  their fields after parsing (`src/aggregate.rs`).
+
+- **Parametric types and generic functions**, instantiated by width:
+  `type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }`,
+  `type f32 = float(8, 23)`, `fn add(E, M)(a: float(E, M), b: float(E, M))`.
+  An opcode on a pack dispatches to the generic of that name, so
+  `add x, y` on two `f32` values *is* the library's function — or the
+  platform's instruction — and a library can add operations of its own
+  (`sqrt x`).
+
+- **Literals wherever the type is known** (`add a, 1`, `mul x, 0.5`,
+  `ret 0`), float literals rounded exactly; block parameters instead of
+  phi nodes; multiple return values; `load`/`store` with `base, off`
+  and `base, index, step` addressing; an optional structured front-end
+  (`if`/`loop`/`break`/`continue`/`yield`) that lowers to the flat
+  block graph at parse time.
+
+- **Data**: `data greeting = "..."` is an array of UTF-8 bytes, `data
+  table: array(i32, 4) = { ... }` an initialized array, `addr` and
+  `len` reach it, and `platform uart` is a constant the platform file
+  provides per board.
+
+- **Abstract types resolved by policy**: `int`/`uint` take a width per
+  target (`--int=i32|i64`); `float`, `fixed`, `unit`, `sunit` and
+  `rational` resolve to the libraries' `float(E, M)`, `fixed(I, F)`,
+  `unit(N)`, `sunit(N)`, `rational(N, D)` (`--float=`, `--fixed=`,
+  `--unit=`, `--sunit=`, `--rational=`, `--round=` for the rounding
+  mode); `scalar` is whichever family the policy names (`--scalar=`).
+
+## The libraries
+
+Every file compiled gets `lib/*.ssa` appended. Number formats are
+libraries, never compiler features; `formats.md` is the recipe and
+`/format` scaffolds one.
+
+- `lib/float.ssa` — IEEE floats over `float(E, M)`: add, sub, mul, div,
+  sqrt, neg, abs, min, max, fma, the comparisons, conversions, every
+  rounding mode; one body per operation, instantiated from fp8 to
+  binary128.
+- `lib/fixed.ssa`, `lib/unit.ssa` — fixed point, and fractions of one
+  (signed and unsigned).
+- `lib/rational.ssa` — exact rationals, reduced, in 128 bits.
+- `lib/time.ssa` — a `rational(64, 64)` of seconds with units: a sample
+  period at 44100 Hz times 44100 is exactly one second.
+- `lib/decimal.ssa` — `decimal(N, S)`, an `i(N)` significand at scale
+  10^S: cents that add exactly.
+- `lib/wide.ssa` — division (and, on a core without a multiplier,
+  multiplication) for wide integers.
+
+## The learners
+
+- `src/learn.rs` for fixed-width register ISAs: one-hot probes XORed
+  against a baseline map each operand bit to its encoding bit — which
+  handles RISC-V's scrambled branch immediates exactly as easily as
+  ARM's contiguous fields. Nonlinear small domains become lookup tables;
+  nonlinear large ones (ARM logical immediates) fail honestly.
+- `src/wlearn.rs` for byte-oriented stack machines (wasm): templates are
+  fixed bytes plus LEB128 codecs at discovered positions, probed through
+  wat2wasm with a bootstrap chain of stack context.
+- Both talk to an assembler only through `src/oracle.rs`; the per-target
+  seed files (`targets/*.probe`, read by `src/target.rs`) say how to
+  *spell* instructions and nothing else.
+
+## Platforms and variants
+
+A platform file (`targets/*.platform`, read by `src/platform.rs`) says
+what a target does natively, as rules over the library's operations:
+
+- `class s = f32` — f32 values live in `s` registers. The allocator
+  (`src/regalloc.rs`) keeps each value in its class's file, so a chain
+  of float operations compiles to the instructions alone.
+- `fadd {s}, {s}, {s} = add(f32, f32) -> f32` — one learned instruction
+  for one library operation. Rules can only name templates the learner
+  verified. Compiling such an instance, or a call to one, emits the rule
+  instead of the SSA body; `--soft` turns that off, and the library
+  remains the reference the hardware path is checked against.
+- `const uart = 0x10000000` — a board's addresses, for `platform uart`.
+- **Variants** are files too: the base file is grouped by extension
+  (`ext M`, `ext F`, `ext D`), and `targets/rv64i.platform` is `base
+  riscv64` plus `without M, F, D` — a core on which `mul`/`div`/`rem`
+  and every float operation are the library's. `--platform=rv64i`
+  selects it everywhere; `probe footprint` lists the instructions a
+  program really used, to prove it.
+
+## The backends
+
+None of them contains a single hand-written opcode.
+
+- `arm64` (`src/emit.rs`) — JIT: mmap/MAP_JIT on Apple Silicon, run
+  in-process; also bare metal under qemu-system-aarch64.
+- `riscv64` (`src/emit_rv.rs`) — bare metal on qemu-system-riscv64, with
+  the runtime harness (UART printing, exit) generated in the project's
+  own SSA.
+- `wasm32` (`src/emit_wasm.rs`) — module emission, executed by node via
+  `src/driver.js`; control flow becomes nested `block`/`loop`/`if` from
+  the dominator tree (`src/structure.rs`), a dispatcher loop only for an
+  irreducible graph.
+
+Shared by all three:
+
+- **A linear-scan register allocator** (`src/regalloc.rs`) with register
+  classes: the emitter hands it pools and gets back a register or spill
+  slot per value.
+- **An SSA pass pipeline** (`src/opt.rs`): simplify-cfg, const-fold,
+  dce, sink. Optimization levels are prefixes of that one list, so every
+  level is a correct stopping point and every pass is checked by the
+  suite on every backend.
+- **An incremental JIT arena** (`src/arena.rs`): each function in its own
+  slot with slack, calls routed through counting trampolines, so an
+  edited function recompiles in place and a hot one is promoted through
+  the full pipeline without disturbing its neighbours.
+
+## Verification
+
+- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`):
+  747 cases with expectations embedded as `;! gcd 48 36 -> 12`
+  directives, run identically against every backend — including arm64
+  under qemu-system-aarch64 as an independent second referee for the
+  same bytes the M-series CPU runs — and under every policy and variant.
+- **Encoding scorecards** (`src/scorecard.rs`, `targets/*.scorecard.md`):
+  every learned template checked against the official inventory its
+  learner never saw — Arm's Machine Readable Architecture XML,
+  riscv-opcodes, wabt's opcode table (`tools/get-isa-tables.sh`): the
+  encoding the fixed bits decode to must exist and the learned fields
+  must be its operand fields. 154/154, 93/93, 125/125 — and the cards
+  list what the inventory has that is not learned yet.
+- **An IEEE-754 oracle** (`src/testfloat.rs`): Berkeley TestFloat's
+  vectors — 19 million cases over f16/f32/f64, every operation, every
+  rounding mode — run through the library instances and, where the
+  platform has the instruction, the hardware, compared bit for bit.
+- **A fuzzer** (`src/fuzz.rs`): random well-formed programs — every
+  integer width, packs, floats through the library and the platform,
+  value-yielding `if`s, bounded loops, calls — with their results at
+  native `-O0` and the platform off as the reference; every optimization
+  level, the platform, wasm, and (with `--slow`) both qemu machines must
+  agree. A disagreement is kept as a suite file that reproduces it. Its
+  first run found wasm trapping on `MIN div -1`, which the IR says wraps.
+- **Model tests** in Rust: every narrow-type op against the
+  const-folder's model over every value pair, the softfloat ops against
+  the FPU for f32/f64 and against an exact reference exhaustively for
+  fp8, 128-bit arithmetic against Rust's `u128`.
 
 ## Usage
 
@@ -181,26 +235,24 @@ cargo run -- run suite/bits.ssa add5 15 1          # i5: 15 + 1 -> -16
 cargo run -- run suite/packs.ssa mkrgb 31 63 1     # -> 4095 (b:g:r = 1:63:31)
 cargo run -- run suite/types.ssa f32exp 0x40490fdb # f32 = float(8, 23): pi's exponent, 128
 
-# floating point is a library (lib/float.ssa, appended to every program):
-# add/sub/mul/div/sqrt/neg/abs/min/max/fma/cmp/conv over float(E, M), done
-# with integer instructions, instantiated for fp8/fp16/bf16/f32/f64 and
-# checked against the FPU. On a platform with hardware for it, fadd32 *is*
-# the instruction; --soft keeps the library body. A bare `float` is the
-# policy's width
-cargo run -- run suite/float.ssa fadd32 0x3dcccccd 0x3e4ccccd   # 0.1 + 0.2 -> 0x3e99999a
+# floating point is a library: on a platform with hardware for it, fadd32
+# *is* the instruction; --soft keeps the library body
+cargo run -- run suite/float.ssa fadd32 0x3dcccccd 0x3e4ccccd          # 0.1 + 0.2 -> 0x3e99999a
 cargo run -- --soft run suite/float.ssa fadd32 0x3dcccccd 0x3e4ccccd   # same answer, ~100 instructions
-cargo run -- run suite/afloat.ssa hyp 3 4                  # sqrt(3*3 + 4*4) over abstract floats -> 5
-cargo run -- --float=f16 run suite/afloat.ssa hyp 3 4      # the same program, at 16 bits
-cargo run -- run suite/fixed.ssa divf 7 2                   # fixed point (lib/fixed.ssa): 7 / 2 -> 3
-cargo run -- run suite/unit.ssa pct 50 50                   # unit fractions (lib/unit.ssa): 50% of 50% -> 25
-cargo run -- run suite/rational.ssa thirds 7               # rationals (lib/rational.ssa): (7 / 3) * 3 -> 7, exactly
-cargo run -- run suite/time.ssa third_plus_sixth_ms           # lib/time.ssa: 1/3 s + 1/6 s, exactly, in ms -> 500
-cargo run -- run suite/wide.ssa mul 0 1 0 1                # u128: (1 << 64) * (1 << 64) -> 0, 0 (mod 2^128); values are words, low first
-cargo run -- run suite/f128.ssa fdiv128 0 0x3fff000000000000 0 0x4000800000000000   # binary128 1 / 3, the same library body at 113 bits
+cargo run -- run suite/afloat.ssa hyp 3 4                              # sqrt(3*3 + 4*4) over abstract floats -> 5
+cargo run -- --float=f16 run suite/afloat.ssa hyp 3 4                  # the same program, at 16 bits
+cargo run -- run suite/f128.ssa fdiv128 0 0x3fff000000000000 0 0x4000800000000000   # binary128 1 / 3
+
+# the other number libraries
+cargo run -- run suite/fixed.ssa divf 7 2                      # fixed point: 7 / 2 -> 3
+cargo run -- run suite/unit.ssa pct 50 50                      # unit fractions: 50% of 50% -> 25
+cargo run -- run suite/rational.ssa thirds 7                   # rationals: (7 / 3) * 3 -> 7, exactly
+cargo run -- run suite/time.ssa third_plus_sixth_ms            # time: 1/3 s + 1/6 s in ms -> 500
+cargo run -- run suite/wide.ssa mul 0 1 0 1                    # u128 as words, low first: (1 << 64)^2 mod 2^128 -> 0, 0
 cargo run -- --scalar=rational run suite/scalar.ssa sweighted 20 80   # one program, any family
 
 # the scorecards (sh tools/get-isa-tables.sh once, to fetch the tables)
-cargo run -- scorecard                          # all three, rewriting targets/*.scorecard.md
+cargo run -- scorecard                           # all three, rewriting targets/*.scorecard.md
 
 # the IEEE-754 oracle (sh tools/get-testfloat.sh once, to build it)
 cargo run -- testfloat                           # every op, f16/f32/f64, nearest even
@@ -221,7 +273,8 @@ cargo run -- fuzz 1 --seed=65a47abe4364edd2 --slow   # the qemu machines too
 cargo run -- live examples/fib.ssa fib 25
 ```
 
-`history.md` has a short entry for every commit.
+`history.md` has a short entry for every commit; `vectors.md` is a
+survey of where vectors, GPUs and the AI number formats would fit.
 
 Toolchain expectations (macOS/arm64 host): `llvm-mc` (brew llvm), `wabt`
 (wat2wasm), `node`, `qemu`. The learned `targets/*.encodings.json` files
@@ -229,16 +282,15 @@ are checked in, so the backends and suite work without re-learning.
 
 ## Status
 
-Integers of every width to 256 bits, packed bitfields, parametric types
-and functions, and floating-point arithmetic, comparison, and conversion
-as a pure-SSA library — one body per operation, instantiated from fp8 to
-binary128 — that the platform swaps for hardware where it has it, on
-three targets,
-everything differentially verified: the suite on four execution paths,
-every narrow-type op against the const-folder's model over every value
-pair, and the softfloat ops against the FPU for f32/f64 and against an
-exact reference exhaustively for fp8. What is
-deliberately not here yet, from `future-work.md`: indirect
-calls / function pointers, external (libc) calls from JIT'd code, a
-dominance check in the verifier, and differential testing against clang
-to close the semantic loop the way the prober closed the encoding loop.
+Integers to 256 bits, packs, structs, parametric types and generic
+functions; floats, fixed point, unit fractions, rationals, time and
+decimals as libraries, with hardware substituted where a platform has
+it; three backends and their variants; a bootable hello world. All of
+it differentially verified — the suite on four execution paths under
+every policy, the oracle, the scorecards, the fuzzer, the model tests.
+
+Deliberately not here yet: vectors (`vectors.md` says how they would
+go), indirect calls and function values, external (libc) calls from
+JIT'd code, a dominance check in the verifier, and differential testing
+against clang to close the semantic loop the way the prober closed the
+encoding loop.
