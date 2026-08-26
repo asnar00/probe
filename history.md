@@ -6,6 +6,18 @@ has the full story for any of them.
 
 ---
 
+### rational, scalar, and literals everywhere — `55a2f74` · 2026-08-26
+
+`lib/rational.ssa`: `numerator / denominator`, reduced, a zero
+denominator being "not a rational"; exact while it fits, and `conv` from
+a float by continued fractions (`3.14159f32` is `22/7` at 8 bits). Then
+`scalar` — a bare name the policy points at one of `float`, `fixed`,
+`rational`, `unit`, `sunit` — and one program that runs unchanged in
+all five. What made that work: a literal on any library number type is
+read as an `i64` or `f64` and handed to that library's own `conv`, so
+`mul x, 0.5` and `sub 1, x` mean the same thing in every family without
+the compiler knowing any of them. 448/448 on all four paths, both ways.
+
 ### unit and sunit — `4ac4a9e` · 2026-08-26
 
 `lib/unit.ssa`: `unit(N)` runs 0.0 to 1.0 over 0 to 2^N−1, `sunit(N)`
