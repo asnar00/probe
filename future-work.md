@@ -22,11 +22,6 @@ and `call_indirect` on wasm). Left:
 
 ## Code quality
 
-- **Fall-through branch elimination**: simplify-cfg now threads branches
-  through empty forwarding blocks at SSA level, but emitters still emit a
-  `b`/`jal` to a block that is laid out immediately after it. Removing
-  those needs layout-aware sizing (dropping an instruction shifts every
-  later offset), i.e. a two-pass or relaxation-style emitter.
 - **More SSA passes for higher tiers**: GVN/CSE, copy propagation (folding
   `x + 0` style identities needs use-rewriting), loop-invariant code
   motion (the structured front-end knows the loops), inlining.

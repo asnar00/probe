@@ -53,6 +53,7 @@ const LD: &str = "ld {r}, {i -2048..2047}({r})";
 const SD: &str = "sd {r}, {i -2048..2047}({r})";
 const JAL: &str = "jal {r}, {i -1048576..1048574 /2}";
 const BEQ: &str = "beq {r}, {r}, {i -4096..4094 /2}";
+const BNE: &str = "bne {r}, {r}, {i -4096..4094 /2}";
 
 enum FixTarget {
     Block(BlockId),
@@ -146,6 +147,8 @@ struct RvEmit<'a> {
     /// a trap handler: the caller-saved registers of the code it
     /// interrupted are kept here and it leaves by mret
     trap: Option<i64>,
+    /// the block being emitted: a jump to the next one is a fall-through
+    cur: usize,
     block_offsets: Vec<Option<usize>>,
     fixups: Vec<Fixup>,
 }
@@ -293,8 +296,21 @@ impl RvEmit<'_> {
         }
     }
 
-    /// unconditional jump to an SSA block (offset patched later)
+    fn is_next(&self, target: BlockId) -> bool {
+        target.0 as usize == self.cur + 1
+    }
+
+    /// unconditional jump to an SSA block, unless it is the next one laid
+    /// out — then the code simply falls into it
     fn goto(&mut self, target: BlockId) -> Result<(), String> {
+        if self.is_next(target) {
+            return Ok(());
+        }
+        self.jump(target)
+    }
+
+    /// unconditional jump to an SSA block (offset patched later)
+    fn jump(&mut self, target: BlockId) -> Result<(), String> {
         let at = self.emit(JAL, &[ZERO, 0])?;
         self.fixups.push(Fixup {
             at,
@@ -581,6 +597,7 @@ fn compile_function(
         classes,
         spill_base,
         trap,
+        cur: 0,
         block_offsets: vec![None; func.blocks.len()],
         fixups: Vec::new(),
     };
@@ -605,6 +622,7 @@ fn compile_function(
 
     for (bi, block) in func.blocks.iter().enumerate() {
         e.block_offsets[bi] = Some(e.code.len());
+        e.cur = bi;
         for inst in &block.insts {
             compile_inst(&mut e, inst)?;
         }
@@ -945,12 +963,23 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             else_args,
         } => {
             let rc = e.src_reg(*cond, T0)?;
+            if e.is_next(*then_target) && then_args.is_empty() {
+                // the then block follows: hop over the else side when the
+                // condition holds, and fall into it
+                let bne_at = e.emit(BNE, &[rc, ZERO, 0])?;
+                e.branch_args(*else_target, else_args)?;
+                e.goto(*else_target)?;
+                let then_here = e.code.len() as i64 - bne_at as i64;
+                let word = e.enc.encode(BNE, &[rc, ZERO, then_here])?;
+                e.code[bne_at..bne_at + 4].copy_from_slice(&word.to_le_bytes());
+                return Ok(());
+            }
             // cond == 0 hops over the then-side moves + jump; the hop is a
             // local distance (tens of bytes), patched once the then side is
             // emitted, so argument moves only run on the taken path
             let beq_at = e.emit(BEQ, &[rc, ZERO, 0])?;
             e.branch_args(*then_target, then_args)?;
-            e.goto(*then_target)?;
+            e.jump(*then_target)?;
             let else_here = e.code.len() as i64 - beq_at as i64;
             let word = e.enc.encode(BEQ, &[rc, ZERO, else_here])?;
             e.code[beq_at..beq_at + 4].copy_from_slice(&word.to_le_bytes());

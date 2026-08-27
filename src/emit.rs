@@ -554,6 +554,8 @@ struct FnEmit<'a> {
     /// a trap handler: the caller-saved registers of the code it
     /// interrupted are kept here (x0..x18 in pairs) and it leaves by eret
     trap: Option<i64>,
+    /// the block being emitted: a jump to the next one is a fall-through
+    cur: usize,
     block_offsets: Vec<Option<usize>>,
     fixups: Vec<Fixup>,
 }
@@ -708,6 +710,19 @@ impl FnEmit<'_> {
                 self.emit(STR_SP, &[source, off]).map(|_| ())
             }
         }
+    }
+
+    fn is_next(&self, target: BlockId) -> bool {
+        target.0 as usize == self.cur + 1
+    }
+
+    /// jump to a block, unless it is the next one laid out — then the
+    /// code simply falls into it
+    fn goto(&mut self, target: BlockId) -> Result<(), String> {
+        if self.is_next(target) {
+            return Ok(());
+        }
+        self.branch("b #{i -134217728..134217724 /4}", vec![0], 0, target)
     }
 
     /// branch to a block: emit with placeholder offset, fix up at function end
@@ -1077,6 +1092,7 @@ fn compile_function(
         classes,
         spill_base,
         trap,
+        cur: 0,
         block_offsets: vec![None; func.blocks.len()],
         fixups: Vec::new(),
     };
@@ -1115,6 +1131,7 @@ fn compile_function(
 
     for (bi, block) in func.blocks.iter().enumerate() {
         e.block_offsets[bi] = Some(e.code.len());
+        e.cur = bi;
         for inst in &block.insts {
             compile_inst(&mut e, inst)?;
         }
@@ -1469,7 +1486,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
         }
         Inst::Jmp { target, args } => {
             e.branch_args(*target, args)?;
-            e.branch("b #{i -134217728..134217724 /4}", vec![0], 0, *target)
+            e.goto(*target)
         }
         Inst::Br {
             cond,
@@ -1479,6 +1496,15 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             else_args,
         } => {
             let rc = e.src_reg(*cond, 9)?;
+            if e.is_next(*then_target) && then_args.is_empty() {
+                // the then block follows: branch over the else side when
+                // the condition holds, and fall into it
+                let cbnz_at = e.emit("cbnz {w}, #{i -1048576..1048572 /4}", &[rc, 0])?;
+                e.branch_args(*else_target, else_args)?;
+                e.goto(*else_target)?;
+                let then_here = e.code.len() as i64 - cbnz_at as i64;
+                return e.patch(cbnz_at, "cbnz {w}, #{i -1048576..1048572 /4}", &[rc, then_here]);
+            }
             // cbz -> (else path, emitted after the then path); patched below
             let cbz_at = e.emit("cbz {w}, #{i -1048576..1048572 /4}", &[rc, 0])?;
             e.branch_args(*then_target, then_args)?;
@@ -1490,7 +1516,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                 &[rc, else_here],
             )?;
             e.branch_args(*else_target, else_args)?;
-            e.branch("b #{i -134217728..134217724 /4}", vec![0], 0, *else_target)
+            e.goto(*else_target)
         }
         Inst::Ret { vals } => {
             if vals.len() > 8 {
