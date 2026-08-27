@@ -6,6 +6,29 @@ has the full story for any of them.
 
 ---
 
+### Input by interrupt — `87ee51b` · 2026-08-27
+
+`os/echo.ssa` no longer polls. `uart_irq_on` asks the board for an
+interrupt per received byte, `__irq` drains the port into a ring, and
+`read` sleeps in `idle` until a line is in the ring, so between
+keystrokes the machine does nothing at all; the last line says how
+many interrupts the input took (one or two: qemu hands a pipe over in
+bursts). The board side is the platform's again, and it exposed the
+one asymmetry between the two machines that a kernel has to know
+about: riscv64 delivers every device interrupt as a single cause,
+"external", and names the source only at its controller, so the
+platform gives `irq_claim()` for the source and `irq_done` completes
+it; arm64's controller names the source in `irq_ack` itself, and
+`irq_external` there is an id that never arrives. One kernel serves
+both. Found on the way, by a storm of interrupts before the first
+prompt: riscv's `irq_on` had been enabling the timer's interrupt while
+`mtimecmp` still held its reset value of zero, which the earlier
+kernels never noticed because they armed or disarmed the timer first.
+Arming the timer enables its interrupt now, as arm64's control
+register always did, and `irq_on` leaves the timer alone.
+
+---
+
 ### A decision: no lifetimes in the pointer type · 2026-08-27
 
 Considered and declined: regions in the pointer type — `ptr frame`,
