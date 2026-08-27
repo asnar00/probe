@@ -6,7 +6,7 @@ has the full story for any of them.
 
 ---
 
-### A reduction on the GPU: threadgroups — `HASH` · 2026-08-27
+### A reduction on the GPU: threadgroups — `60f319e` · 2026-08-27
 
 `fn __kernel(mem, area, id, lane, group)` is a kernel that knows its
 place: the wrapper passes `thread_position_in_threadgroup` and
