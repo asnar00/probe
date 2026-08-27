@@ -1134,6 +1134,16 @@ mod tests {
         }
     }
 
+    /// the fourth: two tasks preempted by the timer, each printing its
+    /// letter once per slice it runs in
+    #[test]
+    fn tasks_boots() {
+        for target in ["riscv64", "arm64"] {
+            let out = super::boot("os/tasks.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"")).unwrap();
+            assert_eq!(out, "ababababab\n", "{}", target);
+        }
+    }
+
     /// the second: a trap handler, system calls through a table of
     /// function values, and input from the serial port, on both machines
     #[test]

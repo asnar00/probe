@@ -58,6 +58,17 @@ tick            # ten of them, a tenth of a second apart
 10 ticks in 1006 ms
 ```
 
+```sh
+cargo run -- boot os/tasks.ssa arm
+ababababab
+```
+
+`os/tasks.ssa` is the fourth: two tasks preempted by the timer. The
+interrupt handler is `fn __irq(sp: ptr) -> ptr` — handed the frame
+holding the interrupted task's whole register file, answering with
+the frame to resume — so a task is a stack and a place to resume, and
+a switch is two stores and two loads.
+
 `os/clock.ssa` is the third: it keeps time. The timer interrupt lands
 in `fn __irq` (a frame that keeps every register, float scratch
 included), each deadline is one step on from the last so the ticks
@@ -333,9 +344,9 @@ are checked in, so the backends and suite work without re-learning.
 Integers to 256 bits, packs, structs, parametric types and generic
 functions, function values; floats, fixed point, unit fractions, rationals, time and
 decimals as libraries, with hardware substituted where a platform has
-it; three backends and their variants; three bootable kernels — hello
-world, an echo with system calls, a clock on the timer interrupt. All
-of
+it; three backends and their variants; four bootable kernels — hello
+world, an echo with system calls, a clock on the timer interrupt, two
+preempted tasks. All of
 it differentially verified — the suite on four execution paths under
 every policy, the oracle, the scorecards, the fuzzer, the model tests.
 

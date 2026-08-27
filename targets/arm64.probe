@@ -237,3 +237,5 @@ inst msr cntp_ctl_el0, {x}
 inst msr daifclr, #{i 0..15}
 inst msr daifset, #{i 0..15}
 inst wfi
+; switching stacks: an interrupt handler that returns the frame to resume
+inst mov sp, {x}

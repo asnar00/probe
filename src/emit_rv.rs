@@ -24,7 +24,7 @@
 use crate::emit::{Compiled, Encoder};
 use crate::regalloc::{self, Loc};
 use crate::platform::{Native, Natives, Operand, Platform};
-use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, ValueId};
+use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, Type, ValueId};
 
 /// pool for the allocator: callee-saved s2..s11 (x18..x27) — values placed
 /// here survive calls by construction
@@ -163,6 +163,8 @@ struct RvEmit<'a> {
     /// code's registers, an interrupt — a0 goes back too and the float
     /// scratch registers are kept as well); it leaves by mret
     trap: Option<(i64, bool)>,
+    /// the registers a handler keeps (integer, float), see TRAP_SAVED
+    saved: (Vec<i64>, Vec<i64>),
     /// each `scratch` value's offset from sp
     scratch: std::collections::HashMap<ValueId, i64>,
     /// the block being emitted: a jump to the next one is a fall-through
@@ -174,10 +176,13 @@ struct RvEmit<'a> {
 /// the caller-saved registers a trap handler preserves: t0-t2, a0-a7,
 /// t3-t6; ra is in the frame already
 const TRAP_SAVED: &[i64] = &[5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31];
-const TRAP_AREA: i64 = 120;
 /// the float registers an interrupt handler keeps: ft0-ft7, fa0-fa7,
 /// ft8-ft11 (the fs registers are the allocator's, kept by it)
 const IRQ_FP_SAVED: &[i64] = &[0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31];
+/// what a task switch keeps on top of those: the callee-saved s0-s11
+/// and fs0-fs11 — the whole file is the task's
+const SWITCH_SAVED: &[i64] = &[8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27];
+const SWITCH_FP_SAVED: &[i64] = &[8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27];
 
 impl RvEmit<'_> {
     fn emit(&mut self, template: &str, values: &[i64]) -> Result<usize, String> {
@@ -505,17 +510,20 @@ impl RvEmit<'_> {
             self.emit(FLD, &[fr, fbase + 8 * k as i64, SP])?;
         }
         if let Some((base, irq)) = self.trap {
+            // a task switch's result is the frame to go back from
+            if irq && !self.func.rets.is_empty() {
+                self.emit(ADDI, &[SP, A0, 0])?;
+            }
             // a trap's result is in a0; everything else goes back as it was
-            for (k, &r) in TRAP_SAVED.iter().enumerate() {
+            let (ints, fp) = self.saved.clone();
+            for (k, &r) in ints.iter().enumerate() {
                 if r != A0 || irq {
                     self.emit(LD, &[r, base + 8 * k as i64, SP])?;
                 }
             }
-            if irq && !self.natives.classes.is_empty() {
-                let fp_base = base + TRAP_AREA;
-                for (k, &fr) in IRQ_FP_SAVED.iter().enumerate() {
-                    self.emit(FLD, &[fr, fp_base + 8 * k as i64, SP])?;
-                }
+            let fp_base = base + 8 * ints.len() as i64;
+            for (k, &fr) in fp.iter().enumerate() {
+                self.emit(FLD, &[fr, fp_base + 8 * k as i64, SP])?;
             }
         }
         self.emit(LD, &[RA, 0, SP])?;
@@ -605,9 +613,26 @@ fn compile_function(
     let alloc = regalloc::allocate_classes(func, &class_idx, &[REG_POOL, F_POOL]);
     let nsaved = alloc.used_regs.len() as i64 + alloc.used_by_class[1].len() as i64;
     let irq = func.name == crate::emit::IRQ;
+    if irq && !(func.params.is_empty() && func.rets.is_empty() || func.params.len() == 1 && func.rets.len() == 1 && func.ty(func.params[0]) == Type::Ptr && func.rets[0] == Type::Ptr) {
+        return Err("__irq is fn __irq() or fn __irq(sp: ptr) -> ptr".into());
+    }
     let trap = (func.name == crate::emit::TRAP || irq).then_some((16 + 8 * nsaved, irq));
-    let fp_area = if irq && !natives.classes.is_empty() { 8 * IRQ_FP_SAVED.len() as i64 } else { 0 };
-    let spill_base = 16 + 8 * nsaved + if trap.is_some() { TRAP_AREA + fp_area } else { 0 };
+    let switching = irq && !func.params.is_empty();
+    let mut saved: (Vec<i64>, Vec<i64>) = (Vec::new(), Vec::new());
+    if trap.is_some() {
+        saved.0 = TRAP_SAVED.to_vec();
+        if irq && !natives.classes.is_empty() {
+            saved.1 = IRQ_FP_SAVED.to_vec();
+        }
+        if switching {
+            saved.0.extend_from_slice(SWITCH_SAVED);
+            if !natives.classes.is_empty() {
+                saved.1.extend_from_slice(SWITCH_FP_SAVED);
+            }
+        }
+    }
+    let trap_area = (8 * (saved.0.len() + saved.1.len()) as i64 + 15) & !15;
+    let spill_base = 16 + 8 * nsaved + trap_area;
     let (scratch, scratch_end) = crate::emit::scratch_layout(func, (spill_base + 8 * alloc.nslots as i64 + 15) & !15);
     let frame = scratch_end;
     if frame > 2047 {
@@ -627,6 +652,7 @@ fn compile_function(
         classes,
         spill_base,
         trap,
+        saved: saved.clone(),
         scratch,
         cur: 0,
         block_offsets: vec![None; func.blocks.len()],
@@ -643,15 +669,17 @@ fn compile_function(
         e.emit(FSD, &[fr, fbase + 8 * k as i64, SP])?;
     }
     if let Some((base, irq)) = trap {
-        for (k, &r) in TRAP_SAVED.iter().enumerate() {
+        for (k, &r) in saved.0.iter().enumerate() {
             e.emit(SD, &[r, base + 8 * k as i64, SP])?;
         }
-        if fp_area > 0 {
-            for (k, &fr) in IRQ_FP_SAVED.iter().enumerate() {
-                e.emit(FSD, &[fr, base + TRAP_AREA + 8 * k as i64, SP])?;
-            }
+        let fp_base = base + 8 * saved.0.len() as i64;
+        for (k, &fr) in saved.1.iter().enumerate() {
+            e.emit(FSD, &[fr, fp_base + 8 * k as i64, SP])?;
         }
-        let _ = irq;
+        // an interrupt handler that switches tasks is given its frame
+        if irq && !func.params.is_empty() {
+            e.emit(ADDI, &[A0, SP, 0])?;
+        }
     }
     for (i, &p) in func.params.iter().enumerate() {
         e.value_from(p, A0 + i as i64)?;

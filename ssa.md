@@ -311,6 +311,18 @@ riscv64 one), `irq_ack()` and `irq_done(id)` take and finish one, and
 second apart, each deadline a step from the previous one, and the
 elapsed count turned into exact milliseconds by `lib/time.ssa`.
 
+An interrupt handler that switches tasks is `fn __irq(sp: ptr) ->
+ptr`: it is handed its frame — where the interrupted code's registers
+now are, the *whole* register file for this form, callee-saved ones
+included — and returns the frame to go back from; the epilogue
+restores from that frame and returns to it. A task is then a stack and
+a place to resume: the frame's address and `resume()`'s, saved when it
+is interrupted, restored (`resume_at`, the frame returned) when it is
+chosen; a task that has never run is a stack whose top 4096 bytes are
+zeros — an empty frame, frames being smaller than that — and its
+function's address as the place to resume. `os/tasks.ssa` is the
+fourth operating system: two tasks, a time slice each, `ababababab`.
+
 ### Calls
 
 A name followed by an argument list is a call — no opcode is ever

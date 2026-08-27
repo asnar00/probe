@@ -1,0 +1,175 @@
+; tasks — the fourth operating system written in probe: two tasks,
+; preempted by the timer, take turns.
+;
+;   probe boot os/tasks.ssa            (riscv64)
+;   probe boot os/tasks.ssa arm        (aarch64)
+;   ababababab
+;
+; A task is a stack and a place to resume: (pc, sp). The timer's
+; interrupt lands in `fn __irq(sp: ptr) -> ptr`, which `probe boot`
+; hands the frame holding the interrupted task's registers and which
+; returns the frame to go back from — so switching tasks is saving
+; where this one was (`resume()`, the frame) and answering with where
+; the other one was. A task that has never run is a stack whose top
+; 4096 bytes are zeros (an empty frame; frames are smaller than that)
+; and the address of its function. Each task prints its letter once
+; per time slice it runs in, then spins until the next slice; ten
+; slices and the machine ends. Slices are a twentieth of a second.
+
+data stack_b: array(u8, 8192)
+; two tasks: pc, sp of each, and which is running
+data tasks: array(ptr, 4)
+data current: array(u64, 1)
+data slices: array(u64, 1)
+data deadline: array(u64, 1)
+
+; --- the board ---
+fn vectors(t: ptr) {
+    ret
+}
+fn resume() -> ptr {
+    ret 0
+}
+fn resume_at(p: ptr) {
+    ret
+}
+fn now() -> u64 {
+    ret 0
+}
+fn hz() -> u64 {
+    ret 0
+}
+fn timer_at(t: u64) {
+    ret
+}
+fn irq_on() {
+    ret
+}
+fn irq_ack() -> u32 {
+    ret 0
+}
+fn irq_done(id: u32) {
+    ret
+}
+fn psci(code: u64) {
+    ret
+}
+
+; --- the kernel: set up task b, start the timer, become task a ---
+fn __start() {
+    h: fn(u64, u64, u64) -> u64 = addr __trap
+    hp: ptr = cast h
+    vectors(hp)
+    t: ptr = addr tasks
+    fb: fn() = addr task_b
+    pcb: ptr = cast fb
+    sb: ptr = addr stack_b
+    spb: ptr = ptradd sb, 4096
+    store pcb, t, 16
+    store spb, t, 24
+    f: u64 = hz()
+    step: u64 = div f, 20
+    start: u64 = now()
+    first: u64 = add start, step
+    dp: ptr = addr deadline
+    store first, dp
+    timer_at(first)
+    irq_on()
+    task_a()
+    ret
+}
+
+; the timer: one more slice, and the other task's turn
+fn __irq(sp: ptr) -> ptr {
+    id: u32 = irq_ack()
+    timer: u32 = platform irq_timer
+    is: u1 = cmp.eq id, timer
+    back: ptr = if is {
+        f: u64 = hz()
+        step: u64 = div f, 20
+        dp: ptr = addr deadline
+        d: u64 = load dp
+        d2: u64 = add d, step
+        store d2, dp
+        timer_at(d2)
+        sp2: ptr = addr slices
+        s: u64 = load sp2
+        s1: u64 = add s, 1
+        store s1, sp2
+        done: u1 = cmp.ge s1, 10
+        if done {
+            putc(10)
+            exit()
+            loop() {
+                continue
+            }
+        }
+        ; this task's place, then the other's
+        t: ptr = addr tasks
+        cp: ptr = addr current
+        cur: u64 = load cp
+        ci: i64 = conv cur
+        pc: ptr = resume()
+        moff: i64 = mul ci, 16
+        me: ptr = ptradd t, moff
+        store pc, me
+        store sp, me, 8
+        other: u64 = sub 1, cur
+        store other, cp
+        oi: i64 = conv other
+        ooff: i64 = mul oi, 16
+        it: ptr = ptradd t, ooff
+        pc2: ptr = load it
+        sp3: ptr = load it, 8
+        resume_at(pc2)
+        yield sp3
+    } else {
+        yield sp
+    }
+    irq_done(id)
+    ret back
+}
+
+fn __trap(n: u64, a: u64, b: u64) -> u64 {
+    exit()
+    ret n
+}
+
+; --- the tasks: a letter per slice, then wait for the next ---
+fn task_a() {
+    run(97)
+    ret
+}
+fn task_b() {
+    run(98)
+    ret
+}
+fn run(c: u8) {
+    sp: ptr = addr slices
+    now: u64 = load sp
+    loop(seen: u64 = now) {
+        putc(c)
+        next: u64 = loop() {
+            s: u64 = load sp
+            same: u1 = cmp.eq s, seen
+            if same {
+                continue
+            }
+            break s
+        }
+        continue next
+    }
+}
+
+fn putc(c: u8) {
+    uart: ptr = platform uart
+    c32: u32 = conv c
+    store c32, uart
+    ret
+}
+fn exit() {
+    f: ptr = platform finisher
+    store 0x5555: u32, f
+    psci(0x84000008)
+    ret
+}
