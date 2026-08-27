@@ -85,8 +85,10 @@ with nothing added to the IR: a time is a library type and a callback
 a function value. And it has memory with the lifetime of a frame: two
 arenas (`lib/arena.ssa`) the scheduler writes wake records into and
 the idle task reads and resets, flipped by a callback every tenth of a
-second — the `frame` lines. Thirty-one interrupts for thirty-one
-events.
+second — the `frame` lines; and with the lifetime of a task: stacks
+from a pool (`lib/pool.ssa`), so a callback can spawn a one-shot task
+(`* 630000`) that sleeps to its time, runs, and hands its stack back —
+`3 stacks out` at the end.
 
 `os/tasks.ssa` is the fourth: two tasks preempted by the timer. The
 interrupt handler is `fn __irq(sp: ptr) -> ptr` — handed the frame
@@ -188,6 +190,9 @@ libraries, never compiler features; `formats.md` is the recipe and
   frame allocator of game engines, and the bottom rung of a lifetime
   ladder (call, frame, object, machine) that never needs a heap. Running
   out is a failed `check`.
+- `lib/pool.ssa` — fixed-size slots taken and given back in any order:
+  `pool_take`, `pool_give`, a free list through the free slots and a
+  flag per slot, so a double give is a failed `check`. The object rung.
 
 ## The learners
 

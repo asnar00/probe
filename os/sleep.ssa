@@ -37,12 +37,16 @@
 ; interrupt (`reschedule`: a software interrupt to this cpu), so the
 ; switch happens now and in the one place switches happen, `__irq`.
 
-data stack_a: array(u8, 8192)
-data stack_b: array(u8, 8192)
-data stack_c: array(u8, 8192)
-; four tasks (0 is the idle task, the boot context): pc, sp, wake time
-; (16 bytes, a rational) — 32 bytes each
-data tasks: array(u64, 16)
+; stacks come from a pool (lib/pool.ssa): four of 8 KB; a task that
+; ends gives its own back
+data stacks: array(u8, 32832)
+data stack_pool: array(u64, 5)
+; five tasks (0 is the idle task, the boot context): pc, sp, wake time
+; (16 bytes, a rational), state (0 free, 1 live, 2 done), and for a
+; one-shot task its function, argument, time and stack — 80 bytes each
+data tasks: array(u64, 50)
+data letters = "?abc*"
+data stacks_out = " stacks out\n"
 data current: array(u64, 1)
 data start: array(u64, 1)
 data interrupts: array(u64, 1)
@@ -56,6 +60,8 @@ data us = " us\n"
 data timers: array(u64, 16)
 data ping_at: array(u64, 2)
 data pong_at: array(u64, 2)
+data star_at: array(u64, 2)
+data starlabel = "* "
 data bang = "! "
 data bangbang = "!! "
 ; the frame arenas: two records of three words, two arrays of records
@@ -142,33 +148,82 @@ fn ticks_of(t: time) -> u64 {
 ; --- the kernel ---
 fn task_block(i: i64) -> ptr {
     t: ptr = addr tasks
-    off: i64 = mul i, 32
+    off: i64 = mul i, 80
     p: ptr = ptradd t, off
     ret p
 }
-fn spawn(i: i64, f: fn(), stack: ptr) {
+; a task: a stack from the pool, its function as the place to resume,
+; runnable now
+fn spawn(i: i64, f: fn()) {
     p: ptr = task_block(i)
     pc: ptr = cast f
-    sp: ptr = ptradd stack, 4096
+    sp: ptr = addr stack_pool
+    stack: ptr = pool_take(sp)
+    top: ptr = ptradd stack, 4096
     store pc, p
-    store sp, p, 8
+    store top, p, 8
     zero: time = seconds(0)
     store zero, p, 16
+    store 1: i64, p, 32
+    store stack, p, 72
     ret
+}
+; a one-shot task: at time t, f(arg), then gone — a free task slot, the
+; three words it needs, and the task that runs them
+fn run_at(t: time, f: fn(ptr), arg: ptr) {
+    i: i64 = loop(j: i64 = 1) {
+        has_slot: u1 = cmp.le j, 4
+        check has_slot
+        bj: ptr = task_block(j)
+        st: i64 = load bj, 32
+        free: u1 = cmp.eq st, 0
+        if free {
+            break j
+        }
+        j1: i64 = add j, 1
+        continue j1
+    }
+    b: ptr = task_block(i)
+    store f, b, 40
+    store arg, b, 48
+    store t, b, 56
+    g: fn() = addr oneshot
+    spawn(i, g)
+    reschedule()
+    ret
+}
+fn oneshot() {
+    cp: ptr = addr current
+    c: u64 = load cp
+    i: i64 = conv c
+    b: ptr = task_block(i)
+    t: time = load b, 56
+    sleep_until(i, t)
+    f: fn(ptr) = load b, 40
+    arg: ptr = load b, 48
+    f(arg)
+    store 2: i64, b, 32
+    reschedule()
+    loop() {
+        idle()
+        continue
+    }
 }
 fn __start() {
     h: fn(u64, u64, u64) -> u64 = addr __trap
     hp: ptr = cast h
     vectors(hp)
+    sp: ptr = addr stack_pool
+    sm: ptr = addr stacks
+    pool_init(sp, sm, 32832, 8192, 4)
+    idle_block: ptr = task_block(0)
+    store 1: i64, idle_block, 32
     fa: fn() = addr task_a
     fb: fn() = addr task_b
     fc: fn() = addr task_c
-    sa: ptr = addr stack_a
-    sb: ptr = addr stack_b
-    sc: ptr = addr stack_c
-    spawn(1, fa, sa)
-    spawn(2, fb, sb)
-    spawn(3, fc, sc)
+    spawn(1, fa)
+    spawn(2, fb)
+    spawn(3, fc)
     t0: u64 = now()
     stp: ptr = addr start
     store t0, stp
@@ -214,6 +269,12 @@ fn __start() {
             wv: i64 = load wo
             print_dec(wv)
             say_us()
+            spp: ptr = addr stack_pool
+            outn: i64 = pool_out(spp)
+            print_dec(outn)
+            sop: ptr = addr stacks_out
+            son: i64 = len stacks_out
+            say(sop, son)
             exit()
             loop() {
                 continue
@@ -255,13 +316,29 @@ fn __irq(sp: ptr) -> ptr {
         ; the earliest passed deadline runs; the earliest future one
         ; sets the timer
         best: i64, next: time = loop(i: i64 = 1, b: i64 = 0, bw: time = tnow, nx: time = tnow, have: u1 = 0) {
-            over: u1 = cmp.gt i, 3
+            over: u1 = cmp.gt i, 4
             if over {
                 break b, nx
             }
             p: ptr = task_block(i)
-            w: time = load p, 16
             i2: i64 = add i, 1
+            st: i64 = load p, 32
+            not_live: u1 = cmp.ne st, 1
+            if not_live {
+                ; a task that ended, once it is not the one interrupted:
+                ; its stack goes back to the pool, its slot is free
+                ended: u1 = cmp.eq st, 2
+                not_me: u1 = cmp.ne i, ci
+                reclaim: u1 = and ended, not_me
+                if reclaim {
+                    stack: ptr = load p, 72
+                    spp: ptr = addr stack_pool
+                    pool_give(spp, stack)
+                    store 0: i64, p, 32
+                }
+                continue i2, b, bw, nx, have
+            }
+            w: time = load p, 16
             due: u1 = cmp.le w, tnow
             if due {
                 earlier: u1 = cmp.lt w, bw
@@ -476,8 +553,8 @@ fn consume() {
                 break
             }
             t: i64 = load base, i, 1
-            letter: i64 = add t, 96
-            l8: u8 = conv letter
+            lp2: ptr = addr letters
+            l8: u8 = load lp2, t, 1
             putc(32)
             putc(l8)
             i16: i64 = add i, 16
@@ -496,6 +573,14 @@ fn ping(arg: ptr) {
     bp: ptr = addr bang
     bn: i64 = len bang
     report(bp, bn, t)
+    ; a one-shot task at 63/100 s: a task, so it may take its time
+    sixtythree: time = seconds(63)
+    hundredth: time = period(100)
+    ts: time = mul sixtythree, hundredth
+    sp: ptr = addr star_at
+    store ts, sp
+    fs: fn(ptr) = addr star
+    run_at(ts, fs, sp)
     ; and the next one a quarter of a second after this one's time —
     ; the scheduled time, not the late moment it is running at
     quarter: time = period(4)
@@ -504,6 +589,13 @@ fn ping(arg: ptr) {
     store t2, pp
     fp: fn(ptr) = addr pong
     at(t2, fp, pp)
+    ret
+}
+fn star(arg: ptr) {
+    t: time = load arg
+    bp: ptr = addr starlabel
+    bn: i64 = len starlabel
+    report(bp, bn, t)
     ret
 }
 fn pong(arg: ptr) {

@@ -115,8 +115,18 @@ fn parse_case(line: &str) -> Result<Case, String> {
             Some((bytes, body))
         });
         if let Some((bytes, body)) = arr {
-            let vals: Result<Vec<i64>, _> = body.split(',').map(|v| parse_int(v.trim())).collect();
-            args.push(ArgSpec::Arr { bytes, vals: vals? });
+            // an element may be `v*n`: v repeated n times (u8[0*256])
+            let mut vals = Vec::new();
+            for v in body.split(',') {
+                match v.trim().split_once('*') {
+                    Some((x, n)) => {
+                        let (x, n) = (parse_int(x.trim())?, parse_int(n.trim())?);
+                        vals.extend(std::iter::repeat_n(x, n.max(0) as usize));
+                    }
+                    None => vals.push(parse_int(v.trim())?),
+                }
+            }
+            args.push(ArgSpec::Arr { bytes, vals });
         } else {
             args.push(ArgSpec::Int(parse_int(tok)?));
         }
@@ -1145,55 +1155,68 @@ mod tests {
     /// the fifth: three tasks sleeping until exact times — every 1/10,
     /// 1/3 and 1/7 of a second — must wake in the order the fractions
     /// say (ties at 1 s in index order), never early; two callbacks at
-    /// 13/25 s and 77/100 s; a frame every tenth of a second (flipped at
-    /// 0.05, 0.15, ...) whose record — the switches to tasks in it — is
-    /// printed by the idle task; and one interrupt per distinct event:
-    /// 18 deadlines, 2 callbacks, 11 flips. The whole transcript is
-    /// computed here from the fractions; only the lateness figures vary
-    /// (qemu's wake-up granularity, milliseconds).
+    /// 13/25 s and 77/100 s, the first spawning a one-shot task for
+    /// 63/100 s that gives its stack back; a frame every tenth of a
+    /// second (flipped at 0.05, 0.15, ...) whose record — the switches
+    /// to tasks in it — is printed by the idle task. The wakes, the
+    /// frames' contents and the stacks left out are exact; the lateness
+    /// figures, and whether two events within the machine's wake-up
+    /// latency of each other (c at 0.857 and the flip at 0.85) share an
+    /// interrupt and so which prints first, are qemu's.
     #[test]
     fn sleep_boots() {
         let _turn = boot_turn();
-        // events: (numerator, denominator, text), sorted by exact time
-        let mut events: Vec<(i64, i64, String)> = Vec::new();
         let mut wakes: Vec<(i64, i64, char)> = Vec::new();
         for (letter, den, count) in [('a', 10, 10), ('b', 3, 3), ('c', 7, 7)] {
             for k in 1..=count {
                 wakes.push((k, den, letter));
             }
         }
+        wakes.push((63, 100, '*'));
         wakes.sort_by(|x, y| (x.0 * y.1).cmp(&(y.0 * x.1)).then(x.2.cmp(&y.2)));
-        for (k, d, l) in &wakes {
-            events.push((*k, *d, format!("{} {}", l, k * 1_000_000 / d)));
-        }
-        events.push((13, 25, "! 520000".into()));
-        events.push((77, 100, "!! 770000".into()));
-        // frame k flips at (2k - 1)/20 and records the switches in the
-        // frame before: the three starts, then the wakes in each tenth
+        let mut timed: Vec<(i64, i64, String)> = wakes.iter().map(|(k, d, l)| (*k, *d, format!("{} {}", l, k * 1_000_000 / d))).collect();
+        timed.push((13, 25, "! 520000".into()));
+        timed.push((77, 100, "!! 770000".into()));
+        timed.sort_by(|x, y| (x.0 * y.1).cmp(&(y.0 * x.1)));
+        let want_timed: Vec<String> = timed.into_iter().map(|(_, _, t)| t).collect();
+        // frame k, flipped at (2k - 1)/20, records the switches in the
+        // frame before: the three starts, the one-shot's first dispatch
+        // at 13/25 (frame 6), and the wakes in each tenth
+        let mut want_frames = Vec::new();
         for k in 1..=11i64 {
             let (lo, hi) = (2 * k - 3, 2 * k - 1); // twentieths: (lo/20, hi/20]
-            let mut letters: Vec<String> = if k == 1 { vec!["a".into(), "b".into(), "c".into()] } else { Vec::new() };
-            for (n, d, l) in &wakes {
+            let mut switches: Vec<(i64, i64, char)> = if k == 1 { vec![(0, 1, 'a'), (0, 1, 'b'), (0, 1, 'c')] } else { Vec::new() };
+            for (n, d, l) in wakes.iter().chain([(13, 25, '*')].iter()) {
                 if n * 20 > lo * d && n * 20 <= hi * d {
-                    letters.push(l.to_string());
+                    switches.push((*n, *d, *l));
                 }
             }
-            events.push((2 * k - 1, 20, format!("frame {}: {}", k, letters.join(" "))));
+            switches.sort_by(|x, y| (x.0 * y.1).cmp(&(y.0 * x.1)).then(x.2.cmp(&y.2)));
+            let letters: Vec<String> = switches.iter().map(|s| s.2.to_string()).collect();
+            want_frames.push(format!("frame {}: {}", k, letters.join(" ")));
         }
-        events.sort_by(|x, y| (x.0 * y.1).cmp(&(y.0 * x.1)));
         for target in ["riscv64", "arm64"] {
             let out = super::boot("os/sleep.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"")).unwrap();
             let lines: Vec<&str> = out.lines().collect();
-            assert_eq!(lines.len(), events.len() + 1, "{}: {:?}", target, out);
-            for (line, (_, _, want)) in lines.iter().zip(&events) {
-                let (event, late) = line.split_once(" +").unwrap_or((line, ""));
-                assert_eq!(event, want, "{}: {:?}", target, out);
-                if !late.is_empty() {
+            let n = lines.len();
+            assert_eq!(n, want_timed.len() + want_frames.len() + 2, "{}: {:?}", target, out);
+            let mut got_timed = Vec::new();
+            let mut got_frames = Vec::new();
+            for line in &lines[..n - 2] {
+                if line.starts_with("frame ") {
+                    got_frames.push(line.to_string());
+                } else {
+                    let (event, late) = line.split_once(" +").unwrap_or((line, "x"));
                     let late: i64 = late.parse().unwrap_or(-1);
                     assert!((0..20_000).contains(&late), "{}: {:?}", target, line);
+                    got_timed.push(event.to_string());
                 }
             }
-            assert!(lines[events.len()].starts_with("31 interrupts, worst +"), "{}: {:?}", target, out);
+            assert_eq!(got_timed, want_timed, "{}: {:?}", target, out);
+            assert_eq!(got_frames, want_frames, "{}: {:?}", target, out);
+            let interrupts: i64 = lines[n - 2].split_once(" interrupts").and_then(|(k, _)| k.parse().ok()).unwrap_or(-1);
+            assert!((30..=32).contains(&interrupts), "{}: {:?}", target, out);
+            assert_eq!(lines[n - 1], "3 stacks out", "{}: {:?}", target, out);
         }
     }
 

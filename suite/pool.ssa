@@ -1,0 +1,111 @@
+; lib/pool.ssa: fixed-size slots over declared memory, taken and given
+; back in any order. The pool's five words live in scratch; the slots
+; are in the caller's buffer (a u8 array of 256 bytes).
+
+;! take_two u8[0*256] -> 32
+;! give_and_retake u8[0*256] -> 1
+;! out_count u8[0*256] -> 2
+;! any_order u8[0*256] -> 3
+;! all_slots u8[0*256] -> 4
+;! distinct_values u8[0*256] -> 60
+;! aligned u8[0*256] -> 1
+
+; two slots of 32 bytes are 32 bytes apart
+fn take_two(mem: ptr) -> i64 {
+    p: ptr = scratch 40
+    pool_init(p, mem, 200, 24, 4)
+    a: ptr = pool_take(p)
+    b: ptr = pool_take(p)
+    aa: u64 = cast a
+    ba: u64 = cast b
+    d: u64 = sub ba, aa
+    r: i64 = cast d
+    ret r
+}
+
+; a slot given back is the next one taken
+fn give_and_retake(mem: ptr) -> u1 {
+    p: ptr = scratch 40
+    pool_init(p, mem, 200, 24, 4)
+    a: ptr = pool_take(p)
+    pool_take(p)
+    pool_give(p, a)
+    c: ptr = pool_take(p)
+    aa: u64 = cast a
+    ca: u64 = cast c
+    r: u1 = cmp.eq aa, ca
+    ret r
+}
+
+fn out_count(mem: ptr) -> i64 {
+    p: ptr = scratch 40
+    pool_init(p, mem, 200, 24, 4)
+    a: ptr = pool_take(p)
+    pool_take(p)
+    pool_take(p)
+    pool_give(p, a)
+    n: i64 = pool_out(p)
+    ret n
+}
+
+; give back in a different order from taking; count is right
+fn any_order(mem: ptr) -> i64 {
+    p: ptr = scratch 40
+    pool_init(p, mem, 200, 24, 4)
+    a: ptr = pool_take(p)
+    b: ptr = pool_take(p)
+    c: ptr = pool_take(p)
+    d: ptr = pool_take(p)
+    pool_give(p, b)
+    pool_give(p, d)
+    pool_give(p, a)
+    e: ptr = pool_take(p)
+    f: ptr = pool_take(p)
+    ea: u64 = cast e
+    fa: u64 = cast f
+    ne: u1 = cmp.ne ea, fa
+    check ne
+    n: i64 = pool_out(p)
+    ret n
+}
+
+; exactly count slots can be out at once
+fn all_slots(mem: ptr) -> i64 {
+    p: ptr = scratch 40
+    pool_init(p, mem, 200, 24, 4)
+    pool_take(p)
+    pool_take(p)
+    pool_take(p)
+    pool_take(p)
+    n: i64 = pool_out(p)
+    ret n
+}
+
+; slots hold their own values
+fn distinct_values(mem: ptr) -> i64 {
+    p: ptr = scratch 40
+    pool_init(p, mem, 200, 24, 4)
+    a: ptr = pool_take(p)
+    b: ptr = pool_take(p)
+    c: ptr = pool_take(p)
+    store 10: i64, a
+    store 20: i64, b
+    store 30: i64, c
+    av: i64 = load a
+    bv: i64 = load b
+    cv: i64 = load c
+    s1: i64 = add av, bv
+    s: i64 = add s1, cv
+    ret s
+}
+
+fn aligned(mem: ptr) -> u1 {
+    p: ptr = scratch 40
+    pool_init(p, mem, 200, 24, 4)
+    pool_take(p)
+    q: ptr = pool_take(p)
+    qa: u64 = cast q
+    low: u64 = and qa, 15
+    r: u1 = cmp.eq low, 0
+    ret r
+}

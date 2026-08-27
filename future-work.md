@@ -67,8 +67,9 @@ and `call_indirect` on wasm). Left:
 The design session happened; `reference/memory-management.md` is the
 briefing and its §7 the direction. Built so far: `scratch` (a call's
 lifetime), `data` (the machine's), `lib/arena.ssa` (a frame's: bump
-allocation reset all at once) and `check`. Next, in order: pools (fixed
-slots, given back one at a time); regions in the pointer type, checked
+allocation reset all at once), `lib/pool.ssa` (an object's: fixed
+slots given back one at a time) and `check`. Next, in order: regions in
+the pointer type, checked
 statically — `ptr frame` cannot be stored where a `ptr` can, nor
 returned past its reset — the one IR change memory asks for; the
 capacity analysis (`probe stack`: worst-case stack per task and bytes

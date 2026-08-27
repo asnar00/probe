@@ -1,0 +1,122 @@
+; a pool: fixed-size slots over memory the program declared, taken and
+; given back one at a time, in any order. The second rung of the
+; lifetime ladder (lib/arena.ssa is the first): an object's lifetime,
+; ended by the program. Five words: where the slots start, the slot
+; size, how many, the head of the free list (an index; count means
+; none), how many are out. The free list runs through the free slots
+; themselves; a byte per slot in front of them says which are out, so
+; giving back a slot twice, or one that was never taken, is a failed
+; check. Running out is a failed check too.
+type pool = struct { base: ptr, slot: i64, count: i64, head: i64, out: i64 }
+
+; `mem` of `size` bytes becomes `count` slots of `slot` bytes (rounded
+; up to 16), after `count` flag bytes (rounded up to 16)
+fn pool_init(p: ptr, mem: ptr, size: i64, slot: i64, count: i64) {
+    s15: i64 = add slot, 15
+    slot16: i64 = and s15, -16
+    c15: i64 = add count, 15
+    flags: i64 = and c15, -16
+    m: u64 = cast mem
+    m15: u64 = add m, 15
+    aligned: u64 = and m15, -16
+    a: ptr = cast aligned
+    lead: u64 = sub aligned, m
+    leadi: i64 = cast lead
+    need0: i64 = mul slot16, count
+    need1: i64 = add need0, flags
+    need: i64 = add need1, leadi
+    fits: u1 = cmp.le need, size
+    check fits
+    base: ptr = ptradd a, flags
+    store base, p
+    store slot16, p, 8
+    store count, p, 16
+    store 0: i64, p, 24
+    store 0: i64, p, 32
+    ; every slot free, each threading to the next
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, count
+        if done {
+            break
+        }
+        off: i64 = mul i, slot16
+        q: ptr = ptradd base, off
+        i1: i64 = add i, 1
+        store i1, q
+        fl: ptr = ptradd a, i
+        store 0: u8, fl
+        continue i1
+    }
+    ret
+}
+
+fn pool_slot(p: ptr, i: i64) -> ptr {
+    base: ptr = load p
+    slot: i64 = load p, 8
+    off: i64 = mul i, slot
+    q: ptr = ptradd base, off
+    ret q
+}
+fn pool_flag(p: ptr, i: i64) -> ptr {
+    base: ptr = load p
+    count: i64 = load p, 16
+    c15: i64 = add count, 15
+    flags: i64 = and c15, -16
+    neg: i64 = sub 0, flags
+    a: ptr = ptradd base, neg
+    f: ptr = ptradd a, i
+    ret f
+}
+
+; a slot; the pool must have one
+fn pool_take(p: ptr) -> ptr {
+    count: i64 = load p, 16
+    head: i64 = load p, 24
+    have: u1 = cmp.lt head, count
+    check have
+    q: ptr = pool_slot(p, head)
+    next: i64 = load q
+    store next, p, 24
+    out: i64 = load p, 32
+    out1: i64 = add out, 1
+    store out1, p, 32
+    f: ptr = pool_flag(p, head)
+    store 1: u8, f
+    ret q
+}
+
+; a slot back; it must be one of this pool's, and out
+fn pool_give(p: ptr, q: ptr) {
+    base: ptr = load p
+    slot: i64 = load p, 8
+    count: i64 = load p, 16
+    qa: u64 = cast q
+    ba: u64 = cast base
+    inside: u1 = cmp.ge qa, ba
+    check inside
+    d: u64 = sub qa, ba
+    di: i64 = cast d
+    i: i64 = div di, slot
+    r: i64 = rem di, slot
+    whole: u1 = cmp.eq r, 0
+    check whole
+    known: u1 = cmp.lt i, count
+    check known
+    f: ptr = pool_flag(p, i)
+    was: u8 = load f
+    is_out: u1 = cmp.eq was, 1
+    check is_out
+    store 0: u8, f
+    head: i64 = load p, 24
+    store head, q
+    store i, p, 24
+    out: i64 = load p, 32
+    out1: i64 = sub out, 1
+    store out1, p, 32
+    ret
+}
+
+fn pool_out(p: ptr) -> i64 {
+    out: i64 = load p, 32
+    ret out
+}

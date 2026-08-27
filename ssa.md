@@ -266,7 +266,14 @@ the arena's (`lib/arena.ssa`): bump allocation over memory the program
 declared, reset all at once at a moment nothing points into it — a
 frame's end, a period boundary — and a failed `check` when it runs out.
 `os/sleep.ssa` keeps two, produced into by the scheduler and consumed
-by the idle task, flipped every tenth of a second.
+by the idle task, flipped every tenth of a second. Memory with an
+object's lifetime — given back one piece at a time, in any order — is
+the pool's (`lib/pool.ssa`): fixed-size slots, a free list through the
+free ones, a flag per slot so that giving one back twice is a failed
+`check`. `os/sleep.ssa`'s task stacks come from one; a one-shot task
+spawned by a callback sleeps until its time, runs, and hands its stack
+back. Those are the rungs so far — a call's, a frame's, an object's,
+the machine's — and there is no heap.
 
 ### Data, and the machine
 
