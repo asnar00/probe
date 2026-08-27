@@ -6,7 +6,7 @@ has the full story for any of them.
 
 ---
 
-### The simdgroup — `HASH` · 2026-08-28
+### The simdgroup — `9b8630e` · 2026-08-28
 
 `lib/gpu.ssa` names what a simdgroup computes across its lanes —
 `simd_sum`, `simd_product`, `simd_max`, `simd_min`, `simd_prefix_sum`,
