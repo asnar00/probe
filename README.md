@@ -65,24 +65,28 @@ ababababab
 
 ```sh
 cargo run -- boot os/sleep.ssa
+frame 1: a b c    # the previous frame's record, from an arena
 a 100000 +5415    # letter, scheduled wake in µs, lateness
 c 142857 +3679
 ...
-! 500000 +5652    # a callback, run inside the interrupt
-a 500000 +7474
+! 520000 +5503    # a callback, run inside the interrupt
 ...
-19 interrupts, worst +7554 us
+31 interrupts, worst +7206 us
 ```
 
 `os/sleep.ssa` is the fifth: three tasks sleeping until exact times —
 every 1/10, 1/3 and 1/7 of a second — woken in the order the fractions
 say, 3/3 and 7/7 and 10/10 of a second being one instant, and the
-timer armed to the next deadline rather than to a tick: twenty wakes,
-eighteen interrupts. A task giving up the cpu asks for a software
-interrupt (`reschedule`), so every switch still happens in `__irq`;
-and `at(t, f, arg)` / `after(d, f, arg)` run a function value at a
-time inside the interrupt — the `!` lines — with nothing added to the
-IR: a time is a library type and a callback a function value.
+timer armed to the next deadline rather than to a tick. A task giving
+up the cpu asks for a software interrupt (`reschedule`), so every
+switch still happens in `__irq`; `at(t, f, arg)` / `after(d, f, arg)`
+run a function value at a time inside the interrupt — the `!` lines —
+with nothing added to the IR: a time is a library type and a callback
+a function value. And it has memory with the lifetime of a frame: two
+arenas (`lib/arena.ssa`) the scheduler writes wake records into and
+the idle task reads and resets, flipped by a callback every tenth of a
+second — the `frame` lines. Thirty-one interrupts for thirty-one
+events.
 
 `os/tasks.ssa` is the fourth: two tasks preempted by the timer. The
 interrupt handler is `fn __irq(sp: ptr) -> ptr` — handed the frame
@@ -142,6 +146,10 @@ printer. In outline:
 - **Scratch**: `p: ptr = scratch 64` is memory that is the function's
   while it runs — its frame, or a shadow stack on wasm.
 
+- **Check**: `check c` is an assertion; one that fails is a breakpoint
+  trap the kernel's `__trap` reports with the address (`os/check.ssa`).
+  How a library says a capacity was exceeded.
+
 - **Function values**: `fn(i64, i64) -> i64` is a type — the signature —
   and `f: binary = addr add64` a value of it, taken with the same `addr`
   that reaches data. Calling it, `r: i64 = f(a, b)`, is spelled like any
@@ -175,6 +183,11 @@ libraries, never compiler features; `formats.md` is the recipe and
   10^S: cents that add exactly.
 - `lib/wide.ssa` — division (and, on a core without a multiplier,
   multiplication) for wide integers.
+- `lib/arena.ssa` — bump allocation over memory the program declared:
+  `arena_alloc`, `arena_mark`/`arena_release`, `arena_reset`; the
+  frame allocator of game engines, and the bottom rung of a lifetime
+  ladder (call, frame, object, machine) that never needs a heap. Running
+  out is a failed `check`.
 
 ## The learners
 

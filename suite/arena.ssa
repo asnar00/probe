@@ -1,0 +1,94 @@
+; lib/arena.ssa: bump allocation over declared memory. The arena's
+; three words live in scratch here; the memory it hands out is the
+; caller's buffer (80 bytes, wherever it starts: the arena begins at
+; its first 16-aligned byte, so at least 64 are usable).
+
+;! two_allocs i64[0,0,0,0,0,0,0,0,0,0] -> 16
+;! aligned i64[0,0,0,0,0,0,0,0,0,0] -> 1
+;! roundtrip i64[0,0,0,0,0,0,0,0,0,0] 7 9 -> 16
+;! reset_reuses i64[0,0,0,0,0,0,0,0,0,0] -> 1
+;! mark_release i64[0,0,0,0,0,0,0,0,0,0] -> 48
+;! fills_exactly i64[0,0,0,0,0,0,0,0,0,0] -> 64
+;! checks_pass 3 -> 3
+
+fn two_allocs(buf: ptr) -> i64 {
+    a: ptr = scratch 24
+    arena_init(a, buf, 80)
+    p: ptr = arena_alloc(a, 8)
+    q: ptr = arena_alloc(a, 8)
+    pa: u64 = cast p
+    qa: u64 = cast q
+    d: u64 = sub qa, pa
+    r: i64 = cast d
+    ret r
+}
+
+; every allocation is 16-aligned, whatever was asked for
+fn aligned(buf: ptr) -> u1 {
+    a: ptr = scratch 24
+    arena_init(a, buf, 80)
+    p: ptr = arena_alloc(a, 3)
+    q: ptr = arena_alloc(a, 17)
+    qa: u64 = cast q
+    low: u64 = and qa, 15
+    r: u1 = cmp.eq low, 0
+    ret r
+}
+
+fn roundtrip(buf: ptr, x: i64, y: i64) -> i64 {
+    a: ptr = scratch 24
+    arena_init(a, buf, 80)
+    p: ptr = arena_alloc(a, 8)
+    q: ptr = arena_alloc(a, 8)
+    store x, p
+    store y, q
+    xv: i64 = load p
+    yv: i64 = load q
+    r: i64 = add xv, yv
+    ret r
+}
+
+; after a reset the next allocation is the first one again
+fn reset_reuses(buf: ptr) -> u1 {
+    a: ptr = scratch 24
+    arena_init(a, buf, 80)
+    p: ptr = arena_alloc(a, 32)
+    arena_reset(a)
+    q: ptr = arena_alloc(a, 32)
+    pa: u64 = cast p
+    qa: u64 = cast q
+    r: u1 = cmp.eq pa, qa
+    ret r
+}
+
+; a mark taken, allocations, a release: the count is back
+fn mark_release(buf: ptr) -> i64 {
+    a: ptr = scratch 24
+    arena_init(a, buf, 80)
+    arena_alloc(a, 48)
+    m: i64 = arena_mark(a)
+    arena_alloc(a, 16)
+    arena_release(a, m)
+    u: i64 = arena_used(a)
+    ret u
+}
+
+; exactly the declared size fits
+fn fills_exactly(buf: ptr) -> i64 {
+    a: ptr = scratch 24
+    arena_init(a, buf, 80)
+    arena_alloc(a, 16)
+    arena_alloc(a, 16)
+    arena_alloc(a, 16)
+    arena_alloc(a, 16)
+    u: i64 = arena_used(a)
+    ret u
+}
+
+; a check that holds is nothing
+fn checks_pass(x: i64) -> i64 {
+    pos: u1 = cmp.gt x, 0
+    check pos
+    check 1
+    ret x
+}

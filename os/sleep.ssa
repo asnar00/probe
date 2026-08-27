@@ -12,8 +12,19 @@
 ; Besides tasks there are callbacks: `at(t, f, arg)` and `after(d, f,
 ; arg)` run a function value at a time, inside the interrupt, before
 ; the scheduler picks a task — fast and exact, so short and never
-; sleeping. One is set half a second after boot and registers another
-; at exactly a quarter of a second after its own time.
+; sleeping. One is set for 13/25 s and registers another at exactly a
+; quarter of a second after its own time — times chosen to share an
+; interrupt with nothing else, so every event costs exactly one.
+;
+; And there is memory with a lifetime of one frame: two arenas
+; (lib/arena.ssa) over two data arrays. Every time the scheduler
+; wakes a task it writes a record into the current arena — inside the
+; interrupt, a bump of the count, nothing more. A frame callback runs
+; every tenth of a second (at 0.05, 0.15, ... so a flip never shares
+; an interrupt with a wake): it checks the consumer has finished with
+; the other arena, then flips. The idle task is the consumer: after
+; each flip it prints the closed frame's records — which tasks woke,
+; in order — and resets that arena. Produce, flip, consume, reset.
 ;
 ; Three tasks wake every 1/10, 1/3 and 1/7 of a second, each deadline
 ; a `time` — lib/time.ssa's rational seconds, so 3/3 and 7/7 and 10/10
@@ -47,6 +58,15 @@ data ping_at: array(u64, 2)
 data pong_at: array(u64, 2)
 data bang = "! "
 data bangbang = "!! "
+; the frame arenas: two records of three words, two arrays of records
+data arenas: array(u64, 6)
+data frame_a: array(u8, 512)
+data frame_b: array(u8, 512)
+data current_arena: array(u64, 1)
+data frames: array(u64, 1)
+data consumed: array(u64, 1)
+data frame_label = "frame "
+data colon = ":"
 
 ; --- the board ---
 fn vectors(t: ptr) {
@@ -154,18 +174,36 @@ fn __start() {
     store t0, stp
     timer_off()
     irq_on()
-    ; a callback half a second from now
-    half: time = period(2)
+    ; the frame arenas, and the first flip at 0.05 s
+    aa: ptr = addr arenas
+    mem_a: ptr = addr frame_a
+    arena_init(aa, mem_a, 512)
+    ab: ptr = ptradd aa, 24
+    mem_b: ptr = addr frame_b
+    arena_init(ab, mem_b, 512)
+    twentieth: time = period(20)
+    ff: fn(ptr) = addr flip
+    at(twentieth, ff, aa)
+    ; a callback at 13/25 of a second
+    thirteen: time = seconds(13)
+    twentyfifth: time = period(25)
+    when: time = mul thirteen, twentyfifth
     pp: ptr = addr ping_at
-    fp: fn(ptr) = addr ping
-    when: time = after(half, fp, pp)
     store when, pp
+    fp: fn(ptr) = addr ping
+    at(when, fp, pp)
     reschedule()
-    ; the idle task: when the twenty wakes are done, the report
+    ; the idle task: the consumer of closed frames, and when the twenty
+    ; wakes and ten frames are done, the report
     wp: ptr = addr wakes
     loop() {
+        consume()
         w: u64 = load wp
-        done: u1 = cmp.ge w, 20
+        frp: ptr = addr frames
+        fr: u64 = load frp
+        w20: u1 = cmp.ge w, 20
+        f11: u1 = cmp.ge fr, 11
+        done: u1 = and w20, f11
         if done {
             ip: ptr = addr interrupts
             n: u64 = load ip
@@ -251,6 +289,15 @@ fn __irq(sp: ptr) -> ptr {
             timer_at(at)
         } else {
             timer_off()
+        }
+        ; a switch to a task, on record: a word in this frame's arena
+        chosen_task: u1 = cmp.ne best, 0
+        switched: u1 = cmp.ne best, ci
+        record: u1 = and chosen_task, switched
+        if record {
+            rec: ptr = current_records()
+            r: ptr = arena_alloc(rec, 8)
+            store best, r
         }
         bu: u64 = conv best
         store bu, cp
@@ -360,6 +407,89 @@ fn next_callback(tnow: time, next: time) -> time {
     }
     ret r
 }
+; --- frames ---
+fn current_records() -> ptr {
+    aa: ptr = addr arenas
+    cp: ptr = addr current_arena
+    c: u64 = load cp
+    ci: i64 = conv c
+    off: i64 = mul ci, 24
+    p: ptr = ptradd aa, off
+    ret p
+}
+; the frame callback: the consumer must be done with the other arena
+; (it had a whole frame), then the arenas change places, and the next
+; flip is a tenth of a second on
+fn flip(arg: ptr) {
+    fp: ptr = addr frames
+    f: u64 = load fp
+    cp2: ptr = addr consumed
+    c: u64 = load cp2
+    caught_up: u1 = cmp.eq c, f
+    check caught_up
+    f1: u64 = add f, 1
+    store f1, fp
+    cp: ptr = addr current_arena
+    cur: u64 = load cp
+    other: u64 = sub 1, cur
+    store other, cp
+    ff: fn(ptr) = addr flip
+    tenth: time = period(10)
+    ; from the frame's own time, not from now: 0.05 + f1/10, exactly
+    twentieth: time = period(20)
+    fi: i64 = conv f1
+    ft: time = seconds(fi)
+    step: time = mul tenth, ft
+    next: time = add twentieth, step
+    at(next, ff, arg)
+    ret
+}
+; the consumer: a frame closed since last time is printed and reset
+fn consume() {
+    fp: ptr = addr frames
+    f: u64 = load fp
+    cp2: ptr = addr consumed
+    c: u64 = load cp2
+    behind: u1 = cmp.lt c, f
+    if behind {
+        ; the closed frame is the arena not current
+        cp: ptr = addr current_arena
+        cur: u64 = load cp
+        closed: u64 = sub 1, cur
+        ci: i64 = conv closed
+        off: i64 = mul ci, 24
+        aa: ptr = addr arenas
+        a: ptr = ptradd aa, off
+        lp: ptr = addr frame_label
+        ln: i64 = len frame_label
+        say(lp, ln)
+        c1: u64 = add c, 1
+        c1i: i64 = conv c1
+        print_dec(c1i)
+        colp: ptr = addr colon
+        say(colp, 1)
+        base: ptr = load a
+        used: i64 = arena_used(a)
+        loop(i: i64 = 0) {
+            done: u1 = cmp.ge i, used
+            if done {
+                break
+            }
+            t: i64 = load base, i, 1
+            letter: i64 = add t, 96
+            l8: u8 = conv letter
+            putc(32)
+            putc(l8)
+            i16: i64 = add i, 16
+            continue i16
+        }
+        putc(10)
+        arena_reset(a)
+        store c1, cp2
+    }
+    ret
+}
+
 ; the callbacks themselves: report, and the first registers the second
 fn ping(arg: ptr) {
     t: time = load arg

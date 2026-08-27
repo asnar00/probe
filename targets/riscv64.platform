@@ -26,8 +26,10 @@ const uart_ready_mask = 1
 const uart_ready = 1
 ; an environment call leaves the return address on itself: skip 4
 const resume_skip = 4
-; mcause of an environment call from M-mode
+; mcause of an environment call from M-mode, and of a failed `check`
+; (a breakpoint)
 const trap_syscall = 11
+const trap_check = 3
 
 ; traps in M-mode. `probe boot` lays a 16-entry vector table (one
 ; jump each) in the 64 bytes before __trap's entry — entry 0 for

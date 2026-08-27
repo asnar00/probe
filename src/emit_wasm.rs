@@ -969,6 +969,14 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             e.op("i32.const {}", Some((DATA_BASE + off) as i64))?;
             e.set(*dst)
         }
+        Inst::Check { cond } => {
+            e.get(*cond)?;
+            e.op("i32.const {}", Some(0))?;
+            e.op("i32.eq", None)?;
+            e.op("if", None)?;
+            e.op("unreachable", None)?;
+            e.op("end", None)
+        }
         Inst::Scratch { dst, .. } => {
             let (local, _) = e.shadow.ok_or("scratch without a shadow frame")?;
             let off = e.scratch[dst];

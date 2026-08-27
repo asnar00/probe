@@ -451,7 +451,7 @@ enum Class {
 
 fn class(inst: &Inst) -> Class {
     match inst {
-        Inst::Load { .. } | Inst::Store { .. } | Inst::Call { .. } | Inst::CallInd { .. } => Class::Memory,
+        Inst::Load { .. } | Inst::Store { .. } | Inst::Call { .. } | Inst::CallInd { .. } | Inst::Check { .. } => Class::Memory,
         _ => Class::Pure,
     }
 }

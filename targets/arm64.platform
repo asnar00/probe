@@ -41,8 +41,10 @@ const uart_ready_mask = 0x10
 const uart_ready = 0
 ; a supervisor call leaves the return address after itself
 const resume_skip = 0
-; the exception class of a supervisor call (ESR_EL1.EC = 0x15)
+; the exception class of a supervisor call (ESR_EL1.EC = 0x15), and of
+; a failed `check` (a breakpoint, 0x3c)
 const trap_syscall = 21
+const trap_check = 60
 
 ; traps at EL1. `fn __trap(a: u64, b: u64, c: u64) -> u64` is the
 ; handler (see ssa.md: it gets the trapped code's first argument

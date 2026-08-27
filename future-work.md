@@ -64,15 +64,19 @@ and `call_indirect` on wasm). Left:
 
 ## Memory
 
-`scratch N` gives a function memory for its own lifetime, and `data`
-gives a program memory for the machine's; nothing in between. What a
-program does with memory that outlives a call — allocation, ownership,
-freeing, whether the compiler or a library or the OS holds the heap,
-what a pointer is allowed to mean on wasm versus bare metal — needs a
-proper design session before anything is built, not a feature added
-to the list. Until then: frames are at most 4095 bytes on arm64 and
-2047 on riscv64 (a single immediate); larger needs a multi-instruction
-frame adjustment.
+The design session happened; `reference/memory-management.md` is the
+briefing and its §7 the direction. Built so far: `scratch` (a call's
+lifetime), `data` (the machine's), `lib/arena.ssa` (a frame's: bump
+allocation reset all at once) and `check`. Next, in order: pools (fixed
+slots, given back one at a time); regions in the pointer type, checked
+statically — `ptr frame` cannot be stored where a `ptr` can, nor
+returned past its reset — the one IR change memory asks for; the
+capacity analysis (`probe stack`: worst-case stack per task and bytes
+per arena per frame, over the call graph the compiler already has,
+indirect calls by type); unique pointers when pools need explicit
+release to be safe; generics over types when pools want to be typed.
+Never: a general heap. Also still: frames are at most 4095 bytes on
+arm64 and 2047 on riscv64 (a single immediate).
 
 ## Language
 

@@ -243,6 +243,7 @@ impl Lower<'_> {
             }
             Inst::FnAddr { dst, name } => self.out.push(Inst::FnAddr { dst, name }),
             Inst::Scratch { dst, bytes } => self.out.push(Inst::Scratch { dst, bytes }),
+            Inst::Check { cond } => self.out.push(Inst::Check { cond: r(self, cond) }),
             Inst::Jmp { target, args } => {
                 let args = self.expand_list(&args);
                 self.out.push(Inst::Jmp { target, args });

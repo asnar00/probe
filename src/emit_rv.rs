@@ -949,6 +949,11 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             e.emit(ADDI, &[rd, SP, off])?;
             e.finish(*dst, rd)
         }
+        Inst::Check { cond } => {
+            let rc = e.src_reg(*cond, T0)?;
+            e.emit(BNE, &[rc, ZERO, 8])?;
+            e.emit("ebreak", &[]).map(|_| ())
+        }
         Inst::Platform { dst, name } => {
             let v = *e.natives.consts.get(name).ok_or_else(|| format!("the platform has no constant '{}'", name))?;
             let rd = e.dst_reg(*dst, T0);

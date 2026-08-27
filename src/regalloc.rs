@@ -41,6 +41,7 @@ pub(crate) fn inst_uses(inst: &Inst, out: &mut Vec<ValueId>) {
         Inst::Cast { src, .. } | Inst::Unpack { src, .. } | Inst::Get { src, .. } => {
             out.push(*src)
         }
+        Inst::Check { cond } => out.push(*cond),
         Inst::Pack { args, .. } => out.extend(args),
         Inst::Set { src, val, .. } => {
             out.push(*src);

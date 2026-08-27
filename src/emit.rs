@@ -1500,6 +1500,12 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             e.emit("add {x}, sp, #{i 0..4095}", &[rd, off])?;
             e.finish(*dst, rd)
         }
+        Inst::Check { cond } => {
+            // holds: hop over the breakpoint
+            let rc = e.src_reg(*cond, 9)?;
+            e.emit("cbnz {w}, #{i -1048576..1048572 /4}", &[rc, 8])?;
+            e.emit("brk #{i 0..65535}", &[0]).map(|_| ())
+        }
         Inst::Platform { dst, name } => {
             let v = *e.natives.consts.get(name).ok_or_else(|| format!("the platform has no constant '{}'", name))?;
             let rd = e.dst_reg(*dst, 9);

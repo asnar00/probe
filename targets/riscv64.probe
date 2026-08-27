@@ -134,5 +134,7 @@ inst ecall
 inst csrs {i 0..4095}, {r}
 inst csrc {i 0..4095}, {r}
 inst wfi
+; a failed check: a breakpoint exception (mcause 3)
+inst ebreak
 ; the address of a data item: auipc's page plus an addi
 inst auipc {r}, {i 0..1048575}

@@ -750,6 +750,12 @@ pub enum Inst {
         dst: ValueId,
         name: String,
     },
+    /// `check c`: c must hold; if it does not, the program stops here —
+    /// a breakpoint trap (`brk`, `ebreak`, wasm `unreachable`) the
+    /// kernel's `__trap` can report
+    Check {
+        cond: ValueId,
+    },
     /// a call through a function value: `r = f(x)` where f is a value
     CallInd {
         dsts: Vec<ValueId>,
@@ -3576,6 +3582,10 @@ impl Parser {
                 let (off, index) = self.parse_addressing(scope)?;
                 Ok(Inst::Store { val, addr, off, index })
             }
+            "check" => {
+                let cond = self.parse_operand(scope, Some(Type::U1))?;
+                Ok(Inst::Check { cond })
+            }
             _ if self.is_call(op) => {
                 let (callee, args) = self.parse_call_tail(op.to_string(), scope)?;
                 Ok(Self::make_call(Vec::new(), callee, args))
@@ -3821,7 +3831,7 @@ impl Parser {
                     self.expect(Tok::Newline)?;
                     Ok(true)
                 }
-                "store" => {
+                "store" | "check" => {
                     let inst = self.parse_plain_op(&op, scope)?;
                     self.emit(st, inst);
                     self.expect(Tok::Newline)?;
@@ -4307,6 +4317,7 @@ impl Function {
                 }
             }
             Inst::FnAddr { dst, name } => format!("{} = addr {}", self.fmt_def(*dst), name),
+            Inst::Check { cond } => format!("check {}", self.fmt_value(*cond)),
             Inst::CallInd { dsts, callee, args } => {
                 let call = format!("{}({})", self.fmt_value(*callee), self.fmt_args(args));
                 if dsts.is_empty() {
@@ -4827,6 +4838,11 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                         )));
                     }
                 }
+            }
+        }
+        Inst::Check { cond } => {
+            if func.ty(*cond) != Type::U1 {
+                errs.push(ctx(format!("check takes a u1, not {}", tn(func.ty(*cond)))));
             }
         }
         Inst::FnAddr { dst, name } => {

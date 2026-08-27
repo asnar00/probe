@@ -232,6 +232,21 @@ offset on all three; the scaled index computes an address first where
 the target has no form for it). Whether a value spills to the stack is
 the allocator's business and invisible here.
 
+### Check
+
+```
+check c                    ; c: u1 — if it does not hold, stop here
+```
+
+An assertion. A `check` that holds costs a compare; one that does not
+is a breakpoint trap — `brk` on arm64, `ebreak` on riscv64,
+`unreachable` on wasm — which on a machine lands in `fn __trap` with
+the platform's `trap_check` cause and, from `resume()`, the address of
+the check (`os/check.ssa` prints it and stops). Under the JIT it ends
+the process, as an assertion would. It is how a library says a
+capacity was exceeded or a bound broken, instead of returning a value
+nobody checks.
+
 ### Scratch
 
 ```
@@ -245,8 +260,13 @@ returns (so never returned or stored where it outlives the call). Each
 `scratch` instruction is one area, the same on every pass through it;
 a recursive function gets one per activation. A callee may be handed
 it. It is the only memory a program owns besides `data`: a frame is
-at most 4095 bytes on arm64 and 2047 on riscv64 for now, and
-allocation beyond a function's lifetime is not here yet.
+at most 4095 bytes on arm64 and 2047 on riscv64 for now. Memory with
+a longer lifetime than a call and a shorter one than the machine is
+the arena's (`lib/arena.ssa`): bump allocation over memory the program
+declared, reset all at once at a moment nothing points into it — a
+frame's end, a period boundary — and a failed `check` when it runs out.
+`os/sleep.ssa` keeps two, produced into by the scheduler and consumed
+by the idle task, flipped every tenth of a second.
 
 ### Data, and the machine
 

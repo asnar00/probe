@@ -1110,9 +1110,16 @@ mod tests {
         }
     }
 
+    /// the machines' timing is the tests' subject, so boots take turns
+    fn boot_turn() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// the first operating system: hello world on both bare-metal machines
     #[test]
     fn hello_world_boots() {
+        let _turn = boot_turn();
         for target in ["riscv64", "arm64"] {
             let out = super::boot("os/hello.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"")).unwrap();
             assert!(out.contains("hello world ᕦ(ツ)ᕤ"), "{}: {:?}", target, out);
@@ -1124,6 +1131,7 @@ mod tests {
     /// milliseconds — a second, plus what qemu's timers are late by
     #[test]
     fn clock_boots() {
+        let _turn = boot_turn();
         for target in ["riscv64", "arm64"] {
             let out = super::boot("os/clock.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"")).unwrap();
             let ticks = out.matches("tick\n").count();
@@ -1136,47 +1144,69 @@ mod tests {
 
     /// the fifth: three tasks sleeping until exact times — every 1/10,
     /// 1/3 and 1/7 of a second — must wake in the order the fractions
-    /// say (ties at 1 s in index order), never early, and cost one
-    /// interrupt per distinct deadline: 20 wakes plus two callbacks,
-    /// 19 interrupts. The lateness bound is qemu's wake-up granularity,
-    /// milliseconds.
+    /// say (ties at 1 s in index order), never early; two callbacks at
+    /// 13/25 s and 77/100 s; a frame every tenth of a second (flipped at
+    /// 0.05, 0.15, ...) whose record — the switches to tasks in it — is
+    /// printed by the idle task; and one interrupt per distinct event:
+    /// 18 deadlines, 2 callbacks, 11 flips. The whole transcript is
+    /// computed here from the fractions; only the lateness figures vary
+    /// (qemu's wake-up granularity, milliseconds).
     #[test]
     fn sleep_boots() {
-        let mut expect: Vec<(i64, i64, char)> = Vec::new(); // (k, den, letter)
+        let _turn = boot_turn();
+        // events: (numerator, denominator, text), sorted by exact time
+        let mut events: Vec<(i64, i64, String)> = Vec::new();
+        let mut wakes: Vec<(i64, i64, char)> = Vec::new();
         for (letter, den, count) in [('a', 10, 10), ('b', 3, 3), ('c', 7, 7)] {
             for k in 1..=count {
-                expect.push((k, den, letter));
+                wakes.push((k, den, letter));
             }
         }
-        // by value, exactly: k1/d1 < k2/d2 iff k1*d2 < k2*d1; ties by task (a, b, c)
-        expect.sort_by(|x, y| (x.0 * y.1).cmp(&(y.0 * x.1)).then(x.2.cmp(&y.2)));
-        let want: Vec<String> = expect.iter().map(|(k, d, l)| format!("{} {}", l, k * 1_000_000 / d)).collect();
+        wakes.sort_by(|x, y| (x.0 * y.1).cmp(&(y.0 * x.1)).then(x.2.cmp(&y.2)));
+        for (k, d, l) in &wakes {
+            events.push((*k, *d, format!("{} {}", l, k * 1_000_000 / d)));
+        }
+        events.push((13, 25, "! 520000".into()));
+        events.push((77, 100, "!! 770000".into()));
+        // frame k flips at (2k - 1)/20 and records the switches in the
+        // frame before: the three starts, then the wakes in each tenth
+        for k in 1..=11i64 {
+            let (lo, hi) = (2 * k - 3, 2 * k - 1); // twentieths: (lo/20, hi/20]
+            let mut letters: Vec<String> = if k == 1 { vec!["a".into(), "b".into(), "c".into()] } else { Vec::new() };
+            for (n, d, l) in &wakes {
+                if n * 20 > lo * d && n * 20 <= hi * d {
+                    letters.push(l.to_string());
+                }
+            }
+            events.push((2 * k - 1, 20, format!("frame {}: {}", k, letters.join(" "))));
+        }
+        events.sort_by(|x, y| (x.0 * y.1).cmp(&(y.0 * x.1)));
         for target in ["riscv64", "arm64"] {
             let out = super::boot("os/sleep.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"")).unwrap();
             let lines: Vec<&str> = out.lines().collect();
-            assert_eq!(lines.len(), 23, "{}: {:?}", target, out);
-            // the callbacks: `!` half a second after boot (a few µs past
-            // 500000, boot being when `start` was read), run before the
-            // wake it shares an interrupt with; `!!` exactly 250000 later
-            let mut wakes = Vec::new();
-            let mut bang: Option<i64> = None;
-            for line in &lines[..22] {
-                let (event, late) = line.split_once(" +").unwrap_or((line, "x"));
-                let late: i64 = late.parse().unwrap_or(-1);
-                assert!((0..20_000).contains(&late), "{}: {:?}", target, line);
-                if let Some(t) = event.strip_prefix("!! ") {
-                    assert_eq!(t.parse::<i64>().unwrap(), bang.expect("! before !!") + 250_000, "{}: {:?}", target, out);
-                } else if let Some(t) = event.strip_prefix("! ") {
-                    let t: i64 = t.parse().unwrap();
-                    assert!((500_000..501_000).contains(&t), "{}: {:?}", target, out);
-                    assert_eq!(wakes.len(), 8, "! must run before a 500000: {:?}", out);
-                    bang = Some(t);
-                } else {
-                    wakes.push(event.to_string());
+            assert_eq!(lines.len(), events.len() + 1, "{}: {:?}", target, out);
+            for (line, (_, _, want)) in lines.iter().zip(&events) {
+                let (event, late) = line.split_once(" +").unwrap_or((line, ""));
+                assert_eq!(event, want, "{}: {:?}", target, out);
+                if !late.is_empty() {
+                    let late: i64 = late.parse().unwrap_or(-1);
+                    assert!((0..20_000).contains(&late), "{}: {:?}", target, line);
                 }
             }
-            assert_eq!(wakes, want, "{}: {:?}", target, out);
-            assert!(lines[22].starts_with("19 interrupts, worst +"), "{}: {:?}", target, out);
+            assert!(lines[events.len()].starts_with("31 interrupts, worst +"), "{}: {:?}", target, out);
+        }
+    }
+
+    /// a failed check is a breakpoint trap the kernel reports, with the
+    /// address of the check; what follows it never runs
+    #[test]
+    fn check_boots() {
+        let _turn = boot_turn();
+        for target in ["riscv64", "arm64"] {
+            let out = super::boot("os/check.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"")).unwrap();
+            let rest = out.strip_prefix("acheck failed at 0x").unwrap_or_else(|| panic!("{}: {:?}", target, out));
+            assert_eq!(rest.trim_end().len(), 16, "{}: {:?}", target, out);
+            assert!(!out.contains('b'), "{}: {:?}", target, out);
         }
     }
 
@@ -1184,6 +1214,7 @@ mod tests {
     /// letter once per slice it runs in
     #[test]
     fn tasks_boots() {
+        let _turn = boot_turn();
         for target in ["riscv64", "arm64"] {
             let out = super::boot("os/tasks.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"")).unwrap();
             assert_eq!(out, "ababababab\n", "{}", target);
@@ -1194,6 +1225,7 @@ mod tests {
     /// function values, and input from the serial port, on both machines
     #[test]
     fn echo_boots() {
+        let _turn = boot_turn();
         for target in ["riscv64", "arm64"] {
             let out = super::boot("os/echo.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"hello\n\nsyscalls\nbye\n")).unwrap();
             assert_eq!(out, "> echo: hello\n> echo: \n> echo: syscalls\n> ", "{}", target);

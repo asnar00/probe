@@ -239,3 +239,5 @@ inst msr daifset, #{i 0..15}
 inst wfi
 ; switching stacks: an interrupt handler that returns the frame to resume
 inst mov sp, {x}
+; a failed check: a breakpoint exception (ESR_EL1.EC = 0x3c)
+inst brk #{i 0..65535}

@@ -173,6 +173,7 @@
     {"template": "msr daifclr, #{i 0..15}", "fixed": "0xd50340ff", "verified": 65, "rejected": 0, "fields": [{"slot": "{i 0..15}", "kind": "linear", "signed": false, "bits": [8, 9, 10, 11]}]},
     {"template": "msr daifset, #{i 0..15}", "fixed": "0xd50340df", "verified": 65, "rejected": 0, "fields": [{"slot": "{i 0..15}", "kind": "linear", "signed": false, "bits": [8, 9, 10, 11]}]},
     {"template": "wfi", "fixed": "0xd503207f", "verified": 1, "rejected": 0, "fields": []},
-    {"template": "mov sp, {x}", "fixed": "0x9100001f", "verified": 65, "rejected": 0, "fields": [{"slot": "{x}", "kind": "linear", "signed": false, "bits": [5, 6, 7, 8, 9]}]}
+    {"template": "mov sp, {x}", "fixed": "0x9100001f", "verified": 65, "rejected": 0, "fields": [{"slot": "{x}", "kind": "linear", "signed": false, "bits": [5, 6, 7, 8, 9]}]},
+    {"template": "brk #{i 0..65535}", "fixed": "0xd4200000", "verified": 65, "rejected": 0, "fields": [{"slot": "{i 0..65535}", "kind": "linear", "signed": false, "bits": [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]}]}
   ]
 }
