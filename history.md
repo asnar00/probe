@@ -6,6 +6,26 @@ has the full story for any of them.
 
 ---
 
+### Function values — `fd64eaa` · 2026-08-27
+
+A function is now a value. Its type is its signature, spelled as the
+function declares it — `fn(i64) -> i64`, `fn(ptr, i64)`, `fn(i64, i64)
+-> (i64, i64)` — so a value carries everything the verifier needs; the
+same `addr` that reaches a `data` item makes one, and a call through it
+is written exactly like a call by name. The value goes wherever a value
+goes: parameters, results, block parameters (a reducer carried around a
+loop), memory (a table of handlers, built with `store`), `cast` to its
+bits. arm64 does it with `adr` and `blr`, riscv64 with `auipc`/`addi`
+and `jalr` — all already learned; wasm needed one new template,
+`call_indirect`, learned through a seed that declares a table and 130
+identical types to range over, plus a table and element section listing
+the address-taken functions. In the incremental arena a value is the
+callee's trampoline, so it survives edits and promotion. Seventeen cases
+in `suite/indirect.ssa`, on all four paths under every policy and
+variant. This is the piece the OS needs next: trap and syscall tables.
+
+---
+
 ### hello world ᕦ(ツ)ᕤ — `16cfa2b` · 2026-08-26
 
 `probe boot os/hello.ssa` (or `... arm`) and qemu's serial port says
