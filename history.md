@@ -6,6 +6,32 @@ has the full story for any of them.
 
 ---
 
+### Traps and system calls: `os/echo.ssa` — `504879b` · 2026-08-27
+
+`printf 'hello\nbye\n' | probe boot os/echo.ssa arm` and the machine
+answers `> echo: hello` then `> ` and stops: the second operating
+system. A kernel installs a trap handler and serves write, read and
+exit through a `data` table of function values (yesterday's feature,
+put to its purpose; `data` may now hold pointers and function values),
+and a program of nothing but system calls prompts, reads a line from
+the serial port and echoes it. The handler is `fn __trap(a, b, c) ->
+u64`: `probe boot` compiles it with a frame that keeps every register
+of the interrupted code and a return by `eret`/`mret`, and on arm64
+lays a 2K-aligned vector table of branches before its entry; it is
+called with the trapped code's first three argument registers and its
+result replaces the first, so `syscall(n, a, b)` on one side meets
+`__trap(n, a, b)` on the other. How a machine takes a trap is the
+platform file's business: `vectors`, `cause`, `resume`, `resume_at`
+and `syscall` are functions whose bodies the platform supplies —
+`msr`/`mrs`/`svc` on arm64, `csrw`/`csrr`/`ecall` on riscv64, ten
+instructions newly learned — plus two constants for what a system call
+looks like and how far past it to resume, and three for the UART's
+receive side. Rule lines may now spell a template's fixed operands
+(`msr vbar_el1, t`). Not yet: device interrupts, which can land with
+float scratch registers live.
+
+---
+
 ### Function values — `fd64eaa` · 2026-08-27
 
 A function is now a value. Its type is its signature, spelled as the
