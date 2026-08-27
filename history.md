@@ -6,6 +6,29 @@ has the full story for any of them.
 
 ---
 
+### The second rung: pools, and tasks that come and go — `e762343` · 2026-08-27
+
+`lib/pool.ssa`: fixed-size slots over declared memory, taken and given
+back in any order, a free list threaded through the free ones and a
+flag per slot so that giving one back twice is a failed `check`. What
+it unlocks is the thing that had been waiting on it: a task that
+exists for a while. In `os/sleep.ssa` stacks come from a pool of four,
+tasks have a state, and `run_at(t, f, arg)` spawns a one-shot task —
+the half-second callback spawns one for 63/100 s — that sleeps to its
+time, runs, marks itself done and asks to be rescheduled; the
+scheduler hands its stack back once it is no longer the interrupted
+one, and the report ends `3 stacks out`. One `check` did its job on
+the way: a wrongly written slot search (`check over` where "a slot
+remains" was meant) stopped the machine at the callback, with the
+address, rather than running on into a spawn that never happened. And
+a lesson about what a test may demand of a machine: two events within
+its wake-up latency of each other merge into one interrupt and decide
+which of two lines prints first, so the count and the interleaving are
+the machine's; the wakes, the frames' contents and the stacks are the
+program's, and those are exact.
+
+---
+
 ### The first rung of memory: arenas, and `check` — `7eff7ca` · 2026-08-27
 
 The memory design session (`reference/memory-management.md`) came out
