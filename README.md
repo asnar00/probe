@@ -88,7 +88,10 @@ the idle task reads and resets, flipped by a callback every tenth of a
 second — the `frame` lines; and with the lifetime of a task: stacks
 from a pool (`lib/pool.ssa`), so a callback can spawn a one-shot task
 (`* 630000`) that sleeps to its time, runs, and hands its stack back —
-`3 stacks out` at the end.
+`3 stacks out` at the end. The pool, the arenas and the task's own
+region all come from one heap (`lib/heap.ssa`), sealed inside every
+interrupt: `66560 heap bytes out` at the end, the task's region gone
+back.
 
 `os/tasks.ssa` is the fourth: two tasks preempted by the timer. The
 interrupt handler is `fn __irq(sp: ptr) -> ptr` — handed the frame
@@ -193,6 +196,11 @@ libraries, never compiler features; `formats.md` is the recipe and
 - `lib/pool.ssa` — fixed-size slots taken and given back in any order:
   `pool_take`, `pool_give`, a free list through the free slots and a
   flag per slot, so a double give is a failed `check`. The object rung.
+- `lib/heap.ssa` — the root the rungs are carved from: a buddy
+  allocator over one declared block, `heap_take`/`heap_give` in powers
+  of two aligned to their size, a state per node of the split tree so
+  a wrong give is a failed `check`, and `heap_seal` so a kernel can
+  forbid allocation inside interrupts. For regions, not objects.
 
 ## The learners
 

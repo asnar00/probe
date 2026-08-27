@@ -272,8 +272,16 @@ the pool's (`lib/pool.ssa`): fixed-size slots, a free list through the
 free ones, a flag per slot so that giving one back twice is a failed
 `check`. `os/sleep.ssa`'s task stacks come from one; a one-shot task
 spawned by a callback sleeps until its time, runs, and hands its stack
-back. Those are the rungs so far — a call's, a frame's, an object's,
-the machine's — and there is no heap.
+back. And the memory those are carved from is the heap's
+(`lib/heap.ssa`): a buddy allocator over one declared block, blocks a
+power of two and aligned to their size, taken rarely and in big pieces
+— a pool's slots, an arena's bytes, a task's region — and given back
+whole; a byte per node of its split tree makes a double give or a
+wrong size a failed `check`, and a kernel *seals* it inside every
+interrupt so that nothing allocates in a handler. It is a heap for
+regions, not for objects: those are the rungs — a call's, a frame's,
+an object's, the machine's — and the discipline is that objects live
+in the rungs and the rungs come from the heap.
 
 ### Data, and the machine
 

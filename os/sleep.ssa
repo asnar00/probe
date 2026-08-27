@@ -16,6 +16,13 @@
 ; quarter of a second after its own time — times chosen to share an
 ; interrupt with nothing else, so every event costs exactly one.
 ;
+; All the memory below the machine's comes from one heap (lib/heap.ssa,
+; a buddy allocator over a declared block): the stacks' pool and the
+; frame arenas are carved from it at boot, and a task that needs a
+; region of its own carves one and gives it back. The kernel seals the
+; heap inside every interrupt — nothing allocates in a handler — and
+; reports at the end what is still out.
+;
 ; And there is memory with a lifetime of one frame: two arenas
 ; (lib/arena.ssa) over two data arrays. Every time the scheduler
 ; wakes a task it writes a record into the current arena — inside the
@@ -37,9 +44,12 @@
 ; interrupt (`reschedule`: a software interrupt to this cpu), so the
 ; switch happens now and in the one place switches happen, `__irq`.
 
-; stacks come from a pool (lib/pool.ssa): four of 8 KB; a task that
-; ends gives its own back
-data stacks: array(u8, 32832)
+; the heap everything is carved from
+data heap_mem: array(u8, 262144)
+data the_heap: array(u64, 6)
+data heap_label = " heap bytes out\n"
+; stacks come from a pool (lib/pool.ssa): four of 8 KB in a 64 KB
+; block from the heap; a task that ends gives its own back
 data stack_pool: array(u64, 5)
 ; five tasks (0 is the idle task, the boot context): pc, sp, wake time
 ; (16 bytes, a rational), state (0 free, 1 live, 2 done), and for a
@@ -64,10 +74,9 @@ data star_at: array(u64, 2)
 data starlabel = "* "
 data bang = "! "
 data bangbang = "!! "
-; the frame arenas: two records of three words, two arrays of records
+; the frame arenas: two records of three words over two 512-byte
+; blocks from the heap
 data arenas: array(u64, 6)
-data frame_a: array(u8, 512)
-data frame_b: array(u8, 512)
 data current_arena: array(u64, 1)
 data frames: array(u64, 1)
 data consumed: array(u64, 1)
@@ -213,9 +222,12 @@ fn __start() {
     h: fn(u64, u64, u64) -> u64 = addr __trap
     hp: ptr = cast h
     vectors(hp)
+    hm: ptr = addr heap_mem
+    hpp: ptr = addr the_heap
+    heap_init(hpp, hm, 262144)
     sp: ptr = addr stack_pool
-    sm: ptr = addr stacks
-    pool_init(sp, sm, 32832, 8192, 4)
+    sm: ptr = heap_take(hpp, 65536)
+    pool_init(sp, sm, 65536, 8192, 4)
     idle_block: ptr = task_block(0)
     store 1: i64, idle_block, 32
     fa: fn() = addr task_a
@@ -231,10 +243,10 @@ fn __start() {
     irq_on()
     ; the frame arenas, and the first flip at 0.05 s
     aa: ptr = addr arenas
-    mem_a: ptr = addr frame_a
+    mem_a: ptr = heap_take(hpp, 512)
     arena_init(aa, mem_a, 512)
     ab: ptr = ptradd aa, 24
-    mem_b: ptr = addr frame_b
+    mem_b: ptr = heap_take(hpp, 512)
     arena_init(ab, mem_b, 512)
     twentieth: time = period(20)
     ff: fn(ptr) = addr flip
@@ -275,6 +287,12 @@ fn __start() {
             sop: ptr = addr stacks_out
             son: i64 = len stacks_out
             say(sop, son)
+            hp2: ptr = addr the_heap
+            ho: i64 = heap_out(hp2)
+            print_dec(ho)
+            hlp: ptr = addr heap_label
+            hln: i64 = len heap_label
+            say(hlp, hln)
             exit()
             loop() {
                 continue
@@ -290,6 +308,8 @@ fn __start() {
 ; deadline (the idle task when there is none), arm the timer to the
 ; earliest deadline still to come, and go there.
 fn __irq(sp: ptr) -> ptr {
+    hp: ptr = addr the_heap
+    heap_seal(hp)
     id: u32 = irq_ack()
     timer: u32 = platform irq_timer
     soft: u32 = platform irq_soft
@@ -387,6 +407,7 @@ fn __irq(sp: ptr) -> ptr {
         yield sp
     }
     irq_done(id)
+    heap_unseal(hp)
     ret back
 }
 
@@ -591,11 +612,29 @@ fn ping(arg: ptr) {
     at(t2, fp, pp)
     ret
 }
+; the one-shot task's work: a region of its own from the heap, used
+; through an arena, given back — a task's lifetime, carved and returned
 fn star(arg: ptr) {
-    t: time = load arg
+    hp: ptr = addr the_heap
+    mem: ptr = heap_take(hp, 4096)
+    a: ptr = scratch 24
+    arena_init(a, mem, 4096)
+    msg: ptr = arena_alloc(a, 64)
     bp: ptr = addr starlabel
     bn: i64 = len starlabel
-    report(bp, bn, t)
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, bn
+        if done {
+            break
+        }
+        c: u8 = load bp, i, 1
+        store c, msg, i, 1
+        i1: i64 = add i, 1
+        continue i1
+    }
+    t: time = load arg
+    report(msg, bn, t)
+    heap_give(hp, mem, 4096)
     ret
 }
 fn pong(arg: ptr) {

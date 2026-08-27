@@ -68,15 +68,18 @@ The design session happened; `reference/memory-management.md` is the
 briefing and its §7 the direction. Built so far: `scratch` (a call's
 lifetime), `data` (the machine's), `lib/arena.ssa` (a frame's: bump
 allocation reset all at once), `lib/pool.ssa` (an object's: fixed
-slots given back one at a time) and `check`. Next, in order: regions in
-the pointer type, checked
-statically — `ptr frame` cannot be stored where a `ptr` can, nor
-returned past its reset — the one IR change memory asks for; the
-capacity analysis (`probe stack`: worst-case stack per task and bytes
-per arena per frame, over the call graph the compiler already has,
-indirect calls by type); unique pointers when pools need explicit
-release to be safe; generics over types when pools want to be typed.
-Never: a general heap. Also still: frames are at most 4095 bytes on
+slots given back one at a time), `lib/heap.ssa` (the root: a buddy
+allocator the rungs are carved from, sealable) and `check`. The
+discipline, stated: objects live in the rungs, the rungs come from the
+heap, and nothing allocates from the heap inside an interrupt. Next,
+in order: regions in the pointer type, checked statically — `ptr
+frame` cannot be stored where a `ptr` can, nor returned past its reset
+— the one IR change memory asks for; the capacity analysis (`probe
+stack`: worst-case stack per task and bytes per arena per frame, over
+the call graph the compiler already has, indirect calls by type);
+unique pointers when pools need explicit release to be safe; generics
+over types when pools want to be typed. Not a heap for objects: the
+rungs are for those. Also still: frames are at most 4095 bytes on
 arm64 and 2047 on riscv64 (a single immediate).
 
 ## Language

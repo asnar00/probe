@@ -1,0 +1,149 @@
+; lib/heap.ssa: a buddy allocator over declared memory — the root the
+; arenas and pools come from. The heap's six words live in scratch; its
+; memory is the caller's buffer of 8 KB (u8[0*8192]), which holds a
+; 4 KB heap of 256-byte units and the tree in front of it.
+
+;! heap_fits u8[0*8192] -> 4096
+;! take_two u8[0*8192] -> 256
+;! rounds_up u8[0*8192] -> 512
+;! aligned_to_size u8[0*8192] -> 1
+;! give_merges u8[0*8192] -> 1
+;! out_accounts u8[0*8192] -> 768
+;! all_units u8[0*8192] -> 4096
+;! reuse_after_give u8[0*8192] -> 1
+;! values_kept u8[0*8192] 5 6 -> 11
+;! whole_heap u8[0*8192] -> 1
+
+fn heap_fits(mem: ptr) -> i64 {
+    h: ptr = scratch 48
+    heap_init(h, mem, 8192)
+    s: i64 = heap_size(h)
+    ret s
+}
+
+; two smallest blocks are one unit apart
+fn take_two(mem: ptr) -> i64 {
+    h: ptr = scratch 48
+    heap_init(h, mem, 8192)
+    a: ptr = heap_take(h, 100)
+    b: ptr = heap_take(h, 100)
+    aa: u64 = cast a
+    ba: u64 = cast b
+    d: u64 = sub ba, aa
+    r: i64 = cast d
+    ret r
+}
+
+; a request rounds up to a power of two: 300 bytes take 512
+fn rounds_up(mem: ptr) -> i64 {
+    h: ptr = scratch 48
+    heap_init(h, mem, 8192)
+    heap_take(h, 300)
+    o: i64 = heap_out(h)
+    ret o
+}
+
+; a 1 KB block sits at a 1 KB boundary of the heap
+fn aligned_to_size(mem: ptr) -> u1 {
+    h: ptr = scratch 48
+    heap_init(h, mem, 8192)
+    heap_take(h, 256)
+    p: ptr = heap_take(h, 1024)
+    base: ptr = load h
+    pa: u64 = cast p
+    ba: u64 = cast base
+    d: u64 = sub pa, ba
+    low: u64 = and d, 1023
+    r: u1 = cmp.eq low, 0
+    ret r
+}
+
+; four units taken and given back merge: a 1 KB block is there again
+fn give_merges(mem: ptr) -> u1 {
+    h: ptr = scratch 48
+    heap_init(h, mem, 8192)
+    a: ptr = heap_take(h, 256)
+    b: ptr = heap_take(h, 256)
+    c: ptr = heap_take(h, 256)
+    d: ptr = heap_take(h, 256)
+    heap_give(h, b, 256)
+    heap_give(h, d, 256)
+    heap_give(h, a, 256)
+    heap_give(h, c, 256)
+    big: ptr = heap_take(h, 4096)
+    aa: u64 = cast a
+    bg: u64 = cast big
+    r: u1 = cmp.eq aa, bg
+    ret r
+}
+
+fn out_accounts(mem: ptr) -> i64 {
+    h: ptr = scratch 48
+    heap_init(h, mem, 8192)
+    a: ptr = heap_take(h, 256)
+    heap_take(h, 512)
+    heap_take(h, 256)
+    heap_give(h, a, 256)
+    o: i64 = heap_out(h)
+    ret o
+}
+
+; every unit can be out at once
+fn all_units(mem: ptr) -> i64 {
+    h: ptr = scratch 48
+    heap_init(h, mem, 8192)
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, 16
+        if done {
+            break
+        }
+        heap_take(h, 256)
+        i1: i64 = add i, 1
+        continue i1
+    }
+    o: i64 = heap_out(h)
+    ret o
+}
+
+; what was given back is what is taken next
+fn reuse_after_give(mem: ptr) -> u1 {
+    h: ptr = scratch 48
+    heap_init(h, mem, 8192)
+    a: ptr = heap_take(h, 512)
+    heap_take(h, 512)
+    heap_give(h, a, 512)
+    c: ptr = heap_take(h, 512)
+    aa: u64 = cast a
+    ca: u64 = cast c
+    r: u1 = cmp.eq aa, ca
+    ret r
+}
+
+fn values_kept(mem: ptr, x: i64, y: i64) -> i64 {
+    h: ptr = scratch 48
+    heap_init(h, mem, 8192)
+    a: ptr = heap_take(h, 256)
+    b: ptr = heap_take(h, 2048)
+    store x, a
+    store y, b
+    xv: i64 = load a
+    yv: i64 = load b
+    r: i64 = add xv, yv
+    ret r
+}
+
+; the whole heap is one block; back, it is one block again
+fn whole_heap(mem: ptr) -> u1 {
+    h: ptr = scratch 48
+    heap_init(h, mem, 8192)
+    a: ptr = heap_take(h, 4096)
+    heap_give(h, a, 4096)
+    b: ptr = heap_take(h, 4096)
+    aa: u64 = cast a
+    ba: u64 = cast b
+    same: u1 = cmp.eq aa, ba
+    o: i64 = heap_out(h)
+    full: u1 = cmp.eq o, 4096
+    r: u1 = and same, full
+    ret r
+}

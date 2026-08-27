@@ -1,0 +1,257 @@
+; a heap: the root the other memory comes from. Not for objects — for
+; the arenas and pools and stacks a program carves out of one declared
+; block, rarely, in big pieces. A buddy allocator: the block is a
+; power of two of 256-byte units; taking rounds up to a power of two
+; and splits a free block down to that size; giving back merges with
+; the buddy while the buddy is free. So every piece is aligned to its
+; own size, splitting and merging are bounded, and fragmentation is
+; the internal kind you can count. A byte per node of the split tree
+; (kept in the block itself, in front) says whether it is free, split,
+; in use, or absent — inside a larger free block — so giving a piece
+; back twice, or at the wrong size, is a failed check; so is running
+; out. A sealed heap refuses everything: a kernel seals it inside an
+; interrupt, and a program that allocates only while initializing seals
+; it after.
+;
+; six words: base, size, levels, the tree, bytes out, sealed
+type heap = struct { base: ptr, size: i64, levels: i64, tree: ptr, out: i64, sealed: i64 }
+
+fn heap_unit() -> i64 {
+    ret 256
+}
+
+; the largest power-of-two heap, with its tree in front, that fits in
+; `size` bytes at `mem`
+fn heap_init(h: ptr, mem: ptr, size: i64) {
+    m: u64 = cast mem
+    m15: u64 = add m, 15
+    aligned: u64 = and m15, -16
+    lead: u64 = sub aligned, m
+    leadi: i64 = cast lead
+    avail: i64 = sub size, leadi
+    ; the heap size: a power of two of units; the tree takes two bytes
+    ; per unit (rounded up to 256), so shrink until both fit
+    unit: i64 = heap_unit()
+    hs: i64 = loop(hsz: i64 = unit) {
+        twice: i64 = mul hsz, 2
+        tree2: i64 = div twice, 128
+        need: i64 = add twice, tree2
+        too_big: u1 = cmp.gt need, avail
+        if too_big {
+            break hsz
+        }
+        continue twice
+    }
+    tree_bytes: i64 = div hs, 128
+    tb255: i64 = add tree_bytes, 255
+    tree_size: i64 = and tb255, -256
+    fits: u1 = cmp.le tree_size, avail
+    check fits
+    tree: ptr = cast aligned
+    base: ptr = ptradd tree, tree_size
+    ; levels: 0 is the whole heap, and each level halves, down to units
+    levels: i64 = loop(l: i64 = 0, s: i64 = hs) {
+        smallest: u1 = cmp.le s, unit
+        if smallest {
+            break l
+        }
+        l1: i64 = add l, 1
+        half: i64 = div s, 2
+        continue l1, half
+    }
+    store base, h
+    store hs, h, 8
+    store levels, h, 16
+    store tree, h, 24
+    store 0: i64, h, 32
+    store 0: i64, h, 40
+    ; every node absent but the root, which is free
+    nodes: i64 = shl 2: i64, levels
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, nodes
+        if done {
+            break
+        }
+        store 3: u8, tree, i, 1
+        i1: i64 = add i, 1
+        continue i1
+    }
+    store 0: u8, tree, 1
+    ret
+}
+
+; node states
+fn heap_state(h: ptr, node: i64) -> i64 {
+    tree: ptr = load h, 24
+    s: u8 = load tree, node, 1
+    r: i64 = conv s
+    ret r
+}
+fn heap_set(h: ptr, node: i64, state: i64) {
+    tree: ptr = load h, 24
+    s: u8 = conv state
+    store s, tree, node, 1
+    ret
+}
+
+; the size a request takes: a power of two, at least a unit
+fn heap_round(bytes: i64) -> i64 {
+    unit: i64 = heap_unit()
+    r: i64 = loop(s: i64 = unit) {
+        enough: u1 = cmp.ge s, bytes
+        if enough {
+            break s
+        }
+        twice: i64 = mul s, 2
+        continue twice
+    }
+    ret r
+}
+
+; the level whose blocks are `sz` bytes
+fn heap_level(h: ptr, sz: i64) -> i64 {
+    hs: i64 = load h, 8
+    r: i64 = loop(k: i64 = 0, s: i64 = hs) {
+        there: u1 = cmp.eq s, sz
+        if there {
+            break k
+        }
+        k1: i64 = add k, 1
+        half: i64 = div s, 2
+        continue k1, half
+    }
+    ret r
+}
+
+; a block of at least `bytes`: the first free node at the block's
+; level, or the first free node above it split down
+fn heap_take(h: ptr, bytes: i64) -> ptr {
+    sealed: i64 = load h, 40
+    open: u1 = cmp.eq sealed, 0
+    check open
+    hs: i64 = load h, 8
+    sz: i64 = heap_round(bytes)
+    fits: u1 = cmp.le sz, hs
+    check fits
+    k: i64 = heap_level(h, sz)
+    ; the nearest level at or above k with a free node, and the node
+    found: i64, at: i64 = loop(kk: i64 = k) {
+        gone: u1 = cmp.lt kk, 0
+        if gone {
+            break -1, -1
+        }
+        first: i64 = shl 1: i64, kk
+        n: i64 = loop(i: i64 = 0) {
+            over: u1 = cmp.ge i, first
+            if over {
+                break -1
+            }
+            cand: i64 = add first, i
+            st: i64 = heap_state(h, cand)
+            free: u1 = cmp.eq st, 0
+            if free {
+                break cand
+            }
+            i1: i64 = add i, 1
+            continue i1
+        }
+        got: u1 = cmp.ge n, 0
+        if got {
+            break n, kk
+        }
+        km: i64 = sub kk, 1
+        continue km
+    }
+    have: u1 = cmp.ge found, 0
+    check have
+    ; split down from `at` to k, taking the left child each time
+    node: i64 = loop(nd: i64 = found, lv: i64 = at) {
+        here: u1 = cmp.eq lv, k
+        if here {
+            break nd
+        }
+        heap_set(h, nd, 1)
+        left: i64 = mul nd, 2
+        right: i64 = add left, 1
+        heap_set(h, left, 0)
+        heap_set(h, right, 0)
+        lv1: i64 = add lv, 1
+        continue left, lv1
+    }
+    heap_set(h, node, 2)
+    out: i64 = load h, 32
+    out1: i64 = add out, sz
+    store out1, h, 32
+    first_k: i64 = shl 1: i64, k
+    index: i64 = sub node, first_k
+    off: i64 = mul index, sz
+    base: ptr = load h
+    p: ptr = ptradd base, off
+    ret p
+}
+
+; a block back, at the size it was taken; merged with its buddy while
+; the buddy is free
+fn heap_give(h: ptr, p: ptr, bytes: i64) {
+    sealed: i64 = load h, 40
+    open: u1 = cmp.eq sealed, 0
+    check open
+    sz: i64 = heap_round(bytes)
+    k: i64 = heap_level(h, sz)
+    base: ptr = load h
+    pa: u64 = cast p
+    ba: u64 = cast base
+    inside: u1 = cmp.ge pa, ba
+    check inside
+    d: u64 = sub pa, ba
+    di: i64 = cast d
+    index: i64 = div di, sz
+    r: i64 = rem di, sz
+    whole: u1 = cmp.eq r, 0
+    check whole
+    first_k: i64 = shl 1: i64, k
+    node: i64 = add first_k, index
+    st: i64 = heap_state(h, node)
+    in_use: u1 = cmp.eq st, 2
+    check in_use
+    out: i64 = load h, 32
+    out1: i64 = sub out, sz
+    store out1, h, 32
+    heap_set(h, node, 0)
+    loop(nd: i64 = node, lv: i64 = k) {
+        top: u1 = cmp.eq lv, 0
+        if top {
+            break
+        }
+        buddy: i64 = xor nd, 1
+        bst: i64 = heap_state(h, buddy)
+        bfree: u1 = cmp.eq bst, 0
+        if bfree {
+            heap_set(h, nd, 3)
+            heap_set(h, buddy, 3)
+            parent: i64 = div nd, 2
+            heap_set(h, parent, 0)
+            lv1: i64 = sub lv, 1
+            continue parent, lv1
+        }
+        break
+    }
+    ret
+}
+
+fn heap_out(h: ptr) -> i64 {
+    out: i64 = load h, 32
+    ret out
+}
+fn heap_size(h: ptr) -> i64 {
+    s: i64 = load h, 8
+    ret s
+}
+fn heap_seal(h: ptr) {
+    store 1: i64, h, 40
+    ret
+}
+fn heap_unseal(h: ptr) {
+    store 0: i64, h, 40
+    ret
+}

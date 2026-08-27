@@ -618,7 +618,10 @@ fn materialize(
             *heap = (*heap + b - 1) & !(b - 1);
             let base = *heap;
             let ety = format!("i{}", b * 8);
-            for (k, v) in vals.iter().enumerate() {
+            // the machine's RAM starts zeroed and the heap is never
+            // reused, so only nonzero elements need a store (a big
+            // zero buffer would otherwise be a store per element)
+            for (k, v) in vals.iter().enumerate().filter(|(_, v)| **v != 0) {
                 let d = tmp_in(s, n, &ety, format!("const {}", opt::norm(ssa::Repr::S(b as u32 * 8), *v)));
                 let p = tmp_in(s, n, "ptr", format!("const {}", base + b * k as u64));
                 s.push_str(&format!("    store {}, {}\n", d, p));
@@ -1120,7 +1123,9 @@ mod tests {
         }
     }
 
-    /// the machines' timing is the tests' subject, so boots take turns
+    /// the machines' timing is some tests' subject, so everything that
+    /// runs a machine takes turns: a boot's lateness figures must not
+    /// be the host's load
     fn boot_turn() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
@@ -1199,10 +1204,10 @@ mod tests {
             let out = super::boot("os/sleep.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"")).unwrap();
             let lines: Vec<&str> = out.lines().collect();
             let n = lines.len();
-            assert_eq!(n, want_timed.len() + want_frames.len() + 2, "{}: {:?}", target, out);
+            assert_eq!(n, want_timed.len() + want_frames.len() + 3, "{}: {:?}", target, out);
             let mut got_timed = Vec::new();
             let mut got_frames = Vec::new();
-            for line in &lines[..n - 2] {
+            for line in &lines[..n - 3] {
                 if line.starts_with("frame ") {
                     got_frames.push(line.to_string());
                 } else {
@@ -1214,9 +1219,12 @@ mod tests {
             }
             assert_eq!(got_timed, want_timed, "{}: {:?}", target, out);
             assert_eq!(got_frames, want_frames, "{}: {:?}", target, out);
-            let interrupts: i64 = lines[n - 2].split_once(" interrupts").and_then(|(k, _)| k.parse().ok()).unwrap_or(-1);
+            let interrupts: i64 = lines[n - 3].split_once(" interrupts").and_then(|(k, _)| k.parse().ok()).unwrap_or(-1);
             assert!((30..=32).contains(&interrupts), "{}: {:?}", target, out);
-            assert_eq!(lines[n - 1], "3 stacks out", "{}: {:?}", target, out);
+            assert_eq!(lines[n - 2], "3 stacks out", "{}: {:?}", target, out);
+            // the stacks' block and the two frame arenas; the one-shot's
+            // region went back
+            assert_eq!(lines[n - 1], "66560 heap bytes out", "{}: {:?}", target, out);
         }
     }
 
@@ -1259,6 +1267,7 @@ mod tests {
     /// multiplies and divides all in the library, results unchanged
     #[test]
     fn regression_suite_riscv_variants() {
+        let _turn = boot_turn(); // a machine at a time: the boot tests are timed
         for variant in ["rv64im", "rv64i"] {
             crate::platform::select(variant);
             let report = super::run_dir_at("suite", super::Backend::Riscv, crate::opt::MAX_LEVEL, &|p| p).expect("suite runs");
@@ -1283,12 +1292,14 @@ mod tests {
 
     #[test]
     fn regression_suite_riscv() {
+        let _turn = boot_turn(); // a machine at a time: the boot tests are timed
         let report = super::run_dir("suite", super::Backend::Riscv).expect("suite runs");
         assert_eq!(report.failed, 0, "\n{}", report.log);
     }
 
     #[test]
     fn regression_suite_arm_qemu() {
+        let _turn = boot_turn(); // a machine at a time: the boot tests are timed
         let report = super::run_dir("suite", super::Backend::ArmQemu).expect("suite runs");
         assert_eq!(report.failed, 0, "\n{}", report.log);
     }
