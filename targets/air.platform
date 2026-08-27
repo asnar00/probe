@@ -40,3 +40,47 @@ fdiv = div(f16, f16) -> f16
 ; memory is the program's `group` items
 ext group
 air.wg.barrier = group_sync() -> ()
+
+; the simdgroup (lib/gpu.ssa has the one-thread forms). A lane index
+; and the width are the kernel's to know: the wrapper leaves them in
+; each thread's header, where these two rules read them.
+ext simd
+air.simd_lane = simd_lane() -> i64
+air.simd_size = simd_size() -> i64
+air.simd_is_first = simd_first() -> u1
+air.simd_all = simd_all(u1) -> u1
+air.simd_any = simd_any(u1) -> u1
+air.simd_ballot.i64 = simd_ballot(u1) -> u64
+air.simd_sum.f32 = simd_sum(f32) -> f32
+air.simd_product.f32 = simd_product(f32) -> f32
+air.simd_max.f32 = simd_max(f32) -> f32
+air.simd_min.f32 = simd_min(f32) -> f32
+air.simd_prefix_inclusive_sum.f32 = simd_prefix_sum(f32) -> f32
+air.simd_shuffle.f32 = simd_shuffle(f32, i64) -> f32
+air.simd_broadcast.f32 = simd_broadcast(f32, i64) -> f32
+air.simd_shuffle_xor.f32 = simd_shuffle_xor(f32, i64) -> f32
+air.simd_shuffle_down.f32 = simd_shuffle_down(f32, i64) -> f32
+air.simd_shuffle_up.f32 = simd_shuffle_up(f32, i64) -> f32
+air.simd_sum.f16 = simd_sum(f16) -> f16
+air.simd_max.f16 = simd_max(f16) -> f16
+air.simd_min.f16 = simd_min(f16) -> f16
+air.simd_prefix_inclusive_sum.f16 = simd_prefix_sum(f16) -> f16
+air.simd_shuffle.f16 = simd_shuffle(f16, i64) -> f16
+air.simd_broadcast.f16 = simd_broadcast(f16, i64) -> f16
+air.simd_sum.s.i32 = simd_sum(i32) -> i32
+air.simd_sum.u.i32 = simd_sum(u32) -> u32
+air.simd_product.s.i32 = simd_product(i32) -> i32
+air.simd_max.s.i32 = simd_max(i32) -> i32
+air.simd_max.u.i32 = simd_max(u32) -> u32
+air.simd_min.s.i32 = simd_min(i32) -> i32
+air.simd_min.u.i32 = simd_min(u32) -> u32
+air.simd_prefix_inclusive_sum.s.i32 = simd_prefix_sum(i32) -> i32
+air.simd_prefix_inclusive_sum.u.i32 = simd_prefix_sum(u32) -> u32
+air.simd_shuffle.s.i32 = simd_shuffle(i32, i64) -> i32
+air.simd_shuffle.u.i32 = simd_shuffle(u32, i64) -> u32
+air.simd_broadcast.s.i32 = simd_broadcast(i32, i64) -> i32
+air.simd_broadcast.u.i32 = simd_broadcast(u32, i64) -> u32
+air.simd_shuffle_xor.s.i32 = simd_shuffle_xor(i32, i64) -> i32
+air.simd_shuffle_xor.u.i32 = simd_shuffle_xor(u32, i64) -> u32
+air.simd_shuffle_down.s.i32 = simd_shuffle_down(i32, i64) -> i32
+air.simd_shuffle_up.s.i32 = simd_shuffle_up(i32, i64) -> i32

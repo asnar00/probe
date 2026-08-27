@@ -1,0 +1,17 @@
+; the simdgroup at work: every thread sums its id across its simdgroup
+; (32 lanes on an Apple GPU) and writes the sum with its lane index
+;   probe compile examples/simd.ssa air
+;   python3 tools/driver_metal.py --kernel simd.metallib simd.air.json 64
+; -> [49600, 49601, ..., 49631, 152000, ..., 152031]: 0..31 sum to 496,
+;    32..63 to 1520
+
+fn __kernel(mem: ptr, area: ptr, id: i64) {
+    x: i32 = conv id
+    s: i32 = simd_sum x
+    s64: i64 = conv s
+    lane: i64 = simd_lane()
+    h: i64 = mul s64, 100
+    r: i64 = add h, lane
+    store r, area, id, 8
+    ret
+}

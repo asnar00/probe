@@ -9,3 +9,115 @@
 fn group_sync() {
     ret
 }
+
+; a simdgroup: the lanes that execute in lockstep (32 on an Apple GPU),
+; with operations across them — sums, extremes, prefix sums, shuffles
+; and votes, on 32-bit lanes and half (targets/air.platform names
+; Apple's). On one thread the simdgroup is that thread: a lane is 0,
+; the width 1, every reduction is its argument, a shuffle is the
+; value itself, a vote is the one vote. A lane or delta is an i64
+; (`three: i64 = const 3` before `simd_shuffle x, three`).
+
+fn simd_lane() -> i64 {
+    ret 0
+}
+fn simd_size() -> i64 {
+    ret 1
+}
+fn simd_first() -> u1 {
+    one: u1 = const 1
+    ret one
+}
+fn simd_all(c: u1) -> u1 {
+    ret c
+}
+fn simd_any(c: u1) -> u1 {
+    ret c
+}
+fn simd_ballot(c: u1) -> u64 {
+    r: u64 = conv c
+    ret r
+}
+
+fn simd_sum(E, M)(x: float(E, M)) -> float(E, M) {
+    ret x
+}
+fn simd_product(E, M)(x: float(E, M)) -> float(E, M) {
+    ret x
+}
+fn simd_max(E, M)(x: float(E, M)) -> float(E, M) {
+    ret x
+}
+fn simd_min(E, M)(x: float(E, M)) -> float(E, M) {
+    ret x
+}
+fn simd_prefix_sum(E, M)(x: float(E, M)) -> float(E, M) {
+    ret x
+}
+fn simd_shuffle(E, M)(x: float(E, M), lane: i64) -> float(E, M) {
+    ret x
+}
+fn simd_broadcast(E, M)(x: float(E, M), lane: i64) -> float(E, M) {
+    ret x
+}
+fn simd_shuffle_xor(E, M)(x: float(E, M), mask: i64) -> float(E, M) {
+    ret x
+}
+fn simd_shuffle_down(E, M)(x: float(E, M), delta: i64) -> float(E, M) {
+    ret x
+}
+fn simd_shuffle_up(E, M)(x: float(E, M), delta: i64) -> float(E, M) {
+    ret x
+}
+
+fn simd_sum(N)(x: i(N)) -> i(N) {
+    ret x
+}
+fn simd_sum(N)(x: u(N)) -> u(N) {
+    ret x
+}
+fn simd_product(N)(x: i(N)) -> i(N) {
+    ret x
+}
+fn simd_max(N)(x: i(N)) -> i(N) {
+    ret x
+}
+fn simd_max(N)(x: u(N)) -> u(N) {
+    ret x
+}
+fn simd_min(N)(x: i(N)) -> i(N) {
+    ret x
+}
+fn simd_min(N)(x: u(N)) -> u(N) {
+    ret x
+}
+fn simd_prefix_sum(N)(x: i(N)) -> i(N) {
+    ret x
+}
+fn simd_prefix_sum(N)(x: u(N)) -> u(N) {
+    ret x
+}
+fn simd_shuffle(N)(x: i(N), lane: i64) -> i(N) {
+    ret x
+}
+fn simd_shuffle(N)(x: u(N), lane: i64) -> u(N) {
+    ret x
+}
+fn simd_broadcast(N)(x: i(N), lane: i64) -> i(N) {
+    ret x
+}
+fn simd_broadcast(N)(x: u(N), lane: i64) -> u(N) {
+    ret x
+}
+fn simd_shuffle_xor(N)(x: i(N), mask: i64) -> i(N) {
+    ret x
+}
+fn simd_shuffle_xor(N)(x: u(N), mask: i64) -> u(N) {
+    ret x
+}
+fn simd_shuffle_down(N)(x: i(N), delta: i64) -> i(N) {
+    ret x
+}
+fn simd_shuffle_up(N)(x: i(N), delta: i64) -> i(N) {
+    ret x
+}

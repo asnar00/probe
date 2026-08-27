@@ -41,6 +41,14 @@
 //!   insertelement/extractelement, a rule applies to the vector (fadd
 //!   on `<4 x float>`, `air.sqrt.v4f32`), and a library call on lanes
 //!   is made per lane.
+//! - the simdgroup: `lib/gpu.ssa`'s `simd_*` are rules here, Apple's
+//!   intrinsics (`air.simd_sum.f32`, shuffles taking an `i16` lane, votes
+//!   on `i1`); the lane index and width are kernel arguments, which the
+//!   wrapper leaves in a 16-byte header at the start of each thread's
+//!   slab — every function gets its offset as a third hidden parameter,
+//!   `tls`, and `simd_lane()`/`simd_size()` read it. A `simd_*` call the
+//!   platform has no rule for (a 64-bit lane) is an error here: its
+//!   one-thread body would be wrong on many.
 //! - inlining: every function is `alwaysinline`, so a kernel is one
 //!   body (see the note at the declarations for why that is also the
 //!   correct one).
@@ -93,6 +101,8 @@ const CAST_SEXT: u32 = 2;
 const CAST_BITCAST: u32 = 11;
 /// LLVM's attribute kinds
 const ATTR_CONVERGENT: u64 = 43;
+/// each thread's header, at the start of its slab: [simd lane, simd width]
+const HEADER: u64 = 16;
 
 /// which functions AIR cannot have — a function that can reach itself,
 /// and everything that can reach one — with why, given the
@@ -216,7 +226,7 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
 
     // per-thread scratch: any call chain's frames fit in the sum of all
     let scratch_of: Vec<i64> = module.funcs.iter().map(|f| crate::emit::scratch_layout(f, 0).1).collect();
-    let slab: u64 = scratch_of.iter().sum::<i64>() as u64 + 16;
+    let slab: u64 = scratch_of.iter().sum::<i64>() as u64 + 16 + HEADER;
 
     let mut m = BModule::new();
     let void = m.ty(BType::Void);
@@ -299,7 +309,7 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
     }
     let any = module.funcs.first().ok_or("an empty module")?;
     for (k, (ps, rs)) in sigs.iter().enumerate() {
-        let mut params = vec![cx.ptr_ty, cx.i64t, cx.i64t];
+        let mut params = vec![cx.ptr_ty, cx.i64t, cx.i64t, cx.i64t];
         params.extend(ps.iter().map(|&t| cx.lty(any, t)));
         let ret = cx.ret_type(any, rs);
         let fty = cx.m.fn_ty(ret, params);
@@ -317,6 +327,8 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
         if cx.kernel_arity == 5 {
             params.extend([i32t, i32t]);
         }
+        // and the simdgroup's lane index and width, for the header
+        params.extend([i32t, i32t]);
         let fty = cx.m.fn_ty(void, params);
         Some(cx.m.function("__kernel", fty, false))
     } else {
@@ -343,14 +355,24 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
                             (Some(n), Some((stem, suffix))) => format!("{}.v{}{}", stem, n, suffix),
                             _ => key.clone(),
                         };
-                        if !cx.decls.contains_key(&key) {
+                        if !cx.decls.contains_key(&key) && !matches!(key.as_str(), "air.simd_lane" | "air.simd_size") {
+                            // floats are the classed arguments; integers their
+                            // containers, but a shuffle's lane is an i16
                             let vec = |cx: &mut Cx, t: usize| match lanes {
                                 Some(n) => cx.m.ty(BType::Vector(t, n as u64)),
                                 None => t,
                             };
-                            let ret = cx.float_ty(native.ret_bits);
+                            let ret = if native.ret_class.is_some() { cx.float_ty(native.ret_bits) } else { cx.m.int(cont(native.ret_bits)) };
                             let ret = vec(&mut cx, ret);
-                            let params: Vec<usize> = native.arg_bits.iter().map(|&b| { let t = cx.float_ty(b); vec(&mut cx, t) }).collect();
+                            let params: Vec<usize> = native
+                                .arg_bits
+                                .iter()
+                                .enumerate()
+                                .map(|(j, &b)| {
+                                    let t = if native.arg_class[j].is_some() { cx.float_ty(b) } else { cx.m.int(intrinsic_int_bits(&key, j).unwrap_or(cont(b))) };
+                                    vec(&mut cx, t)
+                                })
+                                .collect();
                             let fty = cx.m.fn_ty(ret, params);
                             let id = cx.m.function(&key, fty, true);
                             cx.decls.insert(key.clone(), (id, fty));
@@ -413,6 +435,8 @@ struct Fx<'b> {
     vals: HashMap<u32, usize>,
     env: usize,
     slab: usize,
+    /// the thread's header (its offset in env)
+    tls: usize,
     /// slab + this function's scratch: what callees get
     next_slab: Option<usize>,
     my_scratch: i64,
@@ -422,6 +446,16 @@ struct Fx<'b> {
     cur_block: usize,
     /// values that are addresses into the threadgroup array
     group_vals: std::collections::HashSet<u32>,
+}
+
+/// an intrinsic's own width for an integer argument, where it differs
+/// from the container: a shuffle's or broadcast's lane is an i16
+fn intrinsic_int_bits(key: &str, j: usize) -> Option<u32> {
+    if j == 1 && (key.contains("simd_shuffle") || key.contains("simd_broadcast")) {
+        Some(16)
+    } else {
+        None
+    }
 }
 
 /// the container of a width: i1, else 8/16/32/64 bits (a multiple of
@@ -582,7 +616,7 @@ impl Cx<'_> {
     }
 
     fn fn_type(&mut self, f: &Function) -> usize {
-        let mut params = vec![self.ptr_ty, self.i64t];
+        let mut params = vec![self.ptr_ty, self.i64t, self.i64t];
         for &p in &f.params {
             let t = f.ty(p);
             params.push(self.lty(f, t));
@@ -617,9 +651,10 @@ impl Cx<'_> {
         }
         let env = b.arg(&self.m, 0);
         let slab = b.arg(&self.m, 1);
+        let tls = b.arg(&self.m, 2);
         let mut vals = HashMap::new();
         for (i, &p) in f.params.iter().enumerate() {
-            vals.insert(p.0, b.arg(&self.m, 2 + i));
+            vals.insert(p.0, b.arg(&self.m, 3 + i));
         }
         for bi in 1..f.blocks.len() {
             let nb = b.block();
@@ -635,7 +670,7 @@ impl Cx<'_> {
         }
         let (scratch, _) = crate::emit::scratch_layout(f, 0);
         let group_vals = self.group_addresses(f)?;
-        let mut fx = Fx { b, f, vals, env, slab, next_slab: None, my_scratch: self.scratch_of[fi], scratch, branch_args: Vec::new(), cur_block: 0, group_vals };
+        let mut fx = Fx { b, f, vals, env, slab, tls, next_slab: None, my_scratch: self.scratch_of[fi], scratch, branch_args: Vec::new(), cur_block: 0, group_vals };
         // PROBE_AIR_CUT=k: in a kept function, blocks from the k-th on
         // are `unreachable` (to find which block a compiler rejects)
         let cut = if keep == Some(true) { std::env::var("PROBE_AIR_CUT").ok().and_then(|v| v.parse::<usize>().ok()) } else { None };
@@ -953,7 +988,7 @@ impl Cx<'_> {
                     .collect();
                 for k in 0..n {
                     let idx = self.m.const_int(i32t, k as i64);
-                    let mut a = vec![fx.env, ns];
+                    let mut a = vec![fx.env, ns, fx.tls];
                     for (&x, &v) in args.iter().zip(&argv) {
                         a.push(if f.vector(f.ty(x)).is_some() { fx.b.push(&self.m, B::ExtractElt { vec: v, idx }) } else { v });
                     }
@@ -968,10 +1003,13 @@ impl Cx<'_> {
                 }
             }
             Inst::Call { dsts, callee, args } => {
+                if callee.starts_with("simd_") {
+                    return Err(format!("{} has no rule on air for these types: its one-thread form would be wrong here", callee));
+                }
                 let (fid, fty) = *self.fn_ids.get(callee).ok_or_else(|| format!("call to {}, which is not in this module (left out?)", callee))?;
                 let fv = self.m.function_value(fid);
                 let ns = self.next_slab(fx);
-                let mut a = vec![fx.env, ns];
+                let mut a = vec![fx.env, ns, fx.tls];
                 for &x in args {
                     a.push(self.value(fx, x)?);
                 }
@@ -984,7 +1022,7 @@ impl Cx<'_> {
                 let dv = self.m.function_value(did);
                 let ns = self.next_slab(fx);
                 let idx = self.value(fx, *callee)?;
-                let mut a = vec![fx.env, ns, idx];
+                let mut a = vec![fx.env, ns, fx.tls, idx];
                 for &x in args {
                     a.push(self.value(fx, x)?);
                 }
@@ -1223,6 +1261,20 @@ impl Cx<'_> {
             return Ok(());
         }
         let Some(&dst) = dsts.first() else { return Ok(()) };
+        // the simdgroup lane and width: the thread's header
+        if key == "air.simd_lane" || key == "air.simd_size" {
+            let i8t = self.m.int(8);
+            let i64t = self.i64t;
+            let i64p = self.m.ptr(i64t, 1);
+            let kc = self.const_i64(if key == "air.simd_lane" { 0 } else { 8 });
+            let at = fx.b.push(&self.m, B::Bin { op: OP_ADD, lhs: fx.tls, rhs: kc, flags: 0 });
+            let env = fx.env;
+            let bp = fx.b.push(&self.m, B::Gep { elem_ty: i8t, base: env, idx: vec![at], inbounds: true });
+            let p = fx.b.push(&self.m, B::Cast { op: CAST_BITCAST, val: bp, ty: i64p });
+            let v = fx.b.push(&self.m, B::Load { ptr: p, ty: i64t, align: 8 });
+            fx.vals.insert(dst.0, v);
+            return Ok(());
+        }
         // on vectors, the rule applies to the whole vector: the float
         // types are vectors, an intrinsic its vector form
         let f = fx.f;
@@ -1235,19 +1287,23 @@ impl Cx<'_> {
         for (j, &a) in args.iter().enumerate() {
             let v = self.value(fx, a)?;
             let bits = native.arg_bits[j];
-            let v = if native.arg_class[j].is_some() || bits >= 16 && key != "" {
+            let v = if native.arg_class[j].is_some() {
                 let ft = self.float_ty(bits);
                 let ft = match lanes {
                     Some(n) => self.m.ty(BType::Vector(ft, n as u64)),
                     None => ft,
                 };
                 fx.b.push(&self.m, B::Cast { op: CAST_BITCAST, val: v, ty: ft })
+            } else if let Some(w) = intrinsic_int_bits(&key, j) {
+                // an integer the intrinsic wants narrower (a shuffle's lane)
+                let it = self.m.int(w);
+                fx.b.push(&self.m, B::Cast { op: CAST_TRUNC, val: v, ty: it })
             } else {
                 v
             };
             fargs.push(v);
         }
-        let ret_float = native.ret_bits >= 16 && !key.starts_with("fcmp");
+        let ret_float = native.ret_class.is_some();
         let r = if let Some(pred) = key.strip_prefix("fcmp.") {
             let code = match pred {
                 "oeq" => 1, "ogt" => 2, "oge" => 3, "olt" => 4, "ole" => 5, "one" => 6, "ord" => 7, "uno" => 8,
@@ -1289,8 +1345,9 @@ impl Cx<'_> {
         let mut b = FnBuilder::new(&mut self.m, did);
         let env = b.arg(&self.m, 0);
         let slab = b.arg(&self.m, 1);
-        let idx = b.arg(&self.m, 2);
-        let args: Vec<usize> = (0..ps.len()).map(|i| b.arg(&self.m, 3 + i)).collect();
+        let tls = b.arg(&self.m, 2);
+        let idx = b.arg(&self.m, 3);
+        let args: Vec<usize> = (0..ps.len()).map(|i| b.arg(&self.m, 4 + i)).collect();
         let targets: Vec<(i64, String)> = self
             .taken
             .iter()
@@ -1319,7 +1376,7 @@ impl Cx<'_> {
             b.at(*blk);
             let (fid, fty) = self.fn_ids[name];
             let fv = self.m.function_value(fid);
-            let mut a = vec![env, slab];
+            let mut a = vec![env, slab, tls];
             a.extend(args.iter().copied());
             let r = b.push(&self.m, B::Call { fn_ty: fty, callee: fv, args: a });
             b.push(&self.m, B::Ret { val: if ret_void { None } else { Some(r) } });
@@ -1343,13 +1400,27 @@ impl Cx<'_> {
         let slabc = self.const_i64(slab as i64);
         let off0 = b.push(&self.m, B::Bin { op: OP_MUL, lhs: id64, rhs: slabc, flags: 0 });
         let dsc = self.const_i64(data_size as i64);
-        let my_slab = b.push(&self.m, B::Bin { op: OP_ADD, lhs: off0, rhs: dsc, flags: 0 });
+        let tls = b.push(&self.m, B::Bin { op: OP_ADD, lhs: off0, rhs: dsc, flags: 0 });
+        // the header: the simdgroup lane and width, then the slab
+        let (sl, sw) = (b.arg(&self.m, if self.kernel_arity == 5 { 5 } else { 3 }), b.arg(&self.m, if self.kernel_arity == 5 { 6 } else { 4 }));
+        let i8t = self.m.int(8);
+        let i64p = self.m.ptr(i64t, 1);
+        for (k, v) in [(0i64, sl), (8, sw)] {
+            let v64 = b.push(&self.m, B::Cast { op: CAST_ZEXT, val: v, ty: i64t });
+            let kc = self.const_i64(k);
+            let at = b.push(&self.m, B::Bin { op: OP_ADD, lhs: tls, rhs: kc, flags: 0 });
+            let bp = b.push(&self.m, B::Gep { elem_ty: i8t, base: mem, idx: vec![at], inbounds: true });
+            let p = b.push(&self.m, B::Cast { op: CAST_BITCAST, val: bp, ty: i64p });
+            b.push(&self.m, B::Store { ptr: p, val: v64, align: 8 });
+        }
+        let hc = self.const_i64(HEADER as i64);
+        let my_slab = b.push(&self.m, B::Bin { op: OP_ADD, lhs: tls, rhs: hc, flags: 0 });
         let i64p = self.m.ptr(i64t, 1);
         let pp = b.push(&self.m, B::Cast { op: CAST_BITCAST, val: params, ty: i64p });
         let area = b.push(&self.m, B::Load { ptr: pp, ty: i64t, align: 8 });
         let zero = self.const_i64(0);
         let fv = self.m.function_value(bid);
-        let mut args = vec![mem, my_slab, zero, area, id64];
+        let mut args = vec![mem, my_slab, tls, zero, area, id64];
         if self.kernel_arity == 5 {
             let lane = b.arg(&self.m, 3);
             let group = b.arg(&self.m, 4);
@@ -1391,6 +1462,16 @@ impl Cx<'_> {
             self.m.md_node(items)
         };
         let mut all = vec![Some(a0), Some(a1), Some(a2)];
+        let simd_at = if self.kernel_arity == 5 { 5 } else { 3 };
+        let (vs, vw) = (c(&mut self.m, simd_at), c(&mut self.m, simd_at + 1));
+        let s_lane = {
+            let items = vec![Some(vs), s(&mut self.m, "air.thread_index_in_simdgroup"), s(&mut self.m, "air.arg_type_name"), s(&mut self.m, "uint"), s(&mut self.m, "air.arg_name"), s(&mut self.m, "simd_lane")];
+            self.m.md_node(items)
+        };
+        let s_width = {
+            let items = vec![Some(vw), s(&mut self.m, "air.threads_per_simdgroup"), s(&mut self.m, "air.arg_type_name"), s(&mut self.m, "uint"), s(&mut self.m, "air.arg_name"), s(&mut self.m, "simd_size")];
+            self.m.md_node(items)
+        };
         if self.kernel_arity == 5 {
             let (v3, v4) = (c(&mut self.m, 3), c(&mut self.m, 4));
             let a3 = {
@@ -1403,6 +1484,7 @@ impl Cx<'_> {
             };
             all.extend([Some(a3), Some(a4)]);
         }
+        all.extend([Some(s_lane), Some(s_width)]);
         let args = self.m.md_node(all);
         let kernel = self.m.md_node(vec![Some(fn_md), Some(empty), Some(args)]);
         self.m.md_named("air.kernel", vec![kernel]);
@@ -1429,6 +1511,43 @@ impl Cx<'_> {
 
 #[cfg(test)]
 mod tests {
+    /// a program with a __kernel, compiled and dispatched on this Mac's
+    /// GPU by the Python driver: what its area holds, as printed
+    fn run_example(path: &str, n: u32, group: Option<u32>) -> String {
+        let platform = crate::platform::Platform::load("air").unwrap();
+        let policy = platform.adjust(crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap());
+        let src = std::fs::read_to_string(path).unwrap();
+        let mut module = crate::ssa::parse_with(&crate::ssa::with_prelude(&src), &policy).unwrap();
+        crate::ssa::resolve_types(&mut module, &policy);
+        crate::ssa::verify(&module).unwrap();
+        crate::opt::optimize(&mut module, crate::opt::MAX_LEVEL);
+        let c = super::compile_with(&module, &platform).unwrap();
+        assert!(c.has_kernel);
+        let dir = std::env::temp_dir().join("probe-air-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let stem = std::path::Path::new(path).file_stem().unwrap().to_string_lossy().to_string();
+        std::fs::write(dir.join(format!("{}.metallib", stem)), &c.metallib).unwrap();
+        let data_hex: String = c.layout.data.iter().map(|b| format!("{:02x}", b)).collect();
+        std::fs::write(dir.join(format!("{}.air.json", stem)), format!("{{\"data\":\"{}\",\"slab\":{},\"kernel\":true}}", data_hex, c.layout.slab)).unwrap();
+        let mut cmd = std::process::Command::new("python3");
+        cmd.args(["tools/driver_metal.py", "--kernel"]).arg(dir.join(format!("{}.metallib", stem))).arg(dir.join(format!("{}.air.json", stem))).arg(n.to_string());
+        if let Some(g) = group {
+            cmd.arg(g.to_string());
+        }
+        let out = cmd.output().unwrap();
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    }
+
+    /// examples/simd.ssa: 64 threads, each the sum of its simdgroup's ids
+    /// (32 lanes) with its lane index
+    #[test]
+    fn simdgroup_sums_on_the_gpu() {
+        let _turn = crate::suite::tests::boot_turn();
+        let text = run_example("examples/simd.ssa", 64, None);
+        let want: Vec<String> = (0..64).map(|i| (if i < 32 { 49600 } else { 152000 } + i % 32).to_string()).collect();
+        assert_eq!(text.trim(), format!("area: [{}]", want.join(", ")), "{}", text);
+    }
+
     /// examples/reduce.ssa on this Mac's GPU: 256 threads in groups of
     /// 64, each group summing its ids through threadgroup memory
     #[test]

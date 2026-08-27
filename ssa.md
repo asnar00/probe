@@ -444,6 +444,32 @@ the barrier — `air.wg.barrier` on the GPU, nothing on one thread — so
 a program written for many threads parses and runs everywhere
 (`suite/group.ssa`; `examples/reduce.ssa` for the many-thread case).
 
+### The simdgroup
+
+```
+s: f32 = simd_sum x                           ; across the lanes that execute together
+m: i32 = simd_max y                           ; on floats, halves, 32-bit integers
+zero: i64 = const 0
+b: f32 = simd_broadcast x, zero               ; a lane or delta is an i64
+p: u32 = simd_prefix_sum z                    ; inclusive
+l: i64 = simd_lane()                          ; 0..simd_size() - 1
+v: u1 = simd_all(c)                           ; simd_any, simd_ballot -> u64, simd_first
+```
+
+`lib/gpu.ssa` names the simdgroup's operations — `simd_sum`,
+`simd_product`, `simd_max`, `simd_min`, `simd_prefix_sum`,
+`simd_shuffle`, `simd_broadcast`, `simd_shuffle_xor`,
+`simd_shuffle_down`, `simd_shuffle_up`, the votes, `simd_lane` and
+`simd_size` — as generics over floats and integers, written by opcode
+(`simd_sum x`) or called. On a GPU they are the platform's
+(`air.simd_sum.f32`, ...; 32 lanes on an Apple GPU); on one thread the
+simdgroup is that thread — every reduction is its argument, a shuffle
+the value, the lane 0, the width 1 — so the program runs everywhere,
+and the many-lane case is checked where there are many
+(`examples/simd.ssa`). A `simd_*` operation the platform has no
+instruction for (a 64-bit lane) is an error on the GPU rather than
+its one-thread form.
+
 ### Calls
 
 A name followed by an argument list is a call — no opcode is ever

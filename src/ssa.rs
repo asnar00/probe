@@ -4013,7 +4013,9 @@ impl Parser {
                 if self.vector_of(fty).is_some() {
                     return self.lanewise(scope, dst, op, &args);
                 }
-                if !scope.values[first.0 as usize].ty.is_pack() {
+                // ... or an integer: `simd_sum x` on an i32 is simd_sum(N)
+                // taking i(N)
+                if !scope.values[first.0 as usize].ty.is_pack() && !scope.values[first.0 as usize].ty.is_int() {
                     return Err(self.err(format!("unknown opcode '{}'", op)));
                 }
                 let callee = self.dispatch(op, scope.values[first.0 as usize].ty, scope.values[dst.0 as usize].ty)?;

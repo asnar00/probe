@@ -6,6 +6,30 @@ has the full story for any of them.
 
 ---
 
+### The simdgroup — `HASH` · 2026-08-28
+
+`lib/gpu.ssa` names what a simdgroup computes across its lanes —
+`simd_sum`, `simd_product`, `simd_max`, `simd_min`, `simd_prefix_sum`,
+`simd_shuffle`, `simd_broadcast`, `simd_shuffle_xor`, `_down`, `_up`,
+`simd_all`, `simd_any`, `simd_ballot`, `simd_first`, `simd_lane`,
+`simd_size` — as generics over floats and 32-bit integers with
+one-thread bodies (the argument, the value, 0, 1), and an opcode now
+reaches a library generic for an integer as it did for a pack, so
+`simd_sum x` reads the same on an `i32`. `targets/air.platform` makes
+them Apple's intrinsics, whose names and shapes were read off their
+compiler: `air.simd_sum.f32`, `.s.i32`, `.u.i32`, `.f16`, shuffles
+taking an `i16` lane, votes on `i1`, `simd_ballot.i64`; a `simd_*`
+with no rule is an error on AIR, not its one-thread body. The lane
+index and width are kernel arguments in AIR, so the wrapper leaves
+them in a 16-byte header at the start of each thread's slab, and every
+function takes a third hidden parameter, `tls`, to find it. A rule's
+integer arguments are typed as integers now (a float is a classed
+argument), which the intrinsics needed. `suite/simd.ssa` on all five
+paths; `examples/simd.ssa` on the GPU with a test: 64 threads, the
+sums 496 and 1520 with the lane beside them.
+
+---
+
 ### Group memory, typed and sized — `8303dab` · 2026-08-28
 
 `group tmp: array(i64, 64)` declares what a threadgroup shares the way

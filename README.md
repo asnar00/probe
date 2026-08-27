@@ -282,8 +282,9 @@ None of them contains a single hand-written opcode.
   `scratch` live there, a `__kernel(mem, area, id)` — or `(mem, area,
   id, lane, group)` — becomes the compute kernel; `lib/gpu.ssa`'s
   a `group tmp: array(i64, 64)` item is the threadgroup's memory here
-  and writable data everywhere else, `group_sync()` its barrier
-  (`lib/gpu.ssa`); vectors reach
+  and writable data everywhere else, `group_sync()` its barrier, and
+  `simd_sum x`, shuffles and votes are the simdgroup's (`lib/gpu.ssa`:
+  Apple's intrinsics here, the one-thread forms elsewhere); vectors reach
   it whole (`<4 x float>`, `air.sqrt.v4f32`); recursion,
   which Metal has not, is left out and reported. `tools/driver_metal.py`
   dispatches it (pyobjc).
@@ -366,6 +367,9 @@ python3 tools/driver_metal.py --kernel gpu.metallib gpu.air.json 8
 # ... and a reduction over threadgroups of 64 (lib/gpu.ssa)
 cargo run -- compile examples/reduce.ssa air
 python3 tools/driver_metal.py --kernel reduce.metallib reduce.air.json 256 64
+# ... and the simdgroup summing across its 32 lanes
+cargo run -- compile examples/simd.ssa air
+python3 tools/driver_metal.py --kernel simd.metallib simd.air.json 64
 
 # the optimization pipeline: -O<n> works on any command, and `tiers`
 # compiles at every prefix to show the gradual-optimization story
