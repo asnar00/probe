@@ -292,9 +292,24 @@ riscv leaves `mepc` on the `ecall`). A program declares those functions
 with placeholder bodies and the platform supplies the real ones, as it
 does for `psci`. `os/echo.ssa` is the second operating system: a
 handler dispatching write, read and exit through a `data` table of
-function values, and a program that uses only those calls. Interrupts
-from devices (which can arrive between any two instructions, float
-scratch registers live) are not taken yet.
+function values, and a program that uses only those calls.
+
+Interrupts land in `fn __irq()`. `probe boot` lays a vector table
+before `__trap` on both machines — sixteen entries; on arm64 the
+exception entries branch to `__trap` and the IRQ entries to `__irq`,
+on riscv64 mtvec is put in vectored mode with entry 0 to `__trap` and
+the rest, one per interrupt cause, to `__irq` — and compiles `__irq`
+with a frame that keeps *every* register of the interrupted code,
+float scratch included, since an interrupt can land between any two
+instructions. The board's side is again the platform's: `now()` and
+`hz()` read the counter and its frequency, `timer_at(t)` and
+`timer_off()` arm and disarm the timer, `irq_on()` enables the timer's
+interrupt (the GICv2 on the aarch64 virt board; mie and mstatus on the
+riscv64 one), `irq_ack()` and `irq_done(id)` take and finish one, and
+`idle()` waits for the next; `irq_timer` is the timer's interrupt id.
+`os/clock.ssa` is the third operating system: ten ticks a tenth of a
+second apart, each deadline a step from the previous one, and the
+elapsed count turned into exact milliseconds by `lib/time.ssa`.
 
 ### Calls
 

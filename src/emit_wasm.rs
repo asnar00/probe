@@ -762,6 +762,9 @@ fn compile_function(
 fn rule_seq(native: &Native) -> Result<Vec<(String, Option<i64>)>, String> {
     let mut seq = Vec::new();
     for line in &native.rule.lines {
+        if line.mnemonic == "none" {
+            continue;
+        }
         let key = line.template.clone().unwrap_or_else(|| line.mnemonic.clone());
         match line.operands.as_slice() {
             [] => seq.push((key, None)),

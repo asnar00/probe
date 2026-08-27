@@ -847,8 +847,13 @@ pub fn boot(path: &str, target: &str, level: usize, policy: ssa::Policy, input: 
     match input {
         // the machine's serial port reads what it is given
         Some(bytes) => exec_qemu_with(qemu_command(target, &bin_path), 30, Some(bytes)),
-        // or the terminal, for as long as the program runs
-        None => exec_qemu_with(qemu_command(target, &bin_path), 24 * 3600, None),
+        // or our own stdin: a pipe, or the terminal for as long as the
+        // program runs
+        None => {
+            use std::io::IsTerminal;
+            let secs = if std::io::stdin().is_terminal() { 24 * 3600 } else { 30 };
+            exec_qemu_with(qemu_command(target, &bin_path), secs, None)
+        }
     }
 }
 
@@ -1111,6 +1116,21 @@ mod tests {
         for target in ["riscv64", "arm64"] {
             let out = super::boot("os/hello.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"")).unwrap();
             assert!(out.contains("hello world ᕦ(ツ)ᕤ"), "{}: {:?}", target, out);
+        }
+    }
+
+    /// the third: the timer interrupt, ten ticks a tenth of a second
+    /// apart, and the elapsed count of the machine's counter as exact
+    /// milliseconds — a second, plus what qemu's timers are late by
+    #[test]
+    fn clock_boots() {
+        for target in ["riscv64", "arm64"] {
+            let out = super::boot("os/clock.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"")).unwrap();
+            let ticks = out.matches("tick\n").count();
+            let report = out.lines().last().unwrap_or("");
+            let ms: i64 = report.strip_prefix("10 ticks in ").and_then(|r| r.strip_suffix(" ms")).and_then(|n| n.parse().ok()).unwrap_or(-1);
+            assert_eq!(ticks, 10, "{}: {:?}", target, out);
+            assert!((1000..1500).contains(&ms), "{}: {:?}", target, out);
         }
     }
 

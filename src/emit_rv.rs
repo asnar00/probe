@@ -82,13 +82,28 @@ pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Resu
 /// Compile a module for an image whose code begins at byte `origin`;
 /// riscv's trap vector is the handler's entry itself (mtvec in direct
 /// mode), so nothing here depends on the origin
-pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, _origin: usize) -> Result<Compiled, String> {
+pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin: usize) -> Result<Compiled, String> {
     let natives = platform.natives(module);
     let mut code: Vec<u8> = Vec::new();
     let mut funcs = std::collections::HashMap::new();
     let mut call_fixups: Vec<Fixup> = Vec::new();
 
+    let has_irq = module.funcs.iter().any(|f| f.name == crate::emit::IRQ);
     for func in &module.funcs {
+        if func.name == crate::emit::TRAP {
+            // the vector table for mtvec's vectored mode, 64-aligned:
+            // entry 0 (exceptions) to __trap, the rest (interrupts, by
+            // cause) to __irq when there is one
+            while (origin + code.len()) % 64 != 0 {
+                code.push(0);
+            }
+            for k in 0..16 {
+                let target = if k > 0 && has_irq { crate::emit::IRQ } else { crate::emit::TRAP };
+                let at = code.len();
+                code.extend_from_slice(&enc.encode(JAL, &[ZERO, 0])?.to_le_bytes());
+                call_fixups.push(Fixup { at, values: vec![ZERO, 0], imm_slot: 1, target: FixTarget::Func(target.into()) });
+            }
+        }
         funcs.insert(func.name.clone(), code.len());
         compile_function(func, enc, &natives, &mut code, &mut call_fixups)
             .map_err(|e| format!("{}: {}", func.name, e))?;
@@ -144,9 +159,10 @@ struct RvEmit<'a> {
     /// per value: the platform's float register class (`f`), if any
     classes: Vec<Option<String>>,
     spill_base: i64,
-    /// a trap handler: the caller-saved registers of the code it
-    /// interrupted are kept here and it leaves by mret
-    trap: Option<i64>,
+    /// a trap or interrupt handler: (the frame area for the interrupted
+    /// code's registers, an interrupt — a0 goes back too and the float
+    /// scratch registers are kept as well); it leaves by mret
+    trap: Option<(i64, bool)>,
     /// each `scratch` value's offset from sp
     scratch: std::collections::HashMap<ValueId, i64>,
     /// the block being emitted: a jump to the next one is a fall-through
@@ -159,6 +175,9 @@ struct RvEmit<'a> {
 /// t3-t6; ra is in the frame already
 const TRAP_SAVED: &[i64] = &[5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31];
 const TRAP_AREA: i64 = 120;
+/// the float registers an interrupt handler keeps: ft0-ft7, fa0-fa7,
+/// ft8-ft11 (the fs registers are the allocator's, kept by it)
+const IRQ_FP_SAVED: &[i64] = &[0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31];
 
 impl RvEmit<'_> {
     fn emit(&mut self, template: &str, values: &[i64]) -> Result<usize, String> {
@@ -485,11 +504,17 @@ impl RvEmit<'_> {
         for (k, &fr) in self.alloc.used_by_class[1].clone().iter().enumerate() {
             self.emit(FLD, &[fr, fbase + 8 * k as i64, SP])?;
         }
-        if let Some(base) = self.trap {
-            // the result is in a0; everything else goes back as it was
+        if let Some((base, irq)) = self.trap {
+            // a trap's result is in a0; everything else goes back as it was
             for (k, &r) in TRAP_SAVED.iter().enumerate() {
-                if r != A0 {
+                if r != A0 || irq {
                     self.emit(LD, &[r, base + 8 * k as i64, SP])?;
+                }
+            }
+            if irq && !self.natives.classes.is_empty() {
+                let fp_base = base + TRAP_AREA;
+                for (k, &fr) in IRQ_FP_SAVED.iter().enumerate() {
+                    self.emit(FLD, &[fr, fp_base + 8 * k as i64, SP])?;
                 }
             }
         }
@@ -579,8 +604,10 @@ fn compile_function(
     let class_idx: Vec<usize> = classes.iter().map(|c| c.is_some() as usize).collect();
     let alloc = regalloc::allocate_classes(func, &class_idx, &[REG_POOL, F_POOL]);
     let nsaved = alloc.used_regs.len() as i64 + alloc.used_by_class[1].len() as i64;
-    let trap = (func.name == crate::emit::TRAP).then_some(16 + 8 * nsaved);
-    let spill_base = 16 + 8 * nsaved + if trap.is_some() { TRAP_AREA } else { 0 };
+    let irq = func.name == crate::emit::IRQ;
+    let trap = (func.name == crate::emit::TRAP || irq).then_some((16 + 8 * nsaved, irq));
+    let fp_area = if irq && !natives.classes.is_empty() { 8 * IRQ_FP_SAVED.len() as i64 } else { 0 };
+    let spill_base = 16 + 8 * nsaved + if trap.is_some() { TRAP_AREA + fp_area } else { 0 };
     let (scratch, scratch_end) = crate::emit::scratch_layout(func, (spill_base + 8 * alloc.nslots as i64 + 15) & !15);
     let frame = scratch_end;
     if frame > 2047 {
@@ -615,10 +642,16 @@ fn compile_function(
     for (k, &fr) in alloc.used_by_class[1].iter().enumerate() {
         e.emit(FSD, &[fr, fbase + 8 * k as i64, SP])?;
     }
-    if let Some(base) = trap {
+    if let Some((base, irq)) = trap {
         for (k, &r) in TRAP_SAVED.iter().enumerate() {
             e.emit(SD, &[r, base + 8 * k as i64, SP])?;
         }
+        if fp_area > 0 {
+            for (k, &fr) in IRQ_FP_SAVED.iter().enumerate() {
+                e.emit(FSD, &[fr, base + TRAP_AREA + 8 * k as i64, SP])?;
+            }
+        }
+        let _ = irq;
     }
     for (i, &p) in func.params.iter().enumerate() {
         e.value_from(p, A0 + i as i64)?;
@@ -649,16 +682,24 @@ fn compile_function(
 
 /// the instruction sequence for a platform rule: the arguments and the
 /// result in the registers given, each in its own class's file
+/// the registers a rule's temporaries `t0`..`t3` are: t3..t6, which no
+/// argument or result of a rule ever lands in
+const RULE_TEMPS: &[i64] = &[28, 29, 30, 31];
+
 fn rule_seq<'a>(enc: &'a Encoder, native: &Native, rd: i64, args: &[i64]) -> Result<Vec<(&'a str, Vec<i64>)>, String> {
     let templates = enc.templates();
     let mut seq = Vec::new();
     for line in &native.rule.lines {
+        if line.mnemonic == "none" {
+            continue;
+        }
         let (t, vals) = crate::platform::resolve(native, line, &templates)?;
         let v = vals
             .into_iter()
             .map(|(op, v)| match op {
                 Operand::Arg(i) => args[i],
                 Operand::Ret => rd,
+                Operand::Tmp(k) => RULE_TEMPS[k],
                 Operand::Lit(_) => v,
             })
             .collect();

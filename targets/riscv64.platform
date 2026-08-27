@@ -29,10 +29,15 @@ const resume_skip = 4
 ; mcause of an environment call from M-mode
 const trap_syscall = 11
 
-; traps in M-mode: mtvec (0x305) in direct mode takes the handler's
-; entry itself; mcause is 0x342, mepc 0x341
+; traps in M-mode. `probe boot` lays a 16-entry vector table (one
+; jump each) in the 64 bytes before __trap's entry — entry 0 for
+; exceptions, the rest for interrupts by cause — so mtvec (0x305)
+; takes the entry less 64, in vectored mode (low bit 1); mcause is
+; 0x342, mepc 0x341
 ext traps
 vectors(t: ptr) -> ()
+    addi t, t, -64
+    ori t, t, 1
     csrw 0x305, t
 cause() -> u64
     csrr r, 0x342
@@ -42,6 +47,41 @@ resume_at(p: ptr) -> ()
     csrw 0x341, p
 syscall(n: u64, a: u64, b: u64) -> u64
     ecall
+
+; interrupts and time on the virt board: the counter is the `time` CSR
+; (0xc01), the CLINT's mtime, at 10 MHz; the timer interrupt fires
+; when mtime reaches mtimecmp (0x02004000 for hart 0) and is cleared by
+; moving mtimecmp; enabling it is mie.MTIE (bit 7) and mstatus.MIE (bit
+; 3); mcause's low bits say which interrupt (7: the machine timer)
+ext time
+const irq_timer = 7
+now() -> u64
+    csrr r, 0xc01
+hz() -> u64
+    lui r, 0x989
+    addi r, r, 0x680
+timer_at(t: u64) -> () with base: ptr
+    lui base, 0x2004
+    sd t, 0(base)
+timer_off() -> () with base: ptr, never: u64
+    lui base, 0x2004
+    lui never, 0
+    addi never, never, -1
+    sd never, 0(base)
+irq_on() -> () with bits: u64
+    lui bits, 0
+    addi bits, bits, 128
+    csrs 0x304, bits
+    lui bits, 0
+    addi bits, bits, 8
+    csrs 0x300, bits
+irq_ack() -> u32
+    csrr r, 0x342
+    andi r, r, 255
+irq_done(id: u32) -> ()
+    none
+idle() -> ()
+    wfi
 
 ext M
 builtin mul, div, rem

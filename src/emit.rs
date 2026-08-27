@@ -486,6 +486,21 @@ pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Resu
 
 /// the trap handler's name: `probe boot` installs it (see ssa.md)
 pub const TRAP: &str = "__trap";
+/// the interrupt handler's name: the vector table's interrupt entries
+/// go here, with every register of the interrupted code kept
+pub const IRQ: &str = "__irq";
+
+/// a handler's frame: where the interrupted code's registers are kept
+struct TrapFrame {
+    /// the integer registers' area, from the frame base
+    base: i64,
+    /// an interrupt: nothing is a result, so x0 goes back too, and the
+    /// float scratch registers are kept as well
+    irq: bool,
+    /// the float registers kept (d0-d7, d16-d31) and where
+    fp: Vec<i64>,
+    fp_base: i64,
+}
 /// an arm64 vector table: 16 entries of 32 instructions, 2K-aligned
 const VECTOR_ENTRY: usize = 0x80;
 const VECTOR_TABLE: usize = 16 * VECTOR_ENTRY;
@@ -499,14 +514,19 @@ pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin
     let mut funcs = HashMap::new();
     let mut call_fixups: Vec<Fixup> = Vec::new();
 
+    let has_irq = module.funcs.iter().any(|f| f.name == IRQ);
     for func in &module.funcs {
         if func.name == TRAP {
+            // the vector table: exceptions to __trap, interrupts (every
+            // fourth entry from the second: IRQ) to __irq when there is one
             while (origin + code.len()) % VECTOR_TABLE != 0 {
                 code.push(0);
             }
             for k in 0..16 {
-                let delta = (VECTOR_TABLE - k * VECTOR_ENTRY) as i64;
-                code.extend_from_slice(&enc.encode("b #{i -134217728..134217724 /4}", &[delta])?.to_le_bytes());
+                let target = if k % 4 == 1 && has_irq { IRQ } else { TRAP };
+                let at = code.len();
+                code.extend_from_slice(&enc.encode("b #{i -134217728..134217724 /4}", &[0])?.to_le_bytes());
+                call_fixups.push(Fixup { at, template: "b #{i -134217728..134217724 /4}", values: vec![0], imm_slot: 0, target: FixTarget::Func(target.into()) });
                 code.resize(code.len() + VECTOR_ENTRY - 4, 0);
             }
         }
@@ -551,9 +571,9 @@ struct FnEmit<'a> {
     /// per value: the platform's float register class (`s`/`d`), if any
     classes: Vec<Option<String>>,
     spill_base: i64,
-    /// a trap handler: the caller-saved registers of the code it
-    /// interrupted are kept here (x0..x18 in pairs) and it leaves by eret
-    trap: Option<i64>,
+    /// a trap or interrupt handler: the caller-saved registers of the
+    /// code it interrupted are kept in the frame and it leaves by eret
+    trap: Option<TrapFrame>,
     /// each `scratch` value's offset from sp
     scratch: HashMap<ValueId, i64>,
     /// the block being emitted: a jump to the next one is a fall-through
@@ -566,6 +586,9 @@ struct FnEmit<'a> {
 /// is in the frame's fp/lr pair already
 const TRAP_SAVED: &[i64] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
 const TRAP_AREA: i64 = 160;
+/// the float registers an interrupt handler keeps: the caller-saved
+/// ones (v8-v15's low halves are callee-saved and kept by the allocator)
+const IRQ_FP_SAVED: &[i64] = &[0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31];
 
 impl FnEmit<'_> {
     fn emit(&mut self, template: &str, values: &[i64]) -> Result<usize, String> {
@@ -1001,11 +1024,15 @@ impl FnEmit<'_> {
                 _ => unreachable!(),
             }
         }
-        if let Some(base) = self.trap {
-            // the result is in x0; everything else goes back as it was
+        if let Some(t) = &self.trap {
+            // a trap's result is in x0; everything else goes back as it was
+            let (base, irq, fp, fp_base) = (t.base, t.irq, t.fp.clone(), t.fp_base);
+            for (k, &fr) in fp.iter().enumerate() {
+                self.emit(LDR_D_SP, &[fr, fp_base + 8 * k as i64])?;
+            }
             for (k, pair) in TRAP_SAVED.chunks(2).enumerate() {
                 match pair {
-                    [_, b] if k == 0 => self.emit(LDR_SP, &[*b, base + 8])?,
+                    [_, b] if k == 0 && !irq => self.emit(LDR_SP, &[*b, base + 8])?,
                     [a, b] => self.emit("ldp {x}, {x}, [sp, #{i -512..504 /8}]", &[*a, *b, base + 16 * k as i64])?,
                     [a] => self.emit(LDR_SP, &[*a, base + 16 * k as i64])?,
                     _ => unreachable!(),
@@ -1088,8 +1115,14 @@ fn compile_function(
     let class_idx: Vec<usize> = classes.iter().map(|c| c.is_some() as usize).collect();
     let alloc = crate::regalloc::allocate_classes(func, &class_idx, &[REG_POOL, F_POOL]);
     let nsaved = alloc.used_regs.len() as i64 + alloc.used_by_class[1].len() as i64;
-    let trap = (func.name == TRAP).then_some(16 + 8 * nsaved);
-    let spill_base = 16 + 8 * nsaved + if trap.is_some() { TRAP_AREA } else { 0 };
+    let trap = (func.name == TRAP || func.name == IRQ).then(|| {
+        let irq = func.name == IRQ;
+        // an interrupt can land between any two instructions, float
+        // scratch live — on a platform that has floats at all
+        let fp: Vec<i64> = if irq && !natives.classes.is_empty() { IRQ_FP_SAVED.to_vec() } else { Vec::new() };
+        TrapFrame { base: 16 + 8 * nsaved, irq, fp_base: 16 + 8 * nsaved + TRAP_AREA, fp }
+    });
+    let spill_base = 16 + 8 * nsaved + trap.as_ref().map_or(0, |t| TRAP_AREA + 8 * t.fp.len() as i64);
     // scratch areas above the spills, each 16-aligned
     let (scratch, scratch_end) = scratch_layout(func, (spill_base + 8 * alloc.nslots as i64 + 15) & !15);
     let frame = scratch_end;
@@ -1135,13 +1168,17 @@ fn compile_function(
     for (k, &fr) in alloc.used_by_class[1].iter().enumerate() {
         e.emit(STR_D_SP, &[fr, fbase + 8 * k as i64])?;
     }
-    if let Some(base) = trap {
+    if let Some(t) = &e.trap {
+        let (base, fp, fp_base) = (t.base, t.fp.clone(), t.fp_base);
         for (k, pair) in TRAP_SAVED.chunks(2).enumerate() {
             match pair {
                 [a, b] => e.emit("stp {x}, {x}, [sp, #{i -512..504 /8}]", &[*a, *b, base + 16 * k as i64])?,
                 [a] => e.emit(STR_SP, &[*a, base + 16 * k as i64])?,
                 _ => unreachable!(),
             };
+        }
+        for (k, &fr) in fp.iter().enumerate() {
+            e.emit(STR_D_SP, &[fr, fp_base + 8 * k as i64])?;
         }
     }
     for (i, &p) in func.params.iter().enumerate() {
@@ -1174,16 +1211,24 @@ fn compile_function(
 
 /// the instruction sequence for a platform rule: the arguments and the
 /// result in the registers given, each in its own class's file
+/// the registers a rule's temporaries `t0`..`t3` are: scratch ones no
+/// argument or result of a rule ever lands in
+const RULE_TEMPS: &[i64] = &[12, 13, 14, 15];
+
 fn rule_seq<'a>(enc: &'a Encoder, native: &Native, rd: i64, args: &[i64]) -> Result<Vec<(&'a str, Vec<i64>)>, String> {
     let templates = enc.templates();
     let mut seq = Vec::new();
     for line in &native.rule.lines {
+        if line.mnemonic == "none" {
+            continue;
+        }
         let (t, vals) = crate::platform::resolve(native, line, &templates)?;
         let v = vals
             .into_iter()
             .map(|(op, v)| match op {
                 Operand::Arg(i) => args[i],
                 Operand::Ret => rd,
+                Operand::Tmp(k) => RULE_TEMPS[k],
                 Operand::Lit(_) => v,
             })
             .collect();

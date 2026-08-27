@@ -52,6 +52,21 @@ nothing but those system calls (`svc`/`ecall`). The trap instructions
 are learned like every other; how a board takes a trap is five
 platform rules and two constants.
 
+```sh
+cargo run -- boot os/clock.ssa
+tick            # ten of them, a tenth of a second apart
+10 ticks in 1006 ms
+```
+
+`os/clock.ssa` is the third: it keeps time. The timer interrupt lands
+in `fn __irq` (a frame that keeps every register, float scratch
+included), each deadline is one step on from the last so the ticks
+never drift, and the elapsed count of the machine's counter becomes
+milliseconds exactly, through `lib/time.ssa`'s rationals. The generic
+timer and GICv2 on one board, the CLINT and `time` CSR on the other,
+are eight platform rules — some with typed temporaries (`irq_on() ->
+() with gic: ptr, v: u32`) for the addresses and values they need.
+
 ## The IR
 
 `ssa.md` is the reference; `src/ssa.rs` the parser, verifier and
@@ -158,10 +173,13 @@ what a target does natively, as rules over the library's operations:
   remains the reference the hardware path is checked against.
 - `const uart = 0x10000000` — a board's addresses, for `platform uart`.
 - `psci(code: u64) -> ()` with `hvc 0` under it — a plain function the
-  platform gives a body: how the board is ended, or how a trap is
+  platform gives a body: how the board is ended, how a trap is
   installed, read and returned from (`vectors`, `cause`, `resume`,
-  `resume_at`, `syscall`). A body line may spell a template's fixed
-  operands (`msr vbar_el1, t`).
+  `resume_at`, `syscall`), how time is read and the timer's interrupt
+  taken (`now`, `hz`, `timer_at`, `irq_on`, `irq_ack`, ...). A body
+  line may spell a template's fixed operands (`msr vbar_el1, t`); a
+  rule may declare typed temporaries (`with gic: ptr, v: u32`) for
+  addresses and values it needs; `none` is a rule that does nothing.
 - **Variants** are files too: the base file is grouped by extension
   (`ext M`, `ext F`, `ext D`), and `targets/rv64i.platform` is `base
   riscv64` plus `without M, F, D` — a core on which `mul`/`div`/`rem`
@@ -315,8 +333,9 @@ are checked in, so the backends and suite work without re-learning.
 Integers to 256 bits, packs, structs, parametric types and generic
 functions, function values; floats, fixed point, unit fractions, rationals, time and
 decimals as libraries, with hardware substituted where a platform has
-it; three backends and their variants; a bootable hello world and an
-echo kernel with system calls. All of
+it; three backends and their variants; three bootable kernels — hello
+world, an echo with system calls, a clock on the timer interrupt. All
+of
 it differentially verified — the suite on four execution paths under
 every policy, the oracle, the scorecards, the fuzzer, the model tests.
 

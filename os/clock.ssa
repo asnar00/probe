@@ -1,0 +1,190 @@
+; clock — the third operating system written in probe: it keeps time.
+;
+;   probe boot os/clock.ssa            (riscv64)
+;   probe boot os/clock.ssa arm        (aarch64)
+;   tick (ten times, a tenth of a second apart)
+;   10 ticks in 1000 ms
+;
+; The timer interrupt lands in `fn __irq`, which `probe boot` compiles
+; with a frame that keeps every register of whatever it interrupted,
+; float scratch included, and returns to it. The deadline advances by
+; a fixed step from the previous deadline, never from "now", so the
+; ticks do not drift; and the elapsed count of the machine's counter
+; is turned into seconds exactly, by lib/time.ssa's rationals, before
+; it is printed in milliseconds. The counter, its frequency, the
+; timer, the interrupt controller and the idle instruction are the
+; platform's (`now`, `hz`, `timer_at`, `timer_off`, `irq_on`,
+; `irq_ack`, `irq_done`, `idle`): a generic timer and a GICv2 on the
+; aarch64 virt board, the CLINT and the time CSR on the riscv64 one.
+
+data tick = "tick\n"
+data report = " ticks in "
+data unit = " ms\n"
+data ticks: array(u64, 1)
+data deadline: array(u64, 1)
+
+; --- the board ---
+fn vectors(t: ptr) {
+    ret
+}
+fn now() -> u64 {
+    ret 0
+}
+fn hz() -> u64 {
+    ret 0
+}
+fn timer_at(t: u64) {
+    ret
+}
+fn timer_off() {
+    ret
+}
+fn irq_on() {
+    ret
+}
+fn irq_ack() -> u32 {
+    ret 0
+}
+fn irq_done(id: u32) {
+    ret
+}
+fn idle() {
+    ret
+}
+fn psci(code: u64) {
+    ret
+}
+
+; --- the kernel ---
+fn __start() {
+    h: fn(u64, u64, u64) -> u64 = addr __trap
+    hp: ptr = cast h
+    vectors(hp)
+    f: u64 = hz()
+    step: u64 = div f, 10
+    start: u64 = now()
+    first: u64 = add start, step
+    dp: ptr = addr deadline
+    store first, dp
+    timer_at(first)
+    irq_on()
+    counter: ptr = addr ticks
+    loop() {
+        n: u64 = load counter
+        done: u1 = cmp.ge n, 10
+        if done {
+            break
+        }
+        idle()
+        continue
+    }
+    end: u64 = now()
+    timer_off()
+    ; the elapsed count, as an exact time: a period times a count
+    elapsed: u64 = sub end, start
+    fi: i64 = conv f
+    ei: i64 = conv elapsed
+    p: time = period(fi)
+    c: time = seconds(ei)
+    t: time = mul p, c
+    m: i64 = to_millis(t)
+    n10: u64 = load counter
+    ni: i64 = conv n10
+    print_dec(ni)
+    rp: ptr = addr report
+    rn: i64 = len report
+    say(rp, rn)
+    print_dec(m)
+    up: ptr = addr unit
+    un: i64 = len unit
+    say(up, un)
+    exit()
+    ret
+}
+
+; every interrupt lands here; the timer's advances the deadline by one
+; step from where it was, re-arms, and counts a tick
+fn __irq() {
+    id: u32 = irq_ack()
+    timer: u32 = platform irq_timer
+    is: u1 = cmp.eq id, timer
+    if is {
+        f: u64 = hz()
+        step: u64 = div f, 10
+        dp: ptr = addr deadline
+        d: u64 = load dp
+        d2: u64 = add d, step
+        store d2, dp
+        timer_at(d2)
+        counter: ptr = addr ticks
+        n: u64 = load counter
+        n1: u64 = add n, 1
+        store n1, counter
+        tp: ptr = addr tick
+        tn: i64 = len tick
+        say(tp, tn)
+    }
+    irq_done(id)
+    ret
+}
+
+; a synchronous trap is unexpected here: end the machine
+fn __trap(n: u64, a: u64, b: u64) -> u64 {
+    exit()
+    ret n
+}
+
+; --- output ---
+fn putc(c: u8) {
+    uart: ptr = platform uart
+    c32: u32 = conv c
+    store c32, uart
+    ret
+}
+fn say(p: ptr, n: i64) {
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        c: u8 = load p, i, 1
+        putc(c)
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+; decimal, through a scratch buffer of digits
+fn print_dec(v: i64) {
+    buf: ptr = scratch 32
+    n: i64 = loop(x: i64 = v, i: i64 = 0) {
+        d: i64 = rem x, 10
+        c: u8 = conv d
+        c48: u8 = add c, 48
+        store c48, buf, i, 1
+        x2: i64 = div x, 10
+        i2: i64 = add i, 1
+        done: u1 = cmp.eq x2, 0
+        if done {
+            break i2
+        }
+        continue x2, i2
+    }
+    loop(j: i64 = n) {
+        z: u1 = cmp.le j, 0
+        if z {
+            break
+        }
+        j1: i64 = sub j, 1
+        ch: u8 = load buf, j1, 1
+        putc(ch)
+        continue j1
+    }
+    ret
+}
+fn exit() {
+    f: ptr = platform finisher
+    store 0x5555: u32, f
+    psci(0x84000008)
+    ret
+}

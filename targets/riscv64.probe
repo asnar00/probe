@@ -130,5 +130,9 @@ inst csrr {r}, {i 0..4095}
 inst csrw {i 0..4095}, {r}
 inst mret
 inst ecall
+; interrupts: set and clear bits of a CSR (mie, mstatus), and wait
+inst csrs {i 0..4095}, {r}
+inst csrc {i 0..4095}, {r}
+inst wfi
 ; the address of a data item: auipc's page plus an addi
 inst auipc {r}, {i 0..1048575}

@@ -165,6 +165,13 @@
     {"template": "mrs {x}, elr_el1", "fixed": "0xd5384020", "verified": 65, "rejected": 0, "fields": [{"slot": "{x}", "kind": "linear", "signed": false, "bits": [0, 1, 2, 3, 4]}]},
     {"template": "msr elr_el1, {x}", "fixed": "0xd5184020", "verified": 65, "rejected": 0, "fields": [{"slot": "{x}", "kind": "linear", "signed": false, "bits": [0, 1, 2, 3, 4]}]},
     {"template": "eret", "fixed": "0xd69f03e0", "verified": 1, "rejected": 0, "fields": []},
-    {"template": "svc #{i 0..65535}", "fixed": "0xd4000001", "verified": 65, "rejected": 0, "fields": [{"slot": "{i 0..65535}", "kind": "linear", "signed": false, "bits": [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]}]}
+    {"template": "svc #{i 0..65535}", "fixed": "0xd4000001", "verified": 65, "rejected": 0, "fields": [{"slot": "{i 0..65535}", "kind": "linear", "signed": false, "bits": [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]}]},
+    {"template": "mrs {x}, cntpct_el0", "fixed": "0xd53be020", "verified": 65, "rejected": 0, "fields": [{"slot": "{x}", "kind": "linear", "signed": false, "bits": [0, 1, 2, 3, 4]}]},
+    {"template": "mrs {x}, cntfrq_el0", "fixed": "0xd53be000", "verified": 65, "rejected": 0, "fields": [{"slot": "{x}", "kind": "linear", "signed": false, "bits": [0, 1, 2, 3, 4]}]},
+    {"template": "msr cntp_cval_el0, {x}", "fixed": "0xd51be240", "verified": 65, "rejected": 0, "fields": [{"slot": "{x}", "kind": "linear", "signed": false, "bits": [0, 1, 2, 3, 4]}]},
+    {"template": "msr cntp_ctl_el0, {x}", "fixed": "0xd51be220", "verified": 65, "rejected": 0, "fields": [{"slot": "{x}", "kind": "linear", "signed": false, "bits": [0, 1, 2, 3, 4]}]},
+    {"template": "msr daifclr, #{i 0..15}", "fixed": "0xd50340ff", "verified": 65, "rejected": 0, "fields": [{"slot": "{i 0..15}", "kind": "linear", "signed": false, "bits": [8, 9, 10, 11]}]},
+    {"template": "msr daifset, #{i 0..15}", "fixed": "0xd50340df", "verified": 65, "rejected": 0, "fields": [{"slot": "{i 0..15}", "kind": "linear", "signed": false, "bits": [8, 9, 10, 11]}]},
+    {"template": "wfi", "fixed": "0xd503207f", "verified": 1, "rejected": 0, "fields": []}
   ]
 }

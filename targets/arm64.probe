@@ -226,3 +226,14 @@ inst mrs {x}, elr_el1
 inst msr elr_el1, {x}
 inst eret
 inst svc #{i 0..65535}
+
+; --- interrupts and the generic timer: the counter and its frequency,
+; the EL1 physical timer's compare value and control, the interrupt
+; mask bits of PSTATE, and waiting for an interrupt ---
+inst mrs {x}, cntpct_el0
+inst mrs {x}, cntfrq_el0
+inst msr cntp_cval_el0, {x}
+inst msr cntp_ctl_el0, {x}
+inst msr daifclr, #{i 0..15}
+inst msr daifset, #{i 0..15}
+inst wfi

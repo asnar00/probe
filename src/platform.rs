@@ -67,8 +67,12 @@ pub enum Operand {
     Arg(usize),
     /// the result
     Ret,
-    /// a literal: an immediate or an enum choice
+    /// a literal: an immediate, an enum choice, or a fixed operand of
+    /// the template (`vbar_el1`)
     Lit(String),
+    /// the n-th temporary of the rule (`with base: ptr, v: u32` on its
+    /// header): a register the emitter provides
+    Tmp(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -87,6 +91,8 @@ pub struct Rule {
     pub ret_type: String,
     pub names: Vec<String>,
     pub lines: Vec<Line>,
+    /// temporaries: (name, width in bits), from `with name: type, ...`
+    pub temps: Vec<(String, u32)>,
 }
 
 /// a rule resolved against a module's types: canonical type spellings
@@ -112,6 +118,7 @@ impl Native {
         match op {
             Operand::Arg(i) => self.arg_bits[*i],
             Operand::Ret => self.ret_bits,
+            Operand::Tmp(k) => self.rule.temps[*k].1,
             _ => 0,
         }
     }
@@ -277,7 +284,10 @@ impl Platform {
                 if rule.lines.iter().any(|l| l.template.is_some()) {
                     return Err(at("a one-line rule takes no further instructions".into()));
                 }
-                rule.lines.push(parse_line(line.trim(), &rule.names).map_err(at)?);
+                if rule.temps.len() > TEMPS {
+                    return Err(at(format!("a rule may name {} temporaries at most", TEMPS)));
+                }
+                rule.lines.push(parse_line(line.trim(), &rule.names, &rule.temps).map_err(at)?);
             } else if words[0] == "target" && words.len() == 2 {
                 p.target = words[1].to_string();
             } else if words[0] == "base" && words.len() == 2 {
@@ -339,7 +349,7 @@ impl Platform {
         }
         for (r, _) in &rules {
             if r.lines.is_empty() {
-                return Err(format!("rule '{}' has no instructions", r.generic));
+                return Err(format!("rule '{}' has no instructions (say 'none' for a rule that does nothing)", r.generic));
             }
         }
         p.rules = rules;
@@ -426,6 +436,17 @@ fn parse_header(s: &str) -> Result<Rule, String> {
     let (generic, rest) = s.split_once('(').ok_or("expected op(types) -> type")?;
     let (params, rest) = split_params(rest)?;
     let ret = rest.trim().strip_prefix("->").ok_or("expected '-> type'")?.trim();
+    // `-> type with name: type, ...`: the rule's temporaries
+    let (ret, temps_text) = match ret.split_once(" with ") {
+        Some((r, t)) => (r.trim(), Some(t)),
+        None => (ret, None),
+    };
+    let mut temps = Vec::new();
+    for t in temps_text.into_iter().flat_map(|t| t.split(',')) {
+        let (name, ty) = t.trim().split_once(':').ok_or("a temporary is 'name: type'")?;
+        let bits = Type::from_name_pub(ty.trim()).and_then(|t| t.int_bits()).ok_or_else(|| format!("a temporary's type is an integer or ptr, not '{}'", ty.trim()))?;
+        temps.push((name.trim().to_string(), bits));
+    }
     let ret_type = normalize(ret.rsplit(':').next().unwrap());
     let mut names = Vec::new();
     let mut arg_types = Vec::new();
@@ -441,7 +462,7 @@ fn parse_header(s: &str) -> Result<Rule, String> {
             }
         }
     }
-    Ok(Rule { generic: generic.trim().to_string(), arg_types, ret_type, names, lines: Vec::new() })
+    Ok(Rule { generic: generic.trim().to_string(), arg_types, ret_type, names, lines: Vec::new(), temps })
 }
 
 /// the parameter list up to its closing paren, honouring nested parens
@@ -475,25 +496,42 @@ fn normalize(ty: &str) -> String {
     t.replace("( ", "(").replace(" )", ")").replace(" ,", ",").replace(",", ", ").replace(",  ", ", ")
 }
 
-/// `fcmp a, b` / `cset r, lo` / `xori r, r, 1`
-fn parse_line(s: &str, names: &[String]) -> Result<Line, String> {
+/// the operand tokens of a rule line or a template's text: split at
+/// commas, spaces and brackets, a `#` dropped — `sd t, 0(t0)` gives
+/// `t`, `0`, `t0`; `[{x}, #{i}]` gives `{x}`, `{i}`
+fn operand_tokens(s: &str) -> Vec<String> {
+    s.split(|c: char| c == ',' || c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']')
+        .map(|t| t.trim_start_matches('#'))
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// `fcmp a, b` / `cset r, lo` / `xori r, r, 1` / `sd t, 0(base)` /
+/// `none` (a rule that takes no instructions)
+fn parse_line(s: &str, names: &[String], temps: &[(String, u32)]) -> Result<Line, String> {
     let (mnemonic, rest) = match s.split_once(char::is_whitespace) {
         Some((m, r)) => (m, r),
         None => (s, ""),
     };
     let mut operands = Vec::new();
-    for tok in rest.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+    for tok in operand_tokens(rest) {
         let op = if tok == "r" {
             Operand::Ret
-        } else if let Some(i) = names.iter().position(|n| n == tok) {
+        } else if let Some(i) = names.iter().position(|n| *n == tok) {
             Operand::Arg(i)
+        } else if let Some(k) = temps.iter().position(|(n, _)| *n == tok) {
+            Operand::Tmp(k)
         } else {
-            Operand::Lit(tok.to_string())
+            Operand::Lit(tok)
         };
         operands.push(op);
     }
     Ok(Line { template: None, mnemonic: mnemonic.to_string(), operands })
 }
+
+/// how many temporaries a rule may name
+pub const TEMPS: usize = 4;
 
 /// a literal: decimal, hex, negative
 fn parse_int(s: &str) -> Option<i64> {
@@ -521,30 +559,6 @@ pub fn template_slots(template: &str) -> Vec<&str> {
     out
 }
 
-/// a template's operands after the mnemonic, split at the commas
-/// outside brackets: `msr vbar_el1, {x}` gives `vbar_el1` and `{x}`
-fn template_pieces(template: &str) -> Vec<&str> {
-    let rest = template.split_once(char::is_whitespace).map(|(_, r)| r).unwrap_or("");
-    let mut out = Vec::new();
-    let mut depth = 0;
-    let mut start = 0;
-    for (i, c) in rest.char_indices() {
-        match c {
-            '[' | '{' => depth += 1,
-            ']' | '}' => depth -= 1,
-            ',' if depth == 0 => {
-                out.push(&rest[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    if !rest[start..].trim().is_empty() {
-        out.push(&rest[start..]);
-    }
-    out
-}
-
 /// does a template slot take this operand? A float-class operand takes
 /// the slot of its class letter; an integer operand takes `{r}` at any
 /// width, `{w}` at 32 bits, `{x}` at 64 — and as the result also `{x}`
@@ -553,7 +567,7 @@ fn template_pieces(template: &str) -> Vec<&str> {
 fn slot_takes(slot: &str, native: &Native, op: &Operand) -> Option<i64> {
     let kind = slot.split_whitespace().next().unwrap_or("");
     match op {
-        Operand::Arg(_) | Operand::Ret => {
+        Operand::Arg(_) | Operand::Ret | Operand::Tmp(_) => {
             if let Some(c) = native.class(op) {
                 return (kind == c).then_some(0);
             }
@@ -589,40 +603,32 @@ pub fn resolve<'t>(native: &Native, line: &Line, templates: &[&'t str]) -> Resul
     };
     let mut found: Option<(&str, Vec<(Operand, i64)>, bool)> = None;
     for t in candidates {
+        // the template's operand text, token by token: a slot takes the
+        // line's operand there; fixed text (`vbar_el1`, `lsl`, `16`)
+        // must be spelled the same
         let slots = template_slots(t);
+        let mut text = t.split_once(char::is_whitespace).map(|(_, r)| r.to_string()).unwrap_or_default();
+        for (k, s) in slots.iter().enumerate() {
+            text = text.replacen(&format!("{{{}}}", s), &format!("{{{}}}", k), 1);
+        }
+        let tokens = operand_tokens(&text);
+        if tokens.len() != line.operands.len() {
+            continue;
+        }
         let mut vals = Vec::new();
         let mut ok = true;
-        if slots.len() == line.operands.len() {
-            for (slot, op) in slots.iter().zip(&line.operands) {
-                match slot_takes(slot, native, op) {
+        for (tok, op) in tokens.iter().zip(&line.operands) {
+            if let Some(k) = tok.strip_prefix('{').and_then(|p| p.strip_suffix('}')).and_then(|k| k.parse::<usize>().ok()) {
+                match slot_takes(slots[k], native, op) {
                     Some(v) => vals.push((op.clone(), v)),
                     None => {
                         ok = false;
                         break;
                     }
                 }
-            }
-        } else {
-            // a template with fixed operands (`msr vbar_el1, {x}`): the
-            // line spells them out, and they must match word for word
-            let pieces = template_pieces(t);
-            if pieces.len() != line.operands.len() {
-                continue;
-            }
-            for (piece, op) in pieces.iter().zip(&line.operands) {
-                let piece = piece.trim();
-                if let Some(slot) = piece.strip_prefix('{').and_then(|p| p.strip_suffix('}')) {
-                    match slot_takes(slot, native, op) {
-                        Some(v) => vals.push((op.clone(), v)),
-                        None => {
-                            ok = false;
-                            break;
-                        }
-                    }
-                } else if !matches!(op, Operand::Lit(l) if l == piece) {
-                    ok = false;
-                    break;
-                }
+            } else if !matches!(op, Operand::Lit(l) if l == tok) {
+                ok = false;
+                break;
             }
         }
         if !ok {
@@ -665,9 +671,10 @@ mod tests {
         let m = crate::ssa::parse_with(&crate::ssa::with_prelude("fn f(a: f32, b: f32) -> f32 {\n    r: f32 = add a, b\n    ret r\n}\n"), &crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap()).unwrap();
         assert!(!full.natives(&m).rules.is_empty());
         assert!(im.natives(&m).rules.is_empty() && im.natives(&m).classes.is_empty());
-        // virt (the board's constants), traps, M, F, D; rv64i keeps virt and traps
-        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 5);
-        assert_eq!(i.extensions().iter().filter(|(_, present)| *present).count(), 2);
+        // virt (the board's constants), traps, time, M, F, D; rv64i keeps
+        // virt, traps and time
+        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 6);
+        assert_eq!(i.extensions().iter().filter(|(_, present)| *present).count(), 3);
         assert_eq!(i.natives(&m).consts.get("uart"), Some(&0x10000000));
         let nofp = Platform::load_named("arm64-nofp").unwrap();
         assert!(nofp.natives(&m).classes.is_empty());
