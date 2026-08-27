@@ -92,6 +92,9 @@ printer. In outline:
   `len` reach it, and `platform uart` is a constant the platform file
   provides per board.
 
+- **Scratch**: `p: ptr = scratch 64` is memory that is the function's
+  while it runs — its frame, or a shadow stack on wasm.
+
 - **Function values**: `fn(i64, i64) -> i64` is a type — the signature —
   and `f: binary = addr add64` a value of it, taken with the same `addr`
   that reaches data. Calling it, `r: i64 = f(a, b)`, is spelled like any

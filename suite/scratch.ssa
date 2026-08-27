@@ -1,0 +1,159 @@
+; scratch: memory that is the function's while it runs — `p: ptr =
+; scratch 64` is the address of 64 bytes in its frame (a shadow stack
+; on wasm), 16-aligned, uninitialized, gone when the function returns.
+; Until now every byte a program touched came from its caller or from
+; `data`.
+
+;! roundtrip 42 -> 42
+;! sum_squares 5 -> 55
+;! filled_by_callee 7 -> 28
+;! two_areas 3 4 -> 3, 4
+;! aligned -> 1
+;! depth 6 -> 21
+;! wide_in_scratch 5 6 -> 5, 6
+;! table_of_fns 9 -> 90
+;! loop_reuses 10 -> 10
+
+fn roundtrip(x: i64) -> i64 {
+    p: ptr = scratch 8
+    store x, p
+    r: i64 = load p
+    ret r
+}
+
+; an array of n squares, built then summed
+fn sum_squares(n: i64) -> i64 {
+    p: ptr = scratch 128
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        i1: i64 = add i, 1
+        sq: i64 = mul i1, i1
+        store sq, p, i, 8
+        continue i1
+    }
+    s: i64 = loop(j: i64 = 0, acc: i64 = 0) {
+        done2: u1 = cmp.ge j, n
+        if done2 {
+            break acc
+        }
+        v: i64 = load p, j, 8
+        acc2: i64 = add acc, v
+        j1: i64 = add j, 1
+        continue j1, acc2
+    }
+    ret s
+}
+
+; a callee writes into the caller's scratch
+fn fill4(p: ptr, x: i64) {
+    store x, p
+    store x, p, 8
+    store x, p, 16
+    store x, p, 24
+    ret
+}
+fn filled_by_callee(x: i64) -> i64 {
+    p: ptr = scratch 32
+    fill4(p, x)
+    a: i64 = load p
+    b: i64 = load p, 8
+    c: i64 = load p, 16
+    d: i64 = load p, 24
+    ab: i64 = add a, b
+    cd: i64 = add c, d
+    r: i64 = add ab, cd
+    ret r
+}
+
+; two areas are two areas
+fn two_areas(x: i64, y: i64) -> (i64, i64) {
+    p: ptr = scratch 8
+    q: ptr = scratch 8
+    store x, p
+    store y, q
+    a: i64 = load p
+    b: i64 = load q
+    ret a, b
+}
+
+; each area is 16-aligned
+fn aligned() -> u1 {
+    p: ptr = scratch 24
+    q: ptr = scratch 8
+    pa: u64 = cast p
+    qa: u64 = cast q
+    pm: u64 = and pa, 15
+    qm: u64 = and qa, 15
+    both: u64 = or pm, qm
+    r: u1 = cmp.eq both, 0
+    ret r
+}
+
+; recursion: every activation has its own — the sum 1..n kept in
+; scratch at each level
+fn depth(n: i64) -> i64 {
+    p: ptr = scratch 8
+    store n, p
+    done: u1 = cmp.le n, 0
+    r: i64 = if done {
+        yield 0
+    } else {
+        m: i64 = sub n, 1
+        below: i64 = depth(m)
+        mine: i64 = load p
+        s: i64 = add mine, below
+        yield s
+    }
+    ret r
+}
+
+; a wide value lives in scratch as its words
+fn wide_in_scratch(lo: u64, hi: u64) -> (u64, u64) {
+    p: ptr = scratch 16
+    lo128: u128 = conv lo
+    hi128: u128 = conv hi
+    sh: u128 = shl hi128, 64
+    v: u128 = or lo128, sh
+    store v, p
+    w: u128 = load p
+    a: u64 = conv w
+    ws: u128 = shr w, 64
+    b: u64 = conv ws
+    ret a, b
+}
+
+; a table of function values built in scratch and called through
+fn ten(x: i64) -> i64 {
+    r: i64 = mul x, 10
+    ret r
+}
+fn table_of_fns(x: i64) -> i64 {
+    t: ptr = scratch 16
+    f: fn(i64) -> i64 = addr ten
+    store f, t, 8
+    g: fn(i64) -> i64 = load t, 8
+    r: i64 = g(x)
+    ret r
+}
+
+; the same area on every iteration: a counter kept in memory
+fn loop_reuses(n: i64) -> i64 {
+    p: ptr = scratch 8
+    store 0: i64, p
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        c: i64 = load p
+        c1: i64 = add c, 1
+        store c1, p
+        i1: i64 = add i, 1
+        continue i1
+    }
+    r: i64 = load p
+    ret r
+}

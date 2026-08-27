@@ -62,11 +62,21 @@ and `call_indirect` on wasm). Left:
   Architecture** XML (see reference/README.md) — an independent scorecard
   the learner never consults during learning.
 
+## Memory
+
+`scratch N` gives a function memory for its own lifetime, and `data`
+gives a program memory for the machine's; nothing in between. What a
+program does with memory that outlives a call — allocation, ownership,
+freeing, whether the compiler or a library or the OS holds the heap,
+what a pointer is allowed to mean on wasm versus bare metal — needs a
+proper design session before anything is built, not a feature added
+to the list. Until then: frames are at most 4095 bytes on arm64 and
+2047 on riscv64 (a single immediate); larger needs a multi-instruction
+frame adjustment.
+
 ## Language
 
 - External calls (libc symbols) from JIT'd code.
-- An `alloca`-style op for function-local scratch memory (today all memory
-  comes from the caller).
 - Floats: `lib/float.ssa` has generic add/sub/mul/div/sqrt/neg/abs/
   min/max/fma, the comparisons, and conversions over packs, with the
   f32/f64 instances on hardware wherever the target's semantics agree.

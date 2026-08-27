@@ -147,6 +147,8 @@ struct RvEmit<'a> {
     /// a trap handler: the caller-saved registers of the code it
     /// interrupted are kept here and it leaves by mret
     trap: Option<i64>,
+    /// each `scratch` value's offset from sp
+    scratch: std::collections::HashMap<ValueId, i64>,
     /// the block being emitted: a jump to the next one is a fall-through
     cur: usize,
     block_offsets: Vec<Option<usize>>,
@@ -579,9 +581,10 @@ fn compile_function(
     let nsaved = alloc.used_regs.len() as i64 + alloc.used_by_class[1].len() as i64;
     let trap = (func.name == crate::emit::TRAP).then_some(16 + 8 * nsaved);
     let spill_base = 16 + 8 * nsaved + if trap.is_some() { TRAP_AREA } else { 0 };
-    let frame = (spill_base + 8 * alloc.nslots as i64 + 15) & !15;
+    let (scratch, scratch_end) = crate::emit::scratch_layout(func, (spill_base + 8 * alloc.nslots as i64 + 15) & !15);
+    let frame = scratch_end;
     if frame > 2047 {
-        return Err("function needs too large a frame for v0".into());
+        return Err(format!("function needs a {}-byte frame; 2047 is the most for now", frame));
     }
     if func.params.len() > 8 {
         return Err("more than 8 parameters not supported yet".into());
@@ -597,6 +600,7 @@ fn compile_function(
         classes,
         spill_base,
         trap,
+        scratch,
         cur: 0,
         block_offsets: vec![None; func.blocks.len()],
         fixups: Vec::new(),
@@ -868,6 +872,12 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             let at = e.emit(AUIPC, &[rd, 0])?;
             e.emit(ADDI, &[rd, rd, 0])?;
             e.fixups.push(Fixup { at, values: vec![rd, 0], imm_slot: 1, target: FixTarget::Data(name.clone()) });
+            e.finish(*dst, rd)
+        }
+        Inst::Scratch { dst, .. } => {
+            let off = e.scratch[dst];
+            let rd = e.dst_reg(*dst, T0);
+            e.emit(ADDI, &[rd, SP, off])?;
             e.finish(*dst, rd)
         }
         Inst::Platform { dst, name } => {

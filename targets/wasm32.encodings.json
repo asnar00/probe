@@ -119,6 +119,8 @@
     {"template": "i64.trunc_sat_f64_s", "verified": 1, "pieces": [{"fixed": "fc06"}]},
     {"template": "i64.trunc_sat_f64_u", "verified": 1, "pieces": [{"fixed": "fc07"}]},
     {"template": "drop", "verified": 1, "pieces": [{"fixed": "1a"}]},
+    {"template": "global.get {i 0..129}", "verified": 17, "pieces": [{"fixed": "23"}, {"uleb": true}]},
+    {"template": "global.set {i 0..129}", "verified": 17, "pieces": [{"fixed": "24"}, {"uleb": true}]},
     {"template": "block", "verified": 1, "pieces": [{"fixed": "0240"}]},
     {"template": "loop", "verified": 1, "pieces": [{"fixed": "0340"}]},
     {"template": "if", "verified": 1, "pieces": [{"fixed": "0440"}]},

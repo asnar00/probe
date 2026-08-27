@@ -391,6 +391,7 @@ fn dce(func: &mut Function) {
         | Inst::Set { .. }
         | Inst::PtrAdd { .. }
         | Inst::Addr { .. }
+        | Inst::Scratch { .. }
         | Inst::FnAddr { .. }
         | Inst::Platform { .. }
         | Inst::Load { .. } => true,

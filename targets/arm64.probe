@@ -140,6 +140,8 @@ inst strh {w}, [{x}, #{i 0..8190 /2}]
 ; appears literally in these templates
 inst add sp, sp, #{i 0..4095}
 inst sub sp, sp, #{i 0..4095}
+; the address of a frame's scratch area
+inst add {x}, sp, #{i 0..4095}
 inst str {x}, [sp, #{i 0..32760 /8}]
 inst ldr {x}, [sp, #{i 0..32760 /8}]
 inst str {w}, [sp, #{i 0..16380 /4}]

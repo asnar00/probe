@@ -554,6 +554,8 @@ struct FnEmit<'a> {
     /// a trap handler: the caller-saved registers of the code it
     /// interrupted are kept here (x0..x18 in pairs) and it leaves by eret
     trap: Option<i64>,
+    /// each `scratch` value's offset from sp
+    scratch: HashMap<ValueId, i64>,
     /// the block being emitted: a jump to the next one is a fall-through
     cur: usize,
     block_offsets: Vec<Option<usize>>,
@@ -1017,6 +1019,20 @@ impl FnEmit<'_> {
     }
 }
 
+/// where each `scratch` of a function goes, from `base` up, each area
+/// 16-aligned: (value -> offset, the end)
+pub fn scratch_layout(func: &Function, base: i64) -> (HashMap<ValueId, i64>, i64) {
+    let mut at = base;
+    let mut map = HashMap::new();
+    for inst in func.blocks.iter().flat_map(|b| &b.insts) {
+        if let Inst::Scratch { dst, bytes } = inst {
+            map.insert(*dst, at);
+            at += (*bytes as i64 + 15) & !15;
+        }
+    }
+    (map, at)
+}
+
 /// pool for the allocator: callee-saved x19..x28 — values placed here
 /// survive calls by construction, so call sites need no spill logic
 const REG_POOL: &[i64] = &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
@@ -1074,9 +1090,11 @@ fn compile_function(
     let nsaved = alloc.used_regs.len() as i64 + alloc.used_by_class[1].len() as i64;
     let trap = (func.name == TRAP).then_some(16 + 8 * nsaved);
     let spill_base = 16 + 8 * nsaved + if trap.is_some() { TRAP_AREA } else { 0 };
-    let frame = (spill_base + 8 * alloc.nslots as i64 + 15) & !15;
+    // scratch areas above the spills, each 16-aligned
+    let (scratch, scratch_end) = scratch_layout(func, (spill_base + 8 * alloc.nslots as i64 + 15) & !15);
+    let frame = scratch_end;
     if frame > 4095 {
-        return Err("function needs too large a frame for v0".into());
+        return Err(format!("function needs a {}-byte frame; 4095 is the most for now", frame));
     }
     if func.params.len() > 8 {
         return Err("more than 8 parameters not supported yet".into());
@@ -1092,6 +1110,7 @@ fn compile_function(
         classes,
         spill_base,
         trap,
+        scratch,
         cur: 0,
         block_offsets: vec![None; func.blocks.len()],
         fixups: Vec::new(),
@@ -1399,6 +1418,12 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             let rd = e.dst_reg(*dst, 9);
             let at = e.emit(ADR, &[rd, 0])?;
             e.fixups.push(Fixup { at, template: ADR, values: vec![rd, 0], imm_slot: 1, target: FixTarget::Data(name.clone()) });
+            e.finish(*dst, rd)
+        }
+        Inst::Scratch { dst, .. } => {
+            let off = e.scratch[dst];
+            let rd = e.dst_reg(*dst, 9);
+            e.emit("add {x}, sp, #{i 0..4095}", &[rd, off])?;
             e.finish(*dst, rd)
         }
         Inst::Platform { dst, name } => {

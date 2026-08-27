@@ -85,6 +85,7 @@ struct WInst {
     preamble: usize, // dummy "(func)" entries before the probe functions
     types: usize,    // explicit "(type (func (result i64)))" entries, for type indices
     table: bool,     // a "(table 1 funcref)", for call_indirect
+    globals: usize,  // mutable i32 globals, for global.get/set indices
 }
 
 struct WSeed {
@@ -116,6 +117,7 @@ fn parse_wseed(name: &str, src: &str) -> Result<WSeed, String> {
                     preamble: 0,
                     types: 0,
                     table: false,
+                    globals: 0,
                 };
                 for part in parts {
                     if part == "table" {
@@ -128,6 +130,9 @@ fn parse_wseed(name: &str, src: &str) -> Result<WSeed, String> {
                     match k.trim() {
                         "types" => {
                             inst.types = v.trim().parse().map_err(|_| err("bad types count".into()))?
+                        }
+                        "globals" => {
+                            inst.globals = v.trim().parse().map_err(|_| err("bad globals count".into()))?
                         }
                         "sig" => inst.sig = v.trim().to_string(),
                         "locals" => {
@@ -359,6 +364,9 @@ fn build_module(inst: &WInst, values: &[Option<i64>]) -> String {
     }
     if inst.table {
         wat.push_str("  (table 1 funcref)\n");
+    }
+    for _ in 0..inst.globals {
+        wat.push_str("  (global (mut i32) (i32.const 0))\n");
     }
     for _ in 0..inst.preamble {
         wat.push_str("  (func)\n");

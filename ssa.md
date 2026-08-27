@@ -232,6 +232,22 @@ offset on all three; the scaled index computes an address first where
 the target has no form for it). Whether a value spills to the stack is
 the allocator's business and invisible here.
 
+### Scratch
+
+```
+p: ptr = scratch 64        ; 64 bytes of the function's own memory
+```
+
+`scratch N` is the address of N bytes that belong to the function for
+as long as it runs — its frame on arm64 and riscv64, a shadow stack in
+linear memory on wasm — 16-aligned, uninitialized, gone when it
+returns (so never returned or stored where it outlives the call). Each
+`scratch` instruction is one area, the same on every pass through it;
+a recursive function gets one per activation. A callee may be handed
+it. It is the only memory a program owns besides `data`: a frame is
+at most 4095 bytes on arm64 and 2047 on riscv64 for now, and
+allocation beyond a function's lifetime is not here yet.
+
 ### Data, and the machine
 
 ```

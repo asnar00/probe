@@ -33,7 +33,7 @@ pub struct Alloc {
 
 pub(crate) fn inst_uses(inst: &Inst, out: &mut Vec<ValueId>) {
     match inst {
-        Inst::IConst { .. } | Inst::Addr { .. } | Inst::FnAddr { .. } | Inst::Platform { .. } => {}
+        Inst::IConst { .. } | Inst::Addr { .. } | Inst::Scratch { .. } | Inst::FnAddr { .. } | Inst::Platform { .. } => {}
         Inst::Bin { lhs, rhs, .. } | Inst::ICmp { lhs, rhs, .. } => {
             out.push(*lhs);
             out.push(*rhs);
@@ -95,6 +95,7 @@ pub(crate) fn inst_defs(inst: &Inst, out: &mut Vec<ValueId>) {
         | Inst::Load { dst, .. }
         | Inst::PtrAdd { dst, .. }
         | Inst::Addr { dst, .. }
+        | Inst::Scratch { dst, .. }
         | Inst::FnAddr { dst, .. }
         | Inst::Platform { dst, .. } => out.push(*dst),
         Inst::Call { dsts, .. } | Inst::CallInd { dsts, .. } | Inst::Unpack { dsts, .. } => out.extend(dsts),

@@ -727,6 +727,13 @@ pub enum Inst {
         dst: ValueId,
         name: String,
     },
+    /// `scratch N`: the address of N bytes of memory that are the
+    /// function's for as long as it runs — its frame (a shadow stack on
+    /// wasm); 16-aligned, uninitialized, one area per instruction
+    Scratch {
+        dst: ValueId,
+        bytes: u32,
+    },
     /// a constant the platform file provides (`const uart = 0x10000000`):
     /// a board's address, resolved when the target is known
     Platform {
@@ -3438,6 +3445,16 @@ impl Parser {
                 self.pos -= 1;
                 Err(self.err(format!("no data or function named '{}'", name)))
             }
+            "scratch" => {
+                let bytes = match self.next()? {
+                    Tok::Int(n) if n > 0 && n <= 1 << 20 => n as u32,
+                    t => {
+                        self.pos -= 1;
+                        return Err(self.err(format!("scratch takes a byte count from 1 to 1048576, not {}", t)));
+                    }
+                };
+                Ok(Inst::Scratch { dst, bytes })
+            }
             "len" => {
                 let name = self.expect_ident()?;
                 let Some(d) = self.data.iter().find(|d| d.name == name) else {
@@ -4268,6 +4285,7 @@ impl Function {
                 format!("store {}, {}{}", self.fmt_value_typed(*val), self.fmt_value(*addr), self.fmt_addressing(*off, *index))
             }
             Inst::Addr { dst, name } => format!("{} = addr {}", self.fmt_def(*dst), name),
+            Inst::Scratch { dst, bytes } => format!("{} = scratch {}", self.fmt_def(*dst), bytes),
             Inst::Platform { dst, name } => format!("{} = platform {}", self.fmt_def(*dst), name),
             Inst::PtrAdd { dst, base, off } => format!(
                 "{} = ptradd {}, {}",
@@ -4486,6 +4504,7 @@ fn inst_dsts(inst: &Inst) -> Vec<ValueId> {
         | Inst::Set { dst, .. }
         | Inst::Load { dst, .. }
         | Inst::Addr { dst, .. }
+        | Inst::Scratch { dst, .. }
         | Inst::Platform { dst, .. }
         | Inst::FnAddr { dst, .. }
         | Inst::PtrAdd { dst, .. } => vec![*dst],
@@ -4756,6 +4775,11 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
         Inst::Addr { dst, .. } => {
             if func.ty(*dst) != Type::Ptr {
                 errs.push(ctx(format!("addr gives a ptr, not {}", tn(func.ty(*dst)))));
+            }
+        }
+        Inst::Scratch { dst, .. } => {
+            if func.ty(*dst) != Type::Ptr {
+                errs.push(ctx(format!("scratch gives a ptr, not {}", tn(func.ty(*dst)))));
             }
         }
         Inst::Platform { dst, .. } => {

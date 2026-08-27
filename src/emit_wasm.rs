@@ -145,6 +145,8 @@ pub fn compile(module: &Module, enc: &WEncoder) -> Result<Vec<u8>, String> {
 /// where `data` items live in linear memory: above the harness's heap
 /// (which starts near 0), within the first page
 const DATA_BASE: usize = 0x8000;
+/// the shadow stack for `scratch`: global 0, growing down from the data
+const SHADOW_STACK_TOP: i64 = DATA_BASE as i64;
 
 pub fn compile_with(module: &Module, enc: &WEncoder, platform: &Platform) -> Result<Vec<u8>, String> {
     let natives = platform.natives(module);
@@ -246,6 +248,12 @@ pub fn compile_with(module: &Module, enc: &WEncoder, platform: &Platform) -> Res
     // one memory, min 1 page (64KB) — plenty for the suite's buffers
     section(&mut out, 5, vec![0x01, 0x00, 0x01]);
 
+    // one global: the shadow stack pointer, mutable i32
+    let mut p = vec![0x01, 0x7F, 0x01, 0x41];
+    p.extend(sleb(SHADOW_STACK_TOP));
+    p.push(0x0b);
+    section(&mut out, 6, p);
+
     let mut p = uleb(module.funcs.len() as u64 + 1);
     for (i, f) in module.funcs.iter().enumerate() {
         p.extend(uleb(f.name.len() as u64));
@@ -311,6 +319,10 @@ struct WEmit<'a> {
     classes: Vec<Option<String>>,
     local_of: Vec<i64>, // ValueId -> wasm local index
     label_local: i64,
+    /// a function with `scratch`: (the local holding its shadow-stack
+    /// frame, the frame's size), and each value's offset in it
+    shadow: Option<(i64, i64)>,
+    scratch: HashMap<ValueId, i64>,
     nblocks: usize,
     /// structured emission: the enclosing labels, innermost last
     ctx: Vec<Label>,
@@ -656,6 +668,11 @@ fn compile_function(
     }
     let label_local = next;
     extra_types.push(0x7F);
+    let (scratch, scratch_size) = crate::emit::scratch_layout(func, 0);
+    let shadow = (scratch_size > 0).then(|| {
+        extra_types.push(0x7F);
+        (label_local + 1, scratch_size)
+    });
 
     let mut e = WEmit {
         enc,
@@ -669,6 +686,8 @@ fn compile_function(
         classes,
         local_of,
         label_local,
+        shadow,
+        scratch,
         nblocks: func.blocks.len(),
         ctx: Vec::new(),
     };
@@ -677,6 +696,15 @@ fn compile_function(
             e.op("local.get {}", Some(i as i64))?;
             e.set(p)?;
         }
+    }
+    if let Some((local, size)) = e.shadow {
+        // claim the frame: sp -= size, kept in a local
+        e.op("global.get {}", Some(0))?;
+        e.op("i32.const {}", Some(size))?;
+        e.op("i32.sub", None)?;
+        e.op("local.set {}", Some(local))?;
+        e.op("local.get {}", Some(local))?;
+        e.op("global.set {}", Some(0))?;
     }
 
     match crate::structure::Cfg::analyze(func) {
@@ -938,6 +966,14 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
             e.op("i32.const {}", Some((DATA_BASE + off) as i64))?;
             e.set(*dst)
         }
+        Inst::Scratch { dst, .. } => {
+            let (local, _) = e.shadow.ok_or("scratch without a shadow frame")?;
+            let off = e.scratch[dst];
+            e.op("local.get {}", Some(local))?;
+            e.op("i32.const {}", Some(off))?;
+            e.op("i32.add", None)?;
+            e.set(*dst)
+        }
         Inst::Platform { dst, name } => {
             let v = *e.natives.consts.get(name).ok_or_else(|| format!("the platform has no constant '{}'", name))?;
             e.konst(e.repr(*dst), v)?;
@@ -1029,6 +1065,13 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
         Inst::Ret { vals } => {
             for &v in vals {
                 e.get(v)?;
+            }
+            if let Some((_, size)) = e.shadow {
+                // release the frame: sp += size
+                e.op("global.get {}", Some(0))?;
+                e.op("i32.const {}", Some(size))?;
+                e.op("i32.add", None)?;
+                e.op("global.set {}", Some(0))?;
             }
             e.op("return", None)
         }

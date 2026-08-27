@@ -144,6 +144,10 @@ inst i64.trunc_sat_f64_u :: sig=(param f64) (result i64) :: pre=local.get 0
 ; --- stack management (learned early so control-flow probes can use it) ---
 inst drop :: sig=(param i64) :: pre=local.get 0
 
+; --- globals: the shadow stack pointer for `scratch` lives in one ---
+inst global.get {i 0..129} :: sig=(result i32) :: globals=130
+inst global.set {i 0..129} :: sig=(param i32) :: globals=130 :: pre=local.get 0
+
 ; --- control flow ---
 ; 'end' is already known (observed as every body's terminator)
 inst block :: sig=(result i64) :: post=end, i64.const 0
