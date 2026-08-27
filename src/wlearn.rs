@@ -83,6 +83,8 @@ struct WInst {
     pre: Vec<String>,               // learned-template instantiations
     post: Vec<String>,
     preamble: usize, // dummy "(func)" entries before the probe functions
+    types: usize,    // explicit "(type (func (result i64)))" entries, for type indices
+    table: bool,     // a "(table 1 funcref)", for call_indirect
 }
 
 struct WSeed {
@@ -112,12 +114,21 @@ fn parse_wseed(name: &str, src: &str) -> Result<WSeed, String> {
                     pre: Vec::new(),
                     post: Vec::new(),
                     preamble: 0,
+                    types: 0,
+                    table: false,
                 };
                 for part in parts {
+                    if part == "table" {
+                        inst.table = true;
+                        continue;
+                    }
                     let (k, v) = part
                         .split_once('=')
                         .ok_or_else(|| err(format!("expected key=value, got '{}'", part)))?;
                     match k.trim() {
+                        "types" => {
+                            inst.types = v.trim().parse().map_err(|_| err("bad types count".into()))?
+                        }
                         "sig" => inst.sig = v.trim().to_string(),
                         "locals" => {
                             let (n, ty) = v
@@ -341,6 +352,14 @@ fn probe_values(lo: i64, hi: i64) -> Vec<i64> {
 
 fn build_module(inst: &WInst, values: &[Option<i64>]) -> String {
     let mut wat = String::from("(module\n  (memory 1)\n");
+    // explicit types are kept as written, duplicates and all, so N of
+    // them give type indices 0..N for a probe to range over
+    for _ in 0..inst.types {
+        wat.push_str("  (type (func (result i64)))\n");
+    }
+    if inst.table {
+        wat.push_str("  (table 1 funcref)\n");
+    }
     for _ in 0..inst.preamble {
         wat.push_str("  (func)\n");
     }

@@ -1363,6 +1363,28 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             }
             if ret_f { e.finish_f(dst, rd) } else { e.finish(dst, rd) }
         }
+        Inst::FnAddr { dst, name } => {
+            // the function's entry, pc-relative like a data item's
+            let rd = e.dst_reg(*dst, 9);
+            let at = e.emit(ADR, &[rd, 0])?;
+            e.fixups.push(Fixup { at, template: ADR, values: vec![rd, 0], imm_slot: 1, target: FixTarget::Func(name.clone()) });
+            e.finish(*dst, rd)
+        }
+        Inst::CallInd { dsts, callee, args } => {
+            if args.len() > 8 {
+                return Err("more than 8 call arguments not supported yet".into());
+            }
+            for (j, &a) in args.iter().enumerate() {
+                e.value_to(j as i64, a)?;
+            }
+            // x17: neither an argument register nor callee-saved
+            let rc = e.src_reg(*callee, 17)?;
+            e.emit("blr {x}", &[rc])?;
+            for (j, &d) in dsts.iter().enumerate() {
+                e.value_from(d, j as i64)?;
+            }
+            Ok(())
+        }
         Inst::Call { dsts, callee, args } => {
             if args.len() > 8 {
                 return Err("more than 8 call arguments not supported yet".into());

@@ -356,6 +356,33 @@ mod tests {
     }
 
     #[test]
+    fn function_values_resolve_to_trampolines() {
+        // a function value is the callee's trampoline, so an edit to the
+        // callee — even one that relocates it — is seen through a value
+        // taken before the edit
+        let mut a = arena();
+        let m1 = parse(
+            "fn val(x: i64) -> i64 {\n    r: i64 = add x, 1\n    ret r\n}\n\
+             fn through(x: i64) -> i64 {\n    f: fn(i64) -> i64 = addr val\n    r: i64 = f(x)\n    ret r\n}\n",
+        );
+        a.sync(&m1.funcs, 0).expect("install");
+        assert_eq!(a.call("through", &[41]).unwrap(), 42);
+        let mut big = String::from("fn val(x: i64) -> i64 {\n    v0: i64 = add x, 1\n");
+        for i in 1..=20 {
+            big.push_str(&format!("    v{}: i64 = add v{}, 1\n", i, i - 1));
+        }
+        big.push_str("    ret v20\n}\n");
+        let m2 = parse(&format!(
+            "{}fn through(x: i64) -> i64 {{\n    f: fn(i64) -> i64 = addr val\n    r: i64 = f(x)\n    ret r\n}}\n",
+            big
+        ));
+        let done = a.sync(&m2.funcs, 0).expect("sync");
+        assert_eq!(done.len(), 1, "only val changed");
+        assert!(!done[0].in_place, "bigger body must relocate");
+        assert_eq!(a.call("through", &[21]).unwrap(), 42);
+    }
+
+    #[test]
     fn incremental_replace_and_grow() {
         let mut a = arena();
         let m1 = parse(

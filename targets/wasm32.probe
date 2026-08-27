@@ -155,3 +155,6 @@ inst br_if {i 0..12} :: sig=(param i32) (result i64) :: pre=block, block, block,
 inst return :: sig=(param i64) (result i64) :: pre=local.get 0
 inst unreachable :: sig=(result i64)
 inst call {i 0..129} :: sig=(result i64) :: preamble=130 :: post=i64.const 0
+; a call through the table: the type index, then table 0; the callee's
+; index is on the stack
+inst call_indirect (type {i 0..129}) :: sig=(result i64) :: types=130 :: table :: pre=i32.const 0

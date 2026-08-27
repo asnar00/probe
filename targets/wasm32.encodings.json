@@ -127,6 +127,7 @@
     {"template": "br_if {i 0..12}", "verified": 12, "pieces": [{"fixed": "0d"}, {"uleb": true}]},
     {"template": "return", "verified": 1, "pieces": [{"fixed": "0f"}]},
     {"template": "unreachable", "verified": 1, "pieces": [{"fixed": "00"}]},
-    {"template": "call {i 0..129}", "verified": 17, "pieces": [{"fixed": "10"}, {"uleb": true}]}
+    {"template": "call {i 0..129}", "verified": 17, "pieces": [{"fixed": "10"}, {"uleb": true}]},
+    {"template": "call_indirect (type {i 0..129})", "verified": 17, "pieces": [{"fixed": "11"}, {"uleb": true}, {"fixed": "00"}]}
   ]
 }

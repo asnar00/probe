@@ -1,30 +1,24 @@
 # Future work
 
-## Function pointers / indirect calls
+## Function values
 
-Add first-class function values to the SSA:
+In (`fn(i64) -> i64` types, `addr f`, calls through a value; a table
+and `call_indirect` on wasm). Left:
 
-```
-f: ptr = funcaddr sq
-r: i64 = calli f(x)        ; signature checked against uses, or annotated
-```
-
-Backend sketch:
-
-- **arm64**: nearly free. `funcaddr` materializes the function's code address
-  (pc-relative `adr`, or `movz/movk` of a known offset at JIT layout time);
-  `calli` is `blr {x}` — already learned and verified.
-- **riscv64**: same shape — `auipc`/`addi` for the address, `jalr` (already
-  learned) for the call.
-- **wasm**: functions are not addressable; a "function pointer" is an index
-  into a module-level **table**. Emit a table + element section listing every
-  address-taken function; `funcaddr` becomes that index; `calli` becomes
-  `call_indirect` (one new template to probe: opcode + type-index uleb +
-  table byte). Note the semantic difference: wasm type-checks the callee
-  signature at call time and traps on mismatch, where native targets would
-  execute garbage — the suite needs to treat mis-typed-callee tests as
-  target-dependent. The function-references proposal (`ref.func`/`call_ref`)
-  is a cleaner future mapping once universally shipped.
+- **Function values in `data`**: `data handlers: array(fn(i64), 4) = {
+  addr a, ... }` needs address relocations inside data — absolute on
+  bare metal, unknown until mapping in the JIT — or a table of indices
+  the way wasm does it. Today a table is built at run time with `store`.
+- **Signatures with structs or wide values**: the aggregate and wide
+  lowerings rewrite a function's parameters into fields and words; a
+  function *type* would have to be rewritten the same way. Rejected
+  for now.
+- **Generics over function types**: `apply(T)(f: fn(T) -> T, x: T)`
+  needs `unify` to see through `fn(...)`.
+- **Signature mismatch is target-dependent**: wasm traps on a call
+  through a value of the wrong type; the native targets execute
+  whatever is there. The verifier catches every static case; a value
+  loaded from memory is the program's promise.
 
 ## Code quality
 

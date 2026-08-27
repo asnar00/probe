@@ -236,6 +236,12 @@ impl Lower<'_> {
                 let args = self.expand_list(&args);
                 self.out.push(Inst::Call { dsts, callee, args });
             }
+            Inst::CallInd { dsts, callee, args } => {
+                let dsts = self.expand_list(&dsts);
+                let args = self.expand_list(&args);
+                self.out.push(Inst::CallInd { dsts, callee: r(self, callee), args });
+            }
+            Inst::FnAddr { dst, name } => self.out.push(Inst::FnAddr { dst, name }),
             Inst::Jmp { target, args } => {
                 let args = self.expand_list(&args);
                 self.out.push(Inst::Jmp { target, args });

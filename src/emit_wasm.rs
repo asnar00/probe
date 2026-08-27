@@ -27,7 +27,7 @@
 //! `ssa::Repr`); narrow results re-normalize with a shift pair or a mask.
 
 use crate::platform::{Native, Natives, Operand, Platform};
-use crate::ssa::{BinOp, Cond, Function, Inst, Module, Repr, ValueId};
+use crate::ssa::{BinOp, Cond, Function, Inst, Module, Repr, Type, ValueId};
 use crate::wlearn::{encode_pieces, sleb, uleb, Piece};
 use std::collections::HashMap;
 
@@ -113,7 +113,8 @@ fn normalize_key(template: &str) -> String {
 /// a value's representation on wasm: as in `Function::repr`, except that
 /// pointers are 32-bit offsets into linear memory
 pub fn wrepr(f: &Function, ty: crate::ssa::Type) -> Repr {
-    if ty == crate::ssa::Type::Ptr {
+    // a pointer is a 32-bit offset; a function value a 32-bit table index
+    if ty == crate::ssa::Type::Ptr || ty.is_fn() {
         Repr::U(32)
     } else {
         f.repr(ty)
@@ -171,10 +172,43 @@ pub fn compile_with(module: &Module, enc: &WEncoder, platform: &Platform) -> Res
         ftype.push(idx);
     }
 
+    // function types get a type index too, for call_indirect
+    let mut sigtype: HashMap<u32, i64> = HashMap::new();
+    if let Some(f0) = module.funcs.first() {
+        for (i, p) in f0.packs.iter().enumerate() {
+            let Some((ps, rs)) = &p.sig else { continue };
+            let params: Vec<u8> = ps.iter().map(|&t| valtype(wrepr(f0, t))).collect();
+            let results: Vec<u8> = rs.iter().map(|&t| valtype(wrepr(f0, t))).collect();
+            let sig = (params, results);
+            let idx = match types.iter().position(|t| *t == sig) {
+                Some(i) => i,
+                None => {
+                    types.push(sig);
+                    types.len() - 1
+                }
+            };
+            sigtype.insert(i as u32, idx as i64);
+        }
+    }
+    // the table: every function whose address is taken, in order of
+    // first appearance; a function value is its index here
+    let mut table: Vec<String> = Vec::new();
+    let mut tabidx: HashMap<String, i64> = HashMap::new();
+    for f in &module.funcs {
+        for inst in f.blocks.iter().flat_map(|b| &b.insts) {
+            if let Inst::FnAddr { name, .. } = inst {
+                if !tabidx.contains_key(name) {
+                    tabidx.insert(name.clone(), table.len() as i64);
+                    table.push(name.clone());
+                }
+            }
+        }
+    }
+
     let mut bodies = Vec::new();
     for f in &module.funcs {
         bodies.push(
-            compile_function(f, enc, &findex, &natives, &data_offsets).map_err(|e| format!("{}: {}", f.name, e))?,
+            compile_function(f, enc, &findex, &natives, &data_offsets, &sigtype, &tabidx).map_err(|e| format!("{}: {}", f.name, e))?,
         );
     }
 
@@ -202,6 +236,13 @@ pub fn compile_with(module: &Module, enc: &WEncoder, platform: &Platform) -> Res
     }
     section(&mut out, 3, p);
 
+    // one table of funcref, exactly the address-taken functions
+    if !table.is_empty() {
+        let mut p = vec![0x01, 0x70, 0x00];
+        p.extend(uleb(table.len() as u64));
+        section(&mut out, 4, p);
+    }
+
     // one memory, min 1 page (64KB) — plenty for the suite's buffers
     section(&mut out, 5, vec![0x01, 0x00, 0x01]);
 
@@ -217,6 +258,21 @@ pub fn compile_with(module: &Module, enc: &WEncoder, platform: &Platform) -> Res
     p.push(0x02); // memory
     p.extend(uleb(0));
     section(&mut out, 7, p);
+
+    // element section: the table's contents, from index 0
+    if !table.is_empty() {
+        let mut p = uleb(1);
+        p.push(0x00); // active, table 0
+        p.push(0x41); // i32.const 0
+        p.push(0x00);
+        p.push(0x0b); // end
+        p.extend(uleb(table.len() as u64));
+        for name in &table {
+            let (idx, _) = findex[name];
+            p.extend(uleb(idx as u64));
+        }
+        section(&mut out, 9, p);
+    }
 
     let mut p = uleb(bodies.len() as u64);
     for b in bodies {
@@ -247,6 +303,9 @@ struct WEmit<'a> {
     natives: &'a Natives,
     /// data item -> offset in linear memory
     data: &'a HashMap<String, usize>,
+    /// function type (pack index) -> type index; address-taken function -> table index
+    sigtype: &'a HashMap<u32, i64>,
+    tabidx: &'a HashMap<String, i64>,
     code: Vec<u8>,
     /// per value: the platform's local class (`f32`/`f64`), if any
     classes: Vec<Option<String>>,
@@ -546,6 +605,8 @@ fn compile_function(
     findex: &HashMap<String, (i64, usize)>,
     natives: &Natives,
     data: &HashMap<String, usize>,
+    sigtype: &HashMap<u32, i64>,
+    tabidx: &HashMap<String, i64>,
 ) -> Result<Vec<u8>, String> {
     if let Some(native) = natives.get(&func.name) {
         // this function *is* a platform instruction: parameters arrive as
@@ -602,6 +663,8 @@ fn compile_function(
         findex,
         natives,
         data,
+        sigtype,
+        tabidx,
         code: Vec::new(),
         classes,
         local_of,
@@ -902,6 +965,32 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
                 e.op(&key, v)?;
             }
             if e.is_f(dst) { e.set_raw(dst) } else { e.set(dst) }
+        }
+        Inst::FnAddr { dst, name } => {
+            let idx = *e.tabidx.get(name).ok_or_else(|| format!("{} is not in the table", name))?;
+            e.op("i32.const {}", Some(idx))?;
+            e.set(*dst)
+        }
+        Inst::CallInd { dsts, callee, args } => {
+            for &a in args {
+                e.get(a)?;
+            }
+            e.get(*callee)?;
+            let Type::Fn(i) = e.func.ty(*callee) else {
+                return Err("call through a value that is not a function".into());
+            };
+            let nrets = e.func.sig(Type::Fn(i)).map(|(_, r)| r.len()).unwrap_or(0);
+            let t = *e.sigtype.get(&i).ok_or("function type without a type index")?;
+            e.op("call_indirect (type {})", Some(t))?;
+            if dsts.is_empty() {
+                for _ in 0..nrets {
+                    e.op("drop", None)?;
+                }
+            }
+            for &d in dsts.iter().rev() {
+                e.set(d)?;
+            }
+            Ok(())
         }
         Inst::Call { dsts, callee, args } => {
             for &a in args {

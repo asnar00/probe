@@ -33,7 +33,7 @@ pub struct Alloc {
 
 pub(crate) fn inst_uses(inst: &Inst, out: &mut Vec<ValueId>) {
     match inst {
-        Inst::IConst { .. } | Inst::Addr { .. } | Inst::Platform { .. } => {}
+        Inst::IConst { .. } | Inst::Addr { .. } | Inst::FnAddr { .. } | Inst::Platform { .. } => {}
         Inst::Bin { lhs, rhs, .. } | Inst::ICmp { lhs, rhs, .. } => {
             out.push(*lhs);
             out.push(*rhs);
@@ -64,6 +64,10 @@ pub(crate) fn inst_uses(inst: &Inst, out: &mut Vec<ValueId>) {
             out.push(*off);
         }
         Inst::Call { args, .. } => out.extend(args),
+        Inst::CallInd { callee, args, .. } => {
+            out.push(*callee);
+            out.extend(args);
+        }
         Inst::Jmp { args, .. } => out.extend(args),
         Inst::Br {
             cond,
@@ -91,8 +95,9 @@ pub(crate) fn inst_defs(inst: &Inst, out: &mut Vec<ValueId>) {
         | Inst::Load { dst, .. }
         | Inst::PtrAdd { dst, .. }
         | Inst::Addr { dst, .. }
+        | Inst::FnAddr { dst, .. }
         | Inst::Platform { dst, .. } => out.push(*dst),
-        Inst::Call { dsts, .. } | Inst::Unpack { dsts, .. } => out.extend(dsts),
+        Inst::Call { dsts, .. } | Inst::CallInd { dsts, .. } | Inst::Unpack { dsts, .. } => out.extend(dsts),
         _ => {}
     }
 }

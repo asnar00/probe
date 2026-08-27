@@ -46,6 +46,7 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `name`, `name(8, 23)` | a declared type, plain or instantiated with widths (see *Type declarations*) |
 | `pack { ... }` | bitfields packed into at most 256 bits (see *Packs*) |
 | `struct { ... }` | fields side by side, never a bit pattern (see *Structs*) |
+| `fn(i64, i64) -> i64`, `fn(ptr)`, `fn() -> (i64, i64)` | a function value: the signature is the type (see *Calls*) |
 | `i(expr)`, `u(expr)` | an integer whose width is an expression — inside type declarations |
 | `int`, `uint`, `float`, `fixed`, `unit`, `sunit`, `rational`, `scalar` | abstract numbers — resolved to a concrete type by the target's replacement policy (see *Abstract numeric types*) |
 
@@ -267,6 +268,31 @@ g(a)                           ; call with results ignored (or none)
 
 A call binds either *all* of the callee's return values or *none* of them
 (calls and `unpack` are the only instructions that define more than one value).
+
+A function is also a value. Its type is its signature, written the way
+the function declares it — `fn(i64) -> i64`, `fn(ptr, i64)`, `fn(i64,
+i64) -> (i64, i64)` — and `addr` makes one, the same `addr` that reaches
+a `data` item. Calling a value looks exactly like calling a name:
+
+```
+type unary = fn(i64) -> i64
+f: unary = addr sq            ; the verifier checks sq against the type
+r: i64 = f(x)                 ; a call through the value
+```
+
+Because the signature is on the type, a call through a value is checked
+like any other, and the value goes wherever a value goes: parameters,
+results, block parameters (a reducer carried around a loop), memory
+(`store f, p`; a table of handlers), and `cast` to a `u64` or `ptr` when
+its bits are wanted. Two spellings of one signature are one type. On
+arm64 and riscv64 the value is the function's address (`adr` /
+`auipc`+`addi`) and the call is `blr` / `jalr`; on wasm it is an index
+into a table of the address-taken functions and the call is
+`call_indirect`, which also checks the signature at run time. In the
+incremental arena it is the function's trampoline, so a value taken
+before an edit calls the new code. A function type may not yet take or
+return a struct or a value wider than 64 bits, and generics do not range
+over function types. `suite/indirect.ssa` has the cases.
 
 ### Terminators
 

@@ -78,6 +78,13 @@ printer. In outline:
   `len` reach it, and `platform uart` is a constant the platform file
   provides per board.
 
+- **Function values**: `fn(i64, i64) -> i64` is a type — the signature —
+  and `f: binary = addr add64` a value of it, taken with the same `addr`
+  that reaches data. Calling it, `r: i64 = f(a, b)`, is spelled like any
+  call and checked like one; the value goes anywhere a value goes,
+  including memory. `adr`+`blr` on arm64, `auipc`+`jalr` on riscv64, a
+  table and `call_indirect` on wasm.
+
 - **Abstract types resolved by policy**: `int`/`uint` take a width per
   target (`--int=i32|i64`); `float`, `fixed`, `unit`, `sunit` and
   `rational` resolve to the libraries' `float(E, M)`, `fixed(I, F)`,
@@ -249,6 +256,7 @@ cargo run -- run suite/unit.ssa pct 50 50                      # unit fractions:
 cargo run -- run suite/rational.ssa thirds 7                   # rationals: (7 / 3) * 3 -> 7, exactly
 cargo run -- run suite/time.ssa third_plus_sixth_ms            # time: 1/3 s + 1/6 s in ms -> 500
 cargo run -- run suite/wide.ssa mul 0 1 0 1                    # u128 as words, low first: (1 << 64)^2 mod 2^128 -> 0, 0
+cargo run -- run suite/indirect.ssa chosen 1 10                # a function value, returned then called -> 20
 cargo run -- --scalar=rational run suite/scalar.ssa sweighted 20 80   # one program, any family
 
 # the scorecards (sh tools/get-isa-tables.sh once, to fetch the tables)
@@ -283,15 +291,14 @@ are checked in, so the backends and suite work without re-learning.
 ## Status
 
 Integers to 256 bits, packs, structs, parametric types and generic
-functions; floats, fixed point, unit fractions, rationals, time and
+functions, function values; floats, fixed point, unit fractions, rationals, time and
 decimals as libraries, with hardware substituted where a platform has
 it; three backends and their variants; a bootable hello world. All of
 it differentially verified — the suite on four execution paths under
 every policy, the oracle, the scorecards, the fuzzer, the model tests.
 
 Deliberately not here yet: vectors (`vectors.md` says how they would
-go), indirect calls and function values, external (libc) calls from
-JIT'd code, a dominance check in the verifier, and differential testing
+go), external (libc) calls from JIT'd code, a dominance check in the verifier, and differential testing
 against clang to close the semantic loop the way the prober closed the
 encoding loop.
 

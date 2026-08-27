@@ -59,6 +59,8 @@ enum FixTarget {
     Func(String),
     /// a data item, by name: an auipc/addi pair gets the distance to it
     Data(String),
+    /// a function's entry, by name, the same way (a function value)
+    FuncAddr(String),
 }
 
 struct Fixup {
@@ -101,10 +103,14 @@ pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Resu
                 let word = enc.encode(JAL, &values)?;
                 code[fix.at..fix.at + 4].copy_from_slice(&word.to_le_bytes());
             }
-            FixTarget::Data(name) => {
+            FixTarget::Data(_) | FixTarget::FuncAddr(_) => {
+                let target = match &fix.target {
+                    FixTarget::Data(name) => data_base + *data_offsets.get(name.as_str()).ok_or_else(|| format!("no data named {}", name))?,
+                    FixTarget::FuncAddr(name) => *funcs.get(name.as_str()).ok_or_else(|| format!("addr of undefined function {}", name))?,
+                    _ => unreachable!(),
+                };
                 // auipc takes the page distance, addi the rest (the low
                 // part is signed, so the page rounds to nearest)
-                let target = data_base + *data_offsets.get(name.as_str()).ok_or_else(|| format!("no data named {}", name))?;
                 let delta = target as i64 - fix.at as i64;
                 let hi = (delta + 0x800) >> 12;
                 let lo = delta - (hi << 12);
@@ -579,7 +585,7 @@ fn compile_function(
                 let word = e.enc.encode(JAL, &values)?;
                 e.code[fix.at..fix.at + 4].copy_from_slice(&word.to_le_bytes());
             }
-            FixTarget::Func(_) | FixTarget::Data(_) => call_fixups.push(fix),
+            FixTarget::Func(_) | FixTarget::Data(_) | FixTarget::FuncAddr(_) => call_fixups.push(fix),
         }
     }
     Ok(())
@@ -843,6 +849,27 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
                 e.emit(t, &v)?;
             }
             if ret_f { e.finish_f(dst, rd) } else { e.finish(dst, rd) }
+        }
+        Inst::FnAddr { dst, name } => {
+            let rd = e.dst_reg(*dst, T0);
+            let at = e.emit(AUIPC, &[rd, 0])?;
+            e.emit(ADDI, &[rd, rd, 0])?;
+            e.fixups.push(Fixup { at, values: vec![rd, 0], imm_slot: 1, target: FixTarget::FuncAddr(name.clone()) });
+            e.finish(*dst, rd)
+        }
+        Inst::CallInd { dsts, callee, args } => {
+            if args.len() > 8 {
+                return Err("more than 8 call arguments not supported yet".into());
+            }
+            for (j, &a) in args.iter().enumerate() {
+                e.value_to(A0 + j as i64, a)?;
+            }
+            let rc = e.src_reg(*callee, T0)?;
+            e.emit("jalr {r}, {i -2048..2047}({r})", &[RA, 0, rc])?;
+            for (j, &d) in dsts.iter().enumerate() {
+                e.value_from(d, A0 + j as i64)?;
+            }
+            Ok(())
         }
         Inst::Call { dsts, callee, args } => {
             if args.len() > 8 {

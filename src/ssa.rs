@@ -27,6 +27,11 @@ pub enum Type {
     /// bit pattern — the same table, with `aggregate` set. Dissolved into
     /// its fields right after parsing (see aggregate.rs)
     Struct(u32),
+    /// a function value: `fn(i64, i64) -> i64`, the signature by index
+    /// into the same table (`sig` set). In a register it is the
+    /// function's address (its table index on wasm); `addr f` makes one
+    /// and calling it is an indirect call
+    Fn(u32),
     /// abstract integers: resolved to a concrete width by the target's
     /// replacement policy before verification (see `resolve_types`)
     AInt,
@@ -55,6 +60,7 @@ impl Type {
             Type::Ptr => "ptr".into(),
             Type::Pack(i) => format!("#{}", i),
             Type::Struct(i) => format!("struct#{}", i),
+            Type::Fn(i) => format!("fn#{}", i),
             Type::AInt => "int".into(),
             Type::AUInt => "uint".into(),
         }
@@ -101,6 +107,10 @@ impl Type {
         matches!(self, Type::Struct(_))
     }
 
+    pub fn is_fn(self) -> bool {
+        matches!(self, Type::Fn(_))
+    }
+
     pub fn is_abstract(self) -> bool {
         matches!(self, Type::AInt | Type::AUInt)
     }
@@ -109,7 +119,7 @@ impl Type {
     pub fn int_bits(self) -> Option<u32> {
         match self {
             Type::Int { bits, .. } => Some(bits as u32),
-            Type::Ptr => Some(64),
+            Type::Ptr | Type::Fn(_) => Some(64),
             _ => None,
         }
     }
@@ -132,6 +142,9 @@ pub struct PackDef {
     /// is size * 8 (only asked before it is dissolved into fields)
     pub aggregate: bool,
     pub size: u32,
+    /// a function type: its (parameter types, return types); `fields`
+    /// is empty and `width` 64 — the entry is a signature, not a layout
+    pub sig: Option<(Vec<Type>, Vec<Type>)>,
 }
 
 impl PackDef {
@@ -236,6 +249,8 @@ pub enum TypeExpr {
     Named { name: String, args: Vec<IntExpr> },
     Pack(Vec<(String, TypeExpr)>),
     Struct(Vec<(String, TypeExpr)>),
+    /// `fn(a, b) -> r, s`: a function type, parameters then results
+    Fn(Vec<TypeExpr>, Vec<TypeExpr>),
 }
 
 impl fmt::Display for TypeExpr {
@@ -256,6 +271,16 @@ impl fmt::Display for TypeExpr {
             TypeExpr::Struct(fields) => {
                 let fs: Vec<String> = fields.iter().map(|(n, t)| format!("{}: {}", n, t)).collect();
                 write!(f, "struct {{ {} }}", fs.join(", "))
+            }
+            TypeExpr::Fn(params, rets) => {
+                let ps: Vec<String> = params.iter().map(|t| t.to_string()).collect();
+                write!(f, "fn({})", ps.join(", "))?;
+                let rs: Vec<String> = rets.iter().map(|t| t.to_string()).collect();
+                match rs.len() {
+                    0 => Ok(()),
+                    1 => write!(f, " -> {}", rs[0]),
+                    _ => write!(f, " -> ({})", rs.join(", ")),
+                }
             }
         }
     }
@@ -713,6 +738,17 @@ pub enum Inst {
         callee: String,
         args: Vec<ValueId>,
     },
+    /// the address of a function, as a value of its function type
+    FnAddr {
+        dst: ValueId,
+        name: String,
+    },
+    /// a call through a function value: `r = f(x)` where f is a value
+    CallInd {
+        dsts: Vec<ValueId>,
+        callee: ValueId,
+        args: Vec<ValueId>,
+    },
     Jmp {
         target: BlockId,
         args: Vec<ValueId>,
@@ -790,11 +826,22 @@ impl Function {
         }
     }
 
+    /// the (parameter types, return types) of a function type
+    pub fn sig(&self, ty: Type) -> Option<&(Vec<Type>, Vec<Type>)> {
+        match ty {
+            Type::Fn(i) => self.packs.get(i as usize).and_then(|p| p.sig.as_ref()),
+            _ => None,
+        }
+    }
+
     /// the type's spelling with pack names resolved
     pub fn tyname(&self, ty: Type) -> String {
-        match self.pack(ty) {
-            Some(p) => p.name.clone(),
-            None => ty.name(),
+        match ty {
+            Type::Pack(i) | Type::Struct(i) | Type::Fn(i) => match self.packs.get(i as usize) {
+                Some(p) => p.name.clone(),
+                None => ty.name(),
+            },
+            t => t.name(),
         }
     }
 
@@ -807,7 +854,7 @@ impl Function {
         match ty {
             Type::Int { signed: true, bits } => Repr::S(bits as u32),
             Type::Int { signed: false, bits } => Repr::U(bits as u32),
-            Type::Ptr => Repr::U(64),
+            Type::Ptr | Type::Fn(_) => Repr::U(64),
             Type::Pack(_) => Repr::U(self.width(ty).unwrap_or(64)),
             Type::Struct(_) => unreachable!("structs are dissolved into fields before use"),
             Type::AInt | Type::AUInt => unreachable!("abstract types are resolved before use"),
@@ -1612,6 +1659,12 @@ impl StructEmit {
 }
 
 /// Per-function parsing state: the value/block name tables.
+/// what a call names: a function, or a value of function type
+enum Callee {
+    Name(String),
+    Value(ValueId),
+}
+
 struct FuncScope {
     values: Vec<ValueData>,
     value_ids: HashMap<String, ValueId>,
@@ -1956,6 +2009,7 @@ impl Parser {
             }
         };
         match expr {
+            TypeExpr::Fn(..) => false, // generics do not range over function types
             TypeExpr::Named { name, args } if args.is_empty() => match Type::from_name(name) {
                 Some(t) => t == ty,
                 None => matches!(ty, Type::Pack(i) if self.packs[i as usize].name == *name),
@@ -2125,7 +2179,7 @@ impl Parser {
         if params.is_empty() {
             let before = self.packs.len();
             let ty = self.instantiate(&body, &[], 0).map_err(|m| self.err(m))?;
-            if let Type::Pack(i) = ty {
+            if let Type::Pack(i) | Type::Fn(i) = ty {
                 if i as usize >= before {
                     self.packs[i as usize].name = name.clone();
                 }
@@ -2188,6 +2242,55 @@ impl Parser {
                 return Err(err(format!("a {} needs at least one field", if is_struct { "struct" } else { "pack" })));
             }
             return Ok((if is_struct { TypeExpr::Struct(fields) } else { TypeExpr::Pack(fields) }, j));
+        }
+        // fn(types) -> types: a function type
+        if name == "fn" && at(i + 1) == Some(&Tok::LParen) {
+            let mut ptys = Vec::new();
+            let mut j = i + 2;
+            if at(j) == Some(&Tok::RParen) {
+                j += 1;
+            } else {
+                loop {
+                    let (t, next) = self.type_expr_at(j, params)?;
+                    ptys.push(t);
+                    j = next;
+                    match at(j) {
+                        Some(Tok::Comma) => j += 1,
+                        Some(Tok::RParen) => {
+                            j += 1;
+                            break;
+                        }
+                        _ => return Err(err("expected ',' or ')' in a function type's parameters".into())),
+                    }
+                }
+            }
+            // results as a function declares them: one type, or several
+            // in parentheses
+            let mut rets = Vec::new();
+            if at(j) == Some(&Tok::Arrow) {
+                j += 1;
+                if at(j) == Some(&Tok::LParen) {
+                    j += 1;
+                    loop {
+                        let (t, next) = self.type_expr_at(j, params)?;
+                        rets.push(t);
+                        j = next;
+                        match at(j) {
+                            Some(Tok::Comma) => j += 1,
+                            Some(Tok::RParen) => {
+                                j += 1;
+                                break;
+                            }
+                            _ => return Err(err("expected ',' or ')' in a function type's results".into())),
+                        }
+                    }
+                } else {
+                    let (t, next) = self.type_expr_at(j, params)?;
+                    rets.push(t);
+                    j = next;
+                }
+            }
+            return Ok((TypeExpr::Fn(ptys, rets), j));
         }
         // name, name(args), i(expr), u(expr)
         if at(i + 1) == Some(&Tok::LParen) {
@@ -2493,6 +2596,7 @@ impl Parser {
                     origin: None,
                     aggregate: false,
                     size: 0,
+                    sig: None,
                 });
                 Ok(Type::Pack(id))
             }
@@ -2539,8 +2643,52 @@ impl Parser {
                     origin: None,
                     aggregate: true,
                     size,
+                    sig: None,
                 });
                 Ok(Type::Struct(id))
+            }
+            TypeExpr::Fn(params, rets) => {
+                // a signature: interned like a pack, so every spelling of
+                // the same signature is the same type; abstract types
+                // inside it resolve by the policy now, as the values
+                // carrying them will be
+                let mut ps = Vec::new();
+                for e in params {
+                    let t = self.instantiate(e, env, depth + 1)?;
+                    ps.push(self.policy.resolve(t));
+                }
+                let mut rs = Vec::new();
+                for e in rets {
+                    let t = self.instantiate(e, env, depth + 1)?;
+                    rs.push(self.policy.resolve(t));
+                }
+                for t in ps.iter().chain(&rs) {
+                    if t.is_struct() || matches!(t, Type::Int { bits, .. } if *bits > 64) {
+                        return Err(format!("a function type cannot take or return {} yet", self.tyname_of(*t)));
+                    }
+                }
+                let sig = Some((ps, rs));
+                if let Some(i) = self.packs.iter().position(|p| p.sig == sig) {
+                    return Ok(Type::Fn(i as u32));
+                }
+                let id = self.packs.len() as u32;
+                let (ps, rs) = sig.as_ref().unwrap();
+                let name = TypeExpr::Fn(
+                    ps.iter().map(|t| TypeExpr::Named { name: self.tyname_of(*t), args: Vec::new() }).collect(),
+                    rs.iter().map(|t| TypeExpr::Named { name: self.tyname_of(*t), args: Vec::new() }).collect(),
+                )
+                .to_string();
+                self.packs.push(PackDef {
+                    name,
+                    fields: Vec::new(),
+                    offsets: Vec::new(),
+                    width: 64,
+                    origin: None,
+                    aggregate: false,
+                    size: 8,
+                    sig,
+                });
+                Ok(Type::Fn(id))
             }
         }
     }
@@ -2555,7 +2703,7 @@ impl Parser {
                 let size = if b <= 8 { 1 } else if b <= 16 { 2 } else if b <= 32 { 4 } else { 8 * b.div_ceil(64) };
                 Some((size, size.min(8)))
             }
-            Type::Ptr => Some((8, 8)),
+            Type::Ptr | Type::Fn(_) => Some((8, 8)),
             Type::Pack(i) => {
                 let w = self.packs[i as usize].width;
                 let size = if w <= 8 { 1 } else if w <= 16 { 2 } else if w <= 32 { 4 } else { 8 * w.div_ceil(64) };
@@ -3079,7 +3227,7 @@ impl Parser {
                 let op = self.expect_ident()?;
                 let inst = if self.is_call(&op) {
                     let (callee, args) = self.parse_call_tail(op, scope)?;
-                    Inst::Call { dsts, callee, args }
+                    Self::make_call(dsts, callee, args)
                 } else if op == "unpack" {
                     let src = self.expect_value(scope)?;
                     Inst::Unpack { dsts, src }
@@ -3273,11 +3421,15 @@ impl Parser {
             }
             "addr" => {
                 let name = self.expect_ident()?;
-                if !self.data.iter().any(|d| d.name == name) {
-                    self.pos -= 1;
-                    return Err(self.err(format!("no data named '{}'", name)));
+                if self.data.iter().any(|d| d.name == name) {
+                    return Ok(Inst::Addr { dst, name });
                 }
-                Ok(Inst::Addr { dst, name })
+                // a function: the value has its function type
+                if self.sigs.contains_key(&name) {
+                    return Ok(Inst::FnAddr { dst, name });
+                }
+                self.pos -= 1;
+                Err(self.err(format!("no data or function named '{}'", name)))
             }
             "len" => {
                 let name = self.expect_ident()?;
@@ -3402,11 +3554,7 @@ impl Parser {
             }
             _ if self.is_call(op) => {
                 let (callee, args) = self.parse_call_tail(op.to_string(), scope)?;
-                Ok(Inst::Call {
-                    dsts: Vec::new(),
-                    callee,
-                    args,
-                })
+                Ok(Self::make_call(Vec::new(), callee, args))
             }
             "jmp" => {
                 let (target, args) = self.parse_branch_target(scope)?;
@@ -3446,7 +3594,38 @@ impl Parser {
         !matches!(op, "const" | "iconst" | "loop" | "call") && matches!(self.peek(), Some(Tok::LParen))
     }
 
-    fn parse_call_tail(&mut self, callee: String, scope: &mut FuncScope) -> Result<(String, Vec<ValueId>), ParseError> {
+    /// build the call instruction for what parse_call_tail found
+    fn make_call(dsts: Vec<ValueId>, callee: Callee, args: Vec<ValueId>) -> Inst {
+        match callee {
+            Callee::Name(callee) => Inst::Call { dsts, callee, args },
+            Callee::Value(callee) => Inst::CallInd { dsts, callee, args },
+        }
+    }
+
+    fn parse_call_tail(&mut self, callee: String, scope: &mut FuncScope) -> Result<(Callee, Vec<ValueId>), ParseError> {
+        // a value of function type in scope: an indirect call, its
+        // signature the type's
+        if let Some(&v) = scope.value_ids.get(&callee) {
+            let ty = scope.values[v.0 as usize].ty;
+            let Type::Fn(i) = ty else {
+                self.pos -= 1;
+                return Err(self.err(format!("'{}' is {}, not a function value", callee, self.tyname_of(ty))));
+            };
+            let wants = self.packs[i as usize].sig.as_ref().unwrap().0.clone();
+            self.expect(Tok::LParen)?;
+            let mut args = Vec::new();
+            if !self.eat(&Tok::RParen) {
+                loop {
+                    let want = wants.get(args.len()).copied();
+                    args.push(self.parse_operand(scope, want)?);
+                    if self.eat(&Tok::RParen) {
+                        break;
+                    }
+                    self.expect(Tok::Comma)?;
+                }
+            }
+            return Ok((Callee::Value(v), args));
+        }
         let mut callee = callee;
         // `g(8, 23)(a, b)`: the first group is width arguments when a
         // second group follows it
@@ -3481,7 +3660,7 @@ impl Parser {
                 self.expect(Tok::Comma)?;
             }
         }
-        Ok((callee, args))
+        Ok((Callee::Name(callee), args))
     }
 
     // -- structured control flow --------------------------------------------
@@ -3542,7 +3721,7 @@ impl Parser {
                     "loop" => return self.parse_struct_loop(scope, st, dsts),
                     _ if self.is_call(&op) => {
                         let (callee, args) = self.parse_call_tail(op, scope)?;
-                        self.emit(st, Inst::Call { dsts, callee, args });
+                        self.emit(st, Self::make_call(dsts, callee, args));
                     }
                     "unpack" => {
                         let src = self.expect_value(scope)?;
@@ -4102,6 +4281,16 @@ impl Function {
                     format!("{} = {}", defs.join(", "), call)
                 }
             }
+            Inst::FnAddr { dst, name } => format!("{} = addr {}", self.fmt_def(*dst), name),
+            Inst::CallInd { dsts, callee, args } => {
+                let call = format!("{}({})", self.fmt_value(*callee), self.fmt_args(args));
+                if dsts.is_empty() {
+                    call
+                } else {
+                    let defs: Vec<String> = dsts.iter().map(|&d| self.fmt_def(d)).collect();
+                    format!("{} = {}", defs.join(", "), call)
+                }
+            }
             Inst::Jmp { target, args } => format!("jmp {}", self.fmt_target(*target, args)),
             Inst::Br {
                 cond,
@@ -4243,8 +4432,9 @@ fn inst_dsts(inst: &Inst) -> Vec<ValueId> {
         | Inst::Get { dst, .. }
         | Inst::Set { dst, .. }
         | Inst::Load { dst, .. }
+        | Inst::FnAddr { dst, .. }
         | Inst::PtrAdd { dst, .. } => vec![*dst],
-        Inst::Call { dsts, .. } | Inst::Unpack { dsts, .. } => dsts.clone(),
+        Inst::Call { dsts, .. } | Inst::CallInd { dsts, .. } | Inst::Unpack { dsts, .. } => dsts.clone(),
         _ => vec![],
     }
 }
@@ -4274,6 +4464,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
     let is_memory = |t: Type| {
         t == Type::Ptr
             || t.is_struct()
+            || t.is_fn()
             || ((t.is_int() || t.is_pack())
                 && matches!(func.width(t), Some(8) | Some(16) | Some(32) | Some(64) | Some(128) | Some(192) | Some(256)))
     };
@@ -4292,7 +4483,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 // meaningful wherever ptr is an address-space index
                 Type::Int { .. } | Type::Ptr => true,
                 // a pack literal is its bit pattern
-                Type::Struct(_) => false, // a struct has no literal
+                Type::Struct(_) | Type::Fn(_) => false, // a struct or a function has no literal
                 Type::Pack(_) => match func.width(ty) {
                     // a 64-bit pack takes any 64-bit pattern (a negative i64
                     // is one); narrower and wide ones fit their width
@@ -4353,9 +4544,10 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             let (wd, ws) = (func.width(td), func.width(ts));
             let ok = match op {
                 CastOp::Conv => td.is_int() && ts.is_int(),
+                // a function value casts like a ptr: to its address
                 CastOp::Cast => {
-                    (td.is_int() || td.is_pack() || td == Type::Ptr)
-                        && (ts.is_int() || ts.is_pack() || ts == Type::Ptr)
+                    (td.is_int() || td.is_pack() || td == Type::Ptr || td.is_fn())
+                        && (ts.is_int() || ts.is_pack() || ts == Type::Ptr || ts.is_fn())
                         && wd == ws
                 }
             };
@@ -4558,6 +4750,46 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 }
             }
         }
+        Inst::FnAddr { dst, name } => {
+            let dt = func.ty(*dst);
+            match (func.sig(dt), module.func(name)) {
+                (None, _) => errs.push(ctx(format!("addr {} gives a function value, not {}", name, tn(dt)))),
+                (Some(_), None) => errs.push(ctx(format!("addr {}: no such function", name))),
+                (Some((ps, rs)), Some(target)) => {
+                    let want: Vec<Type> = target.params.iter().map(|&p| target.ty(p)).collect();
+                    if *ps != want || *rs != target.rets {
+                        errs.push(ctx(format!("addr {}: the function is not {}", name, tn(dt))));
+                    }
+                }
+            }
+        }
+        Inst::CallInd { dsts, callee, args } => {
+            let ct = func.ty(*callee);
+            let Some((want, rets)) = func.sig(ct) else {
+                errs.push(ctx(format!("call through {}: it is {}, not a function value", name(*callee), tn(ct))));
+                return;
+            };
+            let got: Vec<Type> = args.iter().map(|&a| func.ty(a)).collect();
+            if *want != got {
+                errs.push(ctx(format!(
+                    "call through {}: argument types ({}) do not match parameters ({})",
+                    name(*callee),
+                    got.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", "),
+                    want.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", ")
+                )));
+            }
+            if !dsts.is_empty() {
+                let dt: Vec<Type> = dsts.iter().map(|&d| func.ty(d)).collect();
+                if dt != *rets {
+                    errs.push(ctx(format!(
+                        "call through {}: result types ({}) do not match return types ({})",
+                        name(*callee),
+                        dt.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", "),
+                        rets.iter().map(|&t| tn(t)).collect::<Vec<_>>().join(", ")
+                    )));
+                }
+            }
+        }
         Inst::Jmp { .. } | Inst::Br { .. } => {
             if let Inst::Br { cond, .. } = inst {
                 if func.ty(*cond) != Type::U1 {
@@ -4681,6 +4913,68 @@ entry:
         let m = parse(src).expect("parse succeeds; verify should fail");
         let errs = verify(&m).unwrap_err();
         assert!(errs[0].contains("add"), "got: {:?}", errs);
+    }
+
+    #[test]
+    fn function_values_check_against_signatures() {
+        // the value's type must be the function's signature
+        let src = r"
+fn sq(x: i64) -> i64 {
+    r: i64 = mul x, x
+    ret r
+}
+fn bad() -> i64 {
+    f: fn(i32) -> i64 = addr sq
+    r: i64 = f(1)
+    ret r
+}
+";
+        let m = parse(src).expect("parse succeeds; verify should fail");
+        let errs = verify(&m).unwrap_err();
+        assert!(errs[0].contains("addr sq") && errs[0].contains("fn(i32) -> i64"), "got: {:?}", errs);
+        // a call through a value checks arguments and results like a call
+        let src = r"
+fn sq(x: i64) -> i64 {
+    r: i64 = mul x, x
+    ret r
+}
+fn bad(y: i32) -> i64 {
+    f: fn(i64) -> i64 = addr sq
+    r: i64 = f(y)
+    ret r
+}
+";
+        let m = parse(src).expect("parse succeeds; verify should fail");
+        let errs = verify(&m).unwrap_err();
+        assert!(errs[0].contains("call through f"), "got: {:?}", errs);
+        // only a function value can be called through
+        let src = "fn bad(y: i64) -> i64 {\n    r: i64 = y(1)\n    ret r\n}\n";
+        let e = parse(src).unwrap_err();
+        assert!(e.to_string().contains("not a function value"), "got: {}", e);
+        // and only data or functions have addresses
+        let src = "fn bad() -> i64 {\n    r: fn() -> i64 = addr nothing\n    ret 0\n}\n";
+        let e = parse(src).unwrap_err();
+        assert!(e.to_string().contains("no data or function named 'nothing'"), "got: {}", e);
+        // the same signature spelled twice is one type, and prints back
+        let src = r"
+type unary = fn(i64) -> i64
+fn id(x: i64) -> i64 {
+    ret x
+}
+fn two() -> (fn(i64) -> i64, fn(i64, i64)) {
+    f: unary = addr id
+    g: fn(i64, i64) = addr pair
+    ret f, g
+}
+fn pair(a: i64, b: i64) {
+    ret
+}
+";
+        let m = parse(src).expect("parse");
+        verify(&m).expect("verify");
+        let text = m.to_string();
+        assert!(text.contains("f: unary = addr id"), "got: {}", text);
+        assert!(text.contains("g: fn(i64, i64) = addr pair"), "got: {}", text);
     }
 
     #[test]

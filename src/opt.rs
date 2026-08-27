@@ -391,6 +391,7 @@ fn dce(func: &mut Function) {
         | Inst::Set { .. }
         | Inst::PtrAdd { .. }
         | Inst::Addr { .. }
+        | Inst::FnAddr { .. }
         | Inst::Platform { .. }
         | Inst::Load { .. } => true,
         Inst::Bin { op, rhs, .. } => match op {
@@ -449,7 +450,7 @@ enum Class {
 
 fn class(inst: &Inst) -> Class {
     match inst {
-        Inst::Load { .. } | Inst::Store { .. } | Inst::Call { .. } => Class::Memory,
+        Inst::Load { .. } | Inst::Store { .. } | Inst::Call { .. } | Inst::CallInd { .. } => Class::Memory,
         _ => Class::Pure,
     }
 }
