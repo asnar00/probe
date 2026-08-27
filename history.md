@@ -6,6 +6,25 @@ has the full story for any of them.
 
 ---
 
+### Sleeping tasks and a tickless timer: `os/sleep.ssa` — `ada2d1f` · 2026-08-27
+
+The fifth operating system: three tasks that sleep until exact times,
+every 1/10, 1/3 and 1/7 of a second, each deadline a `time` — a
+rational — so that 3/3, 7/7 and 10/10 of a second are one instant and
+the three wake on one interrupt, in index order. Twenty wakes, in the
+order the fractions say; eighteen interrupts, because the timer is
+armed to the next deadline rather than to a tick and a shared deadline
+costs one. A task going to sleep asks the machine for an interrupt —
+`reschedule()`, riscv's msip or an SGI on the GIC — so every switch
+still happens in `__irq`. Two lessons: a timer left armed in the past
+fires again the moment interrupts are enabled (both machines stormed
+until the scheduler learned to disarm it when nothing is pending), and
+the harness now keeps the output a machine produced before timing
+out, which is how that was seen. Lateness is qemu's wake-up
+granularity, milliseconds; on a board it would be microseconds.
+
+---
+
 ### A decision: everything at kernel level · 2026-08-27
 
 Considered and declined, for now: user mode. It would need no IR
