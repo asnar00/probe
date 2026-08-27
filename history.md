@@ -6,7 +6,7 @@ has the full story for any of them.
 
 ---
 
-### Group memory, typed and sized — `HASH` · 2026-08-28
+### Group memory, typed and sized — `8303dab` · 2026-08-28
 
 `group tmp: array(i64, 64)` declares what a threadgroup shares the way
 `data` declares what the program has: an array type, nothing else,
