@@ -279,9 +279,12 @@ None of them contains a single hand-written opcode.
   driver compiles for whatever GPU it finds — written byte by byte by
   our own bitstream writer, with none of Apple's tools in the path.
   Pointers are offsets into one memory buffer (as on wasm), `data` and
-  `scratch` live there, a `__kernel(mem, area, id)` becomes the compute
-  kernel; recursion, which Metal has not, is left out and reported.
-  `tools/driver_metal.py` dispatches it (pyobjc).
+  `scratch` live there, a `__kernel(mem, area, id)` — or `(mem, area,
+  id, lane, group)` — becomes the compute kernel; `lib/gpu.ssa`'s
+  `group_load`/`group_store`/`group_sync` are the threadgroup's memory
+  and barrier here and a buffer in data everywhere else; recursion,
+  which Metal has not, is left out and reported. `tools/driver_metal.py`
+  dispatches it (pyobjc).
 
 Shared by the register machines and wasm:
 
@@ -358,6 +361,9 @@ cargo run -- test air          # this Mac's GPU, through Metal
 # a program for the GPU: a .metallib with none of Apple's tools
 cargo run -- compile examples/gpu.ssa air
 python3 tools/driver_metal.py --kernel gpu.metallib gpu.air.json 8
+# ... and a reduction over threadgroups of 64 (lib/gpu.ssa)
+cargo run -- compile examples/reduce.ssa air
+python3 tools/driver_metal.py --kernel reduce.metallib reduce.air.json 256 64
 
 # the optimization pipeline: -O<n> works on any command, and `tiers`
 # compiles at every prefix to show the gradual-optimization story

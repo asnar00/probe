@@ -28,6 +28,11 @@
 //!   zero-extended if unsigned, sign-extended if signed, as wasm keeps
 //!   them — with arithmetic renormalizing; memory sizes match the
 //!   containers already.
+//! - threadgroups: `fn __kernel(mem, area, id, lane, group)` also gets
+//!   its place in its group and its group's number; `lib/gpu.ssa`'s
+//!   `group_load`/`group_store`/`group_sync` are platform rules here —
+//!   a 16 KB `addrspace(3)` array and `air.wg.barrier` — and plain
+//!   functions over data everywhere else.
 //! - inlining: every function is `alwaysinline`, so a kernel is one
 //!   body (see the note at the declarations for why that is also the
 //!   correct one).
@@ -78,6 +83,10 @@ const CAST_TRUNC: u32 = 0;
 const CAST_ZEXT: u32 = 1;
 const CAST_SEXT: u32 = 2;
 const CAST_BITCAST: u32 = 11;
+/// LLVM's attribute kinds
+const ATTR_CONVERGENT: u64 = 43;
+/// threadgroup memory a program may use, in bytes
+const GROUP_BYTES: u64 = 16384;
 
 /// which functions AIR cannot have — a function that can reach itself,
 /// and everything that can reach one — with why, given the
@@ -223,7 +232,18 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
         data_offsets,
         scratch_of: scratch_of.clone(),
         dispatchers: HashMap::new(),
+        group: None,
+        kernel_arity: 3,
     };
+    // threadgroup memory, before any constant (globals come first)
+    let uses_group = module.funcs.iter().enumerate().filter(|(i, _)| !out[*i]).flat_map(|(_, f)| f.blocks.iter().flat_map(|b| &b.insts)).any(|inst| matches!(inst, Inst::Call { callee, .. } if natives.get(callee).is_some_and(|n| n.rule.lines[0].template.as_deref().is_some_and(|k| k.starts_with("air.group")))));
+    if uses_group {
+        let arr = cx.m.ty(BType::Array(i8t, GROUP_BYTES));
+        cx.m.ptr(arr, 3);
+        let g = cx.m.global("__group", arr, 3, 16);
+        cx.m.globals[g].undef_init = true;
+        cx.group = Some(g);
+    }
 
     // every global value first: functions, dispatchers, the kernel,
     // the intrinsics rules use
@@ -272,7 +292,16 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
     }
     let has_kernel = module.funcs.iter().position(|f| f.name == "__kernel").is_some_and(|i| !out[i]);
     let kernel = if has_kernel {
-        let fty = cx.m.fn_ty(void, vec![ptr_ty, ptr_ty, i32t]);
+        let kf = module.func("__kernel").unwrap();
+        cx.kernel_arity = kf.params.len();
+        if cx.kernel_arity != 3 && cx.kernel_arity != 5 {
+            return Err("__kernel takes (mem, area, id) or (mem, area, id, lane, group)".into());
+        }
+        let mut params = vec![ptr_ty, ptr_ty, i32t];
+        if cx.kernel_arity == 5 {
+            params.extend([i32t, i32t]);
+        }
+        let fty = cx.m.fn_ty(void, params);
         Some(cx.m.function("__kernel", fty, false))
     } else {
         None
@@ -285,7 +314,12 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
             if let Inst::Call { callee, .. } = inst {
                 if let Some(native) = natives.get(callee) {
                     let key = native.rule.lines[0].template.clone().unwrap_or_default();
-                    if key.starts_with("air.") && !cx.decls.contains_key(&key) {
+                    if key == "air.wg.barrier" && !cx.decls.contains_key(&key) {
+                        let fty = cx.m.fn_ty(void, vec![i32t, i32t]);
+                        let id = cx.m.function(&key, fty, true);
+                        cx.m.functions[id].attrs.push(ATTR_CONVERGENT);
+                        cx.decls.insert(key.clone(), (id, fty));
+                    } else if key.starts_with("air.") && !key.starts_with("air.group") && !cx.decls.contains_key(&key) {
                         let ret = cx.float_ty(native.ret_bits);
                         let params: Vec<usize> = native.arg_bits.iter().map(|&b| cx.float_ty(b)).collect();
                         let fty = cx.m.fn_ty(ret, params);
@@ -333,6 +367,10 @@ struct Cx<'a> {
     data_offsets: HashMap<String, usize>,
     scratch_of: Vec<i64>,
     dispatchers: HashMap<(Vec<Type>, Vec<Type>), (usize, usize)>,
+    /// the threadgroup array, if any group operation is used
+    group: Option<usize>,
+    /// how many arguments the program's kernel takes (3 or 5)
+    kernel_arity: usize,
 }
 
 /// a function body being emitted
@@ -940,6 +978,40 @@ impl Cx<'_> {
     fn emit_rule(&mut self, fx: &mut Fx, dsts: &[ValueId], callee: &str, args: &[ValueId]) -> Result<(), String> {
         let native = self.natives.get(callee).unwrap();
         let key = native.rule.lines[0].template.clone().unwrap_or_default();
+        // the group operations: an offset into the threadgroup array
+        if key == "air.wg.barrier" {
+            let (id, fty) = self.decls[&key];
+            let fv = self.m.function_value(id);
+            let (flags, scope) = (self.m.const_int(self.i32t, 2), self.m.const_int(self.i32t, 1));
+            fx.b.push(&self.m, B::Call { fn_ty: fty, callee: fv, args: vec![flags, scope] });
+            return Ok(());
+        }
+        if let Some(what) = key.strip_prefix("air.group.") {
+            let g = self.group.ok_or("group memory used but not set up")?;
+            let gv = self.m.global_value(g);
+            let i8t = self.m.int(8);
+            let arr = self.m.ty(BType::Array(i8t, GROUP_BYTES));
+            let i64t = self.i64t;
+            let p64 = self.m.ptr(i64t, 3);
+            let zero = self.const_i64(0);
+            match what {
+                "load" => {
+                    let off = self.value(fx, args[0])?;
+                    let p = fx.b.push(&self.m, B::Gep { elem_ty: arr, base: gv, idx: vec![zero, off], inbounds: true });
+                    let tp = fx.b.push(&self.m, B::Cast { op: CAST_BITCAST, val: p, ty: p64 });
+                    let v = fx.b.push(&self.m, B::Load { ptr: tp, ty: i64t, align: 8 });
+                    fx.vals.insert(dsts[0].0, v);
+                }
+                "store" => {
+                    let (v, off) = (self.value(fx, args[0])?, self.value(fx, args[1])?);
+                    let p = fx.b.push(&self.m, B::Gep { elem_ty: arr, base: gv, idx: vec![zero, off], inbounds: true });
+                    let tp = fx.b.push(&self.m, B::Cast { op: CAST_BITCAST, val: p, ty: p64 });
+                    fx.b.push(&self.m, B::Store { ptr: tp, val: v, align: 8 });
+                }
+                _ => return Err(format!("unknown group operation '{}'", key)),
+            }
+            return Ok(());
+        }
         let Some(&dst) = dsts.first() else { return Ok(()) };
         let mut fargs = Vec::new();
         for (j, &a) in args.iter().enumerate() {
@@ -1051,7 +1123,15 @@ impl Cx<'_> {
         let area = b.push(&self.m, B::Load { ptr: pp, ty: i64t, align: 8 });
         let zero = self.const_i64(0);
         let fv = self.m.function_value(bid);
-        b.push(&self.m, B::Call { fn_ty: bty, callee: fv, args: vec![mem, my_slab, zero, area, id64] });
+        let mut args = vec![mem, my_slab, zero, area, id64];
+        if self.kernel_arity == 5 {
+            let lane = b.arg(&self.m, 3);
+            let group = b.arg(&self.m, 4);
+            let lane64 = b.push(&self.m, B::Cast { op: CAST_ZEXT, val: lane, ty: i64t });
+            let group64 = b.push(&self.m, B::Cast { op: CAST_ZEXT, val: group, ty: i64t });
+            args.extend([lane64, group64]);
+        }
+        b.push(&self.m, B::Call { fn_ty: bty, callee: fv, args });
         b.push(&self.m, B::Ret { val: None });
         b.finish(&mut self.m);
 
@@ -1084,7 +1164,20 @@ impl Cx<'_> {
             let items = vec![Some(v2), s(&mut self.m, "air.thread_position_in_grid"), s(&mut self.m, "air.arg_type_name"), s(&mut self.m, "uint"), s(&mut self.m, "air.arg_name"), s(&mut self.m, "id")];
             self.m.md_node(items)
         };
-        let args = self.m.md_node(vec![Some(a0), Some(a1), Some(a2)]);
+        let mut all = vec![Some(a0), Some(a1), Some(a2)];
+        if self.kernel_arity == 5 {
+            let (v3, v4) = (c(&mut self.m, 3), c(&mut self.m, 4));
+            let a3 = {
+                let items = vec![Some(v3), s(&mut self.m, "air.thread_position_in_threadgroup"), s(&mut self.m, "air.arg_type_name"), s(&mut self.m, "uint"), s(&mut self.m, "air.arg_name"), s(&mut self.m, "lane")];
+                self.m.md_node(items)
+            };
+            let a4 = {
+                let items = vec![Some(v4), s(&mut self.m, "air.threadgroup_position_in_grid"), s(&mut self.m, "air.arg_type_name"), s(&mut self.m, "uint"), s(&mut self.m, "air.arg_name"), s(&mut self.m, "group")];
+                self.m.md_node(items)
+            };
+            all.extend([Some(a3), Some(a4)]);
+        }
+        let args = self.m.md_node(all);
         let kernel = self.m.md_node(vec![Some(fn_md), Some(empty), Some(args)]);
         self.m.md_named("air.kernel", vec![kernel]);
         let version = self.m.md_node(vec![Some(v2), Some(v8), Some(v0)]);
@@ -1105,5 +1198,38 @@ impl Cx<'_> {
         let lang = self.m.md_node(vec![Some(metal), Some(v4), Some(v0), Some(v0)]);
         self.m.md_named("air.language_version", vec![lang]);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// examples/reduce.ssa on this Mac's GPU: 256 threads in groups of
+    /// 64, each group summing its ids through threadgroup memory
+    #[test]
+    fn reduction_runs_on_the_gpu() {
+        let _turn = crate::suite::tests::boot_turn();
+        let platform = crate::platform::Platform::load("air").unwrap();
+        let policy = platform.adjust(crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap());
+        let src = std::fs::read_to_string("examples/reduce.ssa").unwrap();
+        let mut module = crate::ssa::parse_with(&crate::ssa::with_prelude(&src), &policy).unwrap();
+        crate::ssa::resolve_types(&mut module, &policy);
+        crate::ssa::verify(&module).unwrap();
+        crate::opt::optimize(&mut module, crate::opt::MAX_LEVEL);
+        let c = super::compile_with(&module, &platform).unwrap();
+        assert!(c.has_kernel);
+        let dir = std::env::temp_dir().join("probe-air-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("reduce.metallib"), &c.metallib).unwrap();
+        let data_hex: String = c.layout.data.iter().map(|b| format!("{:02x}", b)).collect();
+        std::fs::write(dir.join("reduce.air.json"), format!("{{\"data\":\"{}\",\"slab\":{},\"kernel\":true}}", data_hex, c.layout.slab)).unwrap();
+        let out = std::process::Command::new("python3")
+            .args(["tools/driver_metal.py", "--kernel"])
+            .arg(dir.join("reduce.metallib"))
+            .arg(dir.join("reduce.air.json"))
+            .args(["256", "64"])
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.starts_with("area: [2016, 6112, 10208, 14304, 0,"), "{}{}", text, String::from_utf8_lossy(&out.stderr));
     }
 }

@@ -1205,7 +1205,7 @@ fn finish_case(report: &mut Report, name: &str, case: &Case, got: Result<Vec<i64
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #[test]
     fn regression_suite_native() {
         let report = super::run_dir("suite", super::Backend::Native).expect("suite runs");
@@ -1268,7 +1268,7 @@ mod tests {
     /// the machines' timing is some tests' subject, so everything that
     /// runs a machine takes turns: a boot's lateness figures must not
     /// be the host's load
-    fn boot_turn() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn boot_turn() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }

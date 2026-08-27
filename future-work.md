@@ -25,10 +25,12 @@ and `call_indirect` on wasm). Left:
 AIR is in (`src/emit_air.rs`): a `__kernel` runs on any Apple GPU from
 bitcode we write. Left:
 
-- **Threadgroups and barriers**: everything is a thread over device
-  memory today. `air.wg.barrier` and `addrspace(3)` memory want an IR
-  form — likely a platform operation and a `scratch`-like declaration
-  of threadgroup memory — before any reduction is worth writing.
+- **Threadgroup memory as words at byte offsets** (`lib/gpu.ssa`): 16
+  KB, `i64` only, one array per program. Typed access (`group_load`
+  of an `f32x4`), a size the program declares, and simdgroup
+  operations (`air.simdgroup.*`) are the next rungs. The one-thread
+  fallbacks make the program run everywhere but say nothing about
+  its group behaviour; a CPU driver that runs a group as fibres would.
 - **Textures and samplers**: handles with platform operations, as
   decided when arrays were done; not arrays.
 - **Vectors as `<N x T>`**: lanes are separate values on AIR as on

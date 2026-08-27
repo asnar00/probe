@@ -6,6 +6,24 @@ has the full story for any of them.
 
 ---
 
+### A reduction on the GPU: threadgroups — `HASH` · 2026-08-27
+
+`fn __kernel(mem, area, id, lane, group)` is a kernel that knows its
+place: the wrapper passes `thread_position_in_threadgroup` and
+`threadgroup_position_in_grid` when the signature asks. `lib/gpu.ssa`
+gives every program `group_load(off)`, `group_store(v, off)` and
+`group_sync()` — words at byte offsets in a buffer in data, and
+nothing, so a program runs everywhere as a group of one — and
+`targets/air.platform` makes them the platform's: a 16 KB
+`addrspace(3)` array with an `undef` initializer (the writer's first
+global with one) and `air.wg.barrier(2, 1)` declared `convergent`.
+`examples/reduce.ssa` sums each group of 64 ids by halving at every
+barrier; the driver takes the group size; a Rust test runs it
+(`[2016, 6112, 10208, 14304]`). The suite is unchanged on every path
+with the new library in every program.
+
+---
+
 ### The GPU, from our own bitcode — `3ab3971` · 2026-08-27
 
 A fifth execution path: `probe compile x.ssa air` writes a `.metallib`

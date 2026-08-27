@@ -280,6 +280,9 @@ pub struct Global {
     pub ty: usize,
     pub addrspace: u32,
     pub align: u32,
+    /// defined with an `undef` initializer (a threadgroup array), not
+    /// declared
+    pub undef_init: bool,
 }
 
 pub struct Module {
@@ -343,7 +346,7 @@ impl Module {
     pub fn global(&mut self, name: &str, elem_ty: usize, addrspace: u32, align: u32) -> usize {
         assert!(self.consts.is_empty(), "declare globals before constants");
         let id = self.globals.len() + self.functions.len();
-        self.globals.push(Global { name: name.into(), ty: elem_ty, addrspace, align });
+        self.globals.push(Global { name: name.into(), ty: elem_ty, addrspace, align, undef_init: false });
         self.nglobal_values = self.globals.len() + self.functions.len();
         let _ = id;
         // ids: globals first, then functions — computed at write time
@@ -394,7 +397,8 @@ impl Module {
 
     /// the first value id a function's arguments take
     pub fn first_local_value(&self) -> usize {
-        self.nglobal_values + self.consts.len()
+        // the undef initializers the writer adds come after the constants
+        self.nglobal_values + self.consts.len() + self.globals.iter().filter(|g| g.undef_init).count()
     }
 
     pub fn md_str(&mut self, s: &str) -> usize {
@@ -514,7 +518,19 @@ impl Module {
         let ptr_ty_of = |g: &Global| -> usize {
             *self.type_ids.get(&Type::Ptr(g.ty, g.addrspace)).expect("a global's pointer type must be interned (call Module::ptr for it)")
         };
+        // an undef initializer is a constant after all the others; its
+        // id is known here
+        let mut consts: Vec<Const> = self.consts.clone();
+        let mut init_of: Vec<u64> = Vec::new();
         for g in &self.globals {
+            if g.undef_init {
+                consts.push(Const::Undef(g.ty));
+                init_of.push((self.nglobal_values + consts.len()) as u64); // 1-based
+            } else {
+                init_of.push(0);
+            }
+        }
+        for (gi, g) in self.globals.iter().enumerate() {
             let (off, size) = name_at(&g.name, &mut strtab);
             let pty = ptr_ty_of(g) as u64;
             let align_enc = if g.align == 0 { 0 } else { (g.align.trailing_zeros() + 1) as u64 };
@@ -525,7 +541,7 @@ impl Module {
             let isconst = 0u64 | 2 | ((g.addrspace as u64) << 2);
             let _ = ty_and_flags;
             // internal linkage (3), undef initializer: initid 0 = none
-            s.record(7, &[off, size, g.ty as u64, isconst, 0, 3, align_enc, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
+            s.record(7, &[off, size, g.ty as u64, isconst, init_of[gi], 3, align_enc, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
         }
         // functions: [strtab_offset, strtab_size, type, callingconv, isproto, linkage, paramattr, alignment, section, visibility, gc, unnamed_addr, prologuedata, dllstorageclass, comdat, prefixdata, personalityfn, preemptionspecifier, addrspace, partition_offset, partition_size]
         for f in &self.functions {
@@ -534,10 +550,10 @@ impl Module {
         }
 
         // constants
-        if !self.consts.is_empty() {
+        if !consts.is_empty() {
             s.enter(11, 4);
             let mut cur_ty = usize::MAX;
-            for c in &self.consts {
+            for c in &consts {
                 let ty = match c {
                     Const::Int(t, _) | Const::Float(t, _) | Const::Null(t) | Const::Undef(t) => *t,
                 };

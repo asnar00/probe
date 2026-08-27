@@ -3,7 +3,7 @@
 # Loads the library by URL, makes a pipeline for `kernel`, dispatches n
 # threads over a buffer of n int32s initialised to 10*i, and prints the
 # buffer afterwards.
-#   python3 tools/driver_metal.py --kernel lib.metallib lib.air.json n
+#   python3 tools/driver_metal.py --kernel lib.metallib lib.air.json n [group]
 # A probe program's __kernel: buffer 0 is the program's memory (its
 # data image, n scratch slabs, then an area of n i64 words the program
 # writes), buffer 1 the parameters (the area's offset); prints the area.
@@ -23,10 +23,12 @@ def pipeline(path):
         print("pipeline error:", err, file=sys.stderr); sys.exit(1)
     return dev, pso
 
-def run(dev, pso, mem, params, n):
+def run(dev, pso, mem, params, n, group=None):
+    # n threads, in groups of `group` (the program's choice, when it
+    # uses its group) or whatever the device likes
     q = dev.newCommandQueue(); cb = q.commandBuffer(); enc = cb.computeCommandEncoder()
     enc.setComputePipelineState_(pso); enc.setBuffer_offset_atIndex_(mem, 0, 0); enc.setBuffer_offset_atIndex_(params, 0, 1)
-    enc.dispatchThreads_threadsPerThreadgroup_(Metal.MTLSizeMake(n, 1, 1), Metal.MTLSizeMake(min(n, pso.maxTotalThreadsPerThreadgroup()), 1, 1))
+    enc.dispatchThreads_threadsPerThreadgroup_(Metal.MTLSizeMake(n, 1, 1), Metal.MTLSizeMake(group or min(n, pso.maxTotalThreadsPerThreadgroup()), 1, 1))
     enc.endEncoding(); cb.commit(); cb.waitUntilCompleted()
     if cb.error() is not None:
         print("command buffer error:", cb.error(), file=sys.stderr); sys.exit(1)
@@ -61,6 +63,7 @@ if sys.argv[1] == "--suite":
 if sys.argv[1] == "--kernel":
     # the area of n i64 words follows the data and the slabs in memory
     path, layout, n = sys.argv[2], json.load(open(sys.argv[3])), int(sys.argv[4])
+    group = int(sys.argv[5]) if len(sys.argv) > 5 else None
     dev, pso = pipeline(path)
     data = bytes.fromhex(layout["data"])
     data_size = (len(data) + 15) & ~15
@@ -72,7 +75,7 @@ if sys.argv[1] == "--kernel":
     view[:len(data)] = data
     params = dev.newBufferWithLength_options_(8, 0)
     memoryview(params.contents().as_buffer(8))[:] = area_off.to_bytes(8, "little")
-    run(dev, pso, mem, params, n)
+    run(dev, pso, mem, params, n, group)
     out = (ctypes.c_int64 * n).from_buffer(mem.contents().as_buffer(mem_len), area_off)
     print("area:", list(out))
     sys.exit(0)
