@@ -6,6 +6,31 @@ has the full story for any of them.
 
 ---
 
+### Interrupts and the timer: `os/clock.ssa` — `664a7fc` · 2026-08-27
+
+`probe boot os/clock.ssa` prints `tick` ten times, a tenth of a second
+apart, then `10 ticks in 1006 ms` (1010 on arm64): the third operating
+system keeps time. Interrupts land in `fn __irq()`, which `probe boot`
+compiles with a frame that keeps *every* register of the interrupted
+code, float scratch included, since an interrupt lands between any two
+instructions; both machines get a sixteen-entry vector table before
+`__trap` — arm64's IRQ entries branch to `__irq`, riscv64's mtvec goes
+vectored with entry 0 for exceptions and the rest, by cause, for
+interrupts. What the board does is the platform file's, as before:
+`now` and `hz` (the generic timer's counter and frequency; the `time`
+CSR at 10 MHz), `timer_at` and `timer_off` (`cntp_cval_el0`; the
+CLINT's mtimecmp), `irq_on` (the GICv2's distributor and cpu interface
+and `daifclr`; mie and mstatus), `irq_ack` and `irq_done`, `idle`
+(`wfi`). Those rules needed registers of their own for addresses and
+values, so a rule may now declare typed temporaries — `irq_on() -> ()
+with gic: ptr, v: u32` — and `none` is a rule that does nothing. Each
+deadline is one step on from the previous deadline, never from "now",
+so the ticks do not drift; and the elapsed count becomes milliseconds
+exactly through `lib/time.ssa`'s rationals — a period times a count —
+which is the point: getting time right starts at the bottom.
+
+---
+
 ### Dominance, fall-through, scratch — `147fe74` → `ad80a53` · 2026-08-27
 
 Three items from the list. *Dominance* (`147fe74`): the verifier's
