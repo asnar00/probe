@@ -6,7 +6,7 @@ has the full story for any of them.
 
 ---
 
-### The GPU, from our own bitcode — `HASH` · 2026-08-27
+### The GPU, from our own bitcode — `3ab3971` · 2026-08-27
 
 A fifth execution path: `probe compile x.ssa air` writes a `.metallib`
 — LLVM bitcode in Apple's AIR dialect inside their container, byte by
