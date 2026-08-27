@@ -6,6 +6,28 @@ has the full story for any of them.
 
 ---
 
+### Typed pointers and shaped arrays — `17d787c` · 2026-08-27
+
+The other half of the type work the GPU asked for. `ptr(T)` is an
+address that knows what it points at — a scalar, a vector, a struct,
+or `array(T, W, H, ...)` with a shape — so `load g, i, j`, `store v,
+g, i, j` and `index g, i, j` take indices, as many as the shape has
+dimensions, and check the element; `ptr` stays what it was, bytes at
+any step. An array is a memory type and never a value: it is what a
+typed pointer points at, what `scratch` sizes itself by when its
+result is typed, and what `data` declares, now with a shape. The
+lowering is the parser's: the shape makes the offset (row-major,
+innermost first), the element makes the step, a hidden cast to `ptr`
+keeps the printed program re-parsable, and the multiply goes to the
+library on a core without one — the `rv64i` footprint test caught that
+within the hour, as it did for vectors. No backend changed except one
+line: on wasm a typed pointer is an `i32`, like `ptr`. Textures are
+deliberately not arrays; they will be handles with platform
+operations. Nine cases on four paths; the AIR emitter is next, with
+`<N x T>` and typed pointers to lean on.
+
+---
+
 ### Vectors, `TxN` — `6590476` · 2026-08-27
 
 Before the GPU emitter, the type it will lean on. `f32x4`, `i32x8`,
