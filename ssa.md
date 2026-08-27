@@ -711,8 +711,9 @@ terminator), same as flat form.
 5. The entry block has no parameters and is not the target of any branch.
 6. `ret` operands match the function's declared return types in count and
    type; a result-binding call matches the callee's return types the same way.
-
-Deliberately *not* checked in v0.1: dominance (that every use is reached only
-after its definition). The parser's scoping makes most violations awkward to
-write, and the emitter will surface the rest; a real dominance check can come
-with the optimizer.
+7. Every use is dominated by its definition: the value was defined earlier
+   in the same block, or in a block that every path from the entry to this
+   one passes through (a block's parameters are defined at its top). A
+   value defined in one arm of a branch cannot be used after the join —
+   pass it as a branch argument. Unreachable blocks are not checked; the
+   passes remove them.

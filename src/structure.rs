@@ -28,9 +28,21 @@ fn successors(inst: &Inst) -> Vec<usize> {
     }
 }
 
-impl Cfg {
-    /// None when the graph is irreducible
-    pub fn analyze(f: &Function) -> Option<Cfg> {
+/// The dominator tree of a function's blocks: what the verifier's
+/// dominance rule and the wasm structuring both start from
+pub struct Dom {
+    /// reachable blocks in reverse postorder
+    pub rpo: Vec<usize>,
+    /// a block's position in `rpo`; usize::MAX when unreachable
+    pub rpo_index: Vec<usize>,
+    pub preds: Vec<Vec<usize>>,
+    /// the immediate dominator of each block; None when unreachable (the
+    /// entry is its own)
+    pub idom: Vec<Option<usize>>,
+}
+
+impl Dom {
+    pub fn compute(f: &Function) -> Dom {
         let nb = f.blocks.len();
         let succs: Vec<Vec<usize>> = f.blocks.iter().map(|b| b.insts.last().map(successors).unwrap_or_default()).collect();
         // reverse postorder by an explicit DFS
@@ -101,10 +113,36 @@ impl Cfg {
                 break;
             }
         }
-        let mut idom = vec![0; nb];
+        let mut idom = vec![None; nb];
         for i in 0..n {
-            idom[rpo[i]] = rpo[idom_pos[i]?];
+            idom[rpo[i]] = idom_pos[i].map(|p| rpo[p]);
         }
+        Dom { rpo, rpo_index, preds, idom }
+    }
+
+    /// does block a dominate block b? (every block dominates itself)
+    pub fn dominates(&self, a: usize, mut b: usize) -> bool {
+        loop {
+            if a == b {
+                return true;
+            }
+            if b == 0 {
+                return false;
+            }
+            match self.idom[b] {
+                Some(d) => b = d,
+                None => return false,
+            }
+        }
+    }
+}
+
+impl Cfg {
+    /// None when the graph is irreducible
+    pub fn analyze(f: &Function) -> Option<Cfg> {
+        let nb = f.blocks.len();
+        let Dom { rpo, rpo_index, preds, idom } = Dom::compute(f);
+        let idom: Vec<usize> = idom.iter().map(|d| d.unwrap_or(0)).collect();
         let dominates = |a: usize, mut b: usize| {
             loop {
                 if a == b {

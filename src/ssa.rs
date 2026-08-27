@@ -4427,6 +4427,52 @@ fn verify_function(module: &Module, func: &Function, errs: &mut Vec<String>) {
             verify_inst(module, func, block, inst, errs);
         }
     }
+
+    // rule 7: every use is dominated by its definition — defined earlier
+    // in the same block, or in a block every path from the entry to this
+    // one passes through (block parameters count as defined at the top
+    // of their block; unreachable blocks are not checked)
+    let dom = crate::structure::Dom::compute(func);
+    let mut def_at: Vec<Option<(usize, usize)>> = vec![None; func.values.len()];
+    for &p in &func.params {
+        def_at[p.0 as usize] = Some((0, 0));
+    }
+    for (b, block) in func.blocks.iter().enumerate() {
+        for &p in &block.params {
+            def_at[p.0 as usize] = Some((b, 0));
+        }
+        for (i, inst) in block.insts.iter().enumerate() {
+            for d in inst_dsts(inst) {
+                def_at[d.0 as usize] = Some((b, i + 1));
+            }
+        }
+    }
+    for (b, block) in func.blocks.iter().enumerate() {
+        if dom.rpo_index[b] == usize::MAX {
+            continue;
+        }
+        for (i, inst) in block.insts.iter().enumerate() {
+            let mut uses = Vec::new();
+            crate::regalloc::inst_uses(inst, &mut uses);
+            for u in uses {
+                let ok = match def_at[u.0 as usize] {
+                    Some((db, di)) if db == b => di <= i,
+                    Some((db, _)) => dom.dominates(db, b),
+                    None => false,
+                };
+                if !ok {
+                    let v = &func.value(u).name;
+                    errs.push(ctx(match def_at[u.0 as usize] {
+                        None => format!("{}: '{}' is used but never defined", block.name, v),
+                        Some((db, _)) => format!(
+                            "{}: '{}' is used here but defined in {}, which does not dominate it (not every path from the entry passes through its definition)",
+                            block.name, v, func.blocks[db].name
+                        ),
+                    }));
+                }
+            }
+        }
+    }
 }
 
 fn inst_dsts(inst: &Inst) -> Vec<ValueId> {
@@ -4439,6 +4485,8 @@ fn inst_dsts(inst: &Inst) -> Vec<ValueId> {
         | Inst::Get { dst, .. }
         | Inst::Set { dst, .. }
         | Inst::Load { dst, .. }
+        | Inst::Addr { dst, .. }
+        | Inst::Platform { dst, .. }
         | Inst::FnAddr { dst, .. }
         | Inst::PtrAdd { dst, .. } => vec![*dst],
         Inst::Call { dsts, .. } | Inst::CallInd { dsts, .. } | Inst::Unpack { dsts, .. } => dsts.clone(),
@@ -4985,6 +5033,54 @@ fn pair(a: i64, b: i64) {
     }
 
     #[test]
+    fn rejects_use_not_dominated_by_definition() {
+        // defined in one arm, used after the join
+        let src = r"
+fn bad(c: u1, a: i64) -> i64 {
+entry:
+    br c, yes, no
+yes:
+    t: i64 = add a, 1
+    jmp join
+no:
+    jmp join
+join:
+    r: i64 = add t, 1
+    ret r
+}
+";
+        let m = parse(src).expect("parse succeeds; verify should fail");
+        let errs = verify(&m).unwrap_err();
+        assert!(errs[0].contains("'t' is used") && errs[0].contains("yes"), "got: {:?}", errs);
+        // used before defined in one block
+        let src = "fn bad(a: i64) -> i64 {\nentry:\n    r: i64 = add t, 1\n    t: i64 = add a, 1\n    ret r\n}\n";
+        match parse(src) {
+            Ok(m) => assert!(verify(&m).unwrap_err()[0].contains("'t'")),
+            Err(e) => assert!(e.to_string().contains("t"), "got: {}", e),
+        }
+        // a loop-carried value defined by the header's parameter is fine,
+        // and so is one defined before the loop and used in its body
+        let src = r"
+fn ok(n: i64) -> i64 {
+entry:
+    k: i64 = const 3
+    jmp head(0, 0)
+head(i: i64, s: i64):
+    done: u1 = cmp.ge i, n
+    br done, out, body
+body:
+    s2: i64 = add s, k
+    i2: i64 = add i, 1
+    jmp head(i2, s2)
+out:
+    ret s
+}
+";
+        let m = parse(src).expect("parse");
+        verify(&m).expect("verify");
+    }
+
+    #[test]
     fn rejects_branch_arg_mismatch() {
         let src = r"
 fn bad(a: i64) -> i64 {
@@ -5103,9 +5199,9 @@ fn bad(c: u1, a: i64, b: i32) -> i64 {
     }
 
     #[test]
-    fn forward_value_reference_across_blocks() {
-        // x is defined textually after its use; the prescan makes this fine
-        // (dominance is the emitter's problem, per the spec).
+    fn rejects_forward_reference_across_blocks() {
+        // x is defined textually after its use; the prescan lets it parse,
+        // and the dominance rule rejects it: b does not dominate a
         let src = r"
 fn fwd(c: u1) -> i64 {
 entry:
@@ -5120,7 +5216,8 @@ join(r: i64):
 }
 ";
         let m = parse(src).expect("parse");
-        verify(&m).expect("verify");
+        let errs = verify(&m).unwrap_err();
+        assert!(errs[0].contains("'x' is used") && errs[0].contains("does not dominate"), "got: {:?}", errs);
     }
 
     #[test]
