@@ -20,23 +20,30 @@ pub fn has_structs(m: &Module) -> bool {
     m.funcs.iter().any(|f| f.values.iter().any(|v| v.ty.is_struct()) || f.rets.iter().any(|t| t.is_struct()))
 }
 
-pub fn lower(m: &mut Module) -> Result<(), String> {
+/// `keep_vectors`: a vector (a struct of lanes) stays a value, for a
+/// platform that takes it whole
+pub fn lower(m: &mut Module, keep_vectors: bool) -> Result<(), String> {
     for f in &mut m.funcs {
         if f.values.iter().any(|v| v.ty.is_struct()) || f.rets.iter().any(|t| t.is_struct()) {
-            lower_function(f).map_err(|e| format!("{}: {}", f.name, e))?;
+            lower_function(f, keep_vectors).map_err(|e| format!("{}: {}", f.name, e))?;
         }
     }
     Ok(())
 }
 
+/// does a type come apart here? a struct, unless it is a vector being kept
+fn dissolves(f: &Function, ty: Type, keep_vectors: bool) -> bool {
+    ty.is_struct() && !(keep_vectors && f.vector(ty).is_some())
+}
+
 /// the scalar leaves of a type: (type, byte offset), nested structs
 /// flattened
-fn leaves(f: &Function, ty: Type, base: u32, out: &mut Vec<(Type, u32)>) {
+fn leaves(f: &Function, ty: Type, base: u32, out: &mut Vec<(Type, u32)>, keep_vectors: bool) {
     match ty {
-        Type::Struct(_) => {
+        Type::Struct(_) if dissolves(f, ty, keep_vectors) => {
             let p = f.pack(ty).unwrap().clone();
             for (k, (_, fty)) in p.fields.iter().enumerate() {
-                leaves(f, *fty, base + p.offsets[k], out);
+                leaves(f, *fty, base + p.offsets[k], out, keep_vectors);
             }
         }
         t => out.push((t, base)),
@@ -52,28 +59,29 @@ struct Lower<'a> {
     /// the struct types of the values that were retyped to their first leaf
     orig: HashMap<u32, Type>,
     out: Vec<Inst>,
+    keep: bool,
 }
 
-fn lower_function(f: &mut Function) -> Result<(), String> {
+fn lower_function(f: &mut Function, keep_vectors: bool) -> Result<(), String> {
     // the signature as written, for callers from outside (the harness)
     f.wide_sig = Some((f.params.iter().map(|&p| f.ty(p)).collect(), f.rets.clone()));
     let mut rets = Vec::new();
     for &t in &f.rets {
         let mut ls = Vec::new();
-        leaves(f, t, 0, &mut ls);
+        leaves(f, t, 0, &mut ls, keep_vectors);
         rets.extend(ls.into_iter().map(|(t, _)| t));
     }
     f.rets = rets;
-    let mut lo = Lower { f, rows: HashMap::new(), alias: HashMap::new(), orig: HashMap::new(), out: Vec::new() };
+    let mut lo = Lower { f, rows: HashMap::new(), alias: HashMap::new(), orig: HashMap::new(), out: Vec::new(), keep: keep_vectors };
     let n = lo.f.values.len();
     for i in 0..n {
         let id = ValueId(i as u32);
         let ty = lo.f.ty(id);
-        if !ty.is_struct() {
+        if !dissolves(lo.f, ty, keep_vectors) {
             continue;
         }
         let mut ls = Vec::new();
-        leaves(lo.f, ty, 0, &mut ls);
+        leaves(lo.f, ty, 0, &mut ls, keep_vectors);
         let name = lo.f.values[i].name.clone();
         let mut row = vec![id];
         for (k, (lt, _)) in ls.iter().enumerate().skip(1) {
@@ -146,7 +154,7 @@ impl Lower<'_> {
         let mut start = 0;
         for (k, (_, fty)) in p.fields.iter().enumerate() {
             let mut ls = Vec::new();
-            leaves(self.f, *fty, 0, &mut ls);
+            leaves(self.f, *fty, 0, &mut ls, self.keep);
             if k as u32 == field {
                 return (start, start + ls.len());
             }
@@ -213,7 +221,7 @@ impl Lower<'_> {
             Inst::Unpack { src, .. } | Inst::Get { src, .. } if self.is_struct(src) => {}
             Inst::Load { dst, addr, off, index } if self.is_struct(dst) => {
                 let mut ls = Vec::new();
-                leaves(self.f, self.struct_ty(dst), 0, &mut ls);
+                leaves(self.f, self.struct_ty(dst), 0, &mut ls, self.keep);
                 let row = self.rows[&dst.0].clone();
                 let addr = r(self, addr);
                 let index = index.map(|(i, s)| (r(self, i), s));
@@ -223,7 +231,7 @@ impl Lower<'_> {
             }
             Inst::Store { val, addr, off, index } if self.is_struct(val) => {
                 let mut ls = Vec::new();
-                leaves(self.f, self.struct_ty(val), 0, &mut ls);
+                leaves(self.f, self.struct_ty(val), 0, &mut ls, self.keep);
                 let row = self.row(val);
                 let addr = r(self, addr);
                 let index = index.map(|(i, s)| (r(self, i), s));

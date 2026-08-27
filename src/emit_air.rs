@@ -33,6 +33,12 @@
 //!   `group_load`/`group_store`/`group_sync` are platform rules here —
 //!   a 16 KB `addrspace(3)` array and `air.wg.barrier` — and plain
 //!   functions over data everywhere else.
+//! - vectors: `targets/air.platform` says `builtin vectors`, so a `TxN`
+//!   reaches here whole, as `<N x T>`: arithmetic, comparisons and
+//!   conversions are LLVM's on vectors, `pack`/`unpack`/`get`/`set` are
+//!   insertelement/extractelement, a rule applies to the vector (fadd
+//!   on `<4 x float>`, `air.sqrt.v4f32`), and a library call on lanes
+//!   is made per lane.
 //! - inlining: every function is `alwaysinline`, so a kernel is one
 //!   body (see the note at the declarations for why that is also the
 //!   correct one).
@@ -319,12 +325,26 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
                         let id = cx.m.function(&key, fty, true);
                         cx.m.functions[id].attrs.push(ATTR_CONVERGENT);
                         cx.decls.insert(key.clone(), (id, fty));
-                    } else if key.starts_with("air.") && !key.starts_with("air.group") && !cx.decls.contains_key(&key) {
-                        let ret = cx.float_ty(native.ret_bits);
-                        let params: Vec<usize> = native.arg_bits.iter().map(|&b| cx.float_ty(b)).collect();
-                        let fty = cx.m.fn_ty(ret, params);
-                        let id = cx.m.function(&key, fty, true);
-                        cx.decls.insert(key.clone(), (id, fty));
+                    } else if key.starts_with("air.") && !key.starts_with("air.group") {
+                        // the scalar intrinsic, or its vector form for a
+                        // call on vectors
+                        let lanes = if let Inst::Call { dsts, .. } = inst { dsts.first().and_then(|&d| f.vector(f.ty(d))).map(|(_, n)| n) } else { None };
+                        let key = match (lanes, key.rsplit_once('.')) {
+                            (Some(n), Some((stem, suffix))) => format!("{}.v{}{}", stem, n, suffix),
+                            _ => key.clone(),
+                        };
+                        if !cx.decls.contains_key(&key) {
+                            let vec = |cx: &mut Cx, t: usize| match lanes {
+                                Some(n) => cx.m.ty(BType::Vector(t, n as u64)),
+                                None => t,
+                            };
+                            let ret = cx.float_ty(native.ret_bits);
+                            let ret = vec(&mut cx, ret);
+                            let params: Vec<usize> = native.arg_bits.iter().map(|&b| { let t = cx.float_ty(b); vec(&mut cx, t) }).collect();
+                            let fty = cx.m.fn_ty(ret, params);
+                            let id = cx.m.function(&key, fty, true);
+                            cx.decls.insert(key.clone(), (id, fty));
+                        }
                     }
                 }
             }
@@ -414,7 +434,36 @@ impl Cx<'_> {
                 let w = f.width(t).unwrap_or(64);
                 self.m.int(cont(w))
             }
-            Type::Struct(_) | Type::Array(_) | Type::AInt | Type::AUInt => unreachable!("lowered before emission"),
+            Type::Struct(_) => match f.vector(t) {
+                Some((lane, n)) => {
+                    let l = self.lty(f, lane);
+                    self.m.ty(BType::Vector(l, n as u64))
+                }
+                None => unreachable!("structs are lowered before emission"),
+            },
+            Type::Array(_) | Type::AInt | Type::AUInt => unreachable!("lowered before emission"),
+        }
+    }
+
+    /// a vector's lane type, else the type itself
+    fn scalar_of(&self, f: &Function, t: Type) -> Type {
+        f.vector(t).map_or(t, |(l, _)| l)
+    }
+
+    /// the constant v of type t: an integer, or a vector of it in every
+    /// lane
+    fn konst(&mut self, f: &Function, t: Type, v: i64) -> usize {
+        match f.vector(t) {
+            Some((lane, n)) => {
+                let lt = self.lty(f, lane);
+                let e = self.m.const_int(lt, v);
+                let vt = self.lty(f, t);
+                self.m.const_agg(vt, vec![e; n as usize])
+            }
+            None => {
+                let lt = self.lty(f, t);
+                self.m.const_int(lt, v)
+            }
         }
     }
 
@@ -441,18 +490,18 @@ impl Cx<'_> {
     /// bits above its width zero (unsigned) or its sign (signed)
     fn normalize(&mut self, fx: &mut Fx, v: usize, t: Type) -> usize {
         let f = fx.f;
-        let Some(bits) = f.width(t) else { return v };
+        let st = self.scalar_of(f, t);
+        let Some(bits) = f.width(st) else { return v };
         let c = cont(bits);
         if bits == c || bits > 64 {
             return v;
         }
-        let lt = self.lty(f, t);
-        if f.repr(t).signed() {
-            let sh = self.m.const_int(lt, (c - bits) as i64);
+        if f.repr(st).signed() {
+            let sh = self.konst(f, t, (c - bits) as i64);
             let up = fx.b.push(&self.m, B::Bin { op: OP_SHL, lhs: v, rhs: sh, flags: 0 });
             fx.b.push(&self.m, B::Bin { op: OP_ASHR, lhs: up, rhs: sh, flags: 0 })
         } else {
-            let mask = self.m.const_int(lt, ((1i128 << bits) - 1) as i64);
+            let mask = self.konst(f, t, ((1i128 << bits) - 1) as i64);
             fx.b.push(&self.m, B::Bin { op: OP_AND, lhs: v, rhs: mask, flags: 0 })
         }
     }
@@ -604,6 +653,14 @@ impl Cx<'_> {
     fn mem_ptr(&mut self, fx: &mut Fx, p: usize, t: Type) -> Result<(usize, usize), String> {
         let mt = match t {
             Type::Ptr | Type::TPtr(_) | Type::Fn(_) => self.i64t,
+            _ if fx.f.vector(t).is_some() => {
+                // lanes as their containers, a byte each for u1 (the
+                // struct's layout); the callers convert
+                let (lane, n) = fx.f.vector(t).unwrap();
+                let w = fx.f.width(lane).ok_or_else(|| format!("no memory width for {}", fx.f.tyname(lane)))?;
+                let lt = self.m.int(cont(w).max(8));
+                self.m.ty(BType::Vector(lt, n as u64))
+            }
             _ => {
                 let w = fx.f.width(t).ok_or_else(|| format!("no memory width for {}", fx.f.tyname(t)))?;
                 self.m.int(cont(w))
@@ -621,15 +678,17 @@ impl Cx<'_> {
         let f = fx.f;
         match inst {
             Inst::IConst { dst, imm } => {
+                // a literal of a vector type is that value in every lane
                 let t = f.ty(*dst);
-                let lt = self.lty(f, t);
-                let v = crate::opt::norm(f.repr(t), *imm as i64);
-                let c = self.m.const_int(lt, v);
+                let st = self.scalar_of(f, t);
+                let v = crate::opt::norm(f.repr(st), *imm as i64);
+                let c = self.konst(f, t, v);
                 fx.vals.insert(dst.0, c);
             }
             Inst::Bin { op, dst, lhs, rhs } => {
                 let t = f.ty(*dst);
-                let signed = f.repr(t).signed();
+                let st = self.scalar_of(f, t);
+                let signed = f.repr(st).signed();
                 let code = match op {
                     BinOp::IAdd => OP_ADD,
                     BinOp::ISub => OP_SUB,
@@ -643,15 +702,15 @@ impl Cx<'_> {
                     BinOp::Shr => if signed { OP_ASHR } else { OP_LSHR },
                 };
                 let (a, mut c) = (self.value(fx, *lhs)?, self.value(fx, *rhs)?);
-                let bits = f.width(t).unwrap_or(64);
+                let bits = f.width(st).unwrap_or(64);
                 // LLVM has no answer for MIN / -1 (the IR: MIN) or MIN % -1
                 // (0): divide by rhs + 2m instead, m = (rhs == -1), and
                 // negate the quotient back, (q ^ -m) + m — in a full
                 // container only; a narrower type's MIN / -1 fits
                 let m = if signed && matches!(op, BinOp::Div | BinOp::Rem) && bits == cont(bits) {
                     let lt = self.lty(f, t);
-                    let minus1 = self.m.const_int(lt, -1);
-                    let two = self.m.const_int(lt, 2);
+                    let minus1 = self.konst(f, t, -1);
+                    let two = self.konst(f, t, 2);
                     let is = fx.b.push(&self.m, B::Cmp { pred: 32, lhs: c, rhs: minus1 });
                     let m = fx.b.push(&self.m, B::Cast { op: CAST_ZEXT, val: is, ty: lt });
                     let m2 = fx.b.push(&self.m, B::Bin { op: OP_MUL, lhs: m, rhs: two, flags: 0 });
@@ -662,8 +721,7 @@ impl Cx<'_> {
                 };
                 let mut v = fx.b.push(&self.m, B::Bin { op: code, lhs: a, rhs: c, flags: 0 });
                 if let (Some(m), BinOp::Div) = (m, op) {
-                    let lt = self.lty(f, t);
-                    let zero = self.m.const_int(lt, 0);
+                    let zero = self.konst(f, t, 0);
                     let neg = fx.b.push(&self.m, B::Bin { op: OP_SUB, lhs: zero, rhs: m, flags: 0 });
                     let x = fx.b.push(&self.m, B::Bin { op: OP_XOR, lhs: v, rhs: neg, flags: 0 });
                     v = fx.b.push(&self.m, B::Bin { op: OP_ADD, lhs: x, rhs: m, flags: 0 });
@@ -675,7 +733,7 @@ impl Cx<'_> {
                 fx.vals.insert(dst.0, v);
             }
             Inst::ICmp { cond, dst, lhs, rhs } => {
-                let t = f.ty(*lhs);
+                let t = self.scalar_of(f, f.ty(*lhs));
                 let signed = t.is_int() && f.repr(t).signed();
                 let pred = match (cond, signed) {
                     (Cond::Eq, _) => 32,
@@ -700,13 +758,14 @@ impl Cx<'_> {
                 // then the value made canonical for its new width and
                 // signedness — for `cast` too: the same bits in a signed
                 // type are a different container value
-                let (wd, ws) = (f.width(td).unwrap_or(64), f.width(ts).unwrap_or(64));
+                let (sd, ss) = (self.scalar_of(f, td), self.scalar_of(f, ts));
+                let (wd, ws) = (f.width(sd).unwrap_or(64), f.width(ss).unwrap_or(64));
                 let (cd, cs) = (cont(wd), cont(ws));
                 let lt = self.lty(f, td);
                 let mut v = if cd < cs {
                     fx.b.push(&self.m, B::Cast { op: CAST_TRUNC, val: s, ty: lt })
                 } else if cd > cs {
-                    let ext = if *op == CastOp::Conv && f.repr(ts).signed() { CAST_SEXT } else { CAST_ZEXT };
+                    let ext = if *op == CastOp::Conv && f.repr(ss).signed() { CAST_SEXT } else { CAST_ZEXT };
                     fx.b.push(&self.m, B::Cast { op: ext, val: s, ty: lt })
                 } else {
                     s
@@ -716,6 +775,12 @@ impl Cx<'_> {
                 }
                 fx.vals.insert(dst.0, v);
             }
+            Inst::Pack { dst: v, .. } | Inst::Set { dst: v, .. } if f.vector(f.ty(*v)).is_some() => {
+                self.emit_vector_op(fx, inst)?;
+            }
+            Inst::Unpack { src: v, .. } | Inst::Get { src: v, .. } if f.vector(f.ty(*v)).is_some() => {
+                self.emit_vector_op(fx, inst)?;
+            }
             Inst::Pack { .. } | Inst::Unpack { .. } | Inst::Get { .. } | Inst::Set { .. } => {
                 // packs: bit fields in an integer
                 self.emit_pack_op(fx, inst)?;
@@ -724,7 +789,11 @@ impl Cx<'_> {
                 let p = self.address(fx, *addr, *off, *index)?;
                 let t = f.ty(*dst);
                 let (pt, mt) = self.mem_ptr(fx, p, t)?;
-                let v = fx.b.push(&self.m, B::Load { ptr: pt, ty: mt, align: 1 });
+                let mut v = fx.b.push(&self.m, B::Load { ptr: pt, ty: mt, align: 1 });
+                if f.vector(t).is_some_and(|(l, _)| l == Type::U1) {
+                    let lt = self.lty(f, t);
+                    v = fx.b.push(&self.m, B::Cast { op: CAST_TRUNC, val: v, ty: lt });
+                }
                 // memory holds the container; what was put there by
                 // something else may not be canonical
                 let v = self.normalize(fx, v, t);
@@ -733,8 +802,11 @@ impl Cx<'_> {
             Inst::Store { val, addr, off, index } => {
                 let p = self.address(fx, *addr, *off, *index)?;
                 let t = f.ty(*val);
-                let v = self.value(fx, *val)?;
-                let (pt, _) = self.mem_ptr(fx, p, t)?;
+                let mut v = self.value(fx, *val)?;
+                let (pt, mt) = self.mem_ptr(fx, p, t)?;
+                if f.vector(t).is_some_and(|(l, _)| l == Type::U1) {
+                    v = fx.b.push(&self.m, B::Cast { op: CAST_ZEXT, val: v, ty: mt });
+                }
                 fx.b.push(&self.m, B::Store { ptr: pt, val: v, align: 1 });
             }
             Inst::PtrAdd { dst, base, off } => {
@@ -770,6 +842,38 @@ impl Cx<'_> {
             // wasm): the emitter knows it by its key
             Inst::Call { dsts, callee, args } if self.natives.get(callee).is_some() => {
                 self.emit_rule(fx, dsts, callee, args)?;
+            }
+            Inst::Call { dsts, callee, args } if args.iter().any(|&x| f.vector(f.ty(x)).is_some()) => {
+                // a lane operation the library does: once per lane, the
+                // lanes taken out and the results put back
+                let (fid, fty) = *self.fn_ids.get(callee).ok_or_else(|| format!("call to {}, which is not in this module (left out?)", callee))?;
+                let fv = self.m.function_value(fid);
+                let ns = self.next_slab(fx);
+                let n = args.iter().find_map(|&x| f.vector(f.ty(x))).map(|(_, n)| n).unwrap();
+                let i32t = self.i32t;
+                let argv: Vec<usize> = args.iter().map(|&x| self.value(fx, x)).collect::<Result<_, _>>()?;
+                let mut results: Vec<usize> = dsts
+                    .iter()
+                    .map(|&d| {
+                        let lt = self.lty(f, f.ty(d));
+                        self.m.const_undef(lt)
+                    })
+                    .collect();
+                for k in 0..n {
+                    let idx = self.m.const_int(i32t, k as i64);
+                    let mut a = vec![fx.env, ns];
+                    for (&x, &v) in args.iter().zip(&argv) {
+                        a.push(if f.vector(f.ty(x)).is_some() { fx.b.push(&self.m, B::ExtractElt { vec: v, idx }) } else { v });
+                    }
+                    let r = fx.b.push(&self.m, B::Call { fn_ty: fty, callee: fv, args: a });
+                    for (i, res) in results.iter_mut().enumerate() {
+                        let lane = if dsts.len() == 1 { r } else { fx.b.push(&self.m, B::ExtractVal { agg: r, idx: i as u32 }) };
+                        *res = fx.b.push(&self.m, B::InsertElt { vec: *res, elt: lane, idx });
+                    }
+                }
+                for (&d, &r) in dsts.iter().zip(&results) {
+                    fx.vals.insert(d.0, r);
+                }
             }
             Inst::Call { dsts, callee, args } => {
                 let (fid, fty) = *self.fn_ids.get(callee).ok_or_else(|| format!("call to {}, which is not in this module (left out?)", callee))?;
@@ -879,6 +983,46 @@ impl Cx<'_> {
                 }
             }
         }
+    }
+
+    /// vectors as LLVM's: lanes go in and out by index
+    fn emit_vector_op(&mut self, fx: &mut Fx, inst: &Inst) -> Result<(), String> {
+        let f = fx.f;
+        let i32t = self.i32t;
+        match inst {
+            Inst::Pack { dst, args } => {
+                let lt = self.lty(f, f.ty(*dst));
+                let mut acc = self.m.const_undef(lt);
+                for (k, &a) in args.iter().enumerate() {
+                    let v = self.value(fx, a)?;
+                    let idx = self.m.const_int(i32t, k as i64);
+                    acc = fx.b.push(&self.m, B::InsertElt { vec: acc, elt: v, idx });
+                }
+                fx.vals.insert(dst.0, acc);
+            }
+            Inst::Unpack { dsts, src } => {
+                let v = self.value(fx, *src)?;
+                for (k, &d) in dsts.iter().enumerate() {
+                    let idx = self.m.const_int(i32t, k as i64);
+                    let lane = fx.b.push(&self.m, B::ExtractElt { vec: v, idx });
+                    fx.vals.insert(d.0, lane);
+                }
+            }
+            Inst::Get { dst, src, field } => {
+                let v = self.value(fx, *src)?;
+                let idx = self.m.const_int(i32t, *field as i64);
+                let lane = fx.b.push(&self.m, B::ExtractElt { vec: v, idx });
+                fx.vals.insert(dst.0, lane);
+            }
+            Inst::Set { dst, src, field, val } => {
+                let (v, x) = (self.value(fx, *src)?, self.value(fx, *val)?);
+                let idx = self.m.const_int(i32t, *field as i64);
+                let r = fx.b.push(&self.m, B::InsertElt { vec: v, elt: x, idx });
+                fx.vals.insert(dst.0, r);
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
     }
 
     /// packs as integers: a field is a shift and a mask
@@ -1013,12 +1157,24 @@ impl Cx<'_> {
             return Ok(());
         }
         let Some(&dst) = dsts.first() else { return Ok(()) };
+        // on vectors, the rule applies to the whole vector: the float
+        // types are vectors, an intrinsic its vector form
+        let f = fx.f;
+        let lanes = f.vector(f.ty(dst)).map(|(_, n)| n);
+        let key = match (lanes, key.rsplit_once('.')) {
+            (Some(n), Some((stem, suffix))) if key.starts_with("air.") && !key.starts_with("air.wg") => format!("{}.v{}{}", stem, n, suffix),
+            _ => key,
+        };
         let mut fargs = Vec::new();
         for (j, &a) in args.iter().enumerate() {
             let v = self.value(fx, a)?;
             let bits = native.arg_bits[j];
             let v = if native.arg_class[j].is_some() || bits >= 16 && key != "" {
                 let ft = self.float_ty(bits);
+                let ft = match lanes {
+                    Some(n) => self.m.ty(BType::Vector(ft, n as u64)),
+                    None => ft,
+                };
                 fx.b.push(&self.m, B::Cast { op: CAST_BITCAST, val: v, ty: ft })
             } else {
                 v
@@ -1048,6 +1204,10 @@ impl Cx<'_> {
         };
         let r = if ret_float {
             let it = self.m.int(native.ret_bits);
+            let it = match lanes {
+                Some(n) => self.m.ty(BType::Vector(it, n as u64)),
+                None => it,
+            };
             fx.b.push(&self.m, B::Cast { op: CAST_BITCAST, val: r, ty: it })
         } else {
             r

@@ -171,8 +171,11 @@ fn const_fold(func: &mut Function) {
         let mut consts: Vec<Option<i64>> = vec![None; func.values.len()];
         for block in &func.blocks {
             for inst in &block.insts {
+                // (a literal of a vector type is every lane; nothing folds it)
                 if let Inst::IConst { dst, imm } = inst {
-                    consts[dst.0 as usize] = Some(norm(func.repr(func.ty(*dst)), *imm as i64));
+                    if func.vector(func.ty(*dst)).is_none() {
+                        consts[dst.0 as usize] = Some(norm(func.repr(func.ty(*dst)), *imm as i64));
+                    }
                 }
             }
         }
@@ -209,6 +212,9 @@ fn const_fold(func: &mut Function) {
                         let to = func.repr(func.values[dst.0 as usize].ty);
                         (*dst, norm(to, a))
                     }),
+                    // (a vector's lanes are not bits of one integer: no folding)
+                    Inst::Get { src, .. } | Inst::Unpack { src, .. } if func.vector(func.ty(*src)).is_some() => None,
+                    Inst::Set { dst, .. } | Inst::Pack { dst, .. } if func.vector(func.ty(*dst)).is_some() => None,
                     Inst::Get { dst, src, field } => get(*src).map(|a| {
                         let (off, fty) = func.field(func.ty(*src), *field).unwrap();
                         let r = func.repr(fty);

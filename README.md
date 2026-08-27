@@ -282,7 +282,8 @@ None of them contains a single hand-written opcode.
   `scratch` live there, a `__kernel(mem, area, id)` — or `(mem, area,
   id, lane, group)` — becomes the compute kernel; `lib/gpu.ssa`'s
   `group_load`/`group_store`/`group_sync` are the threadgroup's memory
-  and barrier here and a buffer in data everywhere else; recursion,
+  and barrier here and a buffer in data everywhere else; vectors reach
+  it whole (`<4 x float>`, `air.sqrt.v4f32`); recursion,
   which Metal has not, is left out and reported. `tools/driver_metal.py`
   dispatches it (pyobjc).
 

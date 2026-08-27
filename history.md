@@ -6,6 +6,30 @@ has the full story for any of them.
 
 ---
 
+### Vectors whole to the GPU — `HASH` · 2026-08-27
+
+`targets/air.platform` says `builtin vectors`, and a `TxN` now
+reaches the AIR emitter as one value: the parser emits a single
+vector-typed instruction where it made one per lane — a library call
+on pack lanes takes vectors for its lanes — `aggregate.rs` leaves a
+lane struct whole, the wide lowering knows a 128-bit vector is not a
+128-bit integer, the folder leaves vectors alone, and the verifier
+learns the lane rules (a `u1xN` from a `cmp` on `TxN`, a call on N
+lanes gives N lanes back). In the emitter a vector is `<N x T>`:
+arithmetic, comparisons and conversions are LLVM's own on vectors,
+`pack`/`unpack`/`get`/`set` are insertelement/extractelement, a
+literal of a vector type is a constant in every lane, a rule applies
+to the whole vector (`fadd <4 x float>`, an intrinsic by its vector
+name, `air.sqrt.v4f32`, as Apple's front end spells it), and a
+library operation with no rule is made once per lane. `u1` lanes are
+a byte each in memory, as the struct's layout has them. Every other
+backend is untouched: 22/22 vector and typed-pointer cases on the
+GPU, the suite unchanged on all five paths, `probe parse x.ssa air`
+shows the whole form (and prints the module even when the verifier
+objects).
+
+---
+
 ### A reduction on the GPU: threadgroups — `60f319e` · 2026-08-27
 
 `fn __kernel(mem, area, id, lane, group)` is a kernel that knows its

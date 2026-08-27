@@ -8,6 +8,10 @@
 
 target air
 
+; vectors reach the emitter whole, as <N x T>
+ext vectors
+builtin vectors
+
 ext FP
 class f32 = f32
 class f16 = f16

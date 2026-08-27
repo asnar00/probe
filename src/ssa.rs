@@ -867,6 +867,21 @@ impl Function {
         self.value(id).ty
     }
 
+    /// `TxN`: the lane type and the count, if ty is a vector
+    pub fn vector(&self, ty: Type) -> Option<(Type, u32)> {
+        match ty {
+            Type::Struct(i) => {
+                let p = &self.packs[i as usize];
+                if p.lanes > 0 {
+                    Some((p.fields[0].1, p.lanes))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub fn pack(&self, ty: Type) -> Option<&PackDef> {
         match ty {
             Type::Pack(i) | Type::Struct(i) => self.packs.get(i as usize),
@@ -1031,6 +1046,9 @@ pub struct Policy {
     /// sends `mul`, `div` and `rem` to the library's generics instead
     pub native_mul: bool,
     pub native_div: bool,
+    /// the platform takes vectors whole (AIR): a vector operation stays
+    /// one instruction on vector-typed values instead of one per lane
+    pub vectors: bool,
 }
 
 pub const ROUNDS: [&str; 5] = ["even", "zero", "down", "up", "away"];
@@ -1039,8 +1057,8 @@ impl Policy {
     pub fn new(int: Type) -> Result<Policy, String> {
         match int {
             // the float of the same class as the integer: f32 with i32, f64 with i64
-            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16, rational: (16, 16), scalar: "float", round: 0, native_mul: true, native_div: true }),
-            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32, rational: (32, 32), scalar: "float", round: 0, native_mul: true, native_div: true }),
+            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16, rational: (16, 16), scalar: "float", round: 0, native_mul: true, native_div: true, vectors: false }),
+            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32, rational: (32, 32), scalar: "float", round: 0, native_mul: true, native_div: true, vectors: false }),
             t => Err(format!("'int' cannot resolve to {}", t.name())),
         }
     }
@@ -1614,7 +1632,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
         if let Err(errs) = verify(&checked) {
             return Err(ParseError { line: 0, msg: errs.join("; ") });
         }
-        crate::aggregate::lower(&mut module).map_err(|m| ParseError { line: 0, msg: m })?;
+        crate::aggregate::lower(&mut module, policy.vectors).map_err(|m| ParseError { line: 0, msg: m })?;
         crate::wide::lower(&mut module).map_err(|m| ParseError { line: 0, msg: m })?;
     }
     Ok(module)
@@ -3578,15 +3596,60 @@ impl Parser {
         let (dlane, n) = self.vector_of(dty).ok_or_else(|| self.err(format!("'{}' on vectors gives a vector; {} is {}", op, scope.values[dst.0 as usize].name, self.tyname_of(dty))))?;
         let dname = scope.values[dst.0 as usize].name.clone();
         let mut rows: Vec<Vec<ValueId>> = Vec::new();
+        let mut lane_types = Vec::new();
         for (j, &v) in operands.iter().enumerate() {
             let vty = scope.values[v.0 as usize].ty;
             let (lane, m) = self.vector_of(vty).ok_or_else(|| self.err(format!("'{}': {} is {}, not a vector", op, scope.values[v.0 as usize].name, self.tyname_of(vty))))?;
             if m != n {
                 return Err(self.err(format!("'{}': {} has {} lanes, {} has {}", op, scope.values[v.0 as usize].name, m, dname, n)));
             }
+            lane_types.push(lane);
+            if self.policy.vectors {
+                continue;
+            }
             let lanes: Vec<ValueId> = (0..n).map(|k| scope.temp(lane, format!("{}_{}{}", dname, (b'a' + j as u8) as char, k))).collect();
             self.consts.push(Inst::Unpack { dsts: lanes.clone(), src: v });
             rows.push(lanes);
+        }
+        if self.policy.vectors {
+            // the platform takes the vector whole: one instruction on the
+            // vectors, and a lane operation's library call takes vectors
+            // for its lanes (the emitter applies it per lane, or knows
+            // the vector form)
+            let sl = lane_types[0];
+            let inst = if let Some((_, bin)) = BINOPS.iter().find(|(n, _)| *n == op) {
+                let to_library = sl.is_pack()
+                    || match *bin {
+                        BinOp::Div | BinOp::Rem => !self.policy.native_div,
+                        BinOp::IMul => !self.policy.native_mul,
+                        _ => false,
+                    };
+                if to_library {
+                    let callee = self.dispatch(op, sl, dlane)?;
+                    Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() }
+                } else {
+                    Inst::Bin { op: *bin, dst, lhs: operands[0], rhs: operands[1] }
+                }
+            } else if let Some(cc) = op.strip_prefix("cmp.") {
+                let cond = CONDS.iter().find(|(n, _)| *n == cc).map(|(_, c)| *c).ok_or_else(|| self.err(format!("unknown comparison condition '{}'", cc)))?;
+                if sl.is_pack() {
+                    let callee = self.dispatch(cond.name(), sl, dlane)?;
+                    Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() }
+                } else {
+                    Inst::ICmp { cond, dst, lhs: operands[0], rhs: operands[1] }
+                }
+            } else if op == "conv" || op == "cast" {
+                if op == "conv" && (sl.is_pack() || dlane.is_pack()) {
+                    let callee = self.dispatch(op, sl, dlane)?;
+                    Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() }
+                } else {
+                    Inst::Cast { op: if op == "conv" { CastOp::Conv } else { CastOp::Cast }, dst, src: operands[0] }
+                }
+            } else {
+                let callee = self.dispatch(op, sl, dlane)?;
+                Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() }
+            };
+            return Ok(inst);
         }
         let mut results = Vec::new();
         for k in 0..n as usize {
@@ -5042,7 +5105,10 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
         }
         Inst::Bin { op, dst, lhs, rhs } => {
             let (td, tl, tr) = (func.ty(*dst), func.ty(*lhs), func.ty(*rhs));
-            if !td.is_int() || tl != td || tr != td {
+            // ... or one vector type of integer lanes, on a platform that
+            // takes vectors whole
+            let int_or_lanes = td.is_int() || func.vector(td).is_some_and(|(l, _)| l.is_int());
+            if !int_or_lanes || tl != td || tr != td {
                 errs.push(ctx(format!(
                     "{}: operands and result must share an integer type; got {}: {}, {}: {}, {}: {}",
                     op.name(),
@@ -5062,7 +5128,13 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             rhs,
         } => {
             let (td, tl, tr) = (func.ty(*dst), func.ty(*lhs), func.ty(*rhs));
-            if td != Type::U1 {
+            // on vectors: u1xN from TxN
+            let lanes = func.vector(tl);
+            let want_dst = match lanes {
+                Some((_, n)) => func.vector(td).is_some_and(|(l, m)| l == Type::U1 && m == n),
+                None => td == Type::U1,
+            };
+            if !want_dst {
                 errs.push(ctx(format!(
                     "cmp.{} result {} must be u1, not {}",
                     cond.name(),
@@ -5070,7 +5142,8 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     tn(td)
                 )));
             }
-            if tl != tr || !(tl.is_int() || tl.is_ptr()) {
+            let scalar = lanes.map_or(tl, |(l, _)| l);
+            if tl != tr || !(scalar.is_int() || scalar.is_ptr()) {
                 errs.push(ctx(format!(
                     "cmp.{}: operands must share an integer or ptr type; got {} and {}",
                     cond.name(),
@@ -5081,6 +5154,13 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
         }
         Inst::Cast { op, dst, src } => {
             let (td, ts) = (func.ty(*dst), func.ty(*src));
+            // vectors convert lane by lane: the same count on both sides
+            let (vd, vs) = (func.vector(td), func.vector(ts));
+            let (td, ts) = match (vd, vs) {
+                (Some((ld, n)), Some((ls, m))) if n == m => (ld, ls),
+                (None, None) => (td, ts),
+                _ => (Type::AInt, Type::AInt), // a mismatch: fails below
+            };
             let (wd, ws) = (func.width(td), func.width(ts));
             let ok = match op {
                 CastOp::Conv => td.is_int() && ts.is_int(),
@@ -5268,7 +5348,31 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             if let Some(target) = module.func(callee) {
                 let want: Vec<Type> = target.params.iter().map(|&p| target.ty(p)).collect();
                 let got: Vec<Type> = args.iter().map(|&a| func.ty(a)).collect();
-                if want != got {
+                // a lane operation's call takes vectors for its lanes, all
+                // of one count, and gives vectors back
+                let lane_count = |want: &[Type], got: &[Type]| -> Option<u32> {
+                    if want.len() != got.len() {
+                        return None;
+                    }
+                    let mut n = 0;
+                    for (w, g) in want.iter().zip(got) {
+                        match func.vector(*g) {
+                            Some((l, m)) if l == *w && (n == 0 || n == m) => n = m,
+                            _ if g == w => {}
+                            _ => return None,
+                        }
+                    }
+                    Some(n)
+                };
+                let n = lane_count(&want, &got);
+                if n.is_some_and(|n| n > 0) {
+                    if !dsts.is_empty() {
+                        let dt: Vec<Type> = dsts.iter().map(|&d| func.ty(d)).collect();
+                        if lane_count(&target.rets, &dt) != n {
+                            errs.push(ctx(format!("call {} on {} lanes: results must be vectors of {} lanes of the return types", callee, n.unwrap(), n.unwrap())));
+                        }
+                    }
+                } else if want != got {
                     errs.push(ctx(format!(
                         "call {}: argument types ({}) do not match parameters ({})",
                         callee,
@@ -5277,7 +5381,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     )));
                 }
                 // results may bind all of the callee's return values or none
-                if !dsts.is_empty() {
+                if !dsts.is_empty() && !n.is_some_and(|n| n > 0) {
                     let dt: Vec<Type> = dsts.iter().map(|&d| func.ty(d)).collect();
                     if dt != target.rets {
                         errs.push(ctx(format!(

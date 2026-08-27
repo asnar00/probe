@@ -4,9 +4,9 @@
 ; `pack`/`unpack` build and split it, `get v, 2` and `set v, 0, x`
 ; reach one lane, `splat x` fills every lane. Arithmetic, comparisons
 ; and conversions on vectors are lane by lane — the scalar operation on
-; each lane, the library's for a pack lane — so they run today on
-; every backend, instruction by instruction, and a platform with
-; vector registers can later take the whole vector at once. `Tx1` is T.
+; each lane, the library's for a pack lane — so they run on every
+; backend, instruction by instruction; a platform that says `builtin
+; vectors` (AIR) takes the whole vector at once. `Tx1` is T.
 
 ;! add4 1 2 3 4 10 20 30 40 -> 22, 44
 ;! mul_splat 1 2 3 4 3 -> 3, 12

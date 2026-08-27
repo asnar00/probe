@@ -33,7 +33,9 @@ pub fn word_types(f: &Function, ty: Type) -> Vec<Type> {
 }
 
 fn is_wide(f: &Function, ty: Type) -> bool {
-    f.width(ty).map_or(false, |w| w > 64)
+    // a vector kept whole (for a platform that takes them) is lanes, not
+    // one wide integer, whatever its width adds up to
+    f.vector(ty).is_none() && f.width(ty).map_or(false, |w| w > 64)
 }
 
 /// does the module have anything to lower?

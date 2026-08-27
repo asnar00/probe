@@ -185,6 +185,8 @@ pub enum Type {
     Double,
     Ptr(usize, u32),
     Array(usize, u64),
+    /// <n x elem>
+    Vector(usize, u64),
     Fn(usize, Vec<usize>),
     Metadata,
     Label,
@@ -200,6 +202,8 @@ pub enum Const {
     Float(usize, u64),
     Null(usize),
     Undef(usize),
+    /// a vector (or array) of constants, by their value ids
+    Agg(usize, Vec<usize>),
 }
 
 #[derive(Clone, Debug)]
@@ -236,6 +240,10 @@ pub enum Inst {
     ExtractVal { agg: usize, idx: u32 },
     /// a unary op: fneg is opcode 0
     Unop { op: u32, val: usize },
+    /// one lane of a vector
+    ExtractElt { vec: usize, idx: usize },
+    /// a vector with one lane replaced
+    InsertElt { vec: usize, elt: usize, idx: usize },
 }
 
 impl Inst {
@@ -389,6 +397,13 @@ impl Module {
         self.const_ids.insert(key, id);
         id
     }
+    /// a constant vector of the given element constants
+    pub fn const_agg(&mut self, ty: usize, elems: Vec<usize>) -> usize {
+        let id = self.nglobal_values + self.consts.len();
+        self.consts.push(Const::Agg(ty, elems));
+        id
+    }
+
     pub fn const_undef(&mut self, ty: usize) -> usize {
         let id = self.nglobal_values + self.consts.len();
         self.consts.push(Const::Undef(ty));
@@ -434,6 +449,7 @@ impl Module {
             Type::Ptr(p, a) => (8, vec![*p as u64, *a as u64]),
             Type::Half => (10, vec![]),
             Type::Array(e, n) => (11, vec![*n, *e as u64]),
+            Type::Vector(e, n) => (12, vec![*n, *e as u64]),
             Type::Metadata => (16, vec![]),
             Type::Fn(r, ps) => {
                 let mut ops = vec![0u64, *r as u64];
@@ -555,7 +571,7 @@ impl Module {
             let mut cur_ty = usize::MAX;
             for c in &consts {
                 let ty = match c {
-                    Const::Int(t, _) | Const::Float(t, _) | Const::Null(t) | Const::Undef(t) => *t,
+                    Const::Int(t, _) | Const::Float(t, _) | Const::Null(t) | Const::Undef(t) | Const::Agg(t, _) => *t,
                 };
                 if ty != cur_ty {
                     s.record(1, &[ty as u64]); // SETTYPE
@@ -571,6 +587,7 @@ impl Module {
                     Const::Float(_, bits) => s.record(6, &[*bits]),
                     Const::Null(_) => s.record(2, &[]),
                     Const::Undef(_) => s.record(3, &[]),
+                    Const::Agg(_, elems) => s.record(7, &elems.iter().map(|&e| e as u64).collect::<Vec<_>>()),
                 }
             }
             s.exit();
@@ -751,6 +768,8 @@ impl Module {
                     }
                     Inst::InsertVal { agg, val, idx } => s.record(27, &[rel(cur, *agg), rel(cur, *val), *idx as u64]),
                     Inst::ExtractVal { agg, idx } => s.record(26, &[rel(cur, *agg), *idx as u64]),
+                    Inst::ExtractElt { vec, idx } => s.record(6, &[rel(cur, *vec), rel(cur, *idx)]),
+                    Inst::InsertElt { vec, elt, idx } => s.record(7, &[rel(cur, *vec), rel(cur, *elt), rel(cur, *idx)]),
                     Inst::Unop { op, val } => s.record(56, &[rel(cur, *val), *op as u64]),
                     Inst::Ret { val: Some(v) } => s.record(10, &[rel(cur, *v)]),
                     Inst::Ret { val: None } => s.record(10, &[]),

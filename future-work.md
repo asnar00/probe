@@ -33,10 +33,10 @@ bitcode we write. Left:
   its group behaviour; a CPU driver that runs a group as fibres would.
 - **Textures and samplers**: handles with platform operations, as
   decided when arrays were done; not arrays.
-- **Vectors as `<N x T>`**: lanes are separate values on AIR as on
-  every backend; Apple's back end would take real vector types and
-  produce SIMD code. The lane-wise lowering happens at parse time, so
-  this needs a way to keep a vector whole through to the emitter.
+- **Vectors whole elsewhere**: AIR takes them (`builtin vectors`);
+  wasm SIMD and NEON would use the same seam — the parser's whole
+  form and the verifier's lane rules are there — and each needs its
+  emitter's `<N x T>` and its register class.
 - **Denormals**: the f32 instructions flush them and Apple's compiler
   has no switch (`air.compile.denorms_enable` is ignored, their own
   front end never writes anything but `denorms_disable`); half keeps

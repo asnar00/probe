@@ -237,6 +237,8 @@ impl Platform {
     pub fn adjust(&self, mut policy: Policy) -> Policy {
         policy.native_mul = self.has_builtin("mul");
         policy.native_div = self.has_builtin("div") && self.has_builtin("rem");
+        // vectors whole is opted into: a platform says `builtin vectors`
+        policy.vectors = self.builtins.iter().any(|(o, g)| o == "vectors" && !self.without.contains(g));
         policy
     }
 

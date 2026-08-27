@@ -113,6 +113,11 @@ fn main() -> ExitCode {
         Err(e) => return fail(&e),
     };
     match args.first().map(String::as_str) {
+        // `parse x.ssa air`: as the air platform's policy has it (vectors whole)
+        Some("parse") if args.len() >= 3 && args[2] == "air" => match platform::Platform::load("air") {
+            Ok(p) => cmd_parse(&args[1], p.adjust(policy)),
+            Err(e) => fail(&e),
+        },
         Some("parse") if args.len() >= 2 => cmd_parse(&args[1], policy),
         Some("learn") if args.len() >= 2 => {
             let out = args
@@ -336,13 +341,16 @@ fn cmd_parse(path: &str, policy: ssa::Policy) -> ExitCode {
     };
     // abstract types resolve under the same policy as every other command
     ssa::resolve_types(&mut module, &policy);
-    if let Err(errs) = ssa::verify(&module) {
+    // the module is printed either way: what the verifier objects to is
+    // easier to see than to imagine
+    let verified = ssa::verify(&module);
+    print!("{}", module);
+    if let Err(errs) = verified {
         for e in &errs {
             eprintln!("{}: {}", path, e);
         }
         return ExitCode::FAILURE;
     }
-    print!("{}", module);
     ExitCode::SUCCESS
 }
 
