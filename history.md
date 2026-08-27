@@ -6,6 +6,31 @@ has the full story for any of them.
 
 ---
 
+### A metallib by hand — `0dc7a3d` · 2026-08-27
+
+The GPU thread starts where the memory thread ended: on this Mac, and
+on the M6 that is not announced yet. Apple's GPUs have no public ISA
+and a different one each generation; what Apple keeps stable is the
+bitcode its shader compiler emits (AIR: LLVM bitcode with typed
+pointers, address spaces, `air.*` intrinsics and metadata naming a
+kernel's arguments), which the driver compiles for whatever chip it
+finds. So that is the binary, and the goal is to produce it with none
+of Apple's tools in the mix. The analysis went as it did for ARM: the
+Metal toolchain was fetched, a catalog of tiny kernels compiled, and
+what came out read with LLVM's own bcanalyzer and disassembler
+(`tools/probe-air.sh` keeps the record). Then `src/bitcode.rs`: the
+bitstream and the `.metallib` container, written from the public
+format and the observed records — and `add1`, built by hand in a
+test, disassembles under upstream LLVM and runs on the M1 Max. Two
+things learned the hard way: upstream LLVM 19's own encoding of the
+same module crashes Apple's compiler service (the format must be
+theirs, record for record), and a bitcode the driver has not seen
+validated by `llvm-dis` first is a way to crash it again — so the GPU
+only ever sees bytes LLVM has accepted. Also that the string table is
+a top-level block after the module, which cost an hour.
+
+---
+
 ### Input by interrupt — `87ee51b` · 2026-08-27
 
 `os/echo.ssa` no longer polls. `uart_irq_on` asks the board for an
