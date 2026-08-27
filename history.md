@@ -6,6 +6,29 @@ has the full story for any of them.
 
 ---
 
+### The root: a heap for regions — `25724a3` · 2026-08-27
+
+The heap after all — but as the root the rungs are carved from, not a
+`malloc` for objects, which is seL4's shape and what keeps it inside
+the rules. `lib/heap.ssa` is a buddy allocator over one declared
+block: pieces are powers of two aligned to their own size, taking is a
+split and giving back a merge, a byte per node of the split tree makes
+a double give or a wrong size a failed `check`, and `heap_seal` lets a
+kernel forbid allocation inside an interrupt — the discipline, stated:
+objects live in the rungs, the rungs come from the heap, nothing
+allocates from the heap in a handler. `os/sleep.ssa` now carves its
+stacks' pool and its frame arenas from one at boot, seals it in
+`__irq`, and the one-shot task takes a region of its own, uses it
+through an arena, and gives it back: `66560 heap bytes out` at the
+end, the task's 4 KB gone home. Two harness lessons: the qemu driver
+was writing test buffers a store per byte, so ten 8 KB zero buffers
+became a megabyte of code and a call outran `jal` on riscv — RAM
+starts zeroed, so zeros need no store; and a timing test must not
+share the host with the regression suites, so everything that runs a
+machine now takes turns.
+
+---
+
 ### The second rung: pools, and tasks that come and go — `e762343` · 2026-08-27
 
 `lib/pool.ssa`: fixed-size slots over declared memory, taken and given
