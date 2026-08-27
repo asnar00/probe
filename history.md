@@ -6,6 +6,29 @@ has the full story for any of them.
 
 ---
 
+### `at` and `after` — `fba9011` · 2026-08-27
+
+The question was whether "at a time, do this" wants an instruction in
+the IR. It does not: a time is a library type and a callback is a
+function value, both already there, so `at(t, f, arg)` and `after(d,
+f, arg)` are two kernel functions — a queue of `(time, fn, arg)` in
+`data`, due entries run inside `__irq` before the scheduler picks a
+task, pending ones counted when the timer is armed. Exact and cheap,
+hence short and never sleeping; the task-level kind, which may sleep,
+waits for the memory design session because it needs a stack each.
+In `os/sleep.ssa` one callback is set half a second after boot and
+registers another at exactly a quarter of a second after its own
+time: `!` prints before `a 500000` on the interrupt they share, `!!`
+250000 µs later to the microsecond, nineteen interrupts. `after`
+returns the time it registered, so a callback reports what was
+scheduled rather than the late moment it runs at. Two places time
+might later touch the compiler, noted and not taken: closures, so
+`at t { ... }` could capture; and static bounds on how long the code
+it emits takes, which is what would let a callback's deadline be
+checked rather than hoped for.
+
+---
+
 ### Sleeping tasks and a tickless timer: `os/sleep.ssa` — `ada2d1f` · 2026-08-27
 
 The fifth operating system: three tasks that sleep until exact times,
