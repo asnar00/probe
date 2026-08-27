@@ -344,6 +344,15 @@ instructions. The board's side is again the platform's: `now()` and
 interrupt (the GICv2 on the aarch64 virt board; mie and mstatus on the
 riscv64 one), `irq_ack()` and `irq_done(id)` take and finish one, and
 `idle()` waits for the next; `irq_timer` is the timer's interrupt id.
+A device's interrupt is the same shape with two more: `uart_irq_on()`
+asks the board for one per received byte, and — since riscv64 delivers
+every device interrupt as one cause, "external", and names the source
+only at its controller — a handler that sees `irq_external` asks
+`irq_claim()` for the source (on arm64 the controller names it in
+`irq_ack` and `irq_external` is an id that never arrives), then
+`irq_done` completes it; `irq_uart` is the port's source. `os/echo.ssa`
+reads its input that way: `__irq` drains the port into a ring and
+`read` sleeps until a line is in it.
 `os/clock.ssa` is the third operating system: ten ticks a tenth of a
 second apart, each deadline a step from the previous one, and the
 elapsed count turned into exact milliseconds by `lib/time.ssa`.

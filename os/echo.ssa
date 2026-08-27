@@ -14,12 +14,29 @@
 ; supplies (msr/mrs/svc on arm64, csrw/csrr/ecall on riscv64). The
 ; handler is `fn __trap`: `probe boot` gives it a frame that keeps the
 ; interrupted code's registers and a return that resumes it.
+;
+; Input arrives by interrupt: `uart_irq_on` asks the board for one per
+; byte, `fn __irq` drains the port into a ring, and `read` sleeps
+; (`idle`) until a whole line is in the ring — so between keystrokes
+; the machine does nothing at all. On riscv64 every device interrupt
+; is one cause, "external", and the controller names the source
+; (`irq_claim`); on arm64 the controller names it outright; the two
+; constants `irq_external` and `irq_uart` let one kernel do both. The
+; last line says how many interrupts the input took.
 
 data prompt = "> "
 data echo = "echo: "
 data newline = "\n"
 data line: array(u8, 64)
 data calls: array(fn(u64, u64) -> u64, 3)
+; the receive ring: 256 bytes, a head the interrupt moves and a tail
+; the reader moves
+data ring: array(u8, 256)
+data head: array(u64, 1)
+data tail: array(u64, 1)
+data uart_irqs: array(u64, 1)
+data took = "took "
+data irqs = " interrupts\n"
 
 ; --- the board ---
 fn vectors(t: ptr) {
@@ -40,6 +57,24 @@ fn syscall(n: u64, a: u64, b: u64) -> u64 {
 fn psci(code: u64) {
     ret
 }
+fn irq_on() {
+    ret
+}
+fn uart_irq_on() {
+    ret
+}
+fn irq_ack() -> u32 {
+    ret 0
+}
+fn irq_claim() -> u32 {
+    ret 0
+}
+fn irq_done(id: u32) {
+    ret
+}
+fn idle() {
+    ret
+}
 
 ; --- the kernel ---
 fn __start() {
@@ -53,8 +88,61 @@ fn __start() {
     h: fn(u64, u64, u64) -> u64 = addr __trap
     hp: ptr = cast h
     vectors(hp)
+    uart_irq_on()
+    irq_on()
     main()
     exit()
+    ret
+}
+
+; a byte arrived: everything the port has goes into the ring
+fn __irq() {
+    id: u32 = irq_ack()
+    ext: u32 = platform irq_external
+    is_ext: u1 = cmp.eq id, ext
+    src: u32 = if is_ext {
+        s: u32 = irq_claim()
+        yield s
+    } else {
+        yield id
+    }
+    uart_id: u32 = platform irq_uart
+    is_uart: u1 = cmp.eq src, uart_id
+    if is_uart {
+        ip: ptr = addr uart_irqs
+        n: u64 = load ip
+        n1: u64 = add n, 1
+        store n1, ip
+        drain()
+    }
+    irq_done(src)
+    ret
+}
+fn drain() {
+    uart: ptr = platform uart
+    off: i64 = platform uart_status
+    status: ptr = ptradd uart, off
+    mask: u8 = platform uart_ready_mask
+    ready: u8 = platform uart_ready
+    rp: ptr = addr ring
+    hp: ptr = addr head
+    loop() {
+        s: u8 = load status
+        m: u8 = and s, mask
+        ok: u1 = cmp.eq m, ready
+        empty: u1 = cmp.ne ok, 1
+        if empty {
+            break
+        }
+        c: u8 = load uart
+        h: u64 = load hp
+        hi: i64 = conv h
+        slot: i64 = and hi, 255
+        store c, rp, slot, 1
+        h1: u64 = add h, 1
+        store h1, hp
+        continue
+    }
     ret
 }
 
@@ -100,11 +188,19 @@ fn sys_write(p: u64, n: u64) -> u64 {
     ret n
 }
 
-; read(p, n): a line from the serial port into p, at most n bytes, the
-; newline dropped; returns the count
+; read(p, n): a line from the ring into p, at most n bytes, the newline
+; dropped; returns the count. Sleeps until a line is there.
 fn sys_read(p: u64, n: u64) -> u64 {
     q: ptr = cast p
     m: i64 = conv n
+    loop() {
+        have: u1 = line_ready()
+        if have {
+            break
+        }
+        idle()
+        continue
+    }
     got: i64 = loop(i: i64 = 0) {
         c: u8 = getc()
         nl: u1 = cmp.eq c, 10
@@ -122,8 +218,44 @@ fn sys_read(p: u64, n: u64) -> u64 {
     r: u64 = conv got
     ret r
 }
+; is there a newline between the tail and the head?
+fn line_ready() -> u1 {
+    rp: ptr = addr ring
+    hp: ptr = addr head
+    tp: ptr = addr tail
+    h: u64 = load hp
+    t0: u64 = load tp
+    r: u1 = loop(t: u64 = t0) {
+        at_end: u1 = cmp.ge t, h
+        if at_end {
+            break 0
+        }
+        ti: i64 = conv t
+        slot: i64 = and ti, 255
+        c: u8 = load rp, slot, 1
+        nl: u1 = cmp.eq c, 10
+        if nl {
+            break 1
+        }
+        t1: u64 = add t, 1
+        continue t1
+    }
+    ret r
+}
 
+
+; exit: how many interrupts the input took, then the machine ends
 fn sys_exit(a: u64, b: u64) -> u64 {
+    ip: ptr = addr uart_irqs
+    n: u64 = load ip
+    ni: i64 = conv n
+    tp: ptr = addr took
+    tn: i64 = len took
+    say_bytes(tp, tn)
+    print_dec(ni)
+    ipp: ptr = addr irqs
+    ipn: i64 = len irqs
+    say_bytes(ipp, ipn)
     exit()
     ret 0
 }
@@ -135,23 +267,57 @@ fn putc(c: u8) {
     store c32, uart
     ret
 }
+; the next byte of the ring (there is one: read waited for a line)
 fn getc() -> u8 {
-    uart: ptr = platform uart
-    off: i64 = platform uart_status
-    status: ptr = ptradd uart, off
-    mask: u8 = platform uart_ready_mask
-    ready: u8 = platform uart_ready
-    loop() {
-        s: u8 = load status
-        m: u8 = and s, mask
-        ok: u1 = cmp.eq m, ready
-        if ok {
+    rp: ptr = addr ring
+    tp: ptr = addr tail
+    t: u64 = load tp
+    ti: i64 = conv t
+    slot: i64 = and ti, 255
+    c: u8 = load rp, slot, 1
+    t1: u64 = add t, 1
+    store t1, tp
+    ret c
+}
+fn say_bytes(p: ptr, n: i64) {
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
             break
         }
-        continue
+        c: u8 = load p, i, 1
+        putc(c)
+        i2: i64 = add i, 1
+        continue i2
     }
-    c: u8 = load uart
-    ret c
+    ret
+}
+fn print_dec(v: i64) {
+    buf: ptr = scratch 32
+    n: i64 = loop(x: i64 = v, i: i64 = 0) {
+        d: i64 = rem x, 10
+        c: u8 = conv d
+        c48: u8 = add c, 48
+        store c48, buf, i, 1
+        x2: i64 = div x, 10
+        i2: i64 = add i, 1
+        done: u1 = cmp.eq x2, 0
+        if done {
+            break i2
+        }
+        continue x2, i2
+    }
+    loop(j: i64 = n) {
+        z: u1 = cmp.le j, 0
+        if z {
+            break
+        }
+        j1: i64 = sub j, 1
+        ch: u8 = load buf, j1, 1
+        putc(ch)
+        continue j1
+    }
+    ret
 }
 
 ; end the machine (as os/hello.ssa does)

@@ -66,14 +66,26 @@ const irq_timer = 7
 ; raises it by writing the CLINT's msip (0x02000000); taking it needs
 ; mie.MSIE (bit 3), and finishing it clears msip
 const irq_soft = 3
+; device interrupts arrive as one cause, external (11), and the PLIC
+; (0x0c000000) says which source: the UART is source 10. A program
+; that sees irq_external asks irq_claim for the source, and irq_done
+; completes it
+const irq_external = 11
+const irq_uart = 10
 now() -> u64
     csrr r, 0xc01
 hz() -> u64
     lui r, 0x989
     addi r, r, 0x680
-timer_at(t: u64) -> () with base: ptr
+; arming the timer also enables its interrupt (mie.MTIE), as arm64's
+; timer control does; irq_on leaves it alone, since mtimecmp resets to
+; zero and an enabled, unarmed timer fires at once
+timer_at(t: u64) -> () with base: ptr, bits: u64
     lui base, 0x2004
     sd t, 0(base)
+    lui bits, 0
+    addi bits, bits, 128
+    csrs 0x304, bits
 timer_off() -> () with base: ptr, never: u64
     lui base, 0x2004
     lui never, 0
@@ -81,11 +93,34 @@ timer_off() -> () with base: ptr, never: u64
     sd never, 0(base)
 irq_on() -> () with bits: u64
     lui bits, 0
-    addi bits, bits, 136
+    addi bits, bits, 1024
+    add bits, bits, bits
+    addi bits, bits, 8
     csrs 0x304, bits
     lui bits, 0
     addi bits, bits, 8
     csrs 0x300, bits
+; the UART's receive interrupt: the device's enable (IER, offset 1),
+; then the PLIC's priority for source 10 (offset 4 * 10), its enable
+; bit for hart 0's M-mode context (0x0c002000), and that context's
+; threshold (0x0c200000) at zero
+uart_irq_on() -> () with base: ptr, v: u32
+    lui base, 0x10000
+    lui v, 0
+    addi v, v, 1
+    sb v, 1(base)
+    lui base, 0xc000
+    sw v, 40(base)
+    lui base, 0xc002
+    lui v, 0
+    addi v, v, 1024
+    sw v, 0(base)
+    lui base, 0xc200
+    lui v, 0
+    sw v, 0(base)
+irq_claim() -> u32 with base: ptr
+    lui base, 0xc200
+    lwu r, 4(base)
 irq_ack() -> u32
     csrr r, 0x342
     andi r, r, 255
@@ -93,6 +128,8 @@ irq_done(id: u32) -> () with base: ptr, zero: u32
     lui base, 0x2000
     lui zero, 0
     sw zero, 0(base)
+    lui base, 0xc200
+    sw id, 4(base)
 reschedule() -> () with base: ptr, one: u32
     lui base, 0x2000
     lui one, 0

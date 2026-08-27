@@ -48,9 +48,11 @@ printf 'hello\nbye\n' | cargo run -- boot os/echo.ssa arm
 (`fn __trap`, compiled with a frame that keeps the interrupted code's
 registers and returns by `eret`/`mret`) and serves write, read and exit
 through a `data` table of function values, and a program that uses
-nothing but those system calls (`svc`/`ecall`). The trap instructions
-are learned like every other; how a board takes a trap is five
-platform rules and two constants.
+nothing but those system calls (`svc`/`ecall`). Its input arrives by
+interrupt: `__irq` drains the port into a ring and `read` sleeps until
+a line is there, so between keystrokes the machine does nothing. The
+trap instructions are learned like every other; how a board takes a
+trap is a handful of platform rules and constants.
 
 ```sh
 cargo run -- boot os/clock.ssa

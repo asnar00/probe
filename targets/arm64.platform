@@ -83,6 +83,11 @@ const irq_timer = 30
 ; distributor's SGIR at 0xf00, target list filter "self"): a task
 ; asking to be rescheduled
 const irq_soft = 0
+; the GIC names every source itself, so there is no "external" cause
+; to claim from: irq_external is an id that never arrives, and the
+; UART is SPI 33
+const irq_external = 1023
+const irq_uart = 33
 now() -> u64
     mrs r, cntpct_el0
 hz() -> u64
@@ -111,6 +116,22 @@ irq_on() -> () with gic: ptr, v: u32
 irq_ack() -> u32 with gic: ptr
     movz gic, 0x0801, lsl 16
     ldr r, [gic, 12]
+irq_claim() -> u32 with gic: ptr
+    movz gic, 0x0801, lsl 16
+    ldr r, [gic, 12]
+; the UART's receive interrupt: SPI 33 enabled in the distributor
+; (set-enable register 1, bit 1) and targeted at cpu 0 (the byte for
+; source 33 of the targets registers), and the PL011's receive mask
+; bit (IMSC, offset 0x38)
+uart_irq_on() -> () with gic: ptr, v: u32, uart: ptr
+    movz gic, 0x0800, lsl 16
+    movz v, 2
+    str v, [gic, 260]
+    movz v, 1
+    strb v, [gic, 2081]
+    movz uart, 0x0900, lsl 16
+    movz v, 16
+    str v, [uart, 56]
 irq_done(id: u32) -> () with gic: ptr
     movz gic, 0x0801, lsl 16
     str id, [gic, 16]

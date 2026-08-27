@@ -1253,13 +1253,20 @@ mod tests {
     }
 
     /// the second: a trap handler, system calls through a table of
-    /// function values, and input from the serial port, on both machines
+    /// function values, and input from the serial port by interrupt, on
+    /// both machines — how many interrupts the input takes is qemu's
+    /// (it delivers a pipe in bursts), but never none and never more
+    /// than the bytes
     #[test]
     fn echo_boots() {
         let _turn = boot_turn();
         for target in ["riscv64", "arm64"] {
-            let out = super::boot("os/echo.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"hello\n\nsyscalls\nbye\n")).unwrap();
-            assert_eq!(out, "> echo: hello\n> echo: \n> echo: syscalls\n> ", "{}", target);
+            let input = b"hello\n\nsyscalls\nbye\n";
+            let out = super::boot("os/echo.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(input)).unwrap();
+            let (transcript, report) = out.rsplit_once("> ").unwrap_or(("", &out));
+            assert_eq!(transcript, "> echo: hello\n> echo: \n> echo: syscalls\n", "{}: {:?}", target, out);
+            let n: usize = report.strip_prefix("took ").and_then(|r| r.strip_suffix(" interrupts\n")).and_then(|n| n.parse().ok()).unwrap_or(0);
+            assert!((1..=input.len()).contains(&n), "{}: {:?}", target, out);
         }
     }
 
