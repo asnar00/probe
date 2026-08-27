@@ -6,6 +6,30 @@ has the full story for any of them.
 
 ---
 
+### Vectors, `TxN` — `6590476` · 2026-08-27
+
+Before the GPU emitter, the type it will lean on. `f32x4`, `i32x8`,
+`u1x4`, `floatx4` with the policy's float, `intxN` in a generic: N
+lanes of one type, spelled the way one says it, and `Tx1` is `T`. A
+vector is a struct whose fields are its numbered lanes, so building,
+splitting, indexing, loading and storing one are the struct's
+operations already there; what is new is that `add`, `cmp.gt`, `conv`
+and `sqrt` on a vector mean the scalar operation on each lane — a
+definition the IR makes itself, as it does for integers wider than a
+word, rather than a library's, because "per lane" is structure, not
+arithmetic. The parser writes a vector operation out lane by lane and
+the struct lowering makes the packs and unpacks free, so vectors run
+on every backend today, verified against nothing but the scalar
+operations they are made of; a platform with vector registers may
+later keep a type whole and take the operation in one instruction,
+checked against this meaning — the choice between one register and
+many lanes being the platform's, which is what the architectures
+disagree about. One thing caught by the variant test: a `mul` lane on
+a core without a multiplier must go to the library like a scalar
+`mul` does.
+
+---
+
 ### A metallib by hand — `0dc7a3d` · 2026-08-27
 
 The GPU thread starts where the memory thread ended: on this Mac, and
