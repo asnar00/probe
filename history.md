@@ -6,6 +6,21 @@ has the full story for any of them.
 
 ---
 
+### The heap is the machine's memory — `74bb298` · 2026-08-27
+
+"Shouldn't the heap come from the data memory?" It did — a declared
+array of 256 KB, a stand-in sized by hand, which is the kind of number
+the rules want out of a program. What the machine actually has is
+128 MB with the image at the bottom and the boot stack a few MB up;
+everything above is a program's to carve. So the platform files say
+where that is (`heap_base`, `ram_end`) and `os/sleep.ssa`'s heap is
+those 112 MB, in 4 KB units so the split tree stays small — the unit
+is now `heap_init`'s to choose. Under the JIT and wasm a heap stays
+over a declared array: those are not machines, and there is no rest
+of RAM to have.
+
+---
+
 ### The root: a heap for regions — `25724a3` · 2026-08-27
 
 The heap after all — but as the root the rungs are carved from, not a
