@@ -71,16 +71,21 @@ allocation reset all at once), `lib/pool.ssa` (an object's: fixed
 slots given back one at a time), `lib/heap.ssa` (the root: a buddy
 allocator the rungs are carved from, sealable) and `check`. The
 discipline, stated: objects live in the rungs, the rungs come from the
-heap, and nothing allocates from the heap inside an interrupt. Next,
-in order: regions in the pointer type, checked statically — `ptr
-frame` cannot be stored where a `ptr` can, nor returned past its reset
-— the one IR change memory asks for; the capacity analysis (`probe
-stack`: worst-case stack per task and bytes per arena per frame, over
-the call graph the compiler already has, indirect calls by type);
-unique pointers when pools need explicit release to be safe; generics
-over types when pools want to be typed. Not a heap for objects: the
-rungs are for those. Also still: frames are at most 4095 bytes on
-arm64 and 2047 on riscv64 (a single immediate).
+heap, and nothing allocates from the heap inside an interrupt.
+
+Decided against, deliberately: lifetimes in the pointer type (`ptr
+frame`, `ptr call`, checked at stores and returns) and unique pointers.
+The IR is a target; whether a pointer outlives its memory is the
+contract of the code generator upstream of it, which is expected to be
+smart enough never to emit that, the way it is expected never to emit
+a use before a definition it cannot see. The verifier checks the IR's
+own well-formedness, not the front end's discipline. Still possible:
+the capacity analysis (`probe stack`: worst-case stack per task and
+bytes per arena per frame, over the call graph the compiler already
+has, indirect calls by type); generics over types when pools want to
+be typed. Not a heap for objects: the rungs are for those. Also still:
+frames are at most 4095 bytes on arm64 and 2047 on riscv64 (a single
+immediate).
 
 ## Language
 

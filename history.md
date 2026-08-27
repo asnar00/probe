@@ -6,6 +6,21 @@ has the full story for any of them.
 
 ---
 
+### A decision: no lifetimes in the pointer type · 2026-08-27
+
+Considered and declined: regions in the pointer type — `ptr frame`,
+`ptr call`, and a verifier rule that a pointer never goes where
+something longer-lived is expected. It would have been small and
+static, and it is what Cyclone and Austral do. But the IR is a target,
+and whether a pointer outlives its memory is the contract of whatever
+generates the IR, which is expected to be smart enough never to do
+that — as it is expected never to emit a use before a definition it
+cannot see. The verifier checks the IR's own well-formedness; the
+front end's discipline is the front end's. Unique pointers go the same
+way, for the same reason.
+
+---
+
 ### The heap is the machine's memory — `74bb298` · 2026-08-27
 
 "Shouldn't the heap come from the data memory?" It did — a declared
