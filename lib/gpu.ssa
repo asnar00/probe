@@ -6,7 +6,13 @@
 ; air.wg.barrier); here it is nothing, so the same program parses and
 ; runs everywhere as a group of one — a machine's group items are data.
 
+; the barrier: with fibres running (lib/fibre.ssa), a turn given up —
+; every fibre reaches its next sync before any goes on
 fn group_sync() {
+    a: u1 = fibres_active()
+    if a {
+        fibre_yield()
+    }
     ret
 }
 

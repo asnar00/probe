@@ -201,3 +201,39 @@ fcvt.d.w {f}, {r} = conv(i32) -> f64
 fcvt.d.wu {f}, {r} = conv(u32) -> f64
 fcvt.d.l {f}, {r} = conv(i64) -> f64
 fcvt.d.lu {f}, {r} = conv(u64) -> f64
+
+; fibres: a stack switch (see targets/arm64.platform). The saved set
+; is s0..s11 (x8, x9, x18..x27), ra (x1) and sp (x2): 14 words.
+ext fibres
+const fibre_lr = 96
+const fibre_sp = 104
+const fibre_stacks = 1
+fibre_switch(save: ptr, to: ptr) -> () called
+    sd x8, 0(save)
+    sd x9, 8(save)
+    sd x18, 16(save)
+    sd x19, 24(save)
+    sd x20, 32(save)
+    sd x21, 40(save)
+    sd x22, 48(save)
+    sd x23, 56(save)
+    sd x24, 64(save)
+    sd x25, 72(save)
+    sd x26, 80(save)
+    sd x27, 88(save)
+    sd x1, 96(save)
+    sd x2, 104(save)
+    ld x8, 0(to)
+    ld x9, 8(to)
+    ld x18, 16(to)
+    ld x19, 24(to)
+    ld x20, 32(to)
+    ld x21, 40(to)
+    ld x22, 48(to)
+    ld x23, 56(to)
+    ld x24, 64(to)
+    ld x25, 72(to)
+    ld x26, 80(to)
+    ld x27, 88(to)
+    ld x1, 96(to)
+    ld x2, 104(to)

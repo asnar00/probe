@@ -1,0 +1,58 @@
+; lib/fibre.ssa: bodies taking turns on one thread. `interleave` runs
+; three fibres that each record their number and yield, three times:
+; the record reads 0 1 2 0 1 2 0 1 2 where fibres take turns, and a
+; machine with one stack (wasm) runs them one after another — so the
+; cases here are what holds either way: every body runs to its end,
+; each exactly once, and yields outside a run are nothing.
+
+;! runs_all -> 9, 9
+;! yield_alone 5 -> 5
+
+data __stacks: array(u8, 12288)
+data record: array(i64, 16)
+
+fn body(k: i64) {
+    r: ptr(array(i64, 16)) = addr record
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, 3
+        if done {
+            break
+        }
+        n: i64 = load r, 15
+        store k, r, n
+        n1: i64 = add n, 1
+        store n1, r, 15
+        fibre_yield()
+        i1: i64 = add i, 1
+        continue i1
+    }
+    ret
+}
+
+; three fibres, each recording three times: nine records, three of
+; each number
+fn runs_all() -> (i64, i64) {
+    r: ptr(array(i64, 16)) = addr record
+    store 0: i64, r, 15
+    s: ptr = addr __stacks
+    b: fn(i64) = addr body
+    fibres_run(3, s, 4096, b)
+    n: i64 = load r, 15
+    sum: i64 = loop(i: i64 = 0, acc: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break acc
+        }
+        v: i64 = load r, i
+        acc1: i64 = add acc, v
+        i1: i64 = add i, 1
+        continue i1, acc1
+    }
+    ret sum, n
+}
+
+fn yield_alone(x: i64) -> i64 {
+    fibre_yield()
+    group_sync()
+    ret x
+}

@@ -284,7 +284,10 @@ None of them contains a single hand-written opcode.
   a `group tmp: array(i64, 64)` item is the threadgroup's memory here
   and writable data everywhere else, `group_sync()` its barrier, and
   `simd_sum x`, shuffles and votes are the simdgroup's (`lib/gpu.ssa`:
-  Apple's intrinsics here, the one-thread forms elsewhere); vectors reach
+  Apple's intrinsics here, the one-thread forms elsewhere); a
+  `;! __kernel n g -> words` directive runs a kernel as a suite case —
+  dispatched here, as fibres taking turns at every barrier on a machine
+  (`lib/fibre.ssa`, a stack switch the platform provides); vectors reach
   it whole (`<4 x float>`, `air.sqrt.v4f32`); recursion,
   which Metal has not, is left out and reported. `tools/driver_metal.py`
   dispatches it (pyobjc).

@@ -423,8 +423,8 @@ pub struct Compiled {
     pub code_end: usize,
     #[allow(dead_code)]
     pub data_base: usize,
-    /// where the group items begin, on a page of their own: a program
-    /// writes those, and the JIT keeps everything before read-only
+    /// where the data begins, on a page of its own: the JIT maps it
+    /// writable, the code before it write-protected
     pub writable_from: Option<usize>,
 }
 
@@ -542,26 +542,29 @@ pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin
             .map_err(|e| format!("{}: {}", func.name, e))?;
     }
 
-    // data after the code, 8-aligned (read-only under the JIT's
-    // write-protected pages; writable on bare metal)
+    // data after the code, on pages of its own: the program's RAM,
+    // writable under the JIT as on bare metal (the code's pages stay
+    // write-protected)
     let code_end = code.len();
-    while code.len() % 8 != 0 {
-        code.push(0);
-    }
     let (data, rw, data_offsets, rw_offsets) = crate::ssa::layout_data_parts(module);
-    let data_base = code.len();
-    code.extend_from_slice(&data);
-    // the group items on a page of their own, after everything read-only
-    let writable_from = if rw.is_empty() {
+    let writable_from = if data.is_empty() && rw.is_empty() {
+        while code.len() % 8 != 0 {
+            code.push(0);
+        }
         None
     } else {
         while code.len() % 16384 != 0 {
             code.push(0);
         }
-        let b = code.len();
-        code.extend_from_slice(&rw);
-        Some(b)
+        Some(code.len())
     };
+    let data_base = code.len();
+    code.extend_from_slice(&data);
+    while code.len() % 16 != 0 {
+        code.push(0);
+    }
+    let rw_base = code.len();
+    code.extend_from_slice(&rw);
 
     // cross-function fixups (bl) and data addresses (adr)
     for fix in call_fixups {
@@ -569,7 +572,7 @@ pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin
             FixTarget::Func(name) => *funcs.get(name.as_str()).ok_or_else(|| format!("call to undefined function {}", name))?,
             FixTarget::Data(name) => match data_offsets.get(name.as_str()) {
                 Some(off) => data_base + off,
-                None => writable_from.unwrap_or(0) + *rw_offsets.get(name.as_str()).ok_or_else(|| format!("no data named {}", name))?,
+                None => rw_base + *rw_offsets.get(name.as_str()).ok_or_else(|| format!("no data named {}", name))?,
             },
             FixTarget::Block(_) => unreachable!(),
         };
@@ -1678,6 +1681,7 @@ pub mod jit {
     const MAP_PRIVATE: i32 = 0x0002;
     const MAP_ANON: i32 = 0x1000;
     const MAP_JIT: i32 = 0x0800;
+    const MAP_FIXED: i32 = 0x0010;
 
     pub struct JitCode {
         base: *mut u8,
@@ -1688,16 +1692,19 @@ pub mod jit {
 
     impl JitCode {
         pub fn new(compiled: &Compiled) -> Result<JitCode, String> {
-            // code and data on JIT pages, write-protected once written;
-            // the group items, if any, on plain writable pages right
-            // after — the code reaches them PC-relative, so they must be
-            // exactly where the image has them
+            // the code on JIT pages, write-protected once written; the
+            // data, if any, on plain writable pages right after — the
+            // code reaches it PC-relative, so it must be exactly where
+            // the image has it
             let split = compiled.writable_from.unwrap_or(compiled.code.len());
             let len = split.next_multiple_of(16384);
+            let rw_len = compiled.writable_from.map_or(0, |w| (compiled.code.len() - w).next_multiple_of(16384));
             unsafe {
+                // the whole range reserved at once (so the data's pages
+                // are certainly free), the code part JIT
                 let base = mmap(
                     std::ptr::null_mut(),
-                    len,
+                    len + rw_len,
                     PROT_READ | PROT_WRITE | PROT_EXEC,
                     MAP_PRIVATE | MAP_ANON | MAP_JIT,
                     -1,
@@ -1712,11 +1719,11 @@ pub mod jit {
                 sys_icache_invalidate(base, len);
                 let mut total = len;
                 if let Some(w) = compiled.writable_from {
-                    let rw_len = (compiled.code.len() - w).next_multiple_of(16384);
+                    // the tail replaced by plain writable pages (ours to replace)
                     let want = base.add(w);
-                    let p = mmap(want, rw_len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+                    let p = mmap(want, rw_len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
                     if p != want {
-                        return Err("could not place the group items' pages after the code".into());
+                        return Err("could not place the data's pages after the code".into());
                     }
                     std::ptr::copy_nonoverlapping(compiled.code.as_ptr().add(w), p, compiled.code.len() - w);
                     total += rw_len;

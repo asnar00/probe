@@ -93,6 +93,10 @@ pub struct Rule {
     pub lines: Vec<Line>,
     /// temporaries: (name, width in bits), from `with name: type, ...`
     pub temps: Vec<(String, u32)>,
+    /// `called`: the rule is a function reached by a real call even
+    /// though it names every argument — it must have a return address
+    /// and a frame of its own (a stack switch)
+    pub called: bool,
 }
 
 /// a rule resolved against a module's types: canonical type spellings
@@ -195,7 +199,10 @@ pub fn selected() -> Option<String> {
 
 impl Platform {
     pub fn none() -> Platform {
-        Platform { target: String::new(), name: "none".into(), classes: Vec::new(), rules: Vec::new(), builtins: Vec::new(), consts: Vec::new(), without: Vec::new() }
+        // no instructions at all — but the constants a library needs to
+        // choose its way (fibres run one after another, having no switch)
+        let consts = vec![("fibre_lr".to_string(), 0, String::new()), ("fibre_sp".to_string(), 8, String::new()), ("fibre_stacks".to_string(), 0, String::new())];
+        Platform { target: String::new(), name: "none".into(), classes: Vec::new(), rules: Vec::new(), builtins: Vec::new(), consts, without: Vec::new() }
     }
 
     /// the platform for a target: the selected variant when it is one of
@@ -405,7 +412,7 @@ impl Platform {
                 }
                 let arg_bits: Vec<u32> = f.params.iter().map(|&p| f.width(f.ty(p)).unwrap_or(64)).collect();
                 let ret_bits = f.rets.first().map(|&t| f.width(t).unwrap_or(64)).unwrap_or(0);
-                let inline = (0..ptys.len()).all(|i| r.lines.iter().any(|l| l.operands.contains(&Operand::Arg(i))));
+                let inline = !r.called && (0..ptys.len()).all(|i| r.lines.iter().any(|l| l.operands.contains(&Operand::Arg(i))));
                 let native = Native {
                     rule: r.clone(),
                     sig: format!("{}({}) -> {}", generic, ptys.join(", "), rty),
@@ -438,6 +445,10 @@ fn parse_header(s: &str) -> Result<Rule, String> {
     let (generic, rest) = s.split_once('(').ok_or("expected op(types) -> type")?;
     let (params, rest) = split_params(rest)?;
     let ret = rest.trim().strip_prefix("->").ok_or("expected '-> type'")?.trim();
+    let (ret, called) = match ret.strip_suffix(" called") {
+        Some(r) => (r.trim(), true),
+        None => (ret, false),
+    };
     // `-> type with name: type, ...`: the rule's temporaries
     let (ret, temps_text) = match ret.split_once(" with ") {
         Some((r, t)) => (r.trim(), Some(t)),
@@ -464,7 +475,7 @@ fn parse_header(s: &str) -> Result<Rule, String> {
             }
         }
     }
-    Ok(Rule { generic: generic.trim().to_string(), arg_types, ret_type, names, lines: Vec::new(), temps })
+    Ok(Rule { generic: generic.trim().to_string(), arg_types, ret_type, names, lines: Vec::new(), temps, called })
 }
 
 /// the parameter list up to its closing paren, honouring nested parens
@@ -584,6 +595,9 @@ fn slot_takes(slot: &str, native: &Native, op: &Operand) -> Option<i64> {
         Operand::Lit(l) => match kind {
             "i" => parse_int(l),
             "e" => slot.trim_start_matches('e').trim().split('|').position(|c| c == l).map(|i| i as i64),
+            // a register by number, `x19`: a callee-saved one a rule must
+            // name (a stack switch saves them all)
+            "x" | "r" => l.strip_prefix('x').and_then(|n| n.parse::<i64>().ok()).filter(|n| (0..32).contains(n)),
             _ => None,
         },
     }
@@ -671,12 +685,14 @@ mod tests {
         assert_eq!(im.target, "riscv64");
         assert!(full.has_builtin("mul") && im.has_builtin("mul") && !i.has_builtin("div"));
         let m = crate::ssa::parse_with(&crate::ssa::with_prelude("fn f(a: f32, b: f32) -> f32 {\n    r: f32 = add a, b\n    ret r\n}\n"), &crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap()).unwrap();
-        assert!(!full.natives(&m).rules.is_empty());
-        assert!(im.natives(&m).rules.is_empty() && im.natives(&m).classes.is_empty());
-        // virt (the board's constants), traps, time, M, F, D; rv64i keeps
-        // virt, traps and time
-        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 6);
-        assert_eq!(i.extensions().iter().filter(|(_, present)| *present).count(), 3);
+        assert!(full.natives(&m).rules.keys().any(|k| k.starts_with("add")));
+        // the variant has no float: no add rule, no classes (the fibre
+        // switch, an integer rule, stays)
+        assert!(!im.natives(&m).rules.keys().any(|k| k.starts_with("add")) && im.natives(&m).classes.is_empty());
+        // virt (the board's constants), traps, time, M, F, D, fibres;
+        // rv64i keeps virt, traps, time and fibres
+        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 7);
+        assert_eq!(i.extensions().iter().filter(|(_, present)| *present).count(), 4);
         assert_eq!(i.natives(&m).consts.get("uart"), Some(&0x10000000));
         let nofp = Platform::load_named("arm64-nofp").unwrap();
         assert!(nofp.natives(&m).classes.is_empty());

@@ -337,8 +337,8 @@ their natural size, little-endian, or pointers and function values,
 which start as zeros (a table of handlers the program fills) — laid out
 after the code (8-aligned)
 and reached by a PC-relative address (`adr`, `auipc`/`addi`, a
-`data` segment on wasm). Under the JIT it is read-only; on bare metal it
-is the program's RAM. `platform name` is a constant from the platform
+`data` segment on wasm). It is the program's RAM everywhere: writable
+pages after the code under the JIT, memory on bare metal and wasm. `platform name` is a constant from the platform
 file's `const` lines — a board's addresses (`uart`, `finisher` on qemu's
 virt machines) — resolved when the target is known, so one program can
 say `store c, uart` for two boards. `probe boot file.ssa [riscv|arm]`
@@ -438,11 +438,33 @@ item), and an address computed from `addr` of a group item — through
 arithmetic, casts and block arguments — is a threadgroup access; such
 an address cannot be stored, passed to a function or returned, since
 no pointer type says which memory it is in. On a machine that runs a
-group of one, group items are data: writable pages after the code
-under the JIT, RAM on bare metal, memory on wasm. `group_sync()` is
+group of one, group items are data. `group_sync()` is
 the barrier — `air.wg.barrier` on the GPU, nothing on one thread — so
 a program written for many threads parses and runs everywhere
 (`suite/group.ssa`; `examples/reduce.ssa` for the many-thread case).
+
+### Fibres, and a kernel as a suite case
+
+```
+fibres_run(3, stacks, 4096, body)             ; body(0), body(1), body(2) by turns (lib/fibre.ssa)
+fibre_yield()                                 ; the current fibre gives up its turn
+;! __kernel 256 64 -> 2016, 6112, 10208, 14304   ; a directive: n threads in groups of g
+```
+
+`lib/fibre.ssa` runs bodies by turns on one thread, each on a stack
+of its own: `fibres_run(count, stacks, stack_bytes, body)` runs
+`body(k)` for every k round-robin, a body running until it calls
+`fibre_yield()` or returns, so every body has yielded before any goes
+on — the shape of a barrier. The switch is the platform's
+(`fibre_switch`, the callee-saved registers and sp saved and loaded;
+`targets/arm64.platform`, `riscv64.platform`); wasm, with one stack,
+runs the bodies one after another instead (`fibre_stacks = 0`).
+`group_sync()` yields while fibres run. So a program written for a
+threadgroup is a suite case everywhere: `;! __kernel n g -> words`
+runs its `__kernel` as n threads in groups of g — the real dispatch on
+the GPU, a group of fibres per group on a machine — and compares the
+area's first words; on wasm it is skipped and counted. A program with
+a `__kernel` takes only such directives (`suite/reduce.ssa`).
 
 ### The simdgroup
 

@@ -1,0 +1,40 @@
+; a group program as a suite case: `;! __kernel n g -> words` runs the
+; kernel as n threads in groups of g and compares the area's first
+; words — the real dispatch on the GPU, fibres taking turns at every
+; group_sync on a machine (lib/fibre.ssa), skipped on wasm, which has
+; one stack. The reduction: each group sums its ids through group
+; memory, halving at every barrier.
+
+;! __kernel 256 64 -> 2016, 6112, 10208, 14304
+;! __kernel 128 64 -> 2016, 6112
+
+group tmp: array(i64, 64)
+
+fn __kernel(mem: ptr, area: ptr, id: i64, lane: i64, group: i64) {
+    t: ptr(array(i64, 64)) = addr tmp
+    store id, t, lane
+    group_sync()
+    loop(half: i64 = 32) {
+        done: u1 = cmp.eq half, 0
+        if done {
+            break
+        }
+        below: u1 = cmp.lt lane, half
+        if below {
+            other: i64 = add lane, half
+            a: i64 = load t, lane
+            b: i64 = load t, other
+            s: i64 = add a, b
+            store s, t, lane
+        }
+        group_sync()
+        h2: i64 = shr half, 1
+        continue h2
+    }
+    first: u1 = cmp.eq lane, 0
+    if first {
+        total: i64 = load t, 0
+        store total, area, group, 8
+    }
+    ret
+}

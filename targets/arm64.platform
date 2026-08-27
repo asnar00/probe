@@ -230,3 +230,42 @@ fcvtzs {w}, {d} = conv(f64) -> i32
 fcvtzu {w}, {d} = conv(f64) -> u32
 fcvtzs {x}, {d} = conv(f64) -> i64
 fcvtzu {x}, {d} = conv(f64) -> u64
+
+; fibres: a stack switch. Saves the callee-saved registers and sp
+; where `save` points (13 words: x19..x28, x29, x30, sp), loads the
+; other set from `to`, and the return goes where that set's x30 says.
+; A fibre that has never run is a frame whose x30 is its entry and
+; whose sp is the top of its stack (lib/fibre.ssa).
+ext fibres
+const fibre_lr = 88
+const fibre_sp = 96
+const fibre_stacks = 1
+fibre_switch(save: ptr, to: ptr) -> () with t: ptr called
+    str x19, [save, 0]
+    str x20, [save, 8]
+    str x21, [save, 16]
+    str x22, [save, 24]
+    str x23, [save, 32]
+    str x24, [save, 40]
+    str x25, [save, 48]
+    str x26, [save, 56]
+    str x27, [save, 64]
+    str x28, [save, 72]
+    str x29, [save, 80]
+    str x30, [save, 88]
+    add t, sp, 0
+    str t, [save, 96]
+    ldr x19, [to, 0]
+    ldr x20, [to, 8]
+    ldr x21, [to, 16]
+    ldr x22, [to, 24]
+    ldr x23, [to, 32]
+    ldr x24, [to, 40]
+    ldr x25, [to, 48]
+    ldr x26, [to, 56]
+    ldr x27, [to, 64]
+    ldr x28, [to, 72]
+    ldr x29, [to, 80]
+    ldr x30, [to, 88]
+    ldr t, [to, 96]
+    mov sp, t

@@ -31,11 +31,14 @@ bitcode we write. Left:
   there is no pointer type for the space it is in. A `ptr` that knows
   its address space would lift that; ash's rule against region-typed
   pointers is about lifetimes, not spaces, so it is open.
-- **Group behaviour on one thread**: the one-thread fallbacks make a
-  group program run everywhere but say nothing about what a group of
-  many does; a CPU driver that runs a group as fibres would (the
-  barrier a yield), and a simdgroup's operations would then be over
-  the fibres too.
+- **The simdgroup over fibres**: a kernel directive runs a group as
+  fibres on a machine, but `simd_sum` and the rest are still their
+  one-thread forms there; a simd operation across a group's fibres
+  (a barrier, then the operation over the recorded lanes) would make
+  `examples/simd.ssa` a suite case too.
+- **Fibres on wasm**: one stack. Bodies run one after another, and
+  kernel directives are skipped; a CPS transform at a `group_sync`, or
+  wasm's stack-switching proposal when it lands, would lift that.
 - **Simdgroup operations on 64-bit lanes**: Apple's intrinsics stop at
   32 bits; a `simd_sum` on an `i64` is an error on the GPU. Two 32-bit
   halves with a carry, or a threadgroup reduction, would give it.

@@ -260,16 +260,29 @@ pub fn run_dir_at(
             }
         }
 
+        let has_kernel_cases = cases.iter().any(|c| c.func == "__kernel");
+        let mut src = src;
         let module = (|| -> Result<ssa::Module, String> {
             if let Some(e) = bad_directive {
                 return Err(e);
             }
-            let mut module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| e.to_string())?;
-            ssa::resolve_types(&mut module, &policy);
-            ssa::verify(&module).map_err(|errs| errs.join("; "))?;
-            opt::optimize(&mut module, level);
-            ssa::verify(&module)
-                .map_err(|errs| format!("after optimization: {}", errs.join("; ")))?;
+            let build = |src: &str| -> Result<ssa::Module, String> {
+                let mut module = ssa::parse_with(&ssa::with_prelude(src), &policy).map_err(|e| e.to_string())?;
+                ssa::resolve_types(&mut module, &policy);
+                ssa::verify(&module).map_err(|errs| errs.join("; "))?;
+                opt::optimize(&mut module, level);
+                ssa::verify(&module).map_err(|errs| format!("after optimization: {}", errs.join("; ")))?;
+                Ok(module)
+            };
+            let module = build(&src)?;
+            if has_kernel_cases {
+                // `;! __kernel n g -> words`: the program's kernel run as n
+                // threads in groups of g by the runner below (fibres on a
+                // machine), its area's first words the results
+                let arity = module.func("__kernel").ok_or("a __kernel directive needs fn __kernel")?.params.len();
+                src.push_str(&kernel_runner(arity));
+                return build(&src);
+            }
             Ok(module)
         })();
         let module = match module {
@@ -346,6 +359,16 @@ fn run_native(
         }
     };
     for case in cases {
+        if case.func == "__kernel" {
+            // the runner, then the area's words
+            let got = (|| -> Result<Vec<i64>, String> {
+                let (n, g) = kernel_shape(case)?;
+                jit.call("__run_kernel", &[n, g])?;
+                (0..case.expected.len() as i64).map(|i| jit.call("__area_word", &[i])).collect()
+            })();
+            finish_case(report, name, case, got);
+            continue;
+        }
         // materialize array args as live buffers, kept alive through the call
         let mut bufs: Vec<Vec<u64>> = Vec::new(); // u64-aligned backing store
         let mut argv = Vec::new();
@@ -399,6 +422,20 @@ fn run_wasm(
     scratch: &std::path::Path,
     report: &mut Report,
 ) {
+    // a kernel needs fibres, which need a stack to switch; wasm has one
+    let mut kept = Vec::new();
+    for c in cases {
+        if c.func == "__kernel" {
+            report.skipped += 1;
+            report.log.push_str(&format!("skip  {:<16} {}: a group on wasm would need a second stack\n", name, c.text));
+        } else {
+            kept.push(c.clone());
+        }
+    }
+    let cases: &[Case] = &kept;
+    if cases.is_empty() {
+        return;
+    }
     let wasm = match emit_wasm::compile(module, enc) {
         Ok(b) => b,
         Err(e) => {
@@ -697,6 +734,27 @@ fn gen_driver(
     for (ci, case) in cases.iter().enumerate() {
         s.push_str(&format!("fn __case{}() {{\nentry:\n", ci));
         start.push_str(&format!("    __case{}()\n", ci));
+        if case.func == "__kernel" {
+            // the runner, then the area's words printed
+            let (kn, kg) = kernel_shape(case)?;
+            let n = tmp(&mut s, "i64", format!("const {}", kn));
+            let g = tmp(&mut s, "i64", format!("const {}", kg));
+            s.push_str(&format!("    __run_kernel({}, {})\n", n, g));
+            for i in 0..case.expected.len() {
+                if i > 0 {
+                    let sp = tmp(&mut s, "u64", "const 32".into());
+                    s.push_str(&format!("    __pch({})\n", sp));
+                }
+                let ic = tmp(&mut s, "i64", format!("const {}", i));
+                let w = tmp(&mut s, "i64", format!("__area_word({})", ic));
+                let u = tmp(&mut s, "u64", format!("cast {}", w));
+                s.push_str(&format!("    __phex({})\n", u));
+            }
+            let nl = tmp(&mut s, "u64", "const 10".into());
+            s.push_str(&format!("    __pch({})\n", nl));
+            s.push_str("    ret\n}\n");
+            continue;
+        }
         let func = module
             .func(&case.func)
             .ok_or_else(|| format!("no function {} for directive '{}'", case.func, case.text))?;
@@ -1009,6 +1067,69 @@ const AIR_AREA: u64 = 0x10_0000;
 const AIR_HEAP: u64 = 0x20_0000;
 const AIR_MEM: u64 = 0x80_0000;
 
+/// a `__kernel n g` directive's n and g
+fn kernel_shape(case: &Case) -> Result<(i64, i64), String> {
+    match case.args.as_slice() {
+        [ArgSpec::Int(n), ArgSpec::Int(g)] if *g > 0 && *g <= 64 && n % g == 0 => Ok((*n, *g)),
+        _ => Err(format!("'{}': a __kernel directive takes n threads and a group size dividing it (at most 64)", case.text)),
+    }
+}
+
+/// what runs a program's kernel on a machine: each group as fibres
+/// (lib/fibre.ssa), a lane per thread, its area in data — the SSA the
+/// suite adds to a program with `__kernel` directives
+fn kernel_runner(arity: usize) -> String {
+    let call = if arity == 5 { "__kernel(__z, __area, __id, __lane, __grp)" } else { "__kernel(__z, __area, __id)" };
+    format!(
+        r"
+data __karea: array(i64, 1024)
+data __kstacks: array(u8, 262144)
+data __kargs: array(i64, 4)
+fn __klane(__lane: i64) {{
+entry:
+    __ka: ptr = addr __kargs
+    __g: i64 = load __ka, 0
+    __grp: i64 = load __ka, 8
+    __gid: i64 = mul __grp, __g
+    __id: i64 = add __gid, __lane
+    __area: ptr = addr __karea
+    __z: ptr = const 0
+    {}
+    ret
+}}
+fn __run_kernel(__n: i64, __g: i64) {{
+entry:
+    __ka: ptr = addr __kargs
+    store __g, __ka, 0
+    __groups: i64 = div __n, __g
+    __b: fn(i64) = addr __klane
+    __s: ptr = addr __kstacks
+    __zero: i64 = const 0
+    jmp loop(__zero)
+loop(__grp: i64):
+    __done: u1 = cmp.ge __grp, __groups
+    br __done, exit, body
+body:
+    store __grp, __ka, 8
+    __sz: i64 = const 4096
+    fibres_run(__g, __s, __sz, __b)
+    __one: i64 = const 1
+    __next: i64 = add __grp, __one
+    jmp loop(__next)
+exit:
+    ret
+}}
+fn __area_word(__i: i64) -> i64 {{
+entry:
+    __a: ptr = addr __karea
+    __v: i64 = load __a, __i, 8
+    ret __v
+}}
+",
+        call
+    )
+}
+
 /// the kernel keeps the area's offset in data, and the output helpers
 /// append there
 fn helpers_air() -> String {
@@ -1070,6 +1191,48 @@ fn run_air(
         report.failed += cases.len().max(1);
         report.log.push_str(&format!("FAIL  {:<16} {}\n", name, msg));
     };
+    // a program with a kernel is dispatched as one: n threads in groups
+    // of g, its area's first words the results
+    if module.func("__kernel").is_some() {
+        if cases.iter().any(|c| c.func != "__kernel") {
+            return fail_all(report, "a program with a __kernel takes only __kernel directives on air".into());
+        }
+        let prepared = (|| -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+            let c = crate::emit_air::compile_with(module, platform)?;
+            if !c.has_kernel {
+                return Err(format!("the kernel was left out: {:?}", c.skipped));
+            }
+            let lib = scratch.join(format!("{}.metallib", name));
+            let json = scratch.join(format!("{}.air.json", name));
+            std::fs::write(&lib, &c.metallib).map_err(|e| e.to_string())?;
+            std::fs::write(scratch.join(format!("{}.bc", name)), &c.bitcode).map_err(|e| e.to_string())?;
+            let data_hex: String = c.layout.data.iter().map(|b| format!("{:02x}", b)).collect();
+            std::fs::write(&json, format!("{{\"data\":\"{}\",\"slab\":{},\"kernel\":true}}", data_hex, c.layout.slab)).map_err(|e| e.to_string())?;
+            Ok((lib, json))
+        })();
+        let (lib, json) = match prepared {
+            Ok(p) => p,
+            Err(e) => return fail_all(report, e),
+        };
+        for case in cases {
+            let got = (|| -> Result<Vec<i64>, String> {
+                let (n, g) = kernel_shape(case)?;
+                let out = Command::new("python3")
+                    .args(["tools/driver_metal.py", "--kernel"])
+                    .arg(&lib)
+                    .arg(&json)
+                    .args([n.to_string(), g.to_string()])
+                    .output()
+                    .map_err(|e| format!("python3: {}", e))?;
+                let text = String::from_utf8_lossy(&out.stdout);
+                let words = text.trim().strip_prefix("area: [").and_then(|t| t.strip_suffix(']')).ok_or_else(|| format!("the driver: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("no output")))?;
+                let all: Vec<i64> = words.split(',').map(|w| w.trim().parse::<i64>().map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
+                Ok(all.into_iter().take(case.expected.len()).collect())
+            })();
+            finish_case(report, name, case, got);
+        }
+        return;
+    }
     let prepared = (|| -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
         let driver = gen_driver(module, cases, AIR_HEAP, "")?;
         let full = format!("{}\n{}\n{}", driver, helpers_air(), ssa::with_prelude(src));

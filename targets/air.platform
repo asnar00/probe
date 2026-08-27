@@ -84,3 +84,10 @@ air.simd_shuffle_xor.s.i32 = simd_shuffle_xor(i32, i64) -> i32
 air.simd_shuffle_xor.u.i32 = simd_shuffle_xor(u32, i64) -> u32
 air.simd_shuffle_down.s.i32 = simd_shuffle_down(i32, i64) -> i32
 air.simd_shuffle_up.s.i32 = simd_shuffle_up(i32, i64) -> i32
+
+; fibres (lib/fibre.ssa) are a machine's way of running a group on one
+; thread; a GPU runs its bodies one after another if asked
+ext fibres
+const fibre_lr = 0
+const fibre_sp = 8
+const fibre_stacks = 0

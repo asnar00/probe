@@ -6,6 +6,33 @@ has the full story for any of them.
 
 ---
 
+### Fibres: a group on one thread, and a kernel as a suite case — `HASH` · 2026-08-28
+
+The last of the three: a program written for a threadgroup now runs
+the same on a machine, and is checked there. `lib/fibre.ssa` runs
+bodies by turns on one thread, each on a stack of its own —
+`fibres_run(count, stacks, bytes, body)`, `fibre_yield()` — round-robin,
+so every body has yielded before any goes on, which is what
+`group_sync()` needs and now does while fibres run. The switch is a
+platform rule of a new kind: `fibre_switch(save, to) -> () called`
+names every callee-saved register (`str x19, [save, 0]` ...; a rule
+line may name a register by number now) and is reached by a real
+call, so the return goes where the other fibre's saved x30 says; a
+fibre that has never run is a frame whose lr is `fibre_entry` and
+whose sp is the top of its stack. arm64 and riscv64 have it; wasm,
+with one stack, runs the bodies one after another (`fibre_stacks =
+0`). Then the directive: `;! __kernel n g -> words` runs a program's
+kernel as n threads in groups of g — dispatched on the GPU, a group
+of fibres per group on a machine through a runner the suite adds —
+and compares the area's first words; wasm skips it and says so.
+`suite/reduce.ssa` is the reduction, right on native, riscv, arm and
+the GPU. On the way: data is writable under the JIT now, on pages of
+its own after the code, as it always was on bare metal and wasm — a
+program that wrote its data crashed natively and ran everywhere else,
+the opposite of what the paths are for.
+
+---
+
 ### The simdgroup — `9b8630e` · 2026-08-28
 
 `lib/gpu.ssa` names what a simdgroup computes across its lanes —

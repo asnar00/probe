@@ -68,3 +68,11 @@ i32.trunc_sat_f64_s = conv(f64) -> i32
 i32.trunc_sat_f64_u = conv(f64) -> u32
 i64.trunc_sat_f64_s = conv(f64) -> i64
 i64.trunc_sat_f64_u = conv(f64) -> u64
+
+; fibres: wasm has one stack and cannot switch it; lib/fibre.ssa runs
+; fibres one after another here (fibre_stacks = 0), which is right for
+; bodies that never wait on each other and nothing else
+ext fibres
+const fibre_lr = 0
+const fibre_sp = 8
+const fibre_stacks = 0
