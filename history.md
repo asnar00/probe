@@ -6,7 +6,7 @@ has the full story for any of them.
 
 ---
 
-### Fibres: a group on one thread, and a kernel as a suite case — `HASH` · 2026-08-28
+### Fibres: a group on one thread, and a kernel as a suite case — `4e37c8c` · 2026-08-28
 
 The last of the three: a program written for a threadgroup now runs
 the same on a machine, and is checked there. `lib/fibre.ssa` runs
