@@ -102,6 +102,10 @@ arrive together.
 
 ## What this suggests doing, in order
 
+(Step 1 landed on 2026-08-27 as `TxN` — `f32x4`, `floatx4`, `intxN` —
+lane-by-lane by definition, on every backend; see ssa.md *Vectors*.
+The register class and the platform rules are the next step.)
+
 1. **Fixed-width vectors as a type and a class.** `type f32x4 =
    vector(f32, 4)`: a struct-like type of homogeneous lanes that a
    platform's `class v = f32x4, i32x4, ...` puts in a vector register;

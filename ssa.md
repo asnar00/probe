@@ -47,6 +47,7 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `pack { ... }` | bitfields packed into at most 256 bits (see *Packs*) |
 | `struct { ... }` | fields side by side, never a bit pattern (see *Structs*) |
 | `fn(i64, i64) -> i64`, `fn(ptr)`, `fn() -> (i64, i64)` | a function value: the signature is the type (see *Calls*) |
+| `f32x4`, `i32x8`, `u1x4`, `floatx4`, `intxN` | a vector: N lanes of one type, `TxN` (see *Vectors*); `Tx1` is `T` |
 | `i(expr)`, `u(expr)` | an integer whose width is an expression — inside type declarations |
 | `int`, `uint`, `float`, `fixed`, `unit`, `sunit`, `rational`, `scalar` | abstract numbers — resolved to a concrete type by the target's replacement policy (see *Abstract numeric types*) |
 
@@ -460,6 +461,42 @@ w: u16 = cast c                           ; the raw bits, and back again
 Packs are compared structurally: two spellings of the same layout are the
 same type. `unpack` is, with calls, the only instruction that defines
 several values.
+
+### Vectors
+
+```
+type v4 = i32x4                 ; four lanes of i32
+a: f32x4 = pack x, y, z, w      ; lanes, in order
+k: f32x4 = splat h              ; every lane h
+c: f32x4 = add a, k             ; lane by lane
+m: u1x4 = cmp.gt c, k           ; a comparison gives u1 lanes
+x: f32 = get c, 2               ; lane 2
+d: f32x4 = set c, 0, x          ; a copy with lane 0 replaced
+r0: f32, r1: f32, r2: f32, r3: f32 = unpack c
+s: f32x4 = sqrt c               ; a library operation, on every lane
+```
+
+`TxN` is N lanes of T, where T is any integer or pack of at most 64
+bits — concrete (`f32x4`), abstract (`floatx4`, `intx8`: the policy's
+type), or in a generic with the lane count a width parameter
+(`i32xN`). `Tx1` is T. A vector is a struct whose fields are its lanes,
+numbered from 0, laid out consecutively in memory; so `pack`, `unpack`,
+`get`, `set`, loads and stores are the struct's, `get`/`set` taking a
+lane number. Arithmetic, comparisons, conversions and library
+operations (`sqrt`, `fma`) on vectors are **lane by lane**: the
+scalar operation on each lane — an instruction, or the library's for a
+pack lane — which is a definition the IR makes itself, as it does for
+integers wider than a word, rather than a library's. The parser writes
+a vector operation out that way (`probe parse` shows the lanes), and
+the struct lowering makes the packs and unpacks free; so vectors run on
+every backend today, verified lane by lane. A platform with vector
+registers may later hold a vector type in a class and take the whole
+operation at once, checked against the lane-by-lane meaning — the
+choice between a vector in one register and a vector as its lanes is
+the platform's. Horizontal operations (sums, dot products, shuffles)
+are written over lanes for now; a vector's lanes are values like any
+other, so a `u8x8` can be a block parameter and a `u1x4` the result of
+a compare.
 
 ### Structs
 

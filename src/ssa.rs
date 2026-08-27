@@ -145,6 +145,9 @@ pub struct PackDef {
     /// a function type: its (parameter types, return types); `fields`
     /// is empty and `width` 64 — the entry is a signature, not a layout
     pub sig: Option<(Vec<Type>, Vec<Type>)>,
+    /// a vector `TxN`: a struct of N lanes of one type, named "0".."N-1";
+    /// 0 for anything else. Arithmetic on it is lane by lane
+    pub lanes: u32,
 }
 
 impl PackDef {
@@ -251,6 +254,8 @@ pub enum TypeExpr {
     Struct(Vec<(String, TypeExpr)>),
     /// `fn(a, b) -> r, s`: a function type, parameters then results
     Fn(Vec<TypeExpr>, Vec<TypeExpr>),
+    /// `TxN`: N lanes of T
+    Vector(Box<TypeExpr>, IntExpr),
 }
 
 impl fmt::Display for TypeExpr {
@@ -272,6 +277,7 @@ impl fmt::Display for TypeExpr {
                 let fs: Vec<String> = fields.iter().map(|(n, t)| format!("{}: {}", n, t)).collect();
                 write!(f, "struct {{ {} }}", fs.join(", "))
             }
+            TypeExpr::Vector(inner, n) => write!(f, "{}x{}", inner, n),
             TypeExpr::Fn(params, rets) => {
                 let ps: Vec<String> = params.iter().map(|t| t.to_string()).collect();
                 write!(f, "fn({})", ps.join(", "))?;
@@ -1692,6 +1698,14 @@ struct FuncScope {
 }
 
 impl FuncScope {
+    /// a value the parser introduces — a lane of a vector operation —
+    /// named after the value it serves, so it prints and parses again
+    fn temp(&mut self, ty: Type, name: String) -> ValueId {
+        let id = ValueId(self.values.len() as u32);
+        self.values.push(ValueData { name, ty, literal: None });
+        id
+    }
+
     /// a hidden value for a literal operand, recording the literal as
     /// (type it was read in, bits)
     fn synth(&mut self, ty: Type, lit: (Type, i64)) -> ValueId {
@@ -2026,6 +2040,23 @@ impl Parser {
         };
         match expr {
             TypeExpr::Fn(..) => false, // generics do not range over function types
+            TypeExpr::Vector(inner, n) => {
+                let Type::Struct(i) = ty else {
+                    return false;
+                };
+                let p = &self.packs[i as usize];
+                if p.lanes == 0 {
+                    return false;
+                }
+                let lane = p.fields[0].1;
+                let lanes = p.lanes as i64;
+                let n_ok = match n {
+                    IntExpr::Param(name) => bind(name, lanes, binds),
+                    IntExpr::Lit(l) => *l == lanes,
+                    _ => false,
+                };
+                n_ok && self.unify(inner, lane, binds)
+            }
             TypeExpr::Named { name, args } if args.is_empty() => match Type::from_name(name) {
                 Some(t) => t == ty,
                 None => matches!(ty, Type::Pack(i) if self.packs[i as usize].name == *name),
@@ -2346,6 +2377,27 @@ impl Parser {
                 j,
             ));
         }
+        // `f32x4`, `floatx4`, `intxN`: a name no type has, split at its
+        // last `x` into a type and a lane count (a literal, or one of the
+        // width parameters in scope)
+        if Type::from_name(name).is_none() && !self.types.iter().any(|t| t.name == *name) {
+            if let Some(k) = name.rfind('x') {
+                let (base, count) = (&name[..k], &name[k + 1..]);
+                let lanes = if !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit()) {
+                    count.parse::<i64>().ok().map(IntExpr::Lit)
+                } else if params.iter().any(|p| p == count) {
+                    Some(IntExpr::Param(count.to_string()))
+                } else {
+                    None
+                };
+                if let Some(lanes) = lanes {
+                    if !base.is_empty() && (Type::from_name(base).is_some() || self.types.iter().any(|t| t.name == base)) {
+                        let inner = TypeExpr::Named { name: base.to_string(), args: Vec::new() };
+                        return Ok((TypeExpr::Vector(Box::new(inner), lanes), i + 1));
+                    }
+                }
+            }
+        }
         Ok((
             TypeExpr::Named {
                 name: name.clone(),
@@ -2617,6 +2669,7 @@ impl Parser {
                     aggregate: false,
                     size: 0,
                     sig: None,
+                    lanes: 0,
                 });
                 Ok(Type::Pack(id))
             }
@@ -2664,6 +2717,49 @@ impl Parser {
                     aggregate: true,
                     size,
                     sig: None,
+                    lanes: 0,
+                });
+                Ok(Type::Struct(id))
+            }
+            TypeExpr::Vector(inner, n) => {
+                // N lanes of one type: a struct of N fields "0".."N-1"
+                // marked as a vector; `Tx1` is T itself
+                let lane0 = self.instantiate(inner, env, depth + 1)?;
+                let lane = self.policy.resolve(lane0);
+                let n = n.eval(env)?;
+                if !(1..=64).contains(&n) {
+                    return Err(format!("{} has {} lanes; vectors have 1 to 64", expr, n));
+                }
+                let ok = match lane {
+                    Type::Int { bits, .. } => bits <= 64,
+                    Type::Pack(i) => self.packs[i as usize].width <= 64,
+                    _ => false,
+                };
+                if !ok {
+                    return Err(format!("a lane must be an integer or a pack of at most 64 bits, not {}", self.tyname_of(lane)));
+                }
+                if n == 1 {
+                    return Ok(lane);
+                }
+                let (size, align) = self.layout_of(lane).unwrap();
+                let fields: Vec<(String, Type)> = (0..n).map(|k| (k.to_string(), lane)).collect();
+                if let Some(i) = self.packs.iter().position(|p| p.lanes > 0 && p.fields == fields) {
+                    return Ok(Type::Struct(i as u32));
+                }
+                let id = self.packs.len() as u32;
+                let offsets: Vec<u32> = (0..n).map(|k| k as u32 * size).collect();
+                let name = format!("{}x{}", self.tyname_of(lane), n);
+                let _ = align;
+                self.packs.push(PackDef {
+                    name,
+                    fields,
+                    offsets,
+                    width: size * 8 * n as u32,
+                    origin: None,
+                    aggregate: true,
+                    size: size * n as u32,
+                    sig: None,
+                    lanes: n as u32,
                 });
                 Ok(Type::Struct(id))
             }
@@ -2707,6 +2803,7 @@ impl Parser {
                     aggregate: false,
                     size: 8,
                     sig,
+                    lanes: 0,
                 });
                 Ok(Type::Fn(id))
             }
@@ -3275,9 +3372,86 @@ impl Parser {
         }
     }
 
+    /// (lane type, lane count) of a vector type
+    fn vector_of(&self, ty: Type) -> Option<(Type, u32)> {
+        match ty {
+            Type::Struct(i) if self.packs[i as usize].lanes > 0 => Some((self.packs[i as usize].fields[0].1, self.packs[i as usize].lanes)),
+            _ => None,
+        }
+    }
+
+    /// an operation on vectors, lane by lane: the operands unpacked, the
+    /// scalar operation on each lane (an instruction, or the library's
+    /// for a pack lane), the results packed into `dst`. Sugar: the
+    /// struct lowering turns the packs and unpacks into names
+    fn lanewise(&mut self, scope: &mut FuncScope, dst: ValueId, op: &str, operands: &[ValueId]) -> Result<Inst, ParseError> {
+        let dty = scope.values[dst.0 as usize].ty;
+        let (dlane, n) = self.vector_of(dty).ok_or_else(|| self.err(format!("'{}' on vectors gives a vector; {} is {}", op, scope.values[dst.0 as usize].name, self.tyname_of(dty))))?;
+        let dname = scope.values[dst.0 as usize].name.clone();
+        let mut rows: Vec<Vec<ValueId>> = Vec::new();
+        for (j, &v) in operands.iter().enumerate() {
+            let vty = scope.values[v.0 as usize].ty;
+            let (lane, m) = self.vector_of(vty).ok_or_else(|| self.err(format!("'{}': {} is {}, not a vector", op, scope.values[v.0 as usize].name, self.tyname_of(vty))))?;
+            if m != n {
+                return Err(self.err(format!("'{}': {} has {} lanes, {} has {}", op, scope.values[v.0 as usize].name, m, dname, n)));
+            }
+            let lanes: Vec<ValueId> = (0..n).map(|k| scope.temp(lane, format!("{}_{}{}", dname, (b'a' + j as u8) as char, k))).collect();
+            self.consts.push(Inst::Unpack { dsts: lanes.clone(), src: v });
+            rows.push(lanes);
+        }
+        let mut results = Vec::new();
+        for k in 0..n as usize {
+            let r = scope.temp(dlane, format!("{}_{}", dname, k));
+            let args: Vec<ValueId> = rows.iter().map(|row| row[k]).collect();
+            let sl = scope.values[args[0].0 as usize].ty;
+            let inst = if let Some((_, bin)) = BINOPS.iter().find(|(n, _)| *n == op) {
+                // a pack lane is the library's; so are mul, div and rem
+                // on a core without them (as for scalars)
+                let to_library = sl.is_pack()
+                    || match *bin {
+                        BinOp::Div | BinOp::Rem => !self.policy.native_div,
+                        BinOp::IMul => !self.policy.native_mul,
+                        _ => false,
+                    };
+                if to_library {
+                    let callee = self.dispatch(op, sl, dlane)?;
+                    Inst::Call { dsts: vec![r], callee, args }
+                } else {
+                    Inst::Bin { op: *bin, dst: r, lhs: args[0], rhs: args[1] }
+                }
+            } else if let Some(cc) = op.strip_prefix("cmp.") {
+                let cond = CONDS.iter().find(|(n, _)| *n == cc).map(|(_, c)| *c).ok_or_else(|| self.err(format!("unknown comparison condition '{}'", cc)))?;
+                if sl.is_pack() {
+                    let callee = self.dispatch(cond.name(), sl, dlane)?;
+                    Inst::Call { dsts: vec![r], callee, args }
+                } else {
+                    Inst::ICmp { cond, dst: r, lhs: args[0], rhs: args[1] }
+                }
+            } else if op == "conv" || op == "cast" {
+                if op == "conv" && (sl.is_pack() || dlane.is_pack()) {
+                    let callee = self.dispatch(op, sl, dlane)?;
+                    Inst::Call { dsts: vec![r], callee, args }
+                } else {
+                    Inst::Cast { op: if op == "conv" { CastOp::Conv } else { CastOp::Cast }, dst: r, src: args[0] }
+                }
+            } else {
+                // a library operation (`sqrt`, `fma`, ...) on each lane
+                let callee = self.dispatch(op, sl, dlane)?;
+                Inst::Call { dsts: vec![r], callee, args }
+            };
+            self.consts.push(inst);
+            results.push(r);
+        }
+        Ok(Inst::Pack { dst, args: results })
+    }
+
     fn parse_def_op(&mut self, op: &str, dst: ValueId, scope: &mut FuncScope) -> Result<Inst, ParseError> {
         if let Some((_, bin)) = BINOPS.iter().find(|(n, _)| *n == op) {
             let dty = scope.values[dst.0 as usize].ty;
+            if self.vector_of(dty).is_some() {
+                let (lhs, rhs) = self.parse_pair(scope, None)?;
+                return self.lanewise(scope, dst, op, &[lhs, rhs]);
+            }
             let (lhs, rhs) = self.parse_pair(scope, Some(dty))?;
             // on a pack, the opcode is whatever generic function of that
             // name takes the pack's origin type: `add` on a float(8, 23)
@@ -3320,6 +3494,9 @@ impl Parser {
                 .map(|(_, c)| *c)
                 .ok_or_else(|| self.err(format!("unknown comparison condition '{}'", cc)))?;
             let (lhs, rhs) = self.parse_pair(scope, None)?;
+            if self.vector_of(scope.values[lhs.0 as usize].ty).is_some() {
+                return self.lanewise(scope, dst, op, &[lhs, rhs]);
+            }
             // on a pack, `cmp.lt` is the library's `lt` for that type
             if scope.values[lhs.0 as usize].ty.is_pack() {
                 let callee = self.dispatch(cond.name(), scope.values[lhs.0 as usize].ty, scope.values[dst.0 as usize].ty)?;
@@ -3383,6 +3560,9 @@ impl Parser {
             "conv" | "cast" => {
                 let src = self.expect_value(scope)?;
                 let (ts, td) = (scope.values[src.0 as usize].ty, scope.values[dst.0 as usize].ty);
+                if self.vector_of(ts).is_some() && self.vector_of(td).is_some() {
+                    return self.lanewise(scope, dst, op, &[src]);
+                }
                 // a conversion touching a pack is the library's: conv from
                 // float(E, M) to i(W), from u(W) to float(E, M), ...
                 if op == "conv" && (ts.is_pack() || td.is_pack()) {
@@ -3439,6 +3619,12 @@ impl Parser {
                 let (off, index) = self.parse_addressing(scope)?;
                 Ok(Inst::Load { dst, addr, off, index })
             }
+            "splat" => {
+                let dty = scope.values[dst.0 as usize].ty;
+                let (lane, n) = self.vector_of(dty).ok_or_else(|| self.err(format!("splat gives a vector; {} is {}", scope.values[dst.0 as usize].name, self.tyname_of(dty))))?;
+                let x = self.parse_operand(scope, Some(lane))?;
+                Ok(Inst::Pack { dst, args: vec![x; n as usize] })
+            }
             "addr" => {
                 let name = self.expect_ident()?;
                 if self.data.iter().any(|d| d.name == name) {
@@ -3493,6 +3679,9 @@ impl Parser {
                 let mut args = vec![first];
                 while self.eat(&Tok::Comma) {
                     args.push(self.parse_operand(scope, Some(fty))?);
+                }
+                if self.vector_of(fty).is_some() {
+                    return self.lanewise(scope, dst, op, &args);
                 }
                 if !scope.values[first.0 as usize].ty.is_pack() {
                     return Err(self.err(format!("unknown opcode '{}'", op)));
@@ -3552,8 +3741,18 @@ impl Parser {
 
     /// a field name of the pack-typed value `of`, resolved to its index
     fn expect_field(&mut self, scope: &mut FuncScope, of: ValueId) -> Result<u32, ParseError> {
-        let fname = self.expect_ident()?;
         let ty = scope.values[of.0 as usize].ty;
+        // a vector's lanes are numbered
+        if let Some((_, n)) = self.vector_of(ty) {
+            return match self.next()? {
+                Tok::Int(k) if k >= 0 && (k as u32) < n => Ok(k as u32),
+                t => {
+                    self.pos -= 1;
+                    Err(self.err(format!("'{}' has lanes 0 to {}, not {}", scope.values[of.0 as usize].name, n - 1, t)))
+                }
+            };
+        }
+        let fname = self.expect_ident()?;
         let (Type::Pack(i) | Type::Struct(i)) = ty else {
             self.pos -= 1;
             return Err(self.err(format!(

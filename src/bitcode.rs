@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! LLVM bitcode, written by hand — the form Apple's GPU compiler takes.
 //!
 //! A Metal library (`.metallib`) holds LLVM bitcode in Apple's dialect
