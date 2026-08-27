@@ -55,6 +55,10 @@ syscall(n: u64, a: u64, b: u64) -> u64
 ; 3); mcause's low bits say which interrupt (7: the machine timer)
 ext time
 const irq_timer = 7
+; the machine software interrupt: a task asking to be rescheduled
+; raises it by writing the CLINT's msip (0x02000000); taking it needs
+; mie.MSIE (bit 3), and finishing it clears msip
+const irq_soft = 3
 now() -> u64
     csrr r, 0xc01
 hz() -> u64
@@ -70,7 +74,7 @@ timer_off() -> () with base: ptr, never: u64
     sd never, 0(base)
 irq_on() -> () with bits: u64
     lui bits, 0
-    addi bits, bits, 128
+    addi bits, bits, 136
     csrs 0x304, bits
     lui bits, 0
     addi bits, bits, 8
@@ -78,8 +82,15 @@ irq_on() -> () with bits: u64
 irq_ack() -> u32
     csrr r, 0x342
     andi r, r, 255
-irq_done(id: u32) -> ()
-    none
+irq_done(id: u32) -> () with base: ptr, zero: u32
+    lui base, 0x2000
+    lui zero, 0
+    sw zero, 0(base)
+reschedule() -> () with base: ptr, one: u32
+    lui base, 0x2000
+    lui one, 0
+    addi one, one, 1
+    sw one, 0(base)
 idle() -> ()
     wfi
 

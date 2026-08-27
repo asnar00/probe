@@ -323,6 +323,16 @@ zeros — an empty frame, frames being smaller than that — and its
 function's address as the place to resume. `os/tasks.ssa` is the
 fourth operating system: two tasks, a time slice each, `ababababab`.
 
+A task that wants to give up the cpu before its slice ends asks the
+machine for an interrupt — `reschedule()`, a software interrupt to
+this cpu (riscv's msip, an SGI on the GIC; `irq_soft` is its id) — so
+that switching stays in the one place it happens. `os/sleep.ssa` is
+the fifth operating system: tasks that sleep until a `time`, a
+scheduler that picks the earliest passed deadline and arms the timer
+to the earliest future one (tickless: twenty wakes, eighteen
+interrupts), and deadlines like 3/3 s and 7/7 s and 10/10 s that are
+one instant because a `time` is a rational.
+
 ### Calls
 
 A name followed by an argument list is a call — no opcode is ever

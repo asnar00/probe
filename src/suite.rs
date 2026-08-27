@@ -896,7 +896,7 @@ pub fn exec_qemu_with(mut cmd: Command, secs: u64, input: Option<&[u8]>) -> Resu
     }
     let _ = child.wait();
     if timed_out {
-        return Err("qemu timed out (runaway emitted code?)".into());
+        return Err(format!("qemu timed out (runaway emitted code?); output so far:\n{}", out));
     }
     Ok(out)
 }
@@ -1131,6 +1131,36 @@ mod tests {
             let ms: i64 = report.strip_prefix("10 ticks in ").and_then(|r| r.strip_suffix(" ms")).and_then(|n| n.parse().ok()).unwrap_or(-1);
             assert_eq!(ticks, 10, "{}: {:?}", target, out);
             assert!((1000..1500).contains(&ms), "{}: {:?}", target, out);
+        }
+    }
+
+    /// the fifth: three tasks sleeping until exact times — every 1/10,
+    /// 1/3 and 1/7 of a second — must wake in the order the fractions
+    /// say (ties at 1 s in index order), never early, and cost one
+    /// interrupt per distinct deadline: 20 wakes, 18 interrupts. The
+    /// lateness bound is qemu's wake-up granularity, milliseconds.
+    #[test]
+    fn sleep_boots() {
+        let mut expect: Vec<(i64, i64, char)> = Vec::new(); // (k, den, letter)
+        for (letter, den, count) in [('a', 10, 10), ('b', 3, 3), ('c', 7, 7)] {
+            for k in 1..=count {
+                expect.push((k, den, letter));
+            }
+        }
+        // by value, exactly: k1/d1 < k2/d2 iff k1*d2 < k2*d1; ties by task (a, b, c)
+        expect.sort_by(|x, y| (x.0 * y.1).cmp(&(y.0 * x.1)).then(x.2.cmp(&y.2)));
+        let want: Vec<String> = expect.iter().map(|(k, d, l)| format!("{} {}", l, k * 1_000_000 / d)).collect();
+        for target in ["riscv64", "arm64"] {
+            let out = super::boot("os/sleep.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"")).unwrap();
+            let lines: Vec<&str> = out.lines().collect();
+            assert_eq!(lines.len(), 21, "{}: {:?}", target, out);
+            for (line, w) in lines[..20].iter().zip(&want) {
+                let (wake, late) = line.split_once(" +").unwrap_or((line, "x"));
+                assert_eq!(wake, w, "{}: {:?}", target, out);
+                let late: i64 = late.parse().unwrap_or(-1);
+                assert!((0..20_000).contains(&late), "{}: {:?}", target, line);
+            }
+            assert!(lines[20].starts_with("18 interrupts, worst +"), "{}: {:?}", target, out);
         }
     }
 

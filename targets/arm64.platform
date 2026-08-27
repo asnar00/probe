@@ -71,6 +71,10 @@ syscall(n: u64, a: u64, b: u64) -> u64
 ; IRQ mask bit of PSTATE (daif bit 2)
 ext time
 const irq_timer = 30
+; a software-generated interrupt to this cpu (SGI 0, through the
+; distributor's SGIR at 0xf00, target list filter "self"): a task
+; asking to be rescheduled
+const irq_soft = 0
 now() -> u64
     mrs r, cntpct_el0
 hz() -> u64
@@ -88,6 +92,8 @@ irq_on() -> () with gic: ptr, v: u32
     str v, [gic, 0]
     movz v, 0x4000, lsl 16
     str v, [gic, 256]
+    movz v, 1
+    str v, [gic, 256]
     movz gic, 0x0801, lsl 16
     movz v, 255
     str v, [gic, 4]
@@ -100,6 +106,10 @@ irq_ack() -> u32 with gic: ptr
 irq_done(id: u32) -> () with gic: ptr
     movz gic, 0x0801, lsl 16
     str id, [gic, 16]
+reschedule() -> () with gic: ptr, v: u32
+    movz gic, 0x0800, lsl 16
+    movz v, 0x0200, lsl 16
+    str v, [gic, 3840]
 idle() -> ()
     wfi
 

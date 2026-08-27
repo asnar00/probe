@@ -1,0 +1,387 @@
+; sleep — the fifth operating system written in probe: tasks that
+; sleep until a time, and a scheduler that keeps exact time.
+;
+;   probe boot os/sleep.ssa            (riscv64)
+;   probe boot os/sleep.ssa arm        (aarch64)
+;   a 100000 +9
+;   c 142857 +8
+;   a 200000 +10
+;   ...
+;   18 interrupts, worst +NN us
+;
+; Three tasks wake every 1/10, 1/3 and 1/7 of a second, each deadline
+; a `time` — lib/time.ssa's rational seconds, so 3/3 and 7/7 and 10/10
+; are the same instant and the three wake on one interrupt, in index
+; order. Each prints its letter, its scheduled wake in microseconds
+; and how late it woke; after a second the idle task reports how many
+; timer interrupts it took (18: twenty wakes, two of them shared) and
+; the worst lateness. The timer is armed to the next deadline, never
+; to a tick. A task that goes to sleep asks the machine for an
+; interrupt (`reschedule`: a software interrupt to this cpu), so the
+; switch happens now and in the one place switches happen, `__irq`.
+
+data stack_a: array(u8, 8192)
+data stack_b: array(u8, 8192)
+data stack_c: array(u8, 8192)
+; four tasks (0 is the idle task, the boot context): pc, sp, wake time
+; (16 bytes, a rational) — 32 bytes each
+data tasks: array(u64, 16)
+data current: array(u64, 1)
+data start: array(u64, 1)
+data interrupts: array(u64, 1)
+data wakes: array(u64, 1)
+data worst: array(i64, 1)
+data sep = " +"
+data summary = " interrupts, worst +"
+data us = " us\n"
+
+; --- the board ---
+fn vectors(t: ptr) {
+    ret
+}
+fn resume() -> ptr {
+    ret 0
+}
+fn resume_at(p: ptr) {
+    ret
+}
+fn now() -> u64 {
+    ret 0
+}
+fn hz() -> u64 {
+    ret 0
+}
+fn timer_at(t: u64) {
+    ret
+}
+fn timer_off() {
+    ret
+}
+fn irq_on() {
+    ret
+}
+fn irq_ack() -> u32 {
+    ret 0
+}
+fn irq_done(id: u32) {
+    ret
+}
+fn reschedule() {
+    ret
+}
+fn idle() {
+    ret
+}
+fn psci(code: u64) {
+    ret
+}
+
+; --- time ---
+; the machine's counter since boot, as exact seconds
+fn now_time() -> time {
+    sp: ptr = addr start
+    s: u64 = load sp
+    t: u64 = now()
+    e: u64 = sub t, s
+    ei: i64 = conv e
+    f: u64 = hz()
+    fi: i64 = conv f
+    c: time = seconds(ei)
+    p: time = period(fi)
+    r: time = mul c, p
+    ret r
+}
+; a time as a count of the machine's counter, the tick after it
+fn ticks_of(t: time) -> u64 {
+    sp: ptr = addr start
+    s: u64 = load sp
+    f: u64 = hz()
+    fi: i64 = conv f
+    ft: time = seconds(fi)
+    x: time = mul t, ft
+    n: i64 = to_seconds(x)
+    n1: i64 = add n, 1
+    nu: u64 = conv n1
+    r: u64 = add s, nu
+    ret r
+}
+
+; --- the kernel ---
+fn task_block(i: i64) -> ptr {
+    t: ptr = addr tasks
+    off: i64 = mul i, 32
+    p: ptr = ptradd t, off
+    ret p
+}
+fn spawn(i: i64, f: fn(), stack: ptr) {
+    p: ptr = task_block(i)
+    pc: ptr = cast f
+    sp: ptr = ptradd stack, 4096
+    store pc, p
+    store sp, p, 8
+    zero: time = seconds(0)
+    store zero, p, 16
+    ret
+}
+fn __start() {
+    h: fn(u64, u64, u64) -> u64 = addr __trap
+    hp: ptr = cast h
+    vectors(hp)
+    fa: fn() = addr task_a
+    fb: fn() = addr task_b
+    fc: fn() = addr task_c
+    sa: ptr = addr stack_a
+    sb: ptr = addr stack_b
+    sc: ptr = addr stack_c
+    spawn(1, fa, sa)
+    spawn(2, fb, sb)
+    spawn(3, fc, sc)
+    t0: u64 = now()
+    stp: ptr = addr start
+    store t0, stp
+    timer_off()
+    irq_on()
+    reschedule()
+    ; the idle task: when the twenty wakes are done, the report
+    wp: ptr = addr wakes
+    loop() {
+        w: u64 = load wp
+        done: u1 = cmp.ge w, 20
+        if done {
+            ip: ptr = addr interrupts
+            n: u64 = load ip
+            ni: i64 = conv n
+            print_dec(ni)
+            say_summary()
+            wo: ptr = addr worst
+            wv: i64 = load wo
+            print_dec(wv)
+            say_us()
+            exit()
+            loop() {
+                continue
+            }
+        }
+        idle()
+        continue
+    }
+}
+
+; every interrupt: the timer's, or a task asking. Either way: keep
+; where the running task is, pick the runnable task with the earliest
+; deadline (the idle task when there is none), arm the timer to the
+; earliest deadline still to come, and go there.
+fn __irq(sp: ptr) -> ptr {
+    id: u32 = irq_ack()
+    timer: u32 = platform irq_timer
+    soft: u32 = platform irq_soft
+    is_timer: u1 = cmp.eq id, timer
+    is_soft: u1 = cmp.eq id, soft
+    mine: u1 = or is_timer, is_soft
+    back: ptr = if mine {
+        if is_timer {
+            ip: ptr = addr interrupts
+            n: u64 = load ip
+            n1: u64 = add n, 1
+            store n1, ip
+        }
+        cp: ptr = addr current
+        cur: u64 = load cp
+        ci: i64 = conv cur
+        me: ptr = task_block(ci)
+        pc: ptr = resume()
+        store pc, me
+        store sp, me, 8
+        tnow: time = now_time()
+        ; the earliest passed deadline runs; the earliest future one
+        ; sets the timer
+        best: i64, next: time = loop(i: i64 = 1, b: i64 = 0, bw: time = tnow, nx: time = tnow, have: u1 = 0) {
+            over: u1 = cmp.gt i, 3
+            if over {
+                break b, nx
+            }
+            p: ptr = task_block(i)
+            w: time = load p, 16
+            i2: i64 = add i, 1
+            due: u1 = cmp.le w, tnow
+            if due {
+                earlier: u1 = cmp.lt w, bw
+                none_yet: u1 = cmp.eq b, 0
+                take: u1 = or earlier, none_yet
+                if take {
+                    continue i2, i, w, nx, have
+                }
+                continue i2, b, bw, nx, have
+            }
+            sooner: u1 = cmp.lt w, nx
+            first: u1 = cmp.eq have, 0
+            take2: u1 = or sooner, first
+            if take2 {
+                continue i2, b, bw, w, 1
+            }
+            continue i2, b, bw, nx, have
+        }
+        ; a timer left armed in the past would fire again at once
+        later: u1 = cmp.gt next, tnow
+        if later {
+            at: u64 = ticks_of(next)
+            timer_at(at)
+        } else {
+            timer_off()
+        }
+        bu: u64 = conv best
+        store bu, cp
+        chosen: ptr = task_block(best)
+        pc2: ptr = load chosen
+        sp2: ptr = load chosen, 8
+        resume_at(pc2)
+        yield sp2
+    } else {
+        yield sp
+    }
+    irq_done(id)
+    ret back
+}
+
+fn __trap(n: u64, a: u64, b: u64) -> u64 {
+    exit()
+    ret n
+}
+
+; sleep until a time: set the deadline, hand the cpu over, and — the
+; interrupt being asynchronous — wait for the time to have come
+fn sleep_until(i: i64, t: time) {
+    p: ptr = task_block(i)
+    store t, p, 16
+    reschedule()
+    loop() {
+        n: time = now_time()
+        due: u1 = cmp.ge n, t
+        if due {
+            break
+        }
+        idle()
+        continue
+    }
+    ret
+}
+
+; --- the tasks: wake every period, report the wake ---
+fn task_a() {
+    p: time = period(10)
+    run(97, 1, p, 10)
+    ret
+}
+fn task_b() {
+    p: time = period(3)
+    run(98, 2, p, 3)
+    ret
+}
+fn task_c() {
+    p: time = period(7)
+    run(99, 3, p, 7)
+    ret
+}
+fn run(letter: u8, i: i64, per: time, count: i64) {
+    loop(k: i64 = 1) {
+        kt: time = seconds(k)
+        d: time = mul per, kt
+        sleep_until(i, d)
+        n: time = now_time()
+        late: time = sub n, d
+        lu: i64 = to_micros(late)
+        du: i64 = to_micros(d)
+        putc(letter)
+        putc(32)
+        print_dec(du)
+        sp: ptr = addr sep
+        sn: i64 = len sep
+        say(sp, sn)
+        print_dec(lu)
+        putc(10)
+        wo: ptr = addr worst
+        wv: i64 = load wo
+        more: u1 = cmp.gt lu, wv
+        if more {
+            store lu, wo
+        }
+        wp: ptr = addr wakes
+        w: u64 = load wp
+        w1: u64 = add w, 1
+        store w1, wp
+        last: u1 = cmp.ge k, count
+        if last {
+            ; done: sleep forever
+            far: time = seconds(1000000)
+            sleep_until(i, far)
+        }
+        k1: i64 = add k, 1
+        continue k1
+    }
+}
+
+; --- output ---
+fn putc(c: u8) {
+    uart: ptr = platform uart
+    c32: u32 = conv c
+    store c32, uart
+    ret
+}
+fn say(p: ptr, n: i64) {
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        c: u8 = load p, i, 1
+        putc(c)
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+fn say_summary() {
+    p: ptr = addr summary
+    n: i64 = len summary
+    say(p, n)
+    ret
+}
+fn say_us() {
+    p: ptr = addr us
+    n: i64 = len us
+    say(p, n)
+    ret
+}
+fn print_dec(v: i64) {
+    buf: ptr = scratch 32
+    n: i64 = loop(x: i64 = v, i: i64 = 0) {
+        d: i64 = rem x, 10
+        c: u8 = conv d
+        c48: u8 = add c, 48
+        store c48, buf, i, 1
+        x2: i64 = div x, 10
+        i2: i64 = add i, 1
+        done: u1 = cmp.eq x2, 0
+        if done {
+            break i2
+        }
+        continue x2, i2
+    }
+    loop(j: i64 = n) {
+        z: u1 = cmp.le j, 0
+        if z {
+            break
+        }
+        j1: i64 = sub j, 1
+        ch: u8 = load buf, j1, 1
+        putc(ch)
+        continue j1
+    }
+    ret
+}
+fn exit() {
+    f: ptr = platform finisher
+    store 0x5555: u32, f
+    psci(0x84000008)
+    ret
+}
