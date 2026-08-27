@@ -6,6 +6,28 @@ has the full story for any of them.
 
 ---
 
+### Dominance, fall-through, scratch — `147fe74` → `ad80a53` · 2026-08-27
+
+Three items from the list. *Dominance* (`147fe74`): the verifier's
+rule 7 — every use is dominated by its definition, earlier in its block
+or in a block every path from the entry passes through; the dominator
+tree moved out of the wasm structuring into `structure::Dom` so both
+share it. It found that `addr` and `platform` results had never been
+on the verifier's definition list at all. *Fall-through* (`30430b9`): a
+jump to the block laid out next is not emitted, and a conditional
+branch whose taken side is next is inverted over the other; no
+relaxation pass was needed because block offsets were always patched
+after the whole function. *Scratch* (`ad80a53`): `p: ptr = scratch 64`
+is memory that is the function's while it runs — its frame on arm64
+(`add x, sp, #imm`, newly learned) and riscv64, a shadow stack in
+linear memory on wasm (one mutable global, `global.get`/`set` newly
+learned) — 16-aligned, one area per instruction, one per activation.
+Until now every byte a program touched came from its caller or from
+`data`. Memory that outlives a call is deliberately not started:
+`future-work.md` says it needs a design session first.
+
+---
+
 ### Traps and system calls: `os/echo.ssa` — `504879b` · 2026-08-27
 
 `printf 'hello\nbye\n' | probe boot os/echo.ssa arm` and the machine
