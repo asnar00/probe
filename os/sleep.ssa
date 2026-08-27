@@ -9,6 +9,12 @@
 ;   ...
 ;   18 interrupts, worst +NN us
 ;
+; Besides tasks there are callbacks: `at(t, f, arg)` and `after(d, f,
+; arg)` run a function value at a time, inside the interrupt, before
+; the scheduler picks a task — fast and exact, so short and never
+; sleeping. One is set half a second after boot and registers another
+; at exactly a quarter of a second after its own time.
+;
 ; Three tasks wake every 1/10, 1/3 and 1/7 of a second, each deadline
 ; a `time` — lib/time.ssa's rational seconds, so 3/3 and 7/7 and 10/10
 ; are the same instant and the three wake on one interrupt, in index
@@ -34,6 +40,13 @@ data worst: array(i64, 1)
 data sep = " +"
 data summary = " interrupts, worst +"
 data us = " us\n"
+; callbacks: up to four of (time, f, arg) — 32 bytes each, f zero
+; when the slot is free
+data timers: array(u64, 16)
+data ping_at: array(u64, 2)
+data pong_at: array(u64, 2)
+data bang = "! "
+data bangbang = "!! "
 
 ; --- the board ---
 fn vectors(t: ptr) {
@@ -141,6 +154,12 @@ fn __start() {
     store t0, stp
     timer_off()
     irq_on()
+    ; a callback half a second from now
+    half: time = period(2)
+    pp: ptr = addr ping_at
+    fp: fn(ptr) = addr ping
+    when: time = after(half, fp, pp)
+    store when, pp
     reschedule()
     ; the idle task: when the twenty wakes are done, the report
     wp: ptr = addr wakes
@@ -193,6 +212,8 @@ fn __irq(sp: ptr) -> ptr {
         store pc, me
         store sp, me, 8
         tnow: time = now_time()
+        ; callbacks whose time has come run here, now
+        run_due(tnow)
         ; the earliest passed deadline runs; the earliest future one
         ; sets the timer
         best: i64, next: time = loop(i: i64 = 1, b: i64 = 0, bw: time = tnow, nx: time = tnow, have: u1 = 0) {
@@ -221,10 +242,12 @@ fn __irq(sp: ptr) -> ptr {
             }
             continue i2, b, bw, nx, have
         }
-        ; a timer left armed in the past would fire again at once
-        later: u1 = cmp.gt next, tnow
+        ; ... or a callback still to come; a timer left armed in the
+        ; past would fire again at once
+        next2: time = next_callback(tnow, next)
+        later: u1 = cmp.gt next2, tnow
         if later {
-            at: u64 = ticks_of(next)
+            at: u64 = ticks_of(next2)
             timer_at(at)
         } else {
             timer_off()
@@ -241,6 +264,138 @@ fn __irq(sp: ptr) -> ptr {
     }
     irq_done(id)
     ret back
+}
+
+; --- callbacks ---
+fn timer_slot(i: i64) -> ptr {
+    t: ptr = addr timers
+    off: i64 = mul i, 32
+    p: ptr = ptradd t, off
+    ret p
+}
+; run a function value at a time (inside the interrupt: short, and it
+; must not sleep); from a task or from another callback
+fn at(t: time, f: fn(ptr), arg: ptr) {
+    loop(i: i64 = 0) {
+        full: u1 = cmp.ge i, 4
+        if full {
+            break
+        }
+        p: ptr = timer_slot(i)
+        g: fn(ptr) = load p, 16
+        gb: u64 = cast g
+        free: u1 = cmp.eq gb, 0
+        if free {
+            store t, p
+            store f, p, 16
+            store arg, p, 24
+            break
+        }
+        i1: i64 = add i, 1
+        continue i1
+    }
+    reschedule()
+    ret
+}
+; ... or a duration from now; the time that makes it, for the caller
+fn after(d: time, f: fn(ptr), arg: ptr) -> time {
+    n: time = now_time()
+    t: time = add n, d
+    at(t, f, arg)
+    ret t
+}
+; the callbacks whose time has come, in slot order
+fn run_due(tnow: time) {
+    loop(i: i64 = 0) {
+        over: u1 = cmp.ge i, 4
+        if over {
+            break
+        }
+        i1: i64 = add i, 1
+        p: ptr = timer_slot(i)
+        g: fn(ptr) = load p, 16
+        gb: u64 = cast g
+        free: u1 = cmp.eq gb, 0
+        if free {
+            continue i1
+        }
+        t: time = load p
+        due: u1 = cmp.le t, tnow
+        if due {
+            arg: ptr = load p, 24
+            none: u64 = const 0
+            store none, p, 16
+            g(arg)
+        }
+        continue i1
+    }
+    ret
+}
+; the earliest callback time still to come, if sooner than `next`
+; (which may be no deadline at all: not after tnow)
+fn next_callback(tnow: time, next: time) -> time {
+    r: time = loop(i: i64 = 0, nx: time = next) {
+        over: u1 = cmp.ge i, 4
+        if over {
+            break nx
+        }
+        i1: i64 = add i, 1
+        p: ptr = timer_slot(i)
+        g: fn(ptr) = load p, 16
+        gb: u64 = cast g
+        free: u1 = cmp.eq gb, 0
+        if free {
+            continue i1, nx
+        }
+        t: time = load p
+        future: u1 = cmp.gt t, tnow
+        sooner: u1 = cmp.lt t, nx
+        none: u1 = cmp.le nx, tnow
+        take0: u1 = or sooner, none
+        take: u1 = and future, take0
+        if take {
+            continue i1, t
+        }
+        continue i1, nx
+    }
+    ret r
+}
+; the callbacks themselves: report, and the first registers the second
+fn ping(arg: ptr) {
+    t: time = load arg
+    bp: ptr = addr bang
+    bn: i64 = len bang
+    report(bp, bn, t)
+    ; and the next one a quarter of a second after this one's time —
+    ; the scheduled time, not the late moment it is running at
+    quarter: time = period(4)
+    t2: time = add t, quarter
+    pp: ptr = addr pong_at
+    store t2, pp
+    fp: fn(ptr) = addr pong
+    at(t2, fp, pp)
+    ret
+}
+fn pong(arg: ptr) {
+    t: time = load arg
+    bp: ptr = addr bangbang
+    bn: i64 = len bangbang
+    report(bp, bn, t)
+    ret
+}
+fn report(label: ptr, n: i64, t: time) {
+    say(label, n)
+    now: time = now_time()
+    late: time = sub now, t
+    lu: i64 = to_micros(late)
+    du: i64 = to_micros(t)
+    print_dec(du)
+    sp: ptr = addr sep
+    sn: i64 = len sep
+    say(sp, sn)
+    print_dec(lu)
+    putc(10)
+    ret
 }
 
 fn __trap(n: u64, a: u64, b: u64) -> u64 {

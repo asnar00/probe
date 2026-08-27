@@ -331,7 +331,12 @@ the fifth operating system: tasks that sleep until a `time`, a
 scheduler that picks the earliest passed deadline and arms the timer
 to the earliest future one (tickless: twenty wakes, eighteen
 interrupts), and deadlines like 3/3 s and 7/7 s and 10/10 s that are
-one instant because a `time` is a rational.
+one instant because a `time` is a rational. It also has callbacks:
+`at(t, f, arg)` and `after(d, f, arg)` run a function value at a
+time, inside the interrupt and before the scheduler picks a task —
+exact and cheap, so short and never sleeping. Neither is anything the
+IR knows about: a time is a library type, a callback a function value,
+and what the kernel does with them is the kernel's.
 
 ### Calls
 

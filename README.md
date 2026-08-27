@@ -68,7 +68,10 @@ cargo run -- boot os/sleep.ssa
 a 100000 +5415    # letter, scheduled wake in µs, lateness
 c 142857 +3679
 ...
-18 interrupts, worst +7554 us
+! 500000 +5652    # a callback, run inside the interrupt
+a 500000 +7474
+...
+19 interrupts, worst +7554 us
 ```
 
 `os/sleep.ssa` is the fifth: three tasks sleeping until exact times —
@@ -76,7 +79,10 @@ every 1/10, 1/3 and 1/7 of a second — woken in the order the fractions
 say, 3/3 and 7/7 and 10/10 of a second being one instant, and the
 timer armed to the next deadline rather than to a tick: twenty wakes,
 eighteen interrupts. A task giving up the cpu asks for a software
-interrupt (`reschedule`), so every switch still happens in `__irq`.
+interrupt (`reschedule`), so every switch still happens in `__irq`;
+and `at(t, f, arg)` / `after(d, f, arg)` run a function value at a
+time inside the interrupt — the `!` lines — with nothing added to the
+IR: a time is a library type and a callback a function value.
 
 `os/tasks.ssa` is the fourth: two tasks preempted by the timer. The
 interrupt handler is `fn __irq(sp: ptr) -> ptr` — handed the frame

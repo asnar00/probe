@@ -1137,8 +1137,9 @@ mod tests {
     /// the fifth: three tasks sleeping until exact times — every 1/10,
     /// 1/3 and 1/7 of a second — must wake in the order the fractions
     /// say (ties at 1 s in index order), never early, and cost one
-    /// interrupt per distinct deadline: 20 wakes, 18 interrupts. The
-    /// lateness bound is qemu's wake-up granularity, milliseconds.
+    /// interrupt per distinct deadline: 20 wakes plus two callbacks,
+    /// 19 interrupts. The lateness bound is qemu's wake-up granularity,
+    /// milliseconds.
     #[test]
     fn sleep_boots() {
         let mut expect: Vec<(i64, i64, char)> = Vec::new(); // (k, den, letter)
@@ -1153,14 +1154,29 @@ mod tests {
         for target in ["riscv64", "arm64"] {
             let out = super::boot("os/sleep.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"")).unwrap();
             let lines: Vec<&str> = out.lines().collect();
-            assert_eq!(lines.len(), 21, "{}: {:?}", target, out);
-            for (line, w) in lines[..20].iter().zip(&want) {
-                let (wake, late) = line.split_once(" +").unwrap_or((line, "x"));
-                assert_eq!(wake, w, "{}: {:?}", target, out);
+            assert_eq!(lines.len(), 23, "{}: {:?}", target, out);
+            // the callbacks: `!` half a second after boot (a few µs past
+            // 500000, boot being when `start` was read), run before the
+            // wake it shares an interrupt with; `!!` exactly 250000 later
+            let mut wakes = Vec::new();
+            let mut bang: Option<i64> = None;
+            for line in &lines[..22] {
+                let (event, late) = line.split_once(" +").unwrap_or((line, "x"));
                 let late: i64 = late.parse().unwrap_or(-1);
                 assert!((0..20_000).contains(&late), "{}: {:?}", target, line);
+                if let Some(t) = event.strip_prefix("!! ") {
+                    assert_eq!(t.parse::<i64>().unwrap(), bang.expect("! before !!") + 250_000, "{}: {:?}", target, out);
+                } else if let Some(t) = event.strip_prefix("! ") {
+                    let t: i64 = t.parse().unwrap();
+                    assert!((500_000..501_000).contains(&t), "{}: {:?}", target, out);
+                    assert_eq!(wakes.len(), 8, "! must run before a 500000: {:?}", out);
+                    bang = Some(t);
+                } else {
+                    wakes.push(event.to_string());
+                }
             }
-            assert!(lines[20].starts_with("18 interrupts, worst +"), "{}: {:?}", target, out);
+            assert_eq!(wakes, want, "{}: {:?}", target, out);
+            assert!(lines[22].starts_with("19 interrupts, worst +"), "{}: {:?}", target, out);
         }
     }
 
