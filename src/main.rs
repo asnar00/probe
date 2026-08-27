@@ -1,5 +1,6 @@
 mod aggregate;
 mod arena;
+mod bitcode;
 mod emit;
 mod emit_rv;
 mod emit_wasm;
