@@ -6,6 +6,26 @@ has the full story for any of them.
 
 ---
 
+### A decision: everything at kernel level · 2026-08-27
+
+Considered and declined, for now: user mode. It would need no IR
+change — privilege is machine state the trap frame carries, so it is
+two more platform rules (the saved status register, `mstatus`/`spsr`)
+and a kernel stack at handler entry (free on arm64, an `mscratch` swap
+on riscv) — but what it buys is containment of one's own bugs, and
+only with memory protection (PMP; on arm64 the MMU and page tables),
+at the price of a trap per service, copies across the boundary, and a
+kernel/user split of every name. This is a single-user machine built
+by its one user, in the tradition of Oberon and the language-safe
+systems: one program, compiled together, every function in the
+verifier's sight. So: one level, "system calls" are calls, and two
+conventions keep the door open — only the handlers touch machine
+state, and the kernel's services are a table of function values, so a
+component that ever needs isolating can be moved behind a real trap
+without redesigning the rest.
+
+---
+
 ### Preemptive tasks: `os/tasks.ssa` — `7f42d6c` · 2026-08-27
 
 `probe boot os/tasks.ssa` prints `ababababab`: two tasks, preempted by
