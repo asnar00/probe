@@ -19,6 +19,11 @@ target riscv64
 ext virt
 const uart = 0x10000000
 const finisher = 0x100000
+; the machine's memory: 128 MB from 0x80000000; the image is at the
+; bottom, the boot stack 8 MB up (probe boot's preamble), and what
+; is above that is a program's to carve — its heap
+const heap_base = 0x80800000
+const ram_end = 0x88000000
 ; the UART's receive side: the line status register, its "data ready"
 ; bit, and that bit's value when a byte is waiting
 const uart_status = 5

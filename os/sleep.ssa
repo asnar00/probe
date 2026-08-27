@@ -17,10 +17,12 @@
 ; interrupt with nothing else, so every event costs exactly one.
 ;
 ; All the memory below the machine's comes from one heap (lib/heap.ssa,
-; a buddy allocator over a declared block): the stacks' pool and the
-; frame arenas are carved from it at boot, and a task that needs a
-; region of its own carves one and gives it back. The kernel seals the
-; heap inside every interrupt — nothing allocates in a handler — and
+; a buddy allocator) over the RAM the machine has above the image and
+; the boot stack — `platform heap_base` to `platform ram_end`, 112 MB
+; on these boards, in 4 KB units: the stacks' pool and the frame
+; arenas are carved from it at boot, and a task that needs a region of
+; its own carves one and gives it back. The kernel seals the heap
+; inside every interrupt — nothing allocates in a handler — and
 ; reports at the end what is still out.
 ;
 ; And there is memory with a lifetime of one frame: two arenas
@@ -44,9 +46,9 @@
 ; interrupt (`reschedule`: a software interrupt to this cpu), so the
 ; switch happens now and in the one place switches happen, `__irq`.
 
-; the heap everything is carved from
-data heap_mem: array(u8, 262144)
-data the_heap: array(u64, 6)
+; the heap everything is carved from: its seven words; its memory is
+; the machine's
+data the_heap: array(u64, 7)
 data heap_label = " heap bytes out\n"
 ; stacks come from a pool (lib/pool.ssa): four of 8 KB in a 64 KB
 ; block from the heap; a task that ends gives its own back
@@ -222,9 +224,14 @@ fn __start() {
     h: fn(u64, u64, u64) -> u64 = addr __trap
     hp: ptr = cast h
     vectors(hp)
-    hm: ptr = addr heap_mem
+    hm: ptr = platform heap_base
+    ram_end: ptr = platform ram_end
+    hb: u64 = cast hm
+    re: u64 = cast ram_end
+    ram: u64 = sub re, hb
+    rami: i64 = cast ram
     hpp: ptr = addr the_heap
-    heap_init(hpp, hm, 262144)
+    heap_init(hpp, hm, rami, 4096)
     sp: ptr = addr stack_pool
     sm: ptr = heap_take(hpp, 65536)
     pool_init(sp, sm, 65536, 8192, 4)

@@ -1222,9 +1222,9 @@ mod tests {
             let interrupts: i64 = lines[n - 3].split_once(" interrupts").and_then(|(k, _)| k.parse().ok()).unwrap_or(-1);
             assert!((30..=32).contains(&interrupts), "{}: {:?}", target, out);
             assert_eq!(lines[n - 2], "3 stacks out", "{}: {:?}", target, out);
-            // the stacks' block and the two frame arenas; the one-shot's
-            // region went back
-            assert_eq!(lines[n - 1], "66560 heap bytes out", "{}: {:?}", target, out);
+            // the stacks' block and the two frame arenas (4 KB units); the
+            // one-shot's region went back
+            assert_eq!(lines[n - 1], "73728 heap bytes out", "{}: {:?}", target, out);
         }
     }
 

@@ -89,9 +89,10 @@ second — the `frame` lines; and with the lifetime of a task: stacks
 from a pool (`lib/pool.ssa`), so a callback can spawn a one-shot task
 (`* 630000`) that sleeps to its time, runs, and hands its stack back —
 `3 stacks out` at the end. The pool, the arenas and the task's own
-region all come from one heap (`lib/heap.ssa`), sealed inside every
-interrupt: `66560 heap bytes out` at the end, the task's region gone
-back.
+region all come from one heap (`lib/heap.ssa`) over the RAM the machine
+has above the image — 112 MB, `platform heap_base` to `platform
+ram_end` — sealed inside every interrupt: `73728 heap bytes out` at the
+end, the task's region gone back.
 
 `os/tasks.ssa` is the fourth: two tasks preempted by the timer. The
 interrupt handler is `fn __irq(sp: ptr) -> ptr` — handed the frame
@@ -229,7 +230,9 @@ what a target does natively, as rules over the library's operations:
   verified. Compiling such an instance, or a call to one, emits the rule
   instead of the SSA body; `--soft` turns that off, and the library
   remains the reference the hardware path is checked against.
-- `const uart = 0x10000000` — a board's addresses, for `platform uart`.
+- `const uart = 0x10000000` — a board's addresses, for `platform uart`;
+  `heap_base` and `ram_end`, the RAM above the image that is a
+  program's to carve.
 - `psci(code: u64) -> ()` with `hvc 0` under it — a plain function the
   platform gives a body: how the board is ended, how a trap is
   installed, read and returned from (`vectors`, `cause`, `resume`,

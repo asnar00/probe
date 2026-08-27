@@ -1,7 +1,9 @@
 ; a heap: the root the other memory comes from. Not for objects — for
-; the arenas and pools and stacks a program carves out of one declared
-; block, rarely, in big pieces. A buddy allocator: the block is a
-; power of two of 256-byte units; taking rounds up to a power of two
+; the arenas and pools and stacks a program carves out of one block,
+; rarely, in big pieces: a declared array, or on a machine the RAM
+; above the image (`platform heap_base` to `platform ram_end`). A
+; buddy allocator: the block is a power of two of units (256 bytes for
+; a small heap, 4 KB for a machine's); taking rounds up to a power of two
 ; and splits a free block down to that size; giving back merges with
 ; the buddy while the buddy is free. So every piece is aligned to its
 ; own size, splitting and merging are bounded, and fragmentation is
@@ -13,16 +15,17 @@
 ; interrupt, and a program that allocates only while initializing seals
 ; it after.
 ;
-; six words: base, size, levels, the tree, bytes out, sealed
-type heap = struct { base: ptr, size: i64, levels: i64, tree: ptr, out: i64, sealed: i64 }
+; seven words: base, size, levels, the tree, bytes out, sealed, unit
+type heap = struct { base: ptr, size: i64, levels: i64, tree: ptr, out: i64, sealed: i64, unit: i64 }
 
-fn heap_unit() -> i64 {
-    ret 256
+fn heap_unit(h: ptr) -> i64 {
+    u: i64 = load h, 48
+    ret u
 }
 
-; the largest power-of-two heap, with its tree in front, that fits in
-; `size` bytes at `mem`
-fn heap_init(h: ptr, mem: ptr, size: i64) {
+; the largest power-of-two heap of `unit`-byte units, with its tree in
+; front, that fits in `size` bytes at `mem`
+fn heap_init(h: ptr, mem: ptr, size: i64, unit: i64) {
     m: u64 = cast mem
     m15: u64 = add m, 15
     aligned: u64 = and m15, -16
@@ -30,11 +33,13 @@ fn heap_init(h: ptr, mem: ptr, size: i64) {
     leadi: i64 = cast lead
     avail: i64 = sub size, leadi
     ; the heap size: a power of two of units; the tree takes two bytes
-    ; per unit (rounded up to 256), so shrink until both fit
-    unit: i64 = heap_unit()
-    hs: i64 = loop(hsz: i64 = unit) {
+    ; per unit (rounded up to a unit), so shrink until both fit
+    u15: i64 = add unit, 15
+    unit16: i64 = and u15, -16
+    hs: i64 = loop(hsz: i64 = unit16) {
         twice: i64 = mul hsz, 2
-        tree2: i64 = div twice, 128
+        tunits: i64 = div twice, unit16
+        tree2: i64 = mul tunits, 2
         need: i64 = add twice, tree2
         too_big: u1 = cmp.gt need, avail
         if too_big {
@@ -42,16 +47,19 @@ fn heap_init(h: ptr, mem: ptr, size: i64) {
         }
         continue twice
     }
-    tree_bytes: i64 = div hs, 128
-    tb255: i64 = add tree_bytes, 255
-    tree_size: i64 = and tb255, -256
+    hunits: i64 = div hs, unit16
+    tree_bytes: i64 = mul hunits, 2
+    tbu: i64 = add tree_bytes, unit16
+    tbu1: i64 = sub tbu, 1
+    tree_size0: i64 = div tbu1, unit16
+    tree_size: i64 = mul tree_size0, unit16
     fits: u1 = cmp.le tree_size, avail
     check fits
     tree: ptr = cast aligned
     base: ptr = ptradd tree, tree_size
     ; levels: 0 is the whole heap, and each level halves, down to units
     levels: i64 = loop(l: i64 = 0, s: i64 = hs) {
-        smallest: u1 = cmp.le s, unit
+        smallest: u1 = cmp.le s, unit16
         if smallest {
             break l
         }
@@ -65,6 +73,7 @@ fn heap_init(h: ptr, mem: ptr, size: i64) {
     store tree, h, 24
     store 0: i64, h, 32
     store 0: i64, h, 40
+    store unit16, h, 48
     ; every node absent but the root, which is free
     nodes: i64 = shl 2: i64, levels
     loop(i: i64 = 0) {
@@ -95,8 +104,8 @@ fn heap_set(h: ptr, node: i64, state: i64) {
 }
 
 ; the size a request takes: a power of two, at least a unit
-fn heap_round(bytes: i64) -> i64 {
-    unit: i64 = heap_unit()
+fn heap_round(h: ptr, bytes: i64) -> i64 {
+    unit: i64 = heap_unit(h)
     r: i64 = loop(s: i64 = unit) {
         enough: u1 = cmp.ge s, bytes
         if enough {
@@ -130,7 +139,7 @@ fn heap_take(h: ptr, bytes: i64) -> ptr {
     open: u1 = cmp.eq sealed, 0
     check open
     hs: i64 = load h, 8
-    sz: i64 = heap_round(bytes)
+    sz: i64 = heap_round(h, bytes)
     fits: u1 = cmp.le sz, hs
     check fits
     k: i64 = heap_level(h, sz)
@@ -196,7 +205,7 @@ fn heap_give(h: ptr, p: ptr, bytes: i64) {
     sealed: i64 = load h, 40
     open: u1 = cmp.eq sealed, 0
     check open
-    sz: i64 = heap_round(bytes)
+    sz: i64 = heap_round(h, bytes)
     k: i64 = heap_level(h, sz)
     base: ptr = load h
     pa: u64 = cast p

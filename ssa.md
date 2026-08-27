@@ -273,8 +273,10 @@ free ones, a flag per slot so that giving one back twice is a failed
 `check`. `os/sleep.ssa`'s task stacks come from one; a one-shot task
 spawned by a callback sleeps until its time, runs, and hands its stack
 back. And the memory those are carved from is the heap's
-(`lib/heap.ssa`): a buddy allocator over one declared block, blocks a
-power of two and aligned to their size, taken rarely and in big pieces
+(`lib/heap.ssa`): a buddy allocator over one block — a declared array,
+or on a machine the RAM above the image, `platform heap_base` to
+`platform ram_end` — blocks a power of two and aligned to their size,
+taken rarely and in big pieces
 — a pool's slots, an arena's bytes, a task's region — and given back
 whole; a byte per node of its split tree makes a double give or a
 wrong size a failed `check`, and a kernel *seals* it inside every
