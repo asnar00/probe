@@ -6,6 +6,24 @@ has the full story for any of them.
 
 ---
 
+### Preemptive tasks: `os/tasks.ssa` — `7f42d6c` · 2026-08-27
+
+`probe boot os/tasks.ssa` prints `ababababab`: two tasks, preempted by
+the timer, a slice each — the fourth operating system. The mechanism
+is one signature: an interrupt handler written `fn __irq(sp: ptr) ->
+ptr` is handed its frame, where the interrupted code's registers now
+are, and returns the frame to go back from; the epilogue switches the
+stack pointer to it before restoring and returning. So a task is a
+stack and a place to resume, a switch is two stores and two loads
+around `resume()`/`resume_at()`, and a task that has never run is
+zeros for a frame and its function's address. The first try printed
+`abbbbbbbbb`: the handler had kept only the caller-saved registers,
+correct for returning to the same task and wrong for a switch, where
+the whole file belongs to the task — the callee-saved registers, float
+ones included, are kept too for this form now.
+
+---
+
 ### Interrupts and the timer: `os/clock.ssa` — `664a7fc` · 2026-08-27
 
 `probe boot os/clock.ssa` prints `tick` ten times, a tenth of a second
