@@ -6,6 +6,35 @@ has the full story for any of them.
 
 ---
 
+### The first rung of memory: arenas, and `check` — `7eff7ca` · 2026-08-27
+
+The memory design session (`reference/memory-management.md`) came out
+where the safety-critical rules and the game engines both stand: no
+heap, a ladder of lifetimes instead — a call's (`scratch`), a
+frame's, an object's, the machine's (`data`) — each a bump or a free
+list over memory the program declared, each with a declared capacity,
+the only failure exhaustion at a known site. This is the simplest
+rung that is not wrong. `lib/arena.ssa`: bump allocation over any
+memory, sixteen-aligned absolutely, reset all at once, marks for the
+stack flavour. `check c`: the assertion — the one instruction memory
+asked of the IR — a breakpoint trap (`brk`, `ebreak`, `unreachable`)
+that reaches `__trap` with a cause and the address of the check, and
+what an arena does when it runs out rather than hand back a pointer
+nobody tests (`os/check.ssa`). And the frame allocator from GPU
+engines, in the OS: `os/sleep.ssa` keeps two arenas, the scheduler
+writes a record into the current one at every switch, a callback
+flips them every tenth of a second after checking the consumer has
+finished, the idle task prints each closed frame and resets it. Two
+lessons kept: a record is a *switch*, not a pick (a task re-picked
+after a callback's reschedule is not a wake), and events that fall
+within one machine's wake-up latency of each other merge into one
+interrupt, so the callbacks moved to times of their own and the count
+is exact: thirty-one events, thirty-one interrupts. Not built, on
+purpose: pools, regions in the pointer type, the capacity analysis —
+each sits on this and changes none of it.
+
+---
+
 ### `at` and `after` — `fba9011` · 2026-08-27
 
 The question was whether "at a time, do this" wants an instruction in
