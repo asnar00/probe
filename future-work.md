@@ -20,6 +20,35 @@ and `call_indirect` on wasm). Left:
   whatever is there. The verifier catches every static case; a value
   loaded from memory is the program's promise.
 
+## The GPU
+
+AIR is in (`src/emit_air.rs`): a `__kernel` runs on any Apple GPU from
+bitcode we write. Left:
+
+- **Threadgroups and barriers**: everything is a thread over device
+  memory today. `air.wg.barrier` and `addrspace(3)` memory want an IR
+  form — likely a platform operation and a `scratch`-like declaration
+  of threadgroup memory — before any reduction is worth writing.
+- **Textures and samplers**: handles with platform operations, as
+  decided when arrays were done; not arrays.
+- **Vectors as `<N x T>`**: lanes are separate values on AIR as on
+  every backend; Apple's back end would take real vector types and
+  produce SIMD code. The lane-wise lowering happens at parse time, so
+  this needs a way to keep a vector whole through to the emitter.
+- **Denormals**: the f32 instructions flush them and Apple's compiler
+  has no switch (`air.compile.denorms_enable` is ignored, their own
+  front end never writes anything but `denorms_disable`); half keeps
+  them. A program that needs f32 denormals must use the library.
+- **Apple's optimizer**: with inlining left to it, a 128-bit division
+  came out wrong (the same bitcode was right through upstream LLVM at
+  -O0 and -O2, and right with every function `noinline`); everything is
+  `alwaysinline` now, which is also six times faster. If a kernel ever
+  outgrows that, the bug is waiting.
+- **Recursion**: left out and reported; a program that needs it gets
+  an explicit stack in memory, by hand for now.
+- **WebGPU**: the same shape for SPIR-V (`spirv-as` as the oracle,
+  wgpu to run), when the wasm side comes back.
+
 ## Code quality
 
 - **More SSA passes for higher tiers**: GVN/CSE, copy propagation (folding

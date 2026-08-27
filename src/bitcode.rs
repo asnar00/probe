@@ -72,7 +72,7 @@ impl Bits {
 
     /// a signed VBR: the sign in the low bit
     pub fn svbr(&mut self, v: i64, n: u32) {
-        let enc = if v >= 0 { (v as u64) << 1 } else { ((-v) as u64) << 1 | 1 };
+        let enc = if v >= 0 { (v as u64) << 1 } else { v.unsigned_abs() << 1 | 1 };
         self.vbr(enc, n);
     }
 
@@ -188,6 +188,9 @@ pub enum Type {
     Fn(usize, Vec<usize>),
     Metadata,
     Label,
+    /// an anonymous struct: the aggregate a function with several
+    /// results returns
+    Struct(Vec<usize>),
 }
 
 /// a constant, at module level
@@ -224,14 +227,21 @@ pub enum Inst {
     Alloca { ty: usize, count_val: usize, align: u32 },
     Br { target: usize },
     CondBr { cond: usize, then: usize, els: usize },
+    /// switch on an integer: (its type, the value, default block, (case constant id, block)*)
+    Switch { ty: usize, val: usize, default: usize, cases: Vec<(usize, usize)> },
     Ret { val: Option<usize> },
     Unreachable,
+    /// insert a value into an aggregate at index → the new aggregate
+    InsertVal { agg: usize, val: usize, idx: u32 },
+    ExtractVal { agg: usize, idx: u32 },
+    /// a unary op: fneg is opcode 0
+    Unop { op: u32, val: usize },
 }
 
 impl Inst {
     fn defines(&self, m: &Module) -> bool {
         match self {
-            Inst::Store { .. } | Inst::Br { .. } | Inst::CondBr { .. } | Inst::Ret { .. } | Inst::Unreachable => false,
+            Inst::Store { .. } | Inst::Br { .. } | Inst::CondBr { .. } | Inst::Switch { .. } | Inst::Ret { .. } | Inst::Unreachable => false,
             Inst::Call { fn_ty, .. } => match &m.types[*fn_ty] {
                 Type::Fn(r, _) => !matches!(m.types[*r], Type::Void),
                 _ => true,
@@ -244,6 +254,9 @@ impl Inst {
 #[derive(Clone, Debug)]
 pub struct Block {
     pub insts: Vec<Inst>,
+    /// the builder's id for each instruction (meaningless for one that
+    /// defines nothing): pushed in any order, numbered in this one
+    pub ids: Vec<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -257,6 +270,8 @@ pub struct Function {
     /// the id of the first instruction value, for numbering
     pub first_inst_value: usize,
     pub nvalues: usize,
+    /// LLVM enum attributes on the function (2 alwaysinline, 14 noinline)
+    pub attrs: Vec<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -337,7 +352,7 @@ impl Module {
 
     pub fn function(&mut self, name: &str, ty: usize, is_decl: bool) -> usize {
         assert!(self.consts.is_empty(), "declare functions before constants");
-        self.functions.push(Function { name: name.into(), ty, is_decl, blocks: Vec::new(), args: Vec::new(), first_inst_value: 0, nvalues: 0 });
+        self.functions.push(Function { name: name.into(), ty, is_decl, blocks: Vec::new(), args: Vec::new(), first_inst_value: 0, nvalues: 0, attrs: Vec::new() });
         self.nglobal_values = self.globals.len() + self.functions.len();
         self.functions.len() - 1
     }
@@ -421,6 +436,11 @@ impl Module {
                 ops.extend(ps.iter().map(|&p| p as u64));
                 (21, ops)
             }
+            Type::Struct(elts) => {
+                let mut ops = vec![0u64]; // not packed
+                ops.extend(elts.iter().map(|&e| e as u64));
+                (18, ops)
+            }
         }
     }
 
@@ -449,6 +469,33 @@ impl Module {
 
         s.enter(8, 3); // MODULE
         s.record(1, &[2]); // VERSION 2
+        // attributes: one group per distinct set, on the function
+        // (paramidx 0xFFFFFFFF); a list per group; a function names its
+        // list by 1-based index
+        let mut attr_sets: Vec<Vec<u64>> = Vec::new();
+        for f in &self.functions {
+            if !f.attrs.is_empty() && !attr_sets.contains(&f.attrs) {
+                attr_sets.push(f.attrs.clone());
+            }
+        }
+        if !attr_sets.is_empty() {
+            s.enter(10, 3); // PARAMATTR_GROUP
+            for (i, set) in attr_sets.iter().enumerate() {
+                let mut ops = vec![i as u64 + 1, 0xFFFF_FFFF];
+                for a in set {
+                    ops.push(0);
+                    ops.push(*a);
+                }
+                s.record(3, &ops);
+            }
+            s.exit();
+            s.enter(9, 3); // PARAMATTR
+            for i in 0..attr_sets.len() {
+                s.record(2, &[i as u64 + 1]);
+            }
+            s.exit();
+        }
+        let attr_index = |f: &Function| -> u64 { attr_sets.iter().position(|a| *a == f.attrs).map_or(0, |i| i as u64 + 1) };
 
         // types
         s.enter(17, 4);
@@ -483,7 +530,7 @@ impl Module {
         // functions: [strtab_offset, strtab_size, type, callingconv, isproto, linkage, paramattr, alignment, section, visibility, gc, unnamed_addr, prologuedata, dllstorageclass, comdat, prefixdata, personalityfn, preemptionspecifier, addrspace, partition_offset, partition_size]
         for f in &self.functions {
             let (off, size) = name_at(&f.name, &mut strtab);
-            s.record(8, &[off, size, f.ty as u64, 0, f.is_decl as u64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            s.record(8, &[off, size, f.ty as u64, 0, f.is_decl as u64, 0, attr_index(f), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         }
 
         // constants
@@ -500,7 +547,9 @@ impl Module {
                 }
                 match c {
                     Const::Int(_, v) => {
-                        let enc = if *v >= 0 { (*v as u64) << 1 } else { ((-*v) as u64) << 1 | 1 };
+                        // sign-magnitude, the sign the low bit; i64::MIN's
+                        // magnitude is not an i64 (LLVM writes it as 1)
+                        let enc = if *v >= 0 { (*v as u64) << 1 } else if *v == i64::MIN { 1 } else { ((-*v) as u64) << 1 | 1 };
                         s.record(4, &[enc]);
                     }
                     Const::Float(_, bits) => s.record(6, &[*bits]),
@@ -602,15 +651,20 @@ impl Module {
         };
         assert_eq!(f.args.len(), nargs);
         next += nargs;
-        // instruction value ids, precomputed so phis can refer forward
+        // instruction value ids in the order written, which need not be
+        // the order the builder handed them out (blocks are filled in
+        // any order): the builder's id maps to the written one
         let mut inst_ids: Vec<Vec<Option<usize>>> = Vec::new();
+        let base = self.first_local_value();
+        let mut placed: HashMap<usize, usize> = (0..nargs).map(|i| (LOCAL + i, base + i)).collect();
         {
             let mut n = next;
             for b in &f.blocks {
                 let mut ids = Vec::new();
-                for inst in &b.insts {
+                for (inst, &id) in b.insts.iter().zip(&b.ids) {
                     if inst.defines(self) {
                         ids.push(Some(n));
+                        placed.insert(id, n);
                         n += 1;
                     } else {
                         ids.push(None);
@@ -621,8 +675,7 @@ impl Module {
         }
         let mut cur = next;
         // a local id is placed after the constants; others are absolute
-        let base = self.first_local_value();
-        let abs = |v: usize| if v >= LOCAL { base + (v - LOCAL) } else { v };
+        let abs = |v: usize| if v >= LOCAL { *placed.get(&v).unwrap_or_else(|| panic!("value {} used but never defined", v - LOCAL)) } else { v };
         let rel = |cur: usize, v: usize| (cur as i64 - abs(v) as i64) as u64;
         for (bi, b) in f.blocks.iter().enumerate() {
             for (ii, inst) in b.insts.iter().enumerate() {
@@ -671,6 +724,18 @@ impl Module {
                     }
                     Inst::Br { target } => s.record(11, &[*target as u64]),
                     Inst::CondBr { cond, then, els } => s.record(11, &[*then as u64, *els as u64, rel(cur, *cond)]),
+                    Inst::Switch { ty, val, default, cases } => {
+                        // [opty, cond, default, (case value id — absolute, block)*]
+                        let mut ops = vec![*ty as u64, rel(cur, *val), *default as u64];
+                        for (c, b) in cases {
+                            ops.push(abs(*c) as u64);
+                            ops.push(*b as u64);
+                        }
+                        s.record(12, &ops);
+                    }
+                    Inst::InsertVal { agg, val, idx } => s.record(27, &[rel(cur, *agg), rel(cur, *val), *idx as u64]),
+                    Inst::ExtractVal { agg, idx } => s.record(26, &[rel(cur, *agg), *idx as u64]),
+                    Inst::Unop { op, val } => s.record(56, &[rel(cur, *val), *op as u64]),
                     Inst::Ret { val: Some(v) } => s.record(10, &[rel(cur, *v)]),
                     Inst::Ret { val: None } => s.record(10, &[]),
                     Inst::Unreachable => s.record(15, &[]),
@@ -701,6 +766,10 @@ pub struct FnBuilder {
     next: usize,
     pub blocks: Vec<Block>,
     cur: usize,
+    /// blocks in the order first entered: the order they are written,
+    /// so that a block split off another (its rest moved to a new one)
+    /// comes before the blocks that use what it defines
+    order: Vec<usize>,
 }
 
 impl FnBuilder {
@@ -710,7 +779,7 @@ impl FnBuilder {
             _ => 0,
         };
         m.functions[f].args = (LOCAL..LOCAL + nargs).collect();
-        FnBuilder { f, next: LOCAL + nargs, blocks: vec![Block { insts: Vec::new() }], cur: 0 }
+        FnBuilder { f, next: LOCAL + nargs, blocks: vec![Block { insts: Vec::new(), ids: Vec::new() }], cur: 0, order: vec![0] }
     }
 
     pub fn arg(&self, m: &Module, i: usize) -> usize {
@@ -718,12 +787,15 @@ impl FnBuilder {
     }
 
     pub fn block(&mut self) -> usize {
-        self.blocks.push(Block { insts: Vec::new() });
+        self.blocks.push(Block { insts: Vec::new(), ids: Vec::new() });
         self.blocks.len() - 1
     }
 
     pub fn at(&mut self, b: usize) {
         self.cur = b;
+        if !self.order.contains(&b) {
+            self.order.push(b);
+        }
     }
 
     /// append an instruction; returns the value it defines (or the id it
@@ -731,6 +803,7 @@ impl FnBuilder {
     pub fn push(&mut self, m: &Module, inst: Inst) -> usize {
         let defines = inst.defines(m);
         self.blocks[self.cur].insts.push(inst);
+        self.blocks[self.cur].ids.push(self.next);
         if defines {
             self.next += 1;
             self.next - 1
@@ -739,13 +812,58 @@ impl FnBuilder {
         }
     }
 
+    /// append to a block without entering it (a phi placed ahead of time)
+    pub fn push_in(&mut self, m: &Module, b: usize, inst: Inst) -> usize {
+        let was = self.cur;
+        self.cur = b;
+        let id = self.push(m, inst);
+        self.cur = was;
+        id
+    }
+
     /// the id the next defining instruction gets (for phis referring forward)
     pub fn peek(&self) -> usize {
         self.next
     }
 
-    pub fn finish(self, m: &mut Module) {
-        m.functions[self.f].blocks = self.blocks;
+    pub fn finish(mut self, m: &mut Module) {
+        // blocks in entry order, never-entered ones last; every block
+        // index in an instruction renumbered to match
+        let mut order = self.order.clone();
+        for b in 0..self.blocks.len() {
+            if !order.contains(&b) {
+                order.push(b);
+            }
+        }
+        let mut new_of = vec![0usize; self.blocks.len()];
+        for (k, &b) in order.iter().enumerate() {
+            new_of[b] = k;
+        }
+        for blk in &mut self.blocks {
+            for inst in &mut blk.insts {
+                match inst {
+                    Inst::Br { target } => *target = new_of[*target],
+                    Inst::CondBr { then, els, .. } => {
+                        *then = new_of[*then];
+                        *els = new_of[*els];
+                    }
+                    Inst::Switch { default, cases, .. } => {
+                        *default = new_of[*default];
+                        for c in cases.iter_mut() {
+                            c.1 = new_of[c.1];
+                        }
+                    }
+                    Inst::Phi { incoming, .. } => {
+                        for i in incoming.iter_mut() {
+                            i.1 = new_of[i.1];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut blocks: Vec<Option<Block>> = self.blocks.into_iter().map(Some).collect();
+        m.functions[self.f].blocks = order.iter().map(|&b| blocks[b].take().unwrap()).collect();
     }
 }
 

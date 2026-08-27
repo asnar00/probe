@@ -29,12 +29,17 @@ pub enum Backend {
     /// prints results over the virt machine's UART and exits via its test
     /// finisher — qemu's decoder and semantics are the independent referee
     Riscv,
+    /// Apple's GPU: a driver in our own SSA becomes a kernel, one thread
+    /// runs every case and writes the results as text into an area of
+    /// the program's memory (see emit_air.rs; tools/driver_metal.py)
+    Air,
     /// the arm64 backend, but run bare-metal under qemu-system-aarch64
     /// instead of natively — an independent implementation of the
     /// architecture judging the same bytes the M-series CPU runs
     ArmQemu,
 }
 
+#[derive(Clone)]
 enum ArgSpec {
     Int(i64),
     /// an array argument: element width in bytes, values (canonical)
@@ -54,6 +59,7 @@ impl ArgSpec {
     }
 }
 
+#[derive(Clone)]
 struct Case {
     func: String,
     args: Vec<ArgSpec>,
@@ -142,6 +148,8 @@ fn parse_case(line: &str) -> Result<Case, String> {
 pub struct Report {
     pub passed: usize,
     pub failed: usize,
+    /// cases a backend cannot run (AIR: recursion), neither passed nor failed
+    pub skipped: usize,
     pub log: String,
 }
 
@@ -176,7 +184,7 @@ fn default_int(backend: Backend) -> ssa::Type {
 /// and for the abstract 'float': f64 on the register machines, f32 on wasm32
 fn default_float(backend: Backend) -> (u32, u32) {
     match backend {
-        Backend::Wasm => (8, 23),
+        Backend::Wasm | Backend::Air => (8, 23),
         _ => (11, 52),
     }
 }
@@ -227,12 +235,14 @@ pub fn run_dir_at(
         Backend::Native | Backend::ArmQemu => "arm64",
         Backend::Riscv => "riscv64",
         Backend::Wasm => "wasm32",
+        Backend::Air => "air",
     };
     let platform = crate::platform::Platform::load(target)?;
     let policy = adjust(platform.adjust(ssa::Policy::new(default_int(backend))?.with_float(fe, fm)));
     let mut report = Report {
         passed: 0,
         failed: 0,
+        skipped: 0,
         log: String::new(),
     };
     for path in &files {
@@ -305,12 +315,14 @@ pub fn run_dir_at(
                 level,
                 &mut report,
             ),
+            Backend::Air => run_air(&module, &policy, &platform, &src, &cases, &name, &scratch, level, &mut report),
         }
     }
     report.log.push_str(&format!(
-        "\n{}/{} cases passed\n",
+        "\n{}/{} cases passed{}\n",
         report.passed,
-        report.passed + report.failed
+        report.passed + report.failed,
+        if report.skipped > 0 { format!(", {} skipped", report.skipped) } else { String::new() }
     ));
     Ok(report)
 }
@@ -876,11 +888,19 @@ pub fn exec_qemu(cmd: Command, secs: u64) -> Result<String, String> {
 
 /// run qemu with its serial port's input: bytes (piped, then closed),
 /// or None for the terminal
-pub fn exec_qemu_with(mut cmd: Command, secs: u64, input: Option<&[u8]>) -> Result<String, String> {
+pub fn exec_qemu_with(cmd: Command, secs: u64, input: Option<&[u8]>) -> Result<String, String> {
+    exec_io(cmd, secs, input, false)
+}
+
+/// ... and with the command's own stderr kept (a file the caller set),
+/// for a driver whose complaints matter
+fn exec_io(mut cmd: Command, secs: u64, input: Option<&[u8]>, keep_stderr: bool) -> Result<String, String> {
+    if !keep_stderr {
+        cmd.stderr(std::process::Stdio::null());
+    }
     let child = cmd
         .stdin(if input.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::inherit() })
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
         .spawn();
     let mut child = child.map_err(|e| format!("spawn qemu: {}", e))?;
     if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
@@ -975,6 +995,128 @@ fn run_riscv(
 
     let cmd = qemu_command("riscv64", &bin_path);
     match exec_qemu(cmd, 30) {
+        Ok(out) => check_hex_lines(&out, cases, name, report),
+        Err(e) => fail_all(report, e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Apple's GPU: the driver's memory is the program's, at offsets it chose
+
+/// the program's memory: data, then the thread's scratch, then the
+/// driver's output area and heap
+const AIR_AREA: u64 = 0x10_0000;
+const AIR_HEAP: u64 = 0x20_0000;
+const AIR_MEM: u64 = 0x80_0000;
+
+/// the kernel keeps the area's offset in data, and the output helpers
+/// append there
+fn helpers_air() -> String {
+    String::from(
+        r"
+data __cur: array(i64, 1) = { 0 }
+fn __kernel(mem: ptr, area: ptr, id: i64) {
+entry:
+    p: ptr = addr __cur
+    a: u64 = cast area
+    store a, p
+    __start()
+    ret
+}
+fn __pch(c: u64) {
+entry:
+    p: ptr = addr __cur
+    cur: u64 = load p
+    q: ptr = cast cur
+    b: u8 = conv c
+    store b, q
+    one: u64 = const 1
+    cur1: u64 = add cur, one
+    store cur1, p
+    ret
+}
+",
+    ) + PHEX
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_air(
+    module: &ssa::Module,
+    policy: &ssa::Policy,
+    platform: &crate::platform::Platform,
+    src: &str,
+    cases: &[Case],
+    name: &str,
+    scratch: &std::path::Path,
+    level: usize,
+    report: &mut Report,
+) {
+    // a case whose function AIR leaves out (recursion) is skipped, not run
+    let out = crate::emit_air::skipped_names(module);
+    let mut runnable = Vec::new();
+    for c in cases {
+        if out.contains(&c.func) {
+            report.skipped += 1;
+            report.log.push_str(&format!("skip  {:<16} {}: recursion, which AIR has not\n", name, c.func));
+        } else {
+            runnable.push(c.clone());
+        }
+    }
+    let cases: &[Case] = &runnable;
+    if cases.is_empty() {
+        return;
+    }
+    let fail_all = |report: &mut Report, msg: String| {
+        report.failed += cases.len().max(1);
+        report.log.push_str(&format!("FAIL  {:<16} {}\n", name, msg));
+    };
+    let prepared = (|| -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+        let driver = gen_driver(module, cases, AIR_HEAP, "")?;
+        let full = format!("{}\n{}\n{}", driver, helpers_air(), ssa::with_prelude(src));
+        let mut m2 = ssa::parse_with(&full, policy).map_err(|e| format!("driver: {}", e))?;
+        ssa::resolve_types(&mut m2, policy);
+        ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
+        opt::optimize(&mut m2, level);
+        let c = crate::emit_air::compile_with(&m2, platform)?;
+        if !c.has_kernel {
+            return Err(format!("the driver's kernel was left out: {:?}", c.skipped));
+        }
+        let data_size = (c.layout.data.len() as u64 + 15) & !15;
+        if data_size + c.layout.slab > AIR_AREA {
+            return Err(format!("data ({}) and scratch ({}) overrun the driver's area at {:#x}", data_size, c.layout.slab, AIR_AREA));
+        }
+        let lib = scratch.join(format!("{}.metallib", name));
+        let mem = scratch.join(format!("{}.mem", name));
+        std::fs::write(&lib, &c.metallib).map_err(|e| e.to_string())?;
+        // the bitcode too, for llvm-dis when something is wrong
+        std::fs::write(scratch.join(format!("{}.bc", name)), &c.bitcode).map_err(|e| e.to_string())?;
+        std::fs::write(&mem, &c.layout.data).map_err(|e| e.to_string())?;
+        Ok((lib, mem))
+    })();
+    let (lib, mem) = match prepared {
+        Ok(p) => p,
+        Err(e) => return fail_all(report, e),
+    };
+    let mut cmd = Command::new("python3");
+    cmd.arg("tools/driver_metal.py").arg("--suite").arg(&lib).arg(&mem);
+    cmd.arg(AIR_MEM.to_string()).arg(AIR_AREA.to_string()).arg((AIR_HEAP - AIR_AREA).to_string());
+    // what the driver says (Metal's compiler failing, a faulting kernel)
+    // is the failure when there is no output
+    let errs = scratch.join(format!("{}.err", name));
+    match std::fs::File::create(&errs) {
+        Ok(f) => {
+            cmd.stderr(f);
+        }
+        Err(e) => return fail_all(report, e.to_string()),
+    }
+    match exec_io(cmd, 120, Some(&[]), true) {
+        Ok(out) if out.is_empty() => {
+            let said = std::fs::read_to_string(&errs).unwrap_or_default();
+            match said.lines().rev().find(|l| !l.trim().is_empty()) {
+                Some(l) => fail_all(report, format!("the driver: {}", l.trim())),
+                None => check_hex_lines(&out, cases, name, report),
+            }
+        }
         Ok(out) => check_hex_lines(&out, cases, name, report),
         Err(e) => fail_all(report, e),
     }
@@ -1186,27 +1328,27 @@ mod tests {
         let want_timed: Vec<String> = timed.into_iter().map(|(_, _, t)| t).collect();
         // frame k, flipped at (2k - 1)/20, records the switches in the
         // frame before: the three starts, the one-shot's first dispatch
-        // at 13/25 (frame 6), and the wakes in each tenth
-        let mut want_frames = Vec::new();
-        for k in 1..=11i64 {
-            let (lo, hi) = (2 * k - 3, 2 * k - 1); // twentieths: (lo/20, hi/20]
-            let mut switches: Vec<(i64, i64, char)> = if k == 1 { vec![(0, 1, 'a'), (0, 1, 'b'), (0, 1, 'c')] } else { Vec::new() };
-            for (n, d, l) in wakes.iter().chain([(13, 25, '*')].iter()) {
-                if n * 20 > lo * d && n * 20 <= hi * d {
-                    switches.push((*n, *d, *l));
-                }
-            }
-            switches.sort_by(|x, y| (x.0 * y.1).cmp(&(y.0 * x.1)).then(x.2.cmp(&y.2)));
-            let letters: Vec<String> = switches.iter().map(|s| s.2.to_string()).collect();
-            want_frames.push(format!("frame {}: {}", k, letters.join(" ")));
-        }
+        // at 13/25, and the wakes — each in the frame it actually ran
+        // in, which its printed lateness says (qemu wakes late by up to
+        // ~12 ms, enough to carry a wake past a flip)
+        let frames_of = |ran: &[(char, i64)]| -> Vec<String> {
+            (1..=11i64)
+                .map(|k| {
+                    let (lo, hi) = ((2 * k - 3) * 50_000, (2 * k - 1) * 50_000);
+                    let mut letters: Vec<String> = if k == 1 { vec!["a".into(), "b".into(), "c".into()] } else { Vec::new() };
+                    letters.extend(ran.iter().filter(|(_, t)| *t > lo && *t <= hi).map(|(l, _)| l.to_string()));
+                    format!("frame {}: {}", k, letters.join(" "))
+                })
+                .collect()
+        };
         for target in ["riscv64", "arm64"] {
             let out = super::boot("os/sleep.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"")).unwrap();
             let lines: Vec<&str> = out.lines().collect();
             let n = lines.len();
-            assert_eq!(n, want_timed.len() + want_frames.len() + 3, "{}: {:?}", target, out);
+            assert_eq!(n, want_timed.len() + 11 + 3, "{}: {:?}", target, out);
             let mut got_timed = Vec::new();
             let mut got_frames = Vec::new();
+            let mut ran: Vec<(char, i64)> = Vec::new();
             for line in &lines[..n - 3] {
                 if line.starts_with("frame ") {
                     got_frames.push(line.to_string());
@@ -1215,10 +1357,16 @@ mod tests {
                     let late: i64 = late.parse().unwrap_or(-1);
                     assert!((0..20_000).contains(&late), "{}: {:?}", target, line);
                     got_timed.push(event.to_string());
+                    // a wake, or the one-shot's first dispatch ('!'), is a
+                    // switch; the region's return ('!!') is not
+                    let (letter, at) = event.split_once(' ').unwrap();
+                    if letter != "!!" {
+                        ran.push((if letter == "!" { '*' } else { letter.chars().next().unwrap() }, at.parse::<i64>().unwrap() + late));
+                    }
                 }
             }
             assert_eq!(got_timed, want_timed, "{}: {:?}", target, out);
-            assert_eq!(got_frames, want_frames, "{}: {:?}", target, out);
+            assert_eq!(got_frames, frames_of(&ran), "{}: {:?}", target, out);
             let interrupts: i64 = lines[n - 3].split_once(" interrupts").and_then(|(k, _)| k.parse().ok()).unwrap_or(-1);
             assert!((30..=32).contains(&interrupts), "{}: {:?}", target, out);
             assert_eq!(lines[n - 2], "3 stacks out", "{}: {:?}", target, out);
@@ -1301,6 +1449,14 @@ mod tests {
     fn regression_suite_riscv() {
         let _turn = boot_turn(); // a machine at a time: the boot tests are timed
         let report = super::run_dir("suite", super::Backend::Riscv).expect("suite runs");
+        assert_eq!(report.failed, 0, "\n{}", report.log);
+    }
+
+    /// this Mac's GPU, through Metal (needs pyobjc-framework-Metal)
+    #[test]
+    fn regression_suite_air() {
+        let _turn = boot_turn(); // the driver is timed too
+        let report = super::run_dir("suite", super::Backend::Air).expect("suite runs");
         assert_eq!(report.failed, 0, "\n{}", report.log);
     }
 

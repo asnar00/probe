@@ -401,14 +401,14 @@ fn arguments(rng: &mut Rng, ptys: &[Ty]) -> Vec<i64> {
         .collect()
 }
 
-pub fn fuzz(count: usize, seed: u64, slow: bool) -> Result<usize, String> {
-    fuzz_with(count, seed, slow, true)
+pub fn fuzz(count: usize, seed: u64, slow: bool, air: bool) -> Result<usize, String> {
+    fuzz_with(count, seed, slow, true, air)
 }
 
 /// `soft_run`: also run the whole thing with the platform off at the top
 /// level, which flips the process-wide --soft flag — fine from the
 /// command line, not from a test running beside others
-pub fn fuzz_with(count: usize, seed: u64, slow: bool, soft_run: bool) -> Result<usize, String> {
+pub fn fuzz_with(count: usize, seed: u64, slow: bool, soft_run: bool, air: bool) -> Result<usize, String> {
     let enc = emit::Encoder::load("targets/arm64.encodings.json")?;
     let dir = std::path::Path::new("target/fuzz");
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -451,6 +451,9 @@ pub fn fuzz_with(count: usize, seed: u64, slow: bool, soft_run: bool) -> Result<
             runs.push(("riscv", suite::Backend::Riscv, crate::opt::MAX_LEVEL, false));
             runs.push(("arm-qemu", suite::Backend::ArmQemu, crate::opt::MAX_LEVEL, false));
         }
+        if air {
+            runs.push(("air", suite::Backend::Air, crate::opt::MAX_LEVEL, false));
+        }
         let mut bad = Vec::new();
         for (name, backend, level, soft) in runs {
             if soft_run {
@@ -481,6 +484,6 @@ mod tests {
     /// a short run: every configuration this machine has without qemu
     #[test]
     fn programs_agree_everywhere() {
-        assert_eq!(super::fuzz_with(12, 0x1000, false, false).unwrap(), 0);
+        assert_eq!(super::fuzz_with(12, 0x1000, false, false, false).unwrap(), 0);
     }
 }

@@ -1,0 +1,33 @@
+; targets/air.platform — what Apple's GPUs compute with their own
+; instructions, as LLVM operations and air intrinsics (see
+; targets/arm64.platform for the form; src/emit_air.rs for the target).
+; Values are their bits, as on wasm; the emitter bitcasts around a rule.
+; Nothing here is fast-math: what Apple's compiler does with these is
+; what `probe testfloat air` will measure. There is no double on an
+; Apple GPU, so f64 stays the library's.
+
+target air
+
+ext FP
+class f32 = f32
+class f16 = f16
+
+fadd = add(f32, f32) -> f32
+fsub = sub(f32, f32) -> f32
+fmul = mul(f32, f32) -> f32
+fdiv = div(f32, f32) -> f32
+fneg = neg(f32) -> f32
+air.sqrt.f32 = sqrt(f32) -> f32
+air.fma.f32 = fma(f32, f32, f32) -> f32
+air.fabs.f32 = abs(f32) -> f32
+fcmp.oeq = eq(f32, f32) -> u1
+fcmp.une = ne(f32, f32) -> u1
+fcmp.olt = lt(f32, f32) -> u1
+fcmp.ole = le(f32, f32) -> u1
+fcmp.ogt = gt(f32, f32) -> u1
+fcmp.oge = ge(f32, f32) -> u1
+
+fadd = add(f16, f16) -> f16
+fsub = sub(f16, f16) -> f16
+fmul = mul(f16, f16) -> f16
+fdiv = div(f16, f16) -> f16

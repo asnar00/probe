@@ -274,8 +274,16 @@ None of them contains a single hand-written opcode.
   `src/driver.js`; control flow becomes nested `block`/`loop`/`if` from
   the dominator tree (`src/structure.rs`), a dispatcher loop only for an
   irreducible graph.
+- `air` (`src/emit_air.rs`, `src/bitcode.rs`) — Apple's GPUs: the SSA
+  as LLVM bitcode in Apple's AIR dialect, in a `.metallib` the Metal
+  driver compiles for whatever GPU it finds — written byte by byte by
+  our own bitstream writer, with none of Apple's tools in the path.
+  Pointers are offsets into one memory buffer (as on wasm), `data` and
+  `scratch` live there, a `__kernel(mem, area, id)` becomes the compute
+  kernel; recursion, which Metal has not, is left out and reported.
+  `tools/driver_metal.py` dispatches it (pyobjc).
 
-Shared by all three:
+Shared by the register machines and wasm:
 
 - **A linear-scan register allocator** (`src/regalloc.rs`) with register
   classes: the emitter hands it pools and gets back a register or spill
@@ -292,10 +300,14 @@ Shared by all three:
 ## Verification
 
 - **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`):
-  747 cases with expectations embedded as `;! gcd 48 36 -> 12`
+  804 cases with expectations embedded as `;! gcd 48 36 -> 12`
   directives, run identically against every backend — including arm64
   under qemu-system-aarch64 as an independent second referee for the
-  same bytes the M-series CPU runs — and under every policy and variant.
+  same bytes the M-series CPU runs, and this Mac's GPU through Metal —
+  and under every policy and variant. `probe testfloat air` runs the
+  19.4M TestFloat vectors on the GPU too, a thread per vector: the
+  library is exact there at every width; the f32 instructions miss only
+  where the GPU flushes a denormal, which the report counts apart.
 - **Encoding scorecards** (`src/scorecard.rs`, `targets/*.scorecard.md`):
   every learned template checked against the official inventory its
   learner never saw — Arm's Machine Readable Architecture XML,
@@ -341,6 +353,11 @@ cargo run -- test              # native arm64 JIT
 cargo run -- test wasm         # node
 cargo run -- test riscv        # qemu-system-riscv64
 cargo run -- test arm-qemu     # qemu-system-aarch64
+cargo run -- test air          # this Mac's GPU, through Metal
+
+# a program for the GPU: a .metallib with none of Apple's tools
+cargo run -- compile examples/gpu.ssa air
+python3 tools/driver_metal.py --kernel gpu.metallib gpu.air.json 8
 
 # the optimization pipeline: -O<n> works on any command, and `tiers`
 # compiles at every prefix to show the gradual-optimization story
@@ -399,8 +416,10 @@ cargo run -- live examples/fib.ssa fib 25
 survey of where vectors, GPUs and the AI number formats would fit.
 
 Toolchain expectations (macOS/arm64 host): `llvm-mc` (brew llvm), `wabt`
-(wat2wasm), `node`, `qemu`. The learned `targets/*.encodings.json` files
-are checked in, so the backends and suite work without re-learning.
+(wat2wasm), `node`, `qemu`; for the GPU, `pyobjc-framework-Metal` (the
+driver is Python) and, to inspect what we emit, brew llvm's `llvm-dis`.
+The learned `targets/*.encodings.json` files are checked in, so the
+backends and suite work without re-learning.
 
 ## Status
 
@@ -408,11 +427,13 @@ Integers to 256 bits, packs, structs, vectors, typed pointers and
 shaped arrays, parametric types and generic functions, function
 values; floats, fixed point, unit fractions, rationals, time and
 decimals as libraries, with hardware substituted where a platform has
-it; three backends and their variants; four bootable kernels — hello
+it; four backends and their variants, the fourth Apple's GPU through a
+`.metallib` we write ourselves; four bootable kernels — hello
 world, an echo with system calls, a clock on the timer interrupt, two
 preempted tasks, tasks sleeping to exact times. All of
-it differentially verified — the suite on four execution paths under
-every policy, the oracle, the scorecards, the fuzzer, the model tests.
+it differentially verified — the suite on five execution paths under
+every policy, the oracle (on the CPU and the GPU), the scorecards, the
+fuzzer (`--air` puts the GPU in its panel), the model tests.
 
 Deliberately not here yet: vectors (`vectors.md` says how they would
 go), external (libc) calls from JIT'd code, a dominance check in the verifier, and differential testing

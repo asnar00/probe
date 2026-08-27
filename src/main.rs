@@ -2,6 +2,7 @@ mod aggregate;
 mod arena;
 mod bitcode;
 mod emit;
+mod emit_air;
 mod emit_rv;
 mod emit_wasm;
 mod footprint;
@@ -121,6 +122,7 @@ fn main() -> ExitCode {
                 .cloned();
             cmd_learn(&args[1], out.as_deref())
         }
+        Some("compile") if args.len() >= 3 && args[2] == "air" => cmd_compile_air(&args[1], level, policy),
         Some("compile") if args.len() >= 2 => cmd_compile(&args[1], level, policy),
         Some("live") if args.len() >= 3 => {
             let fargs: Result<Vec<i64>, _> = args[3..].iter().map(|a| parse_arg(a)).collect();
@@ -199,11 +201,12 @@ fn main() -> ExitCode {
             if problems == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
         }
         Some("testfloat") => {
-            let only: Vec<String> = args[1..].iter().filter(|a| !a.starts_with("--")).cloned().collect();
-            match testfloat::run(&only, level, policy) {
+            let only: Vec<String> = args[1..].iter().filter(|a| !a.starts_with("--") && *a != "air").cloned().collect();
+            let result = if args[1..].iter().any(|a| a == "air") { testfloat::run_air(&only, level, policy, 1) } else { testfloat::run(&only, level, policy) };
+            match result {
                 Ok(r) => {
                     print!("{}", r.log);
-                    println!("{} cases, {} wrong", r.cases, r.failed);
+                    println!("{} cases, {} wrong{}", r.cases, r.failed, if r.flushed > 0 { format!(", {} denormals flushed by the GPU", r.flushed) } else { String::new() });
                     if r.failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
                 }
                 Err(e) => fail(&e),
@@ -213,7 +216,8 @@ fn main() -> ExitCode {
             let count = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(20);
             let seed = args.iter().find_map(|a| a.strip_prefix("--seed=")).and_then(|s| u64::from_str_radix(s, 16).ok()).unwrap_or(1);
             let slow = args.iter().any(|a| a == "--slow");
-            match fuzz::fuzz(count, seed, slow) {
+            let air = args.iter().any(|a| a == "--air");
+            match fuzz::fuzz(count, seed, slow, air) {
                 Ok(0) => {
                     println!("{} programs, every configuration agreed", count);
                     ExitCode::SUCCESS
@@ -229,6 +233,8 @@ fn main() -> ExitCode {
             let rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
             let backend = if rest.contains(&"wasm") {
                 suite::Backend::Wasm
+            } else if rest.contains(&"air") {
+                suite::Backend::Air
             } else if rest.contains(&"riscv") {
                 suite::Backend::Riscv
             } else if rest.contains(&"arm-qemu") {
@@ -238,7 +244,7 @@ fn main() -> ExitCode {
             };
             let dir = rest
                 .iter()
-                .find(|a| **a != "wasm" && **a != "riscv" && **a != "arm-qemu")
+                .find(|a| **a != "wasm" && **a != "riscv" && **a != "arm-qemu" && **a != "air")
                 .copied()
                 .unwrap_or("suite");
             match suite::run_dir_at(dir, backend, level, &|p| {
@@ -464,6 +470,31 @@ fn cmd_compile(path: &str, level: usize, policy: ssa::Policy) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Err(e) => fail(&e),
+    }
+}
+
+/// `probe compile x.ssa air`: a .metallib next to the source, its
+/// bitcode, and a layout the driver reads — with none of Apple's tools
+fn cmd_compile_air(path: &str, level: usize, policy: ssa::Policy) -> ExitCode {
+    let result = (|| -> Result<(), String> {
+        let platform = platform::Platform::load("air")?;
+        let policy = platform.adjust(policy);
+        let module = load_module(path, level, policy)?;
+        let c = emit_air::compile_with(&module, &platform)?;
+        let stem = std::path::Path::new(path).file_stem().unwrap().to_string_lossy().to_string();
+        std::fs::write(format!("{}.metallib", stem), &c.metallib).map_err(|e| e.to_string())?;
+        std::fs::write(format!("{}.bc", stem), &c.bitcode).map_err(|e| e.to_string())?;
+        let data_hex: String = c.layout.data.iter().map(|b| format!("{:02x}", b)).collect();
+        std::fs::write(format!("{}.air.json", stem), format!("{{\"data\":\"{}\",\"slab\":{},\"kernel\":{}}}\n", data_hex, c.layout.slab, c.has_kernel)).map_err(|e| e.to_string())?;
+        println!("{}.metallib: {} bytes of bitcode, {} bytes of data, {} bytes of scratch per thread{}", stem, c.bitcode.len(), c.layout.data.len(), c.layout.slab, if c.has_kernel { ", kernel __kernel" } else { ", no kernel" });
+        for (f, why) in &c.skipped {
+            println!("  left out: {} ({})", f, why);
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => fail(&e),
     }
 }

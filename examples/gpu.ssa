@@ -1,0 +1,24 @@
+; the first program on the GPU: every thread writes 10 * id + 1 into
+; the driver's area, and reads a word of data to add
+;   probe compile examples/gpu.ssa air
+;   python3 tools/driver_metal.py --kernel gpu.metallib gpu.air.json 8
+; (from the repository root: the platform files are found there)
+
+data offsets: array(i64, 2) = { 1, 100 }
+
+fn __kernel(mem: ptr, area: ptr, id: i64) {
+    ten: i64 = mul id, 10
+    d: ptr = addr offsets
+    one: i64 = load d
+    v: i64 = add ten, one
+    w: i64 = twice(v)
+    store w, area, id, 8
+    ret
+}
+fn twice(x: i64) -> i64 {
+    p: ptr = scratch 16
+    store x, p
+    y: i64 = load p
+    r: i64 = add x, y
+    ret r
+}

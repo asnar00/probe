@@ -86,6 +86,9 @@ fn is_nan(v: u64, (e, m): (u32, u32)) -> bool {
 pub struct Report {
     pub cases: usize,
     pub failed: usize,
+    /// on the GPU: results wrong only because a denormal was flushed —
+    /// what the hardware does, not what the code got wrong
+    pub flushed: usize,
     pub log: String,
 }
 
@@ -102,7 +105,7 @@ pub fn run_at(only: &[String], level: usize, policy: ssa::Policy, tf_level: u8) 
         return Err(format!("{} not found; build it with tools/get-testfloat.sh", GEN));
     }
     let enc = emit::Encoder::load("targets/arm64.encodings.json")?;
-    let mut report = Report { cases: 0, failed: 0, log: String::new() };
+    let mut report = Report { cases: 0, failed: 0, flushed: 0, log: String::new() };
     for w in ["f16", "f32", "f64"] {
         let ops: Vec<Op> = ops_for(w).into_iter().filter(|o| only.is_empty() || only.iter().any(|s| o.name.contains(s.as_str()))).collect();
         if ops.is_empty() {
@@ -178,6 +181,167 @@ pub fn run_at(only: &[String], level: usize, policy: ssa::Policy, tf_level: u8) 
                 n,
                 if bad_soft == 0 { "ok".to_string() } else { format!("{} wrong", bad_soft) },
                 if on_platform { format!("  platform {}", if bad_hard == 0 { "ok".to_string() } else { format!("{} wrong", bad_hard) }) } else { String::new() }
+            );
+        }
+    }
+    Ok(report)
+}
+
+/// the same vectors on the GPU: per op, a kernel whose thread `id`
+/// takes case `id`'s operands from an argument table in the program's
+/// memory and puts its result after the table — one dispatch of as many
+/// threads as TestFloat has cases. Compared is what runs there: the
+/// platform's instruction where `targets/air.platform` has one, the
+/// library otherwise (as `probe test air` runs it)
+pub fn run_air(only: &[String], level: usize, policy: ssa::Policy, tf_level: u8) -> Result<Report, String> {
+    if !std::path::Path::new(GEN).exists() {
+        return Err(format!("{} not found; build it with tools/get-testfloat.sh", GEN));
+    }
+    let platform = platform::Platform::load("air")?;
+    let policy = platform.adjust(policy);
+    let scratch = std::env::temp_dir().join("probe-testfloat");
+    std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
+    let mut report = Report { cases: 0, failed: 0, flushed: 0, log: String::new() };
+    for w in ["f16", "f32", "f64"] {
+        let ops: Vec<Op> = ops_for(w).into_iter().filter(|o| only.is_empty() || only.iter().any(|s| o.name.contains(s.as_str()))).collect();
+        for op in &ops {
+            let tf = tf_level.to_string();
+            let mut gen_args = vec![op.name.as_str(), "-level", tf.as_str()];
+            gen_args.push(if op.skip_invalid { "-rminMag" } else { ROUND_FLAGS[policy.round as usize] });
+            let out = Command::new(GEN).args(&gen_args).output().map_err(|e| format!("{}: {}", GEN, e))?;
+            if !out.status.success() {
+                return Err(format!("testfloat_gen {}: {}", op.name, String::from_utf8_lossy(&out.stderr)));
+            }
+            let text = String::from_utf8_lossy(&out.stdout);
+            let mut cases: Vec<(Vec<u64>, u64)> = Vec::new();
+            for line in text.lines() {
+                let f: Vec<&str> = line.split_whitespace().collect();
+                if f.len() != op.nargs + 2 {
+                    continue;
+                }
+                let flags = u8::from_str_radix(f[op.nargs + 1], 16).unwrap();
+                if op.skip_invalid && flags & 0x10 != 0 {
+                    continue;
+                }
+                cases.push((f[..op.nargs].iter().map(|s| u64::from_str_radix(s, 16).unwrap()).collect(), u64::from_str_radix(f[op.nargs], 16).unwrap()));
+            }
+            let n = cases.len();
+            // the kernel: operands as words at area + id * nargs * 8,
+            // the result as a word at area + n * nargs * 8 + id * 8
+            let (e, m) = width(w).unwrap();
+            let wbits = e + m + 1;
+            let arg_ty = |i: usize| -> &str {
+                // the wrapper's parameter types, in its own words
+                let sig = op.wrapper.lines().next().unwrap();
+                let inside = &sig[sig.find('(').unwrap() + 1..sig.find(')').unwrap()];
+                inside.split(',').nth(i).unwrap().split(':').nth(1).unwrap().trim()
+            };
+            let mut k = String::from("fn __kernel(mem: ptr, area: ptr, id: i64) {\n");
+            let _ = writeln!(k, "    base: i64 = mul id, {}", op.nargs * 8);
+            k.push_str("    p: ptr = ptradd area, base\n");
+            let mut names = Vec::new();
+            for i in 0..op.nargs {
+                let t = arg_ty(i);
+                let _ = writeln!(k, "    w{i}: u64 = load p, {}", i * 8);
+                let bits = match t { "f16" => 16, "f32" | "i32" | "u32" => 32, _ => 64 };
+                if t.starts_with('f') {
+                    if bits < 64 {
+                        let _ = writeln!(k, "    x{i}: u{bits} = conv w{i}\n    a{i}: {t} = cast x{i}");
+                    } else {
+                        let _ = writeln!(k, "    a{i}: {t} = cast w{i}");
+                    }
+                } else if bits < 64 {
+                    let _ = writeln!(k, "    a{i}: {t} = conv w{i}");
+                } else {
+                    let _ = writeln!(k, "    a{i}: {t} = cast w{i}");
+                }
+                names.push(format!("a{i}"));
+            }
+            let rt = op.wrapper.lines().next().unwrap().rsplit("->").next().unwrap().trim().trim_end_matches('{').trim().to_string();
+            let _ = writeln!(k, "    r: {} = {}({})", rt, op.name, names.join(", "));
+            if rt.starts_with('f') {
+                let rb = if rt == "f16" { 16 } else if rt == "f32" { 32 } else { 64 };
+                let _ = writeln!(k, "    rb: u{rb} = cast r");
+                k.push_str(if rb < 64 { "    ru: u64 = conv rb\n" } else { "    ru: u64 = cast rb\n" });
+            } else if rt == "u64" {
+                k.push_str("    ru: u64 = cast r\n");
+            } else if rt == "i64" {
+                k.push_str("    ru: u64 = cast r\n");
+            } else {
+                k.push_str("    ru: u64 = conv r\n");
+            }
+            let _ = writeln!(k, "    q: ptr = ptradd area, {}\n    store ru, q, id, 8\n    ret\n}}", n * op.nargs * 8);
+            let _ = wbits;
+            let src = format!("{}\n{}", op.wrapper, k);
+            let mut module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| format!("{}: {}", op.name, e))?;
+            ssa::resolve_types(&mut module, &policy);
+            ssa::verify(&module).map_err(|e| format!("{}: {}", op.name, e.join("; ")))?;
+            opt::optimize(&mut module, level);
+            let native = platform.natives(&module);
+            let f = module.funcs.iter().find(|f| f.name == op.name).unwrap();
+            let on_platform = f.blocks.iter().flat_map(|b| b.insts.iter()).any(|i| matches!(i, ssa::Inst::Call { callee, .. } if native.get(callee).is_some()));
+            let c = crate::emit_air::compile_with(&module, &platform)?;
+            if !c.has_kernel {
+                return Err(format!("{}: the kernel was left out: {:?}", op.name, c.skipped));
+            }
+            let data_size = (c.layout.data.len() as u64 + 15) & !15;
+            let area_off = (data_size + n as u64 * c.layout.slab + 15) & !15;
+            let area_len = (n * op.nargs * 8 + n * 8) as u64;
+            let size = area_off + area_len + 16;
+            let mut image = c.layout.data.clone();
+            image.resize(area_off as usize, 0);
+            for (args, _) in &cases {
+                for a in args {
+                    image.extend_from_slice(&a.to_le_bytes());
+                }
+            }
+            let lib = scratch.join(format!("{}.metallib", op.name));
+            let mem = scratch.join(format!("{}.mem", op.name));
+            std::fs::write(&lib, &c.metallib).map_err(|e| e.to_string())?;
+            std::fs::write(&mem, &image).map_err(|e| e.to_string())?;
+            let out = Command::new("python3")
+                .args(["tools/driver_metal.py", "--batch"])
+                .arg(&lib)
+                .arg(&mem)
+                .args([size.to_string(), area_off.to_string(), area_len.to_string(), n.to_string()])
+                .output()
+                .map_err(|e| format!("python3: {}", e))?;
+            if !out.status.success() {
+                return Err(format!("{}: the driver: {}", op.name, String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("")));
+            }
+            let results = &out.stdout[n * op.nargs * 8..];
+            let mask = if op.result_bits == 64 { u64::MAX } else { (1u64 << op.result_bits) - 1 };
+            let (mut bad, mut shown, mut denormal) = (0, 0, 0);
+            let is_denormal = |v: u64, (e, m): (u32, u32)| -> bool { (v >> m) & ((1 << e) - 1) == 0 && v & ((1 << m) - 1) != 0 };
+            for (i, (args, expected)) in cases.iter().enumerate() {
+                let got = u64::from_le_bytes(results[i * 8..i * 8 + 8].try_into().unwrap()) & mask;
+                let same_nan = op.float_result.map_or(false, |fr| is_nan(*expected, fr) && is_nan(got, fr));
+                if got != *expected && !(on_platform && same_nan) {
+                    bad += 1;
+                    // a denormal operand or result: what a GPU flushes
+                    let in_denormal = op.name.starts_with(w) && args.iter().any(|&a| is_denormal(a, (e, m)));
+                    // ... or the least normal, which a flushed intermediate loses too
+                    let out_denormal = op.float_result.is_some_and(|fr| is_denormal(*expected, fr) || (*expected >> fr.1) & ((1 << fr.0) - 1) == 1);
+                    if in_denormal || out_denormal {
+                        denormal += 1;
+                        continue; // the others are the ones to show
+                    }
+                    if shown < 4 {
+                        shown += 1;
+                        let _ = writeln!(report.log, "  {} {}: expected {:x}, gpu {:x}", op.name, args.iter().map(|a| format!("{:x}", a)).collect::<Vec<_>>().join(" "), expected, got);
+                    }
+                }
+            }
+            report.cases += n;
+            report.failed += bad - denormal;
+            report.flushed += denormal;
+            let _ = writeln!(
+                report.log,
+                "{:<14} {:>8} cases  gpu {} ({})",
+                op.name,
+                n,
+                if bad == 0 { "ok".to_string() } else if denormal == bad { format!("{} denormals flushed", bad) } else { format!("{} wrong, {} denormals flushed", bad - denormal, denormal) },
+                if on_platform { "the platform's instruction" } else { "the library" }
             );
         }
     }

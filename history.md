@@ -6,6 +6,43 @@ has the full story for any of them.
 
 ---
 
+### The GPU, from our own bitcode — `HASH` · 2026-08-27
+
+A fifth execution path: `probe compile x.ssa air` writes a `.metallib`
+— LLVM bitcode in Apple's AIR dialect inside their container, byte by
+byte from `src/bitcode.rs`, with none of Apple's tools in the path —
+and the Metal driver compiles it for whatever GPU it finds. `fn
+__kernel(mem: ptr, area: ptr, id: i64)` is the entry: one buffer of
+memory where pointers are offsets (as on wasm), `data` at zero, a
+scratch slab per thread, the driver's area where it says.
+`src/emit_air.rs` maps blocks to blocks and parameters to phis,
+returns several values as a struct, dispatches function values by a
+switch, and leaves recursion out with a reason (`probe test air`
+counts it skipped: 15 cases). What Apple's compiler taught us, each by
+a bisection: it crashes on an `or` with a wide constant at an odd
+width, so every integer now lives normalized in an 8/16/32/64-bit
+container like wasm's; it compiles every function in a module, so
+only what the kernel reaches is emitted; and with inlining left to
+its judgement it miscompiled a 128-bit division — upstream LLVM ran
+the same bitcode right, so did `noinline` — which `alwaysinline`
+fixes and speeds up six times over. Platform rules with no operands
+(`fadd = add(f32, f32) -> f32`, `air.sqrt.f32`, `air.fma.f32`) are
+Apple's instructions; `targets/air.platform` has f32 and half. The
+suite runs 804/804 on the M1 Max in 33 s, with a Rust test; `probe
+testfloat air` runs TestFloat a thread per vector — 6.1M `mulAdd`
+cases in one dispatch, 19.4M in all: the library exact at every width,
+the f32 instructions missing only where the GPU flushes a denormal
+(116,504 of them, counted apart; Apple's compiler has no switch, and
+half keeps its denormals); `probe fuzz --air` puts the GPU in the
+fuzzer's panel. Along the way: bitcode value ids follow written order
+and blocks are written in the order first entered (LLVM forward
+references need types we don't track); function attributes;
+`i64::MIN` as a signed VBR; the Python driver zeroes its buffers,
+which Metal does not promise; `sleep_boots` now places each wake in
+the frame its printed lateness says it ran in.
+
+---
+
 ### Typed pointers and shaped arrays — `17d787c` · 2026-08-27
 
 The other half of the type work the GPU asked for. `ptr(T)` is an
