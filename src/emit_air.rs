@@ -29,10 +29,12 @@
 //!   them — with arithmetic renormalizing; memory sizes match the
 //!   containers already.
 //! - threadgroups: `fn __kernel(mem, area, id, lane, group)` also gets
-//!   its place in its group and its group's number; `lib/gpu.ssa`'s
-//!   `group_load`/`group_store`/`group_sync` are platform rules here —
-//!   a 16 KB `addrspace(3)` array and `air.wg.barrier` — and plain
-//!   functions over data everywhere else.
+//!   its place in its group and its group's number. A `group` item is
+//!   in one `addrspace(3)` array; `addr` of one gives an offset into
+//!   it, and every address computed from that (a fixpoint over the
+//!   function's adds, casts and block arguments) is a threadgroup
+//!   access — it cannot be stored, passed or returned. `group_sync()`
+//!   (lib/gpu.ssa) is `air.wg.barrier`.
 //! - vectors: `targets/air.platform` says `builtin vectors`, so a `TxN`
 //!   reaches here whole, as `<N x T>`: arithmetic, comparisons and
 //!   conversions are LLVM's on vectors, `pack`/`unpack`/`get`/`set` are
@@ -91,8 +93,6 @@ const CAST_SEXT: u32 = 2;
 const CAST_BITCAST: u32 = 11;
 /// LLVM's attribute kinds
 const ATTR_CONVERGENT: u64 = 43;
-/// threadgroup memory a program may use, in bytes
-const GROUP_BYTES: u64 = 16384;
 
 /// which functions AIR cannot have — a function that can reach itself,
 /// and everything that can reach one — with why, given the
@@ -239,16 +239,26 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
         scratch_of: scratch_of.clone(),
         dispatchers: HashMap::new(),
         group: None,
+        group_bytes: 0,
+        group_offsets: HashMap::new(),
         kernel_arity: 3,
     };
-    // threadgroup memory, before any constant (globals come first)
-    let uses_group = module.funcs.iter().enumerate().filter(|(i, _)| !out[*i]).flat_map(|(_, f)| f.blocks.iter().flat_map(|b| &b.insts)).any(|inst| matches!(inst, Inst::Call { callee, .. } if natives.get(callee).is_some_and(|n| n.rule.lines[0].template.as_deref().is_some_and(|k| k.starts_with("air.group")))));
-    if uses_group {
-        let arr = cx.m.ty(BType::Array(i8t, GROUP_BYTES));
+    // threadgroup memory: the group items laid out in one array, before
+    // any constant (globals come first)
+    let mut group_bytes = 0u64;
+    for d in module.data.iter().filter(|d| d.shared) {
+        group_bytes = (group_bytes + 15) & !15;
+        cx.group_offsets.insert(d.name.clone(), group_bytes as i64);
+        group_bytes += d.bytes.len() as u64;
+    }
+    if group_bytes > 0 {
+        group_bytes = (group_bytes + 15) & !15;
+        let arr = cx.m.ty(BType::Array(i8t, group_bytes));
         cx.m.ptr(arr, 3);
         let g = cx.m.global("__group", arr, 3, 16);
         cx.m.globals[g].undef_init = true;
         cx.group = Some(g);
+        cx.group_bytes = group_bytes;
     }
 
     // every global value first: functions, dispatchers, the kernel,
@@ -325,7 +335,7 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
                         let id = cx.m.function(&key, fty, true);
                         cx.m.functions[id].attrs.push(ATTR_CONVERGENT);
                         cx.decls.insert(key.clone(), (id, fty));
-                    } else if key.starts_with("air.") && !key.starts_with("air.group") {
+                    } else if key.starts_with("air.") {
                         // the scalar intrinsic, or its vector form for a
                         // call on vectors
                         let lanes = if let Inst::Call { dsts, .. } = inst { dsts.first().and_then(|&d| f.vector(f.ty(d))).map(|(_, n)| n) } else { None };
@@ -387,8 +397,11 @@ struct Cx<'a> {
     data_offsets: HashMap<String, usize>,
     scratch_of: Vec<i64>,
     dispatchers: HashMap<(Vec<Type>, Vec<Type>), (usize, usize)>,
-    /// the threadgroup array, if any group operation is used
+    /// the threadgroup array, if the program declares group items, and
+    /// its size; each item's offset in it
     group: Option<usize>,
+    group_bytes: u64,
+    group_offsets: HashMap<String, i64>,
     /// how many arguments the program's kernel takes (3 or 5)
     kernel_arity: usize,
 }
@@ -407,6 +420,8 @@ struct Fx<'b> {
     /// (from block, target param, value): phi incoming, filled at the end
     branch_args: Vec<(usize, ValueId, ValueId)>,
     cur_block: usize,
+    /// values that are addresses into the threadgroup array
+    group_vals: std::collections::HashSet<u32>,
 }
 
 /// the container of a width: i1, else 8/16/32/64 bits (a multiple of
@@ -486,6 +501,66 @@ impl Cx<'_> {
         }
     }
 
+    /// which values are threadgroup addresses: `addr` of a group item,
+    /// and whatever arithmetic, casts and block arguments carry it. One
+    /// may not leave the function or go to memory: there is no pointer
+    /// type that says which memory it is in
+    fn group_addresses(&self, f: &Function) -> Result<std::collections::HashSet<u32>, String> {
+        let mut tagged: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        loop {
+            let before = tagged.len();
+            for b in &f.blocks {
+                for inst in &b.insts {
+                    match inst {
+                        Inst::Addr { dst, name } if self.group_offsets.contains_key(name.as_str()) => {
+                            tagged.insert(dst.0);
+                        }
+                        Inst::Bin { dst, lhs, rhs, .. } if tagged.contains(&lhs.0) || tagged.contains(&rhs.0) => {
+                            tagged.insert(dst.0);
+                        }
+                        Inst::PtrAdd { dst, base, .. } | Inst::Cast { dst, src: base, .. } if tagged.contains(&base.0) => {
+                            tagged.insert(dst.0);
+                        }
+                        Inst::Jmp { target, args } => {
+                            for (&p, a) in f.blocks[target.0 as usize].params.iter().zip(args) {
+                                if tagged.contains(&a.0) {
+                                    tagged.insert(p.0);
+                                }
+                            }
+                        }
+                        Inst::Br { then_target, then_args, else_target, else_args, .. } => {
+                            for (t, args) in [(then_target, then_args), (else_target, else_args)] {
+                                for (&p, a) in f.blocks[t.0 as usize].params.iter().zip(args) {
+                                    if tagged.contains(&a.0) {
+                                        tagged.insert(p.0);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if tagged.len() == before {
+                break;
+            }
+        }
+        for b in &f.blocks {
+            for inst in &b.insts {
+                let escapes = match inst {
+                    Inst::Store { val, .. } => tagged.contains(&val.0),
+                    Inst::Call { args, .. } | Inst::CallInd { args, .. } => args.iter().any(|a| tagged.contains(&a.0)),
+                    Inst::Ret { vals } => vals.iter().any(|v| tagged.contains(&v.0)),
+                    _ => false,
+                };
+                if escapes {
+                    return Err("a group address is used where it is computed: it cannot be stored, passed or returned".into());
+                }
+            }
+        }
+        Ok(tagged)
+    }
+
     /// a value of type t back in canonical form in its container: the
     /// bits above its width zero (unsigned) or its sign (signed)
     fn normalize(&mut self, fx: &mut Fx, v: usize, t: Type) -> usize {
@@ -559,7 +634,8 @@ impl Cx<'_> {
             }
         }
         let (scratch, _) = crate::emit::scratch_layout(f, 0);
-        let mut fx = Fx { b, f, vals, env, slab, next_slab: None, my_scratch: self.scratch_of[fi], scratch, branch_args: Vec::new(), cur_block: 0 };
+        let group_vals = self.group_addresses(f)?;
+        let mut fx = Fx { b, f, vals, env, slab, next_slab: None, my_scratch: self.scratch_of[fi], scratch, branch_args: Vec::new(), cur_block: 0, group_vals };
         // PROBE_AIR_CUT=k: in a kept function, blocks from the k-th on
         // are `unreachable` (to find which block a compiler rejects)
         let cut = if keep == Some(true) { std::env::var("PROBE_AIR_CUT").ok().and_then(|v| v.parse::<usize>().ok()) } else { None };
@@ -650,7 +726,7 @@ impl Cx<'_> {
 
     /// the device pointer at an offset, typed for a value: iN, or i64
     /// for a pointer/function value
-    fn mem_ptr(&mut self, fx: &mut Fx, p: usize, t: Type) -> Result<(usize, usize), String> {
+    fn mem_ptr(&mut self, fx: &mut Fx, p: usize, t: Type, group: bool) -> Result<(usize, usize), String> {
         let mt = match t {
             Type::Ptr | Type::TPtr(_) | Type::Fn(_) => self.i64t,
             _ if fx.f.vector(t).is_some() => {
@@ -666,10 +742,19 @@ impl Cx<'_> {
                 self.m.int(cont(w))
             }
         };
-        let pt = self.m.ptr(mt, 1);
         let i8t = self.m.int(8);
-        let env = fx.env;
-        let bp = fx.b.push(&self.m, B::Gep { elem_ty: i8t, base: env, idx: vec![p], inbounds: true });
+        let bp = if group {
+            // into the threadgroup array
+            let g = self.group.ok_or("a group address without group items")?;
+            let gv = self.m.global_value(g);
+            let arr = self.m.ty(BType::Array(i8t, self.group_bytes));
+            let zero = self.const_i64(0);
+            fx.b.push(&self.m, B::Gep { elem_ty: arr, base: gv, idx: vec![zero, p], inbounds: true })
+        } else {
+            let env = fx.env;
+            fx.b.push(&self.m, B::Gep { elem_ty: i8t, base: env, idx: vec![p], inbounds: true })
+        };
+        let pt = self.m.ptr(mt, if group { 3 } else { 1 });
         let cast = fx.b.push(&self.m, B::Cast { op: CAST_BITCAST, val: bp, ty: pt });
         Ok((cast, mt))
     }
@@ -788,7 +873,8 @@ impl Cx<'_> {
             Inst::Load { dst, addr, off, index } => {
                 let p = self.address(fx, *addr, *off, *index)?;
                 let t = f.ty(*dst);
-                let (pt, mt) = self.mem_ptr(fx, p, t)?;
+                let group = fx.group_vals.contains(&addr.0);
+                let (pt, mt) = self.mem_ptr(fx, p, t, group)?;
                 let mut v = fx.b.push(&self.m, B::Load { ptr: pt, ty: mt, align: 1 });
                 if f.vector(t).is_some_and(|(l, _)| l == Type::U1) {
                     let lt = self.lty(f, t);
@@ -803,7 +889,8 @@ impl Cx<'_> {
                 let p = self.address(fx, *addr, *off, *index)?;
                 let t = f.ty(*val);
                 let mut v = self.value(fx, *val)?;
-                let (pt, mt) = self.mem_ptr(fx, p, t)?;
+                let group = fx.group_vals.contains(&addr.0);
+                let (pt, mt) = self.mem_ptr(fx, p, t, group)?;
                 if f.vector(t).is_some_and(|(l, _)| l == Type::U1) {
                     v = fx.b.push(&self.m, B::Cast { op: CAST_ZEXT, val: v, ty: mt });
                 }
@@ -815,7 +902,12 @@ impl Cx<'_> {
                 fx.vals.insert(dst.0, v);
             }
             Inst::Addr { dst, name } => {
-                let off = *self.data_offsets.get(name.as_str()).ok_or_else(|| format!("no data named {}", name))? as i64;
+                // a group item's address is its offset in the threadgroup
+                // array (mem_ptr knows, from the tag)
+                let off = match self.group_offsets.get(name.as_str()) {
+                    Some(&g) => g,
+                    None => *self.data_offsets.get(name.as_str()).ok_or_else(|| format!("no data named {}", name))? as i64,
+                };
                 let c = self.const_i64(off);
                 fx.vals.insert(dst.0, c);
             }
@@ -1128,32 +1220,6 @@ impl Cx<'_> {
             let fv = self.m.function_value(id);
             let (flags, scope) = (self.m.const_int(self.i32t, 2), self.m.const_int(self.i32t, 1));
             fx.b.push(&self.m, B::Call { fn_ty: fty, callee: fv, args: vec![flags, scope] });
-            return Ok(());
-        }
-        if let Some(what) = key.strip_prefix("air.group.") {
-            let g = self.group.ok_or("group memory used but not set up")?;
-            let gv = self.m.global_value(g);
-            let i8t = self.m.int(8);
-            let arr = self.m.ty(BType::Array(i8t, GROUP_BYTES));
-            let i64t = self.i64t;
-            let p64 = self.m.ptr(i64t, 3);
-            let zero = self.const_i64(0);
-            match what {
-                "load" => {
-                    let off = self.value(fx, args[0])?;
-                    let p = fx.b.push(&self.m, B::Gep { elem_ty: arr, base: gv, idx: vec![zero, off], inbounds: true });
-                    let tp = fx.b.push(&self.m, B::Cast { op: CAST_BITCAST, val: p, ty: p64 });
-                    let v = fx.b.push(&self.m, B::Load { ptr: tp, ty: i64t, align: 8 });
-                    fx.vals.insert(dsts[0].0, v);
-                }
-                "store" => {
-                    let (v, off) = (self.value(fx, args[0])?, self.value(fx, args[1])?);
-                    let p = fx.b.push(&self.m, B::Gep { elem_ty: arr, base: gv, idx: vec![zero, off], inbounds: true });
-                    let tp = fx.b.push(&self.m, B::Cast { op: CAST_BITCAST, val: p, ty: p64 });
-                    fx.b.push(&self.m, B::Store { ptr: tp, val: v, align: 8 });
-                }
-                _ => return Err(format!("unknown group operation '{}'", key)),
-            }
             return Ok(());
         }
         let Some(&dst) = dsts.first() else { return Ok(()) };

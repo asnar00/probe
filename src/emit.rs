@@ -423,6 +423,9 @@ pub struct Compiled {
     pub code_end: usize,
     #[allow(dead_code)]
     pub data_base: usize,
+    /// where the group items begin, on a page of their own: a program
+    /// writes those, and the JIT keeps everything before read-only
+    pub writable_from: Option<usize>,
 }
 
 // templates, named once (the strings must match the seed file exactly)
@@ -545,15 +548,29 @@ pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin
     while code.len() % 8 != 0 {
         code.push(0);
     }
-    let (data, data_offsets) = crate::ssa::layout_data(module);
+    let (data, rw, data_offsets, rw_offsets) = crate::ssa::layout_data_parts(module);
     let data_base = code.len();
     code.extend_from_slice(&data);
+    // the group items on a page of their own, after everything read-only
+    let writable_from = if rw.is_empty() {
+        None
+    } else {
+        while code.len() % 16384 != 0 {
+            code.push(0);
+        }
+        let b = code.len();
+        code.extend_from_slice(&rw);
+        Some(b)
+    };
 
     // cross-function fixups (bl) and data addresses (adr)
     for fix in call_fixups {
         let target = match &fix.target {
             FixTarget::Func(name) => *funcs.get(name.as_str()).ok_or_else(|| format!("call to undefined function {}", name))?,
-            FixTarget::Data(name) => data_base + *data_offsets.get(name.as_str()).ok_or_else(|| format!("no data named {}", name))?,
+            FixTarget::Data(name) => match data_offsets.get(name.as_str()) {
+                Some(off) => data_base + off,
+                None => writable_from.unwrap_or(0) + *rw_offsets.get(name.as_str()).ok_or_else(|| format!("no data named {}", name))?,
+            },
             FixTarget::Block(_) => unreachable!(),
         };
         let mut values = fix.values;
@@ -562,7 +579,7 @@ pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin
         code[fix.at..fix.at + 4].copy_from_slice(&word.to_le_bytes());
     }
 
-    Ok(Compiled { code, funcs, code_end, data_base })
+    Ok(Compiled { code, funcs, code_end, data_base, writable_from })
 }
 
 struct FnEmit<'a> {
@@ -1671,7 +1688,12 @@ pub mod jit {
 
     impl JitCode {
         pub fn new(compiled: &Compiled) -> Result<JitCode, String> {
-            let len = compiled.code.len().next_multiple_of(16384);
+            // code and data on JIT pages, write-protected once written;
+            // the group items, if any, on plain writable pages right
+            // after — the code reaches them PC-relative, so they must be
+            // exactly where the image has them
+            let split = compiled.writable_from.unwrap_or(compiled.code.len());
+            let len = split.next_multiple_of(16384);
             unsafe {
                 let base = mmap(
                     std::ptr::null_mut(),
@@ -1685,12 +1707,23 @@ pub mod jit {
                     return Err("mmap(MAP_JIT) failed".into());
                 }
                 pthread_jit_write_protect_np(0);
-                std::ptr::copy_nonoverlapping(compiled.code.as_ptr(), base, compiled.code.len());
+                std::ptr::copy_nonoverlapping(compiled.code.as_ptr(), base, split);
                 pthread_jit_write_protect_np(1);
                 sys_icache_invalidate(base, len);
+                let mut total = len;
+                if let Some(w) = compiled.writable_from {
+                    let rw_len = (compiled.code.len() - w).next_multiple_of(16384);
+                    let want = base.add(w);
+                    let p = mmap(want, rw_len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+                    if p != want {
+                        return Err("could not place the group items' pages after the code".into());
+                    }
+                    std::ptr::copy_nonoverlapping(compiled.code.as_ptr().add(w), p, compiled.code.len() - w);
+                    total += rw_len;
+                }
                 Ok(JitCode {
                     base,
-                    len,
+                    len: total,
                     funcs: compiled.funcs.clone(),
                 })
             }

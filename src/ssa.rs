@@ -956,6 +956,10 @@ pub struct DataDef {
     pub elem_name: String,
     pub count: usize,
     pub bytes: Vec<u8>,
+    /// a `group` item: memory a threadgroup shares, zero, sized and
+    /// typed like data — data on a machine that runs a group of one,
+    /// threadgroup memory on a GPU
+    pub shared: bool,
 }
 
 impl fmt::Display for DataDef {
@@ -968,7 +972,8 @@ impl fmt::Display for DataDef {
                 }
             }
         }
-        write!(f, "data {}: array({}, {})", self.name, self.elem_name, self.count)?;
+        let shape: Vec<String> = if self.dims.len() > 1 { self.dims.iter().map(|d| d.to_string()).collect() } else { vec![self.count.to_string()] };
+        write!(f, "{} {}: array({}, {})", if self.shared { "group" } else { "data" }, self.name, self.elem_name, shape.join(", "))?;
         if self.bytes.iter().any(|&b| b != 0) {
             let vals: Vec<String> = self.bytes.chunks(size).map(|c| {
                 let mut v = 0i64;
@@ -985,19 +990,40 @@ impl fmt::Display for DataDef {
 
 /// every data item laid out end to end, 8-aligned: (bytes, name -> offset)
 pub fn layout_data(m: &Module) -> (Vec<u8>, std::collections::HashMap<String, usize>) {
-    let mut bytes = Vec::new();
-    let mut offsets = std::collections::HashMap::new();
-    for d in &m.data {
-        while bytes.len() % 8 != 0 {
-            bytes.push(0);
-        }
-        offsets.insert(d.name.clone(), bytes.len());
-        bytes.extend_from_slice(&d.bytes);
-    }
-    while bytes.len() % 8 != 0 {
-        bytes.push(0);
+    // one image: the data, then the group items
+    let (ro, rw, ro_off, rw_off) = layout_data_parts(m);
+    let mut bytes = ro;
+    let base = bytes.len();
+    bytes.extend_from_slice(&rw);
+    let mut offsets = ro_off;
+    for (n, o) in rw_off {
+        offsets.insert(n, base + o);
     }
     (bytes, offsets)
+}
+
+/// the data items and the group items as two images with their own
+/// offsets: a JIT keeps its data read-only and needs the group items,
+/// which a program writes, on pages of their own
+pub fn layout_data_parts(m: &Module) -> (Vec<u8>, Vec<u8>, std::collections::HashMap<String, usize>, std::collections::HashMap<String, usize>) {
+    let lay = |shared: bool| {
+        let mut bytes = Vec::new();
+        let mut offsets = std::collections::HashMap::new();
+        for d in m.data.iter().filter(|d| d.shared == shared) {
+            while bytes.len() % 16 != 0 {
+                bytes.push(0);
+            }
+            offsets.insert(d.name.clone(), bytes.len());
+            bytes.extend_from_slice(&d.bytes);
+        }
+        while bytes.len() % 16 != 0 {
+            bytes.push(0);
+        }
+        (bytes, offsets)
+    };
+    let (ro, ro_off) = lay(false);
+    let (rw, rw_off) = lay(true);
+    (ro, rw, ro_off, rw_off)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1878,7 +1904,7 @@ impl Parser {
         if matches!(at(0), Some(Tok::Ident(k)) if k == "type") {
             return Item::Type;
         }
-        if matches!(at(0), Some(Tok::Ident(k)) if k == "data") {
+        if matches!(at(0), Some(Tok::Ident(k)) if k == "data" || k == "group") {
             return Item::Data;
         }
         if at(2) == Some(&Tok::Equals) {
@@ -2161,7 +2187,7 @@ impl Parser {
     /// `data name = "text"`, `data name: array(T, N) = { v, ... }`, or
     /// `data name: array(T, N)` (zeros)
     fn parse_data_decl(&mut self) -> Result<(), ParseError> {
-        self.expect_ident()?; // 'data'
+        let shared = self.expect_ident()? == "group"; // 'data' or 'group'
         let name = self.expect_ident()?;
         if self.data.iter().any(|d| d.name == name) {
             self.pos -= 1;
@@ -2246,7 +2272,10 @@ impl Parser {
         if dims.is_empty() {
             dims = vec![n as u32];
         }
-        self.data.push(DataDef { name, elem, dims, elem_name, count: n, bytes });
+        if shared && (count.is_none() || bytes.iter().any(|&b| b != 0)) {
+            return Err(self.err(format!("group '{}' is declared with its array type and nothing else: a threadgroup's memory starts as nothing", name)));
+        }
+        self.data.push(DataDef { name, elem, dims, elem_name, count: n, bytes, shared });
         Ok(())
     }
 

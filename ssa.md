@@ -420,6 +420,30 @@ exact and cheap, so short and never sleeping. Neither is anything the
 IR knows about: a time is a library type, a callback a function value,
 and what the kernel does with them is the kernel's.
 
+### Group memory
+
+```
+group tmp: array(i64, 64)                     ; what a threadgroup shares: typed, sized, zero
+t: ptr(array(i64, 64)) = addr tmp
+store id, t, lane
+group_sync()                                  ; the barrier (lib/gpu.ssa)
+v: i64 = load t, other
+```
+
+`group` declares memory a threadgroup shares, the way `data` declares
+the program's: an array type, no initializer (it starts as nothing),
+reached through `addr` and the typed loads and stores. On a GPU it is
+the threadgroup array (AIR: one `addrspace(3)` global holding every
+item), and an address computed from `addr` of a group item — through
+arithmetic, casts and block arguments — is a threadgroup access; such
+an address cannot be stored, passed to a function or returned, since
+no pointer type says which memory it is in. On a machine that runs a
+group of one, group items are data: writable pages after the code
+under the JIT, RAM on bare metal, memory on wasm. `group_sync()` is
+the barrier — `air.wg.barrier` on the GPU, nothing on one thread — so
+a program written for many threads parses and runs everywhere
+(`suite/group.ssa`; `examples/reduce.ssa` for the many-thread case).
+
 ### Calls
 
 A name followed by an argument list is a call — no opcode is ever

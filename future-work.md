@@ -25,12 +25,16 @@ and `call_indirect` on wasm). Left:
 AIR is in (`src/emit_air.rs`): a `__kernel` runs on any Apple GPU from
 bitcode we write. Left:
 
-- **Threadgroup memory as words at byte offsets** (`lib/gpu.ssa`): 16
-  KB, `i64` only, one array per program. Typed access (`group_load`
-  of an `f32x4`), a size the program declares, and simdgroup
-  operations (`air.simdgroup.*`) are the next rungs. The one-thread
-  fallbacks make the program run everywhere but say nothing about
-  its group behaviour; a CPU driver that runs a group as fibres would.
+- **Group addresses stay in their function**: a `group` item's address
+  is tracked through arithmetic and block arguments inside the
+  function that took it, and may not be stored, passed or returned —
+  there is no pointer type for the space it is in. A `ptr` that knows
+  its address space would lift that; ash's rule against region-typed
+  pointers is about lifetimes, not spaces, so it is open.
+- **Group behaviour on one thread**: the one-thread fallbacks make a
+  group program run everywhere but say nothing about what a group of
+  many does; a CPU driver that runs a group as fibres would (the
+  barrier a yield).
 - **Textures and samplers**: handles with platform operations, as
   decided when arrays were done; not arrays.
 - **Vectors whole elsewhere**: AIR takes them (`builtin vectors`);

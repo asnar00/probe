@@ -1,23 +1,11 @@
 ; lib/gpu.ssa: what a program running as many threads has and a
-; program running as one does not — memory a threadgroup shares, and
-; the barrier that orders its use. On a GPU these are the platform's
-; (targets/air.platform: an addrspace(3) array and air.wg.barrier);
-; here they are a buffer in data and nothing, so the same program
-; parses and runs everywhere as a group of one. Offsets are in bytes;
-; the values are words.
+; program running as one does not. A `group` item is memory a
+; threadgroup shares (`group tmp: array(i64, 64)`, reached through
+; `addr` like data); `group_sync()` is the barrier that orders its use.
+; On a GPU the barrier is the platform's (targets/air.platform:
+; air.wg.barrier); here it is nothing, so the same program parses and
+; runs everywhere as a group of one — a machine's group items are data.
 
-data __group: array(i64, 2048)
-
-fn group_load(off: i64) -> i64 {
-    g: ptr = addr __group
-    v: i64 = load g, off, 1
-    ret v
-}
-fn group_store(v: i64, off: i64) {
-    g: ptr = addr __group
-    store v, g, off, 1
-    ret
-}
 fn group_sync() {
     ret
 }

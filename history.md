@@ -6,6 +6,27 @@ has the full story for any of them.
 
 ---
 
+### Group memory, typed and sized — `HASH` · 2026-08-28
+
+`group tmp: array(i64, 64)` declares what a threadgroup shares the way
+`data` declares what the program has: an array type, nothing else,
+reached through `addr` and the typed loads and stores — a vector
+element, a shape, whatever the type says — in place of the 16 KB of
+`i64` words at byte offsets the library gave before. On AIR every
+group item is laid out in one `addrspace(3)` array sized to fit, and
+the emitter decides which loads and stores are threadgroup accesses
+by a fixpoint over the function: `addr` of a group item is one, and so
+is whatever arithmetic, cast or block argument carries it; such an
+address cannot be stored, passed or returned, which the emitter says.
+On a machine a group item is data — and the JIT, whose data pages are
+write-protected, now puts the group items on writable pages of their
+own right after the code (`layout_data_parts`, `Compiled::
+writable_from`), where the PC-relative addresses expect them.
+`suite/group.ssa` runs on all five paths; `examples/reduce.ssa` reads
+as it should. `probe parse` prints shapes again.
+
+---
+
 ### Vectors whole to the GPU — `4a008b9` · 2026-08-27
 
 `targets/air.platform` says `builtin vectors`, and a `TxN` now

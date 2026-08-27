@@ -36,9 +36,7 @@ fsub = sub(f16, f16) -> f16
 fmul = mul(f16, f16) -> f16
 fdiv = div(f16, f16) -> f16
 
-; a threadgroup's shared memory and barrier (lib/gpu.ssa has the
-; one-thread forms)
+; a threadgroup's barrier (lib/gpu.ssa has the one-thread form); its
+; memory is the program's `group` items
 ext group
-air.group.load = group_load(i64) -> i64
-air.group.store = group_store(i64, i64) -> ()
 air.wg.barrier = group_sync() -> ()

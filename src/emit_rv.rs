@@ -146,7 +146,7 @@ pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin
             FixTarget::Block(_) => unreachable!(),
         }
     }
-    Ok(Compiled { code, funcs, code_end, data_base })
+    Ok(Compiled { code, funcs, code_end, data_base, writable_from: None })
 }
 
 struct RvEmit<'a> {

@@ -1,0 +1,58 @@
+; group memory: `group name: array(T, N)` is memory a threadgroup
+; shares, typed and sized like data and reached through `addr` — a
+; GPU's threadgroup array, a machine's data (a group of one). These
+; cases run everywhere; what a group of many does with it is
+; examples/reduce.ssa, on the GPU.
+
+;! cells_typed 5 -> 15
+;! cells_vector -> 60
+;! cells_synced 7 -> 21
+;! cells_shape 2 1 -> 12
+
+group cells: array(i64, 8)
+group vecs: array(i32x4, 2)
+group grid: array(i32, 3, 2)
+
+fn cells_typed(x: i64) -> i64 {
+    t: ptr(array(i64, 8)) = addr cells
+    store x, t, 1
+    y: i64 = mul x, 2
+    store y, t, 2
+    a: i64 = load t, 1
+    b: i64 = load t, 2
+    s: i64 = add a, b
+    ret s
+}
+
+; a vector element, stored whole and taken apart
+fn cells_vector() -> i32 {
+    t: ptr(array(i32x4, 2)) = addr vecs
+    v: i32x4 = pack 10, 20, 30, 40
+    store v, t, 1
+    w: i32x4 = load t, 1
+    w0: i32, w1: i32, w2: i32, w3: i32 = unpack w
+    s0: i32 = add w0, w1
+    s1: i32 = add w2, w3
+    s: i32 = add s0, s1
+    r: i32 = sub s, 40
+    ret r
+}
+
+; the barrier between a store and a load: nothing on one thread,
+; everything on many
+fn cells_synced(x: i64) -> i64 {
+    t: ptr(array(i64, 8)) = addr cells
+    store x, t, 3
+    group_sync()
+    v: i64 = load t, 3
+    r: i64 = mul v, 3
+    ret r
+}
+
+; a shape, indexed
+fn cells_shape(i: i64, j: i64) -> i32 {
+    g: ptr(array(i32, 3, 2)) = addr grid
+    store 12: i32, g, i, j
+    v: i32 = load g, i, j
+    ret v
+}
