@@ -6,7 +6,7 @@ has the full story for any of them.
 
 ---
 
-### Vectors whole to the GPU — `HASH` · 2026-08-27
+### Vectors whole to the GPU — `4a008b9` · 2026-08-27
 
 `targets/air.platform` says `builtin vectors`, and a `TxN` now
 reaches the AIR emitter as one value: the parser emits a single
