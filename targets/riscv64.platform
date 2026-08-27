@@ -19,6 +19,29 @@ target riscv64
 ext virt
 const uart = 0x10000000
 const finisher = 0x100000
+; the UART's receive side: the line status register, its "data ready"
+; bit, and that bit's value when a byte is waiting
+const uart_status = 5
+const uart_ready_mask = 1
+const uart_ready = 1
+; an environment call leaves the return address on itself: skip 4
+const resume_skip = 4
+; mcause of an environment call from M-mode
+const trap_syscall = 11
+
+; traps in M-mode: mtvec (0x305) in direct mode takes the handler's
+; entry itself; mcause is 0x342, mepc 0x341
+ext traps
+vectors(t: ptr) -> ()
+    csrw 0x305, t
+cause() -> u64
+    csrr r, 0x342
+resume() -> ptr
+    csrr r, 0x341
+resume_at(p: ptr) -> ()
+    csrw 0x341, p
+syscall(n: u64, a: u64, b: u64) -> u64
+    ecall
 
 ext M
 builtin mul, div, rem

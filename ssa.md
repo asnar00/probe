@@ -244,7 +244,9 @@ uart: ptr = platform uart                     ; a constant the platform file pro
 ```
 
 `data` is initialized memory — elements are integers of up to 64 bits at
-their natural size, little-endian — laid out after the code (8-aligned)
+their natural size, little-endian, or pointers and function values,
+which start as zeros (a table of handlers the program fills) — laid out
+after the code (8-aligned)
 and reached by a PC-relative address (`adr`, `auipc`/`addi`, a
 `data` segment on wasm). Under the JIT it is read-only; on bare metal it
 is the program's RAM. `platform name` is a constant from the platform
@@ -252,7 +254,31 @@ file's `const` lines — a board's addresses (`uart`, `finisher` on qemu's
 virt machines) — resolved when the target is known, so one program can
 say `store c, uart` for two boards. `probe boot file.ssa [riscv|arm]`
 runs a program with a `fn __start()` on bare-metal qemu and prints what
-it wrote to the UART: `os/hello.ssa` is the first one.
+it wrote to the UART, feeding it what is piped in (or the terminal):
+`os/hello.ssa` is the first one.
+
+Traps are the second machine convention. A program with a `fn
+__trap(a: u64, b: u64, c: u64) -> u64` has a trap handler: `probe boot`
+compiles it with a frame that keeps every register of the code it
+interrupted and a return that resumes that code (`eret`, `mret`), and
+on arm64 lays a 2K-aligned vector table of branches to it just before
+its entry. The handler is called with the trapped code's first three
+argument registers and its result replaces the first — so a system
+call is `syscall(n, a, b) -> u64` on one side and `__trap(n, a, b) ->
+u64` on the other. How the machine takes and leaves a trap is the
+platform's: `vectors(t: ptr)` installs the handler (`msr vbar_el1` /
+`csrw mtvec`), `cause()` reads why (`esr_el1`'s class / `mcause`),
+`resume()` and `resume_at(p)` read and set where the trapped code
+continues (`elr_el1` / `mepc`), `syscall` is `svc` / `ecall`, and the
+constants `trap_syscall` and `resume_skip` say what a system call
+looks like and how far past it to resume (arm64 steps past its `svc`,
+riscv leaves `mepc` on the `ecall`). A program declares those functions
+with placeholder bodies and the platform supplies the real ones, as it
+does for `psci`. `os/echo.ssa` is the second operating system: a
+handler dispatching write, read and exit through a `data` table of
+function values, and a program that uses only those calls. Interrupts
+from devices (which can arrive between any two instructions, float
+scratch registers live) are not taken yet.
 
 ### Calls
 

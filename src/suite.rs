@@ -756,6 +756,8 @@ fn gen_driver(
 /// means an infinite loop); returns captured stdout.
 /// a bare-metal riscv64 image: sp = 0x80800000 (mid-RAM), the FPU on,
 /// then fall into the first function
+const RV_PREAMBLE_WORDS: usize = 6;
+
 pub fn rv_image(compiled: &emit::Compiled, enc: &emit::Encoder) -> Result<Vec<u8>, String> {
     let mut bin = Vec::new();
     const ADDI: &str = "addi {r}, {r}, {i -2048..2047}";
@@ -772,6 +774,7 @@ pub fn rv_image(compiled: &emit::Compiled, enc: &emit::Encoder) -> Result<Vec<u8
         let n = if t.starts_with("lui") { 2 } else { 3 };
         bin.extend(enc.encode(t, &v[..n])?.to_le_bytes());
     }
+    debug_assert_eq!(bin.len(), RV_PREAMBLE_WORDS * 4);
     bin.extend(&compiled.code);
     Ok(bin)
 }
@@ -818,7 +821,7 @@ pub fn qemu_command(target: &str, bin_path: &std::path::Path) -> Command {
 /// preamble falls into the first function, so it is moved there); the
 /// output is what it wrote to the UART. The platform's constants
 /// (`platform uart`, `platform finisher`) are the board's addresses.
-pub fn boot(path: &str, target: &str, level: usize, policy: ssa::Policy) -> Result<String, String> {
+pub fn boot(path: &str, target: &str, level: usize, policy: ssa::Policy, input: Option<&[u8]>) -> Result<String, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
     let platform = crate::platform::Platform::load(target)?;
     let policy = platform.adjust(policy);
@@ -830,25 +833,43 @@ pub fn boot(path: &str, target: &str, level: usize, policy: ssa::Policy) -> Resu
     module.funcs.insert(0, f);
     opt::optimize(&mut module, level);
     let enc = emit::Encoder::load(&format!("targets/{}.encodings.json", target))?;
+    // the code follows the preamble, which is where a vector table's
+    // alignment is measured from
     let bin = if target == "riscv64" {
-        rv_image(&emit_rv::compile_with(&module, &enc, &platform)?, &enc)?
+        rv_image(&emit_rv::compile_image(&module, &enc, &platform, RV_PREAMBLE_WORDS * 4)?, &enc)?
     } else {
-        arm_image(&emit::compile_with(&module, &enc, &platform)?, &enc)?
+        arm_image(&emit::compile_image(&module, &enc, &platform, ARM_PREAMBLE_WORDS * 4)?, &enc)?
     };
     let scratch = std::env::temp_dir().join("probe-boot");
     std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
     let bin_path = scratch.join(format!("{}.{}.bin", std::path::Path::new(path).file_stem().unwrap().to_string_lossy(), target));
     std::fs::write(&bin_path, &bin).map_err(|e| e.to_string())?;
-    exec_qemu(qemu_command(target, &bin_path), 30)
+    match input {
+        // the machine's serial port reads what it is given
+        Some(bytes) => exec_qemu_with(qemu_command(target, &bin_path), 30, Some(bytes)),
+        // or the terminal, for as long as the program runs
+        None => exec_qemu_with(qemu_command(target, &bin_path), 24 * 3600, None),
+    }
 }
 
-pub fn exec_qemu(mut cmd: Command, secs: u64) -> Result<String, String> {
+pub fn exec_qemu(cmd: Command, secs: u64) -> Result<String, String> {
+    exec_qemu_with(cmd, secs, Some(&[]))
+}
+
+/// run qemu with its serial port's input: bytes (piped, then closed),
+/// or None for the terminal
+pub fn exec_qemu_with(mut cmd: Command, secs: u64, input: Option<&[u8]>) -> Result<String, String> {
     let child = cmd
-        .stdin(std::process::Stdio::null())
+        .stdin(if input.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::inherit() })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn();
     let mut child = child.map_err(|e| format!("spawn qemu: {}", e))?;
+    if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
+        use std::io::Write;
+        let _ = stdin.write_all(bytes);
+        // stdin drops here: closed after the bytes
+    }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     let mut timed_out = false;
     loop {
@@ -1088,8 +1109,18 @@ mod tests {
     #[test]
     fn hello_world_boots() {
         for target in ["riscv64", "arm64"] {
-            let out = super::boot("os/hello.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap()).unwrap();
+            let out = super::boot("os/hello.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"")).unwrap();
             assert!(out.contains("hello world ᕦ(ツ)ᕤ"), "{}: {:?}", target, out);
+        }
+    }
+
+    /// the second: a trap handler, system calls through a table of
+    /// function values, and input from the serial port, on both machines
+    #[test]
+    fn echo_boots() {
+        for target in ["riscv64", "arm64"] {
+            let out = super::boot("os/echo.ssa", target, crate::opt::MAX_LEVEL, crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap(), Some(b"hello\n\nsyscalls\nbye\n")).unwrap();
+            assert_eq!(out, "> echo: hello\n> echo: \n> echo: syscalls\n> ", "{}", target);
         }
     }
 

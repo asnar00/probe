@@ -214,3 +214,13 @@ inst isb
 
 ; --- hypervisor call: the qemu bare-metal harness exits via PSCI ---
 inst hvc #{i 0..65535}
+
+; --- traps at EL1: the vector table base, the syndrome and return
+; address of the exception taken, the return from it, and a supervisor
+; call to take one on purpose ---
+inst msr vbar_el1, {x}
+inst mrs {x}, esr_el1
+inst mrs {x}, elr_el1
+inst msr elr_el1, {x}
+inst eret
+inst svc #{i 0..65535}

@@ -34,6 +34,34 @@ const uart = 0x9000000
 const finisher = 0x41300000
 psci(code: u64) -> ()
     hvc 0
+; the UART's receive side: the flag register, its "receive FIFO empty"
+; bit, and that bit's value when a byte is waiting
+const uart_status = 0x18
+const uart_ready_mask = 0x10
+const uart_ready = 0
+; a supervisor call leaves the return address after itself
+const resume_skip = 0
+; the exception class of a supervisor call (ESR_EL1.EC = 0x15)
+const trap_syscall = 21
+
+; traps at EL1. `fn __trap(a: u64, b: u64, c: u64) -> u64` is the
+; handler (see ssa.md: it gets the trapped code's first argument
+; registers and its result replaces the first); `probe boot` lays a
+; vector table of branches to it in the 2K before its entry, so the
+; base to install is the entry less 2048
+ext traps
+vectors(t: ptr) -> ()
+    sub t, t, 2048
+    msr vbar_el1, t
+cause() -> u64
+    mrs r, esr_el1
+    lsr r, r, 26
+resume() -> ptr
+    mrs r, elr_el1
+resume_at(p: ptr) -> ()
+    msr elr_el1, p
+syscall(n: u64, a: u64, b: u64) -> u64
+    svc 0
 
 ext FP
 class s = f32

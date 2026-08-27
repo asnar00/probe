@@ -38,6 +38,20 @@ rule with `hvc` as its body). No runtime, no linker script, no
 assembly: the image is the learned encodings and a six-instruction
 preamble that sets the stack pointer.
 
+```sh
+printf 'hello\nbye\n' | cargo run -- boot os/echo.ssa arm
+> echo: hello
+> 
+```
+
+`os/echo.ssa` is the second: a kernel that installs a trap handler
+(`fn __trap`, compiled with a frame that keeps the interrupted code's
+registers and returns by `eret`/`mret`) and serves write, read and exit
+through a `data` table of function values, and a program that uses
+nothing but those system calls (`svc`/`ecall`). The trap instructions
+are learned like every other; how a board takes a trap is five
+platform rules and two constants.
+
 ## The IR
 
 `ssa.md` is the reference; `src/ssa.rs` the parser, verifier and
@@ -140,6 +154,11 @@ what a target does natively, as rules over the library's operations:
   instead of the SSA body; `--soft` turns that off, and the library
   remains the reference the hardware path is checked against.
 - `const uart = 0x10000000` — a board's addresses, for `platform uart`.
+- `psci(code: u64) -> ()` with `hvc 0` under it — a plain function the
+  platform gives a body: how the board is ended, or how a trap is
+  installed, read and returned from (`vectors`, `cause`, `resume`,
+  `resume_at`, `syscall`). A body line may spell a template's fixed
+  operands (`msr vbar_el1, t`).
 - **Variants** are files too: the base file is grouped by extension
   (`ext M`, `ext F`, `ext D`), and `targets/rv64i.platform` is `base
   riscv64` plus `without M, F, D` — a core on which `mul`/`div`/`rem`
@@ -293,7 +312,8 @@ are checked in, so the backends and suite work without re-learning.
 Integers to 256 bits, packs, structs, parametric types and generic
 functions, function values; floats, fixed point, unit fractions, rationals, time and
 decimals as libraries, with hardware substituted where a platform has
-it; three backends and their variants; a bootable hello world. All of
+it; three backends and their variants; a bootable hello world and an
+echo kernel with system calls. All of
 it differentially verified — the suite on four execution paths under
 every policy, the oracle, the scorecards, the fuzzer, the model tests.
 

@@ -75,6 +75,13 @@ pub fn compile(module: &Module, enc: &Encoder) -> Result<Compiled, String> {
 }
 
 pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Result<Compiled, String> {
+    compile_image(module, enc, platform, 0)
+}
+
+/// Compile a module for an image whose code begins at byte `origin`;
+/// riscv's trap vector is the handler's entry itself (mtvec in direct
+/// mode), so nothing here depends on the origin
+pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, _origin: usize) -> Result<Compiled, String> {
     let natives = platform.natives(module);
     let mut code: Vec<u8> = Vec::new();
     let mut funcs = std::collections::HashMap::new();
@@ -136,9 +143,17 @@ struct RvEmit<'a> {
     /// per value: the platform's float register class (`f`), if any
     classes: Vec<Option<String>>,
     spill_base: i64,
+    /// a trap handler: the caller-saved registers of the code it
+    /// interrupted are kept here and it leaves by mret
+    trap: Option<i64>,
     block_offsets: Vec<Option<usize>>,
     fixups: Vec<Fixup>,
 }
+
+/// the caller-saved registers a trap handler preserves: t0-t2, a0-a7,
+/// t3-t6; ra is in the frame already
+const TRAP_SAVED: &[i64] = &[5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31];
+const TRAP_AREA: i64 = 120;
 
 impl RvEmit<'_> {
     fn emit(&mut self, template: &str, values: &[i64]) -> Result<usize, String> {
@@ -452,9 +467,21 @@ impl RvEmit<'_> {
         for (k, &fr) in self.alloc.used_by_class[1].clone().iter().enumerate() {
             self.emit(FLD, &[fr, fbase + 8 * k as i64, SP])?;
         }
+        if let Some(base) = self.trap {
+            // the result is in a0; everything else goes back as it was
+            for (k, &r) in TRAP_SAVED.iter().enumerate() {
+                if r != A0 {
+                    self.emit(LD, &[r, base + 8 * k as i64, SP])?;
+                }
+            }
+        }
         self.emit(LD, &[RA, 0, SP])?;
         self.emit(ADDI, &[SP, SP, self.frame])?;
-        self.emit("jalr {r}, {i -2048..2047}({r})", &[ZERO, 0, RA])?;
+        if self.trap.is_some() {
+            self.emit("mret", &[])?;
+        } else {
+            self.emit("jalr {r}, {i -2048..2047}({r})", &[ZERO, 0, RA])?;
+        }
         Ok(())
     }
 
@@ -534,7 +561,8 @@ fn compile_function(
     let class_idx: Vec<usize> = classes.iter().map(|c| c.is_some() as usize).collect();
     let alloc = regalloc::allocate_classes(func, &class_idx, &[REG_POOL, F_POOL]);
     let nsaved = alloc.used_regs.len() as i64 + alloc.used_by_class[1].len() as i64;
-    let spill_base = 16 + 8 * nsaved;
+    let trap = (func.name == crate::emit::TRAP).then_some(16 + 8 * nsaved);
+    let spill_base = 16 + 8 * nsaved + if trap.is_some() { TRAP_AREA } else { 0 };
     let frame = (spill_base + 8 * alloc.nslots as i64 + 15) & !15;
     if frame > 2047 {
         return Err("function needs too large a frame for v0".into());
@@ -552,6 +580,7 @@ fn compile_function(
         alloc: &alloc,
         classes,
         spill_base,
+        trap,
         block_offsets: vec![None; func.blocks.len()],
         fixups: Vec::new(),
     };
@@ -564,6 +593,11 @@ fn compile_function(
     let fbase = 16 + 8 * alloc.used_regs.len() as i64;
     for (k, &fr) in alloc.used_by_class[1].iter().enumerate() {
         e.emit(FSD, &[fr, fbase + 8 * k as i64, SP])?;
+    }
+    if let Some(base) = trap {
+        for (k, &r) in TRAP_SAVED.iter().enumerate() {
+            e.emit(SD, &[r, base + 8 * k as i64, SP])?;
+        }
     }
     for (i, &p) in func.params.iter().enumerate() {
         e.value_from(p, A0 + i as i64)?;
@@ -836,19 +870,28 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             // the call, each operand in its own file
             let natives: &Natives = e.natives;
             let native = natives.get(callee).unwrap();
-            let Some(&dst) = dsts.first() else {
-                return Ok(());
-            };
+            let dst = dsts.first().copied();
+            if dst.is_none() && native.ret_bits != 0 {
+                return Ok(()); // result unused: nothing to compute
+            }
             let mut regs = Vec::new();
             for (j, &a) in args.iter().enumerate() {
                 regs.push(if native.arg_class[j].is_some() { e.src_freg(a, j as i64)? } else { e.src_reg(a, [T0, T1, T2][j])? });
             }
             let ret_f = native.ret_class.is_some();
-            let rd = if ret_f { e.dst_freg(dst, 3) } else { e.dst_reg(dst, T0) };
+            let rd = match dst {
+                Some(d) if ret_f => e.dst_freg(d, 3),
+                Some(d) => e.dst_reg(d, T0),
+                None => T0,
+            };
             for (t, v) in rule_seq(e.enc, native, rd, &regs)? {
                 e.emit(t, &v)?;
             }
-            if ret_f { e.finish_f(dst, rd) } else { e.finish(dst, rd) }
+            match dst {
+                Some(d) if ret_f => e.finish_f(d, rd),
+                Some(d) => e.finish(d, rd),
+                None => Ok(()),
+            }
         }
         Inst::FnAddr { dst, name } => {
             let rd = e.dst_reg(*dst, T0);

@@ -1,0 +1,200 @@
+; echo — the second operating system written in probe. A kernel that
+; installs a trap handler and serves three system calls — write, read,
+; exit — through a table of function values; and a program that uses
+; nothing but those calls: it prompts, reads a line, echoes it, and
+; stops at "bye".
+;
+;   printf 'hello\nbye\n' | probe boot os/echo.ssa        (riscv64)
+;   printf 'hello\nbye\n' | probe boot os/echo.ssa arm    (aarch64)
+;   probe boot os/echo.ssa arm                            (the terminal)
+;
+; The board is the platform file's: `platform uart` and the status
+; register that says a byte has arrived; `vectors`, `cause`, `resume`,
+; `resume_at` and `syscall` are functions whose bodies the platform
+; supplies (msr/mrs/svc on arm64, csrw/csrr/ecall on riscv64). The
+; handler is `fn __trap`: `probe boot` gives it a frame that keeps the
+; interrupted code's registers and a return that resumes it.
+
+data prompt = "> "
+data echo = "echo: "
+data newline = "\n"
+data line: array(u8, 64)
+data calls: array(fn(u64, u64) -> u64, 3)
+
+; --- the board ---
+fn vectors(t: ptr) {
+    ret
+}
+fn cause() -> u64 {
+    ret 0
+}
+fn resume() -> ptr {
+    ret 0
+}
+fn resume_at(p: ptr) {
+    ret
+}
+fn syscall(n: u64, a: u64, b: u64) -> u64 {
+    ret 0
+}
+fn psci(code: u64) {
+    ret
+}
+
+; --- the kernel ---
+fn __start() {
+    t: ptr = addr calls
+    w: fn(u64, u64) -> u64 = addr sys_write
+    r: fn(u64, u64) -> u64 = addr sys_read
+    x: fn(u64, u64) -> u64 = addr sys_exit
+    store w, t
+    store r, t, 8
+    store x, t, 16
+    h: fn(u64, u64, u64) -> u64 = addr __trap
+    hp: ptr = cast h
+    vectors(hp)
+    main()
+    exit()
+    ret
+}
+
+; every trap lands here with the trapped code's first three argument
+; registers; what it returns replaces the first. A system call is
+; dispatched through the table and resumed past the instruction that
+; made it; anything else ends the machine.
+fn __trap(n: u64, a: u64, b: u64) -> u64 {
+    c: u64 = cause()
+    sc: u64 = platform trap_syscall
+    is: u1 = cmp.eq c, sc
+    r: u64 = if is {
+        t: ptr = addr calls
+        i: i64 = conv n
+        f: fn(u64, u64) -> u64 = load t, i, 8
+        v: u64 = f(a, b)
+        p: ptr = resume()
+        skip: i64 = platform resume_skip
+        p2: ptr = ptradd p, skip
+        resume_at(p2)
+        yield v
+    } else {
+        exit()
+        yield n
+    }
+    ret r
+}
+
+; write(p, n): n bytes from p to the serial port
+fn sys_write(p: u64, n: u64) -> u64 {
+    q: ptr = cast p
+    m: i64 = conv n
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, m
+        if done {
+            break
+        }
+        c: u8 = load q, i, 1
+        putc(c)
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret n
+}
+
+; read(p, n): a line from the serial port into p, at most n bytes, the
+; newline dropped; returns the count
+fn sys_read(p: u64, n: u64) -> u64 {
+    q: ptr = cast p
+    m: i64 = conv n
+    got: i64 = loop(i: i64 = 0) {
+        c: u8 = getc()
+        nl: u1 = cmp.eq c, 10
+        if nl {
+            break i
+        }
+        full: u1 = cmp.ge i, m
+        if full {
+            continue i
+        }
+        store c, q, i, 1
+        i2: i64 = add i, 1
+        continue i2
+    }
+    r: u64 = conv got
+    ret r
+}
+
+fn sys_exit(a: u64, b: u64) -> u64 {
+    exit()
+    ret 0
+}
+
+; --- the serial port ---
+fn putc(c: u8) {
+    uart: ptr = platform uart
+    c32: u32 = conv c
+    store c32, uart
+    ret
+}
+fn getc() -> u8 {
+    uart: ptr = platform uart
+    off: i64 = platform uart_status
+    status: ptr = ptradd uart, off
+    mask: u8 = platform uart_ready_mask
+    ready: u8 = platform uart_ready
+    loop() {
+        s: u8 = load status
+        m: u8 = and s, mask
+        ok: u1 = cmp.eq m, ready
+        if ok {
+            break
+        }
+        continue
+    }
+    c: u8 = load uart
+    ret c
+}
+
+; end the machine (as os/hello.ssa does)
+fn exit() {
+    f: ptr = platform finisher
+    store 0x5555: u32, f
+    psci(0x84000008)
+    ret
+}
+
+; --- the program: system calls only ---
+fn main() {
+    buf: ptr = addr line
+    lp: u64 = cast buf
+    pp: ptr = addr prompt
+    ep: ptr = addr echo
+    np: ptr = addr newline
+    loop() {
+        say(pp, 2)
+        n: u64 = syscall(1, lp, 64)
+        three: u1 = cmp.eq n, 3
+        b0: u8 = load buf
+        b1: u8 = load buf, 1
+        b2: u8 = load buf, 2
+        isb: u1 = cmp.eq b0, 98
+        isy: u1 = cmp.eq b1, 121
+        ise: u1 = cmp.eq b2, 101
+        t1: u1 = and three, isb
+        t2: u1 = and t1, isy
+        bye: u1 = and t2, ise
+        if bye {
+            break
+        }
+        say(ep, 6)
+        syscall(0, lp, n)
+        say(np, 1)
+        continue
+    }
+    syscall(2, 0, 0)
+    ret
+}
+fn say(p: ptr, n: u64) {
+    a: u64 = cast p
+    syscall(0, a, n)
+    ret
+}

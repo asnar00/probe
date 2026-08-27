@@ -521,6 +521,30 @@ pub fn template_slots(template: &str) -> Vec<&str> {
     out
 }
 
+/// a template's operands after the mnemonic, split at the commas
+/// outside brackets: `msr vbar_el1, {x}` gives `vbar_el1` and `{x}`
+fn template_pieces(template: &str) -> Vec<&str> {
+    let rest = template.split_once(char::is_whitespace).map(|(_, r)| r).unwrap_or("");
+    let mut out = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '[' | '{' => depth += 1,
+            ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(&rest[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if !rest[start..].trim().is_empty() {
+        out.push(&rest[start..]);
+    }
+    out
+}
+
 /// does a template slot take this operand? A float-class operand takes
 /// the slot of its class letter; an integer operand takes `{r}` at any
 /// width, `{w}` at 32 bits, `{x}` at 64 — and as the result also `{x}`
@@ -566,15 +590,36 @@ pub fn resolve<'t>(native: &Native, line: &Line, templates: &[&'t str]) -> Resul
     let mut found: Option<(&str, Vec<(Operand, i64)>, bool)> = None;
     for t in candidates {
         let slots = template_slots(t);
-        if slots.len() != line.operands.len() {
-            continue;
-        }
         let mut vals = Vec::new();
         let mut ok = true;
-        for (slot, op) in slots.iter().zip(&line.operands) {
-            match slot_takes(slot, native, op) {
-                Some(v) => vals.push((op.clone(), v)),
-                None => {
+        if slots.len() == line.operands.len() {
+            for (slot, op) in slots.iter().zip(&line.operands) {
+                match slot_takes(slot, native, op) {
+                    Some(v) => vals.push((op.clone(), v)),
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+        } else {
+            // a template with fixed operands (`msr vbar_el1, {x}`): the
+            // line spells them out, and they must match word for word
+            let pieces = template_pieces(t);
+            if pieces.len() != line.operands.len() {
+                continue;
+            }
+            for (piece, op) in pieces.iter().zip(&line.operands) {
+                let piece = piece.trim();
+                if let Some(slot) = piece.strip_prefix('{').and_then(|p| p.strip_suffix('}')) {
+                    match slot_takes(slot, native, op) {
+                        Some(v) => vals.push((op.clone(), v)),
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                } else if !matches!(op, Operand::Lit(l) if l == piece) {
                     ok = false;
                     break;
                 }
@@ -620,9 +665,9 @@ mod tests {
         let m = crate::ssa::parse_with(&crate::ssa::with_prelude("fn f(a: f32, b: f32) -> f32 {\n    r: f32 = add a, b\n    ret r\n}\n"), &crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap()).unwrap();
         assert!(!full.natives(&m).rules.is_empty());
         assert!(im.natives(&m).rules.is_empty() && im.natives(&m).classes.is_empty());
-        // virt (the board's constants), M, F, D; rv64i keeps only virt
-        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 4);
-        assert_eq!(i.extensions().iter().filter(|(_, present)| *present).count(), 1);
+        // virt (the board's constants), traps, M, F, D; rv64i keeps virt and traps
+        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 5);
+        assert_eq!(i.extensions().iter().filter(|(_, present)| *present).count(), 2);
         assert_eq!(i.natives(&m).consts.get("uart"), Some(&0x10000000));
         let nofp = Platform::load_named("arm64-nofp").unwrap();
         assert!(nofp.natives(&m).classes.is_empty());

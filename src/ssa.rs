@@ -876,6 +876,9 @@ impl Function {
 pub struct DataDef {
     pub name: String,
     pub elem: Type,
+    /// the element type as written, for printing (a function type's
+    /// name lives in the pack table)
+    pub elem_name: String,
     pub count: usize,
     pub bytes: Vec<u8>,
 }
@@ -890,7 +893,7 @@ impl fmt::Display for DataDef {
                 }
             }
         }
-        write!(f, "data {}: array({}, {})", self.name, self.elem.name(), self.count)?;
+        write!(f, "data {}: array({}, {})", self.name, self.elem_name, self.count)?;
         if self.bytes.iter().any(|&b| b != 0) {
             let vals: Vec<String> = self.bytes.chunks(size).map(|c| {
                 let mut v = 0i64;
@@ -2083,10 +2086,14 @@ impl Parser {
             }
             self.expect(Tok::RParen)?;
         }
+        // integers, pointers and function values (the last two zero
+        // until the program stores them: a table of handlers)
         let bits = match elem {
             Type::Int { bits, .. } if bits <= 64 => bits as u32,
-            t => return Err(self.err(format!("data elements must be integers of at most 64 bits, not {}", t.name()))),
+            Type::Ptr | Type::Fn(_) => 64,
+            t => return Err(self.err(format!("data elements must be integers of at most 64 bits, pointers or function values, not {}", self.tyname_of(t)))),
         };
+        let elem_name = self.tyname_of(elem);
         let size = bits.div_ceil(8).next_power_of_two() as usize;
         let mut bytes = Vec::new();
         let mut n = 0usize;
@@ -2139,7 +2146,7 @@ impl Parser {
             None if n == 0 => return Err(self.err(format!("data '{}' needs a size or an initializer", name))),
             _ => {}
         }
-        self.data.push(DataDef { name, elem, count: n, bytes });
+        self.data.push(DataDef { name, elem, elem_name, count: n, bytes });
         Ok(())
     }
 

@@ -138,7 +138,17 @@ fn main() -> ExitCode {
         }
         Some("boot") if args.len() >= 2 => {
             let target = if args.iter().any(|a| a == "arm") { "arm64" } else { "riscv64" };
-            match suite::boot(&args[1], target, level, policy) {
+            // piped input goes to the machine's serial port; a terminal
+            // is handed to it as is
+            use std::io::{IsTerminal, Read};
+            let piped = if std::io::stdin().is_terminal() {
+                None
+            } else {
+                let mut bytes = Vec::new();
+                let _ = std::io::stdin().read_to_end(&mut bytes);
+                Some(bytes)
+            };
+            match suite::boot(&args[1], target, level, policy, piped.as_deref()) {
                 Ok(out) => {
                     print!("{}", out);
                     ExitCode::SUCCESS

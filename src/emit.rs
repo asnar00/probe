@@ -481,12 +481,35 @@ pub fn compile(module: &Module, enc: &Encoder) -> Result<Compiled, String> {
 }
 
 pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Result<Compiled, String> {
+    compile_image(module, enc, platform, 0)
+}
+
+/// the trap handler's name: `probe boot` installs it (see ssa.md)
+pub const TRAP: &str = "__trap";
+/// an arm64 vector table: 16 entries of 32 instructions, 2K-aligned
+const VECTOR_ENTRY: usize = 0x80;
+const VECTOR_TABLE: usize = 16 * VECTOR_ENTRY;
+
+/// Compile a module whose code will sit at byte `origin` of its image
+/// (after a boot preamble): `__trap` is preceded by its vector table,
+/// which must be 2K-aligned in the image, every entry a branch to it.
+pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin: usize) -> Result<Compiled, String> {
     let natives = platform.natives(module);
     let mut code: Vec<u8> = Vec::new();
     let mut funcs = HashMap::new();
     let mut call_fixups: Vec<Fixup> = Vec::new();
 
     for func in &module.funcs {
+        if func.name == TRAP {
+            while (origin + code.len()) % VECTOR_TABLE != 0 {
+                code.push(0);
+            }
+            for k in 0..16 {
+                let delta = (VECTOR_TABLE - k * VECTOR_ENTRY) as i64;
+                code.extend_from_slice(&enc.encode("b #{i -134217728..134217724 /4}", &[delta])?.to_le_bytes());
+                code.resize(code.len() + VECTOR_ENTRY - 4, 0);
+            }
+        }
         funcs.insert(func.name.clone(), code.len());
         compile_function(func, enc, &natives, &mut code, &mut call_fixups)
             .map_err(|e| format!("{}: {}", func.name, e))?;
@@ -528,9 +551,17 @@ struct FnEmit<'a> {
     /// per value: the platform's float register class (`s`/`d`), if any
     classes: Vec<Option<String>>,
     spill_base: i64,
+    /// a trap handler: the caller-saved registers of the code it
+    /// interrupted are kept here (x0..x18 in pairs) and it leaves by eret
+    trap: Option<i64>,
     block_offsets: Vec<Option<usize>>,
     fixups: Vec<Fixup>,
 }
+
+/// the caller-saved registers a trap handler preserves, in pairs; x30
+/// is in the frame's fp/lr pair already
+const TRAP_SAVED: &[i64] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
+const TRAP_AREA: i64 = 160;
 
 impl FnEmit<'_> {
     fn emit(&mut self, template: &str, values: &[i64]) -> Result<usize, String> {
@@ -953,9 +984,20 @@ impl FnEmit<'_> {
                 _ => unreachable!(),
             }
         }
+        if let Some(base) = self.trap {
+            // the result is in x0; everything else goes back as it was
+            for (k, pair) in TRAP_SAVED.chunks(2).enumerate() {
+                match pair {
+                    [_, b] if k == 0 => self.emit(LDR_SP, &[*b, base + 8])?,
+                    [a, b] => self.emit("ldp {x}, {x}, [sp, #{i -512..504 /8}]", &[*a, *b, base + 16 * k as i64])?,
+                    [a] => self.emit(LDR_SP, &[*a, base + 16 * k as i64])?,
+                    _ => unreachable!(),
+                };
+            }
+        }
         self.emit("ldp {x}, {x}, [sp, #{i -512..504 /8}]", &[29, 30, 0])?;
         self.emit("add sp, sp, #{i 0..4095}", &[self.frame])?;
-        self.emit("ret", &[])?;
+        self.emit(if self.trap.is_some() { "eret" } else { "ret" }, &[])?;
         Ok(())
     }
 }
@@ -1015,7 +1057,8 @@ fn compile_function(
     let class_idx: Vec<usize> = classes.iter().map(|c| c.is_some() as usize).collect();
     let alloc = crate::regalloc::allocate_classes(func, &class_idx, &[REG_POOL, F_POOL]);
     let nsaved = alloc.used_regs.len() as i64 + alloc.used_by_class[1].len() as i64;
-    let spill_base = 16 + 8 * nsaved;
+    let trap = (func.name == TRAP).then_some(16 + 8 * nsaved);
+    let spill_base = 16 + 8 * nsaved + if trap.is_some() { TRAP_AREA } else { 0 };
     let frame = (spill_base + 8 * alloc.nslots as i64 + 15) & !15;
     if frame > 4095 {
         return Err("function needs too large a frame for v0".into());
@@ -1033,6 +1076,7 @@ fn compile_function(
         alloc: &alloc,
         classes,
         spill_base,
+        trap,
         block_offsets: vec![None; func.blocks.len()],
         fixups: Vec::new(),
     };
@@ -1055,6 +1099,15 @@ fn compile_function(
     let fbase = 16 + 8 * alloc.used_regs.len() as i64;
     for (k, &fr) in alloc.used_by_class[1].iter().enumerate() {
         e.emit(STR_D_SP, &[fr, fbase + 8 * k as i64])?;
+    }
+    if let Some(base) = trap {
+        for (k, pair) in TRAP_SAVED.chunks(2).enumerate() {
+            match pair {
+                [a, b] => e.emit("stp {x}, {x}, [sp, #{i -512..504 /8}]", &[*a, *b, base + 16 * k as i64])?,
+                [a] => e.emit(STR_SP, &[*a, base + 16 * k as i64])?,
+                _ => unreachable!(),
+            };
+        }
     }
     for (i, &p) in func.params.iter().enumerate() {
         e.value_from(p, i as i64)?;
@@ -1349,19 +1402,28 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             // the call, each operand in its own file
             let natives: &Natives = e.natives;
             let native = natives.get(callee).unwrap();
-            let Some(&dst) = dsts.first() else {
+            let dst = dsts.first().copied();
+            if dst.is_none() && native.ret_bits != 0 {
                 return Ok(()); // result unused: nothing to compute
-            };
+            }
             let mut regs = Vec::new();
             for (j, &a) in args.iter().enumerate() {
                 regs.push(if native.arg_class[j].is_some() { e.src_freg(a, 16 + j as i64)? } else { e.src_reg(a, 9 + j as i64)? });
             }
             let ret_f = native.ret_class.is_some();
-            let rd = if ret_f { e.dst_freg(dst, 19) } else { e.dst_reg(dst, 9) };
+            let rd = match dst {
+                Some(d) if ret_f => e.dst_freg(d, 19),
+                Some(d) => e.dst_reg(d, 9),
+                None => 9,
+            };
             for (t, v) in rule_seq(e.enc, native, rd, &regs)? {
                 e.emit(t, &v)?;
             }
-            if ret_f { e.finish_f(dst, rd) } else { e.finish(dst, rd) }
+            match dst {
+                Some(d) if ret_f => e.finish_f(d, rd),
+                Some(d) => e.finish(d, rd),
+                None => Ok(()),
+            }
         }
         Inst::FnAddr { dst, name } => {
             // the function's entry, pc-relative like a data item's
