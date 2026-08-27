@@ -126,6 +126,11 @@ printer. In outline:
   `type rgb = pack { r: u5, g: u6, b: u5 }` — nestable and storable.
   A pack is its bit pattern.
 
+- **Typed pointers**: `ptr(T)` and `ptr(array(f32, 512, 512))` — an
+  address that knows what it points at, so `load g, i, j` takes
+  indices and checks the element; `ptr` stays bytes. Arrays with a
+  shape are memory types, in `data`, `scratch` or behind a pointer.
+
 - **Vectors**: `f32x4`, `i32x8`, `floatx4` — N lanes of a type, a
   struct of numbered lanes; `add`, `cmp.*`, `conv`, `sqrt` on a vector
   work lane by lane, defined by the IR itself the way wide integers
@@ -399,8 +404,9 @@ are checked in, so the backends and suite work without re-learning.
 
 ## Status
 
-Integers to 256 bits, packs, structs, vectors, parametric types and
-generic functions, function values; floats, fixed point, unit fractions, rationals, time and
+Integers to 256 bits, packs, structs, vectors, typed pointers and
+shaped arrays, parametric types and generic functions, function
+values; floats, fixed point, unit fractions, rationals, time and
 decimals as libraries, with hardware substituted where a platform has
 it; three backends and their variants; four bootable kernels — hello
 world, an echo with system calls, a clock on the timer interrupt, two

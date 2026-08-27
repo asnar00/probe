@@ -32,6 +32,15 @@ pub enum Type {
     /// function's address (its table index on wasm); `addr f` makes one
     /// and calling it is an indirect call
     Fn(u32),
+    /// a typed pointer `ptr(T)`: an address like `ptr`, with the type of
+    /// what it points at (`pointee` set) — a scalar, a vector, a struct,
+    /// or an array with a shape — so that `load p, i, j` knows its step
+    /// and its result. Indexed accesses are lowered at parse time to the
+    /// untyped forms; no backend meets one
+    TPtr(u32),
+    /// an array `array(T, W, H, ...)`: a memory type, never a value —
+    /// what a typed pointer points at, or a `data` item's type
+    Array(u32),
     /// abstract integers: resolved to a concrete width by the target's
     /// replacement policy before verification (see `resolve_types`)
     AInt,
@@ -61,6 +70,8 @@ impl Type {
             Type::Pack(i) => format!("#{}", i),
             Type::Struct(i) => format!("struct#{}", i),
             Type::Fn(i) => format!("fn#{}", i),
+            Type::TPtr(i) => format!("ptr#{}", i),
+            Type::Array(i) => format!("array#{}", i),
             Type::AInt => "int".into(),
             Type::AUInt => "uint".into(),
         }
@@ -111,6 +122,11 @@ impl Type {
         matches!(self, Type::Fn(_))
     }
 
+    /// an address: `ptr`, or a typed pointer
+    pub fn is_ptr(self) -> bool {
+        matches!(self, Type::Ptr | Type::TPtr(_))
+    }
+
     pub fn is_abstract(self) -> bool {
         matches!(self, Type::AInt | Type::AUInt)
     }
@@ -119,7 +135,7 @@ impl Type {
     pub fn int_bits(self) -> Option<u32> {
         match self {
             Type::Int { bits, .. } => Some(bits as u32),
-            Type::Ptr | Type::Fn(_) => Some(64),
+            Type::Ptr | Type::Fn(_) | Type::TPtr(_) => Some(64),
             _ => None,
         }
     }
@@ -148,6 +164,10 @@ pub struct PackDef {
     /// a vector `TxN`: a struct of N lanes of one type, named "0".."N-1";
     /// 0 for anything else. Arithmetic on it is lane by lane
     pub lanes: u32,
+    /// a typed pointer: what it points at
+    pub pointee: Option<Type>,
+    /// an array: its element type and shape, innermost dimension first
+    pub elem: Option<(Type, Vec<u32>)>,
 }
 
 impl PackDef {
@@ -256,6 +276,10 @@ pub enum TypeExpr {
     Fn(Vec<TypeExpr>, Vec<TypeExpr>),
     /// `TxN`: N lanes of T
     Vector(Box<TypeExpr>, IntExpr),
+    /// `ptr(T)`: a typed pointer
+    TPtr(Box<TypeExpr>),
+    /// `array(T, W, H, ...)`: an array with a shape
+    Array(Box<TypeExpr>, Vec<IntExpr>),
 }
 
 impl fmt::Display for TypeExpr {
@@ -278,6 +302,11 @@ impl fmt::Display for TypeExpr {
                 write!(f, "struct {{ {} }}", fs.join(", "))
             }
             TypeExpr::Vector(inner, n) => write!(f, "{}x{}", inner, n),
+            TypeExpr::TPtr(inner) => write!(f, "ptr({})", inner),
+            TypeExpr::Array(inner, dims) => {
+                let ds: Vec<String> = dims.iter().map(|d| d.to_string()).collect();
+                write!(f, "array({}, {})", inner, ds.join(", "))
+            }
             TypeExpr::Fn(params, rets) => {
                 let ps: Vec<String> = params.iter().map(|t| t.to_string()).collect();
                 write!(f, "fn({})", ps.join(", "))?;
@@ -537,7 +566,7 @@ impl fmt::Display for TypeDef {
 /// Bit width of a type given the pack table (abstract types have none).
 pub fn type_width(ty: Type, packs: &[PackDef]) -> Option<u32> {
     match ty {
-        Type::Pack(i) | Type::Struct(i) => packs.get(i as usize).map(|p| p.width),
+        Type::Pack(i) | Type::Struct(i) | Type::Array(i) => packs.get(i as usize).map(|p| p.width),
         t => t.int_bits(),
     }
 }
@@ -845,6 +874,15 @@ impl Function {
         }
     }
 
+    /// what a typed pointer points at
+    #[allow(dead_code)]
+    pub fn pointee(&self, ty: Type) -> Option<Type> {
+        match ty {
+            Type::TPtr(i) => self.packs.get(i as usize).and_then(|p| p.pointee),
+            _ => None,
+        }
+    }
+
     /// the (parameter types, return types) of a function type
     pub fn sig(&self, ty: Type) -> Option<&(Vec<Type>, Vec<Type>)> {
         match ty {
@@ -856,7 +894,7 @@ impl Function {
     /// the type's spelling with pack names resolved
     pub fn tyname(&self, ty: Type) -> String {
         match ty {
-            Type::Pack(i) | Type::Struct(i) | Type::Fn(i) => match self.packs.get(i as usize) {
+            Type::Pack(i) | Type::Struct(i) | Type::Fn(i) | Type::TPtr(i) | Type::Array(i) => match self.packs.get(i as usize) {
                 Some(p) => p.name.clone(),
                 None => ty.name(),
             },
@@ -873,8 +911,9 @@ impl Function {
         match ty {
             Type::Int { signed: true, bits } => Repr::S(bits as u32),
             Type::Int { signed: false, bits } => Repr::U(bits as u32),
-            Type::Ptr | Type::Fn(_) => Repr::U(64),
+            Type::Ptr | Type::Fn(_) | Type::TPtr(_) => Repr::U(64),
             Type::Pack(_) => Repr::U(self.width(ty).unwrap_or(64)),
+            Type::Array(_) => unreachable!("arrays are memory types, never values"),
             Type::Struct(_) => unreachable!("structs are dissolved into fields before use"),
             Type::AInt | Type::AUInt => unreachable!("abstract types are resolved before use"),
         }
@@ -895,6 +934,8 @@ impl Function {
 pub struct DataDef {
     pub name: String,
     pub elem: Type,
+    /// the shape, innermost first; one dimension unless declared with more
+    pub dims: Vec<u32>,
     /// the element type as written, for printing (a function type's
     /// name lives in the pack table)
     pub elem_name: String,
@@ -2039,7 +2080,7 @@ impl Parser {
             }
         };
         match expr {
-            TypeExpr::Fn(..) => false, // generics do not range over function types
+            TypeExpr::Fn(..) | TypeExpr::TPtr(..) | TypeExpr::Array(..) => false, // generics do not range over these
             TypeExpr::Vector(inner, n) => {
                 let Type::Struct(i) = ty else {
                     return false;
@@ -2110,32 +2151,26 @@ impl Parser {
         }
         let mut elem = Type::int(false, 8);
         let mut count: Option<usize> = None;
+        let mut dims: Vec<u32> = Vec::new();
         if self.eat(&Tok::Colon) {
-            let kw = self.expect_ident()?;
-            if kw != "array" {
-                self.pos -= 1;
-                return Err(self.err(format!("data takes an array type, not {}", kw)));
-            }
-            self.expect(Tok::LParen)?;
-            let (te, next) = self.type_expr_at(self.pos, &[])?;
-            self.pos = next;
-            elem = self.instantiate(&te, &[], 0).map_err(|m| self.err(m))?;
-            self.expect(Tok::Comma)?;
-            match self.next()? {
-                Tok::Int(n) if n > 0 => count = Some(n as usize),
-                t => {
-                    self.pos -= 1;
-                    return Err(self.err(format!("array wants a positive count, not {}", t)));
-                }
-            }
-            self.expect(Tok::RParen)?;
+            let at = self.pos;
+            let ty = self.expect_type()?;
+            let Type::Array(i) = ty else {
+                self.pos = at;
+                return Err(self.err(format!("data takes an array type, not {}", self.tyname_of(ty))));
+            };
+            let (e, ds) = self.packs[i as usize].elem.clone().unwrap();
+            elem = e;
+            dims = ds;
+            count = Some(dims.iter().map(|&d| d as usize).product());
         }
         // integers, pointers and function values (the last two zero
         // until the program stores them: a table of handlers)
         let bits = match elem {
             Type::Int { bits, .. } if bits <= 64 => bits as u32,
-            Type::Ptr | Type::Fn(_) => 64,
-            t => return Err(self.err(format!("data elements must be integers of at most 64 bits, pointers or function values, not {}", self.tyname_of(t)))),
+            Type::Ptr | Type::Fn(_) | Type::TPtr(_) => 64,
+            Type::Pack(i) | Type::Struct(i) => self.packs[i as usize].width,
+            t => return Err(self.err(format!("data elements must be integers, packs, vectors, pointers or function values, not {}", self.tyname_of(t)))),
         };
         let elem_name = self.tyname_of(elem);
         let size = bits.div_ceil(8).next_power_of_two() as usize;
@@ -2190,7 +2225,10 @@ impl Parser {
             None if n == 0 => return Err(self.err(format!("data '{}' needs a size or an initializer", name))),
             _ => {}
         }
-        self.data.push(DataDef { name, elem, elem_name, count: n, bytes });
+        if dims.is_empty() {
+            dims = vec![n as u32];
+        }
+        self.data.push(DataDef { name, elem, dims, elem_name, count: n, bytes });
         Ok(())
     }
 
@@ -2342,6 +2380,35 @@ impl Parser {
                 }
             }
             return Ok((TypeExpr::Fn(ptys, rets), j));
+        }
+        // ptr(T): a typed pointer; array(T, W, H, ...): a shape
+        if (name == "ptr" || name == "array") && at(i + 1) == Some(&Tok::LParen) {
+            let (inner, mut j) = self.type_expr_at(i + 2, params)?;
+            if name == "ptr" {
+                if at(j) != Some(&Tok::RParen) {
+                    return Err(err("expected ')' after the pointer's type".into()));
+                }
+                return Ok((TypeExpr::TPtr(Box::new(inner)), j + 1));
+            }
+            let mut dims = Vec::new();
+            loop {
+                match at(j) {
+                    Some(Tok::Comma) => {
+                        let (e, next) = self.int_expr_at(j + 1, params)?;
+                        dims.push(e);
+                        j = next;
+                    }
+                    Some(Tok::RParen) => {
+                        j += 1;
+                        break;
+                    }
+                    _ => return Err(err("expected ',' or ')' in an array type".into())),
+                }
+            }
+            if dims.is_empty() {
+                return Err(err("an array type needs at least one dimension: array(T, N)".into()));
+            }
+            return Ok((TypeExpr::Array(Box::new(inner), dims), j));
         }
         // name, name(args), i(expr), u(expr)
         if at(i + 1) == Some(&Tok::LParen) {
@@ -2670,6 +2737,8 @@ impl Parser {
                     size: 0,
                     sig: None,
                     lanes: 0,
+                    pointee: None,
+                    elem: None,
                 });
                 Ok(Type::Pack(id))
             }
@@ -2718,8 +2787,47 @@ impl Parser {
                     size,
                     sig: None,
                     lanes: 0,
+                    pointee: None,
+                    elem: None,
                 });
                 Ok(Type::Struct(id))
+            }
+            TypeExpr::TPtr(inner) => {
+                let t0 = self.instantiate(inner, env, depth + 1)?;
+                let t = self.policy.resolve(t0);
+                if let Some(i) = self.packs.iter().position(|p| p.pointee == Some(t)) {
+                    return Ok(Type::TPtr(i as u32));
+                }
+                let id = self.packs.len() as u32;
+                let name = format!("ptr({})", self.tyname_of(t));
+                self.packs.push(PackDef { name, fields: Vec::new(), offsets: Vec::new(), width: 64, origin: None, aggregate: false, size: 8, sig: None, lanes: 0, pointee: Some(t), elem: None });
+                Ok(Type::TPtr(id))
+            }
+            TypeExpr::Array(inner, dims) => {
+                let t0 = self.instantiate(inner, env, depth + 1)?;
+                let t = self.policy.resolve(t0);
+                let mut ds = Vec::new();
+                for d in dims {
+                    let n = d.eval(env)?;
+                    if n < 1 || n > u32::MAX as i64 {
+                        return Err(format!("{} has a dimension of {}; dimensions are positive", expr, n));
+                    }
+                    ds.push(n as u32);
+                }
+                let (size, _) = self.layout_of(t).ok_or_else(|| format!("an array cannot be of {}", self.tyname_of(t)))?;
+                let count: u64 = ds.iter().map(|&d| d as u64).product();
+                if size as u64 * count > u32::MAX as u64 / 8 {
+                    return Err(format!("{} is too large", expr));
+                }
+                if let Some(i) = self.packs.iter().position(|p| p.elem.as_ref() == Some(&(t, ds.clone()))) {
+                    return Ok(Type::Array(i as u32));
+                }
+                let id = self.packs.len() as u32;
+                let dsn: Vec<String> = ds.iter().map(|d| d.to_string()).collect();
+                let name = format!("array({}, {})", self.tyname_of(t), dsn.join(", "));
+                let total = size * count as u32;
+                self.packs.push(PackDef { name, fields: Vec::new(), offsets: Vec::new(), width: total * 8, origin: None, aggregate: false, size: total, sig: None, lanes: 0, pointee: None, elem: Some((t, ds)) });
+                Ok(Type::Array(id))
             }
             TypeExpr::Vector(inner, n) => {
                 // N lanes of one type: a struct of N fields "0".."N-1"
@@ -2760,6 +2868,8 @@ impl Parser {
                     size: size * n as u32,
                     sig: None,
                     lanes: n as u32,
+                    pointee: None,
+                    elem: None,
                 });
                 Ok(Type::Struct(id))
             }
@@ -2804,6 +2914,8 @@ impl Parser {
                     size: 8,
                     sig,
                     lanes: 0,
+                    pointee: None,
+                    elem: None,
                 });
                 Ok(Type::Fn(id))
             }
@@ -2820,7 +2932,13 @@ impl Parser {
                 let size = if b <= 8 { 1 } else if b <= 16 { 2 } else if b <= 32 { 4 } else { 8 * b.div_ceil(64) };
                 Some((size, size.min(8)))
             }
-            Type::Ptr | Type::Fn(_) => Some((8, 8)),
+            Type::Ptr | Type::Fn(_) | Type::TPtr(_) => Some((8, 8)),
+            Type::Array(i) => {
+                let (elem, dims) = self.packs[i as usize].elem.clone()?;
+                let (size, align) = self.layout_of(elem)?;
+                let count: u32 = dims.iter().product();
+                Some((size * count, align))
+            }
             Type::Pack(i) => {
                 let w = self.packs[i as usize].width;
                 let size = if w <= 8 { 1 } else if w <= 16 { 2 } else if w <= 32 { 4 } else { 8 * w.div_ceil(64) };
@@ -2978,7 +3096,7 @@ impl Parser {
 
     fn tyname_of(&self, ty: Type) -> String {
         match ty {
-            Type::Pack(i) | Type::Struct(i) => self.packs[i as usize].name.clone(),
+            Type::Pack(i) | Type::Struct(i) | Type::Fn(i) | Type::TPtr(i) | Type::Array(i) => self.packs[i as usize].name.clone(),
             t => t.name(),
         }
     }
@@ -3372,6 +3490,77 @@ impl Parser {
         }
     }
 
+    /// an i64 multiply the parser needs for an address: the instruction,
+    /// or the library's on a core without a multiplier
+    fn mul_i64(&mut self, dst: ValueId, a: ValueId, b: ValueId) -> Result<Inst, ParseError> {
+        if self.policy.native_mul {
+            Ok(Inst::Bin { op: BinOp::IMul, dst, lhs: a, rhs: b })
+        } else {
+            let callee = self.dispatch("mul", Type::I64, Type::I64)?;
+            Ok(Inst::Call { dsts: vec![dst], callee, args: vec![a, b] })
+        }
+    }
+
+    fn pointee_of(&self, ty: Type) -> Option<Type> {
+        match ty {
+            Type::TPtr(i) => self.packs[i as usize].pointee,
+            _ => None,
+        }
+    }
+
+    /// what a typed pointer's element is, and the shape it is indexed by
+    fn shape_of(&self, ty: Type) -> Option<(Type, Vec<u32>)> {
+        let Type::TPtr(i) = ty else { return None };
+        let pointee = self.packs[i as usize].pointee?;
+        Some(match pointee {
+            Type::Array(j) => self.packs[j as usize].elem.clone().unwrap(),
+            t => (t, Vec::new()),
+        })
+    }
+
+    /// an access through a typed pointer, lowered: `p, i, j` on a
+    /// `ptr(array(T, W, H))` is element i + j*W of T; `p` or `p, i` on a
+    /// `ptr(T)` is T at p, or the i-th T from it. Returns the pointer as
+    /// an untyped ptr (a hidden cast, so the lowered form parses again),
+    /// the index and step for load/store, and the element type
+    fn typed_access(&mut self, scope: &mut FuncScope, p: ValueId, what: &str) -> Result<(ValueId, Option<(ValueId, u32)>, Type), ParseError> {
+        let pty = scope.values[p.0 as usize].ty;
+        let pname = scope.values[p.0 as usize].name.clone();
+        let (elem, dims) = self.shape_of(pty).ok_or_else(|| self.err(format!("{}: {} is {}, not a typed pointer", what, pname, self.tyname_of(pty))))?;
+        let mut idx: Vec<ValueId> = Vec::new();
+        while self.eat(&Tok::Comma) {
+            idx.push(self.parse_operand(scope, Some(Type::I64))?);
+        }
+        if !dims.is_empty() && idx.len() != dims.len() {
+            return Err(self.err(format!("{}: {} is {}, which takes {} index(es), not {}", what, pname, self.tyname_of(pty), dims.len(), idx.len())));
+        }
+        if dims.is_empty() && idx.len() > 1 {
+            return Err(self.err(format!("{}: {} is {}, which takes one index at most", what, pname, self.tyname_of(pty))));
+        }
+        for &i in &idx {
+            if scope.values[i.0 as usize].ty != Type::I64 {
+                return Err(self.err(format!("{}: an index is an i64, not {}", what, self.tyname_of(scope.values[i.0 as usize].ty))));
+            }
+        }
+        let (size, _) = self.layout_of(elem).ok_or_else(|| self.err(format!("{}: cannot access a {}", what, self.tyname_of(elem))))?;
+        // k = i0 + i1 * W0 + i2 * W0 * W1 + ...
+        let mut k: Option<ValueId> = idx.first().copied();
+        let mut stride: i64 = 1;
+        for d in 1..idx.len() {
+            stride *= dims[d - 1] as i64;
+            let st = self.make_literal(scope, &Lit::Int(stride), Type::I64).map_err(|m| self.err(m))?;
+            let term = scope.temp(Type::I64, format!("{}_i{}", pname, d));
+            let m = self.mul_i64(term, idx[d], st)?;
+            self.consts.push(m);
+            let sum = scope.temp(Type::I64, format!("{}_k{}", pname, d));
+            self.consts.push(Inst::Bin { op: BinOp::IAdd, dst: sum, lhs: k.unwrap(), rhs: term });
+            k = Some(sum);
+        }
+        let pu = scope.temp(Type::Ptr, format!("{}_u", pname));
+        self.consts.push(Inst::Cast { op: CastOp::Cast, dst: pu, src: p });
+        Ok((pu, k.map(|k| (k, size)), elem))
+    }
+
     /// (lane type, lane count) of a vector type
     fn vector_of(&self, ty: Type) -> Option<(Type, u32)> {
         match ty {
@@ -3616,8 +3805,35 @@ impl Parser {
             }
             "load" => {
                 let addr = self.expect_value(scope)?;
+                if let Type::TPtr(_) = scope.values[addr.0 as usize].ty {
+                    let (pu, index, elem) = self.typed_access(scope, addr, "load")?;
+                    let dty = scope.values[dst.0 as usize].ty;
+                    if dty != elem {
+                        return Err(self.err(format!("load: {} points at {}, but {} is {}", scope.values[addr.0 as usize].name, self.tyname_of(elem), scope.values[dst.0 as usize].name, self.tyname_of(dty))));
+                    }
+                    return Ok(Inst::Load { dst, addr: pu, off: 0, index });
+                }
                 let (off, index) = self.parse_addressing(scope)?;
                 Ok(Inst::Load { dst, addr, off, index })
+            }
+            "index" => {
+                // the address of an element: a ptr(T) from a ptr(array(T, ...))
+                let p = self.expect_value(scope)?;
+                let pname = scope.values[p.0 as usize].name.clone();
+                let (pu, index, elem) = self.typed_access(scope, p, "index")?;
+                let dty = scope.values[dst.0 as usize].ty;
+                if self.pointee_of(dty) != Some(elem) {
+                    return Err(self.err(format!("index: {} gives a ptr({}), but {} is {}", pname, self.tyname_of(elem), scope.values[dst.0 as usize].name, self.tyname_of(dty))));
+                }
+                let Some((k, size)) = index else {
+                    return Err(self.err("index takes at least one index".to_string()));
+                };
+                let sz = self.make_literal(scope, &Lit::Int(size as i64), Type::I64).map_err(|m| self.err(m))?;
+                let bytes = scope.temp(Type::I64, format!("{}_b", pname));
+                let m = self.mul_i64(bytes, k, sz)?;
+                self.consts.push(m);
+                let _ = pu;
+                Ok(Inst::PtrAdd { dst, base: p, off: bytes })
             }
             "splat" => {
                 let dty = scope.values[dst.0 as usize].ty;
@@ -3627,7 +3843,21 @@ impl Parser {
             }
             "addr" => {
                 let name = self.expect_ident()?;
-                if self.data.iter().any(|d| d.name == name) {
+                if let Some(d) = self.data.iter().find(|d| d.name == name) {
+                    // a typed pointer must point at the item's type: its
+                    // array, or its element
+                    let dty = scope.values[dst.0 as usize].ty;
+                    if let Some(pointee) = self.pointee_of(dty) {
+                        let (delem, ddims) = (d.elem, d.dims.clone());
+                        let ok = match pointee {
+                            Type::Array(j) => self.packs[j as usize].elem.as_ref() == Some(&(delem, ddims.clone())),
+                            t => t == delem,
+                        };
+                        if !ok {
+                            self.pos -= 1;
+                            return Err(self.err(format!("addr {}: the data is array({}, {}), not what {} points at", name, self.tyname_of(delem), ddims.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(", "), self.tyname_of(dty))));
+                        }
+                    }
                     return Ok(Inst::Addr { dst, name });
                 }
                 // a function: the value has its function type
@@ -3638,6 +3868,14 @@ impl Parser {
                 Err(self.err(format!("no data or function named '{}'", name)))
             }
             "scratch" => {
+                // `p: ptr(T) = scratch` sizes itself from T
+                let dty = scope.values[dst.0 as usize].ty;
+                if let Some(pointee) = self.pointee_of(dty) {
+                    if !matches!(self.peek(), Some(Tok::Int(_))) {
+                        let (size, _) = self.layout_of(pointee).ok_or_else(|| self.err(format!("scratch: no layout for {}", self.tyname_of(pointee))))?;
+                        return Ok(Inst::Scratch { dst, bytes: size.max(1) });
+                    }
+                }
                 let bytes = match self.next()? {
                     Tok::Int(n) if n > 0 && n <= 1 << 20 => n as u32,
                     t => {
@@ -3778,6 +4016,14 @@ impl Parser {
                 let val = self.expect_value(scope)?;
                 self.expect(Tok::Comma)?;
                 let addr = self.expect_value(scope)?;
+                if let Type::TPtr(_) = scope.values[addr.0 as usize].ty {
+                    let (pu, index, elem) = self.typed_access(scope, addr, "store")?;
+                    let vty = scope.values[val.0 as usize].ty;
+                    if vty != elem {
+                        return Err(self.err(format!("store: {} points at {}, but {} is {}", scope.values[addr.0 as usize].name, self.tyname_of(elem), scope.values[val.0 as usize].name, self.tyname_of(vty))));
+                    }
+                    return Ok(Inst::Store { val, addr: pu, off: 0, index });
+                }
                 let (off, index) = self.parse_addressing(scope)?;
                 Ok(Inst::Store { val, addr, off, index })
             }
@@ -4594,6 +4840,15 @@ fn verify_function(module: &Module, func: &Function, errs: &mut Vec<String>) {
         }
     }
 
+    // an array is a memory type: what a typed pointer points at, never
+    // a value of its own
+    for v in &func.values {
+        if let Type::Array(_) = v.ty {
+            errs.push(ctx(format!("value '{}' has array type {}; arrays live in memory, behind a ptr({})", v.name, func.tyname(v.ty), func.tyname(v.ty))));
+            return;
+        }
+    }
+
     // rule 1: every value defined exactly once
     let mut defined = vec![0u32; func.values.len()];
     let mut define = |id: ValueId, errs: &mut Vec<String>| {
@@ -4746,7 +5001,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
 
     let tn = |t: Type| func.tyname(t);
     let is_memory = |t: Type| {
-        t == Type::Ptr
+        t.is_ptr()
             || t.is_struct()
             || t.is_fn()
             || ((t.is_int() || t.is_pack())
@@ -4765,7 +5020,8 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 }
                 // ptr constants are raw addresses (MMIO, fixed buffers) —
                 // meaningful wherever ptr is an address-space index
-                Type::Int { .. } | Type::Ptr => true,
+                Type::Int { .. } | Type::Ptr | Type::TPtr(_) => true,
+                Type::Array(_) => false,
                 // a pack literal is its bit pattern
                 Type::Struct(_) | Type::Fn(_) => false, // a struct or a function has no literal
                 Type::Pack(_) => match func.width(ty) {
@@ -4814,7 +5070,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     tn(td)
                 )));
             }
-            if tl != tr || !(tl.is_int() || tl == Type::Ptr) {
+            if tl != tr || !(tl.is_int() || tl.is_ptr()) {
                 errs.push(ctx(format!(
                     "cmp.{}: operands must share an integer or ptr type; got {} and {}",
                     cond.name(),
@@ -4830,8 +5086,8 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 CastOp::Conv => td.is_int() && ts.is_int(),
                 // a function value casts like a ptr: to its address
                 CastOp::Cast => {
-                    (td.is_int() || td.is_pack() || td == Type::Ptr || td.is_fn())
-                        && (ts.is_int() || ts.is_pack() || ts == Type::Ptr || ts.is_fn())
+                    (td.is_int() || td.is_pack() || td.is_ptr() || td.is_fn())
+                        && (ts.is_int() || ts.is_pack() || ts.is_ptr() || ts.is_fn())
                         && wd == ws
                 }
             };
@@ -4951,7 +5207,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             }
         }
         Inst::Load { dst, addr, index, .. } => {
-            if func.ty(*addr) != Type::Ptr {
+            if !func.ty(*addr).is_ptr() {
                 errs.push(ctx(format!("load address {} must be ptr", name(*addr))));
             }
             if let Some((i, _)) = index {
@@ -4967,7 +5223,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             }
         }
         Inst::Store { val, addr, index, .. } => {
-            if func.ty(*addr) != Type::Ptr {
+            if !func.ty(*addr).is_ptr() {
                 errs.push(ctx(format!("store address {} must be ptr", name(*addr))));
             }
             if let Some((i, _)) = index {
@@ -4983,24 +5239,24 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
             }
         }
         Inst::Addr { dst, .. } => {
-            if func.ty(*dst) != Type::Ptr {
+            if !func.ty(*dst).is_ptr() {
                 errs.push(ctx(format!("addr gives a ptr, not {}", tn(func.ty(*dst)))));
             }
         }
         Inst::Scratch { dst, .. } => {
-            if func.ty(*dst) != Type::Ptr {
+            if !func.ty(*dst).is_ptr() {
                 errs.push(ctx(format!("scratch gives a ptr, not {}", tn(func.ty(*dst)))));
             }
         }
         Inst::Platform { dst, .. } => {
             let t = func.ty(*dst);
-            if t != Type::Ptr && !t.is_int() {
+            if !t.is_ptr() && !t.is_int() {
                 errs.push(ctx(format!("a platform constant is a ptr or an integer, not {}", tn(t))));
             }
         }
         Inst::PtrAdd { dst, base, off } => {
-            if func.ty(*dst) != Type::Ptr
-                || func.ty(*base) != Type::Ptr
+            if !func.ty(*dst).is_ptr()
+                || !func.ty(*base).is_ptr()
                 || !matches!(func.ty(*off), Type::I64 | Type::U64)
             {
                 errs.push(ctx(

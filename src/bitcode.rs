@@ -428,7 +428,7 @@ impl Module {
         let mut s = Stream::new();
         // the string table: names of globals and functions
         let mut strtab: Vec<u8> = Vec::new();
-        let mut name_at = |name: &str, strtab: &mut Vec<u8>| -> (u64, u64) {
+        let name_at = |name: &str, strtab: &mut Vec<u8>| -> (u64, u64) {
             let off = strtab.len() as u64;
             strtab.extend_from_slice(name.as_bytes());
             (off, name.len() as u64)

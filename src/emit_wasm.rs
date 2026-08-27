@@ -113,8 +113,9 @@ fn normalize_key(template: &str) -> String {
 /// a value's representation on wasm: as in `Function::repr`, except that
 /// pointers are 32-bit offsets into linear memory
 pub fn wrepr(f: &Function, ty: crate::ssa::Type) -> Repr {
-    // a pointer is a 32-bit offset; a function value a 32-bit table index
-    if ty == crate::ssa::Type::Ptr || ty.is_fn() {
+    // a pointer (typed or not) is a 32-bit offset; a function value a
+    // 32-bit table index
+    if ty.is_ptr() || ty.is_fn() {
         Repr::U(32)
     } else {
         f.repr(ty)

@@ -48,6 +48,8 @@ things we can learn ARM64 encodings for by probing LLVM.
 | `struct { ... }` | fields side by side, never a bit pattern (see *Structs*) |
 | `fn(i64, i64) -> i64`, `fn(ptr)`, `fn() -> (i64, i64)` | a function value: the signature is the type (see *Calls*) |
 | `f32x4`, `i32x8`, `u1x4`, `floatx4`, `intxN` | a vector: N lanes of one type, `TxN` (see *Vectors*); `Tx1` is `T` |
+| `ptr(T)`, `ptr(array(f32, 512, 512))` | a typed pointer: an address that knows what it points at (see *Typed pointers and arrays*) |
+| `array(T, W, H, ...)` | an array with a shape — a memory type, never a value: what a typed pointer points at, or a `data` item's type |
 | `i(expr)`, `u(expr)` | an integer whose width is an expression — inside type declarations |
 | `int`, `uint`, `float`, `fixed`, `unit`, `sunit`, `rational`, `scalar` | abstract numbers — resolved to a concrete type by the target's replacement policy (see *Abstract numeric types*) |
 
@@ -285,6 +287,39 @@ interrupt so that nothing allocates in a handler. It is a heap for
 regions, not for objects: those are the rungs — a call's, a frame's,
 an object's, the machine's — and the discipline is that objects live
 in the rungs and the rungs come from the heap.
+
+### Typed pointers and arrays
+
+```
+g: ptr(array(i32, 4, 3)) = cast p    ; a 4-wide, 3-high grid at p
+v: i32 = load g, i, j                ; element (i, j): i + j * 4
+store v, g, i, j
+e: ptr(i32) = index g, i, j          ; the element's own address
+q: ptr(i64) = cast p                 ; a scalar pointer ...
+a: i64 = load q                      ; ... the i64 at it
+b: i64 = load q, i                   ; ... or the i-th i64 from it
+t: ptr(array(f32x4, 8)) = scratch    ; sized by its type
+d: ptr(array(i32, 3, 2)) = addr table
+data table: array(i32, 3, 2) = { 1, 2, 3, 10, 20, 30 }
+```
+
+`ptr` is an address of bytes, and stays that. `ptr(T)` is an address
+that knows it points at a T — a scalar, a vector, a struct, or an
+array `array(T, W, H, ...)` with a shape, innermost dimension first,
+row-major, naturally aligned — so that `load`, `store` and `index`
+take indices instead of a byte offset and a step: as many as the shape
+has dimensions (none or one for a scalar pointee), each an `i64` or a
+literal. The element type is checked against the value loaded or
+stored. An array is a memory type: no value has one; it is what a
+typed pointer points at, what `scratch` sizes itself by when its
+result is typed, and what `data` declares (`addr` gives a `ptr`, or a
+`ptr(...)` to the item's array or its element). A typed pointer casts
+to and from `ptr` and `u64`, compares, and travels like any 64-bit
+value (32 on wasm). A typed access is lowered as it is parsed — the
+shape makes the offset, the element the step, through a hidden cast to
+`ptr` — so no backend meets one and `probe parse` shows the arithmetic.
+Textures and other opaque device resources are not arrays: those will
+be handles with platform operations, when a target has them.
 
 ### Data, and the machine
 

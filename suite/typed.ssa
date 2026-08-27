@@ -1,0 +1,163 @@
+; typed pointers and arrays: `ptr(T)` points at a T, `ptr(array(T, W,
+; H))` at a shape — and `load p, i, j`, `store v, p, i, j`, `index p,
+; i, j` know the step and the element from the type. `ptr` stays
+; untyped bytes. A typed access is lowered as it is parsed: the shape
+; makes the offset, the element makes the step; no backend meets one.
+
+;! sum_row i32[1,2,3,4,5,6,7,8,9,10,11,12] 1 -> 26
+;! transpose_sum i32[1,2,3,4,5,6,7,8,9,10,11,12] -> 78
+;! grid3 -> 32
+;! element_ptr i64[10,20,30,40] 2 -> 30
+;! scratch_typed 7 -> 28
+;! typed_data 2 -> 30
+;! vector_elems -> 60
+;! first_elem i64[5,6,7] -> 5
+;! scalar_indexed i64[5,6,7] 2 -> 7
+
+; a 4 by 3 grid of i32, given as 12 values: row j is elements 4j..4j+3
+fn sum_row(p: ptr, j: i64) -> i32 {
+    g: ptr(array(i32, 4, 3)) = cast p
+    s: i32 = loop(i: i64 = 0, acc: i32 = 0) {
+        done: u1 = cmp.ge i, 4
+        if done {
+            break acc
+        }
+        v: i32 = load g, i, j
+        acc2: i32 = add acc, v
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret s
+}
+
+; every element, by column then row: the sum is the sum
+fn transpose_sum(p: ptr) -> i32 {
+    g: ptr(array(i32, 4, 3)) = cast p
+    s: i32 = loop(i: i64 = 0, acc: i32 = 0) {
+        done: u1 = cmp.ge i, 4
+        if done {
+            break acc
+        }
+        col: i32 = loop(j: i64 = 0, c: i32 = 0) {
+            done2: u1 = cmp.ge j, 3
+            if done2 {
+                break c
+            }
+            v: i32 = load g, i, j
+            c2: i32 = add c, v
+            j2: i64 = add j, 1
+            continue j2, c2
+        }
+        acc2: i32 = add acc, col
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret s
+}
+
+; a 3-D array in scratch, sized by its type: store i + 10j + 100k, read
+; one back
+fn grid3() -> i32 {
+    g: ptr(array(i32, 2, 3, 4)) = scratch
+    loop(k: i64 = 0) {
+        dk: u1 = cmp.ge k, 4
+        if dk {
+            break
+        }
+        loop(j: i64 = 0) {
+            dj: u1 = cmp.ge j, 3
+            if dj {
+                break
+            }
+            loop(i: i64 = 0) {
+                di: u1 = cmp.ge i, 2
+                if di {
+                    break
+                }
+                j10: i64 = mul j, 10
+                k100: i64 = mul k, 100
+                a: i64 = add i, j10
+                b: i64 = add a, k100
+                v: i32 = conv b
+                store v, g, i, j, k
+                i2: i64 = add i, 1
+                continue i2
+            }
+            j2: i64 = add j, 1
+            continue j2
+        }
+        k2: i64 = add k, 1
+        continue k2
+    }
+    ; wait: the loops above have no results; the reads
+    r: i32 = load g, 1, 0, 0
+    r2: i32 = load g, 0, 2, 0
+    r3: i32 = load g, 1, 1, 0
+    s1: i32 = add r, r2
+    s: i32 = add s1, r3
+    ret s
+}
+
+; the address of an element is a typed pointer to it
+fn element_ptr(p: ptr, i: i64) -> i64 {
+    a: ptr(array(i64, 4)) = cast p
+    e: ptr(i64) = index a, i
+    v: i64 = load e
+    ret v
+}
+
+; scratch sized from the type; a scalar pointer indexed
+fn scratch_typed(x: i64) -> i64 {
+    p: ptr(array(i64, 4)) = scratch
+    store x, p, 0
+    y: i64 = mul x, 3
+    store y, p, 3
+    a: i64 = load p, 0
+    b: i64 = load p, 3
+    s: i64 = add a, b
+    ret s
+}
+
+; data with a shape, reached through a typed pointer
+data table: array(i32, 3, 2) = { 1, 2, 3, 10, 20, 30 }
+fn typed_data(i: i64) -> i32 {
+    t: ptr(array(i32, 3, 2)) = addr table
+    v: i32 = load t, i, 1
+    ret v
+}
+
+; an array of vectors: elements are structs, loaded whole
+fn vector_elems() -> i32 {
+    a: ptr(array(i32x4, 2)) = scratch
+    v: i32x4 = pack 1, 2, 3, 4
+    w: i32x4 = pack 10, 20, 30, 40
+    store v, a, 0
+    store w, a, 1
+    x: i32x4 = load a, 1
+    x0: i32, x1: i32, x2: i32, x3: i32 = unpack x
+    s0: i32 = add x0, x1
+    s1: i32 = add x2, x3
+    s: i32 = add s0, s1
+    ; and the first element's second lane, through an element pointer
+    e: ptr(i32x4) = index a, 0
+    y: i32x4 = load e
+    y1: i32 = get y, 1
+    ; s = 100, y1 = 2; return 60: (100 - 40) — the lanes of w less its last
+    t: i32 = sub s, 40
+    u: i32 = sub t, y1
+    r: i32 = add u, 2
+    ret r
+}
+
+; a ptr(T) with no index is the T at it
+fn first_elem(p: ptr) -> i64 {
+    q: ptr(i64) = cast p
+    v: i64 = load q
+    ret v
+}
+; ... and with one index, the i-th T
+fn scalar_indexed(p: ptr, i: i64) -> i64 {
+    q: ptr(i64) = cast p
+    v: i64 = load q, i
+    ret v
+}
