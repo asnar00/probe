@@ -4,3 +4,4 @@
 target riscv64
 base riscv64
 without F, D
+without V

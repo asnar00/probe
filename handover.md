@@ -37,6 +37,7 @@ Two rules that cost time when broken: **never run `probe test air` (or any suite
 - A stack switch must be a real call (`called` on the rule), and a core's own stack must not share a top with its fibres' stacks.
 - Events within qemu's wake latency (~5–12 ms, more under load) merge; timing tests must derive expectations from what the machine printed, not demand exact counts.
 - With the MMU off every access is to device memory and must be aligned to its size: a 128-bit `ldr q` from an 8-aligned address faults, so vectors reach memory by `ld1`/`st1` (aligned to a lane, which is all the IR promises), and a task stack in a `data` array needs the data section 16-aligned *in memory* — measured from the image's origin, since a boot preamble precedes the code. Both hung a machine silently.
+- RVV under qemu wants `-cpu rv64,v=true,vlen=128,elen=64` and `mstatus.VS` set in the preamble (as FS is), or the first vector instruction is an illegal-instruction hang. An instruction that reads the mask `v0` may not write `v0`, which the learner meets as a rejected probe: the seed's `reg vn = v1..v31` is for those destinations, and the emitters renumber (`vmerge.vim {vn}, ...`, value = register − 1).
 
 ## Where things are
 

@@ -677,7 +677,9 @@ fn slot_takes(slot: &str, native: &Native, op: &Operand) -> Option<i64> {
     match op {
         Operand::Arg(_) | Operand::Ret | Operand::Tmp(_) => {
             if let Some(c) = native.class(op) {
-                return (kind == c).then_some(0);
+                // `vn` (v1..v31, the seed's class for a destination that
+                // may not be v0) takes a v operand; the emitter renumbers
+                return (kind == c || (kind == "vn" && c == "v")).then_some(0);
             }
             let bits = native.bits(op);
             match kind {
@@ -791,9 +793,9 @@ mod tests {
         // the variant has no float: no add rule, no classes (the fibre
         // switch, an integer rule, stays)
         assert!(!im.natives(&m).rules.keys().any(|k| k.starts_with("add")) && im.natives(&m).classes.is_empty());
-        // virt (the board's constants), traps, time, M, F, D, fibres,
-        // thread, cores; rv64i keeps all but M, F, D
-        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 9);
+        // virt (the board's constants), traps, time, M, F, D, V, fibres,
+        // thread, cores; rv64i keeps all but M, F, D, V
+        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 10);
         assert_eq!(i.extensions().iter().filter(|(_, present)| *present).count(), 6);
         assert_eq!(i.natives(&m).consts.get("uart"), Some(&0x10000000));
         let nofp = Platform::load_named("arm64-nofp").unwrap();

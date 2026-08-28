@@ -3,11 +3,14 @@
 ; across the encoding; the per-bit learner should handle them unchanged.
 
 triple riscv64
-attr +m,+f,+d
+attr +m,+f,+d,+v
 width 4
 
 reg r = x0..x31
 reg f = f0..f31
+reg v = v0..v31
+; the destination of an instruction that reads the mask v0 may not be v0
+reg vn = v1..v31
 
 inst add {r}, {r}, {r}
 inst sub {r}, {r}, {r}
@@ -138,3 +141,56 @@ inst wfi
 inst ebreak
 ; the address of a data item: auipc's page plus an addi
 inst auipc {r}, {i 0..1048575}
+
+; --- V: 128-bit vectors, four 32-bit lanes (e32, vl 4) or two 64-bit
+; ones (e64, vl 2); every instruction runs under the vtype the rule or
+; the emitter sets just before it (vsetivli). v0 is the mask register;
+; the pool is v8..v15 (saved by the callee, as this compiler has all
+; callees), temporaries v16..v23 ---
+inst vsetivli x0, 4, e32, m1, ta, ma
+inst vsetivli x0, 2, e64, m1, ta, ma
+inst vsetivli x0, 16, e8, m1, ta, ma
+inst vadd.vv {v}, {v}, {v}
+inst vsub.vv {v}, {v}, {v}
+inst vmul.vv {v}, {v}, {v}
+inst vand.vv {v}, {v}, {v}
+inst vor.vv {v}, {v}, {v}
+inst vxor.vv {v}, {v}, {v}
+inst vsll.vv {v}, {v}, {v}
+inst vsra.vv {v}, {v}, {v}
+inst vsrl.vv {v}, {v}, {v}
+inst vfadd.vv {v}, {v}, {v}
+inst vfsub.vv {v}, {v}, {v}
+inst vfmul.vv {v}, {v}, {v}
+inst vfdiv.vv {v}, {v}, {v}
+inst vfsgnjn.vv {v}, {v}, {v}
+inst vfsgnjx.vv {v}, {v}, {v}
+inst vfmacc.vv {v}, {v}, {v}
+inst vfsqrt.v {v}, {v}
+inst vfcvt.f.x.v {v}, {v}
+inst vfcvt.f.xu.v {v}, {v}
+inst vmv1r.v {v}, {v}
+inst vmfeq.vv v0, {v}, {v}
+inst vmfne.vv v0, {v}, {v}
+inst vmflt.vv v0, {v}, {v}
+inst vmfle.vv v0, {v}, {v}
+inst vmseq.vv v0, {v}, {v}
+inst vmsne.vv v0, {v}, {v}
+inst vmslt.vv v0, {v}, {v}
+inst vmsltu.vv v0, {v}, {v}
+inst vmsle.vv v0, {v}, {v}
+inst vmsleu.vv v0, {v}, {v}
+inst vmv.v.i {v}, 0
+inst vmerge.vim {vn}, {v}, 1, v0
+inst vmerge.vvm {vn}, {v}, {v}, v0
+inst vmv.x.s {r}, {v}
+inst vmv.s.x {v}, {r}
+inst vmv.v.x {v}, {r}
+inst vslidedown.vi {v}, {v}, {i 0..3}
+inst vslide1up.vx {v}, {v}, {r}
+inst vle32.v {v}, ({r})
+inst vse32.v {v}, ({r})
+inst vle64.v {v}, ({r})
+inst vse64.v {v}, ({r})
+inst vle8.v {v}, ({r})
+inst vse8.v {v}, ({r})

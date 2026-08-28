@@ -950,7 +950,7 @@ fn gen_driver(
 /// means an infinite loop); returns captured stdout.
 /// a bare-metal riscv64 image: sp = 0x80800000 (mid-RAM), the FPU on,
 /// then fall into the first function
-const RV_PREAMBLE_WORDS: usize = 24;
+const RV_PREAMBLE_WORDS: usize = 25;
 
 pub fn rv_image(compiled: &emit::Compiled, enc: &emit::Encoder) -> Result<Vec<u8>, String> {
     let mut bin = Vec::new();
@@ -961,15 +961,17 @@ pub fn rv_image(compiled: &emit::Compiled, enc: &emit::Encoder) -> Result<Vec<u8
         (SLLI, [2, 2, 8]),
         (ADDI, [2, 2, 0x80]),
         (SLLI, [2, 2, 16]),
-        // enable the FPU (mstatus.FS = initial) for the platform's fadd
+        // enable the FPU and the vector unit (mstatus.FS, .VS = initial)
+        // for the platform's fadd and vfadd
         ("lui {r}, {i 0..1048575}", [5, 0x2, 0]),
+        (ADDI, [5, 5, 0x200]),
         ("csrrs {r}, {i 0..4095}, {r}", [0, 0x300, 5]),
         // every hart runs this; hart 0 goes on into the program, the
         // others park until lib/core.ssa's record for them is in the
         // mailbox (0x80FF0000 + 8 * hart) and msip wakes them: sp and
         // tp from it, then its main with the record in a0
         ("csrr {r}, {i 0..4095}", [6, 0xF14, 0]),
-        ("beq {r}, {r}, {i -4096..4094 /2}", [6, 0, 17 * 4]), // hart 0: to the program (word 24)
+        ("beq {r}, {r}, {i -4096..4094 /2}", [6, 0, 17 * 4]), // hart 0: to the program (word 25)
         ("addi {r}, {r}, {i -2048..2047}", [7, 0, 0x80]),
         (SLLI, [7, 7, 24]),
         ("lui {r}, {i 0..1048575}", [8, 0xFF0, 0]),
@@ -1027,7 +1029,7 @@ pub fn qemu_command(target: &str, bin_path: &std::path::Path) -> Command {
     let mut cmd;
     if target == "riscv64" {
         cmd = Command::new("qemu-system-riscv64");
-        cmd.args(["-machine", "virt", "-bios", "none", "-nographic", "-m", "128M", "-smp", "4"])
+        cmd.args(["-machine", "virt", "-cpu", "rv64,v=true,vlen=128,elen=64", "-bios", "none", "-nographic", "-m", "128M", "-smp", "4"])
             .arg("-device")
             .arg(format!("loader,file={},addr=0x80000000", bin_path.display()));
     } else {
@@ -1830,12 +1832,13 @@ pub(crate) mod tests {
         }
     }
 
-    /// the suite on the RISC-V cores without F/D and without M: floats,
-    /// multiplies and divides all in the library, results unchanged
+    /// the suite on the RISC-V cores without V, without F/D, and without
+    /// M: vectors lane by lane, floats, multiplies and divides all in the
+    /// library, results unchanged
     #[test]
     fn regression_suite_riscv_variants() {
         let _turn = boot_turn(); // a machine at a time: the boot tests are timed
-        for variant in ["rv64im", "rv64i"] {
+        for variant in ["riscv64-nov", "rv64im", "rv64i"] {
             crate::platform::select(variant);
             let report = super::run_dir_at("suite", super::Backend::Riscv, crate::opt::MAX_LEVEL, &|p| p).expect("suite runs");
             assert_eq!(report.failed, 0, "{}:\n{}", variant, report.log);

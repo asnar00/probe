@@ -7,8 +7,8 @@
 ; each lane, the library's for a pack lane — so they run on every
 ; backend, instruction by instruction; a platform that says `builtin
 ; vectors` (AIR) takes the whole vector at once, and one with a
-; register class and rules for it (NEON on arm64) takes whole the
-; operations it has rules for. `Tx1` is T.
+; register class and rules for it (NEON on arm64, RVV on riscv64)
+; takes whole the operations it has rules for. `Tx1` is T.
 
 ;! add4 1 2 3 4 10 20 30 40 -> 22, 44
 ;! mul_splat 1 2 3 4 3 -> 3, 12

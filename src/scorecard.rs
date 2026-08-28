@@ -332,7 +332,7 @@ pub fn scorecard(target: &str) -> Result<Card, String> {
     let (official, focus): (Vec<Official>, Vec<&str>) = match target {
         "arm64" => (arm64_official("tools/ISA_A64_xml_A_profile-2022-12")?, vec!["general", "float"]),
         "riscv64" => {
-            let exts = ["rv_i", "rv64_i", "rv_m", "rv64_m", "rv_a", "rv64_a", "rv_f", "rv64_f", "rv_d", "rv64_d", "rv_zicsr", "rv_zifencei", "rv_system"];
+            let exts = ["rv_i", "rv64_i", "rv_m", "rv64_m", "rv_a", "rv64_a", "rv_f", "rv64_f", "rv_d", "rv64_d", "rv_v", "rv_zicsr", "rv_zifencei", "rv_system"];
             (riscv64_official("tools/riscv-opcodes", &exts)?, exts.to_vec())
         }
         "wasm32" => (wasm32_official("tools/wabt/include/wabt/opcode.def")?, vec!["core", "0xfc (saturating conversions, bulk memory)"]),

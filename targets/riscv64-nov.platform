@@ -1,0 +1,6 @@
+; targets/riscv64-nov.platform — riscv64 with M, F and D but no vector
+; rules: every vector operation lane by lane, in x and f registers.
+; The reference the V rules are checked against.
+target riscv64
+base riscv64
+without V
