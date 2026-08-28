@@ -32,11 +32,7 @@ bitcode we write. Left:
   its address space would lift that; ash's rule against region-typed
   pointers is about lifetimes, not spaces, so it is open.
 - **Cores on qemu**: the JIT deals a kernel's groups across OS threads (`;! __kernel n g m`); the machines run one. Secondary cores brought up with PSCI `CPU_ON` / the hart lottery, each `thread_set` to a block of its own — the multicore OS — would run the same `__run_groups`.
-- **The simdgroup over fibres**: a kernel directive runs a group as
-  fibres on a machine, but `simd_sum` and the rest are still their
-  one-thread forms there; a simd operation across a group's fibres
-  (a barrier, then the operation over the recorded lanes) would make
-  `examples/simd.ssa` a suite case too.
+- **Lockstep checked**: a simd operation over fibres assumes every lane of the simdgroup reaches it; a lane that skips one (a `simd_sum` inside a branch some lanes take) reads a stale slot on a machine and gets something quietly wrong on the GPU. The exchange could count who put a word this phase and fail the case when a lane is missing — the machines catching what the hardware silently permits.
 - **Fibres on wasm**: one stack, so bodies run one after another and kernel directives are skipped. But wasm has *threads* (shared memory, atomics, a worker per thread): the better model there is a real thread per lane — `group_sync` an atomic barrier (`memory.atomic.wait`/`notify` on a counter), group items in shared memory at a per-group offset, `thread()` a per-instance global — with the learner picking the atomic opcodes off wat2wasm and `driver.js` spawning workers. Stack switching (JSPI) would give fibres too, later.
 - **Simdgroup operations on 64-bit lanes**: Apple's intrinsics stop at
   32 bits; a `simd_sum` on an `i64` is an error on the GPU. Two 32-bit

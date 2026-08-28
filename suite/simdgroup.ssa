@@ -1,0 +1,27 @@
+; the simdgroup as a suite case: each thread combines the sum of its
+; simdgroup's ids, the inclusive prefix sum and the id of the lane
+; across from it — Apple's instructions on the GPU, an exchange between
+; fibres on a machine (lib/gpu.ssa) — so word id is
+;   sum * 1000000 + prefix * 1000 + shuffle_xor(id, 1)
+; 0..31 sum to 496; 32..63 to 1520.
+
+;! __kernel 64 64 -> 496000001, 496001000, 496003003, 496006002
+;! __kernel 64 32 -> 496000001, 496001000, 496003003, 496006002
+;! __kernel 128 64 2 -> 496000001, 496001000, 496003003, 496006002
+
+fn __kernel(mem: ptr, area: ptr, id: i64) {
+    x: i32 = conv id
+    s: i32 = simd_sum x
+    p: i32 = simd_prefix_sum x
+    one: i64 = const 1
+    o: i32 = simd_shuffle_xor x, one
+    s64: i64 = conv s
+    p64: i64 = conv p
+    o64: i64 = conv o
+    a: i64 = mul s64, 1000000
+    b: i64 = mul p64, 1000
+    c: i64 = add a, b
+    r: i64 = add c, o64
+    store r, area, id, 8
+    ret
+}

@@ -4,6 +4,12 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### The simdgroup over fibres — `HASH` · 2026-08-28
+
+`simd_sum` and the rest meant something on a machine only for one thread; now they mean the same as on the GPU. With fibres running a group, a simdgroup is 32 consecutive lanes and every operation is an exchange through a 64-word table in the thread's block (`simd_put`, `simd_get`, `simd_done` in lib/gpu.ssa): a lane puts its word in its slot and yields — a round, so every lane has put — reads what it needs (its simdgroup's slots for a sum, a max, a prefix sum; one slot for a shuffle; the bits for a vote) and yields again, so no lane writes over a word another has yet to read. Floats travel as their bits, integers sign-extended; the one-thread forms stand off a kernel run, the rules on the GPU. `suite/simdgroup.ssa` — each thread's simdgroup sum, prefix sum and the lane across from it in one word, in groups of 64, of 32, and across two OS threads — passes on native, riscv, arm and the GPU alike.
+
+---
+
 ### The thread key — `cb3c50c` · 2026-08-28
 
 The register was the wrong half of the right idea. `tpidr_el0` looked free at EL0, and a block installed in it worked — until the first preemption: XNU keeps per-CPU information there (`libsystem_malloc` reads it, which is how lldb caught the first crash) and rewrites it on every context switch, so under parallel tests a runner thread would resume with the kernel's value and `thread()` would point at 1. What macOS does leave a thread is `tpidrro_el0`: read-only, unique per thread, zero at boot. So the platform now gives a *key* (`thread_key`: `tpidrro_el0`; `tp` on riscv64; nothing on wasm), and `lib/thread.ssa` keeps a table from keys to blocks that `thread_set` fills — `thread_set_slot` for several threads at once, no two writing one slot — with the default block for a key it does not know; a GPU keeps `thread()` as its rule. The JIT no longer installs and restores anything. The suite's `;! __kernel n g m` deals a kernel's groups across m OS threads under the JIT, each thread a slot, a block and stacks of its own, all Rust-allocated; `suite/reduce.ssa` sums 512 ids in 8 groups across 4 threads, and the parallel test run that found the race passes.

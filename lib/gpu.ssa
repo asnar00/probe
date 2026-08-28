@@ -19,111 +19,612 @@ fn group_sync() {
 ; a simdgroup: the lanes that execute in lockstep (32 on an Apple GPU),
 ; with operations across them — sums, extremes, prefix sums, shuffles
 ; and votes, on 32-bit lanes and half (targets/air.platform names
-; Apple's). On one thread the simdgroup is that thread: a lane is 0,
-; the width 1, every reduction is its argument, a shuffle is the
-; value itself, a vote is the one vote. A lane or delta is an i64
-; (`three: i64 = const 3` before `simd_shuffle x, three`).
+; Apple's). A lane or delta is an i64 (`three: i64 = const 3` before
+; `simd_shuffle x, three`).
+;
+; On one thread the simdgroup is that thread: a lane is 0, the width
+; 1, every reduction is its argument, a shuffle the value, a vote the
+; one vote. With fibres running a group (lib/fibre.ssa, a kernel
+; directive), the simdgroup is 32 consecutive lanes of the group and
+; an operation is an exchange through a table in the thread's block:
+; every lane puts its word in its slot and yields — a round, so every
+; lane has put — reads what it needs, and yields again so no lane
+; writes over a word another has yet to read. Every lane of a
+; simdgroup must reach the same operation, as on the hardware.
+
+; the exchange table: 64 words at 9216 in the block
+fn simd_slots() -> ptr {
+    t: ptr = thread()
+    p: ptr = ptradd t, 9216
+    ret p
+}
+; my lane's simdgroup: its first lane, and how many lanes it has
+fn simd_base() -> i64 {
+    k: i64 = fibre_current()
+    b: i64 = and k, -32
+    ret b
+}
+fn simd_active() -> i64 {
+    b: i64 = simd_base()
+    st: ptr = fibre_state()
+    c64: u64 = load st, 0
+    count: i64 = cast c64
+    rest: i64 = sub count, b
+    more: u1 = cmp.gt rest, 32
+    if more {
+        ret 32
+    }
+    ret rest
+}
+fn simd_put(w: u64) {
+    k: i64 = fibre_current()
+    s: ptr = simd_slots()
+    store w, s, k, 8
+    fibre_yield()
+    ret
+}
+fn simd_get(lane: i64) -> u64 {
+    s: ptr = simd_slots()
+    w: u64 = load s, lane, 8
+    ret w
+}
+fn simd_done() {
+    fibre_yield()
+    ret
+}
 
 fn simd_lane() -> i64 {
+    a: u1 = fibres_active()
+    if a {
+        k: i64 = fibre_current()
+        l: i64 = and k, 31
+        ret l
+    }
     ret 0
 }
 fn simd_size() -> i64 {
+    a: u1 = fibres_active()
+    if a {
+        ret 32
+    }
     ret 1
 }
 fn simd_first() -> u1 {
-    one: u1 = const 1
-    ret one
+    l: i64 = simd_lane()
+    f: u1 = cmp.eq l, 0
+    ret f
 }
 fn simd_all(c: u1) -> u1 {
+    a: u1 = fibres_active()
+    if a {
+        b: u64 = simd_ballot(c)
+        n: i64 = simd_active()
+        nu: u64 = cast n
+        full: u64 = shl 1: u64, nu
+        every: u64 = sub full, 1
+        r: u1 = cmp.eq b, every
+        ret r
+    }
     ret c
 }
 fn simd_any(c: u1) -> u1 {
+    a: u1 = fibres_active()
+    if a {
+        b: u64 = simd_ballot(c)
+        r: u1 = cmp.ne b, 0
+        ret r
+    }
     ret c
 }
 fn simd_ballot(c: u1) -> u64 {
+    a: u1 = fibres_active()
+    if a {
+        w: u64 = conv c
+        simd_put(w)
+        base: i64 = simd_base()
+        n: i64 = simd_active()
+        bits: u64 = loop(i: i64 = 0, acc: u64 = 0) {
+            done: u1 = cmp.ge i, n
+            if done {
+                break acc
+            }
+            at: i64 = add base, i
+            v: u64 = simd_get(at)
+            iu: u64 = cast i
+            bit: u64 = shl v, iu
+            acc1: u64 = or acc, bit
+            i1: i64 = add i, 1
+            continue i1, acc1
+        }
+        simd_done()
+        ret bits
+    }
     r: u64 = conv c
     ret r
 }
 
+; --- floats: the word is the bits ---
 fn simd_sum(E, M)(x: float(E, M)) -> float(E, M) {
+    a: u1 = fibres_active()
+    if a {
+        xb: u(E + M + 1) = cast x
+        w: u64 = conv xb
+        simd_put(w)
+        base: i64 = simd_base()
+        n: i64 = simd_active()
+        zero: float(E, M) = pack 0, 0, 0
+        acc: float(E, M) = loop(i: i64 = 0, s: float(E, M) = zero) {
+            done: u1 = cmp.ge i, n
+            if done {
+                break s
+            }
+            at: i64 = add base, i
+            v: u64 = simd_get(at)
+            vb: u(E + M + 1) = conv v
+            f: float(E, M) = cast vb
+            s1: float(E, M) = add s, f
+            i1: i64 = add i, 1
+            continue i1, s1
+        }
+        simd_done()
+        ret acc
+    }
     ret x
 }
 fn simd_product(E, M)(x: float(E, M)) -> float(E, M) {
+    a: u1 = fibres_active()
+    if a {
+        xb: u(E + M + 1) = cast x
+        w: u64 = conv xb
+        simd_put(w)
+        base: i64 = simd_base()
+        n: i64 = simd_active()
+        one: float(E, M) = conv 1: i64
+        acc: float(E, M) = loop(i: i64 = 0, s: float(E, M) = one) {
+            done: u1 = cmp.ge i, n
+            if done {
+                break s
+            }
+            at: i64 = add base, i
+            v: u64 = simd_get(at)
+            vb: u(E + M + 1) = conv v
+            f: float(E, M) = cast vb
+            s1: float(E, M) = mul s, f
+            i1: i64 = add i, 1
+            continue i1, s1
+        }
+        simd_done()
+        ret acc
+    }
     ret x
 }
 fn simd_max(E, M)(x: float(E, M)) -> float(E, M) {
+    a: u1 = fibres_active()
+    if a {
+        xb: u(E + M + 1) = cast x
+        w: u64 = conv xb
+        simd_put(w)
+        base: i64 = simd_base()
+        n: i64 = simd_active()
+        acc: float(E, M) = loop(i: i64 = 0, s: float(E, M) = x) {
+            done: u1 = cmp.ge i, n
+            if done {
+                break s
+            }
+            at: i64 = add base, i
+            v: u64 = simd_get(at)
+            vb: u(E + M + 1) = conv v
+            f: float(E, M) = cast vb
+            s1: float(E, M) = max s, f
+            i1: i64 = add i, 1
+            continue i1, s1
+        }
+        simd_done()
+        ret acc
+    }
     ret x
 }
 fn simd_min(E, M)(x: float(E, M)) -> float(E, M) {
+    a: u1 = fibres_active()
+    if a {
+        xb: u(E + M + 1) = cast x
+        w: u64 = conv xb
+        simd_put(w)
+        base: i64 = simd_base()
+        n: i64 = simd_active()
+        acc: float(E, M) = loop(i: i64 = 0, s: float(E, M) = x) {
+            done: u1 = cmp.ge i, n
+            if done {
+                break s
+            }
+            at: i64 = add base, i
+            v: u64 = simd_get(at)
+            vb: u(E + M + 1) = conv v
+            f: float(E, M) = cast vb
+            s1: float(E, M) = min s, f
+            i1: i64 = add i, 1
+            continue i1, s1
+        }
+        simd_done()
+        ret acc
+    }
     ret x
 }
 fn simd_prefix_sum(E, M)(x: float(E, M)) -> float(E, M) {
+    a: u1 = fibres_active()
+    if a {
+        xb: u(E + M + 1) = cast x
+        w: u64 = conv xb
+        simd_put(w)
+        base: i64 = simd_base()
+        me: i64 = fibre_current()
+        zero: float(E, M) = pack 0, 0, 0
+        acc: float(E, M) = loop(i: i64 = base, s: float(E, M) = zero) {
+            done: u1 = cmp.gt i, me
+            if done {
+                break s
+            }
+            v: u64 = simd_get(i)
+            vb: u(E + M + 1) = conv v
+            f: float(E, M) = cast vb
+            s1: float(E, M) = add s, f
+            i1: i64 = add i, 1
+            continue i1, s1
+        }
+        simd_done()
+        ret acc
+    }
     ret x
 }
+; a word from another lane: its slot, or my own value off the group
+fn simd_fetch(x: u64, lane: i64) -> u64 {
+    base: i64 = simd_base()
+    n: i64 = simd_active()
+    simd_put(x)
+    inside0: u1 = cmp.ge lane, 0
+    inside1: u1 = cmp.lt lane, n
+    inside: u1 = and inside0, inside1
+    r: u64 = if inside {
+        at: i64 = add base, lane
+        v: u64 = simd_get(at)
+        yield v
+    } else {
+        yield x
+    }
+    simd_done()
+    ret r
+}
 fn simd_shuffle(E, M)(x: float(E, M), lane: i64) -> float(E, M) {
+    a: u1 = fibres_active()
+    if a {
+        xb: u(E + M + 1) = cast x
+        w: u64 = conv xb
+        v: u64 = simd_fetch(w, lane)
+        vb: u(E + M + 1) = conv v
+        f: float(E, M) = cast vb
+        ret f
+    }
     ret x
 }
 fn simd_broadcast(E, M)(x: float(E, M), lane: i64) -> float(E, M) {
-    ret x
+    r: float(E, M) = simd_shuffle x, lane
+    ret r
 }
 fn simd_shuffle_xor(E, M)(x: float(E, M), mask: i64) -> float(E, M) {
-    ret x
+    l: i64 = simd_lane()
+    other: i64 = xor l, mask
+    r: float(E, M) = simd_shuffle x, other
+    ret r
 }
 fn simd_shuffle_down(E, M)(x: float(E, M), delta: i64) -> float(E, M) {
-    ret x
+    l: i64 = simd_lane()
+    other: i64 = add l, delta
+    r: float(E, M) = simd_shuffle x, other
+    ret r
 }
 fn simd_shuffle_up(E, M)(x: float(E, M), delta: i64) -> float(E, M) {
-    ret x
+    l: i64 = simd_lane()
+    other: i64 = sub l, delta
+    r: float(E, M) = simd_shuffle x, other
+    ret r
 }
 
+; --- integers: the word is the value, sign-extended ---
 fn simd_sum(N)(x: i(N)) -> i(N) {
+    a: u1 = fibres_active()
+    if a {
+        xw: i64 = conv x
+        w: u64 = cast xw
+        simd_put(w)
+        base: i64 = simd_base()
+        n: i64 = simd_active()
+        acc: i64 = loop(i: i64 = 0, s: i64 = 0) {
+            done: u1 = cmp.ge i, n
+            if done {
+                break s
+            }
+            at: i64 = add base, i
+            v: u64 = simd_get(at)
+            vi: i64 = cast v
+            s1: i64 = add s, vi
+            i1: i64 = add i, 1
+            continue i1, s1
+        }
+        simd_done()
+        r: i(N) = conv acc
+        ret r
+    }
     ret x
 }
 fn simd_sum(N)(x: u(N)) -> u(N) {
+    a: u1 = fibres_active()
+    if a {
+        w: u64 = conv x
+        simd_put(w)
+        base: i64 = simd_base()
+        n: i64 = simd_active()
+        acc: u64 = loop(i: i64 = 0, s: u64 = 0) {
+            done: u1 = cmp.ge i, n
+            if done {
+                break s
+            }
+            at: i64 = add base, i
+            v: u64 = simd_get(at)
+            s1: u64 = add s, v
+            i1: i64 = add i, 1
+            continue i1, s1
+        }
+        simd_done()
+        r: u(N) = conv acc
+        ret r
+    }
     ret x
 }
 fn simd_product(N)(x: i(N)) -> i(N) {
+    a: u1 = fibres_active()
+    if a {
+        xw: i64 = conv x
+        w: u64 = cast xw
+        simd_put(w)
+        base: i64 = simd_base()
+        n: i64 = simd_active()
+        acc: i64 = loop(i: i64 = 0, s: i64 = 1) {
+            done: u1 = cmp.ge i, n
+            if done {
+                break s
+            }
+            at: i64 = add base, i
+            v: u64 = simd_get(at)
+            vi: i64 = cast v
+            s1: i64 = mul s, vi
+            i1: i64 = add i, 1
+            continue i1, s1
+        }
+        simd_done()
+        r: i(N) = conv acc
+        ret r
+    }
     ret x
 }
 fn simd_max(N)(x: i(N)) -> i(N) {
+    a: u1 = fibres_active()
+    if a {
+        xw: i64 = conv x
+        w: u64 = cast xw
+        simd_put(w)
+        base: i64 = simd_base()
+        n: i64 = simd_active()
+        acc: i64 = loop(i: i64 = 0, s: i64 = xw) {
+            done: u1 = cmp.ge i, n
+            if done {
+                break s
+            }
+            at: i64 = add base, i
+            v: u64 = simd_get(at)
+            vi: i64 = cast v
+            bigger: u1 = cmp.gt vi, s
+            s1: i64 = if bigger {
+                yield vi
+            } else {
+                yield s
+            }
+            i1: i64 = add i, 1
+            continue i1, s1
+        }
+        simd_done()
+        r: i(N) = conv acc
+        ret r
+    }
     ret x
 }
 fn simd_max(N)(x: u(N)) -> u(N) {
+    a: u1 = fibres_active()
+    if a {
+        w: u64 = conv x
+        simd_put(w)
+        base: i64 = simd_base()
+        n: i64 = simd_active()
+        acc: u64 = loop(i: i64 = 0, s: u64 = w) {
+            done: u1 = cmp.ge i, n
+            if done {
+                break s
+            }
+            at: i64 = add base, i
+            v: u64 = simd_get(at)
+            bigger: u1 = cmp.gt v, s
+            s1: u64 = if bigger {
+                yield v
+            } else {
+                yield s
+            }
+            i1: i64 = add i, 1
+            continue i1, s1
+        }
+        simd_done()
+        r: u(N) = conv acc
+        ret r
+    }
     ret x
 }
 fn simd_min(N)(x: i(N)) -> i(N) {
+    a: u1 = fibres_active()
+    if a {
+        xw: i64 = conv x
+        w: u64 = cast xw
+        simd_put(w)
+        base: i64 = simd_base()
+        n: i64 = simd_active()
+        acc: i64 = loop(i: i64 = 0, s: i64 = xw) {
+            done: u1 = cmp.ge i, n
+            if done {
+                break s
+            }
+            at: i64 = add base, i
+            v: u64 = simd_get(at)
+            vi: i64 = cast v
+            smaller: u1 = cmp.lt vi, s
+            s1: i64 = if smaller {
+                yield vi
+            } else {
+                yield s
+            }
+            i1: i64 = add i, 1
+            continue i1, s1
+        }
+        simd_done()
+        r: i(N) = conv acc
+        ret r
+    }
     ret x
 }
 fn simd_min(N)(x: u(N)) -> u(N) {
+    a: u1 = fibres_active()
+    if a {
+        w: u64 = conv x
+        simd_put(w)
+        base: i64 = simd_base()
+        n: i64 = simd_active()
+        acc: u64 = loop(i: i64 = 0, s: u64 = w) {
+            done: u1 = cmp.ge i, n
+            if done {
+                break s
+            }
+            at: i64 = add base, i
+            v: u64 = simd_get(at)
+            smaller: u1 = cmp.lt v, s
+            s1: u64 = if smaller {
+                yield v
+            } else {
+                yield s
+            }
+            i1: i64 = add i, 1
+            continue i1, s1
+        }
+        simd_done()
+        r: u(N) = conv acc
+        ret r
+    }
     ret x
 }
 fn simd_prefix_sum(N)(x: i(N)) -> i(N) {
+    a: u1 = fibres_active()
+    if a {
+        xw: i64 = conv x
+        w: u64 = cast xw
+        simd_put(w)
+        base: i64 = simd_base()
+        me: i64 = fibre_current()
+        acc: i64 = loop(i: i64 = base, s: i64 = 0) {
+            done: u1 = cmp.gt i, me
+            if done {
+                break s
+            }
+            v: u64 = simd_get(i)
+            vi: i64 = cast v
+            s1: i64 = add s, vi
+            i1: i64 = add i, 1
+            continue i1, s1
+        }
+        simd_done()
+        r: i(N) = conv acc
+        ret r
+    }
     ret x
 }
 fn simd_prefix_sum(N)(x: u(N)) -> u(N) {
+    a: u1 = fibres_active()
+    if a {
+        w: u64 = conv x
+        simd_put(w)
+        base: i64 = simd_base()
+        me: i64 = fibre_current()
+        acc: u64 = loop(i: i64 = base, s: u64 = 0) {
+            done: u1 = cmp.gt i, me
+            if done {
+                break s
+            }
+            v: u64 = simd_get(i)
+            s1: u64 = add s, v
+            i1: i64 = add i, 1
+            continue i1, s1
+        }
+        simd_done()
+        r: u(N) = conv acc
+        ret r
+    }
     ret x
 }
 fn simd_shuffle(N)(x: i(N), lane: i64) -> i(N) {
+    a: u1 = fibres_active()
+    if a {
+        xw: i64 = conv x
+        w: u64 = cast xw
+        v: u64 = simd_fetch(w, lane)
+        vi: i64 = cast v
+        r: i(N) = conv vi
+        ret r
+    }
     ret x
 }
 fn simd_shuffle(N)(x: u(N), lane: i64) -> u(N) {
+    a: u1 = fibres_active()
+    if a {
+        w: u64 = conv x
+        v: u64 = simd_fetch(w, lane)
+        r: u(N) = conv v
+        ret r
+    }
     ret x
 }
 fn simd_broadcast(N)(x: i(N), lane: i64) -> i(N) {
-    ret x
+    r: i(N) = simd_shuffle x, lane
+    ret r
 }
 fn simd_broadcast(N)(x: u(N), lane: i64) -> u(N) {
-    ret x
+    r: u(N) = simd_shuffle x, lane
+    ret r
 }
 fn simd_shuffle_xor(N)(x: i(N), mask: i64) -> i(N) {
-    ret x
+    l: i64 = simd_lane()
+    other: i64 = xor l, mask
+    r: i(N) = simd_shuffle x, other
+    ret r
 }
 fn simd_shuffle_xor(N)(x: u(N), mask: i64) -> u(N) {
-    ret x
+    l: i64 = simd_lane()
+    other: i64 = xor l, mask
+    r: u(N) = simd_shuffle x, other
+    ret r
 }
 fn simd_shuffle_down(N)(x: i(N), delta: i64) -> i(N) {
-    ret x
+    l: i64 = simd_lane()
+    other: i64 = add l, delta
+    r: i(N) = simd_shuffle x, other
+    ret r
 }
 fn simd_shuffle_up(N)(x: i(N), delta: i64) -> i(N) {
-    ret x
+    l: i64 = simd_lane()
+    other: i64 = sub l, delta
+    r: i(N) = simd_shuffle x, other
+    ret r
 }

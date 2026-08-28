@@ -496,13 +496,16 @@ v: u1 = simd_all(c)                           ; simd_any, simd_ballot -> u64, si
 `simd_shuffle_down`, `simd_shuffle_up`, the votes, `simd_lane` and
 `simd_size` — as generics over floats and integers, written by opcode
 (`simd_sum x`) or called. On a GPU they are the platform's
-(`air.simd_sum.f32`, ...; 32 lanes on an Apple GPU); on one thread the
+(`air.simd_sum.f32`, ...; 32 lanes on an Apple GPU). On one thread the
 simdgroup is that thread — every reduction is its argument, a shuffle
-the value, the lane 0, the width 1 — so the program runs everywhere,
-and the many-lane case is checked where there are many
-(`examples/simd.ssa`). A `simd_*` operation the platform has no
-instruction for (a 64-bit lane) is an error on the GPU rather than
-its one-thread form.
+the value, the lane 0, the width 1. With fibres running a group (a
+`__kernel` directive) the simdgroup is 32 consecutive lanes and an
+operation is an exchange through a table in the thread's block: every
+lane puts its word in its slot and yields, reads what it needs, and
+yields again — so `suite/simdgroup.ssa` holds on four referees. Every
+lane of a simdgroup must reach the same operation, as on the hardware.
+A `simd_*` operation the platform has no instruction for (a 64-bit
+lane) is an error on the GPU rather than its one-thread form.
 
 ### Calls
 
