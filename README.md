@@ -242,7 +242,7 @@ What is here:
 - **Types.** Integers to 256 bits, packs, structs, vectors (`f32x4`: per-lane by definition; whole on the GPU, NEON on arm64 and RVV on riscv64, each checked against the lane form), typed pointers and shaped arrays, parametric types and generic functions, function values.
 - **Numbers as libraries.** Floats, fixed point, unit fractions, rationals, time and decimals, with hardware substituted where a platform has it.
 - **Memory as a ladder of lifetimes**, not a heap for objects: `scratch`, arenas, pools, a buddy heap over the rest of RAM as the root; `check` is the one assertion, a breakpoint trap that names its site.
-- **Four backends and their variants**, the fourth Apple's GPU through a `.metallib` we write ourselves.
+- **Four backends and their variants**, the fourth Apple's GPU through a `.metallib` we write ourselves; on the machines each class of value — integer, float, vector — crosses a call in its own registers, and a caller from Rust reaches classed functions through a wrapper the compiler generates.
 - **The GPU's model everywhere.** `group` memory, a barrier and the simdgroup operations are library functions that mean the same on a machine — fibres run a group by turns on one thread, a simdgroup is an exchange through a table; `thread()` reads a platform-named register; a kernel's groups are dealt across OS threads under the JIT, or across four cores on the qemu boards.
 - **Six bootable kernels.** Hello world; an echo with system calls and interrupt-driven input; a clock on the timer interrupt; two preempted tasks; tasks sleeping to exact times on a tickless timer, with `at`/`after` callbacks and tasks that come and go; four cores sharing a kernel's groups.
 - **All of it differentially verified.** The suite on five execution paths under every policy, `;! __kernel` running a program's kernel on the GPU and on every machine, `-> check` for what must fail (a thread that skips a `simd_*` fails a check on every machine, where the GPU reads stale words), the oracle (on the CPU and the GPU), the scorecards, the fuzzer (`--air` puts the GPU in its panel), the model tests.
@@ -252,7 +252,7 @@ Deliberately not here yet (`future-work.md` has the queue, `handover.md` the rea
 - A kernel's threads as real worker threads on wasm.
 - Tasks dealt across cores in the OS programs.
 - Textures as handles with platform operations; WebGPU as a second GPU path.
-- Vectors across a call (a parameter, a result, an argument — two words each); `u1xN` in memory; 64-bit vectors; scalable RVV (`vl` as a value, not a constant); wasm SIMD through the same seam.
+- `u1xN` in memory; 64-bit vectors; scalable RVV (`vl` as a value, not a constant); wasm SIMD through the same seam.
 - Capacity analysis for arenas and stacks.
 - External (libc) calls from JIT'd code.
 - Differential testing against clang, to close the semantic loop the way the prober closed the encoding loop.

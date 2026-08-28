@@ -858,6 +858,84 @@ pub struct Function {
     pub wide_sig: Option<(Vec<Type>, Vec<Type>)>,
 }
 
+/// wrappers for the JIT boundary: a caller from Rust passes and reads
+/// integer words, while a function whose parameter or result has a
+/// register class (a float, a vector) takes those in that class's
+/// registers. `__w_f` takes each classed parameter as the unsigned
+/// integer of its width, casts, calls `f`, and casts its classed results
+/// back — so `jit.call` need know nothing about the convention. A
+/// vector at that boundary gets no wrapper (a caller passes its lanes).
+pub fn jit_wrappers(funcs: &[Function], classed: &dyn Fn(&Function, Type) -> bool) -> Vec<Function> {
+    let mut out = Vec::new();
+    for f in funcs {
+        if f.name.starts_with("__w_") {
+            continue;
+        }
+        let ptys: Vec<Type> = f.params.iter().map(|&p| f.ty(p)).collect();
+        let needs = ptys.iter().chain(&f.rets).any(|&t| classed(f, t));
+        if !needs || ptys.iter().chain(&f.rets).any(|&t| f.vector(t).is_some()) {
+            continue;
+        }
+        let bits_of = |t: Type| Type::Int { signed: false, bits: f.width(t).unwrap_or(64) as u16 };
+        let mut w = Function {
+            name: format!("__w_{}", f.name),
+            params: Vec::new(),
+            rets: f.rets.iter().map(|&t| if classed(f, t) { bits_of(t) } else { t }).collect(),
+            values: Vec::new(),
+            blocks: Vec::new(),
+            packs: f.packs.clone(),
+            instance: None,
+            instance_names: Vec::new(),
+            wide_sig: None,
+        };
+        let mut insts = Vec::new();
+        let mut args = Vec::new();
+        for (i, &t) in ptys.iter().enumerate() {
+            let cls = classed(f, t);
+            let p = ValueId(w.values.len() as u32);
+            w.values.push(ValueData { name: format!("p{}", i), ty: if cls { bits_of(t) } else { t }, literal: None });
+            w.params.push(p);
+            if cls {
+                let c = ValueId(w.values.len() as u32);
+                w.values.push(ValueData { name: format!("c{}", i), ty: t, literal: None });
+                insts.push(Inst::Cast { op: CastOp::Cast, dst: c, src: p });
+                args.push(c);
+            } else {
+                args.push(p);
+            }
+        }
+        let mut dsts = Vec::new();
+        let mut rets = Vec::new();
+        for (j, &t) in f.rets.iter().enumerate() {
+            let d = ValueId(w.values.len() as u32);
+            w.values.push(ValueData { name: format!("r{}", j), ty: t, literal: None });
+            dsts.push(d);
+            if classed(f, t) {
+                let b = ValueId(w.values.len() as u32);
+                w.values.push(ValueData { name: format!("b{}", j), ty: bits_of(t), literal: None });
+                rets.push((d, Some(b)));
+            } else {
+                rets.push((d, None));
+            }
+        }
+        insts.push(Inst::Call { dsts, callee: f.name.clone(), args });
+        let mut vals = Vec::new();
+        for (d, b) in rets {
+            match b {
+                Some(b) => {
+                    insts.push(Inst::Cast { op: CastOp::Cast, dst: b, src: d });
+                    vals.push(b);
+                }
+                None => vals.push(d),
+            }
+        }
+        insts.push(Inst::Ret { vals });
+        w.blocks.push(Block { name: "entry".into(), params: Vec::new(), insts });
+        out.push(w);
+    }
+    out
+}
+
 impl Function {
     pub fn value(&self, id: ValueId) -> &ValueData {
         &self.values[id.0 as usize]

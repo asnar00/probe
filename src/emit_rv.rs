@@ -44,10 +44,15 @@ const FSD: &str = "fsd {f}, {i -2048..2047}({r})";
 const FMV_D: &str = "fmv.d {f}, {f}";
 /// the float file's pool: fs0..fs11, callee-saved
 const F_POOL: &[i64] = &[8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27];
-/// the vector registers values live in: v8..v15, saved by the callee
+/// the vector registers values live in: v24..v31, saved by the callee
 /// (every callee is this compiler's); a rule's vector temporaries are
-/// v16..v19, the emitter's own v20..v23, and v0 is the mask
-const V_POOL: &[i64] = &[8, 9, 10, 11, 12, 13, 14, 15];
+/// v16..v19, the emitter's own v20..v23, v8..v15 carry arguments, and
+/// v0 is the mask
+const V_POOL: &[i64] = &[24, 25, 26, 27, 28, 29, 30, 31];
+/// where a vector argument or result crosses a call: v8..v15, as the
+/// RISC-V vector calling convention has it; floats cross in fa0..fa7
+const V_ARGS: i64 = 8;
+const FA0: i64 = 10;
 const V_TEMPS: &[i64] = &[16, 17, 18, 19];
 /// the vtype every vector instruction runs under: four 32-bit lanes,
 /// two 64-bit ones, or sixteen bytes (a whole register saved or spilled)
@@ -60,8 +65,8 @@ const VLE8: &str = "vle8.v {v}, ({r})";
 const VSE8: &str = "vse8.v {v}, ({r})";
 const VMV1R: &str = "vmv1r.v {v}, {v}";
 /// the vector registers an interrupt handler keeps: the caller-saved
-/// ones (v8..v15 are the allocator's, kept by it), and for a switch those too
-const IRQ_V_SAVED: &[i64] = &[0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31];
+/// ones (v24..v31 are the allocator's, kept by it), and for a switch those too
+const IRQ_V_SAVED: &[i64] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23];
 const SRLI: &str = "srli {r}, {r}, {i 0..63}";
 const SRAI: &str = "srai {r}, {r}, {i 0..63}";
 const ANDI: &str = "andi {r}, {r}, {i -2048..2047}";
@@ -375,10 +380,73 @@ impl RvEmit<'_> {
 
     /// place v into a specific register (targets a0..a7 / staging; sources
     /// are pool registers or slots — disjoint, so sequences never clobber)
-    fn value_to(&mut self, target: i64, v: ValueId) -> Result<(), String> {
-        if self.is_v(v) {
-            return Err(format!("a vector ({}) as an argument or result: not yet — pass its lanes", self.tyname(v)));
+    /// which file a value crosses a call in: 0 an integer register, 1 a
+    /// float register, 2 a vector register
+    fn kind(&self, v: ValueId) -> u8 {
+        if self.is_v(v) { 2 } else { self.is_f(v) as u8 }
+    }
+
+    /// the calling convention: integers in a0.. in their order, floats in
+    /// fa0.. in theirs, vectors in v8.. in theirs — each class counts its
+    /// own; eight of each
+    fn abi_regs(&self, vals: &[ValueId]) -> Result<Vec<(u8, i64)>, String> {
+        let mut n = [0i64; 3];
+        let mut out = Vec::new();
+        for &v in vals {
+            let k = self.kind(v);
+            if n[k as usize] == 8 {
+                return Err(format!("more than 8 {} arguments or results not supported yet", ["integer", "float", "vector"][k as usize]));
+            }
+            out.push((k, [A0, FA0, V_ARGS][k as usize] + n[k as usize]));
+            n[k as usize] += 1;
         }
+        Ok(out)
+    }
+
+    /// v into the register the convention gives it (a caller-saved one,
+    /// never where a value lives)
+    fn arg_to(&mut self, kind: u8, reg: i64, v: ValueId) -> Result<(), String> {
+        match kind {
+            0 => self.value_to(reg, v),
+            1 => {
+                let fr = self.src_freg(v, 0)?;
+                if fr != reg {
+                    self.emit(FMV_D, &[reg, fr])?;
+                }
+                Ok(())
+            }
+            _ => {
+                let vr = self.src_vreg(v, 20)?;
+                if vr != reg {
+                    self.emit(VMV1R, &[reg, vr])?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// the register the convention put v in, into v's own place
+    fn arg_from(&mut self, kind: u8, reg: i64, v: ValueId) -> Result<(), String> {
+        match kind {
+            0 => self.value_from(v, reg),
+            1 => {
+                let fr = self.dst_freg(v, 0);
+                if fr != reg {
+                    self.emit(FMV_D, &[fr, reg])?;
+                }
+                self.finish_f(v, fr)
+            }
+            _ => {
+                let vr = self.dst_vreg(v, 20);
+                if vr != reg {
+                    self.emit(VMV1R, &[vr, reg])?;
+                }
+                self.finish_v(v, vr)
+            }
+        }
+    }
+
+    fn value_to(&mut self, target: i64, v: ValueId) -> Result<(), String> {
         if self.is_f(v) {
             let fr = self.src_freg(v, 0)?;
             return self.f_to_x(target, fr, v);
@@ -393,9 +461,6 @@ impl RvEmit<'_> {
     }
 
     fn value_from(&mut self, v: ValueId, source: i64) -> Result<(), String> {
-        if self.is_v(v) {
-            return Err(format!("a vector ({}) as a parameter or result: not yet — pass its lanes", self.tyname(v)));
-        }
         if self.is_f(v) {
             let fr = self.dst_freg(v, 0);
             self.x_to_f(fr, source, v)?;
@@ -707,30 +772,23 @@ fn compile_function(
     call_fixups: &mut Vec<Fixup>,
 ) -> Result<(), String> {
     if let Some(native) = natives.get(&func.name) {
-        // this function *is* a platform instruction: bits arrive in a0..,
-        // float ones move to ft0.., the rule runs, a float result comes
-        // back through a0 (zero-extended when 32 bits wide)
+        // this function *is* a platform instruction: arguments arrive
+        // where the convention puts them — integers in a0.., floats in
+        // fa0.. — the rule runs, its result in a0 or fa0
         let mut seq: Vec<(&str, Vec<i64>)> = Vec::new();
         let mut args = Vec::new();
-        for (i, class) in native.arg_class.iter().enumerate() {
+        let (mut nx, mut nf) = (0, 0);
+        for class in &native.arg_class {
             if class.is_some() {
-                seq.push((if native.arg_bits[i] <= 32 { "fmv.w.x {f}, {r}" } else { "fmv.d.x {f}, {r}" }, vec![i as i64, A0 + i as i64]));
-                args.push(i as i64);
+                args.push(FA0 + nf);
+                nf += 1;
             } else {
-                args.push(A0 + i as i64);
+                args.push(A0 + nx);
+                nx += 1;
             }
         }
-        let rd = if native.ret_class.is_some() { 3 } else { A0 };
+        let rd = if native.ret_class.is_some() { FA0 } else { A0 };
         seq.extend(rule_seq(enc, native, rd, &args)?);
-        if native.ret_class.is_some() {
-            if native.ret_bits <= 32 {
-                seq.push(("fmv.x.w {r}, {f}", vec![A0, 3]));
-                seq.push((SLLI, vec![A0, A0, 32]));
-                seq.push((SRLI, vec![A0, A0, 32]));
-            } else {
-                seq.push(("fmv.x.d {r}, {f}", vec![A0, 3]));
-            }
-        }
         for (t, v) in seq {
             code.extend_from_slice(&enc.encode(t, &v)?.to_le_bytes());
         }
@@ -839,8 +897,8 @@ fn compile_function(
             e.emit(ADDI, &[A0, SP, 0])?;
         }
     }
-    for (i, &p) in func.params.iter().enumerate() {
-        e.value_from(p, A0 + i as i64)?;
+    for (&p, (k, r)) in func.params.iter().zip(e.abi_regs(&func.params)?) {
+        e.arg_from(k, r, p)?;
     }
 
     for (bi, block) in func.blocks.iter().enumerate() {
@@ -961,14 +1019,19 @@ fn compile_vector_inst(e: &mut RvEmit, inst: &Inst) -> Option<Result<(), String>
                 })()
             }
         }
-        Inst::Call { dsts, callee, args } if args.iter().any(|&a| e.is_v(a)) || dsts.iter().any(|&d| e.is_v(d)) => {
+        // a library operation on vectors the platform has a rule for; a
+        // call on vectors with no rule (a function of the program's) is a
+        // call like any other, its vectors crossing in vector registers
+        Inst::Call { dsts, callee, args } if (args.iter().any(|&a| e.is_v(a)) || dsts.iter().any(|&d| e.is_v(d))) && dsts.len() <= 1 && {
+            let natives: &Natives = e.natives;
+            let ret = dsts.first().map(|&d| e.tyname(d)).unwrap_or_else(|| "()".into());
+            let argn: Vec<String> = args.iter().map(|&a| e.tyname(a)).collect();
+            natives.vector(&natives.vector_sig(callee, &argn, &ret)).is_some()
+        } => {
             let natives: &Natives = e.natives;
             let ret = dsts.first().map(|&d| e.tyname(d)).unwrap_or_else(|| "()".into());
             let argn: Vec<String> = args.iter().map(|&a| e.tyname(a)).collect();
             let sig = natives.vector_sig(callee, &argn, &ret);
-            if dsts.len() > 1 {
-                return Some(Err(format!("{}: several results from a vector operation", sig)));
-            }
             vector_op(e, &sig, dsts.first().copied(), args)
         }
         Inst::Get { dst, src, field } if e.is_v(*src) => (|| {
@@ -1307,7 +1370,7 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             e.emit("add {r}, {r}, {r}", &[rd, rb, ro])?;
             e.finish(*dst, rd)
         }
-        Inst::Call { dsts, callee, args } if e.natives.get(callee).is_some_and(|n| n.inline) => {
+        Inst::Call { dsts, callee, args } if e.natives.get(callee).is_some_and(|n| n.inline) && !args.iter().any(|&a| e.is_v(a)) => {
             // the platform has this one: the rule's sequence instead of
             // the call, each operand in its own file
             let natives: &Natives = e.natives;
@@ -1343,25 +1406,19 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             e.finish(*dst, rd)
         }
         Inst::CallInd { dsts, callee, args } => {
-            if args.len() > 8 {
-                return Err("more than 8 call arguments not supported yet".into());
-            }
-            for (j, &a) in args.iter().enumerate() {
-                e.value_to(A0 + j as i64, a)?;
+            for (&a, (k, r)) in args.iter().zip(e.abi_regs(args)?) {
+                e.arg_to(k, r, a)?;
             }
             let rc = e.src_reg(*callee, T0)?;
             e.emit("jalr {r}, {i -2048..2047}({r})", &[RA, 0, rc])?;
-            for (j, &d) in dsts.iter().enumerate() {
-                e.value_from(d, A0 + j as i64)?;
+            for (&d, (k, r)) in dsts.iter().zip(e.abi_regs(dsts)?) {
+                e.arg_from(k, r, d)?;
             }
             Ok(())
         }
         Inst::Call { dsts, callee, args } => {
-            if args.len() > 8 {
-                return Err("more than 8 call arguments not supported yet".into());
-            }
-            for (j, &a) in args.iter().enumerate() {
-                e.value_to(A0 + j as i64, a)?;
+            for (&a, (k, r)) in args.iter().zip(e.abi_regs(args)?) {
+                e.arg_to(k, r, a)?;
             }
             let at = e.emit(JAL, &[RA, 0])?;
             e.fixups.push(Fixup {
@@ -1370,8 +1427,8 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
                 imm_slot: 1,
                 target: FixTarget::Func(callee.clone()),
             });
-            for (j, &d) in dsts.iter().enumerate() {
-                e.value_from(d, A0 + j as i64)?;
+            for (&d, (k, r)) in dsts.iter().zip(e.abi_regs(dsts)?) {
+                e.arg_from(k, r, d)?;
             }
             Ok(())
         }
@@ -1411,11 +1468,8 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             e.goto(*else_target)
         }
         Inst::Ret { vals } => {
-            if vals.len() > 8 {
-                return Err("more than 8 return values not supported yet".into());
-            }
-            for (j, &v) in vals.iter().enumerate() {
-                e.value_to(A0 + j as i64, v)?;
+            for (&v, (k, r)) in vals.iter().zip(e.abi_regs(vals)?) {
+                e.arg_to(k, r, v)?;
             }
             e.epilogue()
         }

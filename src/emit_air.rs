@@ -716,6 +716,15 @@ impl Cx<'_> {
     }
 
     /// the bitcode value of an SSA value
+    /// does the callee take a vector itself (as against a scalar lane
+    /// function applied per lane)?
+    fn takes_vectors(&self, callee: &str) -> bool {
+        self.fn_ids.get(callee).is_some_and(|&(_, fty)| match &self.m.types[fty] {
+            BType::Fn(_, ps) => ps.iter().any(|&p| matches!(self.m.types[p], BType::Vector(..))),
+            _ => false,
+        })
+    }
+
     fn value(&mut self, fx: &mut Fx, v: ValueId) -> Result<usize, String> {
         fx.vals.get(&v.0).copied().ok_or_else(|| format!("value {} used before it is defined", fx.f.value(v).name))
     }
@@ -970,9 +979,10 @@ impl Cx<'_> {
             Inst::Call { dsts, callee, args } if self.natives.get(callee).is_some() => {
                 self.emit_rule(fx, dsts, callee, args)?;
             }
-            Inst::Call { dsts, callee, args } if args.iter().any(|&x| f.vector(f.ty(x)).is_some()) => {
+            Inst::Call { dsts, callee, args } if args.iter().any(|&x| f.vector(f.ty(x)).is_some()) && !self.takes_vectors(callee) => {
                 // a lane operation the library does: once per lane, the
-                // lanes taken out and the results put back
+                // lanes taken out and the results put back (a function
+                // whose own parameters are vectors is called as it is)
                 let (fid, fty) = *self.fn_ids.get(callee).ok_or_else(|| format!("call to {}, which is not in this module (left out?)", callee))?;
                 let fv = self.m.function_value(fid);
                 let ns = self.next_slab(fx);

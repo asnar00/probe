@@ -239,10 +239,14 @@ impl Arena {
     /// Install every function in the module that is new or whose source
     /// changed, at the given level. Returns what was (re)compiled.
     pub fn sync(&mut self, funcs: &[Function], level: usize) -> Result<Vec<Installed>, String> {
-        let names: Vec<&str> = funcs.iter().map(|f| f.name.as_str()).collect();
+        // with a wrapper for every function a caller from Rust could not
+        // reach otherwise (floats cross a call in float registers)
+        let wrappers = crate::ssa::jit_wrappers(funcs, &|f, t| self.natives.class_of(f, t).is_some());
+        let all: Vec<&Function> = funcs.iter().chain(&wrappers).collect();
+        let names: Vec<&str> = all.iter().map(|f| f.name.as_str()).collect();
         self.ensure_trampolines(&names)?;
         let mut out = Vec::new();
-        for func in funcs {
+        for func in all {
             let changed = match self.entries.get(&func.name) {
                 Some(e) => e.slot == usize::MAX || e.source != func.to_string(),
                 None => true,
@@ -283,9 +287,11 @@ impl Arena {
     }
 
     fn entry_ptr(&self, name: &str) -> Result<*const u8, String> {
+        // the wrapper when there is one: a caller from Rust passes words
         let e = self
             .entries
-            .get(name)
+            .get(&format!("__w_{}", name))
+            .or_else(|| self.entries.get(name))
             .filter(|e| e.slot != usize::MAX)
             .ok_or_else(|| format!("no function {} installed", name))?;
         // call through the trampoline so the invocation counts

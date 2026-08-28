@@ -40,6 +40,9 @@
 ;! bits 0x40000000 0x3f800000 -> 0x40000000, 0x40400000
 ;! i64x2ops 5 -7 3 2 -> 8, -9
 ;! cmp2 0x3ff0000000000000 0x4008000000000000 0x4000000000000000 5 -7 3 2 -> 2, 1
+;! through_call 1 2 3 4 10 20 30 40 -> 22, 44
+;! through_call_f 0x3f800000 0x40000000 0x40400000 0x40800000 0x3f000000 -> 0x40200000, 0x40900000
+;! mixed_call 3 0x3f800000 0x40000000 0x40400000 0x40800000 0x3f000000 -> 4, 0x40200000
 
 type v4 = i32x4
 
@@ -440,4 +443,41 @@ fn mask2(b0: u1, b1: u1) -> u8 {
     s1: u8 = shl c1, 1
     o: u8 = or c0, s1
     ret o
+}
+
+; --- vectors across a call: parameters, results, and mixed with the
+; other classes (each class crosses in its own registers) ---
+fn vsum(a: i32x4, b: i32x4) -> i32x4 {
+    c: i32x4 = add a, b
+    ret c
+}
+fn through_call(a0: i32, a1: i32, a2: i32, a3: i32, b0: i32, b1: i32, b2: i32, b3: i32) -> (i32, i32) {
+    a: i32x4 = pack a0, a1, a2, a3
+    b: i32x4 = pack b0, b1, b2, b3
+    c: i32x4 = vsum(a, b)
+    r0: i32, r1: i32, r2: i32, r3: i32 = unpack c
+    ret r1, r3
+}
+fn vaddh(a: f32x4, h: f32) -> f32x4 {
+    hs: f32x4 = splat h
+    c: f32x4 = add a, hs
+    ret c
+}
+fn through_call_f(a0: f32, a1: f32, a2: f32, a3: f32, h: f32) -> (f32, f32) {
+    a: f32x4 = pack a0, a1, a2, a3
+    c: f32x4 = vaddh(a, h)
+    r0: f32, r1: f32, r2: f32, r3: f32 = unpack c
+    ret r1, r3
+}
+fn mixed(k: i32, a: f32x4, h: f32) -> (i32, f32x4) {
+    k2: i32 = add k, 1
+    hs: f32x4 = splat h
+    c: f32x4 = add a, hs
+    ret k2, c
+}
+fn mixed_call(k: i32, a0: f32, a1: f32, a2: f32, a3: f32, h: f32) -> (i32, f32) {
+    a: f32x4 = pack a0, a1, a2, a3
+    k2: i32, c: f32x4 = mixed(k, a, h)
+    x: f32 = get c, 1
+    ret k2, x
 }
