@@ -41,11 +41,11 @@ fdiv = div(f16, f16) -> f16
 ext group
 air.wg.barrier = group_sync() -> ()
 
-; the simdgroup (lib/gpu.ssa has the one-thread forms). A lane index
-; and the width are the kernel's to know: the wrapper leaves them in
+; the simdgroup (lib/gpu.ssa has the one-thread forms). A thread's index
+; in it and the width are the kernel's to know: the wrapper leaves them in
 ; each thread's header, where these two rules read them.
 ext simd
-air.simd_lane = simd_lane() -> i64
+air.simd_thread = simd_thread() -> i64
 air.simd_size = simd_size() -> i64
 air.simd_is_first = simd_first() -> u1
 air.simd_all = simd_all(u1) -> u1

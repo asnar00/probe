@@ -211,7 +211,7 @@ A task that wants to give up the cpu before its slice ends asks the machine for 
 ```
 group tmp: array(i64, 64)                     ; what a threadgroup shares: typed, sized, zero
 t: ptr(array(i64, 64)) = addr tmp
-store id, t, lane
+store id, t, tid
 group_sync()                                  ; the barrier (lib/gpu.ssa)
 v: i64 = load t, other
 ```
@@ -248,16 +248,16 @@ fibre_yield()                                 ; the current fibre gives up its t
 ### The simdgroup
 
 ```
-s: f32 = simd_sum x                           ; across the lanes that execute together
+s: f32 = simd_sum x                           ; across the threads that execute together
 m: i32 = simd_max y                           ; on floats, halves, 32-bit integers
 zero: i64 = const 0
-b: f32 = simd_broadcast x, zero               ; a lane or delta is an i64
+b: f32 = simd_broadcast x, zero               ; a thread index or delta is an i64
 p: u32 = simd_prefix_sum z                    ; inclusive
-l: i64 = simd_lane()                          ; 0..simd_size() - 1
+l: i64 = simd_thread()                        ; 0..simd_size() - 1
 v: u1 = simd_all(c)                           ; simd_any, simd_ballot -> u64, simd_first
 ```
 
-`lib/gpu.ssa` names the simdgroup's operations — `simd_sum`, `simd_product`, `simd_max`, `simd_min`, `simd_prefix_sum`, `simd_shuffle`, `simd_broadcast`, `simd_shuffle_xor`, `simd_shuffle_down`, `simd_shuffle_up`, the votes, `simd_lane` and `simd_size` — as generics over floats and integers, written by opcode (`simd_sum x`) or called. On a GPU they are the platform's (`air.simd_sum.f32`, ...; 32 lanes on an Apple GPU). On one thread the simdgroup is that thread — every reduction is its argument, a shuffle the value, the lane 0, the width 1. With fibres running a group (a `__kernel` directive) the simdgroup is 32 consecutive lanes and an operation is an exchange through a table in the thread's block: every lane puts its word in its slot and yields, reads what it needs, and yields again — so `suite/simdgroup.ssa` holds on four referees. Every lane of a simdgroup must reach the same operation, as on the hardware. A `simd_*` operation the platform has no instruction for (a 64-bit lane) is an error on the GPU rather than its one-thread form.
+`lib/gpu.ssa` names the simdgroup's operations — `simd_sum`, `simd_product`, `simd_max`, `simd_min`, `simd_prefix_sum`, `simd_shuffle`, `simd_broadcast`, `simd_shuffle_xor`, `simd_shuffle_down`, `simd_shuffle_up`, the votes, `simd_thread` and `simd_size` — as generics over floats and integers, written by opcode (`simd_sum x`) or called. On a GPU they are the platform's (`air.simd_sum.f32`, ...; 32 threads on an Apple GPU). On one thread the simdgroup is that thread — every reduction is its argument, a shuffle the value, the index 0, the width 1. With fibres running a group (a `__kernel` directive) the simdgroup is 32 consecutive threads and an operation is an exchange through a table in the thread's block: every thread puts its word in its slot and yields, reads what it needs, and yields again — so `suite/simdgroup.ssa` holds on four referees. Every thread of a simdgroup must reach the same operation, as on the hardware. (A vector has lanes; a simdgroup has threads.) A `simd_*` operation the platform has no instruction for (a 64-bit value) is an error on the GPU rather than its one-thread form.
 
 ### Calls
 

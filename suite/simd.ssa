@@ -1,12 +1,12 @@
-; the simdgroup (lib/gpu.ssa): what a group of lanes computes across
+; the simdgroup (lib/gpu.ssa): what a group of threads computes across
 ; itself. These cases hold on one thread — the CPU paths, and the GPU
 ; running one — where every reduction is its argument, a shuffle is
-; the value, the lane is 0; examples/simd.ssa is the many-lane case.
+; the value, the thread's index is 0; examples/simd.ssa is the many-thread case.
 
 ;! sum_f 0x40400000 -> 0x40400000
 ;! sum_i 7 -> 7
 ;! sum_u 9 -> 9
-;! lane_zero -> 0
+;! thread_zero -> 0
 ;! first -> 1
 ;! votes 1 -> 3
 ;! votes 0 -> 0
@@ -26,8 +26,8 @@ fn sum_u(x: u32) -> u32 {
     s: u32 = simd_sum x
     ret s
 }
-fn lane_zero() -> i64 {
-    l: i64 = simd_lane()
+fn thread_zero() -> i64 {
+    l: i64 = simd_thread()
     ret l
 }
 fn first() -> u1 {
@@ -46,7 +46,7 @@ fn votes(c: u1) -> u64 {
     r: u64 = mul b, s
     ret r
 }
-; a shuffle from lane 0, a broadcast, an xor: all the value itself
+; a shuffle from thread 0, a broadcast, an xor: all the value itself
 fn shuffles(x: i32) -> i32 {
     zero: i64 = const 0
     one: i64 = const 1

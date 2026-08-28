@@ -1,5 +1,5 @@
 ; a reduction: each group of threads sums its ids through threadgroup
-; memory, halving at every barrier; lane 0 writes the group's sum
+; memory, halving at every barrier; thread 0 writes the group's sum
 ;   probe compile examples/reduce.ssa air
 ;   python3 tools/driver_metal.py --kernel target/air/reduce.metallib target/air/reduce.air.json 256 64
 ; -> [2016, 6112, 10208, 14304, 0, ...]: the sums of 0..63, 64..127, ...
@@ -7,28 +7,28 @@
 
 group tmp: array(i64, 64)
 
-fn __kernel(mem: ptr, area: ptr, id: i64, lane: i64, group: i64) {
+fn __kernel(mem: ptr, area: ptr, id: i64, tid: i64, group: i64) {
     t: ptr(array(i64, 64)) = addr tmp
-    store id, t, lane
+    store id, t, tid
     group_sync()
     loop(half: i64 = 32) {
         done: u1 = cmp.eq half, 0
         if done {
             break
         }
-        below: u1 = cmp.lt lane, half
+        below: u1 = cmp.lt tid, half
         if below {
-            other: i64 = add lane, half
-            a: i64 = load t, lane
+            other: i64 = add tid, half
+            a: i64 = load t, tid
             b: i64 = load t, other
             s: i64 = add a, b
-            store s, t, lane
+            store s, t, tid
         }
         group_sync()
         h2: i64 = shr half, 1
         continue h2
     }
-    first: u1 = cmp.eq lane, 0
+    first: u1 = cmp.eq tid, 0
     if first {
         total: i64 = load t, 0
         store total, area, group, 8

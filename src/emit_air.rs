@@ -28,7 +28,7 @@
 //!   zero-extended if unsigned, sign-extended if signed, as wasm keeps
 //!   them — with arithmetic renormalizing; memory sizes match the
 //!   containers already.
-//! - threadgroups: `fn __kernel(mem, area, id, lane, group)` also gets
+//! - threadgroups: `fn __kernel(mem, area, id, tid, group)` also gets
 //!   its place in its group and its group's number. A `group` item is
 //!   in one `addrspace(3)` array; `addr` of one gives an offset into
 //!   it, and every address computed from that (a fixpoint over the
@@ -42,12 +42,12 @@
 //!   on `<4 x float>`, `air.sqrt.v4f32`), and a library call on lanes
 //!   is made per lane.
 //! - the simdgroup: `lib/gpu.ssa`'s `simd_*` are rules here, Apple's
-//!   intrinsics (`air.simd_sum.f32`, shuffles taking an `i16` lane, votes
-//!   on `i1`); the lane index and width are kernel arguments, which the
+//!   intrinsics (`air.simd_sum.f32`, shuffles taking an `i16` thread index, votes
+//!   on `i1`); the thread's index in its simdgroup and the width are kernel arguments, which the
 //!   wrapper leaves in a 16-byte header at the start of each thread's
 //!   slab — every function gets its offset as a third hidden parameter,
-//!   `tls`, and `simd_lane()`/`simd_size()` read it. A `simd_*` call the
-//!   platform has no rule for (a 64-bit lane) is an error here: its
+//!   `tls`, and `simd_thread()`/`simd_size()` read it. A `simd_*` call the
+//!   platform has no rule for (a 64-bit value) is an error here: its
 //!   one-thread body would be wrong on many.
 //! - inlining: every function is `alwaysinline`, so a kernel is one
 //!   body (see the note at the declarations for why that is also the
@@ -101,7 +101,7 @@ const CAST_SEXT: u32 = 2;
 const CAST_BITCAST: u32 = 11;
 /// LLVM's attribute kinds
 const ATTR_CONVERGENT: u64 = 43;
-/// each thread's header, at the start of its slab: [simd lane, simd width]
+/// each thread's header, at the start of its slab: [simd thread index, simd width]
 const HEADER: u64 = 16;
 
 /// which functions AIR cannot have — a function that can reach itself,
@@ -321,13 +321,13 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
         let kf = module.func("__kernel").unwrap();
         cx.kernel_arity = kf.params.len();
         if cx.kernel_arity != 3 && cx.kernel_arity != 5 {
-            return Err("__kernel takes (mem, area, id) or (mem, area, id, lane, group)".into());
+            return Err("__kernel takes (mem, area, id) or (mem, area, id, tid, group)".into());
         }
         let mut params = vec![ptr_ty, ptr_ty, i32t];
         if cx.kernel_arity == 5 {
             params.extend([i32t, i32t]);
         }
-        // and the simdgroup's lane index and width, for the header
+        // and the thread's index in its simdgroup and the width, for the header
         params.extend([i32t, i32t]);
         let fty = cx.m.fn_ty(void, params);
         Some(cx.m.function("__kernel", fty, false))
@@ -355,9 +355,9 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
                             (Some(n), Some((stem, suffix))) => format!("{}.v{}{}", stem, n, suffix),
                             _ => key.clone(),
                         };
-                        if !cx.decls.contains_key(&key) && !matches!(key.as_str(), "air.simd_lane" | "air.simd_size" | "air.thread") {
+                        if !cx.decls.contains_key(&key) && !matches!(key.as_str(), "air.simd_thread" | "air.simd_size" | "air.thread") {
                             // floats are the classed arguments; integers their
-                            // containers, but a shuffle's lane is an i16
+                            // containers, but a shuffle's thread index is an i16
                             let vec = |cx: &mut Cx, t: usize| match lanes {
                                 Some(n) => cx.m.ty(BType::Vector(t, n as u64)),
                                 None => t,
@@ -449,7 +449,7 @@ struct Fx<'b> {
 }
 
 /// an intrinsic's own width for an integer argument, where it differs
-/// from the container: a shuffle's or broadcast's lane is an i16
+/// from the container: a shuffle's or broadcast's thread index is an i16
 fn intrinsic_int_bits(key: &str, j: usize) -> Option<u32> {
     if j == 1 && (key.contains("simd_shuffle") || key.contains("simd_broadcast")) {
         Some(16)
@@ -1261,16 +1261,16 @@ impl Cx<'_> {
             return Ok(());
         }
         let Some(&dst) = dsts.first() else { return Ok(()) };
-        // the simdgroup lane and width: the thread's header
+        // the thread's simdgroup index and width: its header
         if key == "air.thread" {
             fx.vals.insert(dst.0, fx.tls);
             return Ok(());
         }
-        if key == "air.simd_lane" || key == "air.simd_size" {
+        if key == "air.simd_thread" || key == "air.simd_size" {
             let i8t = self.m.int(8);
             let i64t = self.i64t;
             let i64p = self.m.ptr(i64t, 1);
-            let kc = self.const_i64(if key == "air.simd_lane" { 0 } else { 8 });
+            let kc = self.const_i64(if key == "air.simd_thread" { 0 } else { 8 });
             let at = fx.b.push(&self.m, B::Bin { op: OP_ADD, lhs: fx.tls, rhs: kc, flags: 0 });
             let env = fx.env;
             let bp = fx.b.push(&self.m, B::Gep { elem_ty: i8t, base: env, idx: vec![at], inbounds: true });
@@ -1299,7 +1299,7 @@ impl Cx<'_> {
                 };
                 fx.b.push(&self.m, B::Cast { op: CAST_BITCAST, val: v, ty: ft })
             } else if let Some(w) = intrinsic_int_bits(&key, j) {
-                // an integer the intrinsic wants narrower (a shuffle's lane)
+                // an integer the intrinsic wants narrower (a shuffle's thread index)
                 let it = self.m.int(w);
                 fx.b.push(&self.m, B::Cast { op: CAST_TRUNC, val: v, ty: it })
             } else {
@@ -1405,7 +1405,7 @@ impl Cx<'_> {
         let off0 = b.push(&self.m, B::Bin { op: OP_MUL, lhs: id64, rhs: slabc, flags: 0 });
         let dsc = self.const_i64(data_size as i64);
         let tls = b.push(&self.m, B::Bin { op: OP_ADD, lhs: off0, rhs: dsc, flags: 0 });
-        // the header: the simdgroup lane and width, then the slab
+        // the header: the thread's simdgroup index and width, then the slab
         let (sl, sw) = (b.arg(&self.m, if self.kernel_arity == 5 { 5 } else { 3 }), b.arg(&self.m, if self.kernel_arity == 5 { 6 } else { 4 }));
         let i8t = self.m.int(8);
         let i64p = self.m.ptr(i64t, 1);
@@ -1469,7 +1469,7 @@ impl Cx<'_> {
         let simd_at = if self.kernel_arity == 5 { 5 } else { 3 };
         let (vs, vw) = (c(&mut self.m, simd_at), c(&mut self.m, simd_at + 1));
         let s_lane = {
-            let items = vec![Some(vs), s(&mut self.m, "air.thread_index_in_simdgroup"), s(&mut self.m, "air.arg_type_name"), s(&mut self.m, "uint"), s(&mut self.m, "air.arg_name"), s(&mut self.m, "simd_lane")];
+            let items = vec![Some(vs), s(&mut self.m, "air.thread_index_in_simdgroup"), s(&mut self.m, "air.arg_type_name"), s(&mut self.m, "uint"), s(&mut self.m, "air.arg_name"), s(&mut self.m, "simd_thread")];
             self.m.md_node(items)
         };
         let s_width = {
@@ -1543,7 +1543,7 @@ mod tests {
     }
 
     /// examples/simd.ssa: 64 threads, each the sum of its simdgroup's ids
-    /// (32 lanes) with its lane index
+    /// (32 threads) with its index in it
     #[test]
     fn simdgroup_sums_on_the_gpu() {
         let _turn = crate::suite::tests::boot_turn();

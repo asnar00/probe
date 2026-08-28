@@ -16,21 +16,22 @@ fn group_sync() {
     ret
 }
 
-; a simdgroup: the lanes that execute in lockstep (32 on an Apple GPU),
+; a simdgroup: the threads that execute in lockstep (32 on an Apple GPU),
 ; with operations across them — sums, extremes, prefix sums, shuffles
-; and votes, on 32-bit lanes and half (targets/air.platform names
-; Apple's). A lane or delta is an i64 (`three: i64 = const 3` before
+; and votes, on 32-bit values and half (targets/air.platform names
+; Apple's). A thread index or delta is an i64 (`three: i64 = const 3` before
 ; `simd_shuffle x, three`).
 ;
-; On one thread the simdgroup is that thread: a lane is 0, the width
+; On one thread the simdgroup is that thread: its index is 0, the width
 ; 1, every reduction is its argument, a shuffle the value, a vote the
 ; one vote. With fibres running a group (lib/fibre.ssa, a kernel
-; directive), the simdgroup is 32 consecutive lanes of the group and
+; directive), the simdgroup is 32 consecutive threads of the group and
 ; an operation is an exchange through a table in the thread's block:
-; every lane puts its word in its slot and yields — a round, so every
-; lane has put — reads what it needs, and yields again so no lane
-; writes over a word another has yet to read. Every lane of a
-; simdgroup must reach the same operation, as on the hardware.
+; every thread puts its word in its slot and yields — a round, so every
+; thread has put — reads what it needs, and yields again so no thread
+; writes over a word another has yet to read. Every thread of a
+; simdgroup must reach the same operation, as on the hardware. (A
+; vector has lanes; a simdgroup has threads.)
 
 ; the exchange table: 64 words at 9216 in the block
 fn simd_slots() -> ptr {
@@ -38,7 +39,7 @@ fn simd_slots() -> ptr {
     p: ptr = ptradd t, 9216
     ret p
 }
-; my lane's simdgroup: its first lane, and how many lanes it has
+; my simdgroup: its first thread, and how many threads it has
 fn simd_base() -> i64 {
     k: i64 = fibre_current()
     b: i64 = and k, -32
@@ -63,9 +64,9 @@ fn simd_put(w: u64) {
     fibre_yield()
     ret
 }
-fn simd_get(lane: i64) -> u64 {
+fn simd_get(t: i64) -> u64 {
     s: ptr = simd_slots()
-    w: u64 = load s, lane, 8
+    w: u64 = load s, t, 8
     ret w
 }
 fn simd_done() {
@@ -73,7 +74,7 @@ fn simd_done() {
     ret
 }
 
-fn simd_lane() -> i64 {
+fn simd_thread() -> i64 {
     a: u1 = fibres_active()
     if a {
         k: i64 = fibre_current()
@@ -90,7 +91,7 @@ fn simd_size() -> i64 {
     ret 1
 }
 fn simd_first() -> u1 {
-    l: i64 = simd_lane()
+    l: i64 = simd_thread()
     f: u1 = cmp.eq l, 0
     ret f
 }
@@ -276,16 +277,16 @@ fn simd_prefix_sum(E, M)(x: float(E, M)) -> float(E, M) {
     }
     ret x
 }
-; a word from another lane: its slot, or my own value off the group
-fn simd_fetch(x: u64, lane: i64) -> u64 {
+; a word from another thread: its slot, or my own value off the group
+fn simd_fetch(x: u64, t: i64) -> u64 {
     base: i64 = simd_base()
     n: i64 = simd_active()
     simd_put(x)
-    inside0: u1 = cmp.ge lane, 0
-    inside1: u1 = cmp.lt lane, n
+    inside0: u1 = cmp.ge t, 0
+    inside1: u1 = cmp.lt t, n
     inside: u1 = and inside0, inside1
     r: u64 = if inside {
-        at: i64 = add base, lane
+        at: i64 = add base, t
         v: u64 = simd_get(at)
         yield v
     } else {
@@ -294,36 +295,36 @@ fn simd_fetch(x: u64, lane: i64) -> u64 {
     simd_done()
     ret r
 }
-fn simd_shuffle(E, M)(x: float(E, M), lane: i64) -> float(E, M) {
+fn simd_shuffle(E, M)(x: float(E, M), t: i64) -> float(E, M) {
     a: u1 = fibres_active()
     if a {
         xb: u(E + M + 1) = cast x
         w: u64 = conv xb
-        v: u64 = simd_fetch(w, lane)
+        v: u64 = simd_fetch(w, t)
         vb: u(E + M + 1) = conv v
         f: float(E, M) = cast vb
         ret f
     }
     ret x
 }
-fn simd_broadcast(E, M)(x: float(E, M), lane: i64) -> float(E, M) {
-    r: float(E, M) = simd_shuffle x, lane
+fn simd_broadcast(E, M)(x: float(E, M), t: i64) -> float(E, M) {
+    r: float(E, M) = simd_shuffle x, t
     ret r
 }
 fn simd_shuffle_xor(E, M)(x: float(E, M), mask: i64) -> float(E, M) {
-    l: i64 = simd_lane()
+    l: i64 = simd_thread()
     other: i64 = xor l, mask
     r: float(E, M) = simd_shuffle x, other
     ret r
 }
 fn simd_shuffle_down(E, M)(x: float(E, M), delta: i64) -> float(E, M) {
-    l: i64 = simd_lane()
+    l: i64 = simd_thread()
     other: i64 = add l, delta
     r: float(E, M) = simd_shuffle x, other
     ret r
 }
 fn simd_shuffle_up(E, M)(x: float(E, M), delta: i64) -> float(E, M) {
-    l: i64 = simd_lane()
+    l: i64 = simd_thread()
     other: i64 = sub l, delta
     r: float(E, M) = simd_shuffle x, other
     ret r
@@ -574,56 +575,56 @@ fn simd_prefix_sum(N)(x: u(N)) -> u(N) {
     }
     ret x
 }
-fn simd_shuffle(N)(x: i(N), lane: i64) -> i(N) {
+fn simd_shuffle(N)(x: i(N), t: i64) -> i(N) {
     a: u1 = fibres_active()
     if a {
         xw: i64 = conv x
         w: u64 = cast xw
-        v: u64 = simd_fetch(w, lane)
+        v: u64 = simd_fetch(w, t)
         vi: i64 = cast v
         r: i(N) = conv vi
         ret r
     }
     ret x
 }
-fn simd_shuffle(N)(x: u(N), lane: i64) -> u(N) {
+fn simd_shuffle(N)(x: u(N), t: i64) -> u(N) {
     a: u1 = fibres_active()
     if a {
         w: u64 = conv x
-        v: u64 = simd_fetch(w, lane)
+        v: u64 = simd_fetch(w, t)
         r: u(N) = conv v
         ret r
     }
     ret x
 }
-fn simd_broadcast(N)(x: i(N), lane: i64) -> i(N) {
-    r: i(N) = simd_shuffle x, lane
+fn simd_broadcast(N)(x: i(N), t: i64) -> i(N) {
+    r: i(N) = simd_shuffle x, t
     ret r
 }
-fn simd_broadcast(N)(x: u(N), lane: i64) -> u(N) {
-    r: u(N) = simd_shuffle x, lane
+fn simd_broadcast(N)(x: u(N), t: i64) -> u(N) {
+    r: u(N) = simd_shuffle x, t
     ret r
 }
 fn simd_shuffle_xor(N)(x: i(N), mask: i64) -> i(N) {
-    l: i64 = simd_lane()
+    l: i64 = simd_thread()
     other: i64 = xor l, mask
     r: i(N) = simd_shuffle x, other
     ret r
 }
 fn simd_shuffle_xor(N)(x: u(N), mask: i64) -> u(N) {
-    l: i64 = simd_lane()
+    l: i64 = simd_thread()
     other: i64 = xor l, mask
     r: u(N) = simd_shuffle x, other
     ret r
 }
 fn simd_shuffle_down(N)(x: i(N), delta: i64) -> i(N) {
-    l: i64 = simd_lane()
+    l: i64 = simd_thread()
     other: i64 = add l, delta
     r: i(N) = simd_shuffle x, other
     ret r
 }
 fn simd_shuffle_up(N)(x: i(N), delta: i64) -> i(N) {
-    l: i64 = simd_lane()
+    l: i64 = simd_thread()
     other: i64 = sub l, delta
     r: i(N) = simd_shuffle x, other
     ret r

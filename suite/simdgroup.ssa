@@ -1,5 +1,5 @@
 ; the simdgroup as a suite case: each thread combines the sum of its
-; simdgroup's ids, the inclusive prefix sum and the id of the lane
+; simdgroup's ids, the inclusive prefix sum and the id of the thread
 ; across from it — Apple's instructions on the GPU, an exchange between
 ; fibres on a machine (lib/gpu.ssa) — so word id is
 ;   sum * 1000000 + prefix * 1000 + shuffle_xor(id, 1)

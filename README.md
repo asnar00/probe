@@ -172,7 +172,7 @@ python3 tools/driver_metal.py --kernel target/air/gpu.metallib target/air/gpu.ai
 # ... and a reduction over threadgroups of 64 (lib/gpu.ssa)
 cargo run -- compile examples/reduce.ssa air
 python3 tools/driver_metal.py --kernel target/air/reduce.metallib target/air/reduce.air.json 256 64
-# ... and the simdgroup summing across its 32 lanes
+# ... and the simdgroup summing across its 32 threads
 cargo run -- compile examples/simd.ssa air
 python3 tools/driver_metal.py --kernel target/air/simd.metallib target/air/simd.air.json 64
 
@@ -247,8 +247,8 @@ What is here:
 
 Deliberately not here yet (`future-work.md` has the queue, `handover.md` the reasons):
 
-- Lanes as real worker threads on wasm.
-- Lockstep checking in the simdgroup exchange: a lane that skips a `simd_*` should fail on the machines rather than get a quiet wrong answer as on the GPU.
+- A kernel's threads as real worker threads on wasm.
+- Lockstep checking in the simdgroup exchange: a thread that skips a `simd_*` should fail on the machines rather than get a quiet wrong answer as on the GPU.
 - Tasks dealt across cores in the OS programs.
 - Textures as handles with platform operations; WebGPU as a second GPU path.
 - Capacity analysis for arenas and stacks.
