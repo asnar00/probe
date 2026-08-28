@@ -450,7 +450,7 @@ t: ptr = thread()                             ; this thread's block (lib/thread.
 thread_set(block)                             ; install one: 16 KB plus the program's group section
 ```
 
-`thread()` is a pointer to the current thread's own block of memory, kept in a register the platform names (`ext thread`: `tpidr_el0` on arm64, `tp` on riscv64, the thread's header on a GPU); a thread that has never set one — the register is zero at boot — has the default block the library declares. The block holds the fibre scheduler and its frames, and, at 16384, this thread's copy of the program's `group` items: on a machine `addr` of a group item is `thread()` plus its offset (the machine backends' lowering), so every group in flight has its own, as on the GPU. Under the JIT the register belongs to the host between calls (macOS's malloc reads it), so the runner installs the program's block around each call and puts the host's value back.
+`thread()` is a pointer to the current thread's own block of memory. The platform gives a *key* that tells threads apart (`ext thread`: `tpidrro_el0` on arm64 — unique per thread under macOS, zero at boot — `tp` on riscv64, nothing on wasm), and `lib/thread.ssa` maps keys to blocks in a small table `thread_set` fills (a slot per thread, `thread_set_slot`, when several install at once); a thread with no block has the default block the library declares. On a GPU `thread()` is the platform's, the thread's header. The block holds the fibre scheduler and its frames, and, at 16384, this thread's copy of the program's `group` items: on a machine `addr` of a group item is `thread()` plus its offset (the machine backends' lowering), so every group in flight has its own, as on the GPU. (The writable `tpidr_el0` was the first design; XNU rewrites it at every context switch, so a value left there is gone the moment a thread is preempted.)
 
 ### Fibres, and a kernel as a suite case
 
@@ -469,11 +469,14 @@ on — the shape of a barrier. The switch is the platform's
 `targets/arm64.platform`, `riscv64.platform`); wasm, with one stack,
 runs the bodies one after another instead (`fibre_stacks = 0`).
 `group_sync()` yields while fibres run. So a program written for a
-threadgroup is a suite case everywhere: `;! __kernel n g -> words`
+threadgroup is a suite case everywhere: `;! __kernel n g [m] -> words`
 runs its `__kernel` as n threads in groups of g — the real dispatch on
-the GPU, a group of fibres per group on a machine — and compares the
-area's first words; on wasm it is skipped and counted. A program with
-a `__kernel` takes only such directives (`suite/reduce.ssa`).
+the GPU, a group of fibres per group on a machine, dealt across m OS
+threads under the JIT (thread t takes groups t, t + m, ..., each with
+a thread block and group memory of its own; bare metal runs one) —
+and compares the area's first words; on wasm it is skipped and
+counted. A program with a `__kernel` takes only such directives
+(`suite/reduce.ssa`).
 
 ### The simdgroup
 

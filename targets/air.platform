@@ -94,4 +94,4 @@ const fibre_stacks = 0
 
 ; the current thread: its header, which every function's tls names
 ext thread
-air.thread = thread_reg() -> ptr
+air.thread = thread() -> ptr

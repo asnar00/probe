@@ -1,61 +1,79 @@
 ; lib/thread.ssa: the current thread. `thread()` is a pointer to the
-; thread's own block of memory — the platform keeps it in a register
-; (`thread_reg`: tpidr_el0 on arm64, tp on riscv64, the header on a
-; GPU), and a platform without one, or a thread that never set one
-; (the register is zero at boot), has the default block below, which
-; carries the program's group section after its 16 KB. What the block holds:
+; thread's own block of memory. The platform gives a key that tells
+; threads apart (`thread_key`: tpidrro_el0 on arm64 — unique per
+; thread under macOS, zero at boot; tp on riscv64; nothing on wasm,
+; which has one thread), and a table here maps keys to blocks, filled
+; by `thread_set` (a slot per thread: `thread_set_slot`, when several
+; threads install at once). A thread with no block has the default
+; block below. On a GPU `thread()` is the platform's (its header).
+;
+; What the block holds:
 ;
 ;   [0]      the fibre scheduler's state (lib/fibre.ssa)
+;   [32]     free for a runner (the suite keeps its group size and group here)
 ;   [64]     the scheduler's frame
 ;   [192]    the fibres' frames, 64 of 128 bytes
 ;   [8384]   the fibres' done flags, 64 words
 ;   [16384]  this thread's group items (`group` declarations), laid
 ;            out as the program's group section
 ;
-; so a block is 16 KB plus the group section. `thread_block_bytes()`
-; is the least a block can be; a program with group items needs that
-; plus their bytes (`probe` lays them out 16-aligned in order).
+; so a block is 16 KB plus the group section (`thread_block_bytes()`
+; is the 16 KB; the default block carries the section after it).
 
 data __thread_default: array(u8, 16384)
-data __thread_word: array(u64, 1)
-
-; under a JIT the register belongs to the host (macOS keeps a value in
-; tpidr_el0): the runner installs the default block on load and puts
-; the host's value back when done
-fn __thread_install() -> ptr {
-    prev: ptr = thread_reg()
-    d: ptr = addr __thread_default
-    thread_reg_set(d)
-    ret prev
-}
-fn __thread_restore(p: ptr) {
-    thread_reg_set(p)
-    ret
-}
+; 32 slots of (key, block); a slot is taken when its block is not 0
+data __thread_table: array(u64, 64)
 
 ; the platform's; nothing where there is no register
-fn thread_reg() -> ptr {
-    w: ptr = addr __thread_word
-    p: ptr = load w
-    ret p
-}
-fn thread_reg_set(p: ptr) {
-    w: ptr = addr __thread_word
-    store p, w
-    ret
+fn thread_key() -> ptr {
+    ret 0
 }
 
 fn thread() -> ptr {
-    p: ptr = thread_reg()
-    unset: u1 = cmp.eq p, 0
-    if unset {
+    k: ptr = thread_key()
+    ku: u64 = cast k
+    t: ptr = addr __thread_table
+    found: ptr = loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, 32
+        if done {
+            break 0: ptr
+        }
+        two: i64 = mul i, 2
+        key: u64 = load t, two, 8
+        blockat: i64 = add two, 1
+        block: u64 = load t, blockat, 8
+        taken: u1 = cmp.ne block, 0
+        same: u1 = cmp.eq key, ku
+        hit: u1 = and taken, same
+        if hit {
+            b: ptr = cast block
+            break b
+        }
+        i1: i64 = add i, 1
+        continue i1
+    }
+    none: u1 = cmp.eq found, 0
+    if none {
         d: ptr = addr __thread_default
         ret d
     }
-    ret p
+    ret found
 }
-fn thread_set(p: ptr) {
-    thread_reg_set(p)
+fn thread_set_slot(slot: i64, b: ptr) {
+    ok: u1 = cmp.lt slot, 32
+    check ok
+    k: ptr = thread_key()
+    ku: u64 = cast k
+    bu: u64 = cast b
+    t: ptr = addr __thread_table
+    two: i64 = mul slot, 2
+    store ku, t, two, 8
+    blockat: i64 = add two, 1
+    store bu, t, blockat, 8
+    ret
+}
+fn thread_set(b: ptr) {
+    thread_set_slot(0, b)
     ret
 }
 fn thread_block_bytes() -> i64 {

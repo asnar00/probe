@@ -1686,13 +1686,16 @@ pub mod jit {
     const MAP_JIT: i32 = 0x0800;
     const MAP_FIXED: i32 = 0x0010;
 
+    // the code is shared by the runner's threads; each call is on the
+    // caller's own stack and thread register
+    unsafe impl Send for JitCode {}
+    unsafe impl Sync for JitCode {}
+
     pub struct JitCode {
         base: *mut u8,
         #[allow(dead_code)]
         len: usize,
         funcs: std::collections::HashMap<String, usize>,
-        /// does the program install its thread block? (lib/thread.ssa)
-        threaded: bool,
     }
 
     impl JitCode {
@@ -1733,36 +1736,12 @@ pub mod jit {
                     std::ptr::copy_nonoverlapping(compiled.code.as_ptr().add(w), p, compiled.code.len() - w);
                     total += rw_len;
                 }
-                let threaded = compiled.funcs.contains_key("__thread_install");
-                Ok(JitCode { base, len: total, funcs: compiled.funcs.clone(), threaded })
+                Ok(JitCode { base, len: total, funcs: compiled.funcs.clone() })
             }
         }
 
-        /// Call a compiled function with up to 6 integer arguments. The
-        /// thread register holds the program's block only while its code
-        /// runs (lib/thread.ssa): the host's own value — macOS's malloc
-        /// reads tpidr_el0 — goes back before Rust runs again
+        /// Call a compiled function with up to 6 integer arguments.
         pub fn call(&self, name: &str, args: &[i64]) -> Result<i64, String> {
-            if !self.threaded {
-                return self.call_raw(name, args);
-            }
-            let host = self.call_raw("__thread_install", &[])?;
-            let r = self.call_raw(name, args);
-            self.call_raw("__thread_restore", &[host])?;
-            r
-        }
-
-        pub fn call2(&self, name: &str, args: &[i64]) -> Result<(i64, i64), String> {
-            if !self.threaded {
-                return self.call2_raw(name, args);
-            }
-            let host = self.call_raw("__thread_install", &[])?;
-            let r = self.call2_raw(name, args);
-            self.call_raw("__thread_restore", &[host])?;
-            r
-        }
-
-        fn call_raw(&self, name: &str, args: &[i64]) -> Result<i64, String> {
             let &off = self
                 .funcs
                 .get(name)
@@ -1794,7 +1773,7 @@ pub mod jit {
         /// them in x0/x1, which is exactly where the C ABI puts a returned
         /// two-element aggregate — so a #[repr(C)] pair maps directly.
         /// (Three or more would need an SSA-generated shim; not yet.)
-        fn call2_raw(&self, name: &str, args: &[i64]) -> Result<(i64, i64), String> {
+        pub fn call2(&self, name: &str, args: &[i64]) -> Result<(i64, i64), String> {
             #[repr(C)]
             struct Pair(i64, i64);
             let &off = self

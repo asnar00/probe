@@ -31,7 +31,7 @@ bitcode we write. Left:
   there is no pointer type for the space it is in. A `ptr` that knows
   its address space would lift that; ash's rule against region-typed
   pointers is about lifetimes, not spaces, so it is open.
-- **M threads on a machine**: `thread()` gives every thread a block of its own, so a kernel's groups can be dealt out across OS threads (the JIT runner spawning them, each with a block) and, on qemu, across cores brought up with PSCI / the hart lottery — the multicore OS. A `;! __kernel n g m` form for the thread count; groups dealt out deterministically so the qemu paths reproduce.
+- **Cores on qemu**: the JIT deals a kernel's groups across OS threads (`;! __kernel n g m`); the machines run one. Secondary cores brought up with PSCI `CPU_ON` / the hart lottery, each `thread_set` to a block of its own — the multicore OS — would run the same `__run_groups`.
 - **The simdgroup over fibres**: a kernel directive runs a group as
   fibres on a machine, but `simd_sum` and the rest are still their
   one-thread forms there; a simd operation across a group's fibres

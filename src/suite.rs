@@ -361,10 +361,28 @@ fn run_native(
     };
     for case in cases {
         if case.func == "__kernel" {
-            // the runner, then the area's words
+            // m OS threads, each with a block and stacks of its own,
+            // dealt the groups t, t + m, ...; then the area's words
             let got = (|| -> Result<Vec<i64>, String> {
-                let (n, g) = kernel_shape(case)?;
-                jit.call("__run_kernel", &[n, g])?;
+                let (n, g, m) = kernel_shape(case)?;
+                let block_bytes = 16384 + ssa::layout_data_parts(module).1.len();
+                let mut blocks: Vec<Vec<u64>> = (0..m).map(|_| vec![0u64; block_bytes.div_ceil(8)]).collect();
+                let mut stacks: Vec<Vec<u64>> = (0..m).map(|_| vec![0u64; (g as usize) * 4096 / 8]).collect();
+                let results: Vec<Result<i64, String>> = std::thread::scope(|sc| {
+                    let handles: Vec<_> = blocks
+                        .iter_mut()
+                        .zip(stacks.iter_mut())
+                        .enumerate()
+                        .map(|(t, (b, s))| {
+                            let jit = &jit;
+                            sc.spawn(move || jit.call("__run_groups", &[n, g, t as i64, m, b.as_mut_ptr() as i64, s.as_mut_ptr() as i64]))
+                        })
+                        .collect();
+                    handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("a runner thread panicked".into()))).collect()
+                });
+                for r in results {
+                    r?;
+                }
                 (0..case.expected.len() as i64).map(|i| jit.call("__area_word", &[i])).collect()
             })();
             finish_case(report, name, case, got);
@@ -737,7 +755,7 @@ fn gen_driver(
         start.push_str(&format!("    __case{}()\n", ci));
         if case.func == "__kernel" {
             // the runner, then the area's words printed
-            let (kn, kg) = kernel_shape(case)?;
+            let (kn, kg, _) = kernel_shape(case)?;
             let n = tmp(&mut s, "i64", format!("const {}", kn));
             let g = tmp(&mut s, "i64", format!("const {}", kg));
             s.push_str(&format!("    __run_kernel({}, {})\n", n, g));
@@ -1068,11 +1086,13 @@ const AIR_AREA: u64 = 0x10_0000;
 const AIR_HEAP: u64 = 0x20_0000;
 const AIR_MEM: u64 = 0x80_0000;
 
-/// a `__kernel n g` directive's n and g
-fn kernel_shape(case: &Case) -> Result<(i64, i64), String> {
+/// a `__kernel n g [m]` directive's n threads, group size g and, on
+/// the JIT, m OS threads to deal the groups across (1 elsewhere)
+fn kernel_shape(case: &Case) -> Result<(i64, i64, i64), String> {
     match case.args.as_slice() {
-        [ArgSpec::Int(n), ArgSpec::Int(g)] if *g > 0 && *g <= 64 && n % g == 0 => Ok((*n, *g)),
-        _ => Err(format!("'{}': a __kernel directive takes n threads and a group size dividing it (at most 64)", case.text)),
+        [ArgSpec::Int(n), ArgSpec::Int(g)] if *g > 0 && *g <= 64 && n % g == 0 => Ok((*n, *g, 1)),
+        [ArgSpec::Int(n), ArgSpec::Int(g), ArgSpec::Int(m)] if *g > 0 && *g <= 64 && n % g == 0 && *m > 0 && *m <= 16 => Ok((*n, *g, *m)),
+        _ => Err(format!("'{}': a __kernel directive takes n threads, a group size dividing it (at most 64) and, optionally, a thread count (at most 16)", case.text)),
     }
 }
 
@@ -1081,17 +1101,18 @@ fn kernel_shape(case: &Case) -> Result<(i64, i64), String> {
 /// suite adds to a program with `__kernel` directives
 fn kernel_runner(arity: usize, group_bytes: usize) -> String {
     let call = if arity == 5 { "__kernel(__z, __area, __id, __lane, __grp)" } else { "__kernel(__z, __area, __id)" };
+    // the group size and the group under way are the thread's, at 32
+    // and 40 in its block (lib/thread.ssa leaves those words free)
     format!(
         r"
 data __karea: array(i64, 1024)
 data __kstacks: array(u8, 262144)
-data __kargs: array(i64, 4)
 data __kthread: array(u8, {})
 fn __klane(__lane: i64) {{
 entry:
-    __ka: ptr = addr __kargs
-    __g: i64 = load __ka, 0
-    __grp: i64 = load __ka, 8
+    __t: ptr = thread()
+    __g: i64 = load __t, 32
+    __grp: i64 = load __t, 40
     __gid: i64 = mul __grp, __g
     __id: i64 = add __gid, __lane
     __area: ptr = addr __karea
@@ -1099,28 +1120,32 @@ entry:
     {}
     ret
 }}
-fn __run_kernel(__n: i64, __g: i64) {{
+fn __run_groups(__n: i64, __g: i64, __first: i64, __step: i64, __block: ptr, __stacks: ptr) {{
 entry:
-    __kt: ptr = addr __kthread
-    thread_set(__kt)
-    __ka: ptr = addr __kargs
-    store __g, __ka, 0
+    thread_set_slot(__first, __block)
+    store __g, __block, 32
     __groups: i64 = div __n, __g
     __b: fn(i64) = addr __klane
-    __s: ptr = addr __kstacks
-    __zero: i64 = const 0
-    jmp loop(__zero)
+    jmp loop(__first)
 loop(__grp: i64):
     __done: u1 = cmp.ge __grp, __groups
     br __done, exit, body
 body:
-    store __grp, __ka, 8
+    store __grp, __block, 40
     __sz: i64 = const 4096
-    fibres_run(__g, __s, __sz, __b)
-    __one: i64 = const 1
-    __next: i64 = add __grp, __one
+    fibres_run(__g, __stacks, __sz, __b)
+    __next: i64 = add __grp, __step
     jmp loop(__next)
 exit:
+    ret
+}}
+fn __run_kernel(__n: i64, __g: i64) {{
+entry:
+    __kt: ptr = addr __kthread
+    __s: ptr = addr __kstacks
+    __zero: i64 = const 0
+    __one: i64 = const 1
+    __run_groups(__n, __g, __zero, __one, __kt, __s)
     ret
 }}
 fn __area_word(__i: i64) -> i64 {{
@@ -1221,7 +1246,7 @@ fn run_air(
         };
         for case in cases {
             let got = (|| -> Result<Vec<i64>, String> {
-                let (n, g) = kernel_shape(case)?;
+                let (n, g, _) = kernel_shape(case)?;
                 let out = Command::new("python3")
                     .args(["tools/driver_metal.py", "--kernel"])
                     .arg(&lib)

@@ -270,11 +270,10 @@ fibre_switch(save: ptr, to: ptr) -> () with t: ptr called
     ldr t, [to, 96]
     mov sp, t
 
-; the current thread: a pointer the platform keeps per thread
-; (lib/thread.ssa says what it points at). tpidr_el0 is the thread
-; register both at EL1 and, unused by macOS's own runtime, at EL0
+; the current thread's key: tpidrro_el0, which macOS keeps unique per
+; thread and cannot be written from user space (tpidr_el0 is the
+; kernel's, rewritten at every context switch), and which is zero at
+; boot. lib/thread.ssa maps the key to the thread's block.
 ext thread
-thread_reg() -> ptr
-    mrs r, tpidr_el0
-thread_reg_set(p: ptr) -> ()
-    msr tpidr_el0, p
+thread_key() -> ptr
+    mrs r, tpidrro_el0

@@ -2,11 +2,14 @@
 ; kernel as n threads in groups of g and compares the area's first
 ; words — the real dispatch on the GPU, fibres taking turns at every
 ; group_sync on a machine (lib/fibre.ssa), skipped on wasm, which has
-; one stack. The reduction: each group sums its ids through group
-; memory, halving at every barrier.
+; one stack. A third number is how many OS threads the JIT deals the
+; groups across, each with a thread block and group memory of its own.
+; The reduction: each group sums its ids through group memory, halving
+; at every barrier.
 
 ;! __kernel 256 64 -> 2016, 6112, 10208, 14304
 ;! __kernel 128 64 -> 2016, 6112
+;! __kernel 512 64 4 -> 2016, 6112, 10208, 14304, 18400, 22496, 26592, 30688
 
 group tmp: array(i64, 64)
 
