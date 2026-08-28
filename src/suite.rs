@@ -281,7 +281,12 @@ pub fn run_dir_at(
                 // machine), its area's first words the results
                 let arity = module.func("__kernel").ok_or("a __kernel directive needs fn __kernel")?.params.len();
                 let group_bytes = ssa::layout_data_parts(&module).1.len();
-                src.push_str(&kernel_runner(arity, group_bytes));
+                let core_ram = match backend {
+                    Backend::Riscv => 0x8600_0000u64,
+                    Backend::ArmQemu => 0x4600_0000,
+                    _ => 0,
+                };
+                src.push_str(&kernel_runner(arity, group_bytes, core_ram));
                 return build(&src);
             }
             Ok(module)
@@ -755,10 +760,11 @@ fn gen_driver(
         start.push_str(&format!("    __case{}()\n", ci));
         if case.func == "__kernel" {
             // the runner, then the area's words printed
-            let (kn, kg, _) = kernel_shape(case)?;
+            let (kn, kg, km) = kernel_shape(case)?;
             let n = tmp(&mut s, "i64", format!("const {}", kn));
             let g = tmp(&mut s, "i64", format!("const {}", kg));
-            s.push_str(&format!("    __run_kernel({}, {})\n", n, g));
+            let m = tmp(&mut s, "i64", format!("const {}", km.min(4)));
+            s.push_str(&format!("    __run_kernel({}, {}, {})\n", n, g, m));
             for i in 0..case.expected.len() {
                 if i > 0 {
                     let sp = tmp(&mut s, "u64", "const 32".into());
@@ -858,7 +864,7 @@ fn gen_driver(
 /// means an infinite loop); returns captured stdout.
 /// a bare-metal riscv64 image: sp = 0x80800000 (mid-RAM), the FPU on,
 /// then fall into the first function
-const RV_PREAMBLE_WORDS: usize = 6;
+const RV_PREAMBLE_WORDS: usize = 24;
 
 pub fn rv_image(compiled: &emit::Compiled, enc: &emit::Encoder) -> Result<Vec<u8>, String> {
     let mut bin = Vec::new();
@@ -872,8 +878,36 @@ pub fn rv_image(compiled: &emit::Compiled, enc: &emit::Encoder) -> Result<Vec<u8
         // enable the FPU (mstatus.FS = initial) for the platform's fadd
         ("lui {r}, {i 0..1048575}", [5, 0x2, 0]),
         ("csrrs {r}, {i 0..4095}, {r}", [0, 0x300, 5]),
+        // every hart runs this; hart 0 goes on into the program, the
+        // others park until lib/core.ssa's record for them is in the
+        // mailbox (0x80FF0000 + 8 * hart) and msip wakes them: sp and
+        // tp from it, then its main with the record in a0
+        ("csrr {r}, {i 0..4095}", [6, 0xF14, 0]),
+        ("beq {r}, {r}, {i -4096..4094 /2}", [6, 0, 17 * 4]), // hart 0: to the program (word 24)
+        ("addi {r}, {r}, {i -2048..2047}", [7, 0, 0x80]),
+        (SLLI, [7, 7, 24]),
+        ("lui {r}, {i 0..1048575}", [8, 0xFF0, 0]),
+        ("add {r}, {r}, {r}", [7, 7, 8]),
+        (SLLI, [9, 6, 3]),
+        ("add {r}, {r}, {r}", [7, 7, 9]),
+        // wfi wakes only for an interrupt enabled in mie: the software
+        // interrupt (msip), with mstatus.MIE still clear so none is taken
+        ("addi {r}, {r}, {i -2048..2047}", [11, 0, 8]),
+        ("csrrs {r}, {i 0..4095}, {r}", [0, 0x304, 11]),
+        ("ld {r}, {i -2048..2047}({r})", [10, 0, 7]), // loop: the record?
+        ("bne {r}, {r}, {i -4096..4094 /2}", [10, 0, 3 * 4]),
+        ("wfi", [0, 0, 0]),
+        ("jal {r}, {i -1048576..1048574 /2}", [0, -3 * 4, 0]),
+        ("ld {r}, {i -2048..2047}({r})", [2, 0, 10]), // sp
+        ("addi {r}, {r}, {i -2048..2047}", [4, 6, 0]), // tp = hart
+        ("ld {r}, {i -2048..2047}({r})", [11, 8, 10]), // main
+        ("jalr {r}, {i -2048..2047}({r})", [0, 0, 11]),
     ] {
-        let n = if t.starts_with("lui") { 2 } else { 3 };
+        let n = match t.split_whitespace().next().unwrap() {
+            "lui" | "csrr" | "jal" => 2,
+            "wfi" => 0,
+            _ => 3,
+        };
         bin.extend(enc.encode(t, &v[..n])?.to_le_bytes());
     }
     debug_assert_eq!(bin.len(), RV_PREAMBLE_WORDS * 4);
@@ -907,12 +941,12 @@ pub fn qemu_command(target: &str, bin_path: &std::path::Path) -> Command {
     let mut cmd;
     if target == "riscv64" {
         cmd = Command::new("qemu-system-riscv64");
-        cmd.args(["-machine", "virt", "-bios", "none", "-nographic", "-m", "128M"])
+        cmd.args(["-machine", "virt", "-bios", "none", "-nographic", "-m", "128M", "-smp", "4"])
             .arg("-device")
             .arg(format!("loader,file={},addr=0x80000000", bin_path.display()));
     } else {
         cmd = Command::new("qemu-system-aarch64");
-        cmd.args(["-machine", "virt", "-cpu", "cortex-a57", "-nographic", "-m", "128M"])
+        cmd.args(["-machine", "virt", "-cpu", "cortex-a57", "-nographic", "-m", "128M", "-smp", "4"])
             .arg("-device")
             .arg(format!("loader,file={},addr=0x40200000,cpu-num=0", bin_path.display()));
     }
@@ -1054,6 +1088,9 @@ fn run_riscv(
         );
         let driver = gen_driver(module, cases, RV_HEAP, &exit_ssa)?;
         let full = format!("{}\n{}\n{}", driver, helpers(RV_UART), ssa::with_prelude(src));
+        if let Ok(p) = std::env::var("PROBE_DUMP_DRIVER") {
+            let _ = std::fs::write(p, &full);
+        }
         let mut m2 = ssa::parse_with(&full, policy).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
@@ -1099,15 +1136,19 @@ fn kernel_shape(case: &Case) -> Result<(i64, i64, i64), String> {
 /// what runs a program's kernel on a machine: each group as fibres
 /// (lib/fibre.ssa), a lane per thread, its area in data — the SSA the
 /// suite adds to a program with `__kernel` directives
-fn kernel_runner(arity: usize, group_bytes: usize) -> String {
+fn kernel_runner(arity: usize, group_bytes: usize, core_ram: u64) -> String {
     let call = if arity == 5 { "__kernel(__z, __area, __id, __lane, __grp)" } else { "__kernel(__z, __area, __id)" };
     // the group size and the group under way are the thread's, at 32
-    // and 40 in its block (lib/thread.ssa leaves those words free)
+    // and 40 in its block (lib/thread.ssa leaves those words free); on
+    // a machine with cores (core_ram), core c > 0 gets a megabyte at
+    // core_ram + c MB: its record, its block at 64, its own stack
+    // growing down from 768 KB, its fibres' stacks above that
     format!(
         r"
 data __karea: array(i64, 1024)
 data __kstacks: array(u8, 262144)
 data __kthread: array(u8, {})
+data __kshape: array(i64, 4)
 fn __klane(__lane: i64) {{
 entry:
     __t: ptr = thread()
@@ -1139,13 +1180,68 @@ body:
 exit:
     ret
 }}
-fn __run_kernel(__n: i64, __g: i64) {{
+fn __core_rec(__c: i64) -> ptr {{
 entry:
+    __mb: i64 = const 1048576
+    __off: i64 = mul __c, __mb
+    __base: i64 = const {}
+    __at: i64 = add __base, __off
+    __rec: ptr = cast __at
+    ret __rec
+}}
+fn __core_main(__rec: ptr) {{
+entry:
+    __c: i64 = load __rec, 24
+    __sh: ptr = addr __kshape
+    __n: i64 = load __sh, 0
+    __g: i64 = load __sh, 8
+    __m: i64 = load __sh, 16
+    __block: ptr = ptradd __rec, 64
+    __stk: i64 = const 786432
+    __stacks: ptr = ptradd __rec, __stk
+    __run_groups(__n, __g, __c, __m, __block, __stacks)
+    __one: i64 = const 1
+    store __one, __rec, 32
+    jmp park
+park:
+    core_idle()
+    jmp park
+}}
+fn __run_kernel(__n: i64, __g: i64, __m: i64) {{
+entry:
+    __sh: ptr = addr __kshape
+    store __n, __sh, 0
+    store __g, __sh, 8
+    store __m, __sh, 16
+    __main: fn(ptr) = addr __core_main
+    __one: i64 = const 1
+    jmp launch(__one)
+launch(__c: i64):
+    __all: u1 = cmp.ge __c, __m
+    br __all, run, start
+start:
+    __rec: ptr = __core_rec(__c)
+    __stk: i64 = const 786432
+    __top: ptr = ptradd __rec, __stk
+    core_launch(__c, __rec, __top, __main, __rec)
+    __c1: i64 = add __c, __one
+    jmp launch(__c1)
+run:
     __kt: ptr = addr __kthread
     __s: ptr = addr __kstacks
     __zero: i64 = const 0
-    __one: i64 = const 1
-    __run_groups(__n, __g, __zero, __one, __kt, __s)
+    __run_groups(__n, __g, __zero, __m, __kt, __s)
+    jmp wait(__one)
+wait(__w: i64):
+    __done: u1 = cmp.ge __w, __m
+    br __done, exit, poll
+poll:
+    __wrec: ptr = __core_rec(__w)
+    __flag: i64 = load __wrec, 32
+    __ready: u1 = cmp.ne __flag, 0
+    __w1: i64 = add __w, __one
+    br __ready, wait(__w1), poll
+exit:
     ret
 }}
 fn __area_word(__i: i64) -> i64 {{
@@ -1156,7 +1252,8 @@ entry:
 }}
 ",
         16384 + group_bytes,
-        call
+        call,
+        core_ram
     )
 }
 
@@ -1341,6 +1438,10 @@ fn run_arm_qemu(
         let driver = gen_driver(module, cases, ARM_HEAP, "    __qemu_exit()\n")?;
         let stub = "fn __qemu_exit() {\nentry:\n    ret\n}\n";
         let full = format!("{}\n{}\n{}\n{}", driver, helpers(ARM_UART), stub, ssa::with_prelude(src));
+        // PROBE_DUMP_DRIVER=path: the whole program the machine runs, to read
+        if let Ok(p) = std::env::var("PROBE_DUMP_DRIVER") {
+            let _ = std::fs::write(p, &full);
+        }
         let mut m2 = ssa::parse_with(&full, policy).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;

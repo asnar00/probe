@@ -1,0 +1,31 @@
+; lib/core.ssa: other cores. `core_launch(core, rec, stack_top, main,
+; arg)` starts core number `core` running main(rec) on its own stack,
+; with its key for `thread()` set to its number, from a record it
+; fills in: [stack top, main, arg, key]. How a core starts is the
+; platform's (`core_start`; targets/arm64.platform via PSCI,
+; riscv64.platform via the boot preamble's mailbox); a platform with
+; one core does nothing, and main never runs. The core has no way
+; back: main should end in a loop.
+
+fn core_boot() {
+    ret
+}
+; a core with nothing to do: waits for an interrupt (the platform's
+; `wfi`), once; a finished core loops on it
+fn core_idle() {
+    ret
+}
+fn core_start(core: i64, entry: ptr, rec: ptr) {
+    ret
+}
+fn core_launch(core: i64, rec: ptr, stack_top: ptr, main: fn(ptr), arg: ptr) {
+    store stack_top, rec
+    mp: ptr = cast main
+    store mp, rec, 8
+    store arg, rec, 16
+    store core, rec, 24
+    e: fn() = addr core_boot
+    ep: ptr = cast e
+    core_start(core, ep, rec)
+    ret
+}

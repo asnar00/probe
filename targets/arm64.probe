@@ -237,6 +237,7 @@ inst msr cntp_ctl_el0, {x}
 inst msr daifclr, #{i 0..15}
 ; the read-only thread id register: unique per thread under macOS, zero at boot
 inst mrs {x}, tpidrro_el0
+inst msr tpidrro_el0, {x}
 inst msr daifset, #{i 0..15}
 inst wfi
 ; switching stacks: an interrupt handler that returns the frame to resume

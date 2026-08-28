@@ -452,6 +452,14 @@ thread_set(block)                             ; install one: 16 KB plus the prog
 
 `thread()` is a pointer to the current thread's own block of memory. The platform gives a *key* that tells threads apart (`ext thread`: `tpidrro_el0` on arm64 — unique per thread under macOS, zero at boot — `tp` on riscv64, nothing on wasm), and `lib/thread.ssa` maps keys to blocks in a small table `thread_set` fills (a slot per thread, `thread_set_slot`, when several install at once); a thread with no block has the default block the library declares. On a GPU `thread()` is the platform's, the thread's header. The block holds the fibre scheduler and its frames, and, at 16384, this thread's copy of the program's `group` items: on a machine `addr` of a group item is `thread()` plus its offset (the machine backends' lowering), so every group in flight has its own, as on the GPU. (The writable `tpidr_el0` was the first design; XNU rewrites it at every context switch, so a value left there is gone the moment a thread is preempted.)
 
+### Cores
+
+```
+core_launch(1, rec, stack_top, main, arg)     ; core 1 runs main(rec) on its own stack (lib/core.ssa)
+```
+
+`lib/core.ssa` starts another core: `core_launch` fills a record — the stack top, the function, its argument, the core's key for `thread()` — and hands it to the platform's `core_start`. On arm64 virt that is PSCI `CPU_ON` with `core_boot` as the entry, which sets sp and `tpidrro_el0` from the record and jumps; on riscv64 virt every hart runs the boot preamble, which parks harts other than 0 in `wfi` until their record is in the mailbox and hart 0 rings the CLINT's `msip`, then sets sp and `tp` from it and jumps. A core has no way back: its main ends in `core_idle()` (`wfi`) forever. Both machines boot with four cores (`-smp 4`); a platform with one core (the JIT, wasm, the GPU) does nothing and main never runs.
+
 ### Fibres, and a kernel as a suite case
 
 ```
@@ -471,9 +479,10 @@ runs the bodies one after another instead (`fibre_stacks = 0`).
 `group_sync()` yields while fibres run. So a program written for a
 threadgroup is a suite case everywhere: `;! __kernel n g [m] -> words`
 runs its `__kernel` as n threads in groups of g — the real dispatch on
-the GPU, a group of fibres per group on a machine, dealt across m OS
-threads under the JIT (thread t takes groups t, t + m, ..., each with
-a thread block and group memory of its own; bare metal runs one) —
+the GPU, a group of fibres per group on a machine, dealt across m
+threads: OS threads under the JIT, cores on the qemu machines (thread t
+takes groups t, t + m, ..., each with a thread block and group memory
+of its own) —
 and compares the area's first words; on wasm it is skipped and
 counted. A program with a `__kernel` takes only such directives
 (`suite/reduce.ssa`).

@@ -288,7 +288,9 @@ None of them contains a single hand-written opcode.
   `;! __kernel n g [m] -> words` directive runs a kernel as a suite case
   — dispatched here, as fibres taking turns at every barrier on a
   machine (`lib/fibre.ssa`, a stack switch the platform provides), the
-  groups dealt across m OS threads under the JIT; vectors reach
+  groups dealt across m OS threads under the JIT and m cores on the
+  qemu machines (`lib/core.ssa`: PSCI on arm64, a parking preamble and
+  mailbox on riscv64); vectors reach
   it whole (`<4 x float>`, `air.sqrt.v4f32`); recursion,
   which Metal has not, is left out and reported. `tools/driver_metal.py`
   dispatches it (pyobjc).
@@ -446,7 +448,8 @@ decimals as libraries, with hardware substituted where a platform has
 it; four backends and their variants, the fourth Apple's GPU through a
 `.metallib` we write ourselves; four bootable kernels — hello
 world, an echo with system calls, a clock on the timer interrupt, two
-preempted tasks, tasks sleeping to exact times. All of
+preempted tasks, tasks sleeping to exact times, four cores sharing a
+kernel's groups. All of
 it differentially verified — the suite on five execution paths under
 every policy, the oracle (on the CPU and the GPU), the scorecards, the
 fuzzer (`--air` puts the GPU in its panel), the model tests.

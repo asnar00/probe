@@ -277,3 +277,29 @@ fibre_switch(save: ptr, to: ptr) -> () with t: ptr called
 ext thread
 thread_key() -> ptr
     mrs r, tpidrro_el0
+
+; cores: a secondary core is off until PSCI CPU_ON (hvc: x0 the call,
+; x1 the target core, x2 where it starts, x3 a word it starts with)
+; and starts with the MMU off and no stack. `core_boot` is where: x0
+; is the record lib/core.ssa built — its stack top at 0, its main at
+; 8, and its key for `thread()` at 24 — so it sets sp and tpidrro_el0
+; and jumps to main with the record in x0. `core_ram` is RAM for a
+; core's block and stacks, 1 MB each, beyond the heap.
+ext cores
+const core_ram = 0x46000000
+core_boot() -> () with t: ptr called
+    ldr t, [x0, 0]
+    mov sp, t
+    ldr t, [x0, 24]
+    msr tpidrro_el0, t
+    ldr t, [x0, 8]
+    br t
+core_start(core: i64, entry: ptr, rec: ptr) -> () called
+    mov x3, x2
+    mov x2, x1
+    mov x1, x0
+    movz x0, 3
+    movk x0, 0xC400, lsl 16
+    hvc 0
+core_idle() -> ()
+    wfi

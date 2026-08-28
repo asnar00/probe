@@ -242,3 +242,28 @@ fibre_switch(save: ptr, to: ptr) -> () called
 ext thread
 thread_key() -> ptr
     addi r, x4, 0
+
+; cores: every hart runs the reset vector; the boot preamble parks
+; harts other than 0 until a record for them appears in the mailbox
+; (`core_mailbox`, a word per hart) and an interrupt (CLINT msip)
+; wakes them, then sets sp and tp from it and jumps to its main.
+; `core_start` puts the record there and rings the bell; the entry is
+; the preamble's business here. `core_ram` as on arm64.
+ext cores
+const core_mailbox = 0x80FF0000
+const core_ram = 0x86000000
+core_start(core: i64, entry: ptr, rec: ptr) -> () with a: ptr, b: ptr, c: ptr called
+    addi a, x0, 128
+    slli a, a, 24
+    lui b, 4080
+    add a, a, b
+    slli b, x10, 3
+    add a, a, b
+    sd x12, 0(a)
+    lui b, 8192
+    slli c, x10, 2
+    add b, b, c
+    addi c, x0, 1
+    sw c, 0(b)
+core_idle() -> ()
+    wfi
