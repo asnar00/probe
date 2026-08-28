@@ -12,6 +12,8 @@ suite/*.ssa  --parse/resolve/verify-->  SSA  --passes-->  SSA  --emitter-->  byt
                                                   targets/*.encodings.json  (learned, verified)
 ```
 
+
+
 ## Hello, world
 
 ```sh
@@ -63,28 +65,19 @@ c 142857 +3679
 `ssa.md` is the reference; `src/ssa.rs` the parser, verifier and printer. In outline:
 
 - **Integers of any width from 1 to 256 bits**, signed or unsigned (`i5`, `u23`, `i64`, `u128`, plus `ptr`). Signedness lives in the type, so there is one `div`, one `shr`, one `cmp.lt`. Above 64 bits a value is lowered to a row of words right after parsing (`src/wide.rs`), so no backend ever meets one.
-
 - **Packs**: bitfields laid out lowest-bits-first in up to 256 bits — `type rgb = pack { r: u5, g: u6, b: u5 }` — nestable and storable. A pack is its bit pattern.
-
 - **Typed pointers**: `ptr(T)` and `ptr(array(f32, 512, 512))` — an address that knows what it points at, so `load g, i, j` takes indices and checks the element; `ptr` stays bytes. Arrays with a shape are memory types, in `data`, `scratch` or behind a pointer.
-
-- **Vectors**: `f32x4`, `i32x8`, `floatx4` — N lanes of a type, a struct of numbered lanes; `add`, `cmp.*`, `conv`, `sqrt` on a vector work lane by lane, defined by the IR itself the way wide integers are, so they run on every backend today and a platform with vector registers can take the whole vector later.
-
+- **Vectors**: `f32x4`, `i32x8`, `floatx4` — N lanes of a type, a struct of numbered lanes; `add`, `cmp.`*, `conv`, `sqrt` on a vector work lane by lane, defined by the IR itself the way wide integers are, so they run on every backend today and a platform with vector registers can take the whole vector later.
 - **Structs**: fields side by side, in memory at natural offsets and in registers as separate values. Never a bit pattern — no `cast`, no literal — which leaves the layout to the compiler. Dissolved into their fields after parsing (`src/aggregate.rs`).
-
 - **Parametric types and generic functions**, instantiated by width: `type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }`, `type f32 = float(8, 23)`, `fn add(E, M)(a: float(E, M), b: float(E, M))`. An opcode on a pack dispatches to the generic of that name, so `add x, y` on two `f32` values *is* the library's function — or the platform's instruction — and a library can add operations of its own (`sqrt x`).
-
 - **Literals wherever the type is known** (`add a, 1`, `mul x, 0.5`, `ret 0`), float literals rounded exactly; block parameters instead of phi nodes; multiple return values; `load`/`store` with `base, off` and `base, index, step` addressing; an optional structured front-end (`if`/`loop`/`break`/`continue`/`yield`) that lowers to the flat block graph at parse time.
-
 - **Data**: `data greeting = "..."` is an array of UTF-8 bytes, `data table: array(i32, 4) = { ... }` an initialized array, `addr` and `len` reach it, and `platform uart` is a constant the platform file provides per board.
-
 - **Scratch**: `p: ptr = scratch 64` is memory that is the function's while it runs — its frame, or a shadow stack on wasm.
-
 - **Check**: `check c` is an assertion; one that fails is a breakpoint trap the kernel's `__trap` reports with the address (`os/check.ssa`). How a library says a capacity was exceeded.
-
 - **Function values**: `fn(i64, i64) -> i64` is a type — the signature — and `f: binary = addr add64` a value of it, taken with the same `addr` that reaches data. Calling it, `r: i64 = f(a, b)`, is spelled like any call and checked like one; the value goes anywhere a value goes, including memory. `adr`+`blr` on arm64, `auipc`+`jalr` on riscv64, a table and `call_indirect` on wasm.
-
 - **Abstract types resolved by policy**: `int`/`uint` take a width per target (`--int=i32|i64`); `float`, `fixed`, `unit`, `sunit` and `rational` resolve to the libraries' `float(E, M)`, `fixed(I, F)`, `unit(N)`, `sunit(N)`, `rational(N, D)` (`--float=`, `--fixed=`, `--unit=`, `--sunit=`, `--rational=`, `--round=` for the rounding mode); `scalar` is whichever family the policy names (`--scalar=`).
+
+
 
 ## The libraries
 
@@ -100,11 +93,15 @@ Every file compiled gets `lib/*.ssa` appended. Number formats are libraries, nev
 - `lib/pool.ssa` — fixed-size slots taken and given back in any order: `pool_take`, `pool_give`, a free list through the free slots and a flag per slot, so a double give is a failed `check`. The object rung.
 - `lib/heap.ssa` — the root the rungs are carved from: a buddy allocator over one declared block, `heap_take`/`heap_give` in powers of two aligned to their size, a state per node of the split tree so a wrong give is a failed `check`, and `heap_seal` so a kernel can forbid allocation inside interrupts. For regions, not objects.
 
+
+
 ## The learners
 
 - `src/learn.rs` for fixed-width register ISAs: one-hot probes XORed against a baseline map each operand bit to its encoding bit — which handles RISC-V's scrambled branch immediates exactly as easily as ARM's contiguous fields. Nonlinear small domains become lookup tables; nonlinear large ones (ARM logical immediates) fail honestly.
 - `src/wlearn.rs` for byte-oriented stack machines (wasm): templates are fixed bytes plus LEB128 codecs at discovered positions, probed through wat2wasm with a bootstrap chain of stack context.
 - Both talk to an assembler only through `src/oracle.rs`; the per-target seed files (`targets/*.probe`, read by `src/target.rs`) say how to *spell* instructions and nothing else.
+
+
 
 ## Platforms and variants
 
@@ -115,6 +112,8 @@ A platform file (`targets/*.platform`, read by `src/platform.rs`) says what a ta
 - `const uart = 0x10000000` — a board's addresses, for `platform uart`; `heap_base` and `ram_end`, the RAM above the image that is a program's to carve.
 - `psci(code: u64) -> ()` with `hvc 0` under it — a plain function the platform gives a body: how the board is ended, how a trap is installed, read and returned from (`vectors`, `cause`, `resume`, `resume_at`, `syscall`), how time is read and the timer's interrupt taken (`now`, `hz`, `timer_at`, `irq_on`, `irq_ack`, ...). A body line may spell a template's fixed operands (`msr vbar_el1, t`); a rule may declare typed temporaries (`with gic: ptr, v: u32`) for addresses and values it needs; `none` is a rule that does nothing.
 - **Variants** are files too: the base file is grouped by extension (`ext M`, `ext F`, `ext D`), and `targets/rv64i.platform` is `base riscv64` plus `without M, F, D` — a core on which `mul`/`div`/`rem` and every float operation are the library's. `--platform=rv64i` selects it everywhere; `probe footprint` lists the instructions a program really used, to prove it.
+
+
 
 ## The backends
 
@@ -131,6 +130,8 @@ Shared by the register machines and wasm:
 - **An SSA pass pipeline** (`src/opt.rs`): simplify-cfg, const-fold, dce, sink. Optimization levels are prefixes of that one list, so every level is a correct stopping point and every pass is checked by the suite on every backend.
 - **An incremental JIT arena** (`src/arena.rs`): each function in its own slot with slack, calls routed through counting trampolines, so an edited function recompiles in place and a hot one is promoted through the full pipeline without disturbing its neighbours.
 
+
+
 ## Verification
 
 - **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 841 cases with expectations embedded as `;! gcd 48 36 -> 12` directives, run identically against every backend — including arm64 under qemu-system-aarch64 as an independent second referee for the same bytes the M-series CPU runs, and this Mac's GPU through Metal — and under every policy and variant (wasm, with one stack, skips the six kernel cases and says so). `probe testfloat air` runs the 19.4M TestFloat vectors on the GPU too, a thread per vector: the library is exact there at every width; the f32 instructions miss only where the GPU flushes a denormal, which the report counts apart.
@@ -138,6 +139,8 @@ Shared by the register machines and wasm:
 - **An IEEE-754 oracle** (`src/testfloat.rs`): Berkeley TestFloat's vectors — 19 million cases over f16/f32/f64, every operation, every rounding mode — run through the library instances and, where the platform has the instruction, the hardware, compared bit for bit.
 - **A fuzzer** (`src/fuzz.rs`): random well-formed programs — every integer width, packs, floats through the library and the platform, value-yielding `if`s, bounded loops, calls — with their results at native `-O0` and the platform off as the reference; every optimization level, the platform, wasm, and (with `--slow`) both qemu machines must agree. A disagreement is kept as a suite file that reproduces it. Its first run found wasm trapping on `MIN div -1`, which the IR says wraps.
 - **Model tests** in Rust: every narrow-type op against the const-folder's model over every value pair, the softfloat ops against the FPU for f32/f64 and against an exact reference exhaustively for fp8, 128-bit arithmetic against Rust's `u128`.
+
+
 
 ## Usage
 
@@ -232,10 +235,26 @@ Toolchain expectations (macOS/arm64 host): `llvm-mc` (brew llvm), `wabt` (wat2wa
 
 ## Status
 
-Integers to 256 bits, packs, structs, vectors, typed pointers and shaped arrays, parametric types and generic functions, function values; floats, fixed point, unit fractions, rationals, time and decimals as libraries, with hardware substituted where a platform has it; four backends and their variants, the fourth Apple's GPU through a `.metallib` we write ourselves; four bootable kernels — hello world, an echo with system calls, a clock on the timer interrupt, two preempted tasks, tasks sleeping to exact times, four cores sharing a kernel's groups. All of it differentially verified — the suite on five execution paths under every policy, the oracle (on the CPU and the GPU), the scorecards, the fuzzer (`--air` puts the GPU in its panel), the model tests.
+What is here:
 
-Deliberately not here yet: vectors (`vectors.md` says how they would go), external (libc) calls from JIT'd code, a dominance check in the verifier, and differential testing against clang to close the semantic loop the way the prober closed the encoding loop.
+- **Types.** Integers to 256 bits, packs, structs, vectors (`f32x4`: per-lane by definition, whole on the GPU), typed pointers and shaped arrays, parametric types and generic functions, function values.
+- **Numbers as libraries.** Floats, fixed point, unit fractions, rationals, time and decimals, with hardware substituted where a platform has it.
+- **Memory as a ladder of lifetimes**, not a heap for objects: `scratch`, arenas, pools, a buddy heap over the rest of RAM as the root; `check` is the one assertion, a breakpoint trap that names its site.
+- **Four backends and their variants**, the fourth Apple's GPU through a `.metallib` we write ourselves.
+- **The GPU's model everywhere.** `group` memory, a barrier and the simdgroup operations are library functions that mean the same on a machine — fibres run a group by turns on one thread, a simdgroup is an exchange through a table; `thread()` reads a platform-named register; a kernel's groups are dealt across OS threads under the JIT, or across four cores on the qemu boards.
+- **Six bootable kernels.** Hello world; an echo with system calls and interrupt-driven input; a clock on the timer interrupt; two preempted tasks; tasks sleeping to exact times on a tickless timer, with `at`/`after` callbacks and tasks that come and go; four cores sharing a kernel's groups.
+- **All of it differentially verified.** The suite on five execution paths under every policy, `;! __kernel` running a program's kernel on the GPU and on every machine, the oracle (on the CPU and the GPU), the scorecards, the fuzzer (`--air` puts the GPU in its panel), the model tests.
+
+Deliberately not here yet (`future-work.md` has the queue, `handover.md` the reasons):
+
+- Lanes as real worker threads on wasm.
+- Lockstep checking in the simdgroup exchange: a lane that skips a `simd_*` should fail on the machines rather than get a quiet wrong answer as on the GPU.
+- Tasks dealt across cores in the OS programs.
+- Textures as handles with platform operations; WebGPU as a second GPU path.
+- Capacity analysis for arenas and stacks.
+- External (libc) calls from JIT'd code.
+- Differential testing against clang, to close the semantic loop the way the prober closed the encoding loop.
 
 ## Credits where due
 
-Claude Fable 5 wrote all this code.
+Claude Fable 5 wrote all this code; the concept and direction is mine.
