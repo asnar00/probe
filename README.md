@@ -366,13 +366,13 @@ cargo run -- test air          # this Mac's GPU, through Metal
 
 # a program for the GPU: a .metallib with none of Apple's tools
 cargo run -- compile examples/gpu.ssa air
-python3 tools/driver_metal.py --kernel gpu.metallib gpu.air.json 8
+python3 tools/driver_metal.py --kernel target/air/gpu.metallib target/air/gpu.air.json 8
 # ... and a reduction over threadgroups of 64 (lib/gpu.ssa)
 cargo run -- compile examples/reduce.ssa air
-python3 tools/driver_metal.py --kernel reduce.metallib reduce.air.json 256 64
+python3 tools/driver_metal.py --kernel target/air/reduce.metallib target/air/reduce.air.json 256 64
 # ... and the simdgroup summing across its 32 lanes
 cargo run -- compile examples/simd.ssa air
-python3 tools/driver_metal.py --kernel simd.metallib simd.air.json 64
+python3 tools/driver_metal.py --kernel target/air/simd.metallib target/air/simd.air.json 64
 
 # the optimization pipeline: -O<n> works on any command, and `tiers`
 # compiles at every prefix to show the gradual-optimization story

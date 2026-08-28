@@ -237,3 +237,10 @@ fibre_switch(save: ptr, to: ptr) -> () called
     ld x27, 88(to)
     ld x1, 96(to)
     ld x2, 104(to)
+
+; the current thread: tp (x4), the ABI's thread pointer
+ext thread
+thread_reg() -> ptr
+    addi r, x4, 0
+thread_reg_set(p: ptr) -> ()
+    addi x4, p, 0

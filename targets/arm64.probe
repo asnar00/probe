@@ -235,6 +235,9 @@ inst mrs {x}, cntfrq_el0
 inst msr cntp_cval_el0, {x}
 inst msr cntp_ctl_el0, {x}
 inst msr daifclr, #{i 0..15}
+; the thread pointer: free at EL1 and, on macOS, at EL0 too
+inst mrs {x}, tpidr_el0
+inst msr tpidr_el0, {x}
 inst msr daifset, #{i 0..15}
 inst wfi
 ; switching stacks: an interrupt handler that returns the frame to resume

@@ -355,7 +355,7 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
                             (Some(n), Some((stem, suffix))) => format!("{}.v{}{}", stem, n, suffix),
                             _ => key.clone(),
                         };
-                        if !cx.decls.contains_key(&key) && !matches!(key.as_str(), "air.simd_lane" | "air.simd_size") {
+                        if !cx.decls.contains_key(&key) && !matches!(key.as_str(), "air.simd_lane" | "air.simd_size" | "air.thread") {
                             // floats are the classed arguments; integers their
                             // containers, but a shuffle's lane is an i16
                             let vec = |cx: &mut Cx, t: usize| match lanes {
@@ -1262,6 +1262,10 @@ impl Cx<'_> {
         }
         let Some(&dst) = dsts.first() else { return Ok(()) };
         // the simdgroup lane and width: the thread's header
+        if key == "air.thread" {
+            fx.vals.insert(dst.0, fx.tls);
+            return Ok(());
+        }
         if key == "air.simd_lane" || key == "air.simd_size" {
             let i8t = self.m.int(8);
             let i64t = self.i64t;

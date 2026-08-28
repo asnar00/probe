@@ -482,8 +482,8 @@ fn cmd_compile(path: &str, level: usize, policy: ssa::Policy) -> ExitCode {
     }
 }
 
-/// `probe compile x.ssa air`: a .metallib next to the source, its
-/// bitcode, and a layout the driver reads — with none of Apple's tools
+/// `probe compile x.ssa air`: a .metallib in target/air/, its bitcode,
+/// and a layout the driver reads — with none of Apple's tools
 fn cmd_compile_air(path: &str, level: usize, policy: ssa::Policy) -> ExitCode {
     let result = (|| -> Result<(), String> {
         let platform = platform::Platform::load("air")?;
@@ -491,11 +491,13 @@ fn cmd_compile_air(path: &str, level: usize, policy: ssa::Policy) -> ExitCode {
         let module = load_module(path, level, policy)?;
         let c = emit_air::compile_with(&module, &platform)?;
         let stem = std::path::Path::new(path).file_stem().unwrap().to_string_lossy().to_string();
-        std::fs::write(format!("{}.metallib", stem), &c.metallib).map_err(|e| e.to_string())?;
-        std::fs::write(format!("{}.bc", stem), &c.bitcode).map_err(|e| e.to_string())?;
+        let dir = std::path::Path::new("target/air");
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(format!("{}.metallib", stem)), &c.metallib).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(format!("{}.bc", stem)), &c.bitcode).map_err(|e| e.to_string())?;
         let data_hex: String = c.layout.data.iter().map(|b| format!("{:02x}", b)).collect();
-        std::fs::write(format!("{}.air.json", stem), format!("{{\"data\":\"{}\",\"slab\":{},\"kernel\":{}}}\n", data_hex, c.layout.slab, c.has_kernel)).map_err(|e| e.to_string())?;
-        println!("{}.metallib: {} bytes of bitcode, {} bytes of data, {} bytes of scratch per thread{}", stem, c.bitcode.len(), c.layout.data.len(), c.layout.slab, if c.has_kernel { ", kernel __kernel" } else { ", no kernel" });
+        std::fs::write(dir.join(format!("{}.air.json", stem)), format!("{{\"data\":\"{}\",\"slab\":{},\"kernel\":{}}}\n", data_hex, c.layout.slab, c.has_kernel)).map_err(|e| e.to_string())?;
+        println!("target/air/{}.metallib: {} bytes of bitcode, {} bytes of data, {} bytes of scratch per thread{}", stem, c.bitcode.len(), c.layout.data.len(), c.layout.slab, if c.has_kernel { ", kernel __kernel" } else { ", no kernel" });
         for (f, why) in &c.skipped {
             println!("  left out: {} ({})", f, why);
         }

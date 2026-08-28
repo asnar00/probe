@@ -1002,11 +1002,47 @@ pub fn layout_data(m: &Module) -> (Vec<u8>, std::collections::HashMap<String, us
     (bytes, offsets)
 }
 
+/// on a machine, a `group` item lives in the current thread's block
+/// (lib/thread.ssa: at 16384 plus its offset in the group section), so
+/// each group in flight has its own: `addr` of one becomes
+/// `thread()` plus that offset — the machine backends' lowering, before
+/// emission (the GPU keeps `addr` and puts the item in threadgroup memory)
+pub fn lower_group_addrs(m: &Module) -> Module {
+    const GROUP_BASE: i64 = 16384;
+    let (_, _, _, rw_off) = layout_data_parts(m);
+    if rw_off.is_empty() {
+        return m.clone();
+    }
+    let mut m = m.clone();
+    for f in &mut m.funcs {
+        for b in 0..f.blocks.len() {
+            let mut out = Vec::new();
+            for inst in std::mem::take(&mut f.blocks[b].insts) {
+                match inst {
+                    Inst::Addr { dst, ref name } if rw_off.contains_key(name.as_str()) => {
+                        let off = GROUP_BASE + rw_off[name.as_str()] as i64;
+                        let t = ValueId(f.values.len() as u32);
+                        f.values.push(ValueData { name: format!("{}.thread", f.values[dst.0 as usize].name), ty: Type::Ptr, literal: None });
+                        let o = ValueId(f.values.len() as u32);
+                        f.values.push(ValueData { name: format!("{}.off", f.values[dst.0 as usize].name), ty: Type::I64, literal: None });
+                        out.push(Inst::Call { dsts: vec![t], callee: "thread".into(), args: Vec::new() });
+                        out.push(Inst::IConst { dst: o, imm: off as i128 });
+                        out.push(Inst::PtrAdd { dst, base: t, off: o });
+                    }
+                    other => out.push(other),
+                }
+            }
+            f.blocks[b].insts = out;
+        }
+    }
+    m
+}
+
 /// the data items and the group items as two images with their own
 /// offsets: a JIT keeps its data read-only and needs the group items,
 /// which a program writes, on pages of their own
 pub fn layout_data_parts(m: &Module) -> (Vec<u8>, Vec<u8>, std::collections::HashMap<String, usize>, std::collections::HashMap<String, usize>) {
-    let lay = |shared: bool| {
+    let lay = |shared: bool, extend_default: usize| {
         let mut bytes = Vec::new();
         let mut offsets = std::collections::HashMap::new();
         for d in m.data.iter().filter(|d| d.shared == shared) {
@@ -1015,14 +1051,19 @@ pub fn layout_data_parts(m: &Module) -> (Vec<u8>, Vec<u8>, std::collections::Has
             }
             offsets.insert(d.name.clone(), bytes.len());
             bytes.extend_from_slice(&d.bytes);
+            if d.name == "__thread_default" {
+                // the default thread block (lib/thread.ssa) carries the
+                // program's group section after its 16 KB
+                bytes.resize(bytes.len() + extend_default, 0);
+            }
         }
         while bytes.len() % 16 != 0 {
             bytes.push(0);
         }
         (bytes, offsets)
     };
-    let (ro, ro_off) = lay(false);
-    let (rw, rw_off) = lay(true);
+    let (rw, rw_off) = lay(true, 0);
+    let (ro, ro_off) = lay(false, rw.len());
     (ro, rw, ro_off, rw_off)
 }
 

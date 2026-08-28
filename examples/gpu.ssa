@@ -1,8 +1,9 @@
 ; the first program on the GPU: every thread writes 10 * id + 1 into
 ; the driver's area, and reads a word of data to add
 ;   probe compile examples/gpu.ssa air
-;   python3 tools/driver_metal.py --kernel gpu.metallib gpu.air.json 8
-; (from the repository root: the platform files are found there)
+;   python3 tools/driver_metal.py --kernel target/air/gpu.metallib target/air/gpu.air.json 8
+; (from the repository root: the platform files are found there; the
+; outputs land in target/air/)
 
 data offsets: array(i64, 2) = { 1, 100 }
 

@@ -91,3 +91,7 @@ ext fibres
 const fibre_lr = 0
 const fibre_sp = 8
 const fibre_stacks = 0
+
+; the current thread: its header, which every function's tls names
+ext thread
+air.thread = thread_reg() -> ptr

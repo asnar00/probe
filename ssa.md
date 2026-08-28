@@ -443,6 +443,15 @@ the barrier — `air.wg.barrier` on the GPU, nothing on one thread — so
 a program written for many threads parses and runs everywhere
 (`suite/group.ssa`; `examples/reduce.ssa` for the many-thread case).
 
+### The current thread
+
+```
+t: ptr = thread()                             ; this thread's block (lib/thread.ssa)
+thread_set(block)                             ; install one: 16 KB plus the program's group section
+```
+
+`thread()` is a pointer to the current thread's own block of memory, kept in a register the platform names (`ext thread`: `tpidr_el0` on arm64, `tp` on riscv64, the thread's header on a GPU); a thread that has never set one — the register is zero at boot — has the default block the library declares. The block holds the fibre scheduler and its frames, and, at 16384, this thread's copy of the program's `group` items: on a machine `addr` of a group item is `thread()` plus its offset (the machine backends' lowering), so every group in flight has its own, as on the GPU. Under the JIT the register belongs to the host between calls (macOS's malloc reads it), so the runner installs the program's block around each call and puts the host's value back.
+
 ### Fibres, and a kernel as a suite case
 
 ```

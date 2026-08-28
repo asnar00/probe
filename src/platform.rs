@@ -689,10 +689,10 @@ mod tests {
         // the variant has no float: no add rule, no classes (the fibre
         // switch, an integer rule, stays)
         assert!(!im.natives(&m).rules.keys().any(|k| k.starts_with("add")) && im.natives(&m).classes.is_empty());
-        // virt (the board's constants), traps, time, M, F, D, fibres;
-        // rv64i keeps virt, traps, time and fibres
-        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 7);
-        assert_eq!(i.extensions().iter().filter(|(_, present)| *present).count(), 4);
+        // virt (the board's constants), traps, time, M, F, D, fibres,
+        // thread; rv64i keeps virt, traps, time, fibres and thread
+        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 8);
+        assert_eq!(i.extensions().iter().filter(|(_, present)| *present).count(), 5);
         assert_eq!(i.natives(&m).consts.get("uart"), Some(&0x10000000));
         let nofp = Platform::load_named("arm64-nofp").unwrap();
         assert!(nofp.natives(&m).classes.is_empty());

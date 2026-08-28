@@ -150,6 +150,9 @@ const DATA_BASE: usize = 0x8000;
 const SHADOW_STACK_TOP: i64 = DATA_BASE as i64;
 
 pub fn compile_with(module: &Module, enc: &WEncoder, platform: &Platform) -> Result<Vec<u8>, String> {
+    // group items through the thread's block
+    let lowered = crate::ssa::lower_group_addrs(module);
+    let module = &lowered;
     let natives = platform.natives(module);
     let (data_bytes, data_offsets) = crate::ssa::layout_data(module);
     // function name -> (index, result count), in module order

@@ -1,0 +1,63 @@
+; lib/thread.ssa: the current thread. `thread()` is a pointer to the
+; thread's own block of memory — the platform keeps it in a register
+; (`thread_reg`: tpidr_el0 on arm64, tp on riscv64, the header on a
+; GPU), and a platform without one, or a thread that never set one
+; (the register is zero at boot), has the default block below, which
+; carries the program's group section after its 16 KB. What the block holds:
+;
+;   [0]      the fibre scheduler's state (lib/fibre.ssa)
+;   [64]     the scheduler's frame
+;   [192]    the fibres' frames, 64 of 128 bytes
+;   [8384]   the fibres' done flags, 64 words
+;   [16384]  this thread's group items (`group` declarations), laid
+;            out as the program's group section
+;
+; so a block is 16 KB plus the group section. `thread_block_bytes()`
+; is the least a block can be; a program with group items needs that
+; plus their bytes (`probe` lays them out 16-aligned in order).
+
+data __thread_default: array(u8, 16384)
+data __thread_word: array(u64, 1)
+
+; under a JIT the register belongs to the host (macOS keeps a value in
+; tpidr_el0): the runner installs the default block on load and puts
+; the host's value back when done
+fn __thread_install() -> ptr {
+    prev: ptr = thread_reg()
+    d: ptr = addr __thread_default
+    thread_reg_set(d)
+    ret prev
+}
+fn __thread_restore(p: ptr) {
+    thread_reg_set(p)
+    ret
+}
+
+; the platform's; nothing where there is no register
+fn thread_reg() -> ptr {
+    w: ptr = addr __thread_word
+    p: ptr = load w
+    ret p
+}
+fn thread_reg_set(p: ptr) {
+    w: ptr = addr __thread_word
+    store p, w
+    ret
+}
+
+fn thread() -> ptr {
+    p: ptr = thread_reg()
+    unset: u1 = cmp.eq p, 0
+    if unset {
+        d: ptr = addr __thread_default
+        ret d
+    }
+    ret p
+}
+fn thread_set(p: ptr) {
+    thread_reg_set(p)
+    ret
+}
+fn thread_block_bytes() -> i64 {
+    ret 16384
+}

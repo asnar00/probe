@@ -280,7 +280,8 @@ pub fn run_dir_at(
                 // threads in groups of g by the runner below (fibres on a
                 // machine), its area's first words the results
                 let arity = module.func("__kernel").ok_or("a __kernel directive needs fn __kernel")?.params.len();
-                src.push_str(&kernel_runner(arity));
+                let group_bytes = ssa::layout_data_parts(&module).1.len();
+                src.push_str(&kernel_runner(arity, group_bytes));
                 return build(&src);
             }
             Ok(module)
@@ -1078,13 +1079,14 @@ fn kernel_shape(case: &Case) -> Result<(i64, i64), String> {
 /// what runs a program's kernel on a machine: each group as fibres
 /// (lib/fibre.ssa), a lane per thread, its area in data — the SSA the
 /// suite adds to a program with `__kernel` directives
-fn kernel_runner(arity: usize) -> String {
+fn kernel_runner(arity: usize, group_bytes: usize) -> String {
     let call = if arity == 5 { "__kernel(__z, __area, __id, __lane, __grp)" } else { "__kernel(__z, __area, __id)" };
     format!(
         r"
 data __karea: array(i64, 1024)
 data __kstacks: array(u8, 262144)
 data __kargs: array(i64, 4)
+data __kthread: array(u8, {})
 fn __klane(__lane: i64) {{
 entry:
     __ka: ptr = addr __kargs
@@ -1099,6 +1101,8 @@ entry:
 }}
 fn __run_kernel(__n: i64, __g: i64) {{
 entry:
+    __kt: ptr = addr __kthread
+    thread_set(__kt)
     __ka: ptr = addr __kargs
     store __g, __ka, 0
     __groups: i64 = div __n, __g
@@ -1126,6 +1130,7 @@ entry:
     ret __v
 }}
 ",
+        16384 + group_bytes,
         call
     )
 }

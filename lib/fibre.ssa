@@ -9,13 +9,26 @@
 ; targets/arm64.platform, riscv64.platform); a platform with one stack
 ; (wasm: `fibre_stacks = 0`) runs the bodies one after another instead.
 ; At most 64 fibres. Frames are 128 bytes; the lr and sp words are where
-; the platform says.
+; the platform says. The scheduler's state, its frame, the fibres'
+; frames and their done flags live in the current thread's block
+; (lib/thread.ssa), so every thread has a scheduler of its own.
 
-; [count, current, active, body, sequential]
-data __fibre_state: array(u64, 8)
-data __fibre_sched: array(u64, 16)
-data __fibre_frames: array(u64, 1024)
-data __fibre_done: array(u64, 64)
+; the block's parts: [count, current, active, body] at 0, the
+; scheduler's frame at 64, the frames at 192, the done flags at 8384
+fn fibre_state() -> ptr {
+    t: ptr = thread()
+    ret t
+}
+fn fibre_sched() -> ptr {
+    t: ptr = thread()
+    p: ptr = ptradd t, 64
+    ret p
+}
+fn fibre_done_flags() -> ptr {
+    t: ptr = thread()
+    p: ptr = ptradd t, 8384
+    ret p
+}
 
 ; the platform's; a no-op where there is no rule
 fn fibre_switch(save: ptr, to: ptr) {
@@ -23,21 +36,22 @@ fn fibre_switch(save: ptr, to: ptr) {
 }
 
 fn fibre_frame(k: i64) -> ptr {
-    f: ptr = addr __fibre_frames
-    off: i64 = mul k, 128
-    p: ptr = ptradd f, off
+    t: ptr = thread()
+    off0: i64 = mul k, 128
+    off: i64 = add off0, 192
+    p: ptr = ptradd t, off
     ret p
 }
 
 fn fibres_active() -> u1 {
-    st: ptr = addr __fibre_state
+    st: ptr = fibre_state()
     a: u64 = load st, 16
     r: u1 = cmp.ne a, 0
     ret r
 }
 
 fn fibre_current() -> i64 {
-    st: ptr = addr __fibre_state
+    st: ptr = fibre_state()
     c: u64 = load st, 8
     r: i64 = cast c
     ret r
@@ -49,7 +63,7 @@ fn fibre_yield() {
     if a {
         k: i64 = fibre_current()
         mine: ptr = fibre_frame(k)
-        sched: ptr = addr __fibre_sched
+        sched: ptr = fibre_sched()
         fibre_switch(mine, sched)
     }
     ret
@@ -58,14 +72,14 @@ fn fibre_yield() {
 ; where a fresh fibre begins: its body, then done for good
 fn fibre_entry() {
     k: i64 = fibre_current()
-    st: ptr = addr __fibre_state
+    st: ptr = fibre_state()
     b: u64 = load st, 24
     body: fn(i64) = cast b
     body(k)
-    d: ptr = addr __fibre_done
+    d: ptr = fibre_done_flags()
     store 1: u64, d, k, 8
     mine: ptr = fibre_frame(k)
-    sched: ptr = addr __fibre_sched
+    sched: ptr = fibre_sched()
     fibre_switch(mine, sched)
     ret
 }
@@ -73,7 +87,7 @@ fn fibre_entry() {
 fn fibres_run(count: i64, stacks: ptr, stack_bytes: i64, body: fn(i64)) {
     ok: u1 = cmp.le count, 64
     check ok
-    st: ptr = addr __fibre_state
+    st: ptr = fibre_state()
     c64: u64 = cast count
     store c64, st, 0
     b: u64 = cast body
@@ -97,7 +111,7 @@ fn fibres_run(count: i64, stacks: ptr, stack_bytes: i64, body: fn(i64)) {
     sp_off: i64 = platform fibre_sp
     e: fn() = addr fibre_entry
     entry: u64 = cast e
-    d: ptr = addr __fibre_done
+    d: ptr = fibre_done_flags()
     loop(k: i64 = 0) {
         done: u1 = cmp.ge k, count
         if done {
@@ -114,7 +128,7 @@ fn fibres_run(count: i64, stacks: ptr, stack_bytes: i64, body: fn(i64)) {
         continue k1
     }
     store 1: u64, st, 16
-    sched: ptr = addr __fibre_sched
+    sched: ptr = fibre_sched()
     loop() {
         live: u1 = loop(j: i64 = 0, any: u1 = 0) {
             at_end: u1 = cmp.ge j, count

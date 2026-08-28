@@ -516,6 +516,9 @@ const VECTOR_TABLE: usize = 16 * VECTOR_ENTRY;
 /// (after a boot preamble): `__trap` is preceded by its vector table,
 /// which must be 2K-aligned in the image, every entry a branch to it.
 pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin: usize) -> Result<Compiled, String> {
+    // group items through the thread's block
+    let lowered = crate::ssa::lower_group_addrs(module);
+    let module = &lowered;
     let natives = platform.natives(module);
     let mut code: Vec<u8> = Vec::new();
     let mut funcs = HashMap::new();
@@ -1688,6 +1691,8 @@ pub mod jit {
         #[allow(dead_code)]
         len: usize,
         funcs: std::collections::HashMap<String, usize>,
+        /// does the program install its thread block? (lib/thread.ssa)
+        threaded: bool,
     }
 
     impl JitCode {
@@ -1728,16 +1733,36 @@ pub mod jit {
                     std::ptr::copy_nonoverlapping(compiled.code.as_ptr().add(w), p, compiled.code.len() - w);
                     total += rw_len;
                 }
-                Ok(JitCode {
-                    base,
-                    len: total,
-                    funcs: compiled.funcs.clone(),
-                })
+                let threaded = compiled.funcs.contains_key("__thread_install");
+                Ok(JitCode { base, len: total, funcs: compiled.funcs.clone(), threaded })
             }
         }
 
-        /// Call a compiled function with up to 6 integer arguments.
+        /// Call a compiled function with up to 6 integer arguments. The
+        /// thread register holds the program's block only while its code
+        /// runs (lib/thread.ssa): the host's own value — macOS's malloc
+        /// reads tpidr_el0 — goes back before Rust runs again
         pub fn call(&self, name: &str, args: &[i64]) -> Result<i64, String> {
+            if !self.threaded {
+                return self.call_raw(name, args);
+            }
+            let host = self.call_raw("__thread_install", &[])?;
+            let r = self.call_raw(name, args);
+            self.call_raw("__thread_restore", &[host])?;
+            r
+        }
+
+        pub fn call2(&self, name: &str, args: &[i64]) -> Result<(i64, i64), String> {
+            if !self.threaded {
+                return self.call2_raw(name, args);
+            }
+            let host = self.call_raw("__thread_install", &[])?;
+            let r = self.call2_raw(name, args);
+            self.call_raw("__thread_restore", &[host])?;
+            r
+        }
+
+        fn call_raw(&self, name: &str, args: &[i64]) -> Result<i64, String> {
             let &off = self
                 .funcs
                 .get(name)
@@ -1769,7 +1794,7 @@ pub mod jit {
         /// them in x0/x1, which is exactly where the C ABI puts a returned
         /// two-element aggregate — so a #[repr(C)] pair maps directly.
         /// (Three or more would need an SSA-generated shim; not yet.)
-        pub fn call2(&self, name: &str, args: &[i64]) -> Result<(i64, i64), String> {
+        fn call2_raw(&self, name: &str, args: &[i64]) -> Result<(i64, i64), String> {
             #[repr(C)]
             struct Pair(i64, i64);
             let &off = self

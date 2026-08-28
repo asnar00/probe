@@ -83,6 +83,9 @@ pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Resu
 /// riscv's trap vector is the handler's entry itself (mtvec in direct
 /// mode), so nothing here depends on the origin
 pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin: usize) -> Result<Compiled, String> {
+    // group items through the thread's block
+    let lowered = crate::ssa::lower_group_addrs(module);
+    let module = &lowered;
     let natives = platform.natives(module);
     let mut code: Vec<u8> = Vec::new();
     let mut funcs = std::collections::HashMap::new();

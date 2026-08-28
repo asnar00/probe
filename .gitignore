@@ -3,7 +3,3 @@
 /tools/ISA_A64_xml_*
 /tools/riscv-opcodes
 /tools/wabt
-# probe compile outputs
-*.metallib
-*.bc
-*.air.json

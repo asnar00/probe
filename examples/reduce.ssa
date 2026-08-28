@@ -1,7 +1,7 @@
 ; a reduction: each group of threads sums its ids through threadgroup
 ; memory, halving at every barrier; lane 0 writes the group's sum
 ;   probe compile examples/reduce.ssa air
-;   python3 tools/driver_metal.py --kernel reduce.metallib reduce.air.json 256 64
+;   python3 tools/driver_metal.py --kernel target/air/reduce.metallib target/air/reduce.air.json 256 64
 ; -> [2016, 6112, 10208, 14304, 0, ...]: the sums of 0..63, 64..127, ...
 ; (the driver prints n words; a group writes one)
 

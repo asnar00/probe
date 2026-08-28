@@ -31,14 +31,13 @@ bitcode we write. Left:
   there is no pointer type for the space it is in. A `ptr` that knows
   its address space would lift that; ash's rule against region-typed
   pointers is about lifetimes, not spaces, so it is open.
+- **M threads on a machine**: `thread()` gives every thread a block of its own, so a kernel's groups can be dealt out across OS threads (the JIT runner spawning them, each with a block) and, on qemu, across cores brought up with PSCI / the hart lottery — the multicore OS. A `;! __kernel n g m` form for the thread count; groups dealt out deterministically so the qemu paths reproduce.
 - **The simdgroup over fibres**: a kernel directive runs a group as
   fibres on a machine, but `simd_sum` and the rest are still their
   one-thread forms there; a simd operation across a group's fibres
   (a barrier, then the operation over the recorded lanes) would make
   `examples/simd.ssa` a suite case too.
-- **Fibres on wasm**: one stack. Bodies run one after another, and
-  kernel directives are skipped; a CPS transform at a `group_sync`, or
-  wasm's stack-switching proposal when it lands, would lift that.
+- **Fibres on wasm**: one stack, so bodies run one after another and kernel directives are skipped. But wasm has *threads* (shared memory, atomics, a worker per thread): the better model there is a real thread per lane — `group_sync` an atomic barrier (`memory.atomic.wait`/`notify` on a counter), group items in shared memory at a per-group offset, `thread()` a per-instance global — with the learner picking the atomic opcodes off wat2wasm and `driver.js` spawning workers. Stack switching (JSPI) would give fibres too, later.
 - **Simdgroup operations on 64-bit lanes**: Apple's intrinsics stop at
   32 bits; a `simd_sum` on an `i64` is an error on the GPU. Two 32-bit
   halves with a carry, or a threadgroup reduction, would give it.
