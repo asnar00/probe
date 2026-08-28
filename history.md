@@ -4,7 +4,7 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
-### The simdgroup over fibres — `HASH` · 2026-08-28
+### The simdgroup over fibres — `c6f161b` · 2026-08-28
 
 `simd_sum` and the rest meant something on a machine only for one thread; now they mean the same as on the GPU. With fibres running a group, a simdgroup is 32 consecutive lanes and every operation is an exchange through a 64-word table in the thread's block (`simd_put`, `simd_get`, `simd_done` in lib/gpu.ssa): a lane puts its word in its slot and yields — a round, so every lane has put — reads what it needs (its simdgroup's slots for a sum, a max, a prefix sum; one slot for a shuffle; the bits for a vote) and yields again, so no lane writes over a word another has yet to read. Floats travel as their bits, integers sign-extended; the one-thread forms stand off a kernel run, the rules on the GPU. `suite/simdgroup.ssa` — each thread's simdgroup sum, prefix sum and the lane across from it in one word, in groups of 64, of 32, and across two OS threads — passes on native, riscv, arm and the GPU alike.
 
