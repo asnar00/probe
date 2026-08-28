@@ -1,0 +1,23 @@
+; lockstep: every thread of a simdgroup must reach a simd operation.
+; Here thread 5 goes around the simd_sum, so the exchange finds a
+; count one short and the case ends in a failed check on every machine
+; (lib/gpu.ssa). The GPU cannot say so — it reads what it reads — and
+; skips the case; `-> check` is what the machines refuse.
+
+;! __kernel 64 64 -> check
+;! __kernel 64 32 -> check
+;! __kernel 128 64 2 -> check
+
+fn __kernel(mem: ptr, area: ptr, id: i64) {
+    x: i32 = conv id
+    five: u1 = cmp.eq id, 5
+    r: i32 = if five {
+        yield x
+    } else {
+        s: i32 = simd_sum x
+        yield s
+    }
+    r64: i64 = conv r
+    store r64, area, id, 8
+    ret
+}

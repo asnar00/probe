@@ -14,6 +14,8 @@
 ;   [64]     the scheduler's frame
 ;   [192]    the fibres' frames, 64 of 128 bytes
 ;   [8384]   the fibres' done flags, 64 words
+;   [9216]   the simdgroup exchange table, 64 words (lib/gpu.ssa)
+;   [9728]   a word per fibre, zero when it starts (`fibre_word`)
 ;   [16384]  this thread's group items (`group` declarations), laid
 ;            out as the program's group section
 ;

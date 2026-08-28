@@ -30,7 +30,12 @@ fn group_sync() {
 ; every thread puts its word in its slot and yields — a round, so every
 ; thread has put — reads what it needs, and yields again so no thread
 ; writes over a word another has yet to read. Every thread of a
-; simdgroup must reach the same operation, as on the hardware. (A
+; simdgroup must reach the same operation, as on the hardware — and
+; here that is checked: each fibre counts its puts in its word
+; (lib/fibre.ssa's `fibre_word`), and after the round every thread of
+; the simdgroup must have put as often as this one, or a `check`
+; fails. A thread that skipped the operation, or returned before it,
+; is found on a machine where the GPU would read stale words. (A
 ; vector has lanes; a simdgroup has threads.)
 
 ; the exchange table: 64 words at 9216 in the block
@@ -61,7 +66,31 @@ fn simd_put(w: u64) {
     k: i64 = fibre_current()
     s: ptr = simd_slots()
     store w, s, k, 8
+    c: ptr = fibre_word(k)
+    n: i64 = load c
+    n1: i64 = add n, 1
+    store n1, c
     fibre_yield()
+    simd_lockstep(n1)
+    ret
+}
+; after a round: every thread of my simdgroup has put as often as I have
+fn simd_lockstep(mine: i64) {
+    b: i64 = simd_base()
+    n: i64 = simd_active()
+    e: i64 = add b, n
+    loop(t: i64 = b) {
+        done: u1 = cmp.ge t, e
+        if done {
+            break
+        }
+        c: ptr = fibre_word(t)
+        theirs: i64 = load c
+        same: u1 = cmp.eq theirs, mine
+        check same
+        t1: i64 = add t, 1
+        continue t1
+    }
     ret
 }
 fn simd_get(t: i64) -> u64 {

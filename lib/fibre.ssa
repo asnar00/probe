@@ -14,7 +14,9 @@
 ; (lib/thread.ssa), so every thread has a scheduler of its own.
 
 ; the block's parts: [count, current, active, body] at 0, the
-; scheduler's frame at 64, the frames at 192, the done flags at 8384
+; scheduler's frame at 64, the frames at 192, the done flags at 8384,
+; a word per fibre at 9728 (zero when it starts; lib/gpu.ssa counts
+; simdgroup operations in it)
 fn fibre_state() -> ptr {
     t: ptr = thread()
     ret t
@@ -84,9 +86,27 @@ fn fibre_entry() {
     ret
 }
 
+fn fibre_word(k: i64) -> ptr {
+    t: ptr = thread()
+    off: i64 = mul k, 8
+    p: ptr = ptradd t, 9728
+    w: ptr = ptradd p, off
+    ret w
+}
+
 fn fibres_run(count: i64, stacks: ptr, stack_bytes: i64, body: fn(i64)) {
     ok: u1 = cmp.le count, 64
     check ok
+    loop(z: i64 = 0) {
+        zdone: u1 = cmp.ge z, count
+        if zdone {
+            break
+        }
+        zw: ptr = fibre_word(z)
+        store 0: i64, zw
+        z1: i64 = add z, 1
+        continue z1
+    }
     st: ptr = fibre_state()
     c64: u64 = cast count
     store c64, st, 0

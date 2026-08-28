@@ -43,7 +43,7 @@ Two rules that cost time when broken: **never run `probe test air` (or any suite
 
 ## The queue
 
-`future-work.md` has it in full. The near items, in ash's order of interest: a kernel's threads as real worker threads on wasm (wasm has threads and atomics, not stack switching); lockstep checking in the simdgroup exchange (a thread that skips a `simd_*` should fail the case on the machines rather than get a wrong answer as on the GPU); tasks across cores in the OS programs; textures as handles with platform operations; WebGPU as the second GPU path (SPIR-V, `spirv-as` as the oracle, wgpu to run). Bigger and older: capacity analysis for arenas and stacks, type generics, closures, libc calls from JIT'd code.
+`future-work.md` has it in full. The near items, in ash's order of interest: a kernel's threads as real worker threads on wasm (wasm has threads and atomics, not stack switching); tasks across cores in the OS programs; textures as handles with platform operations; WebGPU as the second GPU path (SPIR-V, `spirv-as` as the oracle, wgpu to run). Bigger and older: capacity analysis for arenas and stacks, type generics, closures, libc calls from JIT'd code.
 
 ## What pulled at me (an agent's note, 2026-08-28)
 

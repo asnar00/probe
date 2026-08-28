@@ -71,10 +71,6 @@ struct Fixup {
     target: FixTarget,
 }
 
-pub fn compile(module: &Module, enc: &Encoder) -> Result<Compiled, String> {
-    compile_with(module, enc, &Platform::riscv64())
-}
-
 pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Result<Compiled, String> {
     compile_image(module, enc, platform, 0)
 }

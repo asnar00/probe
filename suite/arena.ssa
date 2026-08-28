@@ -10,6 +10,8 @@
 ;! mark_release i64[0,0,0,0,0,0,0,0,0,0] -> 48
 ;! fills_exactly i64[0,0,0,0,0,0,0,0,0,0] -> 64
 ;! checks_pass 3 -> 3
+;! checks_pass 0 -> check
+;! overflows i64[0,0,0,0,0,0,0,0,0,0] -> check
 
 fn two_allocs(buf: ptr) -> i64 {
     a: ptr = scratch 24
@@ -86,6 +88,16 @@ fn fills_exactly(buf: ptr) -> i64 {
 }
 
 ; a check that holds is nothing
+; a third allocation does not fit: a failed check, not a pointer past the end
+fn overflows(buf: ptr) -> i64 {
+    a: ptr = scratch 24
+    arena_init(a, buf, 80)
+    p: ptr = arena_alloc(a, 32)
+    q: ptr = arena_alloc(a, 32)
+    r: ptr = arena_alloc(a, 32)
+    ra: i64 = cast r
+    ret ra
+}
 fn checks_pass(x: i64) -> i64 {
     pos: u1 = cmp.gt x, 0
     check pos

@@ -64,8 +64,12 @@ struct Case {
     func: String,
     args: Vec<ArgSpec>,
     expected: Vec<i64>, // one entry per return value
+    checks: bool,       // `-> check`: the case must end in a failed check
     text: String,       // the directive as written, for reporting
 }
+
+/// what a case that ended in a failed check reports
+const CHECKED: &str = "a failed check";
 
 fn parse_int(tok: &str) -> Result<i64, String> {
     let (neg, t) = match tok.strip_prefix('-') {
@@ -85,10 +89,12 @@ fn parse_case(line: &str) -> Result<Case, String> {
     let (call, expect) = line
         .split_once("->")
         .ok_or("directive needs '-> expected'")?;
-    let expected: Vec<i64> = expect
-        .split(',')
-        .map(|v| parse_int(v.trim()))
-        .collect::<Result<_, _>>()?;
+    let checks = expect.trim() == "check";
+    let expected: Vec<i64> = if checks {
+        Vec::new()
+    } else {
+        expect.split(',').map(|v| parse_int(v.trim())).collect::<Result<_, _>>()?
+    };
     let mut toks = Vec::new();
     let mut rest = call.trim();
     while !rest.is_empty() {
@@ -141,6 +147,7 @@ fn parse_case(line: &str) -> Result<Case, String> {
         func,
         args,
         expected,
+        checks,
         text: line.trim().to_string(),
     })
 }
@@ -312,28 +319,18 @@ pub fn run_dir_at(
                 &scratch,
                 &mut report,
             ),
-            Backend::Riscv => run_riscv(
-                &module,
-                &policy,
-                &src,
-                rv_enc.as_ref().unwrap(),
-                &cases,
-                &name,
-                &scratch,
-                level,
-                &mut report,
-            ),
-            Backend::ArmQemu => run_arm_qemu(
-                &module,
-                &policy,
-                &src,
-                native_enc.as_ref().unwrap(),
-                &cases,
-                &name,
-                &scratch,
-                level,
-                &mut report,
-            ),
+            // a machine ends at a failed check, so a case expecting one
+            // boots on its own, with a `__trap` that says so
+            Backend::Riscv => {
+                for (group, trap) in boots(&cases) {
+                    run_riscv(&module, &policy, &src, rv_enc.as_ref().unwrap(), group, trap, &name, &scratch, level, &mut report);
+                }
+            }
+            Backend::ArmQemu => {
+                for (group, trap) in boots(&cases) {
+                    run_arm_qemu(&module, &policy, &src, native_enc.as_ref().unwrap(), group, trap, &name, &scratch, level, &mut report);
+                }
+            }
             Backend::Air => run_air(&module, &policy, &platform, &src, &cases, &name, &scratch, level, &mut report),
         }
     }
@@ -344,6 +341,73 @@ pub fn run_dir_at(
         if report.skipped > 0 { format!(", {} skipped", report.skipped) } else { String::new() }
     ));
     Ok(report)
+}
+
+/// the boots a file takes on a machine: the ordinary cases in one, then
+/// each case expecting a failed check in a boot of its own
+fn boots(cases: &[Case]) -> Vec<(&[Case], bool)> {
+    let mut out: Vec<(&[Case], bool)> = Vec::new();
+    let mut i = 0;
+    while i < cases.len() {
+        if cases[i].checks {
+            out.push((&cases[i..i + 1], true));
+            i += 1;
+        } else {
+            let j = (i..cases.len()).find(|&j| cases[j].checks).unwrap_or(cases.len());
+            out.push((&cases[i..j], false));
+            i = j;
+        }
+    }
+    out
+}
+
+/// run f in a forked child: a `check` that fails there is a breakpoint
+/// trap that ends the child, not the suite
+fn forked<F: FnOnce() -> Result<Vec<i64>, String>>(f: F) -> Result<Vec<i64>, String> {
+    unsafe extern "C" {
+        fn fork() -> i32;
+        fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+        fn _exit(code: i32) -> !;
+        fn pipe(fds: *mut i32) -> i32;
+    }
+    use std::io::{Read, Write};
+    use std::os::unix::io::FromRawFd;
+    let mut fds = [0i32; 2];
+    if unsafe { pipe(fds.as_mut_ptr()) } != 0 {
+        return Err("pipe failed".into());
+    }
+    let pid = unsafe { fork() };
+    if pid < 0 {
+        return Err("fork failed".into());
+    }
+    if pid == 0 {
+        let mut w = unsafe { std::fs::File::from_raw_fd(fds[1]) };
+        let text = match f() {
+            Ok(ws) => ws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
+            Err(e) => format!("error: {}", e),
+        };
+        let _ = w.write_all(text.as_bytes());
+        drop(w);
+        unsafe { _exit(0) }
+    }
+    drop(unsafe { std::fs::File::from_raw_fd(fds[1]) });
+    let mut r = unsafe { std::fs::File::from_raw_fd(fds[0]) };
+    let mut text = String::new();
+    let _ = r.read_to_string(&mut text);
+    let mut status = 0i32;
+    unsafe { waitpid(pid, &mut status, 0) };
+    match status & 0x7f {
+        0 => {}
+        5 => return Err(CHECKED.into()), // SIGTRAP: brk
+        sig => return Err(format!("the child died of signal {}", sig)),
+    }
+    if let Some(e) = text.strip_prefix("error: ") {
+        return Err(e.to_string());
+    }
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    text.split(',').map(|v| v.trim().parse::<i64>().map_err(|e| e.to_string())).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -368,7 +432,7 @@ fn run_native(
         if case.func == "__kernel" {
             // m OS threads, each with a block and stacks of its own,
             // dealt the groups t, t + m, ...; then the area's words
-            let got = (|| -> Result<Vec<i64>, String> {
+            let run = || -> Result<Vec<i64>, String> {
                 let (n, g, m) = kernel_shape(case)?;
                 let block_bytes = 16384 + ssa::layout_data_parts(module).1.len();
                 let mut blocks: Vec<Vec<u64>> = (0..m).map(|_| vec![0u64; block_bytes.div_ceil(8)]).collect();
@@ -389,7 +453,8 @@ fn run_native(
                     r?;
                 }
                 (0..case.expected.len() as i64).map(|i| jit.call("__area_word", &[i])).collect()
-            })();
+            };
+            let got = if case.checks { forked(run) } else { run() };
             finish_case(report, name, case, got);
             continue;
         }
@@ -424,13 +489,16 @@ fn run_native(
             Some(r) if r.container() == 32 => opt::norm(*r, x as u32 as i64),
             _ => x,
         };
-        let got: Result<Vec<i64>, String> = match case.expected.len() {
-            1 => jit.call(&case.func, &argv).map(|v| vec![fix(0, v)]),
-            2 => jit
-                .call2(&case.func, &argv)
-                .map(|(a, b)| vec![fix(0, a), fix(1, b)]),
-            n => Err(format!("{} expected values not supported by the runner", n)),
+        let run = || -> Result<Vec<i64>, String> {
+            match case.expected.len() {
+                // a check case has no results: the call is the case
+                0 => jit.call(&case.func, &argv).map(|_| Vec::new()),
+                1 => jit.call(&case.func, &argv).map(|v| vec![fix(0, v)]),
+                2 => jit.call2(&case.func, &argv).map(|(a, b)| vec![fix(0, a), fix(1, b)]),
+                n => Err(format!("{} expected values not supported by the runner", n)),
+            }
         };
+        let got = if case.checks { forked(run) } else { run() };
         finish_case(report, name, case, got);
     }
 }
@@ -739,11 +807,17 @@ fn gen_driver(
     cases: &[Case],
     heap_base: u64,
     exit_ssa: &str,
+    trap: bool,
 ) -> Result<String, String> {
     // one function per case (a driver's frame would otherwise outgrow
     // what a single function may spill), called in order from __start
     let mut s = String::new();
     let mut start = String::from("fn __start() {\nentry:\n");
+    if trap {
+        // the trap handler below, installed the way os/check.ssa does
+        // (`vectors` is the platform's; the stub is what the rule replaces)
+        start.push_str("    __h: fn(u64, u64, u64) -> u64 = addr __trap\n    __hp: ptr = cast __h\n    vectors(__hp)\n");
+    }
     let n = std::cell::Cell::new(0u32);
     let mut heap = heap_base;
     let tmp_name = || {
@@ -856,6 +930,18 @@ fn gen_driver(
     }
     start.push_str(exit_ssa);
     start.push_str("    ret\n}\n");
+    if trap {
+        // a failed check lands here: say so, and end the machine (the
+        // machine takes a moment to end, and returning would run the
+        // check again)
+        s.push_str("fn __trap(__n: u64, __a: u64, __b: u64) -> u64 {\nentry:\n");
+        for c in "check\n".bytes() {
+            let t = tmp(&mut s, "u64", format!("const {}", c));
+            s.push_str(&format!("    __pch({})\n", t));
+        }
+        s.push_str(exit_ssa);
+        s.push_str("    jmp spin\nspin:\n    jmp spin\n}\nfn vectors(__t: ptr) {\nentry:\n    ret\n}\n");
+    }
     // __start first: the bare-metal preamble falls into the first function
     Ok(format!("{}{}", start, s))
 }
@@ -1050,6 +1136,7 @@ fn check_hex_lines(out: &str, cases: &[Case], name: &str, report: &mut Report) {
     let lines: Vec<&str> = out.lines().collect();
     for (i, case) in cases.iter().enumerate() {
         let got: Result<Vec<i64>, String> = match lines.get(i) {
+            Some(l) if l.trim() == "check" => Err(CHECKED.into()),
             Some(l) => l
                 .split_whitespace()
                 .map(|h| {
@@ -1071,6 +1158,7 @@ fn run_riscv(
     src: &str,
     enc: &emit::Encoder,
     cases: &[Case],
+    trap: bool,
     name: &str,
     scratch: &std::path::Path,
     level: usize,
@@ -1086,7 +1174,7 @@ fn run_riscv(
             "    __f1: i32 = const 21845\n    __f2: ptr = const {}\n    store __f1, __f2\n",
             RV_FINISHER
         );
-        let driver = gen_driver(module, cases, RV_HEAP, &exit_ssa)?;
+        let driver = gen_driver(module, cases, RV_HEAP, &exit_ssa, trap)?;
         let full = format!("{}\n{}\n{}", driver, helpers(RV_UART), ssa::with_prelude(src));
         if let Ok(p) = std::env::var("PROBE_DUMP_DRIVER") {
             let _ = std::fs::write(p, &full);
@@ -1095,7 +1183,7 @@ fn run_riscv(
         ssa::resolve_types(&mut m2, policy);
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
         opt::optimize(&mut m2, level);
-        let compiled = emit_rv::compile(&m2, enc)?;
+        let compiled = emit_rv::compile_image(&m2, enc, &crate::platform::Platform::riscv64(), RV_PREAMBLE_WORDS * 4)?;
         rv_image(&compiled, enc)
     })();
     let bin = match prepared {
@@ -1134,10 +1222,10 @@ fn kernel_shape(case: &Case) -> Result<(i64, i64, i64), String> {
 }
 
 /// what runs a program's kernel on a machine: each group as fibres
-/// (lib/fibre.ssa), a lane per thread, its area in data — the SSA the
+/// (lib/fibre.ssa), a fibre per thread, its area in data — the SSA the
 /// suite adds to a program with `__kernel` directives
 fn kernel_runner(arity: usize, group_bytes: usize, core_ram: u64) -> String {
-    let call = if arity == 5 { "__kernel(__z, __area, __id, __lane, __grp)" } else { "__kernel(__z, __area, __id)" };
+    let call = if arity == 5 { "__kernel(__z, __area, __id, __tid, __grp)" } else { "__kernel(__z, __area, __id)" };
     // the group size and the group under way are the thread's, at 32
     // and 40 in its block (lib/thread.ssa leaves those words free); on
     // a machine with cores (core_ram), core c > 0 gets a megabyte at
@@ -1149,13 +1237,13 @@ data __karea: array(i64, 1024)
 data __kstacks: array(u8, 262144)
 data __kthread: array(u8, {})
 data __kshape: array(i64, 4)
-fn __klane(__lane: i64) {{
+fn __kbody(__tid: i64) {{
 entry:
     __t: ptr = thread()
     __g: i64 = load __t, 32
     __grp: i64 = load __t, 40
     __gid: i64 = mul __grp, __g
-    __id: i64 = add __gid, __lane
+    __id: i64 = add __gid, __tid
     __area: ptr = addr __karea
     __z: ptr = const 0
     {}
@@ -1166,7 +1254,7 @@ entry:
     thread_set_slot(__first, __block)
     store __g, __block, 32
     __groups: i64 = div __n, __g
-    __b: fn(i64) = addr __klane
+    __b: fn(i64) = addr __kbody
     jmp loop(__first)
 loop(__grp: i64):
     __done: u1 = cmp.ge __grp, __groups
@@ -1318,6 +1406,21 @@ fn run_air(
         report.failed += cases.len().max(1);
         report.log.push_str(&format!("FAIL  {:<16} {}\n", name, msg));
     };
+    // the GPU does not stop at a failed check: what a machine refuses,
+    // it runs on to a wrong answer
+    let mut kept = Vec::new();
+    for c in cases {
+        if c.checks {
+            report.skipped += 1;
+            report.log.push_str(&format!("skip  {:<16} {}: the GPU does not stop at a failed check\n", name, c.text));
+        } else {
+            kept.push(c.clone());
+        }
+    }
+    let cases: &[Case] = &kept;
+    if cases.is_empty() {
+        return;
+    }
     // a program with a kernel is dispatched as one: n threads in groups
     // of g, its area's first words the results
     if module.func("__kernel").is_some() {
@@ -1361,7 +1464,7 @@ fn run_air(
         return;
     }
     let prepared = (|| -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
-        let driver = gen_driver(module, cases, AIR_HEAP, "")?;
+        let driver = gen_driver(module, cases, AIR_HEAP, "", false)?;
         let full = format!("{}\n{}\n{}", driver, helpers_air(), ssa::with_prelude(src));
         let mut m2 = ssa::parse_with(&full, policy).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);
@@ -1422,6 +1525,7 @@ fn run_arm_qemu(
     src: &str,
     enc: &emit::Encoder,
     cases: &[Case],
+    trap: bool,
     name: &str,
     scratch: &std::path::Path,
     level: usize,
@@ -1435,7 +1539,7 @@ fn run_arm_qemu(
     let prepared = (|| -> Result<Vec<u8>, String> {
         // exit through a stub whose body is patched below into a PSCI
         // SYSTEM_OFF hypervisor call (x0 = 0x84000008; hvc #0)
-        let driver = gen_driver(module, cases, ARM_HEAP, "    __qemu_exit()\n")?;
+        let driver = gen_driver(module, cases, ARM_HEAP, "    __qemu_exit()\n", trap)?;
         let stub = "fn __qemu_exit() {\nentry:\n    ret\n}\n";
         let full = format!("{}\n{}\n{}\n{}", driver, helpers(ARM_UART), stub, ssa::with_prelude(src));
         // PROBE_DUMP_DRIVER=path: the whole program the machine runs, to read
@@ -1446,7 +1550,9 @@ fn run_arm_qemu(
         ssa::resolve_types(&mut m2, policy);
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
         opt::optimize(&mut m2, level);
-        let compiled = emit::compile(&m2, enc)?;
+        // the code follows the preamble, which is where a vector table's
+        // 2K alignment is measured from
+        let compiled = emit::compile_image(&m2, enc, &crate::platform::Platform::arm64(), ARM_PREAMBLE_WORDS * 4)?;
         let mut bin = arm_image(&compiled, enc)?;
         let preamble = ARM_PREAMBLE_WORDS * 4;
         // patch the exit stub
@@ -1483,6 +1589,18 @@ fn run_arm_qemu(
 }
 
 fn finish_case(report: &mut Report, name: &str, case: &Case, got: Result<Vec<i64>, String>) {
+    if case.checks {
+        // a trap is the expected end: the JIT's child died of brk, a
+        // machine's `__trap` said "check", wasm's driver said "trap:"
+        return match got {
+            Err(e) if e == CHECKED || e.starts_with("trap:") => report.case(true, name, &case.text, ""),
+            Ok(got) => {
+                let gs: Vec<String> = got.iter().map(|v| v.to_string()).collect();
+                report.case(false, name, &case.text, &format!("(no check failed; got {})", gs.join(", ")))
+            }
+            Err(e) => report.case(false, name, &case.text, &format!("({})", e)),
+        };
+    }
     match got {
         Ok(got) if got == case.expected => report.case(true, name, &case.text, ""),
         Ok(got) => {
