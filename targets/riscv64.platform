@@ -202,18 +202,18 @@ fcvt.d.wu {f}, {r} = conv(u32) -> f64
 fcvt.d.l {f}, {r} = conv(i64) -> f64
 fcvt.d.lu {f}, {r} = conv(u64) -> f64
 
-; V: 128-bit vectors — four f32 or i32 lanes (e32, vl 4), two f64 or
-; i64 lanes (e64, vl 2) — the types below in a class of their own, and
-; a rule per operation the library defines lane by lane. Every rule
-; sets the vtype it runs under first (vsetivli: the one piece of
-; machine state a rule carries, set by whoever needs it); the emitter
-; does the same before its own lane moves and loads. A comparison
-; leaves its mask in v0 and merges 1 over 0 into the result, so a
-; `u1xN` holds each lane as 0 or 1. Not here, as for scalars: min/max
+; V: vectors of 64 or 128 bits — lanes of 8 to 64 bits — the types
+; below in a class of their own, and a rule per operation the library
+; defines lane by lane. Every rule sets the vtype it runs under first
+; (vsetivli: the one piece of machine state a rule carries, set by
+; whoever needs it); the emitter does the same before its own lane
+; moves and loads. A comparison leaves its mask in v0 and merges 1 over
+; 0 into the result under the mask type's vtype, so a `u1xN` holds each
+; lane as 0 or 1 in a 128/N-bit lane. Not here, as for scalars: min/max
 ; and float-to-integer (the NaN cases differ from the library's).
 ; targets/riscv64-nov.platform is this target without them.
 ext V
-class v = f32x4, f64x2, i32x4, u32x4, i64x2, u64x2, u1x4, u1x2
+class v = f32x4, f64x2, f32x2, i32x4, u32x4, i64x2, u64x2, i32x2, u32x2, i16x4, u16x4, i8x8, u8x8, i16x8, u16x8, i8x16, u8x16, u1x2, u1x4, u1x8, u1x16
 
 
 ; --- f32x4 ---
@@ -246,33 +246,45 @@ fma(f32x4, f32x4, f32x4) -> f32x4 with t: f32x4
 eq(f32x4, f32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmfeq.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 ne(f32x4, f32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmfne.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 lt(f32x4, f32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmflt.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 le(f32x4, f32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmfle.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 gt(f32x4, f32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmflt.vv v0, b, a
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 ge(f32x4, f32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmfle.vv v0, b, a
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
+conv(i32x4) -> f32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vfcvt.f.x.v r, a
+conv(u32x4) -> f32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vfcvt.f.xu.v r, a
 
 ; --- f64x2 ---
 add(f64x2, f64x2) -> f64x2
@@ -304,38 +316,114 @@ fma(f64x2, f64x2, f64x2) -> f64x2 with t: f64x2
 eq(f64x2, f64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmfeq.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 ne(f64x2, f64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmfne.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 lt(f64x2, f64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmflt.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 le(f64x2, f64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmfle.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 gt(f64x2, f64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmflt.vv v0, b, a
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 ge(f64x2, f64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmfle.vv v0, b, a
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
-conv(i32x4) -> f32x4
-    vsetivli x0, 4, e32, m1, ta, ma
+conv(i64x2) -> f64x2
+    vsetivli x0, 2, e64, m1, ta, ma
     vfcvt.f.x.v r, a
-conv(u32x4) -> f32x4
-    vsetivli x0, 4, e32, m1, ta, ma
+conv(u64x2) -> f64x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vfcvt.f.xu.v r, a
+
+; --- f32x2 ---
+add(f32x2, f32x2) -> f32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vfadd.vv r, a, b
+sub(f32x2, f32x2) -> f32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vfsub.vv r, a, b
+mul(f32x2, f32x2) -> f32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vfmul.vv r, a, b
+div(f32x2, f32x2) -> f32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vfdiv.vv r, a, b
+sqrt(f32x2) -> f32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vfsqrt.v r, a
+neg(f32x2) -> f32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vfsgnjn.vv r, a, a
+abs(f32x2) -> f32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vfsgnjx.vv r, a, a
+fma(f32x2, f32x2, f32x2) -> f32x2 with t: f32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmv1r.v t, c
+    vfmacc.vv t, a, b
+    vmv1r.v r, t
+eq(f32x2, f32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmfeq.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ne(f32x2, f32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmfne.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+lt(f32x2, f32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmflt.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+le(f32x2, f32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmfle.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+gt(f32x2, f32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmflt.vv v0, b, a
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ge(f32x2, f32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmfle.vv v0, b, a
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+conv(i32x2) -> f32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vfcvt.f.x.v r, a
+conv(u32x2) -> f32x2
+    vsetivli x0, 2, e32, m1, ta, ma
     vfcvt.f.xu.v r, a
 
 ; --- i32x4 ---
@@ -366,31 +454,37 @@ shr(i32x4, i32x4) -> i32x4
 eq(i32x4, i32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmseq.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 ne(i32x4, i32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmsne.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 lt(i32x4, i32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmslt.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 le(i32x4, i32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmsle.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 gt(i32x4, i32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmslt.vv v0, b, a
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 ge(i32x4, i32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmsle.vv v0, b, a
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 
@@ -422,39 +516,39 @@ shr(u32x4, u32x4) -> u32x4
 eq(u32x4, u32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmseq.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 ne(u32x4, u32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmsne.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 lt(u32x4, u32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmsltu.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 le(u32x4, u32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmsleu.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 gt(u32x4, u32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmsltu.vv v0, b, a
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 ge(u32x4, u32x4) -> u1x4 with t: u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vmsleu.vv v0, b, a
+    vsetivli x0, 4, e32, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
-conv(i64x2) -> f64x2
-    vsetivli x0, 2, e64, m1, ta, ma
-    vfcvt.f.x.v r, a
-conv(u64x2) -> f64x2
-    vsetivli x0, 2, e64, m1, ta, ma
-    vfcvt.f.xu.v r, a
 
 ; --- i64x2 ---
 add(i64x2, i64x2) -> i64x2
@@ -484,31 +578,37 @@ shr(i64x2, i64x2) -> i64x2
 eq(i64x2, i64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmseq.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 ne(i64x2, i64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmsne.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 lt(i64x2, i64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmslt.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 le(i64x2, i64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmsle.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 gt(i64x2, i64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmslt.vv v0, b, a
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 ge(i64x2, i64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmsle.vv v0, b, a
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 
@@ -540,49 +640,758 @@ shr(u64x2, u64x2) -> u64x2
 eq(u64x2, u64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmseq.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 ne(u64x2, u64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmsne.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 lt(u64x2, u64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmsltu.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 le(u64x2, u64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmsleu.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 gt(u64x2, u64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmsltu.vv v0, b, a
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 ge(u64x2, u64x2) -> u1x2 with t: u1x2
     vsetivli x0, 2, e64, m1, ta, ma
     vmsleu.vv v0, b, a
+    vsetivli x0, 2, e64, m1, ta, ma
     vmv.v.i t, 0
     vmerge.vim r, t, 1, v0
 
-; --- a cast between vectors of one width: the same bits ---
-vmv1r.v {v}, {v} = cast(i32x4) -> u32x4
-vmv1r.v {v}, {v} = cast(u32x4) -> i32x4
-vmv1r.v {v}, {v} = cast(f32x4) -> u32x4
-vmv1r.v {v}, {v} = cast(u32x4) -> f32x4
-vmv1r.v {v}, {v} = cast(f32x4) -> i32x4
-vmv1r.v {v}, {v} = cast(i32x4) -> f32x4
-vmv1r.v {v}, {v} = cast(i64x2) -> u64x2
-vmv1r.v {v}, {v} = cast(u64x2) -> i64x2
-vmv1r.v {v}, {v} = cast(f64x2) -> u64x2
-vmv1r.v {v}, {v} = cast(u64x2) -> f64x2
-vmv1r.v {v}, {v} = cast(f64x2) -> i64x2
-vmv1r.v {v}, {v} = cast(i64x2) -> f64x2
+; --- i32x2 ---
+add(i32x2, i32x2) -> i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vadd.vv r, a, b
+sub(i32x2, i32x2) -> i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vsub.vv r, a, b
+mul(i32x2, i32x2) -> i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmul.vv r, a, b
+and(i32x2, i32x2) -> i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vand.vv r, a, b
+or(i32x2, i32x2) -> i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vor.vv r, a, b
+xor(i32x2, i32x2) -> i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vxor.vv r, a, b
+shl(i32x2, i32x2) -> i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vsll.vv r, a, b
+shr(i32x2, i32x2) -> i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vsra.vv r, a, b
+eq(i32x2, i32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmseq.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ne(i32x2, i32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmsne.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+lt(i32x2, i32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmslt.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+le(i32x2, i32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmsle.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+gt(i32x2, i32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmslt.vv v0, b, a
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ge(i32x2, i32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmsle.vv v0, b, a
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
 
-; --- u1x4, u1x2: the lanes 0 or 1 ---
+; --- u32x2 ---
+add(u32x2, u32x2) -> u32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vadd.vv r, a, b
+sub(u32x2, u32x2) -> u32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vsub.vv r, a, b
+mul(u32x2, u32x2) -> u32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmul.vv r, a, b
+and(u32x2, u32x2) -> u32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vand.vv r, a, b
+or(u32x2, u32x2) -> u32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vor.vv r, a, b
+xor(u32x2, u32x2) -> u32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vxor.vv r, a, b
+shl(u32x2, u32x2) -> u32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vsll.vv r, a, b
+shr(u32x2, u32x2) -> u32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vsrl.vv r, a, b
+eq(u32x2, u32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmseq.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ne(u32x2, u32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmsne.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+lt(u32x2, u32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmsltu.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+le(u32x2, u32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmsleu.vv v0, a, b
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+gt(u32x2, u32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmsltu.vv v0, b, a
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ge(u32x2, u32x2) -> u1x2 with t: u1x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmsleu.vv v0, b, a
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+
+; --- i16x4 ---
+add(i16x4, i16x4) -> i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vadd.vv r, a, b
+sub(i16x4, i16x4) -> i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vsub.vv r, a, b
+mul(i16x4, i16x4) -> i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmul.vv r, a, b
+and(i16x4, i16x4) -> i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vand.vv r, a, b
+or(i16x4, i16x4) -> i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vor.vv r, a, b
+xor(i16x4, i16x4) -> i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vxor.vv r, a, b
+shl(i16x4, i16x4) -> i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vsll.vv r, a, b
+shr(i16x4, i16x4) -> i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vsra.vv r, a, b
+eq(i16x4, i16x4) -> u1x4 with t: u1x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmseq.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ne(i16x4, i16x4) -> u1x4 with t: u1x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmsne.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+lt(i16x4, i16x4) -> u1x4 with t: u1x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmslt.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+le(i16x4, i16x4) -> u1x4 with t: u1x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmsle.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+gt(i16x4, i16x4) -> u1x4 with t: u1x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmslt.vv v0, b, a
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ge(i16x4, i16x4) -> u1x4 with t: u1x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmsle.vv v0, b, a
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+
+; --- u16x4 ---
+add(u16x4, u16x4) -> u16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vadd.vv r, a, b
+sub(u16x4, u16x4) -> u16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vsub.vv r, a, b
+mul(u16x4, u16x4) -> u16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmul.vv r, a, b
+and(u16x4, u16x4) -> u16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vand.vv r, a, b
+or(u16x4, u16x4) -> u16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vor.vv r, a, b
+xor(u16x4, u16x4) -> u16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vxor.vv r, a, b
+shl(u16x4, u16x4) -> u16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vsll.vv r, a, b
+shr(u16x4, u16x4) -> u16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vsrl.vv r, a, b
+eq(u16x4, u16x4) -> u1x4 with t: u1x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmseq.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ne(u16x4, u16x4) -> u1x4 with t: u1x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmsne.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+lt(u16x4, u16x4) -> u1x4 with t: u1x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmsltu.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+le(u16x4, u16x4) -> u1x4 with t: u1x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmsleu.vv v0, a, b
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+gt(u16x4, u16x4) -> u1x4 with t: u1x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmsltu.vv v0, b, a
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ge(u16x4, u16x4) -> u1x4 with t: u1x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmsleu.vv v0, b, a
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+
+; --- i8x8 ---
+add(i8x8, i8x8) -> i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vadd.vv r, a, b
+sub(i8x8, i8x8) -> i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vsub.vv r, a, b
+mul(i8x8, i8x8) -> i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmul.vv r, a, b
+and(i8x8, i8x8) -> i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vand.vv r, a, b
+or(i8x8, i8x8) -> i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vor.vv r, a, b
+xor(i8x8, i8x8) -> i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vxor.vv r, a, b
+shl(i8x8, i8x8) -> i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vsll.vv r, a, b
+shr(i8x8, i8x8) -> i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vsra.vv r, a, b
+eq(i8x8, i8x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmseq.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ne(i8x8, i8x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmsne.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+lt(i8x8, i8x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmslt.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+le(i8x8, i8x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmsle.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+gt(i8x8, i8x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmslt.vv v0, b, a
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ge(i8x8, i8x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmsle.vv v0, b, a
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+
+; --- u8x8 ---
+add(u8x8, u8x8) -> u8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vadd.vv r, a, b
+sub(u8x8, u8x8) -> u8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vsub.vv r, a, b
+mul(u8x8, u8x8) -> u8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmul.vv r, a, b
+and(u8x8, u8x8) -> u8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vand.vv r, a, b
+or(u8x8, u8x8) -> u8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vor.vv r, a, b
+xor(u8x8, u8x8) -> u8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vxor.vv r, a, b
+shl(u8x8, u8x8) -> u8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vsll.vv r, a, b
+shr(u8x8, u8x8) -> u8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vsrl.vv r, a, b
+eq(u8x8, u8x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmseq.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ne(u8x8, u8x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmsne.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+lt(u8x8, u8x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmsltu.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+le(u8x8, u8x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmsleu.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+gt(u8x8, u8x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmsltu.vv v0, b, a
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ge(u8x8, u8x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmsleu.vv v0, b, a
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+
+; --- i16x8 ---
+add(i16x8, i16x8) -> i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vadd.vv r, a, b
+sub(i16x8, i16x8) -> i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vsub.vv r, a, b
+mul(i16x8, i16x8) -> i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmul.vv r, a, b
+and(i16x8, i16x8) -> i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vand.vv r, a, b
+or(i16x8, i16x8) -> i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vor.vv r, a, b
+xor(i16x8, i16x8) -> i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vxor.vv r, a, b
+shl(i16x8, i16x8) -> i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vsll.vv r, a, b
+shr(i16x8, i16x8) -> i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vsra.vv r, a, b
+eq(i16x8, i16x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmseq.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ne(i16x8, i16x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmsne.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+lt(i16x8, i16x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmslt.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+le(i16x8, i16x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmsle.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+gt(i16x8, i16x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmslt.vv v0, b, a
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ge(i16x8, i16x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmsle.vv v0, b, a
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+
+; --- u16x8 ---
+add(u16x8, u16x8) -> u16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vadd.vv r, a, b
+sub(u16x8, u16x8) -> u16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vsub.vv r, a, b
+mul(u16x8, u16x8) -> u16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmul.vv r, a, b
+and(u16x8, u16x8) -> u16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vand.vv r, a, b
+or(u16x8, u16x8) -> u16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vor.vv r, a, b
+xor(u16x8, u16x8) -> u16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vxor.vv r, a, b
+shl(u16x8, u16x8) -> u16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vsll.vv r, a, b
+shr(u16x8, u16x8) -> u16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vsrl.vv r, a, b
+eq(u16x8, u16x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmseq.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ne(u16x8, u16x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmsne.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+lt(u16x8, u16x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmsltu.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+le(u16x8, u16x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmsleu.vv v0, a, b
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+gt(u16x8, u16x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmsltu.vv v0, b, a
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ge(u16x8, u16x8) -> u1x8 with t: u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmsleu.vv v0, b, a
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+
+; --- i8x16 ---
+add(i8x16, i8x16) -> i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vadd.vv r, a, b
+sub(i8x16, i8x16) -> i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vsub.vv r, a, b
+mul(i8x16, i8x16) -> i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmul.vv r, a, b
+and(i8x16, i8x16) -> i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vand.vv r, a, b
+or(i8x16, i8x16) -> i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vor.vv r, a, b
+xor(i8x16, i8x16) -> i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vxor.vv r, a, b
+shl(i8x16, i8x16) -> i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vsll.vv r, a, b
+shr(i8x16, i8x16) -> i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vsra.vv r, a, b
+eq(i8x16, i8x16) -> u1x16 with t: u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmseq.vv v0, a, b
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ne(i8x16, i8x16) -> u1x16 with t: u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmsne.vv v0, a, b
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+lt(i8x16, i8x16) -> u1x16 with t: u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmslt.vv v0, a, b
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+le(i8x16, i8x16) -> u1x16 with t: u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmsle.vv v0, a, b
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+gt(i8x16, i8x16) -> u1x16 with t: u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmslt.vv v0, b, a
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ge(i8x16, i8x16) -> u1x16 with t: u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmsle.vv v0, b, a
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+
+; --- u8x16 ---
+add(u8x16, u8x16) -> u8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vadd.vv r, a, b
+sub(u8x16, u8x16) -> u8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vsub.vv r, a, b
+mul(u8x16, u8x16) -> u8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmul.vv r, a, b
+and(u8x16, u8x16) -> u8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vand.vv r, a, b
+or(u8x16, u8x16) -> u8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vor.vv r, a, b
+xor(u8x16, u8x16) -> u8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vxor.vv r, a, b
+shl(u8x16, u8x16) -> u8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vsll.vv r, a, b
+shr(u8x16, u8x16) -> u8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vsrl.vv r, a, b
+eq(u8x16, u8x16) -> u1x16 with t: u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmseq.vv v0, a, b
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ne(u8x16, u8x16) -> u1x16 with t: u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmsne.vv v0, a, b
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+lt(u8x16, u8x16) -> u1x16 with t: u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmsltu.vv v0, a, b
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+le(u8x16, u8x16) -> u1x16 with t: u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmsleu.vv v0, a, b
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+gt(u8x16, u8x16) -> u1x16 with t: u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmsltu.vv v0, b, a
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+ge(u8x16, u8x16) -> u1x16 with t: u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmsleu.vv v0, b, a
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+
+; --- widening and narrowing between lane widths, and the floats'. A
+; widened operand is a register pair, which must be even-aligned: the
+; rule's temporary (v16) is, an allocated register may not be ---
+conv(i32x2) -> i64x2 with t: i32x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv1r.v t, a
+    vsext.vf2 r, t
+conv(i64x2) -> i32x2 with t: i64x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmv1r.v t, a
+    vnsrl.wi r, t, 0
+conv(u32x2) -> u64x2 with t: u32x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv1r.v t, a
+    vzext.vf2 r, t
+conv(u64x2) -> u32x2 with t: u64x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmv1r.v t, a
+    vnsrl.wi r, t, 0
+conv(i16x4) -> i32x4 with t: i16x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv1r.v t, a
+    vsext.vf2 r, t
+conv(i32x4) -> i16x4 with t: i32x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmv1r.v t, a
+    vnsrl.wi r, t, 0
+conv(u16x4) -> u32x4 with t: u16x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv1r.v t, a
+    vzext.vf2 r, t
+conv(u32x4) -> u16x4 with t: u32x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmv1r.v t, a
+    vnsrl.wi r, t, 0
+conv(i8x8) -> i16x8 with t: i8x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv1r.v t, a
+    vsext.vf2 r, t
+conv(i16x8) -> i8x8 with t: i16x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmv1r.v t, a
+    vnsrl.wi r, t, 0
+conv(u8x8) -> u16x8 with t: u8x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv1r.v t, a
+    vzext.vf2 r, t
+conv(u16x8) -> u8x8 with t: u16x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmv1r.v t, a
+    vnsrl.wi r, t, 0
+conv(f32x2) -> f64x2 with t: f64x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vfwcvt.f.f.v t, a
+    vmv1r.v r, t
+conv(f64x2) -> f32x2 with t: f64x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmv1r.v t, a
+    vfncvt.f.f.w r, t
+
+; --- a cast between vectors of one shape: the same bits ---
+vmv1r.v {v}, {v} = cast(i16x4) -> u16x4
+vmv1r.v {v}, {v} = cast(u16x4) -> i16x4
+vmv1r.v {v}, {v} = cast(f32x4) -> i32x4
+vmv1r.v {v}, {v} = cast(f32x4) -> u32x4
+vmv1r.v {v}, {v} = cast(i32x4) -> f32x4
+vmv1r.v {v}, {v} = cast(i32x4) -> u32x4
+vmv1r.v {v}, {v} = cast(u32x4) -> f32x4
+vmv1r.v {v}, {v} = cast(u32x4) -> i32x4
+vmv1r.v {v}, {v} = cast(f32x2) -> i32x2
+vmv1r.v {v}, {v} = cast(f32x2) -> u32x2
+vmv1r.v {v}, {v} = cast(i32x2) -> f32x2
+vmv1r.v {v}, {v} = cast(i32x2) -> u32x2
+vmv1r.v {v}, {v} = cast(u32x2) -> f32x2
+vmv1r.v {v}, {v} = cast(u32x2) -> i32x2
+vmv1r.v {v}, {v} = cast(f64x2) -> i64x2
+vmv1r.v {v}, {v} = cast(f64x2) -> u64x2
+vmv1r.v {v}, {v} = cast(i64x2) -> f64x2
+vmv1r.v {v}, {v} = cast(i64x2) -> u64x2
+vmv1r.v {v}, {v} = cast(u64x2) -> f64x2
+vmv1r.v {v}, {v} = cast(u64x2) -> i64x2
+vmv1r.v {v}, {v} = cast(i8x8) -> u8x8
+vmv1r.v {v}, {v} = cast(u8x8) -> i8x8
+vmv1r.v {v}, {v} = cast(i16x8) -> u16x8
+vmv1r.v {v}, {v} = cast(u16x8) -> i16x8
+vmv1r.v {v}, {v} = cast(i8x16) -> u8x16
+vmv1r.v {v}, {v} = cast(u8x16) -> i8x16
+
+; --- u1xN: the lanes 0 or 1 ---
+and(u1x2, u1x2) -> u1x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vand.vv r, a, b
+or(u1x2, u1x2) -> u1x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vor.vv r, a, b
+xor(u1x2, u1x2) -> u1x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vxor.vv r, a, b
 and(u1x4, u1x4) -> u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vand.vv r, a, b
@@ -592,14 +1401,23 @@ or(u1x4, u1x4) -> u1x4
 xor(u1x4, u1x4) -> u1x4
     vsetivli x0, 4, e32, m1, ta, ma
     vxor.vv r, a, b
-and(u1x2, u1x2) -> u1x2
-    vsetivli x0, 2, e64, m1, ta, ma
+and(u1x8, u1x8) -> u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
     vand.vv r, a, b
-or(u1x2, u1x2) -> u1x2
-    vsetivli x0, 2, e64, m1, ta, ma
+or(u1x8, u1x8) -> u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
     vor.vv r, a, b
-xor(u1x2, u1x2) -> u1x2
-    vsetivli x0, 2, e64, m1, ta, ma
+xor(u1x8, u1x8) -> u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vxor.vv r, a, b
+and(u1x16, u1x16) -> u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vand.vv r, a, b
+or(u1x16, u1x16) -> u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vor.vv r, a, b
+xor(u1x16, u1x16) -> u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
     vxor.vv r, a, b
 
 ; fibres: a stack switch (see targets/arm64.platform). The saved set

@@ -1,4 +1,4 @@
-; vectors: `TxN` is N lanes of T — `i32x4`, `f32x4`, `u8x8`, `floatx4`
+; vectors: `TxN` is N lanes of T — `i32x4`, `f32x4`, `u8x8`, `i16x8`, `floatx4`
 ; with the policy's float, `intx2` with its int, `u1x4` for a
 ; comparison's result. A vector is a struct of numbered lanes:
 ; `pack`/`unpack` build and split it, `get v, 2` and `set v, 0, x`
@@ -43,6 +43,19 @@
 ;! through_call 1 2 3 4 10 20 30 40 -> 22, 44
 ;! through_call_f 0x3f800000 0x40000000 0x40400000 0x40800000 0x3f000000 -> 0x40200000, 0x40900000
 ;! mixed_call 3 0x3f800000 0x40000000 0x40400000 0x40800000 0x3f000000 -> 4, 0x40200000
+;! add2 1 2 10 20 -> 11, 22
+;! fadd2s 0x3f800000 0x40000000 0x3f000000 -> 0x3fc00000, 0x40200000
+;! mul4h 1 2 3 4 3 -> 3, 12
+;! bytes8 250 10 -> 4, 260
+;! cmp8 1 5 3 7 4 -> 170
+;! cmp16 3 5 -> 1, 0
+;! widen4 1 -2 3 -4 -> -2, -4
+;! narrow4 70000 -1 2 3 -> 4464, -1
+;! fwiden 0x3f800000 0x40000000 -> 0x3ff0000000000000, 0x4000000000000000
+;! fnarrow 0x3ff0000000000000 0x4000000000000000 -> 0x3f800000, 0x40000000
+;! shl8 1 2 3 4 1 -> 2, 8
+;! via_memory_2 i64[0,0,0,0] 7 8 -> 15
+;! ucmp4h 1 0x8000 3 0xffff 2 -> 14
 
 type v4 = i32x4
 
@@ -480,4 +493,122 @@ fn mixed_call(k: i32, a0: f32, a1: f32, a2: f32, a3: f32, h: f32) -> (i32, f32) 
     k2: i32, c: f32x4 = mixed(k, a, h)
     x: f32 = get c, 1
     ret k2, x
+}
+
+; --- the other shapes: 64-bit vectors (i32x2, f32x2, i16x4, u8x8) and
+; 128-bit ones of narrow lanes (i16x8, u8x16), with the conversions
+; between lane widths ---
+fn add2(a0: i32, a1: i32, b0: i32, b1: i32) -> (i32, i32) {
+    a: i32x2 = pack a0, a1
+    b: i32x2 = pack b0, b1
+    c: i32x2 = add a, b
+    r0: i32, r1: i32 = unpack c
+    ret r0, r1
+}
+fn fadd2s(a0: f32, a1: f32, h: f32) -> (f32, f32) {
+    a: f32x2 = pack a0, a1
+    hs: f32x2 = splat h
+    c: f32x2 = add a, hs
+    r0: f32, r1: f32 = unpack c
+    ret r0, r1
+}
+fn mul4h(a0: i16, a1: i16, a2: i16, a3: i16, k: i16) -> (i16, i16) {
+    a: i16x4 = pack a0, a1, a2, a3
+    ks: i16x4 = splat k
+    c: i16x4 = mul a, ks
+    r0: i16 = get c, 0
+    r3: i16 = get c, 3
+    ret r0, r3
+}
+; bytes wrap at 256; the same sum in 16-bit lanes does not
+fn bytes8(x: u8, y: u8) -> (u8, i16) {
+    a: u8x8 = splat x
+    b: u8x8 = splat y
+    s: u8x8 = add a, b
+    r0: u8 = get s, 3
+    x16: i16 = conv x
+    y16: i16 = conv y
+    c: i16x8 = splat x16
+    d: i16x8 = splat y16
+    t: i16x8 = add c, d
+    r1: i16 = get t, 5
+    ret r0, r1
+}
+fn cmp8(a0: i8, a1: i8, a2: i8, a3: i8, k: i8) -> u8 {
+    a: i8x8 = pack a0, a1, a2, a3, a0, a1, a2, a3
+    ks: i8x8 = splat k
+    m: u1x8 = cmp.gt a, ks
+    b0: u1, b1: u1, b2: u1, b3: u1, b4: u1, b5: u1, b6: u1, b7: u1 = unpack m
+    r: u8 = mask8(b0, b1, b2, b3, b4, b5, b6, b7)
+    ret r
+}
+fn mask8(b0: u1, b1: u1, b2: u1, b3: u1, b4: u1, b5: u1, b6: u1, b7: u1) -> u8 {
+    lo: u8 = mask4(b0, b1, b2, b3)
+    hi: u8 = mask4(b4, b5, b6, b7)
+    hs: u8 = shl hi, 4
+    r: u8 = or lo, hs
+    ret r
+}
+; sixteen byte lanes: a comparison every lane agrees on, masked with one none does
+fn cmp16(x: u8, y: u8) -> (u1, u1) {
+    a: u8x16 = splat x
+    b: u8x16 = splat y
+    lt: u1x16 = cmp.lt a, b
+    gt: u1x16 = cmp.gt a, b
+    both: u1x16 = and lt, gt
+    r0: u1 = get lt, 15
+    r1: u1 = get both, 0
+    ret r0, r1
+}
+fn widen4(a0: i16, a1: i16, a2: i16, a3: i16) -> (i32, i32) {
+    a: i16x4 = pack a0, a1, a2, a3
+    w: i32x4 = conv a
+    r1: i32 = get w, 1
+    r3: i32 = get w, 3
+    ret r1, r3
+}
+fn narrow4(a0: i32, a1: i32, a2: i32, a3: i32) -> (i16, i16) {
+    a: i32x4 = pack a0, a1, a2, a3
+    n: i16x4 = conv a
+    r0: i16 = get n, 0
+    r1: i16 = get n, 1
+    ret r0, r1
+}
+fn fwiden(a0: f32, a1: f32) -> (f64, f64) {
+    a: f32x2 = pack a0, a1
+    w: f64x2 = conv a
+    r0: f64, r1: f64 = unpack w
+    ret r0, r1
+}
+fn fnarrow(a0: f64, a1: f64) -> (f32, f32) {
+    a: f64x2 = pack a0, a1
+    n: f32x2 = conv a
+    r0: f32, r1: f32 = unpack n
+    ret r0, r1
+}
+fn shl8(a0: i8, a1: i8, a2: i8, a3: i8, n: i8) -> (i8, i8) {
+    a: i8x8 = pack a0, a1, a2, a3, a0, a1, a2, a3
+    ns: i8x8 = splat n
+    s: i8x8 = shl a, ns
+    r0: i8 = get s, 0
+    r3: i8 = get s, 3
+    ret r0, r3
+}
+fn via_memory_2(p: ptr, a0: i32, a1: i32) -> i32 {
+    a: i32x2 = pack a0, a1
+    store a, p
+    b: i32x2 = load p
+    store b, p, 8
+    x: i32 = load p, 12
+    y: i32 = load p, 0
+    s: i32 = add x, y
+    ret s
+}
+fn ucmp4h(a0: u16, a1: u16, a2: u16, a3: u16, k: u16) -> u8 {
+    a: u16x4 = pack a0, a1, a2, a3
+    ks: u16x4 = splat k
+    m: u1x4 = cmp.gt a, ks
+    b0: u1, b1: u1, b2: u1, b3: u1 = unpack m
+    r: u8 = mask4(b0, b1, b2, b3)
+    ret r
 }

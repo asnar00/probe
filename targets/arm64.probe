@@ -247,10 +247,27 @@ inst mov sp, {x}
 ; a failed check: a breakpoint exception (ESR_EL1.EC = 0x3c)
 inst brk #{i 0..65535}
 
-; --- NEON: 128-bit vectors, four f32 or i32 lanes (.4s) or two f64 or
-; i64 lanes (.2d), in the same file as the floats. The rules in
-; targets/arm64.platform take a vector operation whole where the
-; library defines it lane by lane ---
+; --- NEON: vectors of 64 or 128 bits — lanes of 8, 16, 32 or 64 bits
+; (.8b/.16b, .4h/.8h, .2s/.4s, .2d) in the same file as the floats. The
+; rules in targets/arm64.platform take a vector operation whole where
+; the library defines it lane by lane ---
+inst fadd {v}.2s, {v}.2s, {v}.2s
+inst fsub {v}.2s, {v}.2s, {v}.2s
+inst fmul {v}.2s, {v}.2s, {v}.2s
+inst fdiv {v}.2s, {v}.2s, {v}.2s
+inst fmin {v}.2s, {v}.2s, {v}.2s
+inst fmax {v}.2s, {v}.2s, {v}.2s
+inst fmla {v}.2s, {v}.2s, {v}.2s
+inst fcmeq {v}.2s, {v}.2s, {v}.2s
+inst fcmgt {v}.2s, {v}.2s, {v}.2s
+inst fcmge {v}.2s, {v}.2s, {v}.2s
+inst fsqrt {v}.2s, {v}.2s
+inst fneg {v}.2s, {v}.2s
+inst fabs {v}.2s, {v}.2s
+inst scvtf {v}.2s, {v}.2s
+inst ucvtf {v}.2s, {v}.2s
+inst fcvtzs {v}.2s, {v}.2s
+inst fcvtzu {v}.2s, {v}.2s
 inst fadd {v}.4s, {v}.4s, {v}.4s
 inst fsub {v}.4s, {v}.4s, {v}.4s
 inst fmul {v}.4s, {v}.4s, {v}.4s
@@ -261,20 +278,9 @@ inst fmla {v}.4s, {v}.4s, {v}.4s
 inst fcmeq {v}.4s, {v}.4s, {v}.4s
 inst fcmgt {v}.4s, {v}.4s, {v}.4s
 inst fcmge {v}.4s, {v}.4s, {v}.4s
-inst add {v}.4s, {v}.4s, {v}.4s
-inst sub {v}.4s, {v}.4s, {v}.4s
-inst cmeq {v}.4s, {v}.4s, {v}.4s
-inst cmgt {v}.4s, {v}.4s, {v}.4s
-inst cmge {v}.4s, {v}.4s, {v}.4s
-inst cmhi {v}.4s, {v}.4s, {v}.4s
-inst cmhs {v}.4s, {v}.4s, {v}.4s
-inst sshl {v}.4s, {v}.4s, {v}.4s
-inst ushl {v}.4s, {v}.4s, {v}.4s
 inst fsqrt {v}.4s, {v}.4s
 inst fneg {v}.4s, {v}.4s
 inst fabs {v}.4s, {v}.4s
-inst neg {v}.4s, {v}.4s
-inst abs {v}.4s, {v}.4s
 inst scvtf {v}.4s, {v}.4s
 inst ucvtf {v}.4s, {v}.4s
 inst fcvtzs {v}.4s, {v}.4s
@@ -289,6 +295,79 @@ inst fmla {v}.2d, {v}.2d, {v}.2d
 inst fcmeq {v}.2d, {v}.2d, {v}.2d
 inst fcmgt {v}.2d, {v}.2d, {v}.2d
 inst fcmge {v}.2d, {v}.2d, {v}.2d
+inst fsqrt {v}.2d, {v}.2d
+inst fneg {v}.2d, {v}.2d
+inst fabs {v}.2d, {v}.2d
+inst scvtf {v}.2d, {v}.2d
+inst ucvtf {v}.2d, {v}.2d
+inst fcvtzs {v}.2d, {v}.2d
+inst fcvtzu {v}.2d, {v}.2d
+inst add {v}.8b, {v}.8b, {v}.8b
+inst sub {v}.8b, {v}.8b, {v}.8b
+inst cmeq {v}.8b, {v}.8b, {v}.8b
+inst cmgt {v}.8b, {v}.8b, {v}.8b
+inst cmge {v}.8b, {v}.8b, {v}.8b
+inst cmhi {v}.8b, {v}.8b, {v}.8b
+inst cmhs {v}.8b, {v}.8b, {v}.8b
+inst sshl {v}.8b, {v}.8b, {v}.8b
+inst ushl {v}.8b, {v}.8b, {v}.8b
+inst neg {v}.8b, {v}.8b
+inst mul {v}.8b, {v}.8b, {v}.8b
+inst add {v}.4h, {v}.4h, {v}.4h
+inst sub {v}.4h, {v}.4h, {v}.4h
+inst cmeq {v}.4h, {v}.4h, {v}.4h
+inst cmgt {v}.4h, {v}.4h, {v}.4h
+inst cmge {v}.4h, {v}.4h, {v}.4h
+inst cmhi {v}.4h, {v}.4h, {v}.4h
+inst cmhs {v}.4h, {v}.4h, {v}.4h
+inst sshl {v}.4h, {v}.4h, {v}.4h
+inst ushl {v}.4h, {v}.4h, {v}.4h
+inst neg {v}.4h, {v}.4h
+inst mul {v}.4h, {v}.4h, {v}.4h
+inst add {v}.2s, {v}.2s, {v}.2s
+inst sub {v}.2s, {v}.2s, {v}.2s
+inst cmeq {v}.2s, {v}.2s, {v}.2s
+inst cmgt {v}.2s, {v}.2s, {v}.2s
+inst cmge {v}.2s, {v}.2s, {v}.2s
+inst cmhi {v}.2s, {v}.2s, {v}.2s
+inst cmhs {v}.2s, {v}.2s, {v}.2s
+inst sshl {v}.2s, {v}.2s, {v}.2s
+inst ushl {v}.2s, {v}.2s, {v}.2s
+inst neg {v}.2s, {v}.2s
+inst mul {v}.2s, {v}.2s, {v}.2s
+inst add {v}.16b, {v}.16b, {v}.16b
+inst sub {v}.16b, {v}.16b, {v}.16b
+inst cmeq {v}.16b, {v}.16b, {v}.16b
+inst cmgt {v}.16b, {v}.16b, {v}.16b
+inst cmge {v}.16b, {v}.16b, {v}.16b
+inst cmhi {v}.16b, {v}.16b, {v}.16b
+inst cmhs {v}.16b, {v}.16b, {v}.16b
+inst sshl {v}.16b, {v}.16b, {v}.16b
+inst ushl {v}.16b, {v}.16b, {v}.16b
+inst neg {v}.16b, {v}.16b
+inst mul {v}.16b, {v}.16b, {v}.16b
+inst add {v}.8h, {v}.8h, {v}.8h
+inst sub {v}.8h, {v}.8h, {v}.8h
+inst cmeq {v}.8h, {v}.8h, {v}.8h
+inst cmgt {v}.8h, {v}.8h, {v}.8h
+inst cmge {v}.8h, {v}.8h, {v}.8h
+inst cmhi {v}.8h, {v}.8h, {v}.8h
+inst cmhs {v}.8h, {v}.8h, {v}.8h
+inst sshl {v}.8h, {v}.8h, {v}.8h
+inst ushl {v}.8h, {v}.8h, {v}.8h
+inst neg {v}.8h, {v}.8h
+inst mul {v}.8h, {v}.8h, {v}.8h
+inst add {v}.4s, {v}.4s, {v}.4s
+inst sub {v}.4s, {v}.4s, {v}.4s
+inst cmeq {v}.4s, {v}.4s, {v}.4s
+inst cmgt {v}.4s, {v}.4s, {v}.4s
+inst cmge {v}.4s, {v}.4s, {v}.4s
+inst cmhi {v}.4s, {v}.4s, {v}.4s
+inst cmhs {v}.4s, {v}.4s, {v}.4s
+inst sshl {v}.4s, {v}.4s, {v}.4s
+inst ushl {v}.4s, {v}.4s, {v}.4s
+inst neg {v}.4s, {v}.4s
+inst mul {v}.4s, {v}.4s, {v}.4s
 inst add {v}.2d, {v}.2d, {v}.2d
 inst sub {v}.2d, {v}.2d, {v}.2d
 inst cmeq {v}.2d, {v}.2d, {v}.2d
@@ -298,36 +377,59 @@ inst cmhi {v}.2d, {v}.2d, {v}.2d
 inst cmhs {v}.2d, {v}.2d, {v}.2d
 inst sshl {v}.2d, {v}.2d, {v}.2d
 inst ushl {v}.2d, {v}.2d, {v}.2d
-inst fsqrt {v}.2d, {v}.2d
-inst fneg {v}.2d, {v}.2d
-inst fabs {v}.2d, {v}.2d
 inst neg {v}.2d, {v}.2d
-inst abs {v}.2d, {v}.2d
-inst scvtf {v}.2d, {v}.2d
-inst ucvtf {v}.2d, {v}.2d
-inst fcvtzs {v}.2d, {v}.2d
-inst fcvtzu {v}.2d, {v}.2d
-inst mul {v}.4s, {v}.4s, {v}.4s
 inst and {v}.16b, {v}.16b, {v}.16b
 inst orr {v}.16b, {v}.16b, {v}.16b
 inst eor {v}.16b, {v}.16b, {v}.16b
 inst mvn {v}.16b, {v}.16b
 inst mov {v}.16b, {v}.16b
+inst sshll {v}.2d, {v}.2s, #0
+inst ushll {v}.2d, {v}.2s, #0
+inst xtn {v}.2s, {v}.2d
+inst sshll {v}.4s, {v}.4h, #0
+inst ushll {v}.4s, {v}.4h, #0
+inst xtn {v}.4h, {v}.4s
+inst sshll {v}.8h, {v}.8b, #0
+inst ushll {v}.8h, {v}.8b, #0
+inst xtn {v}.8b, {v}.8h
+inst fcvtl {v}.2d, {v}.2s
+inst fcvtn {v}.2s, {v}.2d
+inst dup {v}.8b, {w}
+inst dup {v}.4h, {w}
+inst dup {v}.2s, {w}
+inst dup {v}.16b, {w}
+inst dup {v}.8h, {w}
 inst dup {v}.4s, {w}
 inst dup {v}.2d, {x}
+inst mov {v}.b[{i 0..15}], {w}
+inst mov {v}.h[{i 0..7}], {w}
 inst mov {v}.s[{i 0..3}], {w}
 inst mov {v}.d[{i 0..1}], {x}
+inst umov {w}, {v}.b[{i 0..15}]
+inst umov {w}, {v}.h[{i 0..7}]
 inst umov {w}, {v}.s[{i 0..3}]
 inst umov {x}, {v}.d[{i 0..1}]
+inst smov {w}, {v}.b[{i 0..15}]
+inst smov {w}, {v}.h[{i 0..7}]
 inst fmov {x}, {v}.d[1]
 inst fmov {v}.d[1], {x}
 ; a vector in memory is aligned only to its lanes (ssa.md: a struct of
 ; lanes at their natural offsets), and with the MMU off an access must
 ; be aligned to its size: ld1/st1 access lane by lane. The q forms are
 ; for the stack, which is 16-aligned
+inst ld1 {{{v}.8b}}, [{x}]
+inst st1 {{{v}.8b}}, [{x}]
+inst ld1 {{{v}.4h}}, [{x}]
+inst st1 {{{v}.4h}}, [{x}]
+inst ld1 {{{v}.2s}}, [{x}]
+inst st1 {{{v}.2s}}, [{x}]
+inst ld1 {{{v}.16b}}, [{x}]
+inst st1 {{{v}.16b}}, [{x}]
+inst ld1 {{{v}.8h}}, [{x}]
+inst st1 {{{v}.8h}}, [{x}]
 inst ld1 {{{v}.4s}}, [{x}]
-inst ld1 {{{v}.2d}}, [{x}]
 inst st1 {{{v}.4s}}, [{x}]
+inst ld1 {{{v}.2d}}, [{x}]
 inst st1 {{{v}.2d}}, [{x}]
 inst ldr {q}, [sp, #{i 0..65520 /16}]
 inst str {q}, [sp, #{i 0..65520 /16}]

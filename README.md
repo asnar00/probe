@@ -239,7 +239,7 @@ Toolchain expectations (macOS/arm64 host): `llvm-mc` (brew llvm), `wabt` (wat2wa
 
 What is here:
 
-- **Types.** Integers to 256 bits, packs, structs, vectors (`f32x4`: per-lane by definition; whole on the GPU, NEON on arm64 and RVV on riscv64, each checked against the lane form), typed pointers and shaped arrays, parametric types and generic functions, function values.
+- **Types.** Integers to 256 bits, packs, structs, vectors of 64 or 128 bits with lanes of 8 to 64 bits (`f32x4`, `u8x8`, `i16x8`, ...: per-lane by definition; whole on the GPU, NEON on arm64 and RVV on riscv64, each checked against the lane form), typed pointers and shaped arrays, parametric types and generic functions, function values.
 - **Numbers as libraries.** Floats, fixed point, unit fractions, rationals, time and decimals, with hardware substituted where a platform has it.
 - **Memory as a ladder of lifetimes**, not a heap for objects: `scratch`, arenas, pools, a buddy heap over the rest of RAM as the root; `check` is the one assertion, a breakpoint trap that names its site.
 - **Four backends and their variants**, the fourth Apple's GPU through a `.metallib` we write ourselves; on the machines each class of value — integer, float, vector — crosses a call in its own registers, and a caller from Rust reaches classed functions through a wrapper the compiler generates.
@@ -252,7 +252,7 @@ Deliberately not here yet (`future-work.md` has the queue, `handover.md` the rea
 - A kernel's threads as real worker threads on wasm.
 - Tasks dealt across cores in the OS programs.
 - Textures as handles with platform operations; WebGPU as a second GPU path.
-- `u1xN` in memory; 64-bit vectors; scalable RVV (`vl` as a value, not a constant); wasm SIMD through the same seam.
+- `u1xN` in memory; scalable RVV (`vl` as a value, not a constant); wasm SIMD through the same seam.
 - Capacity analysis for arenas and stacks.
 - External (libc) calls from JIT'd code.
 - Differential testing against clang, to close the semantic loop the way the prober closed the encoding loop.

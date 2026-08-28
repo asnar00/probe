@@ -659,10 +659,19 @@ impl FnEmit<'_> {
         self.vecs[v.0 as usize]
     }
 
-    /// a vector's lanes: (bits per lane in the register — 128 / N — and N)
-    fn lanes(&self, v: ValueId) -> (u32, u32) {
-        let (_, n) = self.func.vector(self.func.ty(v)).unwrap();
-        (128 / n, n)
+    /// a vector's shape: (bits per lane in the register, lanes, bits in
+    /// all): 64 or 128 bits — a u1xN holds each lane as 0 or 1 in a
+    /// 128/N-bit lane of a whole register
+    fn shape(&self, v: ValueId) -> (u32, u32, u32) {
+        let ty = self.func.ty(v);
+        let (lane, n) = self.func.vector(ty).unwrap();
+        let total = if self.func.width(lane) == Some(1) { 128 } else { self.func.width(ty).unwrap() };
+        (total / n, n, total)
+    }
+
+    /// the arrangement a shape is written with: `.4s`, `.8b`, ...
+    fn arrangement(bits: u32, n: u32) -> String {
+        format!("{}{}", n, match bits { 8 => 'b', 16 => 'h', 32 => 's', _ => 'd' })
     }
 
     fn tyname(&self, v: ValueId) -> String {
@@ -1208,8 +1217,23 @@ const LDR_Q_SP: &str = "ldr {q}, [sp, #{i 0..65520 /16}]";
 const STR_Q_SP: &str = "str {q}, [sp, #{i 0..65520 /16}]";
 /// a vector in memory is aligned to its lanes, not to 16: ld1/st1 access
 /// it lane by lane, which the machine allows on device memory too
-const LD1: [&str; 2] = ["ld1 {{{v}.4s}}, [{x}]", "ld1 {{{v}.2d}}, [{x}]"];
-const ST1: [&str; 2] = ["st1 {{{v}.4s}}, [{x}]", "st1 {{{v}.2d}}, [{x}]"];
+fn ld1(bits: u32, n: u32, store: bool) -> String {
+    format!("{} {{{{{{v}}.{}}}}}, [{{x}}]", if store { "st1" } else { "ld1" }, FnEmit::arrangement(bits, n))
+}
+/// a lane into and out of a vector register, by the lane's width
+fn ins(bits: u32) -> &'static str {
+    match bits { 8 => "mov {v}.b[{i 0..15}], {w}", 16 => "mov {v}.h[{i 0..7}], {w}", 32 => "mov {v}.s[{i 0..3}], {w}", _ => "mov {v}.d[{i 0..1}], {x}" }
+}
+fn umov(bits: u32, signed: bool) -> &'static str {
+    match (bits, signed) {
+        (8, true) => "smov {w}, {v}.b[{i 0..15}]",
+        (8, false) => "umov {w}, {v}.b[{i 0..15}]",
+        (16, true) => "smov {w}, {v}.h[{i 0..7}]",
+        (16, false) => "umov {w}, {v}.h[{i 0..7}]",
+        (32, _) => "umov {w}, {v}.s[{i 0..3}]",
+        _ => "umov {x}, {v}.d[{i 0..1}]",
+    }
+}
 const MOV_V: &str = "mov {v}.16b, {v}.16b";
 const LDR_D_SP: &str = "ldr {d}, [sp, #{i 0..32760 /8}]";
 const ADR: &str = "adr {x}, #{i -1048576..1048575}";
@@ -1471,8 +1495,6 @@ fn native_body(enc: &Encoder, native: &Native, code: &mut Vec<u8>) -> Result<(),
 /// rule for the operation's signature; None when the instruction has no
 /// vector in it
 fn compile_vector_inst(e: &mut FnEmit, inst: &Inst) -> Option<Result<(), String>> {
-    let ins = |bits: u32| if bits == 64 { "mov {v}.d[{i 0..1}], {x}" } else { "mov {v}.s[{i 0..3}], {w}" };
-    let umov = |bits: u32| if bits == 64 { "umov {x}, {v}.d[{i 0..1}]" } else { "umov {w}, {v}.s[{i 0..3}]" };
     let r = match inst {
         Inst::Bin { op, dst, lhs, rhs } if e.is_v(*dst) => {
             let sig = format!("{}({}, {}) -> {}", op.name(), e.tyname(*lhs), e.tyname(*rhs), e.tyname(*dst));
@@ -1517,14 +1539,14 @@ fn compile_vector_inst(e: &mut FnEmit, inst: &Inst) -> Option<Result<(), String>
             vector_op(e, &sig, dsts.first().copied(), args)
         }
         Inst::Get { dst, src, field } if e.is_v(*src) => (|| {
-            let (bits, _) = e.lanes(*src);
+            let (bits, _, _) = e.shape(*src);
             let rs = e.src_freg(*src, 16)?;
             let rd = e.dst_reg(*dst, 10);
-            e.emit(umov(bits), &[rd, rs, *field as i64])?;
+            e.emit(umov(bits, e.repr(*dst).signed()), &[rd, rs, *field as i64])?;
             e.finish(*dst, rd)
         })(),
         Inst::Set { dst, src, field, val } if e.is_v(*dst) => (|| {
-            let (bits, _) = e.lanes(*dst);
+            let (bits, _, _) = e.shape(*dst);
             let rs = e.src_freg(*src, 16)?;
             let rv = e.src_reg(*val, 10)?;
             // built in v20, which is neither source
@@ -1537,12 +1559,13 @@ fn compile_vector_inst(e: &mut FnEmit, inst: &Inst) -> Option<Result<(), String>
             e.finish_f(*dst, rd)
         })(),
         Inst::Pack { dst, args } if e.is_v(*dst) => (|| {
-            let (bits, _) = e.lanes(*dst);
+            let (bits, n, _) = e.shape(*dst);
             let rd = e.dst_freg(*dst, 19);
             if args.iter().all(|a| a == &args[0]) {
                 // a splat
                 let ra = e.src_reg(args[0], 10)?;
-                e.emit(if bits == 64 { "dup {v}.2d, {x}" } else { "dup {v}.4s, {w}" }, &[rd, ra])?;
+                let t = format!("dup {{v}}.{}, {{{}}}", FnEmit::arrangement(bits, n), if bits == 64 { "x" } else { "w" });
+                e.emit(&t, &[rd, ra])?;
                 return e.finish_f(*dst, rd);
             }
             // lane by lane into v20 (a lane may live in the register rd is)
@@ -1554,13 +1577,13 @@ fn compile_vector_inst(e: &mut FnEmit, inst: &Inst) -> Option<Result<(), String>
             e.finish_f(*dst, rd)
         })(),
         Inst::Unpack { dsts, src } if e.is_v(*src) => (|| {
-            let (bits, _) = e.lanes(*src);
+            let (bits, _, _) = e.shape(*src);
             let rs = e.src_freg(*src, 16)?;
             // results may be allocated over the source; read from a copy
             e.emit(MOV_V, &[20, rs])?;
             for (k, &d) in dsts.iter().enumerate() {
                 let rd = e.dst_reg(d, 10);
-                e.emit(umov(bits), &[rd, 20, k as i64])?;
+                e.emit(umov(bits, e.repr(d).signed()), &[rd, 20, k as i64])?;
                 e.finish(d, rd)?;
             }
             Ok(())
@@ -1570,10 +1593,10 @@ fn compile_vector_inst(e: &mut FnEmit, inst: &Inst) -> Option<Result<(), String>
             if e.func.width(lane) == Some(1) {
                 return Err(format!("a load of {} (a lane a byte each): not yet", e.tyname(*dst)));
             }
-            let (bits, _) = e.lanes(*dst);
+            let (bits, n, _) = e.shape(*dst);
             let ra = e.vector_address(*addr, *off, *index)?;
             let rd = e.dst_freg(*dst, 19);
-            e.emit(LD1[(bits == 64) as usize], &[rd, ra])?;
+            e.emit(&ld1(bits, n, false), &[rd, ra])?;
             e.finish_f(*dst, rd)
         })(),
         Inst::Store { val, addr, off, index } if e.is_v(*val) => (|| {
@@ -1581,10 +1604,10 @@ fn compile_vector_inst(e: &mut FnEmit, inst: &Inst) -> Option<Result<(), String>
             if e.func.width(lane) == Some(1) {
                 return Err(format!("a store of {} (a lane a byte each): not yet", e.tyname(*val)));
             }
-            let (bits, _) = e.lanes(*val);
+            let (bits, n, _) = e.shape(*val);
             let rv = e.src_freg(*val, 16)?;
             let ra = e.vector_address(*addr, *off, *index)?;
-            e.emit(ST1[(bits == 64) as usize], &[rv, ra]).map(|_| ())
+            e.emit(&ld1(bits, n, true), &[rv, ra]).map(|_| ())
         })(),
         Inst::IConst { dst, .. } if e.is_v(*dst) => Err(format!("a literal of a vector type ({}): not yet — splat it", e.tyname(*dst))),
         _ => return None,

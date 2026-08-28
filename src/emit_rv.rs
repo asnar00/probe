@@ -54,13 +54,24 @@ const V_POOL: &[i64] = &[24, 25, 26, 27, 28, 29, 30, 31];
 const V_ARGS: i64 = 8;
 const FA0: i64 = 10;
 const V_TEMPS: &[i64] = &[16, 17, 18, 19];
-/// the vtype every vector instruction runs under: four 32-bit lanes,
-/// two 64-bit ones, or sixteen bytes (a whole register saved or spilled)
-const VSET_E32: &str = "vsetivli x0, 4, e32, m1, ta, ma";
-const VSET_E64: &str = "vsetivli x0, 2, e64, m1, ta, ma";
+/// the vtype every vector instruction runs under: the lanes and their
+/// width; sixteen bytes for a whole register saved or spilled
+fn vset(bits: u32, n: u32) -> Result<&'static str, String> {
+    Ok(match (n, bits) {
+        (4, 32) => "vsetivli x0, 4, e32, m1, ta, ma",
+        (2, 64) => "vsetivli x0, 2, e64, m1, ta, ma",
+        (16, 8) => "vsetivli x0, 16, e8, m1, ta, ma",
+        (2, 32) => "vsetivli x0, 2, e32, m1, ta, ma",
+        (4, 16) => "vsetivli x0, 4, e16, m1, ta, ma",
+        (8, 8) => "vsetivli x0, 8, e8, m1, ta, ma",
+        (8, 16) => "vsetivli x0, 8, e16, m1, ta, ma",
+        _ => return Err(format!("no vtype for {} lanes of {} bits", n, bits)),
+    })
+}
 const VSET_E8: &str = "vsetivli x0, 16, e8, m1, ta, ma";
-const VLE: [&str; 2] = ["vle32.v {v}, ({r})", "vle64.v {v}, ({r})"];
-const VSE: [&str; 2] = ["vse32.v {v}, ({r})", "vse64.v {v}, ({r})"];
+fn vle(bits: u32, store: bool) -> String {
+    format!("{}{}.v {{v}}, ({{r}})", if store { "vse" } else { "vle" }, bits)
+}
 const VLE8: &str = "vle8.v {v}, ({r})";
 const VSE8: &str = "vse8.v {v}, ({r})";
 const VMV1R: &str = "vmv1r.v {v}, {v}";
@@ -236,19 +247,23 @@ impl RvEmit<'_> {
         self.vecs[v.0 as usize]
     }
 
-    /// a vector's lanes: (bits per lane — 128 / N — and N)
-    fn lanes(&self, v: ValueId) -> (u32, u32) {
-        let (_, n) = self.func.vector(self.func.ty(v)).unwrap();
-        (128 / n, n)
+    /// a vector's shape: (bits per lane, lanes) — a u1xN holds each lane
+    /// as 0 or 1 in a 128/N-bit lane
+    fn shape(&self, v: ValueId) -> (u32, u32) {
+        let ty = self.func.ty(v);
+        let (lane, n) = self.func.vector(ty).unwrap();
+        let total = if self.func.width(lane) == Some(1) { 128 } else { self.func.width(ty).unwrap() };
+        (total / n, n)
     }
 
     fn tyname(&self, v: ValueId) -> String {
         self.func.tyname(self.func.ty(v))
     }
 
-    /// the vtype for lanes of `bits`
-    fn vset(&mut self, bits: u32) -> Result<(), String> {
-        self.emit(if bits == 64 { VSET_E64 } else { VSET_E32 }, &[]).map(|_| ())
+    /// the vtype for a vector's shape
+    fn vset(&mut self, v: ValueId) -> Result<(), String> {
+        let (bits, n) = self.shape(v);
+        self.emit(vset(bits, n)?, &[]).map(|_| ())
     }
 
     /// a whole vector register to or from a frame slot: sixteen bytes at
@@ -1035,28 +1050,27 @@ fn compile_vector_inst(e: &mut RvEmit, inst: &Inst) -> Option<Result<(), String>
             vector_op(e, &sig, dsts.first().copied(), args)
         }
         Inst::Get { dst, src, field } if e.is_v(*src) => (|| {
-            let (bits, _) = e.lanes(*src);
+            let (bits, _) = e.shape(*src);
             let rs = e.src_vreg(*src, 20)?;
             let rd = e.dst_reg(*dst, T1);
-            e.vset(bits)?;
+            e.vset(*src)?;
             let from = if *field == 0 { rs } else {
-                e.emit("vslidedown.vi {v}, {v}, {i 0..3}", &[21, rs, *field as i64])?;
+                e.emit("vslidedown.vi {v}, {v}, {i 0..15}", &[21, rs, *field as i64])?;
                 21
             };
             e.emit("vmv.x.s {r}, {v}", &[rd, from])?;
-            // a 32-bit lane arrives sign-extended: the canonical form of the
-            // lane's type
-            if bits == 32 {
+            // a narrow lane arrives sign-extended: the canonical form of
+            // the lane's type
+            if bits < 64 {
                 let rr = e.repr(*dst);
                 e.norm(rd, rd, rr)?;
             }
             e.finish(*dst, rd)
         })(),
         Inst::Set { dst, src, field, val } if e.is_v(*dst) => (|| {
-            let (bits, _) = e.lanes(*dst);
             let rs = e.src_vreg(*src, 20)?;
             let rv = e.src_reg(*val, T1)?;
-            e.vset(bits)?;
+            e.vset(*dst)?;
             // the mask is lane `field`; merge a splat of the value over the source
             e.iconst(T0, 1 << *field)?;
             e.emit("vmv.s.x {v}, {r}", &[0, T0])?;
@@ -1067,9 +1081,8 @@ fn compile_vector_inst(e: &mut RvEmit, inst: &Inst) -> Option<Result<(), String>
             e.finish_v(*dst, rd)
         })(),
         Inst::Pack { dst, args } if e.is_v(*dst) => (|| {
-            let (bits, _) = e.lanes(*dst);
             let rd = e.dst_vreg(*dst, 23);
-            e.vset(bits)?;
+            e.vset(*dst)?;
             if args.iter().all(|a| a == &args[0]) {
                 // a splat
                 let ra = e.src_reg(args[0], T0)?;
@@ -1089,17 +1102,17 @@ fn compile_vector_inst(e: &mut RvEmit, inst: &Inst) -> Option<Result<(), String>
             e.finish_v(*dst, rd)
         })(),
         Inst::Unpack { dsts, src } if e.is_v(*src) => (|| {
-            let (bits, _) = e.lanes(*src);
+            let (bits, _) = e.shape(*src);
             let rs = e.src_vreg(*src, 20)?;
-            e.vset(bits)?;
+            e.vset(*src)?;
             for (k, &d) in dsts.iter().enumerate() {
                 let rd = e.dst_reg(d, T1);
                 let from = if k == 0 { rs } else {
-                    e.emit("vslidedown.vi {v}, {v}, {i 0..3}", &[21, rs, k as i64])?;
+                    e.emit("vslidedown.vi {v}, {v}, {i 0..15}", &[21, rs, k as i64])?;
                     21
                 };
                 e.emit("vmv.x.s {r}, {v}", &[rd, from])?;
-                if bits == 32 {
+                if bits < 64 {
                     let rr = e.repr(d);
                     e.norm(rd, rd, rr)?;
                 }
@@ -1112,11 +1125,11 @@ fn compile_vector_inst(e: &mut RvEmit, inst: &Inst) -> Option<Result<(), String>
             if e.func.width(lane) == Some(1) {
                 return Err(format!("a load of {} (a lane a byte each): not yet", e.tyname(*dst)));
             }
-            let (bits, _) = e.lanes(*dst);
+            let (bits, _) = e.shape(*dst);
             let ra = e.vector_address(*addr, *off, *index)?;
             let rd = e.dst_vreg(*dst, 23);
-            e.vset(bits)?;
-            e.emit(VLE[(bits == 64) as usize], &[rd, ra])?;
+            e.vset(*dst)?;
+            e.emit(&vle(bits, false), &[rd, ra])?;
             e.finish_v(*dst, rd)
         })(),
         Inst::Store { val, addr, off, index } if e.is_v(*val) => (|| {
@@ -1124,11 +1137,11 @@ fn compile_vector_inst(e: &mut RvEmit, inst: &Inst) -> Option<Result<(), String>
             if e.func.width(lane) == Some(1) {
                 return Err(format!("a store of {} (a lane a byte each): not yet", e.tyname(*val)));
             }
-            let (bits, _) = e.lanes(*val);
+            let (bits, _) = e.shape(*val);
             let rv = e.src_vreg(*val, 20)?;
             let ra = e.vector_address(*addr, *off, *index)?;
-            e.vset(bits)?;
-            e.emit(VSE[(bits == 64) as usize], &[rv, ra]).map(|_| ())
+            e.vset(*val)?;
+            e.emit(&vle(bits, true), &[rv, ra]).map(|_| ())
         })(),
         Inst::IConst { dst, .. } if e.is_v(*dst) => Err(format!("a literal of a vector type ({}): not yet — splat it", e.tyname(*dst))),
         _ => return None,

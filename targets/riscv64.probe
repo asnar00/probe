@@ -142,14 +142,18 @@ inst ebreak
 ; the address of a data item: auipc's page plus an addi
 inst auipc {r}, {i 0..1048575}
 
-; --- V: 128-bit vectors, four 32-bit lanes (e32, vl 4) or two 64-bit
-; ones (e64, vl 2); every instruction runs under the vtype the rule or
-; the emitter sets just before it (vsetivli). v0 is the mask register;
-; the pool is v8..v15 (saved by the callee, as this compiler has all
-; callees), temporaries v16..v23 ---
+; --- V: vectors of 64 or 128 bits, lanes of 8 to 64 bits; every
+; instruction runs under the vtype the rule or the emitter sets just
+; before it (vsetivli: lanes and their width). v0 is the mask register;
+; the pool is v24..v31 (saved by the callee, as this compiler has all
+; callees), arguments cross in v8..v15, temporaries v16..v23 ---
 inst vsetivli x0, 4, e32, m1, ta, ma
 inst vsetivli x0, 2, e64, m1, ta, ma
 inst vsetivli x0, 16, e8, m1, ta, ma
+inst vsetivli x0, 2, e32, m1, ta, ma
+inst vsetivli x0, 4, e16, m1, ta, ma
+inst vsetivli x0, 8, e8, m1, ta, ma
+inst vsetivli x0, 8, e16, m1, ta, ma
 inst vadd.vv {v}, {v}, {v}
 inst vsub.vv {v}, {v}, {v}
 inst vmul.vv {v}, {v}, {v}
@@ -170,6 +174,11 @@ inst vfsqrt.v {v}, {v}
 inst vfcvt.f.x.v {v}, {v}
 inst vfcvt.f.xu.v {v}, {v}
 inst vmv1r.v {v}, {v}
+inst vsext.vf2 {v}, {v}
+inst vzext.vf2 {v}, {v}
+inst vfwcvt.f.f.v {v}, {v}
+inst vfncvt.f.f.w {v}, {v}
+inst vnsrl.wi {v}, {v}, 0
 inst vmfeq.vv v0, {v}, {v}
 inst vmfne.vv v0, {v}, {v}
 inst vmflt.vv v0, {v}, {v}
@@ -186,11 +195,13 @@ inst vmerge.vvm {vn}, {v}, {v}, v0
 inst vmv.x.s {r}, {v}
 inst vmv.s.x {v}, {r}
 inst vmv.v.x {v}, {r}
-inst vslidedown.vi {v}, {v}, {i 0..3}
+inst vslidedown.vi {v}, {v}, {i 0..15}
 inst vslide1up.vx {v}, {v}, {r}
+inst vle8.v {v}, ({r})
+inst vse8.v {v}, ({r})
+inst vle16.v {v}, ({r})
+inst vse16.v {v}, ({r})
 inst vle32.v {v}, ({r})
 inst vse32.v {v}, ({r})
 inst vle64.v {v}, ({r})
 inst vse64.v {v}, ({r})
-inst vle8.v {v}, ({r})
-inst vse8.v {v}, ({r})

@@ -385,6 +385,18 @@ impl Platform {
                 if nslots == 0 {
                     operands.clear();
                 }
+                // the template's own literal operands (`#0` of an `sshll`)
+                // take their place among the slots
+                let text = template.split_once(char::is_whitespace).map(|(_, r)| r.to_string()).unwrap_or_default();
+                let mut slots = operands.into_iter();
+                let mut operands = Vec::new();
+                for tok in operand_tokens(&text) {
+                    if tok.starts_with('{') {
+                        operands.push(slots.next().ok_or_else(|| at(format!("'{}': more slots than operands", template)))?);
+                    } else {
+                        operands.push(Operand::Lit(tok));
+                    }
+                }
                 let suffixes = vec![String::new(); operands.len()];
                 rule.lines.push(Line { template: Some(template), mnemonic, operands, suffixes });
                 rules.push((rule, group.clone()));
