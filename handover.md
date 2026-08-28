@@ -1,0 +1,46 @@
+# Handover
+
+For whoever picks probe up next — a person or an agent. `README.md` says what the project is and how to run it; `ssa.md` is the IR; `history.md` has one entry per commit, newest first, and is the fastest way to catch up on *why* things are the way they are; `future-work.md` is the queue. This file is the working knowledge that is in none of those: how work lands here, what the machines and tools do that you would not guess, and where the bodies are.
+
+## What probe is, in one paragraph
+
+A compiler back end that *learns* instruction encodings by probing toolchains (`llvm-mc`, `wat2wasm`) instead of transcribing manuals, then compiles its own SSA IR to arm64, riscv64, wasm32 and Apple's GPU (AIR, a `.metallib` written byte by byte with none of Apple's tools), and verifies everything differentially: one suite of `;! f args -> results` directives on five execution paths (the M-series JIT, node, qemu riscv64, qemu aarch64, the GPU through Metal), the Berkeley TestFloat oracle, encoding scorecards against the official ISA tables, a fuzzer. Numbers are libraries in the IR itself (`lib/*.ssa`: floats, fixed point, rationals, decimals, time), platform files (`targets/*.platform`) say which library operations a machine has instructions for, and a threadgroup program — group memory, barriers, simdgroups — runs the same on the GPU, as fibres on one thread, across OS threads under the JIT and across cores on the qemu boards. "One programming model across CPU and GPU" is the stated goal.
+
+## Who you are working with
+
+ash (asnar00 on GitHub) is a systems and graphics engineer, deeply engaged, reading everything, and learning as they go — explanations are welcome and should be concrete. ash makes the design calls; they like to hear the options with a recommendation, then decide. Things ash has decided that you should not reopen without asking: types live on variables, not opcodes; no region- or lifetime-typed pointers in the IR ("the upstream code generators should be smart enough"); everything stays at kernel level on the machines (no user mode); representations are libraries, never compiler features; docs illustrate only with verbatim project code. ash is happy for an agent to work through an agreed queue alone (overnight, say) as long as each item lands fully and the trail is in `history.md`.
+
+## How work lands
+
+Every piece of work is: code, suite cases (`suite/*.ssa` with directives, run on every path), a Rust test where the suite cannot express it (boot tests, GPU dispatch tests), `cargo test` green, a commit, a `history.md` entry as a second commit ("history.md: entry for <hash>", the hash written into the entry's heading), and a push. Commit messages and history entries are written in the project's voice — plain, specific, saying what was found — and `Co-Authored-By: Claude ...` on agent commits. `history.md` and the other top-level Markdown files use one long line per paragraph (the renderer wraps); keep that.
+
+Memory for an agent (`~/.claude/projects/.../memory/`) holds the project state and ash's feedback; read `MEMORY.md` first.
+
+## Running things
+
+`cargo build`, then `./target/debug/probe`. The suite: `probe test [wasm|riscv|arm-qemu|air] [dir]` (a directory of `.ssa` files; `suite` by default). Run it from the repository root — platform files are found by relative path, and `probe compile x.ssa air` writes into `target/air/`. `probe boot os/x.ssa [riscv|arm]` runs an OS program on bare-metal qemu. `probe testfloat [air]` is the IEEE oracle (needs `tools/get-testfloat.sh` once). `probe fuzz N [--air]`. `probe scorecard`. `probe parse x.ssa [air]` prints the module as parsed (the whole-vector form under `air`), even when the verifier objects. `cargo test` takes about 40 s when the machine is quiet.
+
+Two rules that cost time when broken: **never run `probe test air` (or any suite) by hand while `cargo test` is running** — they share `$TMPDIR/probe-suite/` and the GPU compile service, and the parallel test will fail for no real reason; and **a failing boot test under load is usually load** (qemu wake latency; the boot tests take turns through `boot_turn()` but other tests still run beside them) — rerun it alone before investigating. Watch for stray `qemu-system-*` processes after an interrupted run (`pkill -f qemu-system`); with `-smp 4` each can burn four host threads.
+
+## Debugging on the machines
+
+- **qemu's output is lost when it is killed on a timeout.** "output so far:" being empty says nothing about where a run hung; cases that printed may have passed. Set `PROBE_DUMP_DRIVER=path` on a `probe test riscv|arm-qemu` run to get the whole program the machine runs, cut it at the first library line (`; an arena: bump allocation`), give it an exit (the finisher store and `psci(0x84000008)` as `os/hello.ssa` does), and `probe boot` it with a letter written to `platform uart` at each step. That finds in minutes what timeouts hide for hours.
+- A platform rule that does not match its library function (a `u64` where the library says `i64`, an argument count) is not an error: the library body runs instead. When a platform operation "does nothing", check the signatures first.
+- `PROBE_AIR_STUB=n`, `PROBE_AIR_KEEP=names`, `PROBE_AIR_CUT=k` bisect what Apple's compiler rejects (a crash of the compile service takes about a minute per try). `xcrun metal -x ir file.bc` reproduces a miscompile offline; compiling the `llvm-dis` text with upstream clang for the CPU (triple swapped, `addrspace` stripped) is an independent referee for our bitcode. `PROBE_AIR_INLINE=none|noinline` turns the always-inline workaround off.
+- The verifier and the emitters assume the SSA's dominance and block-parameter rules; `probe parse` shows what the parser made of a structured program when a lowering surprises you.
+
+## Things the hardware and the hosts taught us (do not relearn)
+
+- Apple's GPU compiler crashes on odd integer widths (`or i57 x, 1<<52`), compiles every function in a module whether reachable or not, and miscompiled a 128-bit division under its own inlining; hence containers for every integer, pruning to what the kernel reaches, and `alwaysinline` everywhere. It flushes f32 denormals and nothing turns that off; half keeps them.
+- Under macOS, `tpidr_el0` belongs to the kernel (rewritten at every context switch, read by malloc); `tpidrro_el0` is the per-thread key. Bare metal is EL1 and can write both.
+- qemu wakes a `wfi` hart only for an interrupt enabled in `mie`; all riscv harts run the reset vector (the boot preamble parks harts other than 0); arm64 virt's secondary cores are off until PSCI `CPU_ON`.
+- A stack switch must be a real call (`called` on the rule), and a core's own stack must not share a top with its fibres' stacks.
+- Events within qemu's wake latency (~5–12 ms, more under load) merge; timing tests must derive expectations from what the machine printed, not demand exact counts.
+
+## Where things are
+
+`src/ssa.rs` parser, types, verifier, lowerings (`lower_group_addrs`); `src/opt.rs` passes; `src/wide.rs`, `src/aggregate.rs` wide values and structs; `src/emit.rs` arm64 (+JIT), `src/emit_rv.rs` riscv64, `src/emit_wasm.rs`, `src/emit_air.rs` (+`src/bitcode.rs`, the bitstream writer); `src/platform.rs` rule files; `src/suite.rs` the harness (drivers for every path, the kernel runner, `boot`); `src/testfloat.rs`, `src/fuzz.rs`, `src/scorecard.rs`, `src/footprint.rs`. `lib/` the number libraries plus `thread.ssa`, `fibre.ssa`, `core.ssa`, `gpu.ssa`, `arena.ssa`, `pool.ssa`, `heap.ssa`. `os/` the bootable programs. `targets/` probe files (what to learn), learned encodings, platform files, scorecards. `tools/` fetchers for the ISA tables and TestFloat, the Metal driver (`driver_metal.py`, pyobjc), the AIR catalog.
+
+## The queue
+
+`future-work.md` has it in full. The near items, in ash's order of interest: lanes as real worker threads on wasm (wasm has threads and atomics, not stack switching); lockstep checking in the simdgroup exchange (a lane that skips a `simd_*` should fail the case on the machines rather than get a wrong answer as on the GPU); tasks across cores in the OS programs; textures as handles with platform operations; WebGPU as the second GPU path (SPIR-V, `spirv-as` as the oracle, wgpu to run). Bigger and older: capacity analysis for arenas and stacks, type generics, closures, libc calls from JIT'd code.
