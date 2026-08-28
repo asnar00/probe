@@ -547,23 +547,26 @@ pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin
 
     // data after the code, on pages of its own: the program's RAM,
     // writable under the JIT as on bare metal (the code's pages stay
-    // write-protected)
+    // write-protected). Alignment is measured from the image's origin
+    // (a boot preamble precedes the code): a data item is 16-aligned in
+    // memory, which a task's stack in a `data` array needs for the 128-bit
+    // saves of an interrupt frame
     let code_end = code.len();
     let (data, rw, data_offsets, rw_offsets) = crate::ssa::layout_data_parts(module);
     let writable_from = if data.is_empty() && rw.is_empty() {
-        while code.len() % 8 != 0 {
+        while (origin + code.len()) % 16 != 0 {
             code.push(0);
         }
         None
     } else {
-        while code.len() % 16384 != 0 {
+        while (origin + code.len()) % 16384 != 0 {
             code.push(0);
         }
         Some(code.len())
     };
     let data_base = code.len();
     code.extend_from_slice(&data);
-    while code.len() % 16 != 0 {
+    while (origin + code.len()) % 16 != 0 {
         code.push(0);
     }
     let rw_base = code.len();
@@ -595,9 +598,13 @@ struct FnEmit<'a> {
     code: &'a mut Vec<u8>,
     frame: i64,
     alloc: &'a crate::regalloc::Alloc,
-    /// per value: the platform's float register class (`s`/`d`), if any
+    /// per value: the platform's float register class (`s`/`d`/`v`), if any
     classes: Vec<Option<String>>,
+    /// per value: a vector kept whole, 128 bits in its v register
+    vecs: Vec<bool>,
     spill_base: i64,
+    /// a spill slot is 8 bytes, or 16 when the function has vectors
+    slot_size: i64,
     /// a trap or interrupt handler: the caller-saved registers of the
     /// code it interrupted are kept in the frame and it leaves by eret
     trap: Option<TrapFrame>,
@@ -634,7 +641,22 @@ impl FnEmit<'_> {
     }
 
     fn slot_off(&self, idx: usize) -> i64 {
-        self.spill_base + 8 * idx as i64
+        self.spill_base + self.slot_size * idx as i64
+    }
+
+    /// is v a vector kept whole (in a v register)?
+    fn is_v(&self, v: ValueId) -> bool {
+        self.vecs[v.0 as usize]
+    }
+
+    /// a vector's lanes: (bits per lane in the register — 128 / N — and N)
+    fn lanes(&self, v: ValueId) -> (u32, u32) {
+        let (_, n) = self.func.vector(self.func.ty(v)).unwrap();
+        (128 / n, n)
+    }
+
+    fn tyname(&self, v: ValueId) -> String {
+        self.func.tyname(self.func.ty(v))
     }
 
     /// does v live in a float register?
@@ -660,7 +682,7 @@ impl FnEmit<'_> {
             crate::regalloc::Loc::Reg(r) => Ok(r),
             crate::regalloc::Loc::Slot(i) => {
                 let off = self.slot_off(i);
-                self.emit(LDR_D_SP, &[fscratch, off])?;
+                self.emit(if self.is_v(v) { LDR_Q_SP } else { LDR_D_SP }, &[fscratch, off])?;
                 Ok(fscratch)
             }
         }
@@ -676,7 +698,7 @@ impl FnEmit<'_> {
     fn finish_f(&mut self, v: ValueId, fr: i64) -> Result<(), String> {
         if let crate::regalloc::Loc::Slot(i) = self.alloc.loc[v.0 as usize] {
             let off = self.slot_off(i);
-            self.emit(STR_D_SP, &[fr, off])?;
+            self.emit(if self.is_v(v) { STR_Q_SP } else { STR_D_SP }, &[fr, off])?;
         }
         Ok(())
     }
@@ -737,6 +759,9 @@ impl FnEmit<'_> {
     /// Targets are x0..x17; sources are pool registers or slots — disjoint,
     /// so a sequence of these never clobbers a pending source.
     fn value_to(&mut self, target: i64, v: ValueId) -> Result<(), String> {
+        if self.is_v(v) {
+            return Err(format!("a vector ({}) as an argument or result: not yet — pass its lanes", self.tyname(v)));
+        }
         if self.is_f(v) {
             let fr = self.src_freg(v, 16)?;
             return self.f_to_x(target, fr, v);
@@ -752,6 +777,9 @@ impl FnEmit<'_> {
 
     /// store a specific register into v's location
     fn value_from(&mut self, v: ValueId, source: i64) -> Result<(), String> {
+        if self.is_v(v) {
+            return Err(format!("a vector ({}) as a parameter or result: not yet — pass its lanes", self.tyname(v)));
+        }
         if self.is_f(v) {
             let fr = self.dst_freg(v, 16);
             self.x_to_f(fr, source, v)?;
@@ -804,25 +832,27 @@ impl FnEmit<'_> {
     /// integer file or (`f`) the float file
     fn loc_move(
         &mut self,
-        f: bool,
+        kind: u8,
         dst: crate::regalloc::Loc,
         src: crate::regalloc::Loc,
     ) -> Result<(), String> {
         use crate::regalloc::Loc;
-        if f {
+        if kind > 0 {
+            // a float (1) or a vector (2): the same file, a 64- or 128-bit move
+            let (mv, ldr, str) = if kind == 2 { (MOV_V, LDR_Q_SP, STR_Q_SP) } else { ("fmov {d}, {d}", LDR_D_SP, STR_D_SP) };
             return match (dst, src) {
                 (Loc::Reg(d), Loc::Reg(s)) => {
                     if d != s {
-                        self.emit("fmov {d}, {d}", &[d, s])?;
+                        self.emit(mv, &[d, s])?;
                     }
                     Ok(())
                 }
-                (Loc::Reg(d), Loc::Slot(s)) => self.emit(LDR_D_SP, &[d, self.slot_off(s)]).map(|_| ()),
-                (Loc::Slot(d), Loc::Reg(s)) => self.emit(STR_D_SP, &[s, self.slot_off(d)]).map(|_| ()),
+                (Loc::Reg(d), Loc::Slot(s)) => self.emit(ldr, &[d, self.slot_off(s)]).map(|_| ()),
+                (Loc::Slot(d), Loc::Reg(s)) => self.emit(str, &[s, self.slot_off(d)]).map(|_| ()),
                 (Loc::Slot(d), Loc::Slot(s)) => {
                     // transit through v17; v16 stays free for cycle breaking
-                    self.emit(LDR_D_SP, &[17, self.slot_off(s)])?;
-                    self.emit(STR_D_SP, &[17, self.slot_off(d)]).map(|_| ())
+                    self.emit(ldr, &[17, self.slot_off(s)])?;
+                    self.emit(str, &[17, self.slot_off(d)]).map(|_| ())
                 }
             };
         }
@@ -850,25 +880,28 @@ impl FnEmit<'_> {
     fn branch_args(&mut self, target: BlockId, args: &[ValueId]) -> Result<(), String> {
         use crate::regalloc::Loc;
         let params: Vec<ValueId> = self.func.blocks[target.0 as usize].params.clone();
-        // (float file?, destination, source); the two files never alias
-        let mut pending: Vec<(bool, Loc, Loc)> = params
+        // (kind: 0 integer, 1 float, 2 vector; destination, source); the
+        // integer file and the float file never alias, floats and vectors
+        // share the latter
+        let mut pending: Vec<(u8, Loc, Loc)> = params
             .iter()
             .zip(args)
-            .map(|(&p, &a)| (self.is_f(p), self.alloc.loc[p.0 as usize], self.alloc.loc[a.0 as usize]))
+            .map(|(&p, &a)| (if self.is_v(p) { 2 } else { self.is_f(p) as u8 }, self.alloc.loc[p.0 as usize], self.alloc.loc[a.0 as usize]))
             .filter(|(_, d, s)| d != s)
             .collect();
+        let file = |k: u8| k > 0;
         while !pending.is_empty() {
             if let Some(i) = (0..pending.len())
-                .find(|&i| !pending.iter().any(|&(f, _, s)| f == pending[i].0 && s == pending[i].1))
+                .find(|&i| !pending.iter().any(|&(k, _, s)| file(k) == file(pending[i].0) && s == pending[i].1))
             {
-                let (f, d, s) = pending.swap_remove(i);
-                self.loc_move(f, d, s)?;
+                let (k, d, s) = pending.swap_remove(i);
+                self.loc_move(k, d, s)?;
             } else {
                 // pure cycle: stash one source in the file's scratch register
-                let (f, _, s) = pending[0];
-                let scratch = Loc::Reg(if f { 16 } else { 9 });
-                self.loc_move(f, scratch, s)?;
-                for m in pending.iter_mut().filter(|m| m.0 == f && m.2 == s) {
+                let (k, _, s) = pending[0];
+                let scratch = Loc::Reg(if file(k) { 16 } else { 9 });
+                self.loc_move(k, scratch, s)?;
+                for m in pending.iter_mut().filter(|m| file(m.0) == file(k) && m.2 == s) {
                     m.2 = scratch;
                 }
             }
@@ -963,6 +996,17 @@ impl FnEmit<'_> {
     /// in range and aligned (arm64 scales it by the access size), else
     /// the address computed into `scratch` (with `scratch2` for the
     /// scaled index)
+    /// the whole address of a vector access in one register: ld1/st1
+    /// take no offset
+    fn vector_address(&mut self, base: ValueId, off: i64, index: Option<(ValueId, u32)>) -> Result<i64, String> {
+        let (ra, imm) = self.address(base, off, index, 1, 9, 11)?;
+        if imm == 0 {
+            return Ok(ra);
+        }
+        self.emit("add {x}, {x}, #{i 0..4095}", &[9, ra, imm])?;
+        Ok(9)
+    }
+
     fn address(&mut self, base: ValueId, off: i64, index: Option<(ValueId, u32)>, size: u32, scratch: i64, scratch2: i64) -> Result<(i64, i64), String> {
         let rb = self.src_reg(base, scratch)?;
         let max = 4095 * size as i64;
@@ -1038,9 +1082,9 @@ impl FnEmit<'_> {
     }
 
     fn epilogue(&mut self) -> Result<(), String> {
-        let fbase = 16 + 8 * self.alloc.used_regs.len() as i64;
+        let fbase = fp_save_base(self.alloc.used_regs.len());
         for (k, &fr) in self.alloc.used_by_class[1].clone().iter().enumerate() {
-            self.emit(LDR_D_SP, &[fr, fbase + 8 * k as i64])?;
+            self.emit(LDR_Q_SP, &[fr, fbase + 16 * k as i64])?;
         }
         for (k, pair) in self.alloc.used_regs.clone().chunks(2).enumerate() {
             match pair {
@@ -1061,7 +1105,7 @@ impl FnEmit<'_> {
                 self.emit("mov sp, {x}", &[0])?;
             }
             for (k, &fr) in fp.iter().enumerate() {
-                self.emit(LDR_D_SP, &[fr, fp_base + 8 * k as i64])?;
+                self.emit(LDR_Q_SP, &[fr, fp_base + 16 * k as i64])?;
             }
             for (k, pair) in ints.chunks(2).enumerate() {
                 match pair {
@@ -1098,6 +1142,18 @@ pub fn scratch_layout(func: &Function, base: i64) -> (HashMap<ValueId, i64>, i64
 const REG_POOL: &[i64] = &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
 /// the float file's pool: v8..v15, whose low 64 bits are callee-saved
 const F_POOL: &[i64] = &[8, 9, 10, 11, 12, 13, 14, 15];
+/// the v registers a rule's vector temporaries are: v20..v23, never
+/// allocated, beyond the float scratch v16..v19
+const V_TEMPS: &[i64] = &[20, 21, 22, 23];
+/// the float file is saved and spilled whole (128 bits): a vector keeps
+/// its lanes across a call as a float keeps its bits
+const LDR_Q_SP: &str = "ldr {q}, [sp, #{i 0..65520 /16}]";
+const STR_Q_SP: &str = "str {q}, [sp, #{i 0..65520 /16}]";
+/// a vector in memory is aligned to its lanes, not to 16: ld1/st1 access
+/// it lane by lane, which the machine allows on device memory too
+const LD1: [&str; 2] = ["ld1 {{{v}.4s}}, [{x}]", "ld1 {{{v}.2d}}, [{x}]"];
+const ST1: [&str; 2] = ["st1 {{{v}.4s}}, [{x}]", "st1 {{{v}.2d}}, [{x}]"];
+const MOV_V: &str = "mov {v}.16b, {v}.16b";
 const LDR_D_SP: &str = "ldr {d}, [sp, #{i 0..32760 /8}]";
 const ADR: &str = "adr {x}, #{i -1048576..1048575}";
 const STR_D_SP: &str = "str {d}, [sp, #{i 0..32760 /8}]";
@@ -1143,11 +1199,19 @@ fn compile_function(
         native_body(enc, native, code)?;
         return Ok(());
     }
-    // values of a type the platform gives a float class live in v8..v15
+    // values of a type the platform gives a float class live in v8..v15;
+    // a vector kept whole is one of them, all 128 bits
     let classes: Vec<Option<String>> = func.values.iter().map(|v| natives.class_of(func, v.ty).map(str::to_string)).collect();
+    let vecs: Vec<bool> = func.values.iter().map(|v| func.vector(v.ty).is_some()).collect();
+    if let Some(i) = (0..func.values.len()).find(|&i| vecs[i] && classes[i].is_none()) {
+        return Err(format!("a vector ({}) the platform has no register class for", func.tyname(func.values[i].ty)));
+    }
     let class_idx: Vec<usize> = classes.iter().map(|c| c.is_some() as usize).collect();
     let alloc = crate::regalloc::allocate_classes(func, &class_idx, &[REG_POOL, F_POOL]);
-    let nsaved = alloc.used_regs.len() as i64 + alloc.used_by_class[1].len() as i64;
+    // the callee-saved area: the integer registers in pairs, then the
+    // float registers whole, 16 bytes each
+    let saved_end = fp_save_base(alloc.used_regs.len()) + 16 * alloc.used_by_class[1].len() as i64;
+    let slot_size: i64 = if vecs.iter().any(|&b| b) { 16 } else { 8 };
     if func.name == IRQ && !(func.params.is_empty() && func.rets.is_empty() || func.params.len() == 1 && func.rets.len() == 1 && func.ty(func.params[0]) == Type::Ptr && func.rets[0] == Type::Ptr) {
         return Err("__irq is fn __irq() or fn __irq(sp: ptr) -> ptr".into());
     }
@@ -1165,13 +1229,14 @@ fn compile_function(
                 fp.extend_from_slice(SWITCH_FP_SAVED);
             }
         }
-        let base = 16 + 8 * nsaved;
+        let base = saved_end;
         let fp_base = base + (8 * ints.len() as i64 + 15) & !15;
         TrapFrame { base, irq, ints, fp, fp_base }
     });
-    let spill_base = trap.as_ref().map_or(16 + 8 * nsaved, |t| t.fp_base + 8 * t.fp.len() as i64);
+    let spill_base = trap.as_ref().map_or(saved_end, |t| t.fp_base + 16 * t.fp.len() as i64);
+    let spill_base = if slot_size == 16 { (spill_base + 15) & !15 } else { spill_base };
     // scratch areas above the spills, each 16-aligned
-    let (scratch, scratch_end) = scratch_layout(func, (spill_base + 8 * alloc.nslots as i64 + 15) & !15);
+    let (scratch, scratch_end) = scratch_layout(func, (spill_base + slot_size * alloc.nslots as i64 + 15) & !15);
     let frame = scratch_end;
     if frame > 4095 {
         return Err(format!("function needs a {}-byte frame; 4095 is the most for now", frame));
@@ -1188,7 +1253,9 @@ fn compile_function(
         frame,
         alloc: &alloc,
         classes,
+        vecs,
         spill_base,
+        slot_size,
         trap,
         scratch,
         cur: 0,
@@ -1211,9 +1278,9 @@ fn compile_function(
             _ => unreachable!(),
         }
     }
-    let fbase = 16 + 8 * alloc.used_regs.len() as i64;
+    let fbase = fp_save_base(alloc.used_regs.len());
     for (k, &fr) in alloc.used_by_class[1].iter().enumerate() {
-        e.emit(STR_D_SP, &[fr, fbase + 8 * k as i64])?;
+        e.emit(STR_Q_SP, &[fr, fbase + 16 * k as i64])?;
     }
     if let Some(t) = &e.trap {
         let (base, irq, ints, fp, fp_base) = (t.base, t.irq, t.ints.clone(), t.fp.clone(), t.fp_base);
@@ -1225,7 +1292,7 @@ fn compile_function(
             };
         }
         for (k, &fr) in fp.iter().enumerate() {
-            e.emit(STR_D_SP, &[fr, fp_base + 8 * k as i64])?;
+            e.emit(STR_Q_SP, &[fr, fp_base + 16 * k as i64])?;
         }
         // an interrupt handler that switches tasks is given its frame:
         // where the interrupted code's registers now are
@@ -1267,6 +1334,12 @@ fn compile_function(
 /// argument or result of a rule ever lands in
 const RULE_TEMPS: &[i64] = &[12, 13, 14, 15];
 
+/// where the float registers' save area begins: after fp/lr and the
+/// integer pairs, 16-aligned
+fn fp_save_base(nints: usize) -> i64 {
+    (16 + 8 * nints as i64 + 15) & !15
+}
+
 fn rule_seq<'a>(enc: &'a Encoder, native: &Native, rd: i64, args: &[i64]) -> Result<Vec<(&'a str, Vec<i64>)>, String> {
     let templates = enc.templates();
     let mut seq = Vec::new();
@@ -1280,13 +1353,36 @@ fn rule_seq<'a>(enc: &'a Encoder, native: &Native, rd: i64, args: &[i64]) -> Res
             .map(|(op, v)| match op {
                 Operand::Arg(i) => args[i],
                 Operand::Ret => rd,
-                Operand::Tmp(k) => RULE_TEMPS[k],
+                Operand::Tmp(k) => {
+                    if native.tmp_class.get(k).is_some_and(|c| c.is_some()) {
+                        V_TEMPS[k]
+                    } else {
+                        RULE_TEMPS[k]
+                    }
+                }
                 Operand::Lit(_) => v,
             })
             .collect();
         seq.push((t, v));
     }
     Ok(seq)
+}
+
+/// an operation on whole vectors: the platform's rule for its signature,
+/// every operand in the float file
+fn vector_op(e: &mut FnEmit, sig: &str, dst: Option<ValueId>, args: &[ValueId]) -> Result<(), String> {
+    let natives: &Natives = e.natives;
+    let native = natives.vector(sig).ok_or_else(|| format!("no rule for {} on this platform", sig))?;
+    let mut regs = Vec::new();
+    for (j, &a) in args.iter().enumerate() {
+        regs.push(if e.is_f(a) { e.src_freg(a, 16 + j as i64)? } else { e.src_reg(a, 9 + j as i64)? });
+    }
+    let Some(d) = dst else { return Ok(()) };
+    let rd = if e.is_f(d) { e.dst_freg(d, 19) } else { e.dst_reg(d, 9) };
+    for (t, v) in rule_seq(e.enc, native, rd, &regs)? {
+        e.emit(t, &v)?;
+    }
+    if e.is_f(d) { e.finish_f(d, rd) } else { e.finish(d, rd) }
 }
 
 /// the whole body of a natively implemented function: arguments arrive
@@ -1317,7 +1413,131 @@ fn native_body(enc: &Encoder, native: &Native, code: &mut Vec<u8>) -> Result<(),
     Ok(())
 }
 
+/// the instructions on vectors kept whole: lanes moved by `ins`/`umov`,
+/// loads and stores of the q register, everything else the platform's
+/// rule for the operation's signature; None when the instruction has no
+/// vector in it
+fn compile_vector_inst(e: &mut FnEmit, inst: &Inst) -> Option<Result<(), String>> {
+    let ins = |bits: u32| if bits == 64 { "mov {v}.d[{i 0..1}], {x}" } else { "mov {v}.s[{i 0..3}], {w}" };
+    let umov = |bits: u32| if bits == 64 { "umov {x}, {v}.d[{i 0..1}]" } else { "umov {w}, {v}.s[{i 0..3}]" };
+    let r = match inst {
+        Inst::Bin { op, dst, lhs, rhs } if e.is_v(*dst) => {
+            let sig = format!("{}({}, {}) -> {}", op.name(), e.tyname(*lhs), e.tyname(*rhs), e.tyname(*dst));
+            vector_op(e, &sig, Some(*dst), &[*lhs, *rhs])
+        }
+        Inst::ICmp { cond, dst, lhs, rhs } if e.is_v(*dst) => {
+            let sig = format!("{}({}, {}) -> {}", cond.name(), e.tyname(*lhs), e.tyname(*rhs), e.tyname(*dst));
+            vector_op(e, &sig, Some(*dst), &[*lhs, *rhs])
+        }
+        Inst::Cast { op, dst, src } if e.is_v(*dst) || e.is_v(*src) => {
+            if !(e.is_v(*dst) && e.is_v(*src)) {
+                return Some(Err(format!("a {} between a vector and a scalar ({} to {}): not yet", if *op == crate::ssa::CastOp::Conv { "conv" } else { "cast" }, e.tyname(*src), e.tyname(*dst))));
+            }
+            if *op == crate::ssa::CastOp::Conv {
+                let sig = format!("conv({}) -> {}", e.tyname(*src), e.tyname(*dst));
+                vector_op(e, &sig, Some(*dst), &[*src])
+            } else {
+                // the same 128 bits, read as other lanes
+                (|| {
+                    let rs = e.src_freg(*src, 16)?;
+                    let rd = e.dst_freg(*dst, 19);
+                    if rd != rs {
+                        e.emit(MOV_V, &[rd, rs])?;
+                    }
+                    e.finish_f(*dst, rd)
+                })()
+            }
+        }
+        Inst::Call { dsts, callee, args } if args.iter().any(|&a| e.is_v(a)) || dsts.iter().any(|&d| e.is_v(d)) => {
+            let natives: &Natives = e.natives;
+            let ret = dsts.first().map(|&d| e.tyname(d)).unwrap_or_else(|| "()".into());
+            let argn: Vec<String> = args.iter().map(|&a| e.tyname(a)).collect();
+            let sig = natives.vector_sig(callee, &argn, &ret);
+            if dsts.len() > 1 {
+                return Some(Err(format!("{}: several results from a vector operation", sig)));
+            }
+            vector_op(e, &sig, dsts.first().copied(), args)
+        }
+        Inst::Get { dst, src, field } if e.is_v(*src) => (|| {
+            let (bits, _) = e.lanes(*src);
+            let rs = e.src_freg(*src, 16)?;
+            let rd = e.dst_reg(*dst, 10);
+            e.emit(umov(bits), &[rd, rs, *field as i64])?;
+            e.finish(*dst, rd)
+        })(),
+        Inst::Set { dst, src, field, val } if e.is_v(*dst) => (|| {
+            let (bits, _) = e.lanes(*dst);
+            let rs = e.src_freg(*src, 16)?;
+            let rv = e.src_reg(*val, 10)?;
+            // built in v20, which is neither source
+            if rs != 20 {
+                e.emit(MOV_V, &[20, rs])?;
+            }
+            e.emit(ins(bits), &[20, *field as i64, rv])?;
+            let rd = e.dst_freg(*dst, 19);
+            e.emit(MOV_V, &[rd, 20])?;
+            e.finish_f(*dst, rd)
+        })(),
+        Inst::Pack { dst, args } if e.is_v(*dst) => (|| {
+            let (bits, _) = e.lanes(*dst);
+            let rd = e.dst_freg(*dst, 19);
+            if args.iter().all(|a| a == &args[0]) {
+                // a splat
+                let ra = e.src_reg(args[0], 10)?;
+                e.emit(if bits == 64 { "dup {v}.2d, {x}" } else { "dup {v}.4s, {w}" }, &[rd, ra])?;
+                return e.finish_f(*dst, rd);
+            }
+            // lane by lane into v20 (a lane may live in the register rd is)
+            for (k, &a) in args.iter().enumerate() {
+                let ra = e.src_reg(a, 10)?;
+                e.emit(ins(bits), &[20, k as i64, ra])?;
+            }
+            e.emit(MOV_V, &[rd, 20])?;
+            e.finish_f(*dst, rd)
+        })(),
+        Inst::Unpack { dsts, src } if e.is_v(*src) => (|| {
+            let (bits, _) = e.lanes(*src);
+            let rs = e.src_freg(*src, 16)?;
+            // results may be allocated over the source; read from a copy
+            e.emit(MOV_V, &[20, rs])?;
+            for (k, &d) in dsts.iter().enumerate() {
+                let rd = e.dst_reg(d, 10);
+                e.emit(umov(bits), &[rd, 20, k as i64])?;
+                e.finish(d, rd)?;
+            }
+            Ok(())
+        })(),
+        Inst::Load { dst, addr, off, index } if e.is_v(*dst) => (|| {
+            let (lane, _) = e.func.vector(e.func.ty(*dst)).unwrap();
+            if e.func.width(lane) == Some(1) {
+                return Err(format!("a load of {} (a lane a byte each): not yet", e.tyname(*dst)));
+            }
+            let (bits, _) = e.lanes(*dst);
+            let ra = e.vector_address(*addr, *off, *index)?;
+            let rd = e.dst_freg(*dst, 19);
+            e.emit(LD1[(bits == 64) as usize], &[rd, ra])?;
+            e.finish_f(*dst, rd)
+        })(),
+        Inst::Store { val, addr, off, index } if e.is_v(*val) => (|| {
+            let (lane, _) = e.func.vector(e.func.ty(*val)).unwrap();
+            if e.func.width(lane) == Some(1) {
+                return Err(format!("a store of {} (a lane a byte each): not yet", e.tyname(*val)));
+            }
+            let (bits, _) = e.lanes(*val);
+            let rv = e.src_freg(*val, 16)?;
+            let ra = e.vector_address(*addr, *off, *index)?;
+            e.emit(ST1[(bits == 64) as usize], &[rv, ra]).map(|_| ())
+        })(),
+        Inst::IConst { dst, .. } if e.is_v(*dst) => Err(format!("a literal of a vector type ({}): not yet — splat it", e.tyname(*dst))),
+        _ => return None,
+    };
+    Some(r)
+}
+
 fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
+    if let Some(r) = compile_vector_inst(e, inst) {
+        return r;
+    }
     match inst {
         Inst::IConst { dst, imm } => {
             let rd = e.dst_reg(*dst, 9);

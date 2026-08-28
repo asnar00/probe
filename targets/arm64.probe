@@ -8,6 +8,8 @@ reg x = x0..x30
 reg w = w0..w30
 reg s = s0..s31
 reg d = d0..d31
+reg v = v0..v31
+reg q = q0..q31
 
 ; --- three-register ALU ---
 inst add {x}, {x}, {x}
@@ -244,3 +246,88 @@ inst wfi
 inst mov sp, {x}
 ; a failed check: a breakpoint exception (ESR_EL1.EC = 0x3c)
 inst brk #{i 0..65535}
+
+; --- NEON: 128-bit vectors, four f32 or i32 lanes (.4s) or two f64 or
+; i64 lanes (.2d), in the same file as the floats. The rules in
+; targets/arm64.platform take a vector operation whole where the
+; library defines it lane by lane ---
+inst fadd {v}.4s, {v}.4s, {v}.4s
+inst fsub {v}.4s, {v}.4s, {v}.4s
+inst fmul {v}.4s, {v}.4s, {v}.4s
+inst fdiv {v}.4s, {v}.4s, {v}.4s
+inst fmin {v}.4s, {v}.4s, {v}.4s
+inst fmax {v}.4s, {v}.4s, {v}.4s
+inst fmla {v}.4s, {v}.4s, {v}.4s
+inst fcmeq {v}.4s, {v}.4s, {v}.4s
+inst fcmgt {v}.4s, {v}.4s, {v}.4s
+inst fcmge {v}.4s, {v}.4s, {v}.4s
+inst add {v}.4s, {v}.4s, {v}.4s
+inst sub {v}.4s, {v}.4s, {v}.4s
+inst cmeq {v}.4s, {v}.4s, {v}.4s
+inst cmgt {v}.4s, {v}.4s, {v}.4s
+inst cmge {v}.4s, {v}.4s, {v}.4s
+inst cmhi {v}.4s, {v}.4s, {v}.4s
+inst cmhs {v}.4s, {v}.4s, {v}.4s
+inst sshl {v}.4s, {v}.4s, {v}.4s
+inst ushl {v}.4s, {v}.4s, {v}.4s
+inst fsqrt {v}.4s, {v}.4s
+inst fneg {v}.4s, {v}.4s
+inst fabs {v}.4s, {v}.4s
+inst neg {v}.4s, {v}.4s
+inst abs {v}.4s, {v}.4s
+inst scvtf {v}.4s, {v}.4s
+inst ucvtf {v}.4s, {v}.4s
+inst fcvtzs {v}.4s, {v}.4s
+inst fcvtzu {v}.4s, {v}.4s
+inst fadd {v}.2d, {v}.2d, {v}.2d
+inst fsub {v}.2d, {v}.2d, {v}.2d
+inst fmul {v}.2d, {v}.2d, {v}.2d
+inst fdiv {v}.2d, {v}.2d, {v}.2d
+inst fmin {v}.2d, {v}.2d, {v}.2d
+inst fmax {v}.2d, {v}.2d, {v}.2d
+inst fmla {v}.2d, {v}.2d, {v}.2d
+inst fcmeq {v}.2d, {v}.2d, {v}.2d
+inst fcmgt {v}.2d, {v}.2d, {v}.2d
+inst fcmge {v}.2d, {v}.2d, {v}.2d
+inst add {v}.2d, {v}.2d, {v}.2d
+inst sub {v}.2d, {v}.2d, {v}.2d
+inst cmeq {v}.2d, {v}.2d, {v}.2d
+inst cmgt {v}.2d, {v}.2d, {v}.2d
+inst cmge {v}.2d, {v}.2d, {v}.2d
+inst cmhi {v}.2d, {v}.2d, {v}.2d
+inst cmhs {v}.2d, {v}.2d, {v}.2d
+inst sshl {v}.2d, {v}.2d, {v}.2d
+inst ushl {v}.2d, {v}.2d, {v}.2d
+inst fsqrt {v}.2d, {v}.2d
+inst fneg {v}.2d, {v}.2d
+inst fabs {v}.2d, {v}.2d
+inst neg {v}.2d, {v}.2d
+inst abs {v}.2d, {v}.2d
+inst scvtf {v}.2d, {v}.2d
+inst ucvtf {v}.2d, {v}.2d
+inst fcvtzs {v}.2d, {v}.2d
+inst fcvtzu {v}.2d, {v}.2d
+inst mul {v}.4s, {v}.4s, {v}.4s
+inst and {v}.16b, {v}.16b, {v}.16b
+inst orr {v}.16b, {v}.16b, {v}.16b
+inst eor {v}.16b, {v}.16b, {v}.16b
+inst mvn {v}.16b, {v}.16b
+inst mov {v}.16b, {v}.16b
+inst dup {v}.4s, {w}
+inst dup {v}.2d, {x}
+inst mov {v}.s[{i 0..3}], {w}
+inst mov {v}.d[{i 0..1}], {x}
+inst umov {w}, {v}.s[{i 0..3}]
+inst umov {x}, {v}.d[{i 0..1}]
+inst fmov {x}, {v}.d[1]
+inst fmov {v}.d[1], {x}
+; a vector in memory is aligned only to its lanes (ssa.md: a struct of
+; lanes at their natural offsets), and with the MMU off an access must
+; be aligned to its size: ld1/st1 access lane by lane. The q forms are
+; for the stack, which is 16-aligned
+inst ld1 {{{v}.4s}}, [{x}]
+inst ld1 {{{v}.2d}}, [{x}]
+inst st1 {{{v}.4s}}, [{x}]
+inst st1 {{{v}.2d}}, [{x}]
+inst ldr {q}, [sp, #{i 0..65520 /16}]
+inst str {q}, [sp, #{i 0..65520 /16}]

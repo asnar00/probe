@@ -107,9 +107,10 @@ pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin
         compile_function(func, enc, &natives, &mut code, &mut call_fixups)
             .map_err(|e| format!("{}: {}", func.name, e))?;
     }
-    // data after the code, 8-aligned
+    // data after the code, 16-aligned in memory (the alignment is
+    // measured from the image's origin: a boot preamble precedes the code)
     let code_end = code.len();
-    while code.len() % 8 != 0 {
+    while (origin + code.len()) % 16 != 0 {
         code.push(0);
     }
     let (data, data_offsets) = crate::ssa::layout_data(module);

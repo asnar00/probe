@@ -17,7 +17,9 @@
 //! ```
 //!
 //! Holes: `{class}` register, `{i lo..hi}` or `{i lo..hi /step}` immediate
-//! (lo may be negative), `{e a|b|c}` enumerated literal.
+//! (lo may be negative), `{e a|b|c}` enumerated literal. `{{` and `}}`
+//! are literal braces (`ld1 {{{v}.4s}}, [{x}]`: the register list an
+//! assembler writes in braces).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -176,9 +178,18 @@ fn expand_range(a: &str, b: &str, out: &mut Vec<String>) -> Result<(), String> {
 fn parse_template(text: &str, regs: &HashMap<String, Vec<String>>) -> Result<Shape, String> {
     let mut segs = Vec::new();
     let mut rest = text;
-    while let Some(open) = rest.find('{') {
+    while let Some(open) = rest.find(['{', '}']) {
         if open > 0 {
             segs.push(Seg::Text(rest[..open].to_string()));
+        }
+        // a doubled brace is the brace itself
+        if rest[open..].starts_with("{{") || rest[open..].starts_with("}}") {
+            segs.push(Seg::Text(rest[open..open + 1].to_string()));
+            rest = &rest[open + 2..];
+            continue;
+        }
+        if rest[open..].starts_with('}') {
+            return Err(format!("stray '}}' in template '{}'", text));
         }
         let close = rest[open..]
             .find('}')

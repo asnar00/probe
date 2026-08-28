@@ -4,3 +4,4 @@
 target arm64
 base arm64
 without FP
+without NEON

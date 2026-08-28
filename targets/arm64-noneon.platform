@@ -1,0 +1,6 @@
+; targets/arm64-noneon.platform — arm64 with the FP registers but no
+; vector rules: every vector operation lane by lane, in s and d
+; registers. The reference the NEON rules are checked against.
+target arm64
+base arm64
+without NEON

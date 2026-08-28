@@ -56,8 +56,8 @@
 //! learned instructions a program actually used, which is how a variant
 //! is checked to keep its word.
 
-use crate::ssa::{Function, Module, Policy, Type};
-use std::collections::HashMap;
+use crate::ssa::{Function, Module, Policy, Type, VectorWhole, Vectors};
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// an operand of a rule line
@@ -81,6 +81,9 @@ pub struct Line {
     pub template: Option<String>,
     pub mnemonic: String,
     pub operands: Vec<Operand>,
+    /// what follows an operand's name in the line (`a.4s`: ".4s"), which
+    /// the template must spell after its slot; empty for most
+    pub suffixes: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -93,6 +96,8 @@ pub struct Rule {
     pub lines: Vec<Line>,
     /// temporaries: (name, width in bits), from `with name: type, ...`
     pub temps: Vec<(String, u32)>,
+    /// the temporaries' types as written (a vector one has a class)
+    pub temp_types: Vec<String>,
     /// `called`: the rule is a function reached by a real call even
     /// though it names every argument — it must have a return address
     /// and a frame of its own (a stack switch)
@@ -110,6 +115,8 @@ pub struct Native {
     /// the class of each argument and of the result (None: integer)
     pub arg_class: Vec<Option<String>>,
     pub ret_class: Option<String>,
+    /// the class of each temporary (a vector temporary lives in a v register)
+    pub tmp_class: Vec<Option<String>>,
     /// may a call site emit the rule in place? Only when every argument
     /// is an operand of it; a rule that leaves an argument where the
     /// calling convention put it (PSCI's code in x0 before `hvc`) is
@@ -130,6 +137,7 @@ impl Native {
         match op {
             Operand::Arg(i) => self.arg_class[*i].as_deref(),
             Operand::Ret => self.ret_class.as_deref(),
+            Operand::Tmp(k) => self.tmp_class.get(*k).and_then(|c| c.as_deref()),
             _ => None,
         }
     }
@@ -138,6 +146,11 @@ impl Native {
 /// the rules of a module: callee -> native, and type -> register class
 pub struct Natives {
     pub rules: HashMap<String, Native>,
+    /// rules on whole vectors, by signature (`add(f32x4, f32x4) -> f32x4`):
+    /// there is no function of that type in the module to attach them to
+    pub vector_rules: HashMap<String, Native>,
+    /// every function's generic name (its own, if it is not an instance)
+    pub generics: HashMap<String, String>,
     /// canonical type spelling -> class name
     pub classes: HashMap<String, String>,
     /// the platform's constants: a board's addresses
@@ -146,10 +159,20 @@ pub struct Natives {
 
 impl Natives {
     pub fn none() -> Natives {
-        Natives { rules: HashMap::new(), classes: HashMap::new(), consts: HashMap::new() }
+        Natives { rules: HashMap::new(), vector_rules: HashMap::new(), generics: HashMap::new(), classes: HashMap::new(), consts: HashMap::new() }
     }
     pub fn get(&self, callee: &str) -> Option<&Native> {
         self.rules.get(callee)
+    }
+    /// the rule for an operation on whole vectors, by its signature
+    pub fn vector(&self, sig: &str) -> Option<&Native> {
+        self.vector_rules.get(sig)
+    }
+    /// the signature of a call on vectors: the callee's generic name over
+    /// the argument and result type names
+    pub fn vector_sig(&self, callee: &str, args: &[String], ret: &str) -> String {
+        let g = self.generics.get(callee).map(String::as_str).unwrap_or(callee);
+        format!("{}({}) -> {}", g, args.join(", "), ret)
     }
     /// the register class of a value's type, if the platform has one
     pub fn class_of(&self, f: &Function, ty: Type) -> Option<&str> {
@@ -244,8 +267,20 @@ impl Platform {
     pub fn adjust(&self, mut policy: Policy) -> Policy {
         policy.native_mul = self.has_builtin("mul");
         policy.native_div = self.has_builtin("div") && self.has_builtin("rem");
-        // vectors whole is opted into: a platform says `builtin vectors`
-        policy.vectors = self.builtins.iter().any(|(o, g)| o == "vectors" && !self.without.contains(g));
+        // vectors whole: every one on a platform that says `builtin
+        // vectors`; on a register machine the vector types it gives a
+        // class, for the operations it has rules over them
+        policy.vectors = if self.builtins.iter().any(|(o, g)| o == "vectors" && self.present(g)) {
+            Vectors::All
+        } else {
+            let types: HashSet<String> = self.classes.iter().filter(|(_, t, g)| self.present(g) && is_vector_name(t)).map(|(_, t, _)| t.clone()).collect();
+            if types.is_empty() {
+                Vectors::None
+            } else {
+                let ops = self.rules.iter().filter(|(r, g)| self.present(g) && r.arg_types.iter().chain([&r.ret_type]).any(|t| is_vector_name(t))).map(|(r, _)| format!("{}({}) -> {}", r.generic, r.arg_types.join(", "), r.ret_type)).collect();
+                Vectors::Some(Box::leak(Box::new(VectorWhole { types, ops })))
+            }
+        };
         policy
     }
 
@@ -350,7 +385,8 @@ impl Platform {
                 if nslots == 0 {
                     operands.clear();
                 }
-                rule.lines.push(Line { template: Some(template), mnemonic, operands });
+                let suffixes = vec![String::new(); operands.len()];
+                rule.lines.push(Line { template: Some(template), mnemonic, operands, suffixes });
                 rules.push((rule, group.clone()));
             } else {
                 rules.push((parse_header(line.trim()).map_err(at)?, group.clone()));
@@ -382,6 +418,31 @@ impl Platform {
         let defaults = Policy::new(Type::I64).unwrap();
         let consts: HashMap<String, i64> = self.consts.iter().filter(|(_, _, g)| self.present(g)).map(|(n, v, _)| (n.clone(), *v)).collect();
         let mut rules = HashMap::new();
+        let mut vector_rules = HashMap::new();
+        let mut generics = HashMap::new();
+        // rules over whole vectors: no function in the module has those
+        // types, so they are kept by signature, the classes theirs
+        for (r, g) in &self.rules {
+            if !self.present(g) || !r.arg_types.iter().chain([&r.ret_type]).any(|t| is_vector_name(t)) {
+                continue;
+            }
+            let sig = format!("{}({}) -> {}", r.generic, r.arg_types.join(", "), r.ret_type);
+            let bits = |t: &str| vector_name_bits(t).unwrap_or(64);
+            let inline = !r.called && (0..r.arg_types.len()).all(|i| r.lines.iter().any(|l| l.operands.contains(&Operand::Arg(i))));
+            vector_rules.insert(
+                sig.clone(),
+                Native {
+                    rule: r.clone(),
+                    sig,
+                    arg_bits: r.arg_types.iter().map(|t| bits(t)).collect(),
+                    ret_bits: if r.ret_type == "()" { 0 } else { bits(&r.ret_type) },
+                    arg_class: r.arg_types.iter().map(|t| classes.get(t).cloned()).collect(),
+                    ret_class: classes.get(&r.ret_type).cloned(),
+                    tmp_class: r.temp_types.iter().map(|t| classes.get(&resolve(t)).cloned()).collect(),
+                    inline,
+                },
+            );
+        }
         for f in &m.funcs {
             // an instance of a generic, or a plain function the platform
             // names outright (a board operation like PSCI's hvc)
@@ -389,6 +450,7 @@ impl Platform {
                 Some((g, a)) => (g.clone(), a.clone()),
                 None => (f.name.clone(), Vec::new()),
             };
+            generics.insert(f.name.clone(), generic.clone());
             if f.rets.len() > 1 {
                 continue;
             }
@@ -420,13 +482,14 @@ impl Platform {
                     ret_bits,
                     arg_class: ptys.iter().map(|t| classes.get(t).cloned()).collect(),
                     ret_class: if rty == "()" { None } else { classes.get(&rty).cloned() },
+                    tmp_class: r.temp_types.iter().map(|t| classes.get(&resolve(t)).cloned()).collect(),
                     inline,
                 };
                 rules.insert(f.name.clone(), native);
                 break;
             }
         }
-        Natives { rules, classes, consts }
+        Natives { rules, vector_rules, generics, classes, consts }
     }
 }
 
@@ -455,10 +518,12 @@ fn parse_header(s: &str) -> Result<Rule, String> {
         None => (ret, None),
     };
     let mut temps = Vec::new();
+    let mut temp_types = Vec::new();
     for t in temps_text.into_iter().flat_map(|t| t.split(',')) {
         let (name, ty) = t.trim().split_once(':').ok_or("a temporary is 'name: type'")?;
-        let bits = Type::from_name_pub(ty.trim()).and_then(|t| t.int_bits()).ok_or_else(|| format!("a temporary's type is an integer or ptr, not '{}'", ty.trim()))?;
+        let bits = vector_name_bits(ty.trim()).or_else(|| Type::from_name_pub(ty.trim()).and_then(|t| t.int_bits())).ok_or_else(|| format!("a temporary's type is an integer, ptr or vector, not '{}'", ty.trim()))?;
         temps.push((name.trim().to_string(), bits));
+        temp_types.push(normalize(ty.trim()));
     }
     let ret_type = normalize(ret.rsplit(':').next().unwrap());
     let mut names = Vec::new();
@@ -475,7 +540,25 @@ fn parse_header(s: &str) -> Result<Rule, String> {
             }
         }
     }
-    Ok(Rule { generic: generic.trim().to_string(), arg_types, ret_type, names, lines: Vec::new(), temps, called })
+    Ok(Rule { generic: generic.trim().to_string(), arg_types, ret_type, names, lines: Vec::new(), temps, temp_types, called })
+}
+
+/// a vector type by its spelling, `f32x4`, `u1x2`: (lane bits, lanes)
+pub fn vector_name(s: &str) -> Option<(u32, u32)> {
+    let rest = s.strip_prefix(['i', 'u', 'f'])?;
+    let (bits, lanes) = rest.split_once('x')?;
+    let (b, n) = (bits.parse::<u32>().ok()?, lanes.parse::<u32>().ok()?);
+    (b > 0 && n > 1).then_some((b, n))
+}
+
+fn is_vector_name(s: &str) -> bool {
+    vector_name(s).is_some()
+}
+
+/// the register a classed vector fills: 128 bits for any of them (a
+/// vector of u1 lanes holds each lane in a 128/N-bit lane)
+fn vector_name_bits(s: &str) -> Option<u32> {
+    vector_name(s).map(|_| 128)
 }
 
 /// the parameter list up to its closing paren, honouring nested parens
@@ -528,19 +611,26 @@ fn parse_line(s: &str, names: &[String], temps: &[(String, u32)]) -> Result<Line
         None => (s, ""),
     };
     let mut operands = Vec::new();
+    let mut suffixes = Vec::new();
     for tok in operand_tokens(rest) {
-        let op = if tok == "r" {
+        // `a.4s`: the operand a, and an arrangement the template spells
+        let (head, suffix) = match tok.split_once('.') {
+            Some((h, s)) if h == "r" || names.contains(&h.to_string()) || temps.iter().any(|(n, _)| n == h) => (h.to_string(), format!(".{}", s)),
+            _ => (tok.clone(), String::new()),
+        };
+        let op = if head == "r" {
             Operand::Ret
-        } else if let Some(i) = names.iter().position(|n| *n == tok) {
+        } else if let Some(i) = names.iter().position(|n| *n == head) {
             Operand::Arg(i)
-        } else if let Some(k) = temps.iter().position(|(n, _)| *n == tok) {
+        } else if let Some(k) = temps.iter().position(|(n, _)| *n == head) {
             Operand::Tmp(k)
         } else {
             Operand::Lit(tok)
         };
         operands.push(op);
+        suffixes.push(suffix);
     }
-    Ok(Line { template: None, mnemonic: mnemonic.to_string(), operands })
+    Ok(Line { template: None, mnemonic: mnemonic.to_string(), operands, suffixes })
 }
 
 /// how many temporaries a rule may name
@@ -565,6 +655,11 @@ pub fn template_slots(template: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut rest = template;
     while let Some(s) = rest.find('{') {
+        // `{{` is a literal brace (a register list), not a slot
+        if rest[s..].starts_with("{{") {
+            rest = &rest[s + 2..];
+            continue;
+        }
         let Some(e) = rest[s..].find('}') else { break };
         out.push(&rest[s + 1..s + e]);
         rest = &rest[s + e + 1..];
@@ -633,8 +728,15 @@ pub fn resolve<'t>(native: &Native, line: &Line, templates: &[&'t str]) -> Resul
         }
         let mut vals = Vec::new();
         let mut ok = true;
-        for (tok, op) in tokens.iter().zip(&line.operands) {
-            if let Some(k) = tok.strip_prefix('{').and_then(|p| p.strip_suffix('}')).and_then(|k| k.parse::<usize>().ok()) {
+        for ((j, tok), op) in tokens.iter().enumerate().zip(&line.operands) {
+            // `{0}` or `{0}.4s`: a slot, and the arrangement the line's
+            // operand must carry too
+            let slot_k = tok.strip_prefix('{').and_then(|p| p.split_once('}')).and_then(|(k, suffix)| k.parse::<usize>().ok().map(|k| (k, suffix)));
+            if let Some((k, suffix)) = slot_k {
+                if line.template.is_none() && line.suffixes.get(j).map(String::as_str).unwrap_or("") != suffix {
+                    ok = false;
+                    break;
+                }
                 match slot_takes(slots[k], native, op) {
                     Some(v) => vals.push((op.clone(), v)),
                     None => {

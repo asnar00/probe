@@ -1842,6 +1842,18 @@ pub(crate) mod tests {
         }
     }
 
+    /// the suite on arm64 without the NEON rules: every vector operation
+    /// lane by lane, which is what the rules are checked against
+    #[test]
+    fn regression_suite_arm64_noneon() {
+        crate::platform::select("arm64-noneon");
+        assert_eq!(crate::platform::Platform::load("arm64").unwrap().name, "arm64-noneon");
+        let report = super::run_dir_at("suite", super::Backend::Native, crate::opt::MAX_LEVEL, &|p| p).expect("suite runs");
+        crate::platform::select("arm64");
+        assert_eq!(report.failed, 0, "arm64-noneon:\n{}", report.log);
+        assert!(report.passed > 800, "{} cases", report.passed);
+    }
+
     #[test]
     fn regression_suite_unit_policies() {
         for n in [8u32, 16, 32] {

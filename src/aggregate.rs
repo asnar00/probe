@@ -13,16 +13,16 @@
 //! per field at its byte offset. Nested structs flatten; a wide field is
 //! then lowered by wide.rs like any other.
 
-use crate::ssa::{Function, Inst, Module, Type, ValueData, ValueId};
+use crate::ssa::{Function, Inst, Module, Type, ValueData, ValueId, Vectors};
 use std::collections::HashMap;
 
 pub fn has_structs(m: &Module) -> bool {
     m.funcs.iter().any(|f| f.values.iter().any(|v| v.ty.is_struct()) || f.rets.iter().any(|t| t.is_struct()))
 }
 
-/// `keep_vectors`: a vector (a struct of lanes) stays a value, for a
-/// platform that takes it whole
-pub fn lower(m: &mut Module, keep_vectors: bool) -> Result<(), String> {
+/// `keep_vectors`: a vector (a struct of lanes) stays a value where the
+/// platform takes it whole
+pub fn lower(m: &mut Module, keep_vectors: Vectors) -> Result<(), String> {
     for f in &mut m.funcs {
         if f.values.iter().any(|v| v.ty.is_struct()) || f.rets.iter().any(|t| t.is_struct()) {
             lower_function(f, keep_vectors).map_err(|e| format!("{}: {}", f.name, e))?;
@@ -32,13 +32,13 @@ pub fn lower(m: &mut Module, keep_vectors: bool) -> Result<(), String> {
 }
 
 /// does a type come apart here? a struct, unless it is a vector being kept
-fn dissolves(f: &Function, ty: Type, keep_vectors: bool) -> bool {
-    ty.is_struct() && !(keep_vectors && f.vector(ty).is_some())
+fn dissolves(f: &Function, ty: Type, keep_vectors: Vectors) -> bool {
+    ty.is_struct() && !(f.vector(ty).is_some() && keep_vectors.keeps(&f.tyname(ty)))
 }
 
 /// the scalar leaves of a type: (type, byte offset), nested structs
 /// flattened
-fn leaves(f: &Function, ty: Type, base: u32, out: &mut Vec<(Type, u32)>, keep_vectors: bool) {
+fn leaves(f: &Function, ty: Type, base: u32, out: &mut Vec<(Type, u32)>, keep_vectors: Vectors) {
     match ty {
         Type::Struct(_) if dissolves(f, ty, keep_vectors) => {
             let p = f.pack(ty).unwrap().clone();
@@ -59,10 +59,10 @@ struct Lower<'a> {
     /// the struct types of the values that were retyped to their first leaf
     orig: HashMap<u32, Type>,
     out: Vec<Inst>,
-    keep: bool,
+    keep: Vectors,
 }
 
-fn lower_function(f: &mut Function, keep_vectors: bool) -> Result<(), String> {
+fn lower_function(f: &mut Function, keep_vectors: Vectors) -> Result<(), String> {
     // the signature as written, for callers from outside (the harness)
     f.wide_sig = Some((f.params.iter().map(|&p| f.ty(p)).collect(), f.rets.clone()));
     let mut rets = Vec::new();

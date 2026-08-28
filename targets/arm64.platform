@@ -231,6 +231,240 @@ fcvtzu {w}, {d} = conv(f64) -> u32
 fcvtzs {x}, {d} = conv(f64) -> i64
 fcvtzu {x}, {d} = conv(f64) -> u64
 
+; NEON: 128-bit vectors in the same file as the floats — four f32 or
+; i32 lanes (.4s), two f64 or i64 lanes (.2d). The library defines a
+; vector operation lane by lane (ssa.md: Vectors); a rule here takes
+; the whole vector in one instruction, and the parser keeps a vector
+; of a classed type whole only for the operations that have one —
+; everything else (a divide of i32x4, a vector of eight bytes) stays
+; lane by lane. A vector of u1 lanes holds each lane as 0 or 1 in a
+; 128/N-bit lane, which is what `neg` makes of a comparison's all-ones.
+; targets/arm64-noneon.platform is this target without them: the same
+; programs lane by lane, which is what these rules are checked against.
+ext NEON
+class v = f32x4, f64x2, i32x4, u32x4, i64x2, u64x2, u1x4, u1x2
+
+; --- f32x4 ---
+fadd {v}.4s, {v}.4s, {v}.4s = add(f32x4, f32x4) -> f32x4
+fsub {v}.4s, {v}.4s, {v}.4s = sub(f32x4, f32x4) -> f32x4
+fmul {v}.4s, {v}.4s, {v}.4s = mul(f32x4, f32x4) -> f32x4
+fdiv {v}.4s, {v}.4s, {v}.4s = div(f32x4, f32x4) -> f32x4
+fsqrt {v}.4s, {v}.4s = sqrt(f32x4) -> f32x4
+fneg {v}.4s, {v}.4s = neg(f32x4) -> f32x4
+fabs {v}.4s, {v}.4s = abs(f32x4) -> f32x4
+fmin {v}.4s, {v}.4s, {v}.4s = min(f32x4, f32x4) -> f32x4
+fmax {v}.4s, {v}.4s, {v}.4s = max(f32x4, f32x4) -> f32x4
+; a*b + c with one rounding: fmla accumulates into its destination
+fma(f32x4, f32x4, f32x4) -> f32x4 with t: f32x4
+    mov t.16b, c.16b
+    fmla t.4s, a.4s, b.4s
+    mov r.16b, t.16b
+eq(f32x4, f32x4) -> u1x4 with t: u1x4
+    fcmeq t.4s, a.4s, b.4s
+    neg r.4s, t.4s
+ne(f32x4, f32x4) -> u1x4 with t: u1x4
+    fcmeq t.4s, a.4s, b.4s
+    mvn t.16b, t.16b
+    neg r.4s, t.4s
+gt(f32x4, f32x4) -> u1x4 with t: u1x4
+    fcmgt t.4s, a.4s, b.4s
+    neg r.4s, t.4s
+ge(f32x4, f32x4) -> u1x4 with t: u1x4
+    fcmge t.4s, a.4s, b.4s
+    neg r.4s, t.4s
+lt(f32x4, f32x4) -> u1x4 with t: u1x4
+    fcmgt t.4s, b.4s, a.4s
+    neg r.4s, t.4s
+le(f32x4, f32x4) -> u1x4 with t: u1x4
+    fcmge t.4s, b.4s, a.4s
+    neg r.4s, t.4s
+scvtf {v}.4s, {v}.4s = conv(i32x4) -> f32x4
+ucvtf {v}.4s, {v}.4s = conv(u32x4) -> f32x4
+fcvtzs {v}.4s, {v}.4s = conv(f32x4) -> i32x4
+fcvtzu {v}.4s, {v}.4s = conv(f32x4) -> u32x4
+
+; --- f64x2 ---
+fadd {v}.2d, {v}.2d, {v}.2d = add(f64x2, f64x2) -> f64x2
+fsub {v}.2d, {v}.2d, {v}.2d = sub(f64x2, f64x2) -> f64x2
+fmul {v}.2d, {v}.2d, {v}.2d = mul(f64x2, f64x2) -> f64x2
+fdiv {v}.2d, {v}.2d, {v}.2d = div(f64x2, f64x2) -> f64x2
+fsqrt {v}.2d, {v}.2d = sqrt(f64x2) -> f64x2
+fneg {v}.2d, {v}.2d = neg(f64x2) -> f64x2
+fabs {v}.2d, {v}.2d = abs(f64x2) -> f64x2
+fmin {v}.2d, {v}.2d, {v}.2d = min(f64x2, f64x2) -> f64x2
+fmax {v}.2d, {v}.2d, {v}.2d = max(f64x2, f64x2) -> f64x2
+fma(f64x2, f64x2, f64x2) -> f64x2 with t: f64x2
+    mov t.16b, c.16b
+    fmla t.2d, a.2d, b.2d
+    mov r.16b, t.16b
+eq(f64x2, f64x2) -> u1x2 with t: u1x2
+    fcmeq t.2d, a.2d, b.2d
+    neg r.2d, t.2d
+ne(f64x2, f64x2) -> u1x2 with t: u1x2
+    fcmeq t.2d, a.2d, b.2d
+    mvn t.16b, t.16b
+    neg r.2d, t.2d
+gt(f64x2, f64x2) -> u1x2 with t: u1x2
+    fcmgt t.2d, a.2d, b.2d
+    neg r.2d, t.2d
+ge(f64x2, f64x2) -> u1x2 with t: u1x2
+    fcmge t.2d, a.2d, b.2d
+    neg r.2d, t.2d
+lt(f64x2, f64x2) -> u1x2 with t: u1x2
+    fcmgt t.2d, b.2d, a.2d
+    neg r.2d, t.2d
+le(f64x2, f64x2) -> u1x2 with t: u1x2
+    fcmge t.2d, b.2d, a.2d
+    neg r.2d, t.2d
+scvtf {v}.2d, {v}.2d = conv(i64x2) -> f64x2
+ucvtf {v}.2d, {v}.2d = conv(u64x2) -> f64x2
+fcvtzs {v}.2d, {v}.2d = conv(f64x2) -> i64x2
+fcvtzu {v}.2d, {v}.2d = conv(f64x2) -> u64x2
+
+; --- i32x4 ---
+add {v}.4s, {v}.4s, {v}.4s = add(i32x4, i32x4) -> i32x4
+sub {v}.4s, {v}.4s, {v}.4s = sub(i32x4, i32x4) -> i32x4
+and {v}.16b, {v}.16b, {v}.16b = and(i32x4, i32x4) -> i32x4
+orr {v}.16b, {v}.16b, {v}.16b = or(i32x4, i32x4) -> i32x4
+eor {v}.16b, {v}.16b, {v}.16b = xor(i32x4, i32x4) -> i32x4
+mul {v}.4s, {v}.4s, {v}.4s = mul(i32x4, i32x4) -> i32x4
+sshl {v}.4s, {v}.4s, {v}.4s = shl(i32x4, i32x4) -> i32x4
+shr(i32x4, i32x4) -> i32x4 with t: i32x4
+    neg t.4s, b.4s
+    sshl r.4s, a.4s, t.4s
+eq(i32x4, i32x4) -> u1x4 with t: u1x4
+    cmeq t.4s, a.4s, b.4s
+    neg r.4s, t.4s
+ne(i32x4, i32x4) -> u1x4 with t: u1x4
+    cmeq t.4s, a.4s, b.4s
+    mvn t.16b, t.16b
+    neg r.4s, t.4s
+gt(i32x4, i32x4) -> u1x4 with t: u1x4
+    cmgt t.4s, a.4s, b.4s
+    neg r.4s, t.4s
+ge(i32x4, i32x4) -> u1x4 with t: u1x4
+    cmge t.4s, a.4s, b.4s
+    neg r.4s, t.4s
+lt(i32x4, i32x4) -> u1x4 with t: u1x4
+    cmgt t.4s, b.4s, a.4s
+    neg r.4s, t.4s
+le(i32x4, i32x4) -> u1x4 with t: u1x4
+    cmge t.4s, b.4s, a.4s
+    neg r.4s, t.4s
+
+; --- u32x4 ---
+add {v}.4s, {v}.4s, {v}.4s = add(u32x4, u32x4) -> u32x4
+sub {v}.4s, {v}.4s, {v}.4s = sub(u32x4, u32x4) -> u32x4
+and {v}.16b, {v}.16b, {v}.16b = and(u32x4, u32x4) -> u32x4
+orr {v}.16b, {v}.16b, {v}.16b = or(u32x4, u32x4) -> u32x4
+eor {v}.16b, {v}.16b, {v}.16b = xor(u32x4, u32x4) -> u32x4
+mul {v}.4s, {v}.4s, {v}.4s = mul(u32x4, u32x4) -> u32x4
+sshl {v}.4s, {v}.4s, {v}.4s = shl(u32x4, u32x4) -> u32x4
+shr(u32x4, u32x4) -> u32x4 with t: u32x4
+    neg t.4s, b.4s
+    ushl r.4s, a.4s, t.4s
+eq(u32x4, u32x4) -> u1x4 with t: u1x4
+    cmeq t.4s, a.4s, b.4s
+    neg r.4s, t.4s
+ne(u32x4, u32x4) -> u1x4 with t: u1x4
+    cmeq t.4s, a.4s, b.4s
+    mvn t.16b, t.16b
+    neg r.4s, t.4s
+gt(u32x4, u32x4) -> u1x4 with t: u1x4
+    cmhi t.4s, a.4s, b.4s
+    neg r.4s, t.4s
+ge(u32x4, u32x4) -> u1x4 with t: u1x4
+    cmhs t.4s, a.4s, b.4s
+    neg r.4s, t.4s
+lt(u32x4, u32x4) -> u1x4 with t: u1x4
+    cmhi t.4s, b.4s, a.4s
+    neg r.4s, t.4s
+le(u32x4, u32x4) -> u1x4 with t: u1x4
+    cmhs t.4s, b.4s, a.4s
+    neg r.4s, t.4s
+
+; --- i64x2 ---
+add {v}.2d, {v}.2d, {v}.2d = add(i64x2, i64x2) -> i64x2
+sub {v}.2d, {v}.2d, {v}.2d = sub(i64x2, i64x2) -> i64x2
+and {v}.16b, {v}.16b, {v}.16b = and(i64x2, i64x2) -> i64x2
+orr {v}.16b, {v}.16b, {v}.16b = or(i64x2, i64x2) -> i64x2
+eor {v}.16b, {v}.16b, {v}.16b = xor(i64x2, i64x2) -> i64x2
+sshl {v}.2d, {v}.2d, {v}.2d = shl(i64x2, i64x2) -> i64x2
+shr(i64x2, i64x2) -> i64x2 with t: i64x2
+    neg t.2d, b.2d
+    sshl r.2d, a.2d, t.2d
+eq(i64x2, i64x2) -> u1x2 with t: u1x2
+    cmeq t.2d, a.2d, b.2d
+    neg r.2d, t.2d
+ne(i64x2, i64x2) -> u1x2 with t: u1x2
+    cmeq t.2d, a.2d, b.2d
+    mvn t.16b, t.16b
+    neg r.2d, t.2d
+gt(i64x2, i64x2) -> u1x2 with t: u1x2
+    cmgt t.2d, a.2d, b.2d
+    neg r.2d, t.2d
+ge(i64x2, i64x2) -> u1x2 with t: u1x2
+    cmge t.2d, a.2d, b.2d
+    neg r.2d, t.2d
+lt(i64x2, i64x2) -> u1x2 with t: u1x2
+    cmgt t.2d, b.2d, a.2d
+    neg r.2d, t.2d
+le(i64x2, i64x2) -> u1x2 with t: u1x2
+    cmge t.2d, b.2d, a.2d
+    neg r.2d, t.2d
+
+; --- u64x2 ---
+add {v}.2d, {v}.2d, {v}.2d = add(u64x2, u64x2) -> u64x2
+sub {v}.2d, {v}.2d, {v}.2d = sub(u64x2, u64x2) -> u64x2
+and {v}.16b, {v}.16b, {v}.16b = and(u64x2, u64x2) -> u64x2
+orr {v}.16b, {v}.16b, {v}.16b = or(u64x2, u64x2) -> u64x2
+eor {v}.16b, {v}.16b, {v}.16b = xor(u64x2, u64x2) -> u64x2
+sshl {v}.2d, {v}.2d, {v}.2d = shl(u64x2, u64x2) -> u64x2
+shr(u64x2, u64x2) -> u64x2 with t: u64x2
+    neg t.2d, b.2d
+    ushl r.2d, a.2d, t.2d
+eq(u64x2, u64x2) -> u1x2 with t: u1x2
+    cmeq t.2d, a.2d, b.2d
+    neg r.2d, t.2d
+ne(u64x2, u64x2) -> u1x2 with t: u1x2
+    cmeq t.2d, a.2d, b.2d
+    mvn t.16b, t.16b
+    neg r.2d, t.2d
+gt(u64x2, u64x2) -> u1x2 with t: u1x2
+    cmhi t.2d, a.2d, b.2d
+    neg r.2d, t.2d
+ge(u64x2, u64x2) -> u1x2 with t: u1x2
+    cmhs t.2d, a.2d, b.2d
+    neg r.2d, t.2d
+lt(u64x2, u64x2) -> u1x2 with t: u1x2
+    cmhi t.2d, b.2d, a.2d
+    neg r.2d, t.2d
+le(u64x2, u64x2) -> u1x2 with t: u1x2
+    cmhs t.2d, b.2d, a.2d
+    neg r.2d, t.2d
+
+; --- a cast between vectors of one width: the same bits ---
+mov {v}.16b, {v}.16b = cast(i32x4) -> u32x4
+mov {v}.16b, {v}.16b = cast(u32x4) -> i32x4
+mov {v}.16b, {v}.16b = cast(f32x4) -> u32x4
+mov {v}.16b, {v}.16b = cast(u32x4) -> f32x4
+mov {v}.16b, {v}.16b = cast(f32x4) -> i32x4
+mov {v}.16b, {v}.16b = cast(i32x4) -> f32x4
+mov {v}.16b, {v}.16b = cast(i64x2) -> u64x2
+mov {v}.16b, {v}.16b = cast(u64x2) -> i64x2
+mov {v}.16b, {v}.16b = cast(f64x2) -> u64x2
+mov {v}.16b, {v}.16b = cast(u64x2) -> f64x2
+mov {v}.16b, {v}.16b = cast(f64x2) -> i64x2
+mov {v}.16b, {v}.16b = cast(i64x2) -> f64x2
+
+; --- u1x4, u1x2: the lanes 0 or 1 ---
+and {v}.16b, {v}.16b, {v}.16b = and(u1x4, u1x4) -> u1x4
+orr {v}.16b, {v}.16b, {v}.16b = or(u1x4, u1x4) -> u1x4
+eor {v}.16b, {v}.16b, {v}.16b = xor(u1x4, u1x4) -> u1x4
+and {v}.16b, {v}.16b, {v}.16b = and(u1x2, u1x2) -> u1x2
+orr {v}.16b, {v}.16b, {v}.16b = or(u1x2, u1x2) -> u1x2
+eor {v}.16b, {v}.16b, {v}.16b = xor(u1x2, u1x2) -> u1x2
+
 ; fibres: a stack switch. Saves the callee-saved registers and sp
 ; where `save` points (13 words: x19..x28, x29, x30, sp), loads the
 ; other set from `to`, and the return goes where that set's x30 says.

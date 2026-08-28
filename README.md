@@ -107,7 +107,7 @@ Every file compiled gets `lib/*.ssa` appended. Number formats are libraries, nev
 
 A platform file (`targets/*.platform`, read by `src/platform.rs`) says what a target does natively, as rules over the library's operations:
 
-- `class s = f32` — f32 values live in `s` registers. The allocator (`src/regalloc.rs`) keeps each value in its class's file, so a chain of float operations compiles to the instructions alone.
+- `class s = f32` — f32 values live in `s` registers. The allocator (`src/regalloc.rs`) keeps each value in its class's file, so a chain of float operations compiles to the instructions alone. `class v = f32x4, i32x4, ...` does the same for vectors: `fadd {v}.4s, {v}.4s, {v}.4s = add(f32x4, f32x4) -> f32x4` takes the whole vector, and the parser keeps a vector whole only for the operations with a rule — the rest stays lane by lane, as on every other backend. `targets/arm64-noneon.platform` is the same target without the vector rules, the reference they are checked against.
 - `fadd {s}, {s}, {s} = add(f32, f32) -> f32` — one learned instruction for one library operation. Rules can only name templates the learner verified. Compiling such an instance, or a call to one, emits the rule instead of the SSA body; `--soft` turns that off, and the library remains the reference the hardware path is checked against.
 - `const uart = 0x10000000` — a board's addresses, for `platform uart`; `heap_base` and `ram_end`, the RAM above the image that is a program's to carve.
 - `psci(code: u64) -> ()` with `hvc 0` under it — a plain function the platform gives a body: how the board is ended, how a trap is installed, read and returned from (`vectors`, `cause`, `resume`, `resume_at`, `syscall`), how time is read and the timer's interrupt taken (`now`, `hz`, `timer_at`, `irq_on`, `irq_ack`, ...). A body line may spell a template's fixed operands (`msr vbar_el1, t`); a rule may declare typed temporaries (`with gic: ptr, v: u32`) for addresses and values it needs; `none` is a rule that does nothing.
@@ -119,7 +119,7 @@ A platform file (`targets/*.platform`, read by `src/platform.rs`) says what a ta
 
 None of them contains a single hand-written opcode.
 
-- `arm64` (`src/emit.rs`) — JIT: mmap/MAP_JIT on Apple Silicon, run in-process; also bare metal under qemu-system-aarch64.
+- `arm64` (`src/emit.rs`) — JIT: mmap/MAP_JIT on Apple Silicon, run in-process; also bare metal under qemu-system-aarch64. Vectors of a classed type (`f32x4`, `i32x4`, `f64x2`, `i64x2`, their unsigned and `u1` forms) are NEON registers, one instruction per operation the platform has a rule for.
 - `riscv64` (`src/emit_rv.rs`) — bare metal on qemu-system-riscv64, with the runtime harness (UART printing, exit) generated in the project's own SSA.
 - `wasm32` (`src/emit_wasm.rs`) — module emission, executed by node via `src/driver.js`; control flow becomes nested `block`/`loop`/`if` from the dominator tree (`src/structure.rs`), a dispatcher loop only for an irreducible graph.
 - `air` (`src/emit_air.rs`, `src/bitcode.rs`) — Apple's GPUs: the SSA as LLVM bitcode in Apple's AIR dialect, in a `.metallib` the Metal driver compiles for whatever GPU it finds — written byte by byte by our own bitstream writer, with none of Apple's tools in the path. Pointers are offsets into one memory buffer (as on wasm), `data` and `scratch` live there, a `__kernel(mem, area, id)` — or `(mem, area, id, lane, group)` — becomes the compute kernel; `lib/gpu.ssa`'s a `group tmp: array(i64, 64)` item is the threadgroup's memory here and writable data everywhere else, `group_sync()` its barrier, and `simd_sum x`, shuffles and votes are the simdgroup's (`lib/gpu.ssa`: Apple's intrinsics here, the one-thread forms elsewhere); a `;! __kernel n g [m] -> words` directive runs a kernel as a suite case — dispatched here, as fibres taking turns at every barrier on a machine (`lib/fibre.ssa`, a stack switch the platform provides), the groups dealt across m OS threads under the JIT and m cores on the qemu machines (`lib/core.ssa`: PSCI on arm64, a parking preamble and mailbox on riscv64); vectors reach it whole (`<4 x float>`, `air.sqrt.v4f32`); recursion, which Metal has not, is left out and reported. `tools/driver_metal.py` dispatches it (pyobjc).
@@ -134,7 +134,7 @@ Shared by the register machines and wasm:
 
 ## Verification
 
-- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 846 cases with expectations embedded as `;! gcd 48 36 -> 12` directives (or `-> check`, for a case that must end in a failed check), run identically against every backend — including arm64 under qemu-system-aarch64 as an independent second referee for the same bytes the M-series CPU runs, and this Mac's GPU through Metal — and under every policy and variant (wasm, with one stack, skips the six kernel cases and says so). `probe testfloat air` runs the 19.4M TestFloat vectors on the GPU too, a thread per vector: the library is exact there at every width; the f32 instructions miss only where the GPU flushes a denormal, which the report counts apart.
+- **One regression suite** (`suite/*.ssa`, runner in `src/suite.rs`): 863 cases with expectations embedded as `;! gcd 48 36 -> 12` directives (or `-> check`, for a case that must end in a failed check), run identically against every backend — including arm64 under qemu-system-aarch64 as an independent second referee for the same bytes the M-series CPU runs, and this Mac's GPU through Metal — and under every policy and variant (wasm, with one stack, skips the six kernel cases and says so). `probe testfloat air` runs the 19.4M TestFloat vectors on the GPU too, a thread per vector: the library is exact there at every width; the f32 instructions miss only where the GPU flushes a denormal, which the report counts apart.
 - **Encoding scorecards** (`src/scorecard.rs`, `targets/*.scorecard.md`): every learned template checked against the official inventory its learner never saw — Arm's Machine Readable Architecture XML, riscv-opcodes, wabt's opcode table (`tools/get-isa-tables.sh`): the encoding the fixed bits decode to must exist and the learned fields must be its operand fields. 154/154, 93/93, 125/125 — and the cards list what the inventory has that is not learned yet.
 - **An IEEE-754 oracle** (`src/testfloat.rs`): Berkeley TestFloat's vectors — 19 million cases over f16/f32/f64, every operation, every rounding mode — run through the library instances and, where the platform has the instruction, the hardware, compared bit for bit.
 - **A fuzzer** (`src/fuzz.rs`): random well-formed programs — every integer width, packs, floats through the library and the platform, value-yielding `if`s, bounded loops, calls — with their results at native `-O0` and the platform off as the reference; every optimization level, the platform, wasm, and (with `--slow`) both qemu machines must agree. A disagreement is kept as a suite file that reproduces it. Its first run found wasm trapping on `MIN div -1`, which the IR says wraps.
@@ -164,6 +164,7 @@ cargo run -- test              # native arm64 JIT
 cargo run -- test wasm         # node
 cargo run -- test riscv        # qemu-system-riscv64
 cargo run -- test arm-qemu     # qemu-system-aarch64
+cargo run -- test --platform=arm64-noneon   # the same machine, every vector operation lane by lane
 cargo run -- test air          # this Mac's GPU, through Metal
 
 # a program for the GPU: a .metallib with none of Apple's tools
@@ -237,7 +238,7 @@ Toolchain expectations (macOS/arm64 host): `llvm-mc` (brew llvm), `wabt` (wat2wa
 
 What is here:
 
-- **Types.** Integers to 256 bits, packs, structs, vectors (`f32x4`: per-lane by definition, whole on the GPU), typed pointers and shaped arrays, parametric types and generic functions, function values.
+- **Types.** Integers to 256 bits, packs, structs, vectors (`f32x4`: per-lane by definition; whole on the GPU, and NEON instructions on arm64 checked against the lane form), typed pointers and shaped arrays, parametric types and generic functions, function values.
 - **Numbers as libraries.** Floats, fixed point, unit fractions, rationals, time and decimals, with hardware substituted where a platform has it.
 - **Memory as a ladder of lifetimes**, not a heap for objects: `scratch`, arenas, pools, a buddy heap over the rest of RAM as the root; `check` is the one assertion, a breakpoint trap that names its site.
 - **Four backends and their variants**, the fourth Apple's GPU through a `.metallib` we write ourselves.
@@ -250,6 +251,7 @@ Deliberately not here yet (`future-work.md` has the queue, `handover.md` the rea
 - A kernel's threads as real worker threads on wasm.
 - Tasks dealt across cores in the OS programs.
 - Textures as handles with platform operations; WebGPU as a second GPU path.
+- Vectors across a call (a parameter, a result, an argument — two words each); `u1xN` in memory; 64-bit vectors; RVV and wasm SIMD through the same seam.
 - Capacity analysis for arenas and stacks.
 - External (libc) calls from JIT'd code.
 - Differential testing against clang, to close the semantic loop the way the prober closed the encoding loop.

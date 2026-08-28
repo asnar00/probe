@@ -1113,9 +1113,47 @@ pub struct Policy {
     /// sends `mul`, `div` and `rem` to the library's generics instead
     pub native_mul: bool,
     pub native_div: bool,
-    /// the platform takes vectors whole (AIR): a vector operation stays
-    /// one instruction on vector-typed values instead of one per lane
-    pub vectors: bool,
+    /// which vectors the platform takes whole, and which operations on
+    /// them stay one instruction on vector-typed values instead of one
+    /// per lane: all of them (AIR), the ones its classes and rules name
+    /// (NEON), or none
+    pub vectors: Vectors,
+}
+
+/// what a platform keeps whole: every vector, or the vector types it
+/// has a register class for and the operations it has a rule for,
+/// each as a signature the parser spells the same way (`add(f32x4,
+/// f32x4) -> f32x4`, `gt(i32x4, i32x4) -> u1x4`)
+#[derive(Clone, Copy, Debug)]
+pub enum Vectors {
+    None,
+    All,
+    Some(&'static VectorWhole),
+}
+
+#[derive(Debug)]
+pub struct VectorWhole {
+    pub types: std::collections::HashSet<String>,
+    pub ops: std::collections::HashSet<String>,
+}
+
+impl Vectors {
+    /// does a vector of this type name stay a value?
+    pub fn keeps(&self, tyname: &str) -> bool {
+        match self {
+            Vectors::None => false,
+            Vectors::All => true,
+            Vectors::Some(w) => w.types.contains(tyname),
+        }
+    }
+    /// is this operation one instruction on whole vectors?
+    pub fn whole(&self, sig: &str) -> bool {
+        match self {
+            Vectors::None => false,
+            Vectors::All => true,
+            Vectors::Some(w) => w.ops.contains(sig),
+        }
+    }
 }
 
 pub const ROUNDS: [&str; 5] = ["even", "zero", "down", "up", "away"];
@@ -1124,8 +1162,8 @@ impl Policy {
     pub fn new(int: Type) -> Result<Policy, String> {
         match int {
             // the float of the same class as the integer: f32 with i32, f64 with i64
-            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16, rational: (16, 16), scalar: "float", round: 0, native_mul: true, native_div: true, vectors: false }),
-            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32, rational: (32, 32), scalar: "float", round: 0, native_mul: true, native_div: true, vectors: false }),
+            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16, rational: (16, 16), scalar: "float", round: 0, native_mul: true, native_div: true, vectors: Vectors::None }),
+            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32, rational: (32, 32), scalar: "float", round: 0, native_mul: true, native_div: true, vectors: Vectors::None }),
             t => Err(format!("'int' cannot resolve to {}", t.name())),
         }
     }
@@ -3665,6 +3703,12 @@ impl Parser {
         let dty = scope.values[dst.0 as usize].ty;
         let (dlane, n) = self.vector_of(dty).ok_or_else(|| self.err(format!("'{}' on vectors gives a vector; {} is {}", op, scope.values[dst.0 as usize].name, self.tyname_of(dty))))?;
         let dname = scope.values[dst.0 as usize].name.clone();
+        // the operation as a platform rule spells it: `add(f32x4, f32x4)
+        // -> f32x4`, `gt(i32x4, i32x4) -> u1x4`; whole when the platform
+        // has it (or, on a GPU, takes every vector whole)
+        let generic = op.strip_prefix("cmp.").unwrap_or(op);
+        let sig = format!("{}({}) -> {}", generic, operands.iter().map(|&v| self.tyname_of(scope.values[v.0 as usize].ty)).collect::<Vec<_>>().join(", "), self.tyname_of(dty));
+        let whole = self.policy.vectors.whole(&sig);
         let mut rows: Vec<Vec<ValueId>> = Vec::new();
         let mut lane_types = Vec::new();
         for (j, &v) in operands.iter().enumerate() {
@@ -3674,14 +3718,14 @@ impl Parser {
                 return Err(self.err(format!("'{}': {} has {} lanes, {} has {}", op, scope.values[v.0 as usize].name, m, dname, n)));
             }
             lane_types.push(lane);
-            if self.policy.vectors {
+            if whole {
                 continue;
             }
             let lanes: Vec<ValueId> = (0..n).map(|k| scope.temp(lane, format!("{}_{}{}", dname, (b'a' + j as u8) as char, k))).collect();
             self.consts.push(Inst::Unpack { dsts: lanes.clone(), src: v });
             rows.push(lanes);
         }
-        if self.policy.vectors {
+        if whole {
             // the platform takes the vector whole: one instruction on the
             // vectors, and a lane operation's library call takes vectors
             // for its lanes (the emitter applies it per lane, or knows

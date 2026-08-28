@@ -36,6 +36,7 @@ Two rules that cost time when broken: **never run `probe test air` (or any suite
 - qemu wakes a `wfi` hart only for an interrupt enabled in `mie`; all riscv harts run the reset vector (the boot preamble parks harts other than 0); arm64 virt's secondary cores are off until PSCI `CPU_ON`.
 - A stack switch must be a real call (`called` on the rule), and a core's own stack must not share a top with its fibres' stacks.
 - Events within qemu's wake latency (~5–12 ms, more under load) merge; timing tests must derive expectations from what the machine printed, not demand exact counts.
+- With the MMU off every access is to device memory and must be aligned to its size: a 128-bit `ldr q` from an 8-aligned address faults, so vectors reach memory by `ld1`/`st1` (aligned to a lane, which is all the IR promises), and a task stack in a `data` array needs the data section 16-aligned *in memory* — measured from the image's origin, since a boot preamble precedes the code. Both hung a machine silently.
 
 ## Where things are
 
@@ -43,7 +44,7 @@ Two rules that cost time when broken: **never run `probe test air` (or any suite
 
 ## The queue
 
-`future-work.md` has it in full. The near items, in ash's order of interest: a kernel's threads as real worker threads on wasm (wasm has threads and atomics, not stack switching); tasks across cores in the OS programs; textures as handles with platform operations; WebGPU as the second GPU path (SPIR-V, `spirv-as` as the oracle, wgpu to run). Bigger and older: capacity analysis for arenas and stacks, type generics, closures, libc calls from JIT'd code.
+`future-work.md` has it in full. The near items, in ash's order of interest: a kernel's threads as real worker threads on wasm (wasm has threads and atomics, not stack switching); vectors across a call boundary, and the rest of NEON (64-bit vectors, `u1xN` in memory, horizontals); tasks across cores in the OS programs; textures as handles with platform operations; WebGPU as the second GPU path (SPIR-V, `spirv-as` as the oracle, wgpu to run). Bigger and older: capacity analysis for arenas and stacks, type generics, closures, libc calls from JIT'd code.
 
 ## What pulled at me (an agent's note, 2026-08-28)
 
