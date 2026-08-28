@@ -4,7 +4,7 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
-### The current thread — `HASH` · 2026-08-28
+### The current thread — `48ce834` · 2026-08-28
 
 `thread()` answers, from any function, where this thread's own things are: a pointer kept in a register the platform names — `ext thread` in the platform files: `mrs r, tpidr_el0` on arm64 (two templates learned for it), `addi r, x4, 0` on riscv64, the header every function's `tls` names on AIR — and, where the register is zero (at boot) or the platform has none (wasm), the default block `lib/thread.ssa` declares. The block holds the fibre scheduler, its frame, the fibres' frames and done flags, which `lib/fibre.ssa` now finds through `thread()` instead of global data, and at 16 KB this thread's copy of the program's `group` items: on a machine `addr` of a group item is now `thread()` plus its offset (`lower_group_addrs`, the machine backends' one lowering), so every group in flight has memory of its own, as the GPU gives it; the default block is laid out with the group section behind it. The suite's kernel runner installs a block sized for the program. Two things macOS taught: `tpidr_el0` is not free at EL0 — the kernel keeps a per-thread value there and `libsystem_malloc` reads it — so the JIT installs the program's block only around each call and restores the host's value before Rust runs again; the design (option B, a register) stands, with that one rule about whose register it is when. 837/837 natively, the group, fibre, reduce and simd suites on every path, the arm64 scorecard clean.
 
