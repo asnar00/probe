@@ -4,7 +4,7 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
-### The thread key — `HASH` · 2026-08-28
+### The thread key — `cb3c50c` · 2026-08-28
 
 The register was the wrong half of the right idea. `tpidr_el0` looked free at EL0, and a block installed in it worked — until the first preemption: XNU keeps per-CPU information there (`libsystem_malloc` reads it, which is how lldb caught the first crash) and rewrites it on every context switch, so under parallel tests a runner thread would resume with the kernel's value and `thread()` would point at 1. What macOS does leave a thread is `tpidrro_el0`: read-only, unique per thread, zero at boot. So the platform now gives a *key* (`thread_key`: `tpidrro_el0`; `tp` on riscv64; nothing on wasm), and `lib/thread.ssa` keeps a table from keys to blocks that `thread_set` fills — `thread_set_slot` for several threads at once, no two writing one slot — with the default block for a key it does not know; a GPU keeps `thread()` as its rule. The JIT no longer installs and restores anything. The suite's `;! __kernel n g m` deals a kernel's groups across m OS threads under the JIT, each thread a slot, a block and stacks of its own, all Rust-allocated; `suite/reduce.ssa` sums 512 ids in 8 groups across 4 threads, and the parallel test run that found the race passes.
 
