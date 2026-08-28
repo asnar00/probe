@@ -4,7 +4,7 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
-### Four cores — `HASH` · 2026-08-28
+### Four cores — `45540f0` · 2026-08-28
 
 A kernel's groups are dealt across cores on the qemu machines now, as across OS threads under the JIT: `;! __kernel 512 64 4` sums 512 ids in eight groups on four cores of either board, the same answer as everywhere else. `lib/core.ssa`'s `core_launch(core, rec, stack_top, main, arg)` fills a record — stack top, function, argument, the core's key for `thread()` — and the platform's `core_start` does the rest: on arm64 virt PSCI `CPU_ON` with `core_boot` as the entry, a function-body rule that sets sp and `tpidrro_el0` (writable at EL1, learned) from the record and jumps; on riscv64 virt, where every hart runs the reset vector, the boot preamble parks harts other than 0 in `wfi` until a record for them is in a mailbox and hart 0 rings the CLINT's `msip`, then sets sp and `tp` and jumps. Both boards boot with `-smp 4`; a finished core idles in `wfi`. What it took, each found by putting a letter on the UART: a rule that said `u64` where the library said `i64` and so never matched (the fallback ran, and nothing happened); qemu waking a `wfi` hart only for an interrupt enabled in `mie`; a core's own stack given the same top as its last fibre's, so the scheduler and the fibres wrote over each other; and, above all, qemu's output being lost when it is killed on a timeout, so the "output so far" of a hung run says nothing about where it hung — an hour was spent suspecting cases that had already passed. `PROBE_DUMP_DRIVER=path` now writes the whole program a machine runs, for exactly that.
 
