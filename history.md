@@ -4,6 +4,21 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### Blocks and history: a biquad as a stream node — `6b8697d` · 2026-08-29
+
+```
+fn biquad(x: f32$, out: f32$, b0: f32, b1: f32, b2: f32, a1: f32, a2: f32) -> f32$ {
+    f: f32[], ft: time[], x2: f32$ = frame(x)
+    hx: f32[] = behind x, 2
+    hy: f32[] = last out, 2
+    ...
+        push out, y
+```
+
+The audio case from `reference/streams.md`: 48 000 samples a second arrive a block at a time, and a filter reads behind itself on both its streams by a bounded amount. `push s, block` takes a view into a regular stream; `behind s, k` is the k items before this reader's position and `last s, k` the k last pushed — the history of an input and of a node's own output — fewer at a stream's start, where `tail(h, k)` gives 0 before the beginning. So the biquad keeps no state: `y[n-1]` and `y[n-2]` are the output ring's last two, and the decay of `y[n] = x[n] + y[n-1]/2` carries from an impulse block into a silent one through the ring — 1/32 at the fifth sample, 1/128 at the seventh. The ring is sized by hand (`buffer(f32, 16)`) with a comment saying what it needs — a frame of four and two behind, six — because that number is the point: what every reader reads behind and ahead of its position, plus its lag under the schedule, is what a ring must keep resident, so capacity can be derived, double and triple buffering are numbers rather than idioms (`x[t+dt] = f(x[t])` is 2, this filter 3), and a leak becomes a deadline miss, which the `stale` check already catches. The rest of the day's conversation is in `future-work.md`: a cost per function in SSA time and, through a platform's instruction costs, in hardware time, their ratio K a map of where a platform disagrees with the IR; and a virtual clock, so a stream program runs in the suite as fast as it can with simulated time. 958 on every path and both variants.
+
+---
+
 ### A literal after a view or a stream — `e02b3ed` · 2026-08-29
 
 ```
