@@ -14,6 +14,11 @@
 ;! rowmax -> 4, 12
 ;! outside2 -> check
 ;! ragged -> check
+;! dotp 1 2 3 4 -> 30
+;! matmul_small -> 212, 64
+;! broadcast -> 100, 15
+;! heap_buffers u8[0*8192] -> 30, 0
+;! normalize -> 0x3f400000, 0x3f000000
 
 data m: buffer(i32, 12)
 data m2: buffer(i32, 12)
@@ -178,4 +183,109 @@ fn ragged() -> i32 {
     b: i32[,] = slice q, 4, 3
     add b, a, a
     ret 0
+}
+
+data ma: buffer(i32, 6)
+data mb: buffer(i32, 6)
+data mc: buffer(i32, 4)
+data fr: buffer(f32, 4)
+data fc: buffer(f32, 4)
+data fs: buffer(f32, 2)
+
+; the dot of a vector with itself: 1 + 4 + 9 + 16
+fn dotp(a0: i32, a1: i32, a2: i32, a3: i32) -> i32 {
+    q: ptr = addr m2
+    all: i32[] = slice q
+    v: i32[] = view all, 0, 4
+    store a0, v, 0
+    store a1, v, 1
+    store a2, v, 2
+    store a3, v, 3
+    d: i32 = dot v, v
+    ret d
+}
+
+; [[1 2 3] [4 5 6]] times [[7 8] [9 10] [11 12]] is [[58 64] [139 154]]
+fn matmul_small() -> (i32, i32) {
+    pa: ptr = addr ma
+    pb: ptr = addr mb
+    pc: ptr = addr mc
+    a: i32[,] = slice pa, 2, 3
+    b: i32[,] = slice pb, 3, 2
+    c: i32[,] = slice pc, 2, 2
+    loop(k: i64 = 0) {
+        done: u1 = cmp.ge k, 6
+        if done {
+            break
+        }
+        k32: i32 = conv k
+        va: i32 = add k32, 1
+        vb: i32 = add k32, 7
+        i: i64 = div k, 3
+        j: i64 = rem k, 3
+        store va, a, i, j
+        i2: i64 = div k, 2
+        j2: i64 = rem k, 2
+        store vb, b, i2, j2
+        k2: i64 = add k, 1
+        continue k2
+    }
+    matmul c, a, b
+    x: i32 = load c, 0, 0
+    y: i32 = load c, 1, 1
+    z: i32 = load c, 0, 1
+    t: i32 = add x, y
+    ret t, z
+}
+
+; row 0 of the grid made [1 2 3 4] (a view: the grid changes too, to 70)
+; and added to every row: 70 + 30; the last element 11 + 4
+fn broadcast() -> (i32, i32) {
+    p: ptr = addr m
+    q: ptr = addr m2
+    a: i32[,] = slice p, 3, 4
+    ramp(a)
+    c: i32[,] = slice q, 3, 4
+    r: i32[] = at a, 0
+    add r, r, 1
+    add c, a, r
+    s: i32 = sum c
+    e: i32 = load c, 2, 3
+    ret s, e
+}
+
+; a buffer taken from a heap and given back: ten i32 of 3 sum to 30,
+; and nothing is out afterwards
+fn heap_buffers(mem: ptr) -> (i32, i64) {
+    h: ptr = scratch 56
+    heap_init(h, mem, 8192, 256)
+    b: ptr = buffer_take(h, 4, 10)
+    a: i32[] = slice b
+    fill a, 3
+    s: i32 = sum a
+    buffer_give(h, b)
+    out: i64 = load h, 32
+    ret s, out
+}
+
+; rows of [[1 3] [1 1]] divided by their sums, [4 2]: a per-row scalar
+; is a column broadcast, which is a row broadcast on the transposes
+fn normalize() -> (f32, f32) {
+    p: ptr = addr fr
+    q: ptr = addr fc
+    r: ptr = addr fs
+    a: f32[,] = slice p, 2, 2
+    c: f32[,] = slice q, 2, 2
+    s: f32[] = slice r
+    store 1.0: f32, a, 0, 0
+    store 3.0: f32, a, 0, 1
+    store 1.0: f32, a, 1, 0
+    store 1.0: f32, a, 1, 1
+    sum s, a
+    at: f32[,] = transpose a
+    ct: f32[,] = transpose c
+    div ct, at, s
+    x: f32 = load c, 0, 1
+    y: f32 = load c, 1, 0
+    ret x, y
 }

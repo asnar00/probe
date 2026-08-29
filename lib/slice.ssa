@@ -2036,3 +2036,229 @@ fn max(c: number[,], a: number[,,]) {
     }
     ret
 }
+
+; --- dot: the sum of products of two rank-1 views, a chunk of partial
+; products while both are contiguous, then one at a time ---
+fn dot(a: number[], b: number[]) -> number {
+    n: i64 = len a
+    n1: i64 = len b
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    pa: ptr(number) = ptr a
+    va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
+    pb: ptr(number) = ptr b
+    vb: ptr(chunk(number)) = cast pb
+    stb: i64 = stride b
+    ca: u1 = cmp.eq sta, 1
+    cb: u1 = cmp.eq stb, 1
+    cc1: u1 = and ca, cb
+    contig: u1 = cast cc1
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
+    zero: chunk(number) = splat 0
+    k: i64 = lanes chunk(number)
+    stop: i64, total: chunk(number) = loop(i: i64 = 0, ci: i64 = 0, acc: chunk(number) = zero) {
+        left: i64 = sub limit, i
+        m: i64 = fit number, left
+        partial: u1 = cmp.lt m, k
+        if partial {
+            break i, acc
+        }
+        x: chunk(number) = load va, ci
+        y: chunk(number) = load vb, ci
+        p: chunk(number) = mul x, y
+        acc2: chunk(number) = add acc, p
+        i2: i64 = add i, k
+        ci2: i64 = add ci, 1
+        continue i2, ci2, acc2
+    }
+    s0: number = sum total
+    s: number = loop(j: i64 = stop, t: number = s0) {
+        done: u1 = cmp.ge j, n
+        if done {
+            break t
+        }
+        ixa: i64 = mul j, sta
+        ixb: i64 = mul j, stb
+        xt: number = load pa, ixa
+        yt: number = load pb, ixb
+        pt: number = mul xt, yt
+        t2: number = add t, pt
+        j2: i64 = add j, 1
+        continue j2, t2
+    }
+    ret s
+}
+
+; --- matmul c, a, b: c[i, j] is the dot of row i of a and column j of b
+; (a row of b's transpose); shapes checked ---
+fn matmul(c: number[,], a: number[,], b: number[,]) {
+    n0: i64 = shape c, 0
+    n1: i64 = shape c, 1
+    m0: i64 = shape a, 0
+    m1: i64 = shape a, 1
+    k0: i64 = shape b, 0
+    k1: i64 = shape b, 1
+    ok0: u1 = cmp.eq n0, m0
+    check ok0
+    ok1: u1 = cmp.eq n1, k1
+    check ok1
+    ok2: u1 = cmp.eq m1, k0
+    check ok2
+    bt: number[,] = transpose b
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        ai: number[] = at a, i
+        ci: number[] = at c, i
+        loop(j: i64 = 0) {
+            done2: u1 = cmp.ge j, n1
+            if done2 {
+                break
+            }
+            bj: number[] = at bt, j
+            d: number = dot ai, bj
+            store d, ci, j
+            j2: i64 = add j, 1
+            continue j2
+        }
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+; --- a row broadcast: `add c, a, r` with r a rank-1 view, added to every
+; row (for a column, the transposes') ---
+fn add(c: number[,], a: number[,], r: number[]) {
+    n0: i64 = shape c, 0
+    m0: i64 = shape a, 0
+    ok: u1 = cmp.eq n0, m0
+    check ok
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        ci: number[] = at c, i
+        ai: number[] = at a, i
+        add ci, ai, r
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+fn sub(c: number[,], a: number[,], r: number[]) {
+    n0: i64 = shape c, 0
+    m0: i64 = shape a, 0
+    ok: u1 = cmp.eq n0, m0
+    check ok
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        ci: number[] = at c, i
+        ai: number[] = at a, i
+        sub ci, ai, r
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+fn mul(c: number[,], a: number[,], r: number[]) {
+    n0: i64 = shape c, 0
+    m0: i64 = shape a, 0
+    ok: u1 = cmp.eq n0, m0
+    check ok
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        ci: number[] = at c, i
+        ai: number[] = at a, i
+        mul ci, ai, r
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+fn div(c: number[,], a: number[,], r: number[]) {
+    n0: i64 = shape c, 0
+    m0: i64 = shape a, 0
+    ok: u1 = cmp.eq n0, m0
+    check ok
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        ci: number[] = at c, i
+        ai: number[] = at a, i
+        div ci, ai, r
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+fn min(c: number[,], a: number[,], r: number[]) {
+    n0: i64 = shape c, 0
+    m0: i64 = shape a, 0
+    ok: u1 = cmp.eq n0, m0
+    check ok
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        ci: number[] = at c, i
+        ai: number[] = at a, i
+        min ci, ai, r
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+fn max(c: number[,], a: number[,], r: number[]) {
+    n0: i64 = shape c, 0
+    m0: i64 = shape a, 0
+    ok: u1 = cmp.eq n0, m0
+    check ok
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        ci: number[] = at c, i
+        ai: number[] = at a, i
+        max ci, ai, r
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+; --- buffers from a heap (lib/heap.ssa): the header and the elements
+; in one region, given back by the header's own numbers ---
+fn buffer_take(h: ptr, elem: i64, cap: i64) -> ptr {
+    bytes: i64 = mul elem, cap
+    total: i64 = add bytes, 16
+    p: ptr = heap_take(h, total)
+    buffer_init(p, elem, cap)
+    ret p
+}
+fn buffer_give(h: ptr, p: ptr) {
+    elem: i64 = load p
+    cap: i64 = load p, 8
+    bytes: i64 = mul elem, cap
+    total: i64 = add bytes, 16
+    heap_give(h, p, total)
+    ret
+}
