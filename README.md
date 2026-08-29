@@ -89,6 +89,7 @@ Every file compiled gets `lib/*.ssa` appended. Number formats are libraries, nev
 - `lib/time.ssa` — a `rational(64, 64)` of seconds with units: a sample period at 44100 Hz times 44100 is exactly one second.
 - `lib/decimal.ssa` — `decimal(N, S)`, an `i(N)` significand at scale 10^S: cents that add exactly.
 - `lib/wide.ssa` — division (and, on a core without a multiplier, multiplication) for wide integers.
+- `lib/int.ssa` — `min`, `max`, `abs`, `neg` over integers: instructions where a platform has them (`cmp`/`csel` on arm64; `smin`/`umin`, `vmin`/`vminu`, `abs`, `neg` over vectors), these bodies elsewhere.
 - `lib/arena.ssa` — bump allocation over memory the program declared: `arena_alloc`, `arena_mark`/`arena_release`, `arena_reset`; the frame allocator of game engines, and the bottom rung of a lifetime ladder (call, frame, object, machine) that never needs a heap. Running out is a failed `check`.
 - `lib/pool.ssa` — fixed-size slots taken and given back in any order: `pool_take`, `pool_give`, a free list through the free slots and a flag per slot, so a double give is a failed `check`. The object rung.
 - `lib/heap.ssa` — the root the rungs are carved from: a buddy allocator over one declared block, `heap_take`/`heap_give` in powers of two aligned to their size, a state per node of the split tree so a wrong give is a failed `check`, and `heap_seal` so a kernel can forbid allocation inside interrupts. For regions, not objects.

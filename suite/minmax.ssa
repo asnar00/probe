@@ -1,0 +1,87 @@
+; integer min, max, abs and neg: lib/int.ssa's, or an instruction where
+; a platform has one (cmp/csel on arm64; smin/umin, vmin/vminu, abs and
+; neg over vectors on NEON and RVV), checked against the library
+
+;! smin32 3 -7 -> -7, 3
+;! umin32 3 0xfffffff9 -> 3, 0xfffffff9
+;! smin64 -5000000000 4 -> -5000000000, 4
+;! umin64 5 0xfffffffffffffffb -> 5, 0xfffffffffffffffb
+;! smin8 -100 20 -> -100, 20
+;! absneg 7 -> 7, -7
+;! absneg -7 -> 7, 7
+;! absneg -128 -> -128, 128
+;! vmin4 1 -9 3 7 2 -> -9, 2
+;! vmaxu8h 1 0xfff0 3 4 2 -> 0xfff0, 4
+;! vminu8b 5 200 100 -> 5, 100
+;! vabsneg 3 -4 5 -6 -> 4, 6
+
+fn smin32(a: i32, b: i32) -> (i32, i32) {
+    lo: i32 = min a, b
+    hi: i32 = max a, b
+    ret lo, hi
+}
+fn umin32(a: u32, b: u32) -> (u32, u32) {
+    lo: u32 = min a, b
+    hi: u32 = max a, b
+    ret lo, hi
+}
+fn smin64(a: i64, b: i64) -> (i64, i64) {
+    lo: i64 = min a, b
+    hi: i64 = max a, b
+    ret lo, hi
+}
+fn umin64(a: u64, b: u64) -> (u64, u64) {
+    lo: u64 = min a, b
+    hi: u64 = max a, b
+    ret lo, hi
+}
+fn smin8(a: i8, b: i8) -> (i8, i8) {
+    lo: i8 = min a, b
+    hi: i8 = max a, b
+    ret lo, hi
+}
+; abs of the most negative i8 wraps to itself; its neg widened does not
+fn absneg(a: i8) -> (i8, i16) {
+    x: i8 = abs a
+    w: i16 = conv a
+    y: i16 = neg w
+    ret x, y
+}
+fn vmin4(a0: i32, a1: i32, a2: i32, a3: i32, k: i32) -> (i32, i32) {
+    a: i32x4 = pack a0, a1, a2, a3
+    ks: i32x4 = splat k
+    lo: i32x4 = min a, ks
+    hi: i32x4 = max a, ks
+    r0: i32 = get lo, 1
+    r1: i32 = get hi, 1
+    ret r0, r1
+}
+fn vmaxu8h(a0: u16, a1: u16, a2: u16, a3: u16, k: u16) -> (u16, u16) {
+    a: u16x8 = pack a0, a1, a2, a3, a0, a1, a2, a3
+    ks: u16x8 = splat k
+    hi: u16x8 = max a, ks
+    lo: u16x8 = min a, ks
+    r0: u16 = get hi, 5
+    r1: u16 = get hi, 3
+    z: u16 = get lo, 1
+    s: u16 = sub r1, z
+    t: u16 = add s, z
+    ret r0, t
+}
+fn vminu8b(x: u8, y: u8, z: u8) -> (u8, u8) {
+    a: u8x8 = pack x, y, z, x, y, z, x, y
+    ks: u8x8 = splat z
+    lo: u8x8 = min a, ks
+    hi: u8x8 = max a, ks
+    r0: u8 = get lo, 0
+    r1: u8 = get hi, 2
+    ret r0, r1
+}
+fn vabsneg(a0: i16, a1: i16, a2: i16, a3: i16) -> (i16, i16) {
+    a: i16x4 = pack a0, a1, a2, a3
+    b: i16x4 = abs a
+    c: i16x4 = neg a
+    r0: i16 = get b, 1
+    r1: i16 = get c, 3
+    ret r0, r1
+}

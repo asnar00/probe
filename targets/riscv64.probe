@@ -182,6 +182,11 @@ inst vzext.vf2 {v}, {v}
 inst vfwcvt.f.f.v {v}, {v}
 inst vfncvt.f.f.w {v}, {v}
 inst vnsrl.wi {v}, {v}, 0
+inst vmin.vv {v}, {v}, {v}
+inst vmax.vv {v}, {v}, {v}
+inst vminu.vv {v}, {v}, {v}
+inst vmaxu.vv {v}, {v}, {v}
+inst vrsub.vx {v}, {v}, x0
 inst vmfeq.vv v0, {v}, {v}
 inst vmfne.vv v0, {v}, {v}
 inst vmflt.vv v0, {v}, {v}

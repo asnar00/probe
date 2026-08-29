@@ -1,0 +1,57 @@
+; lib/int.ssa — the integer operations that are not instructions
+; everywhere: min, max, abs and neg over i(N) and u(N). A platform with
+; an instruction for one substitutes it (arm64: cmp and csel; NEON and
+; RVV: smin/umin, vmin/vminu, abs, neg over vectors); elsewhere these
+; bodies are what runs, and what the instructions are checked against.
+
+fn min(N)(a: i(N), b: i(N)) -> i(N) {
+    lt: u1 = cmp.lt a, b
+    r: i(N) = if lt {
+        yield a
+    } else {
+        yield b
+    }
+    ret r
+}
+fn max(N)(a: i(N), b: i(N)) -> i(N) {
+    gt: u1 = cmp.gt a, b
+    r: i(N) = if gt {
+        yield a
+    } else {
+        yield b
+    }
+    ret r
+}
+fn min(N)(a: u(N), b: u(N)) -> u(N) {
+    lt: u1 = cmp.lt a, b
+    r: u(N) = if lt {
+        yield a
+    } else {
+        yield b
+    }
+    ret r
+}
+fn max(N)(a: u(N), b: u(N)) -> u(N) {
+    gt: u1 = cmp.gt a, b
+    r: u(N) = if gt {
+        yield a
+    } else {
+        yield b
+    }
+    ret r
+}
+; -a; the most negative value stays itself, as the machines have it
+fn neg(N)(a: i(N)) -> i(N) {
+    r: i(N) = sub 0, a
+    ret r
+}
+fn abs(N)(a: i(N)) -> i(N) {
+    neg: u1 = cmp.lt a, 0
+    r: i(N) = if neg {
+        m: i(N) = sub 0, a
+        yield m
+    } else {
+        yield a
+    }
+    ret r
+}

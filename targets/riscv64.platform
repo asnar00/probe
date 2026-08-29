@@ -1354,6 +1354,141 @@ conv(f64x2) -> f32x2 with t: f64x2
     vmv1r.v t, a
     vfncvt.f.f.w r, t
 
+; --- integer min, max, abs, neg (lib/int.ssa) over vectors ---
+min(i32x4, i32x4) -> i32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmin.vv r, a, b
+max(i32x4, i32x4) -> i32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmax.vv r, a, b
+neg(i32x4) -> i32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vrsub.vx r, a, x0
+abs(i32x4) -> i32x4 with t: i32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vrsub.vx t, a, x0
+    vmax.vv r, a, t
+min(u32x4, u32x4) -> u32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vminu.vv r, a, b
+max(u32x4, u32x4) -> u32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmaxu.vv r, a, b
+min(i64x2, i64x2) -> i64x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmin.vv r, a, b
+max(i64x2, i64x2) -> i64x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmax.vv r, a, b
+neg(i64x2) -> i64x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vrsub.vx r, a, x0
+abs(i64x2) -> i64x2 with t: i64x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vrsub.vx t, a, x0
+    vmax.vv r, a, t
+min(u64x2, u64x2) -> u64x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vminu.vv r, a, b
+max(u64x2, u64x2) -> u64x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmaxu.vv r, a, b
+min(i32x2, i32x2) -> i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmin.vv r, a, b
+max(i32x2, i32x2) -> i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmax.vv r, a, b
+neg(i32x2) -> i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vrsub.vx r, a, x0
+abs(i32x2) -> i32x2 with t: i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vrsub.vx t, a, x0
+    vmax.vv r, a, t
+min(u32x2, u32x2) -> u32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vminu.vv r, a, b
+max(u32x2, u32x2) -> u32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmaxu.vv r, a, b
+min(i16x4, i16x4) -> i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmin.vv r, a, b
+max(i16x4, i16x4) -> i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmax.vv r, a, b
+neg(i16x4) -> i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vrsub.vx r, a, x0
+abs(i16x4) -> i16x4 with t: i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vrsub.vx t, a, x0
+    vmax.vv r, a, t
+min(u16x4, u16x4) -> u16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vminu.vv r, a, b
+max(u16x4, u16x4) -> u16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmaxu.vv r, a, b
+min(i8x8, i8x8) -> i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmin.vv r, a, b
+max(i8x8, i8x8) -> i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmax.vv r, a, b
+neg(i8x8) -> i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vrsub.vx r, a, x0
+abs(i8x8) -> i8x8 with t: i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vrsub.vx t, a, x0
+    vmax.vv r, a, t
+min(u8x8, u8x8) -> u8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vminu.vv r, a, b
+max(u8x8, u8x8) -> u8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmaxu.vv r, a, b
+min(i16x8, i16x8) -> i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmin.vv r, a, b
+max(i16x8, i16x8) -> i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmax.vv r, a, b
+neg(i16x8) -> i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vrsub.vx r, a, x0
+abs(i16x8) -> i16x8 with t: i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vrsub.vx t, a, x0
+    vmax.vv r, a, t
+min(u16x8, u16x8) -> u16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vminu.vv r, a, b
+max(u16x8, u16x8) -> u16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmaxu.vv r, a, b
+min(i8x16, i8x16) -> i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmin.vv r, a, b
+max(i8x16, i8x16) -> i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmax.vv r, a, b
+neg(i8x16) -> i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vrsub.vx r, a, x0
+abs(i8x16) -> i8x16 with t: i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vrsub.vx t, a, x0
+    vmax.vv r, a, t
+min(u8x16, u8x16) -> u8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vminu.vv r, a, b
+max(u8x16, u8x16) -> u8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmaxu.vv r, a, b
+
 ; --- a cast between vectors of one shape: the same bits ---
 vmv1r.v {v}, {v} = cast(i16x4) -> u16x4
 vmv1r.v {v}, {v} = cast(u16x4) -> i16x4

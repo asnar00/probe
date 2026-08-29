@@ -382,6 +382,37 @@ inst and {v}.16b, {v}.16b, {v}.16b
 inst orr {v}.16b, {v}.16b, {v}.16b
 inst eor {v}.16b, {v}.16b, {v}.16b
 inst mvn {v}.16b, {v}.16b
+inst smin {v}.8b, {v}.8b, {v}.8b
+inst smax {v}.8b, {v}.8b, {v}.8b
+inst umin {v}.8b, {v}.8b, {v}.8b
+inst umax {v}.8b, {v}.8b, {v}.8b
+inst smin {v}.16b, {v}.16b, {v}.16b
+inst smax {v}.16b, {v}.16b, {v}.16b
+inst umin {v}.16b, {v}.16b, {v}.16b
+inst umax {v}.16b, {v}.16b, {v}.16b
+inst smin {v}.4h, {v}.4h, {v}.4h
+inst smax {v}.4h, {v}.4h, {v}.4h
+inst umin {v}.4h, {v}.4h, {v}.4h
+inst umax {v}.4h, {v}.4h, {v}.4h
+inst smin {v}.8h, {v}.8h, {v}.8h
+inst smax {v}.8h, {v}.8h, {v}.8h
+inst umin {v}.8h, {v}.8h, {v}.8h
+inst umax {v}.8h, {v}.8h, {v}.8h
+inst smin {v}.2s, {v}.2s, {v}.2s
+inst smax {v}.2s, {v}.2s, {v}.2s
+inst umin {v}.2s, {v}.2s, {v}.2s
+inst umax {v}.2s, {v}.2s, {v}.2s
+inst smin {v}.4s, {v}.4s, {v}.4s
+inst smax {v}.4s, {v}.4s, {v}.4s
+inst umin {v}.4s, {v}.4s, {v}.4s
+inst umax {v}.4s, {v}.4s, {v}.4s
+inst abs {v}.8b, {v}.8b
+inst abs {v}.16b, {v}.16b
+inst abs {v}.4h, {v}.4h
+inst abs {v}.8h, {v}.8h
+inst abs {v}.2s, {v}.2s
+inst abs {v}.4s, {v}.4s
+inst abs {v}.2d, {v}.2d
 inst mov {v}.16b, {v}.16b
 inst sshll {v}.2d, {v}.2s, #0
 inst ushll {v}.2d, {v}.2s, #0

@@ -142,6 +142,33 @@ reschedule() -> () with gic: ptr, v: u32
 idle() -> ()
     wfi
 
+; integer min and max (lib/int.ssa): a compare and a conditional select
+ext select
+min(i32, i32) -> i32
+    cmp a, b
+    csel r, a, b, lt
+max(i32, i32) -> i32
+    cmp a, b
+    csel r, a, b, gt
+min(u32, u32) -> u32
+    cmp a, b
+    csel r, a, b, lo
+max(u32, u32) -> u32
+    cmp a, b
+    csel r, a, b, hi
+min(i64, i64) -> i64
+    cmp a, b
+    csel r, a, b, lt
+max(i64, i64) -> i64
+    cmp a, b
+    csel r, a, b, gt
+min(u64, u64) -> u64
+    cmp a, b
+    csel r, a, b, lo
+max(u64, u64) -> u64
+    cmp a, b
+    csel r, a, b, hi
+
 ext FP
 class s = f32
 class d = f64
@@ -849,6 +876,46 @@ ushll {v}.8h, {v}.8b, #0 = conv(u8x8) -> u16x8
 xtn {v}.8b, {v}.8h = conv(u16x8) -> u8x8
 fcvtl {v}.2d, {v}.2s = conv(f32x2) -> f64x2
 fcvtn {v}.2s, {v}.2d = conv(f64x2) -> f32x2
+
+; --- integer min, max, abs, neg (lib/int.ssa) over vectors ---
+smin {v}.4s, {v}.4s, {v}.4s = min(i32x4, i32x4) -> i32x4
+smax {v}.4s, {v}.4s, {v}.4s = max(i32x4, i32x4) -> i32x4
+abs {v}.4s, {v}.4s = abs(i32x4) -> i32x4
+neg {v}.4s, {v}.4s = neg(i32x4) -> i32x4
+umin {v}.4s, {v}.4s, {v}.4s = min(u32x4, u32x4) -> u32x4
+umax {v}.4s, {v}.4s, {v}.4s = max(u32x4, u32x4) -> u32x4
+abs {v}.2d, {v}.2d = abs(i64x2) -> i64x2
+neg {v}.2d, {v}.2d = neg(i64x2) -> i64x2
+smin {v}.2s, {v}.2s, {v}.2s = min(i32x2, i32x2) -> i32x2
+smax {v}.2s, {v}.2s, {v}.2s = max(i32x2, i32x2) -> i32x2
+abs {v}.2s, {v}.2s = abs(i32x2) -> i32x2
+neg {v}.2s, {v}.2s = neg(i32x2) -> i32x2
+umin {v}.2s, {v}.2s, {v}.2s = min(u32x2, u32x2) -> u32x2
+umax {v}.2s, {v}.2s, {v}.2s = max(u32x2, u32x2) -> u32x2
+smin {v}.4h, {v}.4h, {v}.4h = min(i16x4, i16x4) -> i16x4
+smax {v}.4h, {v}.4h, {v}.4h = max(i16x4, i16x4) -> i16x4
+abs {v}.4h, {v}.4h = abs(i16x4) -> i16x4
+neg {v}.4h, {v}.4h = neg(i16x4) -> i16x4
+umin {v}.4h, {v}.4h, {v}.4h = min(u16x4, u16x4) -> u16x4
+umax {v}.4h, {v}.4h, {v}.4h = max(u16x4, u16x4) -> u16x4
+smin {v}.8b, {v}.8b, {v}.8b = min(i8x8, i8x8) -> i8x8
+smax {v}.8b, {v}.8b, {v}.8b = max(i8x8, i8x8) -> i8x8
+abs {v}.8b, {v}.8b = abs(i8x8) -> i8x8
+neg {v}.8b, {v}.8b = neg(i8x8) -> i8x8
+umin {v}.8b, {v}.8b, {v}.8b = min(u8x8, u8x8) -> u8x8
+umax {v}.8b, {v}.8b, {v}.8b = max(u8x8, u8x8) -> u8x8
+smin {v}.8h, {v}.8h, {v}.8h = min(i16x8, i16x8) -> i16x8
+smax {v}.8h, {v}.8h, {v}.8h = max(i16x8, i16x8) -> i16x8
+abs {v}.8h, {v}.8h = abs(i16x8) -> i16x8
+neg {v}.8h, {v}.8h = neg(i16x8) -> i16x8
+umin {v}.8h, {v}.8h, {v}.8h = min(u16x8, u16x8) -> u16x8
+umax {v}.8h, {v}.8h, {v}.8h = max(u16x8, u16x8) -> u16x8
+smin {v}.16b, {v}.16b, {v}.16b = min(i8x16, i8x16) -> i8x16
+smax {v}.16b, {v}.16b, {v}.16b = max(i8x16, i8x16) -> i8x16
+abs {v}.16b, {v}.16b = abs(i8x16) -> i8x16
+neg {v}.16b, {v}.16b = neg(i8x16) -> i8x16
+umin {v}.16b, {v}.16b, {v}.16b = min(u8x16, u8x16) -> u8x16
+umax {v}.16b, {v}.16b, {v}.16b = max(u8x16, u8x16) -> u8x16
 
 ; --- a cast between vectors of one shape: the same bits ---
 mov {v}.16b, {v}.16b = cast(i16x4) -> u16x4
