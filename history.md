@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### Ticks: time at the boundary — `1576d32` · 2026-08-29
+
+```
+ring_init(r, a, b, 1000000)                   ; an irregular ring on a microsecond clock: a tick per item
+ring_regular(r, a, 48000, 1, 0)               ; a regular ring: item k at tick t0 + k * step, no ticks stored
+push s, 1000, 9                               ; the producer's side: (tick, v)
+f: u8[], k0: i64, s2: u8$ = frame(s)          ; the values, the index of the first, the reader moved on
+t: time = time_at(s, k0)                      ; the boundary: a tick over the rate, exact, once
+```
+
+`probe cost`'s first number was 300 000 SSA operations for one push into a regular stream — a 128-bit rational multiply-and-add per item, filling a times buffer a regular stream never needs. "Compile out the time stuff except where necessary... or store times as integer tick-counts and only convert to seconds when necessary" — both at once, and by the library's structure rather than an analysis: a ring has a clock, a rate in hz, and its items sit at integer ticks of it, which is what the machine's counter and a device's sample index are anyway; an irregular ring keeps a tick per item and a regular one keeps none, item k being at `t0 + k·step`. `time` — exact seconds — is the boundary type: `time_at` divides a tick by the rate, `sample` and `window` multiply a time by it, once per call and never per item, and two rings on different clocks will meet by one such conversion where they meet. The per-item paths do not mention `time` at all; the biquad went from 20.9 million SSA operations to 34 thousand, a push from 326 000 to 512, most of that the slide when the ring fills. The view lost its `dt` and `t0` and is four words. Underneath, the parser learned to type a stream's literal operands properly: by the operation's arity, counted ahead to the end of the line, a parameter that is concrete gives its type (`push s, 1000, v`: an `i64` tick), one that is the container's own abstract gives the element (`push reg, 10.0`: an `f32`), any other abstract the literal's kind — in the operation form and the statement form both, which had each typed literals their own way. The OS programs push the counter's ticks straight from `now()`. 958 on every path and both variants.
+
+---
+
 ### `probe cost`: SSA time, K, hardware time — `a88cd26` · 2026-08-29
 
 ```
