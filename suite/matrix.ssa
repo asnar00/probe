@@ -302,12 +302,8 @@ fn bilinear() -> (i32, i32) {
     p: ptr = addr m
     a: i32[,] = slice p, 3, 4
     ramp(a)
-    u: f32 = const 1.5
-    v: f32 = const 0.5
-    x: i32 = sample a, u, v
-    u2: f32 = const 3.0
-    v2: f32 = const 2.0
-    y: i32 = sample a, u2, v2
+    x: i32 = sample a, 1.5, 0.5
+    y: i32 = sample a, 3.0, 2.0
     ret x, y
 }
 ; off the left and below the bottom is the corner 8; off the right at
@@ -316,12 +312,8 @@ fn bilinear_edges() -> (i32, i32) {
     p: ptr = addr m
     a: i32[,] = slice p, 3, 4
     ramp(a)
-    u: f32 = const -1.0
-    v: f32 = const 5.0
-    x: i32 = sample a, u, v
-    u2: f32 = const 3.7
-    v2: f32 = const 0.2
-    y: i32 = sample a, u2, v2
+    x: i32 = sample a, -1.0, 5.0
+    y: i32 = sample a, 3.7, 0.2
     ret x, y
 }
 ; a 2x2 of floats 0, 10, 20, 30: the centre is 15.0

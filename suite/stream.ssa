@@ -73,9 +73,8 @@ fn frames_again() -> (i64, i64) {
 fn peeked() -> (u8, i64) {
     s: u8$ = fresh()
     five(s)
-    two: i64 = const 2
-    x: u8 = peek s, two
-    s2: u8$ = advance(s, two)
+    x: u8 = peek s, 2
+    s2: u8$ = advance(s, 2)
     f: u8[], ft: time[], s3: u8$ = frame(s2)
     n: i64 = len f
     ret x, n

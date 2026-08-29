@@ -3707,6 +3707,51 @@ impl Parser {
         })
     }
 
+    /// the type a literal takes as the k-th operand of a view's or a
+    /// stream's operation: the parameter's, when every generic of the
+    /// name gives that position a concrete type; else the literal's own
+    /// kind's — i64 for an integer, f64 for a decimal — which an abstract
+    /// parameter then binds
+    fn param_want(&mut self, op: &str, k: usize) -> Result<Option<Type>, ParseError> {
+        let ptes: Vec<TypeExpr> = self
+            .generics
+            .iter()
+            .filter(|g| g.name == op && g.param_types.len() > k)
+            .map(|g| g.param_types[k].clone())
+            .collect();
+        let mut found: Option<Type> = None;
+        for te in &ptes {
+            let mut names = Vec::new();
+            self.abstract_names(te, &mut names);
+            if !names.is_empty() {
+                found = None;
+                break;
+            }
+            let Ok(t) = self.instantiate(te, &[], 0) else { found = None; break };
+            match found {
+                Some(f) if f != t => {
+                    found = None;
+                    break;
+                }
+                _ => found = Some(t),
+            }
+        }
+        if found.is_some() {
+            return Ok(found);
+        }
+        let at = self.pos;
+        let kind = match self.parse_lit()? {
+            Some(Lit::Int(_)) => Some(Type::I64),
+            Some(_) => {
+                let f64_te = TypeExpr::Named { name: "f64".to_string(), args: Vec::new() };
+                self.instantiate(&f64_te, &[], 0).ok()
+            }
+            None => None,
+        };
+        self.pos = at;
+        Ok(kind)
+    }
+
     /// The hidden instructions for a literal of type `ty`: a `const` when
     /// the type reads literals itself (integers, pointers, floats, plain
     /// packs by bit pattern); for a library number type (fixed, rational,
@@ -4986,8 +5031,15 @@ impl Parser {
                 let first = self.parse_operand(scope, None)?;
                 let fty = scope.values[first.0 as usize].ty;
                 let mut args = vec![first];
+                // ... unless the first is a view or a stream, whose
+                // operations take indices and coordinates: then a
+                // literal takes the parameter's type (`peek s, 2`), or
+                // its own kind's, i64 or f64, where the parameter is
+                // abstract (`sample img, 1.5, 0.5` over `scalar`)
+                let by_param = self.slice_of(fty).is_some() || self.stream_of(fty).is_some();
                 while self.eat(&Tok::Comma) {
-                    args.push(self.parse_operand(scope, Some(fty))?);
+                    let want = if by_param { self.param_want(op, args.len())? } else { Some(fty) };
+                    args.push(self.parse_operand(scope, want)?);
                 }
                 if self.vector_of(fty).is_some() {
                     return self.lanewise(scope, dst, op, &args);
