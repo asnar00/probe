@@ -41,3 +41,15 @@ Little that is new in kind. A stream type (`T~` irregular, `T~R` regular), which
 5. **Dropping.** When a consumer lags a regular stream (case 4), the choice — drop, lag, or fail a check — is the program's. Which is the default, and is it per stream?
 
 A first step that answers most of these by construction: cases 1 and 2 rewritten as streams (`os/echo.ssa` and `os/clock.ssa` reading `keys` and `tick`), then case 3 on a machine with a synthetic source, with the rings, frames and windows as `lib/stream.ssa` over buffers and views, and the OS calling the program once per frame.
+
+## Time as an axis (2026-08-29, later)
+
+"A good way of thinking about streams is a bit like arrays which take `x[int]`, except streams are `x[time]`. If a stream has metadata `dt`, then `x[t]` returns `x[t/dt]`. We can add interpolation rules — nearest neighbour, bilinear — analogous to texture samplers in the spatial domain. Ranges and slices also make sense." (ash)
+
+This reshapes the model above in a good way: **sampling becomes a property of an axis**, not of streams. An axis of a view carries, beyond its count and stride, an origin and a step — `c = c₀ + i·dc` — and may be indexed by a coordinate: `x[t]` is `i = (t − t₀)/dt` and then a *rule* for a non-integer `i`: nearest, hold (floor: sample-and-hold), linear (the two neighbours weighted). On a regular stream that is `x[t]`; on an image with two such axes it is bilinear filtering; a texture is a view with samplers. Coordinates on a time axis are `time` (rational seconds), so `t/dt` is exact when `dt` is.
+
+An **irregular** stream is an axis whose coordinates are not computed but stored — a `t` per item beside the value — and indexing by `t` is a search (binary; the `t`s are sorted by construction) followed by the same rules: hold gives the last value before `t`, linear interpolates. Regular and irregular differ only in whether a coordinate is computed or looked up. **Ranges by coordinate** follow: `window s, t₁, t₂` is a view of the samples with `t₁ ≤ t < t₂` — a contiguous block on a regular stream, the items in range on an irregular one; `frame` is "since last time".
+
+What stays separate, and should: residency and plumbing. The ring is where a stream's window lives; reading outside the resident range is a `check` (or the drop policy); tasks, handlers and the timer feed it. The sampling model says what `x[t]` means; the ring says which `t` are answerable now.
+
+In the IR: `s: f32~ = stream b, 48000` (a ring seen through a time axis); `x: f32 = sample s, t` (nearest by default) and `sample s, t, linear` (the rule an operand, like a texture's sampler state); `w: f32[] = window s, t1, t2`; and, later, `p: f32 = sample img, u, v, bilinear` on a spatial view with the same operation. Open: whether the rule lives per read (an operand — the leaning: one stream is read both ways) or per stream (metadata with a default), and the edge rules — clamp, wrap, or fail; a ring's edges are "not yet" and "no longer", which want `check` by default.
