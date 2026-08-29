@@ -4,6 +4,29 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### Views with a shape — `ef51522` · 2026-08-29
+
+```
+fn strided() -> (i32, i32) {
+    p: ptr = addr m2
+    b: i32[,] = slice p, 3, 4
+    fill b, 1
+    t: i32[,] = transpose b
+    c2: i32[] = at t, 2
+    fill c2, 5
+    mul c2, c2, 2
+    s: i32 = sum c2
+    sc: i32 = sub s, 16
+    all: i32 = sum b
+    a2: i32 = add all, 3
+    ret sc, a2
+}
+```
+
+"Views carry the shape, and `f32[,]`." A view of rank 1 to 3 is now a typed pointer and, per axis, a count and a stride in elements, so the things a matrix program wants are views of the same memory and nothing moves: `at a, i` is a row, `transpose a` the axes swapped, a column is a row of the transpose with a stride, `block` a rectangle, `reshape` a shape laid over a contiguous run — each a `Pack` of the words with a `check` on every bound, and `load a, i, j` reaches an element with every index checked. `lib/slice.ssa` grew by rank rather than by operation: the rank-1 bodies honour a stride — chunks only when every view is contiguous, a column one element at a time from the start — an operation of rank 2 or 3 is the rank below over each row, a reduction to a scalar goes row by row, and a reduction one rank down, `sum c, a`, is one per row, the columns' being the transpose's rows'. Two things the paths taught: the `rv64i` footprint test found a `mul` in the parser's hidden index arithmetic, which now multiplies by the policy's multiply like everything else; and four cases that read a grid another case had filled passed on the machines and native, where memory persists between cases, and failed on wasm and the GPU, where it does not — so every case builds its own, which is what a test should have done anyway. Nine cases in `suite/matrix.ssa`, two of them `-> check`; 934 on every path and both variants. And from this entry on, each entry opens with the code it is about, verbatim from the suite or the library — the session's entries were given theirs today.
+
+---
+
 ### Chunks — `0ec3a49` · 2026-08-29
 
 ```
