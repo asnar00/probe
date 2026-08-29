@@ -130,20 +130,6 @@ fn ne(N)(a: unit(N), b: unit(N)) -> u1 {
     r: u1 = cmp.ne av, bv
     ret r
 }
-fn min(N)(a: unit(N), b: unit(N)) -> unit(N) {
-    lt: u1 = cmp.lt a, b
-    if lt {
-        ret a
-    }
-    ret b
-}
-fn max(N)(a: unit(N), b: unit(N)) -> unit(N) {
-    gt: u1 = cmp.gt a, b
-    if gt {
-        ret a
-    }
-    ret b
-}
 ; to a float: the bits over the maximum; from a float: rounded, clamped
 ; to [0, 1] (the integer conversion saturates and sends NaN to 0)
 fn conv(N, E, M)(a: unit(N)) -> float(E, M) {
@@ -378,20 +364,6 @@ fn ne(N)(a: sunit(N), b: sunit(N)) -> u1 {
     bv: i(N) = get b, v
     r: u1 = cmp.ne av, bv
     ret r
-}
-fn min(N)(a: sunit(N), b: sunit(N)) -> sunit(N) {
-    lt: u1 = cmp.lt a, b
-    if lt {
-        ret a
-    }
-    ret b
-}
-fn max(N)(a: sunit(N), b: sunit(N)) -> sunit(N) {
-    gt: u1 = cmp.gt a, b
-    if gt {
-        ret a
-    }
-    ret b
 }
 fn conv(N, E, M)(a: sunit(N)) -> float(E, M) {
     av: i(N) = get a, v

@@ -1682,6 +1682,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
         generics: Vec::new(),
         instances: HashMap::new(),
         pending: Vec::new(),
+        tenv: Vec::new(),
         env: Vec::new(),
         consts: Vec::new(),
         cur_rets: Vec::new(),
@@ -1754,6 +1755,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
         }
         p.skip_newlines();
     }
+    p.default_instances()?;
     // named instantiations first, so call sites reuse them
     for at in aliases {
         p.pos = at;
@@ -1782,14 +1784,16 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     };
     // pass 3: instantiate what was asked for, including what those
     // instantiations ask for in turn
-    while let Some((g, args, name)) = p.pending.pop() {
+    while let Some((g, args, tbinds, name)) = p.pending.pop() {
         let (lo, params) = (p.generics[g].lo, p.generics[g].params.clone());
         let generic = p.generics[g].name.clone();
         p.env = params.into_iter().zip(args.iter().copied()).collect();
+        p.tenv = tbinds;
         p.pos = lo;
         let mut f = p.parse_function(Some(name))?;
         f.instance_names = p.env.iter().map(|(n, _)| n.clone()).collect();
         p.env.clear();
+        p.tenv.clear();
         f.instance = Some((generic, args));
         funcs.push(f);
     }
@@ -1833,6 +1837,23 @@ struct GenericFn {
     param_types: Vec<TypeExpr>,
     first_param: Option<TypeExpr>,
     ret: Option<TypeExpr>,
+    /// the abstract names its parameter types mention bare — `number`,
+    /// `scalar`, `int`, `float`... — each bound to a concrete type by
+    /// the argument that arrives (the tower: number over int, uint and
+    /// scalar; scalar over the number libraries; each over its widths)
+    type_params: Vec<String>,
+}
+
+/// where a name stands in the tower of abstract types, if it does:
+/// the higher, the less specific — a definition over `float` beats one
+/// over `scalar`, which beats one over `number`
+fn abstract_level(name: &str) -> Option<u8> {
+    match name {
+        "number" => Some(3),
+        "scalar" => Some(2),
+        "int" | "uint" => Some(1),
+        _ => None,
+    }
 }
 
 struct Parser {
@@ -1843,11 +1864,14 @@ struct Parser {
     packs: Vec<PackDef>,
     generics: Vec<GenericFn>,
     /// (generic index, args) -> the instance's function name
-    instances: HashMap<(usize, Vec<i64>), String>,
+    instances: HashMap<(usize, Vec<i64>, Vec<(String, Type)>), String>,
     /// instances requested but not yet parsed: (generic index, args, name)
-    pending: Vec<(usize, Vec<i64>, String)>,
+    pending: Vec<(usize, Vec<i64>, Vec<(String, Type)>, String)>,
     /// the parameter bindings of the body being parsed (empty outside generics)
     env: Vec<(String, i64)>,
+    /// the abstract names bound while an instance is parsed: `number`
+    /// is this instance's type
+    tenv: Vec<(String, Type)>,
     /// `data` declarations, in order
     data: Vec<DataDef>,
     /// hidden `const`s for literal operands of the instruction being parsed,
@@ -2076,30 +2100,80 @@ impl Parser {
                     Some(Tok::RParen) => {
                         return if at(j + 1 - self.pos) == Some(&Tok::LParen) {
                             Item::Generic
+                        } else if self.mentions_abstract(self.pos + 2) {
+                            Item::Generic
                         } else {
                             Item::Fn
                         };
                     }
-                    _ => return Item::Fn,
+                    _ => break,
                 }
+            }
+            // a plain parameter list over an abstract type (`a: number`,
+            // `v: scalarx4`): a template, instantiated by its arguments
+            if self.mentions_abstract(self.pos + 2) {
+                return Item::Generic;
             }
         }
         Item::Fn
     }
 
-    /// `fn name(P, Q)(...) { ... }`: remember the range for later
+    /// does a parameter list starting at token `open` name an abstract
+    /// type bare — `number`, `scalar`, `int`, `uint`, or a number library
+    /// (`float`, `fixed`...) with no arguments, alone or as a vector's lane?
+    fn mentions_abstract(&self, open: usize) -> bool {
+        let mut j = open + 1;
+        let mut depth = 1;
+        while depth > 0 {
+            match self.toks.get(j).map(|t| &t.0) {
+                Some(Tok::LParen) => depth += 1,
+                Some(Tok::RParen) => depth -= 1,
+                Some(Tok::Ident(w)) if self.toks.get(j - 1).map(|t| &t.0) == Some(&Tok::Colon) => {
+                    if self.toks.get(j + 1).map(|t| &t.0) != Some(&Tok::LParen) && self.abstract_base(w).is_some() {
+                        return true;
+                    }
+                }
+                Some(Tok::Newline) | None => return false,
+                _ => {}
+            }
+            j += 1;
+        }
+        false
+    }
+
+    /// the abstract name a bare word stands for, with a vector's lanes
+    /// stripped (`numberx4` is `number`); None for a concrete name
+    fn abstract_base(&self, word: &str) -> Option<String> {
+        let base = match word.rfind('x') {
+            Some(k) if word[k + 1..].bytes().all(|b| b.is_ascii_digit()) && !word[k + 1..].is_empty() => &word[..k],
+            _ => word,
+        };
+        if abstract_level(base).is_some() || self.types.iter().any(|t| t.name == base && !t.params.is_empty()) {
+            Some(base.to_string())
+        } else {
+            None
+        }
+    }
+
+    /// `fn name(P, Q)(...) { ... }`: remember the range for later; also a
+    /// plain `fn name(a: number, ...)`, a template over its abstract types
     fn record_generic(&mut self) -> Result<(), ParseError> {
         let (lo, hi) = self.function_range()?;
         self.expect_ident()?; // fn
         let name = self.expect_ident()?;
-        self.expect(Tok::LParen)?;
         let mut params = Vec::new();
-        loop {
-            params.push(self.expect_ident()?);
-            if self.eat(&Tok::RParen) {
-                break;
+        // a width-parameter group, unless the group is the value parameters
+        let value_params_next = matches!((self.toks.get(self.pos + 1).map(|t| &t.0), self.toks.get(self.pos + 2).map(|t| &t.0)), (Some(Tok::Ident(_)), Some(Tok::Colon)))
+            || self.toks.get(self.pos + 1).map(|t| &t.0) == Some(&Tok::RParen);
+        if !value_params_next {
+            self.expect(Tok::LParen)?;
+            loop {
+                params.push(self.expect_ident()?);
+                if self.eat(&Tok::RParen) {
+                    break;
+                }
+                self.expect(Tok::Comma)?;
             }
-            self.expect(Tok::Comma)?;
         }
         // the value parameters' types: `(a: float(E, M), b: u(W))`
         self.expect(Tok::LParen)?;
@@ -2130,16 +2204,87 @@ impl Parser {
         } else {
             None
         };
+        // the abstract names the parameters mention, in order of appearance
+        let mut type_params: Vec<String> = Vec::new();
+        for te in &param_types {
+            self.abstract_names(te, &mut type_params);
+        }
+        let g = self.generics.len();
         self.generics.push(GenericFn {
-            name,
+            name: name.clone(),
             params,
             lo,
             param_types,
             first_param,
             ret,
+            type_params: type_params.clone(),
         });
+        let _ = g;
         self.pos = hi + 1;
         Ok(())
+    }
+
+    /// a template with no width parameters, the only definition of its
+    /// name, has a default instance under that name — the policy's
+    /// binding, what a caller from outside (a directive, `probe run`)
+    /// reaches — when the policy has one
+    fn default_instances(&mut self) -> Result<(), ParseError> {
+        for g in 0..self.generics.len() {
+            let name = self.generics[g].name.clone();
+            let type_params = self.generics[g].type_params.clone();
+            if type_params.is_empty() || !self.generics[g].params.is_empty() {
+                continue;
+            }
+            if self.generics.iter().filter(|h| h.name == name).count() != 1 || self.sigs.contains_key(&name) {
+                continue;
+            }
+            let mut tbinds = Vec::new();
+            for n in &type_params {
+                match self.default_binding(n) {
+                    Some(t) => tbinds.push((n.clone(), t)),
+                    None => break,
+                }
+            }
+            if tbinds.len() == type_params.len() {
+                self.request_instance_of(g, Vec::new(), tbinds, Some(name))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// the abstract names a type expression mentions bare
+    fn abstract_names(&self, te: &TypeExpr, out: &mut Vec<String>) {
+        match te {
+            TypeExpr::Named { name, args } if args.is_empty() => {
+                if let Some(base) = self.abstract_base(name) {
+                    if !out.contains(&base) {
+                        out.push(base);
+                    }
+                }
+            }
+            TypeExpr::Vector(inner, _) => self.abstract_names(inner, out),
+            _ => {}
+        }
+    }
+
+    /// what an abstract name means when nothing binds it: the policy's
+    fn default_binding(&mut self, name: &str) -> Option<Type> {
+        match name {
+            "number" | "int" => Some(self.policy.int),
+            "uint" => Some(Type::int(false, self.policy.int.int_bits()?)),
+            _ => self.instantiate(&TypeExpr::Named { name: name.to_string(), args: Vec::new() }, &[], 0).ok(),
+        }
+    }
+
+    /// is a concrete type a member of an abstract name's family?
+    fn member_of(&self, name: &str, ty: Type) -> bool {
+        match name {
+            "number" => matches!(ty, Type::Int { .. }) || self.member_of("scalar", ty),
+            "scalar" => matches!(ty, Type::Pack(i) if self.packs[i as usize].origin.is_some()),
+            "int" => matches!(ty, Type::Int { signed: true, .. }),
+            "uint" => matches!(ty, Type::Int { signed: false, .. }),
+            family => matches!(ty, Type::Pack(i) if self.packs[i as usize].origin.as_ref().is_some_and(|(o, _)| o == family)),
+        }
     }
 
     /// pass 1, a plain function: remember its parameter types under its
@@ -2224,7 +2369,7 @@ impl Parser {
                 for q in &self.generics[g].params.clone()[args.len()..] {
                     args.push(self.named(q).unwrap());
                 }
-                self.request_instance_of(g, args, name)
+                self.request_instance_of(g, args, Vec::new(), name)
             }
             _ => Err(self.err(format!(
                 "'{}' has several forms taking {} parameter(s); apply it as an operation so the types choose",
@@ -2234,8 +2379,10 @@ impl Parser {
         }
     }
 
-    fn request_instance_of(&mut self, g: usize, args: Vec<i64>, name: Option<String>) -> Result<String, ParseError> {
-        let key = (g, args.clone());
+    fn request_instance_of(&mut self, g: usize, args: Vec<i64>, tbinds: Vec<(String, Type)>, name: Option<String>) -> Result<String, ParseError> {
+        // the bindings in the generic's own order, for a stable key
+        let tbinds: Vec<(String, Type)> = self.generics[g].type_params.iter().filter_map(|n| tbinds.iter().find(|(m, _)| m == n).cloned()).collect();
+        let key = (g, args.clone(), tbinds.clone());
         if let Some(existing) = self.instances.get(&key) {
             if let Some(n) = name {
                 if *existing != n {
@@ -2248,7 +2395,18 @@ impl Parser {
             return Ok(existing.clone());
         }
         let name = name.unwrap_or_else(|| {
-            let a: Vec<String> = args.iter().map(|v| v.to_string()).collect();
+            let mut a: Vec<String> = args.iter().map(|v| v.to_string()).collect();
+            for (_, t) in &tbinds {
+                let mut tn = String::new();
+                for c in self.tyname_of(*t).chars() {
+                    if c.is_ascii_alphanumeric() {
+                        tn.push(c);
+                    } else if !tn.ends_with('_') {
+                        tn.push('_');
+                    }
+                }
+                a.push(tn.trim_matches('_').to_string());
+            }
             let base = format!("{}_{}", self.generics[g].name, a.join("_"));
             if self.instances.values().any(|n| *n == base) {
                 format!("{}_{}", base, g) // another form of the same name got it
@@ -2260,19 +2418,27 @@ impl Parser {
         // its parameter types, for literal arguments at call sites
         let env: Vec<(String, i64)> = self.generics[g].params.iter().cloned().zip(args.iter().copied()).collect();
         let ptys = self.generics[g].param_types.clone();
+        let saved = std::mem::replace(&mut self.tenv, tbinds.clone());
         let mut tys = Vec::new();
         for te in &ptys {
-            tys.push(self.instantiate(te, &env, 0).map_err(|m| self.err(m))?);
+            match self.instantiate(te, &env, 0) {
+                Ok(t) => tys.push(t),
+                Err(m) => {
+                    self.tenv = saved;
+                    return Err(self.err(m));
+                }
+            }
         }
+        self.tenv = saved;
         self.sigs.insert(name.clone(), tys);
-        self.pending.push((g, args, name.clone()));
+        self.pending.push((g, args, tbinds, name.clone()));
         Ok(name)
     }
 
     /// Match a declared type against a concrete one, binding width
     /// parameters: `float(E, M)` against a pack from float(8, 23) binds E
     /// and M; `i(W)` against i32 binds W; builtins must be equal.
-    fn unify(&self, expr: &TypeExpr, ty: Type, binds: &mut Vec<(String, i64)>) -> bool {
+    fn unify(&self, expr: &TypeExpr, ty: Type, binds: &mut Vec<(String, i64)>, tbinds: &mut Vec<(String, Type)>) -> bool {
         let bind = |p: &str, v: i64, binds: &mut Vec<(String, i64)>| match binds.iter().find(|(n, _)| n == p) {
             Some((_, w)) => *w == v,
             None => {
@@ -2297,7 +2463,20 @@ impl Parser {
                     IntExpr::Lit(l) => *l == lanes,
                     _ => false,
                 };
-                n_ok && self.unify(inner, lane, binds)
+                n_ok && self.unify(inner, lane, binds, tbinds)
+            }
+            // an abstract name binds to any member of its family, once
+            TypeExpr::Named { name, args } if args.is_empty() && self.abstract_base(name).as_deref() == Some(name.as_str()) => {
+                if !self.member_of(name, ty) {
+                    return false;
+                }
+                match tbinds.iter().find(|(n, _)| n == name) {
+                    Some((_, t)) => *t == ty,
+                    None => {
+                        tbinds.push((name.clone(), ty));
+                        true
+                    }
+                }
             }
             TypeExpr::Named { name, args } if args.is_empty() => match Type::from_name(name) {
                 Some(t) => t == ty,
@@ -2668,7 +2847,8 @@ impl Parser {
                     None
                 };
                 if let Some(lanes) = lanes {
-                    if !base.is_empty() && (Type::from_name(base).is_some() || self.types.iter().any(|t| t.name == base)) {
+                    // a lane type may be abstract too: `numberx4`
+                    if !base.is_empty() && (Type::from_name(base).is_some() || self.types.iter().any(|t| t.name == base) || abstract_level(base).is_some()) {
                         let inner = TypeExpr::Named { name: base.to_string(), args: Vec::new() };
                         return Ok((TypeExpr::Vector(Box::new(inner), lanes), i + 1));
                     }
@@ -2814,6 +2994,10 @@ impl Parser {
             }
             TypeExpr::Named { name, args } => {
                 if args.is_empty() {
+                    // an abstract name bound by this instance's arguments
+                    if let Some((_, t)) = self.tenv.iter().find(|(n, _)| n == name) {
+                        return Ok(*t);
+                    }
                     if let Some(t) = Type::from_name(name) {
                         return Ok(t);
                     }
@@ -3527,9 +3711,14 @@ impl Parser {
 
         let mut name = self.expect_ident()?;
         if let Some(n) = instance {
-            // skip the (P, Q) group; the env already binds them
-            self.expect(Tok::LParen)?;
-            while !matches!(self.next()?, Tok::RParen) {}
+            // skip the (P, Q) group; the env already binds them (a template
+            // over abstract types has none: its first group is the values)
+            let value_params_next = matches!((self.toks.get(self.pos + 1).map(|t| &t.0), self.toks.get(self.pos + 2).map(|t| &t.0)), (Some(Tok::Ident(_)), Some(Tok::Colon)))
+                || self.toks.get(self.pos + 1).map(|t| &t.0) == Some(&Tok::RParen);
+            if !value_params_next {
+                self.expect(Tok::LParen)?;
+                while !matches!(self.next()?, Tok::RParen) {}
+            }
             name = n;
         }
 
@@ -4216,6 +4405,10 @@ impl Parser {
             Type::Pack(i) => p.packs[i as usize].name.clone(),
             t => t.name(),
         };
+        // every generic of the name whose first parameter and result take
+        // the types; of those, the most specific — one over `float` before
+        // one over `scalar` before one over `number`
+        let mut best: Option<(u8, usize, Vec<i64>, Vec<(String, Type)>)> = None;
         for g in 0..self.generics.len() {
             if self.generics[g].name != op {
                 continue;
@@ -4224,11 +4417,12 @@ impl Parser {
                 continue;
             };
             let mut binds = Vec::new();
-            if !self.unify(&first, src, &mut binds) {
+            let mut tbinds = Vec::new();
+            if !self.unify(&first, src, &mut binds, &mut tbinds) {
                 continue;
             }
             if let Some(r) = ret {
-                if !self.unify(&r, dst, &mut binds) {
+                if !self.unify(&r, dst, &mut binds, &mut tbinds) {
                     continue;
                 }
             }
@@ -4238,8 +4432,14 @@ impl Parser {
                 .map(|p| binds.iter().find(|(n, _)| n == p).map(|(_, v)| *v).or_else(|| self.named(p)))
                 .collect();
             if let Some(args) = args {
-                return self.request_instance_of(g, args, None);
+                let level = tbinds.iter().map(|(n, _)| abstract_level(n).unwrap_or(1)).max().unwrap_or(0);
+                if best.as_ref().is_none_or(|b| level < b.0) {
+                    best = Some((level, g, args, tbinds));
+                }
             }
+        }
+        if let Some((_, g, args, tbinds)) = best {
+            return self.request_instance_of(g, args, tbinds, None);
         }
         Err(self.err(format!(
             "no '{}' from {} to {}: define a generic fn {} whose first parameter and result match",
@@ -4410,6 +4610,42 @@ impl Parser {
                     break;
                 }
                 self.expect(Tok::Comma)?;
+            }
+        }
+        // a generic called by its name: the instance its arguments choose
+        // — widths and abstract types bound by every parameter, the most
+        // specific definition of the name winning
+        let atys: Vec<Type> = args.iter().map(|&a| scope.values[a.0 as usize].ty).collect();
+        let plain_fits = self.sigs.get(&callee).is_some_and(|sig| *sig == atys);
+        if !is_inst && !plain_fits && self.generics.iter().any(|g| g.name == callee) {
+            let mut best: Option<(u8, usize, Vec<i64>, Vec<(String, Type)>)> = None;
+            for g in 0..self.generics.len() {
+                if self.generics[g].name != callee || self.generics[g].param_types.len() != atys.len() {
+                    continue;
+                }
+                let (mut binds, mut tbinds) = (Vec::new(), Vec::new());
+                let ptys = self.generics[g].param_types.clone();
+                if !ptys.iter().zip(&atys).all(|(te, &t)| self.unify(te, t, &mut binds, &mut tbinds)) {
+                    continue;
+                }
+                let params = self.generics[g].params.clone();
+                let wargs: Option<Vec<i64>> = params.iter().map(|p| binds.iter().find(|(n, _)| n == p).map(|(_, v)| *v).or_else(|| self.named(p))).collect();
+                if let Some(wargs) = wargs {
+                    let level = tbinds.iter().map(|(n, _)| abstract_level(n).unwrap_or(1)).max().unwrap_or(0);
+                    if best.as_ref().is_none_or(|b| level < b.0) {
+                        best = Some((level, g, wargs, tbinds));
+                    }
+                }
+            }
+            match best {
+                Some((_, g, wargs, tbinds)) => callee = self.request_instance_of(g, wargs, tbinds, None)?,
+                // no instance fits: a plain function of the name, if there is
+                // one, is called as written (its signature is checked later)
+                None if self.sigs.contains_key(&callee) => {}
+                None => {
+                    let names: Vec<String> = atys.iter().map(|&t| self.tyname_of(t)).collect();
+                    return Err(self.err(format!("no '{}' takes ({})", callee, names.join(", "))));
+                }
             }
         }
         Ok((Callee::Name(callee), args))
@@ -6098,10 +6334,11 @@ entry:
 
     #[test]
     fn uint_resolves_with_int() {
-        let mut m = parse("fn f(a: uint, b: int) -> uint {\n    c: uint = cast b\n    ret a\n}").unwrap();
-        resolve_types(&mut m, &Policy::new(Type::I32).unwrap());
+        // a function over `int` and `uint` is a template; its default
+        // instance, under its own name, binds them to the policy's int
+        let m = parse_with("fn f(a: uint, b: int) -> uint {\n    c: uint = cast b\n    ret a\n}", &Policy::new(Type::I32).unwrap()).unwrap();
         verify(&m).expect("verify");
-        assert_eq!(m.funcs[0].rets, vec![Type::int(false, 32)]);
+        assert_eq!(m.func("f").unwrap().rets, vec![Type::int(false, 32)]);
     }
 
     #[test]
@@ -6151,8 +6388,8 @@ fn half(f: f16, b: byte, w: word(2 * 6)) -> (u5, u8, u12) {
 
     #[test]
     fn parametric_type_errors() {
-        // wrong arity, bad width, unknown parameter, self-reference
-        assert!(parse("type w(N) = u(N)\nfn f(a: w) {\n    ret\n}").is_err());
+        // wrong arity, bad width, unknown parameter, self-reference (a bare
+        // `w` is a template over w, see bare_float_follows_the_policy)
         assert!(parse("type w(N) = u(N)\nfn f(a: w(300)) {\n    ret\n}").is_err());
         assert!(parse("type w(N) = u(N)\nfn f(a: w(70)) {\n    ret\n}").is_ok()); // wide
         assert!(parse("type w(N) = u(M)\n").is_err());
@@ -6335,8 +6572,10 @@ fn twice(x: float) -> float {
         let f = m.func("twice").unwrap();
         assert_eq!(f.tyname(f.rets[0]), "float(5, 10)");
         assert!(m.funcs.iter().any(|f| f.name == "add_5_10")); // this source's own add(E, M)
-        // a parametric type with no policy default still needs its arguments
-        assert!(parse("type w(N) = u(N)\nfn f(a: w) {\n    ret\n}").is_err());
+        // a parametric type with no policy default, bare in a signature, is
+        // a template over it: no default instance, one per call
+        let m = parse("type w(N) = pack { v: u(N) }\nfn f(a: w) {\n    ret\n}\nfn g(x: w(8)) {\n    f(x)\n    ret\n}").expect("parse");
+        assert!(m.func("f").is_none() && m.func("f_w_8").is_some());
         assert_eq!(Policy::float_from_arg("bf16"), Some((8, 7)));
         assert_eq!(Policy::float_from_arg("4,3"), Some((4, 3)));
     }

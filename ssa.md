@@ -31,7 +31,7 @@ The input language of the lowest compiler stage. A module of functions; each fun
 | `ptr(T)`, `ptr(array(f32, 512, 512))` | a typed pointer: an address that knows what it points at (see *Typed pointers and arrays*) |
 | `array(T, W, H, ...)` | an array with a shape — a memory type, never a value: what a typed pointer points at, or a `data` item's type |
 | `i(expr)`, `u(expr)` | an integer whose width is an expression — inside type declarations |
-| `int`, `uint`, `float`, `fixed`, `unit`, `sunit`, `rational`, `scalar` | abstract numbers — resolved to a concrete type by the target's replacement policy (see *Abstract numeric types*) |
+| `int`, `uint`, `float`, `fixed`, `unit`, `sunit`, `rational`, `scalar`, `number` | abstract numbers — a tower, `number` at the top; in a program resolved by the target's replacement policy, in a function's signature bound by the argument that arrives (see *Abstract numeric types*) |
 
 Any width works anywhere a value lives — registers, block parameters, calls, packs. Memory is the exception: only 8-, 16-, 32-, 64-bit types and whole words above that (128, 192, 256) can be loaded and stored.
 
@@ -430,6 +430,8 @@ exit:
 ## Abstract numeric types
 
 `int` is an **abstract integer type**: code written with it does not choose a width — the compiler does, at compile time, by a *replacement policy* derived from the target (its natural register width, or a size-oriented choice like i32 on wasm32) and from user concerns (`--int=i32|i64`). `uint` is its unsigned twin and always takes the same width.
+
+**The tower, and templates.** The abstract names form a tower: `number` over `int`, `uint` and `scalar`; `scalar` over the number libraries (`float`, `fixed`, `unit`, `sunit`, `rational`, `decimal`); each of those over its widths. An abstract name is bound by the nearest thing that binds it: in a program's body, the policy; in a *function's signature*, the argument that arrives — so `fn min(a: number, b: number) -> number` (`lib/int.ssa`) is a template, instantiated as `min_i8`, `min_f32`, `min_fixed_16_16` at each call from the argument's type, and inside the body `number` *is* that type (`cmp.lt a, b` dispatches as it would on it). When several definitions of a name take the arguments, the most specific wins — one over `float` before one over `scalar` before one over `number` — which is how `lib/float.ssa` keeps its NaN-propagating `min` and `max` while every other number shares the one in `lib/int.ssa`, and how `lib/reduce.ssa`'s `sum(v: numberx4)` covers every lane type. A template that is the only definition of its name also has a default instance under that name, the policy's binding (`fn f(a: int)` in a program is still `f`, at the policy's width, for a directive or `probe run` to reach; a call with an `i8` makes `f_i8`).
 
 `float` is the same idea for the library's `float(E, M)`: a bare `float` is `float(E, M)` for the policy's E and M — `(11, 52)` on the register machines, `(8, 23)` on wasm32, or whatever `--float=f16|bf16|f32|f64|E,M` says — instantiated as the parser meets it (a parametric type's bare name is abstract when the policy has arguments for it). So `fn half(x: float) -> float { r: float = div x, 2.0 }` is written once, dispatches to the library's `div(E, M)` for the chosen width, and lands on the platform's `fdiv` where there is one.
 

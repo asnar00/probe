@@ -150,20 +150,6 @@ fn ne(N, S)(a: decimal(N, S), b: decimal(N, S)) -> u1 {
     r: u1 = cmp.ne ma, mb
     ret r
 }
-fn min(N, S)(a: decimal(N, S), b: decimal(N, S)) -> decimal(N, S) {
-    less: u1 = lt a, b
-    if less {
-        ret a
-    }
-    ret b
-}
-fn max(N, S)(a: decimal(N, S), b: decimal(N, S)) -> decimal(N, S) {
-    more: u1 = gt a, b
-    if more {
-        ret a
-    }
-    ret b
-}
 
 ; --- conversions ---
 fn conv(W, N, S)(a: i(W)) -> decimal(N, S) {

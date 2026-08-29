@@ -90,7 +90,7 @@ Every file compiled gets `lib/*.ssa` appended. Number formats are libraries, nev
 - `lib/decimal.ssa` — `decimal(N, S)`, an `i(N)` significand at scale 10^S: cents that add exactly.
 - `lib/wide.ssa` — division (and, on a core without a multiplier, multiplication) for wide integers.
 - `lib/reduce.ssa` — across the lanes: `sum`, `min`, `max` of a vector, `all`, `any` of a mask, as pairwise trees; one instruction on NEON (`addv`, `fmaxv`...) and, for the integers, RVV (`vredsum`...).
-- `lib/int.ssa` — `min`, `max`, `abs`, `neg` over integers: instructions where a platform has them (`cmp`/`csel` on arm64; `smin`/`umin`, `vmin`/`vminu`, `abs`, `neg` over vectors), these bodies elsewhere.
+- `lib/int.ssa` — `min`, `max`, `abs`, `neg` over `number`, the top of the tower of abstract types: one body for every integer and number library (float keeps its own, for NaN), instructions where a platform has them (`cmp`/`csel` on arm64; `smin`/`umin`, `vmin`/`vminu`, `abs`, `neg` over vectors).
 - `lib/arena.ssa` — bump allocation over memory the program declared: `arena_alloc`, `arena_mark`/`arena_release`, `arena_reset`; the frame allocator of game engines, and the bottom rung of a lifetime ladder (call, frame, object, machine) that never needs a heap. Running out is a failed `check`.
 - `lib/pool.ssa` — fixed-size slots taken and given back in any order: `pool_take`, `pool_give`, a free list through the free slots and a flag per slot, so a double give is a failed `check`. The object rung.
 - `lib/heap.ssa` — the root the rungs are carved from: a buddy allocator over one declared block, `heap_take`/`heap_give` in powers of two aligned to their size, a state per node of the split tree so a wrong give is a failed `check`, and `heap_seal` so a kernel can forbid allocation inside interrupts. For regions, not objects.
@@ -241,7 +241,7 @@ Toolchain expectations (macOS/arm64 host): `llvm-mc` (brew llvm), `wabt` (wat2wa
 
 What is here:
 
-- **Types.** Integers to 256 bits, packs, structs, vectors of 64 or 128 bits with lanes of 8 to 64 bits (`f32x4`, `u8x8`, `i16x8`, ...: per-lane by definition; whole on the GPU, NEON on arm64 and RVV on riscv64, each checked against the lane form), typed pointers and shaped arrays, parametric types and generic functions, function values.
+- **Types.** Integers to 256 bits, packs, structs, a tower of abstract types (`number` over `int` and `scalar`) that a function may be written over — a template bound by its argument, the most specific definition winning — vectors of 64 or 128 bits with lanes of 8 to 64 bits (`f32x4`, `u8x8`, `i16x8`, ...: per-lane by definition; whole on the GPU, NEON on arm64 and RVV on riscv64, each checked against the lane form), typed pointers and shaped arrays, parametric types and generic functions, function values.
 - **Numbers as libraries.** Floats, fixed point, unit fractions, rationals, time and decimals, with hardware substituted where a platform has it.
 - **Memory as a ladder of lifetimes**, not a heap for objects: `scratch`, arenas, pools, a buddy heap over the rest of RAM as the root; `check` is the one assertion, a breakpoint trap that names its site.
 - **Four backends and their variants**, the fourth Apple's GPU through a `.metallib` we write ourselves; on the machines each class of value — integer, float, vector — crosses a call in its own registers (and past eight, on the stack), and a caller from Rust reaches classed functions through a wrapper the compiler generates.

@@ -74,24 +74,6 @@ fn ne(I, F)(a: fixed(I, F), b: fixed(I, F)) -> u1 {
     r: u1 = cmp.ne ai, bi
     ret r
 }
-fn min(I, F)(a: fixed(I, F), b: fixed(I, F)) -> fixed(I, F) {
-    ai: i(I + F) = cast a
-    bi: i(I + F) = cast b
-    alt: u1 = cmp.lt ai, bi
-    if alt {
-        ret a
-    }
-    ret b
-}
-fn max(I, F)(a: fixed(I, F), b: fixed(I, F)) -> fixed(I, F) {
-    ai: i(I + F) = cast a
-    bi: i(I + F) = cast b
-    agt: u1 = cmp.gt ai, bi
-    if agt {
-        ret a
-    }
-    ret b
-}
 
 ; sign and magnitude of the raw bits, the magnitude as a u64
 fn fxmag(I, F)(a: fixed(I, F)) -> (u1, u64) {

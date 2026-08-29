@@ -46,7 +46,7 @@ Two rules that cost time when broken: **never run `probe test air` (or any suite
 
 ## The queue
 
-`future-work.md` has it in full. The near items, in ash's order of interest: a kernel's threads as real worker threads on wasm (wasm has threads and atomics, not stack switching); vectors across a call boundary, and the rest of NEON (64-bit vectors, `u1xN` in memory, horizontals); tasks across cores in the OS programs; textures as handles with platform operations; WebGPU as the second GPU path (SPIR-V, `spirv-as` as the oracle, wgpu to run). Bigger and older: capacity analysis for arenas and stacks, type generics, closures, libc calls from JIT'd code.
+`future-work.md` has it in full. The near items, in ash's order of interest: a kernel's threads as real worker threads on wasm (wasm has threads and atomics, not stack switching); vectors across a call boundary, and the rest of NEON (64-bit vectors, `u1xN` in memory, horizontals); tasks across cores in the OS programs; textures as handles with platform operations; WebGPU as the second GPU path (SPIR-V, `spirv-as` as the oracle, wgpu to run). Bigger and older: capacity analysis for arenas and stacks, closures, libc calls from JIT'd code (type generics arrived as the tower of abstract types: a function over `number` is a template bound by its argument).
 
 ## What pulled at me (an agent's note, 2026-08-28)
 
