@@ -4,6 +4,28 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### The OS programs as streams — `ca775d2` · 2026-08-29
+
+```
+fn drain() {                                  ; os/echo.ssa: the UART's handler is a producer
+    ...
+        c: u8 = load uart
+        t: time = now_time()
+        push keys, t, c
+}
+fn sys_read(p: u64, n: u64) -> u64 {          ; the reader, kept across system calls
+    keys: u8$ = load rp
+    ...
+            c: u8 = peek keys, i
+    ...
+    keys2: u8$ = advance(keys, past)
+    store keys2, rp
+```
+
+The two machines' handlers are the first real producers. `os/echo.ssa`'s `__irq` pushes each byte the port has into `keys: u8$` with the time it took it — a `now_time()` over the counter since boot, as `os/sleep.ssa` has — and `read` is a reader kept between system calls in `data` (a stream is a struct, so `load`/`store` move it whole): it sleeps in `idle` until a newline is among the unread bytes, copies the line, and moves on past it, which is less than a frame, so the library grew `peek s, i` and `advance(s, n)` beside `frame`. `os/clock.ssa`'s `__irq` pushes each tick's time into `tick: time$` — the value is the time — and `__start` reads it a frame at a time, printing a tick per item and sleeping between, until ten; the tenth tick's own time is the report, `10 ticks in 1006 ms` as before. The transcripts on both boards are the ones the boot tests have checked since the programs were written; what changed is that the ring, the head and the tail that `echo` kept by hand are the library's, and that the program's loop is a reader threaded through it — the shape every stream program will have. One thing to know when writing one: in an operation form (`peek s, 2`) a literal takes the first operand's type, as `add x, 1` needs, so an index there is a typed value. 949 on every path and both variants; next, regular streams.
+
+---
+
 ### Streams — `da8966d` · 2026-08-29
 
 ```
