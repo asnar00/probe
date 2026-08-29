@@ -1721,6 +1721,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
         instances: HashMap::new(),
         pending: Vec::new(),
         tenv: Vec::new(),
+        first_operand_elem: None,
         env: Vec::new(),
         consts: Vec::new(),
         cur_rets: Vec::new(),
@@ -1909,6 +1910,9 @@ struct Parser {
     /// the abstract names bound while an instance is parsed: `number`
     /// is this instance's type
     tenv: Vec<(String, Type)>,
+    /// the element type of the view or stream an operation form started
+    /// with, for typing its later literals
+    first_operand_elem: Option<Type>,
     /// `data` declarations, in order
     data: Vec<DataDef>,
     /// hidden `const`s for literal operands of the instruction being parsed,
@@ -3452,17 +3456,14 @@ impl Parser {
                 Ok(Type::Struct(id))
             }
             TypeExpr::Stream(inner) => {
-                // a reader's view of a ring over time: the ring (its header),
-                // the position read to, dt and t0 as times, a sampling rule
-                // and an edge rule — a struct, dissolved like any struct
+                // a reader's view of a ring over time: the ring (its header,
+                // which holds the clock), the position read to, a sampling
+                // rule and an edge rule — a struct, dissolved like any struct
                 let elem0 = self.instantiate(inner, env, depth + 1)?;
                 let elem = self.policy.resolve(elem0);
-                let time = self.instantiate(&TypeExpr::Named { name: "time".into(), args: Vec::new() }, env, depth + 1)?;
                 let fields = vec![
                     ("ring".to_string(), Type::Ptr),
                     ("pos".to_string(), Type::I64),
-                    ("dt".to_string(), time),
-                    ("t0".to_string(), time),
                     ("rule".to_string(), Type::I64),
                     ("edge".to_string(), Type::I64),
                 ];
@@ -3471,9 +3472,8 @@ impl Parser {
                     return Ok(Type::Struct(i as u32));
                 }
                 let id = self.packs.len() as u32;
-                let (tsize, _) = self.layout_of(time).ok_or("time has no layout")?;
-                let offsets = vec![0, 8, 16, 16 + tsize, 16 + 2 * tsize, 24 + 2 * tsize];
-                let size = 32 + 2 * tsize;
+                let offsets = vec![0, 8, 16, 24];
+                let size = 32;
                 self.packs.push(PackDef { name, fields, offsets, width: size * 8, origin: None, aggregate: true, size, sig: None, lanes: 0, pointee: None, elem: Some((elem, Vec::new())) });
                 Ok(Type::Struct(id))
             }
@@ -3713,35 +3713,61 @@ impl Parser {
     }
 
     /// the type a literal takes as the k-th operand of a view's or a
-    /// stream's operation: the parameter's, when every generic of the
-    /// name gives that position a concrete type; else the literal's own
-    /// kind's — i64 for an integer, f64 for a decimal — which an abstract
-    /// parameter then binds
+    /// stream's operation: among the generics of the name with this
+    /// operation's arity (counted ahead to the end of the line), the
+    /// parameter's type when it is concrete, the container's element type
+    /// when the parameter is the container's own abstract (`v: number`
+    /// beside `s: number$`), and otherwise the literal's own kind's — i64
+    /// for an integer, f64 for a decimal — which an abstract parameter
+    /// such as `scalar` then binds
     fn param_want(&mut self, op: &str, k: usize) -> Result<Option<Type>, ParseError> {
-        let ptes: Vec<TypeExpr> = self
+        let elem = self.first_operand_elem;
+        let mut commas = 0;
+        let mut p = self.pos;
+        while let Some((t, _)) = self.toks.get(p) {
+            match t {
+                Tok::Newline | Tok::RBrace => break,
+                Tok::Comma => commas += 1,
+                _ => {}
+            }
+            p += 1;
+        }
+        let arity = k + 1 + commas;
+        let cands: Vec<(TypeExpr, TypeExpr)> = self
             .generics
             .iter()
-            .filter(|g| g.name == op && g.param_types.len() > k)
-            .map(|g| g.param_types[k].clone())
+            .filter(|g| g.name == op && g.param_types.len() == arity)
+            .map(|g| (g.param_types[0].clone(), g.param_types[k].clone()))
             .collect();
         let mut found: Option<Type> = None;
-        for te in &ptes {
+        let mut agreed = !cands.is_empty();
+        for (first, te) in &cands {
             let mut names = Vec::new();
             self.abstract_names(te, &mut names);
-            if !names.is_empty() {
-                found = None;
-                break;
-            }
-            let Ok(t) = self.instantiate(te, &[], 0) else { found = None; break };
-            match found {
-                Some(f) if f != t => {
-                    found = None;
+            let t = if names.is_empty() {
+                match self.instantiate(te, &[], 0) {
+                    Ok(t) => Some(t),
+                    Err(_) => None,
+                }
+            } else {
+                // the container's own element?
+                let inner = match first {
+                    TypeExpr::Stream(inner) | TypeExpr::Slice(inner, _) => Some(inner.as_ref()),
+                    _ => None,
+                };
+                if inner == Some(te) { elem } else { None }
+            };
+            match (t, found) {
+                (None, _) => {}
+                (Some(t), None) => found = Some(t),
+                (Some(t), Some(f)) if f == t => {}
+                _ => {
+                    agreed = false;
                     break;
                 }
-                _ => found = Some(t),
             }
         }
-        if found.is_some() {
+        if agreed && found.is_some() {
             return Ok(found);
         }
         let at = self.pos;
@@ -5043,6 +5069,7 @@ impl Parser {
                 // its own kind's, i64 or f64, where the parameter is
                 // abstract (`sample img, 1.5, 0.5` over `scalar`)
                 let by_param = self.slice_of(fty).is_some() || self.stream_of(fty).is_some();
+                self.first_operand_elem = self.slice_of(fty).map(|(e, _)| e).or_else(|| self.stream_of(fty));
                 while self.eat(&Tok::Comma) {
                     let want = if by_param { self.param_want(op, args.len())? } else { Some(fty) };
                     args.push(self.parse_operand(scope, want)?);
@@ -5251,9 +5278,14 @@ impl Parser {
                 let first = self.expect_value(scope)?;
                 let fty = scope.values[first.0 as usize].ty;
                 let elem = self.slice_of(fty).map(|(e, _)| e).or_else(|| self.stream_of(fty)).unwrap();
+                let is_stream = self.stream_of(fty).is_some();
+                self.first_operand_elem = Some(elem);
                 let mut args = vec![first];
                 while self.eat(&Tok::Comma) {
-                    args.push(self.parse_operand(scope, Some(elem))?);
+                    // a view's literal is an element (`mul c, a, 2.0`); a
+                    // stream's takes the parameter's type (`push s, 1000, 9: u8`)
+                    let want = if is_stream { self.param_want(op, args.len())? } else { Some(elem) };
+                    args.push(self.parse_operand(scope, want)?);
                 }
                 let atys: Vec<Type> = args.iter().map(|&a| scope.values[a.0 as usize].ty).collect();
                 let callee = self.choose_generic(op, &atys, Some(false))?;

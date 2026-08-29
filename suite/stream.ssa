@@ -1,7 +1,8 @@
 ; streams (lib/stream.ssa): `u8$` is a reader's view of a ring of bytes
 ; over time — the ring, a position, a sampling rule, an edge rule — and
-; a producer pushes (t, v) pairs into the ring. Several views may look
-; at one ring with their own rules. Here a program is its own producer.
+; a producer pushes (tick, v) pairs into the ring, ticks of the ring's
+; clock. Several views may look at one ring with their own rules. Here
+; a program is its own producer.
 
 ;! frames -> 15, 5
 ;! peeked -> 3, 3
@@ -20,21 +21,20 @@
 ;! biquad_fir -> 0x3f000000, 0x3e800000
 ;! biquad_iir -> 0x3d000000, 0x3c000000
 
+; an irregular ring of bytes on a microsecond clock: values and ticks
 data vb: buffer(u8, 8)
-data tb: buffer(time, 8)
-data rg: array(u64, 4)
+data tb: buffer(i64, 8)
+data rg: array(u64, 8)
+; a regular ring at 1 kHz: values only
 data fvb: buffer(f32, 8)
-data ftb: buffer(time, 8)
-data frg: array(u64, 4)
+data frg: array(u64, 8)
 ; the audio rings and a block: the filter reads a frame of 4 and 2
 ; behind it on both streams, so 6 resident is what it needs — what
 ; the residency analysis should compute; 16 holds at least 8
 data avb: buffer(f32, 16)
-data atb: buffer(time, 16)
-data arg: array(u64, 4)
+data arg: array(u64, 8)
 data ovb: buffer(f32, 16)
-data otb: buffer(time, 16)
-data org: array(u64, 4)
+data org: array(u64, 8)
 data blk: buffer(f32, 4)
 
 ; five items at 1, 2, 3, 4, 5 milliseconds with values 1..5
@@ -44,7 +44,7 @@ fn five(s: u8$) {
         if done {
             break
         }
-        t: time = millis(k)
+        t: i64 = mul k, 1000
         v: u8 = conv k
         push s, t, v
         k2: i64 = add k, 1
@@ -56,7 +56,7 @@ fn fresh() -> u8$ {
     r: ptr = addr rg
     a: ptr = addr vb
     b: ptr = addr tb
-    ring_init(r, a, b)
+    ring_init(r, a, b, 1000000)
     s: u8$ = stream r
     ret s
 }
@@ -65,7 +65,7 @@ fn fresh() -> u8$ {
 fn frames() -> (u8, i64) {
     s: u8$ = fresh()
     five(s)
-    f: u8[], ft: time[], s2: u8$ = frame(s)
+    f: u8[], k0: i64, s2: u8$ = frame(s)
     n: i64 = len f
     total: u8 = sum f
     ret total, n
@@ -75,8 +75,8 @@ fn frames_again() -> (i64, i64) {
     s: u8$ = fresh()
     five(s)
     waiting: i64 = count s
-    f: u8[], ft: time[], s2: u8$ = frame(s)
-    g: u8[], gt: time[], s3: u8$ = frame(s2)
+    f: u8[], k0: i64, s2: u8$ = frame(s)
+    g: u8[], k1: i64, s3: u8$ = frame(s2)
     n: i64 = len g
     ret n, waiting
 }
@@ -87,7 +87,7 @@ fn peeked() -> (u8, i64) {
     five(s)
     x: u8 = peek s, 2
     s2: u8$ = advance(s, 2)
-    f: u8[], ft: time[], s3: u8$ = frame(s2)
+    f: u8[], k0: i64, s3: u8$ = frame(s2)
     n: i64 = len f
     ret x, n
 }
@@ -132,7 +132,7 @@ fn sliding() -> (u8, i64) {
         if done {
             break
         }
-        t: time = millis(k)
+        t: i64 = mul k, 1000
         v: u8 = conv k
         push s, t, v
         k2: i64 = add k, 1
@@ -161,13 +161,13 @@ fn stale() -> i64 {
         if done {
             break
         }
-        t: time = millis(k)
+        t: i64 = mul k, 1000
         v: u8 = conv k
         push s, t, v
         k2: i64 = add k, 1
         continue k2
     }
-    f: u8[], ft: time[], s2: u8$ = frame(s)
+    f: u8[], k0: i64, s2: u8$ = frame(s)
     n: i64 = len f
     ret n
 }
@@ -175,24 +175,19 @@ fn stale() -> i64 {
 fn unordered() -> u8 {
     s: u8$ = fresh()
     five(s)
-    t: time = millis(1)
-    push s, t, 9
+    push s, 1000, 9
     x: u8 = latest s
     ret x
 }
 
-; --- regular streams: a sample every dt from t0, the producer's push
-; without a time ---
+; --- regular rings: item k at tick t0 + k * step of a clock, the
+; producer's push without a tick ---
 fn khz() -> f32$ {
     r: ptr = addr frg
     a: ptr = addr fvb
-    b: ptr = addr ftb
-    ring_init(r, a, b)
+    ring_regular(r, a, 1000, 1, 0)
     s: f32$ = stream r
-    dt: time = millis(1)
-    t0: time = seconds(0)
-    reg: f32$ = regular(s, dt, t0)
-    ret reg
+    ret s
 }
 fn tens(s: f32$) {
     push s, 10.0
@@ -201,13 +196,14 @@ fn tens(s: f32$) {
     push s, 40.0
     ret
 }
-; four samples at 0, 1, 2, 3 ms: the frame's times are computed
+; four samples at 0, 1, 2, 3 ms: a frame's times are computed from its first index
 fn regular_frames() -> (i64, i64) {
     s: f32$ = khz()
     tens(s)
-    f: f32[], ft: time[], s2: f32$ = frame(s)
+    f: f32[], k0: i64, s2: f32$ = frame(s)
     n: i64 = len f
-    t3: time = load ft, 3
+    k3: i64 = add k0, 3
+    t3: time = time_at(s, k3)
     us: i64 = to_micros(t3)
     ret n, us
 }
@@ -234,15 +230,13 @@ fn interpolated_int() -> (u8, u8) {
     x: u8 = sample l, t
     s2: u8$ = fresh()
     l2: u8$ = sampling(s2, 2)
-    t1: time = millis(1)
-    t2: time = millis(2)
-    push s2, t1, 10
-    push s2, t2, 4
+    push s2, 1000, 10
+    push s2, 2000, 4
     tm: time = micros(1500)
     y: u8 = sample l2, tm
     ret x, y
 }
-; a push without a time needs a regular stream
+; a push without a tick needs a regular ring
 fn irregular_push() -> u8 {
     s: u8$ = fresh()
     push s, 7
@@ -256,18 +250,12 @@ fn irregular_push() -> u8 {
 fn audio() -> (f32$, f32$) {
     r: ptr = addr arg
     a: ptr = addr avb
-    b: ptr = addr atb
-    ring_init(r, a, b)
+    ring_regular(r, a, 48000, 1, 0)
     r2: ptr = addr org
     a2: ptr = addr ovb
-    b2: ptr = addr otb
-    ring_init(r2, a2, b2)
-    dt: time = period(48000)
-    t0: time = seconds(0)
-    x0: f32$ = stream r
-    x: f32$ = regular(x0, dt, t0)
-    o0: f32$ = stream r2
-    o: f32$ = regular(o0, dt, t0)
+    ring_regular(r2, a2, 48000, 1, 0)
+    x: f32$ = stream r
+    o: f32$ = stream r2
     ret x, o
 }
 ; a block of four: an impulse, or silence
@@ -283,7 +271,7 @@ fn block(first: f32) -> f32[] {
 ; one application of y[n] = b0 x[n] + b1 x[n-1] + b2 x[n-2] - a1 y[n-1] - a2 y[n-2]
 ; to the frame of x since this reader looked, into out; the reader moved on
 fn biquad(x: f32$, out: f32$, b0: f32, b1: f32, b2: f32, a1: f32, a2: f32) -> f32$ {
-    f: f32[], ft: time[], x2: f32$ = frame(x)
+    f: f32[], k0: i64, x2: f32$ = frame(x)
     hx: f32[] = behind x, 2
     hy: f32[] = last out, 2
     n: i64 = len f
@@ -320,7 +308,7 @@ fn biquad_fir() -> (u32, u32) {
     x2: f32$ = biquad(x, o, 1.0, 0.5, 0.25, 0.0, 0.0)
     op: ptr = addr org
     r: f32$ = stream op
-    f: f32[], ft: time[], r2: f32$ = frame(r)
+    f: f32[], k0: i64, r2: f32$ = frame(r)
     v1: f32 = load f, 1
     v2: f32 = load f, 2
     w1: u32 = cast v1
@@ -340,7 +328,7 @@ fn biquad_iir() -> (u32, u32) {
     x3: f32$ = biquad(x2, o, 1.0, 0.0, 0.0, -0.5, 0.0)
     op: ptr = addr org
     r: f32$ = stream op
-    f: f32[], ft: time[], r2: f32$ = frame(r)
+    f: f32[], k0: i64, r2: f32$ = frame(r)
     v5: f32 = load f, 5
     v7: f32 = load f, 7
     w5: u32 = cast v5

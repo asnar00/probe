@@ -5,11 +5,11 @@
 ;   tick (ten times, a tenth of a second apart)
 ;   10 ticks in 1000 ms
 ;
-; The ticks are a stream: `tick: time$` (lib/stream.ssa), each item
-; the time it happened, pushed by the timer's interrupt handler — which
+; The ticks are a stream: `tick: i64$` (lib/stream.ssa), each item
+; the counter's value when it happened, pushed by the timer's interrupt handler — which
 ; `probe boot` compiles with a frame that keeps every register of
 ; whatever it interrupted — and read by the program a frame at a time,
-; sleeping between; the tenth tick's own time is the report. The deadline advances by
+; sleeping between; the tenth tick's own count, as exact milliseconds, is the report. The deadline advances by
 ; a fixed step from the previous deadline, never from "now", so the
 ; ticks do not drift; and the elapsed count of the machine's counter
 ; is turned into seconds exactly, by lib/time.ssa's rationals, before
@@ -24,10 +24,10 @@ data report = " ticks in "
 data unit = " ms\n"
 data deadline: array(u64, 1)
 data start: array(u64, 1)
-; the tick stream's ring: values (the times), times, and the header
-data vb: buffer(time, 32)
-data tb: buffer(time, 32)
-data rg: array(u64, 4)
+; the tick stream's ring: values (the counter's ticks), ticks, the header
+data vb: buffer(i64, 32)
+data tb: buffer(i64, 32)
+data rg: array(u64, 8)
 
 ; --- the board ---
 fn vectors(t: ptr) {
@@ -77,13 +77,14 @@ fn __start() {
     r: ptr = addr rg
     a: ptr = addr vb
     b: ptr = addr tb
-    ring_init(r, a, b)
-    tick0: time$ = stream r
+    fi: i64 = conv f
+    ring_init(r, a, b, fi)
+    tick0: i64$ = stream r
     timer_at(first)
     irq_on()
-    ; ten ticks, read a frame at a time; each tick's time is its value
-    total: i64, last: time = loop(s: time$ = tick0, n: i64 = 0, at: time = 0) {
-        fv: time[], ft: time[], s2: time$ = frame(s)
+    ; ten ticks, read a frame at a time; each tick's counter value is its value
+    total: i64, last: i64 = loop(s: i64$ = tick0, n: i64 = 0, at: i64 = 0) {
+        fv: i64[], k0: i64, s2: i64$ = frame(s)
         k: i64 = len fv
         loop(i: i64 = 0) {
             done: u1 = cmp.ge i, k
@@ -98,8 +99,8 @@ fn __start() {
         }
         n2: i64 = add n, k
         some: u1 = cmp.gt k, 0
-        at2: time = if some {
-            l: time = latest s2
+        at2: i64 = if some {
+            l: i64 = latest s2
             yield l
         } else {
             yield at
@@ -112,7 +113,11 @@ fn __start() {
         continue s2, n2, at2
     }
     timer_off()
-    m: i64 = to_millis(last)
+    ; the tenth tick's count, as exact seconds: a period times a count
+    p: time = period(fi)
+    cnt: time = seconds(last)
+    t: time = mul p, cnt
+    m: i64 = to_millis(t)
     print_dec(total)
     rp: ptr = addr report
     rn: i64 = len report
@@ -140,27 +145,22 @@ fn __irq() {
         store d2, dp
         timer_at(d2)
         r: ptr = addr rg
-        ticks: time$ = stream r
-        t: time = now_time()
+        ticks: i64$ = stream r
+        t: i64 = tick()
         push ticks, t, t
     }
     irq_done(id)
     ret
 }
 
-; the machine's counter since boot, as exact seconds
-fn now_time() -> time {
+; the machine's counter since boot
+fn tick() -> i64 {
     sp: ptr = addr start
     s: u64 = load sp
     t: u64 = now()
     e: u64 = sub t, s
     ei: i64 = conv e
-    f: u64 = hz()
-    fi: i64 = conv f
-    c: time = seconds(ei)
-    p: time = period(fi)
-    r: time = mul c, p
-    ret r
+    ret ei
 }
 
 ; a synchronous trap is unexpected here: end the machine

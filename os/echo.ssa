@@ -16,7 +16,7 @@
 ; interrupted code's registers and a return that resumes it.
 ;
 ; Input is a stream: `keys: u8$` (lib/stream.ssa), a ring the UART's
-; interrupt handler pushes each byte into with the time it arrived
+; interrupt handler pushes each byte into with the counter's tick it arrived at
 ; (`uart_irq_on` asks the board for an interrupt per byte), and a
 ; reader — kept across system calls in `reader` — that `read` moves
 ; through one line at a time, sleeping (`idle`) until a newline is
@@ -32,12 +32,13 @@ data echo = "echo: "
 data newline = "\n"
 data line: array(u8, 64)
 data calls: array(fn(u64, u64) -> u64, 3)
-; the input stream's ring: values, times, the header, and the reader's
-; view of it (a u8$, 56 bytes), kept between system calls
+; the input stream's ring: values, ticks of the counter, the header
+; (the clock is the counter's), and the reader's view of it (a u8$, 32
+; bytes), kept between system calls
 data vb: buffer(u8, 512)
-data tb: buffer(time, 512)
-data rg: array(u64, 4)
-data reader: array(u64, 8)
+data tb: buffer(i64, 512)
+data rg: array(u64, 8)
+data reader: array(u64, 4)
 data start: array(u64, 1)
 data uart_irqs: array(u64, 1)
 data took = "took "
@@ -105,7 +106,9 @@ fn __start() {
     rg0: ptr = addr rg
     a: ptr = addr vb
     b: ptr = addr tb
-    ring_init(rg0, a, b)
+    f: u64 = hz()
+    fi: i64 = conv f
+    ring_init(rg0, a, b, fi)
     keys: u8$ = stream rg0
     rp: ptr = addr reader
     store keys, rp
@@ -117,7 +120,7 @@ fn __start() {
 }
 
 ; a byte arrived: everything the port has goes into the stream, each
-; byte with the time it was taken
+; byte with the counter's tick it was taken at
 fn __irq() {
     id: u32 = irq_ack()
     ext: u32 = platform irq_external
@@ -157,25 +160,20 @@ fn drain() {
             break
         }
         c: u8 = load uart
-        t: time = now_time()
+        t: i64 = tick()
         push keys, t, c
         continue
     }
     ret
 }
-; the machine's counter since boot, as exact seconds
-fn now_time() -> time {
+; the machine's counter since boot
+fn tick() -> i64 {
     sp: ptr = addr start
     s: u64 = load sp
     t: u64 = now()
     e: u64 = sub t, s
     ei: i64 = conv e
-    f: u64 = hz()
-    fi: i64 = conv f
-    c: time = seconds(ei)
-    p: time = period(fi)
-    r: time = mul c, p
-    ret r
+    ret ei
 }
 
 ; every trap lands here with the trapped code's first three argument
