@@ -29,10 +29,10 @@ fn axpy(two: f32) -> (f32, f32) {
     b: f32[] = slice pb
     c: f32[] = slice pc
     ta: ptr(f32) = ptr a
-    store 1.0: f32, ta, 0
-    store 2.0: f32, ta, 1
-    store 3.0: f32, ta, 2
-    store 4.0: f32, ta, 3
+    store 1.0, ta, 0
+    store 2.0, ta, 1
+    store 3.0, ta, 2
+    store 4.0, ta, 3
     fill b, 0.5
     mul c, a, two
     add c, c, b

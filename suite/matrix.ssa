@@ -231,9 +231,10 @@ fn matmul_small() -> (i32, i32) {
         continue k2
     }
     matmul c, a, b
+    one: i32 = const 1
     x: i32 = load c, 0, 0
-    y: i32 = load c, 1, 1
-    z: i32 = load c, 0, 1
+    y: i32 = load c, one, one
+    z: i32 = load c, 0, one
     t: i32 = add x, y
     ret t, z
 }
@@ -277,10 +278,10 @@ fn normalize() -> (f32, f32) {
     a: f32[,] = slice p, 2, 2
     c: f32[,] = slice q, 2, 2
     s: f32[] = slice r
-    store 1.0: f32, a, 0, 0
-    store 3.0: f32, a, 0, 1
-    store 1.0: f32, a, 1, 0
-    store 1.0: f32, a, 1, 1
+    store 1.0, a, 0, 0
+    store 3.0, a, 0, 1
+    store 1.0, a, 1, 0
+    store 1.0, a, 1, 1
     sum s, a
     at: f32[,] = transpose a
     ct: f32[,] = transpose c

@@ -1802,7 +1802,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     // a target without a multiplier: the wide lowering's word products
     // call the library's mul(64) on u64, instantiated here
     let mul64 = if !p.policy.native_mul && p.generics.iter().any(|g| g.name == "mul") {
-        Some(p.dispatch("mul", Type::U64, Type::U64, 2)?)
+        Some(p.dispatch("mul", &[Type::U64, Type::U64], Type::U64)?)
     } else {
         None
     };
@@ -1855,11 +1855,9 @@ struct GenericFn {
     params: Vec<String>,
     lo: usize,
     /// the declared types of its value parameters and of its first result,
-    /// for opcode dispatch (several generics may share a name and differ
-    /// here: `conv` from i(W) and from u(W)) and for typing literal
-    /// arguments at call sites
+    /// for resolution (several generics may share a name and differ here:
+    /// `conv` from i(W) and from u(W)) and for typing literal arguments
     param_types: Vec<TypeExpr>,
-    first_param: Option<TypeExpr>,
     ret: Option<TypeExpr>,
     /// the abstract names its parameter types mention bare — `number`,
     /// `scalar`, `int`, `float`... — each bound to a concrete type by
@@ -2007,6 +2005,11 @@ impl FuncScope {
         });
         id
     }
+}
+
+/// the types of a row of lane values
+fn lane_tys(scope: &FuncScope, args: &[ValueId]) -> Vec<Type> {
+    args.iter().map(|&a| scope.values[a.0 as usize].ty).collect()
 }
 
 impl Parser {
@@ -2220,7 +2223,6 @@ impl Parser {
                 _ => return Err(self.err("bad parameter list".to_string())),
             }
         }
-        let first_param = param_types.first().cloned();
         // and the first result's: `-> ty` or `-> (ty, ...)`
         let ret = if self.toks.get(j).map(|t| &t.0) == Some(&Tok::Arrow) {
             let at = if self.toks.get(j + 1).map(|t| &t.0) == Some(&Tok::LParen) { j + 2 } else { j + 1 };
@@ -2239,7 +2241,6 @@ impl Parser {
             params,
             lo,
             param_types,
-            first_param,
             ret,
             type_params: type_params.clone(),
         });
@@ -2346,6 +2347,19 @@ impl Parser {
         Ok(self.hidden(scope, data_ty, format!("{}_at", tag), |v| Inst::Cast { op: CastOp::Cast, dst: v, src: raw }))
     }
 
+    /// an index or count: an i64, or any integer converted to one
+    fn index_operand(&mut self, scope: &mut FuncScope) -> Result<ValueId, ParseError> {
+        let v = self.parse_operand(scope, Some(Type::I64))?;
+        match scope.values[v.0 as usize].ty {
+            Type::I64 => Ok(v),
+            Type::Int { .. } => {
+                let name = format!("{}_i64", scope.values[v.0 as usize].name);
+                Ok(self.hidden(scope, Type::I64, name, |d| Inst::Cast { op: CastOp::Conv, dst: d, src: v }))
+            }
+            t => Err(self.err(format!("an index is an integer, not {}", self.tyname_of(t)))),
+        }
+    }
+
     /// `check 0 <= i < n`, as hidden instructions
     fn check_index(&mut self, scope: &mut FuncScope, i: ValueId, n: ValueId, tag: &str) {
         let zero = self.hidden(scope, Type::I64, format!("{}_zero", tag), |v| Inst::IConst { dst: v, imm: 0 });
@@ -2377,7 +2391,7 @@ impl Parser {
         let (elem, rank) = self.slice_of(aty).unwrap();
         let mut idx = Vec::new();
         while self.eat(&Tok::Comma) {
-            idx.push(self.parse_operand(scope, Some(Type::I64))?);
+            idx.push(self.index_operand(scope)?);
         }
         if idx.len() != rank as usize {
             return Err(self.err(format!("{}: {} is {}, which takes {} index(es), not {}", what, scope.values[a.0 as usize].name, self.tyname_of(aty), rank, idx.len())));
@@ -3654,7 +3668,7 @@ impl Parser {
     /// the library's `conv` into `ty` from `from`, if there is one
     fn conv_from(&mut self, ty: Type, from: Type) -> Option<String> {
         let at = self.pos;
-        let r = self.dispatch("conv", from, ty, 1).ok();
+        let r = self.dispatch("conv", &[from], ty).ok();
         self.pos = at;
         r
     }
@@ -4118,7 +4132,7 @@ impl Parser {
         if self.policy.native_mul {
             Ok(Inst::Bin { op: BinOp::IMul, dst, lhs: a, rhs: b })
         } else {
-            let callee = self.dispatch("mul", Type::I64, Type::I64, 2)?;
+            let callee = self.dispatch("mul", &[Type::I64, Type::I64], Type::I64)?;
             Ok(Inst::Call { dsts: vec![dst], callee, args: vec![a, b] })
         }
     }
@@ -4151,7 +4165,7 @@ impl Parser {
         let (elem, dims) = self.shape_of(pty).ok_or_else(|| self.err(format!("{}: {} is {}, not a typed pointer", what, pname, self.tyname_of(pty))))?;
         let mut idx: Vec<ValueId> = Vec::new();
         while self.eat(&Tok::Comma) {
-            idx.push(self.parse_operand(scope, Some(Type::I64))?);
+            idx.push(self.index_operand(scope)?);
         }
         if !dims.is_empty() && idx.len() != dims.len() {
             return Err(self.err(format!("{}: {} is {}, which takes {} index(es), not {}", what, pname, self.tyname_of(pty), dims.len(), idx.len())));
@@ -4204,8 +4218,8 @@ impl Parser {
             if BINOPS.iter().any(|(nm, _)| *nm == op) || op.starts_with("cmp.") || op == "conv" || op == "cast" {
                 return Err(self.err(format!("'{}' on vectors gives a vector; {} is {}", op, scope.values[dst.0 as usize].name, self.tyname_of(dty))));
             }
-            let vty = scope.values[operands[0].0 as usize].ty;
-            let callee = self.dispatch(op, vty, dty, operands.len())?;
+            let atys: Vec<Type> = operands.iter().map(|&v| scope.values[v.0 as usize].ty).collect();
+            let callee = self.dispatch(op, &atys, dty)?;
             return Ok(Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() });
         };
         let dname = scope.values[dst.0 as usize].name.clone();
@@ -4245,7 +4259,7 @@ impl Parser {
                         _ => false,
                     };
                 if to_library {
-                    let callee = self.dispatch(op, sl, dlane, operands.len())?;
+                    let callee = self.dispatch(op, &lane_types, dlane)?;
                     Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() }
                 } else {
                     Inst::Bin { op: *bin, dst, lhs: operands[0], rhs: operands[1] }
@@ -4253,20 +4267,20 @@ impl Parser {
             } else if let Some(cc) = op.strip_prefix("cmp.") {
                 let cond = CONDS.iter().find(|(n, _)| *n == cc).map(|(_, c)| *c).ok_or_else(|| self.err(format!("unknown comparison condition '{}'", cc)))?;
                 if sl.is_pack() {
-                    let callee = self.dispatch(cond.name(), sl, dlane, 2)?;
+                    let callee = self.dispatch(cond.name(), &lane_types, dlane)?;
                     Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() }
                 } else {
                     Inst::ICmp { cond, dst, lhs: operands[0], rhs: operands[1] }
                 }
             } else if op == "conv" || op == "cast" {
                 if op == "conv" && (sl.is_pack() || dlane.is_pack()) {
-                    let callee = self.dispatch(op, sl, dlane, operands.len())?;
+                    let callee = self.dispatch(op, &lane_types, dlane)?;
                     Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() }
                 } else {
                     Inst::Cast { op: if op == "conv" { CastOp::Conv } else { CastOp::Cast }, dst, src: operands[0] }
                 }
             } else {
-                let callee = self.dispatch(op, sl, dlane, operands.len())?;
+                let callee = self.dispatch(op, &lane_types, dlane)?;
                 Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() }
             };
             return Ok(inst);
@@ -4286,7 +4300,7 @@ impl Parser {
                         _ => false,
                     };
                 if to_library {
-                    let callee = self.dispatch(op, sl, dlane, args.len())?;
+                    let callee = self.dispatch(op, &lane_tys(scope, &args), dlane)?;
                     Inst::Call { dsts: vec![r], callee, args }
                 } else {
                     Inst::Bin { op: *bin, dst: r, lhs: args[0], rhs: args[1] }
@@ -4294,21 +4308,21 @@ impl Parser {
             } else if let Some(cc) = op.strip_prefix("cmp.") {
                 let cond = CONDS.iter().find(|(n, _)| *n == cc).map(|(_, c)| *c).ok_or_else(|| self.err(format!("unknown comparison condition '{}'", cc)))?;
                 if sl.is_pack() {
-                    let callee = self.dispatch(cond.name(), sl, dlane, 2)?;
+                    let callee = self.dispatch(cond.name(), &lane_types, dlane)?;
                     Inst::Call { dsts: vec![r], callee, args }
                 } else {
                     Inst::ICmp { cond, dst: r, lhs: args[0], rhs: args[1] }
                 }
             } else if op == "conv" || op == "cast" {
                 if op == "conv" && (sl.is_pack() || dlane.is_pack()) {
-                    let callee = self.dispatch(op, sl, dlane, args.len())?;
+                    let callee = self.dispatch(op, &lane_tys(scope, &args), dlane)?;
                     Inst::Call { dsts: vec![r], callee, args }
                 } else {
                     Inst::Cast { op: if op == "conv" { CastOp::Conv } else { CastOp::Cast }, dst: r, src: args[0] }
                 }
             } else {
                 // a library operation (`sqrt`, `fma`, ...) on each lane
-                let callee = self.dispatch(op, sl, dlane, args.len())?;
+                let callee = self.dispatch(op, &lane_tys(scope, &args), dlane)?;
                 Inst::Call { dsts: vec![r], callee, args }
             };
             self.consts.push(inst);
@@ -4345,7 +4359,8 @@ impl Parser {
                 _ => false,
             };
             if lty.is_pack() || to_library {
-                let callee = self.dispatch(op, self.policy.resolve(lty), self.policy.resolve(scope.values[dst.0 as usize].ty), 2)?;
+                let rty = scope.values[rhs.0 as usize].ty;
+                let callee = self.dispatch(op, &[self.policy.resolve(lty), self.policy.resolve(rty)], self.policy.resolve(scope.values[dst.0 as usize].ty))?;
                 return Ok(Inst::Call {
                     dsts: vec![dst],
                     callee,
@@ -4371,7 +4386,7 @@ impl Parser {
             }
             // on a pack, `cmp.lt` is the library's `lt` for that type
             if scope.values[lhs.0 as usize].ty.is_pack() {
-                let callee = self.dispatch(cond.name(), scope.values[lhs.0 as usize].ty, scope.values[dst.0 as usize].ty, 2)?;
+                let callee = self.dispatch(cond.name(), &[scope.values[lhs.0 as usize].ty, scope.values[rhs.0 as usize].ty], scope.values[dst.0 as usize].ty)?;
                 return Ok(Inst::Call {
                     dsts: vec![dst],
                     callee,
@@ -4438,7 +4453,7 @@ impl Parser {
                 // a conversion touching a pack is the library's: conv from
                 // float(E, M) to i(W), from u(W) to float(E, M), ...
                 if op == "conv" && (ts.is_pack() || td.is_pack()) {
-                    let callee = self.dispatch(op, ts, td, 1)?;
+                    let callee = self.dispatch(op, &[ts], td)?;
                     return Ok(Inst::Call {
                         dsts: vec![dst],
                         callee,
@@ -4476,7 +4491,7 @@ impl Parser {
                 let k = self.chunk_lanes(t).ok_or_else(|| self.err(format!("a chunk cannot be of {}", self.tyname_of(t))))?;
                 let dname = scope.values[dst.0 as usize].name.clone();
                 let kv = self.hidden(scope, Type::I64, format!("{}_lanes", dname), |v| Inst::IConst { dst: v, imm: k as i128 });
-                let callee = self.dispatch("min", Type::I64, Type::I64, 2)?;
+                let callee = self.dispatch("min", &[Type::I64, Type::I64], Type::I64)?;
                 Ok(Inst::Call { dsts: vec![dst], callee, args: vec![left, kv] })
             }
             // a slice of a buffer: its header checked (the element size is
@@ -4488,7 +4503,7 @@ impl Parser {
                 let p = self.expect_value(scope)?;
                 let mut counts = Vec::new();
                 while self.eat(&Tok::Comma) {
-                    counts.push(self.parse_operand(scope, Some(Type::I64))?);
+                    counts.push(self.index_operand(scope)?);
                 }
                 if !(counts.is_empty() && rank == 1) && counts.len() != rank as usize {
                     return Err(self.err(format!("slice: {} is {}, which takes {} count(s)", scope.values[dst.0 as usize].name, self.tyname_of(dty), rank)));
@@ -4534,9 +4549,9 @@ impl Parser {
                     return Err(self.err(format!("view: {} is {}, not {}", scope.values[a.0 as usize].name, self.tyname_of(scope.values[a.0 as usize].ty), self.tyname_of(dty))));
                 }
                 self.expect(Tok::Comma)?;
-                let off = self.parse_operand(scope, Some(Type::I64))?;
+                let off = self.index_operand(scope)?;
                 self.expect(Tok::Comma)?;
-                let n = self.parse_operand(scope, Some(Type::I64))?;
+                let n = self.index_operand(scope)?;
                 let dname = scope.values[dst.0 as usize].name.clone();
                 let (data0, dims) = self.view_words(scope, a, "view");
                 let (len0, st) = dims[0];
@@ -4564,7 +4579,7 @@ impl Parser {
                     return Err(self.err(format!("at {}: a view one rank down is {}[{}]; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(elem), ",".repeat(rank.saturating_sub(2) as usize), scope.values[dst.0 as usize].name, self.tyname_of(dty))));
                 }
                 self.expect(Tok::Comma)?;
-                let i = self.parse_operand(scope, Some(Type::I64))?;
+                let i = self.index_operand(scope)?;
                 let dname = scope.values[dst.0 as usize].name.clone();
                 let (data0, dims) = self.view_words(scope, a, "at");
                 let (n0, s0) = dims[0];
@@ -4607,7 +4622,7 @@ impl Parser {
                 let mut ops = Vec::new();
                 for _ in 0..4 {
                     self.expect(Tok::Comma)?;
-                    ops.push(self.parse_operand(scope, Some(Type::I64))?);
+                    ops.push(self.index_operand(scope)?);
                 }
                 let dname = scope.values[dst.0 as usize].name.clone();
                 let (data0, dims) = self.view_words(scope, a, "block");
@@ -4644,7 +4659,7 @@ impl Parser {
                 }
                 let mut counts = Vec::new();
                 while self.eat(&Tok::Comma) {
-                    counts.push(self.parse_operand(scope, Some(Type::I64))?);
+                    counts.push(self.index_operand(scope)?);
                 }
                 if counts.len() != drank as usize {
                     return Err(self.err(format!("reshape to {} takes {} counts", self.tyname_of(dty), drank)));
@@ -4873,7 +4888,7 @@ impl Parser {
             "ptradd" => {
                 let base = self.expect_value(scope)?;
                 self.expect(Tok::Comma)?;
-                let off = self.parse_operand(scope, Some(Type::I64))?;
+                let off = self.index_operand(scope)?;
                 Ok(Inst::PtrAdd { dst, base, off })
             }
             "call" => Err(self.err("'call' is implied: write name(args)".to_string())),
@@ -4900,7 +4915,8 @@ impl Parser {
                 if !fty0.is_pack() && !fty0.is_int() && self.slice_of(fty0).is_none() {
                     return Err(self.err(format!("unknown opcode '{}'", op)));
                 }
-                let callee = self.dispatch(op, scope.values[first.0 as usize].ty, scope.values[dst.0 as usize].ty, args.len())?;
+                let atys: Vec<Type> = args.iter().map(|&a| scope.values[a.0 as usize].ty).collect();
+                let callee = self.dispatch(op, &atys, scope.values[dst.0 as usize].ty)?;
                 Ok(Inst::Call {
                     dsts: vec![dst],
                     callee,
@@ -4914,54 +4930,61 @@ impl Parser {
     /// the generic named `op` whose first parameter matches the source and
     /// whose first result matches the destination, with the width
     /// parameters those matches bind.
-    fn dispatch(&mut self, op: &str, src: Type, dst: Type, arity: usize) -> Result<String, ParseError> {
-        let tyname = |p: &Parser, t: Type| match t {
-            Type::Pack(i) => p.packs[i as usize].name.clone(),
-            t => t.name(),
-        };
-        // every generic of the name whose first parameter and result take
-        // the types; of those, the most specific — one over `float` before
-        // one over `scalar` before one over `number`
+    /// the instance of a generic a name and its argument types choose:
+    /// every parameter unifies with its argument, widths and abstract
+    /// types bound together; a defining form wants a generic with a
+    /// result of the given type, a statement one with none, a call by
+    /// name either; of the definitions that fit, the most specific wins —
+    /// one over `float` before one over `scalar` before one over `number`;
+    /// a width the types leave unbound is the policy's
+    fn resolve(&mut self, name: &str, atys: &[Type], want: Option<Option<Type>>) -> Result<String, ParseError> {
         let mut best: Option<(u8, usize, Vec<i64>, Vec<(String, Type)>)> = None;
         for g in 0..self.generics.len() {
-            if self.generics[g].name != op || self.generics[g].param_types.len() != arity {
+            if self.generics[g].name != name || self.generics[g].param_types.len() != atys.len() {
                 continue;
             }
-            // an operation defines a value: a generic with no result (a
-            // slice operation, `add c, a, b`) is not it
-            let (Some(first), Some(r)) = (self.generics[g].first_param.clone(), self.generics[g].ret.clone()) else {
-                continue;
-            };
-            let mut binds = Vec::new();
-            let mut tbinds = Vec::new();
-            if !self.unify(&first, src, &mut binds, &mut tbinds) {
+            let ret = self.generics[g].ret.clone();
+            match (&want, &ret) {
+                (Some(Some(_)), None) | (Some(None), Some(_)) => continue,
+                _ => {}
+            }
+            let (mut binds, mut tbinds) = (Vec::new(), Vec::new());
+            let ptys = self.generics[g].param_types.clone();
+            if !ptys.iter().zip(atys).all(|(te, &t)| self.unify(te, t, &mut binds, &mut tbinds)) {
                 continue;
             }
-            if !self.unify(&r, dst, &mut binds, &mut tbinds) {
-                continue;
+            if let (Some(Some(dst)), Some(r)) = (&want, &ret) {
+                if !self.unify(r, *dst, &mut binds, &mut tbinds) {
+                    continue;
+                }
             }
             let params = self.generics[g].params.clone();
-            let args: Option<Vec<i64>> = params
-                .iter()
-                .map(|p| binds.iter().find(|(n, _)| n == p).map(|(_, v)| *v).or_else(|| self.named(p)))
-                .collect();
-            if let Some(args) = args {
+            let wargs: Option<Vec<i64>> = params.iter().map(|p| binds.iter().find(|(n, _)| n == p).map(|(_, v)| *v).or_else(|| self.named(p))).collect();
+            if let Some(wargs) = wargs {
                 let level = tbinds.iter().map(|(n, _)| abstract_level(n).unwrap_or(1)).max().unwrap_or(0);
                 if best.as_ref().is_none_or(|b| level < b.0) {
-                    best = Some((level, g, args, tbinds));
+                    best = Some((level, g, wargs, tbinds));
                 }
             }
         }
-        if let Some((_, g, args, tbinds)) = best {
-            return self.request_instance_of(g, args, tbinds, None);
+        match best {
+            Some((_, g, wargs, tbinds)) => self.request_instance_of(g, wargs, tbinds, None),
+            None => {
+                let names: Vec<String> = atys.iter().map(|&t| self.tyname_of(t)).collect();
+                let wants = match want {
+                    Some(Some(t)) => format!(" giving {}", self.tyname_of(t)),
+                    Some(None) => " as a statement".to_string(),
+                    None => String::new(),
+                };
+                Err(self.err(format!("no '{}' takes ({}){}: define a generic fn {} whose parameters and result match", name, names.join(", "), wants, name)))
+            }
         }
-        Err(self.err(format!(
-            "no '{}' from {} to {}: define a generic fn {} whose first parameter and result match",
-            op,
-            tyname(self, src),
-            tyname(self, dst),
-            op
-        )))
+    }
+
+    /// an operation defining a value: the generic its operand types and
+    /// result choose
+    fn dispatch(&mut self, op: &str, atys: &[Type], dst: Type) -> Result<String, ParseError> {
+        self.resolve(op, atys, Some(Some(dst)))
     }
 
     /// a field name of the pack-typed value `of`, resolved to its index
@@ -5013,45 +5036,44 @@ impl Parser {
         }
     }
 
-    /// the instance of a generic that the argument types choose — widths
-    /// and abstract types bound by every parameter, the most specific
-    /// definition of the name winning
+    /// a statement (`want_result` false) or a call by name (None): the
+    /// generic the argument types choose
     fn choose_generic(&mut self, name: &str, atys: &[Type], want_result: Option<bool>) -> Result<String, ParseError> {
-        let mut best: Option<(u8, usize, Vec<i64>, Vec<(String, Type)>)> = None;
-        for g in 0..self.generics.len() {
-            if self.generics[g].name != name || self.generics[g].param_types.len() != atys.len() {
-                continue;
-            }
-            if want_result.is_some_and(|w| w != self.generics[g].ret.is_some()) {
-                continue;
-            }
-            let (mut binds, mut tbinds) = (Vec::new(), Vec::new());
-            let ptys = self.generics[g].param_types.clone();
-            if !ptys.iter().zip(atys).all(|(te, &t)| self.unify(te, t, &mut binds, &mut tbinds)) {
-                continue;
-            }
-            let params = self.generics[g].params.clone();
-            let wargs: Option<Vec<i64>> = params.iter().map(|p| binds.iter().find(|(n, _)| n == p).map(|(_, v)| *v).or_else(|| self.named(p))).collect();
-            if let Some(wargs) = wargs {
-                let level = tbinds.iter().map(|(n, _)| abstract_level(n).unwrap_or(1)).max().unwrap_or(0);
-                if best.as_ref().is_none_or(|b| level < b.0) {
-                    best = Some((level, g, wargs, tbinds));
-                }
-            }
-        }
-        match best {
-            Some((_, g, wargs, tbinds)) => self.request_instance_of(g, wargs, tbinds, None),
-            None => {
-                let names: Vec<String> = atys.iter().map(|&t| self.tyname_of(t)).collect();
-                Err(self.err(format!("no '{}' takes ({})", name, names.join(", "))))
-            }
-        }
+        self.resolve(name, atys, match want_result {
+            Some(false) => Some(None),
+            _ => None,
+        })
     }
 
     fn parse_plain_op(&mut self, op: &str, scope: &mut FuncScope) -> Result<Inst, ParseError> {
         match op {
             "store" => {
-                let val = self.expect_value(scope)?;
+                // a literal takes the type of what it is stored into: the
+                // pointer's element, or the view's
+                let at = self.pos;
+                let val = match self.parse_lit()? {
+                    Some(lit) if matches!(self.peek(), Some(Tok::Comma)) => {
+                        let target = match self.toks.get(self.pos + 1).map(|t| &t.0) {
+                            Some(Tok::Ident(w)) => scope.value_ids.get(w).map(|&v| scope.values[v.0 as usize].ty),
+                            _ => None,
+                        };
+                        let elem = target.and_then(|t| self.pointee_of(t).or_else(|| self.slice_of(t).map(|(e, _)| e)));
+                        match elem {
+                            Some(t) => self.make_literal(scope, &lit, t).map_err(|m| {
+                                self.pos = at;
+                                self.err(m)
+                            })?,
+                            None => {
+                                self.pos = at;
+                                self.expect_value(scope)?
+                            }
+                        }
+                    }
+                    _ => {
+                        self.pos = at;
+                        self.expect_value(scope)?
+                    }
+                };
                 self.expect(Tok::Comma)?;
                 let addr = self.expect_value(scope)?;
                 if self.slice_of(scope.values[addr.0 as usize].ty).is_some() {
@@ -5205,34 +5227,12 @@ impl Parser {
         let atys: Vec<Type> = args.iter().map(|&a| scope.values[a.0 as usize].ty).collect();
         let plain_fits = self.sigs.get(&callee).is_some_and(|sig| *sig == atys);
         if !is_inst && !plain_fits && self.generics.iter().any(|g| g.name == callee) {
-            let mut best: Option<(u8, usize, Vec<i64>, Vec<(String, Type)>)> = None;
-            for g in 0..self.generics.len() {
-                if self.generics[g].name != callee || self.generics[g].param_types.len() != atys.len() {
-                    continue;
-                }
-                let (mut binds, mut tbinds) = (Vec::new(), Vec::new());
-                let ptys = self.generics[g].param_types.clone();
-                if !ptys.iter().zip(&atys).all(|(te, &t)| self.unify(te, t, &mut binds, &mut tbinds)) {
-                    continue;
-                }
-                let params = self.generics[g].params.clone();
-                let wargs: Option<Vec<i64>> = params.iter().map(|p| binds.iter().find(|(n, _)| n == p).map(|(_, v)| *v).or_else(|| self.named(p))).collect();
-                if let Some(wargs) = wargs {
-                    let level = tbinds.iter().map(|(n, _)| abstract_level(n).unwrap_or(1)).max().unwrap_or(0);
-                    if best.as_ref().is_none_or(|b| level < b.0) {
-                        best = Some((level, g, wargs, tbinds));
-                    }
-                }
-            }
-            match best {
-                Some((_, g, wargs, tbinds)) => callee = self.request_instance_of(g, wargs, tbinds, None)?,
+            match self.resolve(&callee, &atys, None) {
+                Ok(n) => callee = n,
                 // no instance fits: a plain function of the name, if there is
                 // one, is called as written (its signature is checked later)
-                None if self.sigs.contains_key(&callee) => {}
-                None => {
-                    let names: Vec<String> = atys.iter().map(|&t| self.tyname_of(t)).collect();
-                    return Err(self.err(format!("no '{}' takes ({})", callee, names.join(", "))));
-                }
+                Err(_) if self.sigs.contains_key(&callee) => {}
+                Err(e) => return Err(e),
             }
         }
         Ok((Callee::Name(callee), args))
