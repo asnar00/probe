@@ -17,6 +17,8 @@
 ;! interpolated -> 260, 30
 ;! interpolated_int -> 2, 7
 ;! irregular_push -> check
+;! biquad_fir -> 0x3f000000, 0x3e800000
+;! biquad_iir -> 0x3d000000, 0x3c000000
 
 data vb: buffer(u8, 8)
 data tb: buffer(time, 8)
@@ -24,6 +26,16 @@ data rg: array(u64, 4)
 data fvb: buffer(f32, 8)
 data ftb: buffer(time, 8)
 data frg: array(u64, 4)
+; the audio rings and a block: the filter reads a frame of 4 and 2
+; behind it on both streams, so 6 resident is what it needs — what
+; the residency analysis should compute; 16 holds at least 8
+data avb: buffer(f32, 16)
+data atb: buffer(time, 16)
+data arg: array(u64, 4)
+data ovb: buffer(f32, 16)
+data otb: buffer(time, 16)
+data org: array(u64, 4)
+data blk: buffer(f32, 4)
 
 ; five items at 1, 2, 3, 4, 5 milliseconds with values 1..5
 fn five(s: u8$) {
@@ -236,4 +248,102 @@ fn irregular_push() -> u8 {
     push s, 7
     x: u8 = latest s
     ret x
+}
+
+; --- audio: a dense regular stream, a block at a time, through a
+; biquad — a node that reads behind its frame on its input and behind
+; its own output, so its state is the rings' history, not its own ---
+fn audio() -> (f32$, f32$) {
+    r: ptr = addr arg
+    a: ptr = addr avb
+    b: ptr = addr atb
+    ring_init(r, a, b)
+    r2: ptr = addr org
+    a2: ptr = addr ovb
+    b2: ptr = addr otb
+    ring_init(r2, a2, b2)
+    dt: time = period(48000)
+    t0: time = seconds(0)
+    x0: f32$ = stream r
+    x: f32$ = regular(x0, dt, t0)
+    o0: f32$ = stream r2
+    o: f32$ = regular(o0, dt, t0)
+    ret x, o
+}
+; a block of four: an impulse, or silence
+fn block(first: f32) -> f32[] {
+    p: ptr = addr blk
+    b: f32[] = slice p
+    store first, b, 0
+    store 0.0, b, 1
+    store 0.0, b, 2
+    store 0.0, b, 3
+    ret b
+}
+; one application of y[n] = b0 x[n] + b1 x[n-1] + b2 x[n-2] - a1 y[n-1] - a2 y[n-2]
+; to the frame of x since this reader looked, into out; the reader moved on
+fn biquad(x: f32$, out: f32$, b0: f32, b1: f32, b2: f32, a1: f32, a2: f32) -> f32$ {
+    f: f32[], ft: time[], x2: f32$ = frame(x)
+    hx: f32[] = behind x, 2
+    hy: f32[] = last out, 2
+    n: i64 = len f
+    px1: f32 = tail(hx, 1)
+    px2: f32 = tail(hx, 2)
+    py1: f32 = tail(hy, 1)
+    py2: f32 = tail(hy, 2)
+    loop(i: i64 = 0, x1: f32 = px1, xx2: f32 = px2, y1: f32 = py1, y2: f32 = py2) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        xn: f32 = load f, i
+        t0: f32 = mul b0, xn
+        t1: f32 = mul b1, x1
+        t2: f32 = mul b2, xx2
+        u1_: f32 = mul a1, y1
+        u2: f32 = mul a2, y2
+        s0: f32 = add t0, t1
+        s1: f32 = add s0, t2
+        s2: f32 = sub s1, u1_
+        y: f32 = sub s2, u2
+        push out, y
+        i2: i64 = add i, 1
+        continue i2, xn, x1, y, y1
+    }
+    ret x2
+}
+; an FIR (a = 0): an impulse gives the taps back: 1, 0.5, 0.25, 0
+fn biquad_fir() -> (u32, u32) {
+    x: f32$, o: f32$ = audio()
+    imp: f32[] = block(1.0)
+    push x, imp
+    x2: f32$ = biquad(x, o, 1.0, 0.5, 0.25, 0.0, 0.0)
+    op: ptr = addr org
+    r: f32$ = stream op
+    f: f32[], ft: time[], r2: f32$ = frame(r)
+    v1: f32 = load f, 1
+    v2: f32 = load f, 2
+    w1: u32 = cast v1
+    w2: u32 = cast v2
+    ret w1, w2
+}
+; y[n] = x[n] + 0.5 y[n-1]: an impulse block then a silent one, and the
+; decay carries across the blocks through the output's history:
+; 1/32 at 5, 1/128 at 7
+fn biquad_iir() -> (u32, u32) {
+    x: f32$, o: f32$ = audio()
+    imp: f32[] = block(1.0)
+    push x, imp
+    x2: f32$ = biquad(x, o, 1.0, 0.0, 0.0, -0.5, 0.0)
+    quiet: f32[] = block(0.0)
+    push x2, quiet
+    x3: f32$ = biquad(x2, o, 1.0, 0.0, 0.0, -0.5, 0.0)
+    op: ptr = addr org
+    r: f32$ = stream op
+    f: f32[], ft: time[], r2: f32$ = frame(r)
+    v5: f32 = load f, 5
+    v7: f32 = load f, 7
+    w5: u32 = cast v5
+    w7: u32 = cast v7
+    ret w5, w7
 }

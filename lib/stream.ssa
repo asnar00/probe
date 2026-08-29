@@ -371,3 +371,63 @@ fn advance(s: number$, n: i64) -> number$ {
     s2: number$ = set s, pos, pos2
     ret s2
 }
+
+; --- blocks and history: what a dense regular stream's node needs ---
+; a regular stream's producer, a block at a time
+fn push(s: number$, block: number[]) {
+    n: i64 = len block
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        v: number = load block, i
+        push(s, v)
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+; the k items before this reader's position — fewer at the start of
+; the stream, when there are not k yet: the history a filter reads
+; behind its frame
+fn behind(s: number$, k: i64) -> number[] {
+    r: ptr = get s, ring
+    base: i64 = load r, 8
+    pos: i64 = get s, pos
+    resident: u1 = cmp.ge pos, base
+    check resident
+    have: i64 = sub pos, base
+    n: i64 = min(k, have)
+    vals: number[] = ring_values(r)
+    start: i64 = sub pos, n
+    from: i64 = sub start, base
+    h: number[] = view vals, from, n
+    ret h
+}
+; the last k items pushed — fewer when there are not k yet: the
+; history a producer reads behind its own output
+fn last(s: number$, k: i64) -> number[] {
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    base: i64 = load r, 8
+    have: i64 = sub pushed, base
+    n: i64 = min(k, have)
+    vals: number[] = ring_values(r)
+    from: i64 = sub have, n
+    h: number[] = view vals, from, n
+    ret h
+}
+; the k-th item from the end of a history, or 0 before the beginning
+fn tail(h: number[], k: i64) -> number {
+    n: i64 = len h
+    short: u1 = cmp.lt n, k
+    v: number = if short {
+        yield 0
+    } else {
+        i: i64 = sub n, k
+        x: number = load h, i
+        yield x
+    }
+    ret v
+}
