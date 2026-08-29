@@ -252,7 +252,7 @@ Deliberately not here yet (`future-work.md` has the queue, `handover.md` the rea
 - A kernel's threads as real worker threads on wasm.
 - Tasks dealt across cores in the OS programs.
 - Textures as handles with platform operations; WebGPU as a second GPU path.
-- `u1xN` in memory; scalable RVV (`vl` as a value, not a constant); wasm SIMD through the same seam.
+- Scalable RVV (`vl` as a value, not a constant); wasm SIMD through the same seam; horizontals (sums, dot products) as library generics with rules.
 - Capacity analysis for arenas and stacks.
 - External (libc) calls from JIT'd code.
 - Differential testing against clang, to close the semantic loop the way the prober closed the encoding loop.

@@ -13,7 +13,7 @@
 //! per field at its byte offset. Nested structs flatten; a wide field is
 //! then lowered by wide.rs like any other.
 
-use crate::ssa::{Function, Inst, Module, Type, ValueData, ValueId, Vectors};
+use crate::ssa::{CastOp, Function, Inst, Module, Type, ValueData, ValueId, Vectors};
 use std::collections::HashMap;
 
 pub fn has_structs(m: &Module) -> bool {
@@ -119,6 +119,13 @@ fn lower_function(f: &mut Function, keep_vectors: Vectors) -> Result<(), String>
 }
 
 impl Lower<'_> {
+    /// a u8 value named after a u1 lane, for its byte in memory
+    fn byte_temp(&mut self, lane: ValueId) -> ValueId {
+        let name = format!("{}_byte", self.f.value(lane).name);
+        self.f.values.push(ValueData { name, ty: Type::Int { signed: false, bits: 8 }, literal: None });
+        ValueId(self.f.values.len() as u32 - 1)
+    }
+
     fn is_struct(&self, v: ValueId) -> bool {
         self.rows.contains_key(&v.0)
     }
@@ -225,8 +232,16 @@ impl Lower<'_> {
                 let row = self.rows[&dst.0].clone();
                 let addr = r(self, addr);
                 let index = index.map(|(i, s)| (r(self, i), s));
-                for (leaf, (_, foff)) in row.iter().zip(&ls) {
-                    self.out.push(Inst::Load { dst: *leaf, addr, off: off + *foff as i64, index });
+                for (leaf, (lty, foff)) in row.iter().zip(&ls) {
+                    // a u1 lane is a byte in memory (as the vector
+                    // registers and the GPU have it): loaded as one, converted
+                    if matches!(lty, Type::Int { bits: 1, .. }) {
+                        let byte = self.byte_temp(*leaf);
+                        self.out.push(Inst::Load { dst: byte, addr, off: off + *foff as i64, index });
+                        self.out.push(Inst::Cast { op: CastOp::Conv, dst: *leaf, src: byte });
+                    } else {
+                        self.out.push(Inst::Load { dst: *leaf, addr, off: off + *foff as i64, index });
+                    }
                 }
             }
             Inst::Store { val, addr, off, index } if self.is_struct(val) => {
@@ -235,8 +250,14 @@ impl Lower<'_> {
                 let row = self.row(val);
                 let addr = r(self, addr);
                 let index = index.map(|(i, s)| (r(self, i), s));
-                for (leaf, (_, foff)) in row.iter().zip(&ls) {
-                    self.out.push(Inst::Store { val: *leaf, addr, off: off + *foff as i64, index });
+                for (leaf, (lty, foff)) in row.iter().zip(&ls) {
+                    if matches!(lty, Type::Int { bits: 1, .. }) {
+                        let byte = self.byte_temp(*leaf);
+                        self.out.push(Inst::Cast { op: CastOp::Conv, dst: byte, src: *leaf });
+                        self.out.push(Inst::Store { val: byte, addr, off: off + *foff as i64, index });
+                    } else {
+                        self.out.push(Inst::Store { val: *leaf, addr, off: off + *foff as i64, index });
+                    }
                 }
             }
             Inst::Call { dsts, callee, args } => {

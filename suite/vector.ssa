@@ -56,6 +56,10 @@
 ;! shl8 1 2 3 4 1 -> 2, 8
 ;! via_memory_2 i64[0,0,0,0] 7 8 -> 15
 ;! ucmp4h 1 0x8000 3 0xffff 2 -> 14
+;! mask4_mem i64[0,0] 1 5 3 7 4 -> 10, 0x01000100
+;! mask2_mem i64[0,0] 0x3ff0000000000000 0x4008000000000000 0x4000000000000000 -> 2, 0x0100
+;! mask8_mem i64[0,0] 1 5 3 7 4 -> 170, 0x0100010001000100
+;! mask16_mem i64[0,0,0,0] 3 5 -> 1, 0x0101010101010101
 
 type v4 = i32x4
 
@@ -611,4 +615,49 @@ fn ucmp4h(a0: u16, a1: u16, a2: u16, a3: u16, k: u16) -> u8 {
     b0: u1, b1: u1, b2: u1, b3: u1 = unpack m
     r: u8 = mask4(b0, b1, b2, b3)
     ret r
+}
+
+; --- a mask through memory, where it is a byte per lane ---
+fn mask4_mem(p: ptr, a0: i32, a1: i32, a2: i32, a3: i32, k: i32) -> (u8, u32) {
+    a: i32x4 = pack a0, a1, a2, a3
+    ks: i32x4 = splat k
+    m: u1x4 = cmp.gt a, ks
+    store m, p
+    b: u1x4 = load p
+    b0: u1, b1: u1, b2: u1, b3: u1 = unpack b
+    r: u8 = mask4(b0, b1, b2, b3)
+    bytes: u32 = load p
+    ret r, bytes
+}
+fn mask2_mem(p: ptr, x0: f64, x1: f64, k: f64) -> (u8, u16) {
+    x: f64x2 = pack x0, x1
+    ks: f64x2 = splat k
+    m: u1x2 = cmp.gt x, ks
+    store m, p
+    b: u1x2 = load p
+    b0: u1, b1: u1 = unpack b
+    r: u8 = mask2(b0, b1)
+    bytes: u16 = load p
+    ret r, bytes
+}
+fn mask8_mem(p: ptr, a0: i8, a1: i8, a2: i8, a3: i8, k: i8) -> (u8, u64) {
+    a: i8x8 = pack a0, a1, a2, a3, a0, a1, a2, a3
+    ks: i8x8 = splat k
+    m: u1x8 = cmp.gt a, ks
+    store m, p
+    b: u1x8 = load p
+    b0: u1, b1: u1, b2: u1, b3: u1, b4: u1, b5: u1, b6: u1, b7: u1 = unpack b
+    r: u8 = mask8(b0, b1, b2, b3, b4, b5, b6, b7)
+    bytes: u64 = load p
+    ret r, bytes
+}
+fn mask16_mem(p: ptr, x: u8, y: u8) -> (u1, u64) {
+    a: u8x16 = splat x
+    b: u8x16 = splat y
+    m: u1x16 = cmp.lt a, b
+    store m, p
+    c: u1x16 = load p
+    r: u1 = get c, 15
+    bytes: u64 = load p, 8
+    ret r, bytes
 }

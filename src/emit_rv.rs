@@ -65,10 +65,53 @@ fn vset(bits: u32, n: u32) -> Result<&'static str, String> {
         (4, 16) => "vsetivli x0, 4, e16, m1, ta, ma",
         (8, 8) => "vsetivli x0, 8, e8, m1, ta, ma",
         (8, 16) => "vsetivli x0, 8, e16, m1, ta, ma",
+        (2, 8) => "vsetivli x0, 2, e8, m1, ta, ma",
+        (2, 16) => "vsetivli x0, 2, e16, m1, ta, ma",
+        (4, 8) => "vsetivli x0, 4, e8, m1, ta, ma",
         _ => return Err(format!("no vtype for {} lanes of {} bits", n, bits)),
     })
 }
 const VSET_E8: &str = "vsetivli x0, 16, e8, m1, ta, ma";
+/// a u1xN mask to and from memory, where it is N bytes: the register's
+/// 128/N-bit lanes narrowed to bytes (vnsrl.wi, halving each time under
+/// the narrower vtype) and stored under vl = N; a load widens them back
+/// (vzext.vf2, doubling). A narrowing's source is a register pair and
+/// must be even: v20 and v22 take turns; a widening's destination may
+/// not be its source: v21 and v23.
+fn mask_store(e: &mut RvEmit, rv: i64, ra: i64, n: u32) -> Result<(), String> {
+    let mut lane = 128 / n;
+    let mut cur = rv;
+    if lane > 8 && cur % 2 != 0 {
+        e.emit(VMV1R, &[20, cur])?;
+        cur = 20;
+    }
+    while lane > 8 {
+        let next = if cur == 20 { 22 } else { 20 };
+        e.emit(vset(lane / 2, n)?, &[])?;
+        e.emit("vnsrl.wi {v}, {v}, 0", &[next, cur])?;
+        cur = next;
+        lane /= 2;
+    }
+    e.emit(vset(8, n)?, &[])?;
+    e.emit(&vle(8, true), &[cur, ra]).map(|_| ())
+}
+fn mask_load(e: &mut RvEmit, rd: i64, ra: i64, n: u32) -> Result<(), String> {
+    e.emit(vset(8, n)?, &[])?;
+    e.emit(&vle(8, false), &[21, ra])?;
+    let mut lane = 8;
+    let mut cur = 21;
+    while lane < 128 / n {
+        let next = if cur == 21 { 23 } else { 21 };
+        e.emit(vset(lane * 2, n)?, &[])?;
+        e.emit("vzext.vf2 {v}, {v}", &[next, cur])?;
+        cur = next;
+        lane *= 2;
+    }
+    if rd != cur {
+        e.emit(VMV1R, &[rd, cur])?;
+    }
+    Ok(())
+}
 fn vle(bits: u32, store: bool) -> String {
     format!("{}{}.v {{v}}, ({{r}})", if store { "vse" } else { "vle" }, bits)
 }
@@ -1122,11 +1165,13 @@ fn compile_vector_inst(e: &mut RvEmit, inst: &Inst) -> Option<Result<(), String>
         })(),
         Inst::Load { dst, addr, off, index } if e.is_v(*dst) => (|| {
             let (lane, _) = e.func.vector(e.func.ty(*dst)).unwrap();
-            if e.func.width(lane) == Some(1) {
-                return Err(format!("a load of {} (a lane a byte each): not yet", e.tyname(*dst)));
-            }
-            let (bits, _) = e.shape(*dst);
+            let (bits, n) = e.shape(*dst);
             let ra = e.vector_address(*addr, *off, *index)?;
+            if e.func.width(lane) == Some(1) {
+                let rd = e.dst_vreg(*dst, 20);
+                mask_load(e, rd, ra, n)?;
+                return e.finish_v(*dst, rd);
+            }
             let rd = e.dst_vreg(*dst, 23);
             e.vset(*dst)?;
             e.emit(&vle(bits, false), &[rd, ra])?;
@@ -1134,12 +1179,12 @@ fn compile_vector_inst(e: &mut RvEmit, inst: &Inst) -> Option<Result<(), String>
         })(),
         Inst::Store { val, addr, off, index } if e.is_v(*val) => (|| {
             let (lane, _) = e.func.vector(e.func.ty(*val)).unwrap();
-            if e.func.width(lane) == Some(1) {
-                return Err(format!("a store of {} (a lane a byte each): not yet", e.tyname(*val)));
-            }
-            let (bits, _) = e.shape(*val);
+            let (bits, n) = e.shape(*val);
             let rv = e.src_vreg(*val, 20)?;
             let ra = e.vector_address(*addr, *off, *index)?;
+            if e.func.width(lane) == Some(1) {
+                return mask_store(e, rv, ra, n);
+            }
             e.vset(*val)?;
             e.emit(&vle(bits, true), &[rv, ra]).map(|_| ())
         })(),

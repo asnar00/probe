@@ -1224,6 +1224,50 @@ fn ld1(bits: u32, n: u32, store: bool) -> String {
 fn ins(bits: u32) -> &'static str {
     match bits { 8 => "mov {v}.b[{i 0..15}], {w}", 16 => "mov {v}.h[{i 0..7}], {w}", 32 => "mov {v}.s[{i 0..3}], {w}", _ => "mov {v}.d[{i 0..1}], {x}" }
 }
+/// a u1xN mask to and from memory, where it is N bytes: the register's
+/// 128/N-bit lanes narrowed to bytes (xtn, halving each time) and the
+/// first N stored — a whole register or half, or one lane of it; a load
+/// widens them back (ushll, doubling). Through v20/v21.
+fn mask_store(e: &mut FnEmit, rv: i64, ra: i64, n: u32) -> Result<(), String> {
+    let mut lane = 128 / n;
+    let mut cur = rv;
+    while lane > 8 {
+        let t = format!("xtn {{v}}.{}, {{v}}.{}", FnEmit::arrangement(lane / 2, 128 / lane), FnEmit::arrangement(lane, 128 / lane));
+        e.emit(&t, &[20, cur])?;
+        cur = 20;
+        lane /= 2;
+    }
+    let t = match n {
+        16 => "st1 {{{v}.16b}}, [{x}]",
+        8 => "st1 {{{v}.8b}}, [{x}]",
+        4 => "st1 {{{v}.s}}[0], [{x}]",
+        _ => "st1 {{{v}.h}}[0], [{x}]",
+    };
+    e.emit(t, &[cur, ra]).map(|_| ())
+}
+fn mask_load(e: &mut FnEmit, rd: i64, ra: i64, n: u32) -> Result<(), String> {
+    let t = match n {
+        16 => "ld1 {{{v}.16b}}, [{x}]",
+        8 => "ld1 {{{v}.8b}}, [{x}]",
+        4 => "ld1 {{{v}.s}}[0], [{x}]",
+        _ => "ld1 {{{v}.h}}[0], [{x}]",
+    };
+    e.emit(t, &[20, ra])?;
+    let mut lane = 8;
+    let mut cur = 20;
+    while lane < 128 / n {
+        let t = format!("ushll {{v}}.{}, {{v}}.{}, #0", FnEmit::arrangement(lane * 2, 64 / lane), FnEmit::arrangement(lane, 64 / lane));
+        let next = if cur == 20 { 21 } else { 20 };
+        e.emit(&t, &[next, cur])?;
+        cur = next;
+        lane *= 2;
+    }
+    if rd != cur {
+        e.emit(MOV_V, &[rd, cur])?;
+    }
+    Ok(())
+}
+
 fn umov(bits: u32, signed: bool) -> &'static str {
     match (bits, signed) {
         (8, true) => "smov {w}, {v}.b[{i 0..15}]",
@@ -1590,23 +1634,24 @@ fn compile_vector_inst(e: &mut FnEmit, inst: &Inst) -> Option<Result<(), String>
         })(),
         Inst::Load { dst, addr, off, index } if e.is_v(*dst) => (|| {
             let (lane, _) = e.func.vector(e.func.ty(*dst)).unwrap();
-            if e.func.width(lane) == Some(1) {
-                return Err(format!("a load of {} (a lane a byte each): not yet", e.tyname(*dst)));
-            }
             let (bits, n, _) = e.shape(*dst);
             let ra = e.vector_address(*addr, *off, *index)?;
             let rd = e.dst_freg(*dst, 19);
-            e.emit(&ld1(bits, n, false), &[rd, ra])?;
+            if e.func.width(lane) == Some(1) {
+                mask_load(e, rd, ra, n)?;
+            } else {
+                e.emit(&ld1(bits, n, false), &[rd, ra])?;
+            }
             e.finish_f(*dst, rd)
         })(),
         Inst::Store { val, addr, off, index } if e.is_v(*val) => (|| {
             let (lane, _) = e.func.vector(e.func.ty(*val)).unwrap();
-            if e.func.width(lane) == Some(1) {
-                return Err(format!("a store of {} (a lane a byte each): not yet", e.tyname(*val)));
-            }
             let (bits, n, _) = e.shape(*val);
             let rv = e.src_freg(*val, 16)?;
             let ra = e.vector_address(*addr, *off, *index)?;
+            if e.func.width(lane) == Some(1) {
+                return mask_store(e, rv, ra, n);
+            }
             e.emit(&ld1(bits, n, true), &[rv, ra]).map(|_| ())
         })(),
         Inst::IConst { dst, .. } if e.is_v(*dst) => Err(format!("a literal of a vector type ({}): not yet — splat it", e.tyname(*dst))),
