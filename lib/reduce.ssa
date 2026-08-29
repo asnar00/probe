@@ -226,3 +226,15 @@ fn any(N)(v: u(N)x16) -> u(N) {
     t14: u(N) = or t12, t13
     ret t14
 }
+
+; --- one lane: a chunk of a number on a platform without vector
+; registers is the number itself ---
+fn sum(v: number) -> number {
+    ret v
+}
+fn min(v: number) -> number {
+    ret v
+}
+fn max(v: number) -> number {
+    ret v
+}

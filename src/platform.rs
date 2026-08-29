@@ -281,6 +281,8 @@ impl Platform {
                 Vectors::Some(Box::leak(Box::new(VectorWhole { types, ops })))
             }
         };
+        // a chunk is a register's worth where there are vector registers
+        policy.chunk_bits = if matches!(policy.vectors, Vectors::None) { 0 } else { 128 };
         policy
     }
 

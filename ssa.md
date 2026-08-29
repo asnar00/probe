@@ -346,7 +346,17 @@ s: f32 = sum a                                ; a reduction, to a scalar; min, m
 
 `T[]` is a **slice**: a view into a buffer, two words — a typed pointer to its first element and a length — and several may look into one buffer at different places. A **buffer** is memory with a header, the element size and the capacity a word each, then the elements: `data name: buffer(T, N)` declares one, `buffer_init(p, elem, cap)` (`lib/slice.ssa`) writes the header on memory carved at run time. `slice p` takes the whole buffer and checks the element size against the slice's; `view a, off, n` a part, checked to lie within (`off >= 0`, `n >= 0`, `off + n <= len a`); `len` and `ptr` read the two words. A slice is a struct and travels as one — two arguments across a call, dissolved into its words everywhere — and is otherwise a value like any other.
 
-An operation on slices is written like a store, with no result, and writes into its first operand: `add c, a, b`, `sub`, `mul`, `div`, `min`, `max` with two slices or a slice and a scalar, `neg`, `abs`, `sqrt` (on `scalar[]`) with one, `copy c, a`, `fill c, k`; lengths must agree, which is a `check`. A reduction — `sum`, `min`, `max` — gives a scalar. Each is a generic of `lib/slice.ssa` over `number[]` (the tower binds `number` to the element type), and its body is the definition: a loop over the elements, one at a time, which runs on every path and is what a machine's chunked form is checked against.
+An operation on slices is written like a store, with no result, and writes into its first operand: `add c, a, b`, `sub`, `mul`, `div`, `min`, `max` with two slices or a slice and a scalar, `neg`, `abs`, `sqrt` (on `scalar[]`) with one, `copy c, a`, `fill c, k`; lengths must agree, which is a `check`. A reduction — `sum`, `min`, `max` — gives a scalar. Each is a generic of `lib/slice.ssa` over `number[]` (the tower binds `number` to the element type), and its body is the definition — and the machine's form at once, through **chunks**:
+
+```
+k: i64 = lanes chunk(f32)                     ; how many f32 a vector register holds here: 4 on NEON and RVV, 1 elsewhere
+m: i64 = fit f32, left                        ; how many of `left` elements a chunk takes: min(left, k)
+v: chunk(f32) = load q, ci                    ; q: ptr(chunk(f32)) — a register's worth, by chunk index
+w: chunk(f32) = add v, u                      ; a vector operation, or the element's, on a platform without
+sz: i64 = sizeof f32
+```
+
+`chunk(T)` is as many lanes of T as the platform's vector register holds — `f32x4` on NEON and RVV, `f32` itself where there are no vector registers — so a body written over `chunk(number)` is vector instructions on one machine and the plain operation on another, and the same text. A slice operation takes whole chunks while `fit` says one is left, then the elements one at a time to the end: on a platform without vector registers the chunk loop *is* the definition, one element at a time; with them it is the vector instructions, checked against it by the other paths. `lanes`, `sizeof` and `fit` are constants of a type on the platform (the last a `min`), which is what lets the library say "as many as fit" without knowing the number.
 
 ### Structs
 

@@ -282,6 +282,9 @@ pub enum TypeExpr {
     Array(Box<TypeExpr>, Vec<IntExpr>),
     /// `T[]`: a slice — a view into a buffer of T: (data: ptr(T), len: i64)
     Slice(Box<TypeExpr>),
+    /// `chunk(T)`: as many lanes of T as the platform's vector register
+    /// holds (`TxK`), or T itself where it has none
+    Chunk(Box<TypeExpr>),
 }
 
 impl fmt::Display for TypeExpr {
@@ -306,6 +309,7 @@ impl fmt::Display for TypeExpr {
             TypeExpr::Vector(inner, n) => write!(f, "{}x{}", inner, n),
             TypeExpr::TPtr(inner) => write!(f, "ptr({})", inner),
             TypeExpr::Slice(inner) => write!(f, "{}[]", inner),
+            TypeExpr::Chunk(inner) => write!(f, "chunk({})", inner),
             TypeExpr::Array(inner, dims) => {
                 let ds: Vec<String> = dims.iter().map(|d| d.to_string()).collect();
                 write!(f, "array({}, {})", inner, ds.join(", "))
@@ -1199,6 +1203,10 @@ pub struct Policy {
     /// per lane: all of them (AIR), the ones its classes and rules name
     /// (NEON), or none
     pub vectors: Vectors,
+    /// the width of a chunk — `chunk(T)`, as many lanes of T as a vector
+    /// register holds — on this platform: 128 where it has vector
+    /// registers, 0 (one lane) where it has none
+    pub chunk_bits: u32,
 }
 
 /// what a platform keeps whole: every vector, or the vector types it
@@ -1243,8 +1251,8 @@ impl Policy {
     pub fn new(int: Type) -> Result<Policy, String> {
         match int {
             // the float of the same class as the integer: f32 with i32, f64 with i64
-            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16, rational: (16, 16), scalar: "float", round: 0, native_mul: true, native_div: true, vectors: Vectors::None }),
-            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32, rational: (32, 32), scalar: "float", round: 0, native_mul: true, native_div: true, vectors: Vectors::None }),
+            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16, rational: (16, 16), scalar: "float", round: 0, native_mul: true, native_div: true, vectors: Vectors::None, chunk_bits: 0 }),
+            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32, rational: (32, 32), scalar: "float", round: 0, native_mul: true, native_div: true, vectors: Vectors::None, chunk_bits: 0 }),
             t => Err(format!("'int' cannot resolve to {}", t.name())),
         }
     }
@@ -1793,7 +1801,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     // a target without a multiplier: the wide lowering's word products
     // call the library's mul(64) on u64, instantiated here
     let mul64 = if !p.policy.native_mul && p.generics.iter().any(|g| g.name == "mul") {
-        Some(p.dispatch("mul", Type::U64, Type::U64)?)
+        Some(p.dispatch("mul", Type::U64, Type::U64, 2)?)
     } else {
         None
     };
@@ -2277,9 +2285,23 @@ impl Parser {
                     }
                 }
             }
-            TypeExpr::Vector(inner, _) | TypeExpr::Slice(inner) => self.abstract_names(inner, out),
+            TypeExpr::Vector(inner, _) | TypeExpr::Slice(inner) | TypeExpr::Chunk(inner) => self.abstract_names(inner, out),
             _ => {}
         }
+    }
+
+    /// how many lanes of a type a chunk holds on this platform: a
+    /// register's worth, or one where there are no vector registers
+    fn chunk_lanes(&self, elem: Type) -> Option<u32> {
+        let bits = match elem {
+            Type::Int { bits, .. } => bits as u32,
+            Type::Pack(i) => self.packs[i as usize].width,
+            _ => return None,
+        };
+        if bits == 0 || bits > 64 {
+            return None;
+        }
+        Some(if self.policy.chunk_bits >= bits { (self.policy.chunk_bits / bits).clamp(1, 64) } else { 1 })
     }
 
     /// the element type of a slice type, if ty is one
@@ -2485,6 +2507,11 @@ impl Parser {
             TypeExpr::Slice(inner) => match self.slice_of(ty) {
                 Some(elem) => self.unify(inner, elem, binds, tbinds),
                 None => false,
+            },
+            // a chunk of T is TxK for the platform's K (T itself when K is 1)
+            TypeExpr::Chunk(inner) => match self.vector_of(ty) {
+                Some((lane, n)) => self.chunk_lanes(lane) == Some(n) && n > 1 && self.unify(inner, lane, binds, tbinds),
+                None => self.chunk_lanes(ty) == Some(1) && self.unify(inner, ty, binds, tbinds),
             },
             TypeExpr::Vector(inner, n) => {
                 let Type::Struct(i) = ty else {
@@ -2837,14 +2864,15 @@ impl Parser {
             }
             return Ok((TypeExpr::Fn(ptys, rets), j));
         }
-        // ptr(T): a typed pointer; array(T, W, H, ...): a shape
-        if (name == "ptr" || name == "array") && at(i + 1) == Some(&Tok::LParen) {
+        // ptr(T): a typed pointer; chunk(T): a register's worth of T;
+        // array(T, W, H, ...): a shape
+        if (name == "ptr" || name == "array" || name == "chunk") && at(i + 1) == Some(&Tok::LParen) {
             let (inner, mut j) = self.type_expr_at(i + 2, params)?;
-            if name == "ptr" {
+            if name == "ptr" || name == "chunk" {
                 if at(j) != Some(&Tok::RParen) {
-                    return Err(err("expected ')' after the pointer's type".into()));
+                    return Err(err(format!("expected ')' after the {}'s type", if name == "ptr" { "pointer" } else { "chunk" })));
                 }
-                return Ok((TypeExpr::TPtr(Box::new(inner)), j + 1));
+                return Ok((if name == "ptr" { TypeExpr::TPtr(Box::new(inner)) } else { TypeExpr::Chunk(Box::new(inner)) }, j + 1));
             }
             let mut dims = Vec::new();
             loop {
@@ -3259,6 +3287,14 @@ impl Parser {
                 });
                 Ok(Type::Struct(id))
             }
+            TypeExpr::Chunk(inner) => {
+                // the vector of as many lanes as the platform's register
+                // holds — a lane where it has no vector registers
+                let elem0 = self.instantiate(inner, env, depth + 1)?;
+                let elem = self.policy.resolve(elem0);
+                let k = self.chunk_lanes(elem).ok_or_else(|| format!("a chunk cannot be of {}", self.tyname_of(elem)))?;
+                self.instantiate(&TypeExpr::Vector(inner.clone(), IntExpr::Lit(k as i64)), env, depth + 1)
+            }
             TypeExpr::Slice(inner) => {
                 // a view into a buffer: its data (a typed pointer) and its
                 // length, a struct — two words, dissolved like any struct
@@ -3519,7 +3555,7 @@ impl Parser {
     /// the library's `conv` into `ty` from `from`, if there is one
     fn conv_from(&mut self, ty: Type, from: Type) -> Option<String> {
         let at = self.pos;
-        let r = self.dispatch("conv", from, ty).ok();
+        let r = self.dispatch("conv", from, ty, 1).ok();
         self.pos = at;
         r
     }
@@ -3983,7 +4019,7 @@ impl Parser {
         if self.policy.native_mul {
             Ok(Inst::Bin { op: BinOp::IMul, dst, lhs: a, rhs: b })
         } else {
-            let callee = self.dispatch("mul", Type::I64, Type::I64)?;
+            let callee = self.dispatch("mul", Type::I64, Type::I64, 2)?;
             Ok(Inst::Call { dsts: vec![dst], callee, args: vec![a, b] })
         }
     }
@@ -4070,7 +4106,7 @@ impl Parser {
                 return Err(self.err(format!("'{}' on vectors gives a vector; {} is {}", op, scope.values[dst.0 as usize].name, self.tyname_of(dty))));
             }
             let vty = scope.values[operands[0].0 as usize].ty;
-            let callee = self.dispatch(op, vty, dty)?;
+            let callee = self.dispatch(op, vty, dty, operands.len())?;
             return Ok(Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() });
         };
         let dname = scope.values[dst.0 as usize].name.clone();
@@ -4110,7 +4146,7 @@ impl Parser {
                         _ => false,
                     };
                 if to_library {
-                    let callee = self.dispatch(op, sl, dlane)?;
+                    let callee = self.dispatch(op, sl, dlane, operands.len())?;
                     Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() }
                 } else {
                     Inst::Bin { op: *bin, dst, lhs: operands[0], rhs: operands[1] }
@@ -4118,20 +4154,20 @@ impl Parser {
             } else if let Some(cc) = op.strip_prefix("cmp.") {
                 let cond = CONDS.iter().find(|(n, _)| *n == cc).map(|(_, c)| *c).ok_or_else(|| self.err(format!("unknown comparison condition '{}'", cc)))?;
                 if sl.is_pack() {
-                    let callee = self.dispatch(cond.name(), sl, dlane)?;
+                    let callee = self.dispatch(cond.name(), sl, dlane, 2)?;
                     Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() }
                 } else {
                     Inst::ICmp { cond, dst, lhs: operands[0], rhs: operands[1] }
                 }
             } else if op == "conv" || op == "cast" {
                 if op == "conv" && (sl.is_pack() || dlane.is_pack()) {
-                    let callee = self.dispatch(op, sl, dlane)?;
+                    let callee = self.dispatch(op, sl, dlane, operands.len())?;
                     Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() }
                 } else {
                     Inst::Cast { op: if op == "conv" { CastOp::Conv } else { CastOp::Cast }, dst, src: operands[0] }
                 }
             } else {
-                let callee = self.dispatch(op, sl, dlane)?;
+                let callee = self.dispatch(op, sl, dlane, operands.len())?;
                 Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() }
             };
             return Ok(inst);
@@ -4151,7 +4187,7 @@ impl Parser {
                         _ => false,
                     };
                 if to_library {
-                    let callee = self.dispatch(op, sl, dlane)?;
+                    let callee = self.dispatch(op, sl, dlane, args.len())?;
                     Inst::Call { dsts: vec![r], callee, args }
                 } else {
                     Inst::Bin { op: *bin, dst: r, lhs: args[0], rhs: args[1] }
@@ -4159,21 +4195,21 @@ impl Parser {
             } else if let Some(cc) = op.strip_prefix("cmp.") {
                 let cond = CONDS.iter().find(|(n, _)| *n == cc).map(|(_, c)| *c).ok_or_else(|| self.err(format!("unknown comparison condition '{}'", cc)))?;
                 if sl.is_pack() {
-                    let callee = self.dispatch(cond.name(), sl, dlane)?;
+                    let callee = self.dispatch(cond.name(), sl, dlane, 2)?;
                     Inst::Call { dsts: vec![r], callee, args }
                 } else {
                     Inst::ICmp { cond, dst: r, lhs: args[0], rhs: args[1] }
                 }
             } else if op == "conv" || op == "cast" {
                 if op == "conv" && (sl.is_pack() || dlane.is_pack()) {
-                    let callee = self.dispatch(op, sl, dlane)?;
+                    let callee = self.dispatch(op, sl, dlane, args.len())?;
                     Inst::Call { dsts: vec![r], callee, args }
                 } else {
                     Inst::Cast { op: if op == "conv" { CastOp::Conv } else { CastOp::Cast }, dst: r, src: args[0] }
                 }
             } else {
                 // a library operation (`sqrt`, `fma`, ...) on each lane
-                let callee = self.dispatch(op, sl, dlane)?;
+                let callee = self.dispatch(op, sl, dlane, args.len())?;
                 Inst::Call { dsts: vec![r], callee, args }
             };
             self.consts.push(inst);
@@ -4210,7 +4246,7 @@ impl Parser {
                 _ => false,
             };
             if lty.is_pack() || to_library {
-                let callee = self.dispatch(op, self.policy.resolve(lty), self.policy.resolve(scope.values[dst.0 as usize].ty))?;
+                let callee = self.dispatch(op, self.policy.resolve(lty), self.policy.resolve(scope.values[dst.0 as usize].ty), 2)?;
                 return Ok(Inst::Call {
                     dsts: vec![dst],
                     callee,
@@ -4236,7 +4272,7 @@ impl Parser {
             }
             // on a pack, `cmp.lt` is the library's `lt` for that type
             if scope.values[lhs.0 as usize].ty.is_pack() {
-                let callee = self.dispatch(cond.name(), scope.values[lhs.0 as usize].ty, scope.values[dst.0 as usize].ty)?;
+                let callee = self.dispatch(cond.name(), scope.values[lhs.0 as usize].ty, scope.values[dst.0 as usize].ty, 2)?;
                 return Ok(Inst::Call {
                     dsts: vec![dst],
                     callee,
@@ -4303,7 +4339,7 @@ impl Parser {
                 // a conversion touching a pack is the library's: conv from
                 // float(E, M) to i(W), from u(W) to float(E, M), ...
                 if op == "conv" && (ts.is_pack() || td.is_pack()) {
-                    let callee = self.dispatch(op, ts, td)?;
+                    let callee = self.dispatch(op, ts, td, 1)?;
                     return Ok(Inst::Call {
                         dsts: vec![dst],
                         callee,
@@ -4312,6 +4348,37 @@ impl Parser {
                 }
                 let cast = if op == "conv" { CastOp::Conv } else { CastOp::Cast };
                 Ok(Inst::Cast { op: cast, dst, src })
+            }
+            // constants of a type: how many lanes a chunk of it holds on
+            // this platform, and its size in bytes
+            "lanes" | "sizeof" => {
+                let env = self.env.clone();
+                let (ty, next) = self.type_at(self.pos, &env, 0)?;
+                self.pos = next;
+                let t = self.policy.resolve(ty);
+                let v = if op == "lanes" {
+                    match self.vector_of(t) {
+                        Some((_, n)) => n as i128,
+                        None => 1,
+                    }
+                } else {
+                    self.layout_of(t).map(|(sz, _)| sz as i128).ok_or_else(|| self.err(format!("{} has no size", self.tyname_of(t))))?
+                };
+                Ok(Inst::IConst { dst, imm: v })
+            }
+            // how many of `left` elements of T a chunk takes: min(left, lanes)
+            "fit" => {
+                let env = self.env.clone();
+                let (ty, next) = self.type_at(self.pos, &env, 0)?;
+                self.pos = next;
+                self.expect(Tok::Comma)?;
+                let left = self.parse_operand(scope, Some(Type::I64))?;
+                let t = self.policy.resolve(ty);
+                let k = self.chunk_lanes(t).ok_or_else(|| self.err(format!("a chunk cannot be of {}", self.tyname_of(t))))?;
+                let dname = scope.values[dst.0 as usize].name.clone();
+                let kv = self.hidden(scope, Type::I64, format!("{}_lanes", dname), |v| Inst::IConst { dst: v, imm: k as i128 });
+                let callee = self.dispatch("min", Type::I64, Type::I64, 2)?;
+                Ok(Inst::Call { dsts: vec![dst], callee, args: vec![left, kv] })
             }
             // a slice of a buffer: its header checked (the element size is
             // the slice's), its capacity the length, its data the view
@@ -4454,7 +4521,15 @@ impl Parser {
             }
             "splat" => {
                 let dty = scope.values[dst.0 as usize].ty;
-                let (lane, n) = self.vector_of(dty).ok_or_else(|| self.err(format!("splat gives a vector; {} is {}", scope.values[dst.0 as usize].name, self.tyname_of(dty))))?;
+                // a splat into a chunk of one lane (a platform with no vector
+                // registers) is the value itself
+                let Some((lane, n)) = self.vector_of(dty) else {
+                    let x = self.parse_operand(scope, Some(dty))?;
+                    if scope.values[x.0 as usize].ty != dty {
+                        return Err(self.err(format!("splat gives a vector; {} is {}", scope.values[dst.0 as usize].name, self.tyname_of(dty))));
+                    }
+                    return Ok(Inst::Cast { op: CastOp::Cast, dst, src: x });
+                };
                 let x = self.parse_operand(scope, Some(lane))?;
                 Ok(Inst::Pack { dst, args: vec![x; n as usize] })
             }
@@ -4553,7 +4628,7 @@ impl Parser {
                 if !fty0.is_pack() && !fty0.is_int() && self.slice_of(fty0).is_none() {
                     return Err(self.err(format!("unknown opcode '{}'", op)));
                 }
-                let callee = self.dispatch(op, scope.values[first.0 as usize].ty, scope.values[dst.0 as usize].ty)?;
+                let callee = self.dispatch(op, scope.values[first.0 as usize].ty, scope.values[dst.0 as usize].ty, args.len())?;
                 Ok(Inst::Call {
                     dsts: vec![dst],
                     callee,
@@ -4567,7 +4642,7 @@ impl Parser {
     /// the generic named `op` whose first parameter matches the source and
     /// whose first result matches the destination, with the width
     /// parameters those matches bind.
-    fn dispatch(&mut self, op: &str, src: Type, dst: Type) -> Result<String, ParseError> {
+    fn dispatch(&mut self, op: &str, src: Type, dst: Type, arity: usize) -> Result<String, ParseError> {
         let tyname = |p: &Parser, t: Type| match t {
             Type::Pack(i) => p.packs[i as usize].name.clone(),
             t => t.name(),
@@ -4577,7 +4652,7 @@ impl Parser {
         // one over `scalar` before one over `number`
         let mut best: Option<(u8, usize, Vec<i64>, Vec<(String, Type)>)> = None;
         for g in 0..self.generics.len() {
-            if self.generics[g].name != op {
+            if self.generics[g].name != op || self.generics[g].param_types.len() != arity {
                 continue;
             }
             // an operation defines a value: a generic with no result (a

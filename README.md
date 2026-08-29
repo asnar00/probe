@@ -89,7 +89,7 @@ Every file compiled gets `lib/*.ssa` appended. Number formats are libraries, nev
 - `lib/time.ssa` — a `rational(64, 64)` of seconds with units: a sample period at 44100 Hz times 44100 is exactly one second.
 - `lib/decimal.ssa` — `decimal(N, S)`, an `i(N)` significand at scale 10^S: cents that add exactly.
 - `lib/wide.ssa` — division (and, on a core without a multiplier, multiplication) for wide integers.
-- `lib/slice.ssa` — slices: `T[]` a view into a buffer (a typed pointer and a length); `add c, a, b`, `mul c, a, k`, `fill`, `copy`, `sum`... as loops over the elements, the definition every chunked form is checked against.
+- `lib/slice.ssa` — slices: `T[]` a view into a buffer (a typed pointer and a length); `add c, a, b`, `mul c, a, k`, `fill`, `copy`, `sum`... as loops over chunks — `chunk(T)`, a vector register's worth of T, or T itself where there are none — then the tail one at a time: vector instructions on NEON and RVV, the definition on every other path.
 - `lib/reduce.ssa` — across the lanes: `sum`, `min`, `max` of a vector, `all`, `any` of a mask, as pairwise trees; one instruction on NEON (`addv`, `fmaxv`...) and, for the integers, RVV (`vredsum`...).
 - `lib/int.ssa` — `min`, `max`, `abs`, `neg` over `number`, the top of the tower of abstract types: one body for every integer and number library (float keeps its own, for NaN), instructions where a platform has them (`cmp`/`csel` on arm64; `smin`/`umin`, `vmin`/`vminu`, `abs`, `neg` over vectors).
 - `lib/arena.ssa` — bump allocation over memory the program declared: `arena_alloc`, `arena_mark`/`arena_release`, `arena_reset`; the frame allocator of game engines, and the bottom rung of a lifetime ladder (call, frame, object, machine) that never needs a heap. Running out is a failed `check`.
@@ -255,7 +255,7 @@ Deliberately not here yet (`future-work.md` has the queue, `handover.md` the rea
 - A kernel's threads as real worker threads on wasm.
 - Tasks dealt across cores in the OS programs.
 - Textures as handles with platform operations; WebGPU as a second GPU path.
-- Scalable RVV (`vl` as a value, not a constant); wasm SIMD through the same seam; shuffles and dot products.
+- A chunk wider than 128 bits (RVV's `vl` on a machine with a wider VLEN: the chunk width is the platform's constant, not the chip's); wasm SIMD through the same seam; shuffles and dot products.
 - Capacity analysis for arenas and stacks.
 - External (libc) calls from JIT'd code.
 - Differential testing against clang, to close the semantic loop the way the prober closed the encoding loop.
