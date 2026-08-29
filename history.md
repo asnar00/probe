@@ -6,11 +6,53 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ### Chunks — `0ec3a49` · 2026-08-29
 
+```
+fn fill(c: number[], s: number) {
+    n: i64 = len c
+    pc: ptr(number) = ptr c
+    vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
+    cc: u1 = cmp.eq stc, 1
+    contig: u1 = cast cc
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
+    ks: chunk(number) = splat s
+    k: i64 = lanes chunk(number)
+    stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
+        left: i64 = sub limit, i
+        m: i64 = fit number, left
+        partial: u1 = cmp.lt m, k
+        if partial {
+            break i
+        }
+        store ks, vc, ci
+```
+
 The lower layer, and with it the slice operations became vector code without a line of emitter changing. `chunk(T)` is as many lanes of T as the platform's vector register holds — `f32x4` on NEON and RVV, where the platform has a vector class, `f32` itself where it has none — resolved as the fixed vector type it is, so every rule of the last three days applies to it unchanged. Three constants of a type on a platform go with it: `lanes chunk(f32)`, `sizeof f32`, and `fit f32, left`, which is `min(left, lanes)` and the one thing a library needs to say "as many as fit" without knowing the number. `lib/slice.ssa` was rewritten over them: an operation takes whole chunks while `fit` says one is left, walking memory through a typed pointer to `chunk(number)` indexed by chunk — a computed byte offset is not addressing here, a lesson relearned — then the elements one at a time to the end; a reduction accumulates a chunk, reduces its lanes, and finishes the tail. On a platform without vector registers a chunk is one element, `splat` into it is the value, and the chunk loop *is* the definition; with them it is `ld1`, `fadd .4s`, `st1` and `addv` on one machine and `vle32`, `vfadd.vv`, `vse32` and `vredsum` on the other, which `probe footprint` shows for the same suite that the other paths run one element at a time. One thing it needed: an operation's dispatch now matches the operand count, since a one-argument `min` (over a slice, or the one lane of a scalar chunk) sits beside the two-argument one. 925 on every path and both variants. What this is not, said plainly in `reference/scalable-vectors.md`: a chunk is 128 bits because the platform says so; RVV on a wider chip would say more, and the type would have to say "the machine's" for the same binary to widen.
 
 ---
 
 ### Slices — `62d01d2` · 2026-08-29
+
+```
+fn views() -> (i32, i32) {
+    p: ptr = addr ia
+    all: i32[] = slice p
+    lo: i32[] = view all, 0, 4
+    hi: i32[] = view all, 4, 4
+    fill lo, 1
+    fill hi, 2
+    s: i32 = sum all
+    n: i64 = len hi
+    n32: i32 = conv n
+    t: i32 = mul s, n32
+    m: i32 = sub t, 9
+    ret m, t
+}
+```
 
 The design note on scalable vectors came back with a different top layer than it proposed, and a better one: "size should ride with the ptr". So a `T[]` is a *slice* — a view into a buffer, a typed pointer to its first element and a length, two words, several of which may look into one buffer at different places — and a buffer is memory with a header, the element size and the capacity, then the elements (`data b: buffer(f32, 1024)`, or `buffer_init` on memory the heap gave). `slice p` takes the whole buffer and checks the element size against the slice's; `view a, off, n` a part, checked to lie within; `len` and `ptr` read the words. An operation on slices is whole and writes into its first operand, written like a store — `add c, a, b`, `mul c, a, 2.0`, `fill c, 0.0`, `copy c, a` — and a reduction gives a scalar, `s: f32 = sum a`. Each is a generic of `lib/slice.ssa` over `number[]`, which the tower of the day before made a one-liner to declare, and its body — a loop over the elements, one at a time — is the definition on every path, and what the chunked form to come will be checked against. In the parser a slice is a struct, so the struct lowering and the calling convention carry it with nothing new; the new things are `[` and `]`, `buffer(T, N)` with its header laid into the data, the four instructions with their `check`s, and a statement form for a generic whose first operand is a slice. One thing it sharpened: `min` over a slice is both a reduction (a result) and an elementwise operation (none), so an operation that defines a value dispatches only to a generic with a result and a statement only to one without. Eight cases, three of them `-> check` (lengths that differ, a view past the end, a slice of the wrong element size — the GPU skips those, as it must); 925 on every path and both variants. Next: `chunk(T)` and `fit`, then the library's loop over chunks, then the rules.
 
@@ -18,11 +60,34 @@ The design note on scalable vectors came back with a different top layer than it
 
 ### The tower — `f50bfa9` · 2026-08-29
 
+```
+fn min(a: number, b: number) -> number {
+    lt: u1 = cmp.lt a, b
+    r: number = if lt {
+        yield a
+    } else {
+        yield b
+    }
+    ret r
+}
+```
+
 "If we have a scalar type that is parent to int/float/etc, wouldn't we define max and min on scalars and have that single function just work on all numerics?" — and, to the suggestion of a type parameter: "no, that's what abstracts are for. It's a tower of types at the top of which is... number". So it is. `number` is over `int`, `uint` and `scalar`; `scalar` over the number libraries; each of those over its widths; and the rule that makes it work is one sentence: an abstract name is bound by the nearest thing that binds it — the policy in a program's body, the *argument* in a function's signature. `fn min(a: number, b: number) -> number` in `lib/int.ssa` is then a template, instantiated as `min_i8`, `min_f32`, `min_fixed_16_16` at each call, its body's `number` that type and its `cmp.lt` dispatching as it would on it. Where several definitions of a name take the arguments, the most specific wins — `float` before `scalar` before `number` — which is how `lib/float.ssa` keeps its NaN-propagating `min` and `max` and `lib/rational.ssa` its NaR-aware ones while fixed, decimal, unit and sunit lose their copies, and how `lib/reduce.ssa`'s `sum(v: numberx4)` covers every lane type with one body per lane count. In the parser that is: a plain `fn` whose parameters mention an abstract name bare is recorded as a generic with type parameters; `unify` binds a name to a type as it binds `N` to a width; an instance carries its type bindings through the same re-parse (`tenv` beside `env`); the opcode form and a call by name both choose an instance by unifying every parameter with the arguments — a call by name to a generic had never been dispatched at all, which is what "call to undefined function sum" had been the day before — and a template that is the only definition of its name gets a default instance under that name, the policy's binding, so a program's `fn f(a: int)` is still `f` for a directive to reach. One thing it bumped into: `suite/wide.ssa` defines its own plain `add` on `u128`, so a plain function whose signature matches the arguments is called as written before any generic of the name is considered. 917 cases on every path and both variants; three parser tests rewritten to the new rule.
 
 ---
 
 ### Across the lanes — `5857a94` · 2026-08-29
+
+```
+fn allany(a0: i32, a1: i32, a2: i32, a3: i32, k: i32) -> (u1, u1) {
+    v: i32x4 = pack a0, a1, a2, a3
+    ks: i32x4 = splat k
+    m: u1x4 = cmp.gt v, ks
+    every: u1 = all m
+    some: u1 = any m
+    ret every, some
+}
+```
 
 The horizontals: what a vector's lanes come to together. `lib/reduce.ssa` defines `sum`, `min` and `max` of a vector and `all` and `any` of a mask as generics over the vector's shape — `fn sum(W)(v: i(W)x4) -> i(W)`, for which the parser learned to take a lane count after a parameterized type — each a pairwise tree, `(l0 + l1) + (l2 + l3)`, because that is the order a pairwise instruction takes, and so the meaning a rule is checked against: NEON's `faddp` twice over an `f32x4` computes exactly it; RVV's `vfredosum` sums in another order and `vfredmin` takes a NaN as `vfmin` does, so on RVV the floats' reductions stay the library's, as their scalar `min` and `max` do. They are written as operations with a scalar result, `s: i32 = sum v`, which took a small change: the operation form on vectors had insisted the result be a vector, and a plain call to a generic's name is never dispatched by type — it is taken on trust as external, which natively had passed unnoticed because every `sum` had a rule and the rule is chosen by signature, and on riscv became "call to undefined function sum". The rules: `addv`, `smaxv`, `uminv` and the rest reduce into lane 0 of a vector register and `umov` reads it out, so a `v` operand may now take a slot named as one of its lanes (`addv {s}, {v}.4s`); two lanes use the pairwise forms; `all` is `uminv` of the 0/1 lanes and `any` `umaxv`; a vector rule's scalar result is recorded at its real width and class now, which two of the failures were. And a thing the lane form found: a `u8x16` reduction, lane by lane, is a function of sixteen integers, and the convention had stopped at eight — so the arguments past the registers go on the stack now, in both emitters, 8 bytes each and a vector 16, the caller lowering `sp` for the call and the callee reading above its frame; the eight-parameter limit is gone, and `suite/multi.ssa` calls a function of twenty-five arguments in three classes to prove it. Twenty cases in `suite/lanes.ssa`; 916 on every path.
 
@@ -30,11 +95,34 @@ The horizontals: what a vector's lanes come to together. `lib/reduce.ssa` define
 
 ### Integer min, max, abs, neg — `ec5ed77` · 2026-08-29
 
+```
+fn absneg(a: i8) -> (i8, i16) {
+    x: i8 = abs a
+    w: i16 = conv a
+    y: i16 = neg w
+    ret x, y
+}
+```
+
 The smallest of the three items left on the vector list, done first. The integers had never had a `min` or a `neg` — floats and the number libraries define theirs, and an integer `neg` was "no neg from i32: define a generic". So `lib/int.ssa` defines them the same way, as generics over `i(N)` and `u(N)` — a compare and an `if` — and they run everywhere as bodies, while a platform with an instruction substitutes it: arm64 a `cmp` and a `csel` for scalar `min` and `max` (its first integer group besides the base, `select`), NEON `smin`/`umin` and their maxes, `abs` and `neg` over every vector shape, RVV `vmin`/`vminu`, `vmax`/`vmaxu`, `vrsub.vx` from `x0` for a negation and that with a `vmax` for an absolute value. `suite/minmax.ssa` has the scalars at every width and signedness, the most negative `i8` whose `abs` wraps to itself while its `neg` widened does not, and vectors of 32-, 16- and 8-bit lanes; `probe footprint` shows the `csel`s and `smin`s on one machine and the `vmin`s on the other; 895 cases on every path and both variants.
 
 ---
 
 ### A mask in memory — `c258520` · 2026-08-29
+
+```
+fn mask4_mem(p: ptr, a0: i32, a1: i32, a2: i32, a3: i32, k: i32) -> (u8, u32) {
+    a: i32x4 = pack a0, a1, a2, a3
+    ks: i32x4 = splat k
+    m: u1x4 = cmp.gt a, ks
+    store m, p
+    b: u1x4 = load p
+    b0: u1, b1: u1, b2: u1, b3: u1 = unpack b
+    r: u8 = mask4(b0, b1, b2, b3)
+    bytes: u32 = load p
+    ret r, bytes
+}
+```
 
 The last of the vector "not yet"s that was small. A `u1xN` — a comparison's result, N one-bit lanes — has three physical forms: lane by lane it is N `u1` values; in a register it is 0 or 1 in each of N lanes of 128/N bits, whatever produced it; in memory the IR says a lane is at its natural place and a `u1` is a byte, so N bytes. The third had never been built, and it turned out the lane form had never had it either: the struct lowering split a stored mask into stores of `u1`, which the verifier refuses — only the GPU, which had always kept a `u1` lane as a byte, agreed with the definition. Now the lowering stores a `u1` lane as a `u8` and loads it back through `conv`, and the register form narrows its lanes to bytes on a store (`xtn`, halving each time; on RVV `vnsrl.wi` under the narrower vtype) and stores exactly N of them — a whole register, half of one, or a single lane of it (`st1 {v.s}[0]`, `st1 {v.h}[0]`; on RVV `vse8` under `vl = N`, which is what `vl` is for) — and a load widens them back (`ushll`, `vzext.vf2`). On RVV the narrowings take turns between the even temporaries, the widenings between the odd ones, for the same register-pair rule as yesterday. Four cases store and reload masks of two, four, eight and sixteen lanes and read the bytes back as an integer, the same on every path; 883 cases everywhere.
 
@@ -42,11 +130,36 @@ The last of the vector "not yet"s that was small. A `u1xN` — a comparison's re
 
 ### The other shapes — `376a210` · 2026-08-28
 
+```
+fn bytes8(x: u8, y: u8) -> (u8, i16) {
+    a: u8x8 = splat x
+    b: u8x8 = splat y
+    s: u8x8 = add a, b
+    r0: u8 = get s, 3
+    x16: i16 = conv x
+    y16: i16 = conv y
+    c: i16x8 = splat x16
+    d: i16x8 = splat y16
+    t: i16x8 = add c, d
+    r1: i16 = get t, 5
+    ret r0, r1
+}
+```
+
 "Let's definitely do those": the 64-bit vectors, and with them the 128-bit ones of narrow lanes, since it was the same work. Both platforms' vector sections are generated from one table of shapes now — `f32x2`, `i32x2`, `i16x4`, `u8x8` at 64 bits, `i16x8`, `u8x16` at 128, their signed and unsigned forms, and the masks `u1x2` to `u1x16` — a rule per operation per shape, the arrangement (`.8b`, `.4h`, `.2s`, `.8h`, `.16b`) or the vtype (`vsetivli x0, 8, e8`) following the type. A `u1xN` keeps its representation whatever it came from — each lane 0 or 1 in a 128/N-bit lane of a whole register — so a 64-bit vector's comparison is widened (`sshll`) before the `neg` makes ones of its all-ones. Conversions between lane widths arrived too: `sshll`/`ushll` and `xtn`, `fcvtl`/`fcvtn` between `f32x2` and `f64x2`, and on RVV `vsext`/`vzext.vf2`, `vnsrl.wi`, `vfwcvt`/`vfncvt` — which hung a machine until the ISA's rule about widened operands was respected: a doubled-width operand is a register *pair* that must be even-aligned, and an allocated register may well be odd, so those rules go through the rule's temporary, `v16`. In the emitters a vector's shape — lane bits, lanes, bits in all — now comes from its type: `ins`/`umov` by lane width, `smov` for a signed narrow lane, `dup` and `ld1`/`st1` by arrangement, `vsetivli` by lanes and width, a narrow lane normalized after `vmv.x.s`. One small thing found on the way: a one-line rule had counted only its template's slots, so a template with a literal operand (`sshll {v}.4s, {v}.4h, #0`) could not be used as one; it carries the literals now. Thirteen cases joined `suite/vector.ssa` — two-lane integers and floats, 16-bit multiplies, bytes wrapping where 16-bit lanes do not, eight- and sixteen-lane comparisons, widening and narrowing both ways, byte shifts, a two-lane vector through memory — and `bytes_sum`, which had carried a `u8x8` round a loop lane by lane since the day vectors arrived, runs whole now. 879 cases on every path, under both no-vector variants; the scorecards count 51 NEON and 52 RVV templates, every one matched.
 
 ---
 
 ### Each class in its own registers — `47cd7b3` · 2026-08-28
+
+```
+fn mixed(k: i32, a: f32x4, h: f32) -> (i32, f32x4) {
+    k2: i32 = add k, 1
+    hs: f32x4 = splat h
+    c: f32x4 = add a, hs
+    ret k2, c
+}
+```
 
 "There's no real reason to always go through the int registers, is there?" There was not. The convention had been a shortcut from before floats existed: every value crossed a call as bits in `x0..x7`, a float `fmov`'d out of its register and back in on the other side, and a vector, being two words, simply refused. Now each class crosses in its own registers, counted separately, the way AAPCS64 and the RISC-V ABI have it: integers and pointers in `x0..x7` (`a0..a7`), floats in `v0..v7` (`fa0..fa7`), vectors in `v0..v7` on arm64 — shared with the floats — and `v8..v15` on riscv64, where the pool moved up to `v24..v31`; arguments and results alike, eight of each. In the emitters that is one function (`abi_regs`) assigning a register by class, used by calls, indirect calls, returns and the parameter prologue, and a rule that is a function now takes its operands where they arrive, with no moves through `x0`. The one real complication was the JIT boundary: Rust calls compiled code through `fn(&[i64]) -> i64` and cannot put a float in `s0` for a signature it does not know, so the compiler generates a wrapper for every function whose parameters or results have a class — `__w_f`: integer words in, cast, call, cast, words out — when a module is compiled for the JIT or installed in the arena, and the JIT's `call` prefers it; every Rust-side caller (the suite, the fuzzer, TestFloat, `probe run`) is unchanged. A vector is a parameter, result or argument like any other value now: `suite/vector.ssa` gained three cases, an `i32x4` through a call, an `f32x4` with a float, and a mixed signature with an integer, a vector and a float in and a vector among two results out, the same on all five paths. Two things it found: on the machines a call on vectors must go to a rule only when the platform has one for that signature (a function of the program's that takes vectors is a call like any other), and the GPU emitter had been applying *every* call with vector arguments per lane — with no function taking vectors before, nothing had noticed — which for a callee typed over vectors produced bitcode LLVM refused (`llvm-dis: Invalid record`, found by the emitter's body-stub switch); a callee whose own parameters are vectors is now called as it is.
 
@@ -54,11 +167,30 @@ The last of the vector "not yet"s that was small. A `u1xN` — a comparison's re
 
 ### RVV — `0987ac4` · 2026-08-28
 
+```
+add(f32x4, f32x4) -> f32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vfadd.vv r, a, b
+gt(i32x4, i32x4) -> u1x4 with t: u1x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmslt.vv v0, b, a
+    vmv.v.i t, 0
+    vmerge.vim r, t, 1, v0
+```
+
 The same eight vector types on the other machine, and the question `vectors.md` had left for RVV — a rule with machine state — answered the simplest way: every rule sets the vtype it runs under first (`vsetivli x0, 4, e32, m1, ta, ma`, or two 64-bit lanes), and the emitter does the same before its own lane moves and loads; a pass could elide the repeats later, and nothing depends on one. `targets/riscv64.platform` gained `ext V` with `class v` and a rule per operation: `vfadd.vv` and the rest, `vfsgnjn.vv r, a, a` for a negation, `vfmacc.vv` into a copy for `fma`, shifts by a vector of counts directly, a comparison as `vmflt.vv`/`vmslt.vv` into the mask `v0` and a `vmerge.vim` of 1 over a zero vector — so a `u1xN` is 0 or 1 per lane, as on NEON — and, as for scalars there, no `min`/`max` and no float-to-integer, whose NaN cases differ from the library's. In `src/emit_rv.rs` vectors are a third allocator class in v8..v15, saved and spilled as sixteen bytes under e8, their lanes packed by a chain of `vslide1up.vx` (each slide's destination another register than its source), read by `vslidedown.vi` and `vmv.x.s`, a lane set by a mask in `v0` and `vmerge.vvm`; memory is `vle32`/`vse32` at a lane's alignment; an interrupt frame keeps the caller-saved v registers. Two things the ISA made the tools say: an instruction that reads the mask `v0` may not write `v0`, which the learner met as a rejected probe — the seed now has `reg vn = v1..v31` for such a destination, a rule's `v` operand may take a `vn` slot, and the emitters renumber; and a vector instruction with `mstatus.VS` clear is an illegal-instruction hang, so the boot preamble enables the vector unit as it does the FPU, and qemu runs `-cpu rv64,v=true,vlen=128,elen=64`. 45 templates learned, all matched in riscv-opcodes; `targets/riscv64-nov.platform` is the reference (the variants test runs the suite under it, with `rv64im` and `rv64i`, which now say `without V` too); `probe footprint` shows the vector suite using `vfadd.vv`, `vmul.vv`, `vfmacc.vv`, `vmslt.vv` and the slides. The scalable model — `vl` as a value, a loop in chunks of as many as fit, a mask for the tail — is what remains of RVV, and is noted.
 
 ---
 
 ### NEON — `2d11460` · 2026-08-28
+
+```
+class v = f32x4, f64x2, i32x4, u32x4, i64x2, u64x2, u1x4, u1x2
+fadd {v}.4s, {v}.4s, {v}.4s = add(f32x4, f32x4) -> f32x4
+gt(f32x4, f32x4) -> u1x4 with t: u1x4
+    fcmgt t.4s, a.4s, b.4s
+    neg r.4s, t.4s
+```
 
 The second half of the vector step, and the first time a whole-vector instruction is checked against the lane-by-lane meaning that defines it — the move the project made once for floats, made again for vectors. `targets/arm64.platform` gives eight vector types a register class (`class v = f32x4, f64x2, i32x4, u32x4, i64x2, u64x2, u1x4, u1x2`) and a rule per operation: `fadd {v}.4s, {v}.4s, {v}.4s = add(f32x4, f32x4) -> f32x4`, a comparison as `fcmgt` and a `neg` so a `u1xN` holds each lane as 0 or 1, `fma` as a `mov` and an `fmla`, shifts as `sshl`/`ushl` (a right shift by a negated count), casts between vectors of one width as a `mov`. The parser keeps a vector whole only where the platform has both the class and the rule — `Policy.vectors` is none, all (the GPU), or the platform's types and signatures — so a divide of `i32x4`, a `u8x8` or an `i64x4` stays lane by lane and `probe parse` shows which. In the emitter a whole vector lives in the float file, which is now saved and spilled as 128 bits; lanes move by `ins` and `umov`, memory by `ld1`/`st1`. Rule lines learned to carry arrangements (`fmla t.4s, a.4s, b.4s`) and vector-typed temporaries, and seeds to write literal braces (`ld1 {{{v}.4s}}, [{x}]`). The learner took the 76 NEON templates in a second, every one matched against ARM's own XML on the scorecard. `targets/arm64-noneon.platform` is the same target without the rules — the reference, on the same machine, which a Rust test runs the suite under — and `suite/vector.ssa` gained seventeen cases (two-lane doubles and 64-bit integers, `fma`, `min`/`max`, a NaN in a comparison, unsigned against signed compares, shifts, conversions, memory, a vector carried round a loop, ten live at once so some spill, masks combined), the same on native, riscv, arm, wasm and the GPU. Two things the machine taught, each by hanging in silence: with the MMU off every access is to device memory and must be aligned to its size, so a 16-byte `ldr q` from an 8-aligned address faults — a vector in memory is aligned only to its lanes, which is what `ld1`/`st1` want — and the data section had been 16-aligned from the start of the *code*, not the image, so with the boot preamble in front a task's stack in a `data` array sat at 8 mod 16, which the interrupt frame's 128-bit saves found where the 64-bit ones never had. Not yet: a vector as a parameter, result or argument (the two-word convention is the natural one; `fmov {x}, {v}.d[1]` is learned for it), a `u1xN` in memory, 64-bit vectors, RVV and wasm SIMD through the same seam.
 
@@ -66,11 +198,30 @@ The second half of the vector step, and the first time a whole-vector instructio
 
 ### Lockstep, and `-> check` — `1c58088` · 2026-08-28
 
+```
+;! __kernel 64 64 -> check
+
+fn __kernel(mem: ptr, area: ptr, id: i64) {
+    x: i32 = conv id
+    five: u1 = cmp.eq id, 5
+    r: i32 = if five {
+        yield x
+    } else {
+        s: i32 = simd_sum x
+        yield s
+    }
+```
+
 The first item from the agent's note: the GPU's silence made an error. A simdgroup operation over fibres assumed every thread of the simdgroup reached it; one that went around a `simd_sum` read a stale slot and got a number nobody would question. Now each fibre counts its puts in a word of its own — `fibre_word`, at 9728 in the thread's block, zero when the fibre starts — and after every round `simd_lockstep` walks the simdgroup and `check`s that every thread has put as often as this one. `suite/lockstep.ssa` is a kernel where thread 5 skips the sum, in groups of 64, of 32, and across two OS threads. What the test needed was a suite that could *expect* a failed check, which it could not: natively a `brk` would have ended the test process, and a machine has no `__trap` in the driver. So `-> check` is a directive's expectation now, and passes when the case ends in one: under the JIT the case runs in a forked child (`fork`, `waitpid`, no crate) that dies of SIGTRAP; on a machine it boots on its own with a `__trap` in the driver that prints `check` and ends the machine; on wasm it is the driver's `trap:` line; the GPU, which runs on past a failed check, skips such cases and says why. `suite/arena.ssa` gained two — a `check` on zero and a third allocation that does not fit. One thing found on the way: the qemu drivers were compiled at origin 0 while the image begins with a preamble, so the vector table before `__trap` was 2K-aligned in the wrong frame and arm64 hung on the first trap; the drivers compile at the preamble's origin now, as `probe boot` always did.
 
 ---
 
 ### A vector has lanes, a simdgroup has threads — `c0e3842` · 2026-08-28
+
+```
+    t: i64 = simd_thread()                        ; 0..simd_size() - 1, a thread's index in its simdgroup
+    r: i64 = add h, t
+```
 
 Before NEON, one word settled. "Lane" was doing two jobs: an element of a `TxN` and a thread of a simdgroup, which had never met in a sentence until an instruction that works on four lanes at once was about to be checked by a test about a thread that skips one. So a vector has lanes and a simdgroup has threads: `simd_lane()` is `simd_thread()`, a kernel's position in its group is `tid`, and the prose in `lib/gpu.ssa`, `ssa.md`, the platform file and the suites says which it means. `simd_*` itself stays — Apple's word, and what `air.simd_sum.f32` is named after; a SPIR-V path would spell it subgroup the way AIR spells it simdgroup. History is left as it was written.
 

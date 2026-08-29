@@ -7,7 +7,12 @@
 ; `ptr` read the two words. An operation on slices is written like a
 ; store — `add c, a, b`, `mul c, a, 2.0`, `neg c, a`, `fill c, 0`,
 ; `copy c, a` — and writes into its first operand; a reduction —
-; `s: f32 = sum a` — gives a scalar.
+; `s: f32 = sum a` — gives a scalar. A view carries its shape: a count
+; and a stride per axis (`f32[]` rank 1, `f32[,]` rank 2, `f32[,,]`
+; rank 3), so `at a, i` is a row, `transpose a` a free view whose rows
+; are the columns, `block` a rectangle, `view` a part of a row; an
+; operation of rank 2 or 3 is the rank below it over each row, and a
+; reduction into a view one rank down — `sum c, a` — is one per row.
 ;
 ; Each body takes the elements a chunk at a time — `chunk(number)`: as
 ; many lanes as this platform's vector register holds, one where it has
@@ -15,6 +20,8 @@
 ; end. On a platform without vector registers a chunk is one element
 ; and the first loop is the definition; with them the chunk loop is
 ; the vector instructions, checked against it by the other paths.
+
+
 
 
 
@@ -39,13 +46,27 @@ fn add(c: number[], a: number[], b: number[]) {
     check ok2
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
     pb: ptr(number) = ptr b
     vb: ptr(chunk(number)) = cast pb
+    stb: i64 = stride b
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cb: u1 = cmp.eq stb, 1
+    cc1: u1 = and cc, ca
+    cc2: u1 = and cc1, cb
+    contig: u1 = cast cc2
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -64,12 +85,61 @@ fn add(c: number[], a: number[], b: number[]) {
         if done {
             break
         }
-        xt: number = load pa, j
-        yt: number = load pb, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        ixb: i64 = mul j, stb
+        xt: number = load pa, ixa
+        yt: number = load pb, ixb
         zt: number = add xt, yt
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn add(c: number[,], a: number[,], b: number[,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    m2: i64 = shape b, 0
+    ok2: u1 = cmp.eq n0, m2
+    check ok2
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        rb: number[] = at b, i
+        add rc, ra, rb
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn add(c: number[,,], a: number[,,], b: number[,,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    m2: i64 = shape b, 0
+    ok2: u1 = cmp.eq n0, m2
+    check ok2
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        rb: number[,] = at b, i
+        add rc, ra, rb
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -81,12 +151,23 @@ fn add(c: number[], a: number[], s: number) {
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cc1: u1 = and cc, ca
+    contig: u1 = cast cc1
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     ks: chunk(number) = splat s
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -104,11 +185,51 @@ fn add(c: number[], a: number[], s: number) {
         if done {
             break
         }
-        xt: number = load pa, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        xt: number = load pa, ixa
         zt: number = add xt, s
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn add(c: number[,], a: number[,], s: number) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        add rc, ra, s
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn add(c: number[,,], a: number[,,], s: number) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        add rc, ra, s
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -125,13 +246,27 @@ fn sub(c: number[], a: number[], b: number[]) {
     check ok2
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
     pb: ptr(number) = ptr b
     vb: ptr(chunk(number)) = cast pb
+    stb: i64 = stride b
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cb: u1 = cmp.eq stb, 1
+    cc1: u1 = and cc, ca
+    cc2: u1 = and cc1, cb
+    contig: u1 = cast cc2
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -150,12 +285,61 @@ fn sub(c: number[], a: number[], b: number[]) {
         if done {
             break
         }
-        xt: number = load pa, j
-        yt: number = load pb, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        ixb: i64 = mul j, stb
+        xt: number = load pa, ixa
+        yt: number = load pb, ixb
         zt: number = sub xt, yt
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn sub(c: number[,], a: number[,], b: number[,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    m2: i64 = shape b, 0
+    ok2: u1 = cmp.eq n0, m2
+    check ok2
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        rb: number[] = at b, i
+        sub rc, ra, rb
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn sub(c: number[,,], a: number[,,], b: number[,,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    m2: i64 = shape b, 0
+    ok2: u1 = cmp.eq n0, m2
+    check ok2
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        rb: number[,] = at b, i
+        sub rc, ra, rb
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -167,12 +351,23 @@ fn sub(c: number[], a: number[], s: number) {
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cc1: u1 = and cc, ca
+    contig: u1 = cast cc1
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     ks: chunk(number) = splat s
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -190,11 +385,51 @@ fn sub(c: number[], a: number[], s: number) {
         if done {
             break
         }
-        xt: number = load pa, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        xt: number = load pa, ixa
         zt: number = sub xt, s
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn sub(c: number[,], a: number[,], s: number) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        sub rc, ra, s
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn sub(c: number[,,], a: number[,,], s: number) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        sub rc, ra, s
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -211,13 +446,27 @@ fn mul(c: number[], a: number[], b: number[]) {
     check ok2
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
     pb: ptr(number) = ptr b
     vb: ptr(chunk(number)) = cast pb
+    stb: i64 = stride b
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cb: u1 = cmp.eq stb, 1
+    cc1: u1 = and cc, ca
+    cc2: u1 = and cc1, cb
+    contig: u1 = cast cc2
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -236,12 +485,61 @@ fn mul(c: number[], a: number[], b: number[]) {
         if done {
             break
         }
-        xt: number = load pa, j
-        yt: number = load pb, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        ixb: i64 = mul j, stb
+        xt: number = load pa, ixa
+        yt: number = load pb, ixb
         zt: number = mul xt, yt
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn mul(c: number[,], a: number[,], b: number[,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    m2: i64 = shape b, 0
+    ok2: u1 = cmp.eq n0, m2
+    check ok2
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        rb: number[] = at b, i
+        mul rc, ra, rb
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn mul(c: number[,,], a: number[,,], b: number[,,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    m2: i64 = shape b, 0
+    ok2: u1 = cmp.eq n0, m2
+    check ok2
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        rb: number[,] = at b, i
+        mul rc, ra, rb
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -253,12 +551,23 @@ fn mul(c: number[], a: number[], s: number) {
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cc1: u1 = and cc, ca
+    contig: u1 = cast cc1
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     ks: chunk(number) = splat s
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -276,11 +585,51 @@ fn mul(c: number[], a: number[], s: number) {
         if done {
             break
         }
-        xt: number = load pa, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        xt: number = load pa, ixa
         zt: number = mul xt, s
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn mul(c: number[,], a: number[,], s: number) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        mul rc, ra, s
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn mul(c: number[,,], a: number[,,], s: number) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        mul rc, ra, s
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -297,13 +646,27 @@ fn div(c: number[], a: number[], b: number[]) {
     check ok2
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
     pb: ptr(number) = ptr b
     vb: ptr(chunk(number)) = cast pb
+    stb: i64 = stride b
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cb: u1 = cmp.eq stb, 1
+    cc1: u1 = and cc, ca
+    cc2: u1 = and cc1, cb
+    contig: u1 = cast cc2
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -322,12 +685,61 @@ fn div(c: number[], a: number[], b: number[]) {
         if done {
             break
         }
-        xt: number = load pa, j
-        yt: number = load pb, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        ixb: i64 = mul j, stb
+        xt: number = load pa, ixa
+        yt: number = load pb, ixb
         zt: number = div xt, yt
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn div(c: number[,], a: number[,], b: number[,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    m2: i64 = shape b, 0
+    ok2: u1 = cmp.eq n0, m2
+    check ok2
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        rb: number[] = at b, i
+        div rc, ra, rb
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn div(c: number[,,], a: number[,,], b: number[,,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    m2: i64 = shape b, 0
+    ok2: u1 = cmp.eq n0, m2
+    check ok2
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        rb: number[,] = at b, i
+        div rc, ra, rb
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -339,12 +751,23 @@ fn div(c: number[], a: number[], s: number) {
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cc1: u1 = and cc, ca
+    contig: u1 = cast cc1
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     ks: chunk(number) = splat s
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -362,11 +785,51 @@ fn div(c: number[], a: number[], s: number) {
         if done {
             break
         }
-        xt: number = load pa, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        xt: number = load pa, ixa
         zt: number = div xt, s
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn div(c: number[,], a: number[,], s: number) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        div rc, ra, s
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn div(c: number[,,], a: number[,,], s: number) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        div rc, ra, s
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -383,13 +846,27 @@ fn min(c: number[], a: number[], b: number[]) {
     check ok2
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
     pb: ptr(number) = ptr b
     vb: ptr(chunk(number)) = cast pb
+    stb: i64 = stride b
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cb: u1 = cmp.eq stb, 1
+    cc1: u1 = and cc, ca
+    cc2: u1 = and cc1, cb
+    contig: u1 = cast cc2
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -408,12 +885,61 @@ fn min(c: number[], a: number[], b: number[]) {
         if done {
             break
         }
-        xt: number = load pa, j
-        yt: number = load pb, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        ixb: i64 = mul j, stb
+        xt: number = load pa, ixa
+        yt: number = load pb, ixb
         zt: number = min xt, yt
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn min(c: number[,], a: number[,], b: number[,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    m2: i64 = shape b, 0
+    ok2: u1 = cmp.eq n0, m2
+    check ok2
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        rb: number[] = at b, i
+        min rc, ra, rb
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn min(c: number[,,], a: number[,,], b: number[,,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    m2: i64 = shape b, 0
+    ok2: u1 = cmp.eq n0, m2
+    check ok2
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        rb: number[,] = at b, i
+        min rc, ra, rb
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -425,12 +951,23 @@ fn min(c: number[], a: number[], s: number) {
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cc1: u1 = and cc, ca
+    contig: u1 = cast cc1
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     ks: chunk(number) = splat s
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -448,11 +985,51 @@ fn min(c: number[], a: number[], s: number) {
         if done {
             break
         }
-        xt: number = load pa, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        xt: number = load pa, ixa
         zt: number = min xt, s
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn min(c: number[,], a: number[,], s: number) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        min rc, ra, s
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn min(c: number[,,], a: number[,,], s: number) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        min rc, ra, s
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -469,13 +1046,27 @@ fn max(c: number[], a: number[], b: number[]) {
     check ok2
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
     pb: ptr(number) = ptr b
     vb: ptr(chunk(number)) = cast pb
+    stb: i64 = stride b
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cb: u1 = cmp.eq stb, 1
+    cc1: u1 = and cc, ca
+    cc2: u1 = and cc1, cb
+    contig: u1 = cast cc2
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -494,12 +1085,61 @@ fn max(c: number[], a: number[], b: number[]) {
         if done {
             break
         }
-        xt: number = load pa, j
-        yt: number = load pb, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        ixb: i64 = mul j, stb
+        xt: number = load pa, ixa
+        yt: number = load pb, ixb
         zt: number = max xt, yt
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn max(c: number[,], a: number[,], b: number[,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    m2: i64 = shape b, 0
+    ok2: u1 = cmp.eq n0, m2
+    check ok2
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        rb: number[] = at b, i
+        max rc, ra, rb
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn max(c: number[,,], a: number[,,], b: number[,,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    m2: i64 = shape b, 0
+    ok2: u1 = cmp.eq n0, m2
+    check ok2
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        rb: number[,] = at b, i
+        max rc, ra, rb
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -511,12 +1151,23 @@ fn max(c: number[], a: number[], s: number) {
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cc1: u1 = and cc, ca
+    contig: u1 = cast cc1
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     ks: chunk(number) = splat s
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -534,11 +1185,51 @@ fn max(c: number[], a: number[], s: number) {
         if done {
             break
         }
-        xt: number = load pa, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        xt: number = load pa, ixa
         zt: number = max xt, s
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn max(c: number[,], a: number[,], s: number) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        max rc, ra, s
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn max(c: number[,,], a: number[,,], s: number) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        max rc, ra, s
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -552,11 +1243,22 @@ fn neg(c: number[], a: number[]) {
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cc1: u1 = and cc, ca
+    contig: u1 = cast cc1
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -574,11 +1276,51 @@ fn neg(c: number[], a: number[]) {
         if done {
             break
         }
-        xt: number = load pa, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        xt: number = load pa, ixa
         zt: number = neg xt
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn neg(c: number[,], a: number[,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        neg rc, ra
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn neg(c: number[,,], a: number[,,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        neg rc, ra
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -592,11 +1334,22 @@ fn abs(c: number[], a: number[]) {
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cc1: u1 = and cc, ca
+    contig: u1 = cast cc1
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -614,11 +1367,51 @@ fn abs(c: number[], a: number[]) {
         if done {
             break
         }
-        xt: number = load pa, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        xt: number = load pa, ixa
         zt: number = abs xt
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn abs(c: number[,], a: number[,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        abs rc, ra
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn abs(c: number[,,], a: number[,,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        abs rc, ra
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -632,11 +1425,22 @@ fn sqrt(c: scalar[], a: scalar[]) {
     check ok1
     pc: ptr(scalar) = ptr c
     vc: ptr(chunk(scalar)) = cast pc
+    stc: i64 = stride c
     pa: ptr(scalar) = ptr a
     va: ptr(chunk(scalar)) = cast pa
+    sta: i64 = stride a
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cc1: u1 = and cc, ca
+    contig: u1 = cast cc1
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     k: i64 = lanes chunk(scalar)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit scalar, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -654,11 +1458,51 @@ fn sqrt(c: scalar[], a: scalar[]) {
         if done {
             break
         }
-        xt: scalar = load pa, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        xt: scalar = load pa, ixa
         zt: scalar = sqrt xt
-        store zt, pc, j
+        store zt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn sqrt(c: scalar[,], a: scalar[,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: scalar[] = at c, i
+        ra: scalar[] = at a, i
+        sqrt rc, ra
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn sqrt(c: scalar[,,], a: scalar[,,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: scalar[,] = at c, i
+        ra: scalar[,] = at a, i
+        sqrt rc, ra
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -672,11 +1516,22 @@ fn copy(c: number[], a: number[]) {
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
+    cc: u1 = cmp.eq stc, 1
+    ca: u1 = cmp.eq sta, 1
+    cc1: u1 = and cc, ca
+    contig: u1 = cast cc1
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -693,10 +1548,50 @@ fn copy(c: number[], a: number[]) {
         if done {
             break
         }
-        xt: number = load pa, j
-        store xt, pc, j
+        ixc: i64 = mul j, stc
+        ixa: i64 = mul j, sta
+        xt: number = load pa, ixa
+        store xt, pc, ixc
         j2: i64 = add j, 1
         continue j2
+    }
+    ret
+}
+
+fn copy(c: number[,], a: number[,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        ra: number[] = at a, i
+        copy rc, ra
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn copy(c: number[,,], a: number[,,]) {
+    n0: i64 = shape c, 0
+    m1: i64 = shape a, 0
+    ok1: u1 = cmp.eq n0, m1
+    check ok1
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        ra: number[,] = at a, i
+        copy rc, ra
+        i2: i64 = add i, 1
+        continue i2
     }
     ret
 }
@@ -705,10 +1600,18 @@ fn fill(c: number[], s: number) {
     n: i64 = len c
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
+    stc: i64 = stride c
+    cc: u1 = cmp.eq stc, 1
+    contig: u1 = cast cc
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     ks: chunk(number) = splat s
     k: i64 = lanes chunk(number)
     stop: i64 = loop(i: i64 = 0, ci: i64 = 0) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -724,24 +1627,64 @@ fn fill(c: number[], s: number) {
         if done {
             break
         }
-        store s, pc, j
+        ixc: i64 = mul j, stc
+        store s, pc, ixc
         j2: i64 = add j, 1
         continue j2
     }
     ret
 }
 
-; --- reductions: a chunk of partial results, then its lanes, then the
-; tail; min and max from the first element ---
+fn fill(c: number[,], s: number) {
+    n0: i64 = shape c, 0
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[] = at c, i
+        fill rc, s
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn fill(c: number[,,], s: number) {
+    n0: i64 = shape c, 0
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        rc: number[,] = at c, i
+        fill rc, s
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+; --- reductions to a scalar: a chunk of partial results while the view is
+; contiguous, then its lanes, then the rest one at a time; min and max
+; from the first element; a view of rank 2 or 3 row by row ---
 
 fn sum(a: number[]) -> number {
     n: i64 = len a
     zero: chunk(number) = splat 0
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
+    ca: u1 = cmp.eq sta, 1
+    contig: u1 = cast ca
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     k: i64 = lanes chunk(number)
     stop: i64, total: chunk(number) = loop(i: i64 = 0, ci: i64 = 0, acc: chunk(number) = zero) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -759,7 +1702,8 @@ fn sum(a: number[]) -> number {
         if done {
             break t
         }
-        xt: number = load pa, j
+        ixa: i64 = mul j, sta
+        xt: number = load pa, ixa
         t2: number = add t, xt
         j2: i64 = add j, 1
         continue j2, t2
@@ -771,14 +1715,21 @@ fn min(a: number[]) -> number {
     n: i64 = len a
     some: u1 = cmp.gt n, 0
     check some
-    pfirst: ptr(number) = ptr a
-    first: number = load pfirst, 0
+    first: number = load a, 0
     seed: chunk(number) = splat first
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
+    ca: u1 = cmp.eq sta, 1
+    contig: u1 = cast ca
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     k: i64 = lanes chunk(number)
     stop: i64, total: chunk(number) = loop(i: i64 = 0, ci: i64 = 0, acc: chunk(number) = seed) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -796,7 +1747,8 @@ fn min(a: number[]) -> number {
         if done {
             break t
         }
-        xt: number = load pa, j
+        ixa: i64 = mul j, sta
+        xt: number = load pa, ixa
         t2: number = min t, xt
         j2: i64 = add j, 1
         continue j2, t2
@@ -808,14 +1760,21 @@ fn max(a: number[]) -> number {
     n: i64 = len a
     some: u1 = cmp.gt n, 0
     check some
-    pfirst: ptr(number) = ptr a
-    first: number = load pfirst, 0
+    first: number = load a, 0
     seed: chunk(number) = splat first
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
+    sta: i64 = stride a
+    ca: u1 = cmp.eq sta, 1
+    contig: u1 = cast ca
+    limit: i64 = if contig {
+        yield n
+    } else {
+        yield 0
+    }
     k: i64 = lanes chunk(number)
     stop: i64, total: chunk(number) = loop(i: i64 = 0, ci: i64 = 0, acc: chunk(number) = seed) {
-        left: i64 = sub n, i
+        left: i64 = sub limit, i
         m: i64 = fit number, left
         partial: u1 = cmp.lt m, k
         if partial {
@@ -833,10 +1792,247 @@ fn max(a: number[]) -> number {
         if done {
             break t
         }
-        xt: number = load pa, j
+        ixa: i64 = mul j, sta
+        xt: number = load pa, ixa
         t2: number = max t, xt
         j2: i64 = add j, 1
         continue j2, t2
     }
     ret s
+}
+
+fn sum(a: number[,]) -> number {
+    n0: i64 = shape a, 0
+    some: u1 = cmp.gt n0, 0
+    check some
+    r0: number[] = at a, 0
+    f: number = sum r0
+    s: number = loop(i: i64 = 1, acc: number = f) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break acc
+        }
+        ri: number[] = at a, i
+        x: number = sum ri
+        acc2: number = add acc, x
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret s
+}
+
+fn sum(a: number[,,]) -> number {
+    n0: i64 = shape a, 0
+    some: u1 = cmp.gt n0, 0
+    check some
+    r0: number[,] = at a, 0
+    f: number = sum r0
+    s: number = loop(i: i64 = 1, acc: number = f) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break acc
+        }
+        ri: number[,] = at a, i
+        x: number = sum ri
+        acc2: number = add acc, x
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret s
+}
+
+fn min(a: number[,]) -> number {
+    n0: i64 = shape a, 0
+    some: u1 = cmp.gt n0, 0
+    check some
+    r0: number[] = at a, 0
+    f: number = min r0
+    s: number = loop(i: i64 = 1, acc: number = f) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break acc
+        }
+        ri: number[] = at a, i
+        x: number = min ri
+        acc2: number = min acc, x
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret s
+}
+
+fn min(a: number[,,]) -> number {
+    n0: i64 = shape a, 0
+    some: u1 = cmp.gt n0, 0
+    check some
+    r0: number[,] = at a, 0
+    f: number = min r0
+    s: number = loop(i: i64 = 1, acc: number = f) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break acc
+        }
+        ri: number[,] = at a, i
+        x: number = min ri
+        acc2: number = min acc, x
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret s
+}
+
+fn max(a: number[,]) -> number {
+    n0: i64 = shape a, 0
+    some: u1 = cmp.gt n0, 0
+    check some
+    r0: number[] = at a, 0
+    f: number = max r0
+    s: number = loop(i: i64 = 1, acc: number = f) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break acc
+        }
+        ri: number[] = at a, i
+        x: number = max ri
+        acc2: number = max acc, x
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret s
+}
+
+fn max(a: number[,,]) -> number {
+    n0: i64 = shape a, 0
+    some: u1 = cmp.gt n0, 0
+    check some
+    r0: number[,] = at a, 0
+    f: number = max r0
+    s: number = loop(i: i64 = 1, acc: number = f) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break acc
+        }
+        ri: number[,] = at a, i
+        x: number = max ri
+        acc2: number = max acc, x
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret s
+}
+
+; --- reductions one rank down: one per row ---
+
+fn sum(c: number[], a: number[,]) {
+    n0: i64 = shape a, 0
+    nc: i64 = len c
+    ok: u1 = cmp.eq n0, nc
+    check ok
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        ri: number[] = at a, i
+        x: number = sum ri
+        store x, c, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn sum(c: number[,], a: number[,,]) {
+    n0: i64 = shape a, 0
+    nc: i64 = shape c, 0
+    ok: u1 = cmp.eq n0, nc
+    check ok
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        ri: number[,] = at a, i
+        ci: number[] = at c, i
+        sum ci, ri
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn min(c: number[], a: number[,]) {
+    n0: i64 = shape a, 0
+    nc: i64 = len c
+    ok: u1 = cmp.eq n0, nc
+    check ok
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        ri: number[] = at a, i
+        x: number = min ri
+        store x, c, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn min(c: number[,], a: number[,,]) {
+    n0: i64 = shape a, 0
+    nc: i64 = shape c, 0
+    ok: u1 = cmp.eq n0, nc
+    check ok
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        ri: number[,] = at a, i
+        ci: number[] = at c, i
+        min ci, ri
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn max(c: number[], a: number[,]) {
+    n0: i64 = shape a, 0
+    nc: i64 = len c
+    ok: u1 = cmp.eq n0, nc
+    check ok
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        ri: number[] = at a, i
+        x: number = max ri
+        store x, c, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn max(c: number[,], a: number[,,]) {
+    n0: i64 = shape a, 0
+    nc: i64 = shape c, 0
+    ok: u1 = cmp.eq n0, nc
+    check ok
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n0
+        if done {
+            break
+        }
+        ri: number[,] = at a, i
+        ci: number[] = at c, i
+        max ci, ri
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
 }

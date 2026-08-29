@@ -344,9 +344,22 @@ copy c, a
 s: f32 = sum a                                ; a reduction, to a scalar; min, max likewise
 ```
 
-`T[]` is a **slice**: a view into a buffer, two words — a typed pointer to its first element and a length — and several may look into one buffer at different places. A **buffer** is memory with a header, the element size and the capacity a word each, then the elements: `data name: buffer(T, N)` declares one, `buffer_init(p, elem, cap)` (`lib/slice.ssa`) writes the header on memory carved at run time. `slice p` takes the whole buffer and checks the element size against the slice's; `view a, off, n` a part, checked to lie within (`off >= 0`, `n >= 0`, `off + n <= len a`); `len` and `ptr` read the two words. A slice is a struct and travels as one — two arguments across a call, dissolved into its words everywhere — and is otherwise a value like any other.
+`T[]` is a **view** of rank 1 into a buffer — a typed pointer to its first element and, per axis, a count and a stride in elements — and several may look into one buffer at different places. `T[,]` is rank 2, `T[,,]` rank 3: the view carries its shape, so a row, a column, a rectangle or the transpose is another view of the same memory, nothing moved:
 
-An operation on slices is written like a store, with no result, and writes into its first operand: `add c, a, b`, `sub`, `mul`, `div`, `min`, `max` with two slices or a slice and a scalar, `neg`, `abs`, `sqrt` (on `scalar[]`) with one, `copy c, a`, `fill c, k`; lengths must agree, which is a `check`. A reduction — `sum`, `min`, `max` — gives a scalar. Each is a generic of `lib/slice.ssa` over `number[]` (the tower binds `number` to the element type), and its body is the definition — and the machine's form at once, through **chunks**:
+```
+a: i32[,] = slice p, 3, 4                     ; a 3x4 view over a buffer, row-major, checked to fit
+r: i32[] = at a, 1                            ; row 1: a rank-1 view, contiguous
+t: i32[,] = transpose a                       ; the axes swapped: a 4x3 view, its rows the columns
+c: i32[] = at t, 2                            ; column 2: a rank-1 view of stride 4
+b: i32[,] = block a, 1, 2, 1, 2               ; the 2x2 rectangle at (1, 1)
+g: i32[,] = reshape v, 3, 4                   ; a contiguous rank-1 view seen as 3x4
+n: i64 = shape a, 1                           ; the count along axis 1
+x: i32 = load a, 1, 2                         ; an element, each index checked
+store x, a, 2, 0
+sum s, a                                      ; s: i32[]: one sum per row (max, min likewise); sum t's rows for the columns'
+``` A **buffer** is memory with a header, the element size and the capacity a word each, then the elements: `data name: buffer(T, N)` declares one, `buffer_init(p, elem, cap)` (`lib/slice.ssa`) writes the header on memory carved at run time. `slice p` takes the whole buffer and checks the element size against the view's — with counts, `slice p, n0, n1`, a view of that shape over it; `view a, off, n` a part of a rank-1 view, checked to lie within; `at a, i` the sub-view at i along the first axis, one rank down, checked; `transpose`, `block` and `reshape` (a contiguous rank-1 view seen with a shape, checked to be exactly it) as above; `len`, `stride`, `shape a, k` and `ptr` read the words. A view is a struct and travels as one — its words as arguments across a call, dissolved everywhere — and is otherwise a value like any other.
+
+An operation on slices is written like a store, with no result, and writes into its first operand: `add c, a, b`, `sub`, `mul`, `div`, `min`, `max` with two slices or a slice and a scalar, `neg`, `abs`, `sqrt` (on `scalar[]`) with one, `copy c, a`, `fill c, k`; lengths must agree, which is a `check`. A reduction — `sum`, `min`, `max` — gives a scalar. Each is a generic of `lib/slice.ssa` over `number[]` (the tower binds `number` to the element type); an operation of rank 2 or 3 is the rank below it over each row (`at`), and a reduction one rank down — `sum c, a` with `c` a rank-1 view and `a` rank 2 — is one per row (for the columns', reduce the transpose). The rank-1 body is the definition — and the machine's form at once, through **chunks**:
 
 ```
 k: i64 = lanes chunk(f32)                     ; how many f32 a vector register holds here: 4 on NEON and RVV, 1 elsewhere
@@ -356,7 +369,7 @@ w: chunk(f32) = add v, u                      ; a vector operation, or the eleme
 sz: i64 = sizeof f32
 ```
 
-`chunk(T)` is as many lanes of T as the platform's vector register holds — `f32x4` on NEON and RVV, `f32` itself where there are no vector registers — so a body written over `chunk(number)` is vector instructions on one machine and the plain operation on another, and the same text. A slice operation takes whole chunks while `fit` says one is left, then the elements one at a time to the end: on a platform without vector registers the chunk loop *is* the definition, one element at a time; with them it is the vector instructions, checked against it by the other paths. `lanes`, `sizeof` and `fit` are constants of a type on the platform (the last a `min`), which is what lets the library say "as many as fit" without knowing the number.
+`chunk(T)` is as many lanes of T as the platform's vector register holds — `f32x4` on NEON and RVV, `f32` itself where there are no vector registers — so a body written over `chunk(number)` is vector instructions on one machine and the plain operation on another, and the same text. A slice operation takes whole chunks while `fit` says one is left — only when every view is contiguous (stride 1); a strided view, a column, goes one element at a time from the start — then the elements one at a time to the end: on a platform without vector registers the chunk loop *is* the definition, one element at a time; with them it is the vector instructions, checked against it by the other paths. `lanes`, `sizeof` and `fit` are constants of a type on the platform (the last a `min`), which is what lets the library say "as many as fit" without knowing the number.
 
 ### Structs
 

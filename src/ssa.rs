@@ -280,8 +280,9 @@ pub enum TypeExpr {
     TPtr(Box<TypeExpr>),
     /// `array(T, W, H, ...)`: an array with a shape
     Array(Box<TypeExpr>, Vec<IntExpr>),
-    /// `T[]`: a slice — a view into a buffer of T: (data: ptr(T), len: i64)
-    Slice(Box<TypeExpr>),
+    /// `T[]`, `T[,]`, `T[,,]`: a view into a buffer of T of that rank —
+    /// its data (a typed pointer) and, per axis, a count and a stride
+    Slice(Box<TypeExpr>, u8),
     /// `chunk(T)`: as many lanes of T as the platform's vector register
     /// holds (`TxK`), or T itself where it has none
     Chunk(Box<TypeExpr>),
@@ -308,7 +309,7 @@ impl fmt::Display for TypeExpr {
             }
             TypeExpr::Vector(inner, n) => write!(f, "{}x{}", inner, n),
             TypeExpr::TPtr(inner) => write!(f, "ptr({})", inner),
-            TypeExpr::Slice(inner) => write!(f, "{}[]", inner),
+            TypeExpr::Slice(inner, rank) => write!(f, "{}[{}]", inner, ",".repeat(*rank as usize - 1)),
             TypeExpr::Chunk(inner) => write!(f, "chunk({})", inner),
             TypeExpr::Array(inner, dims) => {
                 let ds: Vec<String> = dims.iter().map(|d| d.to_string()).collect();
@@ -2285,7 +2286,7 @@ impl Parser {
                     }
                 }
             }
-            TypeExpr::Vector(inner, _) | TypeExpr::Slice(inner) | TypeExpr::Chunk(inner) => self.abstract_names(inner, out),
+            TypeExpr::Vector(inner, _) | TypeExpr::Slice(inner, _) | TypeExpr::Chunk(inner) => self.abstract_names(inner, out),
             _ => {}
         }
     }
@@ -2304,16 +2305,97 @@ impl Parser {
         Some(if self.policy.chunk_bits >= bits { (self.policy.chunk_bits / bits).clamp(1, 64) } else { 1 })
     }
 
-    /// the element type of a slice type, if ty is one
-    fn slice_of(&self, ty: Type) -> Option<Type> {
+    /// the element type and rank of a view type, if ty is one
+    fn slice_of(&self, ty: Type) -> Option<(Type, u8)> {
         let Type::Struct(i) = ty else { return None };
         let p = &self.packs[i as usize];
-        if p.aggregate && p.name.ends_with("[]") && p.fields.len() == 2 {
+        if p.aggregate && p.name.ends_with(']') && p.fields.len() >= 3 && p.fields.len() % 2 == 1 {
             if let Type::TPtr(j) = p.fields[0].1 {
-                return self.packs[j as usize].pointee;
+                let rank = (p.fields.len() / 2) as u8;
+                return self.packs[j as usize].pointee.map(|e| (e, rank));
             }
         }
         None
+    }
+
+    /// a view's words as hidden values: its data, then (count, stride) per axis
+    fn view_words(&mut self, scope: &mut FuncScope, a: ValueId, tag: &str) -> (ValueId, Vec<(ValueId, ValueId)>) {
+        let aty = scope.values[a.0 as usize].ty;
+        let (_, rank) = self.slice_of(aty).unwrap();
+        let aname = scope.values[a.0 as usize].name.clone();
+        let data_ty = self.field_type(aty, 0);
+        let data = self.hidden(scope, data_ty, format!("{}_{}_data", aname, tag), |v| Inst::Get { dst: v, src: a, field: 0 });
+        let mut dims = Vec::new();
+        for k in 0..rank as u32 {
+            let n = self.hidden(scope, Type::I64, format!("{}_{}_n{}", aname, tag, k), |v| Inst::Get { dst: v, src: a, field: 1 + 2 * k });
+            let st = self.hidden(scope, Type::I64, format!("{}_{}_s{}", aname, tag, k), |v| Inst::Get { dst: v, src: a, field: 2 + 2 * k });
+            dims.push((n, st));
+        }
+        (data, dims)
+    }
+
+    /// a typed data pointer moved by `elems` elements (a hidden multiply
+    /// by the element size, an add on the raw pointer, and back)
+    fn data_moved(&mut self, scope: &mut FuncScope, data: ValueId, elems: ValueId, elem: Type, tag: &str) -> Result<ValueId, ParseError> {
+        let (size, _) = self.layout_of(elem).unwrap();
+        let data_ty = scope.values[data.0 as usize].ty;
+        let sz = self.hidden(scope, Type::I64, format!("{}_size", tag), |v| Inst::IConst { dst: v, imm: size as i128 });
+        let bytes = self.hidden_mul(scope, format!("{}_bytes", tag), elems, sz)?;
+        let raw0 = self.hidden(scope, Type::Ptr, format!("{}_raw0", tag), |v| Inst::Cast { op: CastOp::Cast, dst: v, src: data });
+        let raw = self.hidden(scope, Type::Ptr, format!("{}_raw", tag), |v| Inst::PtrAdd { dst: v, base: raw0, off: bytes });
+        Ok(self.hidden(scope, data_ty, format!("{}_at", tag), |v| Inst::Cast { op: CastOp::Cast, dst: v, src: raw }))
+    }
+
+    /// `check 0 <= i < n`, as hidden instructions
+    fn check_index(&mut self, scope: &mut FuncScope, i: ValueId, n: ValueId, tag: &str) {
+        let zero = self.hidden(scope, Type::I64, format!("{}_zero", tag), |v| Inst::IConst { dst: v, imm: 0 });
+        let ge = self.hidden(scope, Type::U1, format!("{}_ge", tag), |v| Inst::ICmp { cond: Cond::Ge, dst: v, lhs: i, rhs: zero });
+        self.consts.push(Inst::Check { cond: ge });
+        let lt = self.hidden(scope, Type::U1, format!("{}_lt", tag), |v| Inst::ICmp { cond: Cond::Lt, dst: v, lhs: i, rhs: n });
+        self.consts.push(Inst::Check { cond: lt });
+    }
+
+    /// the element offset of indices through a view's axes: sum of i_k * s_k,
+    /// each index checked against its count
+    fn view_index(&mut self, scope: &mut FuncScope, dims: &[(ValueId, ValueId)], idx: &[ValueId], tag: &str) -> Result<ValueId, ParseError> {
+        let mut acc: Option<ValueId> = None;
+        for (k, (&i, &(n, st))) in idx.iter().zip(dims).enumerate() {
+            self.check_index(scope, i, n, &format!("{}_i{}", tag, k));
+            let term = self.hidden_mul(scope, format!("{}_t{}", tag, k), i, st)?;
+            acc = Some(match acc {
+                None => term,
+                Some(a) => self.hidden(scope, Type::I64, format!("{}_o{}", tag, k), |v| Inst::Bin { op: BinOp::IAdd, dst: v, lhs: a, rhs: term }),
+            });
+        }
+        Ok(acc.unwrap())
+    }
+
+    /// `load a, i, j` / `store v, a, i, j` through a view: the indices,
+    /// checked, and the typed access
+    fn view_access(&mut self, scope: &mut FuncScope, a: ValueId, what: &str) -> Result<(ValueId, Option<(ValueId, u32)>, Type), ParseError> {
+        let aty = scope.values[a.0 as usize].ty;
+        let (elem, rank) = self.slice_of(aty).unwrap();
+        let mut idx = Vec::new();
+        while self.eat(&Tok::Comma) {
+            idx.push(self.parse_operand(scope, Some(Type::I64))?);
+        }
+        if idx.len() != rank as usize {
+            return Err(self.err(format!("{}: {} is {}, which takes {} index(es), not {}", what, scope.values[a.0 as usize].name, self.tyname_of(aty), rank, idx.len())));
+        }
+        let aname = scope.values[a.0 as usize].name.clone();
+        let (data, dims) = self.view_words(scope, a, what);
+        let k = self.view_index(scope, &dims, &idx, &format!("{}_{}", aname, what))?;
+        let (size, _) = self.layout_of(elem).unwrap();
+        Ok((data, Some((k, size)), elem))
+    }
+
+    /// a hidden i64 product, by the policy's multiply (an instruction, or
+    /// the library's on a core without one)
+    fn hidden_mul(&mut self, scope: &mut FuncScope, name: String, a: ValueId, b: ValueId) -> Result<ValueId, ParseError> {
+        let v = scope.temp(Type::I64, name);
+        let inst = self.mul_i64(v, a, b)?;
+        self.consts.push(inst);
+        Ok(v)
     }
 
     /// a hidden value and the instruction defining it, before the current one
@@ -2504,9 +2586,9 @@ impl Parser {
         };
         match expr {
             TypeExpr::Fn(..) | TypeExpr::TPtr(..) | TypeExpr::Array(..) => false, // generics do not range over these
-            TypeExpr::Slice(inner) => match self.slice_of(ty) {
-                Some(elem) => self.unify(inner, elem, binds, tbinds),
-                None => false,
+            TypeExpr::Slice(inner, rank) => match self.slice_of(ty) {
+                Some((elem, r)) if r == *rank => self.unify(inner, elem, binds, tbinds),
+                _ => false,
             },
             // a chunk of T is TxK for the platform's K (T itself when K is 1)
             TypeExpr::Chunk(inner) => match self.vector_of(ty) {
@@ -2757,9 +2839,19 @@ impl Parser {
     /// a type expression, with `[]` after it a slice of it
     fn type_expr_at(&self, i: usize, params: &[String]) -> Result<(TypeExpr, usize), ParseError> {
         let (mut expr, mut j) = self.type_expr_inner_at(i, params)?;
-        while self.toks.get(j).map(|t| &t.0) == Some(&Tok::LBracket) && self.toks.get(j + 1).map(|t| &t.0) == Some(&Tok::RBracket) {
-            expr = TypeExpr::Slice(Box::new(expr));
-            j += 2;
+        // `[]` a view of rank 1, `[,]` rank 2, `[,,]` rank 3
+        while self.toks.get(j).map(|t| &t.0) == Some(&Tok::LBracket) {
+            let mut rank = 1u8;
+            let mut k = j + 1;
+            while self.toks.get(k).map(|t| &t.0) == Some(&Tok::Comma) {
+                rank += 1;
+                k += 1;
+            }
+            if self.toks.get(k).map(|t| &t.0) != Some(&Tok::RBracket) {
+                break;
+            }
+            expr = TypeExpr::Slice(Box::new(expr), rank);
+            j = k + 1;
         }
         Ok((expr, j))
     }
@@ -3295,19 +3387,26 @@ impl Parser {
                 let k = self.chunk_lanes(elem).ok_or_else(|| format!("a chunk cannot be of {}", self.tyname_of(elem)))?;
                 self.instantiate(&TypeExpr::Vector(inner.clone(), IntExpr::Lit(k as i64)), env, depth + 1)
             }
-            TypeExpr::Slice(inner) => {
-                // a view into a buffer: its data (a typed pointer) and its
-                // length, a struct — two words, dissolved like any struct
+            TypeExpr::Slice(inner, rank) => {
+                // a view into a buffer: its data (a typed pointer) and, per
+                // axis, a count and a stride in elements — a struct of
+                // words, dissolved like any struct
                 let elem0 = self.instantiate(inner, env, depth + 1)?;
                 let elem = self.policy.resolve(elem0);
                 let data_ty = self.instantiate(&TypeExpr::TPtr(inner.clone()), env, depth + 1)?;
-                let fields = vec![("data".to_string(), data_ty), ("len".to_string(), Type::I64)];
-                let name = format!("{}[]", self.tyname_of(elem));
+                let mut fields = vec![("data".to_string(), data_ty)];
+                for k in 0..*rank {
+                    fields.push((format!("n{}", k), Type::I64));
+                    fields.push((format!("s{}", k), Type::I64));
+                }
+                let name = format!("{}[{}]", self.tyname_of(elem), ",".repeat(*rank as usize - 1));
                 if let Some(i) = self.packs.iter().position(|p| p.aggregate && p.name == name && p.fields == fields) {
                     return Ok(Type::Struct(i as u32));
                 }
                 let id = self.packs.len() as u32;
-                self.packs.push(PackDef { name, fields, offsets: vec![0, 8], width: 128, origin: None, aggregate: true, size: 16, sig: None, lanes: 0, pointee: None, elem: None });
+                let words = fields.len() as u32;
+                let offsets: Vec<u32> = (0..words).map(|k| 8 * k).collect();
+                self.packs.push(PackDef { name, fields, offsets, width: 64 * words, origin: None, aggregate: true, size: 8 * words, sig: None, lanes: 0, pointee: None, elem: None });
                 Ok(Type::Struct(id))
             }
             TypeExpr::TPtr(inner) => {
@@ -4381,11 +4480,19 @@ impl Parser {
                 Ok(Inst::Call { dsts: vec![dst], callee, args: vec![left, kv] })
             }
             // a slice of a buffer: its header checked (the element size is
-            // the slice's), its capacity the length, its data the view
+            // the slice's), its capacity the length — or, with counts, a
+            // view of that shape over it, row-major, checked to fit
             "slice" => {
                 let dty = scope.values[dst.0 as usize].ty;
-                let elem = self.slice_of(dty).ok_or_else(|| self.err(format!("slice gives a slice; {} is {}", scope.values[dst.0 as usize].name, self.tyname_of(dty))))?;
+                let (elem, rank) = self.slice_of(dty).ok_or_else(|| self.err(format!("slice gives a view; {} is {}", scope.values[dst.0 as usize].name, self.tyname_of(dty))))?;
                 let p = self.expect_value(scope)?;
+                let mut counts = Vec::new();
+                while self.eat(&Tok::Comma) {
+                    counts.push(self.parse_operand(scope, Some(Type::I64))?);
+                }
+                if !(counts.is_empty() && rank == 1) && counts.len() != rank as usize {
+                    return Err(self.err(format!("slice: {} is {}, which takes {} count(s)", scope.values[dst.0 as usize].name, self.tyname_of(dty), rank)));
+                }
                 let (size, _) = self.layout_of(elem).unwrap();
                 let dname = scope.values[dst.0 as usize].name.clone();
                 let esz = self.hidden(scope, Type::I64, format!("{}_elem", dname), |v| Inst::Load { dst: v, addr: p, off: 0, index: None });
@@ -4397,24 +4504,42 @@ impl Parser {
                 let raw = self.hidden(scope, Type::Ptr, format!("{}_raw", dname), |v| Inst::PtrAdd { dst: v, base: p, off: hdr });
                 let data_ty = self.field_type(dty, 0);
                 let data = self.hidden(scope, data_ty, format!("{}_data", dname), |v| Inst::Cast { op: CastOp::Cast, dst: v, src: raw });
-                Ok(Inst::Pack { dst, args: vec![data, cap] })
+                let one = self.hidden(scope, Type::I64, format!("{}_one", dname), |v| Inst::IConst { dst: v, imm: 1 });
+                if counts.is_empty() {
+                    return Ok(Inst::Pack { dst, args: vec![data, cap, one] });
+                }
+                // row-major strides: the last axis 1, each before it the product after
+                let mut strides = vec![one; counts.len()];
+                let mut acc = one;
+                for k in (0..counts.len() - 1).rev() {
+                    acc = self.hidden_mul(scope, format!("{}_s{}", dname, k), acc, counts[k + 1])?;
+                    strides[k] = acc;
+                }
+                let total = self.hidden_mul(scope, format!("{}_total", dname), acc, counts[0])?;
+                let fits = self.hidden(scope, Type::U1, format!("{}_fits", dname), |v| Inst::ICmp { cond: Cond::Le, dst: v, lhs: total, rhs: cap });
+                self.consts.push(Inst::Check { cond: fits });
+                let mut args = vec![data];
+                for (c, st) in counts.iter().zip(&strides) {
+                    args.push(*c);
+                    args.push(*st);
+                }
+                Ok(Inst::Pack { dst, args })
             }
-            // a view of a slice: `view a, off, n`, checked to lie within it
+            // a view of a rank-1 view: `view a, off, n`, checked to lie within
             "view" => {
                 let dty = scope.values[dst.0 as usize].ty;
-                let elem = self.slice_of(dty).ok_or_else(|| self.err(format!("view gives a slice; {} is {}", scope.values[dst.0 as usize].name, self.tyname_of(dty))))?;
+                let (elem, rank) = self.slice_of(dty).ok_or_else(|| self.err(format!("view gives a view; {} is {}", scope.values[dst.0 as usize].name, self.tyname_of(dty))))?;
                 let a = self.expect_value(scope)?;
-                if scope.values[a.0 as usize].ty != dty {
+                if scope.values[a.0 as usize].ty != dty || rank != 1 {
                     return Err(self.err(format!("view: {} is {}, not {}", scope.values[a.0 as usize].name, self.tyname_of(scope.values[a.0 as usize].ty), self.tyname_of(dty))));
                 }
                 self.expect(Tok::Comma)?;
                 let off = self.parse_operand(scope, Some(Type::I64))?;
                 self.expect(Tok::Comma)?;
                 let n = self.parse_operand(scope, Some(Type::I64))?;
-                let (size, _) = self.layout_of(elem).unwrap();
                 let dname = scope.values[dst.0 as usize].name.clone();
-                let data0 = self.hidden(scope, self.field_type(dty, 0), format!("{}_from", dname), |v| Inst::Get { dst: v, src: a, field: 0 });
-                let len0 = self.hidden(scope, Type::I64, format!("{}_of", dname), |v| Inst::Get { dst: v, src: a, field: 1 });
+                let (data0, dims) = self.view_words(scope, a, "view");
+                let (len0, st) = dims[0];
                 let zero = self.hidden(scope, Type::I64, format!("{}_zero", dname), |v| Inst::IConst { dst: v, imm: 0 });
                 let off_ok = self.hidden(scope, Type::U1, format!("{}_off_ok", dname), |v| Inst::ICmp { cond: Cond::Ge, dst: v, lhs: off, rhs: zero });
                 self.consts.push(Inst::Check { cond: off_ok });
@@ -4423,19 +4548,149 @@ impl Parser {
                 let end = self.hidden(scope, Type::I64, format!("{}_end", dname), |v| Inst::Bin { op: BinOp::IAdd, dst: v, lhs: off, rhs: n });
                 let fits = self.hidden(scope, Type::U1, format!("{}_fits", dname), |v| Inst::ICmp { cond: Cond::Le, dst: v, lhs: end, rhs: len0 });
                 self.consts.push(Inst::Check { cond: fits });
-                let sz = self.hidden(scope, Type::I64, format!("{}_size", dname), |v| Inst::IConst { dst: v, imm: size as i128 });
-                let bytes = self.hidden(scope, Type::I64, format!("{}_bytes", dname), |v| Inst::Bin { op: BinOp::IMul, dst: v, lhs: off, rhs: sz });
-                let raw0 = self.hidden(scope, Type::Ptr, format!("{}_raw0", dname), |v| Inst::Cast { op: CastOp::Cast, dst: v, src: data0 });
-                let raw = self.hidden(scope, Type::Ptr, format!("{}_raw", dname), |v| Inst::PtrAdd { dst: v, base: raw0, off: bytes });
-                let data_ty = self.field_type(dty, 0);
-                let data = self.hidden(scope, data_ty, format!("{}_data", dname), |v| Inst::Cast { op: CastOp::Cast, dst: v, src: raw });
-                Ok(Inst::Pack { dst, args: vec![data, n] })
+                let elems = self.hidden_mul(scope, format!("{}_elems", dname), off, st)?;
+                let data = self.data_moved(scope, data0, elems, elem, &dname)?;
+                Ok(Inst::Pack { dst, args: vec![data, n, st] })
+            }
+            // `at a, i`: the sub-view at index i along the first axis, one
+            // rank down (a row of a matrix); checked
+            "at" => {
+                let dty = scope.values[dst.0 as usize].ty;
+                let a = self.expect_value(scope)?;
+                let aty = scope.values[a.0 as usize].ty;
+                let (elem, rank) = self.slice_of(aty).ok_or_else(|| self.err(format!("at takes a view; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(aty))))?;
+                let want = if rank >= 2 { self.slice_of(dty) } else { None };
+                if rank < 2 || want != Some((elem, rank - 1)) {
+                    return Err(self.err(format!("at {}: a view one rank down is {}[{}]; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(elem), ",".repeat(rank.saturating_sub(2) as usize), scope.values[dst.0 as usize].name, self.tyname_of(dty))));
+                }
+                self.expect(Tok::Comma)?;
+                let i = self.parse_operand(scope, Some(Type::I64))?;
+                let dname = scope.values[dst.0 as usize].name.clone();
+                let (data0, dims) = self.view_words(scope, a, "at");
+                let (n0, s0) = dims[0];
+                self.check_index(scope, i, n0, &dname);
+                let elems = self.hidden_mul(scope, format!("{}_elems", dname), i, s0)?;
+                let data = self.data_moved(scope, data0, elems, elem, &dname)?;
+                let mut args = vec![data];
+                for (n, st) in &dims[1..] {
+                    args.push(*n);
+                    args.push(*st);
+                }
+                Ok(Inst::Pack { dst, args })
+            }
+            // `transpose a`: the first two axes swapped — a view, nothing moves
+            "transpose" => {
+                let dty = scope.values[dst.0 as usize].ty;
+                let a = self.expect_value(scope)?;
+                let aty = scope.values[a.0 as usize].ty;
+                let rank = self.slice_of(aty).map(|(_, r)| r).unwrap_or(0);
+                if rank < 2 || aty != dty {
+                    return Err(self.err(format!("transpose takes a view of rank 2 or more and gives the same type; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(aty))));
+                }
+                let (data, dims) = self.view_words(scope, a, "t");
+                let mut args = vec![data, dims[1].0, dims[1].1, dims[0].0, dims[0].1];
+                for (n, st) in &dims[2..] {
+                    args.push(*n);
+                    args.push(*st);
+                }
+                Ok(Inst::Pack { dst, args })
+            }
+            // `block a, i0, m0, i1, m1`: a rectangle of a rank-2 view, checked
+            "block" => {
+                let dty = scope.values[dst.0 as usize].ty;
+                let a = self.expect_value(scope)?;
+                let aty = scope.values[a.0 as usize].ty;
+                let (elem, rank) = self.slice_of(aty).ok_or_else(|| self.err(format!("block takes a view; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(aty))))?;
+                if rank != 2 || aty != dty {
+                    return Err(self.err(format!("block takes a view of rank 2 and gives the same type; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(aty))));
+                }
+                let mut ops = Vec::new();
+                for _ in 0..4 {
+                    self.expect(Tok::Comma)?;
+                    ops.push(self.parse_operand(scope, Some(Type::I64))?);
+                }
+                let dname = scope.values[dst.0 as usize].name.clone();
+                let (data0, dims) = self.view_words(scope, a, "block");
+                let mut elems: Option<ValueId> = None;
+                for k in 0..2 {
+                    let (start, count) = (ops[2 * k], ops[2 * k + 1]);
+                    let (n, st) = dims[k];
+                    let zero = self.hidden(scope, Type::I64, format!("{}_z{}", dname, k), |v| Inst::IConst { dst: v, imm: 0 });
+                    let ge = self.hidden(scope, Type::U1, format!("{}_ge{}", dname, k), |v| Inst::ICmp { cond: Cond::Ge, dst: v, lhs: start, rhs: zero });
+                    self.consts.push(Inst::Check { cond: ge });
+                    let cge = self.hidden(scope, Type::U1, format!("{}_cge{}", dname, k), |v| Inst::ICmp { cond: Cond::Ge, dst: v, lhs: count, rhs: zero });
+                    self.consts.push(Inst::Check { cond: cge });
+                    let end = self.hidden(scope, Type::I64, format!("{}_end{}", dname, k), |v| Inst::Bin { op: BinOp::IAdd, dst: v, lhs: start, rhs: count });
+                    let fits = self.hidden(scope, Type::U1, format!("{}_fits{}", dname, k), |v| Inst::ICmp { cond: Cond::Le, dst: v, lhs: end, rhs: n });
+                    self.consts.push(Inst::Check { cond: fits });
+                    let term = self.hidden_mul(scope, format!("{}_term{}", dname, k), start, st)?;
+                    elems = Some(match elems {
+                        None => term,
+                        Some(e) => self.hidden(scope, Type::I64, format!("{}_off{}", dname, k), |v| Inst::Bin { op: BinOp::IAdd, dst: v, lhs: e, rhs: term }),
+                    });
+                }
+                let data = self.data_moved(scope, data0, elems.unwrap(), elem, &dname)?;
+                Ok(Inst::Pack { dst, args: vec![data, ops[1], dims[0].1, ops[3], dims[1].1] })
+            }
+            // `reshape a, n0, n1`: a contiguous rank-1 view seen with a shape
+            "reshape" => {
+                let dty = scope.values[dst.0 as usize].ty;
+                let a = self.expect_value(scope)?;
+                let aty = scope.values[a.0 as usize].ty;
+                let (elem, rank) = self.slice_of(aty).ok_or_else(|| self.err(format!("reshape takes a view; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(aty))))?;
+                let drank = self.slice_of(dty).map(|(_, r)| r).unwrap_or(0);
+                if rank != 1 || self.slice_of(dty).map(|(e, _)| e) != Some(elem) || drank < 2 {
+                    return Err(self.err(format!("reshape takes a rank-1 view and gives one of higher rank over the same elements; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(aty))));
+                }
+                let mut counts = Vec::new();
+                while self.eat(&Tok::Comma) {
+                    counts.push(self.parse_operand(scope, Some(Type::I64))?);
+                }
+                if counts.len() != drank as usize {
+                    return Err(self.err(format!("reshape to {} takes {} counts", self.tyname_of(dty), drank)));
+                }
+                let dname = scope.values[dst.0 as usize].name.clone();
+                let (data, dims) = self.view_words(scope, a, "reshape");
+                let (len0, st) = dims[0];
+                let one = self.hidden(scope, Type::I64, format!("{}_one", dname), |v| Inst::IConst { dst: v, imm: 1 });
+                let contiguous = self.hidden(scope, Type::U1, format!("{}_contig", dname), |v| Inst::ICmp { cond: Cond::Eq, dst: v, lhs: st, rhs: one });
+                self.consts.push(Inst::Check { cond: contiguous });
+                let mut strides = vec![one; counts.len()];
+                let mut acc = one;
+                for k in (0..counts.len() - 1).rev() {
+                    acc = self.hidden_mul(scope, format!("{}_s{}", dname, k), acc, counts[k + 1])?;
+                    strides[k] = acc;
+                }
+                let total = self.hidden_mul(scope, format!("{}_total", dname), acc, counts[0])?;
+                let same = self.hidden(scope, Type::U1, format!("{}_same", dname), |v| Inst::ICmp { cond: Cond::Eq, dst: v, lhs: total, rhs: len0 });
+                self.consts.push(Inst::Check { cond: same });
+                let mut args = vec![data];
+                for (c, st) in counts.iter().zip(&strides) {
+                    args.push(*c);
+                    args.push(*st);
+                }
+                Ok(Inst::Pack { dst, args })
+            }
+            // `shape a, k`: the count along axis k
+            "shape" => {
+                let a = self.expect_value(scope)?;
+                let aty = scope.values[a.0 as usize].ty;
+                let (_, rank) = self.slice_of(aty).ok_or_else(|| self.err(format!("shape takes a view; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(aty))))?;
+                self.expect(Tok::Comma)?;
+                let k = match self.next()? {
+                    Tok::Int(k) if k >= 0 && k < rank as i64 => k as u32,
+                    t => {
+                        self.pos -= 1;
+                        return Err(self.err(format!("shape: an axis of {} is 0 to {}, not {}", self.tyname_of(aty), rank - 1, t)));
+                    }
+                };
+                Ok(Inst::Get { dst, src: a, field: 1 + 2 * k })
             }
             "ptr" => {
                 let a = self.expect_value(scope)?;
                 let aty = scope.values[a.0 as usize].ty;
                 if self.slice_of(aty).is_none() {
-                    return Err(self.err(format!("ptr takes a slice; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(aty))));
+                    return Err(self.err(format!("ptr takes a view; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(aty))));
                 }
                 let dty = scope.values[dst.0 as usize].ty;
                 let data_ty = self.field_type(aty, 0);
@@ -4448,6 +4703,15 @@ impl Parser {
                     return Ok(Inst::Cast { op: CastOp::Cast, dst, src: typed });
                 }
                 Err(self.err(format!("ptr of {} is {} or ptr; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(data_ty), scope.values[dst.0 as usize].name, self.tyname_of(dty))))
+            }
+            // `stride a`: the stride of a rank-1 view, in elements
+            "stride" => {
+                let a = self.expect_value(scope)?;
+                let aty = scope.values[a.0 as usize].ty;
+                match self.slice_of(aty) {
+                    Some((_, 1)) => Ok(Inst::Get { dst, src: a, field: 2 }),
+                    _ => Err(self.err(format!("stride takes a rank-1 view; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(aty)))),
+                }
             }
             "pack" => {
                 let wants: Vec<Type> = match scope.values[dst.0 as usize].ty {
@@ -4489,6 +4753,14 @@ impl Parser {
             }
             "load" => {
                 let addr = self.expect_value(scope)?;
+                if self.slice_of(scope.values[addr.0 as usize].ty).is_some() {
+                    let (data, index, elem) = self.view_access(scope, addr, "load")?;
+                    let dty = scope.values[dst.0 as usize].ty;
+                    if dty != elem {
+                        return Err(self.err(format!("load: {} holds {}, but {} is {}", scope.values[addr.0 as usize].name, self.tyname_of(elem), scope.values[dst.0 as usize].name, self.tyname_of(dty))));
+                    }
+                    return Ok(Inst::Load { dst, addr: data, off: 0, index });
+                }
                 if let Type::TPtr(_) = scope.values[addr.0 as usize].ty {
                     let (pu, index, elem) = self.typed_access(scope, addr, "load")?;
                     let dty = scope.values[dst.0 as usize].ty;
@@ -4782,6 +5054,14 @@ impl Parser {
                 let val = self.expect_value(scope)?;
                 self.expect(Tok::Comma)?;
                 let addr = self.expect_value(scope)?;
+                if self.slice_of(scope.values[addr.0 as usize].ty).is_some() {
+                    let (data, index, elem) = self.view_access(scope, addr, "store")?;
+                    let vty = scope.values[val.0 as usize].ty;
+                    if vty != elem {
+                        return Err(self.err(format!("store: {} holds {}, but {} is {}", scope.values[addr.0 as usize].name, self.tyname_of(elem), scope.values[val.0 as usize].name, self.tyname_of(vty))));
+                    }
+                    return Ok(Inst::Store { val, addr: data, off: 0, index });
+                }
                 if let Type::TPtr(_) = scope.values[addr.0 as usize].ty {
                     let (pu, index, elem) = self.typed_access(scope, addr, "store")?;
                     let vty = scope.values[val.0 as usize].ty;
@@ -4802,7 +5082,7 @@ impl Parser {
             // library's (lib/slice.ssa), chosen by every operand's type
             _ if !self.is_call(op) && self.generics.iter().any(|g| g.name == op) && self.next_value_is_slice(scope) => {
                 let first = self.expect_value(scope)?;
-                let elem = self.slice_of(scope.values[first.0 as usize].ty).unwrap();
+                let (elem, _) = self.slice_of(scope.values[first.0 as usize].ty).unwrap();
                 let mut args = vec![first];
                 while self.eat(&Tok::Comma) {
                     args.push(self.parse_operand(scope, Some(elem))?);

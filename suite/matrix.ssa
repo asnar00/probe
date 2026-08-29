@@ -1,0 +1,181 @@
+; views with a shape (lib/slice.ssa): `f32[,]` is a rank-2 view — its
+; data and, per axis, a count and a stride — so `at a, i` is a row,
+; `transpose a` the same memory with its axes swapped, `block` a
+; rectangle, `reshape` a shape over a contiguous run; operations of
+; rank 2 are the rank-1 ones over each row, and a reduction one rank
+; down is one per row.
+
+;! grid -> 66, 20
+;! rows_cols -> 6, 15
+;! transposed -> 5, 3
+;! blocks -> 54, 4
+;! strided -> 14, 42
+;! cube -> 84, 7
+;! rowmax -> 4, 12
+;! outside2 -> check
+;! ragged -> check
+
+data m: buffer(i32, 12)
+data m2: buffer(i32, 12)
+data f: buffer(f32, 16)
+data c3: buffer(i32, 24)
+
+
+; the 3x4 grid 0..11, by indexed stores — every case builds its own,
+; since a path may start each case with fresh memory
+fn ramp(a: i32[,]) {
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, 3
+        if done {
+            break
+        }
+        loop(j: i64 = 0) {
+            done2: u1 = cmp.ge j, 4
+            if done2 {
+                break
+            }
+            i4: i64 = mul i, 4
+            k: i64 = add i4, j
+            v: i32 = conv k
+            store v, a, i, j
+            j2: i64 = add j, 1
+            continue j2
+        }
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+; the grid's whole sum, and the element at (1, 2)
+fn grid() -> (i32, i32) {
+    p: ptr = addr m
+    a: i32[,] = slice p, 3, 4
+    ramp(a)
+    s: i32 = sum a
+    x: i32 = load a, 1, 2
+    n: i64 = shape a, 1
+    n32: i32 = conv n
+    y: i32 = mul x, n32
+    e: i32 = sub y, 4
+    ret s, e
+}
+
+; rows: the sum of row 1 (4+5+6+7 = 22) and of column 1 through the
+; transpose (1+5+9 = 15)... row 0 = 0..3 sums to 6
+fn rows_cols() -> (i32, i32) {
+    p: ptr = addr m
+    a: i32[,] = slice p, 3, 4
+    ramp(a)
+    r0: i32[] = at a, 0
+    s0: i32 = sum r0
+    t: i32[,] = transpose a
+    c1: i32[] = at t, 1
+    s1: i32 = sum c1
+    ret s0, s1
+}
+
+; the transpose's shape, and its element (2, 1) — which is (1, 2) of the grid
+fn transposed() -> (i64, i32) {
+    p: ptr = addr m
+    a: i32[,] = slice p, 3, 4
+    ramp(a)
+    t: i32[,] = transpose a
+    n0: i64 = shape t, 0
+    n1: i64 = shape t, 1
+    ns: i64 = add n0, n1
+    n5: i64 = sub ns, 2
+    x: i32 = load t, 2, 1
+    y: i32 = sub x, 3
+    ret n5, y
+}
+
+; a 2x2 block at (1, 1): 5 6 / 9 10 sums to 30; doubled through add
+; into a second grid's block: 60; its max 20 — and a 1-element block
+fn blocks() -> (i32, i32) {
+    p: ptr = addr m
+    q: ptr = addr m2
+    a: i32[,] = slice p, 3, 4
+    ramp(a)
+    b: i32[,] = slice q, 3, 4
+    fill b, 0
+    ab: i32[,] = block a, 1, 2, 1, 2
+    bb: i32[,] = block b, 1, 2, 1, 2
+    add bb, ab, ab
+    s: i32 = sum b
+    hi: i32 = max bb
+    s2: i32 = sub s, 6
+    one: i32[,] = block a, 2, 1, 3, 1
+    v: i32 = sum one
+    w: i32 = sub v, 7
+    ret s2, w
+}
+
+; a column is a strided rank-1 view: fill it, scale it, sum it — the
+; contiguous path is not taken and the answer is the same
+fn strided() -> (i32, i32) {
+    p: ptr = addr m2
+    b: i32[,] = slice p, 3, 4
+    fill b, 1
+    t: i32[,] = transpose b
+    c2: i32[] = at t, 2
+    fill c2, 5
+    mul c2, c2, 2
+    s: i32 = sum c2
+    sc: i32 = sub s, 16
+    all: i32 = sum b
+    a2: i32 = add all, 3
+    ret sc, a2
+}
+
+; rank 3: 2x3x4 filled with 1, the slab at 1 filled with 3: sums 12 + 36
+; = 48... plus a per-slab reduction
+fn cube() -> (i32, i32) {
+    p: ptr = addr c3
+    a: i32[,,] = slice p, 2, 3, 4
+    fill a, 1
+    s1: i32[,] = at a, 1
+    fill s1, 3
+    s: i32 = sum a
+    q: ptr = addr m2
+    per: i32[,] = slice q, 2, 3
+    sum per, a
+    x: i32 = load per, 1, 0
+    y: i32 = sub x, 5
+    s2: i32 = add s, 36
+    ret s2, y
+}
+
+; per-row maxima and sums of the 3x4 grid, into rank-1 views
+fn rowmax() -> (i32, i32) {
+    p: ptr = addr m
+    a: i32[,] = slice p, 3, 4
+    ramp(a)
+    q: ptr = addr m2
+    all: i32[] = slice q
+    mx: i32[] = view all, 0, 3
+    max mx, a
+    x: i32 = load mx, 0
+    x2: i32 = add x, 1
+    sm: i32[] = view all, 3, 3
+    sum sm, a
+    y: i32 = load sm, 0
+    y2: i32 = add y, 6
+    ret x2, y2
+}
+
+fn outside2() -> i32 {
+    p: ptr = addr m
+    a: i32[,] = slice p, 3, 4
+    x: i32 = load a, 3, 0
+    ret x
+}
+
+fn ragged() -> i32 {
+    p: ptr = addr m
+    q: ptr = addr m2
+    a: i32[,] = slice p, 3, 4
+    b: i32[,] = slice q, 4, 3
+    add b, a, a
+    ret 0
+}
