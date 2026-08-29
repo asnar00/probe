@@ -506,6 +506,55 @@ impl RvEmit<'_> {
         }
     }
 
+    /// a result to where the convention wants it: a register, or the
+    /// stack above this frame — the caller's area
+    fn res_out(&mut self, abi: Abi, v: ValueId) -> Result<(), String> {
+        match abi {
+            Abi::Reg(k, r) => self.arg_to(k, r, v),
+            Abi::Stack(k, off) => {
+                self.emit(ADDI, &[T2, SP, self.frame])?;
+                match k {
+                    0 => {
+                        let r = self.src_reg(v, T0)?;
+                        self.emit(SD, &[r, off, T2]).map(|_| ())
+                    }
+                    1 => {
+                        let fr = self.src_freg(v, 0)?;
+                        self.emit(FSD, &[fr, off, T2]).map(|_| ())
+                    }
+                    _ => {
+                        let vr = self.src_vreg(v, 20)?;
+                        self.emit(ADDI, &[T2, T2, off])?;
+                        self.emit(VSET_E8, &[])?;
+                        self.emit(VSE8, &[vr, T2]).map(|_| ())
+                    }
+                }
+            }
+        }
+    }
+
+    /// a result from where the callee left it: a register, or the area
+    /// below sp (still lowered) it was given
+    fn res_in(&mut self, abi: Abi, v: ValueId) -> Result<(), String> {
+        match abi {
+            Abi::Reg(k, r) => self.arg_from(k, r, v),
+            Abi::Stack(0, off) => {
+                self.emit(LD, &[T0, off, SP])?;
+                self.value_from(v, T0)
+            }
+            Abi::Stack(1, off) => {
+                self.emit(FLD, &[0, off, SP])?;
+                self.arg_from(1, 0, v)
+            }
+            Abi::Stack(_, off) => {
+                self.emit(ADDI, &[T2, SP, off])?;
+                self.emit(VSET_E8, &[])?;
+                self.emit(VLE8, &[20, T2])?;
+                self.arg_from(2, 20, v)
+            }
+        }
+    }
+
     /// v from where the convention put it: a register, or the stack
     /// above this frame (the address through t2: frame plus offset may
     /// pass an immediate)
@@ -1536,7 +1585,8 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
         }
         Inst::CallInd { dsts, callee, args } => {
             let abi = e.abi_regs(args)?;
-            let below = RvEmit::stack_args(&abi);
+            let rabi = e.abi_regs(dsts)?;
+            let below = RvEmit::stack_args(&abi).max(RvEmit::stack_args(&rabi));
             if below > 0 {
                 e.emit(ADDI, &[SP, SP, -below])?;
                 e.sp_adjust = below;
@@ -1546,18 +1596,19 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             }
             let rc = e.src_reg(*callee, T0)?;
             e.emit("jalr {r}, {i -2048..2047}({r})", &[RA, 0, rc])?;
+            for (&d, abi) in dsts.iter().zip(rabi) {
+                e.res_in(abi, d)?;
+            }
             if below > 0 {
                 e.emit(ADDI, &[SP, SP, below])?;
                 e.sp_adjust = 0;
-            }
-            for (&d, abi) in dsts.iter().zip(e.abi_regs(dsts)?) {
-                e.arg_in(abi, d)?;
             }
             Ok(())
         }
         Inst::Call { dsts, callee, args } => {
             let abi = e.abi_regs(args)?;
-            let below = RvEmit::stack_args(&abi);
+            let rabi = e.abi_regs(dsts)?;
+            let below = RvEmit::stack_args(&abi).max(RvEmit::stack_args(&rabi));
             if below > 0 {
                 e.emit(ADDI, &[SP, SP, -below])?;
                 e.sp_adjust = below;
@@ -1572,12 +1623,12 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
                 imm_slot: 1,
                 target: FixTarget::Func(callee.clone()),
             });
+            for (&d, abi) in dsts.iter().zip(rabi) {
+                e.res_in(abi, d)?;
+            }
             if below > 0 {
                 e.emit(ADDI, &[SP, SP, below])?;
                 e.sp_adjust = 0;
-            }
-            for (&d, abi) in dsts.iter().zip(e.abi_regs(dsts)?) {
-                e.arg_in(abi, d)?;
             }
             Ok(())
         }
@@ -1618,8 +1669,7 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
         }
         Inst::Ret { vals } => {
             for (&v, abi) in vals.iter().zip(e.abi_regs(vals)?) {
-                let Abi::Reg(k, r) = abi else { return Err("more than 8 results of a class: not yet".into()) };
-                e.arg_to(k, r, v)?;
+                e.res_out(abi, v)?;
             }
             e.epilogue()
         }

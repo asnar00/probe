@@ -1,0 +1,151 @@
+; streams (lib/stream.ssa): `u8$` is a reader's view of a ring of bytes
+; over time — the ring, a position, a sampling rule, an edge rule — and
+; a producer pushes (t, v) pairs into the ring. Several views may look
+; at one ring with their own rules. Here a program is its own producer.
+
+;! frames -> 15, 5
+;! frames_again -> 0, 5
+;! samples -> 3, 3
+;! rules -> 4, 3
+;! windowed -> 9, 2
+;! sliding -> 12, 4
+;! early -> check
+;! stale -> check
+;! unordered -> check
+
+data vb: buffer(u8, 8)
+data tb: buffer(time, 8)
+data rg: array(u64, 4)
+
+; five items at 1, 2, 3, 4, 5 milliseconds with values 1..5
+fn five(s: u8$) {
+    loop(k: i64 = 1) {
+        done: u1 = cmp.gt k, 5
+        if done {
+            break
+        }
+        t: time = millis(k)
+        v: u8 = conv k
+        push s, t, v
+        k2: i64 = add k, 1
+        continue k2
+    }
+    ret
+}
+fn fresh() -> u8$ {
+    r: ptr = addr rg
+    a: ptr = addr vb
+    b: ptr = addr tb
+    ring_init(r, a, b)
+    s: u8$ = stream r
+    ret s
+}
+
+; a frame holds everything since the reader last looked
+fn frames() -> (u8, i64) {
+    s: u8$ = fresh()
+    five(s)
+    f: u8[], ft: time[], s2: u8$ = frame(s)
+    n: i64 = len f
+    total: u8 = sum f
+    ret total, n
+}
+; ... and nothing the second time; count says how much is waiting
+fn frames_again() -> (i64, i64) {
+    s: u8$ = fresh()
+    five(s)
+    waiting: i64 = count s
+    f: u8[], ft: time[], s2: u8$ = frame(s)
+    g: u8[], gt: time[], s3: u8$ = frame(s2)
+    n: i64 = len g
+    ret n, waiting
+}
+; nearest at 3.4 ms is the item at 3; hold at 3.9 ms is 3 too
+fn samples() -> (u8, u8) {
+    s: u8$ = fresh()
+    five(s)
+    t1: time = micros(3400)
+    x: u8 = sample s, t1
+    h: u8$ = sampling(s, 1)
+    t2: time = micros(3900)
+    y: u8 = sample h, t2
+    ret x, y
+}
+; two views of one ring: nearest at 3.6 ms gives 4, hold gives 3
+fn rules() -> (u8, u8) {
+    s: u8$ = fresh()
+    five(s)
+    t: time = micros(3600)
+    x: u8 = sample s, t
+    h: u8$ = sampling(s, 1)
+    y: u8 = sample h, t
+    ret x, y
+}
+; the items in [2 ms, 5 ms): 2, 3, 4
+fn windowed() -> (u8, u8) {
+    s: u8$ = fresh()
+    five(s)
+    t1: time = millis(2)
+    t2: time = millis(5)
+    w: u8[] = window s, t1, t2
+    total: u8 = sum w
+    first: u8 = load w, 0
+    ret total, first
+}
+; twelve items into a ring of eight: the newer half slid down when it
+; filled, the latest is 12, and the window from 9 ms holds the last four
+fn sliding() -> (u8, i64) {
+    s: u8$ = fresh()
+    loop(k: i64 = 1) {
+        done: u1 = cmp.gt k, 12
+        if done {
+            break
+        }
+        t: time = millis(k)
+        v: u8 = conv k
+        push s, t, v
+        k2: i64 = add k, 1
+        continue k2
+    }
+    last: u8 = latest s
+    t1: time = millis(9)
+    t2: time = millis(13)
+    w: u8[] = window s, t1, t2
+    n: i64 = len w
+    ret last, n
+}
+; a sample before the first item fails, unless the edge rule clamps
+fn early() -> u8 {
+    s: u8$ = fresh()
+    five(s)
+    t: time = micros(500)
+    x: u8 = sample s, t
+    ret x
+}
+; a reader that fell behind the resident items fails a check
+fn stale() -> i64 {
+    s: u8$ = fresh()
+    loop(k: i64 = 1) {
+        done: u1 = cmp.gt k, 12
+        if done {
+            break
+        }
+        t: time = millis(k)
+        v: u8 = conv k
+        push s, t, v
+        k2: i64 = add k, 1
+        continue k2
+    }
+    f: u8[], ft: time[], s2: u8$ = frame(s)
+    n: i64 = len f
+    ret n
+}
+; times must not go backwards
+fn unordered() -> u8 {
+    s: u8$ = fresh()
+    five(s)
+    t: time = millis(1)
+    push s, t, 9
+    x: u8 = latest s
+    ret x
+}

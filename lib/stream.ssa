@@ -1,0 +1,238 @@
+; lib/stream.ssa — streams: values over time. A stream `T$` is a
+; reader's view of a ring of T: the ring, the position this reader has
+; read to, dt and t0 (0 and 0 for an irregular stream, which carries a
+; time per item), a sampling rule and an edge rule. The ring is the
+; producer's: its header holds how many items have been pushed and
+; where the resident ones start, and two buffers hold the values and
+; their times. Several streams may view one ring, each with its own
+; position and rules — a stream is to a ring what a slice is to a buffer.
+;
+; The resident items stay contiguous: the buffers are twice the
+; capacity, and when they fill the newer half slides down over the
+; older, so at least the last cap/2 items are always a view. A reader
+; that falls further behind than that fails a check (its items are
+; gone); a sample before the first resident item fails a check unless
+; the stream's edge rule is clamp (1), which gives the first.
+;
+; Rules: nearest (0) takes the item whose time is nearest t; hold (1)
+; takes the last item at or before t — a sample-and-hold. Producers
+; `push s, t, v` (times non-decreasing, checked); consumers take a
+; `frame` (everything since they last looked, as views of the values
+; and their times, and the stream advanced), `count`, `latest`,
+; `sample s, t`, or a `window s, t1, t2` of the items with t1 <= t < t2.
+
+; --- the ring: [pushed, base, values buffer, times buffer] ---
+fn ring_init(r: ptr, vb: ptr, tb: ptr) {
+    store 0: i64, r
+    store 0: i64, r, 8
+    store vb, r, 16
+    store tb, r, 24
+    ret
+}
+
+; a stream over a ring: at its start, nearest, failing at the edges
+fn stream(r: ptr) -> number$ {
+    zero: time = seconds(0)
+    s: number$ = pack r, 0, zero, zero, 0, 0
+    ret s
+}
+fn sampling(s: number$, rule: i64) -> number$ {
+    s2: number$ = set s, rule, rule
+    ret s2
+}
+fn edges(s: number$, edge: i64) -> number$ {
+    s2: number$ = set s, edge, edge
+    ret s2
+}
+
+; the ring's values and times as whole views, and the resident range
+fn ring_values(r: ptr) -> number[] {
+    vb: ptr = load r, 16
+    v: number[] = slice vb
+    ret v
+}
+fn ring_times(r: ptr) -> time[] {
+    tb: ptr = load r, 24
+    t: time[] = slice tb
+    ret t
+}
+
+; --- the producer's side ---
+fn push(s: number$, t: time, v: number) {
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    base: i64 = load r, 8
+    vals: number[] = ring_values(r)
+    times: time[] = ring_times(r)
+    cap: i64 = len vals
+    held: i64 = sub pushed, base
+    full: u1 = cmp.eq held, cap
+    base2: i64 = if full {
+        half: i64 = div cap, 2
+        hi: number[] = view vals, half, half
+        lo: number[] = view vals, 0, half
+        copy lo, hi
+        thi: time[] = view times, half, half
+        tlo: time[] = view times, 0, half
+        copy tlo, thi
+        b: i64 = add base, half
+        store b, r, 8
+        yield b
+    } else {
+        yield base
+    }
+    slot: i64 = sub pushed, base2
+    some: u1 = cmp.gt slot, 0
+    if some {
+        prev: i64 = sub slot, 1
+        pt: time = load times, prev
+        ordered: u1 = cmp.ge t, pt
+        check ordered
+    }
+    store v, vals, slot
+    store t, times, slot
+    next: i64 = add pushed, 1
+    store next, r
+    ret
+}
+
+; --- the consumer's side ---
+fn count(s: number$) -> i64 {
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    pos: i64 = get s, pos
+    n: i64 = sub pushed, pos
+    ret n
+}
+; everything since this reader last looked: the values, their times,
+; and the stream moved on
+fn frame(s: number$) -> (number[], time[], number$) {
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    base: i64 = load r, 8
+    pos: i64 = get s, pos
+    resident: u1 = cmp.ge pos, base
+    check resident
+    vals: number[] = ring_values(r)
+    times: time[] = ring_times(r)
+    start: i64 = sub pos, base
+    n: i64 = sub pushed, pos
+    f: number[] = view vals, start, n
+    ft: time[] = view times, start, n
+    s2: number$ = set s, pos, pushed
+    ret f, ft, s2
+}
+fn latest(s: number$) -> number {
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    base: i64 = load r, 8
+    some: u1 = cmp.gt pushed, base
+    check some
+    vals: number[] = ring_values(r)
+    last: i64 = sub pushed, base
+    i: i64 = sub last, 1
+    v: number = load vals, i
+    ret v
+}
+; the index (from base) of the last resident item at or before t, or
+; -1 when t is before them all
+fn before(r: ptr, t: time) -> i64 {
+    pushed: i64 = load r
+    base: i64 = load r, 8
+    times: time[] = ring_times(r)
+    n: i64 = sub pushed, base
+    found: i64 = loop(i: i64 = 0, at: i64 = -1) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break at
+        }
+        ti: time = load times, i
+        past: u1 = cmp.gt ti, t
+        if past {
+            break at
+        }
+        i2: i64 = add i, 1
+        continue i2, i
+    }
+    ret found
+}
+fn sample(s: number$, t: time) -> number {
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    base: i64 = load r, 8
+    n: i64 = sub pushed, base
+    some: u1 = cmp.gt n, 0
+    check some
+    vals: number[] = ring_values(r)
+    times: time[] = ring_times(r)
+    lo: i64 = before(r, t)
+    early: u1 = cmp.lt lo, 0
+    i: i64 = if early {
+        edge: i64 = get s, edge
+        clamp: u1 = cmp.eq edge, 1
+        check clamp
+        yield 0
+    } else {
+        rule: i64 = get s, rule
+        nearest: u1 = cmp.eq rule, 0
+        hi: i64 = add lo, 1
+        has_hi: u1 = cmp.lt hi, n
+        both: u1 = and nearest, has_hi
+        j: i64 = if both {
+            tl: time = load times, lo
+            th: time = load times, hi
+            dl: time = sub t, tl
+            dh: time = sub th, t
+            closer: u1 = cmp.lt dh, dl
+            k: i64 = if closer {
+                yield hi
+            } else {
+                yield lo
+            }
+            yield k
+        } else {
+            yield lo
+        }
+        yield j
+    }
+    v: number = load vals, i
+    ret v
+}
+; the items with t1 <= t < t2, as a view
+fn window(s: number$, t1: time, t2: time) -> number[] {
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    base: i64 = load r, 8
+    n: i64 = sub pushed, base
+    times: time[] = ring_times(r)
+    vals: number[] = ring_values(r)
+    first: i64 = loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break i
+        }
+        ti: time = load times, i
+        inside: u1 = cmp.ge ti, t1
+        if inside {
+            break i
+        }
+        i2: i64 = add i, 1
+        continue i2
+    }
+    end: i64 = loop(j: i64 = first) {
+        done2: u1 = cmp.ge j, n
+        if done2 {
+            break j
+        }
+        tj: time = load times, j
+        past: u1 = cmp.ge tj, t2
+        if past {
+            break j
+        }
+        j2: i64 = add j, 1
+        continue j2
+    }
+    m: i64 = sub end, first
+    w: number[] = view vals, first, m
+    ret w
+}

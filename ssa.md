@@ -375,6 +375,25 @@ sz: i64 = sizeof f32
 
 `chunk(T)` is as many lanes of T as the platform's vector register holds — `f32x4` on NEON and RVV, `f32` itself where there are no vector registers — so a body written over `chunk(number)` is vector instructions on one machine and the plain operation on another, and the same text. A slice operation takes whole chunks while `fit` says one is left — only when every view is contiguous (stride 1); a strided view, a column, goes one element at a time from the start — then the elements one at a time to the end: on a platform without vector registers the chunk loop *is* the definition, one element at a time; with them it is the vector instructions, checked against it by the other paths. `lanes`, `sizeof` and `fit` are constants of a type on the platform (the last a `min`), which is what lets the library say "as many as fit" without knowing the number.
 
+### Streams
+
+```
+data vb: buffer(u8, 8)                        ; the ring's values, and its times: twice the capacity kept
+data tb: buffer(time, 8)
+data rg: array(u64, 4)                        ; the ring's header: pushed, base, the two buffers
+ring_init(r, a, b)
+s: u8$ = stream r                             ; a reader's view: position 0, nearest, failing at the edges
+push s, t, v                                  ; the producer's side: (t, v), t non-decreasing (checked)
+f: u8[], ft: time[], s2: u8$ = frame(s)       ; everything since this reader looked, and the reader moved on
+n: i64 = count s                              ; how much is waiting
+x: u8 = sample s, t                           ; the value at t, by the view's rule: nearest, or hold (1)
+h: u8$ = sampling(s, 1)                       ; another view of the same ring, holding
+w: u8[] = window s, t1, t2                    ; the items with t1 <= t < t2
+v: u8 = latest s
+```
+
+`T$` is a **stream** of T: a value over time, seen as an array indexed by `time` — `x[t]` — with a rule for the times between samples, as a texture has for the points between texels. It is a *reader's view* of a **ring**: the ring is the producer's (a header with how many items have been pushed and where the resident ones start, and two buffers of the values and their times), and the view carries the reader's position, `dt` and `t0` (0 for an irregular stream, which carries a time per item), a sampling rule and an edge rule — so several streams may look at one ring, each with its own rules, as several slices look at one buffer. A stream is a struct and travels as one; a reader's position threads through its loop as an SSA value, which is a program over streams written as SSA. The resident items stay contiguous — the buffers are twice the capacity and the newer half slides down when they fill — so a `frame` or a `window` is a view (chunks apply), and a reader that fell further behind than the resident items fails a `check`, as does a sample before them all unless the view's edge rule clamps. Every operation is `lib/stream.ssa`'s, over `number$` and the tower; regular streams (`dt`), linear interpolation, and the machines' producers — the UART's and the timer's handlers — are next.
+
 ### Structs
 
 ```

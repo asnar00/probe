@@ -839,6 +839,39 @@ impl FnEmit<'_> {
         }
     }
 
+    /// a result to where the convention wants it: a register, or the
+    /// stack above this frame — the caller's area, where its arguments
+    /// came in (consumed by now)
+    fn res_out(&mut self, abi: Abi, v: ValueId) -> Result<(), String> {
+        match abi {
+            Abi::Reg(k, r) => self.arg_to(k, r, v),
+            Abi::Stack(0, off) => {
+                let r = self.src_reg(v, 9)?;
+                self.emit(STR_SP, &[r, self.frame + off]).map(|_| ())
+            }
+            Abi::Stack(k, off) => {
+                let fr = self.src_freg(v, 16)?;
+                self.emit(if k == 2 { STR_Q_SP } else { STR_D_SP }, &[fr, self.frame + off]).map(|_| ())
+            }
+        }
+    }
+
+    /// a result from where the callee left it: a register, or the area
+    /// below sp (still lowered) it was given
+    fn res_in(&mut self, abi: Abi, v: ValueId) -> Result<(), String> {
+        match abi {
+            Abi::Reg(k, r) => self.arg_from(k, r, v),
+            Abi::Stack(0, off) => {
+                self.emit(LDR_SP, &[9, off])?;
+                self.value_from(v, 9)
+            }
+            Abi::Stack(k, off) => {
+                self.emit(if k == 2 { LDR_Q_SP } else { LDR_D_SP }, &[16, off])?;
+                self.arg_from(k, 16, v)
+            }
+        }
+    }
+
     /// v from where the convention put it: a register, or the stack
     /// above this frame
     fn arg_in(&mut self, abi: Abi, v: ValueId) -> Result<(), String> {
@@ -1977,7 +2010,8 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
         }
         Inst::CallInd { dsts, callee, args } => {
             let abi = e.abi_regs(args)?;
-            let below = FnEmit::stack_args(&abi);
+            let rabi = e.abi_regs(dsts)?;
+            let below = FnEmit::stack_args(&abi).max(FnEmit::stack_args(&rabi));
             if below > 0 {
                 e.emit("sub sp, sp, #{i 0..4095}", &[below])?;
                 e.sp_adjust = below;
@@ -1988,18 +2022,19 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             // x17: neither an argument register nor callee-saved
             let rc = e.src_reg(*callee, 17)?;
             e.emit("blr {x}", &[rc])?;
+            for (&d, abi) in dsts.iter().zip(rabi) {
+                e.res_in(abi, d)?;
+            }
             if below > 0 {
                 e.emit("add sp, sp, #{i 0..4095}", &[below])?;
                 e.sp_adjust = 0;
-            }
-            for (&d, abi) in dsts.iter().zip(e.abi_regs(dsts)?) {
-                e.arg_in(abi, d)?;
             }
             Ok(())
         }
         Inst::Call { dsts, callee, args } => {
             let abi = e.abi_regs(args)?;
-            let below = FnEmit::stack_args(&abi);
+            let rabi = e.abi_regs(dsts)?;
+            let below = FnEmit::stack_args(&abi).max(FnEmit::stack_args(&rabi));
             if below > 0 {
                 e.emit("sub sp, sp, #{i 0..4095}", &[below])?;
                 e.sp_adjust = below;
@@ -2015,12 +2050,12 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                 imm_slot: 0,
                 target: FixTarget::Func(callee.clone()),
             });
+            for (&d, abi) in dsts.iter().zip(rabi) {
+                e.res_in(abi, d)?;
+            }
             if below > 0 {
                 e.emit("add sp, sp, #{i 0..4095}", &[below])?;
                 e.sp_adjust = 0;
-            }
-            for (&d, abi) in dsts.iter().zip(e.abi_regs(dsts)?) {
-                e.arg_in(abi, d)?;
             }
             Ok(())
         }
@@ -2060,8 +2095,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
         }
         Inst::Ret { vals } => {
             for (&v, abi) in vals.iter().zip(e.abi_regs(vals)?) {
-                let Abi::Reg(k, r) = abi else { return Err("more than 8 results of a class: not yet".into()) };
-                e.arg_to(k, r, v)?;
+                e.res_out(abi, v)?;
             }
             e.epilogue()
         }

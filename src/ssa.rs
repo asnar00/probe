@@ -286,6 +286,9 @@ pub enum TypeExpr {
     /// `chunk(T)`: as many lanes of T as the platform's vector register
     /// holds (`TxK`), or T itself where it has none
     Chunk(Box<TypeExpr>),
+    /// `T$`: a stream of T — a view of a ring of T over time: the ring,
+    /// this reader's position, dt and t0, a sampling rule and an edge rule
+    Stream(Box<TypeExpr>),
 }
 
 impl fmt::Display for TypeExpr {
@@ -311,6 +314,7 @@ impl fmt::Display for TypeExpr {
             TypeExpr::TPtr(inner) => write!(f, "ptr({})", inner),
             TypeExpr::Slice(inner, rank) => write!(f, "{}[{}]", inner, ",".repeat(*rank as usize - 1)),
             TypeExpr::Chunk(inner) => write!(f, "chunk({})", inner),
+            TypeExpr::Stream(inner) => write!(f, "{}$", inner),
             TypeExpr::Array(inner, dims) => {
                 let ds: Vec<String> = dims.iter().map(|d| d.to_string()).collect();
                 write!(f, "array({}, {})", inner, ds.join(", "))
@@ -1392,6 +1396,7 @@ enum Tok {
     Pipe,
     LBracket,
     RBracket,
+    Dollar,
 }
 
 impl fmt::Display for Tok {
@@ -1400,6 +1405,7 @@ impl fmt::Display for Tok {
             Tok::Newline => write!(f, "end of line"),
             Tok::Ident(s) => write!(f, "'{}'", s),
             Tok::LBracket => write!(f, "'['"),
+            Tok::Dollar => write!(f, "'$'"),
             Tok::RBracket => write!(f, "']'"),
             Tok::Int(n) => write!(f, "'{}'", n),
             Tok::Str(s) => write!(f, "\"{}\"", s),
@@ -1486,7 +1492,7 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                 }
                 toks.push((Tok::Str(s), line));
             }
-            '%' | '^' | '@' | '$' => {
+            '%' | '^' | '@' => {
                 return Err(err(
                     line,
                     format!("'{}' prefixes are gone: values, blocks, functions, and types are plain names", c),
@@ -1550,6 +1556,10 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
             '[' => {
                 chars.next();
                 toks.push((Tok::LBracket, line));
+            }
+            '$' => {
+                chars.next();
+                toks.push((Tok::Dollar, line));
             }
             ']' => {
                 chars.next();
@@ -1711,6 +1721,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
         consts: Vec::new(),
         cur_rets: Vec::new(),
         sigs: HashMap::new(),
+        plain_fns: std::collections::HashSet::new(),
         data: Vec::new(),
     };
     // pass 0: type declarations, wherever they appear (a declaration may
@@ -1904,6 +1915,9 @@ struct Parser {
     /// parameter types of plain functions (from pass 1) and of instances
     /// (as they are requested), to type literal call arguments
     sigs: HashMap<String, Vec<Type>>,
+    /// the names of plain functions (not templates' default instances):
+    /// one of these, with matching parameters, is called as written
+    plain_fns: std::collections::HashSet<String>,
 }
 
 /// nesting guard for type declarations that instantiate themselves
@@ -2154,7 +2168,21 @@ impl Parser {
         while depth > 0 {
             match self.toks.get(j).map(|t| &t.0) {
                 Some(Tok::LParen) => depth += 1,
-                Some(Tok::RParen) => depth -= 1,
+                Some(Tok::RParen) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        // ... and the result types after `->`, up to the body
+                        let mut k = j + 1;
+                        while !matches!(self.toks.get(k).map(|t| &t.0), Some(Tok::LBrace) | Some(Tok::Newline) | None) {
+                            if let Some(Tok::Ident(w)) = self.toks.get(k).map(|t| &t.0) {
+                                if self.toks.get(k + 1).map(|t| &t.0) != Some(&Tok::LParen) && self.abstract_base(w).is_some() {
+                                    return true;
+                                }
+                            }
+                            k += 1;
+                        }
+                    }
+                }
                 Some(Tok::Ident(w)) if self.toks.get(j - 1).map(|t| &t.0) == Some(&Tok::Colon) => {
                     if self.toks.get(j + 1).map(|t| &t.0) != Some(&Tok::LParen) && self.abstract_base(w).is_some() {
                         return true;
@@ -2235,6 +2263,10 @@ impl Parser {
         for te in &param_types {
             self.abstract_names(te, &mut type_params);
         }
+        // ... and in the result: a template may be bound by what it gives
+        if let Some(r) = &ret {
+            self.abstract_names(r, &mut type_params);
+        }
         let g = self.generics.len();
         self.generics.push(GenericFn {
             name: name.clone(),
@@ -2287,7 +2319,7 @@ impl Parser {
                     }
                 }
             }
-            TypeExpr::Vector(inner, _) | TypeExpr::Slice(inner, _) | TypeExpr::Chunk(inner) => self.abstract_names(inner, out),
+            TypeExpr::Vector(inner, _) | TypeExpr::Slice(inner, _) | TypeExpr::Chunk(inner) | TypeExpr::Stream(inner) => self.abstract_names(inner, out),
             _ => {}
         }
     }
@@ -2300,10 +2332,11 @@ impl Parser {
             Type::Pack(i) => self.packs[i as usize].width,
             _ => return None,
         };
-        if bits == 0 || bits > 64 {
+        if bits == 0 {
             return None;
         }
-        Some(if self.policy.chunk_bits >= bits { (self.policy.chunk_bits / bits).clamp(1, 64) } else { 1 })
+        // a wide element (a 128-bit rational) has no vector form: one at a time
+        Some(if bits <= 64 && self.policy.chunk_bits >= bits { (self.policy.chunk_bits / bits).clamp(1, 64) } else { 1 })
     }
 
     /// the element type and rank of a view type, if ty is one
@@ -2315,6 +2348,16 @@ impl Parser {
                 let rank = (p.fields.len() / 2) as u8;
                 return self.packs[j as usize].pointee.map(|e| (e, rank));
             }
+        }
+        None
+    }
+
+    /// the element type of a stream type, if ty is one
+    fn stream_of(&self, ty: Type) -> Option<Type> {
+        let Type::Struct(i) = ty else { return None };
+        let p = &self.packs[i as usize];
+        if p.aggregate && p.name.ends_with('$') {
+            return p.elem.as_ref().map(|(e, _)| *e);
         }
         None
     }
@@ -2458,6 +2501,7 @@ impl Parser {
                 self.expect(Tok::Comma)?;
             }
         }
+        self.plain_fns.insert(name.clone());
         self.sigs.insert(name, tys);
         self.pos = at;
         Ok(())
@@ -2603,6 +2647,10 @@ impl Parser {
             TypeExpr::Slice(inner, rank) => match self.slice_of(ty) {
                 Some((elem, r)) if r == *rank => self.unify(inner, elem, binds, tbinds),
                 _ => false,
+            },
+            TypeExpr::Stream(inner) => match self.stream_of(ty) {
+                Some(elem) => self.unify(inner, elem, binds, tbinds),
+                None => false,
             },
             // a chunk of T is TxK for the platform's K (T itself when K is 1)
             TypeExpr::Chunk(inner) => match self.vector_of(ty) {
@@ -2866,6 +2914,11 @@ impl Parser {
             }
             expr = TypeExpr::Slice(Box::new(expr), rank);
             j = k + 1;
+        }
+        // `T$`: a stream of T
+        while self.toks.get(j).map(|t| &t.0) == Some(&Tok::Dollar) {
+            expr = TypeExpr::Stream(Box::new(expr));
+            j += 1;
         }
         Ok((expr, j))
     }
@@ -3393,12 +3446,41 @@ impl Parser {
                 });
                 Ok(Type::Struct(id))
             }
+            TypeExpr::Stream(inner) => {
+                // a reader's view of a ring over time: the ring (its header),
+                // the position read to, dt and t0 as times, a sampling rule
+                // and an edge rule — a struct, dissolved like any struct
+                let elem0 = self.instantiate(inner, env, depth + 1)?;
+                let elem = self.policy.resolve(elem0);
+                let time = self.instantiate(&TypeExpr::Named { name: "time".into(), args: Vec::new() }, env, depth + 1)?;
+                let fields = vec![
+                    ("ring".to_string(), Type::Ptr),
+                    ("pos".to_string(), Type::I64),
+                    ("dt".to_string(), time),
+                    ("t0".to_string(), time),
+                    ("rule".to_string(), Type::I64),
+                    ("edge".to_string(), Type::I64),
+                ];
+                let name = format!("{}$", self.tyname_of(elem));
+                if let Some(i) = self.packs.iter().position(|p| p.aggregate && p.name == name && p.fields == fields) {
+                    return Ok(Type::Struct(i as u32));
+                }
+                let id = self.packs.len() as u32;
+                let (tsize, _) = self.layout_of(time).ok_or("time has no layout")?;
+                let offsets = vec![0, 8, 16, 16 + tsize, 16 + 2 * tsize, 24 + 2 * tsize];
+                let size = 32 + 2 * tsize;
+                self.packs.push(PackDef { name, fields, offsets, width: size * 8, origin: None, aggregate: true, size, sig: None, lanes: 0, pointee: None, elem: Some((elem, Vec::new())) });
+                Ok(Type::Struct(id))
+            }
             TypeExpr::Chunk(inner) => {
                 // the vector of as many lanes as the platform's register
                 // holds — a lane where it has no vector registers
                 let elem0 = self.instantiate(inner, env, depth + 1)?;
                 let elem = self.policy.resolve(elem0);
                 let k = self.chunk_lanes(elem).ok_or_else(|| format!("a chunk cannot be of {}", self.tyname_of(elem)))?;
+                if k == 1 {
+                    return Ok(elem);
+                }
                 self.instantiate(&TypeExpr::Vector(inner.clone(), IntExpr::Lit(k as i64)), env, depth + 1)
             }
             TypeExpr::Slice(inner, rank) => {
@@ -4097,7 +4179,8 @@ impl Parser {
                 self.expect(Tok::Equals)?;
                 let op = self.expect_ident()?;
                 let inst = if self.is_call(&op) {
-                    let (callee, args) = self.parse_call_tail(op, scope)?;
+                    let want = dsts.first().map(|d| scope.values[d.0 as usize].ty);
+                    let (callee, args) = self.parse_call_tail(op, scope, want)?;
                     Self::make_call(dsts, callee, args)
                 } else if op == "unpack" {
                     let src = self.expect_value(scope)?;
@@ -4911,8 +4994,9 @@ impl Parser {
                 }
                 // ... or an integer: `simd_sum x` on an i32 is simd_sum(N)
                 // taking i(N)
-                let fty0 = scope.values[first.0 as usize].ty;
-                if !fty0.is_pack() && !fty0.is_int() && self.slice_of(fty0).is_none() {
+                // any generic of the name may take it (`s: u8$ = stream r`:
+                // a pointer, the result choosing the instance)
+                if !self.generics.iter().any(|g| g.name == op) {
                     return Err(self.err(format!("unknown opcode '{}'", op)));
                 }
                 let atys: Vec<Type> = args.iter().map(|&a| scope.values[a.0 as usize].ty).collect();
@@ -5020,10 +5104,13 @@ impl Parser {
         })
     }
 
-    /// is the next token a value of slice type?
+    /// is the next token a value of a view or stream type?
     fn next_value_is_slice(&self, scope: &FuncScope) -> bool {
         match self.peek() {
-            Some(Tok::Ident(w)) => scope.value_ids.get(w).is_some_and(|&v| self.slice_of(scope.values[v.0 as usize].ty).is_some()),
+            Some(Tok::Ident(w)) => scope.value_ids.get(w).is_some_and(|&v| {
+                let t = scope.values[v.0 as usize].ty;
+                self.slice_of(t).is_some() || self.stream_of(t).is_some()
+            }),
             _ => false,
         }
     }
@@ -5104,7 +5191,8 @@ impl Parser {
             // library's (lib/slice.ssa), chosen by every operand's type
             _ if !self.is_call(op) && self.generics.iter().any(|g| g.name == op) && self.next_value_is_slice(scope) => {
                 let first = self.expect_value(scope)?;
-                let (elem, _) = self.slice_of(scope.values[first.0 as usize].ty).unwrap();
+                let fty = scope.values[first.0 as usize].ty;
+                let elem = self.slice_of(fty).map(|(e, _)| e).or_else(|| self.stream_of(fty)).unwrap();
                 let mut args = vec![first];
                 while self.eat(&Tok::Comma) {
                     args.push(self.parse_operand(scope, Some(elem))?);
@@ -5114,7 +5202,7 @@ impl Parser {
                 Ok(Inst::Call { dsts: Vec::new(), callee, args })
             }
             _ if self.is_call(op) => {
-                let (callee, args) = self.parse_call_tail(op.to_string(), scope)?;
+                let (callee, args) = self.parse_call_tail(op.to_string(), scope, None)?;
                 Ok(Self::make_call(Vec::new(), callee, args))
             }
             "jmp" => {
@@ -5163,7 +5251,7 @@ impl Parser {
         }
     }
 
-    fn parse_call_tail(&mut self, callee: String, scope: &mut FuncScope) -> Result<(Callee, Vec<ValueId>), ParseError> {
+    fn parse_call_tail(&mut self, callee: String, scope: &mut FuncScope, want: Option<Type>) -> Result<(Callee, Vec<ValueId>), ParseError> {
         // a value of function type in scope: an indirect call, its
         // signature the type's
         if let Some(&v) = scope.value_ids.get(&callee) {
@@ -5225,9 +5313,12 @@ impl Parser {
         // — widths and abstract types bound by every parameter, the most
         // specific definition of the name winning
         let atys: Vec<Type> = args.iter().map(|&a| scope.values[a.0 as usize].ty).collect();
-        let plain_fits = self.sigs.get(&callee).is_some_and(|sig| *sig == atys);
+        // a plain function whose parameters match is called as written; a
+        // template's default instance under a plain name defers to the
+        // types (a result wanted may choose another instance)
+        let plain_fits = self.sigs.get(&callee).is_some_and(|sig| *sig == atys) && (self.plain_fns.contains(&callee) || want.is_none());
         if !is_inst && !plain_fits && self.generics.iter().any(|g| g.name == callee) {
-            match self.resolve(&callee, &atys, None) {
+            match self.resolve(&callee, &atys, want.map(Some)) {
                 Ok(n) => callee = n,
                 // no instance fits: a plain function of the name, if there is
                 // one, is called as written (its signature is checked later)
@@ -5295,7 +5386,8 @@ impl Parser {
                     "if" => return self.parse_struct_if(scope, st, dsts),
                     "loop" => return self.parse_struct_loop(scope, st, dsts),
                     _ if self.is_call(&op) => {
-                        let (callee, args) = self.parse_call_tail(op, scope)?;
+                        let want = dsts.first().map(|d| scope.values[d.0 as usize].ty);
+                        let (callee, args) = self.parse_call_tail(op, scope, want)?;
                         self.emit(st, Self::make_call(dsts, callee, args));
                     }
                     "unpack" => {

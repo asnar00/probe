@@ -54,10 +54,26 @@ fn simplify_cfg(func: &mut Function) {
     loop {
         let mut forwarding: Vec<Option<(Vec<ValueId>, BlockId, Vec<ValueId>)>> =
             vec![None; func.blocks.len()];
+        // the values used anywhere: a block whose parameter is used beyond
+        // its own jump (a loop's result read after the next loop) cannot be
+        // threaded past, since the parameter is its definition
+        let mut used_elsewhere: Vec<Vec<ValueId>> = vec![Vec::new(); func.blocks.len()];
+        for (b, block) in func.blocks.iter().enumerate() {
+            for inst in &block.insts {
+                let mut uses = Vec::new();
+                crate::regalloc::inst_uses(inst, &mut uses);
+                used_elsewhere[b].extend(uses);
+            }
+        }
         for (b, block) in func.blocks.iter().enumerate().skip(1) {
             if let [Inst::Jmp { target, args }] = block.insts.as_slice() {
                 if target.0 as usize != b {
-                    forwarding[b] = Some((block.params.clone(), *target, args.clone()));
+                    let pinned = block.params.iter().any(|p| {
+                        used_elsewhere.iter().enumerate().any(|(ob, us)| ob != b && us.contains(p))
+                    });
+                    if !pinned {
+                        forwarding[b] = Some((block.params.clone(), *target, args.clone()));
+                    }
                 }
             }
         }
