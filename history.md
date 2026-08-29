@@ -4,6 +4,17 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### A literal after a view or a stream — `e02b3ed` · 2026-08-29
+
+```
+    x: u8 = peek s, 2                         ; an i64: the parameter's type
+    p: i32 = sample a, 1.5, 0.5               ; two f64s: the literal's own kind, over `scalar`
+```
+
+In an operation form a literal takes the first operand's type — `add x, 1`, `fma x, y, 0.0` — which is right for numbers and wrong for the operations of a view or a stream, which take indices and coordinates: `peek s, 2` failed and the day's cases carried `two: i64 = const 2`. Now, after a view or a stream, a literal takes the parameter's type when every generic of the name gives that position a concrete type, and its own kind's — `i64` for an integer, `f64` for a decimal — where a parameter is abstract, which the abstract then binds; so `sample img, 1.5, 0.5` samples at `f64` coordinates. Forty lines in the parser, no capability changed; the two cases lost their `const`s. 956 on every path and both variants.
+
+---
+
 ### A view sampled by coordinate — `d4582a6` · 2026-08-29
 
 ```
