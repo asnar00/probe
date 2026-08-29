@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### A view sampled by coordinate — `d4582a6` · 2026-08-29
+
+```
+    a: i32[,] = slice p, 3, 4
+    ramp(a)
+    u: f32 = const 1.5
+    v: f32 = const 0.5
+    x: i32 = sample a, u, v                   ; between 1, 2, 5 and 6: 3.5, into i32 as 3
+```
+
+"Interpolation rules such as nearest neighbour, bilinear filter, etc. are analogous to texture samplers in the spatial domain." The same word that samples a stream by time samples a rank-2 view by coordinate: `sample img, x, y` (`lib/sample.ssa`) is bilinear, `x` along the columns and `y` along the rows, a coordinate an index so that `(0, 0)` is the first element exactly, the edges clamped — off the left and below the bottom is the corner. The weights are the coordinate's type, which is any `scalar`, and the elements any `number`: two abstract names in one signature, each bound by its own argument; every element is converted into the coordinate's type, mixed there, and the result converted back once, so a byte image at `f32` coordinates gives a byte. Thirty lines, nothing in the compiler. Two things a writer meets: a coordinate is a value, not a literal (an operation form's literal takes the first operand's type, as `add x, 1` needs), and `min(k, last)` over `number` is what clamps an index. 956 on every path and both variants; what is left of the streams queue is the scheduler running a graph of stream nodes.
+
+---
+
 ### Regular streams and the linear rule — `ae8d86a` · 2026-08-29
 
 ```
