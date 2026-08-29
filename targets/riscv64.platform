@@ -1489,6 +1489,261 @@ max(u8x16, u8x16) -> u8x16
     vsetivli x0, 16, e8, m1, ta, ma
     vmaxu.vv r, a, b
 
+; --- across the lanes (lib/reduce.ssa): a reduction into lane 0, read
+; out; a narrow unsigned result zero-extended. Integer sums are exact
+; in any order; the float ones are not, and vfredmin takes NaN as vfmin
+; does, so the floats' stay the library's ---
+sum(i32x4) -> i32 with t: i32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vredsum.vs t, a, t
+    vmv.x.s r, t
+min(i32x4) -> i32 with t: i32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vredmin.vs t, a, a
+    vmv.x.s r, t
+max(i32x4) -> i32 with t: i32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vredmax.vs t, a, a
+    vmv.x.s r, t
+sum(u32x4) -> u32 with t: u32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vredsum.vs t, a, t
+    vmv.x.s r, t
+    slli r, r, 32
+    srli r, r, 32
+min(u32x4) -> u32 with t: u32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vredminu.vs t, a, a
+    vmv.x.s r, t
+    slli r, r, 32
+    srli r, r, 32
+max(u32x4) -> u32 with t: u32x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vredmaxu.vs t, a, a
+    vmv.x.s r, t
+    slli r, r, 32
+    srli r, r, 32
+sum(i64x2) -> i64 with t: i64x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vredsum.vs t, a, t
+    vmv.x.s r, t
+min(i64x2) -> i64 with t: i64x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vredmin.vs t, a, a
+    vmv.x.s r, t
+max(i64x2) -> i64 with t: i64x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vredmax.vs t, a, a
+    vmv.x.s r, t
+sum(u64x2) -> u64 with t: u64x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vmv.v.i t, 0
+    vredsum.vs t, a, t
+    vmv.x.s r, t
+min(u64x2) -> u64 with t: u64x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vredminu.vs t, a, a
+    vmv.x.s r, t
+max(u64x2) -> u64 with t: u64x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vredmaxu.vs t, a, a
+    vmv.x.s r, t
+sum(i32x2) -> i32 with t: i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vredsum.vs t, a, t
+    vmv.x.s r, t
+min(i32x2) -> i32 with t: i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vredmin.vs t, a, a
+    vmv.x.s r, t
+max(i32x2) -> i32 with t: i32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vredmax.vs t, a, a
+    vmv.x.s r, t
+sum(u32x2) -> u32 with t: u32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vmv.v.i t, 0
+    vredsum.vs t, a, t
+    vmv.x.s r, t
+    slli r, r, 32
+    srli r, r, 32
+min(u32x2) -> u32 with t: u32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vredminu.vs t, a, a
+    vmv.x.s r, t
+    slli r, r, 32
+    srli r, r, 32
+max(u32x2) -> u32 with t: u32x2
+    vsetivli x0, 2, e32, m1, ta, ma
+    vredmaxu.vs t, a, a
+    vmv.x.s r, t
+    slli r, r, 32
+    srli r, r, 32
+sum(i16x4) -> i16 with t: i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vredsum.vs t, a, t
+    vmv.x.s r, t
+min(i16x4) -> i16 with t: i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vredmin.vs t, a, a
+    vmv.x.s r, t
+max(i16x4) -> i16 with t: i16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vredmax.vs t, a, a
+    vmv.x.s r, t
+sum(u16x4) -> u16 with t: u16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vredsum.vs t, a, t
+    vmv.x.s r, t
+    slli r, r, 48
+    srli r, r, 48
+min(u16x4) -> u16 with t: u16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vredminu.vs t, a, a
+    vmv.x.s r, t
+    slli r, r, 48
+    srli r, r, 48
+max(u16x4) -> u16 with t: u16x4
+    vsetivli x0, 4, e16, m1, ta, ma
+    vredmaxu.vs t, a, a
+    vmv.x.s r, t
+    slli r, r, 48
+    srli r, r, 48
+sum(i8x8) -> i8 with t: i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vredsum.vs t, a, t
+    vmv.x.s r, t
+min(i8x8) -> i8 with t: i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vredmin.vs t, a, a
+    vmv.x.s r, t
+max(i8x8) -> i8 with t: i8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vredmax.vs t, a, a
+    vmv.x.s r, t
+sum(u8x8) -> u8 with t: u8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vredsum.vs t, a, t
+    vmv.x.s r, t
+    slli r, r, 56
+    srli r, r, 56
+min(u8x8) -> u8 with t: u8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vredminu.vs t, a, a
+    vmv.x.s r, t
+    slli r, r, 56
+    srli r, r, 56
+max(u8x8) -> u8 with t: u8x8
+    vsetivli x0, 8, e8, m1, ta, ma
+    vredmaxu.vs t, a, a
+    vmv.x.s r, t
+    slli r, r, 56
+    srli r, r, 56
+sum(i16x8) -> i16 with t: i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vredsum.vs t, a, t
+    vmv.x.s r, t
+min(i16x8) -> i16 with t: i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vredmin.vs t, a, a
+    vmv.x.s r, t
+max(i16x8) -> i16 with t: i16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vredmax.vs t, a, a
+    vmv.x.s r, t
+sum(u16x8) -> u16 with t: u16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vmv.v.i t, 0
+    vredsum.vs t, a, t
+    vmv.x.s r, t
+    slli r, r, 48
+    srli r, r, 48
+min(u16x8) -> u16 with t: u16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vredminu.vs t, a, a
+    vmv.x.s r, t
+    slli r, r, 48
+    srli r, r, 48
+max(u16x8) -> u16 with t: u16x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vredmaxu.vs t, a, a
+    vmv.x.s r, t
+    slli r, r, 48
+    srli r, r, 48
+sum(i8x16) -> i8 with t: i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vredsum.vs t, a, t
+    vmv.x.s r, t
+min(i8x16) -> i8 with t: i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vredmin.vs t, a, a
+    vmv.x.s r, t
+max(i8x16) -> i8 with t: i8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vredmax.vs t, a, a
+    vmv.x.s r, t
+sum(u8x16) -> u8 with t: u8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vmv.v.i t, 0
+    vredsum.vs t, a, t
+    vmv.x.s r, t
+    slli r, r, 56
+    srli r, r, 56
+min(u8x16) -> u8 with t: u8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vredminu.vs t, a, a
+    vmv.x.s r, t
+    slli r, r, 56
+    srli r, r, 56
+max(u8x16) -> u8 with t: u8x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vredmaxu.vs t, a, a
+    vmv.x.s r, t
+    slli r, r, 56
+    srli r, r, 56
+all(u1x2) -> u1 with t: u1x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vredminu.vs t, a, a
+    vmv.x.s r, t
+any(u1x2) -> u1 with t: u1x2
+    vsetivli x0, 2, e64, m1, ta, ma
+    vredmaxu.vs t, a, a
+    vmv.x.s r, t
+all(u1x4) -> u1 with t: u1x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vredminu.vs t, a, a
+    vmv.x.s r, t
+any(u1x4) -> u1 with t: u1x4
+    vsetivli x0, 4, e32, m1, ta, ma
+    vredmaxu.vs t, a, a
+    vmv.x.s r, t
+all(u1x8) -> u1 with t: u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vredminu.vs t, a, a
+    vmv.x.s r, t
+any(u1x8) -> u1 with t: u1x8
+    vsetivli x0, 8, e16, m1, ta, ma
+    vredmaxu.vs t, a, a
+    vmv.x.s r, t
+all(u1x16) -> u1 with t: u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vredminu.vs t, a, a
+    vmv.x.s r, t
+any(u1x16) -> u1 with t: u1x16
+    vsetivli x0, 16, e8, m1, ta, ma
+    vredmaxu.vs t, a, a
+    vmv.x.s r, t
+
 ; --- a cast between vectors of one shape: the same bits ---
 vmv1r.v {v}, {v} = cast(i16x4) -> u16x4
 vmv1r.v {v}, {v} = cast(u16x4) -> i16x4

@@ -1,0 +1,136 @@
+; across the lanes (lib/reduce.ssa): sum, min and max of a vector's
+; lanes, all and any of a mask's — operations whose result is not a
+; vector — as a pairwise tree, and as one instruction where a platform
+; has it (NEON addv/smaxv/faddp/fmaxv..., RVV vredsum/vredmin...)
+
+;! hsum4 1 2 3 4 -> 10
+;! hsum16 200 -> 128
+;! hsum8h 1000 -> 8000
+;! hsum8b -3 -> -24
+;! hsum2 5000000000 6 -> 5000000006
+;! hsum2s 7 -9 -> -2
+;! hminmax4 5 -3 9 2 -> -3, 9
+;! hminmaxu 5 0xfffffff0 -> 5, 0xfffffff0
+;! hminmax4h 5 -3 9 2 -> -3, 9
+;! fsum4 0x3f800000 0x40000000 0x40400000 0x40800000 -> 0x41200000
+;! fsum2 0x3f800000 0x40000000 -> 0x40400000
+;! fsum2d 0x3ff0000000000000 0x4000000000000000 -> 0x4008000000000000
+;! fminmax4 0x3f800000 0x40000000 0x40400000 0x40800000 -> 0x3f800000, 0x40800000
+;! fminmax2d 0x3ff0000000000000 0x4000000000000000 -> 0x3ff0000000000000, 0x4000000000000000
+;! allany 1 5 3 7 0 -> 1, 1
+;! allany 1 5 3 7 4 -> 0, 1
+;! allany 1 5 3 7 9 -> 0, 0
+;! allany2 0x3ff0000000000000 0x4008000000000000 0x4000000000000000 -> 0, 1
+;! allany8 1 5 3 7 4 -> 0, 1
+;! allany16 3 5 -> 1, 0
+
+fn hsum4(a0: i32, a1: i32, a2: i32, a3: i32) -> i32 {
+    v: i32x4 = pack a0, a1, a2, a3
+    s: i32 = sum v
+    ret s
+}
+; sixteen bytes of 200 come to 3200, which is 128 in a byte
+fn hsum16(x: u8) -> u8 {
+    v: u8x16 = splat x
+    s: u8 = sum v
+    ret s
+}
+fn hsum8h(x: i16) -> i16 {
+    v: i16x8 = splat x
+    s: i16 = sum v
+    ret s
+}
+fn hsum8b(x: i8) -> i8 {
+    v: i8x8 = splat x
+    s: i8 = sum v
+    ret s
+}
+fn hsum2(a: i64, b: i64) -> i64 {
+    v: i64x2 = pack a, b
+    s: i64 = sum v
+    ret s
+}
+fn hsum2s(a: i32, b: i32) -> i32 {
+    v: i32x2 = pack a, b
+    s: i32 = sum v
+    ret s
+}
+fn hminmax4(a0: i32, a1: i32, a2: i32, a3: i32) -> (i32, i32) {
+    v: i32x4 = pack a0, a1, a2, a3
+    lo: i32 = min v
+    hi: i32 = max v
+    ret lo, hi
+}
+fn hminmaxu(a: u32, b: u32) -> (u32, u32) {
+    v: u32x4 = pack a, b, a, b
+    lo: u32 = min v
+    hi: u32 = max v
+    ret lo, hi
+}
+fn hminmax4h(a0: i16, a1: i16, a2: i16, a3: i16) -> (i16, i16) {
+    v: i16x4 = pack a0, a1, a2, a3
+    lo: i16 = min v
+    hi: i16 = max v
+    ret lo, hi
+}
+fn fsum4(a0: f32, a1: f32, a2: f32, a3: f32) -> f32 {
+    v: f32x4 = pack a0, a1, a2, a3
+    s: f32 = sum v
+    ret s
+}
+fn fsum2(a: f32, b: f32) -> f32 {
+    v: f32x2 = pack a, b
+    s: f32 = sum v
+    ret s
+}
+fn fsum2d(a: f64, b: f64) -> f64 {
+    v: f64x2 = pack a, b
+    s: f64 = sum v
+    ret s
+}
+fn fminmax4(a0: f32, a1: f32, a2: f32, a3: f32) -> (f32, f32) {
+    v: f32x4 = pack a0, a1, a2, a3
+    lo: f32 = min v
+    hi: f32 = max v
+    ret lo, hi
+}
+fn fminmax2d(a: f64, b: f64) -> (f64, f64) {
+    v: f64x2 = pack a, b
+    lo: f64 = min v
+    hi: f64 = max v
+    ret lo, hi
+}
+; every lane above k, or any: a mask's all and any
+fn allany(a0: i32, a1: i32, a2: i32, a3: i32, k: i32) -> (u1, u1) {
+    v: i32x4 = pack a0, a1, a2, a3
+    ks: i32x4 = splat k
+    m: u1x4 = cmp.gt v, ks
+    every: u1 = all m
+    some: u1 = any m
+    ret every, some
+}
+fn allany2(x0: f64, x1: f64, k: f64) -> (u1, u1) {
+    v: f64x2 = pack x0, x1
+    ks: f64x2 = splat k
+    m: u1x2 = cmp.gt v, ks
+    every: u1 = all m
+    some: u1 = any m
+    ret every, some
+}
+fn allany8(a0: i16, a1: i16, a2: i16, a3: i16, k: i16) -> (u1, u1) {
+    v: i16x8 = pack a0, a1, a2, a3, a0, a1, a2, a3
+    ks: i16x8 = splat k
+    m: u1x8 = cmp.gt v, ks
+    every: u1 = all m
+    some: u1 = any m
+    ret every, some
+}
+fn allany16(x: u8, y: u8) -> (u1, u1) {
+    a: u8x16 = splat x
+    b: u8x16 = splat y
+    lt: u1x16 = cmp.lt a, b
+    gt: u1x16 = cmp.gt a, b
+    every: u1 = all lt
+    some: u1 = any gt
+    ret every, some
+}

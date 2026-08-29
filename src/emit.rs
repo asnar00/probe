@@ -601,6 +601,14 @@ pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin
     Ok(Compiled { code, funcs, code_end, data_base, writable_from })
 }
 
+/// where an argument or result crosses a call: a register of a class
+/// (0 integer, 1 float, 2 vector), or the stack at an offset
+#[derive(Clone, Copy)]
+enum Abi {
+    Reg(u8, i64),
+    Stack(u8, i64),
+}
+
 struct FnEmit<'a> {
     enc: &'a Encoder,
     func: &'a Function,
@@ -615,6 +623,8 @@ struct FnEmit<'a> {
     spill_base: i64,
     /// a spill slot is 8 bytes, or 16 when the function has vectors
     slot_size: i64,
+    /// while a call's stack arguments are below sp: how far sp moved
+    sp_adjust: i64,
     /// a trap or interrupt handler: the caller-saved registers of the
     /// code it interrupted are kept in the frame and it leaves by eret
     trap: Option<TrapFrame>,
@@ -651,7 +661,7 @@ impl FnEmit<'_> {
     }
 
     fn slot_off(&self, idx: usize) -> i64 {
-        self.spill_base + self.slot_size * idx as i64
+        self.spill_base + self.slot_size * idx as i64 + self.sp_adjust
     }
 
     /// is v a vector kept whole (in a v register)?
@@ -785,20 +795,64 @@ impl FnEmit<'_> {
 
     /// the calling convention: integers in x0.. in their order, floats
     /// and vectors in v0.. in theirs (as AAPCS64 has it) — each class
-    /// counts its own; eight of each
-    fn abi_regs(&self, vals: &[ValueId]) -> Result<Vec<(u8, i64)>, String> {
-        let (mut nx, mut nv) = (0, 0);
+    /// counts its own, eight of each; the rest on the stack, in order,
+    /// 8 bytes each and a vector 16, from the caller's sp up
+    fn abi_regs(&self, vals: &[ValueId]) -> Result<Vec<Abi>, String> {
+        let (mut nx, mut nv, mut off) = (0, 0, 0i64);
         let mut out = Vec::new();
         for &v in vals {
             let k = self.kind(v);
             let n = if k == 0 { &mut nx } else { &mut nv };
-            if *n == 8 {
-                return Err(format!("more than 8 {} arguments or results not supported yet", if k == 0 { "integer" } else { "float or vector" }));
+            if *n < 8 {
+                out.push(Abi::Reg(k, *n));
+                *n += 1;
+            } else {
+                if k == 2 {
+                    off = (off + 15) & !15;
+                }
+                out.push(Abi::Stack(k, off));
+                off += if k == 2 { 16 } else { 8 };
             }
-            out.push((k, *n));
-            *n += 1;
         }
         Ok(out)
+    }
+
+    /// what a call's stack arguments take below sp, 16-aligned
+    fn stack_args(abi: &[Abi]) -> i64 {
+        let end = abi.iter().map(|a| match a { Abi::Stack(k, off) => off + if *k == 2 { 16 } else { 8 }, _ => 0 }).max().unwrap_or(0);
+        (end + 15) & !15
+    }
+
+    /// v to where the convention puts it: a register, or the stack
+    /// below sp (sp already lowered by `stack_args`)
+    fn arg_out(&mut self, abi: Abi, v: ValueId) -> Result<(), String> {
+        match abi {
+            Abi::Reg(k, r) => self.arg_to(k, r, v),
+            Abi::Stack(0, off) => {
+                let r = self.src_reg(v, 9)?;
+                self.emit(STR_SP, &[r, off]).map(|_| ())
+            }
+            Abi::Stack(k, off) => {
+                let fr = self.src_freg(v, 16)?;
+                self.emit(if k == 2 { STR_Q_SP } else { STR_D_SP }, &[fr, off]).map(|_| ())
+            }
+        }
+    }
+
+    /// v from where the convention put it: a register, or the stack
+    /// above this frame
+    fn arg_in(&mut self, abi: Abi, v: ValueId) -> Result<(), String> {
+        match abi {
+            Abi::Reg(k, r) => self.arg_from(k, r, v),
+            Abi::Stack(0, off) => {
+                self.emit(LDR_SP, &[9, self.frame + off])?;
+                self.value_from(v, 9)
+            }
+            Abi::Stack(k, off) => {
+                self.emit(if k == 2 { LDR_Q_SP } else { LDR_D_SP }, &[16, self.frame + off])?;
+                self.arg_from(k, 16, v)
+            }
+        }
     }
 
     /// v into the register the convention gives it (a caller-saved one,
@@ -1366,9 +1420,6 @@ fn compile_function(
     if frame > 4095 {
         return Err(format!("function needs a {}-byte frame; 4095 is the most for now", frame));
     }
-    if func.params.len() > 8 {
-        return Err("more than 8 parameters not supported yet".into());
-    }
 
     let mut e = FnEmit {
         enc,
@@ -1381,6 +1432,7 @@ fn compile_function(
         vecs,
         spill_base,
         slot_size,
+        sp_adjust: 0,
         trap,
         scratch,
         cur: 0,
@@ -1425,8 +1477,8 @@ fn compile_function(
             e.emit("add {x}, sp, #{i 0..4095}", &[0, 0])?;
         }
     }
-    for (&p, (k, r)) in func.params.iter().zip(e.abi_regs(&func.params)?) {
-        e.arg_from(k, r, p)?;
+    for (&p, abi) in func.params.iter().zip(e.abi_regs(&func.params)?) {
+        e.arg_in(abi, p)?;
     }
 
     for (bi, block) in func.blocks.iter().enumerate() {
@@ -1924,20 +1976,36 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             e.finish(*dst, rd)
         }
         Inst::CallInd { dsts, callee, args } => {
-            for (&a, (k, r)) in args.iter().zip(e.abi_regs(args)?) {
-                e.arg_to(k, r, a)?;
+            let abi = e.abi_regs(args)?;
+            let below = FnEmit::stack_args(&abi);
+            if below > 0 {
+                e.emit("sub sp, sp, #{i 0..4095}", &[below])?;
+                e.sp_adjust = below;
+            }
+            for (&a, abi) in args.iter().zip(abi) {
+                e.arg_out(abi, a)?;
             }
             // x17: neither an argument register nor callee-saved
             let rc = e.src_reg(*callee, 17)?;
             e.emit("blr {x}", &[rc])?;
-            for (&d, (k, r)) in dsts.iter().zip(e.abi_regs(dsts)?) {
-                e.arg_from(k, r, d)?;
+            if below > 0 {
+                e.emit("add sp, sp, #{i 0..4095}", &[below])?;
+                e.sp_adjust = 0;
+            }
+            for (&d, abi) in dsts.iter().zip(e.abi_regs(dsts)?) {
+                e.arg_in(abi, d)?;
             }
             Ok(())
         }
         Inst::Call { dsts, callee, args } => {
-            for (&a, (k, r)) in args.iter().zip(e.abi_regs(args)?) {
-                e.arg_to(k, r, a)?;
+            let abi = e.abi_regs(args)?;
+            let below = FnEmit::stack_args(&abi);
+            if below > 0 {
+                e.emit("sub sp, sp, #{i 0..4095}", &[below])?;
+                e.sp_adjust = below;
+            }
+            for (&a, abi) in args.iter().zip(abi) {
+                e.arg_out(abi, a)?;
             }
             let at = e.emit("bl #{i -134217728..134217724 /4}", &[0])?;
             e.fixups.push(Fixup {
@@ -1947,8 +2015,12 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                 imm_slot: 0,
                 target: FixTarget::Func(callee.clone()),
             });
-            for (&d, (k, r)) in dsts.iter().zip(e.abi_regs(dsts)?) {
-                e.arg_from(k, r, d)?;
+            if below > 0 {
+                e.emit("add sp, sp, #{i 0..4095}", &[below])?;
+                e.sp_adjust = 0;
+            }
+            for (&d, abi) in dsts.iter().zip(e.abi_regs(dsts)?) {
+                e.arg_in(abi, d)?;
             }
             Ok(())
         }
@@ -1987,7 +2059,8 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             e.goto(*else_target)
         }
         Inst::Ret { vals } => {
-            for (&v, (k, r)) in vals.iter().zip(e.abi_regs(vals)?) {
+            for (&v, abi) in vals.iter().zip(e.abi_regs(vals)?) {
+                let Abi::Reg(k, r) = abi else { return Err("more than 8 results of a class: not yet".into()) };
                 e.arg_to(k, r, v)?;
             }
             e.epilogue()

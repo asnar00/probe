@@ -226,6 +226,14 @@ pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin
     Ok(Compiled { code, funcs, code_end, data_base, writable_from: None })
 }
 
+/// where an argument or result crosses a call: a register of a class
+/// (0 integer, 1 float, 2 vector), or the stack at an offset
+#[derive(Clone, Copy)]
+enum Abi {
+    Reg(u8, i64),
+    Stack(u8, i64),
+}
+
 struct RvEmit<'a> {
     enc: &'a Encoder,
     func: &'a Function,
@@ -240,6 +248,8 @@ struct RvEmit<'a> {
     spill_base: i64,
     /// a spill slot is 8 bytes, or 16 when the function has vectors
     slot_size: i64,
+    /// while a call's stack arguments are below sp: how far sp moved
+    sp_adjust: i64,
     /// a trap or interrupt handler: (the frame area for the interrupted
     /// code's registers, an interrupt — a0 goes back too and the float
     /// scratch registers are kept as well); it leaves by mret
@@ -277,7 +287,7 @@ impl RvEmit<'_> {
     }
 
     fn slot_off(&self, idx: usize) -> i64 {
-        self.spill_base + self.slot_size * idx as i64
+        self.spill_base + self.slot_size * idx as i64 + self.sp_adjust
     }
 
     /// does v live in a float register?
@@ -446,19 +456,82 @@ impl RvEmit<'_> {
 
     /// the calling convention: integers in a0.. in their order, floats in
     /// fa0.. in theirs, vectors in v8.. in theirs — each class counts its
-    /// own; eight of each
-    fn abi_regs(&self, vals: &[ValueId]) -> Result<Vec<(u8, i64)>, String> {
+    /// own, eight of each; the rest on the stack, in order, 8 bytes each
+    /// and a vector 16, from the caller's sp up
+    fn abi_regs(&self, vals: &[ValueId]) -> Result<Vec<Abi>, String> {
         let mut n = [0i64; 3];
+        let mut off = 0i64;
         let mut out = Vec::new();
         for &v in vals {
             let k = self.kind(v);
-            if n[k as usize] == 8 {
-                return Err(format!("more than 8 {} arguments or results not supported yet", ["integer", "float", "vector"][k as usize]));
+            if n[k as usize] < 8 {
+                out.push(Abi::Reg(k, [A0, FA0, V_ARGS][k as usize] + n[k as usize]));
+                n[k as usize] += 1;
+            } else {
+                if k == 2 {
+                    off = (off + 15) & !15;
+                }
+                out.push(Abi::Stack(k, off));
+                off += if k == 2 { 16 } else { 8 };
             }
-            out.push((k, [A0, FA0, V_ARGS][k as usize] + n[k as usize]));
-            n[k as usize] += 1;
         }
         Ok(out)
+    }
+
+    /// what a call's stack arguments take below sp, 16-aligned
+    fn stack_args(abi: &[Abi]) -> i64 {
+        let end = abi.iter().map(|a| match a { Abi::Stack(k, off) => off + if *k == 2 { 16 } else { 8 }, _ => 0 }).max().unwrap_or(0);
+        (end + 15) & !15
+    }
+
+    /// v to where the convention puts it: a register, or the stack
+    /// below sp (sp already lowered by `stack_args`)
+    fn arg_out(&mut self, abi: Abi, v: ValueId) -> Result<(), String> {
+        match abi {
+            Abi::Reg(k, r) => self.arg_to(k, r, v),
+            Abi::Stack(0, off) => {
+                let r = self.src_reg(v, T0)?;
+                self.emit(SD, &[r, off, SP]).map(|_| ())
+            }
+            Abi::Stack(1, off) => {
+                let fr = self.src_freg(v, 0)?;
+                self.emit(FSD, &[fr, off, SP]).map(|_| ())
+            }
+            Abi::Stack(_, off) => {
+                let vr = self.src_vreg(v, 20)?;
+                self.emit(ADDI, &[T2, SP, off])?;
+                self.emit(VSET_E8, &[])?;
+                self.emit(VSE8, &[vr, T2]).map(|_| ())
+            }
+        }
+    }
+
+    /// v from where the convention put it: a register, or the stack
+    /// above this frame (the address through t2: frame plus offset may
+    /// pass an immediate)
+    fn arg_in(&mut self, abi: Abi, v: ValueId) -> Result<(), String> {
+        match abi {
+            Abi::Reg(k, r) => self.arg_from(k, r, v),
+            Abi::Stack(k, off) => {
+                self.emit(ADDI, &[T2, SP, self.frame])?;
+                match k {
+                    0 => {
+                        self.emit(LD, &[T0, off, T2])?;
+                        self.value_from(v, T0)
+                    }
+                    1 => {
+                        self.emit(FLD, &[0, off, T2])?;
+                        self.arg_from(1, 0, v)
+                    }
+                    _ => {
+                        self.emit(ADDI, &[T2, T2, off])?;
+                        self.emit(VSET_E8, &[])?;
+                        self.emit(VLE8, &[20, T2])?;
+                        self.arg_from(2, 20, v)
+                    }
+                }
+            }
+        }
     }
 
     /// v into the register the convention gives it (a caller-saved one,
@@ -901,9 +974,6 @@ fn compile_function(
     if frame > 2047 {
         return Err(format!("function needs a {}-byte frame; 2047 is the most for now", frame));
     }
-    if func.params.len() > 8 {
-        return Err("more than 8 parameters not supported yet".into());
-    }
 
     let mut e = RvEmit {
         enc,
@@ -916,6 +986,7 @@ fn compile_function(
         vecs,
         spill_base,
         slot_size,
+        sp_adjust: 0,
         trap,
         saved: saved.clone(),
         vsaved: vsaved.clone(),
@@ -955,8 +1026,8 @@ fn compile_function(
             e.emit(ADDI, &[A0, SP, 0])?;
         }
     }
-    for (&p, (k, r)) in func.params.iter().zip(e.abi_regs(&func.params)?) {
-        e.arg_from(k, r, p)?;
+    for (&p, abi) in func.params.iter().zip(e.abi_regs(&func.params)?) {
+        e.arg_in(abi, p)?;
     }
 
     for (bi, block) in func.blocks.iter().enumerate() {
@@ -1464,19 +1535,35 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             e.finish(*dst, rd)
         }
         Inst::CallInd { dsts, callee, args } => {
-            for (&a, (k, r)) in args.iter().zip(e.abi_regs(args)?) {
-                e.arg_to(k, r, a)?;
+            let abi = e.abi_regs(args)?;
+            let below = RvEmit::stack_args(&abi);
+            if below > 0 {
+                e.emit(ADDI, &[SP, SP, -below])?;
+                e.sp_adjust = below;
+            }
+            for (&a, abi) in args.iter().zip(abi) {
+                e.arg_out(abi, a)?;
             }
             let rc = e.src_reg(*callee, T0)?;
             e.emit("jalr {r}, {i -2048..2047}({r})", &[RA, 0, rc])?;
-            for (&d, (k, r)) in dsts.iter().zip(e.abi_regs(dsts)?) {
-                e.arg_from(k, r, d)?;
+            if below > 0 {
+                e.emit(ADDI, &[SP, SP, below])?;
+                e.sp_adjust = 0;
+            }
+            for (&d, abi) in dsts.iter().zip(e.abi_regs(dsts)?) {
+                e.arg_in(abi, d)?;
             }
             Ok(())
         }
         Inst::Call { dsts, callee, args } => {
-            for (&a, (k, r)) in args.iter().zip(e.abi_regs(args)?) {
-                e.arg_to(k, r, a)?;
+            let abi = e.abi_regs(args)?;
+            let below = RvEmit::stack_args(&abi);
+            if below > 0 {
+                e.emit(ADDI, &[SP, SP, -below])?;
+                e.sp_adjust = below;
+            }
+            for (&a, abi) in args.iter().zip(abi) {
+                e.arg_out(abi, a)?;
             }
             let at = e.emit(JAL, &[RA, 0])?;
             e.fixups.push(Fixup {
@@ -1485,8 +1572,12 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
                 imm_slot: 1,
                 target: FixTarget::Func(callee.clone()),
             });
-            for (&d, (k, r)) in dsts.iter().zip(e.abi_regs(dsts)?) {
-                e.arg_from(k, r, d)?;
+            if below > 0 {
+                e.emit(ADDI, &[SP, SP, below])?;
+                e.sp_adjust = 0;
+            }
+            for (&d, abi) in dsts.iter().zip(e.abi_regs(dsts)?) {
+                e.arg_in(abi, d)?;
             }
             Ok(())
         }
@@ -1526,7 +1617,8 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             e.goto(*else_target)
         }
         Inst::Ret { vals } => {
-            for (&v, (k, r)) in vals.iter().zip(e.abi_regs(vals)?) {
+            for (&v, abi) in vals.iter().zip(e.abi_regs(vals)?) {
+                let Abi::Reg(k, r) = abi else { return Err("more than 8 results of a class: not yet".into()) };
                 e.arg_to(k, r, v)?;
             }
             e.epilogue()

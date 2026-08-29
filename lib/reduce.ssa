@@ -1,0 +1,480 @@
+; lib/reduce.ssa — the horizontals: what a vector's lanes come to
+; together. `sum(v)`, `min(v)`, `max(v)` over a vector of any lane type,
+; and `all(m)`, `any(m)` over a mask (generics over `u(N)xn` so that
+; each lane count has its own) — written as operations, `s: i32 = sum v`,
+; the vector's type choosing the generic. Each is a tree
+; over the lanes — (l0 + l1) + (l2 + l3) — which is the order a pairwise
+; instruction takes too (NEON faddp), and so the meaning a platform's
+; rule is checked against; a machine whose instruction sums in another
+; order, or takes NaN differently, has no rule and runs this body.
+
+
+; --- 2 lanes ---
+fn sum(W)(v: i(W)x2) -> i(W) {
+    l0: i(W), l1: i(W) = unpack v
+    t0: i(W) = add l0, l1
+    ret t0
+}
+fn min(W)(v: i(W)x2) -> i(W) {
+    l0: i(W), l1: i(W) = unpack v
+    t0: i(W) = min l0, l1
+    ret t0
+}
+fn max(W)(v: i(W)x2) -> i(W) {
+    l0: i(W), l1: i(W) = unpack v
+    t0: i(W) = max l0, l1
+    ret t0
+}
+fn sum(W)(v: u(W)x2) -> u(W) {
+    l0: u(W), l1: u(W) = unpack v
+    t0: u(W) = add l0, l1
+    ret t0
+}
+fn min(W)(v: u(W)x2) -> u(W) {
+    l0: u(W), l1: u(W) = unpack v
+    t0: u(W) = min l0, l1
+    ret t0
+}
+fn max(W)(v: u(W)x2) -> u(W) {
+    l0: u(W), l1: u(W) = unpack v
+    t0: u(W) = max l0, l1
+    ret t0
+}
+fn sum(E, M)(v: float(E, M)x2) -> float(E, M) {
+    l0: float(E, M), l1: float(E, M) = unpack v
+    t0: float(E, M) = add l0, l1
+    ret t0
+}
+fn min(E, M)(v: float(E, M)x2) -> float(E, M) {
+    l0: float(E, M), l1: float(E, M) = unpack v
+    t0: float(E, M) = min l0, l1
+    ret t0
+}
+fn max(E, M)(v: float(E, M)x2) -> float(E, M) {
+    l0: float(E, M), l1: float(E, M) = unpack v
+    t0: float(E, M) = max l0, l1
+    ret t0
+}
+fn all(N)(v: u(N)x2) -> u(N) {
+    l0: u(N), l1: u(N) = unpack v
+    t0: u(N) = and l0, l1
+    ret t0
+}
+fn any(N)(v: u(N)x2) -> u(N) {
+    l0: u(N), l1: u(N) = unpack v
+    t0: u(N) = or l0, l1
+    ret t0
+}
+
+; --- 4 lanes ---
+fn sum(W)(v: i(W)x4) -> i(W) {
+    l0: i(W), l1: i(W), l2: i(W), l3: i(W) = unpack v
+    t0: i(W) = add l0, l1
+    t1: i(W) = add l2, l3
+    t2: i(W) = add t0, t1
+    ret t2
+}
+fn min(W)(v: i(W)x4) -> i(W) {
+    l0: i(W), l1: i(W), l2: i(W), l3: i(W) = unpack v
+    t0: i(W) = min l0, l1
+    t1: i(W) = min l2, l3
+    t2: i(W) = min t0, t1
+    ret t2
+}
+fn max(W)(v: i(W)x4) -> i(W) {
+    l0: i(W), l1: i(W), l2: i(W), l3: i(W) = unpack v
+    t0: i(W) = max l0, l1
+    t1: i(W) = max l2, l3
+    t2: i(W) = max t0, t1
+    ret t2
+}
+fn sum(W)(v: u(W)x4) -> u(W) {
+    l0: u(W), l1: u(W), l2: u(W), l3: u(W) = unpack v
+    t0: u(W) = add l0, l1
+    t1: u(W) = add l2, l3
+    t2: u(W) = add t0, t1
+    ret t2
+}
+fn min(W)(v: u(W)x4) -> u(W) {
+    l0: u(W), l1: u(W), l2: u(W), l3: u(W) = unpack v
+    t0: u(W) = min l0, l1
+    t1: u(W) = min l2, l3
+    t2: u(W) = min t0, t1
+    ret t2
+}
+fn max(W)(v: u(W)x4) -> u(W) {
+    l0: u(W), l1: u(W), l2: u(W), l3: u(W) = unpack v
+    t0: u(W) = max l0, l1
+    t1: u(W) = max l2, l3
+    t2: u(W) = max t0, t1
+    ret t2
+}
+fn sum(E, M)(v: float(E, M)x4) -> float(E, M) {
+    l0: float(E, M), l1: float(E, M), l2: float(E, M), l3: float(E, M) = unpack v
+    t0: float(E, M) = add l0, l1
+    t1: float(E, M) = add l2, l3
+    t2: float(E, M) = add t0, t1
+    ret t2
+}
+fn min(E, M)(v: float(E, M)x4) -> float(E, M) {
+    l0: float(E, M), l1: float(E, M), l2: float(E, M), l3: float(E, M) = unpack v
+    t0: float(E, M) = min l0, l1
+    t1: float(E, M) = min l2, l3
+    t2: float(E, M) = min t0, t1
+    ret t2
+}
+fn max(E, M)(v: float(E, M)x4) -> float(E, M) {
+    l0: float(E, M), l1: float(E, M), l2: float(E, M), l3: float(E, M) = unpack v
+    t0: float(E, M) = max l0, l1
+    t1: float(E, M) = max l2, l3
+    t2: float(E, M) = max t0, t1
+    ret t2
+}
+fn all(N)(v: u(N)x4) -> u(N) {
+    l0: u(N), l1: u(N), l2: u(N), l3: u(N) = unpack v
+    t0: u(N) = and l0, l1
+    t1: u(N) = and l2, l3
+    t2: u(N) = and t0, t1
+    ret t2
+}
+fn any(N)(v: u(N)x4) -> u(N) {
+    l0: u(N), l1: u(N), l2: u(N), l3: u(N) = unpack v
+    t0: u(N) = or l0, l1
+    t1: u(N) = or l2, l3
+    t2: u(N) = or t0, t1
+    ret t2
+}
+
+; --- 8 lanes ---
+fn sum(W)(v: i(W)x8) -> i(W) {
+    l0: i(W), l1: i(W), l2: i(W), l3: i(W), l4: i(W), l5: i(W), l6: i(W), l7: i(W) = unpack v
+    t0: i(W) = add l0, l1
+    t1: i(W) = add l2, l3
+    t2: i(W) = add l4, l5
+    t3: i(W) = add l6, l7
+    t4: i(W) = add t0, t1
+    t5: i(W) = add t2, t3
+    t6: i(W) = add t4, t5
+    ret t6
+}
+fn min(W)(v: i(W)x8) -> i(W) {
+    l0: i(W), l1: i(W), l2: i(W), l3: i(W), l4: i(W), l5: i(W), l6: i(W), l7: i(W) = unpack v
+    t0: i(W) = min l0, l1
+    t1: i(W) = min l2, l3
+    t2: i(W) = min l4, l5
+    t3: i(W) = min l6, l7
+    t4: i(W) = min t0, t1
+    t5: i(W) = min t2, t3
+    t6: i(W) = min t4, t5
+    ret t6
+}
+fn max(W)(v: i(W)x8) -> i(W) {
+    l0: i(W), l1: i(W), l2: i(W), l3: i(W), l4: i(W), l5: i(W), l6: i(W), l7: i(W) = unpack v
+    t0: i(W) = max l0, l1
+    t1: i(W) = max l2, l3
+    t2: i(W) = max l4, l5
+    t3: i(W) = max l6, l7
+    t4: i(W) = max t0, t1
+    t5: i(W) = max t2, t3
+    t6: i(W) = max t4, t5
+    ret t6
+}
+fn sum(W)(v: u(W)x8) -> u(W) {
+    l0: u(W), l1: u(W), l2: u(W), l3: u(W), l4: u(W), l5: u(W), l6: u(W), l7: u(W) = unpack v
+    t0: u(W) = add l0, l1
+    t1: u(W) = add l2, l3
+    t2: u(W) = add l4, l5
+    t3: u(W) = add l6, l7
+    t4: u(W) = add t0, t1
+    t5: u(W) = add t2, t3
+    t6: u(W) = add t4, t5
+    ret t6
+}
+fn min(W)(v: u(W)x8) -> u(W) {
+    l0: u(W), l1: u(W), l2: u(W), l3: u(W), l4: u(W), l5: u(W), l6: u(W), l7: u(W) = unpack v
+    t0: u(W) = min l0, l1
+    t1: u(W) = min l2, l3
+    t2: u(W) = min l4, l5
+    t3: u(W) = min l6, l7
+    t4: u(W) = min t0, t1
+    t5: u(W) = min t2, t3
+    t6: u(W) = min t4, t5
+    ret t6
+}
+fn max(W)(v: u(W)x8) -> u(W) {
+    l0: u(W), l1: u(W), l2: u(W), l3: u(W), l4: u(W), l5: u(W), l6: u(W), l7: u(W) = unpack v
+    t0: u(W) = max l0, l1
+    t1: u(W) = max l2, l3
+    t2: u(W) = max l4, l5
+    t3: u(W) = max l6, l7
+    t4: u(W) = max t0, t1
+    t5: u(W) = max t2, t3
+    t6: u(W) = max t4, t5
+    ret t6
+}
+fn sum(E, M)(v: float(E, M)x8) -> float(E, M) {
+    l0: float(E, M), l1: float(E, M), l2: float(E, M), l3: float(E, M), l4: float(E, M), l5: float(E, M), l6: float(E, M), l7: float(E, M) = unpack v
+    t0: float(E, M) = add l0, l1
+    t1: float(E, M) = add l2, l3
+    t2: float(E, M) = add l4, l5
+    t3: float(E, M) = add l6, l7
+    t4: float(E, M) = add t0, t1
+    t5: float(E, M) = add t2, t3
+    t6: float(E, M) = add t4, t5
+    ret t6
+}
+fn min(E, M)(v: float(E, M)x8) -> float(E, M) {
+    l0: float(E, M), l1: float(E, M), l2: float(E, M), l3: float(E, M), l4: float(E, M), l5: float(E, M), l6: float(E, M), l7: float(E, M) = unpack v
+    t0: float(E, M) = min l0, l1
+    t1: float(E, M) = min l2, l3
+    t2: float(E, M) = min l4, l5
+    t3: float(E, M) = min l6, l7
+    t4: float(E, M) = min t0, t1
+    t5: float(E, M) = min t2, t3
+    t6: float(E, M) = min t4, t5
+    ret t6
+}
+fn max(E, M)(v: float(E, M)x8) -> float(E, M) {
+    l0: float(E, M), l1: float(E, M), l2: float(E, M), l3: float(E, M), l4: float(E, M), l5: float(E, M), l6: float(E, M), l7: float(E, M) = unpack v
+    t0: float(E, M) = max l0, l1
+    t1: float(E, M) = max l2, l3
+    t2: float(E, M) = max l4, l5
+    t3: float(E, M) = max l6, l7
+    t4: float(E, M) = max t0, t1
+    t5: float(E, M) = max t2, t3
+    t6: float(E, M) = max t4, t5
+    ret t6
+}
+fn all(N)(v: u(N)x8) -> u(N) {
+    l0: u(N), l1: u(N), l2: u(N), l3: u(N), l4: u(N), l5: u(N), l6: u(N), l7: u(N) = unpack v
+    t0: u(N) = and l0, l1
+    t1: u(N) = and l2, l3
+    t2: u(N) = and l4, l5
+    t3: u(N) = and l6, l7
+    t4: u(N) = and t0, t1
+    t5: u(N) = and t2, t3
+    t6: u(N) = and t4, t5
+    ret t6
+}
+fn any(N)(v: u(N)x8) -> u(N) {
+    l0: u(N), l1: u(N), l2: u(N), l3: u(N), l4: u(N), l5: u(N), l6: u(N), l7: u(N) = unpack v
+    t0: u(N) = or l0, l1
+    t1: u(N) = or l2, l3
+    t2: u(N) = or l4, l5
+    t3: u(N) = or l6, l7
+    t4: u(N) = or t0, t1
+    t5: u(N) = or t2, t3
+    t6: u(N) = or t4, t5
+    ret t6
+}
+
+; --- 16 lanes ---
+fn sum(W)(v: i(W)x16) -> i(W) {
+    l0: i(W), l1: i(W), l2: i(W), l3: i(W), l4: i(W), l5: i(W), l6: i(W), l7: i(W), l8: i(W), l9: i(W), l10: i(W), l11: i(W), l12: i(W), l13: i(W), l14: i(W), l15: i(W) = unpack v
+    t0: i(W) = add l0, l1
+    t1: i(W) = add l2, l3
+    t2: i(W) = add l4, l5
+    t3: i(W) = add l6, l7
+    t4: i(W) = add l8, l9
+    t5: i(W) = add l10, l11
+    t6: i(W) = add l12, l13
+    t7: i(W) = add l14, l15
+    t8: i(W) = add t0, t1
+    t9: i(W) = add t2, t3
+    t10: i(W) = add t4, t5
+    t11: i(W) = add t6, t7
+    t12: i(W) = add t8, t9
+    t13: i(W) = add t10, t11
+    t14: i(W) = add t12, t13
+    ret t14
+}
+fn min(W)(v: i(W)x16) -> i(W) {
+    l0: i(W), l1: i(W), l2: i(W), l3: i(W), l4: i(W), l5: i(W), l6: i(W), l7: i(W), l8: i(W), l9: i(W), l10: i(W), l11: i(W), l12: i(W), l13: i(W), l14: i(W), l15: i(W) = unpack v
+    t0: i(W) = min l0, l1
+    t1: i(W) = min l2, l3
+    t2: i(W) = min l4, l5
+    t3: i(W) = min l6, l7
+    t4: i(W) = min l8, l9
+    t5: i(W) = min l10, l11
+    t6: i(W) = min l12, l13
+    t7: i(W) = min l14, l15
+    t8: i(W) = min t0, t1
+    t9: i(W) = min t2, t3
+    t10: i(W) = min t4, t5
+    t11: i(W) = min t6, t7
+    t12: i(W) = min t8, t9
+    t13: i(W) = min t10, t11
+    t14: i(W) = min t12, t13
+    ret t14
+}
+fn max(W)(v: i(W)x16) -> i(W) {
+    l0: i(W), l1: i(W), l2: i(W), l3: i(W), l4: i(W), l5: i(W), l6: i(W), l7: i(W), l8: i(W), l9: i(W), l10: i(W), l11: i(W), l12: i(W), l13: i(W), l14: i(W), l15: i(W) = unpack v
+    t0: i(W) = max l0, l1
+    t1: i(W) = max l2, l3
+    t2: i(W) = max l4, l5
+    t3: i(W) = max l6, l7
+    t4: i(W) = max l8, l9
+    t5: i(W) = max l10, l11
+    t6: i(W) = max l12, l13
+    t7: i(W) = max l14, l15
+    t8: i(W) = max t0, t1
+    t9: i(W) = max t2, t3
+    t10: i(W) = max t4, t5
+    t11: i(W) = max t6, t7
+    t12: i(W) = max t8, t9
+    t13: i(W) = max t10, t11
+    t14: i(W) = max t12, t13
+    ret t14
+}
+fn sum(W)(v: u(W)x16) -> u(W) {
+    l0: u(W), l1: u(W), l2: u(W), l3: u(W), l4: u(W), l5: u(W), l6: u(W), l7: u(W), l8: u(W), l9: u(W), l10: u(W), l11: u(W), l12: u(W), l13: u(W), l14: u(W), l15: u(W) = unpack v
+    t0: u(W) = add l0, l1
+    t1: u(W) = add l2, l3
+    t2: u(W) = add l4, l5
+    t3: u(W) = add l6, l7
+    t4: u(W) = add l8, l9
+    t5: u(W) = add l10, l11
+    t6: u(W) = add l12, l13
+    t7: u(W) = add l14, l15
+    t8: u(W) = add t0, t1
+    t9: u(W) = add t2, t3
+    t10: u(W) = add t4, t5
+    t11: u(W) = add t6, t7
+    t12: u(W) = add t8, t9
+    t13: u(W) = add t10, t11
+    t14: u(W) = add t12, t13
+    ret t14
+}
+fn min(W)(v: u(W)x16) -> u(W) {
+    l0: u(W), l1: u(W), l2: u(W), l3: u(W), l4: u(W), l5: u(W), l6: u(W), l7: u(W), l8: u(W), l9: u(W), l10: u(W), l11: u(W), l12: u(W), l13: u(W), l14: u(W), l15: u(W) = unpack v
+    t0: u(W) = min l0, l1
+    t1: u(W) = min l2, l3
+    t2: u(W) = min l4, l5
+    t3: u(W) = min l6, l7
+    t4: u(W) = min l8, l9
+    t5: u(W) = min l10, l11
+    t6: u(W) = min l12, l13
+    t7: u(W) = min l14, l15
+    t8: u(W) = min t0, t1
+    t9: u(W) = min t2, t3
+    t10: u(W) = min t4, t5
+    t11: u(W) = min t6, t7
+    t12: u(W) = min t8, t9
+    t13: u(W) = min t10, t11
+    t14: u(W) = min t12, t13
+    ret t14
+}
+fn max(W)(v: u(W)x16) -> u(W) {
+    l0: u(W), l1: u(W), l2: u(W), l3: u(W), l4: u(W), l5: u(W), l6: u(W), l7: u(W), l8: u(W), l9: u(W), l10: u(W), l11: u(W), l12: u(W), l13: u(W), l14: u(W), l15: u(W) = unpack v
+    t0: u(W) = max l0, l1
+    t1: u(W) = max l2, l3
+    t2: u(W) = max l4, l5
+    t3: u(W) = max l6, l7
+    t4: u(W) = max l8, l9
+    t5: u(W) = max l10, l11
+    t6: u(W) = max l12, l13
+    t7: u(W) = max l14, l15
+    t8: u(W) = max t0, t1
+    t9: u(W) = max t2, t3
+    t10: u(W) = max t4, t5
+    t11: u(W) = max t6, t7
+    t12: u(W) = max t8, t9
+    t13: u(W) = max t10, t11
+    t14: u(W) = max t12, t13
+    ret t14
+}
+fn sum(E, M)(v: float(E, M)x16) -> float(E, M) {
+    l0: float(E, M), l1: float(E, M), l2: float(E, M), l3: float(E, M), l4: float(E, M), l5: float(E, M), l6: float(E, M), l7: float(E, M), l8: float(E, M), l9: float(E, M), l10: float(E, M), l11: float(E, M), l12: float(E, M), l13: float(E, M), l14: float(E, M), l15: float(E, M) = unpack v
+    t0: float(E, M) = add l0, l1
+    t1: float(E, M) = add l2, l3
+    t2: float(E, M) = add l4, l5
+    t3: float(E, M) = add l6, l7
+    t4: float(E, M) = add l8, l9
+    t5: float(E, M) = add l10, l11
+    t6: float(E, M) = add l12, l13
+    t7: float(E, M) = add l14, l15
+    t8: float(E, M) = add t0, t1
+    t9: float(E, M) = add t2, t3
+    t10: float(E, M) = add t4, t5
+    t11: float(E, M) = add t6, t7
+    t12: float(E, M) = add t8, t9
+    t13: float(E, M) = add t10, t11
+    t14: float(E, M) = add t12, t13
+    ret t14
+}
+fn min(E, M)(v: float(E, M)x16) -> float(E, M) {
+    l0: float(E, M), l1: float(E, M), l2: float(E, M), l3: float(E, M), l4: float(E, M), l5: float(E, M), l6: float(E, M), l7: float(E, M), l8: float(E, M), l9: float(E, M), l10: float(E, M), l11: float(E, M), l12: float(E, M), l13: float(E, M), l14: float(E, M), l15: float(E, M) = unpack v
+    t0: float(E, M) = min l0, l1
+    t1: float(E, M) = min l2, l3
+    t2: float(E, M) = min l4, l5
+    t3: float(E, M) = min l6, l7
+    t4: float(E, M) = min l8, l9
+    t5: float(E, M) = min l10, l11
+    t6: float(E, M) = min l12, l13
+    t7: float(E, M) = min l14, l15
+    t8: float(E, M) = min t0, t1
+    t9: float(E, M) = min t2, t3
+    t10: float(E, M) = min t4, t5
+    t11: float(E, M) = min t6, t7
+    t12: float(E, M) = min t8, t9
+    t13: float(E, M) = min t10, t11
+    t14: float(E, M) = min t12, t13
+    ret t14
+}
+fn max(E, M)(v: float(E, M)x16) -> float(E, M) {
+    l0: float(E, M), l1: float(E, M), l2: float(E, M), l3: float(E, M), l4: float(E, M), l5: float(E, M), l6: float(E, M), l7: float(E, M), l8: float(E, M), l9: float(E, M), l10: float(E, M), l11: float(E, M), l12: float(E, M), l13: float(E, M), l14: float(E, M), l15: float(E, M) = unpack v
+    t0: float(E, M) = max l0, l1
+    t1: float(E, M) = max l2, l3
+    t2: float(E, M) = max l4, l5
+    t3: float(E, M) = max l6, l7
+    t4: float(E, M) = max l8, l9
+    t5: float(E, M) = max l10, l11
+    t6: float(E, M) = max l12, l13
+    t7: float(E, M) = max l14, l15
+    t8: float(E, M) = max t0, t1
+    t9: float(E, M) = max t2, t3
+    t10: float(E, M) = max t4, t5
+    t11: float(E, M) = max t6, t7
+    t12: float(E, M) = max t8, t9
+    t13: float(E, M) = max t10, t11
+    t14: float(E, M) = max t12, t13
+    ret t14
+}
+fn all(N)(v: u(N)x16) -> u(N) {
+    l0: u(N), l1: u(N), l2: u(N), l3: u(N), l4: u(N), l5: u(N), l6: u(N), l7: u(N), l8: u(N), l9: u(N), l10: u(N), l11: u(N), l12: u(N), l13: u(N), l14: u(N), l15: u(N) = unpack v
+    t0: u(N) = and l0, l1
+    t1: u(N) = and l2, l3
+    t2: u(N) = and l4, l5
+    t3: u(N) = and l6, l7
+    t4: u(N) = and l8, l9
+    t5: u(N) = and l10, l11
+    t6: u(N) = and l12, l13
+    t7: u(N) = and l14, l15
+    t8: u(N) = and t0, t1
+    t9: u(N) = and t2, t3
+    t10: u(N) = and t4, t5
+    t11: u(N) = and t6, t7
+    t12: u(N) = and t8, t9
+    t13: u(N) = and t10, t11
+    t14: u(N) = and t12, t13
+    ret t14
+}
+fn any(N)(v: u(N)x16) -> u(N) {
+    l0: u(N), l1: u(N), l2: u(N), l3: u(N), l4: u(N), l5: u(N), l6: u(N), l7: u(N), l8: u(N), l9: u(N), l10: u(N), l11: u(N), l12: u(N), l13: u(N), l14: u(N), l15: u(N) = unpack v
+    t0: u(N) = or l0, l1
+    t1: u(N) = or l2, l3
+    t2: u(N) = or l4, l5
+    t3: u(N) = or l6, l7
+    t4: u(N) = or l8, l9
+    t5: u(N) = or l10, l11
+    t6: u(N) = or l12, l13
+    t7: u(N) = or l14, l15
+    t8: u(N) = or t0, t1
+    t9: u(N) = or t2, t3
+    t10: u(N) = or t4, t5
+    t11: u(N) = or t6, t7
+    t12: u(N) = or t8, t9
+    t13: u(N) = or t10, t11
+    t14: u(N) = or t12, t13
+    ret t14
+}

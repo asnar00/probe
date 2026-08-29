@@ -2631,22 +2631,28 @@ impl Parser {
                     _ => return Err(err("expected ',' or ')' in a type's arguments".into())),
                 }
             }
-            if (name == "i" || name == "u") && args.len() == 1 {
-                return Ok((
-                    TypeExpr::Int {
-                        signed: name == "i",
-                        bits: args.pop().unwrap(),
-                    },
-                    j,
-                ));
+            let expr = if (name == "i" || name == "u") && args.len() == 1 {
+                TypeExpr::Int { signed: name == "i", bits: args.pop().unwrap() }
+            } else {
+                TypeExpr::Named { name: name.clone(), args }
+            };
+            // `i(W)x4`, `float(E, M)xN`: a lane count right after a
+            // parameterized type — a generic over a vector's lane type
+            if let Some(Tok::Ident(s)) = at(j) {
+                if let Some(count) = s.strip_prefix('x') {
+                    let lanes = if !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit()) {
+                        count.parse::<i64>().ok().map(IntExpr::Lit)
+                    } else if params.iter().any(|p| p == count) {
+                        Some(IntExpr::Param(count.to_string()))
+                    } else {
+                        None
+                    };
+                    if let Some(lanes) = lanes {
+                        return Ok((TypeExpr::Vector(Box::new(expr), lanes), j + 1));
+                    }
+                }
             }
-            return Ok((
-                TypeExpr::Named {
-                    name: name.clone(),
-                    args,
-                },
-                j,
-            ));
+            return Ok((expr, j));
         }
         // `f32x4`, `floatx4`, `intxN`: a name no type has, split at its
         // last `x` into a type and a lane count (a literal, or one of the
@@ -3779,7 +3785,17 @@ impl Parser {
     /// struct lowering turns the packs and unpacks into names
     fn lanewise(&mut self, scope: &mut FuncScope, dst: ValueId, op: &str, operands: &[ValueId]) -> Result<Inst, ParseError> {
         let dty = scope.values[dst.0 as usize].ty;
-        let (dlane, n) = self.vector_of(dty).ok_or_else(|| self.err(format!("'{}' on vectors gives a vector; {} is {}", op, scope.values[dst.0 as usize].name, self.tyname_of(dty))))?;
+        // a reduction — `s: i32 = sum v`, a vector in and a scalar out —
+        // is a library generic over the vector (lib/reduce.ssa), chosen
+        // by the vector's type as any operation's generic is
+        let Some((dlane, n)) = self.vector_of(dty) else {
+            if BINOPS.iter().any(|(nm, _)| *nm == op) || op.starts_with("cmp.") || op == "conv" || op == "cast" {
+                return Err(self.err(format!("'{}' on vectors gives a vector; {} is {}", op, scope.values[dst.0 as usize].name, self.tyname_of(dty))));
+            }
+            let vty = scope.values[operands[0].0 as usize].ty;
+            let callee = self.dispatch(op, vty, dty)?;
+            return Ok(Inst::Call { dsts: vec![dst], callee, args: operands.to_vec() });
+        };
         let dname = scope.values[dst.0 as usize].name.clone();
         // the operation as a platform rule spells it: `add(f32x4, f32x4)
         // -> f32x4`, `gt(i32x4, i32x4) -> u1x4`; whole when the platform

@@ -32,3 +32,49 @@ entry:
     s: i64 = add t, r
     ret s
 }
+
+; --- more arguments than registers: the ninth and on cross on the stack,
+; each class counting its own; here twelve integers, ten floats and
+; three vectors at once (the vectors dissolve into lanes on some paths,
+; which is more of the same) ---
+;! many_args 1 2 3 4 5 6 7 8 -> 1052, 0x41f00000
+fn many_args(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> (i32, f32) {
+    fa: f32 = conv a
+    fb: f32 = conv b
+    fc: f32 = conv c
+    fd: f32 = conv d
+    fe: f32 = conv e
+    v: i32x4 = pack a, b, c, d
+    w: i32x4 = pack e, f, g, h
+    r: i32, s: f32 = twelve_and_ten(a, b, c, d, e, f, g, h, a, b, c, d, fa, fb, fc, fd, fe, fa, fb, fc, fd, fe, v, w, v)
+    ret r, s
+}
+; the integers a..h then a..d again, the last four weighing 100; the floats a..e twice; lane 3 of v + w + v
+fn twelve_and_ten(i0: i32, i1: i32, i2: i32, i3: i32, i4: i32, i5: i32, i6: i32, i7: i32, i8: i32, i9: i32, i10: i32, i11: i32, f0: f32, f1: f32, f2: f32, f3: f32, f4: f32, f5: f32, f6: f32, f7: f32, f8: f32, f9: f32, v0: i32x4, v1: i32x4, v2: i32x4) -> (i32, f32) {
+    s0: i32 = add i0, i1
+    s1: i32 = add s0, i2
+    s2: i32 = add s1, i3
+    s3: i32 = add s2, i4
+    s4: i32 = add s3, i5
+    s5: i32 = add s4, i6
+    s6: i32 = add s5, i7
+    t0: i32 = add i8, i9
+    t1: i32 = add t0, i10
+    t2: i32 = add t1, i11
+    hundred: i32 = mul t2, 100
+    ints: i32 = add s6, hundred
+    vs: i32x4 = add v0, v1
+    vt: i32x4 = add vs, v2
+    lane: i32 = get vt, 3
+    total: i32 = add ints, lane
+    g0: f32 = add f0, f1
+    g1: f32 = add g0, f2
+    g2: f32 = add g1, f3
+    g3: f32 = add g2, f4
+    g4: f32 = add f5, f6
+    g5: f32 = add g4, f7
+    g6: f32 = add g5, f8
+    g7: f32 = add g6, f9
+    fs: f32 = add g3, g7
+    ret total, fs
+}

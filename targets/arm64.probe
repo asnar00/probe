@@ -10,6 +10,8 @@ reg s = s0..s31
 reg d = d0..d31
 reg v = v0..v31
 reg q = q0..q31
+reg h = h0..h31
+reg b = b0..b31
 
 ; --- three-register ALU ---
 inst add {x}, {x}, {x}
@@ -382,6 +384,48 @@ inst and {v}.16b, {v}.16b, {v}.16b
 inst orr {v}.16b, {v}.16b, {v}.16b
 inst eor {v}.16b, {v}.16b, {v}.16b
 inst mvn {v}.16b, {v}.16b
+; --- across the lanes: reductions to one lane (a scalar register that
+; is the vector's lane 0), pairwise where there is no reduction ---
+inst addv {s}, {v}.4s
+inst addv {h}, {v}.8h
+inst addv {h}, {v}.4h
+inst addv {b}, {v}.16b
+inst addv {b}, {v}.8b
+inst smaxv {s}, {v}.4s
+inst smaxv {h}, {v}.8h
+inst smaxv {h}, {v}.4h
+inst smaxv {b}, {v}.16b
+inst smaxv {b}, {v}.8b
+inst sminv {s}, {v}.4s
+inst sminv {h}, {v}.8h
+inst sminv {h}, {v}.4h
+inst sminv {b}, {v}.16b
+inst sminv {b}, {v}.8b
+inst umaxv {s}, {v}.4s
+inst umaxv {h}, {v}.8h
+inst umaxv {h}, {v}.4h
+inst umaxv {b}, {v}.16b
+inst umaxv {b}, {v}.8b
+inst uminv {s}, {v}.4s
+inst uminv {h}, {v}.8h
+inst uminv {h}, {v}.4h
+inst uminv {b}, {v}.16b
+inst uminv {b}, {v}.8b
+inst addp {d}, {v}.2d
+inst faddp {v}.4s, {v}.4s, {v}.4s
+inst addp {v}.2s, {v}.2s, {v}.2s
+inst smaxp {v}.2s, {v}.2s, {v}.2s
+inst sminp {v}.2s, {v}.2s, {v}.2s
+inst umaxp {v}.2s, {v}.2s, {v}.2s
+inst uminp {v}.2s, {v}.2s, {v}.2s
+inst faddp {s}, {v}.2s
+inst faddp {d}, {v}.2d
+inst fmaxp {s}, {v}.2s
+inst fmaxp {d}, {v}.2d
+inst fminp {s}, {v}.2s
+inst fminp {d}, {v}.2d
+inst fmaxv {s}, {v}.4s
+inst fminv {s}, {v}.4s
 inst smin {v}.8b, {v}.8b, {v}.8b
 inst smax {v}.8b, {v}.8b, {v}.8b
 inst umin {v}.8b, {v}.8b, {v}.8b

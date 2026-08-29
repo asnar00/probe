@@ -439,7 +439,8 @@ impl Platform {
                 continue;
             }
             let sig = format!("{}({}) -> {}", r.generic, r.arg_types.join(", "), r.ret_type);
-            let bits = |t: &str| vector_name_bits(t).unwrap_or(64);
+            // a vector's register, or a scalar's width (a reduction's result)
+            let bits = |t: &str| vector_name_bits(t).or_else(|| Type::from_name_pub(t).and_then(|t| t.int_bits())).unwrap_or(64);
             let inline = !r.called && (0..r.arg_types.len()).all(|i| r.lines.iter().any(|l| l.operands.contains(&Operand::Arg(i))));
             vector_rules.insert(
                 sig.clone(),
@@ -448,8 +449,8 @@ impl Platform {
                     sig,
                     arg_bits: r.arg_types.iter().map(|t| bits(t)).collect(),
                     ret_bits: if r.ret_type == "()" { 0 } else { bits(&r.ret_type) },
-                    arg_class: r.arg_types.iter().map(|t| classes.get(t).cloned()).collect(),
-                    ret_class: classes.get(&r.ret_type).cloned(),
+                    arg_class: r.arg_types.iter().map(|t| classes.get(&resolve(t)).cloned()).collect(),
+                    ret_class: classes.get(&resolve(&r.ret_type)).cloned(),
                     tmp_class: r.temp_types.iter().map(|t| classes.get(&resolve(t)).cloned()).collect(),
                     inline,
                 },
@@ -691,7 +692,9 @@ fn slot_takes(slot: &str, native: &Native, op: &Operand) -> Option<i64> {
             if let Some(c) = native.class(op) {
                 // `vn` (v1..v31, the seed's class for a destination that
                 // may not be v0) takes a v operand; the emitter renumbers
-                return (kind == c || (kind == "vn" && c == "v")).then_some(0);
+                // ... and a vector register named as one of its lanes (`addv
+                // {s}, {v}.4s` writes lane 0): the same register number
+                return (kind == c || (c == "v" && matches!(kind, "vn" | "b" | "h" | "s" | "d" | "q"))).then_some(0);
             }
             let bits = native.bits(op);
             match kind {

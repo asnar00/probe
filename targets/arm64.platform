@@ -917,6 +917,169 @@ neg {v}.16b, {v}.16b = neg(i8x16) -> i8x16
 umin {v}.16b, {v}.16b, {v}.16b = min(u8x16, u8x16) -> u8x16
 umax {v}.16b, {v}.16b, {v}.16b = max(u8x16, u8x16) -> u8x16
 
+; --- across the lanes (lib/reduce.ssa): a reduction into lane 0, read
+; out; pairwise where there is no reduction (two lanes; f32x4's sum, in
+; the tree's order) ---
+sum(f32x4) -> f32 with t: f32x4
+    faddp t.4s, a.4s, a.4s
+    faddp r, t.2s
+max(f32x4) -> f32
+    fmaxv r, a.4s
+min(f32x4) -> f32
+    fminv r, a.4s
+sum(f64x2) -> f64
+    faddp r, a.2d
+max(f64x2) -> f64
+    fmaxp r, a.2d
+min(f64x2) -> f64
+    fminp r, a.2d
+sum(f32x2) -> f32
+    faddp r, a.2s
+max(f32x2) -> f32
+    fmaxp r, a.2s
+min(f32x2) -> f32
+    fminp r, a.2s
+sum(i32x4) -> i32 with t: i32x4
+    addv t, a.4s
+    umov r, t.s[0]
+min(i32x4) -> i32 with t: i32x4
+    sminv t, a.4s
+    umov r, t.s[0]
+max(i32x4) -> i32 with t: i32x4
+    smaxv t, a.4s
+    umov r, t.s[0]
+sum(u32x4) -> u32 with t: u32x4
+    addv t, a.4s
+    umov r, t.s[0]
+min(u32x4) -> u32 with t: u32x4
+    uminv t, a.4s
+    umov r, t.s[0]
+max(u32x4) -> u32 with t: u32x4
+    umaxv t, a.4s
+    umov r, t.s[0]
+sum(i64x2) -> i64 with t: i64x2
+    addp t, a.2d
+    umov r, t.d[0]
+sum(u64x2) -> u64 with t: u64x2
+    addp t, a.2d
+    umov r, t.d[0]
+sum(i32x2) -> i32 with t: i32x2
+    addp t.2s, a.2s, a.2s
+    umov r, t.s[0]
+min(i32x2) -> i32 with t: i32x2
+    sminp t.2s, a.2s, a.2s
+    umov r, t.s[0]
+max(i32x2) -> i32 with t: i32x2
+    smaxp t.2s, a.2s, a.2s
+    umov r, t.s[0]
+sum(u32x2) -> u32 with t: u32x2
+    addp t.2s, a.2s, a.2s
+    umov r, t.s[0]
+min(u32x2) -> u32 with t: u32x2
+    uminp t.2s, a.2s, a.2s
+    umov r, t.s[0]
+max(u32x2) -> u32 with t: u32x2
+    umaxp t.2s, a.2s, a.2s
+    umov r, t.s[0]
+sum(i16x4) -> i16 with t: i16x4
+    addv t, a.4h
+    smov r, t.h[0]
+min(i16x4) -> i16 with t: i16x4
+    sminv t, a.4h
+    smov r, t.h[0]
+max(i16x4) -> i16 with t: i16x4
+    smaxv t, a.4h
+    smov r, t.h[0]
+sum(u16x4) -> u16 with t: u16x4
+    addv t, a.4h
+    umov r, t.h[0]
+min(u16x4) -> u16 with t: u16x4
+    uminv t, a.4h
+    umov r, t.h[0]
+max(u16x4) -> u16 with t: u16x4
+    umaxv t, a.4h
+    umov r, t.h[0]
+sum(i8x8) -> i8 with t: i8x8
+    addv t, a.8b
+    smov r, t.b[0]
+min(i8x8) -> i8 with t: i8x8
+    sminv t, a.8b
+    smov r, t.b[0]
+max(i8x8) -> i8 with t: i8x8
+    smaxv t, a.8b
+    smov r, t.b[0]
+sum(u8x8) -> u8 with t: u8x8
+    addv t, a.8b
+    umov r, t.b[0]
+min(u8x8) -> u8 with t: u8x8
+    uminv t, a.8b
+    umov r, t.b[0]
+max(u8x8) -> u8 with t: u8x8
+    umaxv t, a.8b
+    umov r, t.b[0]
+sum(i16x8) -> i16 with t: i16x8
+    addv t, a.8h
+    smov r, t.h[0]
+min(i16x8) -> i16 with t: i16x8
+    sminv t, a.8h
+    smov r, t.h[0]
+max(i16x8) -> i16 with t: i16x8
+    smaxv t, a.8h
+    smov r, t.h[0]
+sum(u16x8) -> u16 with t: u16x8
+    addv t, a.8h
+    umov r, t.h[0]
+min(u16x8) -> u16 with t: u16x8
+    uminv t, a.8h
+    umov r, t.h[0]
+max(u16x8) -> u16 with t: u16x8
+    umaxv t, a.8h
+    umov r, t.h[0]
+sum(i8x16) -> i8 with t: i8x16
+    addv t, a.16b
+    smov r, t.b[0]
+min(i8x16) -> i8 with t: i8x16
+    sminv t, a.16b
+    smov r, t.b[0]
+max(i8x16) -> i8 with t: i8x16
+    smaxv t, a.16b
+    smov r, t.b[0]
+sum(u8x16) -> u8 with t: u8x16
+    addv t, a.16b
+    umov r, t.b[0]
+min(u8x16) -> u8 with t: u8x16
+    uminv t, a.16b
+    umov r, t.b[0]
+max(u8x16) -> u8 with t: u8x16
+    umaxv t, a.16b
+    umov r, t.b[0]
+all(u1x2) -> u1 with t: u1x2
+    xtn t.2s, a.2d
+    uminp t.2s, t.2s, t.2s
+    umov r, t.s[0]
+any(u1x2) -> u1 with t: u1x2
+    xtn t.2s, a.2d
+    umaxp t.2s, t.2s, t.2s
+    umov r, t.s[0]
+all(u1x4) -> u1 with t: u1x4
+    uminv t, a.4s
+    umov r, t.s[0]
+any(u1x4) -> u1 with t: u1x4
+    umaxv t, a.4s
+    umov r, t.s[0]
+all(u1x8) -> u1 with t: u1x8
+    uminv t, a.8h
+    umov r, t.h[0]
+any(u1x8) -> u1 with t: u1x8
+    umaxv t, a.8h
+    umov r, t.h[0]
+all(u1x16) -> u1 with t: u1x16
+    uminv t, a.16b
+    umov r, t.b[0]
+any(u1x16) -> u1 with t: u1x16
+    umaxv t, a.16b
+    umov r, t.b[0]
+
 ; --- a cast between vectors of one shape: the same bits ---
 mov {v}.16b, {v}.16b = cast(i16x4) -> u16x4
 mov {v}.16b, {v}.16b = cast(u16x4) -> i16x4

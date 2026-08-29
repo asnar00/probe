@@ -187,6 +187,11 @@ inst vmax.vv {v}, {v}, {v}
 inst vminu.vv {v}, {v}, {v}
 inst vmaxu.vv {v}, {v}, {v}
 inst vrsub.vx {v}, {v}, x0
+inst vredsum.vs {v}, {v}, {v}
+inst vredmin.vs {v}, {v}, {v}
+inst vredmax.vs {v}, {v}, {v}
+inst vredminu.vs {v}, {v}, {v}
+inst vredmaxu.vs {v}, {v}, {v}
 inst vmfeq.vv v0, {v}, {v}
 inst vmfne.vv v0, {v}, {v}
 inst vmflt.vv v0, {v}, {v}
