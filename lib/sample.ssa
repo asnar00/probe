@@ -1,0 +1,70 @@
+; lib/sample.ssa — sampling a spatial view by coordinate, as a texture
+; is sampled. `sample img, x, y` on a rank-2 view is bilinear: x runs
+; along axis 1 (the columns), y along axis 0 (the rows), and a
+; coordinate is an index — (0, 0) is the first element exactly, and
+; (1.5, 0) is halfway between the first row's second and third. The
+; edges clamp. The weights are the coordinate's type; each element is
+; converted into it, mixed, and the result converted back, rounded once
+; — so a byte image sampled with f32 coordinates gives a byte.
+fn sample(img: number[,], x: scalar, y: scalar) -> number {
+    w: i64 = shape img, 1
+    h: i64 = shape img, 0
+    j0: i64, fx: scalar = axis(x, w)
+    i0: i64, fy: scalar = axis(y, h)
+    j1: i64 = neighbour(j0, w)
+    i1: i64 = neighbour(i0, h)
+    p00: number = load img, i0, j0
+    p01: number = load img, i0, j1
+    p10: number = load img, i1, j0
+    p11: number = load img, i1, j1
+    a00: scalar = conv p00
+    a01: scalar = conv p01
+    a10: scalar = conv p10
+    a11: scalar = conv p11
+    top: scalar = mix(a00, a01, fx)
+    bottom: scalar = mix(a10, a11, fx)
+    m: scalar = mix(top, bottom, fy)
+    r: number = conv m
+    ret r
+}
+; the index at or below a coordinate, clamped into the axis, and the
+; fraction above it
+fn axis(c: scalar, n: i64) -> (i64, scalar) {
+    last: i64 = sub n, 1
+    below: u1 = cmp.lt c, 0
+    i: i64, f: scalar = if below {
+        yield 0, 0
+    } else {
+        ci: i64 = conv c
+        beyond: u1 = cmp.ge ci, last
+        k: i64, g: scalar = if beyond {
+            yield last, 0
+        } else {
+            cf: scalar = conv ci
+            d: scalar = sub c, cf
+            yield ci, d
+        }
+        yield k, g
+    }
+    ret i, f
+}
+; the index after i, staying inside the axis
+fn neighbour(i: i64, n: i64) -> i64 {
+    last: i64 = sub n, 1
+    at_end: u1 = cmp.ge i, last
+    j: i64 = if at_end {
+        yield last
+    } else {
+        yield i
+    }
+    k: i64 = add j, 1
+    m: i64 = min(k, last)
+    ret m
+}
+; a + (b - a) * f
+fn mix(a: scalar, b: scalar, f: scalar) -> scalar {
+    d: scalar = sub b, a
+    p: scalar = mul d, f
+    r: scalar = add a, p
+    ret r
+}
