@@ -4,6 +4,21 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### `probe cost`: SSA time, K, hardware time — `a88cd26` · 2026-08-29
+
+```
+$ probe cost suite/stream.ssa biquad riscv --platform=rv64i --assume=8
+biquad                     20876408 ssa   K  6.92     89679648 hw
+    biquad: loop at b1 x64 (declared), body 326225 ssa
+    push_f32: ... copy_time: loop at b4 x8 (assumed) ...
+
+    loop(i: i64 = 0, x1: f32 = px1, ...) bound 64 {      ; the trip count the program declares
+```
+
+"If we can estimate bounded runtime for any kernel, we can schedule computation to happen just in time... having some kind of performance metric is crucial... for any SSA function there'll be some constant K mapping SSA time to hardware time." Two numbers and their ratio. **SSA time** is the longest path through a function's IR — one per instruction, a call one plus its callee, arithmetic on a machine number (an integer to 64 bits, `f32`, `f64`) one whichever library implements it, arithmetic on a rational or a fixed the code it is — each loop multiplied by its trip count: the bound the program declares (`loop(...) bound N {`, trusted, not checked), or the count a loop shows when it steps a variable by a constant to a constant (found by running the loop in the small), or one assumed on the command line, or — reported — none, counted once. It compares two programs with no target in sight. **K** is per function per platform: the platform's cost of the function's emitted code, a `cost mnemonic = n` line per instruction in the platform file and 1 without, over its IR instruction count; and **hardware time** is the same walk weighted by K, a library operation the platform has no instruction for descended into. Every cost is 1 today, so hardware time is an instruction count and K the machine instructions per IR instruction — 1.9 for a matmul, 6 to 7 for the biquad, 9 for a five-instruction vector function whose frame is most of it; learning the costs by measurement is next. The tool's first finding was immediate: a `push` into a regular stream costs some 300 000 SSA operations a sample, because `time_of` does a 128-bit rational multiply and add — with a `gcd128` and a 128-step division inside — for every item, to fill a times buffer a regular stream never needs. The parser-independent count says so before any machine is asked, which is the point. 958 on every path; two Rust tests (a loop counted, declared and assumed; arithmetic one on floats and the code on rationals).
+
+---
+
 ### Blocks and history: a biquad as a stream node — `6b8697d` · 2026-08-29
 
 ```
