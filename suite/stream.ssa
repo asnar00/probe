@@ -291,7 +291,7 @@ fn biquad(x: f32$, out: f32$, b0: f32, b1: f32, b2: f32, a1: f32, a2: f32) -> f3
     px2: f32 = tail(hx, 2)
     py1: f32 = tail(hy, 1)
     py2: f32 = tail(hy, 2)
-    loop(i: i64 = 0, x1: f32 = px1, xx2: f32 = px2, y1: f32 = py1, y2: f32 = py2) {
+    loop(i: i64 = 0, x1: f32 = px1, xx2: f32 = px2, y1: f32 = py1, y2: f32 = py2) bound 64 {
         done: u1 = cmp.ge i, n
         if done {
             break

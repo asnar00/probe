@@ -5,6 +5,7 @@ mod emit;
 mod emit_air;
 mod emit_rv;
 mod emit_wasm;
+mod cost;
 mod footprint;
 mod fuzz;
 mod scorecard;
@@ -155,6 +156,70 @@ fn main() -> ExitCode {
                 Err(e) => fail(&e),
             }
         }
+        Some("cost") if args.len() >= 2 => {
+            let target = if args.iter().any(|a| a == "riscv") {
+                Some("riscv64")
+            } else if args.iter().any(|a| a == "arm") {
+                Some("arm64")
+            } else {
+                None
+            };
+            let assume = args.iter().find_map(|a| a.strip_prefix("--assume=")).and_then(|n| n.parse::<i64>().ok());
+            let wanted: Vec<&String> = args[2..].iter().filter(|a| !a.starts_with("--") && a.as_str() != "riscv" && a.as_str() != "arm").collect();
+            let result = (|| -> Result<(), String> {
+                let platform = platform::Platform::load(target.unwrap_or("arm64"))?;
+                let policy = platform.adjust(policy);
+                let src = std::fs::read_to_string(&args[1]).map_err(|e| format!("{}: {}", args[1], e))?;
+                let mut module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| e.to_string())?;
+                ssa::resolve_types(&mut module, &policy);
+                ssa::verify(&module).map_err(|e| e.join("; "))?;
+                opt::optimize(&mut module, level);
+                let ks = match target {
+                    Some(t) => Some(cost::ks(&module, t, &platform)?),
+                    None => None,
+                };
+                let natives = target.map(|_| platform.natives(&module));
+                let mut coster = cost::Coster::new(&module, ks.as_ref(), natives, assume);
+                // the file's own functions, or the ones named
+                let names: Vec<String> = if wanted.is_empty() {
+                    src.lines().filter_map(|l| l.strip_prefix("fn ")).filter_map(|l| l.split(|c: char| !(c.is_alphanumeric() || c == '_')).next()).map(str::to_string).collect()
+                } else {
+                    wanted.iter().map(|s| s.to_string()).collect()
+                };
+                if let Some(t) = target {
+                    println!("{} on {} ({}){}", args[1], t, platform.name, assume.map(|n| format!(", unbounded loops assumed x{}", n)).unwrap_or_default());
+                } else {
+                    println!("{}{}", args[1], assume.map(|n| format!(", unbounded loops assumed x{}", n)).unwrap_or_default());
+                }
+                for name in names {
+                    let Some(r) = coster.report(&name) else {
+                        println!("{:<24} (not in the module)", name);
+                        continue;
+                    };
+                    match (r.hw, r.k) {
+                        (Some(hw), Some(k)) => println!("{:<24} {:>10.0} ssa   K {:>5.2}   {:>10.0} hw", r.name, r.ssa, k, hw),
+                        _ => println!("{:<24} {:>10.0} ssa", r.name, r.ssa),
+                    }
+                    let mut seen_loops = std::collections::BTreeSet::new();
+                    for l in &r.loops {
+                        if seen_loops.insert(l.clone()) {
+                            println!("    {}", l);
+                        }
+                    }
+                    let mut seen = std::collections::BTreeSet::new();
+                    for n in &r.notes {
+                        if seen.insert(n.clone()) {
+                            println!("    ! {}", n);
+                        }
+                    }
+                }
+                Ok(())
+            })();
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => fail(&e),
+            }
+        }
         Some("footprint") if args.len() >= 2 => {
             let target = if args.iter().any(|a| a == "riscv") { "riscv64" } else { "arm64" };
             let result = (|| -> Result<(), String> {
@@ -297,6 +362,7 @@ fn main() -> ExitCode {
             eprintln!("       probe compile <file.ssa>");
             eprintln!("       probe run <file.ssa> <function> [args...]");
             eprintln!("       probe tiers <file.ssa>");
+            eprintln!("       probe cost <file.ssa> [fn...] [arm|riscv] [--assume=N]");
             eprintln!("       probe live <file.ssa> <function> [args...]");
             eprintln!("       probe fuzz [count] [--seed=hex] [--slow]");
             eprintln!("       probe testfloat [f32|add|f16_to_i32...]");

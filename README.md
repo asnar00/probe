@@ -116,6 +116,7 @@ A platform file (`targets/*.platform`, read by `src/platform.rs`) says what a ta
 - `fadd {s}, {s}, {s} = add(f32, f32) -> f32` — one learned instruction for one library operation. Rules can only name templates the learner verified. Compiling such an instance, or a call to one, emits the rule instead of the SSA body; `--soft` turns that off, and the library remains the reference the hardware path is checked against.
 - `const uart = 0x10000000` — a board's addresses, for `platform uart`; `heap_base` and `ram_end`, the RAM above the image that is a program's to carve.
 - `psci(code: u64) -> ()` with `hvc 0` under it — a plain function the platform gives a body: how the board is ended, how a trap is installed, read and returned from (`vectors`, `cause`, `resume`, `resume_at`, `syscall`), how time is read and the timer's interrupt taken (`now`, `hz`, `timer_at`, `irq_on`, `irq_ack`, ...). A body line may spell a template's fixed operands (`msr vbar_el1, t`); a rule may declare typed temporaries (`with gic: ptr, v: u32`) for addresses and values it needs; `none` is a rule that does nothing.
+- **Cost** (`probe cost file.ssa [fn...] [arm|riscv] [--assume=N]`): a function's **SSA time** — the longest path through its IR, one per instruction, arithmetic on machine numbers one whichever library implements it, each loop times its trip count: declared (`loop(...) bound N {`), shown by the loop (a variable stepped by a constant to a constant), assumed (`--assume`), or reported as unbounded. It compares two programs with no target in sight. With a target, **K** — the platform's cost of the function's emitted code (`cost mnemonic = n` lines in the platform file; 1 without) per IR instruction — and **hardware time**, the same walk weighted by K, library arithmetic the platform has no instruction for descended into. K is a constant per function per platform, and where it is far from the platform's usual value the IR's idea of cost and the machine's disagree.
 - **Variants** are files too: the base file is grouped by extension (`ext M`, `ext F`, `ext D`), and `targets/rv64i.platform` is `base riscv64` plus `without M, F, D` — a core on which `mul`/`div`/`rem` and every float operation are the library's. `--platform=rv64i` selects it everywhere; `probe footprint` lists the instructions a program really used, to prove it.
 
 
@@ -225,6 +226,10 @@ cargo run -- --round=zero run suite/round.ssa sumsq 0x3f800000 0x33800000
 # ISA variants: the same suite on a RISC-V core without M/F/D, and what a program uses
 cargo run -- --platform=rv64i test riscv
 cargo run -- --platform=rv64i footprint suite/float.ssa riscv
+
+# what a function costs: SSA time (no target), and on a machine its K and hardware time
+cargo run -- cost suite/stream.ssa biquad --assume=8
+cargo run -- cost suite/stream.ssa biquad riscv --platform=rv64i --assume=8
 
 # the fuzzer: N programs from a seed; a printed seed reproduces one program
 cargo run -- fuzz 300

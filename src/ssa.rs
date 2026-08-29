@@ -847,6 +847,10 @@ pub struct Block {
     pub name: String,
     pub params: Vec<ValueId>,
     pub insts: Vec<Inst>,
+    /// for a loop's header: the trip count the program declares
+    /// (`loop(...) bound N {`) — what a cost or residency analysis
+    /// multiplies the body by; trusted, not checked
+    pub bound: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -942,7 +946,7 @@ pub fn jit_wrappers(funcs: &[Function], classed: &dyn Fn(&Function, Type) -> boo
             }
         }
         insts.push(Inst::Ret { vals });
-        w.blocks.push(Block { name: "entry".into(), params: Vec::new(), insts });
+        w.blocks.push(Block { name: "entry".into(), params: Vec::new(), insts, bound: None });
         out.push(w);
     }
     out
@@ -1960,6 +1964,7 @@ impl StructEmit {
             format!("b{}", self.blocks.len())
         };
         self.blocks.push(Block {
+            bound: None,
             name,
             params,
             insts: Vec::new(),
@@ -4169,6 +4174,7 @@ impl Parser {
                         name: bname,
                         params: bparams,
                         insts: Vec::new(),
+                        bound: None,
                     });
                 }
                 Some(_) => {
@@ -5657,10 +5663,21 @@ impl Parser {
                 self.expect(Tok::Comma)?;
             }
         }
+        // `bound N`: the trip count the program declares for the loop
+        let bound = if matches!(self.peek(), Some(Tok::Ident(w)) if w == "bound") {
+            self.pos += 1;
+            match self.parse_lit()? {
+                Some(Lit::Int(n)) if n > 0 => Some(n),
+                _ => return Err(self.err("bound wants a positive integer: `loop(...) bound 64 {`".to_string())),
+            }
+        } else {
+            None
+        };
         self.expect(Tok::LBrace)?;
         self.expect(Tok::Newline)?;
 
         let header = st.new_block(params);
+        st.blocks[header.0 as usize].bound = bound;
         self.emit(st, Inst::Jmp {
             target: header,
             args: inits,

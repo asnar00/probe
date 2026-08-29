@@ -197,6 +197,10 @@ pub struct Platform {
     consts: Vec<(String, i64, String)>,
     /// groups this variant lacks
     without: Vec<String>,
+    /// `cost mnemonic = n` lines: what one instruction of that
+    /// mnemonic costs, in the platform's units (cycles, once measured);
+    /// an instruction without a line costs 1
+    costs: Vec<(String, i64)>,
 }
 
 /// set by `--soft`: every backend's default platform becomes empty
@@ -225,7 +229,7 @@ impl Platform {
         // no instructions at all — but the constants a library needs to
         // choose its way (fibres run one after another, having no switch)
         let consts = vec![("fibre_lr".to_string(), 0, String::new()), ("fibre_sp".to_string(), 8, String::new()), ("fibre_stacks".to_string(), 0, String::new())];
-        Platform { target: String::new(), name: "none".into(), classes: Vec::new(), rules: Vec::new(), builtins: Vec::new(), consts, without: Vec::new() }
+        Platform { target: String::new(), name: "none".into(), classes: Vec::new(), rules: Vec::new(), builtins: Vec::new(), consts, without: Vec::new(), costs: Vec::new() }
     }
 
     /// the platform for a target: the selected variant when it is one of
@@ -287,6 +291,11 @@ impl Platform {
     }
 
     /// the extension groups declared, and whether each is present
+    /// what one instruction of a mnemonic costs: its `cost` line, or 1
+    pub fn cost_of(&self, mnemonic: &str) -> i64 {
+        self.costs.iter().rev().find(|(m, _)| m == mnemonic).map(|(_, c)| *c).unwrap_or(1)
+    }
+
     pub fn extensions(&self) -> Vec<(String, bool)> {
         let mut seen: Vec<String> = Vec::new();
         for g in self.classes.iter().map(|(_, _, g)| g).chain(self.rules.iter().map(|(_, g)| g)).chain(self.builtins.iter().map(|(_, g)| g)).chain(self.consts.iter().map(|(_, _, g)| g)) {
@@ -348,12 +357,16 @@ impl Platform {
                 p.builtins.extend(base.builtins);
                 p.consts.extend(base.consts);
                 p.without.extend(base.without);
+                p.costs.extend(base.costs);
             } else if words[0] == "ext" && words.len() == 2 {
                 group = words[1].to_string();
             } else if words[0] == "without" {
                 for g in line.trim()[7..].split(',') {
                     p.without.push(g.trim().to_string());
                 }
+            } else if words[0] == "cost" && words.len() == 4 && words[2] == "=" {
+                let v = parse_int(words[3]).ok_or_else(|| at(format!("bad cost '{}'", words[3])))?;
+                p.costs.push((words[1].to_string(), v));
             } else if words[0] == "const" && words.len() == 4 && words[2] == "=" {
                 let v = parse_int(words[3]).ok_or_else(|| at(format!("bad constant '{}'", words[3])))?;
                 p.consts.push((words[1].to_string(), v, group.clone()));
