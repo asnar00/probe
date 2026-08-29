@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### Regular streams and the linear rule — `ae8d86a` · 2026-08-29
+
+```
+    reg: f32$ = regular(s, dt, t0)            ; a sample every millisecond from 0
+    push reg, 10.0                            ; the time is computed
+    push reg, 20.0
+    l: f32$ = sampling(reg, 2)                ; linear
+    x: f32 = sample l, t                      ; 26.0 at 1.6 ms
+```
+
+"If a stream has metadata dt, then when we ask for x[t], it returns x[t/dt]." A regular stream is the same ring seen with a `dt` and a `t0` on the view — `regular(s, dt, t0)` — so its producer says `push s, v` and the time is computed, and a sample at `t` finds its item by dividing rather than searching (and the irregular search is binary now, the times being sorted by construction); the ring still holds a time per item, which is what keeps every reader's operation one function over both kinds. The third rule is linear: the two items around `t` weighed by where `t` falls between their times, done in `time`'s exact rationals — `lerp` converts the difference to a rational, multiplies, and converts back — so the only rounding is the last, into the element's type: `26.0` between `20.0` and `30.0` at 1.6 ms, and on a byte stream `2` at 2.75 ms between 2 and 3, `7` at the midpoint of a slope from 10 down to 4 — a `u8` never goes negative on the way. A push without a time on an irregular stream is a failed `check`. 953 on every path and both variants; next, the same sampling on a spatial view.
+
+---
+
 ### The OS programs as streams — `ca775d2` · 2026-08-29
 
 ```
