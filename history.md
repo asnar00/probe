@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### The frictions — `cbaf920` · 2026-08-29
+
+```
+    store 1.0, a, 0, 0                        ; a literal takes the element's type: no `1.0: f32`
+    one: i32 = const 1
+    y: i32 = load c, one, one                 ; an index is any integer
+```
+
+"We should also definitely address the small frictions before we move to the next idea." Three, named a few hours earlier. A literal stored through a typed pointer or a view now takes the element's type — the parser looks at the target before typing the literal, so `store 1.0: f32, a, 0, 1` is `store 1.0, a, 0, 1`. An index or a count may be any integer, converted to `i64` where it is used, so the `conv`s around a loop's `i32` go. And the one that a user would not see but that would have bitten later: an operation had come to find its definition four ways — the operation form by its first operand, the lane-by-lane path, the statement form on a view, a call by name — each the minimal fix of its day, each with slightly different rules. They are one now: `resolve(name, argument types, wanted result)` — every parameter unifies with its argument, widths and abstract types together; a defining form wants a definition with a result of its type, a statement one with none, a call either; of what fits, the most specific wins — and `dispatch` and `choose_generic` are two lines over it. No capability changed; the suite is the same 939 on every path, with its `: f32` annotations gone and an `i32` index added. What is left of the frictions is a matter of taste noted in `future-work.md`: the statement form of a view operation has no result, which is the one place the syntax has two moods, and is so by design for want of an allocator. Next: streams.
+
+---
+
 ### The array layer, rounded out — `ae35e05` · 2026-08-29
 
 ```
