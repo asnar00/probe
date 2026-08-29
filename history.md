@@ -4,6 +4,34 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### The array layer, rounded out — `ae35e05` · 2026-08-29
+
+```
+fn normalize() -> (f32, f32) {
+    p: ptr = addr fr
+    q: ptr = addr fc
+    r: ptr = addr fs
+    a: f32[,] = slice p, 2, 2
+    c: f32[,] = slice q, 2, 2
+    s: f32[] = slice r
+    store 1.0: f32, a, 0, 0
+    store 3.0: f32, a, 0, 1
+    store 1.0: f32, a, 1, 0
+    store 1.0: f32, a, 1, 1
+    sum s, a
+    at: f32[,] = transpose a
+    ct: f32[,] = transpose c
+    div ct, at, s
+    x: f32 = load c, 0, 1
+    y: f32 = load c, 1, 0
+    ret x, y
+}
+```
+
+"We should definitely round out the array layer properly." The pieces a matrix program reaches for, each a few lines of `lib/slice.ssa` over what was there: `dot a, b` a reduction of a product — a chunk of partial products while both views are contiguous, its lanes summed, then the tail one at a time; `matmul c, a, b` the dot of each row of `a` with each row of `b`'s transpose, shapes checked, a loop until a platform has a rule for a tile; a rank-1 view on the right of a rank-2 operation broadcast to every row, so a per-row scalar is a column broadcast, which is a row broadcast on the transposes, as the kernel above has it; and `buffer_take`/`buffer_give`, a buffer with its header from the heap of the day before, returned by its own numbers. The suite grew a small kernel — rows normalized by their sums — and a case that shows a row view aliasing its grid, which is what a view is for and what my first expectation forgot. 939 on every path and both variants; the model is what a front end would generate into, and reads well enough by hand that the frictions are the next thing, before streams.
+
+---
+
 ### Views with a shape — `ef51522` · 2026-08-29
 
 ```
