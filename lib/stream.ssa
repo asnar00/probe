@@ -15,11 +15,18 @@
 ; the stream's edge rule is clamp (1), which gives the first.
 ;
 ; Rules: nearest (0) takes the item whose time is nearest t; hold (1)
-; takes the last item at or before t — a sample-and-hold. Producers
-; `push s, t, v` (times non-decreasing, checked); consumers take a
-; `frame` (everything since they last looked, as views of the values
-; and their times, and the stream advanced), `count`, `latest`,
-; `sample s, t`, or a `window s, t1, t2` of the items with t1 <= t < t2.
+; takes the last item at or before t — a sample-and-hold; linear (2)
+; weighs the two items around t, exactly in rational arithmetic, and
+; rounds once into the element's type. Producers `push s, t, v` (times
+; non-decreasing, checked); consumers take a `frame` (everything since
+; they last looked, as views of the values and their times, and the
+; stream advanced), `count`, `latest`, `sample s, t`, or a
+; `window s, t1, t2` of the items with t1 <= t < t2.
+;
+; A regular stream (`regular(s, dt, t0)`) has a sample every dt from
+; t0: its producer says `push s, v` and the time is computed, and a
+; sample at t finds its item by arithmetic rather than search. Its ring
+; still holds a time per item, so every reader's operation is the same.
 
 ; --- the ring: [pushed, base, values buffer, times buffer] ---
 fn ring_init(r: ptr, vb: ptr, tb: ptr) {
@@ -43,6 +50,21 @@ fn sampling(s: number$, rule: i64) -> number$ {
 fn edges(s: number$, edge: i64) -> number$ {
     s2: number$ = set s, edge, edge
     ret s2
+}
+; the same ring seen as regular: a sample every dt from t0
+fn regular(s: number$, dt: time, t0: time) -> number$ {
+    s2: number$ = set s, dt, dt
+    s3: number$ = set s2, t0, t0
+    ret s3
+}
+; the time of a regular stream's k-th item
+fn time_of(s: number$, k: i64) -> time {
+    dt: time = get s, dt
+    t0: time = get s, t0
+    kt: time = conv k
+    d: time = mul kt, dt
+    t: time = add t0, d
+    ret t
 }
 
 ; the ring's values and times as whole views, and the resident range
@@ -96,6 +118,19 @@ fn push(s: number$, t: time, v: number) {
     ret
 }
 
+; a regular stream's producer: the next sample, its time computed
+fn push(s: number$, v: number) {
+    dt: time = get s, dt
+    zero: time = seconds(0)
+    is_regular: u1 = cmp.ne dt, zero
+    check is_regular
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    t: time = time_of(s, pushed)
+    push(s, t, v)
+    ret
+}
+
 ; --- the consumer's side ---
 fn count(s: number$) -> i64 {
     r: ptr = get s, ring
@@ -135,26 +170,83 @@ fn latest(s: number$) -> number {
     ret v
 }
 ; the index (from base) of the last resident item at or before t, or
-; -1 when t is before them all
-fn before(r: ptr, t: time) -> i64 {
+; -1 when t is before them all: by arithmetic on a regular stream, by
+; binary search over the times otherwise (they are sorted by construction)
+fn before(s: number$, t: time) -> i64 {
+    r: ptr = get s, ring
     pushed: i64 = load r
     base: i64 = load r, 8
-    times: time[] = ring_times(r)
     n: i64 = sub pushed, base
-    found: i64 = loop(i: i64 = 0, at: i64 = -1) {
-        done: u1 = cmp.ge i, n
-        if done {
-            break at
+    dt: time = get s, dt
+    zero: time = seconds(0)
+    is_regular: u1 = cmp.ne dt, zero
+    found: i64 = if is_regular {
+        t0: time = get s, t0
+        early: u1 = cmp.lt t, t0
+        k: i64 = if early {
+            yield -1
+        } else {
+            rel: time = sub t, t0
+            q: time = div rel, dt
+            qi: i64 = conv q
+            ki: i64 = sub qi, base
+            last: i64 = sub n, 1
+            beyond: u1 = cmp.gt ki, last
+            kc: i64 = if beyond {
+                yield last
+            } else {
+                yield ki
+            }
+            gone: u1 = cmp.lt kc, -1
+            kd: i64 = if gone {
+                yield -1
+            } else {
+                yield kc
+            }
+            yield kd
         }
-        ti: time = load times, i
-        past: u1 = cmp.gt ti, t
-        if past {
-            break at
+        yield k
+    } else {
+        times: time[] = ring_times(r)
+        at: i64 = loop(lo: i64 = 0, hi: i64 = n, best: i64 = -1) {
+            done: u1 = cmp.ge lo, hi
+            if done {
+                break best
+            }
+            span: i64 = sub hi, lo
+            half: i64 = div span, 2
+            mid: i64 = add lo, half
+            tm: time = load times, mid
+            past: u1 = cmp.gt tm, t
+            if past {
+                continue lo, mid, best
+            }
+            mid1: i64 = add mid, 1
+            continue mid1, hi, mid
         }
-        i2: i64 = add i, 1
-        continue i2, i
+        yield at
     }
     ret found
+}
+; a + (b - a) * w, exactly, rounded once into the element's type
+fn lerp(a: number, b: number, w: time) -> number {
+    down: u1 = cmp.lt b, a
+    r: number = if down {
+        d: number = sub a, b
+        dr: time = conv d
+        pr: time = mul dr, w
+        p: number = conv pr
+        v: number = sub a, p
+        yield v
+    } else {
+        d2: number = sub b, a
+        dr2: time = conv d2
+        pr2: time = mul dr2, w
+        p2: number = conv pr2
+        v2: number = add a, p2
+        yield v2
+    }
+    ret r
 }
 fn sample(s: number$, t: time) -> number {
     r: ptr = get s, ring
@@ -165,37 +257,52 @@ fn sample(s: number$, t: time) -> number {
     check some
     vals: number[] = ring_values(r)
     times: time[] = ring_times(r)
-    lo: i64 = before(r, t)
+    lo: i64 = before(s, t)
     early: u1 = cmp.lt lo, 0
-    i: i64 = if early {
+    v: number = if early {
         edge: i64 = get s, edge
         clamp: u1 = cmp.eq edge, 1
         check clamp
-        yield 0
+        first: number = load vals, 0
+        yield first
     } else {
         rule: i64 = get s, rule
-        nearest: u1 = cmp.eq rule, 0
         hi: i64 = add lo, 1
         has_hi: u1 = cmp.lt hi, n
-        both: u1 = and nearest, has_hi
-        j: i64 = if both {
+        vl: number = load vals, lo
+        x: number = if has_hi {
             tl: time = load times, lo
             th: time = load times, hi
+            vh: number = load vals, hi
             dl: time = sub t, tl
             dh: time = sub th, t
-            closer: u1 = cmp.lt dh, dl
-            k: i64 = if closer {
-                yield hi
+            nearest: u1 = cmp.eq rule, 0
+            linear: u1 = cmp.eq rule, 2
+            y: number = if nearest {
+                closer: u1 = cmp.lt dh, dl
+                z: number = if closer {
+                    yield vh
+                } else {
+                    yield vl
+                }
+                yield z
             } else {
-                yield lo
+                z2: number = if linear {
+                    span: time = sub th, tl
+                    w: time = div dl, span
+                    m: number = lerp(vl, vh, w)
+                    yield m
+                } else {
+                    yield vl
+                }
+                yield z2
             }
-            yield k
+            yield y
         } else {
-            yield lo
+            yield vl
         }
-        yield j
+        yield x
     }
-    v: number = load vals, i
     ret v
 }
 ; the items with t1 <= t < t2, as a view

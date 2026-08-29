@@ -13,10 +13,17 @@
 ;! early -> check
 ;! stale -> check
 ;! unordered -> check
+;! regular_frames -> 4, 3000
+;! interpolated -> 260, 30
+;! interpolated_int -> 2, 7
+;! irregular_push -> check
 
 data vb: buffer(u8, 8)
 data tb: buffer(time, 8)
 data rg: array(u64, 4)
+data fvb: buffer(f32, 8)
+data ftb: buffer(time, 8)
+data frg: array(u64, 4)
 
 ; five items at 1, 2, 3, 4, 5 milliseconds with values 1..5
 fn five(s: u8$) {
@@ -159,6 +166,75 @@ fn unordered() -> u8 {
     five(s)
     t: time = millis(1)
     push s, t, 9
+    x: u8 = latest s
+    ret x
+}
+
+; --- regular streams: a sample every dt from t0, the producer's push
+; without a time ---
+fn khz() -> f32$ {
+    r: ptr = addr frg
+    a: ptr = addr fvb
+    b: ptr = addr ftb
+    ring_init(r, a, b)
+    s: f32$ = stream r
+    dt: time = millis(1)
+    t0: time = seconds(0)
+    reg: f32$ = regular(s, dt, t0)
+    ret reg
+}
+fn tens(s: f32$) {
+    push s, 10.0
+    push s, 20.0
+    push s, 30.0
+    push s, 40.0
+    ret
+}
+; four samples at 0, 1, 2, 3 ms: the frame's times are computed
+fn regular_frames() -> (i64, i64) {
+    s: f32$ = khz()
+    tens(s)
+    f: f32[], ft: time[], s2: f32$ = frame(s)
+    n: i64 = len f
+    t3: time = load ft, 3
+    us: i64 = to_micros(t3)
+    ret n, us
+}
+; at 1.6 ms: linear gives 26, nearest gives 30 (as tenths)
+fn interpolated() -> (i32, i32) {
+    s: f32$ = khz()
+    tens(s)
+    t: time = micros(1600)
+    l: f32$ = sampling(s, 2)
+    x: f32 = sample l, t
+    y: f32 = sample s, t
+    x10: f32 = mul x, 10.0
+    xi: i32 = conv x10
+    yi: i32 = conv y
+    ret xi, yi
+}
+; on the byte stream, 2.75 ms between 2 and 3 is 2 (rounded once,
+; toward zero); a slope going down, 10 to 4, at its midpoint is 7
+fn interpolated_int() -> (u8, u8) {
+    s: u8$ = fresh()
+    five(s)
+    l: u8$ = sampling(s, 2)
+    t: time = micros(2750)
+    x: u8 = sample l, t
+    s2: u8$ = fresh()
+    l2: u8$ = sampling(s2, 2)
+    t1: time = millis(1)
+    t2: time = millis(2)
+    push s2, t1, 10
+    push s2, t2, 4
+    tm: time = micros(1500)
+    y: u8 = sample l2, tm
+    ret x, y
+}
+; a push without a time needs a regular stream
+fn irregular_push() -> u8 {
+    s: u8$ = fresh()
+    push s, 7
     x: u8 = latest s
     ret x
 }
