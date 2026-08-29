@@ -280,6 +280,8 @@ pub enum TypeExpr {
     TPtr(Box<TypeExpr>),
     /// `array(T, W, H, ...)`: an array with a shape
     Array(Box<TypeExpr>, Vec<IntExpr>),
+    /// `T[]`: a slice — a view into a buffer of T: (data: ptr(T), len: i64)
+    Slice(Box<TypeExpr>),
 }
 
 impl fmt::Display for TypeExpr {
@@ -303,6 +305,7 @@ impl fmt::Display for TypeExpr {
             }
             TypeExpr::Vector(inner, n) => write!(f, "{}x{}", inner, n),
             TypeExpr::TPtr(inner) => write!(f, "ptr({})", inner),
+            TypeExpr::Slice(inner) => write!(f, "{}[]", inner),
             TypeExpr::Array(inner, dims) => {
                 let ds: Vec<String> = dims.iter().map(|d| d.to_string()).collect();
                 write!(f, "array({}, {})", inner, ds.join(", "))
@@ -1378,6 +1381,8 @@ enum Tok {
     ShiftR,
     Amp,
     Pipe,
+    LBracket,
+    RBracket,
 }
 
 impl fmt::Display for Tok {
@@ -1385,6 +1390,8 @@ impl fmt::Display for Tok {
         match self {
             Tok::Newline => write!(f, "end of line"),
             Tok::Ident(s) => write!(f, "'{}'", s),
+            Tok::LBracket => write!(f, "'['"),
+            Tok::RBracket => write!(f, "']'"),
             Tok::Int(n) => write!(f, "'{}'", n),
             Tok::Str(s) => write!(f, "\"{}\"", s),
             Tok::Float(s) => write!(f, "'{}'", s),
@@ -1530,6 +1537,14 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
             '&' => {
                 chars.next();
                 toks.push((Tok::Amp, line));
+            }
+            '[' => {
+                chars.next();
+                toks.push((Tok::LBracket, line));
+            }
+            ']' => {
+                chars.next();
+                toks.push((Tok::RBracket, line));
             }
             '|' => {
                 chars.next();
@@ -2262,9 +2277,28 @@ impl Parser {
                     }
                 }
             }
-            TypeExpr::Vector(inner, _) => self.abstract_names(inner, out),
+            TypeExpr::Vector(inner, _) | TypeExpr::Slice(inner) => self.abstract_names(inner, out),
             _ => {}
         }
+    }
+
+    /// the element type of a slice type, if ty is one
+    fn slice_of(&self, ty: Type) -> Option<Type> {
+        let Type::Struct(i) = ty else { return None };
+        let p = &self.packs[i as usize];
+        if p.aggregate && p.name.ends_with("[]") && p.fields.len() == 2 {
+            if let Type::TPtr(j) = p.fields[0].1 {
+                return self.packs[j as usize].pointee;
+            }
+        }
+        None
+    }
+
+    /// a hidden value and the instruction defining it, before the current one
+    fn hidden(&mut self, scope: &mut FuncScope, ty: Type, name: String, make: impl FnOnce(ValueId) -> Inst) -> ValueId {
+        let v = scope.temp(ty, name);
+        self.consts.push(make(v));
+        v
     }
 
     /// what an abstract name means when nothing binds it: the policy's
@@ -2448,6 +2482,10 @@ impl Parser {
         };
         match expr {
             TypeExpr::Fn(..) | TypeExpr::TPtr(..) | TypeExpr::Array(..) => false, // generics do not range over these
+            TypeExpr::Slice(inner) => match self.slice_of(ty) {
+                Some(elem) => self.unify(inner, elem, binds, tbinds),
+                None => false,
+            },
             TypeExpr::Vector(inner, n) => {
                 let Type::Struct(i) = ty else {
                     return false;
@@ -2532,6 +2570,31 @@ impl Parser {
         let mut elem = Type::int(false, 8);
         let mut count: Option<usize> = None;
         let mut dims: Vec<u32> = Vec::new();
+        // `buffer(T, N)`: a header — the element size and the capacity, a
+        // word each — then N elements; what a slice is taken from
+        if matches!(self.peek(), Some(Tok::Colon)) && matches!(self.toks.get(self.pos + 1).map(|t| &t.0), Some(Tok::Ident(k)) if k == "buffer") {
+            self.expect(Tok::Colon)?;
+            self.expect_ident()?;
+            self.expect(Tok::LParen)?;
+            let et = self.expect_type()?;
+            self.expect(Tok::Comma)?;
+            let n = match self.next()? {
+                Tok::Int(v) if v > 0 => v as usize,
+                t => {
+                    self.pos -= 1;
+                    return Err(self.err(format!("a buffer's capacity is a positive integer, not {}", t)));
+                }
+            };
+            self.expect(Tok::RParen)?;
+            let (size, _) = self.layout_of(et).ok_or_else(|| self.err(format!("a buffer cannot be of {}", self.tyname_of(et))))?;
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&(size as i64).to_le_bytes());
+            bytes.extend_from_slice(&(n as i64).to_le_bytes());
+            bytes.resize(16 + n * size as usize, 0);
+            let total = bytes.len();
+            self.data.push(DataDef { name, elem, dims: vec![total as u32], elem_name: "u8".into(), count: total, bytes, shared });
+            return Ok(());
+        }
         if self.eat(&Tok::Colon) {
             let at = self.pos;
             let ty = self.expect_type()?;
@@ -2664,7 +2727,17 @@ impl Parser {
     /// Parse a type expression starting at token `i`; `params` are the
     /// names allowed in width expressions. Returns the expression and the
     /// index after it.
+    /// a type expression, with `[]` after it a slice of it
     fn type_expr_at(&self, i: usize, params: &[String]) -> Result<(TypeExpr, usize), ParseError> {
+        let (mut expr, mut j) = self.type_expr_inner_at(i, params)?;
+        while self.toks.get(j).map(|t| &t.0) == Some(&Tok::LBracket) && self.toks.get(j + 1).map(|t| &t.0) == Some(&Tok::RBracket) {
+            expr = TypeExpr::Slice(Box::new(expr));
+            j += 2;
+        }
+        Ok((expr, j))
+    }
+
+    fn type_expr_inner_at(&self, i: usize, params: &[String]) -> Result<(TypeExpr, usize), ParseError> {
         let at = |i: usize| self.toks.get(i).map(|t| &t.0);
         let line = self.toks.get(i).map(|t| t.1).unwrap_or(0);
         let err = |msg: String| ParseError { line, msg };
@@ -3184,6 +3257,21 @@ impl Parser {
                     pointee: None,
                     elem: None,
                 });
+                Ok(Type::Struct(id))
+            }
+            TypeExpr::Slice(inner) => {
+                // a view into a buffer: its data (a typed pointer) and its
+                // length, a struct — two words, dissolved like any struct
+                let elem0 = self.instantiate(inner, env, depth + 1)?;
+                let elem = self.policy.resolve(elem0);
+                let data_ty = self.instantiate(&TypeExpr::TPtr(inner.clone()), env, depth + 1)?;
+                let fields = vec![("data".to_string(), data_ty), ("len".to_string(), Type::I64)];
+                let name = format!("{}[]", self.tyname_of(elem));
+                if let Some(i) = self.packs.iter().position(|p| p.aggregate && p.name == name && p.fields == fields) {
+                    return Ok(Type::Struct(i as u32));
+                }
+                let id = self.packs.len() as u32;
+                self.packs.push(PackDef { name, fields, offsets: vec![0, 8], width: 128, origin: None, aggregate: true, size: 16, sig: None, lanes: 0, pointee: None, elem: None });
                 Ok(Type::Struct(id))
             }
             TypeExpr::TPtr(inner) => {
@@ -4225,6 +4313,75 @@ impl Parser {
                 let cast = if op == "conv" { CastOp::Conv } else { CastOp::Cast };
                 Ok(Inst::Cast { op: cast, dst, src })
             }
+            // a slice of a buffer: its header checked (the element size is
+            // the slice's), its capacity the length, its data the view
+            "slice" => {
+                let dty = scope.values[dst.0 as usize].ty;
+                let elem = self.slice_of(dty).ok_or_else(|| self.err(format!("slice gives a slice; {} is {}", scope.values[dst.0 as usize].name, self.tyname_of(dty))))?;
+                let p = self.expect_value(scope)?;
+                let (size, _) = self.layout_of(elem).unwrap();
+                let dname = scope.values[dst.0 as usize].name.clone();
+                let esz = self.hidden(scope, Type::I64, format!("{}_elem", dname), |v| Inst::Load { dst: v, addr: p, off: 0, index: None });
+                let want = self.hidden(scope, Type::I64, format!("{}_want", dname), |v| Inst::IConst { dst: v, imm: size as i128 });
+                let same = self.hidden(scope, Type::U1, format!("{}_same", dname), |v| Inst::ICmp { cond: Cond::Eq, dst: v, lhs: esz, rhs: want });
+                self.consts.push(Inst::Check { cond: same });
+                let cap = self.hidden(scope, Type::I64, format!("{}_cap", dname), |v| Inst::Load { dst: v, addr: p, off: 8, index: None });
+                let hdr = self.hidden(scope, Type::I64, format!("{}_hdr", dname), |v| Inst::IConst { dst: v, imm: 16 });
+                let raw = self.hidden(scope, Type::Ptr, format!("{}_raw", dname), |v| Inst::PtrAdd { dst: v, base: p, off: hdr });
+                let data_ty = self.field_type(dty, 0);
+                let data = self.hidden(scope, data_ty, format!("{}_data", dname), |v| Inst::Cast { op: CastOp::Cast, dst: v, src: raw });
+                Ok(Inst::Pack { dst, args: vec![data, cap] })
+            }
+            // a view of a slice: `view a, off, n`, checked to lie within it
+            "view" => {
+                let dty = scope.values[dst.0 as usize].ty;
+                let elem = self.slice_of(dty).ok_or_else(|| self.err(format!("view gives a slice; {} is {}", scope.values[dst.0 as usize].name, self.tyname_of(dty))))?;
+                let a = self.expect_value(scope)?;
+                if scope.values[a.0 as usize].ty != dty {
+                    return Err(self.err(format!("view: {} is {}, not {}", scope.values[a.0 as usize].name, self.tyname_of(scope.values[a.0 as usize].ty), self.tyname_of(dty))));
+                }
+                self.expect(Tok::Comma)?;
+                let off = self.parse_operand(scope, Some(Type::I64))?;
+                self.expect(Tok::Comma)?;
+                let n = self.parse_operand(scope, Some(Type::I64))?;
+                let (size, _) = self.layout_of(elem).unwrap();
+                let dname = scope.values[dst.0 as usize].name.clone();
+                let data0 = self.hidden(scope, self.field_type(dty, 0), format!("{}_from", dname), |v| Inst::Get { dst: v, src: a, field: 0 });
+                let len0 = self.hidden(scope, Type::I64, format!("{}_of", dname), |v| Inst::Get { dst: v, src: a, field: 1 });
+                let zero = self.hidden(scope, Type::I64, format!("{}_zero", dname), |v| Inst::IConst { dst: v, imm: 0 });
+                let off_ok = self.hidden(scope, Type::U1, format!("{}_off_ok", dname), |v| Inst::ICmp { cond: Cond::Ge, dst: v, lhs: off, rhs: zero });
+                self.consts.push(Inst::Check { cond: off_ok });
+                let n_ok = self.hidden(scope, Type::U1, format!("{}_n_ok", dname), |v| Inst::ICmp { cond: Cond::Ge, dst: v, lhs: n, rhs: zero });
+                self.consts.push(Inst::Check { cond: n_ok });
+                let end = self.hidden(scope, Type::I64, format!("{}_end", dname), |v| Inst::Bin { op: BinOp::IAdd, dst: v, lhs: off, rhs: n });
+                let fits = self.hidden(scope, Type::U1, format!("{}_fits", dname), |v| Inst::ICmp { cond: Cond::Le, dst: v, lhs: end, rhs: len0 });
+                self.consts.push(Inst::Check { cond: fits });
+                let sz = self.hidden(scope, Type::I64, format!("{}_size", dname), |v| Inst::IConst { dst: v, imm: size as i128 });
+                let bytes = self.hidden(scope, Type::I64, format!("{}_bytes", dname), |v| Inst::Bin { op: BinOp::IMul, dst: v, lhs: off, rhs: sz });
+                let raw0 = self.hidden(scope, Type::Ptr, format!("{}_raw0", dname), |v| Inst::Cast { op: CastOp::Cast, dst: v, src: data0 });
+                let raw = self.hidden(scope, Type::Ptr, format!("{}_raw", dname), |v| Inst::PtrAdd { dst: v, base: raw0, off: bytes });
+                let data_ty = self.field_type(dty, 0);
+                let data = self.hidden(scope, data_ty, format!("{}_data", dname), |v| Inst::Cast { op: CastOp::Cast, dst: v, src: raw });
+                Ok(Inst::Pack { dst, args: vec![data, n] })
+            }
+            "ptr" => {
+                let a = self.expect_value(scope)?;
+                let aty = scope.values[a.0 as usize].ty;
+                if self.slice_of(aty).is_none() {
+                    return Err(self.err(format!("ptr takes a slice; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(aty))));
+                }
+                let dty = scope.values[dst.0 as usize].ty;
+                let data_ty = self.field_type(aty, 0);
+                if dty == data_ty {
+                    return Ok(Inst::Get { dst, src: a, field: 0 });
+                }
+                if dty == Type::Ptr {
+                    let dname = scope.values[dst.0 as usize].name.clone();
+                    let typed = self.hidden(scope, data_ty, format!("{}_typed", dname), |v| Inst::Get { dst: v, src: a, field: 0 });
+                    return Ok(Inst::Cast { op: CastOp::Cast, dst, src: typed });
+                }
+                Err(self.err(format!("ptr of {} is {} or ptr; {} is {}", scope.values[a.0 as usize].name, self.tyname_of(data_ty), scope.values[dst.0 as usize].name, self.tyname_of(dty))))
+            }
             "pack" => {
                 let wants: Vec<Type> = match scope.values[dst.0 as usize].ty {
                     Type::Pack(i) | Type::Struct(i) => self.packs[i as usize].fields.iter().map(|(_, t)| *t).collect(),
@@ -4346,6 +4503,15 @@ impl Parser {
                 Ok(Inst::Scratch { dst, bytes })
             }
             "len" => {
+                // a slice's length, or a data item's
+                if let Some(Tok::Ident(w)) = self.peek().cloned() {
+                    if let Some(&v) = scope.value_ids.get(&w) {
+                        if self.slice_of(scope.values[v.0 as usize].ty).is_some() {
+                            self.pos += 1;
+                            return Ok(Inst::Get { dst, src: v, field: 1 });
+                        }
+                    }
+                }
                 let name = self.expect_ident()?;
                 let Some(d) = self.data.iter().find(|d| d.name == name) else {
                     self.pos -= 1;
@@ -4383,7 +4549,8 @@ impl Parser {
                 }
                 // ... or an integer: `simd_sum x` on an i32 is simd_sum(N)
                 // taking i(N)
-                if !scope.values[first.0 as usize].ty.is_pack() && !scope.values[first.0 as usize].ty.is_int() {
+                let fty0 = scope.values[first.0 as usize].ty;
+                if !fty0.is_pack() && !fty0.is_int() && self.slice_of(fty0).is_none() {
                     return Err(self.err(format!("unknown opcode '{}'", op)));
                 }
                 let callee = self.dispatch(op, scope.values[first.0 as usize].ty, scope.values[dst.0 as usize].ty)?;
@@ -4413,7 +4580,9 @@ impl Parser {
             if self.generics[g].name != op {
                 continue;
             }
-            let (Some(first), ret) = (self.generics[g].first_param.clone(), self.generics[g].ret.clone()) else {
+            // an operation defines a value: a generic with no result (a
+            // slice operation, `add c, a, b`) is not it
+            let (Some(first), Some(r)) = (self.generics[g].first_param.clone(), self.generics[g].ret.clone()) else {
                 continue;
             };
             let mut binds = Vec::new();
@@ -4421,10 +4590,8 @@ impl Parser {
             if !self.unify(&first, src, &mut binds, &mut tbinds) {
                 continue;
             }
-            if let Some(r) = ret {
-                if !self.unify(&r, dst, &mut binds, &mut tbinds) {
-                    continue;
-                }
+            if !self.unify(&r, dst, &mut binds, &mut tbinds) {
+                continue;
             }
             let params = self.generics[g].params.clone();
             let args: Option<Vec<i64>> = params
@@ -4483,6 +4650,57 @@ impl Parser {
         })
     }
 
+    /// is the next token a value of slice type?
+    fn next_value_is_slice(&self, scope: &FuncScope) -> bool {
+        match self.peek() {
+            Some(Tok::Ident(w)) => scope.value_ids.get(w).is_some_and(|&v| self.slice_of(scope.values[v.0 as usize].ty).is_some()),
+            _ => false,
+        }
+    }
+
+    /// the type of field k of a pack or struct type
+    fn field_type(&self, ty: Type, k: usize) -> Type {
+        match ty {
+            Type::Pack(i) | Type::Struct(i) => self.packs[i as usize].fields[k].1,
+            _ => ty,
+        }
+    }
+
+    /// the instance of a generic that the argument types choose — widths
+    /// and abstract types bound by every parameter, the most specific
+    /// definition of the name winning
+    fn choose_generic(&mut self, name: &str, atys: &[Type], want_result: Option<bool>) -> Result<String, ParseError> {
+        let mut best: Option<(u8, usize, Vec<i64>, Vec<(String, Type)>)> = None;
+        for g in 0..self.generics.len() {
+            if self.generics[g].name != name || self.generics[g].param_types.len() != atys.len() {
+                continue;
+            }
+            if want_result.is_some_and(|w| w != self.generics[g].ret.is_some()) {
+                continue;
+            }
+            let (mut binds, mut tbinds) = (Vec::new(), Vec::new());
+            let ptys = self.generics[g].param_types.clone();
+            if !ptys.iter().zip(atys).all(|(te, &t)| self.unify(te, t, &mut binds, &mut tbinds)) {
+                continue;
+            }
+            let params = self.generics[g].params.clone();
+            let wargs: Option<Vec<i64>> = params.iter().map(|p| binds.iter().find(|(n, _)| n == p).map(|(_, v)| *v).or_else(|| self.named(p))).collect();
+            if let Some(wargs) = wargs {
+                let level = tbinds.iter().map(|(n, _)| abstract_level(n).unwrap_or(1)).max().unwrap_or(0);
+                if best.as_ref().is_none_or(|b| level < b.0) {
+                    best = Some((level, g, wargs, tbinds));
+                }
+            }
+        }
+        match best {
+            Some((_, g, wargs, tbinds)) => self.request_instance_of(g, wargs, tbinds, None),
+            None => {
+                let names: Vec<String> = atys.iter().map(|&t| self.tyname_of(t)).collect();
+                Err(self.err(format!("no '{}' takes ({})", name, names.join(", "))))
+            }
+        }
+    }
+
     fn parse_plain_op(&mut self, op: &str, scope: &mut FuncScope) -> Result<Inst, ParseError> {
         match op {
             "store" => {
@@ -4503,6 +4721,20 @@ impl Parser {
             "check" => {
                 let cond = self.parse_operand(scope, Some(Type::U1))?;
                 Ok(Inst::Check { cond })
+            }
+            // an operation on a slice writes into it: `add c, a, b`,
+            // `mul c, a, 2.0`, `neg c, a`, `fill c, 0`, `copy c, a` — the
+            // library's (lib/slice.ssa), chosen by every operand's type
+            _ if !self.is_call(op) && self.generics.iter().any(|g| g.name == op) && self.next_value_is_slice(scope) => {
+                let first = self.expect_value(scope)?;
+                let elem = self.slice_of(scope.values[first.0 as usize].ty).unwrap();
+                let mut args = vec![first];
+                while self.eat(&Tok::Comma) {
+                    args.push(self.parse_operand(scope, Some(elem))?);
+                }
+                let atys: Vec<Type> = args.iter().map(|&a| scope.values[a.0 as usize].ty).collect();
+                let callee = self.choose_generic(op, &atys, Some(false))?;
+                Ok(Inst::Call { dsts: Vec::new(), callee, args })
             }
             _ if self.is_call(op) => {
                 let (callee, args) = self.parse_call_tail(op.to_string(), scope)?;
@@ -4786,6 +5018,13 @@ impl Parser {
                     Ok(true)
                 }
                 "store" | "check" => {
+                    let inst = self.parse_plain_op(&op, scope)?;
+                    self.emit(st, inst);
+                    self.expect(Tok::Newline)?;
+                    Ok(false)
+                }
+                // an operation on a slice, `add c, a, b`: a statement too
+                _ if self.generics.iter().any(|g| g.name == op) && self.next_value_is_slice(scope) => {
                     let inst = self.parse_plain_op(&op, scope)?;
                     self.emit(st, inst);
                     self.expect(Tok::Newline)?;

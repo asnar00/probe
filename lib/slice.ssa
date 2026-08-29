@@ -1,0 +1,477 @@
+; lib/slice.ssa — operations on slices. A slice `T[]` is a view into a
+; buffer: its data (a typed pointer) and its length; a buffer is memory
+; with a header — the element size and the capacity, a word each — then
+; the elements (`data buf: buffer(f32, 1024)`; `buffer_init` for one
+; carved at run time). `slice p` takes the whole buffer, checking the
+; element size; `view a, off, n` a part, checked to lie within; `len`,
+; `ptr` read the two words. An operation on slices is written like a
+; store — `add c, a, b`, `mul c, a, 2.0`, `neg c, a`, `fill c, 0`,
+; `copy c, a` — and writes into its first operand; a reduction —
+; `s: f32 = sum a` — gives a scalar. These bodies are the definitions:
+; a loop over the elements, one at a time, on every path. (A machine
+; with vector registers will take them in chunks: lib/chunk, next.)
+
+
+
+fn buffer_init(p: ptr, elem: i64, cap: i64) {
+    store elem, p
+    store cap, p, 8
+    ret
+}
+
+
+; --- add ---
+
+fn add(c: number[], a: number[], b: number[]) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    n2: i64 = len b
+    ok2: u1 = cmp.eq n, n2
+    check ok2
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    pb: ptr(number) = ptr b
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        y: number = load pb, i
+        z: number = add x, y
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn add(c: number[], a: number[], k: number) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        z: number = add x, k
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+; --- sub ---
+
+fn sub(c: number[], a: number[], b: number[]) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    n2: i64 = len b
+    ok2: u1 = cmp.eq n, n2
+    check ok2
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    pb: ptr(number) = ptr b
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        y: number = load pb, i
+        z: number = sub x, y
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn sub(c: number[], a: number[], k: number) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        z: number = sub x, k
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+; --- mul ---
+
+fn mul(c: number[], a: number[], b: number[]) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    n2: i64 = len b
+    ok2: u1 = cmp.eq n, n2
+    check ok2
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    pb: ptr(number) = ptr b
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        y: number = load pb, i
+        z: number = mul x, y
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn mul(c: number[], a: number[], k: number) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        z: number = mul x, k
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+; --- div ---
+
+fn div(c: number[], a: number[], b: number[]) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    n2: i64 = len b
+    ok2: u1 = cmp.eq n, n2
+    check ok2
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    pb: ptr(number) = ptr b
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        y: number = load pb, i
+        z: number = div x, y
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn div(c: number[], a: number[], k: number) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        z: number = div x, k
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+; --- min ---
+
+fn min(c: number[], a: number[], b: number[]) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    n2: i64 = len b
+    ok2: u1 = cmp.eq n, n2
+    check ok2
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    pb: ptr(number) = ptr b
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        y: number = load pb, i
+        z: number = min x, y
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn min(c: number[], a: number[], k: number) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        z: number = min x, k
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+; --- max ---
+
+fn max(c: number[], a: number[], b: number[]) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    n2: i64 = len b
+    ok2: u1 = cmp.eq n, n2
+    check ok2
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    pb: ptr(number) = ptr b
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        y: number = load pb, i
+        z: number = max x, y
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn max(c: number[], a: number[], k: number) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        z: number = max x, k
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+; --- neg ---
+
+fn neg(c: number[], a: number[]) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        z: number = neg x
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+; --- abs ---
+
+fn abs(c: number[], a: number[]) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        z: number = abs x
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+; --- sqrt ---
+
+fn sqrt(c: scalar[], a: scalar[]) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    pc: ptr(scalar) = ptr c
+    pa: ptr(scalar) = ptr a
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: scalar = load pa, i
+        z: scalar = sqrt x
+        store z, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+; --- copy, fill ---
+
+fn copy(c: number[], a: number[]) {
+    n: i64 = len c
+    n1: i64 = len a
+    ok1: u1 = cmp.eq n, n1
+    check ok1
+    pc: ptr(number) = ptr c
+    pa: ptr(number) = ptr a
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: number = load pa, i
+        store x, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+fn fill(c: number[], k: number) {
+    n: i64 = len c
+    pc: ptr(number) = ptr c
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        store k, pc, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret
+}
+
+; --- reductions: sum from zero, min and max from the first element ---
+
+fn sum(a: number[]) -> number {
+    n: i64 = len a
+    pa: ptr(number) = ptr a
+    s: number = loop(i: i64 = 0, acc: number = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break acc
+        }
+        x: number = load pa, i
+        acc2: number = add acc, x
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret s
+}
+
+fn min(a: number[]) -> number {
+    n: i64 = len a
+    some: u1 = cmp.gt n, 0
+    check some
+    pa: ptr(number) = ptr a
+    first: number = load pa, 0
+    s: number = loop(i: i64 = 1, acc: number = first) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break acc
+        }
+        x: number = load pa, i
+        acc2: number = min acc, x
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret s
+}
+
+fn max(a: number[]) -> number {
+    n: i64 = len a
+    some: u1 = cmp.gt n, 0
+    check some
+    pa: ptr(number) = ptr a
+    first: number = load pa, 0
+    s: number = loop(i: i64 = 1, acc: number = first) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break acc
+        }
+        x: number = load pa, i
+        acc2: number = max acc, x
+        i2: i64 = add i, 1
+        continue i2, acc2
+    }
+    ret s
+}

@@ -1,0 +1,131 @@
+; slices: `f32[]` is a view into a buffer — a typed pointer and a length,
+; several of which may look into one buffer — and an operation on
+; slices writes into its first operand (lib/slice.ssa). A buffer is a
+; header (element size, capacity) and the elements: `data b: buffer(f32,
+; 8)` here, `buffer_init` on memory carved at run time.
+
+;! axpy 0x40000000 -> 0x40900000, 0x41080000
+;! views -> 39, 48
+;! reduce -> 36, 18
+;! ints 3 -> 21, -21
+;! mismatch -> check
+;! outside -> check
+;! wrong_elem -> check
+;! runtime_buffer i64[0*6] 7 -> 21
+
+data fa: buffer(f32, 4)
+data fb: buffer(f32, 4)
+data fc: buffer(f32, 4)
+data ia: buffer(i32, 8)
+data ib: buffer(i32, 8)
+data i64s: buffer(i64, 4)
+
+; c = 2 a + b, over four floats: a = 1..4, b = 0.5
+fn axpy(two: f32) -> (f32, f32) {
+    pa: ptr = addr fa
+    pb: ptr = addr fb
+    pc: ptr = addr fc
+    a: f32[] = slice pa
+    b: f32[] = slice pb
+    c: f32[] = slice pc
+    ta: ptr(f32) = ptr a
+    store 1.0: f32, ta, 0
+    store 2.0: f32, ta, 1
+    store 3.0: f32, ta, 2
+    store 4.0: f32, ta, 3
+    fill b, 0.5
+    mul c, a, two
+    add c, c, b
+    tc: ptr(f32) = ptr c
+    r1: f32 = load tc, 1
+    r3: f32 = load tc, 3
+    ret r1, r3
+}
+
+; two views into one buffer: the halves; fill each, sum the whole
+fn views() -> (i32, i32) {
+    p: ptr = addr ia
+    all: i32[] = slice p
+    lo: i32[] = view all, 0, 4
+    hi: i32[] = view all, 4, 4
+    fill lo, 1
+    fill hi, 2
+    s: i32 = sum all
+    n: i64 = len hi
+    n32: i32 = conv n
+    t: i32 = mul s, n32
+    m: i32 = sub t, 9
+    ret m, t
+}
+
+fn reduce() -> (i32, i32) {
+    p: ptr = addr ib
+    a: i32[] = slice p
+    ta: ptr(i32) = ptr a
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, 8
+        if done {
+            break
+        }
+        i32v: i32 = conv i
+        v: i32 = add i32v, 1
+        store v, ta, i
+        i2: i64 = add i, 1
+        continue i2
+    }
+    s: i32 = sum a
+    lo: i32 = min a
+    hi: i32 = max a
+    lo10: i32 = mul lo, 10
+    lohi: i32 = add lo10, hi
+    ret s, lohi
+}
+
+fn ints(k: i64) -> (i64, i64) {
+    p: ptr = addr i64s
+    a: i64[] = slice p
+    fill a, k
+    b: i64[] = view a, 1, 3
+    mul b, b, 2
+    s: i64 = sum a
+    neg a, a
+    t: i64 = sum a
+    ret s, t
+}
+
+; lengths that differ fail a check
+fn mismatch() -> i32 {
+    p: ptr = addr ia
+    all: i32[] = slice p
+    part: i32[] = view all, 0, 3
+    add part, all, all
+    ret 0
+}
+
+; a view past the end fails a check
+fn outside() -> i32 {
+    p: ptr = addr ia
+    all: i32[] = slice p
+    bad: i32[] = view all, 6, 4
+    n: i64 = len bad
+    r: i32 = conv n
+    ret r
+}
+
+; a slice of the wrong element size fails a check
+fn wrong_elem() -> i32 {
+    p: ptr = addr ia
+    a: i64[] = slice p
+    n: i64 = len a
+    r: i32 = conv n
+    ret r
+}
+
+; a buffer made at run time in memory the caller gives
+fn runtime_buffer(mem: ptr, k: i64) -> i64 {
+    buffer_init(mem, 8, 3)
+    a: i64[] = slice mem
+    fill a, k
+    s: i64 = sum a
+    ret s
+}
