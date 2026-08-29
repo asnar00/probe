@@ -4,6 +4,24 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### Streams — `da8966d` · 2026-08-29
+
+```
+fn rules() -> (u8, u8) {
+    s: u8$ = fresh()
+    five(s)
+    t: time = micros(3600)
+    x: u8 = sample s, t
+    h: u8$ = sampling(s, 1)
+    y: u8 = sample h, t
+    ret x, y
+}
+```
+
+"A stream is a value over time — a partially resident array of `(t, v)` with monotonically increasing `t`... a bit like arrays which take `x[int]`, except streams are `x[time]`, with interpolation rules analogous to texture samplers. The metadata should live in the stream; we can have multiple streams looking onto the same data with different sampling rules. Let's use `T$` to mean a stream of `T`." So `u8$` is a reader's view of a ring: the ring is the producer's — a header saying how many items have been pushed and where the resident ones start, and two buffers, the values and their times — and the view carries the reader's position, `dt` and `t0`, a sampling rule and an edge rule; the ring's newer half slides down over the older when it fills, so the resident items are always a contiguous view and a `frame` or a `window` is a slice, chunks and all. Everything is `lib/stream.ssa` over `number$`: `push` on the producer's side, checking that time does not go back; `frame`, which gives what arrived since this reader looked and the reader moved on — a position threaded through a loop as an SSA value, which is a program over streams written as SSA; `sample` by the view's rule, nearest or hold, failing before the first item unless the view clamps; `window`, `count`, `latest`. Nine cases, three of them `-> check`: a sample before the beginning, a reader that fell behind the resident items, a time going backwards. What it took underneath was more than the library: a template may be bound by its result alone (`ring_values(r) -> number[]`), so the defining call now passes its result type into resolution; a chunk of a 128-bit `time` is the `time`; a `frame` returns fourteen words, so results past eight of a class go on the stack as arguments do; `simplify-cfg` was threading past a block whose parameter was used after it — a loop with two `break`s feeding the next loop, which the library's `window` has — and a genuine plain function with matching parameters must be called as written while a template's default instance defers to the types, which `control.ssa`'s own `sum` against `reduce`'s taught on riscv, where the driver calls by name. 948 on every path and both variants; next, the OS programs' handlers as producers, then regular streams.
+
+---
+
 ### The frictions — `cbaf920` · 2026-08-29
 
 ```
