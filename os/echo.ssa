@@ -15,10 +15,13 @@
 ; handler is `fn __trap`: `probe boot` gives it a frame that keeps the
 ; interrupted code's registers and a return that resumes it.
 ;
-; Input arrives by interrupt: `uart_irq_on` asks the board for one per
-; byte, `fn __irq` drains the port into a ring, and `read` sleeps
-; (`idle`) until a whole line is in the ring — so between keystrokes
-; the machine does nothing at all. On riscv64 every device interrupt
+; Input is a stream: `keys: u8$` (lib/stream.ssa), a ring the UART's
+; interrupt handler pushes each byte into with the time it arrived
+; (`uart_irq_on` asks the board for an interrupt per byte), and a
+; reader — kept across system calls in `reader` — that `read` moves
+; through one line at a time, sleeping (`idle`) until a newline is
+; among the unread bytes; so between keystrokes the machine does
+; nothing at all. On riscv64 every device interrupt
 ; is one cause, "external", and the controller names the source
 ; (`irq_claim`); on arm64 the controller names it outright; the two
 ; constants `irq_external` and `irq_uart` let one kernel do both. The
@@ -29,11 +32,13 @@ data echo = "echo: "
 data newline = "\n"
 data line: array(u8, 64)
 data calls: array(fn(u64, u64) -> u64, 3)
-; the receive ring: 256 bytes, a head the interrupt moves and a tail
-; the reader moves
-data ring: array(u8, 256)
-data head: array(u64, 1)
-data tail: array(u64, 1)
+; the input stream's ring: values, times, the header, and the reader's
+; view of it (a u8$, 56 bytes), kept between system calls
+data vb: buffer(u8, 512)
+data tb: buffer(time, 512)
+data rg: array(u64, 4)
+data reader: array(u64, 8)
+data start: array(u64, 1)
 data uart_irqs: array(u64, 1)
 data took = "took "
 data irqs = " interrupts\n"
@@ -75,6 +80,12 @@ fn irq_done(id: u32) {
 fn idle() {
     ret
 }
+fn now() -> u64 {
+    ret 0
+}
+fn hz() -> u64 {
+    ret 0
+}
 
 ; --- the kernel ---
 fn __start() {
@@ -88,6 +99,16 @@ fn __start() {
     h: fn(u64, u64, u64) -> u64 = addr __trap
     hp: ptr = cast h
     vectors(hp)
+    sp: ptr = addr start
+    t0: u64 = now()
+    store t0, sp
+    rg0: ptr = addr rg
+    a: ptr = addr vb
+    b: ptr = addr tb
+    ring_init(rg0, a, b)
+    keys: u8$ = stream rg0
+    rp: ptr = addr reader
+    store keys, rp
     uart_irq_on()
     irq_on()
     main()
@@ -95,7 +116,8 @@ fn __start() {
     ret
 }
 
-; a byte arrived: everything the port has goes into the ring
+; a byte arrived: everything the port has goes into the stream, each
+; byte with the time it was taken
 fn __irq() {
     id: u32 = irq_ack()
     ext: u32 = platform irq_external
@@ -124,8 +146,8 @@ fn drain() {
     status: ptr = ptradd uart, off
     mask: u8 = platform uart_ready_mask
     ready: u8 = platform uart_ready
-    rp: ptr = addr ring
-    hp: ptr = addr head
+    r: ptr = addr rg
+    keys: u8$ = stream r
     loop() {
         s: u8 = load status
         m: u8 = and s, mask
@@ -135,15 +157,25 @@ fn drain() {
             break
         }
         c: u8 = load uart
-        h: u64 = load hp
-        hi: i64 = conv h
-        slot: i64 = and hi, 255
-        store c, rp, slot, 1
-        h1: u64 = add h, 1
-        store h1, hp
+        t: time = now_time()
+        push keys, t, c
         continue
     }
     ret
+}
+; the machine's counter since boot, as exact seconds
+fn now_time() -> time {
+    sp: ptr = addr start
+    s: u64 = load sp
+    t: u64 = now()
+    e: u64 = sub t, s
+    ei: i64 = conv e
+    f: u64 = hz()
+    fi: i64 = conv f
+    c: time = seconds(ei)
+    p: time = period(fi)
+    r: time = mul c, p
+    ret r
 }
 
 ; every trap lands here with the trapped code's first three argument
@@ -188,58 +220,56 @@ fn sys_write(p: u64, n: u64) -> u64 {
     ret n
 }
 
-; read(p, n): a line from the ring into p, at most n bytes, the newline
-; dropped; returns the count. Sleeps until a line is there.
+; read(p, n): a line from the stream into p, at most n bytes, the
+; newline dropped; returns the count. Sleeps until a line is there,
+; then moves the reader past it and keeps it for the next call.
 fn sys_read(p: u64, n: u64) -> u64 {
     q: ptr = cast p
     m: i64 = conv n
-    loop() {
-        have: u1 = line_ready()
-        if have {
-            break
+    rp: ptr = addr reader
+    keys: u8$ = load rp
+    ; the unread bytes, up to and including a newline
+    line: i64 = loop() {
+        have: i64 = count keys
+        found: i64 = loop(i: i64 = 0) {
+            at_end: u1 = cmp.ge i, have
+            if at_end {
+                break -1
+            }
+            c: u8 = peek keys, i
+            nl: u1 = cmp.eq c, 10
+            if nl {
+                break i
+            }
+            i2: i64 = add i, 1
+            continue i2
+        }
+        ready: u1 = cmp.ge found, 0
+        if ready {
+            break found
         }
         idle()
         continue
     }
-    got: i64 = loop(i: i64 = 0) {
-        c: u8 = getc()
-        nl: u1 = cmp.eq c, 10
-        if nl {
-            break i
+    got: i64 = loop(k: i64 = 0, j: i64 = 0) {
+        at_nl: u1 = cmp.ge k, line
+        if at_nl {
+            break j
         }
-        full: u1 = cmp.ge i, m
+        b: u8 = peek keys, k
+        k2: i64 = add k, 1
+        full: u1 = cmp.ge j, m
         if full {
-            continue i
+            continue k2, j
         }
-        store c, q, i, 1
-        i2: i64 = add i, 1
-        continue i2
+        store b, q, j, 1
+        j2: i64 = add j, 1
+        continue k2, j2
     }
+    past: i64 = add line, 1
+    keys2: u8$ = advance(keys, past)
+    store keys2, rp
     r: u64 = conv got
-    ret r
-}
-; is there a newline between the tail and the head?
-fn line_ready() -> u1 {
-    rp: ptr = addr ring
-    hp: ptr = addr head
-    tp: ptr = addr tail
-    h: u64 = load hp
-    t0: u64 = load tp
-    r: u1 = loop(t: u64 = t0) {
-        at_end: u1 = cmp.ge t, h
-        if at_end {
-            break 0
-        }
-        ti: i64 = conv t
-        slot: i64 = and ti, 255
-        c: u8 = load rp, slot, 1
-        nl: u1 = cmp.eq c, 10
-        if nl {
-            break 1
-        }
-        t1: u64 = add t, 1
-        continue t1
-    }
     ret r
 }
 
@@ -266,18 +296,6 @@ fn putc(c: u8) {
     c32: u32 = conv c
     store c32, uart
     ret
-}
-; the next byte of the ring (there is one: read waited for a line)
-fn getc() -> u8 {
-    rp: ptr = addr ring
-    tp: ptr = addr tail
-    t: u64 = load tp
-    ti: i64 = conv t
-    slot: i64 = and ti, 255
-    c: u8 = load rp, slot, 1
-    t1: u64 = add t, 1
-    store t1, tp
-    ret c
 }
 fn say_bytes(p: ptr, n: i64) {
     loop(i: i64 = 0) {

@@ -4,6 +4,7 @@
 ; at one ring with their own rules. Here a program is its own producer.
 
 ;! frames -> 15, 5
+;! peeked -> 3, 3
 ;! frames_again -> 0, 5
 ;! samples -> 3, 3
 ;! rules -> 4, 3
@@ -59,6 +60,18 @@ fn frames_again() -> (i64, i64) {
     g: u8[], gt: time[], s3: u8$ = frame(s2)
     n: i64 = len g
     ret n, waiting
+}
+; a reader taking less than a frame: peek at the third unread item,
+; move on two, and the next frame is what is left
+fn peeked() -> (u8, i64) {
+    s: u8$ = fresh()
+    five(s)
+    two: i64 = const 2
+    x: u8 = peek s, two
+    s2: u8$ = advance(s, two)
+    f: u8[], ft: time[], s3: u8$ = frame(s2)
+    n: i64 = len f
+    ret x, n
 }
 ; nearest at 3.4 ms is the item at 3; hold at 3.9 ms is 3 too
 fn samples() -> (u8, u8) {

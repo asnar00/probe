@@ -30,7 +30,7 @@ printf 'hello\nbye\n' | cargo run -- boot os/echo.ssa arm
 > 
 ```
 
-`os/echo.ssa` is the second: a kernel that installs a trap handler (`fn __trap`, compiled with a frame that keeps the interrupted code's registers and returns by `eret`/`mret`) and serves write, read and exit through a `data` table of function values, and a program that uses nothing but those system calls (`svc`/`ecall`). Its input arrives by interrupt: `__irq` drains the port into a ring and `read` sleeps until a line is there, so between keystrokes the machine does nothing. The trap instructions are learned like every other; how a board takes a trap is a handful of platform rules and constants.
+`os/echo.ssa` is the second: a kernel that installs a trap handler (`fn __trap`, compiled with a frame that keeps the interrupted code's registers and returns by `eret`/`mret`) and serves write, read and exit through a `data` table of function values, and a program that uses nothing but those system calls (`svc`/`ecall`). Its input is a stream (`keys: u8$`, `lib/stream.ssa`): `__irq` pushes each byte the port has, with the time it arrived, and `read` — a reader kept across system calls — sleeps until a newline is among the unread bytes, so between keystrokes the machine does nothing. The trap instructions are learned like every other; how a board takes a trap is a handful of platform rules and constants.
 
 ```sh
 cargo run -- boot os/clock.ssa
@@ -58,7 +58,7 @@ c 142857 +3679
 
 `os/tasks.ssa` is the fourth: two tasks preempted by the timer. The interrupt handler is `fn __irq(sp: ptr) -> ptr` — handed the frame holding the interrupted task's whole register file, answering with the frame to resume — so a task is a stack and a place to resume, and a switch is two stores and two loads.
 
-`os/clock.ssa` is the third: it keeps time. The timer interrupt lands in `fn __irq` (a frame that keeps every register, float scratch included), each deadline is one step on from the last so the ticks never drift, and the elapsed count of the machine's counter becomes milliseconds exactly, through `lib/time.ssa`'s rationals. The generic timer and GICv2 on one board, the CLINT and `time` CSR on the other, are eight platform rules — some with typed temporaries (`irq_on() -> () with gic: ptr, v: u32`) for the addresses and values they need.
+`os/clock.ssa` is the third: it keeps time. The timer interrupt lands in `fn __irq` (a frame that keeps every register, float scratch included) and pushes the tick's time into a stream (`tick: time$`) the program reads a frame at a time, sleeping between; each deadline is one step on from the last so the ticks never drift, and the tenth tick's time — the machine's counter since boot — becomes milliseconds exactly, through `lib/time.ssa`'s rationals. The generic timer and GICv2 on one board, the CLINT and `time` CSR on the other, are eight platform rules — some with typed temporaries (`irq_on() -> () with gic: ptr, v: u32`) for the addresses and values they need.
 
 ## The IR
 
@@ -89,7 +89,7 @@ Every file compiled gets `lib/*.ssa` appended. Number formats are libraries, nev
 - `lib/time.ssa` — a `rational(64, 64)` of seconds with units: a sample period at 44100 Hz times 44100 is exactly one second.
 - `lib/decimal.ssa` — `decimal(N, S)`, an `i(N)` significand at scale 10^S: cents that add exactly.
 - `lib/wide.ssa` — division (and, on a core without a multiplier, multiplication) for wide integers.
-- `lib/stream.ssa` — streams: `T$` a reader's view of a ring of values over time; `push`, `frame`, `sample` by a rule (nearest, hold), `window`, `count`, `latest`; several views of one ring with their own rules.
+- `lib/stream.ssa` — streams: `T$` a reader's view of a ring of values over time; `push`, `frame`, `sample` by a rule (nearest, hold), `window`, `count`, `latest`, `peek`/`advance` for a reader taking less than a frame; several views of one ring with their own rules; the interrupt handlers of `os/echo.ssa` and `os/clock.ssa` are producers.
 - `lib/slice.ssa` — views: `T[]`, `T[,]`, `T[,,]` into a buffer (a typed pointer, a count and a stride per axis); `add c, a, b`, `mul c, a, k`, `fill`, `copy`, `sum`... over a rank-1 view as loops over chunks, over a higher rank row by row, a reduction one rank down per row — `chunk(T)`, a vector register's worth of T, or T itself where there are none — then the tail one at a time: vector instructions on NEON and RVV, the definition on every other path.
 - `lib/reduce.ssa` — across the lanes: `sum`, `min`, `max` of a vector, `all`, `any` of a mask, as pairwise trees; one instruction on NEON (`addv`, `fmaxv`...) and, for the integers, RVV (`vredsum`...).
 - `lib/int.ssa` — `min`, `max`, `abs`, `neg` over `number`, the top of the tower of abstract types: one body for every integer and number library (float keeps its own, for NaN), instructions where a platform has them (`cmp`/`csel` on arm64; `smin`/`umin`, `vmin`/`vminu`, `abs`, `neg` over vectors).

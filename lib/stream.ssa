@@ -236,3 +236,31 @@ fn window(s: number$, t1: time, t2: time) -> number[] {
     w: number[] = view vals, first, m
     ret w
 }
+
+; --- a reader taking less than a frame: the i-th unread item, and the
+; reader moved on by n ---
+fn peek(s: number$, i: i64) -> number {
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    base: i64 = load r, 8
+    pos: i64 = get s, pos
+    resident: u1 = cmp.ge pos, base
+    check resident
+    at: i64 = add pos, i
+    inside: u1 = cmp.lt at, pushed
+    check inside
+    vals: number[] = ring_values(r)
+    k: i64 = sub at, base
+    v: number = load vals, k
+    ret v
+}
+fn advance(s: number$, n: i64) -> number$ {
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    pos: i64 = get s, pos
+    pos2: i64 = add pos, n
+    inside: u1 = cmp.le pos2, pushed
+    check inside
+    s2: number$ = set s, pos, pos2
+    ret s2
+}

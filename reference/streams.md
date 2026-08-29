@@ -6,7 +6,7 @@ A stream is a value over time: a partially resident array of `(t, v)` with `t` m
 
 Six, each something the project or a real machine wants. For each: what arrives, how often, what the program does with it, what it must never do.
 
-**1. Keys (irregular, sparse, latency-bound).** The UART delivers a byte at a time, whenever a person types; `os/echo.ssa` today drains it in the interrupt handler into a ring and the program sleeps until a line is there. As a stream: `keys: u8~` with irregular `t`; the program reads it line by line (a window ended by a delimiter), and echoes. What matters: nothing is lost between interrupts (the ring has room — bounded, declared), and the consumer runs soon after the byte, not on a tick. Two items may carry the same `t` (a burst).
+**1. Keys (irregular, sparse, latency-bound).** The UART delivers a byte at a time, whenever a person types; `os/echo.ssa` pushes it from the interrupt handler into `keys: u8$` and `read` sleeps until a newline is among the unread bytes (done, 2026-08-29). As a stream: `keys: u8~` with irregular `t`; the program reads it line by line (a window ended by a delimiter), and echoes. What matters: nothing is lost between interrupts (the ring has room — bounded, declared), and the consumer runs soon after the byte, not on a tick. Two items may carry the same `t` (a burst).
 
 **2. The clock (regular, sparse).** `tick: ()~` at 20 Hz — a stream with no value, only times — is what `os/clock.ssa` and `os/tasks.ssa` are built on. As a stream it is the simplest regular one: `t_i = t_0 + i/20`, so `t` is implicit and the stream is an index. What matters: lateness is measured, not assumed (the sleep tests already print it); a missed tick is a fact the program can see, not a silent gap.
 
