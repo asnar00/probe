@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: types — `6421bc3` · 2026-09-08
+
+```
+type Vec =
+    float x, y, z = 0
+
+type Tristate = no | yes | maybe
+
+on (Vec v) = (Vec a) + (Vec b)
+    v = Vec(a.x + b.x, a.y + b.y, a.z + b.z)
+```
+
+Plan item 3 of milestone 0, section 4 of zero.md. A struct is the IR's `struct`, built by position (`Vec v(1, 2, 3)`), by name (`Vec v(z = 3, x = 1)`), in an expression (`Vec(...)`) or from its defaults alone, read with `v.x`; an enumeration is an unsigned integer wide enough for its cases with a `const` per case, compared with `==` and `!=` only; a `string` is `u8[]`, a view of bytes, a literal a `data` item made into a view by the prelude's `__str`, and `print` takes one; a conversion is a type applied to a value, `int(x)`. An operator on a declared type is a named function, `add_Vec(a, b)`, because the IR does not dispatch arithmetic on structs and plain functions cannot share a name — the one place the lowering departs from section 6's wording. The IR itself needed a fix: a struct's `int` fields are now resolved through the policy at declaration, as `float` fields were, so the layout is known and a later mention of the type finds the same entry (`suite/struct.ssa abstract_fields`; 959 native, 950 + 9 wasm). `suite/zero/types`: 15 cases, 30/30 on both paths with the other stores.
+
 ### zero: functions and expressions — `bff0df1` · 2026-09-08
 
 ```
