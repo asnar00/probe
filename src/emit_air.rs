@@ -158,6 +158,99 @@ fn unreachable_from_kernel(module: &Module, taken: &[String], natives: &Natives)
     seen.iter().map(|&s| !s).collect()
 }
 
+/// A kernel outgrowing always-inline: the size of every kept function
+/// once each call in it is inlined (its instructions plus its callees'
+/// inlined sizes, one copy per call site; a recursive edge counts the
+/// callee's own instructions once, since AIR runs no recursion), and
+/// how many call sites each has. The kernel's inlined size is the body
+/// Apple's compiler is given; past `INLINE_BUDGET` its compile service
+/// crashes (an `XPC_ERROR_CONNECTION_INTERRUPTED` about a minute in),
+/// and the functions whose inlining costs most are called instead
+fn inlined_sizes(module: &Module, out: &[bool], natives: &Natives) -> (Vec<u64>, Vec<u32>) {
+    let names: HashMap<&str, usize> = module.funcs.iter().enumerate().map(|(i, f)| (f.name.as_str(), i)).collect();
+    let n = module.funcs.len();
+    let mut sites = vec![0u32; n];
+    let mut callees: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, f) in module.funcs.iter().enumerate() {
+        if out[i] {
+            continue;
+        }
+        for inst in f.blocks.iter().flat_map(|b| &b.insts) {
+            if let Inst::Call { callee, .. } = inst {
+                if natives.get(callee).is_some() {
+                    continue;
+                }
+                if let Some(&j) = names.get(callee.as_str()) {
+                    if !out[j] {
+                        callees[i].push(j);
+                        sites[j] += 1;
+                    }
+                }
+            }
+        }
+    }
+    fn size(i: usize, module: &Module, callees: &[Vec<usize>], memo: &mut Vec<Option<u64>>, active: &mut Vec<bool>) -> u64 {
+        if let Some(s) = memo[i] {
+            return s;
+        }
+        let own = module.funcs[i].blocks.iter().map(|b| b.insts.len() as u64 + 1).sum::<u64>();
+        if active[i] {
+            return own;
+        }
+        active[i] = true;
+        let total = own + callees[i].iter().map(|&j| size(j, module, callees, memo, active)).sum::<u64>();
+        active[i] = false;
+        memo[i] = Some(total);
+        total
+    }
+    let mut memo = vec![None; n];
+    let mut active = vec![false; n];
+    let sizes = (0..n).map(|i| if out[i] { 0 } else { size(i, module, &callees, &mut memo, &mut active) }).collect();
+    (sizes, sites)
+}
+
+/// the inlined size of a kernel past which its functions are not all
+/// inlined. Measured on 8 September 2026 with PROBE_AIR_SIZE: the
+/// zero suite's `tasks` store crashed Apple's compile service at
+/// 757 288 (7 of its cases) and 1 549 334 (all 14) instructions and
+/// ran at 89 582 (1 case); its `lex` store ran fully inlined at
+/// 445 773, `streams` at 209 953; the largest kernel in probe's own
+/// suite is 183 388. 400 000 is about half the smallest crash
+const INLINE_BUDGET: u64 = 400_000;
+
+/// the kept functions to compile as calls rather than inline: none
+/// while the kernel fits the budget; past it, the functions whose
+/// inlining costs the most copies, greedily, until the estimate fits
+fn no_inline(module: &Module, out: &[bool], natives: &Natives) -> Vec<bool> {
+    let (sizes, sites) = inlined_sizes(module, out, natives);
+    let mut no = vec![false; module.funcs.len()];
+    let Some(k) = module.funcs.iter().position(|f| f.name == "__kernel") else { return no };
+    let mut total = sizes[k];
+    let report = std::env::var("PROBE_AIR_SIZE").is_ok();
+    if report {
+        eprintln!("PROBE_AIR_SIZE: the kernel inlined is {} instructions (budget {})", total, INLINE_BUDGET);
+    }
+    // the saving of calling f instead: every copy but one
+    let mut order: Vec<usize> = (0..module.funcs.len()).filter(|&i| !out[i] && sites[i] > 1).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(sizes[i] * (sites[i] as u64 - 1)));
+    if report {
+        for &i in order.iter().take(12) {
+            eprintln!("PROBE_AIR_SIZE:   {:<28} {:>8} inlined x {} sites", module.funcs[i].name, sizes[i], sites[i]);
+        }
+    }
+    for &i in &order {
+        if total <= INLINE_BUDGET {
+            break;
+        }
+        no[i] = true;
+        total = total.saturating_sub(sizes[i] * (sites[i] as u64 - 1));
+        if report {
+            eprintln!("PROBE_AIR_SIZE:   {} called, not inlined; about {} left", module.funcs[i].name, total);
+        }
+    }
+    no
+}
+
 /// the call graph, with an indirect call an edge to every
 /// address-taken function of its signature
 fn call_edges(module: &Module, taken: &[String], natives: Option<&Natives>) -> Vec<Vec<usize>> {
@@ -273,6 +366,7 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
 
     // every global value first: functions, dispatchers, the kernel,
     // the intrinsics rules use
+    let called = no_inline(module, &out, &natives);
     for (i, f) in module.funcs.iter().enumerate() {
         if out[i] {
             continue;
@@ -284,11 +378,14 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
         // which is what a GPU wants — and Apple's optimizer, left to
         // choose, miscompiled a 128-bit division whose callees had three
         // callers (upstream LLVM ran the same bitcode right; noinline
-        // was right too, and six times slower). PROBE_AIR_INLINE=
-        // none|noinline puts that back, for looking
+        // was right too, and six times slower). A kernel too big for
+        // that (`INLINE_BUDGET`) has its costliest functions `noinline`
+        // instead, so the choice is never Apple's. PROBE_AIR_INLINE=
+        // none|noinline puts the old forms back, for looking
         match std::env::var("PROBE_AIR_INLINE").as_deref() {
             Ok("noinline") => cx.m.functions[id].attrs.push(14),
             Ok("none") => {}
+            _ if called[i] => cx.m.functions[id].attrs.push(14),
             _ => cx.m.functions[id].attrs.push(2),
         }
         cx.fn_ids.insert(f.name.clone(), (id, fty));

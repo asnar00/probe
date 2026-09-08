@@ -18,9 +18,11 @@ A stream is a value over time. It is declared with `<<`, which pushes its first 
 - `sampled` and `windowed` declare a rate and read by time, `x$ at (t)` and `x$ from (t1) to (t2)`.
 - `tokens` and `tokens moved` push and read a stream of the struct `token`.
 - `logged` and `logged and read` push into and read the feature-scope stream `log$`.
+- `blocked` and `blocked regular` push a block, `x$ << block$`: a string into a stream of bytes, a list into a regular stream.
 
 ## rules
 - A declaration with `<<` or `at (n hz)` makes a stream; with `=`, a list or a range, a sequence. `frame` and `behind` give sequences.
+- `x$ << block$` pushes every item of a sequence, one push each at the clock's tick on a stream without a rate, the library's block push on a regular one.
 - `x$ << e while (c)`: the candidate is computed from the latest item, `x$` in the condition reads as the candidate, and it is pushed only when the condition holds.
 - `advance` and `frame` move the reader; inside a `loop` the loop carries the stream, and after it the variable holds the moved reader.
 - A stream of structs holds numbers and enumerations in its fields; `frame`, `behind`, `at` and `from`/`to` on one wait for sequences of structs.
@@ -48,6 +50,8 @@ A stream is a value over time. It is declared with `<<`, which pushes its first 
 >tokens moved() → 1252
 >logged() → 3300
 >logged and read() → 7
+>blocked() → 2105
+>blocked regular() → 33
 
 ## hostile
 `peek` on a sequence falls through to "no function named 'peek at'". `i$ << 3` on `int i$ = [1, 2]` is refused: "'i$' is a int[], not a stream: a stream is declared with `<<` or `at (n hz)`". `int f$ = frame t$` on a stream of structs is refused: "'frame' on a stream of structs: a sequence of structs is not in this milestone". `advance i$ by (1)` inside a `for` is refused: "move a stream inside a `loop`, which carries it". `x$ at (1 hz)` in an expression is refused: "a rate belongs on a stream's declaration". `peek i$ at (5)` past the unread items is a failed check from the library.

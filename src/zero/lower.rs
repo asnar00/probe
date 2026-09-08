@@ -141,6 +141,27 @@ pub struct FnInfo {
     pub params: Vec<(String, Ty)>,
     pub results: Vec<(String, Ty)>,
     pub feature: String,
+    /// a task (log 25): declared with `<<`, its result a stream it
+    /// produces and its `$` parameters streams it reads; in the IR its
+    /// output's reader comes first and `__hz` last, and it returns its
+    /// stream parameters moved on
+    pub task: bool,
+}
+
+/// a wiring at feature scope (log 25): one task call the scheduler runs
+/// into a feature-scope stream
+struct Node {
+    info: FnInfo,
+    /// the output stream variable
+    out: String,
+    /// the arguments in the parameters' order: a stream parameter's is
+    /// the name of a feature-scope stream
+    args: Vec<Expr>,
+    hz: i64,
+    feature: String,
+    file: String,
+    /// the wiring as written, for the IR's comment
+    text: String,
 }
 
 /// a declared type
@@ -192,14 +213,33 @@ data __nul: array(u8, 1)
 data __heap: array(u8, 65536)
 data __arena: array(i64, 3)
 
-; the store's virtual clock, in microseconds: what a push into a
-; stream without a rate is stamped with (moved by nothing yet)
-data __clock: array(i64, 1)
+; the store's virtual clock: an exact time, zero at every case, moved
+; by a rated task sleeping between its pushes and by nothing else; a
+; push into a stream without a rate is stamped with it in microseconds
+data __clock: array(time, 1)
+; the scheduler is running: a push from inside a task does not start it again
+data __running: array(i64, 1)
 
 fn __now() -> i64 {
     p: ptr = addr __clock
-    t: i64 = load p
-    ret t
+    c: time = load p
+    h: time = seconds(1000000)
+    x: time = mul c, h
+    k: i64 = conv x
+    ret k
+}
+
+; a task wired at a rate, after each push: the clock moves on one period
+fn __sleep(hz: i64) {
+    rated: u1 = cmp.gt hz, 0
+    if rated {
+        p: ptr = addr __clock
+        c: time = load p
+        d: time = period(hz)
+        c2: time = add c, d
+        store c2, p
+    }
+    ret
 }
 
 fn __out_len() -> i64 {
@@ -298,7 +338,7 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), news: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None };
+    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), news: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new() };
     // the front end's builtins, until item 11 declares them as platform functions
     l.funcs.push(FnInfo {
         key: "print".into(),
@@ -307,9 +347,10 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         params: vec![("s".into(), Ty::string())],
         results: Vec::new(),
         feature: String::new(),
+        task: false,
     });
-    // types first, then every signature, so a body may use what a later
-    // feature declares
+    // types first, then every signature, then the variables (a wiring
+    // names a task), so a body may use what a later feature declares
     for f in &store.features {
         for d in &f.code.decls {
             if let Decl::Type(t) = d {
@@ -319,10 +360,22 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     }
     for f in &store.features {
         for d in &f.code.decls {
-            match d {
-                Decl::Fn(fd) => l.declare(fd, &f.name, &f.code.file)?,
-                Decl::Type(_) => {}
-                Decl::Var(v) => l.declare_var(v, &f.name, &f.code.file)?,
+            if let Decl::Fn(fd) = d {
+                l.declare(fd, &f.name, &f.code.file)?;
+            }
+        }
+    }
+    for f in &store.features {
+        for d in &f.code.decls {
+            if let Decl::Var(v) = d {
+                l.declare_var(v, &f.name, &f.code.file)?;
+            }
+        }
+    }
+    for f in &store.features {
+        for d in &f.code.decls {
+            if let Decl::Var(v) = d {
+                l.collect_nodes(v, &f.name, &f.code.file)?;
             }
         }
     }
@@ -377,6 +430,9 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str) -> Result<Call, 
         return Err(lex::error(file, case.line, "a case calls a function"));
     };
     let (info, args) = find_function(&lowered.funcs, parts, &|_| false, file, case.line)?;
+    if info.task {
+        return Err(lex::error(file, case.line, format!("'{}' is a task: a case calls a function that reads its stream", info.key)));
+    }
     let mut vals = Vec::new();
     for (a, (_, ty)) in args.iter().zip(&info.params) {
         let v = match (&a.kind, ty) {
@@ -462,6 +518,23 @@ struct Lowerer {
     sstructs: std::collections::BTreeSet<String>,
     /// inside a push chain: what the stream's own name reads as
     push_read: Option<(String, PushRead)>,
+    /// the wirings at feature scope, in declaration order
+    nodes: Vec<Node>,
+    /// the feature-scope streams some node reads: a push into one from a
+    /// plain function is followed by `__run()`
+    node_inputs: std::collections::HashSet<String>,
+}
+
+/// what kind of body is being lowered: the scheduler runs after a push
+/// in a plain function only, and a task sleeps after a push into its
+/// own output (log 25)
+#[derive(Clone, PartialEq)]
+enum BodyKind {
+    Fn,
+    /// the output stream's name, and the IR name of the rate parameter
+    Task { out: String, hz: String },
+    Reset,
+    Node,
 }
 
 /// on the right of `<<` a stream's name is its latest item; in the
@@ -487,8 +560,12 @@ struct Var {
 
 /// a loop being lowered: what `break` and `continue` need
 struct LoopCtx {
-    /// the carried variables, in the header's order; empty for a `for`
+    /// the carried variables, in the header's order, then the streams
+    /// the body moves (log 23); empty for a `for`
     carried: Vec<String>,
+    /// how many of them the header declares: `continue (...)` gives
+    /// those, and a carried stream takes its current reader
+    explicit: usize,
     /// a `for`'s stepped variable: its name and the step (`add`/`sub`,
     /// the amount) — the item itself over a range, the index over a
     /// sequence
@@ -522,6 +599,7 @@ struct Body {
     /// how deep in structured blocks the next line is
     depth: usize,
     loops: Vec<LoopCtx>,
+    kind: BodyKind,
 }
 
 impl Body {
@@ -662,22 +740,42 @@ impl Lowerer {
     }
 
     fn declare(&mut self, f: &FnDecl, feature: &str, file: &str) -> Result<(), Error> {
-        if f.task {
-            return Err(lex::error(file, f.line, "tasks are not in this item yet"));
-        }
         if !f.platform.is_empty() {
             return Err(lex::error(file, f.line, "platform bodies are not in this item yet"));
         }
         let key = mangle(&f.name);
         let mut params = Vec::new();
         for p in f.params() {
-            params.push((p.name.clone(), self.ty(&p.ty, p.seq, file, p.line)?));
+            // a task's `$` parameters are the streams it reads (log 25)
+            let ty = if f.task && p.seq {
+                let elem = self.ty(&p.ty, false, file, p.line)?;
+                self.stream_ty(elem, false, file, p.line)?
+            } else {
+                self.ty(&p.ty, p.seq, file, p.line)?
+            };
+            params.push((p.name.clone(), ty));
         }
         let mut results = Vec::new();
+        if f.task {
+            let [r] = f.results.as_slice() else {
+                return Err(lex::error(file, f.line, "a task produces one stream: `on (T x$) << name (...)`"));
+            };
+            if !r.seq {
+                return Err(lex::error(file, f.line, format!("a task's result is the stream it produces: `on ({} {}$) << ...`", r.ty, r.name)));
+            }
+            let elem = self.ty(&r.ty, false, file, r.line)?;
+            results.push((r.name.clone(), self.stream_ty(elem, false, file, r.line)?));
+        }
         for r in &f.results {
+            if f.task {
+                break;
+            }
             results.push((r.name.clone(), self.ty(&r.ty, r.seq, file, r.line)?));
         }
         let operator = f.name.iter().any(|p| matches!(p, NamePart::Sym(_)));
+        if operator && f.task {
+            return Err(lex::error(file, f.line, "a task has a name, not a symbol"));
+        }
         let ir = if operator {
             // an operator on a declared type: named by the opcode and its
             // first operand's type, since the IR does not dispatch
@@ -704,7 +802,151 @@ impl Lowerer {
             }
             return Err(lex::error(file, f.line, "redefinition is not in this item yet"));
         }
-        self.funcs.push(FnInfo { key, ir, parts: f.name.clone(), params, results, feature: feature.to_string() });
+        self.funcs.push(FnInfo { key, ir, parts: f.name.clone(), params, results, feature: feature.to_string(), task: f.task });
+        Ok(())
+    }
+
+    /// the task a phrase calls, its arguments, and the rate after it —
+    /// `count down from (10) at (1 hz)` — or None when the phrase is not
+    /// a task call (the ordinary call path then reports what it is)
+    fn task_call(&self, e: &Expr, vars: Option<&HashMap<String, Var>>, file: &str) -> Result<Option<(FnInfo, Vec<Expr>, i64)>, Error> {
+        let ExprKind::Phrase(parts) = &e.kind else { return Ok(None) };
+        let (parts, hz) = match parts.as_slice() {
+            [rest @ .., Part::Word(at), Part::Args(a)] if at == "at" && a.len() == 1 && matches!(&a[0].value.kind, ExprKind::Unit(..)) => (rest, Some(&a[0].value)),
+            _ => (parts.as_slice(), None),
+        };
+        let is_var = |w: &str| vars.is_some_and(|v| v.contains_key(w)) || self.fvar(w).is_some();
+        let Ok((info, args)) = find_function(&self.funcs, parts, &is_var, file, e.line) else {
+            return Ok(None);
+        };
+        if !info.task {
+            return Ok(None);
+        }
+        let hz = match hz {
+            Some(r) => self.rate_hz(r, file)?,
+            None => 0,
+        };
+        Ok(Some((info.clone(), args, hz)))
+    }
+
+    /// the stream variables a task call moves: its arguments at the
+    /// task's stream parameters
+    fn task_streams(&self, parts: &[Part]) -> Vec<String> {
+        let e = Expr { kind: ExprKind::Phrase(parts.to_vec()), line: 0 };
+        let Ok(Some((info, args, _))) = self.task_call(&e, None, "") else { return Vec::new() };
+        args.iter()
+            .zip(&info.params)
+            .filter_map(|(a, (_, t))| match (&a.kind, t) {
+                (ExprKind::Seq(n), Ty::Stream(..)) => Some(n.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Run a task now (log 25): into the stream `out`, with `__hz` the
+    /// rate given, the enclosing task's, or none; each stream argument
+    /// is a stream variable, and takes the reader the task returns
+    fn run_task(&mut self, info: &FnInfo, args: &[Expr], hz: i64, out: &Val, b: &mut Body, line: usize) -> Result<(), Error> {
+        let file = b.file.clone();
+        let Ty::Stream(want, _) = &info.results[0].1 else { unreachable!() };
+        let Ty::Stream(have, _) = &out.ty else { unreachable!() };
+        if want != have {
+            return Err(lex::error(&file, line, format!("'{}' produces {} and '{}' holds {}", info.key, want.ir(), out.text, have.ir())));
+        }
+        let mut ops = vec![out.text.clone()];
+        let mut moved: Vec<(String, Ty)> = Vec::new();
+        for (a, (pname, pty)) in args.iter().zip(&info.params) {
+            if let Ty::Stream(pe, _) = pty {
+                let ExprKind::Seq(n) = &a.kind else {
+                    return Err(lex::error(&file, a.line, format!("'{}' reads '{}$' as a stream: give it a stream variable", info.key, pname)));
+                };
+                let Some(Ty::Stream(ae, _)) = self.stream_var(n, b) else {
+                    return Err(lex::error(&file, a.line, format!("'{}$' is not a stream: '{}' reads one here", n, info.key)));
+                };
+                if ae != *pe {
+                    return Err(lex::error(&file, a.line, format!("'{}' reads a stream of {}, '{}$' holds {}", info.key, pe.ir(), n, ae.ir())));
+                }
+                let v = self.lower_expr(&Expr { kind: ExprKind::Name(n.clone()), line: a.line }, None, b, None)?;
+                if b.vars.contains_key(n) {
+                    b.assignable(n, a.line)?;
+                }
+                ops.push(v.text);
+                moved.push((n.clone(), v.ty));
+            } else {
+                ops.push(self.plain_arg(info, a, pty, b)?);
+            }
+        }
+        ops.push(match (&b.kind, hz) {
+            (BodyKind::Task { hz: h, .. }, 0) => h.clone(),
+            _ => hz.to_string(),
+        });
+        // the moved readers: a local's next version, a feature variable's setter
+        let mut defs = Vec::new();
+        let mut sets = Vec::new();
+        for (n, ty) in &moved {
+            if b.vars.contains_key(n) {
+                let ir = b.define(n, ty.clone());
+                defs.push(format!("{}: {}", ir, ty.ir()));
+            } else {
+                let t = b.tmp();
+                sets.push((n.clone(), t.clone()));
+                defs.push(format!("{}: {}", t, ty.ir()));
+            }
+        }
+        let call = format!("{}({})", info.ir, ops.join(", "));
+        if defs.is_empty() {
+            b.line(&call);
+        } else {
+            b.line(&format!("{} = {}", defs.join(", "), call));
+        }
+        for (n, t) in sets {
+            b.line(&format!("__set_{}({})", n, t));
+        }
+        Ok(())
+    }
+
+    /// The nodes a feature-scope declaration wires (log 25): `T x$ =
+    /// task(...)`, or task calls in a `<<` chain after its pushed items
+    fn collect_nodes(&mut self, v: &super::syntax::VarDecl, feature: &str, file: &str) -> Result<(), Error> {
+        let calls: Vec<&Expr> = match &v.init {
+            Some(Init::Value(e)) if self.task_call(e, None, file)?.is_some() => vec![e],
+            Some(Init::Pushes { items, cond }) => {
+                let mut first = None;
+                for (i, e) in items.iter().enumerate() {
+                    if self.task_call(e, None, file)?.is_some() {
+                        first = Some(i);
+                        break;
+                    }
+                }
+                let Some(first) = first else { return Ok(()) };
+                if cond.is_some() {
+                    return Err(lex::error(file, v.line, "a task call is not repeated with `while`: the task's own chain says when it stops"));
+                }
+                items[first..].iter().collect()
+            }
+            _ => return Ok(()),
+        };
+        for e in calls {
+            let Some((info, args, hz)) = self.task_call(e, None, file)? else {
+                return Err(lex::error(file, e.line, "a value pushed after a task call at feature scope: a chain's items come before its tasks"));
+            };
+            for (a, (pname, pty)) in args.iter().zip(&info.params) {
+                if let Ty::Stream(pe, _) = pty {
+                    let ExprKind::Seq(n) = &a.kind else {
+                        return Err(lex::error(file, a.line, format!("'{}' reads '{}$' as a stream: wire a feature-scope stream to it", info.key, pname)));
+                    };
+                    match self.fvar(n).map(|f| f.ty.clone()) {
+                        Some(Ty::Stream(ae, _)) if ae == *pe => {}
+                        Some(Ty::Stream(ae, _)) => return Err(lex::error(file, a.line, format!("'{}' reads a stream of {}, '{}$' holds {}", info.key, pe.ir(), n, ae.ir()))),
+                        Some(t) => return Err(lex::error(file, a.line, format!("'{}$' is a {}, not a stream: a stream is declared with `<<` or `at (n hz)`", n, t.ir()))),
+                        None => return Err(lex::error(file, a.line, format!("'{}$' is not a feature-scope stream", n))),
+                    }
+                    self.node_inputs.insert(n.clone());
+                }
+            }
+            let text = format!("{} {}$ {} {}", v.ty, v.name, if matches!(v.init, Some(Init::Value(_))) { "=" } else { "<<" }, phrase_text(e));
+            self.nodes.push(Node { info, out: v.name.clone(), args, hz, feature: feature.to_string(), file: file.to_string(), text });
+        }
         Ok(())
     }
 
@@ -719,7 +961,7 @@ impl Lowerer {
         if v.scope.len() > 1 {
             return Err(lex::error(file, v.line, "a variable has one scope word: static, device or group"));
         }
-        let ty = self.decl_ty(v, file)?;
+        let ty = self.decl_ty(v, None, file)?;
         self.fvars.push(FVar {
             name: v.name.clone(),
             ty,
@@ -734,17 +976,37 @@ impl Lowerer {
         self.fvars.iter().find(|f| f.name == name)
     }
 
-    /// the context struct, its storage, its accessors, and
-    /// `__zero_reset`, which puts every variable's initial value in it
+    /// the context struct, its storage, its accessors, `__zero_reset`,
+    /// which puts every variable's initial value in it, and the
+    /// scheduler with a function per node (log 25)
     fn emit_context(&mut self, store: &Store) -> Result<(), Error> {
-        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new() };
+        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Reset };
         b.line("q: ptr = addr __out_n");
         b.line("store 0: i64, q");
         b.line("a: ptr = addr __arena");
         b.line("h: ptr = addr __heap");
         b.line("arena_init(a, h, 65536)");
         b.line("k: ptr = addr __clock");
-        b.line("store 0: i64, k");
+        b.line("z: time = seconds(0)");
+        b.line("store z, k");
+        b.line("r: ptr = addr __running");
+        b.line("store 0: i64, r");
+        // a node's state: its own reader of each input, and whether it
+        // has finished, as fields after the variables
+        for (k, node) in self.nodes.iter().enumerate() {
+            let mut fields = Vec::new();
+            for (a, (pname, pty)) in node.args.iter().zip(&node.info.params) {
+                if let (ExprKind::Seq(_), Ty::Stream(..)) = (&a.kind, pty) {
+                    fields.push((format!("__node{}_{}", k + 1, pname), pty.clone()));
+                    // how many items the ring had when the node last ran
+                    fields.push((format!("__node{}_{}_seen", k + 1, pname), Ty::Num("i64".into())));
+                }
+            }
+            fields.push((format!("__node{}_fin", k + 1), Ty::Bool));
+            for (name, ty) in fields {
+                self.fvars.push(FVar { name, ty, scope: "node".into(), merge: "last".into(), feature: node.feature.clone() });
+            }
+        }
         if !self.fvars.is_empty() {
             let mut fields = Vec::new();
             self.type_lines.push(String::new());
@@ -757,6 +1019,7 @@ impl Lowerer {
             self.data.push("data __ctx_mem: array(__ctx, 1)".into());
             // the initial values, in composition order
             let mut inits = Vec::new();
+            let mut init_of: HashMap<String, String> = HashMap::new();
             for feat in &store.features {
                 for d in &feat.code.decls {
                     let Decl::Var(v) = d else { continue };
@@ -770,8 +1033,14 @@ impl Lowerer {
                             };
                             let s = self.make_stream(&ty, hz, &mut b, None)?;
                             match &v.init {
-                                Some(Init::Pushes { items, cond }) => self.lower_pushes(&v.name, &s, items, cond.as_ref(), &mut b)?,
+                                Some(Init::Pushes { items, cond }) => {
+                                    // the items before the first task call
+                                    // are pushed here; the calls are nodes
+                                    let n = items.iter().position(|e| matches!(self.task_call(e, None, &b.file), Ok(Some(_)))).unwrap_or(items.len());
+                                    self.lower_pushes(&v.name, &s, &items[..n], cond.as_ref(), &mut b)?;
+                                }
                                 None => {}
+                                Some(Init::Value(_)) => {}
                                 Some(_) => return Err(lex::error(&b.file, v.line, "a stream is filled with `<<`")),
                             }
                             s
@@ -792,16 +1061,31 @@ impl Lowerer {
                         }
                         Some(Init::Pushes { .. }) => unreachable!(),
                     };
+                    init_of.insert(v.name.clone(), val.text.clone());
                     inits.push(val.text);
                 }
+            }
+            // a node's readers start where its inputs' rings start (a
+            // reader is a value: a copy is its own position)
+            for node in &self.nodes {
+                for (a, (_, pty)) in node.args.iter().zip(&node.info.params) {
+                    if let (ExprKind::Seq(n), Ty::Stream(..)) = (&a.kind, pty) {
+                        inits.push(init_of[n].clone());
+                        inits.push("0".into());
+                    }
+                }
+                inits.push("0".into());
             }
             let c = b.tmp();
             b.line(&format!("{}: __ctx = pack {}", c, inits.join(", ")));
             b.line("p: ptr = addr __ctx_mem");
             b.line(&format!("store {}, p", c));
         }
+        if !self.nodes.is_empty() {
+            b.line("__run()");
+        }
         b.line("ret");
-        writeln!(self.out, "\n; before every case: the print buffer emptied, the variables at their initial values").unwrap();
+        writeln!(self.out, "\n; before every case: the print buffer emptied, the variables at their initial values{}", if self.nodes.is_empty() { "" } else { ", the nodes run" }).unwrap();
         writeln!(self.out, "fn __zero_reset() {{").unwrap();
         self.out.push_str(&b.out);
         self.out.push_str("}\n");
@@ -810,7 +1094,151 @@ impl Lowerer {
             writeln!(self.out, "\nfn __get_{}() -> {} {{\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    v: {} = get c, {}\n    ret v\n}}", f.name, t, t, f.name).unwrap();
             writeln!(self.out, "\nfn __set_{}(v: {}) {{\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    c2: __ctx = set c, {}, v\n    store c2, p\n    ret\n}}", f.name, t, f.name).unwrap();
         }
+        let nodes = std::mem::take(&mut self.nodes);
+        for (k, node) in nodes.iter().enumerate() {
+            self.emit_node(k + 1, node)?;
+        }
+        if !nodes.is_empty() {
+            writeln!(self.out, "\n; the scheduler (log 25): passes over the nodes in declaration order until a pass runs nothing").unwrap();
+            writeln!(self.out, "fn __run() {{\n    p: ptr = addr __running\n    busy: i64 = load p\n    idle: u1 = cmp.eq busy, 0\n    if idle {{\n        store 1: i64, p\n        loop() {{").unwrap();
+            let mut any = String::new();
+            for k in 1..=nodes.len() {
+                writeln!(self.out, "            r{}: u1 = __node{}()", k, k).unwrap();
+                if k == 1 {
+                    any = "r1".into();
+                } else {
+                    writeln!(self.out, "            any{}: u1 = or {}, r{}", k, any, k).unwrap();
+                    any = format!("any{}", k);
+                }
+            }
+            writeln!(self.out, "            if {} {{\n                continue\n            }} else {{\n                break\n            }}\n        }}\n        store 0: i64, p\n    }}\n    ret\n}}", any).unwrap();
+        }
+        self.nodes = nodes;
         Ok(())
+    }
+
+    /// `fn __nodeK() -> u1`: run the node when it is pending, and say
+    /// whether it ran. Pending: an input has more items than it had
+    /// when the node last ran (a node may leave what it cannot take yet,
+    /// a partial token, unread), or has ended and the node has not run
+    /// since; a node with no inputs, once. After a run the node is
+    /// finished when all its inputs have ended.
+    fn emit_node(&mut self, k: usize, node: &Node) -> Result<(), Error> {
+        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: node.file.clone(), depth: 0, loops: Vec::new(), kind: BodyKind::Node };
+        b.line(&format!("fin: u1 = __get___node{}_fin()", k));
+        b.line("notfin: u1 = xor fin, 1");
+        let mut readers = Vec::new();
+        let mut pending: Option<String> = None;
+        for (a, (pname, pty)) in node.args.iter().zip(&node.info.params) {
+            let Ty::Stream(..) = pty else { continue };
+            let r = b.tmp();
+            b.line(&format!("{}: {} = __get___node{}_{}()", r, pty.ir(), k, pname));
+            let rv = Val { text: r.clone(), ty: pty.clone(), literal: false };
+            let first = self.first_reader(&rv, &mut b);
+            let pushed = self.pushed_of(&first, &mut b);
+            let seen = b.tmp();
+            b.line(&format!("{}: i64 = __get___node{}_{}_seen()", seen, k, pname));
+            let some = b.tmp();
+            b.line(&format!("{}: u1 = cmp.gt {}, {}", some, pushed, seen));
+            let e = b.tmp();
+            b.line(&format!("{}: u1 = ended({})", e, first));
+            let en = b.tmp();
+            b.line(&format!("{}: u1 = and {}, notfin", en, e));
+            let p = b.tmp();
+            b.line(&format!("{}: u1 = or {}, {}", p, some, en));
+            pending = Some(match pending {
+                None => p,
+                Some(q) => {
+                    let pq = b.tmp();
+                    b.line(&format!("{}: u1 = or {}, {}", pq, q, p));
+                    pq
+                }
+            });
+            readers.push((pname.clone(), r, pty.clone(), a.line));
+        }
+        let pending = pending.unwrap_or_else(|| "notfin".into());
+        b.line(&format!("ran: u1 = if {} {{", pending));
+        b.depth += 1;
+        let out = self.read_fvar(&node.out, &mut b, None);
+        let mut ops = vec![out.text.clone()];
+        let mut ri = 0;
+        for (a, (_, pty)) in node.args.iter().zip(&node.info.params) {
+            if let Ty::Stream(..) = pty {
+                ops.push(readers[ri].1.clone());
+                ri += 1;
+            } else {
+                ops.push(self.plain_arg(&node.info, a, pty, &mut b)?);
+            }
+        }
+        ops.push(node.hz.to_string());
+        let call = format!("{}({})", node.info.ir, ops.join(", "));
+        let mut moved = Vec::new();
+        for (_, _, ty, _) in &readers {
+            let r2 = b.tmp();
+            moved.push(format!("{}: {}", r2, ty.ir()));
+        }
+        if moved.is_empty() {
+            b.line(&call);
+        } else {
+            b.line(&format!("{} = {}", moved.join(", "), call));
+        }
+        let mut done: Option<String> = None;
+        for ((pname, _, ty, _), m) in readers.iter().zip(&moved) {
+            let r2 = m.split(':').next().unwrap().to_string();
+            b.line(&format!("__set___node{}_{}({})", k, pname, r2));
+            let first = self.first_reader(&Val { text: r2, ty: ty.clone(), literal: false }, &mut b);
+            let pushed = self.pushed_of(&first, &mut b);
+            b.line(&format!("__set___node{}_{}_seen({})", k, pname, pushed));
+            let e = b.tmp();
+            b.line(&format!("{}: u1 = ended({})", e, first));
+            done = Some(match done {
+                None => e,
+                Some(d) => {
+                    let de = b.tmp();
+                    b.line(&format!("{}: u1 = and {}, {}", de, d, e));
+                    de
+                }
+            });
+        }
+        b.line(&format!("__set___node{}_fin({})", k, done.unwrap_or_else(|| "1".into())));
+        b.line("yield 1");
+        b.depth -= 1;
+        b.line("} else {");
+        b.depth += 1;
+        b.line("yield 0");
+        b.depth -= 1;
+        b.line("}");
+        b.line("ret ran");
+        writeln!(self.out, "\n; node {}: {} — run when an input has more than the node has seen, or has ended and the node has not run since", k, node.text).unwrap();
+        writeln!(self.out, "fn __node{}() -> u1 {{", k).unwrap();
+        self.out.push_str(&b.out);
+        self.out.push_str("}\n");
+        Ok(())
+    }
+
+    /// how many items a reader's ring has received: its position plus
+    /// what is unread
+    fn pushed_of(&mut self, reader: &str, b: &mut Body) -> String {
+        let (p, t) = (b.tmp(), b.tmp());
+        b.line(&format!("{}: i64, {}: i64 = position({})", p, t, reader));
+        let n = b.tmp();
+        b.line(&format!("{}: i64 = count {}", n, reader));
+        let pushed = b.tmp();
+        b.line(&format!("{}: i64 = add {}, {}", pushed, p, n));
+        pushed
+    }
+
+    /// a task's plain argument, lowered against its parameter
+    fn plain_arg(&mut self, info: &FnInfo, a: &Expr, pty: &Ty, b: &mut Body) -> Result<String, Error> {
+        let file = b.file.clone();
+        let mut v = self.lower_expr(a, Some(pty), b, None)?;
+        if v.literal && fits_literal(&v, pty) {
+            v.ty = pty.clone();
+        }
+        if !fits(&v.ty, pty) {
+            return Err(lex::error(&file, a.line, format!("'{}' wants a {} here, given a {}", info.key, pty.ir(), v.ty.ir())));
+        }
+        Ok(v.text)
     }
 
     /// a feature variable read: a call to its getter
@@ -834,32 +1262,45 @@ impl Lowerer {
     fn lower_fn(&mut self, f: &FnDecl, file: &str) -> Result<(), Error> {
         let key = mangle(&f.name);
         let info = self.funcs.iter().find(|g| g.key == key && g.parts == f.name && g.params.len() == f.params().count()).unwrap().clone();
-        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: info.results.clone(), file: file.to_string(), depth: 0, loops: Vec::new() };
+        // a task's IR results are its stream parameters, moved on (log 25)
+        let results: Vec<(String, Ty)> = if info.task { info.params.iter().filter(|(_, t)| matches!(t, Ty::Stream(..))).cloned().collect() } else { info.results.clone() };
+        let kind = if info.task { BodyKind::Task { out: info.results[0].0.clone(), hz: "__hz".into() } } else { BodyKind::Fn };
+        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: results.clone(), file: file.to_string(), depth: 0, loops: Vec::new(), kind };
         let mut sig = format!("fn {}(", info.ir);
-        for (i, (n, t)) in info.params.iter().enumerate() {
+        let mut sig_params: Vec<(String, Ty)> = Vec::new();
+        if info.task {
+            sig_params.push(info.results[0].clone());
+        }
+        sig_params.extend(info.params.iter().cloned());
+        if info.task {
+            sig_params.push(("__hz".into(), Ty::Num("i64".into())));
+        }
+        for (i, (n, t)) in sig_params.iter().enumerate() {
             if i > 0 {
                 sig.push_str(", ");
             }
             write!(sig, "{}: {}", n, t.ir()).unwrap();
             if b.vars.contains_key(n) {
-                return Err(lex::error(file, f.line, format!("parameter '{}' is named twice", n)));
+                return Err(lex::error(file, f.line, format!("parameter '{}' is named twice{}", n, if info.task { " (a task's result is its first parameter)" } else { "" })));
             }
             b.define(n, t.clone());
         }
         sig.push(')');
-        match info.results.len() {
+        match results.len() {
             0 => {}
-            1 => write!(sig, " -> {}", info.results[0].1.ir()).unwrap(),
+            1 => write!(sig, " -> {}", results[0].1.ir()).unwrap(),
             _ => {
-                let ts: Vec<String> = info.results.iter().map(|(_, t)| t.ir()).collect();
+                let ts: Vec<String> = results.iter().map(|(_, t)| t.ir()).collect();
                 write!(sig, " -> ({})", ts.join(", ")).unwrap();
             }
         }
-        for (n, t) in &info.results {
-            if b.vars.contains_key(n) {
-                return Err(lex::error(file, f.line, format!("result '{}' is also a parameter, or named twice", n)));
+        if !info.task {
+            for (n, t) in &results {
+                if b.vars.contains_key(n) {
+                    return Err(lex::error(file, f.line, format!("result '{}' is also a parameter, or named twice", n)));
+                }
+                b.declare(n, t.clone());
             }
-            b.declare(n, t.clone());
         }
         writeln!(self.out, "{} {{", sig).unwrap();
         let terminated = self.lower_block(&f.body, &mut b)?;
@@ -1022,7 +1463,7 @@ impl Lowerer {
         // a stream the body moves (`advance`, `frame`) is carried too: its
         // position threads through the loop as an ordinary value (log 23)
         let mut moved = Vec::new();
-        moved_streams(body, &mut moved);
+        moved_streams(body, &mut moved, &|parts| self.task_streams(parts));
         for n in moved {
             if carried.contains(&n) {
                 continue;
@@ -1036,7 +1477,7 @@ impl Lowerer {
             }
         }
         // the carried variables are declared inside the loop
-        b.loops.push(LoopCtx { carried: carried.clone(), item: None, loaded: None, breaks: 0 });
+        b.loops.push(LoopCtx { carried: carried.clone(), explicit: vars.len(), item: None, loaded: None, breaks: 0 });
         let mut hdr = Vec::new();
         let inner = b.loops.len();
         for (n, ty, init) in &header {
@@ -1173,7 +1614,7 @@ impl Lowerer {
             b.line("}");
             ("add", step, None)
         };
-        b.loops.push(LoopCtx { carried: Vec::new(), item: Some((var.to_string(), op, step.clone())), loaded: None, breaks: 1 });
+        b.loops.push(LoopCtx { carried: Vec::new(), explicit: 0, item: Some((var.to_string(), op, step.clone())), loaded: None, breaks: 1 });
         let x = b.define(var, ty.clone());
         let before = b.vars.clone();
         let start = b.out.len();
@@ -1242,7 +1683,7 @@ impl Lowerer {
         let n = b.tmp();
         b.line(&format!("{}: i64 = len {}", n, sv.text));
         let k = b.tmp();
-        b.loops.push(LoopCtx { carried: Vec::new(), item: Some((k.clone(), "add", "1".into())), loaded: Some(var.to_string()), breaks: 1 });
+        b.loops.push(LoopCtx { carried: Vec::new(), explicit: 0, item: Some((k.clone(), "add", "1".into())), loaded: Some(var.to_string()), breaks: 1 });
         let depth = b.loops.len();
         b.vars.insert(k.clone(), Var { ir: k.clone(), ty: Ty::Num("i64".into()), set: true, loop_depth: depth });
         let before = b.vars.clone();
@@ -1419,10 +1860,11 @@ impl Lowerer {
                 if b.vars.contains_key(&v.name) {
                     return Err(lex::error(&file, v.line, format!("'{}' is already declared", v.name)));
                 }
-                let ty = self.decl_ty(v, &file)?;
+                let ty = self.decl_ty(v, Some(&b.vars), &file)?;
                 b.declare(&v.name, ty.clone());
                 if let Ty::Stream(..) = &ty {
-                    // a stream: its ring, then the chain of pushes
+                    // a stream: its ring, then the chain of pushes, or the
+                    // task that fills it, run now (log 25)
                     let hz = match &v.rate {
                         Some(r) => self.rate_hz(r, &file)?,
                         None => CLOCK_HZ,
@@ -1432,6 +1874,10 @@ impl Lowerer {
                     return match &v.init {
                         Some(Init::Pushes { items, cond }) => self.lower_pushes(&v.name, &s, items, cond.as_ref(), b),
                         None => Ok(()),
+                        Some(Init::Value(e)) => {
+                            let (info, args, hz) = self.task_call(e, Some(&b.vars), &file)?.unwrap();
+                            self.run_task(&info, &args, hz, &s, b, e.line)
+                        }
                         Some(_) => Err(lex::error(&file, v.line, "a stream is filled with `<<`")),
                     };
                 }
@@ -1488,13 +1934,14 @@ impl Lowerer {
                     return Ok(());
                 }
                 let carried = ctx.carried.clone();
+                let explicit = ctx.explicit;
                 if values.is_empty() {
                     let vals = b.current(&carried);
                     b.line(format!("continue {}", vals.join(", ")).trim_end());
                     return Ok(());
                 }
-                if values.len() != carried.len() {
-                    return Err(lex::error(&file, *line, format!("the loop carries {} variable(s), 'continue' gives {}", carried.len(), values.len())));
+                if values.len() != explicit {
+                    return Err(lex::error(&file, *line, format!("the loop declares {} variable(s), 'continue' gives {}", explicit, values.len())));
                 }
                 let mut vals = Vec::new();
                 for (e, n) in values.iter().zip(&carried) {
@@ -1505,6 +1952,8 @@ impl Lowerer {
                     }
                     vals.push(v.text);
                 }
+                // a stream the loop carries for the body goes on as it stands
+                vals.extend(b.current(&carried[explicit..]));
                 b.line(&format!("continue {}", vals.join(", ")));
                 Ok(())
             }
@@ -1520,7 +1969,9 @@ impl Lowerer {
                     });
                 }
                 let s = self.lower_expr(&Expr { kind: ExprKind::Name(n.clone()), line: *line }, None, b, None)?;
-                self.lower_pushes(n, &s, items, cond.as_ref(), b)
+                self.lower_pushes(n, &s, items, cond.as_ref(), b)?;
+                self.trigger(n, b);
+                Ok(())
             }
         }
     }
@@ -1558,6 +2009,9 @@ impl Lowerer {
         let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
         let (info, args) = find_function(&self.funcs, parts, &is_var, &file, line)?;
         let info = info.clone();
+        if info.task {
+            return Err(lex::error(&file, line, format!("'{}' is a task: it is wired into a stream, `{} x$ = {}`", spoken(&info), task_elem(&info), phrase_text(value))));
+        }
         if info.results.len() != names.len() {
             return Err(lex::error(&file, line, format!("'{}' gives {} result(s), {} wanted", info.key, info.results.len(), names.len())));
         }
@@ -2013,8 +2467,16 @@ impl Lowerer {
 
     /// a declaration's type: a stream when it is made with `<<` or has a
     /// rate, a sequence or a plain value otherwise
-    fn decl_ty(&mut self, v: &super::syntax::VarDecl, file: &str) -> Result<Ty, Error> {
-        let stream = v.seq && (v.rate.is_some() || matches!(v.init, Some(Init::Pushes { .. })));
+    fn decl_ty(&mut self, v: &super::syntax::VarDecl, vars: Option<&HashMap<String, Var>>, file: &str) -> Result<Ty, Error> {
+        // a wiring, `T x$ = task(...)`, declares a stream too (log 25)
+        let wired = match &v.init {
+            Some(Init::Value(e)) => self.task_call(e, vars, file)?.is_some(),
+            _ => false,
+        };
+        if wired && !v.seq {
+            return Err(lex::error(file, v.line, format!("a task produces a stream: `{} {}$ = ...`", v.ty, v.name)));
+        }
+        let stream = v.seq && (v.rate.is_some() || wired || matches!(v.init, Some(Init::Pushes { .. })));
         if !stream {
             if v.rate.is_some() {
                 return Err(lex::error(file, v.line, "a rate belongs on a stream, `T x$ at (n hz)`"));
@@ -2165,8 +2627,19 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
     }
 
     /// one push: a tick from the virtual clock unless the ring is
-    /// regular; a struct pushed field by field at one tick
-    fn emit_push(&mut self, s: &Val, v: &Val, b: &mut Body) {
+    /// regular; a struct pushed field by field at one tick; a task's
+    /// own output sleeps to its next tick after (log 25)
+    fn emit_push(&mut self, name: &str, s: &Val, v: &Val, b: &mut Body) {
+        self.emit_push_only(s, v, b);
+        if let BodyKind::Task { out, hz } = &b.kind {
+            if out == name {
+                let hz = hz.clone();
+                b.line(&format!("__sleep({})", hz));
+            }
+        }
+    }
+
+    fn emit_push_only(&mut self, s: &Val, v: &Val, b: &mut Body) {
         let Ty::Stream(_, regular) = &s.ty else { unreachable!() };
         let tick = if *regular {
             String::new()
@@ -2194,20 +2667,32 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
     /// push for as long as the condition holds of the candidate (log 23)
     fn lower_pushes(&mut self, name: &str, s: &Val, items: &[Expr], cond: Option<&Expr>, b: &mut Body) -> Result<(), Error> {
         let file = b.file.clone();
-        let Ty::Stream(elem, _) = s.ty.clone() else { unreachable!() };
+        let Ty::Stream(elem, regular) = s.ty.clone() else { unreachable!() };
         let elem = *elem;
+        let block_ty = Ty::Seq(Box::new(elem.clone()));
         let item = |l: &mut Lowerer, e: &Expr, b: &mut Body| -> Result<Val, Error> {
             let mut v = l.lower_expr(e, Some(&elem), b, None)?;
             if v.literal && fits_literal(&v, &elem) {
                 v.ty = elem.clone();
             }
-            if v.ty != elem {
+            if v.ty != elem && v.ty != block_ty {
                 return Err(lex::error(&b.file, e.line, format!("'{}$' holds {} but the item is {}", name, elem.ir(), v.ty.ir())));
             }
             Ok(v)
         };
         for (i, e) in items.iter().enumerate() {
             let last = i + 1 == items.len();
+            // a task call in the chain: the task runs into the stream now
+            if let Some((info, args, hz)) = self.task_call(e, Some(&b.vars), &file)? {
+                if b.kind == BodyKind::Reset {
+                    return Err(lex::error(&file, e.line, "a task call at feature scope before a pushed item: a chain's items come before its tasks"));
+                }
+                if cond.is_some() && last {
+                    return Err(lex::error(&file, e.line, "a task call is not repeated with `while`: the task's own chain says when it stops"));
+                }
+                self.run_task(&info, &args, hz, s, b, e.line)?;
+                continue;
+            }
             match cond {
                 Some(c) if last => {
                     b.line("loop() {");
@@ -2224,13 +2709,16 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                         return Err(lex::error(&file, c.line, "'while' takes a bool"));
                     }
                     let cv = b.materialize(&cv);
+                    if v.ty == block_ty {
+                        return Err(lex::error(&file, e.line, "a block is pushed once: `while` repeats an item"));
+                    }
                     b.line(&format!("if {} {{", cv.text));
                     b.line("} else {");
                     b.depth += 1;
                     b.line("break");
                     b.depth -= 1;
                     b.line("}");
-                    self.emit_push(s, &v, b);
+                    self.emit_push(name, s, &v, b);
                     b.line("continue");
                     b.depth -= 1;
                     b.line("}");
@@ -2240,11 +2728,49 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     let v = item(self, e, b);
                     self.push_read = None;
                     let v = v?;
-                    self.emit_push(s, &v, b);
+                    if v.ty == block_ty {
+                        // `x$ << block$`: the library's block push on a
+                        // regular ring; item by item at the clock's tick
+                        // on an irregular one
+                        if regular && self.stream_fields(&s.ty).is_none() {
+                            b.line(&format!("push {}, {}", s.text, v.text));
+                            continue;
+                        }
+                        let n = b.tmp();
+                        b.line(&format!("{}: i64 = len {}", n, v.text));
+                        let k = b.tmp();
+                        b.line(&format!("loop({}: i64 = 0) {{", k));
+                        b.depth += 1;
+                        let done = b.tmp();
+                        b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
+                        b.line(&format!("if {} {{", done));
+                        b.depth += 1;
+                        b.line("break");
+                        b.depth -= 1;
+                        b.line("}");
+                        let x = b.tmp();
+                        b.line(&format!("{}: {} = load {}, {}", x, elem.ir(), v.text, k));
+                        self.emit_push(name, s, &Val { text: x, ty: elem.clone(), literal: false }, b);
+                        let k2 = b.tmp();
+                        b.line(&format!("{}: i64 = add {}, 1", k2, k));
+                        b.line(&format!("continue {}", k2));
+                        b.depth -= 1;
+                        b.line("}");
+                        continue;
+                    }
+                    self.emit_push(name, s, &v, b);
                 }
             }
         }
         Ok(())
+    }
+
+    /// after a push or an `end` from a plain function into a stream a
+    /// node reads: the scheduler runs (log 25)
+    fn trigger(&self, name: &str, b: &mut Body) {
+        if b.kind == BodyKind::Fn && self.node_inputs.contains(name) {
+            b.line("__run()");
+        }
     }
 
     /// a stream variable takes its moved reader: a new version of a
@@ -2265,7 +2791,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
     /// a `for` may not move a local stream: a `loop` carries one
     fn no_moved_stream(&self, body: &[Stmt], b: &Body) -> Result<(), Error> {
         let mut moved = Vec::new();
-        moved_streams(body, &mut moved);
+        moved_streams(body, &mut moved, &|parts| self.task_streams(parts));
         for n in moved {
             if let Some(v) = b.vars.get(&n) {
                 if matches!(v.ty, Ty::Stream(..)) {
@@ -2392,6 +2918,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                         }
                     }
                 }
+                self.trigger(&sname, b);
                 Ok(Some(none))
             }
             ("position", false, []) => Err(lex::error(&file, line, "'position' gives the index of the next unread item and its tick: `int i, int t = position x$`")),
@@ -2710,6 +3237,9 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
                 let (info, args) = find_function(&self.funcs, parts, &is_var, &file, e.line)?;
                 let info = info.clone();
+                if info.task {
+                    return Err(lex::error(&file, e.line, format!("'{}' is a task: it is wired into a stream, `{} x$ = {}`", spoken(&info), task_elem(&info), phrase_text(e))));
+                }
                 let (vals, lifted, acc, rtys) = self.lower_call_args(&info, &args, b)?;
                 if lifted.iter().any(|&l| l) || acc.is_some() {
                     if rtys.len() != 1 {
@@ -2763,61 +3293,67 @@ fn name_for(dst: Option<&str>, ty: &Ty, b: &mut Body) -> String {
 /// arms both do, or a `loop` with no `while` and no `break`? The IR's
 /// rule (ssa.md, *Termination rules*), checked on the zero tree
 /// the streams a block moves: the names `advance x$ by (n)` and
-/// `frame x$` are applied to, anywhere in it
-fn moved_streams(stmts: &[Stmt], out: &mut Vec<String>) {
+/// `frame x$` are applied to, anywhere in it, and the stream arguments
+/// of a task call (`task` says which, log 25)
+fn moved_streams(stmts: &[Stmt], out: &mut Vec<String>, task: &dyn Fn(&[Part]) -> Vec<String>) {
     for s in stmts {
         match s {
             Stmt::Var(v) => match &v.init {
-                Some(Init::Value(e)) => moved_in(e, out),
-                Some(Init::Construct(args)) => args.iter().for_each(|a| moved_in(&a.value, out)),
+                Some(Init::Value(e)) => moved_in(e, out, task),
+                Some(Init::Construct(args)) => args.iter().for_each(|a| moved_in(&a.value, out, task)),
                 Some(Init::Pushes { items, cond }) => {
-                    items.iter().for_each(|e| moved_in(e, out));
-                    cond.iter().for_each(|e| moved_in(e, out));
+                    items.iter().for_each(|e| moved_in(e, out, task));
+                    cond.iter().for_each(|e| moved_in(e, out, task));
                 }
                 None => {}
             },
-            Stmt::Multi { value, .. } | Stmt::Assign { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => moved_in(value, out),
+            Stmt::Multi { value, .. } | Stmt::Assign { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => moved_in(value, out, task),
             Stmt::If { cond, then, els, .. } => {
-                moved_in(cond, out);
-                moved_streams(then, out);
+                moved_in(cond, out, task);
+                moved_streams(then, out, task);
                 if let Some(e) = els {
-                    moved_streams(e, out);
+                    moved_streams(e, out, task);
                 }
             }
             Stmt::Loop { vars, cond, body, .. } => {
                 for v in vars {
                     if let Some(Init::Value(e)) = &v.init {
-                        moved_in(e, out);
+                        moved_in(e, out, task);
                     }
                 }
-                cond.iter().for_each(|e| moved_in(e, out));
-                moved_streams(body, out);
+                cond.iter().for_each(|e| moved_in(e, out, task));
+                moved_streams(body, out, task);
             }
             Stmt::For { seq, body, .. } => {
-                moved_in(seq, out);
-                moved_streams(body, out);
+                moved_in(seq, out, task);
+                moved_streams(body, out, task);
             }
-            Stmt::Continue { values, .. } => values.iter().for_each(|e| moved_in(e, out)),
+            Stmt::Continue { values, .. } => values.iter().for_each(|e| moved_in(e, out, task)),
             Stmt::Push { items, cond, .. } => {
-                items.iter().for_each(|e| moved_in(e, out));
-                cond.iter().for_each(|e| moved_in(e, out));
+                items.iter().for_each(|e| moved_in(e, out, task));
+                cond.iter().for_each(|e| moved_in(e, out, task));
             }
             Stmt::Break { .. } => {}
         }
     }
 }
 
-fn moved_in(e: &Expr, out: &mut Vec<String>) {
+fn moved_in(e: &Expr, out: &mut Vec<String>, task: &dyn Fn(&[Part]) -> Vec<String>) {
     let parts_in = |parts: &[Part], out: &mut Vec<String>| {
         if let [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(n), .. }), ..] = parts {
             if (w == "advance" || w == "frame") && !out.contains(n) {
                 out.push(n.clone());
             }
         }
+        for n in task(parts) {
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
         for p in parts {
             match p {
-                Part::Args(list) => list.iter().for_each(|a| moved_in(&a.value, out)),
-                Part::Value(e) => moved_in(e, out),
+                Part::Args(list) => list.iter().for_each(|a| moved_in(&a.value, out, task)),
+                Part::Value(e) => moved_in(e, out, task),
                 Part::Word(_) => {}
             }
         }
@@ -2825,18 +3361,44 @@ fn moved_in(e: &Expr, out: &mut Vec<String>) {
     match &e.kind {
         ExprKind::Phrase(parts) | ExprKind::Existing(parts) => parts_in(parts, out),
         ExprKind::Bin(_, l, r) | ExprKind::Index(l, r) | ExprKind::Range { from: l, to: r, .. } => {
-            moved_in(l, out);
-            moved_in(r, out);
+            moved_in(l, out, task);
+            moved_in(r, out, task);
         }
-        ExprKind::Neg(x) | ExprKind::Unit(x, _) | ExprKind::Field(x, _) => moved_in(x, out),
+        ExprKind::Neg(x) | ExprKind::Unit(x, _) | ExprKind::Field(x, _) => moved_in(x, out, task),
         ExprKind::IfElse(c, a, d) => {
-            moved_in(c, out);
-            moved_in(a, out);
-            moved_in(d, out);
+            moved_in(c, out, task);
+            moved_in(a, out, task);
+            moved_in(d, out, task);
         }
-        ExprKind::List(items) => items.iter().for_each(|e| moved_in(e, out)),
+        ExprKind::List(items) => items.iter().for_each(|e| moved_in(e, out, task)),
         _ => {}
     }
+}
+
+/// a phrase as text, for a comment in the IR
+fn phrase_text(e: &Expr) -> String {
+    fn expr(e: &Expr) -> String {
+        match &e.kind {
+            ExprKind::Int(v) => v.to_string(),
+            ExprKind::Float(s) => s.clone(),
+            ExprKind::Str(s) => format!("{:?}", s),
+            ExprKind::Bool(b) => b.to_string(),
+            ExprKind::Name(n) => n.clone(),
+            ExprKind::Seq(n) => format!("{}$", n),
+            ExprKind::Unit(x, u) => format!("{} {}", expr(x), u),
+            ExprKind::Phrase(parts) => parts
+                .iter()
+                .map(|p| match p {
+                    Part::Word(w) => w.clone(),
+                    Part::Args(a) => format!("({})", a.iter().map(|a| expr(&a.value)).collect::<Vec<_>>().join(", ")),
+                    Part::Value(v) => expr(v),
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+            _ => "...".into(),
+        }
+    }
+    expr(e)
 }
 
 fn terminates(stmts: &[Stmt]) -> bool {
@@ -2862,6 +3424,28 @@ fn stmt_line(s: &Stmt) -> usize {
         Stmt::Var(v) => v.line,
         Stmt::Multi { line, .. } | Stmt::Assign { line, .. } | Stmt::If { line, .. } | Stmt::Loop { line, .. } | Stmt::For { line, .. } => *line,
         Stmt::Continue { line, .. } | Stmt::Break { line } | Stmt::Check { line, .. } | Stmt::Push { line, .. } | Stmt::Expr { line, .. } => *line,
+    }
+}
+
+/// a function's name as spoken: its words
+fn spoken(info: &FnInfo) -> String {
+    info.parts.iter().filter_map(|p| if let NamePart::Word(w) = p { Some(w.as_str()) } else { None }).collect::<Vec<_>>().join(" ")
+}
+
+/// a task's element type, in zero's spelling where it has one
+fn task_elem(info: &FnInfo) -> String {
+    match &info.results[0].1 {
+        Ty::Stream(e, _) => match e.as_ref() {
+            Ty::Num(n) if n == "u8" => "uint8".into(),
+            Ty::Num(n) => match n.as_str() {
+                "i8" | "i16" | "i32" | "i64" => format!("int{}", &n[1..]),
+                "u16" | "u32" | "u64" => format!("uint{}", &n[1..]),
+                "f32" | "f64" | "f16" => format!("float{}", &n[1..]),
+                _ => n.clone(),
+            },
+            e => e.ir(),
+        },
+        t => t.ir(),
     }
 }
 

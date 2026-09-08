@@ -103,3 +103,11 @@ on (int n) = logged and read()
     log$ << 7
     advance log$ by (1)
     n = peek log$ at (0)
+
+on (int n) = blocked()
+    uint8 b$ << "hi"
+    n = count b$ * 1000 + int(peek b$ at (1))
+
+on (int n) = blocked regular()
+    int r$ at (1 khz) << [1, 2, 3]
+    n = count r$ * 10 + latest r$

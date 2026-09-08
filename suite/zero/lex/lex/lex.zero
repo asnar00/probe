@@ -1,0 +1,99 @@
+type token =
+    int kind, start, n
+
+uint8 chars$ <<
+token t$ = lex(chars$)
+
+on (int k) = kind of (uint8 c)
+    if (c <= 32)
+        k = 0
+    else if (c > 122)
+        k = 3
+    else if (c >= 97)
+        k = 1
+    else if (c > 57)
+        k = 3
+    else if (c >= 48)
+        k = 2
+    else
+        k = 3
+
+on (token t$) << lex (uint8 c$)
+    loop
+        if (count c$ == 0)
+            break
+        int k = kind of (peek c$ at (0))
+        int start, int tick = position c$
+        if (k == 0)
+            advance c$ by (1)
+            continue
+        if (k == 3)
+            t$ << token(3, start, 1)
+            advance c$ by (1)
+            continue
+        loop (int i = 1, int n = -1)
+            if (i >= count c$)
+                if (ended c$)
+                    n = i
+                break
+            if (kind of (peek c$ at (i)) == k)
+                continue (i + 1, -1)
+            n = i
+            break
+        if (n < 0)
+            break
+        t$ << token(k, start, n)
+        advance c$ by (n)
+
+on arrive()
+    chars$ << "let x = 4"
+
+on arrive again()
+    chars$ << "2;\n"
+    end chars$
+
+on (int a, int b) = two arrivals()
+    arrive()
+    a = count t$
+    arrive again()
+    b = count t$
+
+on (int s) = number start()
+    arrive()
+    arrive again()
+    token x = peek t$ at (3)
+    s = x.start
+
+on (int n) = number length()
+    arrive()
+    arrive again()
+    token x = peek t$ at (3)
+    n = x.n
+
+on (int a, int b) = kinds()
+    arrive()
+    arrive again()
+    token x = peek t$ at (0)
+    token y = peek t$ at (1)
+    a = x.kind
+    b = y.kind
+
+on (int k) = third kind()
+    arrive()
+    arrive again()
+    token x = peek t$ at (2)
+    k = x.kind
+
+on (int a, int b) = kinds tail()
+    arrive()
+    arrive again()
+    token x = peek t$ at (3)
+    token y = peek t$ at (4)
+    a = x.kind
+    b = y.kind
+
+on (int a, int b) = a word at the end()
+    chars$ << "let"
+    a = count t$
+    end chars$
+    b = count t$

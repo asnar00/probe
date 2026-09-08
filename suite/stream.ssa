@@ -25,6 +25,7 @@
 ;! positions -> 2, 3000
 ;! position_end -> 5, -1
 ;! regular_position -> 3, 3
+;! struct_of_streams 7 -> 7, 1
 
 ; an irregular ring of bytes on a microsecond clock: values and ticks
 data vb: buffer(u8, 8)
@@ -41,6 +42,12 @@ data arg: array(u64, 8)
 data ovb: buffer(f32, 16)
 data org: array(u64, 8)
 data blk: buffer(f32, 4)
+; two rings of int for the struct of streams
+data ivb: buffer(int, 8)
+data itb: buffer(i64, 8)
+data rg2: array(u64, 8)
+data ivb2: buffer(int, 8)
+data itb2: buffer(i64, 8)
 
 ; five items at 1, 2, 3, 4, 5 milliseconds with values 1..5
 fn five(s: u8$) {
@@ -381,4 +388,36 @@ fn biquad_iir() -> (u32, u32) {
     w5: u32 = cast v5
     w7: u32 = cast v7
     ret w5, w7
+}
+
+; a struct of streams — one ring per field, the front end's form of a
+; stream of structs — passed as a parameter: its `int$` field was made
+; concrete when the struct was declared, and a body's `int` is abstract
+; until the module is resolved; both are the policy's int, and a push
+; of one into the other finds the library's `push`
+type pair_rings = struct { a: int$, b: int$ }
+fn push_pair(r: pair_rings, v: int) {
+    ra: int$ = get r, a
+    x: int = add v, 0
+    push ra, 5, x
+    rb: int$ = get r, b
+    push rb, 5, 1
+    ret
+}
+fn struct_of_streams(v: int) -> (int, int) {
+    a: ptr = addr rg
+    va: ptr = addr ivb
+    ta: ptr = addr itb
+    ring_init(a, va, ta, 1000000)
+    b: ptr = addr rg2
+    vb2: ptr = addr ivb2
+    tb2: ptr = addr itb2
+    ring_init(b, vb2, tb2, 1000000)
+    sa: int$ = stream a
+    sb: int$ = stream b
+    r: pair_rings = pack sa, sb
+    push_pair(r, v)
+    x: int = latest sa
+    y: int = latest sb
+    ret x, y
 }

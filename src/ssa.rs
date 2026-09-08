@@ -2482,6 +2482,9 @@ impl Parser {
 
     /// is a concrete type a member of an abstract name's family?
     fn member_of(&self, name: &str, ty: Type) -> bool {
+        // a body's `int` is abstract until the module is resolved; it is
+        // a member of what the policy's int is a member of
+        let ty = self.policy.resolve(ty);
         match name {
             "number" => matches!(ty, Type::Int { .. }) || self.member_of("scalar", ty),
             "scalar" => matches!(ty, Type::Pack(i) if self.packs[i as usize].origin.is_some()),
@@ -2688,8 +2691,11 @@ impl Parser {
                 if !self.member_of(name, ty) {
                     return false;
                 }
+                // bound once, it is one type under the policy: a struct's
+                // `int$` field is `i64$` from its declaration while a body's
+                // `int` is resolved after parsing, and both are the policy's int
                 match tbinds.iter().find(|(n, _)| n == name) {
-                    Some((_, t)) => *t == ty,
+                    Some((_, t)) => *t == ty || self.policy.resolve(*t) == self.policy.resolve(ty),
                     None => {
                         tbinds.push((name.clone(), ty));
                         true

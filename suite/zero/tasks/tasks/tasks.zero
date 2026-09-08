@@ -1,0 +1,104 @@
+int x$ <<
+int d$ = doubled(x$)
+int e$ = closer(x$)
+int y$ <<
+int q$ = doubled(y$)
+int w$ << count up to (3) << count down from (3)
+int size = 4
+int z$ = count down from (size)
+
+on (int i$) << count down from (int n)
+    i$ << n << (i$ - 1) while (i$ > 0)
+
+on (int i$) << count up to (int n)
+    i$ << 1 << (i$ + 1) while (i$ <= n)
+
+on (int i$) << sawtooth (int n)
+    i$ << count up to (n) << count down from (n)
+
+on (int d$) << doubled (int x$)
+    loop
+        if (count x$ == 0)
+            break
+        d$ << peek x$ at (0) * 2
+        advance x$ by (1)
+
+on (int e$) << closer (int x$)
+    loop
+        if (count x$ == 0)
+            break
+        advance x$ by (1)
+    if (ended x$)
+        e$ << 99
+
+on (int n) = sawtoothed()
+    int i$ = sawtooth(5)
+    int f$ = frame i$
+    n = count f$ * 100 + f$[4] * 10 + f$[9]
+
+on (int n) = counted down()
+    int i$ << count down from (3)
+    n = count i$ * 10 + latest i$
+
+on (int n) = counted up()
+    int i$ << 0 << count up to (4)
+    n = peek i$ at (1) * 10 + latest i$
+
+on (int n) = wired at feature scope()
+    n = count w$ * 100 + peek w$ at (2) * 10 + latest w$
+
+on (int n) = wired from a variable()
+    n = count z$
+
+on (int a, int b) = fed twice()
+    x$ << 1 << 2
+    a = count d$
+    x$ << 3
+    b = latest d$
+
+on (int n) = carried between runs()
+    x$ << 1 << 2
+    x$ << 3
+    int f$ = frame d$
+    n = f$[0] * 100 + f$[1] * 10 + f$[2]
+
+on (int a, int b) = closed()
+    x$ << 5
+    a = count e$
+    end x$
+    b = latest e$ * 10 + count e$
+
+on (int n) = closed once()
+    end x$
+    y$ << 1
+    n = count e$ * 10 + count q$
+
+on (int n) = rated()
+    int c$ = count down from (3) at (1 hz)
+    advance c$ by (2)
+    int k, int t = position c$
+    n = k * 10 + t / 1000000
+
+on (int n) = sampled at a rate()
+    int c$ = count down from (3) at (1 hz)
+    n = c$ at (1 s)
+
+on (int n) = composed at a rate()
+    int s$ = sawtooth(2) at (1 hz)
+    advance s$ by (3)
+    int k, int t = position s$
+    n = k * 10 + t / 1000000
+
+on (int n) = run now moves the reader()
+    int i$ << 1 << 2 << 3
+    int d$ = doubled(i$)
+    n = count i$ * 10 + count d$
+
+on (int n) = run now inside a loop()
+    int i$ << 1 << 2 << 3 << 4
+    int d$ <<
+    loop (int k = 10) while (k < 12)
+        i$ << k
+        d$ << doubled(i$)
+        continue (k + 1)
+    n = count d$ * 10 + latest d$

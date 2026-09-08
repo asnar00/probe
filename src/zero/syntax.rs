@@ -596,10 +596,14 @@ impl<'a> Parser<'a> {
         Ok(VarDecl { line, scope, ty, name, seq, init, merge, rate })
     }
 
-    /// `<< a << b [while (c)]`
+    /// `<< a << b [while (c)]`; a bare `<<` at the end of the line
+    /// declares a stream with nothing in it yet (log 25)
     fn parse_pushes(&mut self) -> Result<(Vec<Expr>, Option<Expr>), Error> {
         let mut items = Vec::new();
         while self.eat_sym("<<") {
+            if self.at(&Tok::Newline) {
+                break;
+            }
             items.push(self.parse_expr()?);
         }
         let cond = if self.eat_word("while") { Some(self.parse_expr()?) } else { None };
@@ -768,6 +772,9 @@ impl<'a> Parser<'a> {
             Some(Tok::Seq(_)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) => {
                 let target = self.parse_primary()?;
                 let (items, cond) = self.parse_pushes()?;
+                if items.is_empty() {
+                    return Err(self.err("nothing to push: `x$ << item`"));
+                }
                 self.expect_newline()?;
                 Ok(Stmt::Push { target, items, cond, line })
             }
