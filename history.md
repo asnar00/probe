@@ -4,6 +4,22 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the three programs — `9c90e1c` · 2026-09-08
+
+```
+int t$ = ticks(5) at (4 hz)
+
+on (int t$) << ticks (int n)
+    t$ << 1 << (t$ + 1) while (t$ <= n)
+
+on (int v) = value at (int m)
+    v = t$ at (m ms)
+```
+
+Plan item 12 of milestone 0. `suite/zero/clock` is the smallest program that needs time at the boundary: a task ticking at a rate on the store's clock and a consumer that turns milliseconds into a `time` once and reads the stream at it, nearest; six cases (`value at (300) → 2`, `where it stands() → 2, 500000`). A time unit may now follow a variable, and `bound N` a push chain's `while` (`src/zero/syntax.rs`, `lower.rs`): hello's countdown says `bound 10`, and `probe cost suite/zero/hello.expected.ssa run` reports `count_down_from: loop at b1 x10 (declared)`, 1619082 ssa for `run`. `hello.expected.ssa`, `lex.expected.ssa` and `clock.expected.ssa` sit beside their stores and `probe zero test` (`src/zero/run.rs`) checks the emitted IR against them, naming the first line that differs, so a lowering change is a diff in the commit. Also found: a node's literal task arguments needed their types. zero 185/185 on native, wasm, riscv and arm-qemu, 176 + 9 skipped on air; probe test 970, 961 + 9, 970, 970, 940 + 30; cargo test 93 passed.
+
+---
+
 ### zero: platform functions — `cd7ed31` · 2026-09-08
 
 ```
