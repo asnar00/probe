@@ -34,7 +34,7 @@
 ; `behind` and `last` for history, `sample s, t`, or a
 ; `window s, t1, t2` of the items with t1 <= t < t2.
 
-; --- the ring: [pushed, base, values, ticks, hz, step, t0] ---
+; --- the ring: [pushed, base, values, ticks, hz, step, t0, ended] ---
 ; an irregular ring: a tick per item, from a clock at hz
 fn ring_init(r: ptr, vb: ptr, tb: ptr, hz: i64) {
     store 0: i64, r
@@ -44,6 +44,7 @@ fn ring_init(r: ptr, vb: ptr, tb: ptr, hz: i64) {
     store hz, r, 32
     store 0: i64, r, 40
     store 0: i64, r, 48
+    store 0: i64, r, 56
     ret
 }
 ; a regular ring: item k at tick t0 + k * step, no ticks stored
@@ -58,6 +59,28 @@ fn ring_regular(r: ptr, vb: ptr, hz: i64, step: i64, t0: i64) {
     store hz, r, 32
     store step, r, 40
     store t0, r, 48
+    store 0: i64, r, 56
+    ret
+}
+
+; the producer closes the ring: nothing more will come, and a push
+; after it fails a check; every reader can see it
+fn end(s: number$) {
+    r: ptr = get s, ring
+    store 1: i64, r, 56
+    ret
+}
+fn ended(s: number$) -> u1 {
+    r: ptr = get s, ring
+    e: i64 = load r, 56
+    closed: u1 = cmp.ne e, 0
+    ret closed
+}
+fn open(s: number$) {
+    r: ptr = get s, ring
+    e: i64 = load r, 56
+    still: u1 = cmp.eq e, 0
+    check still
     ret
 }
 
@@ -180,6 +203,7 @@ fn ring_slot(s: number$) -> i64 {
 }
 ; an irregular ring's producer: an item at a tick, ticks never going back
 fn push(s: number$, tick: i64, v: number) {
+    open(s)
     r: ptr = get s, ring
     step: i64 = load r, 40
     irregular: u1 = cmp.eq step, 0
@@ -203,6 +227,7 @@ fn push(s: number$, tick: i64, v: number) {
 }
 ; a regular ring's producer: the next sample
 fn push(s: number$, v: number) {
+    open(s)
     r: ptr = get s, ring
     step: i64 = load r, 40
     regular: u1 = cmp.gt step, 0
@@ -232,6 +257,25 @@ fn push(s: number$, block: number[]) {
 }
 
 ; --- the consumer's side ---
+; where this reader stands: the index of the next unread item, and
+; its tick — by arithmetic on a regular ring; on an irregular one the
+; item's own, or -1 when nothing is unread, there being no such tick
+fn position(s: number$) -> (i64, i64) {
+    r: ptr = get s, ring
+    pos: i64 = get s, pos
+    step: i64 = load r, 40
+    regular: u1 = cmp.gt step, 0
+    pushed: i64 = load r
+    unread: u1 = cmp.lt pos, pushed
+    known: u1 = or regular, unread
+    t: i64 = if known {
+        tk: i64 = tick_of(s, pos)
+        yield tk
+    } else {
+        yield -1
+    }
+    ret pos, t
+}
 fn count(s: number$) -> i64 {
     r: ptr = get s, ring
     pushed: i64 = load r

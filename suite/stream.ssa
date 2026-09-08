@@ -20,6 +20,11 @@
 ;! irregular_push -> check
 ;! biquad_fir -> 0x3f000000, 0x3e800000
 ;! biquad_iir -> 0x3d000000, 0x3c000000
+;! closing -> 0, 1
+;! push_after_end -> check
+;! positions -> 2, 3000
+;! position_end -> 5, -1
+;! regular_position -> 3, 3
 
 ; an irregular ring of bytes on a microsecond clock: values and ticks
 data vb: buffer(u8, 8)
@@ -235,6 +240,48 @@ fn interpolated_int() -> (u8, u8) {
     tm: time = micros(1500)
     y: u8 = sample l2, tm
     ret x, y
+}
+; the producer closes the stream: `ended` says so to every reader, a
+; push after it fails a check
+fn closing() -> (u1, u1) {
+    s: u8$ = fresh()
+    five(s)
+    before: u1 = ended(s)
+    end(s)
+    after: u1 = ended(s)
+    ret before, after
+}
+fn push_after_end() -> u8 {
+    s: u8$ = fresh()
+    five(s)
+    end(s)
+    push s, 6000, 6
+    x: u8 = latest s
+    ret x
+}
+; where a reader stands: after two of five, the third is next, at 3 ms
+fn positions() -> (i64, i64) {
+    s: u8$ = fresh()
+    five(s)
+    s2: u8$ = advance(s, 2)
+    k: i64, t: i64 = position(s2)
+    ret k, t
+}
+; ... and with nothing unread on an irregular ring, no tick
+fn position_end() -> (i64, i64) {
+    s: u8$ = fresh()
+    five(s)
+    f: u8[], k0: i64, s2: u8$ = frame(s)
+    k: i64, t: i64 = position(s2)
+    ret k, t
+}
+; on a regular ring the next tick is always known: item 3 is at 3
+fn regular_position() -> (i64, i64) {
+    s: f32$ = khz()
+    tens(s)
+    s2: f32$ = advance(s, 3)
+    k: i64, t: i64 = position(s2)
+    ret k, t
 }
 ; a push without a tick needs a regular ring
 fn irregular_push() -> u8 {

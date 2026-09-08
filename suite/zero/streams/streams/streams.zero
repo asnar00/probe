@@ -1,0 +1,105 @@
+type token =
+    int kind, start, n
+
+int log$ << 100
+
+on (int n) = pushed()
+    int i$ << 1 << 2 << 3
+    n = count i$
+
+on (int n) = chained()
+    int i$ << 1 << (i$ + 1) << (i$ * 10)
+    n = latest i$
+
+on (int n) = repeated()
+    int i$ << 1 << (i$ + 1) while (i$ < 5)
+    n = count i$ * 10 + latest i$
+
+on (int n) = counted down from (int k)
+    int i$ << k << (i$ - 1) while (i$ > 0)
+    n = count i$ * 100 + latest i$
+
+on (int n) = peeked()
+    int i$ << 5 << 6 << 7
+    n = peek i$ at (1)
+
+on (int n) = advanced()
+    int i$ << 5 << 6 << 7
+    advance i$ by (2)
+    n = peek i$ at (0) * 10 + count i$
+
+on (int n) = framed()
+    int i$ << 1 << 2 << 3
+    int f$ = frame i$
+    int g$ = frame i$
+    n = count f$ * 10 + count g$ + (f$ + _)
+
+on (int n) = walked()
+    int i$ << 1 << 2 << 3 << 4
+    loop (int acc = 0) while (count i$ > 0)
+        acc = acc + peek i$ at (0)
+        advance i$ by (1)
+    n = acc
+
+on (int n) = history()
+    int i$ << 1 << 2 << 3 << 4
+    advance i$ by (3)
+    int h$ = i$ behind (2)
+    n = h$[0] * 10 + h$[1]
+
+on (int n) = positioned()
+    int x$ at (1000 hz) << 1 << 2 << 3
+    advance x$ by (2)
+    int k, int t = position x$
+    n = k * 10 + t
+
+on (int n) = position unread()
+    int i$ << 1 << 2
+    advance i$ by (2)
+    int k, int t = position i$
+    n = k * 10 + t
+
+on (bool b) = still open()
+    int i$ << 1
+    b = ended i$
+
+on (bool b) = now closed()
+    int i$ << 1
+    end i$
+    b = ended i$
+
+on (int n) = pushed after end()
+    int i$ << 1
+    end i$
+    i$ << 2
+    n = count i$
+
+on (int n) = sampled()
+    float32 x$ at (1 khz) << 10.0 << 20.0 << 30.0 << 40.0
+    float32 v = x$ at (1600 us)
+    n = int(v)
+
+on (int n) = windowed()
+    int x$ at (1000 hz) << 1 << 2 << 3 << 4 << 5
+    int w$ = x$ from (2 ms) to (4 ms)
+    n = count w$ * 10 + w$[0]
+
+on (int n) = tokens()
+    token t$ << token(1, 0, 3) << token(3, 4, 1)
+    token x = peek t$ at (1)
+    n = x.kind * 100 + x.start * 10 + x.n
+
+on (int n) = tokens moved()
+    token t$ << token(1, 0, 3) << token(2, 5, 2)
+    advance t$ by (1)
+    token x = latest t$
+    n = count t$ * 1000 + x.kind * 100 + x.start * 10 + x.n
+
+on (int n) = logged()
+    log$ << 200 << 300
+    n = count log$ * 1000 + latest log$
+
+on (int n) = logged and read()
+    log$ << 7
+    advance log$ by (1)
+    n = peek log$ at (0)

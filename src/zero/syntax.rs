@@ -87,6 +87,8 @@ pub struct VarDecl {
     pub init: Option<Init>,
     /// `merge sum`: how two writes combine
     pub merge: Option<String>,
+    /// `at (48000 hz)`: a stream at a rate
+    pub rate: Option<Expr>,
 }
 
 pub enum Init {
@@ -570,6 +572,16 @@ impl<'a> Parser<'a> {
             return Err(self.err(format!("'{}' is not a type", ty)));
         }
         let (name, seq) = self.expect_name()?;
+        // `T x$ at (n hz)`: a stream at a rate, section 9
+        let rate = if seq && self.eat_word("at") {
+            let args = self.parse_args()?;
+            let [Arg { name: None, value }] = args.as_slice() else {
+                return Err(self.err("a rate is `at (n hz)`"));
+            };
+            Some(value.clone())
+        } else {
+            None
+        };
         let init = if self.eat_sym("=") {
             Some(Init::Value(self.parse_expr()?))
         } else if self.at_sym("(") {
@@ -581,7 +593,7 @@ impl<'a> Parser<'a> {
             None
         };
         let merge = if self.eat_word("merge") { Some(self.expect_word()?) } else { None };
-        Ok(VarDecl { line, scope, ty, name, seq, init, merge })
+        Ok(VarDecl { line, scope, ty, name, seq, init, merge, rate })
     }
 
     /// `<< a << b [while (c)]`
@@ -849,7 +861,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, Error> {
-        let mut e = self.parse_primary()?;
+        let e = self.parse_primary()?;
+        self.postfix_of(e)
+    }
+
+    /// a value's postfixes: `.field`, `[i]` on a sequence, a unit
+    fn postfix_of(&mut self, mut e: Expr) -> Result<Expr, Error> {
         loop {
             if self.at_sym(".") && matches!(self.peek_at(1), Some(Tok::Word(_))) {
                 let line = self.line();
@@ -886,7 +903,16 @@ impl<'a> Parser<'a> {
             Tok::Int(v) => ExprKind::Int(v),
             Tok::Float(s) => ExprKind::Float(s),
             Tok::Str(s) => ExprKind::Str(s),
-            Tok::Seq(w) => ExprKind::Seq(w),
+            Tok::Seq(w) => {
+                // a phrase may begin with a sequence name when a word
+                // follows it: `x$ behind (2)`, `x$ at (t)` (section 9)
+                if matches!(self.peek(), Some(Tok::Word(v)) if !self.ends_phrase(v) && !UNITS.contains(&v.as_str())) {
+                    let mut parts = vec![Part::Value(Expr { kind: ExprKind::Seq(w), line })];
+                    parts.extend(self.parse_parts()?);
+                    return Ok(Expr { kind: ExprKind::Phrase(parts), line });
+                }
+                ExprKind::Seq(w)
+            }
             Tok::Sym("_") => ExprKind::Acc,
             Tok::Sym("(") => {
                 // a phrase may begin with a bracket group — `(3) is less
@@ -975,7 +1001,14 @@ impl<'a> Parser<'a> {
                     parts.push(Part::Word(w));
                 }
                 Some(Tok::Sym("(")) => parts.push(Part::Args(self.parse_args()?)),
-                Some(Tok::Int(_)) | Some(Tok::Float(_)) | Some(Tok::Str(_)) | Some(Tok::Seq(_)) | Some(Tok::Sym("[")) | Some(Tok::Sym("_")) => {
+                Some(Tok::Seq(w)) => {
+                    // a bare sequence argument, not the start of a phrase
+                    let line = self.line();
+                    self.pos += 1;
+                    let e = self.postfix_of(Expr { kind: ExprKind::Seq(w), line })?;
+                    parts.push(Part::Value(e));
+                }
+                Some(Tok::Int(_)) | Some(Tok::Float(_)) | Some(Tok::Str(_)) | Some(Tok::Sym("[")) | Some(Tok::Sym("_")) => {
                     let e = self.parse_postfix()?;
                     parts.push(Part::Value(e));
                 }
