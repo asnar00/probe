@@ -1,0 +1,102 @@
+type Vec =
+    float x, y, z = 0
+
+type Mode = off | on | auto
+
+int size = 40
+static int port = 8822
+device int opened = 0
+group int quota = 100
+int count = 0 merge sum
+Vec origin(1, 2, 3)
+Mode mode = auto
+string name = "zero"
+bool flag
+
+on (int n) = the size()
+    n = size
+
+on set size (int s)
+    size = s
+
+on (int n) = grown()
+    set size (50)
+    n = size
+
+on bump()
+    count = count + 1
+
+on (int n) = bumped twice()
+    bump()
+    bump()
+    n = count
+
+on (int n) = bumped (int k) times
+    for (i in [1 through k])
+        bump()
+    n = count
+
+on (int n) = fresh count()
+    n = count
+
+on (int n) = port number()
+    n = port
+
+on (int q) = quota left after (int used)
+    quota = quota - used
+    q = quota
+
+on (int n) = opened once()
+    opened = opened + 1
+    n = opened
+
+on (int n) = origin sum()
+    n = int(origin.x + origin.y + origin.z)
+
+on (int n) = moved origin()
+    origin = Vec(4, 5, 6)
+    n = int(origin.x)
+
+on (bool b) = is auto()
+    b = mode == auto
+
+on (bool b) = switched on()
+    mode = on
+    b = mode == Mode.on
+
+on named()
+    print name
+
+on renamed()
+    name = "one"
+    print name
+
+on (bool b) = flagged()
+    flag = true
+    b = flag
+
+on (int n) = shadowed by (int size)
+    n = size
+
+on (int n) = shadowed locally()
+    int count = 5
+    n = count
+
+on (int n) = locals()
+    int i = 1
+    int j
+    Vec v
+    Vec w(1, 2, 3)
+    Vec u(z = 3, x = 1)
+    n = i + j + int(v.x + w.z + u.x)
+
+on both()
+    size, port = two()
+
+on (int a, int b) = two()
+    a = 7
+    b = 9
+
+on (int n) = assigned both()
+    both()
+    n = size + port

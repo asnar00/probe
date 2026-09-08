@@ -131,6 +131,19 @@ enum TypeInfo {
     Enum(Vec<String>),
 }
 
+/// a feature-scope variable: a field of the store's context struct
+/// (log 16), with the columns section 5 declares
+#[derive(Clone, Debug)]
+struct FVar {
+    name: String,
+    ty: Ty,
+    /// `user`, `static`, `device` or `group`
+    scope: String,
+    /// `last`, or the word after `merge`
+    merge: String,
+    feature: String,
+}
+
 pub struct Lowered {
     pub ir: String,
     pub funcs: Vec<FnInfo>,
@@ -146,20 +159,14 @@ pub struct Call {
 }
 
 /// the IR every store gets: the output buffer `print` appends to, the
-/// two functions the runner reads it back with, `__print` itself,
-/// `__str` (a string literal's view) and `__zero_reset`, which the
-/// runner calls before each case
+/// two functions the runner reads it back with, `__print` itself and
+/// `__str` (a string literal's view). `__zero_reset`, which the runner
+/// calls before each case, is generated per store (log 16)
 const PRELUDE: &str = r#"
 ; the print buffer: what `print` wrote, read back by the runner
 data __out: array(u8, 4096)
 data __out_n: array(i64, 1)
 data __nul: array(u8, 1)
-
-fn __zero_reset() {
-    q: ptr = addr __out_n
-    store 0: i64, q
-    ret
-}
 
 fn __out_len() -> i64 {
     q: ptr = addr __out_n
@@ -255,7 +262,7 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0 };
+    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new() };
     // the front end's builtins, until item 11 declares them as platform functions
     l.funcs.push(FnInfo {
         key: "print".into(),
@@ -279,10 +286,11 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
             match d {
                 Decl::Fn(fd) => l.declare(fd, &f.name, &f.code.file)?,
                 Decl::Type(_) => {}
-                Decl::Var(v) => return Err(lex::error(&f.code.file, v.line, "feature-scope variables are not in this item yet")),
+                Decl::Var(v) => l.declare_var(v, &f.name, &f.code.file)?,
             }
         }
     }
+    l.emit_context(store)?;
     for f in &store.features {
         writeln!(l.out, "\n; feature {}", f.name).unwrap();
         for d in &f.code.decls {
@@ -317,7 +325,7 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str) -> Result<Call, 
     let ExprKind::Phrase(parts) = &case.call.kind else {
         return Err(lex::error(file, case.line, "a case calls a function"));
     };
-    let (info, args) = find_function(&lowered.funcs, parts, &HashMap::new(), file, case.line)?;
+    let (info, args) = find_function(&lowered.funcs, parts, &|_| false, file, case.line)?;
     let mut vals = Vec::new();
     for (a, (_, ty)) in args.iter().zip(&info.params) {
         let v = match (&a.kind, ty) {
@@ -330,42 +338,55 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str) -> Result<Call, 
     Ok(Call { func: info.ir.clone(), args: vals, nrets: info.results.len(), expect: case.expect.clone() })
 }
 
-/// the function a phrase names, and its arguments in order: a word that
-/// is a variable in scope is an argument, every other word is part of
-/// the name, and the bracket groups and bare values are arguments
-fn find_function<'a>(funcs: &'a [FnInfo], parts: &[Part], vars: &HashMap<String, Var>, file: &str, line: usize) -> Result<(&'a FnInfo, Vec<Expr>), Error> {
-    let mut name = Vec::new();
-    let mut args = Vec::new();
-    for p in parts {
-        match p {
-            Part::Word(w) if vars.contains_key(w) => {
-                name.push(NamePart::Group);
-                args.push(Expr { kind: ExprKind::Name(w.clone()), line });
-            }
-            Part::Word(w) => name.push(NamePart::Word(w.clone())),
-            Part::Args(list) => {
-                name.push(NamePart::Group);
-                for a in list {
-                    if a.name.is_some() {
-                        return Err(lex::error(file, line, "a call's arguments are by position"));
+/// The function a phrase names, and its arguments in order: the bracket
+/// groups and bare values are arguments, and every word is part of the
+/// name — unless no function reads that way, when a word that names a
+/// variable in scope is an argument too (log 17)
+fn find_function<'a>(funcs: &'a [FnInfo], parts: &[Part], is_var: &dyn Fn(&str) -> bool, file: &str, line: usize) -> Result<(&'a FnInfo, Vec<Expr>), Error> {
+    let read = |vars_are_args: bool| -> Result<(Vec<NamePart>, Vec<Expr>), Error> {
+        let mut name = Vec::new();
+        let mut args = Vec::new();
+        for p in parts {
+            match p {
+                Part::Word(w) if vars_are_args && is_var(w) => {
+                    name.push(NamePart::Group);
+                    args.push(Expr { kind: ExprKind::Name(w.clone()), line });
+                }
+                Part::Word(w) => name.push(NamePart::Word(w.clone())),
+                Part::Args(list) => {
+                    name.push(NamePart::Group);
+                    for a in list {
+                        if a.name.is_some() {
+                            return Err(lex::error(file, line, "a call's arguments are by position"));
+                        }
+                        args.push(a.value.clone());
                     }
-                    args.push(a.value.clone());
+                }
+                Part::Value(e) => {
+                    name.push(NamePart::Group);
+                    args.push(e.clone());
                 }
             }
-            Part::Value(e) => {
-                name.push(NamePart::Group);
-                args.push(e.clone());
-            }
+        }
+        Ok((name, args))
+    };
+    let lookup = |name: &[NamePart]| -> Option<&'a FnInfo> {
+        let key = mangle(name);
+        funcs.iter().filter(|f| f.key == key && !f.parts.iter().any(|p| matches!(p, NamePart::Sym(_)))).last()
+    };
+    let (name, args) = read(false)?;
+    if let Some(info) = lookup(&name) {
+        if info.params.len() == args.len() {
+            return Ok((info, args));
         }
     }
-    let key = mangle(&name);
-    let found: Vec<&FnInfo> = funcs.iter().filter(|f| f.key == key && !f.parts.iter().any(|p| matches!(p, NamePart::Sym(_)))).collect();
-    let Some(info) = found.into_iter().last() else {
+    let (name, args) = read(true)?;
+    let Some(info) = lookup(&name) else {
         let words: Vec<String> = name.iter().filter_map(|p| if let NamePart::Word(w) = p { Some(w.clone()) } else { None }).collect();
         return Err(lex::error(file, line, format!("no function named '{}'", words.join(" "))));
     };
     if info.params.len() != args.len() {
-        return Err(lex::error(file, line, format!("'{}' takes {} argument(s), given {}", key, info.params.len(), args.len())));
+        return Err(lex::error(file, line, format!("'{}' takes {} argument(s), given {}", info.key, info.params.len(), args.len())));
     }
     Ok((info, args))
 }
@@ -379,6 +400,8 @@ struct Lowerer {
     data: Vec<String>,
     out: String,
     nstr: usize,
+    /// the feature-scope variables, in composition order
+    fvars: Vec<FVar>,
 }
 
 /// a variable in a function's scope: its current IR value and type
@@ -517,10 +540,9 @@ impl Lowerer {
         }
         match &t.kind {
             TypeKind::Enum(cases) => {
-                let mut bits = 1;
-                while (1u64 << bits) < cases.len() as u64 {
-                    bits += 1;
-                }
+                // a byte, or the next memory width, so that a variable
+                // of the type can be a field of the context (log 18)
+                let bits = if cases.len() <= 256 { 8 } else if cases.len() <= 65536 { 16 } else { 32 };
                 self.type_lines.push(format!("type {} = u{}", t.name, bits));
                 self.types.insert(t.name.clone(), TypeInfo::Enum(cases.clone()));
             }
@@ -596,6 +618,111 @@ impl Lowerer {
             return Err(lex::error(file, f.line, "redefinition is not in this item yet"));
         }
         self.funcs.push(FnInfo { key, ir, parts: f.name.clone(), params, results, feature: feature.to_string() });
+        Ok(())
+    }
+
+    /// a feature-scope variable: a field of the context (log 16)
+    fn declare_var(&mut self, v: &super::syntax::VarDecl, feature: &str, file: &str) -> Result<(), Error> {
+        if v.name == "enabled" {
+            return Err(lex::error(file, v.line, "every feature has 'enabled' already: a feature may not declare its own"));
+        }
+        if let Some(other) = self.fvars.iter().find(|f| f.name == v.name) {
+            return Err(lex::error(file, v.line, format!("'{}' is already a variable of feature {}", v.name, other.feature)));
+        }
+        if v.scope.len() > 1 {
+            return Err(lex::error(file, v.line, "a variable has one scope word: static, device or group"));
+        }
+        let ty = self.ty(&v.ty, v.seq, file, v.line)?;
+        self.fvars.push(FVar {
+            name: v.name.clone(),
+            ty,
+            scope: v.scope.first().cloned().unwrap_or_else(|| "user".into()),
+            merge: v.merge.clone().unwrap_or_else(|| "last".into()),
+            feature: feature.to_string(),
+        });
+        Ok(())
+    }
+
+    fn fvar(&self, name: &str) -> Option<&FVar> {
+        self.fvars.iter().find(|f| f.name == name)
+    }
+
+    /// the context struct, its storage, its accessors, and
+    /// `__zero_reset`, which puts every variable's initial value in it
+    fn emit_context(&mut self, store: &Store) -> Result<(), Error> {
+        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new() };
+        b.line("q: ptr = addr __out_n");
+        b.line("store 0: i64, q");
+        if !self.fvars.is_empty() {
+            let mut fields = Vec::new();
+            self.type_lines.push(String::new());
+            self.type_lines.push("; the context: one field per feature-scope variable — name: scope, merge (feature)".into());
+            for f in &self.fvars {
+                self.type_lines.push(format!(";   {}: {}, {} ({})", f.name, f.scope, f.merge, f.feature));
+                fields.push(format!("{}: {}", f.name, f.ty.ir()));
+            }
+            self.type_lines.push(format!("type __ctx = struct {{ {} }}", fields.join(", ")));
+            self.data.push("data __ctx_mem: array(__ctx, 1)".into());
+            // the initial values, in composition order
+            let mut inits = Vec::new();
+            for feat in &store.features {
+                for d in &feat.code.decls {
+                    let Decl::Var(v) = d else { continue };
+                    b.file = feat.code.file.clone();
+                    let ty = self.fvar(&v.name).unwrap().ty.clone();
+                    let val = match &v.init {
+                        None => self.zero_val(&ty, &mut b),
+                        Some(Init::Value(e)) => {
+                            let val = self.lower_expr(e, Some(&ty), &mut b, None)?;
+                            if !(val.ty == ty || (val.literal && fits_literal(&val, &ty))) {
+                                return Err(lex::error(&b.file, e.line, format!("'{}' is {} but the value is {}", v.name, ty.ir(), val.ty.ir())));
+                            }
+                            val
+                        }
+                        Some(Init::Construct(args)) => {
+                            let Ty::Struct(name) = &ty else {
+                                return Err(lex::error(&b.file, v.line, format!("'{}' is not a struct to construct", v.ty)));
+                            };
+                            self.construct(&name.clone(), args, &mut b, None, v.line)?
+                        }
+                        Some(Init::Pushes { .. }) => return Err(lex::error(&b.file, v.line, "streams are not in this item yet")),
+                    };
+                    inits.push(val.text);
+                }
+            }
+            let c = b.tmp();
+            b.line(&format!("{}: __ctx = pack {}", c, inits.join(", ")));
+            b.line("p: ptr = addr __ctx_mem");
+            b.line(&format!("store {}, p", c));
+        }
+        b.line("ret");
+        writeln!(self.out, "\n; before every case: the print buffer emptied, the variables at their initial values").unwrap();
+        writeln!(self.out, "fn __zero_reset() {{").unwrap();
+        self.out.push_str(&b.out);
+        self.out.push_str("}\n");
+        for f in &self.fvars {
+            let t = f.ty.ir();
+            writeln!(self.out, "\nfn __get_{}() -> {} {{\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    v: {} = get c, {}\n    ret v\n}}", f.name, t, t, f.name).unwrap();
+            writeln!(self.out, "\nfn __set_{}(v: {}) {{\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    c2: __ctx = set c, {}, v\n    store c2, p\n    ret\n}}", f.name, t, f.name).unwrap();
+        }
+        Ok(())
+    }
+
+    /// a feature variable read: a call to its getter
+    fn read_fvar(&mut self, name: &str, b: &mut Body, dst: Option<&str>) -> Val {
+        let ty = self.fvar(name).unwrap().ty.clone();
+        let out = name_for(dst, &ty, b);
+        b.line(&format!("{}: {} = __get_{}()", out, ty.ir(), name));
+        Val { text: out, ty, literal: false }
+    }
+
+    /// a feature variable written: a call to its setter
+    fn write_fvar(&mut self, name: &str, v: Val, b: &mut Body, line: usize) -> Result<(), Error> {
+        let ty = self.fvar(name).unwrap().ty.clone();
+        if !(v.ty == ty || (v.literal && fits_literal(&v, &ty))) {
+            return Err(lex::error(&b.file, line, format!("'{}' is {} but the value is {}", name, ty.ir(), v.ty.ir())));
+        }
+        b.line(&format!("__set_{}({})", name, v.text));
         Ok(())
     }
 
@@ -1063,20 +1190,28 @@ impl Lowerer {
         let file = b.file.clone();
         match s {
             Stmt::Assign { targets, value, line } => {
+                // a local is a new SSA version; a feature variable is a
+                // call to its setter, allowed anywhere
                 for t in targets {
-                    if !b.vars.contains_key(&t.name) {
+                    if b.vars.contains_key(&t.name) {
+                        b.assignable(&t.name, t.line)?;
+                    } else if self.fvar(&t.name).is_none() {
                         return Err(lex::error(&file, t.line, format!("'{}' is not declared: a variable is its type then its name", t.name)));
                     }
-                    b.assignable(&t.name, t.line)?;
                 }
                 if targets.len() == 1 {
                     let t = &targets[0];
+                    if !b.vars.contains_key(&t.name) {
+                        let ty = self.fvar(&t.name).unwrap().ty.clone();
+                        let v = self.lower_expr(value, Some(&ty), b, None)?;
+                        return self.write_fvar(&t.name, v, b, *line);
+                    }
                     let ty = b.vars[&t.name].ty.clone();
                     let v = self.lower_expr(value, Some(&ty), b, Some(&t.name))?;
                     return self.assign(&t.name, v, b, *line);
                 }
                 let names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
-                let tys: Vec<Ty> = names.iter().map(|n| b.vars[n].ty.clone()).collect();
+                let tys: Vec<Ty> = names.iter().map(|n| match b.vars.get(n) { Some(v) => v.ty.clone(), None => self.fvar(n).unwrap().ty.clone() }).collect();
                 self.lower_multi(value, &names, &tys, b, *line)
             }
             Stmt::Multi { vars, value, line } => {
@@ -1186,7 +1321,8 @@ impl Lowerer {
         let ExprKind::Phrase(parts) = &value.kind else {
             return Err(lex::error(&file, line, "several variables at once take a call with several results"));
         };
-        let (info, args) = find_function(&self.funcs, parts, &b.vars, &file, line)?;
+        let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
+        let (info, args) = find_function(&self.funcs, parts, &is_var, &file, line)?;
         let info = info.clone();
         if info.results.len() != names.len() {
             return Err(lex::error(&file, line, format!("'{}' gives {} result(s), {} wanted", info.key, info.results.len(), names.len())));
@@ -1197,8 +1333,26 @@ impl Lowerer {
                 return Err(lex::error(&file, line, format!("'{}' is {} but '{}' gives {}", n, want.ir(), info.key, got.ir())));
             }
         }
-        let defs: Vec<String> = names.iter().zip(tys).map(|(n, t)| format!("{}: {}", b.define(n, t.clone()), t.ir())).collect();
+        // a feature variable among the targets takes its result through
+        // a temporary and its setter
+        let mut sets = Vec::new();
+        let defs: Vec<String> = names
+            .iter()
+            .zip(tys)
+            .map(|(n, t)| {
+                if b.vars.contains_key(n) {
+                    format!("{}: {}", b.define(n, t.clone()), t.ir())
+                } else {
+                    let tmp = b.tmp();
+                    sets.push((n.clone(), tmp.clone()));
+                    format!("{}: {}", tmp, t.ir())
+                }
+            })
+            .collect();
         b.line(&format!("{} = {}({})", defs.join(", "), info.ir, ops.join(", ")));
+        for (n, tmp) in sets {
+            b.line(&format!("__set_{}({})", n, tmp));
+        }
         Ok(())
     }
 
@@ -1295,6 +1449,7 @@ impl Lowerer {
             ExprKind::Name(n) => match b.vars.get(n) {
                 Some(v) if v.set => Ok(Val { text: v.ir.clone(), ty: v.ty.clone(), literal: false }),
                 Some(_) => Err(lex::error(&file, e.line, format!("'{}' is read before it is assigned", n))),
+                None if self.fvar(n).is_some() => Ok(self.read_fvar(n, b, dst)),
                 None => Err(lex::error(&file, e.line, format!("'{}' is not a variable here", n))),
             },
             ExprKind::Field(base, field) => {
@@ -1415,7 +1570,7 @@ impl Lowerer {
             ExprKind::Phrase(parts) => {
                 // a lone word: a variable, or an enumeration's case
                 if let [Part::Word(w)] = parts.as_slice() {
-                    if b.vars.contains_key(w) {
+                    if b.vars.contains_key(w) || self.fvar(w).is_some() {
                         return self.lower_expr(&Expr { kind: ExprKind::Name(w.clone()), line: e.line }, want, b, dst);
                     }
                     if let Some(v) = self.enum_case(w) {
@@ -1449,7 +1604,8 @@ impl Lowerer {
                         };
                     }
                 }
-                let (info, args) = find_function(&self.funcs, parts, &b.vars, &file, e.line)?;
+                let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
+                let (info, args) = find_function(&self.funcs, parts, &is_var, &file, e.line)?;
                 let info = info.clone();
                 let (ops, rtys) = self.lower_args(&info, &args, b)?;
                 let call = format!("{}({})", info.ir, ops.join(", "));
