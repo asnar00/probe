@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: probe zero test on the machines — `876921b` · 2026-09-08
+
+```
+>answer() → 43
+>greet() → "hi there"
+>boom() → check
+```
+
+`probe zero test [dir] [wasm|riscv|arm-qemu|air]`: a zero store now runs on every path probe has, through the suite's own machine drivers. The three runners' prepare-build-run bodies in `src/suite.rs` became one `machine_output`, used by `run_riscv`, `run_arm_qemu`, `run_air` and the zero runner's `run_calls` alike; the driver calls `__zero_reset()` at the top of each case, prints an empty line for a call with no results, and after a case wanting text prints the output buffer as hex words through a generated `__ptext()`. A check case boots alone with the trap handler; air skips checks and recursion as it does for directives. The scratch store above (wrong number, wrong text, an index out of range) fails the first two with the machine's real values and passes the check on all four paths, air skipping it. Five `zero_suite_*` cargo tests run `suite/zero` on every path. 96/96 on native, wasm, riscv, arm-qemu and air; probe test 960, 951 + 9, 960, 960, 931 + 29; cargo test 91 passed, 0 failed, 2 ignored.
+
 ### zero: sequences — `aec4a77` · 2026-09-08
 
 ```
