@@ -4,6 +4,12 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### README: probe zero — `e74567d` · 2026-09-08
+
+Plan item 13 of milestone 0, the documentation half that lives in probe: `README.md` gains a section on `probe zero` — the store it reads (`name/name.md` for the prose and cases, `name/name.zero` for the code), the commands (`zero <store> emit`, `zero <store> run <case>`, `zero test [dir] [path]`), the case form, the compiler's own `platform` feature and a store's platform bodies, the `.expected.ssa` files and the fourteen stores under `suite/zero/`, illustrated with `suite/zero/skeleton` verbatim. The other half — the milestone 0 line at the top of each of zero.md's sections 2 to 15, six sentences corrected, and the log and questions files — is in the fm3 project, which is not a repository.
+
+---
+
 ### zero: the three programs — `9c90e1c` · 2026-09-08
 
 ```
