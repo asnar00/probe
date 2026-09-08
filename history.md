@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the front end's skeleton — `103c9da` · 2026-09-08
+
+```
+on (int n) = answer()
+    n = 42
+
+on hi()
+    print "hi"
+```
+
+Milestone 0 of fm3 begins: zero, the feature-modular language defined in `fm3/zero.md`, gets its front end in probe — `src/zero/`, plain Rust, a lexer, a parser, a store reader and a lowering to IR *text*, which then goes through `parse` and everything after it, so the IR stays the meaning and `probe parse` is the oracle for the front end. `probe zero <store> emit` prints that text, `probe zero <store> run <case>` runs one case, `probe zero test [dir] [wasm]` runs every store under `suite/zero` the way the suite runs its files. A store is a flat folder of feature folders, `name/name.md` beside `name/name.zero`: the prose carries `parent:`, `layer:`, the origins with their timestamps (composition order), and the cases under `## testing` as `>answer() → 42` — a number, a quoted string compared with what `print` wrote, or `check`. Blocks are indentation; a `#` in a `.zero` file is refused with its line. `print` appends to a `data` buffer the runner reads back through two IR functions on both paths (`suite::run_calls`, and a `text:` line from `driver.js`), and `__zero_reset()` runs before every case because the JIT keeps one instance of the program. The parser already covers the whole surface of zero.md; the lowering handles a literal and a print and says "not in this item yet" to the rest. `suite/zero/skeleton`: 2/2 native and wasm; 958 and 949 on the suite as before; two Rust tests that walked `suite/` learned to skip the `zero` directory.
+
 ### Ticks: time at the boundary — `1576d32` · 2026-08-29
 
 ```
