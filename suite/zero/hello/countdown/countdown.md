@@ -18,6 +18,7 @@ Before hello says hello, `count down` prints 10 to 1 on one line, one number a s
 ## rules
 - Section 16 writes `print [10 through 1] at (1 hz)`; here the rate is on the task's wiring and `print` takes the frame, one line with a space between the numbers (log 28).
 - With `countdown.enabled` false, `run` falls through to hello's.
+- `bound 10` on the task's chain is section 7's declared trip count on the repeated push, the number section 16 counts from; it goes onto the IR's `loop() bound 10 {`, trusted, not checked, so `probe cost` on `run` counts the countdown as ten passes (log 33).
 
 ## testing
 >count down() → "10 9 8 7 6 5 4 3 2 1"

@@ -96,7 +96,7 @@ pub enum Init {
     /// `Vec v(1, 2, 3)`, `Vec v(z = 3, x = 1)`
     Construct(Vec<Arg>),
     /// `int i$ << 1 << (i$ + 1) while (i$ < 5)`
-    Pushes { items: Vec<Expr>, cond: Option<Expr> },
+    Pushes { items: Vec<Expr>, cond: Option<Expr>, bound: Option<i64> },
 }
 
 #[derive(Clone, Debug)]
@@ -117,7 +117,7 @@ pub enum Stmt {
     Break { line: usize },
     Check { cond: Expr, line: usize },
     /// `x$ << a << b while (c)`
-    Push { target: Expr, items: Vec<Expr>, cond: Option<Expr>, line: usize },
+    Push { target: Expr, items: Vec<Expr>, cond: Option<Expr>, bound: Option<i64>, line: usize },
     Expr { expr: Expr, line: usize },
 }
 
@@ -571,8 +571,8 @@ impl<'a> Parser<'a> {
         } else if self.at_sym("(") {
             Some(Init::Construct(self.parse_args()?))
         } else if self.at_sym("<<") {
-            let (items, cond) = self.parse_pushes()?;
-            Some(Init::Pushes { items, cond })
+            let (items, cond, bound) = self.parse_pushes()?;
+            Some(Init::Pushes { items, cond, bound })
         } else {
             None
         };
@@ -580,9 +580,10 @@ impl<'a> Parser<'a> {
         Ok(VarDecl { line, scope, ty, name, seq, init, merge, rate })
     }
 
-    /// `<< a << b [while (c)]`; a bare `<<` at the end of the line
-    /// declares a stream with nothing in it yet (log 25)
-    fn parse_pushes(&mut self) -> Result<(Vec<Expr>, Option<Expr>), Error> {
+    /// `<< a << b [while (c) [bound N]]`; a bare `<<` at the end of the
+    /// line declares a stream with nothing in it yet (log 25); `bound N`
+    /// is the repeated push's trip count, as a loop's is (log 33)
+    fn parse_pushes(&mut self) -> Result<(Vec<Expr>, Option<Expr>, Option<i64>), Error> {
         let mut items = Vec::new();
         while self.eat_sym("<<") {
             if self.at(&Tok::Newline) {
@@ -591,7 +592,21 @@ impl<'a> Parser<'a> {
             items.push(self.parse_expr()?);
         }
         let cond = if self.eat_word("while") { Some(self.parse_expr()?) } else { None };
-        Ok((items, cond))
+        let bound = if self.eat_word("bound") {
+            if cond.is_none() {
+                return Err(self.err("'bound' goes with `while`: it is the repeated push's trip count"));
+            }
+            match self.next()? {
+                Tok::Int(n) if n > 0 => Some(n),
+                t => {
+                    self.pos -= 1;
+                    return Err(self.err(format!("'bound' takes a positive number, not {}", t)));
+                }
+            }
+        } else {
+            None
+        };
+        Ok((items, cond, bound))
     }
 
     // --- statements ---
@@ -760,12 +775,12 @@ impl<'a> Parser<'a> {
             }
             Some(Tok::Seq(_)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) => {
                 let target = self.parse_primary()?;
-                let (items, cond) = self.parse_pushes()?;
+                let (items, cond, bound) = self.parse_pushes()?;
                 if items.is_empty() {
                     return Err(self.err("nothing to push: `x$ << item`"));
                 }
                 self.expect_newline()?;
-                Ok(Stmt::Push { target, items, cond, line })
+                Ok(Stmt::Push { target, items, cond, bound, line })
             }
             Some(Tok::Indent) => Err(self.err("an indented line with nothing to belong to")),
             _ => {

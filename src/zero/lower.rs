@@ -1024,7 +1024,7 @@ impl Lowerer {
         }
         ops.push(match (&b.kind, hz) {
             (BodyKind::Task { hz: h, .. }, 0) => h.clone(),
-            _ => hz.to_string(),
+            _ => format!("{}: i64", hz),
         });
         // the moved readers: a local's next version, a feature variable's setter
         let mut defs = Vec::new();
@@ -1056,7 +1056,7 @@ impl Lowerer {
     fn collect_nodes(&mut self, v: &super::syntax::VarDecl, feature: &str, file: &str) -> Result<(), Error> {
         let calls: Vec<&Expr> = match &v.init {
             Some(Init::Value(e)) if self.task_call(e, None, file)?.is_some() => vec![e],
-            Some(Init::Pushes { items, cond }) => {
+            Some(Init::Pushes { items, cond, .. }) => {
                 let mut first = None;
                 for (i, e) in items.iter().enumerate() {
                     if self.task_call(e, None, file)?.is_some() {
@@ -1187,11 +1187,11 @@ impl Lowerer {
                             };
                             let s = self.make_stream(&ty, hz, &mut b, None)?;
                             match &v.init {
-                                Some(Init::Pushes { items, cond }) => {
+                                Some(Init::Pushes { items, cond, bound }) => {
                                     // the items before the first task call
                                     // are pushed here; the calls are nodes
                                     let n = items.iter().position(|e| matches!(self.task_call(e, None, &b.file), Ok(Some(_)))).unwrap_or(items.len());
-                                    self.lower_pushes(&v.name, &s, &items[..n], cond.as_ref(), &mut b)?;
+                                    self.lower_pushes(&v.name, &s, &items[..n], cond.as_ref(), *bound, &mut b)?;
                                 }
                                 None => {}
                                 Some(Init::Value(_)) => {}
@@ -1401,7 +1401,7 @@ impl Lowerer {
                 ops.push(self.plain_arg(&node.info, a, pty, &mut b)?);
             }
         }
-        ops.push(node.hz.to_string());
+        ops.push(format!("{}: i64", node.hz));
         let call = format!("{}({})", node.info.ir, ops.join(", "));
         let mut moved = Vec::new();
         for (_, _, ty, _) in &readers {
@@ -1469,7 +1469,9 @@ impl Lowerer {
         if !fits(&v.ty, pty) {
             return Err(lex::error(&file, a.line, format!("'{}' wants a {} here, given a {}", info.key, pty.ir(), v.ty.ir())));
         }
-        Ok(v.text)
+        // a literal is defined with its type first: in a node, a plain IR
+        // function, a bare literal to an abstract `int` has no type to take
+        Ok(b.materialize(&v).text)
     }
 
     /// a feature variable read: a call to its getter
@@ -2191,7 +2193,7 @@ impl Lowerer {
                     let s = self.make_stream(&ty, hz, b, Some(&v.name))?;
                     self.assign(&v.name, s.clone(), b, v.line)?;
                     return match &v.init {
-                        Some(Init::Pushes { items, cond }) => self.lower_pushes(&v.name, &s, items, cond.as_ref(), b),
+                        Some(Init::Pushes { items, cond, bound }) => self.lower_pushes(&v.name, &s, items, cond.as_ref(), *bound, b),
                         None => Ok(()),
                         Some(Init::Value(e)) => {
                             let (info, args, hz) = self.task_call(e, Some(&b.vars), &file)?.unwrap();
@@ -2299,7 +2301,7 @@ impl Lowerer {
                 b.line("}");
                 Ok(())
             }
-            Stmt::Push { target, items, cond, line } => {
+            Stmt::Push { target, items, cond, bound, line } => {
                 let ExprKind::Seq(n) = &target.kind else {
                     return Err(lex::error(&file, *line, "`<<` pushes into a stream, named `x$`"));
                 };
@@ -2310,7 +2312,7 @@ impl Lowerer {
                     });
                 }
                 let s = self.lower_expr(&Expr { kind: ExprKind::Name(n.clone()), line: *line }, None, b, None)?;
-                self.lower_pushes(n, &s, items, cond.as_ref(), b)?;
+                self.lower_pushes(n, &s, items, cond.as_ref(), *bound, b)?;
                 self.trigger(n, b);
                 Ok(())
             }
@@ -3055,7 +3057,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
     /// `x$ << a << b while (c)`: a push per item, the stream's name on
     /// the right reading as its latest item; `while` repeats the last
     /// push for as long as the condition holds of the candidate (log 23)
-    fn lower_pushes(&mut self, name: &str, s: &Val, items: &[Expr], cond: Option<&Expr>, b: &mut Body) -> Result<(), Error> {
+    fn lower_pushes(&mut self, name: &str, s: &Val, items: &[Expr], cond: Option<&Expr>, bound: Option<i64>, b: &mut Body) -> Result<(), Error> {
         let file = b.file.clone();
         let Ty::Stream(elem, regular) = s.ty.clone() else { unreachable!() };
         let elem = *elem;
@@ -3085,7 +3087,12 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
             }
             match cond {
                 Some(c) if last => {
-                    b.line("loop() {");
+                    // `bound N` (log 33) goes onto the chain's loop as onto
+                    // any loop: a declared trip count, trusted, for `probe cost`
+                    match bound {
+                        Some(n) => b.line(&format!("loop() bound {} {{", n)),
+                        None => b.line("loop() {"),
+                    }
                     b.depth += 1;
                     self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
                     let v = item(self, e, b);
@@ -3399,10 +3406,24 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     "hz" | "khz" => return Err(lex::error(&file, e.line, "a rate belongs on a stream's declaration: `T x$ at (n hz)`")),
                     _ => return Err(lex::error(&file, e.line, format!("'{}' is not a unit of time here: s, ms, us or ns", u))),
                 };
-                let ExprKind::Int(n) = inner.kind else {
-                    return Err(lex::error(&file, e.line, "a time is a whole number of s, ms, us or ns"));
-                };
                 let ty = Ty::Num("time".into());
+                let n = match inner.kind {
+                    ExprKind::Int(n) => n.to_string(),
+                    ExprKind::Float(_) => return Err(lex::error(&file, e.line, "a time is a whole number of s, ms, us or ns")),
+                    _ => {
+                        // a value with a unit: an integer, widened to the
+                        // library's i64 (log 33)
+                        let v = self.lower_expr(inner, None, b, None)?;
+                        let integer = matches!(&v.ty, Ty::Num(t) if t == "int" || t == "uint" || (t.starts_with(['i', 'u']) && t[1..].parse::<u32>().is_ok()));
+                        if !integer {
+                            return Err(lex::error(&file, e.line, format!("'{}' takes a whole number, given a {}", u, v.ty.ir())));
+                        }
+                        let v = b.materialize(&v);
+                        let w = b.tmp();
+                        b.line(&format!("{}: i64 = conv {}", w, v.text));
+                        w
+                    }
+                };
                 let out = name_for(dst, &ty, b);
                 b.line(&format!("{}: time = {}({})", out, f, n));
                 Ok(Val { text: out, ty, literal: false })
@@ -3609,6 +3630,15 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     return Ok(v);
                 }
                 // `count x$`: a sequence's length, as an int
+                // a unit on a variable, `m ms` (log 33): the time it names,
+                // computed once at the boundary
+                if let [Part::Word(w), Part::Word(u)] = parts.as_slice() {
+                    if (b.vars.contains_key(w) || self.fvar(w).is_some()) && matches!(u.as_str(), "s" | "ms" | "us" | "ns") {
+                        let inner = Expr { kind: ExprKind::Name(w.clone()), line: e.line };
+                        let unit = Expr { kind: ExprKind::Unit(Box::new(inner), u.clone()), line: e.line };
+                        return self.lower_expr(&unit, want, b, dst);
+                    }
+                }
                 if let [Part::Word(w), rest] = parts.as_slice() {
                     let named;
                     let arg = match rest {
@@ -3749,7 +3779,7 @@ fn moved_streams(stmts: &[Stmt], out: &mut Vec<String>, task: &dyn Fn(&[Part]) -
             Stmt::Var(v) => match &v.init {
                 Some(Init::Value(e)) => moved_in(e, out, task),
                 Some(Init::Construct(args)) => args.iter().for_each(|a| moved_in(&a.value, out, task)),
-                Some(Init::Pushes { items, cond }) => {
+                Some(Init::Pushes { items, cond, .. }) => {
                     items.iter().for_each(|e| moved_in(e, out, task));
                     cond.iter().for_each(|e| moved_in(e, out, task));
                 }

@@ -148,6 +148,21 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                 continue;
             }
         };
+        // `<name>.expected.ssa` beside the store: the IR the front end
+        // emitted when it was accepted, so a lowering change is a diff
+        // (log 33); the first line names the store's path and is not compared
+        let expected = dir.join(format!("{}.expected.ssa", name));
+        if let Ok(want) = std::fs::read_to_string(&expected) {
+            let (got_lines, want_lines): (Vec<&str>, Vec<&str>) = (lowered.ir.lines().skip(1).collect(), want.lines().skip(1).collect());
+            let file = expected.display().to_string();
+            match got_lines.iter().zip(&want_lines).position(|(g, w)| g != w).or_else(|| (got_lines.len() != want_lines.len()).then_some(got_lines.len().min(want_lines.len()))) {
+                None => report.case(true, &name, &format!("{} matches the emitted IR", file), ""),
+                Some(i) => {
+                    let show = |v: &Vec<&str>| v.get(i).map(|l| l.trim().to_string()).unwrap_or_else(|| "(the end)".into());
+                    report.case(false, &name, &format!("{} differs from the emitted IR", file), &format!("(line {}: emitted `{}`, expected `{}`; `probe zero {} emit > {}` accepts the change)", i + 2, show(&got_lines), show(&want_lines), sdir.display(), file));
+                }
+            }
+        }
         // a case whose function is out of reach on this kind of place
         // (section 15, log 31) is skipped, saying which platform
         // function has no body for it
