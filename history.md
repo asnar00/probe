@@ -4,6 +4,22 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: sequences — `aec4a77` · 2026-09-08
+
+```
+on (int n) = zipped()
+    int i$ = [1, 2, 3, 4]
+    int j$ = [4, 5, 6]
+    int k$ = i$ + j$
+    n = count k$ * 100 + k$[3] * 10 + (k$ + _) - 25
+
+on (int m) = smallest()
+    int i$ = [4, 1, 3]
+    m = smaller of (i$) and (_)
+```
+
+Plan item 6 of milestone 0, section 8 of zero.md. A sequence `T$` is the IR's view `T[]`, carved from one arena per store that `__zero_reset` empties before each case, so nothing a call makes aliases what an earlier call made. Lists and ranges fill a new sequence, `x$[i]` is a checked `load`, `count` is `len`, `for` walks the index. A function of one item over a sequence is a loop giving a new sequence (an operator with a scalar, the slice library's chunked `add`); two sequences run to the longer length, the shorter reading as zero past its end; `_` folds one sequence from its first item, `+` through the library's `sum`. The wasm emitter now sizes its memory from the data rather than one page, with `suite/data.ssa`'s `big_end` covering it everywhere. `suite/zero/sequences`: 21 cases, 96/96 on both paths; probe test 960, wasm 951 + 9; cargo test 83 passed and the 3 Metal tests, qemu and llvm-dis having arrived on the machine during this item.
+
 ### zero: variables — `b9e9172` · 2026-09-08
 
 ```
