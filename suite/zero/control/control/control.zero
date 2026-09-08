@@ -1,0 +1,80 @@
+on (int s) = sign of (int x)
+    if (x < 0)
+        s = -1
+    else if (x > 0)
+        s = 1
+
+on (int a) = magnitude of (int x)
+    a = x
+    if (x < 0)
+        a = -x
+
+on describe (int x)
+    if (x < 0)
+        print "negative"
+    else
+        print "not negative"
+
+on (int s) = sum to (int n)
+    loop (int i = 1, int acc = 0) while (i <= n) bound 100
+        continue (i + 1, acc + i)
+    s = acc
+
+on (int g) = gcd of (int a) and (int b)
+    loop (int x = a, int y = b) while (y != 0)
+        int r = x % y
+        continue (y, r)
+    g = x
+
+on (int p) = power of two above (int n)
+    loop (int q = 1)
+        if (q > n)
+            break
+        q = q * 2
+    p = q
+
+on (int d) = digits of (int n)
+    loop (int x = n, int count = 1)
+        if (x < 10)
+            break
+        continue (x / 10, count + 1)
+    d = count
+
+on (int n) = collatz steps (int start)
+    loop (int x = start, int steps = 0)
+        if (x == 1)
+            break
+        if (x % 2 == 0)
+            x = x / 2
+        else
+            x = 3 * x + 1
+        steps = steps + 1
+    n = steps
+
+on (int t) = triangle (int n)
+    loop (int i = 1, int total = 0) while (i <= n)
+        loop (int j = 1, int row = 0) while (j <= i)
+            continue (j + 1, row + j)
+        continue (i + 1, total + row)
+    t = total
+
+on ticks ()
+    for (i in [1 through 3])
+        print "tick"
+
+on blast off ()
+    for (i in [3 through 1])
+        if (i == 1)
+            print "one"
+        else
+            print "more"
+
+on halves ()
+    for (i in [0 to 4])
+        if (i % 2 == 0)
+            continue
+        print "odd"
+
+on steps from (int a) to (int b)
+    for (i in [a through b])
+        print "step"

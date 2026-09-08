@@ -386,8 +386,22 @@ struct Lowerer {
 struct Var {
     ir: String,
     ty: Ty,
-    /// how many times it has been defined: the next version's suffix
-    versions: usize,
+    /// has it a value yet? A result starts without one
+    set: bool,
+    /// how many loops enclosed its declaration: a variable may be
+    /// assigned only at the depth it was declared, or by the loop that
+    /// carries it (log 12)
+    loop_depth: usize,
+}
+
+/// a loop being lowered: what `break` and `continue` need
+struct LoopCtx {
+    /// the carried variables, in the header's order; empty for a `for`
+    carried: Vec<String>,
+    /// a `for`'s item: its name and the step (`add`/`sub`, the amount)
+    item: Option<(String, &'static str, String)>,
+    /// how many `break`s the body has, the `while` test's included
+    breaks: usize,
 }
 
 /// a value: the text that stands for it as an operand — a name, or a
@@ -403,11 +417,16 @@ struct Val {
 struct Body {
     out: String,
     ntmp: usize,
+    /// the variables in scope; a block's declarations leave with it
     vars: HashMap<String, Var>,
+    /// how many IR definitions each name has had, for the whole body,
+    /// so a name declared again after its block closed is still SSA
+    defs: HashMap<String, usize>,
     results: Vec<(String, Ty)>,
     file: String,
     /// how deep in structured blocks the next line is
     depth: usize,
+    loops: Vec<LoopCtx>,
 }
 
 impl Body {
@@ -424,13 +443,45 @@ impl Body {
         self.out.push('\n');
     }
 
-    /// the IR name for a new definition of `name`
+    /// a variable brought into scope, with no value yet
+    fn declare(&mut self, name: &str, ty: Ty) {
+        let depth = self.loops.len();
+        self.vars.insert(name.to_string(), Var { ir: String::new(), ty, set: false, loop_depth: depth });
+    }
+
+    /// the IR name for a new definition of `name`: the name itself the
+    /// first time, `name_2`, `name_3` after
     fn define(&mut self, name: &str, ty: Ty) -> String {
-        let v = self.vars.entry(name.to_string()).or_insert(Var { ir: name.to_string(), ty: ty.clone(), versions: 0 });
-        v.versions += 1;
+        let depth = self.loops.len();
+        let n = self.defs.entry(name.to_string()).or_insert(0);
+        *n += 1;
+        let ir = if *n == 1 { name.to_string() } else { format!("{}_{}", name, n) };
+        let v = self.vars.entry(name.to_string()).or_insert(Var { ir: String::new(), ty: ty.clone(), set: false, loop_depth: depth });
         v.ty = ty;
-        v.ir = if v.versions == 1 { name.to_string() } else { format!("{}_{}", name, v.versions) };
-        v.ir.clone()
+        v.set = true;
+        v.ir = ir.clone();
+        ir
+    }
+
+    /// the current IR values of some variables, in order
+    fn current(&self, names: &[String]) -> Vec<String> {
+        names.iter().map(|n| self.vars[n].ir.clone()).collect()
+    }
+
+    /// may `name` be assigned here? Only at the depth it was declared,
+    /// which includes a loop's own carried variables; a `for`'s item
+    /// and a variable of an enclosing block are not (log 12)
+    fn assignable(&self, name: &str, line: usize) -> Result<(), Error> {
+        let v = &self.vars[name];
+        if let Some(l) = self.loops.last() {
+            if l.item.as_ref().map(|(i, _, _)| i.as_str()) == Some(name) {
+                return Err(lex::error(&self.file, line, format!("'{}' is the item of the `for`: it steps by itself and is not assigned", name)));
+            }
+        }
+        if v.loop_depth != self.loops.len() {
+            return Err(lex::error(&self.file, line, format!("'{}' is declared outside the loop: carry it in the loop's header, `loop ({} {} = ...)`", name, v.ty.ir(), name)));
+        }
+        Ok(())
     }
 
     /// a literal made into a value, where the IR wants a name
@@ -551,7 +602,7 @@ impl Lowerer {
     fn lower_fn(&mut self, f: &FnDecl, file: &str) -> Result<(), Error> {
         let key = mangle(&f.name);
         let info = self.funcs.iter().find(|g| g.key == key && g.parts == f.name && g.params.len() == f.params().count()).unwrap().clone();
-        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), results: info.results.clone(), file: file.to_string(), depth: 0 };
+        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: info.results.clone(), file: file.to_string(), depth: 0, loops: Vec::new() };
         let mut sig = format!("fn {}(", info.ir);
         for (i, (n, t)) in info.params.iter().enumerate() {
             if i > 0 {
@@ -561,7 +612,7 @@ impl Lowerer {
             if b.vars.contains_key(n) {
                 return Err(lex::error(file, f.line, format!("parameter '{}' is named twice", n)));
             }
-            b.vars.insert(n.clone(), Var { ir: n.clone(), ty: t.clone(), versions: 1 });
+            b.define(n, t.clone());
         }
         sig.push(')');
         match info.results.len() {
@@ -576,31 +627,354 @@ impl Lowerer {
             if b.vars.contains_key(n) {
                 return Err(lex::error(file, f.line, format!("result '{}' is also a parameter, or named twice", n)));
             }
-            b.vars.insert(n.clone(), Var { ir: String::new(), ty: t.clone(), versions: 0 });
+            b.declare(n, t.clone());
         }
         writeln!(self.out, "{} {{", sig).unwrap();
-        self.lower_block(&f.body, &mut b)?;
-        // the results' current values; one never assigned is its type's zero
-        let mut rets = Vec::new();
-        for (n, t) in &b.results.clone() {
-            let v = b.vars[n].clone();
-            if v.versions == 0 {
-                rets.push(self.zero_val(t, &mut b).text);
-            } else {
-                rets.push(v.ir);
+        let terminated = self.lower_block(&f.body, &mut b)?;
+        // the results' current values; one never assigned is its type's
+        // zero. A body that ends in a loop with no way out never returns
+        if !terminated {
+            let mut rets = Vec::new();
+            for (n, t) in &b.results.clone() {
+                let v = b.vars[n].clone();
+                if !v.set {
+                    rets.push(self.zero_val(t, &mut b).text);
+                } else {
+                    rets.push(v.ir);
+                }
             }
+            b.line(format!("ret {}", rets.join(", ")).trim_end());
         }
-        b.line(format!("ret {}", rets.join(", ")).trim_end());
         self.out.push_str(&b.out);
         self.out.push_str("}\n");
         Ok(())
     }
 
-    fn lower_block(&mut self, stmts: &[Stmt], b: &mut Body) -> Result<(), Error> {
-        for s in stmts {
+    /// Lower a block's statements; true when the block ends in `break`
+    /// or `continue` (or an `if` or `loop` that always does). A
+    /// statement after that would never run, and is refused here with
+    /// its zero line rather than by the IR with an IR line (log 14).
+    fn lower_block(&mut self, stmts: &[Stmt], b: &mut Body) -> Result<bool, Error> {
+        for (i, s) in stmts.iter().enumerate() {
             self.lower_stmt(s, b)?;
+            if i + 1 < stmts.len() && terminates(&stmts[..=i]) {
+                return Err(lex::error(&b.file, stmt_line(&stmts[i + 1]), "this never runs: the statement before it leaves the block"));
+            }
         }
+        Ok(terminates(stmts))
+    }
+
+    /// `if (c)` as a statement (log 11): the variables an arm assigns
+    /// become the results of the IR's value-yielding `if`, each arm
+    /// yielding its version, so the code after reads the join's names
+    fn lower_if(&mut self, cond: &Expr, then: &[Stmt], els: Option<&[Stmt]>, b: &mut Body) -> Result<(), Error> {
+        let file = b.file.clone();
+        let cv = self.lower_expr(cond, Some(&Ty::Bool), b, None)?;
+        if cv.ty != Ty::Bool {
+            return Err(lex::error(&file, cond.line, "'if' takes a bool"));
+        }
+        let cv = b.materialize(&cv);
+        let before = b.vars.clone();
+        let start = b.out.len();
+        b.depth += 1;
+        let t_term = self.lower_block(then, b)?;
+        let then_vars = std::mem::replace(&mut b.vars, before.clone());
+        let mut then_lines = b.out.split_off(start);
+        let (e_term, else_vars) = match els {
+            Some(e) => {
+                let t = self.lower_block(e, b)?;
+                (t, std::mem::replace(&mut b.vars, before.clone()))
+            }
+            None => (false, before.clone()),
+        };
+        let mut else_lines = b.out.split_off(start);
+        b.depth -= 1;
+        // the join's results: the variables from before that an arm
+        // which falls through has given a new value
+        let differs = |arm: &HashMap<String, Var>, n: &str| arm[n].ir != before[n].ir || arm[n].set != before[n].set;
+        let mut changed: Vec<String> = before.keys().filter(|n| (!t_term && differs(&then_vars, n)) || (!e_term && differs(&else_vars, n))).cloned().collect();
+        changed.sort();
+        // what each arm yields: its version, or the type's zero for a
+        // variable that has none yet on that path
+        let mut yields = |lines: &mut String, vars: &HashMap<String, Var>, b: &mut Body| -> Vec<String> {
+            let saved = std::mem::replace(&mut b.out, std::mem::take(lines));
+            b.depth += 1;
+            let mut out = Vec::new();
+            for n in &changed {
+                let v = &vars[n];
+                if v.set {
+                    out.push(v.ir.clone());
+                } else {
+                    let ty = v.ty.clone();
+                    out.push(self.zero_val(&ty, b).text);
+                }
+            }
+            b.depth -= 1;
+            *lines = std::mem::replace(&mut b.out, saved);
+            out
+        };
+        let then_yields = if t_term { Vec::new() } else { yields(&mut then_lines, &then_vars, b) };
+        let else_yields = if e_term { Vec::new() } else { yields(&mut else_lines, &else_vars, b) };
+        let head = if changed.is_empty() {
+            format!("if {} {{", cv.text)
+        } else {
+            let defs: Vec<String> = changed.iter().map(|n| {
+                let ty = before[n].ty.clone();
+                format!("{}: {}", b.define(n, ty.clone()), ty.ir())
+            }).collect();
+            format!("{} = if {} {{", defs.join(", "), cv.text)
+        };
+        b.line(&head);
+        b.out.push_str(&then_lines);
+        if !t_term && !changed.is_empty() {
+            b.depth += 1;
+            b.line(&format!("yield {}", then_yields.join(", ")));
+            b.depth -= 1;
+        }
+        if els.is_some() || !changed.is_empty() {
+            b.line("} else {");
+            b.out.push_str(&else_lines);
+            if !e_term && !changed.is_empty() {
+                b.depth += 1;
+                b.line(&format!("yield {}", else_yields.join(", ")));
+                b.depth -= 1;
+            }
+        }
+        b.line("}");
         Ok(())
+    }
+
+    /// `loop (vars) while (c) bound N` (log 12): the carried variables
+    /// are the header's, `while` is tested at the top of every pass, a
+    /// body that falls off its end continues with the current versions,
+    /// every `break` yields them, and after the loop the variables hold
+    /// the values it left with
+    fn lower_loop(&mut self, vars: &[super::syntax::VarDecl], cond: Option<&Expr>, bound: Option<i64>, body: &[Stmt], line: usize, b: &mut Body) -> Result<bool, Error> {
+        let file = b.file.clone();
+        // the initial values, in the block before the loop
+        let mut header = Vec::new();
+        let mut carried = Vec::new();
+        let mut tys = Vec::new();
+        for v in vars {
+            if !v.scope.is_empty() || v.merge.is_some() {
+                return Err(lex::error(&file, v.line, "a scope word or 'merge' belongs on a feature-scope variable"));
+            }
+            if b.vars.contains_key(&v.name) || carried.contains(&v.name) {
+                return Err(lex::error(&file, v.line, format!("'{}' is already declared", v.name)));
+            }
+            let ty = self.ty(&v.ty, v.seq, &file, v.line)?;
+            let init = match &v.init {
+                None => self.zero_val(&ty, b),
+                Some(Init::Value(e)) => {
+                    let val = self.lower_expr(e, Some(&ty), b, None)?;
+                    if !(val.ty == ty || (val.literal && fits_literal(&val, &ty))) {
+                        return Err(lex::error(&file, e.line, format!("'{}' is {} but the value is {}", v.name, ty.ir(), val.ty.ir())));
+                    }
+                    val
+                }
+                Some(Init::Construct(args)) => {
+                    let Ty::Struct(name) = &ty else {
+                        return Err(lex::error(&file, v.line, format!("'{}' is not a struct to construct", v.ty)));
+                    };
+                    self.construct(&name.clone(), args, b, None, v.line)?
+                }
+                Some(Init::Pushes { .. }) => return Err(lex::error(&file, v.line, "streams are not in this item yet")),
+            };
+            header.push((v.name.clone(), ty.clone(), init.text));
+            carried.push(v.name.clone());
+            tys.push(ty);
+        }
+        // the carried variables are declared inside the loop
+        b.loops.push(LoopCtx { carried: carried.clone(), item: None, breaks: 0 });
+        let mut hdr = Vec::new();
+        for (n, ty, init) in &header {
+            let ir = b.define(n, ty.clone());
+            hdr.push(format!("{}: {} = {}", ir, ty.ir(), init));
+        }
+        let before = b.vars.clone();
+        let start = b.out.len();
+        b.depth += 1;
+        if let Some(c) = cond {
+            let cv = self.lower_expr(c, Some(&Ty::Bool), b, None)?;
+            if cv.ty != Ty::Bool {
+                return Err(lex::error(&file, c.line, "'while' takes a bool"));
+            }
+            let cv = b.materialize(&cv);
+            b.line(&format!("if {} {{", cv.text));
+            b.line("} else {");
+            b.depth += 1;
+            let vals = b.current(&carried);
+            b.line(format!("break {}", vals.join(", ")).trim_end());
+            b.depth -= 1;
+            b.line("}");
+            b.loops.last_mut().unwrap().breaks += 1;
+        }
+        let terminated = self.lower_block(body, b)?;
+        if !terminated {
+            let vals = b.current(&carried);
+            b.line(format!("continue {}", vals.join(", ")).trim_end());
+        }
+        b.depth -= 1;
+        let body_lines = b.out.split_off(start);
+        let ctx = b.loops.pop().unwrap();
+        b.vars = before;
+        let bound = match bound {
+            Some(n) if n > 0 => format!(" bound {}", n),
+            Some(_) => return Err(lex::error(&file, line, "'bound' takes a positive number")),
+            None => String::new(),
+        };
+        // a loop with no way out has no results and nothing after it
+        if ctx.breaks == 0 {
+            b.line(&format!("loop({}){} {{", hdr.join(", "), bound));
+            b.out.push_str(&body_lines);
+            b.line("}");
+            for n in &carried {
+                b.vars.remove(n);
+            }
+            return Ok(true);
+        }
+        let depth = b.loops.len();
+        let mut results = Vec::new();
+        for (n, ty) in carried.iter().zip(&tys) {
+            let ir = b.define(n, ty.clone());
+            b.vars.get_mut(n).unwrap().loop_depth = depth;
+            results.push(format!("{}: {}", ir, ty.ir()));
+        }
+        b.line(&format!("{} = loop({}){} {{", results.join(", "), hdr.join(", "), bound));
+        b.out.push_str(&body_lines);
+        b.line("}");
+        Ok(false)
+    }
+
+    /// `for (x in [a through b])`, `[a to b]` (log 13): a loop whose
+    /// carried variable is the item, stepped by one each pass. Literal
+    /// bounds fix the direction, and the IR is the plain counted loop
+    /// `probe cost` reads; otherwise the step is chosen at run time and
+    /// the test is on the signed distance left
+    fn lower_for(&mut self, var: &str, seq: &Expr, bound: Option<i64>, body: &[Stmt], b: &mut Body) -> Result<(), Error> {
+        let file = b.file.clone();
+        let ExprKind::Range { from, to, inclusive } = &seq.kind else {
+            return Err(lex::error(&file, seq.line, "sequences are not in this item yet: a `for` runs over `[a through b]` or `[a to b]`"));
+        };
+        if b.vars.contains_key(var) {
+            return Err(lex::error(&file, seq.line, format!("'{}' is already declared", var)));
+        }
+        for e in [from, to] {
+            if matches!(e.kind, ExprKind::Float(_)) {
+                return Err(lex::error(&file, e.line, "a range's bounds are integers"));
+            }
+        }
+        let mut fv = self.lower_expr(from, None, b, None)?;
+        let mut tv = self.lower_expr(to, if fv.literal { None } else { Some(&fv.ty) }, b, None)?;
+        if fv.literal && !tv.literal {
+            fv.ty = tv.ty.clone();
+        }
+        if tv.literal && !fv.literal {
+            tv.ty = fv.ty.clone();
+        }
+        let ty = fv.ty.clone();
+        if !matches!(ty, Ty::Num(_)) || ty != tv.ty {
+            return Err(lex::error(&file, seq.line, format!("a range runs over one number type, given {} and {}", fv.ty.ir(), tv.ty.ir())));
+        }
+        let bound = match bound {
+            Some(n) if n > 0 => format!(" bound {}", n),
+            Some(_) => return Err(lex::error(&file, seq.line, "'bound' takes a positive number")),
+            None => String::new(),
+        };
+        // the direction, and the test that leaves
+        let (op, step, test) = if fv.literal && tv.literal {
+            let a: i64 = fv.text.parse().map_err(|_| lex::error(&file, from.line, "a range's bounds are integers"))?;
+            let z: i64 = tv.text.parse().map_err(|_| lex::error(&file, to.line, "a range's bounds are integers"))?;
+            let up = a <= z;
+            let cc = match (up, *inclusive) {
+                (true, true) => "cmp.le",
+                (true, false) => "cmp.lt",
+                (false, true) => "cmp.ge",
+                (false, false) => "cmp.gt",
+            };
+            (if up { "add" } else { "sub" }, "1".to_string(), Some(format!("{} {{}}, {}", cc, tv.text)))
+        } else {
+            let Ty::Num(n) = &ty else { unreachable!() };
+            if !(n == "int" || (n.starts_with('i') && n[1..].parse::<u32>().is_ok())) {
+                return Err(lex::error(&file, seq.line, format!("a range with a bound that is not a literal counts over a signed integer, not {}", n)));
+            }
+            let fv2 = b.materialize(&fv);
+            let tv2 = b.materialize(&tv);
+            fv = fv2;
+            tv = tv2;
+            let d = b.tmp();
+            b.line(&format!("{}: {} = sub {}, {}", d, ty.ir(), tv.text, fv.text));
+            let down = b.tmp();
+            b.line(&format!("{}: u1 = cmp.lt {}, 0", down, d));
+            let step = b.tmp();
+            b.line(&format!("{}: {} = if {} {{", step, ty.ir(), down));
+            b.depth += 1;
+            b.line("yield -1");
+            b.depth -= 1;
+            b.line("} else {");
+            b.depth += 1;
+            b.line("yield 1");
+            b.depth -= 1;
+            b.line("}");
+            ("add", step, None)
+        };
+        b.loops.push(LoopCtx { carried: Vec::new(), item: Some((var.to_string(), op, step.clone())), breaks: 1 });
+        let x = b.define(var, ty.clone());
+        let before = b.vars.clone();
+        let start = b.out.len();
+        b.depth += 1;
+        let done = match &test {
+            Some(t) => {
+                let done = b.tmp();
+                b.line(&format!("{}: u1 = {}", done, t.replace("{}", &x)));
+                done
+            }
+            None => {
+                let left = b.tmp();
+                b.line(&format!("{}: {} = sub {}, {}", left, ty.ir(), tv.text, x));
+                let signed = b.tmp();
+                b.line(&format!("{}: {} = mul {}, {}", signed, ty.ir(), left, step));
+                let done = b.tmp();
+                b.line(&format!("{}: u1 = {} {}, 0", done, if *inclusive { "cmp.lt" } else { "cmp.le" }, signed));
+                done
+            }
+        };
+        if test.is_some() {
+            b.line(&format!("if {} {{", done));
+            b.line("} else {");
+            b.depth += 1;
+            b.line("break");
+            b.depth -= 1;
+            b.line("}");
+        } else {
+            b.line(&format!("if {} {{", done));
+            b.depth += 1;
+            b.line("break");
+            b.depth -= 1;
+            b.line("}");
+        }
+        let terminated = self.lower_block(body, b)?;
+        if !terminated {
+            self.step_for(b);
+        }
+        b.depth -= 1;
+        let body_lines = b.out.split_off(start);
+        b.loops.pop();
+        b.vars = before;
+        b.vars.remove(var);
+        b.line(&format!("loop({}: {} = {}){} {{", x, ty.ir(), fv.text, bound));
+        b.out.push_str(&body_lines);
+        b.line("}");
+        Ok(())
+    }
+
+    /// a `for`'s pass ends: the item stepped, and `continue` with it
+    fn step_for(&mut self, b: &mut Body) {
+        let (var, op, step) = b.loops.last().unwrap().item.clone().unwrap();
+        let v = b.vars[&var].clone();
+        let next = b.tmp();
+        b.line(&format!("{}: {} = {} {}, {}", next, v.ty.ir(), op, v.ir, step));
+        b.line(&format!("continue {}", next));
     }
 
     /// a type's zero: a literal for a number, a bool or an enumeration,
@@ -678,8 +1052,9 @@ impl Lowerer {
             return Err(lex::error(&b.file, line, format!("'{}' is {} but the value is {}", name, var.ty.ir(), v.ty.ir())));
         }
         if var.ir != v.text {
-            b.define(name, var.ty.clone());
-            b.vars.get_mut(name).unwrap().ir = v.text;
+            let v2 = b.vars.get_mut(name).unwrap();
+            v2.ir = v.text;
+            v2.set = true;
         }
         Ok(())
     }
@@ -692,6 +1067,7 @@ impl Lowerer {
                     if !b.vars.contains_key(&t.name) {
                         return Err(lex::error(&file, t.line, format!("'{}' is not declared: a variable is its type then its name", t.name)));
                     }
+                    b.assignable(&t.name, t.line)?;
                 }
                 if targets.len() == 1 {
                     let t = &targets[0];
@@ -711,7 +1087,7 @@ impl Lowerer {
                         return Err(lex::error(&file, p.line, format!("'{}' is already declared", p.name)));
                     }
                     let ty = self.ty(&p.ty, p.seq, &file, p.line)?;
-                    b.vars.insert(p.name.clone(), Var { ir: String::new(), ty: ty.clone(), versions: 0 });
+                    b.declare(&p.name, ty.clone());
                     names.push(p.name.clone());
                     tys.push(ty);
                 }
@@ -725,7 +1101,7 @@ impl Lowerer {
                     return Err(lex::error(&file, v.line, format!("'{}' is already declared", v.name)));
                 }
                 let ty = self.ty(&v.ty, v.seq, &file, v.line)?;
-                b.vars.insert(v.name.clone(), Var { ir: String::new(), ty: ty.clone(), versions: 0 });
+                b.declare(&v.name, ty.clone());
                 match &v.init {
                     None => {
                         let z = self.zero_val(&ty, b);
@@ -753,8 +1129,51 @@ impl Lowerer {
                 self.lower_expr(expr, None, b, None)?;
                 Ok(())
             }
-            Stmt::If { line, .. } | Stmt::Loop { line, .. } | Stmt::For { line, .. } | Stmt::Continue { line, .. } | Stmt::Break { line } => {
-                Err(lex::error(&file, *line, "control flow is not in this item yet"))
+            Stmt::If { cond, then, els, .. } => self.lower_if(cond, then, els.as_deref(), b),
+            Stmt::Loop { vars, cond, bound, body, line } => self.lower_loop(vars, cond.as_ref(), *bound, body, *line, b).map(|_| ()),
+            Stmt::For { var, seq, bound, body, .. } => self.lower_for(var, seq, *bound, body, b),
+            Stmt::Break { line } => {
+                if b.loops.is_empty() {
+                    return Err(lex::error(&file, *line, "'break' outside a loop"));
+                }
+                let ctx = b.loops.last_mut().unwrap();
+                ctx.breaks += 1;
+                let carried = if ctx.item.is_some() { Vec::new() } else { ctx.carried.clone() };
+                let vals = b.current(&carried);
+                b.line(format!("break {}", vals.join(", ")).trim_end());
+                Ok(())
+            }
+            Stmt::Continue { values, line } => {
+                let Some(ctx) = b.loops.last() else {
+                    return Err(lex::error(&file, *line, "'continue' outside a loop"));
+                };
+                if ctx.item.is_some() {
+                    if !values.is_empty() {
+                        return Err(lex::error(&file, *line, "a `for` steps its item by itself: 'continue' takes no values here"));
+                    }
+                    self.step_for(b);
+                    return Ok(());
+                }
+                let carried = ctx.carried.clone();
+                if values.is_empty() {
+                    let vals = b.current(&carried);
+                    b.line(format!("continue {}", vals.join(", ")).trim_end());
+                    return Ok(());
+                }
+                if values.len() != carried.len() {
+                    return Err(lex::error(&file, *line, format!("the loop carries {} variable(s), 'continue' gives {}", carried.len(), values.len())));
+                }
+                let mut vals = Vec::new();
+                for (e, n) in values.iter().zip(&carried) {
+                    let ty = b.vars[n].ty.clone();
+                    let v = self.lower_expr(e, Some(&ty), b, None)?;
+                    if !(v.ty == ty || (v.literal && fits_literal(&v, &ty))) {
+                        return Err(lex::error(&file, e.line, format!("'{}' is {} but 'continue' gives a {}", n, ty.ir(), v.ty.ir())));
+                    }
+                    vals.push(v.text);
+                }
+                b.line(&format!("continue {}", vals.join(", ")));
+                Ok(())
             }
             Stmt::Check { line, .. } => Err(lex::error(&file, *line, "checks are not in this item yet")),
             Stmt::Push { line, .. } => Err(lex::error(&file, *line, "streams are not in this item yet")),
@@ -874,7 +1293,7 @@ impl Lowerer {
                 Ok(Val { text: out, ty: Ty::Str, literal: false })
             }
             ExprKind::Name(n) => match b.vars.get(n) {
-                Some(v) if v.versions > 0 => Ok(Val { text: v.ir.clone(), ty: v.ty.clone(), literal: false }),
+                Some(v) if v.set => Ok(Val { text: v.ir.clone(), ty: v.ty.clone(), literal: false }),
                 Some(_) => Err(lex::error(&file, e.line, format!("'{}' is read before it is assigned", n))),
                 None => Err(lex::error(&file, e.line, format!("'{}' is not a variable here", n))),
             },
@@ -1061,6 +1480,35 @@ fn name_for(dst: Option<&str>, ty: &Ty, b: &mut Body) -> String {
     match dst {
         Some(d) if b.vars.get(d).map(|v| &v.ty) == Some(ty) => b.define(d, ty.clone()),
         _ => b.tmp(),
+    }
+}
+
+/// does a block end by leaving: `break`, `continue`, an `if` whose two
+/// arms both do, or a `loop` with no `while` and no `break`? The IR's
+/// rule (ssa.md, *Termination rules*), checked on the zero tree
+fn terminates(stmts: &[Stmt]) -> bool {
+    match stmts.last() {
+        Some(Stmt::Break { .. }) | Some(Stmt::Continue { .. }) => true,
+        Some(Stmt::If { then, els: Some(e), .. }) => terminates(then) && terminates(e),
+        Some(Stmt::Loop { cond: None, body, .. }) => !has_break(body),
+        _ => false,
+    }
+}
+
+/// a `break` of this loop, in the body or in an `if` inside it
+fn has_break(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        Stmt::Break { .. } => true,
+        Stmt::If { then, els, .. } => has_break(then) || els.as_ref().map_or(false, |e| has_break(e)),
+        _ => false,
+    })
+}
+
+fn stmt_line(s: &Stmt) -> usize {
+    match s {
+        Stmt::Var(v) => v.line,
+        Stmt::Multi { line, .. } | Stmt::Assign { line, .. } | Stmt::If { line, .. } | Stmt::Loop { line, .. } | Stmt::For { line, .. } => *line,
+        Stmt::Continue { line, .. } | Stmt::Break { line } | Stmt::Check { line, .. } | Stmt::Push { line, .. } | Stmt::Expr { line, .. } => *line,
     }
 }
 

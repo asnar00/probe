@@ -110,7 +110,7 @@ pub enum Stmt {
     Assign { targets: Vec<Target>, value: Expr, line: usize },
     If { cond: Expr, then: Vec<Stmt>, els: Option<Vec<Stmt>>, line: usize },
     Loop { vars: Vec<VarDecl>, cond: Option<Expr>, bound: Option<i64>, body: Vec<Stmt>, line: usize },
-    For { var: String, seq: Expr, body: Vec<Stmt>, line: usize },
+    For { var: String, seq: Expr, bound: Option<i64>, body: Vec<Stmt>, line: usize },
     Continue { values: Vec<Expr>, line: usize },
     Break { line: usize },
     Check { cond: Expr, line: usize },
@@ -189,11 +189,14 @@ pub struct Parser<'a> {
     pos: usize,
     file: &'a str,
     types: &'a HashSet<String>,
+    /// how deep in `[ ]` the parser is: only there do `to` and
+    /// `through` end a phrase (log 15)
+    ranges: usize,
 }
 
 pub fn parse_feature(name: &str, src: &str, file: &str, types: &HashSet<String>) -> Result<Feature, Error> {
     let toks = lex::lex(src, file)?;
-    let mut p = Parser { toks, pos: 0, file, types };
+    let mut p = Parser { toks, pos: 0, file, types, ranges: 0 };
     let mut decls = Vec::new();
     while !p.at_end() {
         decls.push(p.parse_decl()?);
@@ -206,7 +209,7 @@ pub fn parse_call(text: &str, file: &str, line: usize, types: &HashSet<String>) 
     let mut toks = Vec::new();
     lex::lex_line(text, line, file, &mut toks)?;
     toks.push(Token { tok: Tok::Newline, line });
-    let mut p = Parser { toks, pos: 0, file, types };
+    let mut p = Parser { toks, pos: 0, file, types, ranges: 0 };
     let e = p.parse_expr()?;
     if !p.at(&Tok::Newline) {
         return Err(p.err("the call has something after it"));
@@ -668,9 +671,20 @@ impl<'a> Parser<'a> {
                 }
                 let seq = self.parse_expr()?;
                 self.expect_sym(")")?;
+                let bound = if self.eat_word("bound") {
+                    match self.next()? {
+                        Tok::Int(n) => Some(n),
+                        t => {
+                            self.pos -= 1;
+                            return Err(self.err(format!("'bound' takes a number, not {}", t)));
+                        }
+                    }
+                } else {
+                    None
+                };
                 self.expect_newline()?;
                 let body = self.parse_block()?;
-                Ok(Stmt::For { var, seq, body, line })
+                Ok(Stmt::For { var, seq, bound, body, line })
             }
             Some(Tok::Word(w)) if w == "continue" => {
                 self.pos += 1;
@@ -871,7 +885,7 @@ impl<'a> Parser<'a> {
                 self.pos -= 1;
                 let at = self.pos;
                 if let Ok(args) = self.parse_args() {
-                    if matches!(self.peek(), Some(Tok::Word(w)) if !matches!(w.as_str(), "then" | "else" | "while" | "bound" | "merge" | "in" | "through" | "to") && !UNITS.contains(&w.as_str())) {
+                    if matches!(self.peek(), Some(Tok::Word(w)) if !self.ends_phrase(w) && !UNITS.contains(&w.as_str())) {
                         let mut parts = vec![Part::Args(args)];
                         parts.extend(self.parse_parts()?);
                         return Ok(Expr { kind: ExprKind::Phrase(parts), line });
@@ -886,7 +900,10 @@ impl<'a> Parser<'a> {
             Tok::Sym("[") => {
                 let mut items = Vec::new();
                 if !self.at_sym("]") {
-                    let first = self.parse_expr()?;
+                    self.ranges += 1;
+                    let first = self.parse_expr();
+                    self.ranges -= 1;
+                    let first = first?;
                     if self.at_word("through") || self.at_word("to") {
                         let inclusive = self.eat_word("through") || !self.eat_word("to");
                         let to = self.parse_expr()?;
@@ -930,6 +947,12 @@ impl<'a> Parser<'a> {
         Ok(Expr { kind, line })
     }
 
+    /// a word that ends a phrase: a statement's own word, or a range's
+    /// `to` and `through` inside `[ ]`
+    fn ends_phrase(&self, w: &str) -> bool {
+        matches!(w, "then" | "else" | "while" | "bound" | "merge" | "in") || (self.ranges > 0 && matches!(w, "through" | "to"))
+    }
+
     /// the parts of a phrase: words, bracketed argument groups, and bare
     /// arguments (a literal, a sequence name, a list), up to whatever
     /// ends an expression
@@ -937,7 +960,7 @@ impl<'a> Parser<'a> {
         let mut parts = Vec::new();
         loop {
             match self.peek().cloned() {
-                Some(Tok::Word(w)) if !matches!(w.as_str(), "then" | "else" | "while" | "bound" | "merge" | "in" | "through" | "to") => {
+                Some(Tok::Word(w)) if !self.ends_phrase(&w) => {
                     self.pos += 1;
                     parts.push(Part::Word(w));
                 }
@@ -1016,6 +1039,19 @@ mod tests {
         assert_eq!(p.len(), 5);
         let e = parse_call("(3 + 4) * 2", "t.md", 1, &types()).unwrap();
         assert!(matches!(e.kind, ExprKind::Bin(ref op, _, _) if op == "*"));
+    }
+
+    #[test]
+    fn to_is_a_word_outside_a_range() {
+        let e = parse_call("sum to (10)", "t.md", 1, &types()).unwrap();
+        let ExprKind::Phrase(p) = e.kind else { panic!() };
+        assert_eq!(p.len(), 3);
+        let e = parse_call("[1 to n]", "t.md", 1, &types()).unwrap();
+        assert!(matches!(e.kind, ExprKind::Range { inclusive: false, .. }));
+        let src = "on f (int n)\n    for (i in [1 through n]) bound 8\n        print \"x\"\n";
+        let f = parse_feature("t", src, "t.zero", &types()).unwrap();
+        let Decl::Fn(f) = &f.decls[0] else { panic!() };
+        assert!(matches!(&f.body[0], Stmt::For { bound: Some(8), .. }));
     }
 
     #[test]
