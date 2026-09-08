@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: features — `756dbd3` · 2026-09-08
+
+```
+on run()
+    count down()
+    existing run()
+
+on run without countdown()
+    countdown.enabled = false
+    run()
+```
+
+Plan item 9 of milestone 0, section 12 of zero.md. A redefinition joins a chain: the bodies are `run__hello`, `run__countdown`, `run__bye`, the entry `run` is the outermost link, and each link below (`run__before_bye`) reads its feature's `enabled` and calls the body or falls through, which is what `existing run()` calls (`src/zero/lower.rs`, `emit_links`). Every feature has an `__enabled_` field in the context, on at every reset; `countdown.enabled = false` switches one from a test, and a node of a feature that is off keeps its readers. `layers.md` orders a store's layers and `src/zero/store.rs` checks parents and layers; a name may reach down or sideways, never up, while a chain's entry stays its first definer's so control flows up. `suite/zero/hello` is section 16's program with its countdown as a task at `1 hz`; `suite/zero/features` 12 cases. 156/156 on native, wasm, riscv and arm-qemu, 155 + 1 skipped on air; probe test 966, 957 + 9, 966, 966, 936 + 30; cargo test 91 passed.
+
 ### zero: tasks and the scheduler — `530e6e4` · 2026-09-08
 
 ```
