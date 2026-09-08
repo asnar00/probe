@@ -22,6 +22,9 @@ pub enum Tok {
     Newline,
     Indent,
     Dedent,
+    /// a line of a platform body, as written (log 31): foreign text,
+    /// the block's own indentation removed
+    Raw(String),
 }
 
 impl fmt::Display for Tok {
@@ -36,6 +39,7 @@ impl fmt::Display for Tok {
             Tok::Newline => write!(f, "the end of the line"),
             Tok::Indent => write!(f, "an indented block"),
             Tok::Dedent => write!(f, "the end of the block"),
+            Tok::Raw(s) => write!(f, "the line '{}'", s),
         }
     }
 }
@@ -81,6 +85,11 @@ const SYMBOLS: [&str; 23] = [
 pub fn lex(src: &str, file: &str) -> Result<Vec<Token>, Error> {
     let mut toks = Vec::new();
     let mut depths: Vec<usize> = vec![0];
+    // a `platform` line's indented block is foreign text (log 31): the
+    // next deeper line opens it, and its lines are `Raw` until a line
+    // no deeper than the `platform` line closes it
+    let mut platform_at: Option<usize> = None;
+    let mut raw_depth: Option<usize> = None;
     for (i, raw) in src.lines().enumerate() {
         let line = i + 1;
         let text = raw.trim_end();
@@ -91,6 +100,24 @@ pub fn lex(src: &str, file: &str) -> Result<Vec<Token>, Error> {
             return Err(error(file, line, "a tab: indent with spaces"));
         }
         let depth = text.len() - text.trim_start().len();
+        if let Some(at) = platform_at.take() {
+            if depth > at {
+                depths.push(depth);
+                toks.push(Token { tok: Tok::Indent, line });
+                raw_depth = Some(depth);
+            }
+        }
+        if let Some(base) = raw_depth {
+            if depth >= base {
+                if text.contains('#') {
+                    return Err(error(file, line, "'#' is not allowed in a .zero file, a platform body included: there are no comments, the feature's .md explains"));
+                }
+                toks.push(Token { tok: Tok::Raw(text[base..].to_string()), line });
+                toks.push(Token { tok: Tok::Newline, line });
+                continue;
+            }
+            raw_depth = None;
+        }
         if depth > *depths.last().unwrap() {
             depths.push(depth);
             toks.push(Token { tok: Tok::Indent, line });
@@ -105,6 +132,10 @@ pub fn lex(src: &str, file: &str) -> Result<Vec<Token>, Error> {
         }
         lex_line(text.trim_start(), line, file, &mut toks)?;
         toks.push(Token { tok: Tok::Newline, line });
+        let head = text.trim_start();
+        if head == "platform" || head.starts_with("platform ") {
+            platform_at = Some(depth);
+        }
     }
     let last = src.lines().count();
     while depths.len() > 1 {
@@ -271,6 +302,19 @@ mod tests {
             kinds.join(" "),
             "on run '(' ')' N I hello '(' ')' N if '(' x ')' N I y '(' ')' N D D on hello '(' ')' N"
         );
+    }
+
+    #[test]
+    fn a_platform_body_is_raw_lines() {
+        let src = "on f (int64 a)\nplatform arm64\n    add r, a, a\n    {x} #\non g()\n";
+        let e = lex(src, "x.zero").unwrap_err();
+        assert_eq!(e.line, 4);
+        let src = "on f (int64 a)\nplatform arm64\n    add r, a, a\n      hvc 0\non g()\n    f(1)\n";
+        let toks = lex(src, "x.zero").unwrap();
+        let raw: Vec<String> = toks.iter().filter_map(|t| if let Tok::Raw(s) = &t.tok { Some(s.clone()) } else { None }).collect();
+        assert_eq!(raw, vec!["add r, a, a".to_string(), "  hvc 0".to_string()]);
+        let dedents = toks.iter().filter(|t| t.tok == Tok::Dedent).count();
+        assert_eq!(dedents, 2);
     }
 
     #[test]

@@ -151,6 +151,25 @@ pub struct FnInfo {
     /// bodies are `key__feature` and whose links `key` and
     /// `key__before_feature` gate on each feature's `enabled`
     pub chain: Vec<String>,
+    /// a platform function (log 31): the kinds of place its bodies are
+    /// for — the IR's targets, or `ir` for a body in the IR that serves
+    /// every target — and None for a function with a zero body
+    pub platform: Option<Vec<String>>,
+}
+
+/// the kinds of place a platform body may name in this milestone
+const KINDS: [&str; 5] = ["ir", "arm64", "riscv64", "wasm32", "air"];
+
+/// a type as an overload's IR name spells it: `int`, `ints`, `u8s`
+fn type_word(t: &Ty) -> String {
+    match t {
+        Ty::Bool => "bool".into(),
+        Ty::Num(n) => n.clone(),
+        Ty::Seq(e) => format!("{}s", type_word(e)),
+        Ty::Stream(e, _) => format!("{}_stream", type_word(e)),
+        Ty::Struct(n) | Ty::Enum(n) => n.clone(),
+        Ty::None => String::new(),
+    }
 }
 
 /// a wiring at feature scope (log 25): one task call the scheduler runs
@@ -205,7 +224,8 @@ pub struct Call {
 }
 
 /// the IR every store gets: the output buffer `print` appends to, the
-/// two functions the runner reads it back with, `__print` itself and
+/// two functions the runner reads it back with, `__out_ch` and
+/// `__print_int` for the platform feature's `print` bodies (log 31), and
 /// `__str` (a string literal's view). `__zero_reset`, which the runner
 /// calls before each case, is generated per store (log 16)
 const PRELUDE: &str = r#"
@@ -314,61 +334,6 @@ fn __print_int(x: int) {
     }
     ret
 }
-
-; a sequence of ints on one line, a space between, then a newline
-fn __print_ints(v: int[]) {
-    n: i64 = len v
-    loop(i: i64 = 0) {
-        done: u1 = cmp.ge i, n
-        if done {
-            break
-        }
-        first: u1 = cmp.eq i, 0
-        if first {
-        } else {
-            __out_ch(32)
-        }
-        x: int = load v, i
-        __print_int(x)
-        i2: i64 = add i, 1
-        continue i2
-    }
-    __out_ch(10)
-    ret
-}
-
-; append a string and a newline; what does not fit is dropped
-fn __print(s: u8[]) {
-    q: ptr = addr __out_n
-    k0: i64 = load q
-    o: ptr = addr __out
-    p: ptr(u8) = ptr s
-    n: i64 = len s
-    k1: i64 = loop(i: i64 = 0, k: i64 = k0) {
-        done: u1 = cmp.ge i, n
-        if done {
-            break k
-        }
-        c: u8 = load p, i
-        room: u1 = cmp.lt k, 4095
-        if room {
-            store c, o, k, 1
-        }
-        i2: i64 = add i, 1
-        k2: i64 = add k, 1
-        continue i2, k2
-    }
-    room2: u1 = cmp.lt k1, 4095
-    k4: i64 = if room2 {
-        store 10: u8, o, k1, 1
-        k3: i64 = add k1, 1
-        yield k3
-    } else {
-        yield k1
-    }
-    store k4, q
-    ret
-}
 "#;
 
 /// a ring's capacity: the front end's number until residency is
@@ -419,17 +384,6 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
     }
-    // the front end's builtins, until item 11 declares them as platform functions
-    l.funcs.push(FnInfo {
-        key: "print".into(),
-        ir: "__print".into(),
-        parts: vec![NamePart::Word("print".into()), NamePart::Group],
-        params: vec![("s".into(), Ty::string())],
-        results: Vec::new(),
-        feature: String::new(),
-        task: false,
-        chain: Vec::new(),
-    });
     // types first, then every signature, then the variables (a wiring
     // names a task), so a body may use what a later feature declares
     for f in &store.features {
@@ -858,9 +812,34 @@ impl Lowerer {
     }
 
     fn declare(&mut self, f: &FnDecl, feature: &str, file: &str) -> Result<(), Error> {
-        if !f.platform.is_empty() {
-            return Err(lex::error(file, f.line, "platform bodies are not in this item yet"));
-        }
+        // a platform function (section 15, log 31): its bodies are its
+        // platform bodies, one per kind of place, and nothing else
+        let platform = if f.platform.is_empty() {
+            None
+        } else {
+            if !f.body.is_empty() {
+                return Err(lex::error(file, f.line, "a platform function has no zero body: its platform bodies are its only ones"));
+            }
+            if f.task {
+                return Err(lex::error(file, f.line, "a task is not a platform function"));
+            }
+            let mut kinds: Vec<String> = Vec::new();
+            for (ks, lines) in &f.platform {
+                if lines.is_empty() {
+                    return Err(lex::error(file, f.line, format!("the platform body for {} has no lines", ks.join(" "))));
+                }
+                for k in ks {
+                    if !KINDS.contains(&k.as_str()) {
+                        return Err(lex::error(file, f.line, format!("'{}' is not a kind of place here: one of {}", k, KINDS.join(", "))));
+                    }
+                    if kinds.contains(k) {
+                        return Err(lex::error(file, f.line, format!("two platform bodies for {}", k)));
+                    }
+                    kinds.push(k.clone());
+                }
+            }
+            Some(kinds)
+        };
         let key = mangle(&f.name);
         let mut params = Vec::new();
         for p in f.params() {
@@ -894,6 +873,34 @@ impl Lowerer {
         if operator && f.task {
             return Err(lex::error(file, f.line, "a task has a name, not a symbol"));
         }
+        if let Some(kinds) = &platform {
+            // a rule takes the machine's own types: one number each way
+            if kinds.iter().any(|k| k != "ir") {
+                for (n, t) in params.iter().chain(&results) {
+                    let concrete = matches!(t, Ty::Num(x) if x.len() > 1 && x[1..].parse::<u32>().is_ok());
+                    if !concrete {
+                        return Err(lex::error(file, f.line, format!("'{}' is {} in a platform rule: a rule takes the machine's types, int64 and the like, one number each way", n, t.ir())));
+                    }
+                }
+                if results.len() > 1 {
+                    return Err(lex::error(file, f.line, "a platform rule gives one result at most"));
+                }
+            }
+            if operator {
+                return Err(lex::error(file, f.line, "an operator is not a platform function"));
+            }
+            // an overload (log 31): the same words for other parameter
+            // types, named in the IR by its types
+            if let Some(other) = self.funcs.iter().find(|g| g.key == key && g.parts == f.name && g.params.len() == params.len() && g.platform.is_some()) {
+                if self.funcs.iter().any(|g| g.key == key && g.params == params) {
+                    return Err(lex::error(file, f.line, format!("'{}' is declared twice for these types", spoken(other))));
+                }
+                let words: Vec<String> = params.iter().map(|(_, t)| type_word(t)).collect();
+                let ir = format!("{}__{}", key, words.join("_"));
+                self.funcs.push(FnInfo { key, ir, parts: f.name.clone(), params, results, feature: feature.to_string(), task: false, chain: vec![feature.to_string()], platform });
+                return Ok(());
+            }
+        }
         let ir = if operator {
             // an operator on a declared type: named by the opcode and its
             // first operand's type, since the IR does not dispatch
@@ -909,8 +916,8 @@ impl Lowerer {
             key.clone()
         };
         if let Some(other) = self.funcs.iter().find(|g| g.ir == ir) {
-            if other.feature.is_empty() {
-                return Err(lex::error(file, f.line, format!("'{}' is a builtin of the front end", key)));
+            if other.platform.is_some() || platform.is_some() {
+                return Err(lex::error(file, f.line, format!("'{}' is a platform function of feature {}: the platform is called, not redefined (section 15)", spoken(other), other.feature)));
             }
             if operator && other.params != params {
                 return Err(lex::error(file, f.line, format!("a second operator on {} with this symbol clashes with feature {}'s: the IR names it by its first operand's type only", params[0].1.ir(), other.feature)));
@@ -940,7 +947,7 @@ impl Lowerer {
             self.funcs[i].chain.push(feature.to_string());
             return Ok(());
         }
-        self.funcs.push(FnInfo { key, ir, parts: f.name.clone(), params, results, feature: feature.to_string(), task: f.task, chain: vec![feature.to_string()] });
+        self.funcs.push(FnInfo { key, ir, parts: f.name.clone(), params, results, feature: feature.to_string(), task: f.task, chain: vec![feature.to_string()], platform });
         Ok(())
     }
 
@@ -1488,7 +1495,16 @@ impl Lowerer {
 
     fn lower_fn(&mut self, f: &FnDecl, feature: &str, file: &str) -> Result<(), Error> {
         let key = mangle(&f.name);
-        let info = self.funcs.iter().find(|g| g.key == key && g.parts == f.name && g.params.len() == f.params().count()).unwrap().clone();
+        let mut candidates: Vec<&FnInfo> = self.funcs.iter().filter(|g| g.key == key && g.parts == f.name && g.params.len() == f.params().count()).collect();
+        if candidates.len() > 1 {
+            // overloads (log 31): the one declared for these parameter types
+            let mut tys = Vec::new();
+            for p in f.params() {
+                tys.push(self.ty(&p.ty, p.seq, file, p.line)?);
+            }
+            candidates.retain(|g| g.params.iter().map(|(_, t)| t.clone()).collect::<Vec<Ty>>() == tys);
+        }
+        let info = candidates[0].clone();
         // a task's IR results are its stream parameters, moved on (log 25)
         let results: Vec<(String, Ty)> = if info.task { info.params.iter().filter(|(_, t)| matches!(t, Ty::Stream(..))).cloned().collect() } else { info.results.clone() };
         let kind = if info.task { BodyKind::Task { out: info.results[0].0.clone(), hz: "__hz".into() } } else { BodyKind::Fn };
@@ -1537,6 +1553,9 @@ impl Lowerer {
             }
         }
         writeln!(self.out, "{} {{", sig).unwrap();
+        if let Some(kinds) = &info.platform {
+            return self.lower_platform(f, &info, kinds, &sig_params, &results, &mut b);
+        }
         let terminated = self.lower_block(&f.body, &mut b)?;
         // the results' current values; one never assigned is its type's
         // zero. A body that ends in a loop with no way out never returns
@@ -1554,6 +1573,54 @@ impl Lowerer {
         }
         self.out.push_str(&b.out);
         self.out.push_str("}\n");
+        Ok(())
+    }
+
+    /// A platform function's bodies (section 15, log 31). The `ir` body is
+    /// the IR function's body; without one, the body prints that the
+    /// function is out of reach and fails a check, which a target with
+    /// a rule never runs. A body for a target is a rule in a `platform
+    /// <target> { ... }` block after the function: the header from the
+    /// signature, the lines as written. The signature's `{` is open
+    fn lower_platform(&mut self, f: &FnDecl, info: &FnInfo, kinds: &[String], sig_params: &[(String, Ty)], results: &[(String, Ty)], b: &mut Body) -> Result<(), Error> {
+        let file = b.file.clone();
+        match f.platform.iter().find(|(ks, _)| ks.iter().any(|k| k == "ir")) {
+            Some((_, lines)) => {
+                for l in lines {
+                    b.line(l);
+                }
+            }
+            None => {
+                let note = Expr { kind: ExprKind::Str(format!("no platform body for '{}' here", spoken(info))), line: f.line };
+                let sv = self.lower_expr(&note, None, b, None)?;
+                b.line(&format!("print({})", sv.text));
+                let z = b.tmp();
+                b.line(&format!("{}: u1 = const 0", z));
+                b.line(&format!("check {}", z));
+                let mut rets = Vec::new();
+                for (_, t) in results {
+                    rets.push(self.zero_val(t, b).text);
+                }
+                b.line(format!("ret {}", rets.join(", ")).trim_end());
+            }
+        }
+        self.out.push_str(&b.out);
+        self.out.push_str("}\n");
+        let params: Vec<String> = sig_params.iter().map(|(n, t)| format!("{}: {}", n, t.ir())).collect();
+        let ret = results.first().map(|(_, t)| t.ir()).unwrap_or_else(|| "()".into());
+        for k in kinds {
+            if k == "ir" {
+                continue;
+            }
+            let (_, lines) = f.platform.iter().find(|(ks, _)| ks.contains(k)).unwrap();
+            writeln!(self.out, "platform {} {{", k).unwrap();
+            writeln!(self.out, "    {}({}) -> {}", info.ir, params.join(", "), ret).unwrap();
+            for l in lines {
+                writeln!(self.out, "        {}", l).unwrap();
+            }
+            writeln!(self.out, "}}").unwrap();
+        }
+        let _ = file;
         Ok(())
     }
 
@@ -2224,7 +2291,7 @@ impl Lowerer {
                 let base = file.rsplit('/').next().unwrap_or(&file).to_string();
                 let site = Expr { kind: ExprKind::Str(format!("check at {}:{}", base, line)), line: *line };
                 let sv = self.lower_expr(&site, None, b, None)?;
-                b.line(&format!("__print({})", sv.text));
+                b.line(&format!("print({})", sv.text));
                 let z = b.tmp();
                 b.line(&format!("{}: u1 = const 0", z));
                 b.line(&format!("check {}", z));
@@ -3553,16 +3620,6 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                         }
                         _ => None,
                     };
-                    // `print x$` on a sequence of ints: one line, spaces between
-                    if let (true, Some(a)) = (w == "print", arg) {
-                        let start = b.out.len();
-                        let sv = self.lower_expr(a, None, b, None)?;
-                        if sv.ty == Ty::Seq(Box::new(Ty::Num("int".into()))) {
-                            b.line(&format!("__print_ints({})", sv.text));
-                            return Ok(Val { text: String::new(), ty: Ty::None, literal: false });
-                        }
-                        b.out.truncate(start);
-                    }
                     if let (true, Some(a)) = (w == "count", arg) {
                         let start = b.out.len();
                         let sv = self.lower_expr(a, None, b, None)?;
@@ -3584,7 +3641,39 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     return Err(lex::error(&file, e.line, format!("'{}' is a task: it is wired into a stream, `{} x$ = {}`", spoken(&info), task_elem(&info), phrase_text(e))));
                 }
                 self.reach(&spoken(&info), &info.feature, &file, e.line)?;
-                let (vals, lifted, acc, rtys) = self.lower_call_args(&info, &args, b)?;
+                // a platform function declared for several parameter
+                // types (log 31): the first whose parameters take the
+                // arguments, in declaration order
+                let overloads: Vec<FnInfo> = self.funcs.iter().filter(|g| g.key == info.key && g.parts == info.parts && g.params.len() == info.params.len() && g.platform.is_some()).cloned().collect();
+                let (info, vals, lifted, acc, rtys) = if overloads.len() > 1 {
+                    let mut chosen = None;
+                    let mut last_err = None;
+                    for cand in &overloads {
+                        let (start, ntmp, vars, defs) = (b.out.len(), b.ntmp, b.vars.clone(), b.defs.clone());
+                        match self.lower_call_args(cand, &args, b) {
+                            Ok(r) => {
+                                chosen = Some((cand.clone(), r));
+                                break;
+                            }
+                            Err(err) => {
+                                b.out.truncate(start);
+                                b.ntmp = ntmp;
+                                b.vars = vars;
+                                b.defs = defs;
+                                last_err = Some(err);
+                            }
+                        }
+                    }
+                    let Some((cand, (vals, lifted, acc, rtys))) = chosen else {
+                        let sigs: Vec<String> = overloads.iter().map(|g| format!("({})", g.params.iter().map(|(_, t)| t.ir()).collect::<Vec<_>>().join(", "))).collect();
+                        let e = last_err.unwrap();
+                        return Err(lex::error(&file, e.line, format!("no '{}' takes these arguments: it is declared for {}", spoken(&info), sigs.join(" and "))));
+                    };
+                    (cand, vals, lifted, acc, rtys)
+                } else {
+                    let (vals, lifted, acc, rtys) = self.lower_call_args(&info, &args, b)?;
+                    (info, vals, lifted, acc, rtys)
+                };
                 if lifted.iter().any(|&l| l) || acc.is_some() {
                     if rtys.len() != 1 {
                         return Err(lex::error(&file, e.line, format!("'{}' over a sequence: the function gives one result", info.key)));

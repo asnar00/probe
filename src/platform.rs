@@ -447,9 +447,19 @@ impl Platform {
         let mut rules = HashMap::new();
         let mut vector_rules = HashMap::new();
         let mut generics = HashMap::new();
+        // the module's own blocks for this target come after the file's
+        // rules (they were checked when the module was parsed)
+        let mut all_rules: Vec<(Rule, String)> = self.rules.clone();
+        for (target, text) in &m.platform {
+            if *target == self.target && !self.target.is_empty() {
+                if let Ok(p) = Platform::parse(text) {
+                    all_rules.extend(p.rules);
+                }
+            }
+        }
         // rules over whole vectors: no function in the module has those
         // types, so they are kept by signature, the classes theirs
-        for (r, g) in &self.rules {
+        for (r, g) in &all_rules {
             if !self.present(g) || !r.arg_types.iter().chain([&r.ret_type]).any(|t| is_vector_name(t)) {
                 continue;
             }
@@ -492,7 +502,7 @@ impl Platform {
             }
             let ptys: Vec<String> = f.params.iter().map(|&p| canonical(f, f.ty(p))).collect();
             let rty = f.rets.first().map(|&t| canonical(f, t)).unwrap_or_else(|| "()".into());
-            for (r, g) in &self.rules {
+            for (r, g) in &all_rules {
                 if !self.present(g) || r.generic != generic || r.arg_types.len() != ptys.len() {
                     continue;
                 }
@@ -836,5 +846,23 @@ mod tests {
         assert_eq!(p.rules.len(), 2);
         assert_eq!(p.rules[0].0.lines[0].operands, vec![Operand::Ret, Operand::Arg(0), Operand::Arg(1)]);
         assert_eq!(p.rules[1].0.lines[1].operands, vec![Operand::Ret, Operand::Lit("lo".into())]);
+    }
+
+    /// a module's own `platform <target> { ... }` block: its rule is
+    /// found for that target and for no other, and a bad block is a
+    /// parse error naming its line
+    #[test]
+    fn module_blocks_join_their_target() {
+        let src = "fn plus(a: i64, b: i64) -> i64 {\n    r: i64 = add a, b\n    ret r\n}\nplatform riscv64 {\n    plus(a: i64, b: i64) -> i64\n        add r, a, b\n}\n";
+        let m = crate::ssa::parse_with(&crate::ssa::with_prelude(src), &crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap()).unwrap();
+        assert_eq!(m.platform.len(), 1);
+        assert!(Platform::load_named("riscv64").unwrap().natives(&m).get("plus").is_some());
+        assert!(Platform::load_named("rv64i").unwrap().natives(&m).get("plus").is_some()); // a variant is its target
+        assert!(Platform::load_named("arm64").unwrap().natives(&m).get("plus").is_none());
+        assert!(Platform::none().natives(&m).get("plus").is_none());
+        let bad = "fn f() {\n    ret\n}\nplatform arm64 {\n    nonsense\n}\n";
+        let e = crate::ssa::parse_with(bad, &crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap()).unwrap_err();
+        assert_eq!(e.line, 4, "{}", e.msg);
+        assert!(e.msg.contains("platform arm64"), "{}", e.msg);
     }
 }

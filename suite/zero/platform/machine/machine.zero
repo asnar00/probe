@@ -1,0 +1,30 @@
+on (int64 r) = (int64 a) plus (int64 b)
+platform arm64 riscv64
+    add r, a, b
+platform wasm32
+    i64.add
+platform air
+    add
+
+on (int64 r) = (int64 a) minus (int64 b)
+platform arm64 riscv64
+    sub r, a, b
+platform wasm32
+    i64.sub
+
+on (int64 r) = (int64 a) doubled
+platform ir
+    r: i64 = add a, a
+    ret r
+
+on (int64 s) = sum of three (int64 a, int64 b, int64 c)
+    s = ((a) plus (b)) plus (c)
+
+on (int64 r) = three minus one (int64 a)
+    r = (a) minus (1)
+
+on (int n, int64 last) = count doubled (int64 k)
+    int64 x$ = [1 through k]
+    int64 d$ = (x$) doubled
+    n = count d$
+    last = d$[k - 1]

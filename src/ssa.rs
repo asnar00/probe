@@ -1171,6 +1171,11 @@ pub struct Module {
     /// the library's `mul(64)` on u64, when the hardware has no multiply:
     /// what the wide lowering's word products call
     pub int_mul64: Option<String>,
+    /// the platform rules the module carries itself (`platform arm64 {
+    /// ... }`): the target and the block's text, in the platform file's
+    /// grammar, checked when parsed; `Platform::natives` adds a
+    /// target's blocks to its file's rules
+    pub platform: Vec<(String, String)>,
 }
 
 impl Module {
@@ -1383,6 +1388,9 @@ enum Tok {
     Int(i64),
     Float(String), // 1.5, 2e10, -1.0e-3: kept as text, converted by the type it lands in
     Str(String),   // "hello\n": a data initializer, UTF-8
+    /// `platform <target> {` ... `}`: a block of platform rules the
+    /// module carries for one target, taken raw (the target, the lines)
+    Platform(String, String),
     Colon,
     Comma,
     LParen,
@@ -1408,6 +1416,7 @@ impl fmt::Display for Tok {
         match self {
             Tok::Newline => write!(f, "end of line"),
             Tok::Ident(s) => write!(f, "'{}'", s),
+            Tok::Platform(t, _) => write!(f, "a platform block for {}", t),
             Tok::LBracket => write!(f, "'['"),
             Tok::Dollar => write!(f, "'$'"),
             Tok::RBracket => write!(f, "']'"),
@@ -1586,12 +1595,24 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                 toks.push((t, line));
             }
             c if c.is_ascii_alphabetic() || c == '_' => {
+                let at_line_start = matches!(toks.last(), Some((Tok::Newline, _)) | None);
                 let mut s = lex_name(&mut chars);
                 // opcode suffixes like cmp.slt lex as one identifier
                 while chars.peek() == Some(&'.') {
                     chars.next();
                     s.push('.');
                     s.push_str(&lex_name(&mut chars));
+                }
+                // `platform <target> {` on a line of its own opens a block
+                // of platform rules, taken raw to the `}` line: their
+                // grammar is the platform file's, not this lexer's
+                if at_line_start && s == "platform" {
+                    if let Some((target, text, n)) = lex_platform_block(&mut chars).map_err(|m| err(line, m))? {
+                        toks.push((Tok::Platform(target, text), line));
+                        toks.push((Tok::Newline, line + n));
+                        line += n;
+                        continue;
+                    }
                 }
                 toks.push((Tok::Ident(s), line));
             }
@@ -1602,6 +1623,53 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
         toks.push((Tok::Newline, line));
     }
     Ok(toks)
+}
+
+/// after `platform` at the start of a line: `<target> {`, then every
+/// line up to one holding `}` alone, as text. None when the line is not
+/// that shape (the word is then an identifier as before)
+fn lex_platform_block(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<Option<(String, String, usize)>, String> {
+    let mut look = chars.clone();
+    while look.peek() == Some(&' ') {
+        look.next();
+    }
+    let target = lex_name(&mut look);
+    while look.peek() == Some(&' ') {
+        look.next();
+    }
+    if target.is_empty() || look.next() != Some('{') {
+        return Ok(None);
+    }
+    while matches!(look.peek(), Some(' ') | Some('\r')) {
+        look.next();
+    }
+    if look.next() != Some('\n') {
+        return Err("`platform <target> {` takes the rest of its line".into());
+    }
+    let mut text = String::new();
+    let mut lines = 1;
+    loop {
+        let mut l = String::new();
+        loop {
+            match look.next() {
+                Some('\n') => break,
+                Some(c) => l.push(c),
+                None => return Err(format!("the platform block for {} has no closing `}}` line", target)),
+            }
+        }
+        lines += 1;
+        if l.trim() == "}" {
+            break;
+        }
+        text.push_str(&l);
+        text.push('\n');
+    }
+    *chars = look;
+    // the block's own indentation goes: a rule header is at the block's
+    // left edge and its instruction lines are indented past it
+    let indent = text.lines().filter(|l| !l.trim().is_empty()).map(|l| l.len() - l.trim_start().len()).min().unwrap_or(0);
+    let text: String = text.lines().map(|l| if l.len() >= indent { format!("{}\n", &l[indent..]) } else { "\n".to_string() }).collect();
+    Ok(Some((target, text, lines)))
 }
 
 fn lex_name(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
@@ -1736,11 +1804,19 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     let mut funcs = Vec::new();
     let mut aliases: Vec<usize> = Vec::new(); // token positions of `fn x = g(..)`
     let mut decls: Vec<usize> = Vec::new(); // token positions of `type ...`
+    let mut platform: Vec<(String, String)> = Vec::new();
     p.skip_newlines();
     while !p.at_end() {
         match p.item_kind() {
             Item::Type => {
                 decls.push(p.pos);
+                p.skip_line();
+            }
+            Item::Platform => {
+                if let Some((Tok::Platform(target, text), line)) = p.toks.get(p.pos).cloned() {
+                    crate::platform::Platform::parse(&text).map_err(|m| ParseError { line, msg: format!("platform {}: {}", target, m) })?;
+                    platform.push((target, text));
+                }
                 p.skip_line();
             }
             Item::Alias | Item::Data => p.skip_line(),
@@ -1780,7 +1856,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     p.skip_newlines();
     while !p.at_end() {
         match p.item_kind() {
-            Item::Type => p.skip_line(),
+            Item::Type | Item::Platform => p.skip_line(),
             Item::Data => p.parse_data_decl()?,
             Item::Generic => p.record_generic()?,
             Item::Alias => {
@@ -1806,7 +1882,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
     p.skip_newlines();
     while !p.at_end() {
         match p.item_kind() {
-            Item::Type | Item::Alias | Item::Data => p.skip_line(),
+            Item::Type | Item::Alias | Item::Data | Item::Platform => p.skip_line(),
             Item::Generic => {
                 let (_, hi) = p.function_range()?;
                 p.pos = hi + 1;
@@ -1846,6 +1922,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
         data: p.data,
         funcs,
         int_mul64: mul64,
+        platform,
     };
     // values wider than a word: checked as written, then lowered to words
     // so that no backend ever sees one
@@ -1937,6 +2014,8 @@ enum Item {
     Generic,
     Alias,
     Fn,
+    /// a `platform <target> { ... }` block of rules
+    Platform,
 }
 
 /// Placeholder branch target inside structured constructs; every one is
@@ -2132,6 +2211,9 @@ impl Parser {
     /// `fn x = g(...)`, or a plain `fn`
     fn item_kind(&self) -> Item {
         let at = |k: usize| self.toks.get(self.pos + k).map(|t| &t.0);
+        if matches!(at(0), Some(Tok::Platform(..))) {
+            return Item::Platform;
+        }
         if matches!(at(0), Some(Tok::Ident(k)) if k == "type") {
             return Item::Type;
         }
@@ -4943,7 +5025,9 @@ impl Parser {
                 if self.slice_of(scope.values[addr.0 as usize].ty).is_some() {
                     let (data, index, elem) = self.view_access(scope, addr, "load")?;
                     let dty = scope.values[dst.0 as usize].ty;
-                    if dty != elem {
+                    // a view's element is the policy's from its declaration;
+                    // a body's `int` is abstract until resolved (log 26)
+                    if self.policy.resolve(dty) != self.policy.resolve(elem) {
                         return Err(self.err(format!("load: {} holds {}, but {} is {}", scope.values[addr.0 as usize].name, self.tyname_of(elem), scope.values[dst.0 as usize].name, self.tyname_of(dty))));
                     }
                     return Ok(Inst::Load { dst, addr: data, off: 0, index });
@@ -5263,7 +5347,7 @@ impl Parser {
                 if self.slice_of(scope.values[addr.0 as usize].ty).is_some() {
                     let (data, index, elem) = self.view_access(scope, addr, "store")?;
                     let vty = scope.values[val.0 as usize].ty;
-                    if vty != elem {
+                    if self.policy.resolve(vty) != self.policy.resolve(elem) {
                         return Err(self.err(format!("store: {} holds {}, but {} is {}", scope.values[addr.0 as usize].name, self.tyname_of(elem), scope.values[val.0 as usize].name, self.tyname_of(vty))));
                     }
                     return Ok(Inst::Store { val, addr: data, off: 0, index });
@@ -5819,6 +5903,11 @@ impl fmt::Display for Module {
                 writeln!(f)?;
             }
             write!(f, "{}", func)?;
+        }
+        for (target, text) in &self.platform {
+            writeln!(f, "\nplatform {} {{", target)?;
+            write!(f, "{}", text)?;
+            writeln!(f, "}}")?;
         }
         Ok(())
     }

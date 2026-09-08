@@ -40,6 +40,61 @@ fn calls_of(s: &store::Store, l: &lower::Lowered) -> Result<Vec<(String, lower::
     Ok(out)
 }
 
+/// the kind of place a backend is, as a `platform` body names it (log 31)
+fn kind_of(backend: Backend) -> &'static str {
+    match backend {
+        Backend::Native | Backend::ArmQemu => "arm64",
+        Backend::Riscv => "riscv64",
+        Backend::Wasm => "wasm32",
+        Backend::Air => "air",
+    }
+}
+
+/// Which of the module's functions are out of reach on a kind of place
+/// (section 15): a platform function with no body for it and no `ir`
+/// body, and every function that calls one, by name — with the platform
+/// function it reaches, for the skip line
+fn out_of_reach(module: &ssa::Module, funcs: &[lower::FnInfo], kind: &str) -> std::collections::HashMap<String, String> {
+    let mut out: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for f in funcs {
+        if let Some(kinds) = &f.platform {
+            if !kinds.iter().any(|k| k == "ir" || k == kind) {
+                out.insert(f.ir.clone(), f.ir.clone());
+            }
+        }
+    }
+    if out.is_empty() {
+        return out;
+    }
+    // callers of what is out of reach, until nothing new is found
+    loop {
+        let mut more = Vec::new();
+        for f in &module.funcs {
+            if out.contains_key(&f.name) {
+                continue;
+            }
+            for inst in f.blocks.iter().flat_map(|b| &b.insts) {
+                if let ssa::Inst::Call { callee, .. } = inst {
+                    if let Some(why) = out.get(callee) {
+                        more.push((f.name.clone(), why.clone()));
+                        break;
+                    }
+                }
+            }
+        }
+        if more.is_empty() {
+            break;
+        }
+        out.extend(more);
+    }
+    out
+}
+
+fn skip_note(funcs: &[lower::FnInfo], reaches: &str, kind: &str) -> String {
+    let name = funcs.iter().find(|f| f.ir == reaches).map(|f| f.key.replace('_', " ")).unwrap_or_else(|| reaches.to_string());
+    format!("'{}' has no platform body for {}", name, kind)
+}
+
 /// run one case of a store on the native JIT and print what it gave
 pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize) -> Result<String, String> {
     let s = store::read(dir).map_err(|e| e.to_string())?;
@@ -50,6 +105,10 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize) -> Resul
         .find(|(t, c)| t.split('→').next().unwrap_or("").trim() == which.trim() || c.func == which.trim())
         .ok_or_else(|| format!("no case '{}' in the store's ## testing sections", which))?;
     let module = build(&l.ir, policy, level)?;
+    let kind = kind_of(Backend::Native);
+    if let Some(why) = out_of_reach(&module, &l.funcs, kind).get(&call.func) {
+        return Err(format!("{} is out of reach here: {}", text.split('→').next().unwrap_or("").trim(), skip_note(&l.funcs, why, kind)));
+    }
     let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: call.expect == store::Expect::Check, text: true };
     let got = suite::run_calls(&module, &l.ir, Backend::Native, &[sc], "zero-run", level)?.remove(0)?;
     let vals: Vec<String> = got.values.iter().map(|v| v.to_string()).collect();
@@ -74,14 +133,14 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
     let mut report = Report { passed: 0, failed: 0, skipped: 0, log: String::new() };
     for sdir in &stores {
         let name = sdir.file_name().unwrap().to_string_lossy().to_string();
-        let result = (|| -> Result<(Vec<(String, lower::Call)>, ssa::Module, String), String> {
+        let result = (|| -> Result<(Vec<(String, lower::Call)>, ssa::Module, lower::Lowered), String> {
             let s = store::read(sdir).map_err(|e| e.to_string())?;
             let l = lower::lower(&s).map_err(|e| e.to_string())?;
             let calls = calls_of(&s, &l)?;
             let module = build(&l.ir, &policy, level)?;
-            Ok((calls, module, l.ir))
+            Ok((calls, module, l))
         })();
-        let (calls, module, ir) = match result {
+        let (calls, module, lowered) = match result {
             Ok(r) => r,
             Err(e) => {
                 report.failed += 1;
@@ -89,6 +148,16 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                 continue;
             }
         };
+        // a case whose function is out of reach on this kind of place
+        // (section 15, log 31) is skipped, saying which platform
+        // function has no body for it
+        let kind = kind_of(backend);
+        let unreached = out_of_reach(&module, &lowered.funcs, kind);
+        let (calls, skipped): (Vec<&(String, lower::Call)>, Vec<&(String, lower::Call)>) = calls.iter().partition(|(_, c)| !unreached.contains_key(&c.func));
+        for (text, c) in skipped {
+            report.skipped += 1;
+            report.log.push_str(&format!("skip  {:<16} {}: {}\n", name, text, skip_note(&lowered.funcs, &unreached[&c.func], kind)));
+        }
         let scalls: Vec<suite::Call> = calls
             .iter()
             .map(|(_, c)| suite::Call {
@@ -100,7 +169,10 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                 text: true,
             })
             .collect();
-        let got = match suite::run_calls(&module, &ir, backend, &scalls, &name, level) {
+        if scalls.is_empty() {
+            continue;
+        }
+        let got = match suite::run_calls(&module, &lowered.ir, backend, &scalls, &name, level) {
             Ok(g) => g,
             Err(e) => {
                 report.failed += calls.len().max(1);

@@ -418,36 +418,18 @@ impl<'a> Parser<'a> {
             }
             self.expect_newline()?;
             let mut lines = Vec::new();
+            // a platform body is foreign text: the lexer hands its lines
+            // over as written (log 31)
             if self.eat(&Tok::Indent) {
-                let mut depth = 1;
-                let mut cur = String::new();
-                // a platform body is foreign text: its tokens are kept as
-                // words, one line each, for the backend that reads them
-                while depth > 0 {
+                loop {
                     match self.next()? {
-                        Tok::Indent => depth += 1,
-                        Tok::Dedent => depth -= 1,
-                        Tok::Newline => {
-                            lines.push(std::mem::take(&mut cur));
+                        Tok::Raw(l) => {
+                            lines.push(l);
+                            self.expect_newline()?;
                         }
-                        t => {
-                            if !cur.is_empty() {
-                                cur.push(' ');
-                            }
-                            cur.push_str(&match t {
-                                Tok::Word(w) => w,
-                                Tok::Seq(w) => format!("{}$", w),
-                                Tok::Int(v) => v.to_string(),
-                                Tok::Float(s) => s,
-                                Tok::Str(s) => format!("\"{}\"", s),
-                                Tok::Sym(s) => s.to_string(),
-                                _ => String::new(),
-                            });
-                        }
+                        Tok::Dedent => break,
+                        t => return Err(self.err(format!("unexpected {} in a platform body", t))),
                     }
-                }
-                if !cur.is_empty() {
-                    lines.push(cur);
                 }
             }
             platform.push((kinds, lines));

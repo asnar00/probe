@@ -1,0 +1,6 @@
+on greet()
+    print "hello"
+
+on count to three()
+    int i$ = [1 through 3]
+    print i$

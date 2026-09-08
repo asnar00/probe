@@ -253,6 +253,14 @@ fn no_inline(module: &Module, out: &[bool], natives: &Natives) -> Vec<bool> {
 
 /// the call graph, with an indirect call an edge to every
 /// address-taken function of its signature
+/// what a rule asks the emitter for: its one-line template (`air.sqrt.f32
+/// = sqrt(f32) -> f32`), or the mnemonic of its first line when it is
+/// written as a header with lines, as a module's own block is
+fn rule_key(native: &crate::platform::Native) -> String {
+    let line = &native.rule.lines[0];
+    line.template.clone().unwrap_or_else(|| line.mnemonic.clone())
+}
+
 fn call_edges(module: &Module, taken: &[String], natives: Option<&Natives>) -> Vec<Vec<usize>> {
     let sig_of = |f: &Function| -> (Vec<Type>, Vec<Type>) { (f.params.iter().map(|&p| f.ty(p)).collect(), f.rets.clone()) };
     let names: HashMap<&str, usize> = module.funcs.iter().enumerate().map(|(i, f)| (f.name.as_str(), i)).collect();
@@ -438,7 +446,7 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
         for inst in f.blocks.iter().flat_map(|b| &b.insts) {
             if let Inst::Call { callee, .. } = inst {
                 if let Some(native) = natives.get(callee) {
-                    let key = native.rule.lines[0].template.clone().unwrap_or_default();
+                    let key = rule_key(native);
                     if key == "air.wg.barrier" && !cx.decls.contains_key(&key) {
                         let fty = cx.m.fn_ty(void, vec![i32t, i32t]);
                         let id = cx.m.function(&key, fty, true);
@@ -1358,7 +1366,7 @@ impl Cx<'_> {
     /// result as bits
     fn emit_rule(&mut self, fx: &mut Fx, dsts: &[ValueId], callee: &str, args: &[ValueId]) -> Result<(), String> {
         let native = self.natives.get(callee).unwrap();
-        let key = native.rule.lines[0].template.clone().unwrap_or_default();
+        let key = rule_key(native);
         // the group operations: an offset into the threadgroup array
         if key == "air.wg.barrier" {
             let (id, fty) = self.decls[&key];
@@ -1427,9 +1435,9 @@ impl Cx<'_> {
             fx.b.push(&self.m, B::Call { fn_ty: fty, callee: fv, args: fargs })
         } else {
             match key.as_str() {
-                "fadd" => fx.b.push(&self.m, B::Bin { op: OP_ADD, lhs: fargs[0], rhs: fargs[1], flags: 0 }),
-                "fsub" => fx.b.push(&self.m, B::Bin { op: OP_SUB, lhs: fargs[0], rhs: fargs[1], flags: 0 }),
-                "fmul" => fx.b.push(&self.m, B::Bin { op: OP_MUL, lhs: fargs[0], rhs: fargs[1], flags: 0 }),
+                "fadd" | "add" => fx.b.push(&self.m, B::Bin { op: OP_ADD, lhs: fargs[0], rhs: fargs[1], flags: 0 }),
+                "fsub" | "sub" => fx.b.push(&self.m, B::Bin { op: OP_SUB, lhs: fargs[0], rhs: fargs[1], flags: 0 }),
+                "fmul" | "mul" => fx.b.push(&self.m, B::Bin { op: OP_MUL, lhs: fargs[0], rhs: fargs[1], flags: 0 }),
                 "fdiv" => fx.b.push(&self.m, B::Bin { op: OP_SDIV, lhs: fargs[0], rhs: fargs[1], flags: 0 }),
                 "fneg" => fx.b.push(&self.m, B::Unop { op: 0, val: fargs[0] }),
                 other => return Err(format!("rule '{}': no such operation on air", other)),

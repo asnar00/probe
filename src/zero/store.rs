@@ -61,6 +61,18 @@ pub enum Expect {
     Check,
 }
 
+/// the compiler's own feature (log 31): the platform functions every
+/// store has, `print` first among them, with bodies in the IR; composed
+/// first, in the lowest layer, `platform`
+const PLATFORM_ZERO: &str = include_str!("platform.zero");
+const PLATFORM_FILE: &str = "src/zero/platform.zero";
+
+fn builtin_platform(types: &HashSet<String>) -> Result<FeatureDoc, Error> {
+    let code = syntax::parse_feature("platform", PLATFORM_ZERO, PLATFORM_FILE, types)?;
+    let origin = Origin { when: "0000-00-00T00:00:00".into(), text: "(probe) the compiler's own feature: the platform functions every store has".into() };
+    Ok(FeatureDoc { name: "platform".into(), parent: None, layer: Some("platform".into()), origins: vec![origin], cases: Vec::new(), code, md_file: PLATFORM_FILE.into() })
+}
+
 /// Read a store: every folder with a `.md` and a `.zero` of its own name.
 pub fn read(dir: &Path) -> Result<Store, Error> {
     let sdir = dir.display().to_string();
@@ -78,6 +90,9 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     let mut sources = Vec::new();
     for f in &folders {
         let name = f.file_name().unwrap().to_string_lossy().to_string();
+        if name == "platform" {
+            return Err(lex::error(&f.display().to_string(), 0, "'platform' is the compiler's own feature, composed into every store: name this one otherwise"));
+        }
         let zero = f.join(format!("{}.zero", name));
         let md = f.join(format!("{}.md", name));
         let zfile = zero.display().to_string();
@@ -96,6 +111,7 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     features.sort_by(|a, b| a.origins[0].when.cmp(&b.origins[0].when).then(a.name.cmp(&b.name)));
     let layers = read_layers(dir)?;
     check_tree(&mut features, &layers)?;
+    features.insert(0, builtin_platform(&types)?);
     Ok(Store { path: dir.to_path_buf(), features, layers })
 }
 

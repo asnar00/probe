@@ -9,6 +9,7 @@
 ;! asum 100 -> 4950
 ;! asum 0 -> 0
 ;! afib 15 -> 610
+;! aview 21 -> 26
 ;! aclamp 250 0 100 -> 100
 ;! aclamp -5 0 100 -> 0
 ;! aclamp 42 0 100 -> 42
@@ -74,5 +75,26 @@ fn aeven(n: int) -> u1 {
     bit: int = and n, 1
     flip: int = xor bit, 1
     r: u1 = conv flip
+    ret r
+}
+
+; a view whose element is `int`, stored into and loaded from by a plain
+; function (no abstract type in its signature, so its body's `int` stays
+; abstract until the module is resolved, while the view's element took
+; the policy's width at its declaration): judged under the policy (fm3
+; milestone 0, where `print i$` over `int i$ = [1 through 3]` met it)
+data ints: buffer(int, 4)
+fn ints_int() -> int[] {
+    p: ptr = addr ints
+    v: int[] = slice p
+    ret v
+}
+fn aview(k: i64) -> i64 {
+    v: int[] = ints_int()
+    x: int = const 5
+    store x, v, 1
+    y: int = load v, 1
+    z: i64 = conv y
+    r: i64 = add z, k
     ret r
 }
