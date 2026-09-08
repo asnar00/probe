@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: checks — `662ad8d` · 2026-09-08
+
+```
+on (int s) = guarded sum (int k)
+    check (k >= 0)
+    loop (int i = 1, int acc = 0) while (i <= k)
+        continue (i + 1, acc + i)
+    s = acc
+```
+
+Plan item 10 of milestone 0, section 14 of zero.md. `check (c)` is the IR's trap, with the site — `check at checks.zero:6` — printed into the program's output buffer first, and every runner reads it back (`src/suite.rs`, `checked_at`): the JIT's forked child through a `SIGTRAP` handler that reads the buffer via the JIT before it ends, wasm from the instance that outlives `unreachable` (`src/driver.js`), a machine from `__trap` printing the buffer after `check`. So `>guarded sum (-1) → check` passes with `(at checks.zero:6)` on its ok line, and a case that wanted a number reports `a failed check at checks.zero:6`. Every zero call now runs in a forked child under the JIT and reads its text back, so an unexpected trap is reported rather than ending the runner. `suite/zero/checks`: 11 cases; 167/167 on native, wasm, riscv and arm-qemu, 160 + 7 skipped on air; probe test 966, 957 + 9, 966, 966, 936 + 30; cargo test 91 passed.
+
 ### zero: features — `756dbd3` · 2026-09-08
 
 ```
