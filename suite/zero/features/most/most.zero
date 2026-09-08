@@ -1,0 +1,49 @@
+on (int n) = greet()
+    n = existing greet() * 100
+
+on (int n) = count (int k)
+    if (k > 5)
+        n = existing count (k) + existing count (k)
+    else
+        n = k
+
+on (int n) = describe()
+    n = 20
+
+on (int n) = greeted()
+    n = greet()
+
+on (int n) = counted (int k)
+    n = count (k)
+
+on (int n) = described()
+    n = describe()
+
+on (int n) = greeted without more()
+    more.enabled = false
+    n = greet()
+
+on (int n) = greeted without base()
+    base.enabled = false
+    n = greet()
+
+on (int n) = described without most()
+    most.enabled = false
+    n = describe()
+
+on (int a, int b) = state kept when off()
+    visit()
+    visit()
+    more.enabled = false
+    visit()
+    more.enabled = true
+    visit()
+    a = seen by more()
+    b = visited()
+
+on (bool b) = switch read()
+    more.enabled = false
+    b = more.enabled
+
+on (bool b) = own switch()
+    b = enabled

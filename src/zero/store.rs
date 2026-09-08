@@ -9,18 +9,31 @@
 
 use super::lex::{self, Error};
 use super::syntax::{self, Feature};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub struct Store {
     pub path: PathBuf,
     /// the features in composition order: earliest origin first
     pub features: Vec<FeatureDoc>,
+    /// the layers, lowest first, from `layers.md` beside the feature
+    /// folders (log 28); empty when there is none, and every layer is
+    /// then one level
+    pub layers: Vec<String>,
+}
+
+impl Store {
+    /// a layer's height: its place in `layers.md`, or 0 for every
+    /// layer when there is no list
+    pub fn rank(&self, layer: &str) -> usize {
+        self.layers.iter().position(|l| l == layer).unwrap_or(0)
+    }
 }
 
 pub struct FeatureDoc {
     pub name: String,
     pub parent: Option<String>,
+    /// the feature's layer: its own `layer:` line, or its parent's
     pub layer: Option<String>,
     pub origins: Vec<Origin>,
     pub cases: Vec<Case>,
@@ -81,7 +94,85 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
         features.push(doc);
     }
     features.sort_by(|a, b| a.origins[0].when.cmp(&b.origins[0].when).then(a.name.cmp(&b.name)));
-    Ok(Store { path: dir.to_path_buf(), features })
+    let layers = read_layers(dir)?;
+    check_tree(&mut features, &layers)?;
+    Ok(Store { path: dir.to_path_buf(), features, layers })
+}
+
+/// `layers.md`: the store's layers, one `- name` per line, lowest first
+fn read_layers(dir: &Path) -> Result<Vec<String>, Error> {
+    let path = dir.join("layers.md");
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok(Vec::new()) };
+    let file = path.display().to_string();
+    let mut layers = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if let Some(name) = line.trim().strip_prefix("- ") {
+            let name = name.trim().to_string();
+            if layers.contains(&name) {
+                return Err(lex::error(&file, i + 1, format!("layer '{}' is listed twice", name)));
+            }
+            layers.push(name);
+        }
+    }
+    if layers.is_empty() {
+        return Err(lex::error(&file, 0, "layers.md lists the layers, lowest first, one `- name` per line"));
+    }
+    Ok(layers)
+}
+
+/// the parent lines make a tree, every feature has a layer — its own
+/// or its parent's — and a feature's layer is at or above its parent's
+fn check_tree(features: &mut [FeatureDoc], layers: &[String]) -> Result<(), Error> {
+    let names: Vec<String> = features.iter().map(|f| f.name.clone()).collect();
+    let parent_of: HashMap<String, Option<String>> = features.iter().map(|f| (f.name.clone(), f.parent.clone())).collect();
+    for f in features.iter() {
+        if let Some(p) = &f.parent {
+            if !names.contains(p) {
+                return Err(lex::error(&f.md_file, 0, format!("parent '{}' is not a feature of the store", p)));
+            }
+            if p == &f.name {
+                return Err(lex::error(&f.md_file, 0, "a feature is not its own parent"));
+            }
+        }
+    }
+    // the layer, inherited down the parent line; a loop in the line is found on the way
+    let own: HashMap<String, Option<String>> = features.iter().map(|f| (f.name.clone(), f.layer.clone())).collect();
+    let mut resolved: HashMap<String, String> = HashMap::new();
+    for f in features.iter() {
+        let mut seen = vec![f.name.clone()];
+        let mut at = f.name.clone();
+        let layer = loop {
+            if let Some(l) = &own[&at] {
+                break l.clone();
+            }
+            match &parent_of[&at] {
+                Some(p) => {
+                    if seen.contains(p) {
+                        return Err(lex::error(&f.md_file, 0, format!("the parent lines loop: {}", seen.join(" -> "))));
+                    }
+                    seen.push(p.clone());
+                    at = p.clone();
+                }
+                None => return Err(lex::error(&f.md_file, 0, format!("feature {} has no layer and no parent to take one from: `layer: name`", f.name))),
+            }
+        };
+        if !layers.is_empty() && !layers.contains(&layer) {
+            return Err(lex::error(&f.md_file, 0, format!("layer '{}' is not in layers.md ({})", layer, layers.join(", "))));
+        }
+        resolved.insert(f.name.clone(), layer);
+    }
+    let rank = |l: &str| layers.iter().position(|x| x == l).unwrap_or(0);
+    for f in features.iter_mut() {
+        let layer = resolved[&f.name].clone();
+        if let Some(p) = &f.parent {
+            let pl = &resolved[p];
+            if rank(&layer) < rank(pl) {
+                return Err(lex::error(&f.md_file, 0, format!("feature {} is in layer {}, below its parent {}'s layer {}: a feature's layer is at or above its parent's", f.name, layer, p, pl)));
+            }
+        }
+        f.layer = Some(layer);
+    }
+    Ok(())
 }
 
 fn read_prose(name: &str, prose: &str, file: &str, types: &HashSet<String>, code: Feature) -> Result<FeatureDoc, Error> {

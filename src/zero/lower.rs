@@ -146,6 +146,11 @@ pub struct FnInfo {
     /// output's reader comes first and `__hz` last, and it returns its
     /// stream parameters moved on
     pub task: bool,
+    /// the features that define it, innermost first (log 28): one for a
+    /// function defined once; more for a chain of redefinitions, whose
+    /// bodies are `key__feature` and whose links `key` and
+    /// `key__before_feature` gate on each feature's `enabled`
+    pub chain: Vec<String>,
 }
 
 /// a wiring at feature scope (log 25): one task call the scheduler runs
@@ -261,6 +266,77 @@ fn __str(p: ptr, n: i64) -> u8[] {
     ret v
 }
 
+; one byte, when there is room
+fn __out_ch(c: u8) {
+    q: ptr = addr __out_n
+    k: i64 = load q
+    o: ptr = addr __out
+    room: u1 = cmp.lt k, 4095
+    if room {
+        store c, o, k, 1
+        k2: i64 = add k, 1
+        store k2, q
+    }
+    ret
+}
+
+; an int in decimal
+fn __print_int(x: int) {
+    negative: u1 = cmp.lt x, 0
+    m: int = if negative {
+        __out_ch(45)
+        y: int = sub 0, x
+        yield y
+    } else {
+        yield x
+    }
+    top: int = loop(p: int = 1) {
+        q: int = div m, p
+        more: u1 = cmp.ge q, 10
+        if more {
+            p2: int = mul p, 10
+            continue p2
+        }
+        break p
+    }
+    loop(p3: int = top) {
+        done: u1 = cmp.eq p3, 0
+        if done {
+            break
+        }
+        d: int = div m, p3
+        r: int = rem d, 10
+        a: int = add r, 48
+        c: u8 = conv a
+        __out_ch(c)
+        p4: int = div p3, 10
+        continue p4
+    }
+    ret
+}
+
+; a sequence of ints on one line, a space between, then a newline
+fn __print_ints(v: int[]) {
+    n: i64 = len v
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        first: u1 = cmp.eq i, 0
+        if first {
+        } else {
+            __out_ch(32)
+        }
+        x: int = load v, i
+        __print_int(x)
+        i2: i64 = add i, 1
+        continue i2
+    }
+    __out_ch(10)
+    ret
+}
+
 ; append a string and a newline; what does not fit is dropped
 fn __print(s: u8[]) {
     q: ptr = addr __out_n
@@ -338,7 +414,11 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), news: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new() };
+    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), news: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), type_feature: HashMap::new() };
+    for f in &store.features {
+        l.features.push(f.name.clone());
+        l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
+    }
     // the front end's builtins, until item 11 declares them as platform functions
     l.funcs.push(FnInfo {
         key: "print".into(),
@@ -348,10 +428,12 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         results: Vec::new(),
         feature: String::new(),
         task: false,
+        chain: Vec::new(),
     });
     // types first, then every signature, then the variables (a wiring
     // names a task), so a body may use what a later feature declares
     for f in &store.features {
+        l.cur = f.name.clone();
         for d in &f.code.decls {
             if let Decl::Type(t) = d {
                 l.declare_type(t, &f.code.file)?;
@@ -359,6 +441,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         }
     }
     for f in &store.features {
+        l.cur = f.name.clone();
         for d in &f.code.decls {
             if let Decl::Fn(fd) = d {
                 l.declare(fd, &f.name, &f.code.file)?;
@@ -366,6 +449,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         }
     }
     for f in &store.features {
+        l.cur = f.name.clone();
         for d in &f.code.decls {
             if let Decl::Var(v) = d {
                 l.declare_var(v, &f.name, &f.code.file)?;
@@ -373,6 +457,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         }
     }
     for f in &store.features {
+        l.cur = f.name.clone();
         for d in &f.code.decls {
             if let Decl::Var(v) = d {
                 l.collect_nodes(v, &f.name, &f.code.file)?;
@@ -381,13 +466,15 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     }
     l.emit_context(store)?;
     for f in &store.features {
-        writeln!(l.out, "\n; feature {}", f.name).unwrap();
+        l.cur = f.name.clone();
+        writeln!(l.out, "\n; feature {} (layer {})", f.name, f.layer.as_deref().unwrap_or("")).unwrap();
         for d in &f.code.decls {
             if let Decl::Fn(fd) = d {
-                l.lower_fn(fd, &f.code.file)?;
+                l.lower_fn(fd, &f.name, &f.code.file)?;
             }
         }
     }
+    l.emit_links();
     if !l.news.is_empty() {
         writeln!(l.out, "\n; a sequence of n items, carved from the arena: a buffer, then the view over it").unwrap();
     }
@@ -523,6 +610,14 @@ struct Lowerer {
     /// the feature-scope streams some node reads: a push into one from a
     /// plain function is followed by `__run()`
     node_inputs: std::collections::HashSet<String>,
+    /// the feature whose code is being lowered
+    cur: String,
+    /// every feature's layer height (log 28)
+    ranks: HashMap<String, usize>,
+    /// the features, in composition order
+    features: Vec<String>,
+    /// the feature that declared each type
+    type_feature: HashMap<String, String>,
 }
 
 /// what kind of body is being lowered: the scheduler runs after a push
@@ -600,6 +695,10 @@ struct Body {
     depth: usize,
     loops: Vec<LoopCtx>,
     kind: BodyKind,
+    /// the function this body defines, and the link below it in its
+    /// chain, which is what `existing` calls (log 28)
+    func: Option<FnInfo>,
+    below: Option<String>,
 }
 
 impl Body {
@@ -669,6 +768,20 @@ impl Body {
 }
 
 impl Lowerer {
+    /// may the feature being lowered name something of `owner`'s? Its
+    /// own layer or a lower one, never up (log 28); the front end's
+    /// builtins belong to no feature
+    fn reach(&self, what: &str, owner: &str, file: &str, line: usize) -> Result<(), Error> {
+        if owner.is_empty() || owner == self.cur {
+            return Ok(());
+        }
+        let (from, to) = (self.ranks.get(&self.cur).copied().unwrap_or(0), self.ranks.get(owner).copied().unwrap_or(0));
+        if to > from {
+            return Err(lex::error(file, line, format!("'{}' belongs to feature {}, whose layer is above {}'s: a name reaches down or sideways, never up", what, owner, self.cur)));
+        }
+        Ok(())
+    }
+
     /// a type by zero's name
     fn ty(&self, name: &str, seq: bool, file: &str, line: usize) -> Result<Ty, Error> {
         let t = match builtin_type(name) {
@@ -679,6 +792,9 @@ impl Lowerer {
                 None => return Err(lex::error(file, line, format!("'{}' is not a type", name))),
             },
         };
+        if let Some(owner) = self.type_feature.get(name) {
+            self.reach(name, &owner.clone(), file, line)?;
+        }
         if !seq {
             return Ok(t);
         }
@@ -710,6 +826,7 @@ impl Lowerer {
                 let bits = if cases.len() <= 256 { 8 } else if cases.len() <= 65536 { 16 } else { 32 };
                 self.type_lines.push(format!("type {} = u{}", t.name, bits));
                 self.types.insert(t.name.clone(), TypeInfo::Enum(cases.clone()));
+                self.type_feature.insert(t.name.clone(), self.cur.clone());
             }
             TypeKind::Struct(fields) => {
                 let mut out = Vec::new();
@@ -734,6 +851,7 @@ impl Lowerer {
                 }
                 self.type_lines.push(format!("type {} = struct {{ {} }}", t.name, ir.join(", ")));
                 self.types.insert(t.name.clone(), TypeInfo::Struct(out));
+                self.type_feature.insert(t.name.clone(), self.cur.clone());
             }
         }
         Ok(())
@@ -800,9 +918,29 @@ impl Lowerer {
             if other.parts != f.name || other.params.len() != params.len() {
                 return Err(lex::error(file, f.line, format!("'{}' clashes with a function of feature {} that mangles to the same name", key, other.feature)));
             }
-            return Err(lex::error(file, f.line, "redefinition is not in this item yet"));
+            // a redefinition (log 28): the same signature from a later
+            // feature joins the chain, and its body will call `existing`
+            let last = other.chain.last().cloned().unwrap_or_default();
+            if last == feature {
+                return Err(lex::error(file, f.line, format!("'{}' is defined twice in feature {}", spoken(other), feature)));
+            }
+            if other.task || f.task {
+                return Err(lex::error(file, f.line, format!("'{}' is a task: a task is not redefined in this milestone", spoken(other))));
+            }
+            if operator {
+                return Err(lex::error(file, f.line, "an operator is not redefined in this milestone"));
+            }
+            if other.params != params || other.results != results {
+                return Err(lex::error(file, f.line, format!("'{}' redefines feature {}'s with different parameters or results: a redefinition keeps the signature", spoken(other), last)));
+            }
+            self.reach(&spoken(other), &last, file, f.line)?;
+            let i = self.funcs.iter().position(|g| g.ir == ir).unwrap();
+            // the function stays the first definer's: a lower layer's
+            // name, which control may flow up through (section 12)
+            self.funcs[i].chain.push(feature.to_string());
+            return Ok(());
         }
-        self.funcs.push(FnInfo { key, ir, parts: f.name.clone(), params, results, feature: feature.to_string(), task: f.task });
+        self.funcs.push(FnInfo { key, ir, parts: f.name.clone(), params, results, feature: feature.to_string(), task: f.task, chain: vec![feature.to_string()] });
         Ok(())
     }
 
@@ -848,6 +986,7 @@ impl Lowerer {
     /// is a stream variable, and takes the reader the task returns
     fn run_task(&mut self, info: &FnInfo, args: &[Expr], hz: i64, out: &Val, b: &mut Body, line: usize) -> Result<(), Error> {
         let file = b.file.clone();
+        self.reach(&spoken(info), &info.feature, &file, line)?;
         let Ty::Stream(want, _) = &info.results[0].1 else { unreachable!() };
         let Ty::Stream(have, _) = &out.ty else { unreachable!() };
         if want != have {
@@ -930,6 +1069,7 @@ impl Lowerer {
             let Some((info, args, hz)) = self.task_call(e, None, file)? else {
                 return Err(lex::error(file, e.line, "a value pushed after a task call at feature scope: a chain's items come before its tasks"));
             };
+            self.reach(&spoken(&info), &info.feature, file, e.line)?;
             for (a, (pname, pty)) in args.iter().zip(&info.params) {
                 if let Ty::Stream(pe, _) = pty {
                     let ExprKind::Seq(n) = &a.kind else {
@@ -941,6 +1081,7 @@ impl Lowerer {
                         Some(t) => return Err(lex::error(file, a.line, format!("'{}$' is a {}, not a stream: a stream is declared with `<<` or `at (n hz)`", n, t.ir()))),
                         None => return Err(lex::error(file, a.line, format!("'{}$' is not a feature-scope stream", n))),
                     }
+                    self.reach(&format!("{}$", n), &self.fvar(n).unwrap().feature.clone(), file, a.line)?;
                     self.node_inputs.insert(n.clone());
                 }
             }
@@ -980,7 +1121,7 @@ impl Lowerer {
     /// which puts every variable's initial value in it, and the
     /// scheduler with a function per node (log 25)
     fn emit_context(&mut self, store: &Store) -> Result<(), Error> {
-        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Reset };
+        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Reset, func: None, below: None };
         b.line("q: ptr = addr __out_n");
         b.line("store 0: i64, q");
         b.line("a: ptr = addr __arena");
@@ -1007,6 +1148,10 @@ impl Lowerer {
                 self.fvars.push(FVar { name, ty, scope: "node".into(), merge: "last".into(), feature: node.feature.clone() });
             }
         }
+        // every feature's implicit `enabled` (section 5, log 28), first
+        for (i, f) in self.features.clone().iter().enumerate() {
+            self.fvars.insert(i, FVar { name: format!("__enabled_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone() });
+        }
         if !self.fvars.is_empty() {
             let mut fields = Vec::new();
             self.type_lines.push(String::new());
@@ -1017,13 +1162,15 @@ impl Lowerer {
             }
             self.type_lines.push(format!("type __ctx = struct {{ {} }}", fields.join(", ")));
             self.data.push("data __ctx_mem: array(__ctx, 1)".into());
-            // the initial values, in composition order
-            let mut inits = Vec::new();
+            // the initial values, in composition order: every feature on,
+            // then the variables, then the nodes' state
+            let mut inits: Vec<String> = self.features.iter().map(|_| "1".to_string()).collect();
             let mut init_of: HashMap<String, String> = HashMap::new();
             for feat in &store.features {
                 for d in &feat.code.decls {
                     let Decl::Var(v) = d else { continue };
                     b.file = feat.code.file.clone();
+                    self.cur = feat.name.clone();
                     let ty = self.fvar(&v.name).unwrap().ty.clone();
                     let val = match &v.init {
                         _ if matches!(ty, Ty::Stream(..)) => {
@@ -1117,6 +1264,80 @@ impl Lowerer {
         Ok(())
     }
 
+    /// the links of every chain (log 28): `key` is the outermost, and
+    /// `key__before_F` the chain below feature F's body; each reads its
+    /// feature's `enabled` and calls the body or the link below; the
+    /// innermost, off, gives the results' zeros
+    fn emit_links(&mut self) {
+        let chains: Vec<FnInfo> = self.funcs.iter().filter(|f| f.chain.len() > 1).cloned().collect();
+        for info in chains {
+            let n = info.chain.len();
+            let params: Vec<String> = info.params.iter().map(|(p, t)| format!("{}: {}", p, t.ir())).collect();
+            let args: Vec<String> = info.params.iter().map(|(p, _)| p.clone()).collect();
+            let rets: Vec<String> = info.results.iter().map(|(_, t)| t.ir()).collect();
+            let sig_ret = match rets.len() {
+                0 => String::new(),
+                1 => format!(" -> {}", rets[0]),
+                _ => format!(" -> ({})", rets.join(", ")),
+            };
+            writeln!(self.out, "\n; {}: the chain {}, newest outermost; a link whose feature is off falls through", info.ir, info.chain.iter().rev().cloned().collect::<Vec<_>>().join(", ")).unwrap();
+            for i in (0..n).rev() {
+                let name = if i == n - 1 { info.ir.clone() } else { format!("{}__before_{}", info.ir, info.chain[i + 1]) };
+                let body = format!("{}__{}({})", info.ir, info.chain[i], args.join(", "));
+                let under = if i == 0 { None } else { Some(format!("{}__before_{}({})", info.ir, info.chain[i], args.join(", "))) };
+                let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None };
+                b.line(&format!("on: u1 = __get___enabled_{}()", info.chain[i]));
+                if rets.is_empty() {
+                    b.line("if on {");
+                    b.depth += 1;
+                    b.line(&body);
+                    b.depth -= 1;
+                    if let Some(u) = under {
+                        b.line("} else {");
+                        b.depth += 1;
+                        b.line(&u);
+                        b.depth -= 1;
+                    }
+                    b.line("}");
+                    b.line("ret");
+                } else {
+                    let outs: Vec<String> = (0..rets.len()).map(|_| b.tmp()).collect();
+                    let defs: Vec<String> = outs.iter().zip(&rets).map(|(o, t)| format!("{}: {}", o, t)).collect();
+                    b.line(&format!("{} = if on {{", defs.join(", ")));
+                    b.depth += 1;
+                    let vs: Vec<String> = (0..rets.len()).map(|_| b.tmp()).collect();
+                    let ds: Vec<String> = vs.iter().zip(&rets).map(|(v, t)| format!("{}: {}", v, t)).collect();
+                    b.line(&format!("{} = {}", ds.join(", "), body));
+                    b.line(&format!("yield {}", vs.join(", ")));
+                    b.depth -= 1;
+                    b.line("} else {");
+                    b.depth += 1;
+                    match under {
+                        Some(u) => {
+                            let vs: Vec<String> = (0..rets.len()).map(|_| b.tmp()).collect();
+                            let ds: Vec<String> = vs.iter().zip(&rets).map(|(v, t)| format!("{}: {}", v, t)).collect();
+                            b.line(&format!("{} = {}", ds.join(", "), u));
+                            b.line(&format!("yield {}", vs.join(", ")));
+                        }
+                        None => {
+                            let mut zs = Vec::new();
+                            for (_, t) in &info.results {
+                                zs.push(self.zero_val(t, &mut b).text);
+                            }
+                            b.line(&format!("yield {}", zs.join(", ")));
+                        }
+                    }
+                    b.depth -= 1;
+                    b.line("}");
+                    b.line(&format!("ret {}", outs.join(", ")));
+                }
+                writeln!(self.out, "fn {}({}){} {{", name, params.join(", "), sig_ret).unwrap();
+                self.out.push_str(&b.out);
+                self.out.push_str("}\n");
+            }
+        }
+    }
+
     /// `fn __nodeK() -> u1`: run the node when it is pending, and say
     /// whether it ran. Pending: an input has more items than it had
     /// when the node last ran (a node may leave what it cannot take yet,
@@ -1124,7 +1345,7 @@ impl Lowerer {
     /// since; a node with no inputs, once. After a run the node is
     /// finished when all its inputs have ended.
     fn emit_node(&mut self, k: usize, node: &Node) -> Result<(), Error> {
-        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: node.file.clone(), depth: 0, loops: Vec::new(), kind: BodyKind::Node };
+        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: node.file.clone(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None };
         b.line(&format!("fin: u1 = __get___node{}_fin()", k));
         b.line("notfin: u1 = xor fin, 1");
         let mut readers = Vec::new();
@@ -1157,9 +1378,12 @@ impl Lowerer {
             readers.push((pname.clone(), r, pty.clone(), a.line));
         }
         let pending = pending.unwrap_or_else(|| "notfin".into());
-        b.line(&format!("ran: u1 = if {} {{", pending));
+        // a feature that is off runs no node; its readers keep their place
+        b.line(&format!("on: u1 = __get___enabled_{}()", node.feature));
+        b.line(&format!("due: u1 = and {}, on", pending));
+        b.line("ran: u1 = if due {");
         b.depth += 1;
-        let out = self.read_fvar(&node.out, &mut b, None);
+        let out = self.read_fvar(&node.out, &mut b, None, 0)?;
         let mut ops = vec![out.text.clone()];
         let mut ri = 0;
         for (a, (_, pty)) in node.args.iter().zip(&node.info.params) {
@@ -1242,16 +1466,19 @@ impl Lowerer {
     }
 
     /// a feature variable read: a call to its getter
-    fn read_fvar(&mut self, name: &str, b: &mut Body, dst: Option<&str>) -> Val {
-        let ty = self.fvar(name).unwrap().ty.clone();
-        let out = name_for(dst, &ty, b);
-        b.line(&format!("{}: {} = __get_{}()", out, ty.ir(), name));
-        Val { text: out, ty, literal: false }
+    fn read_fvar(&mut self, name: &str, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        let f = self.fvar(name).unwrap().clone();
+        self.reach(name, &f.feature, &b.file, line)?;
+        let out = name_for(dst, &f.ty, b);
+        b.line(&format!("{}: {} = __get_{}()", out, f.ty.ir(), name));
+        Ok(Val { text: out, ty: f.ty, literal: false })
     }
 
     /// a feature variable written: a call to its setter
     fn write_fvar(&mut self, name: &str, v: Val, b: &mut Body, line: usize) -> Result<(), Error> {
-        let ty = self.fvar(name).unwrap().ty.clone();
+        let f = self.fvar(name).unwrap().clone();
+        self.reach(name, &f.feature, &b.file, line)?;
+        let ty = f.ty;
         if !(v.ty == ty || (v.literal && fits_literal(&v, &ty))) {
             return Err(lex::error(&b.file, line, format!("'{}' is {} but the value is {}", name, ty.ir(), v.ty.ir())));
         }
@@ -1259,14 +1486,21 @@ impl Lowerer {
         Ok(())
     }
 
-    fn lower_fn(&mut self, f: &FnDecl, file: &str) -> Result<(), Error> {
+    fn lower_fn(&mut self, f: &FnDecl, feature: &str, file: &str) -> Result<(), Error> {
         let key = mangle(&f.name);
         let info = self.funcs.iter().find(|g| g.key == key && g.parts == f.name && g.params.len() == f.params().count()).unwrap().clone();
         // a task's IR results are its stream parameters, moved on (log 25)
         let results: Vec<(String, Ty)> = if info.task { info.params.iter().filter(|(_, t)| matches!(t, Ty::Stream(..))).cloned().collect() } else { info.results.clone() };
         let kind = if info.task { BodyKind::Task { out: info.results[0].0.clone(), hz: "__hz".into() } } else { BodyKind::Fn };
-        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: results.clone(), file: file.to_string(), depth: 0, loops: Vec::new(), kind };
-        let mut sig = format!("fn {}(", info.ir);
+        // in a chain the body is `key__feature`, and `existing` is the link below
+        let (name, below) = if info.chain.len() > 1 {
+            let i = info.chain.iter().position(|c| c == feature).unwrap();
+            (format!("{}__{}", info.ir, feature), if i == 0 { None } else { Some(format!("{}__before_{}", info.ir, feature)) })
+        } else {
+            (info.ir.clone(), None)
+        };
+        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: results.clone(), file: file.to_string(), depth: 0, loops: Vec::new(), kind, func: Some(info.clone()), below };
+        let mut sig = format!("fn {}(", name);
         let mut sig_params: Vec<(String, Ty)> = Vec::new();
         if info.task {
             sig_params.push(info.results[0].clone());
@@ -1815,6 +2049,24 @@ impl Lowerer {
         let file = b.file.clone();
         match s {
             Stmt::Assign { targets, value, line } => {
+                // `countdown.enabled = false`: a feature's switch (log 28)
+                if let [t] = targets.as_slice() {
+                    if let Some(feat) = &t.feature {
+                        if t.name != "enabled" || !self.features.contains(feat) {
+                            return Err(lex::error(&file, t.line, format!("'{}.{}': a feature's implicit variable is `{}.enabled`", feat, t.name, feat)));
+                        }
+                        self.reach(&format!("{}.enabled", feat), feat, &file, t.line)?;
+                        let v = self.lower_expr(value, Some(&Ty::Bool), b, None)?;
+                        if v.ty != Ty::Bool {
+                            return Err(lex::error(&file, *line, format!("'{}.enabled' is a bool, given a {}", feat, v.ty.ir())));
+                        }
+                        b.line(&format!("__set___enabled_{}({})", feat, v.text));
+                        return Ok(());
+                    }
+                }
+                if targets.iter().any(|t| t.feature.is_some()) {
+                    return Err(lex::error(&file, *line, "a feature's `enabled` is assigned on its own"));
+                }
                 // a local is a new SSA version; a feature variable is a
                 // call to its setter, allowed anywhere
                 for t in targets {
@@ -1976,9 +2228,57 @@ impl Lowerer {
         }
     }
 
+    /// `existing name(args)` (log 28): the link below this body in its
+    /// chain, called with the arguments; the phrase names the enclosing
+    /// function
+    fn existing_call(&mut self, parts: &[Part], b: &mut Body, line: usize) -> Result<(String, Vec<Ty>), Error> {
+        let file = b.file.clone();
+        let Some(info) = b.func.clone() else {
+            return Err(lex::error(&file, line, "'existing' belongs in a function's body"));
+        };
+        let Some(below) = b.below.clone() else {
+            return Err(lex::error(&file, line, format!("no earlier definition of '{}' for 'existing' to call{}", spoken(&info), if info.chain.len() > 1 { ": this is the first" } else { "" })));
+        };
+        let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
+        let (named, args) = find_function(std::slice::from_ref(&info), parts, &is_var, &file, line).map_err(|_| lex::error(&file, line, format!("'existing' names the function it is in: `existing {}(...)`", spoken(&info))))?;
+        let named = named.clone();
+        let (ops, rtys) = self.lower_args(&named, &args, b)?;
+        Ok((format!("{}({})", below, ops.join(", ")), rtys))
+    }
+
     /// `q, r = f(...)`: a call with several results defines several variables
     fn lower_multi(&mut self, value: &Expr, names: &[String], tys: &[Ty], b: &mut Body, line: usize) -> Result<(), Error> {
         let file = b.file.clone();
+        if let ExprKind::Existing(parts) = &value.kind {
+            let (call, rtys) = self.existing_call(parts, b, line)?;
+            if rtys.len() != names.len() {
+                return Err(lex::error(&file, line, format!("'existing' gives {} result(s), {} wanted", rtys.len(), names.len())));
+            }
+            for ((n, want), got) in names.iter().zip(tys).zip(&rtys) {
+                if want != got {
+                    return Err(lex::error(&file, line, format!("'{}' is {} but 'existing' gives {}", n, want.ir(), got.ir())));
+                }
+            }
+            let mut sets = Vec::new();
+            let defs: Vec<String> = names
+                .iter()
+                .zip(tys)
+                .map(|(n, t)| {
+                    if b.vars.contains_key(n) {
+                        format!("{}: {}", b.define(n, t.clone()), t.ir())
+                    } else {
+                        let tmp = b.tmp();
+                        sets.push((n.clone(), tmp.clone()));
+                        format!("{}: {}", tmp, t.ir())
+                    }
+                })
+                .collect();
+            b.line(&format!("{} = {}", defs.join(", "), call));
+            for (n, tmp) in sets {
+                b.line(&format!("__set_{}({})", n, tmp));
+            }
+            return Ok(());
+        }
         let ExprKind::Phrase(parts) = &value.kind else {
             return Err(lex::error(&file, line, "several variables at once take a call with several results"));
         };
@@ -2012,6 +2312,7 @@ impl Lowerer {
         if info.task {
             return Err(lex::error(&file, line, format!("'{}' is a task: it is wired into a stream, `{} x$ = {}`", spoken(&info), task_elem(&info), phrase_text(value))));
         }
+        self.reach(&spoken(&info), &info.feature, &file, line)?;
         if info.results.len() != names.len() {
             return Err(lex::error(&file, line, format!("'{}' gives {} result(s), {} wanted", info.key, info.results.len(), names.len())));
         }
@@ -3048,13 +3349,18 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
             ExprKind::Name(n) => match b.vars.get(n) {
                 Some(v) if v.set => Ok(Val { text: v.ir.clone(), ty: v.ty.clone(), literal: false }),
                 Some(_) => Err(lex::error(&file, e.line, format!("'{}' is read before it is assigned", n))),
-                None if self.fvar(n).is_some() => Ok(self.read_fvar(n, b, dst)),
+                None if self.fvar(n).is_some() => self.read_fvar(n, b, dst, e.line),
                 None => Err(lex::error(&file, e.line, format!("'{}' is not a variable here", n))),
             },
             ExprKind::Field(base, field) => {
-                // `Tristate.yes`: an enumeration's case, qualified
+                // `Tristate.yes`: an enumeration's case, qualified;
+                // `countdown.enabled`: a feature's switch (log 28)
                 if let ExprKind::Phrase(parts) = &base.kind {
                     if let [Part::Word(w)] = parts.as_slice() {
+                        if field == "enabled" && self.features.contains(w) {
+                            self.reach(&format!("{}.enabled", w), w, &file, e.line)?;
+                            return self.read_fvar(&format!("__enabled_{}", w), b, dst, e.line);
+                        }
                         if let Some(TypeInfo::Enum(cases)) = self.types.get(w) {
                             let Some(i) = cases.iter().position(|c| c == field) else {
                                 return Err(lex::error(&file, e.line, format!("{} has no case '{}'", w, field)));
@@ -3159,10 +3465,15 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 Ok(Val { text: name, ty, literal: false })
             }
             ExprKind::Phrase(parts) => {
-                // a lone word: a variable, or an enumeration's case
+                // a lone word: a variable, the feature's `enabled`, or an
+                // enumeration's case
                 if let [Part::Word(w)] = parts.as_slice() {
                     if b.vars.contains_key(w) || self.fvar(w).is_some() {
                         return self.lower_expr(&Expr { kind: ExprKind::Name(w.clone()), line: e.line }, want, b, dst);
+                    }
+                    if w == "enabled" {
+                        let cur = self.cur.clone();
+                        return self.read_fvar(&format!("__enabled_{}", cur), b, dst, e.line);
                     }
                     if let Some(v) = self.enum_case(w) {
                         return Ok(v);
@@ -3220,6 +3531,16 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                         }
                         _ => None,
                     };
+                    // `print x$` on a sequence of ints: one line, spaces between
+                    if let (true, Some(a)) = (w == "print", arg) {
+                        let start = b.out.len();
+                        let sv = self.lower_expr(a, None, b, None)?;
+                        if sv.ty == Ty::Seq(Box::new(Ty::Num("int".into()))) {
+                            b.line(&format!("__print_ints({})", sv.text));
+                            return Ok(Val { text: String::new(), ty: Ty::None, literal: false });
+                        }
+                        b.out.truncate(start);
+                    }
                     if let (true, Some(a)) = (w == "count", arg) {
                         let start = b.out.len();
                         let sv = self.lower_expr(a, None, b, None)?;
@@ -3240,6 +3561,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 if info.task {
                     return Err(lex::error(&file, e.line, format!("'{}' is a task: it is wired into a stream, `{} x$ = {}`", spoken(&info), task_elem(&info), phrase_text(e))));
                 }
+                self.reach(&spoken(&info), &info.feature, &file, e.line)?;
                 let (vals, lifted, acc, rtys) = self.lower_call_args(&info, &args, b)?;
                 if lifted.iter().any(|&l| l) || acc.is_some() {
                     if rtys.len() != 1 {
@@ -3274,7 +3596,22 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     _ => Err(lex::error(&file, e.line, format!("'{}' gives several results; take them with `a, b = ...`", info.key))),
                 }
             }
-            ExprKind::Existing(_) => Err(lex::error(&file, e.line, "'existing' is not in this item yet")),
+            ExprKind::Existing(parts) => {
+                let (call, rtys) = self.existing_call(parts, b, e.line)?;
+                match rtys.len() {
+                    0 => {
+                        b.line(&call);
+                        Ok(Val { text: String::new(), ty: Ty::None, literal: false })
+                    }
+                    1 => {
+                        let ty = rtys[0].clone();
+                        let name = name_for(dst, &ty, b);
+                        b.line(&format!("{}: {} = {}", name, ty.ir(), call));
+                        Ok(Val { text: name, ty, literal: false })
+                    }
+                    _ => Err(lex::error(&file, e.line, "'existing' gives several results; take them with `a, b = existing ...`")),
+                }
+            }
         }
     }
 }

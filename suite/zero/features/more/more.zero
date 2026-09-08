@@ -1,0 +1,14 @@
+int seen = 0
+
+on (int n) = greet()
+    n = existing greet() + 10
+
+on (int n) = count (int k)
+    n = existing count (k) * 2
+
+on visit()
+    seen = seen + 1
+    existing visit()
+
+on (int n) = seen by more()
+    n = seen

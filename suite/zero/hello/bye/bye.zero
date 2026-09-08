@@ -1,0 +1,10 @@
+on run()
+    existing run()
+    goodbye()
+
+on goodbye()
+    print "goodbye"
+
+on run without countdown()
+    countdown.enabled = false
+    run()

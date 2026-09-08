@@ -1,0 +1,5 @@
+on (int n) = describe()
+    n = existing describe() + 1000
+
+on (int n) = described by the tool()
+    n = describe()

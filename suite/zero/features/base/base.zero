@@ -1,0 +1,19 @@
+int visits = 0
+
+on (int n) = greet()
+    n = 1
+
+on (int n) = count (int k)
+    n = k
+
+on (int n) = describe()
+    n = 10
+
+on (int n) = base only()
+    n = 7
+
+on visit()
+    visits = visits + 1
+
+on (int n) = visited()
+    n = visits

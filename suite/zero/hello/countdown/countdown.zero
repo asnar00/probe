@@ -1,0 +1,10 @@
+on run()
+    count down()
+    existing run()
+
+on count down()
+    int i$ = count down from (10) at (1 hz)
+    print (frame i$)
+
+on (int i$) << count down from (int n)
+    i$ << n << (i$ - 1) while (i$ > 0)

@@ -126,6 +126,8 @@ pub struct Target {
     pub name: String,
     pub seq: bool,
     pub line: usize,
+    /// `countdown.enabled = false`: a feature's implicit variable (log 28)
+    pub feature: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -758,8 +760,13 @@ impl<'a> Parser<'a> {
                 let mut targets = Vec::new();
                 loop {
                     let tline = self.line();
-                    let (name, seq) = self.expect_name()?;
-                    targets.push(Target { name, seq, line: tline });
+                    let (mut name, seq) = self.expect_name()?;
+                    let mut feature = None;
+                    if !seq && self.eat_sym(".") {
+                        feature = Some(name);
+                        name = self.expect_word()?;
+                    }
+                    targets.push(Target { name, seq, line: tline, feature });
                     if !self.eat_sym(",") {
                         break;
                     }
@@ -787,13 +794,16 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `a = ...` or `a, b = ...` ahead on this line
+    /// `a = ...`, `a, b = ...` or `f.enabled = ...` ahead on this line
     fn assignment_ahead(&self) -> bool {
         let mut i = self.pos;
         loop {
             match self.toks.get(i).map(|t| &t.tok) {
                 Some(Tok::Word(_)) | Some(Tok::Seq(_)) => {}
                 _ => return false,
+            }
+            if matches!(self.toks.get(i + 1).map(|t| &t.tok), Some(Tok::Sym("."))) && matches!(self.toks.get(i + 2).map(|t| &t.tok), Some(Tok::Word(_))) {
+                i += 2;
             }
             match self.toks.get(i + 1).map(|t| &t.tok) {
                 Some(Tok::Sym("=")) => return true,
