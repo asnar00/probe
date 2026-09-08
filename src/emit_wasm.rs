@@ -249,8 +249,12 @@ pub fn compile_with(module: &Module, enc: &WEncoder, platform: &Platform) -> Res
         section(&mut out, 4, p);
     }
 
-    // one memory, min 1 page (64KB) — plenty for the suite's buffers
-    section(&mut out, 5, vec![0x01, 0x00, 0x01]);
+    // one memory, as many pages (64KB) as the data needs above DATA_BASE,
+    // and at least one
+    let pages = ((DATA_BASE + data_bytes.len() + 65535) / 65536).max(1) as u64;
+    let mut p = vec![0x01, 0x00];
+    p.extend(uleb(pages));
+    section(&mut out, 5, p);
 
     // one global: the shadow stack pointer, mutable i32
     let mut p = vec![0x01, 0x7F, 0x01, 0x41];

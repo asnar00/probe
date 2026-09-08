@@ -150,6 +150,8 @@ pub enum ExprKind {
     Neg(Box<Expr>),
     IfElse(Box<Expr>, Box<Expr>, Box<Expr>),
     Field(Box<Expr>, String),
+    /// `x$[i]`: an element of a sequence
+    Index(Box<Expr>, Box<Expr>),
     /// an open-syntax call: words and arguments, resolved by the lowering
     Phrase(Vec<Part>),
     /// `existing ...`: the previous definition of the enclosing function
@@ -854,6 +856,14 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 let f = self.expect_word()?;
                 e = Expr { kind: ExprKind::Field(Box::new(e), f), line };
+            } else if self.at_sym("[") && matches!(e.kind, ExprKind::Seq(_) | ExprKind::Index(..)) {
+                // an index, only straight after a sequence's name: a `[`
+                // after anything else starts a list
+                let line = self.line();
+                self.pos += 1;
+                let i = self.parse_expr()?;
+                self.expect_sym("]")?;
+                e = Expr { kind: ExprKind::Index(Box::new(e), Box::new(i)), line };
             } else if let Some(Tok::Word(u)) = self.peek() {
                 if UNITS.contains(&u.as_str()) && matches!(e.kind, ExprKind::Int(_) | ExprKind::Float(_)) {
                     let line = self.line();

@@ -14,11 +14,14 @@
 ;! zeros 5 -> 0
 ;! word_at 1 -> 4294967295
 ;! checksum -> 2807
+;! big_end -> 77
 
 data greeting = "hello world ᕦ(ツ)ᕤ\n"
 data table: array(i32, 4) = { 10, 20, 30, -40 }
 data zeros: array(u8, 16)
 data words: array(u64, 2) = { 1, 4294967295 }
+; more than a wasm page: the memory is sized from the data
+data big: array(u8, 100000)
 
 fn greeting_len() -> i64 {
     n: i64 = len greeting
@@ -75,4 +78,11 @@ fn checksum() -> i64 {
         continue i2, acc2
     }
     ret s
+}
+; the last byte of a data array bigger than a wasm page
+fn big_end() -> u8 {
+    p: ptr = addr big
+    store 77: u8, p, 99999
+    b: u8 = load p, 99999
+    ret b
 }

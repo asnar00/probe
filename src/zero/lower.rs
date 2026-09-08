@@ -28,8 +28,8 @@ pub enum Ty {
     Bool,
     /// a number, by its IR name: `int`, `u8`, `f32`, `number`, ...
     Num(String),
-    /// a string: a view of bytes, `u8[]`
-    Str,
+    /// a sequence `T$`: the IR's rank-1 view `T[]`; a `string` is `u8$`
+    Seq(Box<Ty>),
     /// a declared struct, by name
     Struct(String),
     /// a declared enumeration, by name
@@ -43,9 +43,21 @@ impl Ty {
         match self {
             Ty::Bool => "u1".into(),
             Ty::Num(n) => n.clone(),
-            Ty::Str => "u8[]".into(),
+            Ty::Seq(e) => format!("{}[]", e.ir()),
             Ty::Struct(n) | Ty::Enum(n) => n.clone(),
             Ty::None => String::new(),
+        }
+    }
+
+    fn string() -> Ty {
+        Ty::Seq(Box::new(Ty::Num("u8".into())))
+    }
+
+    /// the element type of a sequence, or none
+    fn elem(&self) -> Option<&Ty> {
+        match self {
+            Ty::Seq(e) => Some(e),
+            _ => None,
         }
     }
 
@@ -62,7 +74,7 @@ impl Ty {
 fn builtin_type(name: &str) -> Option<Ty> {
     let ir = match name {
         "bool" => return Some(Ty::Bool),
-        "string" => return Some(Ty::Str),
+        "string" => return Some(Ty::string()),
         "int" | "uint" | "float" | "number" | "scalar" | "fixed" | "unit" | "sunit" | "rational" | "decimal" | "time" => name.to_string(),
         "int8" => "i8".into(),
         "int16" => "i16".into(),
@@ -168,6 +180,10 @@ data __out: array(u8, 4096)
 data __out_n: array(i64, 1)
 data __nul: array(u8, 1)
 
+; the arena every sequence is carved from, emptied before every case
+data __heap: array(u8, 65536)
+data __arena: array(i64, 3)
+
 fn __out_len() -> i64 {
     q: ptr = addr __out_n
     n: i64 = load q
@@ -184,12 +200,6 @@ fn __out_byte(i: i64) -> u8 {
 fn __str(p: ptr, n: i64) -> u8[] {
     q: ptr(u8) = cast p
     v: u8[] = pack q, n, 1
-    ret v
-}
-
-fn __empty_str() -> u8[] {
-    p: ptr = addr __nul
-    v: u8[] = __str(p, 0)
     ret v
 }
 
@@ -262,13 +272,13 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new() };
+    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), news: std::collections::BTreeSet::new() };
     // the front end's builtins, until item 11 declares them as platform functions
     l.funcs.push(FnInfo {
         key: "print".into(),
         ir: "__print".into(),
         parts: vec![NamePart::Word("print".into()), NamePart::Group],
-        params: vec![("s".into(), Ty::Str)],
+        params: vec![("s".into(), Ty::string())],
         results: Vec::new(),
         feature: String::new(),
     });
@@ -298,6 +308,12 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
                 l.lower_fn(fd, &f.code.file)?;
             }
         }
+    }
+    if !l.news.is_empty() {
+        writeln!(l.out, "\n; a sequence of n items, carved from the arena: a buffer, then the view over it").unwrap();
+    }
+    for t in &l.news {
+        writeln!(l.out, "fn __new_{}(n: i64) -> {}[] {{\n    a: ptr = addr __arena\n    sz: i64 = sizeof {}\n    bytes: i64 = mul n, sz\n    total: i64 = add bytes, 16\n    p: ptr = arena_alloc(a, total)\n    buffer_init(p, sz, n)\n    v: {}[] = slice p\n    ret v\n}}", t, t, t, t).unwrap();
     }
     let mut ir = String::new();
     writeln!(ir, "; lowered from the zero store {}", store.path.display()).unwrap();
@@ -402,6 +418,8 @@ struct Lowerer {
     nstr: usize,
     /// the feature-scope variables, in composition order
     fvars: Vec<FVar>,
+    /// the element types sequences were made of: one `__new_T` each
+    news: std::collections::BTreeSet<String>,
 }
 
 /// a variable in a function's scope: its current IR value and type
@@ -421,8 +439,12 @@ struct Var {
 struct LoopCtx {
     /// the carried variables, in the header's order; empty for a `for`
     carried: Vec<String>,
-    /// a `for`'s item: its name and the step (`add`/`sub`, the amount)
+    /// a `for`'s stepped variable: its name and the step (`add`/`sub`,
+    /// the amount) — the item itself over a range, the index over a
+    /// sequence
     item: Option<(String, &'static str, String)>,
+    /// over a sequence, the item loaded at the top of each pass
+    loaded: Option<String>,
     /// how many `break`s the body has, the `while` test's included
     breaks: usize,
 }
@@ -497,7 +519,7 @@ impl Body {
     fn assignable(&self, name: &str, line: usize) -> Result<(), Error> {
         let v = &self.vars[name];
         if let Some(l) = self.loops.last() {
-            if l.item.as_ref().map(|(i, _, _)| i.as_str()) == Some(name) {
+            if l.item.as_ref().map(|(i, _, _)| i.as_str()) == Some(name) || l.loaded.as_deref() == Some(name) {
                 return Err(lex::error(&self.file, line, format!("'{}' is the item of the `for`: it steps by itself and is not assigned", name)));
             }
         }
@@ -521,17 +543,32 @@ impl Body {
 impl Lowerer {
     /// a type by zero's name
     fn ty(&self, name: &str, seq: bool, file: &str, line: usize) -> Result<Ty, Error> {
-        if seq {
-            return Err(lex::error(file, line, "sequences are not in this item yet"));
-        }
-        if let Some(t) = builtin_type(name) {
+        let t = match builtin_type(name) {
+            Some(t) => t,
+            None => match self.types.get(name) {
+                Some(TypeInfo::Struct(_)) => Ty::Struct(name.to_string()),
+                Some(TypeInfo::Enum(_)) => Ty::Enum(name.to_string()),
+                None => return Err(lex::error(file, line, format!("'{}' is not a type", name))),
+            },
+        };
+        if !seq {
             return Ok(t);
         }
-        match self.types.get(name) {
-            Some(TypeInfo::Struct(_)) => Ok(Ty::Struct(name.to_string())),
-            Some(TypeInfo::Enum(_)) => Ok(Ty::Enum(name.to_string())),
-            None => Err(lex::error(file, line, format!("'{}' is not a type", name))),
+        // the items of a sequence are numbers and enumerations in this milestone
+        match t {
+            Ty::Num(_) | Ty::Enum(_) => Ok(Ty::Seq(Box::new(t))),
+            _ => Err(lex::error(file, line, format!("a sequence of {}: only numbers and enumerations in this milestone", t.ir()))),
         }
+    }
+
+    /// a new sequence of n items in the arena, through the generated
+    /// `__new_T` for its element type
+    fn new_seq(&mut self, elem: &Ty, n: &str, b: &mut Body, dst: Option<&str>) -> Val {
+        let ty = Ty::Seq(Box::new(elem.clone()));
+        self.news.insert(elem.ir());
+        let out = name_for(dst, &ty, b);
+        b.line(&format!("{}: {} = __new_{}({})", out, ty.ir(), elem.ir(), n));
+        Val { text: out, ty, literal: false }
     }
 
     fn declare_type(&mut self, t: &super::syntax::TypeDecl, file: &str) -> Result<(), Error> {
@@ -653,6 +690,9 @@ impl Lowerer {
         let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new() };
         b.line("q: ptr = addr __out_n");
         b.line("store 0: i64, q");
+        b.line("a: ptr = addr __arena");
+        b.line("h: ptr = addr __heap");
+        b.line("arena_init(a, h, 65536)");
         if !self.fvars.is_empty() {
             let mut fields = Vec::new();
             self.type_lines.push(String::new());
@@ -912,7 +952,7 @@ impl Lowerer {
             tys.push(ty);
         }
         // the carried variables are declared inside the loop
-        b.loops.push(LoopCtx { carried: carried.clone(), item: None, breaks: 0 });
+        b.loops.push(LoopCtx { carried: carried.clone(), item: None, loaded: None, breaks: 0 });
         let mut hdr = Vec::new();
         for (n, ty, init) in &header {
             let ir = b.define(n, ty.clone());
@@ -981,7 +1021,7 @@ impl Lowerer {
     fn lower_for(&mut self, var: &str, seq: &Expr, bound: Option<i64>, body: &[Stmt], b: &mut Body) -> Result<(), Error> {
         let file = b.file.clone();
         let ExprKind::Range { from, to, inclusive } = &seq.kind else {
-            return Err(lex::error(&file, seq.line, "sequences are not in this item yet: a `for` runs over `[a through b]` or `[a to b]`"));
+            return self.lower_for_seq(var, seq, bound, body, b);
         };
         if b.vars.contains_key(var) {
             return Err(lex::error(&file, seq.line, format!("'{}' is already declared", var)));
@@ -1045,7 +1085,7 @@ impl Lowerer {
             b.line("}");
             ("add", step, None)
         };
-        b.loops.push(LoopCtx { carried: Vec::new(), item: Some((var.to_string(), op, step.clone())), breaks: 1 });
+        b.loops.push(LoopCtx { carried: Vec::new(), item: Some((var.to_string(), op, step.clone())), loaded: None, breaks: 1 });
         let x = b.define(var, ty.clone());
         let before = b.vars.clone();
         let start = b.out.len();
@@ -1095,6 +1135,56 @@ impl Lowerer {
         Ok(())
     }
 
+    /// `for (x in items$)`: a loop over the index, the item loaded at
+    /// the top of each pass and gone after the loop
+    fn lower_for_seq(&mut self, var: &str, seq: &Expr, bound: Option<i64>, body: &[Stmt], b: &mut Body) -> Result<(), Error> {
+        let file = b.file.clone();
+        let sv = self.lower_expr(seq, None, b, None)?;
+        let Some(e) = sv.ty.elem().cloned() else {
+            return Err(lex::error(&file, seq.line, format!("a `for` runs over a sequence or a range, not a {}", sv.ty.ir())));
+        };
+        if b.vars.contains_key(var) {
+            return Err(lex::error(&file, seq.line, format!("'{}' is already declared", var)));
+        }
+        let bound = match bound {
+            Some(n) if n > 0 => format!(" bound {}", n),
+            Some(_) => return Err(lex::error(&file, seq.line, "'bound' takes a positive number")),
+            None => String::new(),
+        };
+        let n = b.tmp();
+        b.line(&format!("{}: i64 = len {}", n, sv.text));
+        let k = b.tmp();
+        b.loops.push(LoopCtx { carried: Vec::new(), item: Some((k.clone(), "add", "1".into())), loaded: Some(var.to_string()), breaks: 1 });
+        let depth = b.loops.len();
+        b.vars.insert(k.clone(), Var { ir: k.clone(), ty: Ty::Num("i64".into()), set: true, loop_depth: depth });
+        let before = b.vars.clone();
+        let start = b.out.len();
+        b.depth += 1;
+        let done = b.tmp();
+        b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
+        b.line(&format!("if {} {{", done));
+        b.depth += 1;
+        b.line("break");
+        b.depth -= 1;
+        b.line("}");
+        let x = b.define(var, e.clone());
+        b.line(&format!("{}: {} = load {}, {}", x, e.ir(), sv.text, k));
+        let terminated = self.lower_block(body, b)?;
+        if !terminated {
+            self.step_for(b);
+        }
+        b.depth -= 1;
+        let body_lines = b.out.split_off(start);
+        b.loops.pop();
+        b.vars = before;
+        b.vars.remove(var);
+        b.vars.remove(&k);
+        b.line(&format!("loop({}: i64 = 0){} {{", k, bound));
+        b.out.push_str(&body_lines);
+        b.line("}");
+        Ok(())
+    }
+
     /// a `for`'s pass ends: the item stepped, and `continue` with it
     fn step_for(&mut self, b: &mut Body) {
         let (var, op, step) = b.loops.last().unwrap().item.clone().unwrap();
@@ -1109,10 +1199,15 @@ impl Lowerer {
     fn zero_val(&mut self, t: &Ty, b: &mut Body) -> Val {
         match t {
             Ty::Bool | Ty::Num(_) | Ty::Enum(_) => Val { text: "0".into(), ty: t.clone(), literal: true },
-            Ty::Str => {
+            Ty::Seq(e) => {
+                // the empty view: nothing at the null byte
+                let p = b.tmp();
+                b.line(&format!("{}: ptr = addr __nul", p));
+                let q = b.tmp();
+                b.line(&format!("{}: ptr({}) = cast {}", q, e.ir(), p));
                 let n = b.tmp();
-                b.line(&format!("{}: u8[] = __empty_str()", n));
-                Val { text: n, ty: Ty::Str, literal: false }
+                b.line(&format!("{}: {} = pack {}, 0, 1", n, t.ir(), q));
+                Val { text: n, ty: t.clone(), literal: false }
             }
             Ty::Struct(name) => self.construct(name, &[], b, None, 0).unwrap_or(Val { text: "0".into(), ty: t.clone(), literal: true }),
             Ty::None => Val { text: String::new(), ty: Ty::None, literal: false },
@@ -1357,35 +1452,396 @@ impl Lowerer {
     }
 
     /// a call's arguments lowered against its parameters, and its result
-    /// types with the tower's abstract names bound by the arguments
-    fn lower_args(&mut self, info: &FnInfo, args: &[Expr], b: &mut Body) -> Result<(Vec<String>, Vec<Ty>), Error> {
+    /// types with the tower's abstract names bound by the arguments; an
+    /// argument that is a sequence where the parameter is an item is
+    /// marked lifted (a map), and `_` marks the accumulator (a reduce)
+    fn lower_call_args(&mut self, info: &FnInfo, args: &[Expr], b: &mut Body) -> Result<(Vec<Val>, Vec<bool>, Option<(usize, Ty)>, Vec<Ty>), Error> {
         let file = b.file.clone();
-        let mut ops = Vec::new();
+        let mut vals = Vec::new();
+        let mut lifted = Vec::new();
+        let mut acc = None;
         let mut bound: HashMap<String, Ty> = HashMap::new();
-        for (a, (_, ty)) in args.iter().zip(&info.params) {
+        for (i, (a, (_, ty))) in args.iter().zip(&info.params).enumerate() {
+            if matches!(a.kind, ExprKind::Acc) {
+                if acc.is_some() {
+                    return Err(lex::error(&file, a.line, "one '_' marks the accumulator"));
+                }
+                acc = Some(i);
+                vals.push(Val { text: "_".into(), ty: ty.clone(), literal: false });
+                lifted.push(false);
+                continue;
+            }
             let mut v = self.lower_expr(a, Some(ty), b, None)?;
             if v.literal && fits_literal(&v, ty) {
                 v.ty = ty.clone();
             }
-            if !fits(&v.ty, ty) {
+            // the item's type is what the tower sees
+            let item = match (v.ty.elem(), ty) {
+                (Some(e), Ty::Seq(_)) => {
+                    let _ = e;
+                    v.ty.clone()
+                }
+                (Some(e), _) => {
+                    lifted.push(true);
+                    e.clone()
+                }
+                _ => v.ty.clone(),
+            };
+            if lifted.len() < vals.len() + 1 {
+                lifted.push(false);
+            }
+            if !fits(&item, ty) {
                 return Err(lex::error(&file, a.line, format!("'{}' wants a {} here, given a {}", info.key, ty.ir(), v.ty.ir())));
             }
             if let Some(name) = ty.abstract_name() {
-                if &v.ty != ty {
-                    bound.entry(name.to_string()).or_insert(v.ty.clone());
+                if &item != ty {
+                    bound.entry(name.to_string()).or_insert(item.clone());
                 }
             }
-            ops.push(v.text);
+            vals.push(v);
         }
-        let rtys = info
-            .results
-            .iter()
-            .map(|(_, t)| match t.abstract_name().and_then(|n| bound.get(n)) {
-                Some(bt) => bt.clone(),
-                None => t.clone(),
-            })
-            .collect();
-        Ok((ops, rtys))
+        let resolve = |t: &Ty| match t.abstract_name().and_then(|n| bound.get(n)) {
+            Some(bt) => bt.clone(),
+            None => t.clone(),
+        };
+        let rtys = info.results.iter().map(|(_, t)| resolve(t)).collect();
+        let acc = acc.map(|i| {
+            let aty = resolve(&info.params[i].1);
+            vals[i].ty = aty.clone();
+            (i, aty)
+        });
+        Ok((vals, lifted, acc, rtys))
+    }
+
+    /// a call's arguments where no sequence is lifted: the operand texts
+    fn lower_args(&mut self, info: &FnInfo, args: &[Expr], b: &mut Body) -> Result<(Vec<String>, Vec<Ty>), Error> {
+        let file = b.file.clone();
+        let (vals, lifted, acc, rtys) = self.lower_call_args(info, args, b)?;
+        if lifted.iter().any(|&l| l) || acc.is_some() {
+            return Err(lex::error(&file, args[0].line, format!("'{}' gives several results: it is not mapped over a sequence", info.key)));
+        }
+        Ok((vals.into_iter().map(|v| v.text).collect(), rtys))
+    }
+
+    /// Map, zip and reduce (log 19): `vals` are an operation's operands,
+    /// those marked lifted being sequences whose items the operation
+    /// takes one at a time; `op` emits the operation on one set of items.
+    /// With no accumulator the results make a new sequence, as long as
+    /// the longest input, a shorter one reading as zero past its end;
+    /// with one, the operation folds over the one sequence, from its
+    /// first item, an empty sequence giving the accumulator's zero.
+    fn lift(&mut self, mut vals: Vec<Val>, lifted: Vec<bool>, acc: Option<(usize, Ty)>, b: &mut Body, dst: Option<&str>, line: usize, op: &dyn Fn(&mut Lowerer, &[Val], &mut Body) -> Result<Val, Error>) -> Result<Val, Error> {
+        let file = b.file.clone();
+        let seqs: Vec<usize> = (0..vals.len()).filter(|&i| lifted[i]).collect();
+        if acc.is_some() && seqs.len() != 1 {
+            return Err(lex::error(&file, line, "a reduction folds one sequence"));
+        }
+        let mut lens = Vec::new();
+        for &i in &seqs {
+            let n = b.tmp();
+            b.line(&format!("{}: i64 = len {}", n, vals[i].text));
+            lens.push(n);
+        }
+        let mut n = lens[0].clone();
+        for l in &lens[1..] {
+            let m = b.tmp();
+            b.line(&format!("{}: i64 = max({}, {})", m, n, l));
+            n = m;
+        }
+        let k = b.tmp();
+        let zip = seqs.len() > 1;
+        // the items of this pass, a shorter sequence's zero past its end
+        let load_items = |b: &mut Body, vals: &mut Vec<Val>, from: &str| {
+            for (j, &i) in seqs.iter().enumerate() {
+                let e = vals[i].ty.elem().unwrap().clone();
+                let x = b.tmp();
+                if zip {
+                    let inside = b.tmp();
+                    b.line(&format!("{}: u1 = cmp.lt {}, {}", inside, from, lens[j]));
+                    b.line(&format!("{}: {} = if {} {{", x, e.ir(), inside));
+                    b.depth += 1;
+                    let y = b.tmp();
+                    b.line(&format!("{}: {} = load {}, {}", y, e.ir(), vals[i].text, from));
+                    b.line(&format!("yield {}", y));
+                    b.depth -= 1;
+                    b.line("} else {");
+                    b.depth += 1;
+                    b.line("yield 0");
+                    b.depth -= 1;
+                    b.line("}");
+                } else {
+                    b.line(&format!("{}: {} = load {}, {}", x, e.ir(), vals[i].text, from));
+                }
+                vals[i] = Val { text: x, ty: e, literal: false };
+            }
+        };
+        match acc {
+            None => {
+                let c = b.tmp();
+                let start = b.out.len();
+                b.depth += 1;
+                let done = b.tmp();
+                b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
+                b.line(&format!("if {} {{", done));
+                b.depth += 1;
+                b.line("break");
+                b.depth -= 1;
+                b.line("}");
+                load_items(b, &mut vals, &k);
+                let r = op(self, &vals, b)?;
+                let r = b.materialize(&r);
+                b.line(&format!("store {}, {}, {}", r.text, c, k));
+                let k2 = b.tmp();
+                b.line(&format!("{}: i64 = add {}, 1", k2, k));
+                b.line(&format!("continue {}", k2));
+                b.depth -= 1;
+                let body = b.out.split_off(start);
+                let rty = Ty::Seq(Box::new(r.ty.clone()));
+                self.news.insert(r.ty.ir());
+                b.line(&format!("{}: {} = __new_{}({})", c, rty.ir(), r.ty.ir(), n));
+                b.line(&format!("loop({}: i64 = 0) {{", k));
+                b.out.push_str(&body);
+                b.line("}");
+                Ok(Val { text: c, ty: rty, literal: false })
+            }
+            Some((ai, aty)) => {
+                let si = seqs[0];
+                let e = vals[si].ty.elem().unwrap().clone();
+                let v = vals[si].text.clone();
+                let empty = b.tmp();
+                b.line(&format!("{}: u1 = cmp.eq {}, 0", empty, n));
+                let seed = b.tmp();
+                b.line(&format!("{}: {} = if {} {{", seed, aty.ir(), empty));
+                b.depth += 1;
+                b.line("yield 0");
+                b.depth -= 1;
+                b.line("} else {");
+                b.depth += 1;
+                let first = b.tmp();
+                b.line(&format!("{}: {} = load {}, 0", first, e.ir(), v));
+                if e != aty {
+                    return Err(lex::error(&file, line, format!("the accumulator is a {} but the items are {}", aty.ir(), e.ir())));
+                }
+                b.line(&format!("yield {}", first));
+                b.depth -= 1;
+                b.line("}");
+                let a = b.tmp();
+                let start = b.out.len();
+                b.depth += 1;
+                let done = b.tmp();
+                b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
+                b.line(&format!("if {} {{", done));
+                b.depth += 1;
+                b.line(&format!("break {}", a));
+                b.depth -= 1;
+                b.line("}");
+                load_items(b, &mut vals, &k);
+                vals[ai] = Val { text: a.clone(), ty: aty.clone(), literal: false };
+                let r = op(self, &vals, b)?;
+                let r = b.materialize(&r);
+                if r.ty != aty {
+                    return Err(lex::error(&file, line, format!("the reduction gives a {} but its accumulator is a {}", r.ty.ir(), aty.ir())));
+                }
+                let k2 = b.tmp();
+                b.line(&format!("{}: i64 = add {}, 1", k2, k));
+                b.line(&format!("continue {}, {}", k2, r.text));
+                b.depth -= 1;
+                let body = b.out.split_off(start);
+                let out = name_for(dst, &aty, b);
+                b.line(&format!("{}: {} = loop({}: i64 = 1, {}: {} = {}) {{", out, aty.ir(), k, a, aty.ir(), seed));
+                b.out.push_str(&body);
+                b.line("}");
+                Ok(Val { text: out, ty: aty, literal: false })
+            }
+        }
+    }
+
+    /// `[a, b, c]`: a new sequence holding the items
+    fn lower_list(&mut self, items: &[Expr], want: Option<&Ty>, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        let file = b.file.clone();
+        let want_e = want.and_then(|t| t.elem()).cloned();
+        let mut vals = Vec::new();
+        for it in items {
+            vals.push(self.lower_expr(it, want_e.as_ref(), b, None)?);
+        }
+        let e = want_e.or_else(|| vals.iter().find(|v| !v.literal).map(|v| v.ty.clone())).or_else(|| vals.first().map(|v| v.ty.clone()));
+        let Some(e) = e else {
+            return Err(lex::error(&file, line, "an empty list needs a type: declare the sequence, `int i$`"));
+        };
+        if !matches!(e, Ty::Num(_) | Ty::Enum(_)) {
+            return Err(lex::error(&file, line, format!("a sequence of {}: only numbers and enumerations in this milestone", e.ir())));
+        }
+        for (it, v) in items.iter().zip(&vals) {
+            if !(v.ty == e || (v.literal && fits_literal(v, &e))) {
+                return Err(lex::error(&file, it.line, format!("the items are {}, this one is a {}", e.ir(), v.ty.ir())));
+            }
+        }
+        let c = self.new_seq(&e, &vals.len().to_string(), b, dst);
+        for (i, v) in vals.iter().enumerate() {
+            // a literal stored through a view takes the item's type
+            b.line(&format!("store {}, {}, {}", v.text, c.text, i));
+        }
+        Ok(c)
+    }
+
+    /// `[a through b]`, `[a to b]`: the items counted from the bounds
+    /// and filled by a loop, counting down when a > b
+    fn lower_range(&mut self, from: &Expr, to: &Expr, inclusive: bool, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        let file = b.file.clone();
+        for e in [from, to] {
+            if matches!(e.kind, ExprKind::Float(_)) {
+                return Err(lex::error(&file, e.line, "a range's bounds are integers"));
+            }
+        }
+        let mut fv = self.lower_expr(from, None, b, None)?;
+        let mut tv = self.lower_expr(to, if fv.literal { None } else { Some(&fv.ty) }, b, None)?;
+        if fv.literal && !tv.literal {
+            fv.ty = tv.ty.clone();
+        }
+        if tv.literal && !fv.literal {
+            tv.ty = fv.ty.clone();
+        }
+        let ty = fv.ty.clone();
+        let signed = matches!(&ty, Ty::Num(n) if n == "int" || (n.starts_with('i') && n[1..].parse::<u32>().is_ok()));
+        if !signed || ty != tv.ty {
+            return Err(lex::error(&file, line, format!("a range counts over a signed integer, given {} and {}", fv.ty.ir(), tv.ty.ir())));
+        }
+        let fv = b.materialize(&fv);
+        let tv = b.materialize(&tv);
+        let d = b.tmp();
+        b.line(&format!("{}: {} = sub {}, {}", d, ty.ir(), tv.text, fv.text));
+        let down = b.tmp();
+        b.line(&format!("{}: u1 = cmp.lt {}, 0", down, d));
+        let step = b.tmp();
+        b.line(&format!("{}: {} = if {} {{", step, ty.ir(), down));
+        b.depth += 1;
+        b.line("yield -1");
+        b.depth -= 1;
+        b.line("} else {");
+        b.depth += 1;
+        b.line("yield 1");
+        b.depth -= 1;
+        b.line("}");
+        let span = b.tmp();
+        b.line(&format!("{}: {} = mul {}, {}", span, ty.ir(), d, step));
+        let count = if inclusive {
+            let c = b.tmp();
+            b.line(&format!("{}: {} = add {}, 1", c, ty.ir(), span));
+            c
+        } else {
+            span
+        };
+        let n = b.tmp();
+        b.line(&format!("{}: i64 = conv {}", n, count));
+        let c = self.new_seq(&ty, &n, b, dst);
+        let k = b.tmp();
+        let x = b.tmp();
+        b.line(&format!("loop({}: i64 = 0, {}: {} = {}) {{", k, x, ty.ir(), fv.text));
+        b.depth += 1;
+        let done = b.tmp();
+        b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
+        b.line(&format!("if {} {{", done));
+        b.depth += 1;
+        b.line("break");
+        b.depth -= 1;
+        b.line("}");
+        b.line(&format!("store {}, {}, {}", x, c.text, k));
+        let k2 = b.tmp();
+        b.line(&format!("{}: i64 = add {}, 1", k2, k));
+        let x2 = b.tmp();
+        b.line(&format!("{}: {} = add {}, {}", x2, ty.ir(), x, step));
+        b.line(&format!("continue {}, {}", k2, x2));
+        b.depth -= 1;
+        b.line("}");
+        Ok(c)
+    }
+
+    /// arithmetic or a comparison on two scalars: a literal takes the
+    /// other side's type, two literals make one a value first
+    fn emit_bin(&mut self, op: &str, mut lv: Val, mut rv: Val, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        let file = b.file.clone();
+        let cmp = is_comparison(op);
+        if lv.literal && !rv.literal {
+            lv.ty = rv.ty.clone();
+        }
+        if rv.literal && !lv.literal {
+            rv.ty = lv.ty.clone();
+        }
+        if lv.literal && rv.literal {
+            lv = b.materialize(&lv);
+            rv.ty = lv.ty.clone();
+        }
+        if lv.ty != rv.ty {
+            return Err(lex::error(&file, line, format!("'{}' on a {} and a {}: both sides must have one type", op, lv.ty.ir(), rv.ty.ir())));
+        }
+        let equality = cmp && matches!(op, "==" | "!=");
+        match &lv.ty {
+            Ty::Num(_) => {}
+            Ty::Bool | Ty::Enum(_) if equality => {}
+            Ty::Enum(_) => return Err(lex::error(&file, line, format!("'{}' on an enumeration: only '==' and '!=' apply", op))),
+            t => return Err(lex::error(&file, line, format!("'{}' takes numbers, not a {}", op, t.ir()))),
+        }
+        let ty = if cmp { Ty::Bool } else { lv.ty.clone() };
+        let name = name_for(dst, &ty, b);
+        b.line(&format!("{}: {} = {} {}, {}", name, ty.ir(), op_name(op), lv.text, rv.text));
+        Ok(Val { text: name, ty, literal: false })
+    }
+
+    /// an operator with a sequence on a side: a map (the slice library's
+    /// chunked form for a sequence on the left and a scalar on the
+    /// right) or a zip
+    fn seq_bin(&mut self, op: &str, lv: Val, rv: Val, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        let file = b.file.clone();
+        if is_comparison(op) {
+            return Err(lex::error(&file, line, "a comparison over a sequence is not in this milestone"));
+        }
+        let lifted = vec![lv.ty.elem().is_some(), rv.ty.elem().is_some()];
+        if lifted[0] && !lifted[1] && matches!(op, "+" | "-" | "*" | "/") {
+            let e = lv.ty.elem().unwrap().clone();
+            let mut sv = rv;
+            if sv.literal && fits_literal(&sv, &e) {
+                sv.ty = e.clone();
+            }
+            if sv.ty != e {
+                return Err(lex::error(&file, line, format!("'{}' on a sequence of {} and a {}", op, e.ir(), sv.ty.ir())));
+            }
+            if !matches!(e, Ty::Num(_)) {
+                return Err(lex::error(&file, line, format!("'{}' takes numbers, not a {}", op, e.ir())));
+            }
+            let n = b.tmp();
+            b.line(&format!("{}: i64 = len {}", n, lv.text));
+            let c = self.new_seq(&e, &n, b, dst);
+            b.line(&format!("{} {}, {}, {}", op_name(op), c.text, lv.text, sv.text));
+            return Ok(c);
+        }
+        let op = op.to_string();
+        let f = move |s: &mut Lowerer, ev: &[Val], b: &mut Body| s.emit_bin(&op, ev[0].clone(), ev[1].clone(), b, None, line);
+        self.lift(vec![lv, rv], lifted, None, b, dst, line, &f)
+    }
+
+    /// `x$ + _`, `_ * x$`: a reduction by an operator; `+` is the
+    /// library's `sum`
+    fn reduce_bin(&mut self, op: &str, l: &Expr, r: &Expr, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        let file = b.file.clone();
+        let acc_left = matches!(l.kind, ExprKind::Acc);
+        let seq = if acc_left { r } else { l };
+        let sv = self.lower_expr(seq, None, b, None)?;
+        let Some(e) = sv.ty.elem().cloned() else {
+            return Err(lex::error(&file, line, "'_' goes with a sequence on the other side"));
+        };
+        if is_comparison(op) || !matches!(e, Ty::Num(_)) {
+            return Err(lex::error(&file, line, format!("'{}' does not reduce a sequence of {}", op, e.ir())));
+        }
+        if op == "+" {
+            let name = name_for(dst, &e, b);
+            b.line(&format!("{}: {} = sum {}", name, e.ir(), sv.text));
+            return Ok(Val { text: name, ty: e, literal: false });
+        }
+        let acc = Val { text: "_".into(), ty: e.clone(), literal: false };
+        let (vals, lifted, ai) = if acc_left { (vec![acc, sv], vec![false, true], 0) } else { (vec![sv, acc], vec![true, false], 1) };
+        let op = op.to_string();
+        let f = move |s: &mut Lowerer, ev: &[Val], b: &mut Body| s.emit_bin(&op, ev[0].clone(), ev[1].clone(), b, None, line);
+        self.lift(vals, lifted, Some((ai, e)), b, dst, line, &f)
     }
 
     /// an enumeration's case by its bare name, when exactly one has it
@@ -1434,6 +1890,29 @@ impl Lowerer {
                 Ok(Val { text: s.clone(), ty, literal: true })
             }
             ExprKind::Bool(v) => Ok(Val { text: (*v as i64).to_string(), ty: Ty::Bool, literal: true }),
+            ExprKind::Seq(w) => {
+                let v = self.lower_expr(&Expr { kind: ExprKind::Name(w.clone()), line: e.line }, want, b, dst)?;
+                if v.ty.elem().is_none() {
+                    return Err(lex::error(&file, e.line, format!("'{}$' is not a sequence: '{}' is a {}", w, w, v.ty.ir())));
+                }
+                Ok(v)
+            }
+            ExprKind::Acc => Err(lex::error(&file, e.line, "'_' marks the accumulator of a reduction: it goes with a sequence in an operator or a call")),
+            ExprKind::List(items) => self.lower_list(items, want, b, dst, e.line),
+            ExprKind::Range { from, to, inclusive } => self.lower_range(from, to, *inclusive, b, dst, e.line),
+            ExprKind::Index(base, idx) => {
+                let sv = self.lower_expr(base, None, b, None)?;
+                let Some(elem) = sv.ty.elem().cloned() else {
+                    return Err(lex::error(&file, e.line, format!("an index into a {}, which has no items", sv.ty.ir())));
+                };
+                let iv = self.lower_expr(idx, Some(&Ty::Num("int".into())), b, None)?;
+                if !matches!(iv.ty, Ty::Num(_)) {
+                    return Err(lex::error(&file, idx.line, "an index is an integer"));
+                }
+                let out = name_for(dst, &elem, b);
+                b.line(&format!("{}: {} = load {}, {}", out, elem.ir(), sv.text, iv.text));
+                Ok(Val { text: out, ty: elem, literal: false })
+            }
             ExprKind::Str(s) => {
                 self.nstr += 1;
                 let name = format!("__s{}", self.nstr);
@@ -1442,9 +1921,9 @@ impl Lowerer {
                 b.line(&format!("{}: ptr = addr {}", p, name));
                 let n = b.tmp();
                 b.line(&format!("{}: i64 = len {}", n, name));
-                let out = name_for(dst, &Ty::Str, b);
+                let out = name_for(dst, &Ty::string(), b);
                 b.line(&format!("{}: u8[] = __str({}, {})", out, p, n));
-                Ok(Val { text: out, ty: Ty::Str, literal: false })
+                Ok(Val { text: out, ty: Ty::string(), literal: false })
             }
             ExprKind::Name(n) => match b.vars.get(n) {
                 Some(v) if v.set => Ok(Val { text: v.ir.clone(), ty: v.ty.clone(), literal: false }),
@@ -1488,9 +1967,21 @@ impl Lowerer {
                 Ok(Val { text: name, ty: v.ty, literal: false })
             }
             ExprKind::Bin(op, l, r) => {
+                if matches!(l.kind, ExprKind::Acc) || matches!(r.kind, ExprKind::Acc) {
+                    return self.reduce_bin(op, l, r, b, dst, e.line);
+                }
                 let cmp = is_comparison(op);
-                let operand_want = if cmp { None } else { want.filter(|t| matches!(t, Ty::Num(_))) };
-                let mut lv = self.lower_expr(l, operand_want, b, None)?;
+                // a wanted sequence types the items; a wanted number, the operands
+                let operand_want = if cmp {
+                    None
+                } else {
+                    match want {
+                        Some(Ty::Seq(inner)) => Some(inner.as_ref()),
+                        Some(t @ Ty::Num(_)) => Some(t),
+                        _ => None,
+                    }
+                };
+                let lv = self.lower_expr(l, operand_want, b, None)?;
                 // a struct on the left: the program's own operator
                 if let Ty::Struct(_) = &lv.ty {
                     let rv = self.lower_expr(r, None, b, None)?;
@@ -1502,33 +1993,13 @@ impl Lowerer {
                     b.line(&format!("{}: {} = {}({}, {})", name, ty.ir(), info.ir, lv.text, rv.text));
                     return Ok(Val { text: name, ty, literal: false });
                 }
-                let mut rv = self.lower_expr(r, if lv.literal { operand_want } else { Some(&lv.ty) }, b, None)?;
-                // a literal takes the other side's type; two literals
-                // make one of them a value first
-                if lv.literal && !rv.literal {
-                    lv.ty = rv.ty.clone();
+                let lt = lv.ty.clone();
+                let rv_want = if lv.literal { operand_want } else { Some(lt.elem().unwrap_or(&lt)) };
+                let rv = self.lower_expr(r, rv_want, b, None)?;
+                if lv.ty.elem().is_some() || rv.ty.elem().is_some() {
+                    return self.seq_bin(op, lv, rv, b, dst, e.line);
                 }
-                if rv.literal && !lv.literal {
-                    rv.ty = lv.ty.clone();
-                }
-                if lv.literal && rv.literal {
-                    lv = b.materialize(&lv);
-                    rv.ty = lv.ty.clone();
-                }
-                if lv.ty != rv.ty {
-                    return Err(lex::error(&file, e.line, format!("'{}' on a {} and a {}: both sides must have one type", op, lv.ty.ir(), rv.ty.ir())));
-                }
-                let equality = cmp && matches!(op.as_str(), "==" | "!=");
-                match &lv.ty {
-                    Ty::Num(_) => {}
-                    Ty::Bool | Ty::Enum(_) if equality => {}
-                    Ty::Enum(_) => return Err(lex::error(&file, e.line, format!("'{}' on an enumeration: only '==' and '!=' apply", op))),
-                    t => return Err(lex::error(&file, e.line, format!("'{}' takes numbers, not a {}", op, t.ir()))),
-                }
-                let ty = if cmp { Ty::Bool } else { lv.ty.clone() };
-                let name = name_for(dst, &ty, b);
-                b.line(&format!("{}: {} = {} {}, {}", name, ty.ir(), op_name(op), lv.text, rv.text));
-                Ok(Val { text: name, ty, literal: false })
+                self.emit_bin(op, lv, rv, b, dst, e.line)
             }
             ExprKind::IfElse(c, a, d) => {
                 let cv = self.lower_expr(c, Some(&Ty::Bool), b, None)?;
@@ -1584,7 +2055,7 @@ impl Lowerer {
                         return match self.ty(w, false, &file, e.line)? {
                             Ty::Struct(name) => self.construct(&name, args, b, dst, e.line),
                             Ty::Enum(_) => Err(lex::error(&file, e.line, format!("{} is an enumeration: name a case", w))),
-                            Ty::Str | Ty::None => Err(lex::error(&file, e.line, format!("{} cannot be constructed", w))),
+                            Ty::Seq(_) | Ty::None => Err(lex::error(&file, e.line, format!("{} cannot be constructed", w))),
                             to => {
                                 let [a] = args.as_slice() else {
                                     return Err(lex::error(&file, e.line, format!("a conversion is {}(x)", w)));
@@ -1604,10 +2075,63 @@ impl Lowerer {
                         };
                     }
                 }
+                // `s[0]` on a sequence declared without `$` (a string):
+                // the parser saw a word and a one-item list
+                if let [Part::Word(w), Part::Value(Expr { kind: ExprKind::List(items), line })] = parts.as_slice() {
+                    let is_seq = b.vars.get(w).map(|v| v.ty.elem().is_some()).or_else(|| self.fvar(w).map(|f| f.ty.elem().is_some()));
+                    if items.len() == 1 && is_seq == Some(true) {
+                        let base = Expr { kind: ExprKind::Name(w.clone()), line: *line };
+                        return self.lower_expr(&Expr { kind: ExprKind::Index(Box::new(base), Box::new(items[0].clone())), line: *line }, want, b, dst);
+                    }
+                }
+                // `count x$`: a sequence's length, as an int
+                if let [Part::Word(w), rest] = parts.as_slice() {
+                    let named;
+                    let arg = match rest {
+                        Part::Value(a) => Some(a),
+                        Part::Args(a) if a.len() == 1 && a[0].name.is_none() => Some(&a[0].value),
+                        Part::Word(v) if b.vars.contains_key(v) || self.fvar(v).is_some() => {
+                            named = Expr { kind: ExprKind::Name(v.clone()), line: e.line };
+                            Some(&named)
+                        }
+                        _ => None,
+                    };
+                    if let (true, Some(a)) = (w == "count", arg) {
+                        let start = b.out.len();
+                        let sv = self.lower_expr(a, None, b, None)?;
+                        if sv.ty.elem().is_some() {
+                            let n = b.tmp();
+                            b.line(&format!("{}: i64 = len {}", n, sv.text));
+                            let ty = Ty::Num("int".into());
+                            let out = name_for(dst, &ty, b);
+                            b.line(&format!("{}: int = conv {}", out, n));
+                            return Ok(Val { text: out, ty, literal: false });
+                        }
+                        b.out.truncate(start);
+                    }
+                }
                 let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
                 let (info, args) = find_function(&self.funcs, parts, &is_var, &file, e.line)?;
                 let info = info.clone();
-                let (ops, rtys) = self.lower_args(&info, &args, b)?;
+                let (vals, lifted, acc, rtys) = self.lower_call_args(&info, &args, b)?;
+                if lifted.iter().any(|&l| l) || acc.is_some() {
+                    if rtys.len() != 1 {
+                        return Err(lex::error(&file, e.line, format!("'{}' over a sequence: the function gives one result", info.key)));
+                    }
+                    if acc.is_some() && !lifted.iter().any(|&l| l) {
+                        return Err(lex::error(&file, e.line, "'_' goes with a sequence among the arguments"));
+                    }
+                    let ir = info.ir.clone();
+                    let rty = rtys[0].clone();
+                    let f = move |_: &mut Lowerer, ev: &[Val], b: &mut Body| -> Result<Val, Error> {
+                        let ops: Vec<String> = ev.iter().map(|v| v.text.clone()).collect();
+                        let name = b.tmp();
+                        b.line(&format!("{}: {} = {}({})", name, rty.ir(), ir, ops.join(", ")));
+                        Ok(Val { text: name, ty: rty.clone(), literal: false })
+                    };
+                    return self.lift(vals, lifted, acc, b, dst, e.line, &f);
+                }
+                let ops: Vec<String> = vals.into_iter().map(|v| v.text).collect();
                 let call = format!("{}({})", info.ir, ops.join(", "));
                 match rtys.len() {
                     0 => {
