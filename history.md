@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: functions and expressions — `bff0df1` · 2026-09-08
+
+```
+on (number n) = smaller of (number a) and (number b)
+    n = if (a < b) then (a) else (b)
+
+on (int q, int r) = divide (int a) by (int b)
+    q = a / b
+    r = a - q * b
+```
+
+Plan item 2 of milestone 0, section 6 of zero.md: a function body may hold arithmetic, comparisons, `if (c) then (a) else (b)` as an expression, calls in open syntax — the arguments in bracket groups anywhere among the words, or bare, or a group first as in `(3) is less than (4)` — several results taken at once (`q, r = divide (a) by (b)`, or `int q, int r = ...` declaring them), and local declarations with a value. The IR keeps the program's names: `smaller_of_and(a: number, b: number) -> number`, `_1: u1 = cmp.lt a, b`, then `n: number = if _1 { yield a } else { yield b }`, each arm lowered into its own block. Types are strict in a body — two operands share a type, or one is a literal and takes the other's — and the tower binds only at a call: a `number` parameter takes any number and its result comes back as the argument's type, which is how `narrow (x)` gets a 32-bit instance of `smaller of` from the IR. `suite/zero/functions`: 13 cases, 15/15 with skeleton on native and wasm; the suite's 958 and 949 unchanged.
+
 ### zero: the front end's skeleton — `103c9da` · 2026-09-08
 
 ```
