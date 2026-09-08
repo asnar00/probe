@@ -2209,7 +2209,29 @@ impl Lowerer {
                 b.line(&format!("continue {}", vals.join(", ")));
                 Ok(())
             }
-            Stmt::Check { line, .. } => Err(lex::error(&file, *line, "checks are not in this item yet")),
+            Stmt::Check { cond, line } => {
+                // `check (c)` (section 14, log 29): the IR's trap when c
+                // does not hold, the site printed first so the runner
+                // can name it
+                let cv = self.lower_expr(cond, Some(&Ty::Bool), b, None)?;
+                if cv.ty != Ty::Bool {
+                    return Err(lex::error(&file, *line, "'check' takes a bool"));
+                }
+                let cv = b.materialize(&cv);
+                b.line(&format!("if {} {{", cv.text));
+                b.line("} else {");
+                b.depth += 1;
+                let base = file.rsplit('/').next().unwrap_or(&file).to_string();
+                let site = Expr { kind: ExprKind::Str(format!("check at {}:{}", base, line)), line: *line };
+                let sv = self.lower_expr(&site, None, b, None)?;
+                b.line(&format!("__print({})", sv.text));
+                let z = b.tmp();
+                b.line(&format!("{}: u1 = const 0", z));
+                b.line(&format!("check {}", z));
+                b.depth -= 1;
+                b.line("}");
+                Ok(())
+            }
             Stmt::Push { target, items, cond, line } => {
                 let ExprKind::Seq(n) = &target.kind else {
                     return Err(lex::error(&file, *line, "`<<` pushes into a stream, named `x$`"));

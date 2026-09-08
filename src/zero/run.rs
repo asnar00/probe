@@ -50,7 +50,7 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize) -> Resul
         .find(|(t, c)| t.split('→').next().unwrap_or("").trim() == which.trim() || c.func == which.trim())
         .ok_or_else(|| format!("no case '{}' in the store's ## testing sections", which))?;
     let module = build(&l.ir, policy, level)?;
-    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: false, text: true };
+    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: call.expect == store::Expect::Check, text: true };
     let got = suite::run_calls(&module, &l.ir, Backend::Native, &[sc], "zero-run", level)?.remove(0)?;
     let vals: Vec<String> = got.values.iter().map(|v| v.to_string()).collect();
     let mut out = String::new();
@@ -96,7 +96,8 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                 args: c.args.clone(),
                 nrets: c.nrets,
                 checks: c.expect == store::Expect::Check,
-                text: matches!(c.expect, store::Expect::Text(_)),
+                // every case reads the text back: a failed check names its site there
+                text: true,
             })
             .collect();
         let got = match suite::run_calls(&module, &ir, backend, &scalls, &name, level) {
@@ -133,7 +134,7 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
 /// `print "hi"`
 fn judge(expect: &store::Expect, got: Result<suite::Got, String>) -> (bool, String) {
     match (expect, got) {
-        (store::Expect::Check, Err(e)) if e == suite::checked() || e.starts_with("trap:") => (true, String::new()),
+        (store::Expect::Check, Err(e)) if e.starts_with(suite::checked()) || e.starts_with("trap:") => (true, e.strip_prefix(suite::checked()).map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| format!("({})", s)).unwrap_or_default()),
         (store::Expect::Check, Err(e)) => (false, format!("({})", e)),
         (store::Expect::Check, Ok(g)) => (false, format!("(no check failed; got {})", show(&g.values))),
         (_, Err(e)) => (false, format!("({})", e)),

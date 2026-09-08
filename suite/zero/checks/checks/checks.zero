@@ -1,0 +1,32 @@
+on (int n) = within (int k)
+    check (k < 5)
+    n = k
+
+on (int s) = guarded sum (int k)
+    check (k >= 0)
+    loop (int i = 1, int acc = 0) while (i <= k)
+        continue (i + 1, acc + i)
+    s = acc
+
+on (int n) = bounded (int k)
+    loop (int i = 1, int acc = 0) while (i <= k)
+        check (i < 4)
+        continue (i + 1, acc + i)
+    n = acc
+
+on (int n) = either (int k)
+    if (k > 10)
+        check (k < 100)
+        n = 2
+    else
+        n = 1
+
+on (int n) = outside()
+    int i$ = [1, 2]
+    n = i$[5]
+
+on (int n) = after printing()
+    print "so far"
+    int k = 1
+    check (k == 2)
+    n = k

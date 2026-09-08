@@ -168,7 +168,11 @@ impl Report {
     pub fn case(&mut self, ok: bool, file: &str, text: &str, note: &str) {
         if ok {
             self.passed += 1;
-            self.log.push_str(&format!("  ok  {:<16} {}\n", file, text));
+            if note.is_empty() {
+                self.log.push_str(&format!("  ok  {:<16} {}\n", file, text));
+            } else {
+                self.log.push_str(&format!("  ok  {:<16} {}   {}\n", file, text, note));
+            }
         } else {
             self.failed += 1;
             self.log
@@ -374,14 +378,62 @@ fn boots(cases: &[Case]) -> Vec<(&[Case], bool)> {
     out
 }
 
+/// a failed check's report: with the site when the program named one —
+/// the zero front end's `check` prints `check at file:line` before it
+/// traps (log 29)
+fn checked_at(text: &str) -> String {
+    match text.lines().rev().find_map(|l| l.strip_prefix("check at ")) {
+        Some(site) => format!("{} at {}", CHECKED, site.trim()),
+        None => CHECKED.to_string(),
+    }
+}
+
+/// the forked child's JIT and pipe, for `on_trap`
+static TRAP_JIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static TRAP_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// in a forked child, the breakpoint trap of a failed check: the
+/// program's text — where a zero `check` named its site — goes to the
+/// parent through the pipe before the child ends
+extern "C" fn on_trap(_sig: i32) {
+    unsafe extern "C" {
+        fn write(fd: i32, buf: *const u8, n: usize) -> isize;
+        fn _exit(code: i32) -> !;
+    }
+    use std::sync::atomic::Ordering;
+    let mut text = String::from("trap: ");
+    let jit = TRAP_JIT.load(Ordering::SeqCst) as *const emit::jit::JitCode;
+    if !jit.is_null() {
+        let jit = unsafe { &*jit };
+        if let Ok(n) = jit.call("__out_len", &[]) {
+            let mut bytes = Vec::new();
+            for i in 0..n {
+                if let Ok(b) = jit.call("__out_byte", &[i]) {
+                    bytes.push(b as u8);
+                }
+            }
+            text.push_str(&String::from_utf8_lossy(&bytes));
+        }
+    }
+    let fd = TRAP_FD.load(Ordering::SeqCst);
+    unsafe {
+        write(fd, text.as_ptr(), text.len());
+        _exit(0)
+    }
+}
+
 /// run f in a forked child: a `check` that fails there is a breakpoint
-/// trap that ends the child, not the suite
-fn forked<F: FnOnce() -> Result<Vec<i64>, String>>(f: F) -> Result<Vec<i64>, String> {
+/// trap that ends the child, not the suite. With a JIT whose program has
+/// an output buffer, the child reads it back on the trap, so a failed
+/// check can name its site; the results and the text come back through
+/// the pipe otherwise
+fn forked<F: FnOnce() -> Result<Got, String>>(f: F, jit: Option<&emit::jit::JitCode>) -> Result<Got, String> {
     unsafe extern "C" {
         fn fork() -> i32;
         fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
         fn _exit(code: i32) -> !;
         fn pipe(fds: *mut i32) -> i32;
+        fn signal(sig: i32, handler: extern "C" fn(i32)) -> usize;
     }
     use std::io::{Read, Write};
     use std::os::unix::io::FromRawFd;
@@ -394,9 +446,15 @@ fn forked<F: FnOnce() -> Result<Vec<i64>, String>>(f: F) -> Result<Vec<i64>, Str
         return Err("fork failed".into());
     }
     if pid == 0 {
+        if let Some(j) = jit {
+            use std::sync::atomic::Ordering;
+            TRAP_JIT.store(j as *const emit::jit::JitCode as usize, Ordering::SeqCst);
+            TRAP_FD.store(fds[1], Ordering::SeqCst);
+            unsafe { signal(5, on_trap) }; // SIGTRAP: brk
+        }
         let mut w = unsafe { std::fs::File::from_raw_fd(fds[1]) };
         let text = match f() {
-            Ok(ws) => ws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
+            Ok(g) => format!("{}\x1f{}", g.values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","), g.text),
             Err(e) => format!("error: {}", e),
         };
         let _ = w.write_all(text.as_bytes());
@@ -414,13 +472,15 @@ fn forked<F: FnOnce() -> Result<Vec<i64>, String>>(f: F) -> Result<Vec<i64>, Str
         5 => return Err(CHECKED.into()), // SIGTRAP: brk
         sig => return Err(format!("the child died of signal {}", sig)),
     }
+    if let Some(t) = text.strip_prefix("trap: ") {
+        return Err(checked_at(t));
+    }
     if let Some(e) = text.strip_prefix("error: ") {
         return Err(e.to_string());
     }
-    if text.is_empty() {
-        return Ok(Vec::new());
-    }
-    text.split(',').map(|v| v.trim().parse::<i64>().map_err(|e| e.to_string())).collect()
+    let (vals, out_text) = text.split_once('\x1f').unwrap_or((&text, ""));
+    let values: Result<Vec<i64>, String> = if vals.is_empty() { Ok(Vec::new()) } else { vals.split(',').map(|v| v.trim().parse::<i64>().map_err(|e| e.to_string())).collect() };
+    values.map(|values| Got { values, text: out_text.to_string() })
 }
 
 // ---------------------------------------------------------------------------
@@ -467,7 +527,7 @@ fn run_native(
                 }
                 (0..case.expected.len() as i64).map(|i| jit.call("__area_word", &[i])).collect()
             };
-            let got = if case.checks { forked(run) } else { run() };
+            let got = if case.checks { forked(|| run().map(|values| Got { values, text: String::new() }), None).map(|g| g.values) } else { run() };
             finish_case(report, name, case, got);
             continue;
         }
@@ -511,7 +571,7 @@ fn run_native(
                 n => Err(format!("{} expected values not supported by the runner", n)),
             }
         };
-        let got = if case.checks { forked(run) } else { run() };
+        let got = if case.checks { forked(|| run().map(|values| Got { values, text: String::new() }), None).map(|g| g.values) } else { run() };
         finish_case(report, name, case, got);
     }
 }
@@ -721,7 +781,9 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
                     }
                     Ok(Got { values, text })
                 };
-                out.push(if call.checks { forked(|| run().map(|g| g.values)).map(|values| Got { values, text: String::new() }) } else { run() });
+                // every call in a child: a failed check the case did not
+                // expect ends the child and is reported, not the runner
+                out.push(forked(run, Some(&jit)));
             }
             Ok(out)
         }
@@ -786,6 +848,11 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
                     let t = lines.next().ok_or("no text line from node")?;
                     out_text = unjson(t.strip_prefix("text: ").unwrap_or(t));
                 }
+                // a trap with a site named in the text is a failed check
+                let values = match values {
+                    Err(e) if e.starts_with("trap:") && out_text.contains("check at ") => Err(checked_at(&out_text)),
+                    v => v,
+                };
                 got.push(values.map(|values| Got { values, text: out_text }));
             }
             Ok(got)
@@ -850,7 +917,8 @@ fn parse_call_lines(out: &str, cases: &[Case]) -> Vec<Result<Got, String>> {
             Some(l) => hex(l),
             None => Err("no output from the machine".into()),
         };
-        let text = if case.text_out && values.is_ok() {
+        // the text line follows the results, and `__trap` prints it too
+        let text = if case.text_out {
             match lines.next().map(hex) {
                 Some(Ok(bytes)) => String::from_utf8_lossy(&bytes.iter().map(|&b| b as u8).collect::<Vec<u8>>()).to_string(),
                 Some(Err(e)) => {
@@ -864,6 +932,10 @@ fn parse_call_lines(out: &str, cases: &[Case]) -> Vec<Result<Got, String>> {
             }
         } else {
             String::new()
+        };
+        let values = match values {
+            Err(e) if e == CHECKED => Err(checked_at(&text)),
+            v => v,
         };
         got.push(values.map(|values| Got { values, text }));
     }
@@ -1255,6 +1327,10 @@ fn gen_driver(
         for c in "check\n".bytes() {
             let t = tmp(&mut s, "u64", format!("const {}", c));
             s.push_str(&format!("    __pch({})\n", t));
+        }
+        // a zero program's text, where a `check` named its site
+        if cases.iter().any(|c| c.text_out) {
+            s.push_str("    __ptext()\n");
         }
         s.push_str(exit_ssa);
         s.push_str("    jmp spin\nspin:\n    jmp spin\n}\nfn vectors(__t: ptr) {\nentry:\n    ret\n}\n");
@@ -1929,7 +2005,7 @@ fn finish_case(report: &mut Report, name: &str, case: &Case, got: Result<Vec<i64
         // a trap is the expected end: the JIT's child died of brk, a
         // machine's `__trap` said "check", wasm's driver said "trap:"
         return match got {
-            Err(e) if e == CHECKED || e.starts_with("trap:") => report.case(true, name, &case.text, ""),
+            Err(e) if e.starts_with(CHECKED) || e.starts_with("trap:") => report.case(true, name, &case.text, ""),
             Ok(got) => {
                 let gs: Vec<String> = got.iter().map(|v| v.to_string()).collect();
                 report.case(false, name, &case.text, &format!("(no check failed; got {})", gs.join(", ")))

@@ -68,8 +68,9 @@ for (const c of spec.cases) {
     console.log(out.join(", "));
     if (c.text) console.log("text: " + JSON.stringify(readText(inst)));
   } catch (e) {
+    // the instance outlives a trap: the text says where a check failed
     console.log("trap: " + e.message);
-    if (c.text) console.log("text: \"\"");
+    if (c.text) console.log("text: " + JSON.stringify(readText(inst)));
   }
 }
 
