@@ -4,6 +4,23 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: streams — `fcd8146` · 2026-09-08
+
+```
+on (int n) = repeated()
+    int i$ << 1 << (i$ + 1) while (i$ < 5)
+    n = count i$ * 10 + latest i$
+
+on (int n) = walked()
+    int i$ << 1 << 2 << 3 << 4
+    loop (int acc = 0) while (count i$ > 0)
+        acc = acc + peek i$ at (0)
+        advance i$ by (1)
+    n = acc
+```
+
+Plan item 7 of milestone 0, section 9 of zero.md. A stream is the IR's `T$`, a reader's view of a ring carved from the store's arena (64 items) where its declaration runs; it is spelled like a sequence and told apart by how it was made — `<<` or `at (n hz)` — so `frame` and `behind` give sequences back. On the right of `<<` the stream's name is its latest item, and `while` repeats the last push while the condition holds of the candidate, which is what makes section 9's example `[1, 2, 3, 4]`. `advance` and `frame` rebind the variable to the moved reader and a `loop` carries every stream its body moves, the loop `lex.ssa` wrote by hand. A stream of a struct is one ring per field. `lib/stream.ssa` gains `end`, `ended` and `position` in the header's spare word, with five cases in `suite/stream.ssa`. `suite/zero/streams`: 20 cases, 116/116 on native, wasm, riscv and arm-qemu, 115 + 1 skipped on air; probe test 965, 956 + 9, 965, 965, 935 + 30; cargo test 91 passed.
+
 ### zero: probe zero test on the machines — `876921b` · 2026-09-08
 
 ```
