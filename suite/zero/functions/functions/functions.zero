@@ -1,0 +1,29 @@
+on (number n) = smaller of (number a) and (number b)
+    n = if (a < b) then (a) else (b)
+
+on (int q, int r) = divide (int a) by (int b)
+    q = a / b
+    r = a - q * b
+
+on (int s) = sum of (int a) and (int b) and (int c)
+    s = a + b + c
+
+on (int m) = mean of (int a) and (int b)
+    int q, int r = divide (a + b) by (2)
+    m = q
+
+on (int d) = double (int x)
+    d = x * 2
+
+on (int n) = negated (int x)
+    n = -x
+
+on (bool yes) = (int a) is less than (int b)
+    yes = a < b
+
+on (int c) = clamp (int x) between (int lo) and (int hi)
+    c = if (x < lo) then (lo) else (if (x > hi) then (hi) else (x))
+
+on (int32 y) = narrow (int32 x)
+    int32 big = 1000000
+    y = smaller of (x) and (big)

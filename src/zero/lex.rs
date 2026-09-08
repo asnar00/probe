@@ -70,8 +70,8 @@ pub fn error(file: &str, line: usize, msg: impl Into<String>) -> Error {
     Error { file: file.to_string(), line, msg: msg.into() }
 }
 
-const SYMBOLS: [&str; 22] = [
-    "<<", "<=", ">=", "==", "!=", "+=", "->", "→", "(", ")", "[", "]", ",", ".", "=", "<", ">", "+", "-", "*", "/", "|",
+const SYMBOLS: [&str; 23] = [
+    "<<", "<=", ">=", "==", "!=", "+=", "->", "→", "(", ")", "[", "]", ",", ".", "=", "<", ">", "+", "-", "*", "/", "%", "|",
 ];
 
 /// Lex a whole file. Blank lines are skipped; a line's leading spaces

@@ -105,6 +105,8 @@ pub struct Arg {
 
 pub enum Stmt {
     Var(VarDecl),
+    /// `int q, int r = divide (a) by (b)`: several declared at once from one call
+    Multi { vars: Vec<Param>, value: Expr, line: usize },
     Assign { targets: Vec<Target>, value: Expr, line: usize },
     If { cond: Expr, then: Vec<Stmt>, els: Option<Vec<Stmt>>, line: usize },
     Loop { vars: Vec<VarDecl>, cond: Option<Expr>, bound: Option<i64>, body: Vec<Stmt>, line: usize },
@@ -699,6 +701,24 @@ impl<'a> Parser<'a> {
             Some(Tok::Word(w)) if SCOPES.contains(&w.as_str()) => Err(self.err(format!("'{}' belongs on a feature-scope variable, outside any function", w))),
             Some(Tok::Word(w)) if self.is_type(&w) && matches!(self.peek_at(1), Some(Tok::Word(_)) | Some(Tok::Seq(_))) => {
                 let v = self.parse_var()?;
+                // `int q, int r = ...`: several typed names, one initializer
+                if self.at_sym(",") && v.init.is_none() {
+                    let mut vars = vec![Param { ty: v.ty.clone(), name: v.name.clone(), seq: v.seq, line: v.line }];
+                    while self.eat_sym(",") {
+                        let pline = self.line();
+                        let ty = self.expect_word()?;
+                        if !self.is_type(&ty) {
+                            self.pos -= 1;
+                            return Err(self.err(format!("'{}' is not a type: each of several results is its type then its name", ty)));
+                        }
+                        let (name, seq) = self.expect_name()?;
+                        vars.push(Param { ty, name, seq, line: pline });
+                    }
+                    self.expect_sym("=")?;
+                    let value = self.parse_expr()?;
+                    self.expect_newline()?;
+                    return Ok(Stmt::Multi { vars, value, line });
+                }
                 self.expect_newline()?;
                 Ok(Stmt::Var(v))
             }
@@ -788,7 +808,7 @@ impl<'a> Parser<'a> {
         let mut l = self.parse_unary()?;
         loop {
             let op = match self.peek() {
-                Some(Tok::Sym(s)) if matches!(*s, "*" | "/") => *s,
+                Some(Tok::Sym(s)) if matches!(*s, "*" | "/" | "%") => *s,
                 _ => break,
             };
             let line = self.line();
@@ -845,6 +865,20 @@ impl<'a> Parser<'a> {
             Tok::Seq(w) => ExprKind::Seq(w),
             Tok::Sym("_") => ExprKind::Acc,
             Tok::Sym("(") => {
+                // a phrase may begin with a bracket group — `(3) is less
+                // than (4)` — when a word follows it; otherwise these are
+                // parentheses around an expression
+                self.pos -= 1;
+                let at = self.pos;
+                if let Ok(args) = self.parse_args() {
+                    if matches!(self.peek(), Some(Tok::Word(w)) if !matches!(w.as_str(), "then" | "else" | "while" | "bound" | "merge" | "in" | "through" | "to") && !UNITS.contains(&w.as_str())) {
+                        let mut parts = vec![Part::Args(args)];
+                        parts.extend(self.parse_parts()?);
+                        return Ok(Expr { kind: ExprKind::Phrase(parts), line });
+                    }
+                }
+                self.pos = at;
+                self.expect_sym("(")?;
                 let e = self.parse_expr()?;
                 self.expect_sym(")")?;
                 return Ok(e);
@@ -973,6 +1007,15 @@ mod tests {
         assert!(matches!(&f.body[3], Stmt::Expr { expr: Expr { kind: ExprKind::Existing(p), .. }, .. } if p.len() == 2));
         assert!(matches!(&f.body[4], Stmt::Push { items, cond: Some(_), .. } if items.len() == 2));
         assert!(matches!(&f.body[5], Stmt::Expr { expr: Expr { kind: ExprKind::Phrase(p), .. }, .. } if matches!(p[1], Part::Value(_))));
+    }
+
+    #[test]
+    fn a_phrase_may_begin_with_a_group() {
+        let e = parse_call("(3) is less than (4)", "t.md", 1, &types()).unwrap();
+        let ExprKind::Phrase(p) = e.kind else { panic!() };
+        assert_eq!(p.len(), 5);
+        let e = parse_call("(3 + 4) * 2", "t.md", 1, &types()).unwrap();
+        assert!(matches!(e.kind, ExprKind::Bin(ref op, _, _) if op == "*"));
     }
 
     #[test]
