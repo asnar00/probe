@@ -4,6 +4,22 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: tasks and the scheduler — `530e6e4` · 2026-09-08
+
+```
+uint8 chars$ <<
+token t$ = lex(chars$)
+
+on (token t$) << lex (uint8 c$)
+    loop
+        if (count c$ == 0)
+            break
+        int k = kind of (peek c$ at (0))
+        int start, int tick = position c$
+```
+
+Plan item 8 of milestone 0, section 10 of zero.md. A task is a function over readers: `fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$` takes its output's reader and its inputs and returns the inputs moved on, the shape `lex.ssa` wrote by hand. `token t$ = lex(chars$)` at feature scope is a node; `__run()` in `src/zero/lower.rs` passes over the nodes until nothing runs, a node running when an input has more than it last saw or has ended since, its reader carried in the context between runs. The clock is an exact `time` in data and `at (1 hz)` sleeps one period after each push. On the way: an abstract `int` now unifies with its family under the policy (`src/ssa.rs`), and the AIR emitter calls rather than inlines the costliest functions of a kernel past 400 000 inlined instructions, since the `tasks` store crashed Apple's compile service at 757k. `suite/zero/tasks` 14 cases, `suite/zero/lex` the experiment's four; 139/139 on native, wasm, riscv and arm-qemu, 138 + 1 skipped on air; probe test 966, 957 + 9, 966, 966, 936 + 30; cargo test 91 passed.
+
 ### zero: streams — `fcd8146` · 2026-09-08
 
 ```
