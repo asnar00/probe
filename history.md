@@ -4,6 +4,24 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: control flow — `7c31485` · 2026-09-08
+
+```
+on (int s) = sum to (int n)
+    loop (int i = 1, int acc = 0) while (i <= n) bound 100
+        continue (i + 1, acc + i)
+    s = acc
+
+on blast off ()
+    for (i in [3 through 1])
+        if (i == 1)
+            print "one"
+        else
+            print "more"
+```
+
+Plan item 4 of milestone 0, section 7 of zero.md. An `if` statement becomes the IR's value-yielding `if`, one result per variable an arm assigns, each arm yielding its version — so the code after reads the join's names and SSA is kept without the front end inventing anything. A `loop` carries exactly the variables in its header: `while` is tested at the top of every pass, `continue` gives the next values (a body that ends carries the current ones), every `break` yields them, and after the loop the variables hold what it left with; an assignment inside a loop to a variable declared outside it is refused, since SSA has no place for it. `for` over a range is that loop with the item carried, stepped by one, the direction fixed by literal bounds or chosen at run time. `probe cost` on the emitted IR reports `sum_to` as `x100 (declared)` and `blast_off` as `x3 (i from 3 by -1 to 1)` with no bound declared. `suite/zero/control`: 26 cases, 56/56 on both paths; the suite's 959 and 950 + 9 unchanged, cargo test 71 with the 15 environment failures.
+
 ### zero: types — `6421bc3` · 2026-09-08
 
 ```
