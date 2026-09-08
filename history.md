@@ -4,6 +4,24 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: variables — `b9e9172` · 2026-09-08
+
+```
+int size = 40
+static int port = 8822
+int count = 0 merge sum
+
+on bump()
+    count = count + 1
+
+on (int n) = bumped (int k) times
+    for (i in [1 through k])
+        bump()
+    n = count
+```
+
+Plan item 5 of milestone 0, section 5 of zero.md. Feature-scope variables are the fields of one context struct per store, `type __ctx = struct { size: int, port: int, count: int, ... }` in `data`, each field's scope and merge words carried as a comment above the type — every scope is one place in this milestone — and reached through generated `__get_x` and `__set_x` functions, so `count = count + 1` is a load, an add and a store and may sit inside a loop. `__zero_reset`, which the runner calls before every case, is generated per store with every initial value. Two consequences: a phrase reads as a function's name before its words are taken as variables (`set size (50)`), and an enumeration is a byte, since the IR stores only memory widths. `suite/zero/variables`: 19 cases, 75/75 on both paths; 959 and 950 + 9 unchanged, cargo test 71.
+
 ### zero: control flow — `7c31485` · 2026-09-08
 
 ```
