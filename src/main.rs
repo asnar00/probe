@@ -21,6 +21,7 @@ mod ssa;
 mod suite;
 mod target;
 mod wlearn;
+mod zero;
 
 use std::process::ExitCode;
 
@@ -299,6 +300,7 @@ fn main() -> ExitCode {
                 Err(e) => fail(&e),
             }
         }
+        Some("zero") => zero::cmd(&args[1..], level, policy),
         Some("test") => {
             let rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
             let backend = if rest.contains(&"wasm") {
@@ -369,6 +371,7 @@ fn main() -> ExitCode {
             eprintln!("       probe scorecard [arm64|riscv64|wasm32]");
             eprintln!("       probe footprint <file.ssa> [riscv]     (--platform=NAME selects a variant everywhere)");
             eprintln!("       probe boot <file.ssa> [riscv|arm]      bare metal on qemu: fn __start() runs, the UART is the output");
+            eprintln!("       probe zero <store> emit | <store> run <case> | test [dir] [wasm]    the zero front end");
             eprintln!("       (-O<n> selects the optimization level on any command;");
             eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy,");
             eprintln!("        --float=f16|bf16|f32|f64|E,M the abstract 'float' one,");

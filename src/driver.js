@@ -52,6 +52,9 @@ for (const c of spec.cases) {
     throw new Error("bad arg spec");
   });
   try {
+    // the zero runner: reset the program's state first, and read its
+    // text output back after (see suite.rs, run_calls)
+    if (c.reset && inst.exports.__zero_reset) inst.exports.__zero_reset();
     let r = inst.exports[c.func](...args);
     if (r === undefined) r = [];
     else if (!Array.isArray(r)) r = [r];
@@ -63,7 +66,16 @@ for (const c of spec.cases) {
           : (Number(v) >>> 0).toString()
     );
     console.log(out.join(", "));
+    if (c.text) console.log("text: " + JSON.stringify(readText(inst)));
   } catch (e) {
     console.log("trap: " + e.message);
+    if (c.text) console.log("text: \"\"");
   }
+}
+
+function readText(inst) {
+  const n = Number(inst.exports.__out_len());
+  const bytes = new Uint8Array(n);
+  for (let i = 0; i < n; i++) bytes[i] = Number(inst.exports.__out_byte(BigInt(i)));
+  return new TextDecoder().decode(bytes);
 }

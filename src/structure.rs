@@ -189,6 +189,10 @@ mod tests {
     #[test]
     fn suite_graphs_are_reducible() {
         for entry in std::fs::read_dir("suite").unwrap().flatten() {
+            // the zero stores live under suite/zero: only the .ssa files here
+            if entry.path().extension().is_none_or(|x| x != "ssa") {
+                continue;
+            }
             let src = std::fs::read_to_string(entry.path()).unwrap();
             let policy = crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap();
             let mut m = crate::ssa::parse_with(&crate::ssa::with_prelude(&src), &policy).unwrap();

@@ -52,6 +52,10 @@ mod tests {
         let platform = Platform::load_named("rv64i").unwrap();
         let mut seen = std::collections::BTreeSet::new();
         for entry in std::fs::read_dir("suite").unwrap().flatten() {
+            // the zero stores live under suite/zero: only the .ssa files here
+            if entry.path().extension().is_none_or(|x| x != "ssa") {
+                continue;
+            }
             let src = std::fs::read_to_string(entry.path()).unwrap();
             let policy = platform.adjust(Policy::new(Type::I64).unwrap());
             let mut m = ssa::parse_with(&ssa::with_prelude(&src), &policy).unwrap();

@@ -161,7 +161,7 @@ pub struct Report {
 }
 
 impl Report {
-    fn case(&mut self, ok: bool, file: &str, text: &str, note: &str) {
+    pub fn case(&mut self, ok: bool, file: &str, text: &str, note: &str) {
         if ok {
             self.passed += 1;
             self.log.push_str(&format!("  ok  {:<16} {}\n", file, text));
@@ -194,6 +194,25 @@ fn default_float(backend: Backend) -> (u32, u32) {
         Backend::Wasm | Backend::Air => (8, 23),
         _ => (11, 52),
     }
+}
+
+/// the platform a backend compiles for
+pub fn target_of(backend: Backend) -> &'static str {
+    match backend {
+        Backend::Native | Backend::ArmQemu => "arm64",
+        Backend::Riscv => "riscv64",
+        Backend::Wasm => "wasm32",
+        Backend::Air => "air",
+    }
+}
+
+/// a backend's default policy: its `int` and `float` widths, and what
+/// its platform (the selected variant of the backend's target, if any)
+/// lacks of the integer instructions the parser would otherwise assume
+pub fn backend_policy(backend: Backend) -> Result<ssa::Policy, String> {
+    let (fe, fm) = default_float(backend);
+    let platform = crate::platform::Platform::load(target_of(backend))?;
+    Ok(platform.adjust(ssa::Policy::new(default_int(backend))?.with_float(fe, fm)))
 }
 
 pub fn run_dir_at(
@@ -235,17 +254,8 @@ pub fn run_dir_at(
             .map_err(|e| e.to_string())?;
     }
 
-    let (fe, fm) = default_float(backend);
-    // the platform (the selected variant of the backend's target, if any)
-    // may lack integer instructions the parser would otherwise assume
-    let target = match backend {
-        Backend::Native | Backend::ArmQemu => "arm64",
-        Backend::Riscv => "riscv64",
-        Backend::Wasm => "wasm32",
-        Backend::Air => "air",
-    };
-    let platform = crate::platform::Platform::load(target)?;
-    let policy = adjust(platform.adjust(ssa::Policy::new(default_int(backend))?.with_float(fe, fm)));
+    let platform = crate::platform::Platform::load(target_of(backend))?;
+    let policy = adjust(backend_policy(backend)?);
     let mut report = Report {
         passed: 0,
         failed: 0,
@@ -637,6 +647,175 @@ fn run_wasm(
         };
         finish_case(report, name, case, got);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Calls from the zero runner: the same native and wasm paths, with the
+// program's text output read back after each call
+
+/// a call the zero front end's runner makes: a function, its integer
+/// arguments, how many results it has, whether it must end in a failed
+/// check, and whether the program's text output is wanted after it
+pub struct Call {
+    pub func: String,
+    pub args: Vec<i64>,
+    pub nrets: usize,
+    pub checks: bool,
+    pub text: bool,
+}
+
+/// what a call gave: its results, and the text the program printed
+pub struct Got {
+    pub values: Vec<i64>,
+    pub text: String,
+}
+
+/// what a call that ended in a failed check gives back
+pub fn checked() -> &'static str {
+    CHECKED
+}
+
+/// Run calls against one module on a backend. Before every call the
+/// module's `__zero_reset` runs, if it has one (the JIT keeps one
+/// instance of the program for every call; node makes a fresh one per
+/// call, so on wasm it is only for symmetry); after a call that wants
+/// text, `__out_len()` and `__out_byte(i)` read the program's output
+/// buffer back. A call that must end in a failed check runs forked
+/// under the JIT, as a directive's does.
+pub fn run_calls(module: &ssa::Module, backend: Backend, calls: &[Call], name: &str) -> Result<Vec<Result<Got, String>>, String> {
+    match backend {
+        Backend::Native => {
+            let enc = emit::Encoder::load("targets/arm64.encodings.json")?;
+            let jit = emit::compile(module, &enc).and_then(|c| emit::jit::JitCode::new(&c))?;
+            let mut out = Vec::new();
+            for call in calls {
+                let rets: Vec<ssa::Repr> = module.func(&call.func).map(|f| f.rets.iter().map(|&t| f.repr(t)).collect()).unwrap_or_default();
+                let fix = |i: usize, x: i64| match rets.get(i) {
+                    Some(r) if r.container() == 32 => opt::norm(*r, x as u32 as i64),
+                    _ => x,
+                };
+                if module.func("__zero_reset").is_some() {
+                    jit.call("__zero_reset", &[])?;
+                }
+                let run = || -> Result<Got, String> {
+                    let values = match call.nrets {
+                        0 => jit.call(&call.func, &call.args).map(|_| Vec::new())?,
+                        1 => jit.call(&call.func, &call.args).map(|v| vec![fix(0, v)])?,
+                        2 => jit.call2(&call.func, &call.args).map(|(a, b)| vec![fix(0, a), fix(1, b)])?,
+                        n => return Err(format!("{} results not supported by the runner", n)),
+                    };
+                    let mut text = String::new();
+                    if call.text {
+                        let n = jit.call("__out_len", &[])?;
+                        let mut bytes = Vec::new();
+                        for i in 0..n {
+                            bytes.push(jit.call("__out_byte", &[i])? as u8);
+                        }
+                        text = String::from_utf8_lossy(&bytes).to_string();
+                    }
+                    Ok(Got { values, text })
+                };
+                out.push(if call.checks { forked(|| run().map(|g| g.values)).map(|values| Got { values, text: String::new() }) } else { run() });
+            }
+            Ok(out)
+        }
+        Backend::Wasm => {
+            let enc = emit_wasm::WEncoder::load("targets/wasm32.encodings.json")?;
+            let scratch = std::env::temp_dir().join("probe-suite");
+            std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
+            std::fs::write(scratch.join("driver.js"), include_str!("driver.js")).map_err(|e| e.to_string())?;
+            let wasm = emit_wasm::compile(module, &enc)?;
+            let wasm_path = scratch.join(format!("{}.wasm", name));
+            std::fs::write(&wasm_path, &wasm).map_err(|e| e.to_string())?;
+            let mut spec = String::from("{\"cases\":[");
+            for (i, call) in calls.iter().enumerate() {
+                if i > 0 {
+                    spec.push(',');
+                }
+                let func = module.func(&call.func).ok_or_else(|| format!("no function {} in the module", call.func))?;
+                spec.push_str(&format!("{{\"func\":\"{}\",\"reset\":true,\"text\":{},\"args\":[", call.func, call.text));
+                for (j, v) in call.args.iter().enumerate() {
+                    if j > 0 {
+                        spec.push(',');
+                    }
+                    let t = match func.params.get(j).map(|&p| emit_wasm::wrepr(func, func.ty(p))) {
+                        Some(r) if r.container() == 64 => "i64",
+                        _ => "i32",
+                    };
+                    spec.push_str(&format!("{{\"t\":\"{}\",\"v\":\"{}\"}}", t, v));
+                }
+                spec.push_str("],\"rets\":[");
+                for (j, &t) in func.rets.iter().enumerate() {
+                    if j > 0 {
+                        spec.push(',');
+                    }
+                    let r = emit_wasm::wrepr(func, t);
+                    spec.push_str(match (r.container(), r.signed()) {
+                        (64, _) => "\"i64\"",
+                        (_, true) => "\"i32\"",
+                        _ => "\"u32\"",
+                    });
+                }
+                spec.push_str("]}");
+            }
+            spec.push_str("]}");
+            let out = Command::new("node").arg(scratch.join("driver.js")).arg(&wasm_path).arg(&spec).output().map_err(|e| format!("spawn node: {}", e))?;
+            if !out.status.success() {
+                return Err(format!("node: {}", String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or("")));
+            }
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            let mut lines = text.lines();
+            let mut got = Vec::new();
+            for call in calls {
+                let line = lines.next().ok_or("no output from node")?;
+                let values: Result<Vec<i64>, String> = if line.starts_with("trap:") {
+                    Err(line.to_string())
+                } else if line.trim().is_empty() {
+                    Ok(Vec::new())
+                } else {
+                    line.split(',').map(|v| v.trim().parse::<i64>().map_err(|_| format!("bad output '{}'", v))).collect()
+                };
+                let mut out_text = String::new();
+                if call.text {
+                    let t = lines.next().ok_or("no text line from node")?;
+                    out_text = unjson(t.strip_prefix("text: ").unwrap_or(t));
+                }
+                got.push(values.map(|values| Got { values, text: out_text }));
+            }
+            Ok(got)
+        }
+        _ => Err("the zero runner runs on the native JIT and on wasm".into()),
+    }
+}
+
+/// a JSON string literal's text
+fn unjson(s: &str) -> String {
+    let s = s.trim().strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(s);
+    let mut out = String::new();
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some('/') => out.push('/'),
+            Some('u') => {
+                let h: String = it.by_ref().take(4).collect();
+                if let Some(ch) = u32::from_str_radix(&h, 16).ok().and_then(char::from_u32) {
+                    out.push(ch);
+                }
+            }
+            Some(o) => out.push(o),
+            None => {}
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

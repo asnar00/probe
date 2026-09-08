@@ -1,0 +1,5 @@
+on (int n) = answer()
+    n = 42
+
+on hi()
+    print "hi"
