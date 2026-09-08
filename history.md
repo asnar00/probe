@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: platform functions — `cd7ed31` · 2026-09-08
+
+```
+on (int64 r) = (int64 a) plus (int64 b)
+platform arm64 riscv64
+    add r, a, b
+platform wasm32
+    i64.add
+platform air
+    add
+```
+
+Plan item 11 of milestone 0, section 15 of zero.md. A platform function has no zero body: each `platform <kind>` line gives it one for a kind of place — an IR target, whose body is that target's rule lines, or `ir`, a body in the IR serving every target without a rule. The IR gained the item that carries them (`src/ssa.rs`): `platform arm64 { ... }` after the function, in the platform file's grammar, joined to the file's rules by `Platform::natives` (`src/platform.rs`), so `suite/platform.ssa` runs its rules on all five paths. `print` is now a function of the compiler's own `platform` feature (`src/zero/platform.zero`), composed first into every store, declared twice — over a string and over `int$` — with the buffer loops as `ir` bodies; the runner (`src/zero/run.rs`) skips a case whose function reaches a platform function with no body for the path, saying so: `'minus' has no platform body for air`. Found on the way, an IR fix: a plain function's body `int` stored into an `int[]` view is judged under the policy (`aview` in `suite/abstract.ssa`). `suite/zero/platform`: 9 cases; zero 176/176 on native, wasm, riscv and arm-qemu, 167 + 9 skipped on air; probe test 970, 961 + 9, 970, 970, 940 + 30; cargo test 93 passed.
+
 ### zero: checks — `662ad8d` · 2026-09-08
 
 ```
