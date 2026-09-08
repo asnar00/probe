@@ -66,6 +66,9 @@ struct Case {
     expected: Vec<i64>, // one entry per return value
     checks: bool,       // `-> check`: the case must end in a failed check
     text: String,       // the directive as written, for reporting
+    /// the zero runner's cases: print the program's output buffer after
+    /// the results, as a line of hex bytes (see `run_calls`)
+    text_out: bool,
 }
 
 /// what a case that ended in a failed check reports
@@ -149,6 +152,7 @@ fn parse_case(line: &str) -> Result<Case, String> {
         expected,
         checks,
         text: line.trim().to_string(),
+        text_out: false,
     })
 }
 
@@ -250,8 +254,7 @@ pub fn run_dir_at(
         std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
     }
     if backend == Backend::Wasm {
-        std::fs::write(scratch.join("driver.js"), include_str!("driver.js"))
-            .map_err(|e| e.to_string())?;
+        write_driver_js(&scratch)?;
     }
 
     let platform = crate::platform::Platform::load(target_of(backend))?;
@@ -678,11 +681,14 @@ pub fn checked() -> &'static str {
 /// Run calls against one module on a backend. Before every call the
 /// module's `__zero_reset` runs, if it has one (the JIT keeps one
 /// instance of the program for every call; node makes a fresh one per
-/// call, so on wasm it is only for symmetry); after a call that wants
-/// text, `__out_len()` and `__out_byte(i)` read the program's output
-/// buffer back. A call that must end in a failed check runs forked
-/// under the JIT, as a directive's does.
-pub fn run_calls(module: &ssa::Module, backend: Backend, calls: &[Call], name: &str) -> Result<Vec<Result<Got, String>>, String> {
+/// call; a machine runs a group of calls in one boot); after a call
+/// that wants text, `__out_len()` and `__out_byte(i)` read the program's
+/// output buffer back. A call that must end in a failed check runs
+/// forked under the JIT, as a directive's does, and in a boot of its
+/// own on a machine. `src` is the module's IR text, which the machine
+/// paths rebuild with their driver; `level` the optimization level.
+/// On air a call the GPU cannot run comes back as `Err("skip: ...")`.
+pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Call], name: &str, level: usize) -> Result<Vec<Result<Got, String>>, String> {
     match backend {
         Backend::Native => {
             let enc = emit::Encoder::load("targets/arm64.encodings.json")?;
@@ -723,7 +729,7 @@ pub fn run_calls(module: &ssa::Module, backend: Backend, calls: &[Call], name: &
             let enc = emit_wasm::WEncoder::load("targets/wasm32.encodings.json")?;
             let scratch = std::env::temp_dir().join("probe-suite");
             std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
-            std::fs::write(scratch.join("driver.js"), include_str!("driver.js")).map_err(|e| e.to_string())?;
+            write_driver_js(&scratch)?;
             let wasm = emit_wasm::compile(module, &enc)?;
             let wasm_path = scratch.join(format!("{}.wasm", name));
             std::fs::write(&wasm_path, &wasm).map_err(|e| e.to_string())?;
@@ -784,8 +790,95 @@ pub fn run_calls(module: &ssa::Module, backend: Backend, calls: &[Call], name: &
             }
             Ok(got)
         }
-        _ => Err("the zero runner runs on the native JIT and on wasm".into()),
+        Backend::Riscv | Backend::ArmQemu | Backend::Air => {
+            let policy = backend_policy(backend)?;
+            let scratch = std::env::temp_dir().join("probe-suite");
+            std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
+            let cases: Vec<Case> = calls
+                .iter()
+                .map(|c| Case { func: c.func.clone(), args: c.args.iter().map(|&v| ArgSpec::Int(v)).collect(), expected: vec![0; c.nrets], checks: c.checks, text: c.func.clone(), text_out: c.text })
+                .collect();
+            let mut got: Vec<Result<Got, String>> = Vec::new();
+            if backend == Backend::Air {
+                // the GPU does not stop at a failed check, and leaves
+                // out what recurses: those cases are skipped, as the
+                // suite skips them
+                let left_out = crate::emit_air::skipped_names(module);
+                let mut kept = Vec::new();
+                for c in &cases {
+                    if c.checks {
+                        got.push(Err("skip: the GPU does not stop at a failed check".into()));
+                    } else if left_out.contains(&c.func) {
+                        got.push(Err(format!("skip: {}: recursion, which AIR has not", c.func)));
+                    } else {
+                        got.push(Ok(Got { values: Vec::new(), text: String::new() }));
+                        kept.push(c.clone());
+                    }
+                }
+                if !kept.is_empty() {
+                    let out = machine_output(backend, module, &policy, src, &kept, false, name, &scratch, level, None, None)?;
+                    let mut results = parse_call_lines(&out, &kept).into_iter();
+                    for g in got.iter_mut() {
+                        if g.is_ok() {
+                            *g = results.next().unwrap_or_else(|| Err("no output from the driver".into()));
+                        }
+                    }
+                }
+                return Ok(got);
+            }
+            for (group, trap) in boots(&cases) {
+                let out = machine_output(backend, module, &policy, src, group, trap, name, &scratch, level, None, None)?;
+                got.extend(parse_call_lines(&out, group));
+            }
+            Ok(got)
+        }
     }
+}
+
+/// a machine's output for a group of calls: a line of hex results per
+/// case (`check` when the boot ended in a failed check), followed by a
+/// line of hex bytes for a case that wants its text
+fn parse_call_lines(out: &str, cases: &[Case]) -> Vec<Result<Got, String>> {
+    let mut lines = out.lines();
+    let mut got = Vec::new();
+    let hex = |l: &str| -> Result<Vec<i64>, String> {
+        l.split_whitespace().map(|h| u64::from_str_radix(h, 16).map(|v| v as i64).map_err(|_| format!("bad output '{}'", h))).collect()
+    };
+    for case in cases {
+        let values = match lines.next() {
+            Some(l) if l.trim() == "check" => Err(CHECKED.to_string()),
+            Some(l) => hex(l),
+            None => Err("no output from the machine".into()),
+        };
+        let text = if case.text_out && values.is_ok() {
+            match lines.next().map(hex) {
+                Some(Ok(bytes)) => String::from_utf8_lossy(&bytes.iter().map(|&b| b as u8).collect::<Vec<u8>>()).to_string(),
+                Some(Err(e)) => {
+                    got.push(Err(e));
+                    continue;
+                }
+                None => {
+                    got.push(Err("no text line from the machine".into()));
+                    continue;
+                }
+            }
+        } else {
+            String::new()
+        };
+        got.push(values.map(|values| Got { values, text }));
+    }
+    got
+}
+
+/// the node driver into the scratch directory, unless it is there
+/// already: two runners at once (the suite's and the zero runner's,
+/// under `cargo test`) must not truncate it under each other's node
+fn write_driver_js(scratch: &std::path::Path) -> Result<(), String> {
+    let path = scratch.join("driver.js");
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(include_str!("driver.js")) {
+        std::fs::write(&path, include_str!("driver.js")).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// a JSON string literal's text
@@ -870,6 +963,34 @@ loop(sh: u64):
     sh2: u64 = sub sh, four
     br done, exit, loop(sh2)
 exit:
+    ret
+}
+";
+
+/// the zero runner's output buffer, read back through the program's
+/// `__out_len()` and `__out_byte(i)` (see zero/lower.rs) and printed as
+/// one hex word per byte on a line of its own, after the results
+const PTEXT: &str = r"
+fn __ptext() {
+entry:
+    n: i64 = __out_len()
+    i0: i64 = const 0
+    jmp loop(i0)
+loop(i: i64):
+    done: u1 = cmp.ge i, n
+    br done, exit, body
+body:
+    b: u8 = __out_byte(i)
+    w: u64 = conv b
+    __phex(w)
+    sp: u64 = const 32
+    __pch(sp)
+    one: i64 = const 1
+    i2: i64 = add i, one
+    jmp loop(i2)
+exit:
+    nl: u64 = const 10
+    __pch(nl)
     ret
 }
 ";
@@ -1008,9 +1129,15 @@ fn gen_driver(
         s.push_str(&format!("    {}: {} = {}\n", name, ty, init));
         name
     };
+    let reset = module.func("__zero_reset").is_some();
     for (ci, case) in cases.iter().enumerate() {
         s.push_str(&format!("fn __case{}() {{\nentry:\n", ci));
         start.push_str(&format!("    __case{}()\n", ci));
+        if reset {
+            // the zero runner: the program's state is reset before every
+            // call, as the JIT and node do (see `run_calls`)
+            s.push_str("    __zero_reset()\n");
+        }
         if case.func == "__kernel" {
             // the runner, then the area's words printed
             let (kn, kg, km) = kernel_shape(case)?;
@@ -1036,7 +1163,7 @@ fn gen_driver(
         let func = module
             .func(&case.func)
             .ok_or_else(|| format!("no function {} for directive '{}'", case.func, case.text))?;
-        if func.rets.is_empty() {
+        if func.rets.is_empty() && !case.expected.is_empty() {
             return Err(format!("{} returns nothing; directives need results", case.func));
         }
         // the signature as written: a value wider than a word is passed
@@ -1056,7 +1183,8 @@ fn gen_driver(
         if args.next().is_some() {
             return Err(format!("too many args in '{}'", case.text));
         }
-        // call, binding every result
+        // call, binding every result (a zero case's call may have none:
+        // its line is then empty, and its text follows)
         let mut rets = Vec::new();
         for &rt in &rtys {
             let r = tmp_name();
@@ -1066,12 +1194,16 @@ fn gen_driver(
             .iter()
             .map(|(r, t)| format!("{}: {}", r, func.tyname(*t)))
             .collect();
-        s.push_str(&format!(
-            "    {} = {}({})\n",
-            defs.join(", "),
-            case.func,
-            argv.join(", ")
-        ));
+        if rets.is_empty() {
+            s.push_str(&format!("    {}({})\n", case.func, argv.join(", ")));
+        } else {
+            s.push_str(&format!(
+                "    {} = {}({})\n",
+                defs.join(", "),
+                case.func,
+                argv.join(", ")
+            ));
+        }
         // a struct result prints as its fields, a wide one as its words
         let mut printed: Vec<(String, ssa::Type)> = Vec::new();
         for (r, rt) in &rets {
@@ -1105,7 +1237,13 @@ fn gen_driver(
         }
         let nl = tmp(&mut s, "u64", "const 10".into());
         s.push_str(&format!("    __pch({})\n", nl));
+        if case.text_out {
+            s.push_str("    __ptext()\n");
+        }
         s.push_str("    ret\n}\n");
+    }
+    if cases.iter().any(|c| c.text_out) {
+        s.push_str(PTEXT);
     }
     start.push_str(exit_ssa);
     start.push_str("    ret\n}\n");
@@ -1350,36 +1488,145 @@ fn run_riscv(
         report.log.push_str(&format!("FAIL  {:<16} {}\n", name, msg));
     };
 
-    let prepared = (|| -> Result<Vec<u8>, String> {
-        let exit_ssa = format!(
-            "    __f1: i32 = const 21845\n    __f2: ptr = const {}\n    store __f1, __f2\n",
-            RV_FINISHER
-        );
-        let driver = gen_driver(module, cases, RV_HEAP, &exit_ssa, trap)?;
-        let full = format!("{}\n{}\n{}", driver, helpers(RV_UART), ssa::with_prelude(src));
+    match machine_output(Backend::Riscv, module, policy, src, cases, trap, name, scratch, level, Some(enc), None) {
+        Ok(out) => check_hex_lines(&out, cases, name, report),
+        Err(e) => fail_all(report, e),
+    }
+}
+
+/// what a machine, or the GPU, printed for a group of cases: the driver
+/// generated for them is built with the program under the policy,
+/// compiled to an image (riscv64, arm64) or a metallib (air) and run;
+/// the result is what it wrote to the UART or the driver's area, one
+/// line per case. The suite's runners and the zero runner (`run_calls`)
+/// both come through here, so a zero store runs exactly as a suite
+/// file does. The encoder and the platform are loaded when not given.
+#[allow(clippy::too_many_arguments)]
+fn machine_output(
+    backend: Backend,
+    module: &ssa::Module,
+    policy: &ssa::Policy,
+    src: &str,
+    cases: &[Case],
+    trap: bool,
+    name: &str,
+    scratch: &std::path::Path,
+    level: usize,
+    enc: Option<&emit::Encoder>,
+    platform: Option<&crate::platform::Platform>,
+) -> Result<String, String> {
+    let build = |full: &str| -> Result<ssa::Module, String> {
+        // PROBE_DUMP_DRIVER=path: the whole program the machine runs, to read
         if let Ok(p) = std::env::var("PROBE_DUMP_DRIVER") {
-            let _ = std::fs::write(p, &full);
+            let _ = std::fs::write(p, full);
         }
-        let mut m2 = ssa::parse_with(&full, policy).map_err(|e| format!("driver: {}", e))?;
+        let mut m2 = ssa::parse_with(full, policy).map_err(|e| format!("driver: {}", e))?;
         ssa::resolve_types(&mut m2, policy);
         ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
         opt::optimize(&mut m2, level);
-        let compiled = emit_rv::compile_image(&m2, enc, &crate::platform::Platform::riscv64(), RV_PREAMBLE_WORDS * 4)?;
-        rv_image(&compiled, enc)
-    })();
-    let bin = match prepared {
-        Ok(b) => b,
-        Err(e) => return fail_all(report, e),
+        Ok(m2)
     };
-    let bin_path = scratch.join(format!("{}.rv.bin", name));
-    if let Err(e) = std::fs::write(&bin_path, &bin) {
-        return fail_all(report, e.to_string());
-    }
-
-    let cmd = qemu_command("riscv64", &bin_path);
-    match exec_qemu(cmd, 30) {
-        Ok(out) => check_hex_lines(&out, cases, name, report),
-        Err(e) => fail_all(report, e),
+    let loaded;
+    let enc = match (backend, enc) {
+        (Backend::Air, _) => None,
+        (_, Some(e)) => Some(e),
+        (_, None) => {
+            loaded = emit::Encoder::load(&format!("targets/{}.encodings.json", target_of(backend)))?;
+            Some(&loaded)
+        }
+    };
+    match backend {
+        Backend::Riscv => {
+            let enc = enc.unwrap();
+            let exit_ssa = format!(
+                "    __f1: i32 = const 21845\n    __f2: ptr = const {}\n    store __f1, __f2\n",
+                RV_FINISHER
+            );
+            let driver = gen_driver(module, cases, RV_HEAP, &exit_ssa, trap)?;
+            let full = format!("{}\n{}\n{}", driver, helpers(RV_UART), ssa::with_prelude(src));
+            let m2 = build(&full)?;
+            let compiled = emit_rv::compile_image(&m2, enc, &crate::platform::Platform::riscv64(), RV_PREAMBLE_WORDS * 4)?;
+            let bin = rv_image(&compiled, enc)?;
+            let bin_path = scratch.join(format!("{}.rv.bin", name));
+            std::fs::write(&bin_path, &bin).map_err(|e| e.to_string())?;
+            exec_qemu(qemu_command("riscv64", &bin_path), 30)
+        }
+        Backend::ArmQemu => {
+            let enc = enc.unwrap();
+            // exit through a stub whose body is patched below into a PSCI
+            // SYSTEM_OFF hypervisor call (x0 = 0x84000008; hvc #0)
+            let driver = gen_driver(module, cases, ARM_HEAP, "    __qemu_exit()\n", trap)?;
+            let stub = "fn __qemu_exit() {\nentry:\n    ret\n}\n";
+            let full = format!("{}\n{}\n{}\n{}", driver, helpers(ARM_UART), stub, ssa::with_prelude(src));
+            let m2 = build(&full)?;
+            // the code follows the preamble, which is where a vector table's
+            // 2K alignment is measured from
+            let compiled = emit::compile_image(&m2, enc, &crate::platform::Platform::arm64(), ARM_PREAMBLE_WORDS * 4)?;
+            let mut bin = arm_image(&compiled, enc)?;
+            let preamble = ARM_PREAMBLE_WORDS * 4;
+            // patch the exit stub
+            let off = preamble
+                + compiled
+                    .funcs
+                    .get("__qemu_exit")
+                    .copied()
+                    .ok_or("no __qemu_exit stub")?;
+            let words = [
+                enc.encode("movz {x}, #{i 0..65535}", &[0, 0x0008])?,
+                enc.encode("movk {x}, #{i 0..65535}, lsl #16", &[0, 0x8400])?,
+                enc.encode("hvc #{i 0..65535}", &[0])?,
+            ];
+            for (i, w) in words.iter().enumerate() {
+                bin[off + 4 * i..off + 4 * i + 4].copy_from_slice(&w.to_le_bytes());
+            }
+            let bin_path = scratch.join(format!("{}.a64.bin", name));
+            std::fs::write(&bin_path, &bin).map_err(|e| e.to_string())?;
+            exec_qemu(qemu_command("arm64", &bin_path), 30)
+        }
+        Backend::Air => {
+            let loaded_platform;
+            let platform = match platform {
+                Some(p) => p,
+                None => {
+                    loaded_platform = crate::platform::Platform::load("air")?;
+                    &loaded_platform
+                }
+            };
+            let driver = gen_driver(module, cases, AIR_HEAP, "", false)?;
+            let full = format!("{}\n{}\n{}", driver, helpers_air(), ssa::with_prelude(src));
+            let m2 = build(&full)?;
+            let c = crate::emit_air::compile_with(&m2, platform)?;
+            if !c.has_kernel {
+                return Err(format!("the driver's kernel was left out: {:?}", c.skipped));
+            }
+            let data_size = (c.layout.data.len() as u64 + 15) & !15;
+            if data_size + c.layout.slab > AIR_AREA {
+                return Err(format!("data ({}) and scratch ({}) overrun the driver's area at {:#x}", data_size, c.layout.slab, AIR_AREA));
+            }
+            let lib = scratch.join(format!("{}.metallib", name));
+            let mem = scratch.join(format!("{}.mem", name));
+            std::fs::write(&lib, &c.metallib).map_err(|e| e.to_string())?;
+            // the bitcode too, for llvm-dis when something is wrong
+            std::fs::write(scratch.join(format!("{}.bc", name)), &c.bitcode).map_err(|e| e.to_string())?;
+            std::fs::write(&mem, &c.layout.data).map_err(|e| e.to_string())?;
+            let mut cmd = Command::new("python3");
+            cmd.arg("tools/driver_metal.py").arg("--suite").arg(&lib).arg(&mem);
+            cmd.arg(AIR_MEM.to_string()).arg(AIR_AREA.to_string()).arg((AIR_HEAP - AIR_AREA).to_string());
+            // what the driver says (Metal's compiler failing, a faulting kernel)
+            // is the failure when there is no output
+            let errs = scratch.join(format!("{}.err", name));
+            let f = std::fs::File::create(&errs).map_err(|e| e.to_string())?;
+            cmd.stderr(f);
+            let out = exec_io(cmd, 120, Some(&[]), true)?;
+            if out.is_empty() {
+                let said = std::fs::read_to_string(&errs).unwrap_or_default();
+                if let Some(l) = said.lines().rev().find(|l| !l.trim().is_empty()) {
+                    return Err(format!("the driver: {}", l.trim()));
+                }
+            }
+            Ok(out)
+        }
+        Backend::Native | Backend::Wasm => Err("not a machine path".into()),
     }
 }
 
@@ -1644,53 +1891,7 @@ fn run_air(
         }
         return;
     }
-    let prepared = (|| -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
-        let driver = gen_driver(module, cases, AIR_HEAP, "", false)?;
-        let full = format!("{}\n{}\n{}", driver, helpers_air(), ssa::with_prelude(src));
-        let mut m2 = ssa::parse_with(&full, policy).map_err(|e| format!("driver: {}", e))?;
-        ssa::resolve_types(&mut m2, policy);
-        ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
-        opt::optimize(&mut m2, level);
-        let c = crate::emit_air::compile_with(&m2, platform)?;
-        if !c.has_kernel {
-            return Err(format!("the driver's kernel was left out: {:?}", c.skipped));
-        }
-        let data_size = (c.layout.data.len() as u64 + 15) & !15;
-        if data_size + c.layout.slab > AIR_AREA {
-            return Err(format!("data ({}) and scratch ({}) overrun the driver's area at {:#x}", data_size, c.layout.slab, AIR_AREA));
-        }
-        let lib = scratch.join(format!("{}.metallib", name));
-        let mem = scratch.join(format!("{}.mem", name));
-        std::fs::write(&lib, &c.metallib).map_err(|e| e.to_string())?;
-        // the bitcode too, for llvm-dis when something is wrong
-        std::fs::write(scratch.join(format!("{}.bc", name)), &c.bitcode).map_err(|e| e.to_string())?;
-        std::fs::write(&mem, &c.layout.data).map_err(|e| e.to_string())?;
-        Ok((lib, mem))
-    })();
-    let (lib, mem) = match prepared {
-        Ok(p) => p,
-        Err(e) => return fail_all(report, e),
-    };
-    let mut cmd = Command::new("python3");
-    cmd.arg("tools/driver_metal.py").arg("--suite").arg(&lib).arg(&mem);
-    cmd.arg(AIR_MEM.to_string()).arg(AIR_AREA.to_string()).arg((AIR_HEAP - AIR_AREA).to_string());
-    // what the driver says (Metal's compiler failing, a faulting kernel)
-    // is the failure when there is no output
-    let errs = scratch.join(format!("{}.err", name));
-    match std::fs::File::create(&errs) {
-        Ok(f) => {
-            cmd.stderr(f);
-        }
-        Err(e) => return fail_all(report, e.to_string()),
-    }
-    match exec_io(cmd, 120, Some(&[]), true) {
-        Ok(out) if out.is_empty() => {
-            let said = std::fs::read_to_string(&errs).unwrap_or_default();
-            match said.lines().rev().find(|l| !l.trim().is_empty()) {
-                Some(l) => fail_all(report, format!("the driver: {}", l.trim())),
-                None => check_hex_lines(&out, cases, name, report),
-            }
-        }
+    match machine_output(Backend::Air, module, policy, src, cases, false, name, scratch, level, None, Some(platform)) {
         Ok(out) => check_hex_lines(&out, cases, name, report),
         Err(e) => fail_all(report, e),
     }
@@ -1717,53 +1918,7 @@ fn run_arm_qemu(
         report.log.push_str(&format!("FAIL  {:<16} {}\n", name, msg));
     };
 
-    let prepared = (|| -> Result<Vec<u8>, String> {
-        // exit through a stub whose body is patched below into a PSCI
-        // SYSTEM_OFF hypervisor call (x0 = 0x84000008; hvc #0)
-        let driver = gen_driver(module, cases, ARM_HEAP, "    __qemu_exit()\n", trap)?;
-        let stub = "fn __qemu_exit() {\nentry:\n    ret\n}\n";
-        let full = format!("{}\n{}\n{}\n{}", driver, helpers(ARM_UART), stub, ssa::with_prelude(src));
-        // PROBE_DUMP_DRIVER=path: the whole program the machine runs, to read
-        if let Ok(p) = std::env::var("PROBE_DUMP_DRIVER") {
-            let _ = std::fs::write(p, &full);
-        }
-        let mut m2 = ssa::parse_with(&full, policy).map_err(|e| format!("driver: {}", e))?;
-        ssa::resolve_types(&mut m2, policy);
-        ssa::verify(&m2).map_err(|e| format!("driver: {}", e.join("; ")))?;
-        opt::optimize(&mut m2, level);
-        // the code follows the preamble, which is where a vector table's
-        // 2K alignment is measured from
-        let compiled = emit::compile_image(&m2, enc, &crate::platform::Platform::arm64(), ARM_PREAMBLE_WORDS * 4)?;
-        let mut bin = arm_image(&compiled, enc)?;
-        let preamble = ARM_PREAMBLE_WORDS * 4;
-        // patch the exit stub
-        let off = preamble
-            + compiled
-                .funcs
-                .get("__qemu_exit")
-                .copied()
-                .ok_or("no __qemu_exit stub")?;
-        let words = [
-            enc.encode("movz {x}, #{i 0..65535}", &[0, 0x0008])?,
-            enc.encode("movk {x}, #{i 0..65535}, lsl #16", &[0, 0x8400])?,
-            enc.encode("hvc #{i 0..65535}", &[0])?,
-        ];
-        for (i, w) in words.iter().enumerate() {
-            bin[off + 4 * i..off + 4 * i + 4].copy_from_slice(&w.to_le_bytes());
-        }
-        Ok(bin)
-    })();
-    let bin = match prepared {
-        Ok(b) => b,
-        Err(e) => return fail_all(report, e),
-    };
-    let bin_path = scratch.join(format!("{}.a64.bin", name));
-    if let Err(e) = std::fs::write(&bin_path, &bin) {
-        return fail_all(report, e.to_string());
-    }
-
-    let cmd = qemu_command("arm64", &bin_path);
-    match exec_qemu(cmd, 30) {
+    match machine_output(Backend::ArmQemu, module, policy, src, cases, trap, name, scratch, level, Some(enc), None) {
         Ok(out) => check_hex_lines(&out, cases, name, report),
         Err(e) => fail_all(report, e),
     }
@@ -2071,5 +2226,40 @@ pub(crate) mod tests {
         let _turn = boot_turn(); // a machine at a time: the boot tests are timed
         let report = super::run_dir("suite", super::Backend::ArmQemu).expect("suite runs");
         assert_eq!(report.failed, 0, "\n{}", report.log);
+    }
+
+    /// the zero front end's stores (`probe zero test`), on every path:
+    /// a store's cases are the proof that a construct is built
+    fn zero_suite(backend: super::Backend) {
+        let report = crate::zero::run::test(std::path::Path::new("suite/zero"), backend, crate::opt::MAX_LEVEL).expect("stores run");
+        assert_eq!(report.failed, 0, "\n{}", report.log);
+    }
+
+    #[test]
+    fn zero_suite_native() {
+        zero_suite(super::Backend::Native);
+    }
+
+    #[test]
+    fn zero_suite_wasm() {
+        zero_suite(super::Backend::Wasm);
+    }
+
+    #[test]
+    fn zero_suite_riscv() {
+        let _turn = boot_turn();
+        zero_suite(super::Backend::Riscv);
+    }
+
+    #[test]
+    fn zero_suite_arm_qemu() {
+        let _turn = boot_turn();
+        zero_suite(super::Backend::ArmQemu);
+    }
+
+    #[test]
+    fn zero_suite_air() {
+        let _turn = boot_turn();
+        zero_suite(super::Backend::Air);
     }
 }

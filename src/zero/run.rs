@@ -1,5 +1,5 @@
 //! The zero runner: `probe zero <store> emit`, `probe zero <store> run
-//! <case>`, and `probe zero test [dir] [wasm]`. A store is lowered once
+//! <case>`, and `probe zero test [dir] [path]`. A store is lowered once
 //! to IR text, the text goes through probe's parser and everything after
 //! it — the IR is the oracle for the front end — and the cases from the
 //! features' `## testing` sections run on the chosen path through the
@@ -51,7 +51,7 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize) -> Resul
         .ok_or_else(|| format!("no case '{}' in the store's ## testing sections", which))?;
     let module = build(&l.ir, policy, level)?;
     let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: false, text: true };
-    let got = suite::run_calls(&module, Backend::Native, &[sc], "zero-run")?.remove(0)?;
+    let got = suite::run_calls(&module, &l.ir, Backend::Native, &[sc], "zero-run", level)?.remove(0)?;
     let vals: Vec<String> = got.values.iter().map(|v| v.to_string()).collect();
     let mut out = String::new();
     out.push_str(&got.text);
@@ -74,14 +74,14 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
     let mut report = Report { passed: 0, failed: 0, skipped: 0, log: String::new() };
     for sdir in &stores {
         let name = sdir.file_name().unwrap().to_string_lossy().to_string();
-        let result = (|| -> Result<(Vec<(String, lower::Call)>, ssa::Module), String> {
+        let result = (|| -> Result<(Vec<(String, lower::Call)>, ssa::Module, String), String> {
             let s = store::read(sdir).map_err(|e| e.to_string())?;
             let l = lower::lower(&s).map_err(|e| e.to_string())?;
             let calls = calls_of(&s, &l)?;
             let module = build(&l.ir, &policy, level)?;
-            Ok((calls, module))
+            Ok((calls, module, l.ir))
         })();
-        let (calls, module) = match result {
+        let (calls, module, ir) = match result {
             Ok(r) => r,
             Err(e) => {
                 report.failed += 1;
@@ -99,7 +99,7 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                 text: matches!(c.expect, store::Expect::Text(_)),
             })
             .collect();
-        let got = match suite::run_calls(&module, backend, &scalls, &name) {
+        let got = match suite::run_calls(&module, &ir, backend, &scalls, &name, level) {
             Ok(g) => g,
             Err(e) => {
                 report.failed += calls.len().max(1);
@@ -108,11 +108,23 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
             }
         };
         for ((text, call), got) in calls.iter().zip(got) {
+            // a case a path cannot run (air: a failed check, recursion)
+            // is skipped, as the suite skips its own
+            if let Some(why) = got.as_ref().err().and_then(|e| e.strip_prefix("skip: ")) {
+                report.skipped += 1;
+                report.log.push_str(&format!("skip  {:<16} {}: {}\n", name, text, why));
+                continue;
+            }
             let (ok, note) = judge(&call.expect, got);
             report.case(ok, &name, text, &note);
         }
     }
-    report.log.push_str(&format!("\n{}/{} cases passed\n", report.passed, report.passed + report.failed));
+    report.log.push_str(&format!(
+        "\n{}/{} cases passed{}\n",
+        report.passed,
+        report.passed + report.failed,
+        if report.skipped > 0 { format!(", {} skipped", report.skipped) } else { String::new() }
+    ));
     Ok(report)
 }
 

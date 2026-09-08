@@ -15,19 +15,27 @@ use std::path::Path;
 use std::process::ExitCode;
 
 /// `probe zero <store> emit`, `probe zero <store> run <case>`,
-/// `probe zero test [dir] [wasm]`
+/// `probe zero test [dir] [wasm|riscv|arm-qemu|air]`
 pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
     let usage = || {
         eprintln!("usage: probe zero <store> emit          print the store's IR");
         eprintln!("       probe zero <store> run <case>    run one ## testing case natively");
-        eprintln!("       probe zero test [dir] [wasm]     run every store under dir (suite/zero)");
+        eprintln!("       probe zero test [dir] [path]     run every store under dir (suite/zero)");
+        eprintln!("                                        on a path: wasm, riscv, arm-qemu, air (native by default)");
         ExitCode::FAILURE
     };
     match args.first().map(String::as_str) {
         Some("test") => {
             let rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
-            let backend = if rest.contains(&"wasm") { suite::Backend::Wasm } else { suite::Backend::Native };
-            let dir = rest.iter().find(|a| **a != "wasm").copied().unwrap_or("suite/zero");
+            let paths = ["wasm", "riscv", "arm-qemu", "air"];
+            let backend = match rest.iter().find(|a| paths.contains(a)).copied() {
+                Some("wasm") => suite::Backend::Wasm,
+                Some("riscv") => suite::Backend::Riscv,
+                Some("arm-qemu") => suite::Backend::ArmQemu,
+                Some("air") => suite::Backend::Air,
+                _ => suite::Backend::Native,
+            };
+            let dir = rest.iter().find(|a| !paths.contains(a)).copied().unwrap_or("suite/zero");
             match run::test(Path::new(dir), backend, level) {
                 Ok(report) => {
                     print!("{}", report.log);
