@@ -11,6 +11,7 @@
 ;! sum_c i32[1,2,3,4,5,6,7,8,9] 3 -> 18
 ;! far 1065353216 1073741824 1077936128 1082130432 1084227584 1086324736 -> 1086324736
 ;! moved 1065353216 1073741824 1077936128 1091567616 -> 1094713344
+;! abstract_fields 3 4 -> 7
 
 type point = struct { x: f32, y: f32, z: f32 }
 type mixed = struct { tag: u8, n: i64, w: u128 }
@@ -91,5 +92,22 @@ fn moved(a: point, nz: f32) -> f32 {
     z: f32 = get m, z
     s1: f32 = add x, y
     s: f32 = add s1, z
+    ret s
+}
+
+; a struct's fields may be abstract: `int` is the policy's width from the
+; declaration on, so the layout is known and a later mention of the type
+; finds the same entry (`pair` here is `struct { a: i64, b: i64 }` under
+; --int=i64 and 32-bit under --int=i32, the same source)
+type pair = struct { a: int, b: int }
+fn pair_sum(p: pair) -> int {
+    a: int = get p, a
+    b: int = get p, b
+    s: int = add a, b
+    ret s
+}
+fn abstract_fields(x: int, y: int) -> int {
+    p: pair = pack x, y
+    s: int = pair_sum(p)
     ret s
 }

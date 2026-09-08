@@ -1,0 +1,62 @@
+type Vec =
+    float x, y, z = 0
+
+type Tristate = no | yes | maybe
+
+on (Vec v) = (Vec a) + (Vec b)
+    v = Vec(a.x + b.x, a.y + b.y, a.z + b.z)
+
+on (Vec v) = (Vec a) * (float k)
+    v = Vec(a.x * k, a.y * k, a.z * k)
+
+on (int n) = sum of fields (Vec v)
+    n = int(v.x + v.y + v.z)
+
+on (int n) = added()
+    Vec a(1, 2, 3)
+    Vec b(10, 20, 30)
+    n = sum of fields (a + b)
+
+on (int n) = scaled()
+    Vec a(1, 2, 3)
+    n = sum of fields (a * 2.5)
+
+on (int n) = by name()
+    Vec v(z = 3, x = 1)
+    n = sum of fields (v)
+
+on (int n) = defaulted()
+    Vec v
+    n = sum of fields (v)
+
+on (Tristate t) = flipped (Tristate x)
+    t = if (x == yes) then (no) else (if (x == no) then (yes) else (maybe))
+
+on (bool b) = is maybe (Tristate t)
+    b = t == Tristate.maybe
+
+on (int n) = widened (int32 x)
+    n = int(x) * 2
+
+on (uint8 b) = low byte (int x)
+    b = uint8(x)
+
+on (int n) = halved()
+    float x = 7.0
+    n = int(x / 2)
+
+on (bool b) = flags()
+    bool a = true
+    b = a == false
+
+on greet (string who)
+    print who
+
+on hello()
+    greet "world"
+
+on (string s) = name()
+    s = "zero"
+
+on named()
+    print (name())

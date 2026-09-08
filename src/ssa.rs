@@ -3413,7 +3413,11 @@ impl Parser {
                 let mut size = 0u32;
                 let mut align = 1u32;
                 for (fname, fexpr) in fields {
+                    // a field is concrete from the start, as `float`
+                    // fields already are: the layout needs its width, and
+                    // a later mention of the type must find this entry
                     let fty = self.instantiate(fexpr, env, depth + 1)?;
+                    let fty = self.policy.resolve(fty);
                     let (fsize, falign) = self.layout_of(fty).ok_or_else(|| format!("struct field '{}' cannot be {}", fname, fty.name()))?;
                     size = size.div_ceil(falign) * falign;
                     offsets.push(size);
@@ -3645,6 +3649,9 @@ impl Parser {
     /// struct its own
     fn layout_of(&self, ty: Type) -> Option<(u32, u32)> {
         match ty {
+            // an abstract integer in memory — a struct's field — is laid
+            // out at the policy's width, the width it resolves to
+            Type::AInt | Type::AUInt => self.layout_of(self.policy.int),
             Type::Int { bits, .. } => {
                 let b = bits as u32;
                 let size = if b <= 8 { 1 } else if b <= 16 { 2 } else if b <= 32 { 4 } else { 8 * b.div_ceil(64) };
@@ -3667,7 +3674,6 @@ impl Parser {
                 let align = p.fields.iter().filter_map(|(_, t)| self.layout_of(*t)).map(|(_, a)| a).max().unwrap_or(1);
                 Some((p.size, align))
             }
-            _ => None,
         }
     }
 

@@ -13,10 +13,12 @@
 //! a literal — and the tower of abstract numbers binds only at a call:
 //! an `int32` argument fits a `number` parameter, and a `number` result
 //! comes back as `int32`, which is how the IR instantiates its templates.
+//! A struct is the IR's `struct`, an enumeration an unsigned integer
+//! with named constants, a string a `u8[]` view of bytes.
 
 use super::lex::{self, Error};
 use super::store::{Case, Expect, Store};
-use super::syntax::{Decl, Expr, ExprKind, FnDecl, Init, NamePart, Part, Stmt};
+use super::syntax::{Arg, Decl, Expr, ExprKind, FnDecl, Init, NamePart, Part, Stmt, TypeKind};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -26,8 +28,12 @@ pub enum Ty {
     Bool,
     /// a number, by its IR name: `int`, `u8`, `f32`, `number`, ...
     Num(String),
-    /// a string: bytes in `data`, reached as (address, length) for now
+    /// a string: a view of bytes, `u8[]`
     Str,
+    /// a declared struct, by name
+    Struct(String),
+    /// a declared enumeration, by name
+    Enum(String),
     /// no value: a function with no results
     None,
 }
@@ -37,37 +43,10 @@ impl Ty {
         match self {
             Ty::Bool => "u1".into(),
             Ty::Num(n) => n.clone(),
-            Ty::Str => "ptr".into(),
+            Ty::Str => "u8[]".into(),
+            Ty::Struct(n) | Ty::Enum(n) => n.clone(),
             Ty::None => String::new(),
         }
-    }
-
-    /// zero's spelling of a type to the IR's (section 4)
-    fn from_name(name: &str, seq: bool, file: &str, line: usize) -> Result<Ty, Error> {
-        if seq {
-            return Err(lex::error(file, line, "sequences are not in this item yet"));
-        }
-        let ir = match name {
-            "bool" => return Ok(Ty::Bool),
-            "string" => return Ok(Ty::Str),
-            "int" | "uint" | "float" | "number" | "scalar" | "fixed" | "unit" | "sunit" | "rational" | "decimal" | "time" => name.to_string(),
-            "int8" => "i8".into(),
-            "int16" => "i16".into(),
-            "int32" => "i32".into(),
-            "int64" => "i64".into(),
-            "int128" => "i128".into(),
-            "uint8" | "byte" | "char" => "u8".into(),
-            "uint16" => "u16".into(),
-            "uint32" => "u32".into(),
-            "uint64" => "u64".into(),
-            "uint128" => "u128".into(),
-            "float16" => "f16".into(),
-            "bfloat16" => "bf16".into(),
-            "float32" => "f32".into(),
-            "float64" => "f64".into(),
-            _ => return Err(lex::error(file, line, format!("'{}' is not a type this item knows", name))),
-        };
-        Ok(Ty::Num(ir))
     }
 
     /// is this an abstract number, one the tower binds at a call?
@@ -77,6 +56,31 @@ impl Ty {
             _ => None,
         }
     }
+}
+
+/// zero's spelling of a builtin number type to the IR's (section 4)
+fn builtin_type(name: &str) -> Option<Ty> {
+    let ir = match name {
+        "bool" => return Some(Ty::Bool),
+        "string" => return Some(Ty::Str),
+        "int" | "uint" | "float" | "number" | "scalar" | "fixed" | "unit" | "sunit" | "rational" | "decimal" | "time" => name.to_string(),
+        "int8" => "i8".into(),
+        "int16" => "i16".into(),
+        "int32" => "i32".into(),
+        "int64" => "i64".into(),
+        "int128" => "i128".into(),
+        "uint8" | "byte" | "char" => "u8".into(),
+        "uint16" => "u16".into(),
+        "uint32" => "u32".into(),
+        "uint64" => "u64".into(),
+        "uint128" => "u128".into(),
+        "float16" => "f16".into(),
+        "bfloat16" => "bf16".into(),
+        "float32" => "f32".into(),
+        "float64" => "f64".into(),
+        _ => return None,
+    };
+    Some(Ty::Num(ir))
 }
 
 /// does an argument of type `arg` fit a parameter of type `param`? Its
@@ -108,12 +112,23 @@ fn fits(arg: &Ty, param: &Ty) -> bool {
 /// a function the store defines, as the lowering knows it
 #[derive(Clone, Debug)]
 pub struct FnInfo {
-    /// the mangled name, which is also the IR function's name
-    pub name: String,
+    /// the mangled name a call is matched by
+    pub key: String,
+    /// the IR function's name: the key, except for an operator on a
+    /// declared type (`add_Vec`) and the front end's builtins
+    pub ir: String,
     pub parts: Vec<NamePart>,
     pub params: Vec<(String, Ty)>,
     pub results: Vec<(String, Ty)>,
     pub feature: String,
+}
+
+/// a declared type
+#[derive(Clone, Debug)]
+enum TypeInfo {
+    /// fields: name, type, default (a literal's text)
+    Struct(Vec<(String, Ty, Option<String>)>),
+    Enum(Vec<String>),
 }
 
 pub struct Lowered {
@@ -131,12 +146,14 @@ pub struct Call {
 }
 
 /// the IR every store gets: the output buffer `print` appends to, the
-/// two functions the runner reads it back with, `__print` itself, and
-/// `__zero_reset`, which the runner calls before each case
+/// two functions the runner reads it back with, `__print` itself,
+/// `__str` (a string literal's view) and `__zero_reset`, which the
+/// runner calls before each case
 const PRELUDE: &str = r#"
 ; the print buffer: what `print` wrote, read back by the runner
 data __out: array(u8, 4096)
 data __out_n: array(i64, 1)
+data __nul: array(u8, 1)
 
 fn __zero_reset() {
     q: ptr = addr __out_n
@@ -156,17 +173,32 @@ fn __out_byte(i: i64) -> u8 {
     ret b
 }
 
-; append n bytes at s and a newline; what does not fit is dropped
-fn __print(s: ptr, n: i64) {
+; a string: a view of n bytes at p
+fn __str(p: ptr, n: i64) -> u8[] {
+    q: ptr(u8) = cast p
+    v: u8[] = pack q, n, 1
+    ret v
+}
+
+fn __empty_str() -> u8[] {
+    p: ptr = addr __nul
+    v: u8[] = __str(p, 0)
+    ret v
+}
+
+; append a string and a newline; what does not fit is dropped
+fn __print(s: u8[]) {
     q: ptr = addr __out_n
     k0: i64 = load q
     o: ptr = addr __out
+    p: ptr(u8) = ptr s
+    n: i64 = len s
     k1: i64 = loop(i: i64 = 0, k: i64 = k0) {
         done: u1 = cmp.ge i, n
         if done {
             break k
         }
-        c: u8 = load s, i, 1
+        c: u8 = load p, i
         room: u1 = cmp.lt k, 4095
         if room {
             store c, o, k, 1
@@ -223,13 +255,30 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { funcs: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0 };
-    // every signature first, so a body may call what a later feature defines
+    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0 };
+    // the front end's builtins, until item 11 declares them as platform functions
+    l.funcs.push(FnInfo {
+        key: "print".into(),
+        ir: "__print".into(),
+        parts: vec![NamePart::Word("print".into()), NamePart::Group],
+        params: vec![("s".into(), Ty::Str)],
+        results: Vec::new(),
+        feature: String::new(),
+    });
+    // types first, then every signature, so a body may use what a later
+    // feature declares
+    for f in &store.features {
+        for d in &f.code.decls {
+            if let Decl::Type(t) = d {
+                l.declare_type(t, &f.code.file)?;
+            }
+        }
+    }
     for f in &store.features {
         for d in &f.code.decls {
             match d {
                 Decl::Fn(fd) => l.declare(fd, &f.name, &f.code.file)?,
-                Decl::Type(t) => return Err(lex::error(&f.code.file, t.line, "types are not in this item yet")),
+                Decl::Type(_) => {}
                 Decl::Var(v) => return Err(lex::error(&f.code.file, v.line, "feature-scope variables are not in this item yet")),
             }
         }
@@ -245,6 +294,13 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     let mut ir = String::new();
     writeln!(ir, "; lowered from the zero store {}", store.path.display()).unwrap();
     ir.push_str(PRELUDE);
+    if !l.type_lines.is_empty() {
+        ir.push('\n');
+        for t in &l.type_lines {
+            ir.push_str(t);
+            ir.push('\n');
+        }
+    }
     if !l.data.is_empty() {
         ir.push('\n');
         for d in &l.data {
@@ -265,13 +321,13 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str) -> Result<Call, 
     let mut vals = Vec::new();
     for (a, (_, ty)) in args.iter().zip(&info.params) {
         let v = match (&a.kind, ty) {
-            (ExprKind::Int(v), Ty::Num(_)) => *v,
+            (ExprKind::Int(v), Ty::Num(_) | Ty::Enum(_)) => *v,
             (ExprKind::Bool(b), Ty::Bool) => *b as i64,
             _ => return Err(lex::error(file, case.line, "a case's arguments are numbers")),
         };
         vals.push(v);
     }
-    Ok(Call { func: info.name.clone(), args: vals, nrets: info.results.len(), expect: case.expect.clone() })
+    Ok(Call { func: info.ir.clone(), args: vals, nrets: info.results.len(), expect: case.expect.clone() })
 }
 
 /// the function a phrase names, and its arguments in order: a word that
@@ -303,7 +359,7 @@ fn find_function<'a>(funcs: &'a [FnInfo], parts: &[Part], vars: &HashMap<String,
         }
     }
     let key = mangle(&name);
-    let found: Vec<&FnInfo> = funcs.iter().filter(|f| f.name == key).collect();
+    let found: Vec<&FnInfo> = funcs.iter().filter(|f| f.key == key && !f.parts.iter().any(|p| matches!(p, NamePart::Sym(_)))).collect();
     let Some(info) = found.into_iter().last() else {
         let words: Vec<String> = name.iter().filter_map(|p| if let NamePart::Word(w) = p { Some(w.clone()) } else { None }).collect();
         return Err(lex::error(file, line, format!("no function named '{}'", words.join(" "))));
@@ -316,6 +372,9 @@ fn find_function<'a>(funcs: &'a [FnInfo], parts: &[Part], vars: &HashMap<String,
 
 struct Lowerer {
     funcs: Vec<FnInfo>,
+    types: HashMap<String, TypeInfo>,
+    /// the `type` lines, in declaration order
+    type_lines: Vec<String>,
     /// `data` lines for the string literals met so far
     data: Vec<String>,
     out: String,
@@ -386,6 +445,62 @@ impl Body {
 }
 
 impl Lowerer {
+    /// a type by zero's name
+    fn ty(&self, name: &str, seq: bool, file: &str, line: usize) -> Result<Ty, Error> {
+        if seq {
+            return Err(lex::error(file, line, "sequences are not in this item yet"));
+        }
+        if let Some(t) = builtin_type(name) {
+            return Ok(t);
+        }
+        match self.types.get(name) {
+            Some(TypeInfo::Struct(_)) => Ok(Ty::Struct(name.to_string())),
+            Some(TypeInfo::Enum(_)) => Ok(Ty::Enum(name.to_string())),
+            None => Err(lex::error(file, line, format!("'{}' is not a type", name))),
+        }
+    }
+
+    fn declare_type(&mut self, t: &super::syntax::TypeDecl, file: &str) -> Result<(), Error> {
+        if self.types.contains_key(&t.name) || builtin_type(&t.name).is_some() {
+            return Err(lex::error(file, t.line, format!("type '{}' is already declared", t.name)));
+        }
+        match &t.kind {
+            TypeKind::Enum(cases) => {
+                let mut bits = 1;
+                while (1u64 << bits) < cases.len() as u64 {
+                    bits += 1;
+                }
+                self.type_lines.push(format!("type {} = u{}", t.name, bits));
+                self.types.insert(t.name.clone(), TypeInfo::Enum(cases.clone()));
+            }
+            TypeKind::Struct(fields) => {
+                let mut out = Vec::new();
+                let mut ir = Vec::new();
+                for f in fields {
+                    let ty = self.ty(&f.ty, f.seq, file, f.line)?;
+                    if out.iter().any(|(n, _, _)| n == &f.name) {
+                        return Err(lex::error(file, f.line, format!("field '{}' is named twice", f.name)));
+                    }
+                    let default = match &f.default {
+                        None => None,
+                        Some(Expr { kind: ExprKind::Int(v), .. }) if matches!(ty, Ty::Num(_)) => Some(v.to_string()),
+                        Some(Expr { kind: ExprKind::Float(s), .. }) if matches!(ty, Ty::Num(_)) => Some(s.clone()),
+                        Some(Expr { kind: ExprKind::Bool(v), .. }) if ty == Ty::Bool => Some((*v as i64).to_string()),
+                        Some(e) => return Err(lex::error(file, e.line, format!("a field's default is a literal of its type ({})", ty.ir()))),
+                    };
+                    ir.push(format!("{}: {}", f.name, ty.ir()));
+                    out.push((f.name.clone(), ty, default));
+                }
+                if out.is_empty() {
+                    return Err(lex::error(file, t.line, format!("type {} has no fields", t.name)));
+                }
+                self.type_lines.push(format!("type {} = struct {{ {} }}", t.name, ir.join(", ")));
+                self.types.insert(t.name.clone(), TypeInfo::Struct(out));
+            }
+        }
+        Ok(())
+    }
+
     fn declare(&mut self, f: &FnDecl, feature: &str, file: &str) -> Result<(), Error> {
         if f.task {
             return Err(lex::error(file, f.line, "tasks are not in this item yet"));
@@ -393,30 +508,51 @@ impl Lowerer {
         if !f.platform.is_empty() {
             return Err(lex::error(file, f.line, "platform bodies are not in this item yet"));
         }
-        let name = mangle(&f.name);
+        let key = mangle(&f.name);
         let mut params = Vec::new();
         for p in f.params() {
-            params.push((p.name.clone(), Ty::from_name(&p.ty, p.seq, file, p.line)?));
+            params.push((p.name.clone(), self.ty(&p.ty, p.seq, file, p.line)?));
         }
         let mut results = Vec::new();
         for r in &f.results {
-            results.push((r.name.clone(), Ty::from_name(&r.ty, r.seq, file, r.line)?));
+            results.push((r.name.clone(), self.ty(&r.ty, r.seq, file, r.line)?));
         }
-        if let Some(other) = self.funcs.iter().find(|g| g.name == name) {
+        let operator = f.name.iter().any(|p| matches!(p, NamePart::Sym(_)));
+        let ir = if operator {
+            // an operator on a declared type: named by the opcode and its
+            // first operand's type, since the IR does not dispatch
+            // arithmetic on structs and plain functions cannot share a name
+            if f.name.len() != 3 || !matches!(f.name.as_slice(), [NamePart::Group, NamePart::Sym(_), NamePart::Group]) || params.len() != 2 {
+                return Err(lex::error(file, f.line, "an operator is `on (T r) = (T a) op (U b)`"));
+            }
+            if !matches!(params[0].1, Ty::Struct(_)) {
+                return Err(lex::error(file, f.line, "an operator's first operand is a declared struct type; numbers have the IR's operators"));
+            }
+            format!("{}_{}", key, params[0].1.ir())
+        } else {
+            key.clone()
+        };
+        if let Some(other) = self.funcs.iter().find(|g| g.ir == ir) {
+            if other.feature.is_empty() {
+                return Err(lex::error(file, f.line, format!("'{}' is a builtin of the front end", key)));
+            }
+            if operator && other.params != params {
+                return Err(lex::error(file, f.line, format!("a second operator on {} with this symbol clashes with feature {}'s: the IR names it by its first operand's type only", params[0].1.ir(), other.feature)));
+            }
             if other.parts != f.name || other.params.len() != params.len() {
-                return Err(lex::error(file, f.line, format!("'{}' clashes with a function of feature {} that mangles to the same name", name, other.feature)));
+                return Err(lex::error(file, f.line, format!("'{}' clashes with a function of feature {} that mangles to the same name", key, other.feature)));
             }
             return Err(lex::error(file, f.line, "redefinition is not in this item yet"));
         }
-        self.funcs.push(FnInfo { name, parts: f.name.clone(), params, results, feature: feature.to_string() });
+        self.funcs.push(FnInfo { key, ir, parts: f.name.clone(), params, results, feature: feature.to_string() });
         Ok(())
     }
 
     fn lower_fn(&mut self, f: &FnDecl, file: &str) -> Result<(), Error> {
-        let name = mangle(&f.name);
-        let info = self.funcs.iter().find(|g| g.name == name).unwrap().clone();
+        let key = mangle(&f.name);
+        let info = self.funcs.iter().find(|g| g.key == key && g.parts == f.name && g.params.len() == f.params().count()).unwrap().clone();
         let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), results: info.results.clone(), file: file.to_string(), depth: 0 };
-        let mut sig = format!("fn {}(", info.name);
+        let mut sig = format!("fn {}(", info.ir);
         for (i, (n, t)) in info.params.iter().enumerate() {
             if i > 0 {
                 sig.push_str(", ");
@@ -449,7 +585,7 @@ impl Lowerer {
         for (n, t) in &b.results.clone() {
             let v = b.vars[n].clone();
             if v.versions == 0 {
-                rets.push(zero_of(t));
+                rets.push(self.zero_val(t, &mut b).text);
             } else {
                 rets.push(v.ir);
             }
@@ -465,6 +601,64 @@ impl Lowerer {
             self.lower_stmt(s, b)?;
         }
         Ok(())
+    }
+
+    /// a type's zero: a literal for a number, a bool or an enumeration,
+    /// the empty string, a struct of its defaults
+    fn zero_val(&mut self, t: &Ty, b: &mut Body) -> Val {
+        match t {
+            Ty::Bool | Ty::Num(_) | Ty::Enum(_) => Val { text: "0".into(), ty: t.clone(), literal: true },
+            Ty::Str => {
+                let n = b.tmp();
+                b.line(&format!("{}: u8[] = __empty_str()", n));
+                Val { text: n, ty: Ty::Str, literal: false }
+            }
+            Ty::Struct(name) => self.construct(name, &[], b, None, 0).unwrap_or(Val { text: "0".into(), ty: t.clone(), literal: true }),
+            Ty::None => Val { text: String::new(), ty: Ty::None, literal: false },
+        }
+    }
+
+    /// a struct from its arguments, by position or by name, the rest
+    /// from the fields' defaults: `Vec(1, 2, 3)`, `Vec v(z = 3)`, `Vec v`
+    fn construct(&mut self, name: &str, args: &[Arg], b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        let file = b.file.clone();
+        let Some(TypeInfo::Struct(fields)) = self.types.get(name).cloned() else {
+            return Err(lex::error(&file, line, format!("'{}' is not a struct", name)));
+        };
+        let named = args.iter().any(|a| a.name.is_some());
+        if named && args.iter().any(|a| a.name.is_none()) {
+            return Err(lex::error(&file, line, "arguments are all by position or all by name"));
+        }
+        if !named && args.len() > fields.len() {
+            return Err(lex::error(&file, line, format!("{} has {} field(s), given {}", name, fields.len(), args.len())));
+        }
+        for a in args.iter().filter_map(|a| a.name.as_ref()) {
+            if !fields.iter().any(|(n, _, _)| n == a) {
+                return Err(lex::error(&file, line, format!("{} has no field '{}'", name, a)));
+            }
+        }
+        let mut ops = Vec::new();
+        for (i, (fname, fty, default)) in fields.iter().enumerate() {
+            let given = if named { args.iter().find(|a| a.name.as_deref() == Some(fname)) } else { args.get(i) };
+            let v = match given {
+                Some(a) => {
+                    let v = self.lower_expr(&a.value, Some(fty), b, None)?;
+                    if !(v.ty == *fty || (v.literal && fits_literal(&v, fty))) {
+                        return Err(lex::error(&file, a.value.line, format!("field '{}' of {} is {}, given a {}", fname, name, fty.ir(), v.ty.ir())));
+                    }
+                    v
+                }
+                None => match default {
+                    Some(d) => Val { text: d.clone(), ty: fty.clone(), literal: true },
+                    None => self.zero_val(fty, b),
+                },
+            };
+            ops.push(v.text);
+        }
+        let ty = Ty::Struct(name.to_string());
+        let out = name_for(dst, &ty, b);
+        b.line(&format!("{}: {} = pack {}", out, name, ops.join(", ")));
+        Ok(Val { text: out, ty, literal: false })
     }
 
     /// assign a value to a declared variable: a literal becomes a
@@ -516,7 +710,7 @@ impl Lowerer {
                     if b.vars.contains_key(&p.name) {
                         return Err(lex::error(&file, p.line, format!("'{}' is already declared", p.name)));
                     }
-                    let ty = Ty::from_name(&p.ty, p.seq, &file, p.line)?;
+                    let ty = self.ty(&p.ty, p.seq, &file, p.line)?;
                     b.vars.insert(p.name.clone(), Var { ir: String::new(), ty: ty.clone(), versions: 0 });
                     names.push(p.name.clone());
                     tys.push(ty);
@@ -530,19 +724,25 @@ impl Lowerer {
                 if b.vars.contains_key(&v.name) {
                     return Err(lex::error(&file, v.line, format!("'{}' is already declared", v.name)));
                 }
-                let ty = Ty::from_name(&v.ty, v.seq, &file, v.line)?;
+                let ty = self.ty(&v.ty, v.seq, &file, v.line)?;
                 b.vars.insert(v.name.clone(), Var { ir: String::new(), ty: ty.clone(), versions: 0 });
                 match &v.init {
                     None => {
-                        let ir = b.define(&v.name, ty.clone());
-                        b.line(&format!("{}: {} = const {}", ir, ty.ir(), zero_of(&ty)));
-                        Ok(())
+                        let z = self.zero_val(&ty, b);
+                        self.assign(&v.name, z, b, v.line)
                     }
                     Some(Init::Value(e)) => {
                         let val = self.lower_expr(e, Some(&ty), b, Some(&v.name))?;
                         self.assign(&v.name, val, b, v.line)
                     }
-                    Some(_) => Err(lex::error(&file, v.line, "this declaration form is not in this item yet")),
+                    Some(Init::Construct(args)) => {
+                        let Ty::Struct(name) = &ty else {
+                            return Err(lex::error(&file, v.line, format!("'{}' is not a struct to construct", v.ty)));
+                        };
+                        let val = self.construct(&name.clone(), args, b, Some(&v.name), v.line)?;
+                        self.assign(&v.name, val, b, v.line)
+                    }
+                    Some(Init::Pushes { .. }) => Err(lex::error(&file, v.line, "streams are not in this item yet")),
                 }
             }
             Stmt::Expr { expr, line } => {
@@ -570,16 +770,16 @@ impl Lowerer {
         let (info, args) = find_function(&self.funcs, parts, &b.vars, &file, line)?;
         let info = info.clone();
         if info.results.len() != names.len() {
-            return Err(lex::error(&file, line, format!("'{}' gives {} result(s), {} wanted", info.name, info.results.len(), names.len())));
+            return Err(lex::error(&file, line, format!("'{}' gives {} result(s), {} wanted", info.key, info.results.len(), names.len())));
         }
         let (ops, rtys) = self.lower_args(&info, &args, b)?;
         for ((n, want), got) in names.iter().zip(tys).zip(&rtys) {
             if want != got {
-                return Err(lex::error(&file, line, format!("'{}' is {} but '{}' gives {}", n, want.ir(), info.name, got.ir())));
+                return Err(lex::error(&file, line, format!("'{}' is {} but '{}' gives {}", n, want.ir(), info.key, got.ir())));
             }
         }
         let defs: Vec<String> = names.iter().zip(tys).map(|(n, t)| format!("{}: {}", b.define(n, t.clone()), t.ir())).collect();
-        b.line(&format!("{} = {}({})", defs.join(", "), info.name, ops.join(", ")));
+        b.line(&format!("{} = {}({})", defs.join(", "), info.ir, ops.join(", ")));
         Ok(())
     }
 
@@ -590,9 +790,12 @@ impl Lowerer {
         let mut ops = Vec::new();
         let mut bound: HashMap<String, Ty> = HashMap::new();
         for (a, (_, ty)) in args.iter().zip(&info.params) {
-            let v = self.lower_expr(a, Some(ty), b, None)?;
+            let mut v = self.lower_expr(a, Some(ty), b, None)?;
+            if v.literal && fits_literal(&v, ty) {
+                v.ty = ty.clone();
+            }
             if !fits(&v.ty, ty) {
-                return Err(lex::error(&file, a.line, format!("'{}' wants a {} here, given a {}", info.name, ty.ir(), v.ty.ir())));
+                return Err(lex::error(&file, a.line, format!("'{}' wants a {} here, given a {}", info.key, ty.ir(), v.ty.ir())));
             }
             if let Some(name) = ty.abstract_name() {
                 if &v.ty != ty {
@@ -610,6 +813,30 @@ impl Lowerer {
             })
             .collect();
         Ok((ops, rtys))
+    }
+
+    /// an enumeration's case by its bare name, when exactly one has it
+    fn enum_case(&self, word: &str) -> Option<Val> {
+        let mut found = None;
+        for (name, info) in &self.types {
+            if let TypeInfo::Enum(cases) = info {
+                if let Some(i) = cases.iter().position(|c| c == word) {
+                    if found.is_some() {
+                        return None;
+                    }
+                    found = Some(Val { text: i.to_string(), ty: Ty::Enum(name.clone()), literal: true });
+                }
+            }
+        }
+        found
+    }
+
+    /// the user's operator for a struct on the left
+    fn find_operator(&self, op: &str, l: &Ty, r: &Ty) -> Option<FnInfo> {
+        self.funcs
+            .iter()
+            .find(|f| matches!(f.parts.as_slice(), [NamePart::Group, NamePart::Sym(s), NamePart::Group] if s == op) && &f.params[0].1 == l && fits(r, &f.params[1].1))
+            .cloned()
     }
 
     /// Lower an expression to a value. `want` is the type the context
@@ -634,12 +861,48 @@ impl Lowerer {
                 Ok(Val { text: s.clone(), ty, literal: true })
             }
             ExprKind::Bool(v) => Ok(Val { text: (*v as i64).to_string(), ty: Ty::Bool, literal: true }),
-            ExprKind::Str(_) => Err(lex::error(&file, e.line, "a string is only printed in this item")),
+            ExprKind::Str(s) => {
+                self.nstr += 1;
+                let name = format!("__s{}", self.nstr);
+                self.data.push(format!("data {} = \"{}\"", name, s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")));
+                let p = b.tmp();
+                b.line(&format!("{}: ptr = addr {}", p, name));
+                let n = b.tmp();
+                b.line(&format!("{}: i64 = len {}", n, name));
+                let out = name_for(dst, &Ty::Str, b);
+                b.line(&format!("{}: u8[] = __str({}, {})", out, p, n));
+                Ok(Val { text: out, ty: Ty::Str, literal: false })
+            }
             ExprKind::Name(n) => match b.vars.get(n) {
                 Some(v) if v.versions > 0 => Ok(Val { text: v.ir.clone(), ty: v.ty.clone(), literal: false }),
                 Some(_) => Err(lex::error(&file, e.line, format!("'{}' is read before it is assigned", n))),
                 None => Err(lex::error(&file, e.line, format!("'{}' is not a variable here", n))),
             },
+            ExprKind::Field(base, field) => {
+                // `Tristate.yes`: an enumeration's case, qualified
+                if let ExprKind::Phrase(parts) = &base.kind {
+                    if let [Part::Word(w)] = parts.as_slice() {
+                        if let Some(TypeInfo::Enum(cases)) = self.types.get(w) {
+                            let Some(i) = cases.iter().position(|c| c == field) else {
+                                return Err(lex::error(&file, e.line, format!("{} has no case '{}'", w, field)));
+                            };
+                            return Ok(Val { text: i.to_string(), ty: Ty::Enum(w.clone()), literal: true });
+                        }
+                    }
+                }
+                let v = self.lower_expr(base, None, b, None)?;
+                let Ty::Struct(name) = &v.ty else {
+                    return Err(lex::error(&file, e.line, format!("'.{}' on a {}, which has no fields", field, v.ty.ir())));
+                };
+                let Some(TypeInfo::Struct(fields)) = self.types.get(name) else { unreachable!() };
+                let Some((_, fty, _)) = fields.iter().find(|(n, _, _)| n == field) else {
+                    return Err(lex::error(&file, e.line, format!("{} has no field '{}'", name, field)));
+                };
+                let fty = fty.clone();
+                let out = name_for(dst, &fty, b);
+                b.line(&format!("{}: {} = get {}, {}", out, fty.ir(), v.text, field));
+                Ok(Val { text: out, ty: fty, literal: false })
+            }
             ExprKind::Neg(x) => {
                 let v = self.lower_expr(x, want, b, None)?;
                 if !matches!(v.ty, Ty::Num(_)) {
@@ -654,6 +917,17 @@ impl Lowerer {
                 let cmp = is_comparison(op);
                 let operand_want = if cmp { None } else { want.filter(|t| matches!(t, Ty::Num(_))) };
                 let mut lv = self.lower_expr(l, operand_want, b, None)?;
+                // a struct on the left: the program's own operator
+                if let Ty::Struct(_) = &lv.ty {
+                    let rv = self.lower_expr(r, None, b, None)?;
+                    let Some(info) = self.find_operator(op, &lv.ty, &rv.ty) else {
+                        return Err(lex::error(&file, e.line, format!("no '{}' is defined on a {} and a {}", op, lv.ty.ir(), rv.ty.ir())));
+                    };
+                    let ty = info.results[0].1.clone();
+                    let name = name_for(dst, &ty, b);
+                    b.line(&format!("{}: {} = {}({}, {})", name, ty.ir(), info.ir, lv.text, rv.text));
+                    return Ok(Val { text: name, ty, literal: false });
+                }
                 let mut rv = self.lower_expr(r, if lv.literal { operand_want } else { Some(&lv.ty) }, b, None)?;
                 // a literal takes the other side's type; two literals
                 // make one of them a value first
@@ -670,8 +944,12 @@ impl Lowerer {
                 if lv.ty != rv.ty {
                     return Err(lex::error(&file, e.line, format!("'{}' on a {} and a {}: both sides must have one type", op, lv.ty.ir(), rv.ty.ir())));
                 }
-                if !matches!(lv.ty, Ty::Num(_)) && !(cmp && lv.ty == Ty::Bool && matches!(op.as_str(), "==" | "!=")) {
-                    return Err(lex::error(&file, e.line, format!("'{}' takes numbers", op)));
+                let equality = cmp && matches!(op.as_str(), "==" | "!=");
+                match &lv.ty {
+                    Ty::Num(_) => {}
+                    Ty::Bool | Ty::Enum(_) if equality => {}
+                    Ty::Enum(_) => return Err(lex::error(&file, e.line, format!("'{}' on an enumeration: only '==' and '!=' apply", op))),
+                    t => return Err(lex::error(&file, e.line, format!("'{}' takes numbers, not a {}", op, t.ir()))),
                 }
                 let ty = if cmp { Ty::Bool } else { lv.ty.clone() };
                 let name = name_for(dst, &ty, b);
@@ -695,6 +973,7 @@ impl Lowerer {
                 b.depth -= 1;
                 let ty = match (av.literal, dv.literal) {
                     (true, false) => dv.ty.clone(),
+                    (true, true) => want.cloned().filter(|w| fits_literal(&av, w)).unwrap_or(av.ty.clone()),
                     _ => av.ty.clone(),
                 };
                 if !av.literal && !dv.literal && av.ty != dv.ty {
@@ -715,29 +994,46 @@ impl Lowerer {
                 Ok(Val { text: name, ty, literal: false })
             }
             ExprKind::Phrase(parts) => {
-                // a lone word is a variable when there is one
+                // a lone word: a variable, or an enumeration's case
                 if let [Part::Word(w)] = parts.as_slice() {
                     if b.vars.contains_key(w) {
                         return self.lower_expr(&Expr { kind: ExprKind::Name(w.clone()), line: e.line }, want, b, dst);
                     }
+                    if let Some(v) = self.enum_case(w) {
+                        return Ok(v);
+                    }
                 }
-                if let [Part::Word(w), Part::Value(Expr { kind: ExprKind::Str(s), .. })] = parts.as_slice() {
-                    if w == "print" {
-                        self.nstr += 1;
-                        let name = format!("__s{}", self.nstr);
-                        self.data.push(format!("data {} = \"{}\"", name, s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")));
-                        let p = b.tmp();
-                        b.line(&format!("{}: ptr = addr {}", p, name));
-                        let n = b.tmp();
-                        b.line(&format!("{}: i64 = len {}", n, name));
-                        b.line(&format!("__print({}, {})", p, n));
-                        return Ok(Val { text: String::new(), ty: Ty::None, literal: false });
+                // a type applied to arguments: a struct constructed, or a
+                // number converted
+                if let [Part::Word(w), Part::Args(args)] = parts.as_slice() {
+                    if self.types.contains_key(w) || builtin_type(w).is_some() {
+                        return match self.ty(w, false, &file, e.line)? {
+                            Ty::Struct(name) => self.construct(&name, args, b, dst, e.line),
+                            Ty::Enum(_) => Err(lex::error(&file, e.line, format!("{} is an enumeration: name a case", w))),
+                            Ty::Str | Ty::None => Err(lex::error(&file, e.line, format!("{} cannot be constructed", w))),
+                            to => {
+                                let [a] = args.as_slice() else {
+                                    return Err(lex::error(&file, e.line, format!("a conversion is {}(x)", w)));
+                                };
+                                let v = self.lower_expr(&a.value, None, b, None)?;
+                                if !matches!(v.ty, Ty::Num(_) | Ty::Bool) || v.ty == Ty::Bool && to == Ty::Bool {
+                                    return Err(lex::error(&file, e.line, format!("{}(x) converts a number, not a {}", w, v.ty.ir())));
+                                }
+                                if to == Ty::Bool {
+                                    return Err(lex::error(&file, e.line, "a bool is a comparison, not a conversion"));
+                                }
+                                let v = b.materialize(&v);
+                                let name = name_for(dst, &to, b);
+                                b.line(&format!("{}: {} = conv {}", name, to.ir(), v.text));
+                                Ok(Val { text: name, ty: to, literal: false })
+                            }
+                        };
                     }
                 }
                 let (info, args) = find_function(&self.funcs, parts, &b.vars, &file, e.line)?;
                 let info = info.clone();
                 let (ops, rtys) = self.lower_args(&info, &args, b)?;
-                let call = format!("{}({})", info.name, ops.join(", "));
+                let call = format!("{}({})", info.ir, ops.join(", "));
                 match rtys.len() {
                     0 => {
                         b.line(&call);
@@ -749,7 +1045,7 @@ impl Lowerer {
                         b.line(&format!("{}: {} = {}", name, ty.ir(), call));
                         Ok(Val { text: name, ty, literal: false })
                     }
-                    _ => Err(lex::error(&file, e.line, format!("'{}' gives several results; take them with `a, b = ...`", info.name))),
+                    _ => Err(lex::error(&file, e.line, format!("'{}' gives several results; take them with `a, b = ...`", info.key))),
                 }
             }
             ExprKind::Existing(_) => Err(lex::error(&file, e.line, "'existing' is not in this item yet")),
@@ -773,13 +1069,5 @@ fn fits_literal(v: &Val, ty: &Ty) -> bool {
     match (&v.ty, ty) {
         (Ty::Num(_), Ty::Num(_)) => true,
         (a, b) => a == b,
-    }
-}
-
-/// a type's zero, as a literal the IR takes for a result
-fn zero_of(t: &Ty) -> String {
-    match t {
-        Ty::Bool | Ty::Num(_) | Ty::Str => "0".into(),
-        Ty::None => String::new(),
     }
 }
