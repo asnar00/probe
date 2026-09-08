@@ -245,6 +245,25 @@ cargo run -- live examples/fib.ssa fib 25
 
 Toolchain expectations (macOS/arm64 host): `llvm-mc` (brew llvm), `wabt` (wat2wasm), `node`, `qemu`; for the GPU, `pyobjc-framework-Metal` (the driver is Python) and, to inspect what we emit, brew llvm's `llvm-dis`. The learned `targets/*.encodings.json` files are checked in, so the backends and suite work without re-learning.
 
+## zero
+
+`probe zero` is the front end for **zero**, the feature-modular language defined in the fm3 project (`fm3/zero.md`); milestone 0 of that project built it here, in `src/zero/`, on the `zero` branch. It reads a *store* — a folder of feature folders, each `name/name.md` (the prose: `parent:`, `layer:`, origins with timestamps, and `## testing` cases) and `name/name.zero` (the code, with no comments: a `#` is an error naming its line) — lowers it to this IR as text, and runs the cases through the same drivers as the suite. The IR is the meaning; the front end adds none of its own, and the emitted text is what a person reads when a lowering surprises them. `suite/zero/skeleton`:
+
+```
+on (int a) = answer()
+    a = 42
+```
+
+```sh
+cargo run -- zero suite/zero/hello emit            # the store's IR, as text
+cargo run -- zero suite/zero/hello run "run()"     # one ## testing case, natively; prints what it printed
+cargo run -- zero test                             # every store under suite/zero, on the native JIT
+cargo run -- zero test suite/zero wasm             # or wasm, riscv, arm-qemu, air
+cargo run -- cost suite/zero/hello.expected.ssa run   # the lowered IR is IR: cost, parse, footprint all read it
+```
+
+A case is `>call(args) → result`: a number or several, a quoted string (what `print` produced), or `check` (the call must trap). Every store composes the compiler's own `platform` feature first (`src/zero/platform.zero`), which declares `print` with a body in the IR; a store's own platform functions carry a body per kind of place, an IR target's rule lines in a `platform <target> { ... }` block or IR under `ir`, and a case that reaches a function with no body for the path is skipped saying so. `suite/zero/<store>.expected.ssa` beside a store is the IR it emitted when accepted, re-checked by `zero test`. The stores under `suite/zero/` are one per plan item — skeleton, functions, types, control, variables, sequences, streams, tasks, features, checks, platform — and three programs, `hello` (section 16 of zero.md, a countdown at one hertz on a virtual clock), `lex` (the lexer as a task) and `clock`; each reads as the documentation of its construct. `fm3/milestone-0/log.md` has every judgement the build made.
+
 ## Status
 
 What is here:
