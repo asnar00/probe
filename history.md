@@ -4,6 +4,12 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### README: the store's clock — `8798d5e` · 2026-09-10
+
+Third pass item 6, the docs. `README.md`'s `probe zero` section says what the last three landings made true: `<<` methods format into `out$`, a case's `with in "text"` pushes into `in$`, and the store's virtual clock is an integer tick counter. fm3's `zero.md` carries a third-pass line at the head of sections 3, 6, 9, 10, 14 and 15, and its log runs to entry 64 and its questions to 35. At the close of the pass: `probe test` 971/971 native, 962 + 9 skipped wasm, 971 riscv, 971 arm-qemu, 941 + 30 skipped air; `probe zero test` 465/465 on the four CPU paths, 448 + 17 skipped on air; cargo test 105 passed.
+
+---
+
 ### zero: the clock is integer ticks — `81d2a6c` · 2026-09-10
 
 ```
