@@ -60,6 +60,9 @@ pub struct Case {
     pub text: String,
     pub call: syntax::Expr,
     pub expect: Expect,
+    /// the case's context (section 14, log 43): `with <feature> off`
+    /// and `on` clauses after the call, each a feature and its state
+    pub context: Vec<(String, bool)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -296,13 +299,31 @@ fn read_prose(name: &str, prose: &str, file: &str, types: &HashSet<String>, code
     Ok(FeatureDoc { name: name.to_string(), parent, layer, origins, cases, code, md_file: file.to_string() })
 }
 
-/// `>call(args) → result`: the result a number or several, a quoted
-/// string (what `print` produced), or `check` (the call must trap)
+/// `>call(args) [with <feature> off, <feature> on] → result`: the
+/// result a number or several, a quoted string (what `print`
+/// produced), or `check` (the call must trap); the context clause
+/// follows the call's last `)` (log 43)
 fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> Result<Case, Error> {
     let (call, expect) = text
         .split_once('→')
         .or_else(|| text.split_once("->"))
         .ok_or_else(|| lex::error(file, line, "a case is `>call(args) → result`"))?;
+    let (call, context) = match call.rfind(')') {
+        Some(i) if call[i + 1..].trim().starts_with("with ") => {
+            let clause = call[i + 1..].trim().strip_prefix("with ").unwrap();
+            let mut context = Vec::new();
+            for part in clause.split(',') {
+                let words: Vec<&str> = part.split_whitespace().collect();
+                match words.as_slice() {
+                    [name, "off"] => context.push((name.to_string(), false)),
+                    [name, "on"] => context.push((name.to_string(), true)),
+                    _ => return Err(lex::error(file, line, "a case's context is `with <feature> off` or `on`, several joined by commas")),
+                }
+            }
+            (&call[..i + 1], context)
+        }
+        _ => (call, Vec::new()),
+    };
     let expect = expect.trim();
     let expect = if expect == "check" {
         Expect::Check
@@ -331,5 +352,5 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
         Expect::Values(vals)
     };
     let call_expr = syntax::parse_call(call.trim(), file, line, types)?;
-    Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect })
+    Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect, context })
 }

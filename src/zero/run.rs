@@ -109,7 +109,7 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize) -> Resul
     if let Some(why) = out_of_reach(&module, &l.funcs, kind).get(&call.func) {
         return Err(format!("{} is out of reach here: {}", text.split('→').next().unwrap_or("").trim(), skip_note(&l.funcs, why, kind)));
     }
-    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: call.expect == store::Expect::Check, text: true };
+    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: call.expect == store::Expect::Check, text: true, before: call.before.clone() };
     let got = suite::run_calls(&module, &l.ir, Backend::Native, &[sc], "zero-run", level)?.remove(0)?;
     let vals: Vec<String> = got.values.iter().map(|v| v.to_string()).collect();
     let mut out = String::new();
@@ -182,6 +182,7 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                 checks: c.expect == store::Expect::Check,
                 // every case reads the text back: a failed check names its site there
                 text: true,
+                before: c.before.clone(),
             })
             .collect();
         if scalls.is_empty() {

@@ -318,11 +318,6 @@ fn goodbye() {
     print(_4)
     ret
 }
-fn run_without_countdown() {
-    __set___enabled_countdown(0)
-    run()
-    ret
-}
 
 ; run: the chain bye, countdown, hello, newest outermost; a link whose feature is off falls through
 fn run() {

@@ -4,7 +4,3 @@ on run()
 
 on goodbye()
     print "goodbye"
-
-on run without countdown()
-    countdown.enabled = false
-    run()

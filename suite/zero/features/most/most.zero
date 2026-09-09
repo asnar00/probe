@@ -19,30 +19,13 @@ on (int n) = counted (int k)
 on (int n) = described()
     n = describe()
 
-on (int n) = greeted without more()
-    more.enabled = false
-    n = greet()
-
-on (int n) = greeted without base()
-    base.enabled = false
-    n = greet()
-
-on (int n) = described without most()
-    most.enabled = false
-    n = describe()
-
-on (int a, int b) = state kept when off()
+on (int a, int b) = visited twice()
     visit()
-    visit()
-    more.enabled = false
-    visit()
-    more.enabled = true
     visit()
     a = seen by more()
     b = visited()
 
-on (bool b) = switch read()
-    more.enabled = false
+on (bool b) = switch of more()
     b = more.enabled
 
 on (bool b) = own switch()

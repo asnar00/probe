@@ -299,15 +299,20 @@ struct FVar {
 pub struct Lowered {
     pub ir: String,
     pub funcs: Vec<FnInfo>,
+    /// the features, in composition order
+    pub features: Vec<String>,
 }
 
 /// what the runner calls for a case: the IR function, its integer
-/// arguments, how many results it has, and what the case expects
+/// arguments, how many results it has, what the case expects, and the
+/// context the case runs in (log 43): the setter of each named
+/// feature's `enabled` and the value to give it
 pub struct Call {
     pub func: String,
     pub args: Vec<i64>,
     pub nrets: usize,
     pub expect: Expect,
+    pub before: Vec<(String, Vec<i64>)>,
 }
 
 /// the IR every store gets: the output buffer `print` appends to, the
@@ -572,7 +577,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         }
     }
     ir.push_str(&l.out);
-    Ok(Lowered { ir, funcs: l.funcs })
+    Ok(Lowered { ir, funcs: l.funcs, features: l.features })
 }
 
 /// resolve a `## testing` case against the lowered store
@@ -617,7 +622,14 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str) -> Result<Call, 
         };
         vals.push(v);
     }
-    Ok(Call { func: info.ir.clone(), args: vals, nrets: info.results.len(), expect: case.expect.clone() })
+    let mut before = Vec::new();
+    for (feature, on) in &case.context {
+        if !lowered.features.contains(feature) {
+            return Err(lex::error(file, case.line, format!("`with {} {}`: no feature named '{}' in the store", feature, if *on { "on" } else { "off" }, feature)));
+        }
+        before.push((format!("__set___enabled_{}", feature), vec![*on as i64]));
+    }
+    Ok(Call { func: info.ir.clone(), args: vals, nrets: info.results.len(), expect: case.expect.clone(), before })
 }
 
 /// the refusal of an ambiguous call, naming the methods that contend
@@ -1534,14 +1546,16 @@ impl Lowerer {
             b.line("p: ptr = addr __ctx_mem");
             b.line(&format!("store {}, p", c));
         }
-        if !self.nodes.is_empty() {
-            b.line("__run()");
-        }
         b.line("ret");
-        writeln!(self.out, "\n; before every case: the print buffer emptied, the variables at their initial values{}", if self.nodes.is_empty() { "" } else { ", the nodes run" }).unwrap();
+        writeln!(self.out, "\n; before every case: the print buffer emptied, the variables at their initial values").unwrap();
         writeln!(self.out, "fn __zero_reset() {{").unwrap();
         self.out.push_str(&b.out);
         self.out.push_str("}\n");
+        // the case's context is set between the reset and the start, so
+        // a node of a feature that is off never runs (log 43)
+        if !self.nodes.is_empty() {
+            writeln!(self.out, "\n; after the case's context is set: the nodes run\nfn __zero_start() {{\n    __run()\n    ret\n}}").unwrap();
+        }
         for f in &self.fvars {
             let t = f.ty.ir();
             writeln!(self.out, "\nfn __get_{}() -> {} {{\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    v: {} = get c, {}\n    ret v\n}}", f.name, t, t, f.name).unwrap();
@@ -2548,19 +2562,15 @@ impl Lowerer {
         let file = b.file.clone();
         match s {
             Stmt::Assign { targets, value, line } => {
-                // `countdown.enabled = false`: a feature's switch (log 28)
+                // `countdown.enabled = false` is not in the language (log
+                // 43): the chooser switches a feature, a case line says
+                // `with countdown off`
                 if let [t] = targets.as_slice() {
                     if let Some(feat) = &t.feature {
                         if t.name != "enabled" || !self.features.contains(feat) {
                             return Err(lex::error(&file, t.line, format!("'{}.{}': a feature's implicit variable is `{}.enabled`", feat, t.name, feat)));
                         }
-                        self.reach(&format!("{}.enabled", feat), feat, &file, t.line)?;
-                        let v = self.lower_expr(value, Some(&Ty::Bool), b, None)?;
-                        if v.ty != Ty::Bool {
-                            return Err(lex::error(&file, *line, format!("'{}.enabled' is a bool, given a {}", feat, v.ty.ir())));
-                        }
-                        b.line(&format!("__set___enabled_{}({})", feat, v.text));
-                        return Ok(false);
+                        return Err(lex::error(&file, t.line, format!("'{}.enabled' is not assigned in feature code: a feature is switched by the chooser, and a case says `with {} off` on its line (section 14)", feat, feat)));
                     }
                 }
                 if targets.iter().any(|t| t.feature.is_some()) {

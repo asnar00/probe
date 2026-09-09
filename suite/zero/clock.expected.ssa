@@ -131,7 +131,7 @@ type __ctx = struct { __enabled_platform: u1, __enabled_clock: u1, t: int$, __no
 
 data __ctx_mem: array(__ctx, 1)
 
-; before every case: the print buffer emptied, the variables at their initial values, the nodes run
+; before every case: the print buffer emptied, the variables at their initial values
 fn __zero_reset() {
     q: ptr = addr __out_n
     store 0: i64, q
@@ -147,6 +147,11 @@ fn __zero_reset() {
     _2: __ctx = pack 1, 1, _1, 0
     p: ptr = addr __ctx_mem
     store _2, p
+    ret
+}
+
+; after the case's context is set: the nodes run
+fn __zero_start() {
     __run()
     ret
 }

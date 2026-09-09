@@ -15,7 +15,7 @@ for (const c of spec.cases) {
   const inst = new WebAssembly.Instance(mod);
   const mem = inst.exports.memory;
   let bump = 8;
-  const args = c.args.map((a) => {
+  const argOf = (a) => {
     if (a.t === "i64") return BigInt(a.v);
     if (a.t === "i32") return Number(BigInt.asIntN(32, BigInt(a.v)));
     if (a.a64) {
@@ -50,11 +50,15 @@ for (const c of spec.cases) {
       return off;
     }
     throw new Error("bad arg spec");
-  });
+  };
+  const args = c.args.map(argOf);
   try {
-    // the zero runner: reset the program's state first, and read its
-    // text output back after (see suite.rs, run_calls)
+    // the zero runner: reset the program's state first, set the case's
+    // context, start the nodes, and read the text output back after
+    // (see suite.rs, run_calls)
     if (c.reset && inst.exports.__zero_reset) inst.exports.__zero_reset();
+    for (const b of c.before || []) inst.exports[b.func](...b.args.map(argOf));
+    if (c.reset && inst.exports.__zero_start) inst.exports.__zero_start();
     let r = inst.exports[c.func](...args);
     if (r === undefined) r = [];
     else if (!Array.isArray(r)) r = [r];

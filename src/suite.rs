@@ -69,6 +69,9 @@ struct Case {
     /// the zero runner's cases: print the program's output buffer after
     /// the results, as a line of hex bytes (see `run_calls`)
     text_out: bool,
+    /// the zero runner's cases: calls made after `__zero_reset` and
+    /// before `__zero_start`, which set the case's context (log 43)
+    before: Vec<(String, Vec<ArgSpec>)>,
 }
 
 /// what a case that ended in a failed check reports
@@ -153,6 +156,7 @@ fn parse_case(line: &str) -> Result<Case, String> {
         checks,
         text: line.trim().to_string(),
         text_out: false,
+        before: Vec::new(),
     })
 }
 
@@ -718,13 +722,16 @@ fn run_wasm(
 
 /// a call the zero front end's runner makes: a function, its integer
 /// arguments, how many results it has, whether it must end in a failed
-/// check, and whether the program's text output is wanted after it
+/// check, whether the program's text output is wanted after it, and
+/// the calls that set its context between the reset and the start
+/// (log 43), each a function and its integer arguments
 pub struct Call {
     pub func: String,
     pub args: Vec<i64>,
     pub nrets: usize,
     pub checks: bool,
     pub text: bool,
+    pub before: Vec<(String, Vec<i64>)>,
 }
 
 /// what a call gave: its results, and the text the program printed
@@ -741,7 +748,8 @@ pub fn checked() -> &'static str {
 /// Run calls against one module on a backend. Before every call the
 /// module's `__zero_reset` runs, if it has one (the JIT keeps one
 /// instance of the program for every call; node makes a fresh one per
-/// call; a machine runs a group of calls in one boot); after a call
+/// call; a machine runs a group of calls in one boot), then the call's
+/// `before` calls, then `__zero_start` if the module has one; after a call
 /// that wants text, `__out_len()` and `__out_byte(i)` read the program's
 /// output buffer back. A call that must end in a failed check runs
 /// forked under the JIT, as a directive's does, and in a boot of its
@@ -763,7 +771,14 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
                 if module.func("__zero_reset").is_some() {
                     jit.call("__zero_reset", &[])?;
                 }
+                let start = module.func("__zero_start").is_some();
                 let run = || -> Result<Got, String> {
+                    for (f, args) in &call.before {
+                        jit.call(f, args)?;
+                    }
+                    if start {
+                        jit.call("__zero_start", &[])?;
+                    }
                     let values = match call.nrets {
                         0 => jit.call(&call.func, &call.args).map(|_| Vec::new())?,
                         1 => jit.call(&call.func, &call.args).map(|v| vec![fix(0, v)])?,
@@ -801,17 +816,25 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
                     spec.push(',');
                 }
                 let func = module.func(&call.func).ok_or_else(|| format!("no function {} in the module", call.func))?;
-                spec.push_str(&format!("{{\"func\":\"{}\",\"reset\":true,\"text\":{},\"args\":[", call.func, call.text));
-                for (j, v) in call.args.iter().enumerate() {
-                    if j > 0 {
-                        spec.push(',');
+                // an integer argument list as the driver reads it, typed by
+                // the function's parameters
+                let args_json = |func: &ssa::Function, args: &[i64]| -> String {
+                    let mut out = Vec::new();
+                    for (j, v) in args.iter().enumerate() {
+                        let t = match func.params.get(j).map(|&p| emit_wasm::wrepr(func, func.ty(p))) {
+                            Some(r) if r.container() == 64 => "i64",
+                            _ => "i32",
+                        };
+                        out.push(format!("{{\"t\":\"{}\",\"v\":\"{}\"}}", t, v));
                     }
-                    let t = match func.params.get(j).map(|&p| emit_wasm::wrepr(func, func.ty(p))) {
-                        Some(r) if r.container() == 64 => "i64",
-                        _ => "i32",
-                    };
-                    spec.push_str(&format!("{{\"t\":\"{}\",\"v\":\"{}\"}}", t, v));
+                    out.join(",")
+                };
+                let mut before = Vec::new();
+                for (f, args) in &call.before {
+                    let bf = module.func(f).ok_or_else(|| format!("no function {} in the module", f))?;
+                    before.push(format!("{{\"func\":\"{}\",\"args\":[{}]}}", f, args_json(bf, args)));
                 }
+                spec.push_str(&format!("{{\"func\":\"{}\",\"reset\":true,\"text\":{},\"before\":[{}],\"args\":[{}", call.func, call.text, before.join(","), args_json(func, &call.args)));
                 spec.push_str("],\"rets\":[");
                 for (j, &t) in func.rets.iter().enumerate() {
                     if j > 0 {
@@ -863,7 +886,7 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
             std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
             let cases: Vec<Case> = calls
                 .iter()
-                .map(|c| Case { func: c.func.clone(), args: c.args.iter().map(|&v| ArgSpec::Int(v)).collect(), expected: vec![0; c.nrets], checks: c.checks, text: c.func.clone(), text_out: c.text })
+                .map(|c| Case { func: c.func.clone(), args: c.args.iter().map(|&v| ArgSpec::Int(v)).collect(), expected: vec![0; c.nrets], checks: c.checks, text: c.func.clone(), text_out: c.text, before: c.before.iter().map(|(f, a)| (f.clone(), a.iter().map(|&v| ArgSpec::Int(v)).collect())).collect() })
                 .collect();
             let mut got: Vec<Result<Got, String>> = Vec::new();
             if backend == Backend::Air {
@@ -1207,8 +1230,22 @@ fn gen_driver(
         start.push_str(&format!("    __case{}()\n", ci));
         if reset {
             // the zero runner: the program's state is reset before every
-            // call, as the JIT and node do (see `run_calls`)
+            // call, the case's context set, and the nodes started, as the
+            // JIT and node do (see `run_calls`, log 43)
             s.push_str("    __zero_reset()\n");
+            for (bf, bargs) in &case.before {
+                let f = module.func(bf).ok_or_else(|| format!("no function {} for the context of '{}'", bf, case.text))?;
+                let ptys: Vec<ssa::Type> = f.params.iter().map(|&p| f.ty(p)).collect();
+                let mut it = bargs.iter();
+                let mut argv = Vec::new();
+                for &pty in &ptys {
+                    argv.push(materialize(f, pty, &mut it, &mut s, &n, &mut heap, &case.text)?);
+                }
+                s.push_str(&format!("    {}({})\n", bf, argv.join(", ")));
+            }
+            if module.func("__zero_start").is_some() {
+                s.push_str("    __zero_start()\n");
+            }
         }
         if case.func == "__kernel" {
             // the runner, then the area's words printed
