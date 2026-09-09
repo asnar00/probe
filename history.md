@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: assigning the result ends the function — `b060dff` · 2026-09-09
+
+```
+on (int r) = first positive of (int a) and (int b)
+    if (a > 0)
+        r = a
+    r = b
+```
+
+Rulings pass item 1 (question 2 of `fm3/milestone-0/questions.md`, log 35), reversing log 4. An assignment that gives a function its last result ends it there: `src/zero/lower.rs` emits `ret` right after it — inside an `if` arm, a `loop` or a `for` as well as at the top level — and a statement after it is refused as never running, naming the assignment's line. Whether a statement leaves its block is now what the lowering did (`lower_stmt` returns it; the tree readers `terminates` and `has_break` are gone), since it depends on which results have values on that path; until the last of several results is assigned the function goes on and may read the ones it has. `control`'s `magnitude of` keeps a temporary; `functions` gains `first positive of`, `ordered` and `power of two above`, six cases; `lex.expected.ssa` changes where `kind of` returns inside its `if` chain. zero 191/191 on native, wasm, riscv and arm-qemu, 182 + 9 skipped on air; probe test 970, 961 + 9, 970, 970, 940 + 30; cargo test 93 passed.
+
+---
+
 ### README: probe zero — `e74567d` · 2026-09-08
 
 Plan item 13 of milestone 0, the documentation half that lives in probe: `README.md` gains a section on `probe zero` — the store it reads (`name/name.md` for the prose and cases, `name/name.zero` for the code), the commands (`zero <store> emit`, `zero <store> run <case>`, `zero test [dir] [path]`), the case form, the compiler's own `platform` feature and a store's platform bodies, the `.expected.ssa` files and the fourteen stores under `suite/zero/`, illustrated with `suite/zero/skeleton` verbatim. The other half — the milestone 0 line at the top of each of zero.md's sections 2 to 15, six sentences corrected, and the log and questions files — is in the fm3 project, which is not a repository.
