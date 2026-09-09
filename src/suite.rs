@@ -290,12 +290,16 @@ pub fn run_dir_at(
 
         let has_kernel_cases = cases.iter().any(|c| c.func == "__kernel");
         let mut src = src;
+        let mut braced: Option<String> = None;
         let module = (|| -> Result<ssa::Module, String> {
             if let Some(e) = bad_directive {
                 return Err(e);
             }
-            let build = |src: &str| -> Result<ssa::Module, String> {
+            let mut build = |src: &str| -> Result<ssa::Module, String> {
                 let mut module = ssa::parse_with(&ssa::with_prelude(src), &policy).map_err(|e| e.to_string())?;
+                if let Some(w) = ssa::brace_warning(&path.display().to_string(), &module) {
+                    braced = Some(w);
+                }
                 ssa::resolve_types(&mut module, &policy);
                 ssa::verify(&module).map_err(|errs| errs.join("; "))?;
                 opt::optimize(&mut module, level);
@@ -327,6 +331,9 @@ pub fn run_dir_at(
                 continue;
             }
         };
+        if let Some(w) = braced.take() {
+            report.log.push_str(&format!("warn  {}\n", w));
+        }
 
         match backend {
             Backend::Native => {
@@ -1476,6 +1483,9 @@ pub fn boot(path: &str, target: &str, level: usize, policy: ssa::Policy, input: 
     let platform = crate::platform::Platform::load(target)?;
     let policy = platform.adjust(policy);
     let mut module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| e.to_string())?;
+    if let Some(w) = ssa::brace_warning(path, &module) {
+        eprintln!("warning: {}", w);
+    }
     ssa::resolve_types(&mut module, &policy);
     ssa::verify(&module).map_err(|e| e.join("; "))?;
     let start = module.funcs.iter().position(|f| f.name == "__start").ok_or("a bootable program needs fn __start()")?;

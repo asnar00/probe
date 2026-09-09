@@ -174,6 +174,7 @@ fn main() -> ExitCode {
                 let policy = platform.adjust(policy);
                 let src = std::fs::read_to_string(&args[1]).map_err(|e| format!("{}: {}", args[1], e))?;
                 let mut module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| e.to_string())?;
+                warn_braces(&args[1], &module);
                 ssa::resolve_types(&mut module, &policy);
                 ssa::verify(&module).map_err(|e| e.join("; "))?;
                 opt::optimize(&mut module, level);
@@ -230,6 +231,7 @@ fn main() -> ExitCode {
                 let policy = platform.adjust(policy);
                 let src = std::fs::read_to_string(&args[1]).map_err(|e| format!("{}: {}", args[1], e))?;
                 let mut module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| e.to_string())?;
+                warn_braces(&args[1], &module);
                 ssa::resolve_types(&mut module, &policy);
                 ssa::verify(&module).map_err(|e| e.join("; "))?;
                 opt::optimize(&mut module, level);
@@ -402,6 +404,13 @@ fn parse_arg(a: &str) -> Result<i64, ()> {
     Ok(if neg { v.wrapping_neg() } else { v })
 }
 
+/// a file still in the brace form is read, and told so
+fn warn_braces(path: &str, m: &ssa::Module) {
+    if let Some(w) = ssa::brace_warning(path, m) {
+        eprintln!("warning: {}", w);
+    }
+}
+
 fn cmd_parse(path: &str, policy: ssa::Policy) -> ExitCode {
     let src = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -411,6 +420,7 @@ fn cmd_parse(path: &str, policy: ssa::Policy) -> ExitCode {
         Ok(m) => m,
         Err(e) => return fail(&format!("{}: {}", path, e)),
     };
+    warn_braces(path, &module);
     // abstract types resolve under the same policy as every other command
     ssa::resolve_types(&mut module, &policy);
     // the module is printed either way: what the verifier objects to is
@@ -510,6 +520,7 @@ const ENCODINGS: &str = "targets/arm64.encodings.json";
 fn load_module(path: &str, level: usize, policy: ssa::Policy) -> Result<ssa::Module, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
     let mut module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| format!("{}: {}", path, e))?;
+    warn_braces(path, &module);
     ssa::resolve_types(&mut module, &policy);
     ssa::verify(&module).map_err(|errs| format!("{}: {}", path, errs.join("\n")))?;
     opt::optimize(&mut module, level);
@@ -669,6 +680,7 @@ fn cmd_live(path: &str, fname: &str, fargs: &[i64], policy: ssa::Policy) -> Exit
                 held_src = src.clone();
                 let parsed = (|| -> Result<ssa::Module, String> {
                     let mut m = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| e.to_string())?;
+                    warn_braces(path, &m);
                     ssa::resolve_types(&mut m, &policy);
                     ssa::verify(&m).map_err(|e| e.join("; "))?;
                     Ok(m)

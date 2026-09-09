@@ -1197,8 +1197,7 @@ pub struct Module {
     /// target's blocks to its file's rules
     pub platform: Vec<(String, String)>,
     /// the first line of the text that wrote a block with a brace: the
-    /// brace form is still read, and warned on once the tree indents
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// brace form is still read, and `brace_warning` says so
     pub braced: Option<usize>,
 }
 
@@ -2001,6 +2000,12 @@ pub fn with_prelude(src: &str) -> String {
         }
     }
     out
+}
+
+/// the warning a file in the brace form earns: the tree indents its
+/// blocks now, and `probe indent -w` rewrites the file
+pub fn brace_warning(path: &str, m: &Module) -> Option<String> {
+    m.braced.map(|line| format!("{}:{}: written with braces; the IR indents its blocks now, and `probe indent -w {}` rewrites it", path, line, path))
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -7247,6 +7252,8 @@ exit:
         let m = parse(&mixed).expect("mixed");
         assert_eq!(m.funcs.len(), 2);
         assert_eq!(m.braced, Some(1));
+        assert_eq!(brace_warning("x.ssa", &a).as_deref(), Some("x.ssa:1: written with braces; the IR indents its blocks now, and `probe indent -w x.ssa` rewrites it"));
+        assert_eq!(brace_warning("x.ssa", &b), None);
         // on one line, the fields in parentheses: what a type's name says
         let paren = parse("type p = struct(x: i64, y: i64)\nfn f(q: pack(a: u1, b: u7)) -> p\n    r: p = pack 1, 2\n    ret r\n").expect("paren");
         // (the struct is dissolved into its fields after parsing)
