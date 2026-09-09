@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the tree indents — `99eedb7` · 2026-09-10
+
+```
+type rgb = pack
+    r: u5
+    g: u6
+    b: u5
+```
+
+Third pass item 1, second landing (fm3 log 55). Every `.ssa` in the tree — `suite/`, `lib/`, `os/`, `examples/`, the three `.expected.ssa` — rewritten by `probe indent -w`, so no brace remains in any of them (`suite/packs.ssa` above). The emitters write the indented form themselves: `src/zero/lower.rs` first, whose output for hello, lex and clock is line for line what the converter made of the old expected files; then the suite's machine drivers, testfloat's wrappers and the fuzzer's programs. The `ir` bodies in `src/zero/platform.zero`, IR text inside a zero file, are converted too, and `ssa.md`'s and README's examples with them. The Rust unit tests' inline IR stays braced, since the parser reads both. Every path unchanged; `probe cost` reports hello's `run` at 640 310 as before; cargo test 101 passed.
+
+---
+
 ### zero: the IR reads its blocks from indentation — `a7a0370` · 2026-09-10
 
 ```
