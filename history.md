@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a node's due test reads the ring's count — `115ce71` · 2026-09-10
+
+```
+fn __pushed(s: number$) -> i64
+    r: ptr = get s, ring
+    n: i64 = load r
+    ret n
+```
+
+The parity pass, hop 3 (fm3 log 68). A node ran when its input's `position` plus `count` passed what it had seen, computed before its run and after, and `position` costs 46 on the cost tool's longest path for a tick the test throws away. The prelude's `__pushed` (above, `src/zero/lower.rs`) is the ring's count, one load, and means the same. Hello's `run` 2 547 → 2 253 on 722 lines; `__node1` 175 → 77, a scheduler pass 187 → 89. A front-end change, proven on the native path under fm3's new testing rule: probe zero test 465/465.
+
+---
+
 ### stream: a push through the buffer's pointer; opt: elide-stores — `6c83534` · 2026-09-10
 
 ```
