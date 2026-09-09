@@ -13,11 +13,15 @@ on (int n) = chained()
     n = latest i$
 
 on (int n) = repeated()
+    int i$ << 1 << (i$ + 1) while (_ < 5)
+    n = count i$ * 10 + latest i$
+
+on (int n) = latest tested()
     int i$ << 1 << (i$ + 1) while (i$ < 5)
     n = count i$ * 10 + latest i$
 
 on (int n) = counted down from (int k)
-    int i$ << k << (i$ - 1) while (i$ > 0)
+    int i$ << k << (i$ - 1) while (_ > 0)
     n = count i$ * 100 + latest i$
 
 on (int n) = peeked()

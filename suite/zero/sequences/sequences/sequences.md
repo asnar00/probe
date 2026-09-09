@@ -56,4 +56,4 @@ A name ending in `$` is a stream. It is a sequence when its items are all presen
 >bytes pushed() → 333
 
 ## hostile
-`i$[4]` on four items is a failed check from the IR. `_` with no sequence in the call is refused: "'_' marks the accumulator of a reduction". `x = 1` on a `for`'s item is refused. `Vec v$ = [Vec(1, 2, 3)]` is refused: "a list of Vec: only numbers and enumerations in this milestone". `int i$ at (1 khz) = [1, 2]` is refused: "a rate goes on an empty stream, `int i$ at (n hz)`, which `<<` then fills". More than 64K bytes of sequences in one case is a failed check in `arena_alloc`.
+`i$[4]` on four items is a failed check from the IR. `_` with no sequence in the call is refused: "'_' marks the accumulator of a reduction, or the candidate in a chain's `while`". `x = 1` on a `for`'s item is refused. `Vec v$ = [Vec(1, 2, 3)]` is refused: "a list of Vec: only numbers and enumerations in this milestone". `int i$ at (1 khz) = [1, 2]` is refused: "a rate goes on an empty stream, `int i$ at (n hz)`, which `<<` then fills". More than 64K bytes of sequences in one case is a failed check in `arena_alloc`.

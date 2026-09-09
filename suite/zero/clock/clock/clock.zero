@@ -1,7 +1,7 @@
 int t$ = ticks(5) at (4 hz)
 
 on (int t$) << ticks (int n)
-    t$ << 1 << (t$ + 1) while (t$ <= n)
+    t$ << 1 << (t$ + 1) while (_ <= n)
 
 on (int v) = value at (int m)
     v = t$ at (m ms)

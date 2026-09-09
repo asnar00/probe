@@ -7,4 +7,4 @@ on count down()
     print (frame i$)
 
 on (int i$) << count down from (int n)
-    i$ << n << (i$ - 1) while (i$ > 0) bound 10
+    i$ << n << (i$ - 1) while (_ > 0) bound 10

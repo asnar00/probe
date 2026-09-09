@@ -13,7 +13,7 @@ Before hello says hello, `count down` prints 10 to 1 on one line, one number a s
 ## interface
 - `run` counts down, then does what it did before.
 - `count down` wires section 10's task `count down from (10)` at `1 hz` and prints the frame it produced.
-- `count down from (n)` is the task: n, n − 1, ... 1.
+- `count down from (n)` is the task: n, n − 1, ... 1, pushing while the candidate `_` is above zero.
 
 ## rules
 - Section 16 writes `print [10 through 1] at (1 hz)`; here the rate is on the task's wiring and `print` takes the frame, one line with a space between the numbers (log 28).

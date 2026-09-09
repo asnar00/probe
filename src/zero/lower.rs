@@ -481,7 +481,7 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), type_feature: HashMap::new(), strict: false };
+    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), type_feature: HashMap::new(), strict: false, candidate: None };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -783,6 +783,9 @@ struct Lowerer {
     type_feature: HashMap<String, String>,
     /// while `choose` tries a method: a literal argument is its own type
     strict: bool,
+    /// inside a push chain's `while` (log 39): the candidate, which `_`
+    /// reads as; None elsewhere, where `_` is a reduction's accumulator
+    candidate: Option<Val>,
 }
 
 /// what kind of body is being lowered: the scheduler runs after a push
@@ -797,12 +800,11 @@ enum BodyKind {
     Node,
 }
 
-/// on the right of `<<` a stream's name is its latest item; in the
-/// chain's `while` it is the candidate about to be pushed (log 23)
+/// on the right of `<<`, and in the chain's `while`, a stream's name
+/// is its latest item (log 23, 39)
 #[derive(Clone)]
 enum PushRead {
     Latest(Val, Ty),
-    Value(Val),
 }
 
 /// a variable in a function's scope: its current IR value and type
@@ -2811,7 +2813,7 @@ impl Lowerer {
         // did any argument widen? `choose` prefers a method where none did
         let mut converted = false;
         for (i, (a, (_, ty))) in args.iter().zip(&info.params).enumerate() {
-            if matches!(a.kind, ExprKind::Acc) {
+            if matches!(a.kind, ExprKind::Acc) && self.candidate.is_none() {
                 if acc.is_some() {
                     return Err(lex::error(&file, a.line, "one '_' marks the accumulator"));
                 }
@@ -3621,7 +3623,8 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
 
     /// `x$ << a << b while (c)`: a push per item, the stream's name on
     /// the right reading as its latest item; `while` repeats the last
-    /// push for as long as the condition holds of the candidate (log 23)
+    /// push for as long as the condition holds of the candidate, which
+    /// it reads as `_` (log 23, 39)
     fn lower_pushes(&mut self, name: &str, s: &Val, items: &[Expr], cond: Option<&Expr>, bound: Option<i64>, b: &mut Body) -> Result<(), Error> {
         let file = b.file.clone();
         let Ty::Stream(elem) = s.ty.clone() else { unreachable!() };
@@ -3663,8 +3666,12 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     let v = item(self, e, b);
                     self.push_read = None;
                     let v = b.materialize(&v?);
-                    self.push_read = Some((name.to_string(), PushRead::Value(v.clone())));
+                    // in the condition `_` is the candidate and the stream's
+                    // name is still its latest item (log 39)
+                    self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
+                    let outer = self.candidate.replace(v.clone());
                     let cv = self.lower_expr(c, Some(&Ty::Bool), b, None);
+                    self.candidate = outer;
                     self.push_read = None;
                     let cv = cv?;
                     if cv.ty != Ty::Bool {
@@ -3935,10 +3942,8 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 // in a push chain the stream's own name is an item (log 23)
                 if let Some((n, read)) = self.push_read.clone() {
                     if &n == w {
-                        return match read {
-                            PushRead::Latest(s, ty) => self.latest_of(&s, &ty, b, dst),
-                            PushRead::Value(v) => Ok(v),
-                        };
+                        let PushRead::Latest(s, ty) = read;
+                        return self.latest_of(&s, &ty, b, dst);
                     }
                 }
                 let v = self.lower_expr(&Expr { kind: ExprKind::Name(w.clone()), line: e.line }, want, b, dst)?;
@@ -3980,7 +3985,10 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 b.line(&format!("{}: time = {}({})", out, f, n));
                 Ok(Val { text: out, ty, literal: false })
             }
-            ExprKind::Acc => Err(lex::error(&file, e.line, "'_' marks the accumulator of a reduction: it goes with a sequence in an operator or a call")),
+            ExprKind::Acc => match &self.candidate {
+                Some(v) => Ok(v.clone()),
+                None => Err(lex::error(&file, e.line, "'_' marks the accumulator of a reduction, or the candidate in a chain's `while`: it goes with a stream in an operator or a call")),
+            },
             ExprKind::List(items) => self.lower_list(items, want, b, dst, e.line),
             ExprKind::Range { from, to, inclusive } => self.lower_range(from, to, *inclusive, b, dst, e.line),
             ExprKind::Index(base, idx) => {
@@ -4057,7 +4065,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 Ok(Val { text: name, ty: v.ty, literal: false })
             }
             ExprKind::Bin(op, l, r) => {
-                if matches!(l.kind, ExprKind::Acc) || matches!(r.kind, ExprKind::Acc) {
+                if self.candidate.is_none() && (matches!(l.kind, ExprKind::Acc) || matches!(r.kind, ExprKind::Acc)) {
                     return self.reduce_bin(op, l, r, b, dst, e.line);
                 }
                 let cmp = is_comparison(op);
