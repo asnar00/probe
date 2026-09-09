@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `in$` is a system stream — `1c7e43f` · 2026-09-10
+
+```
+>two arrivals() with in "let x = 4" → 3, 5
+```
+
+Third pass item 4 (fm3 log 62, question 35). Input is the same shape as output the other way: the compiler's platform feature declares `uint8 in$`, a stream without a rate of 512 bytes, and under the runner a case's line is the platform's push — `with in "text"` in the `with` clause beside the switches, its bytes pushed through the prelude's `__in_ch` after the reset and before the program starts, on every path, so a task wired `token t$ = lex(in$)` has run over them when the call is made. The `lex` store (above, `suite/zero/lex/lex/lex.md`) loses `chars$` and keeps the experiment's seven results, the second arrival being the program's own push; `platform` gains `echo`. zero 465/465 on the CPU paths, 448 + 17 skipped on air; cargo test 104.
+
+---
+
 ### zero: formatting by dispatch — `39009cd` · 2026-09-10
 
 ```
