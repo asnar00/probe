@@ -601,6 +601,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// formatting by dispatch (log 59): a `<<` method is an operator with
+    /// the stream first and no result, named in the IR by both types; a
+    /// store's own method for a struct stands beside the library's; the
+    /// forms that are not methods are refused naming what they are
+    #[test]
+    fn a_push_is_dispatched_on_the_item() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-push-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → \"x\"\n").unwrap();
+        let emit_with = |code: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), code).unwrap();
+            emit(&dir)
+        };
+        let ir = emit_with("type pair =\n    int a, b\n\non (uint8 o$) << (pair p)\n    o$ << \"(\" << p.a << \")\"\n\non f()\n    out$ << 42 << pair(1, 2) << 2.5 << true\n    int64 k = 3\n    out$ << k\n").unwrap();
+        assert!(ir.contains("fn push__u8s_pair(o: u8$, p: pair)\n"), "{}", ir);
+        for call in ["push__u8s_int(", "push__u8s_pair(", "push__u8s_float(", "push__u8s_u1("] {
+            assert!(ir.contains(call), "{} not called: {}", call, ir);
+        }
+        // the library's methods are templates over the abstract types
+        assert!(ir.contains("fn push__u8s_int(o: u8$, x: int)\n") && ir.contains("fn push__u8s_ints(o: u8$, x: int$)\n"), "{}", ir);
+        let refused = |code: &str| emit_with(code).expect_err("accepted");
+        assert!(refused("on (int o$) << (int x)\n    o$ << 1\n\non f()\n    out$ << 1\n").contains("'int' pushed into 'int$' is the push itself, not a method"));
+        assert!(refused("on (uint8 o$) << (uint8 c$)\n    o$ << \"?\"\n\non f()\n    out$ << 1\n").contains("'string' pushed into 'string' is the block push of section 9, not a method"));
+        assert!(refused("on (uint8 o$) = (uint8 o$) << (int x)\n    o$ << \"?\"\n\non f()\n    out$ << 1\n").contains("unexpected '<<' in a function's name"));
+        assert!(refused("on f()\n    int i$ << 1\n    i$ << 2.5\n").contains("'i$' holds int but the item is float"));
+        assert!(refused("type token =\n    int kind, start, n\n\non f()\n    token t$ << token(1, 2, 3)\n    out$ << t$\n").contains("'out$' holds u8 but the item is token$: no `<<` method takes it"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// a product's bound (log 41) reaches every loop of the function it
     /// names, marked as the product's, and `probe cost` counts it
     #[test]

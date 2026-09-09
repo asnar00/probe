@@ -390,16 +390,26 @@ impl<'a> Parser<'a> {
             }
             matches!(self.toks.get(i + 1).map(|t| &t.tok), Some(Tok::Sym("=")) | Some(Tok::Sym("<<")))
         };
+        let mut name = Vec::new();
+        let mut groups = Vec::new();
         if has_results {
             results = self.parse_params()?;
             if self.eat_sym("<<") {
-                task = true;
+                // a `<<` method (log 59): `on (uint8 o$) << (int x)`, one
+                // bracketed group after the `<<` and nothing else, where
+                // a task has its name word; the stream is a parameter
+                // and there is no result, a push moving no reader
+                if self.at_sym("(") && self.group_ends_line() {
+                    groups.push(std::mem::take(&mut results));
+                    name.push(NamePart::Group);
+                    name.push(NamePart::Sym("<<".into()));
+                } else {
+                    task = true;
+                }
             } else {
                 self.expect_sym("=")?;
             }
         }
-        let mut name = Vec::new();
-        let mut groups = Vec::new();
         while !self.at(&Tok::Newline) {
             match self.peek().cloned() {
                 Some(Tok::Word(w)) => {
@@ -455,6 +465,26 @@ impl<'a> Parser<'a> {
             platform.push((kinds, lines));
         }
         Ok(FnDecl { line, results, name, groups, task, body, platform })
+    }
+
+    /// is the bracketed group at the cursor the last thing on the line?
+    fn group_ends_line(&self) -> bool {
+        let mut depth = 0;
+        let mut i = self.pos;
+        loop {
+            match self.toks.get(i).map(|t| &t.tok) {
+                Some(Tok::Sym("(")) => depth += 1,
+                Some(Tok::Sym(")")) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(self.toks.get(i + 1).map(|t| &t.tok), Some(Tok::Newline) | None);
+                    }
+                }
+                Some(Tok::Newline) | None => return false,
+                _ => {}
+            }
+            i += 1;
+        }
     }
 
     /// `(T a, T b)`, `(T a, b)`, `(T a$)`, `()`
@@ -1115,6 +1145,21 @@ mod tests {
         assert_eq!(f.name, vec![NamePart::Word("smaller".into()), NamePart::Word("of".into()), NamePart::Group, NamePart::Word("and".into()), NamePart::Group]);
         assert_eq!(f.groups.len(), 2);
         assert_eq!(f.body.len(), 1);
+    }
+
+    /// a `<<` method (log 59) is an operator with the stream as its first
+    /// parameter and no result, told from a task by the group after `<<`
+    #[test]
+    fn a_push_method_and_a_task() {
+        let src = "on (uint8 o$) << (int x)\n    o$ << \"?\"\n\non (int t$) << count up (int n)\n    t$ << 1\n";
+        let f = parse_feature("t", src, "t.zero", &types()).unwrap();
+        let Decl::Fn(m) = &f.decls[0] else { panic!() };
+        assert!(!m.task && m.results.is_empty());
+        assert_eq!(m.name, vec![NamePart::Group, NamePart::Sym("<<".into()), NamePart::Group]);
+        assert_eq!(m.groups.len(), 2);
+        assert!(m.groups[0][0].seq && m.groups[0][0].ty == "uint8" && m.groups[1][0].name == "x");
+        let Decl::Fn(t) = &f.decls[1] else { panic!() };
+        assert!(t.task && t.results.len() == 1 && t.name[0] == NamePart::Word("count".into()));
     }
 
     #[test]

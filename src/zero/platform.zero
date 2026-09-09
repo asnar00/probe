@@ -8,24 +8,72 @@ platform ir
 
 write(out$)
 
+on (uint8 o$) << (int x)
+    if (x < 0)
+        o$ << "-"
+    int m = if (x < 0) then (x) else (0 - x)
+    int top = loop (int p = 1) while (m / p <= -10) yields p
+        p = p * 10
+    loop (int p = top) while (p > 0)
+        o$ << uint8(48 - (m / p) % 10)
+        p = p / 10
+
+on (uint8 o$) << (uint x)
+    uint top = loop (uint p = 1) while (x / p >= 10) yields p
+        p = p * 10
+    loop (uint p = top) while (p > 0)
+        o$ << uint8(48 + (x / p) % 10)
+        p = p / 10
+
+on (uint8 o$) << (float x)
+    if (x != x)
+        o$ << "nan"
+    else if (x - x != x - x)
+        if (x < 0.0)
+            o$ << "-inf"
+        else
+            o$ << "inf"
+    else
+        if (x < 0.0)
+            o$ << "-"
+        float m = if (x < 0.0) then (0.0 - x) else (x)
+        int64 whole = int64(m)
+        int64 scaled = int64((m - float(whole)) * 1000000.0 + 0.5)
+        int64 carry = if (scaled >= 1000000) then (1) else (0)
+        o$ << whole + carry
+        o$ << "."
+        int64 places, int64 digits = loop (int64 places = 6, int64 digits = scaled - carry * 1000000) while (places > 1) yields places, digits
+            if (digits % 10 != 0)
+                break
+            continue (places - 1, digits / 10)
+        int64 top = loop (int64 p = 1, int64 k = 1) while (k < places) yields p
+            continue (p * 10, k + 1)
+        loop (int64 p = top) while (p > 0)
+            o$ << uint8(48 + (digits / p) % 10)
+            p = p / 10
+
+on (uint8 o$) << (bool b)
+    if (b)
+        o$ << "true"
+    else
+        o$ << "false"
+
+on (uint8 o$) << (int x$)
+    loop (int i = 0) while (i < count x$)
+        if (i > 0)
+            o$ << " "
+        o$ << x$[i]
+        i = i + 1
+
+on (uint8 o$) << (float x$)
+    loop (int i = 0) while (i < count x$)
+        if (i > 0)
+            o$ << " "
+        o$ << x$[i]
+        i = i + 1
+
 on print (string s)
     out$ << s << "\n"
 
 on print (int x$)
-platform ir
-    f: int[] = unread(x)
-    n: i64 = len f
-    loop(i: i64 = 0)
-        done: u1 = cmp.ge i, n
-        if done
-            break
-        first: u1 = cmp.eq i, 0
-        if first
-        else
-            __out_ch(32)
-        v: int = load f, i
-        __print_int(v)
-        i2: i64 = add i, 1
-        continue i2
-    __out_ch(10)
-    ret
+    out$ << x$ << "\n"

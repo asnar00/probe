@@ -27,6 +27,7 @@ A name ending in `$` is a stream. It is a sequence when its items are all presen
 - A reduction folds one sequence from its first item; an empty sequence gives the type's zero.
 - Map, zip, reduce, `for` and an index read the unread items and leave the reader where it is; `advance` and `frame` move it, and the words then agree with `count`.
 - A `for`'s item is not assigned; a sequence's memory is the store's, emptied before every case.
+- A push into a stream of bytes is by dispatch (third pass, log 59): `b$ << 33` would write the digits `3` `3`, so `bytes pushed` pushes a raw byte as `uint8(33)`.
 
 ## testing
 >how many() → 4

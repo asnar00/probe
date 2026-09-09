@@ -122,5 +122,5 @@ on (int n) = framed sum()
 
 on (int n) = bytes pushed()
     uint8 b$ = "hi"
-    b$ << 33
+    b$ << uint8(33)
     n = count b$ * 100 + int(b$[2])

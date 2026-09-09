@@ -65,41 +65,6 @@ fn __push(s: number$, v: number)
         push(s, t, v)
     ret
 
-; one byte into `out$`, a regular ring: the regular push, straight
-fn __out_ch(c: u8)
-    s: u8$ = __get_out()
-    push(s, c)
-    ret
-
-; an int in decimal
-fn __print_int(x: int)
-    negative: u1 = cmp.lt x, 0
-    m: int = if negative
-        __out_ch(45)
-        y: int = sub 0, x
-        yield y
-    else
-        yield x
-    top: int = loop(p: int = 1)
-        q: int = div m, p
-        more: u1 = cmp.ge q, 10
-        if more
-            p2: int = mul p, 10
-            continue p2
-        break p
-    loop(p3: int = top)
-        done: u1 = cmp.eq p3, 0
-        if done
-            break
-        d: int = div m, p3
-        r: int = rem d, 10
-        a: int = add r, 48
-        c: u8 = conv a
-        __out_ch(c)
-        p4: int = div p3, 10
-        continue p4
-    ret
-
 
 ; the context: one field per feature-scope variable — name: scope, merge (feature)
 ;   __enabled_platform: user, last (platform)
@@ -121,7 +86,18 @@ type __ctx = struct
     __node2_fin: u1
 
 data __ctx_mem: array(__ctx, 1)
-data __s1 = "\n"
+data __s1 = "-"
+data __s2 = "nan"
+data __s3 = "-inf"
+data __s4 = "inf"
+data __s5 = "-"
+data __s6 = "."
+data __s7 = "true"
+data __s8 = "false"
+data __s9 = " "
+data __s10 = " "
+data __s11 = "\n"
+data __s12 = "\n"
 
 ; before every case: the arena emptied, the variables at their initial values
 fn __zero_reset()
@@ -325,6 +301,272 @@ fn write(c: u8$, __hz: i64) -> u8$
     n: i64 = count(c)
     c2: u8$ = advance(c, n)
     ret c2
+fn push__u8s_int(o: u8$, x: int)
+    _1: u1 = cmp.lt x, 0
+    if _1
+        _2: ptr = addr __s1
+        _3: i64 = len __s1
+        _4: u8[] = __str(_2, _3)
+        loop(_5: i64 = 0)
+            _6: u1 = cmp.ge _5, _3
+            if _6
+                break
+            _7: u8 = load _4, _5
+            __push(o, _7)
+            _8: i64 = add _5, 1
+            continue _8
+    _9: u1 = cmp.lt x, 0
+    m: int = if _9
+        yield x
+    else
+        _10: int = sub 0, x
+        yield _10
+    top: int = loop(p: int = 1)
+        _11: int = div m, p
+        _12: u1 = cmp.le _11, -10
+        if _12
+        else
+            break p
+        p_2: int = mul p, 10
+        continue p_2
+    loop(p_3: int = top)
+        _13: u1 = cmp.gt p_3, 0
+        if _13
+        else
+            break
+        _14: int = div m, p_3
+        _15: int = rem _14, 10
+        _16: int = sub 48, _15
+        _17: u8 = conv _16
+        __push(o, _17)
+        p_4: int = div p_3, 10
+        continue p_4
+    ret
+fn push__u8s_uint(o: u8$, x: uint)
+    top: uint = loop(p: uint = 1)
+        _1: uint = div x, p
+        _2: u1 = cmp.ge _1, 10
+        if _2
+        else
+            break p
+        p_2: uint = mul p, 10
+        continue p_2
+    loop(p_3: uint = top)
+        _3: u1 = cmp.gt p_3, 0
+        if _3
+        else
+            break
+        _4: uint = div x, p_3
+        _5: uint = rem _4, 10
+        _6: uint = add 48, _5
+        _7: u8 = conv _6
+        __push(o, _7)
+        p_4: uint = div p_3, 10
+        continue p_4
+    ret
+fn push__u8s_float(o: u8$, x: float)
+    _1: u1 = cmp.ne x, x
+    if _1
+        _2: ptr = addr __s2
+        _3: i64 = len __s2
+        _4: u8[] = __str(_2, _3)
+        loop(_5: i64 = 0)
+            _6: u1 = cmp.ge _5, _3
+            if _6
+                break
+            _7: u8 = load _4, _5
+            __push(o, _7)
+            _8: i64 = add _5, 1
+            continue _8
+    else
+        _9: float = sub x, x
+        _10: float = sub x, x
+        _11: u1 = cmp.ne _9, _10
+        if _11
+            _12: u1 = cmp.lt x, 0.0
+            if _12
+                _13: ptr = addr __s3
+                _14: i64 = len __s3
+                _15: u8[] = __str(_13, _14)
+                loop(_16: i64 = 0)
+                    _17: u1 = cmp.ge _16, _14
+                    if _17
+                        break
+                    _18: u8 = load _15, _16
+                    __push(o, _18)
+                    _19: i64 = add _16, 1
+                    continue _19
+            else
+                _20: ptr = addr __s4
+                _21: i64 = len __s4
+                _22: u8[] = __str(_20, _21)
+                loop(_23: i64 = 0)
+                    _24: u1 = cmp.ge _23, _21
+                    if _24
+                        break
+                    _25: u8 = load _22, _23
+                    __push(o, _25)
+                    _26: i64 = add _23, 1
+                    continue _26
+        else
+            _27: u1 = cmp.lt x, 0.0
+            if _27
+                _28: ptr = addr __s5
+                _29: i64 = len __s5
+                _30: u8[] = __str(_28, _29)
+                loop(_31: i64 = 0)
+                    _32: u1 = cmp.ge _31, _29
+                    if _32
+                        break
+                    _33: u8 = load _30, _31
+                    __push(o, _33)
+                    _34: i64 = add _31, 1
+                    continue _34
+            _35: u1 = cmp.lt x, 0.0
+            m: float = if _35
+                _36: float = sub 0.0, x
+                yield _36
+            else
+                yield x
+            whole: i64 = conv m
+            _37: float = conv whole
+            _38: float = sub m, _37
+            _39: float = mul _38, 1000000.0
+            _40: float = add _39, 0.5
+            scaled: i64 = conv _40
+            _41: u1 = cmp.ge scaled, 1000000
+            carry: i64 = if _41
+                yield 1
+            else
+                yield 0
+            _42: i64 = add whole, carry
+            push__u8s_int(o, _42)
+            _43: ptr = addr __s6
+            _44: i64 = len __s6
+            _45: u8[] = __str(_43, _44)
+            loop(_46: i64 = 0)
+                _47: u1 = cmp.ge _46, _44
+                if _47
+                    break
+                _48: u8 = load _45, _46
+                __push(o, _48)
+                _49: i64 = add _46, 1
+                continue _49
+            _50: i64 = mul carry, 1000000
+            _51: i64 = sub scaled, _50
+            places_2: i64, digits_2: i64 = loop(places: i64 = 6, digits: i64 = _51)
+                _52: u1 = cmp.gt places, 1
+                if _52
+                else
+                    break places, digits
+                _53: i64 = rem digits, 10
+                _54: u1 = cmp.ne _53, 0
+                if _54
+                    break places, digits
+                _55: i64 = sub places, 1
+                _56: i64 = div digits, 10
+                continue _55, _56
+            top: i64 = loop(p: i64 = 1, k: i64 = 1)
+                _57: u1 = cmp.lt k, places_2
+                if _57
+                else
+                    break p
+                _58: i64 = mul p, 10
+                _59: i64 = add k, 1
+                continue _58, _59
+            loop(p_2: i64 = top)
+                _60: u1 = cmp.gt p_2, 0
+                if _60
+                else
+                    break
+                _61: i64 = div digits_2, p_2
+                _62: i64 = rem _61, 10
+                _63: i64 = add 48, _62
+                _64: u8 = conv _63
+                __push(o, _64)
+                p_3: i64 = div p_2, 10
+                continue p_3
+    ret
+fn push__u8s_u1(o: u8$, b: u1)
+    if b
+        _1: ptr = addr __s7
+        _2: i64 = len __s7
+        _3: u8[] = __str(_1, _2)
+        loop(_4: i64 = 0)
+            _5: u1 = cmp.ge _4, _2
+            if _5
+                break
+            _6: u8 = load _3, _4
+            __push(o, _6)
+            _7: i64 = add _4, 1
+            continue _7
+    else
+        _8: ptr = addr __s8
+        _9: i64 = len __s8
+        _10: u8[] = __str(_8, _9)
+        loop(_11: i64 = 0)
+            _12: u1 = cmp.ge _11, _9
+            if _12
+                break
+            _13: u8 = load _10, _11
+            __push(o, _13)
+            _14: i64 = add _11, 1
+            continue _14
+    ret
+fn push__u8s_ints(o: u8$, x: int$)
+    loop(i: int = 0)
+        _1: i64 = count x
+        _2: int = conv _1
+        _3: u1 = cmp.lt i, _2
+        if _3
+        else
+            break
+        _4: u1 = cmp.gt i, 0
+        if _4
+            _5: ptr = addr __s9
+            _6: i64 = len __s9
+            _7: u8[] = __str(_5, _6)
+            loop(_8: i64 = 0)
+                _9: u1 = cmp.ge _8, _6
+                if _9
+                    break
+                _10: u8 = load _7, _8
+                __push(o, _10)
+                _11: i64 = add _8, 1
+                continue _11
+        _12: i64 = conv i
+        _13: int = peek x, _12
+        push__u8s_int(o, _13)
+        i_2: int = add i, 1
+        continue i_2
+    ret
+fn push__u8s_floats(o: u8$, x: float$)
+    loop(i: int = 0)
+        _1: i64 = count x
+        _2: int = conv _1
+        _3: u1 = cmp.lt i, _2
+        if _3
+        else
+            break
+        _4: u1 = cmp.gt i, 0
+        if _4
+            _5: ptr = addr __s10
+            _6: i64 = len __s10
+            _7: u8[] = __str(_5, _6)
+            loop(_8: i64 = 0)
+                _9: u1 = cmp.ge _8, _6
+                if _9
+                    break
+                _10: u8 = load _7, _8
+                __push(o, _10)
+                _11: i64 = add _8, 1
+                continue _11
+        _12: i64 = conv i
+        _13: float = peek x, _12
+        push__u8s_float(o, _13)
+        i_2: int = add i, 1
+        continue i_2
+    ret
 fn print(s: u8$)
     _1: u8$ = __get_out()
     _2: u8[] = unread(s)
@@ -337,8 +579,8 @@ fn print(s: u8$)
         push(_1, _6)
         _7: i64 = add _4, 1
         continue _7
-    _8: ptr = addr __s1
-    _9: i64 = len __s1
+    _8: ptr = addr __s11
+    _9: i64 = len __s11
     _10: u8[] = __str(_8, _9)
     loop(_11: i64 = 0)
         _12: u1 = cmp.ge _11, _9
@@ -351,21 +593,20 @@ fn print(s: u8$)
     __run()
     ret
 fn print__ints(x: int$)
-    f: int[] = unread(x)
-    n: i64 = len f
-    loop(i: i64 = 0)
-        done: u1 = cmp.ge i, n
-        if done
+    _1: u8$ = __get_out()
+    push__u8s_ints(_1, x)
+    _2: ptr = addr __s12
+    _3: i64 = len __s12
+    _4: u8[] = __str(_2, _3)
+    loop(_5: i64 = 0)
+        _6: u1 = cmp.ge _5, _3
+        if _6
             break
-        first: u1 = cmp.eq i, 0
-        if first
-        else
-            __out_ch(32)
-        v: int = load f, i
-        __print_int(v)
-        i2: i64 = add i, 1
-        continue i2
-    __out_ch(10)
+        _7: u8 = load _4, _5
+        push(_1, _7)
+        _8: i64 = add _5, 1
+        continue _8
+    __run()
     ret
 
 ; feature clock (layer runtime)

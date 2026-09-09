@@ -131,6 +131,11 @@ fn fits(arg: &Ty, param: &Ty) -> bool {
     if arg == param {
         return true;
     }
+    // a stream fits by its element (log 59): an `int64$` reaches a
+    // method over `int x$`, the IR instantiating the template
+    if let (Ty::Stream(a), Ty::Stream(p)) = (arg, param) {
+        return fits(a, p);
+    }
     let (Ty::Num(a), Ty::Num(p)) = (arg, param) else {
         return false;
     };
@@ -388,11 +393,11 @@ pub struct Call {
     pub context: Vec<(String, bool)>,
 }
 
-/// the IR every store gets: the output buffer `print` appends to, the
-/// two functions the runner reads it back with, `__out_ch` and
-/// `__print_int` for the platform feature's `print` bodies (log 31), and
-/// `__str` (a string literal's view). `__zero_reset`, which the runner
-/// calls before each case, is generated per store (log 16)
+/// the IR every store gets: the arena, the clock, the two functions
+/// the runner reads `out$` back with (log 57), the push any ring takes
+/// (log 38), and `__str` (a string literal's view). `__zero_reset`,
+/// which the runner calls before each case, is generated per store
+/// (log 16). Formatting is the platform feature's, in zero (log 59)
 const PRELUDE: &str = r#"
 ; an empty string's bytes
 data __nul: array(u8, 1)
@@ -458,41 +463,6 @@ fn __push(s: number$, v: number)
         t: i64 = __now()
         push(s, t, v)
     ret
-
-; one byte into `out$`, a regular ring: the regular push, straight
-fn __out_ch(c: u8)
-    s: u8$ = __get_out()
-    push(s, c)
-    ret
-
-; an int in decimal
-fn __print_int(x: int)
-    negative: u1 = cmp.lt x, 0
-    m: int = if negative
-        __out_ch(45)
-        y: int = sub 0, x
-        yield y
-    else
-        yield x
-    top: int = loop(p: int = 1)
-        q: int = div m, p
-        more: u1 = cmp.ge q, 10
-        if more
-            p2: int = mul p, 10
-            continue p2
-        break p
-    loop(p3: int = top)
-        done: u1 = cmp.eq p3, 0
-        if done
-            break
-        d: int = div m, p3
-        r: int = rem d, 10
-        a: int = add r, 48
-        c: u8 = conv a
-        __out_ch(c)
-        p4: int = div p3, 10
-        continue p4
-    ret
 "#;
 
 /// a ring's capacity, or the item count where it is larger (log 38):
@@ -532,6 +502,9 @@ fn op_name(s: &str) -> &'static str {
         ">=" => "cmp.ge",
         "==" => "cmp.eq",
         "!=" => "cmp.ne",
+        // a push into a stream: `<<`'s methods are `push__u8s__int`
+        // and the like (log 59)
+        "<<" => "push",
         _ => "op",
     }
 }
@@ -1301,7 +1274,23 @@ impl Lowerer {
                 return Err(lex::error(file, f.line, "an operator is not a platform function"));
             }
         }
-        if operator {
+        let push_method = matches!(f.name.as_slice(), [NamePart::Group, NamePart::Sym(s), NamePart::Group] if s == "<<");
+        if operator && push_method {
+            // a `<<` method (log 59): a stream, then the item's type, no result
+            if params.len() != 2 || !matches!(params[0].1, Ty::Stream(_)) {
+                return Err(lex::error(file, f.line, "a `<<` method is `on (T o$) << (U x)`: a stream, then what is pushed into it"));
+            }
+            if !results.is_empty() {
+                return Err(lex::error(file, f.line, "a `<<` method has no result: a push moves no reader"));
+            }
+            let elem = params[0].1.elem().cloned().unwrap();
+            if params[1].1 == elem {
+                return Err(lex::error(file, f.line, format!("'{}' pushed into '{}' is the push itself, not a method", zero_ty(&params[1].1), zero_ty(&params[0].1))));
+            }
+            if matches!(params[1].1, Ty::Stream(ref e) if **e == elem) {
+                return Err(lex::error(file, f.line, format!("'{}' pushed into '{}' is the block push of section 9, not a method", zero_ty(&params[1].1), zero_ty(&params[0].1))));
+            }
+        } else if operator {
             // an operator on a declared type: the IR does not dispatch
             // arithmetic on structs, so it is a function named by the
             // opcode and its first operand's type (log 9)
@@ -1359,7 +1348,7 @@ impl Lowerer {
         // (`name_methods`, log 52)
         let (ir, plain) = if operator {
             let tys: Vec<String> = mine.params.iter().map(|(_, t)| t.ir()).collect();
-            let op = if set.is_empty() { format!("{}_{}", key, mine.params[0].1.ir()) } else { crate::ssa::method_name(&key, &tys) };
+            let op = if set.is_empty() && !push_method { format!("{}_{}", key, mine.params[0].1.ir()) } else { crate::ssa::method_name(&key, &tys) };
             (op.clone(), op)
         } else {
             (String::new(), String::new())
@@ -2483,7 +2472,9 @@ impl Lowerer {
             };
             defs.push(format!("{}: {}", ir, ty.ir()));
         }
-        b.open_loop(&format!("{} = ", defs.join(", ")), &hdr.join(", "), false);
+        // a loop that yields nothing and moves no stream stands alone
+        let prefix = if defs.is_empty() { String::new() } else { format!("{} = ", defs.join(", ")) };
+        b.open_loop(&prefix, &hdr.join(", "), false);
         b.out.push_str(&body_lines);
         for (name, v, local) in after {
             if local {
@@ -3227,6 +3218,11 @@ impl Lowerer {
                     return Err(lex::error(&file, a.line, format!("'{}' wants a {} here, given a {}", info.key, ty.ir(), v.ty.ir())));
                 }
             }
+            // an abstract element binds through the stream (log 59)
+            let (item, ty) = match (&item, ty) {
+                (Ty::Stream(a), Ty::Stream(p)) if p.abstract_name().is_some() => (a.as_ref().clone(), p.as_ref()),
+                _ => (item, ty),
+            };
             if let Some(name) = ty.abstract_name() {
                 if &item != ty {
                     // the substitution: each abstract name binds to the
@@ -3248,9 +3244,10 @@ impl Lowerer {
         // the arguments narrower than what their name bound to widen
         for (i, name, lifted_here) in binders {
             let to = bound[&name].clone();
-            let have = if lifted_here { vals[i].ty.elem().cloned().unwrap() } else { vals[i].ty.clone() };
+            let whole = matches!(vals[i].ty, Ty::Stream(_));
+            let have = if lifted_here || whole { vals[i].ty.elem().cloned().unwrap() } else { vals[i].ty.clone() };
             if have != to {
-                if lifted_here {
+                if lifted_here || whole {
                     return Err(lex::error(&file, args[i].line, format!("'{}' binds {} to {} here, and a sequence of {} is not widened item by item", info.key, name, zero_ty(&to), zero_ty(&vals[i].ty))));
                 }
                 vals[i] = self.widen_to(&vals[i].clone(), &to, b, None);
@@ -3839,8 +3836,11 @@ impl Lowerer {
         // `float`, then any number (an operator symbol has one method
         // per left type, so no width is in question, log 52)
         let decimal = r.text.contains('.');
+        // a number literal's own type; a bool's or an enumeration's
+        // case is its type as it stands
+        let own = if !matches!(r.ty, Ty::Num(_)) { r.ty.clone() } else if decimal { float_ty() } else { int_ty() };
         let takes = |p: &Ty, round: Round| match (r.literal, round) {
-            (true, Round::Own) => fits(&(if decimal { float_ty() } else { int_ty() }), p),
+            (true, Round::Own) => fits(&own, p),
             (true, _) => fits_literal(r, p),
             (false, _) => fits(&r.ty, p),
         };
@@ -4103,21 +4103,18 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
     /// `x$ << a << b while (c)`: a push per item, the stream's name on
     /// the right reading as its latest item; `while` repeats the last
     /// push for as long as the condition holds of the candidate, which
-    /// it reads as `_` (log 23, 39)
+    /// it reads as `_` (log 23, 39). What each item does is `push_item`'s
     fn lower_pushes(&mut self, name: &str, s: &Val, items: &[Expr], cond: Option<&Expr>, b: &mut Body) -> Result<(), Error> {
         let file = b.file.clone();
         let Ty::Stream(elem) = s.ty.clone() else { unreachable!() };
         let elem = *elem;
         let block_ty = Ty::Stream(Box::new(elem.clone()));
+        // an item is lowered as its own type, so that a `<<` method may
+        // take it (log 59); a list alone takes the element as the type
+        // the context fixes, since its items have none of their own
         let item = |l: &mut Lowerer, e: &Expr, b: &mut Body| -> Result<Val, Error> {
-            let mut v = l.lower_expr(e, Some(&elem), b, None)?;
-            if v.literal && fits_literal(&v, &elem) {
-                v.ty = elem.clone();
-            }
-            if v.ty != elem && v.ty != block_ty {
-                return Err(lex::error(&b.file, e.line, format!("'{}$' holds {} but the item is {}", name, elem.ir(), v.ty.ir())));
-            }
-            Ok(v)
+            let want = if matches!(e.kind, ExprKind::List(_)) { Some(&elem) } else { None };
+            l.lower_expr(e, want, b, None)
         };
         for (i, e) in items.iter().enumerate() {
             let last = i + 1 == items.len();
@@ -4147,23 +4144,7 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
                     if cond.is_some() && last {
                         return Err(lex::error(&file, e.line, "a block is pushed once: `while` repeats an item"));
                     }
-                    let (view, n) = self.str_view(text, b);
-                    let i = b.tmp();
-                    b.line(&format!("loop({}: i64 = 0)", i));
-                    b.depth += 1;
-                    let done = b.tmp();
-                    b.line(&format!("{}: u1 = cmp.ge {}, {}", done, i, n));
-                    b.line(&format!("if {}", done));
-                    b.depth += 1;
-                    b.line("break");
-                    b.depth -= 1;
-                    let c = b.tmp();
-                    b.line(&format!("{}: u8 = load {}, {}", c, view, i));
-                    self.emit_push(name, s, &Val { text: c, ty: elem.clone(), literal: false }, b);
-                    let i2 = b.tmp();
-                    b.line(&format!("{}: i64 = add {}, 1", i2, i));
-                    b.line(&format!("continue {}", i2));
-                    b.depth -= 1;
+                    self.push_text(name, s, text, b);
                     continue;
                 }
             }
@@ -4195,7 +4176,7 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
                     b.depth += 1;
                     b.line("break");
                     b.depth -= 1;
-                    self.emit_push(name, s, &v, b);
+                    self.push_item(name, s, v, e.line, b)?;
                     b.line("continue");
                     b.depth -= 1;
                 }
@@ -4203,39 +4184,109 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
                     self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
                     let v = item(self, e, b);
                     self.push_read = None;
-                    let v = v?;
-                    if v.ty == block_ty {
-                        // `x$ << block$`: the block's unread items, one
-                        // push each
-                        if v.ty.items().is_none() {
-                            return Err(lex::error(&file, e.line, "a stream of structs is pushed an item at a time"));
-                        }
-                        let view = self.unread_view(&v, b);
-                        let n = b.tmp();
-                        b.line(&format!("{}: i64 = len {}", n, view));
-                        let k = b.tmp();
-                        b.open_loop("", &format!("{}: i64 = 0", k), false);
-                        b.depth += 1;
-                        let done = b.tmp();
-                        b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
-                        b.line(&format!("if {}", done));
-                        b.depth += 1;
-                        b.line("break");
-                        b.depth -= 1;
-                        let x = b.tmp();
-                        b.line(&format!("{}: {} = load {}, {}", x, elem.ir(), view, k));
-                        self.emit_push(name, s, &Val { text: x, ty: elem.clone(), literal: false }, b);
-                        let k2 = b.tmp();
-                        b.line(&format!("{}: i64 = add {}, 1", k2, k));
-                        b.line(&format!("continue {}", k2));
-                        b.depth -= 1;
-                        continue;
-                    }
-                    self.emit_push(name, s, &v, b);
+                    self.push_item(name, s, v?, e.line, b)?;
                 }
             }
         }
         Ok(())
+    }
+
+    /// One item into a stream, by dispatch (section 15, log 59). A value
+    /// of the element type, or a block of them, is pushed as it is; else
+    /// the `<<` method the stream's type and the item's pick, a literal
+    /// as its own type first (`out$ << 42` writes the digits); else a
+    /// literal that fits the element; else a struct as its fields with
+    /// a space between, each by this rule, and an enumeration as its
+    /// case's name; else the item is refused
+    fn push_item(&mut self, name: &str, s: &Val, mut v: Val, line: usize, b: &mut Body) -> Result<(), Error> {
+        let file = b.file.clone();
+        let Ty::Stream(elem) = s.ty.clone() else { unreachable!() };
+        let elem = *elem;
+        if !v.literal && v.ty == elem {
+            self.emit_push(name, s, &v, b);
+            return Ok(());
+        }
+        if v.ty == Ty::Stream(Box::new(elem.clone())) {
+            // `x$ << block$`: the block's unread items, one push each
+            if v.ty.items().is_none() {
+                return Err(lex::error(&file, line, "a stream of structs is pushed an item at a time"));
+            }
+            let view = self.unread_view(&v, b);
+            let n = b.tmp();
+            b.line(&format!("{}: i64 = len {}", n, view));
+            self.push_view(name, s, &elem, &view, &n, b);
+            return Ok(());
+        }
+        if let Some(info) = self.find_operator("<<", &s.ty, &v, &file, line)? {
+            // a literal is typed for the method: its parameter's type
+            // where that is concrete, else the literal's own
+            if v.literal {
+                let p = &info.params[1].1;
+                v.ty = if is_concrete(p) { p.clone() } else if v.text.contains('.') { float_ty() } else { int_ty() };
+            }
+            let v = b.materialize(&v);
+            b.line(&format!("{}({}, {})", info.ir, s.text, v.text));
+            return Ok(());
+        }
+        if v.literal && fits_literal(&v, &elem) {
+            v.ty = elem.clone();
+            self.emit_push(name, s, &v, b);
+            return Ok(());
+        }
+        match v.ty.clone() {
+            Ty::Struct(sn) => {
+                let Some(TypeInfo::Struct(fields)) = self.types.get(&sn).cloned() else { unreachable!() };
+                for (i, (f, t, _)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.push_text(name, s, " ", b);
+                    }
+                    let x = b.tmp();
+                    b.line(&format!("{}: {} = get {}, {}", x, t.ir(), v.text, f));
+                    self.push_item(name, s, Val { text: x, ty: t.clone(), literal: false }, line, b)?;
+                }
+                Ok(())
+            }
+            Ty::Enum(en) => {
+                let Some(TypeInfo::Enum(cases)) = self.types.get(&en).cloned() else { unreachable!() };
+                let v = b.materialize(&v);
+                for (k, case) in cases.iter().enumerate() {
+                    let is = b.tmp();
+                    b.line(&format!("{}: u1 = cmp.eq {}, {}", is, v.text, k));
+                    b.line(&format!("if {}", is));
+                    b.depth += 1;
+                    self.push_text(name, s, case, b);
+                    b.depth -= 1;
+                }
+                Ok(())
+            }
+            _ => Err(lex::error(&file, line, format!("'{}$' holds {} but the item is {}{}", name, elem.ir(), zero_ty(&v.ty), if elem.ir() == "u8" { ": no `<<` method takes it" } else { "" }))),
+        }
+    }
+
+    /// a string's bytes into a stream of bytes, straight from `data` (log 57)
+    fn push_text(&mut self, name: &str, s: &Val, text: &str, b: &mut Body) {
+        let (view, n) = self.str_view(text, b);
+        self.push_view(name, s, &Ty::Num("u8".into()), &view, &n, b);
+    }
+
+    /// the `n` items of a view pushed one by one
+    fn push_view(&mut self, name: &str, s: &Val, elem: &Ty, view: &str, n: &str, b: &mut Body) {
+        let k = b.tmp();
+        b.open_loop("", &format!("{}: i64 = 0", k), false);
+        b.depth += 1;
+        let done = b.tmp();
+        b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
+        b.line(&format!("if {}", done));
+        b.depth += 1;
+        b.line("break");
+        b.depth -= 1;
+        let x = b.tmp();
+        b.line(&format!("{}: {} = load {}, {}", x, elem.ir(), view, k));
+        self.emit_push(name, s, &Val { text: x, ty: elem.clone(), literal: false }, b);
+        let k2 = b.tmp();
+        b.line(&format!("{}: i64 = add {}, 1", k2, k));
+        b.line(&format!("continue {}", k2));
+        b.depth -= 1;
     }
 
     /// after a push or an `end` from a plain function into a stream a

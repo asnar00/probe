@@ -1,0 +1,80 @@
+type pair =
+    int a, b
+
+type point =
+    int x, y, z
+
+type colour = red | green | blue
+
+on (uint8 o$) << (pair p)
+    o$ << "(" << p.a << ", " << p.b << ")"
+
+on an int()
+    out$ << 42
+
+on a negative int()
+    out$ << -7 << " " << -10
+
+on an int64()
+    int64 big = 1234567890123
+    out$ << big
+
+on ints()
+    int i$ = [1 through 3]
+    out$ << i$
+
+on a frame()
+    int i$ << 5 << 6 << 7
+    out$ << (frame i$)
+
+on a float()
+    out$ << 2.5
+
+on floats()
+    float32 f$ = [1.5, 3.0, 0.25]
+    out$ << f$
+
+on a third()
+    float32 t = 1.0 / 3.0
+    out$ << t
+
+on a negative float()
+    out$ << -0.5
+
+on a large float()
+    float64 x = 1000000.0
+    out$ << x
+
+on two thirds()
+    float64 x = 2.0 / 3.0
+    out$ << x
+
+on not a number()
+    float32 z = 0.0
+    out$ << z / z
+
+on infinity()
+    float32 z = 0.0
+    out$ << 1.0 / z << " " << -1.0 / z
+
+on a bool()
+    out$ << true << " " << (1 < 0)
+
+on a byte()
+    uint8 c = uint8(65)
+    out$ << c
+
+on a struct()
+    out$ << point(1, 2, 3)
+
+on a pair()
+    out$ << pair(1, 2)
+
+on a colour()
+    out$ << green
+
+on mixed()
+    out$ << "n = " << 5 << ", x = " << 1.5 << "\n"
+
+on lines()
+    out$ << 1 << "\n" << 2 << "\n"
