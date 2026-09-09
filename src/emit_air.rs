@@ -165,16 +165,21 @@ fn unreachable_from_kernel(module: &Module, taken: &[String], natives: &Natives)
 
 /// A kernel outgrowing always-inline: the size of every kept function
 /// once each call in it is inlined (its instructions plus its callees'
-/// inlined sizes, one copy per call site; a recursive edge counts the
-/// callee's own instructions once, since AIR runs no recursion), and
-/// how many call sites each has. The kernel's inlined size is the body
-/// Apple's compiler is given; past `INLINE_BUDGET` its compile service
-/// crashes (an `XPC_ERROR_CONNECTION_INTERRUPTED` about a minute in),
-/// and the functions whose inlining costs most are called instead
-fn inlined_sizes(module: &Module, out: &[bool], natives: &Natives) -> (Vec<u64>, Vec<u32>) {
+/// inlined sizes, one copy per call site, a callee in `no` counting as
+/// the call alone; a recursive edge counts the callee's own
+/// instructions once, since AIR runs no recursion), and how many
+/// copies of each the kernel holds — a function called from n sites
+/// inside a function inlined m times is copied n·m times, and one in
+/// `no` is compiled once and counts once towards its callees, which is
+/// how a store's scheduler, called after every push and inlined into
+/// every case's start, comes to be most of a kernel. The kernel's
+/// inlined size is the body Apple's compiler is given; past
+/// `INLINE_BUDGET` its compile service crashes (an
+/// `XPC_ERROR_CONNECTION_INTERRUPTED` about a minute in), and the
+/// functions whose inlining costs most are called instead
+fn inlined_sizes(module: &Module, out: &[bool], natives: &Natives, no: &[bool]) -> (Vec<u64>, Vec<u64>) {
     let names: HashMap<&str, usize> = module.funcs.iter().enumerate().map(|(i, f)| (f.name.as_str(), i)).collect();
     let n = module.funcs.len();
-    let mut sites = vec![0u32; n];
     let mut callees: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (i, f) in module.funcs.iter().enumerate() {
         if out[i] {
@@ -188,13 +193,12 @@ fn inlined_sizes(module: &Module, out: &[bool], natives: &Natives) -> (Vec<u64>,
                 if let Some(&j) = names.get(callee.as_str()) {
                     if !out[j] {
                         callees[i].push(j);
-                        sites[j] += 1;
                     }
                 }
             }
         }
     }
-    fn size(i: usize, module: &Module, callees: &[Vec<usize>], memo: &mut Vec<Option<u64>>, active: &mut Vec<bool>) -> u64 {
+    fn size(i: usize, module: &Module, callees: &[Vec<usize>], no: &[bool], memo: &mut Vec<Option<u64>>, active: &mut Vec<bool>) -> u64 {
         if let Some(s) = memo[i] {
             return s;
         }
@@ -203,15 +207,42 @@ fn inlined_sizes(module: &Module, out: &[bool], natives: &Natives) -> (Vec<u64>,
             return own;
         }
         active[i] = true;
-        let total = own + callees[i].iter().map(|&j| size(j, module, callees, memo, active)).sum::<u64>();
+        let total = own + callees[i].iter().filter(|&&j| !no[j]).map(|&j| size(j, module, callees, no, memo, active)).sum::<u64>();
         active[i] = false;
         memo[i] = Some(total);
         total
     }
     let mut memo = vec![None; n];
     let mut active = vec![false; n];
-    let sizes = (0..n).map(|i| if out[i] { 0 } else { size(i, module, &callees, &mut memo, &mut active) }).collect();
-    (sizes, sites)
+    let sizes: Vec<u64> = (0..n).map(|i| if out[i] { 0 } else { size(i, module, &callees, no, &mut memo, &mut active) }).collect();
+    // copies: callers before callees, from the kernel, a recursive edge
+    // (back into an active function) not followed
+    let mut copies = vec![0u64; n];
+    let Some(k) = module.funcs.iter().position(|f| f.name == "__kernel") else { return (sizes, copies) };
+    fn order(i: usize, callees: &[Vec<usize>], seen: &mut Vec<bool>, active: &mut Vec<bool>, post: &mut Vec<usize>) {
+        if seen[i] {
+            return;
+        }
+        seen[i] = true;
+        active[i] = true;
+        for &j in &callees[i] {
+            if !active[j] {
+                order(j, callees, seen, active, post);
+            }
+        }
+        active[i] = false;
+        post.push(i);
+    }
+    let mut post = Vec::new();
+    order(k, &callees, &mut vec![false; n], &mut vec![false; n], &mut post);
+    copies[k] = 1;
+    for &i in post.iter().rev() {
+        let from = if no[i] { 1 } else { copies[i] };
+        for &j in &callees[i] {
+            copies[j] += from;
+        }
+    }
+    (sizes, copies)
 }
 
 /// the inlined size of a kernel past which its functions are not all
@@ -223,35 +254,47 @@ fn inlined_sizes(module: &Module, out: &[bool], natives: &Natives) -> (Vec<u64>,
 /// suite is 183 388. 400 000 is about half the smallest crash
 const INLINE_BUDGET: u64 = 400_000;
 
-/// the kept functions to compile as calls rather than inline: none
-/// while the kernel fits the budget; past it, the functions whose
-/// inlining costs the most copies, greedily, until the estimate fits
+/// the kept functions to compile as calls rather than inline: while
+/// the kernel is past the budget, or one function's copies alone pass
+/// a quarter of it, the function whose inlining costs the most copies
+/// is called, and the sizes and copies are counted again with it
+/// compiled once. The quarter was measured on 10 September 2026 with
+/// PROBE_AIR_SIZE: the zero suite's `tasks` store, at 257 214 inlined,
+/// hung Apple's compiler with its scheduler `__run` (8 737
+/// instructions) copied 23 times, 200 000 of the kernel, and compiled
+/// in four seconds with `__run` called; its `lex` store runs with the
+/// scheduler copied 11 times (51 000), `streams` with `__push` copied
+/// 68 times (38 000)
 fn no_inline(module: &Module, out: &[bool], natives: &Natives, budget: u64) -> (Vec<bool>, u64) {
-    let (sizes, sites) = inlined_sizes(module, out, natives);
-    let mut no = vec![false; module.funcs.len()];
+    let n = module.funcs.len();
+    let mut no = vec![false; n];
     let Some(k) = module.funcs.iter().position(|f| f.name == "__kernel") else { return (no, 0) };
-    let mut total = sizes[k];
-    let inlined = total;
     let report = std::env::var("PROBE_AIR_SIZE").is_ok();
-    if report {
-        eprintln!("PROBE_AIR_SIZE: the kernel inlined is {} instructions (budget {})", total, budget);
-    }
-    // the saving of calling f instead: every copy but one
-    let mut order: Vec<usize> = (0..module.funcs.len()).filter(|&i| !out[i] && sites[i] > 1).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(sizes[i] * (sites[i] as u64 - 1)));
-    if report {
-        for &i in order.iter().take(12) {
-            eprintln!("PROBE_AIR_SIZE:   {:<28} {:>8} inlined x {} sites", module.funcs[i].name, sizes[i], sites[i]);
+    let mut inlined = 0;
+    loop {
+        let (sizes, copies) = inlined_sizes(module, out, natives, &no);
+        // the kernel's body, and every called function's once
+        let total = sizes[k] + (0..n).filter(|&i| no[i]).map(|i| sizes[i]).sum::<u64>();
+        if inlined == 0 {
+            inlined = total;
+            if report {
+                eprintln!("PROBE_AIR_SIZE: the kernel inlined is {} instructions (budget {})", total, budget);
+                let mut order: Vec<usize> = (0..n).filter(|&i| !out[i] && copies[i] > 1).collect();
+                order.sort_by_key(|&i| std::cmp::Reverse(sizes[i] * (copies[i] - 1)));
+                for &i in order.iter().take(12) {
+                    eprintln!("PROBE_AIR_SIZE:   {:<28} {:>8} inlined x {} copies", module.funcs[i].name, sizes[i], copies[i]);
+                }
+            }
         }
-    }
-    for &i in &order {
-        if total <= budget {
+        // the saving of calling f instead: every copy but one
+        let Some(i) = (0..n).filter(|&i| !out[i] && !no[i] && copies[i] > 1).max_by_key(|&i| sizes[i] * (copies[i] - 1)) else { break };
+        let saving = sizes[i] * (copies[i] - 1);
+        if total <= budget && saving <= budget / 4 {
             break;
         }
         no[i] = true;
-        total = total.saturating_sub(sizes[i] * (sites[i] as u64 - 1));
         if report {
-            eprintln!("PROBE_AIR_SIZE:   {} called, not inlined; about {} left", module.funcs[i].name, total);
+            eprintln!("PROBE_AIR_SIZE:   {} called, not inlined ({} x {} copies); about {} left", module.funcs[i].name, sizes[i], copies[i], total - saving);
         }
     }
     (no, inlined)
@@ -1647,6 +1690,36 @@ impl Cx<'_> {
 
 #[cfg(test)]
 mod tests {
+    /// copies count through inlined callers (fm3 log 64): a function
+    /// called from three sites inside one inlined twice is copied six
+    /// times, and once the caller is called it is copied three; the
+    /// rule calls the function whose copies pass a quarter of the
+    /// budget though the kernel is under it
+    #[test]
+    fn copies_count_through_inlined_callers() {
+        let src = "fn b(x: i64) -> i64\n    y: i64 = add x, 1\n    ret y\n\nfn a(x: i64) -> i64\n    p: i64 = b(x)\n    q: i64 = b(p)\n    r: i64 = b(q)\n    ret r\n\nfn __kernel(t: i64) -> i64\n    u: i64 = a(t)\n    v: i64 = a(u)\n    ret v\n";
+        let policy = crate::ssa::Policy::new(crate::ssa::Type::I64).unwrap();
+        let module = crate::ssa::parse_with(src, &policy).unwrap();
+        let idx = |n: &str| module.funcs.iter().position(|f| f.name == n).unwrap();
+        let natives = crate::platform::Natives::none();
+        let out = vec![false; module.funcs.len()];
+        let (sizes, copies) = super::inlined_sizes(&module, &out, &natives, &vec![false; module.funcs.len()]);
+        assert_eq!((copies[idx("__kernel")], copies[idx("a")], copies[idx("b")]), (1, 2, 6));
+        assert_eq!(sizes[idx("a")], sizes[idx("b")] * 3 + 5);
+        let mut no = vec![false; module.funcs.len()];
+        no[idx("a")] = true;
+        let (sizes2, copies2) = super::inlined_sizes(&module, &out, &natives, &no);
+        assert_eq!(copies2[idx("b")], 3);
+        assert_eq!(sizes2[idx("__kernel")], 4);
+        // b is copied six times, saving the most: its copies pass a
+        // quarter of a budget of 20, and with it called a's do not
+        let (called, inlined) = super::no_inline(&module, &out, &natives, 20);
+        assert_eq!(inlined, sizes[idx("__kernel")]);
+        assert!(called[idx("b")] && !called[idx("a")], "{:?}", called);
+        let (called, _) = super::no_inline(&module, &out, &natives, 1000);
+        assert!(called.iter().all(|&c| !c));
+    }
+
     /// a program with a __kernel, compiled and dispatched on this Mac's
     /// GPU by the Python driver: what its area holds, as printed
     fn run_example(path: &str, n: u32, group: Option<u32>) -> String {

@@ -7,29 +7,29 @@ data __nul: array(u8, 1)
 data __heap: array(u8, 65536)
 data __arena: array(i64, 3)
 
-; the store's virtual clock: an exact time, zero at every case, moved
-; by a rated task sleeping between its pushes and by nothing else; a
-; push into a stream without a rate is stamped with it in microseconds
-data __clock: array(time, 1)
+; the store's virtual clock (log 63): integer ticks on a clock of a
+; million a second, the bootstrap's step; zero at every case, moved by
+; a rated task sleeping between its pushes and by nothing else; a push
+; into a stream without a rate is stamped with it. Exact time is the
+; boundary's: `x$ at (t)` and `position` convert once, in the library
+data __clock: array(i64, 1)
 ; the scheduler is running: a push from inside a task does not start it again
 data __running: array(i64, 1)
 
 fn __now() -> i64
     p: ptr = addr __clock
-    c: time = load p
-    h: time = seconds(1000000)
-    x: time = mul c, h
-    k: i64 = conv x
+    k: i64 = load p
     ret k
 
-; a task wired at a rate, after each push: the clock moves on one period
+; a task wired at a rate, after each push: the clock moves on one
+; period, in whole ticks, as a rated ring steps
 fn __sleep(hz: i64)
     rated: u1 = cmp.gt hz, 0
     if rated
         p: ptr = addr __clock
-        c: time = load p
-        d: time = period(hz)
-        c2: time = add c, d
+        c: i64 = load p
+        d: i64 = div 1000000, hz
+        c2: i64 = add c, d
         store c2, p
     ret
 
@@ -118,8 +118,7 @@ fn __zero_reset()
     h: ptr = addr __heap
     arena_init(a, h, 65536)
     k: ptr = addr __clock
-    z: time = seconds(0)
-    store z, k
+    store 0: i64, k
     r: ptr = addr __running
     store 0: i64, r
     _1: u8$ = __regular_u8(1000000, 4096)

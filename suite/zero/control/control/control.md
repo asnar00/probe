@@ -68,8 +68,8 @@ Each of these is refused with the file and line named. An assignment inside a lo
 
 `probe cost` on the emitted IR (`probe zero suite/zero/control emit > control.ssa; probe cost control.ssa ticks blast_off`) reports:
 
-    ticks: loop at b1 x3 (i from 1 by 1 to 3), body 1388 ssa
-    blast_off: loop at b1 x3 (i from 3 by -1 to 1), body 1391 ssa
+    ticks: loop at b1 x3 (i from 1 by 1 to 3), body 1412 ssa
+    blast_off: loop at b1 x3 (i from 3 by -1 to 1), body 1415 ssa
 
 (a pass is one write of a string literal to `out$`, its bytes pushed straight from `data` into the regular ring and the scheduler run once after, log 57; each string's bytes show as a counted inner loop of their own — `x4` for "tick", `x1` for the newline)
 
