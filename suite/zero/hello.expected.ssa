@@ -59,6 +59,13 @@ fn __str(p: ptr, n: i64) -> u8[]
     v: u8[] = pack q, n, 1
     ret v
 
+; how many items a stream's ring has received, whoever reads it: what a
+; node compares with what it has seen (log 68)
+fn __pushed(s: number$) -> i64
+    r: ptr = get s, ring
+    n: i64 = load r
+    ret n
+
 ; a push into any stream (log 38): stamped with the clock on a ring
 ; without a rate, the next sample on one with a rate
 fn __push(s: number$, v: number)
@@ -273,25 +280,21 @@ fn __node1() -> u1
     fin: u1 = __get___node1_fin()
     notfin: u1 = xor fin, 1
     _1: u8$ = __get___node1_c()
-    _2: i64, _3: i64 = position(_1)
-    _4: i64 = count _1
-    _5: i64 = add _2, _4
-    _6: i64 = __get___node1_c_seen()
-    _7: u1 = cmp.gt _5, _6
-    _8: u1 = ended(_1)
-    _9: u1 = and _8, notfin
-    _10: u1 = or _7, _9
+    _2: i64 = __pushed(_1)
+    _3: i64 = __get___node1_c_seen()
+    _4: u1 = cmp.gt _2, _3
+    _5: u1 = ended(_1)
+    _6: u1 = and _5, notfin
+    _7: u1 = or _4, _6
     on: u1 = __on_platform()
-    due: u1 = and _10, on
+    due: u1 = and _7, on
     ran: u1 = if due
-        _11: u8$ = write(_1, 0: i64)
-        __set___node1_c(_11)
-        _12: i64, _13: i64 = position(_11)
-        _14: i64 = count _11
-        _15: i64 = add _12, _14
-        __set___node1_c_seen(_15)
-        _16: u1 = ended(_11)
-        __set___node1_fin(_16)
+        _8: u8$ = write(_1, 0: i64)
+        __set___node1_c(_8)
+        _9: i64 = __pushed(_8)
+        __set___node1_c_seen(_9)
+        _10: u1 = ended(_8)
+        __set___node1_fin(_10)
         yield 1
     else
         yield 0

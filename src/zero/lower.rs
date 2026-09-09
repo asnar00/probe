@@ -460,6 +460,13 @@ fn __str(p: ptr, n: i64) -> u8[]
     v: u8[] = pack q, n, 1
     ret v
 
+; how many items a stream's ring has received, whoever reads it: what a
+; node compares with what it has seen (log 68)
+fn __pushed(s: number$) -> i64
+    r: ptr = get s, ring
+    n: i64 = load r
+    ret n
+
 ; a push into any stream (log 38): stamped with the clock on a ring
 ; without a rate, the next sample on one with a rate
 fn __push(s: number$, v: number)
@@ -1984,15 +1991,12 @@ impl Lowerer {
         Ok(())
     }
 
-    /// how many items a reader's ring has received: its position plus
-    /// what is unread
+    /// how many items a reader's ring has received: the ring's count
+    /// (log 68: it was the reader's position plus what is unread, and
+    /// `position` computes a tick the test throws away)
     fn pushed_of(&mut self, reader: &str, b: &mut Body) -> String {
-        let (p, t) = (b.tmp(), b.tmp());
-        b.line(&format!("{}: i64, {}: i64 = position({})", p, t, reader));
-        let n = b.tmp();
-        b.line(&format!("{}: i64 = count {}", n, reader));
         let pushed = b.tmp();
-        b.line(&format!("{}: i64 = add {}, {}", pushed, p, n));
+        b.line(&format!("{}: i64 = __pushed({})", pushed, reader));
         pushed
     }
 
