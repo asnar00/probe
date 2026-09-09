@@ -274,6 +274,16 @@ fn __set___node1_fin(v: u1) {
     ret
 }
 
+; a feature's effective state: its own enabled and its ancestors', read by every gate
+fn __on_platform() -> u1 {
+    own: u1 = __get___enabled_platform()
+    ret own
+}
+fn __on_lex() -> u1 {
+    own: u1 = __get___enabled_lex()
+    ret own
+}
+
 ; node 1: token t$ = lex (chars$) — run when an input has more than the node has seen, or has ended and the node has not run since
 fn __node1() -> u1 {
     fin: u1 = __get___node1_fin()
@@ -287,7 +297,7 @@ fn __node1() -> u1 {
     _8: u1 = ended(_1)
     _9: u1 = and _8, notfin
     _10: u1 = or _7, _9
-    on: u1 = __get___enabled_lex()
+    on: u1 = __on_lex()
     due: u1 = and _10, on
     ran: u1 = if due {
         _11: __s_token = __get_t()

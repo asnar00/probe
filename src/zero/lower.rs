@@ -546,10 +546,11 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store, int_bits: u32) -> Result<Lowered, Error> {
-    let mut l = Lowerer { int_ty: Ty::Num(format!("i{}", int_bits)), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new() };
+    let mut l = Lowerer { int_ty: Ty::Num(format!("i{}", int_bits)), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
+        l.parents.insert(f.name.clone(), f.parent.clone());
     }
     // types first, then every signature, then the variables (a wiring
     // names a task), so a body may use what a later feature declares
@@ -863,6 +864,9 @@ struct Lowerer {
     ranks: HashMap<String, usize>,
     /// the features, in composition order
     features: Vec<String>,
+    /// each feature's parent (log 51): the effective state of a feature
+    /// is its own flag and every ancestor's, read by `__on_<feature>`
+    parents: HashMap<String, Option<String>>,
     /// the feature that declared each type
     type_feature: HashMap<String, String>,
     /// while `choose` tries a method: which round of literal typing
@@ -1628,6 +1632,17 @@ impl Lowerer {
             writeln!(self.out, "\nfn __get_{}() -> {} {{\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    v: {} = get c, {}\n    ret v\n}}", f.name, t, t, f.name).unwrap();
             writeln!(self.out, "\nfn __set_{}(v: {}) {{\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    c2: __ctx = set c, {}, v\n    store c2, p\n    ret\n}}", f.name, t, f.name).unwrap();
         }
+        // a feature is on when its own flag and every ancestor's are
+        // (section 14, log 51): the gate reads this, and a switch writes
+        // one field, so a parent off and on again leaves its children as
+        // they were
+        writeln!(self.out, "\n; a feature's effective state: its own enabled and its ancestors', read by every gate").unwrap();
+        for f in &self.features {
+            match self.parents.get(f).cloned().flatten() {
+                Some(p) => writeln!(self.out, "fn __on_{}() -> u1 {{\n    own: u1 = __get___enabled_{}()\n    up: u1 = __on_{}()\n    on: u1 = and own, up\n    ret on\n}}", f, f, p).unwrap(),
+                None => writeln!(self.out, "fn __on_{}() -> u1 {{\n    own: u1 = __get___enabled_{}()\n    ret own\n}}", f, f).unwrap(),
+            }
+        }
         let nodes = std::mem::take(&mut self.nodes);
         for (k, node) in nodes.iter().enumerate() {
             self.emit_node(k + 1, node)?;
@@ -1673,7 +1688,7 @@ impl Lowerer {
                 let body = format!("{}__{}({})", info.ir, info.chain[i], args.join(", "));
                 let under = if i == 0 { None } else { Some(format!("{}__before_{}({})", info.ir, info.chain[i], args.join(", "))) };
                 let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
-                b.line(&format!("on: u1 = __get___enabled_{}()", info.chain[i]));
+                b.line(&format!("on: u1 = __on_{}()", info.chain[i]));
                 if rets.is_empty() {
                     b.line("if on {");
                     b.depth += 1;
@@ -1766,7 +1781,7 @@ impl Lowerer {
         }
         let pending = pending.unwrap_or_else(|| "notfin".into());
         // a feature that is off runs no node; its readers keep their place
-        b.line(&format!("on: u1 = __get___enabled_{}()", node.feature));
+        b.line(&format!("on: u1 = __on_{}()", node.feature));
         b.line(&format!("due: u1 = and {}, on", pending));
         b.line("ran: u1 = if due {");
         b.depth += 1;
@@ -1852,6 +1867,14 @@ impl Lowerer {
         // a literal is defined with its type first: in a node, a plain IR
         // function, a bare literal to an abstract `int` has no type to take
         Ok(b.materialize(&v).text)
+    }
+
+    /// a feature's switch read (log 51): its effective state, own flag
+    /// and ancestors', through the generated `__on_<feature>`
+    fn read_on(&mut self, feature: &str, b: &mut Body, dst: Option<&str>) -> Val {
+        let out = name_for(dst, &Ty::Bool, b);
+        b.line(&format!("{}: u1 = __on_{}()", out, feature));
+        Val { text: out, ty: Ty::Bool, literal: false }
     }
 
     /// a feature variable read: a call to its getter
@@ -4288,7 +4311,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     if let [Part::Word(w)] = parts.as_slice() {
                         if field == "enabled" && self.features.contains(w) {
                             self.reach(&format!("{}.enabled", w), w, &file, e.line)?;
-                            return self.read_fvar(&format!("__enabled_{}", w), b, dst, e.line);
+                            return Ok(self.read_on(w, b, dst));
                         }
                         if let Some(TypeInfo::Enum(cases)) = self.types.get(w) {
                             let Some(i) = cases.iter().position(|c| c == field) else {
@@ -4416,7 +4439,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     }
                     if w == "enabled" {
                         let cur = self.cur.clone();
-                        return self.read_fvar(&format!("__enabled_{}", cur), b, dst, e.line);
+                        return Ok(self.read_on(&cur, b, dst));
                     }
                     if let Some(v) = self.enum_case(w) {
                         return Ok(v);

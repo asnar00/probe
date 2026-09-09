@@ -216,11 +216,21 @@ fn __set___node1_fin(v: u1) {
     ret
 }
 
+; a feature's effective state: its own enabled and its ancestors', read by every gate
+fn __on_platform() -> u1 {
+    own: u1 = __get___enabled_platform()
+    ret own
+}
+fn __on_clock() -> u1 {
+    own: u1 = __get___enabled_clock()
+    ret own
+}
+
 ; node 1: int t$ = ticks (5) at (4 hz) — run when an input has more than the node has seen, or has ended and the node has not run since
 fn __node1() -> u1 {
     fin: u1 = __get___node1_fin()
     notfin: u1 = xor fin, 1
-    on: u1 = __get___enabled_clock()
+    on: u1 = __on_clock()
     due: u1 = and notfin, on
     ran: u1 = if due {
         _1: int$ = __get_t()

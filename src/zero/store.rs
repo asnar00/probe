@@ -37,9 +37,14 @@ impl Store {
         self.layers.iter().position(|l| l == layer).unwrap_or(0)
     }
 
-    /// a feature and every feature under it in the parent tree: what a
-    /// switch of that feature takes with it, since the enabled gate is
-    /// the ancestor conjunction (structure.md, log 44)
+    /// the features effectively off when these are switched off (log
+    /// 51): each with every feature under it in the parent tree, since
+    /// the enabled gate is the ancestor conjunction (structure.md)
+    pub fn closure(&self, switched: &std::collections::BTreeSet<String>) -> std::collections::BTreeSet<String> {
+        switched.iter().flat_map(|f| self.subtree(f)).collect()
+    }
+
+    /// a feature and every feature under it in the parent tree
     pub fn subtree(&self, name: &str) -> Vec<String> {
         let mut out = vec![name.to_string()];
         let mut i = 0;

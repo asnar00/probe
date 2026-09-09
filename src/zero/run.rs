@@ -74,49 +74,45 @@ fn calls_of(s: &store::Store, l: &lower::Lowered) -> Result<Vec<Planned>, String
     Ok(out)
 }
 
-/// The contexts a store's cases run in (section 14, log 44): every
-/// feature on, then each feature of the store off alone — with its
-/// descendants, since a feature off takes its subtree with it — as a
-/// label and the set of features off. The compiler's own `platform`
-/// feature is never switched
+/// The contexts a store's cases run in (section 14, log 44, 51): every
+/// feature on, then each feature of the store switched off alone, as a
+/// label and the set of features switched. A feature off takes its
+/// descendants with it through the gate, not through their fields
+/// (`Store::closure` says which are effectively off). The compiler's
+/// own `platform` feature is never switched
 fn contexts(s: &store::Store) -> Vec<(String, BTreeSet<String>)> {
     let mut out = vec![(String::new(), BTreeSet::new())];
     for f in &s.features {
         if f.name != "platform" {
-            out.push((format!("with {} off", f.name), s.subtree(&f.name).into_iter().collect()));
+            out.push((format!("with {} off", f.name), [f.name.clone()].into_iter().collect()));
         }
     }
     out
 }
 
-/// The features off when a case runs in the runner's context `x`: `x`
-/// with the case's own line applied on top, each `off` taking its
-/// subtree. None when the case does not stand there: its own feature
-/// is off in `x`, or its line pins `on` a feature `x` switches off. A
-/// line that pins `on` a feature its own `off` covers contradicts
-/// itself and is refused
-fn effective(s: &store::Store, x: &BTreeSet<String>, p: &Planned) -> Result<Option<BTreeSet<String>>, String> {
-    if x.contains(&p.feature) {
-        return Ok(None);
+/// The features switched off when a case runs in the runner's context
+/// `x`: `x` with the case's own line applied on top, a sequence of
+/// switches in order, `off` setting a flag and `on` restoring it (log
+/// 51). None when the case does not stand there: its own feature is
+/// effectively off in `x`
+fn effective(s: &store::Store, x: &BTreeSet<String>, p: &Planned) -> Option<BTreeSet<String>> {
+    if s.closure(x).contains(&p.feature) {
+        return None;
     }
     let mut off = x.clone();
     for (name, on) in &p.call.context {
         if *on {
-            if x.contains(name) {
-                return Ok(None);
-            }
-            if off.contains(name) {
-                return Err(format!("{}:{}: `with {} on` contradicts an `off` on the same line that switches it off", p.file, p.line, name));
-            }
+            off.remove(name);
         } else {
-            off.extend(s.subtree(name));
+            off.insert(name.clone());
         }
     }
-    Ok(Some(off))
+    Some(off)
 }
 
-/// the calls that build a context before a case: each feature off, its
-/// `enabled` set to 0 (everything is on after the reset, log 43)
+/// the calls that build a context before a case: each feature
+/// switched off, its own `enabled` field set to 0 and no other
+/// (everything is on after the reset, log 43)
 fn setters(off: &BTreeSet<String>) -> Vec<(String, Vec<i64>)> {
     off.iter().map(|f| (format!("__set___enabled_{}", f), vec![0])).collect()
 }
@@ -173,12 +169,13 @@ fn plan(s: &store::Store, cases: &[Planned]) -> Result<(Vec<Run>, Vec<Over>), St
     for (label, x) in contexts(s) {
         // the chain of test definitions per method in this context,
         // newest first: the features whose cases stand
+        let gone = s.closure(&x);
         let methods: BTreeSet<&str> = cases.iter().map(|p| p.call.func.as_str()).collect();
         let mut chains: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
         for m in methods {
             let mut chain = Vec::new();
             for f in s.features.iter().rev() {
-                if x.contains(&f.name) || !cases.iter().any(|p| p.feature == f.name && p.call.func == m) {
+                if gone.contains(&f.name) || !cases.iter().any(|p| p.feature == f.name && p.call.func == m) {
                     continue;
                 }
                 chain.push(f.name.as_str());
@@ -189,7 +186,7 @@ fn plan(s: &store::Store, cases: &[Planned]) -> Result<(Vec<Run>, Vec<Over>), St
             chains.insert(m, chain);
         }
         for (i, p) in cases.iter().enumerate() {
-            let Some(off) = effective(s, &x, p)? else { continue };
+            let Some(off) = effective(s, &x, p) else { continue };
             let chain = &chains[p.call.func.as_str()];
             if !chain.iter().any(|f| *f == p.feature) {
                 over.push(Over { text: labelled(&p.text, &label), context: describe(&x), why: format!("replaced by {}'s cases for {}", chain[0], call_text(p)) });
@@ -317,7 +314,7 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize) -> Resul
     if let Some(why) = out_of_reach(&module, &l.funcs, kind).get(&call.func) {
         return Err(format!("{} is out of reach here: {}", text.split('→').next().unwrap_or("").trim(), skip_note(&l.funcs, why, kind)));
     }
-    let off = effective(&s, &BTreeSet::new(), &p)?.unwrap_or_default();
+    let off = effective(&s, &BTreeSet::new(), &p).unwrap_or_default();
     let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: call.expect == store::Expect::Check, text: true, before: setters(&off) };
     let got = suite::run_calls(&module, &l.ir, Backend::Native, &[sc], "zero-run", level)?.remove(0)?;
     let vals: Vec<String> = got.values.iter().map(|v| v.to_string()).collect();
@@ -539,19 +536,22 @@ mod tests {
         let err = match plan(&s, &cases) { Err(e) => e, Ok(_) => panic!("accepted") };
         assert!(err.contains("`>existing` in feature b's testing, but no older feature has cases for h()"), "{}", err);
         let _ = std::fs::remove_dir_all(&dir);
-        // a line's `off` takes the subtree; an `on` the runner contradicts does not stand
+        // a line's `off` switches one field (log 51); the descendants go
+        // off through the gate, which `closure` says
         let s = store::read(Path::new("suite/zero/features")).unwrap();
         let l = lower::lower(&s, 64).unwrap();
         let cases = calls_of(&s, &l).unwrap();
         let base_off = cases.iter().find(|p| p.text.starts_with("greeted() with base off")).unwrap();
-        let off = effective(&s, &BTreeSet::new(), base_off).unwrap().unwrap();
-        assert_eq!(off.iter().cloned().collect::<Vec<_>>(), ["base", "more", "most", "tool"]);
-        assert_eq!(setters(&off)[0], ("__set___enabled_base".to_string(), vec![0]));
-        let pinned = Planned { text: String::new(), call: lower::Call { func: "greeted".into(), args: vec![], nrets: 1, expect: store::Expect::Values(vec![1]), context: vec![("tool".into(), true)] }, feature: "most".into(), rank: 3, file: "most.md".into(), line: 1 };
-        assert!(effective(&s, &s.subtree("tool").into_iter().collect(), &pinned).unwrap().is_none());
-        assert!(effective(&s, &s.subtree("more").into_iter().collect(), &pinned).unwrap().is_some());
-        let contradiction = Planned { call: lower::Call { context: vec![("base".into(), false), ("more".into(), true)], ..pinned.call }, ..pinned };
-        assert!(effective(&s, &BTreeSet::new(), &contradiction).unwrap_err().contains("`with more on` contradicts"));
+        let off = effective(&s, &BTreeSet::new(), base_off).unwrap();
+        assert_eq!(off.iter().cloned().collect::<Vec<_>>(), ["base"]);
+        assert_eq!(s.closure(&off).iter().cloned().collect::<Vec<_>>(), ["base", "more", "most", "tool"]);
+        assert_eq!(setters(&off), [("__set___enabled_base".to_string(), vec![0])]);
+        // a case does not stand where its feature is effectively off; a
+        // line is a sequence of switches, `on` restoring a flag
+        let sequence = Planned { text: String::new(), call: lower::Call { func: "switches".into(), args: vec![], nrets: 2, expect: store::Expect::Values(vec![0, 1]), context: vec![("more".into(), false), ("base".into(), false), ("base".into(), true)] }, feature: "most".into(), rank: 3, file: "most.md".into(), line: 1 };
+        assert!(effective(&s, &["base".to_string()].into_iter().collect(), &sequence).is_none());
+        assert_eq!(effective(&s, &["tool".to_string()].into_iter().collect(), &sequence).unwrap().iter().cloned().collect::<Vec<_>>(), ["more", "tool"]);
+        assert!(l.ir.contains("fn __on_more() -> u1 {\n    own: u1 = __get___enabled_more()\n    up: u1 = __on_base()\n    on: u1 = and own, up\n    ret on\n}"), "{}", l.ir);
     }
 
     /// a bare literal between two concrete widths takes the product's

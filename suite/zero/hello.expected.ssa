@@ -211,6 +211,28 @@ fn __set___enabled_bye(v: u1) {
     ret
 }
 
+; a feature's effective state: its own enabled and its ancestors', read by every gate
+fn __on_platform() -> u1 {
+    own: u1 = __get___enabled_platform()
+    ret own
+}
+fn __on_hello() -> u1 {
+    own: u1 = __get___enabled_hello()
+    ret own
+}
+fn __on_countdown() -> u1 {
+    own: u1 = __get___enabled_countdown()
+    up: u1 = __on_hello()
+    on: u1 = and own, up
+    ret on
+}
+fn __on_bye() -> u1 {
+    own: u1 = __get___enabled_bye()
+    up: u1 = __on_hello()
+    on: u1 = and own, up
+    ret on
+}
+
 ; feature platform (layer platform)
 fn print(s: u8$) {
     q: ptr = addr __out_n
@@ -321,7 +343,7 @@ fn goodbye() {
 
 ; run: the chain bye, countdown, hello, newest outermost; a link whose feature is off falls through
 fn run() {
-    on: u1 = __get___enabled_bye()
+    on: u1 = __on_bye()
     if on {
         run__bye()
     } else {
@@ -330,7 +352,7 @@ fn run() {
     ret
 }
 fn run__before_bye() {
-    on: u1 = __get___enabled_countdown()
+    on: u1 = __on_countdown()
     if on {
         run__countdown()
     } else {
@@ -339,7 +361,7 @@ fn run__before_bye() {
     ret
 }
 fn run__before_countdown() {
-    on: u1 = __get___enabled_hello()
+    on: u1 = __on_hello()
     if on {
         run__hello()
     }

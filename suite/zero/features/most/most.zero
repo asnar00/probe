@@ -30,3 +30,7 @@ on (bool b) = switch of more()
 
 on (bool b) = own switch()
     b = enabled
+
+on (bool a, bool b) = switches()
+    a = more.enabled
+    b = enabled
