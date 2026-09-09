@@ -4,6 +4,17 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: formatting by dispatch — `39009cd` · 2026-09-10
+
+```
+on (uint8 o$) << (pair p)
+    o$ << "(" << p.a << ", " << p.b << ")"
+```
+
+Third pass item 3 (fm3 log 59, 60, 61; questions 33, 34). A push into a stream dispatches on the item's type like any operator: a `<<` method is `on (uint8 o$) << (int x)`, the stream first and no result, and the compiler's platform feature defines the library's in zero (`src/zero/platform.zero`) — an `int`, a `uint`, a `float` to six places with the trailing zeros dropped, a `bool`, a sequence of ints or floats with spaces — so `out$ << 42` writes the digits and `print (int x$)` is `out$ << x$ << "\n"`. A struct with no method is its fields with spaces, an enumeration its case's name, and a store's own method (above, `suite/zero/platform/format/format.zero`) wins for its type. The `platform` store's `format` feature has twenty cases. zero 418/418 on the CPU paths, 403 + 15 skipped on air; cargo test 103. hello's `run` costs 204 857 by the cost tool's clock branch at every push site, which item 5 removes.
+
+---
+
 ### zero: `out$` is a system stream — `ad1a4fc` · 2026-09-10
 
 ```
