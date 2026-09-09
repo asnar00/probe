@@ -4,6 +4,14 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `position` is the index alone, `time of` asks the time — `b0ba7ae` · 2026-09-10
+
+```
+        int start = position c$
+```
+
+The parity pass, hop 18 (fm3 log 85, question 42). Ash ruled that a stream is timed only where the text mentions time, so `position x$` gives one int, the index of the next unread item, and asks no time — `k: i64 = get reader, pos`, no library call and no tick — while the new `time of x$` gives that item's tick and is the time word that times the stream. `src/zero/lower.rs`'s `stream_word` gains both arms, `lower_multi` refuses the two-result form by name, `time_words_in` trades `position` for `time of`, and hop 15's inspection of whether a bound tick was read goes with `dead_ticks`, `reads_name` and `reads_in`: the rule a reader can see replaces the rule the compiler inferred. `suite/zero/lex` writes the line above and its IR does not change, so lex's cost does not move — 236 for a turn, 1 499 for its case against the oracle's 415; `streams`, `tasks` and `clock` split their line into `position` and `time of` and keep their results, so the timed side stays covered, clock's IR gaining a getter and a call (286 → 288 lines). hello and static untouched at 2 715 and 2 629. A front-end change: zero 477/477 native, cargo test 111.
+
 ### zero: a system stream is pushed with a store and a count — `dfef61c` · 2026-09-10
 
 ```
