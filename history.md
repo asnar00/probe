@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a system stream is pushed with a store and a count — `dfef61c` · 2026-09-10
+
+```
+fn push_plain(s: number$, v: number)
+    ...
+    room: u1 = cmp.lt pushed, half
+    check room
+    store v, q, pushed
+```
+
+The parity pass, hop 17 (fm3 log 84, question 41). Ash ruled that a system stream's only reader is the platform, so it needs no ring: `lib/stream.ssa` gains `push_plain` for a value and for a block (above) — the ended check, the capacity checked as a limit rather than a window, the store at slot k and the count — where the mirrored push computes a slot, a twin, two stores and a base, and the block push copies three times to keep the seam whole. The ring is an ordinary regular one, so `push` still works on it and no reader changes; `src/zero/lower.rs`'s `system()` names the streams the front end can see are the platform's own `out$` and `in$`, and `emit_push`, `push_view` and the prelude's `__in_ch` call `push_plain` there. A general stream keeps the full ring. hello's `run` 3 487 → 2 715 against the oracle's 1 165, static's 3 401 → 2 629 against 1 126, lex's case 1 813 → 1 499 against 415 (`__in_ch` 41 → 29, `two_arrivals` 1 036 → 830); `lex` itself unchanged at 236, its token stream being general; 428, 341 and 478 lines, unchanged. A library change: all five paths, `probe test` 980/980 native (three new cases in `suite/stream.ssa`), zero 477/477 on the four CPU paths and 460/460 on air, cargo test 111.
+
 ### zero: no sleep in a store with no rated wiring — `e569a59` · 2026-09-10
 
 ```
