@@ -4,6 +4,21 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the enabled gate is the ancestor conjunction — `0732f86` · 2026-09-09
+
+```
+fn __on_countdown() -> u1 {
+    own: u1 = __get___enabled_countdown()
+    up: u1 = __on_hello()
+    on: u1 = and own, up
+    ret on
+}
+```
+
+Second rulings pass item 6 (Ash's caveat under question 25, log 51). Switching a feature off must never write its descendants' fields, so that switching the parent back on restores what was beneath it. `src/zero/lower.rs` now generates one `__on_<feature>` per feature — the lines above are from `suite/zero/hello.expected.ssa` — and every gate reads it: chain links, nodes, bare `enabled` and `<feature>.enabled`. The runner switches one field per context and works out who is effectively off from the parent tree; a case line is a sequence of switches, and `features/most`'s `>switches() with more off, base off, base on → 0, 1` shows `more` still off and `most` still on after `base` has been off and on. The three expected files change by the new functions; hello's `run` costs 640 310 ssa. zero 325/325 on the four CPU paths (252 cases, 13 overridden), 314 + 11 skipped on air; cargo test 97 passed.
+
+---
+
 ### zero: tests are functions — `b03dc6c` · 2026-09-09
 
 ```
