@@ -432,7 +432,8 @@ fn __edge1(i: int$, __hz: i64) -> int$
     _1: int[] = unread(i)
     _2: i64 = len _1
     _3: i64 = get i, pos
-    loop(_4: i64 = 0)
+    ; the most items one event pushes into i$: 10 (log 79)
+    loop(_4: i64 = 0) bound 10
         _5: u1 = cmp.ge _4, _2
         if _5
             break

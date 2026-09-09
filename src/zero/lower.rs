@@ -894,7 +894,7 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock, static_schedule: false };
+    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -967,6 +967,33 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
                 _ => {}
             }
         }
+    }
+    // the arrival bound (log 79): the most items one push statement
+    // from a plain function or the reset pushes into each feature-scope
+    // stream, counted before anything is lowered
+    {
+        let mut counts: HashMap<String, Option<i64>> = HashMap::new();
+        let bytes = |n: &str| l.fvar(n).map(|f| matches!(&f.ty, Ty::Stream(e) if e.ir() == "u8"));
+        for f in &store.features {
+            for d in &f.code.decls {
+                match d {
+                    Decl::Fn(fd) if !fd.task => {
+                        let mut bound: Names = fd.results.iter().map(|p| p.name.clone()).collect();
+                        bound.extend(fd.params().map(|p| p.name.clone()));
+                        arrivals(&fd.body, &bound, &bytes, &mut counts);
+                    }
+                    Decl::Var(v) => {
+                        if let Some(Init::Pushes { items, cond }) = &v.init {
+                            if let Some(b) = bytes(&v.name) {
+                                arrival(&v.name, items, cond.as_ref(), b, &mut counts);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        l.arrivals = counts;
     }
     l.emit_context(store)?;
     for f in &store.features {
@@ -1455,6 +1482,10 @@ struct Lowerer {
     /// the scheduler is a static schedule (log 78): the node graph is
     /// acyclic, and a push into a stream runs `__run_<stream>()`
     static_schedule: bool,
+    /// the arrival bound (log 79): per feature-scope stream, the most
+    /// items one push statement from a plain function or the reset
+    /// pushes into it, None when some statement's count is unknown
+    arrivals: HashMap<String, Option<i64>>,
     /// the feature that declared each type
     type_feature: HashMap<String, String>,
     /// while `choose` tries a method: which round of literal typing
@@ -3470,7 +3501,21 @@ impl Lowerer {
         b.vars = before;
         b.vars.remove(var);
         b.vars.remove(&k);
-        b.open_loop("", &format!("{}: i64 = 0", k), false);
+        // an edge's loop is bounded by the most items one event pushes
+        // into its source (log 79), when every such push was countable
+        let arrival = match (&b.func, &seq.kind) {
+            (Some(f), ExprKind::Seq(src)) if self.edge_fns.get(&f.ir) == Some(src) => self.arrivals.get(src).copied().flatten(),
+            _ => None,
+        };
+        match arrival {
+            Some(n) => {
+                if let ExprKind::Seq(src) = &seq.kind {
+                    b.line(&format!("; the most items one event pushes into {}$: {} (log 79)", src, n));
+                }
+                b.line(&format!("loop({}: i64 = 0) bound {}", k, n));
+            }
+            None => b.open_loop("", &format!("{}: i64 = 0", k), false),
+        }
         b.out.push_str(&body_lines);
         Ok(())
     }
@@ -5743,6 +5788,78 @@ fn name_for(dst: Option<&str>, ty: &Ty, b: &mut Body) -> String {
 /// and `position x$`; and whether one of them is a parameter of the
 /// function, when any stream may be passed there and the store keeps
 /// every unrated stream's ticks
+/// the arrival bound's pre-pass (log 79): every push statement into a
+/// feature-scope stream that is not shadowed by a parameter or a local,
+/// its item count when every item is countable
+fn arrivals(stmts: &[Stmt], bound: &Names, bytes: &dyn Fn(&str) -> Option<bool>, out: &mut HashMap<String, Option<i64>>) {
+    let mut bound = bound.clone();
+    for s in stmts {
+        match s {
+            Stmt::Var(v) => {
+                bound.insert(v.name.clone());
+            }
+            Stmt::Multi { vars, .. } => {
+                for p in vars {
+                    bound.insert(p.name.clone());
+                }
+            }
+            Stmt::If { then, els, .. } => {
+                arrivals(then, &bound, bytes, out);
+                if let Some(e) = els {
+                    arrivals(e, &bound, bytes, out);
+                }
+            }
+            Stmt::Loop { vars, body, .. } => {
+                let mut inner = bound.clone();
+                inner.extend(vars.iter().map(|v| v.name.clone()));
+                arrivals(body, &inner, bytes, out);
+            }
+            Stmt::For { var, body, .. } => {
+                let mut inner = bound.clone();
+                inner.insert(var.clone());
+                arrivals(body, &inner, bytes, out);
+            }
+            Stmt::Push { target, items, cond, .. } => {
+                if let ExprKind::Seq(n) = &target.kind {
+                    if !bound.contains(n) {
+                        if let Some(b) = bytes(n) {
+                            arrival(n, items, cond.as_ref(), b, out);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// one push statement's items, into the stream's count: the largest
+/// so far, or unknown once any statement's is
+fn arrival(name: &str, items: &[Expr], cond: Option<&Expr>, bytes: bool, out: &mut HashMap<String, Option<i64>>) {
+    let count = if cond.is_some() { None } else { items.iter().map(|e| item_count(e, bytes)).sum::<Option<i64>>() };
+    let e = out.entry(name.to_string()).or_insert(Some(0));
+    *e = match (*e, count) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        _ => None,
+    };
+}
+
+/// how many items one pushed expression is, when the text says: a
+/// literal one, a string its bytes into a byte stream, a list its
+/// length, a range with literal bounds its count
+fn item_count(e: &Expr, bytes: bool) -> Option<i64> {
+    match &e.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) => Some(1),
+        ExprKind::Str(s) if bytes => Some(s.len() as i64),
+        ExprKind::List(items) => Some(items.len() as i64),
+        ExprKind::Range { from, to, inclusive } => match (&from.kind, &to.kind) {
+            (ExprKind::Int(a), ExprKind::Int(z)) => Some((a - z).abs() + *inclusive as i64),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn time_words(stmts: &[Stmt], params: &[String], out: &mut std::collections::HashSet<String>, on_param: &mut bool) {
     for s in stmts {
         match s {
