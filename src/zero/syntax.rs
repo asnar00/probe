@@ -96,7 +96,7 @@ pub enum Init {
     /// `Vec v(1, 2, 3)`, `Vec v(z = 3, x = 1)`
     Construct(Vec<Arg>),
     /// `int i$ << 1 << (i$ + 1) while (i$ < 5)`
-    Pushes { items: Vec<Expr>, cond: Option<Expr>, bound: Option<i64> },
+    Pushes { items: Vec<Expr>, cond: Option<Expr> },
 }
 
 #[derive(Clone, Debug)]
@@ -113,13 +113,13 @@ pub enum Stmt {
     If { cond: Expr, then: Vec<Stmt>, els: Option<Vec<Stmt>>, line: usize },
     /// `loop (vars) while (c) gives x, y` (log 40): `gives` names the
     /// carried variables that leave, into declared or existing names
-    Loop { vars: Vec<VarDecl>, cond: Option<Expr>, bound: Option<i64>, body: Vec<Stmt>, gives: Vec<String>, into: Option<LoopInto>, line: usize },
-    For { var: String, seq: Expr, bound: Option<i64>, body: Vec<Stmt>, line: usize },
+    Loop { vars: Vec<VarDecl>, cond: Option<Expr>, body: Vec<Stmt>, gives: Vec<String>, into: Option<LoopInto>, line: usize },
+    For { var: String, seq: Expr, body: Vec<Stmt>, line: usize },
     Continue { values: Vec<Expr>, line: usize },
     Break { line: usize },
     Check { cond: Expr, line: usize },
     /// `x$ << a << b while (c)`
-    Push { target: Expr, items: Vec<Expr>, cond: Option<Expr>, bound: Option<i64>, line: usize },
+    Push { target: Expr, items: Vec<Expr>, cond: Option<Expr>, line: usize },
     Expr { expr: Expr, line: usize },
 }
 
@@ -582,8 +582,8 @@ impl<'a> Parser<'a> {
         } else if self.at_sym("(") {
             Some(Init::Construct(self.parse_args()?))
         } else if self.at_sym("<<") {
-            let (items, cond, bound) = self.parse_pushes()?;
-            Some(Init::Pushes { items, cond, bound })
+            let (items, cond) = self.parse_pushes()?;
+            Some(Init::Pushes { items, cond })
         } else {
             None
         };
@@ -591,10 +591,10 @@ impl<'a> Parser<'a> {
         Ok(VarDecl { line, scope, ty, name, seq, init, merge, rate })
     }
 
-    /// `<< a << b [while (c) [bound N]]`; a bare `<<` at the end of the
-    /// line declares a stream with nothing in it yet (log 25); `bound N`
-    /// is the repeated push's trip count, as a loop's is (log 33)
-    fn parse_pushes(&mut self) -> Result<(Vec<Expr>, Option<Expr>, Option<i64>), Error> {
+    /// `<< a << b [while (c)]`; a bare `<<` at the end of the line is
+    /// refused by the lowering (log 38). A trip count is never written
+    /// here: a bound is a product setting (log 41)
+    fn parse_pushes(&mut self) -> Result<(Vec<Expr>, Option<Expr>), Error> {
         let mut items = Vec::new();
         while self.eat_sym("<<") {
             if self.at(&Tok::Newline) {
@@ -603,21 +603,7 @@ impl<'a> Parser<'a> {
             items.push(self.parse_expr()?);
         }
         let cond = if self.eat_word("while") { Some(self.parse_expr()?) } else { None };
-        let bound = if self.eat_word("bound") {
-            if cond.is_none() {
-                return Err(self.err("'bound' goes with `while`: it is the repeated push's trip count"));
-            }
-            match self.next()? {
-                Tok::Int(n) if n > 0 => Some(n),
-                t => {
-                    self.pos -= 1;
-                    return Err(self.err(format!("'bound' takes a positive number, not {}", t)));
-                }
-            }
-        } else {
-            None
-        };
-        Ok((items, cond, bound))
+        Ok((items, cond))
     }
 
     // --- statements ---
@@ -670,20 +656,9 @@ impl<'a> Parser<'a> {
                 }
                 let seq = self.parse_expr()?;
                 self.expect_sym(")")?;
-                let bound = if self.eat_word("bound") {
-                    match self.next()? {
-                        Tok::Int(n) => Some(n),
-                        t => {
-                            self.pos -= 1;
-                            return Err(self.err(format!("'bound' takes a number, not {}", t)));
-                        }
-                    }
-                } else {
-                    None
-                };
                 self.expect_newline()?;
                 let body = self.parse_block()?;
-                Ok(Stmt::For { var, seq, bound, body, line })
+                Ok(Stmt::For { var, seq, body, line })
             }
             Some(Tok::Word(w)) if w == "continue" => {
                 self.pos += 1;
@@ -781,12 +756,12 @@ impl<'a> Parser<'a> {
             }
             Some(Tok::Seq(_)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) => {
                 let target = self.parse_primary()?;
-                let (items, cond, bound) = self.parse_pushes()?;
+                let (items, cond) = self.parse_pushes()?;
                 if items.is_empty() {
                     return Err(self.err("nothing to push: `x$ << item`"));
                 }
                 self.expect_newline()?;
-                Ok(Stmt::Push { target, items, cond, bound, line })
+                Ok(Stmt::Push { target, items, cond, line })
             }
             Some(Tok::Indent) => Err(self.err("an indented line with nothing to belong to")),
             _ => {
@@ -797,7 +772,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `loop (vars) [while (c)] [bound N] [gives x, y]`, then the body;
+    /// `loop (vars) [while (c)] [gives x, y]`, then the body;
     /// `into` says where the given values go (log 40)
     fn parse_loop(&mut self, into: Option<LoopInto>, line: usize) -> Result<Stmt, Error> {
         let mut vars = Vec::new();
@@ -811,21 +786,11 @@ impl<'a> Parser<'a> {
             self.expect_sym(")")?;
         }
         let mut cond = None;
-        let mut bound = None;
         let mut gives = Vec::new();
         self.header += 1;
         loop {
             if self.eat_word("while") {
                 cond = Some(self.parse_expr()?);
-            } else if self.eat_word("bound") {
-                match self.next()? {
-                    Tok::Int(n) => bound = Some(n),
-                    t => {
-                        self.pos -= 1;
-                        self.header -= 1;
-                        return Err(self.err(format!("'bound' takes a number, not {}", t)));
-                    }
-                }
             } else if self.eat_word("gives") {
                 loop {
                     gives.push(self.expect_word()?);
@@ -840,7 +805,7 @@ impl<'a> Parser<'a> {
         self.header -= 1;
         self.expect_newline()?;
         let body = self.parse_block()?;
-        Ok(Stmt::Loop { vars, cond, bound, body, gives, into, line })
+        Ok(Stmt::Loop { vars, cond, body, gives, into, line })
     }
 
     /// `T a[, T b] = loop` ahead on this line: a loop's results declared
@@ -1067,7 +1032,7 @@ impl<'a> Parser<'a> {
     /// a word that ends a phrase: a statement's own word, or a range's
     /// `to` and `through` inside `[ ]`
     fn ends_phrase(&self, w: &str) -> bool {
-        matches!(w, "then" | "else" | "while" | "bound" | "merge" | "in") || (self.ranges > 0 && matches!(w, "through" | "to")) || (self.header > 0 && w == "gives")
+        matches!(w, "then" | "else" | "while" | "merge" | "in") || (self.ranges > 0 && matches!(w, "through" | "to")) || (self.header > 0 && w == "gives")
     }
 
     /// the parts of a phrase: words, bracketed argument groups, and bare
@@ -1172,10 +1137,11 @@ mod tests {
         assert_eq!(p.len(), 3);
         let e = parse_call("[1 to n]", "t.md", 1, &types()).unwrap();
         assert!(matches!(e.kind, ExprKind::Range { inclusive: false, .. }));
-        let src = "on f (int n)\n    for (i in [1 through n]) bound 8\n        print \"x\"\n";
+        // `bound` is a word like any other since log 41
+        let src = "on f (int n)\n    for (i in [1 through n])\n        bound (i)\n";
         let f = parse_feature("t", src, "t.zero", &types()).unwrap();
         let Decl::Fn(f) = &f.decls[0] else { panic!() };
-        assert!(matches!(&f.body[0], Stmt::For { bound: Some(8), .. }));
+        assert!(matches!(&f.body[0], Stmt::For { .. }));
     }
 
     #[test]

@@ -481,7 +481,7 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), type_feature: HashMap::new(), strict: false, candidate: None };
+    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), type_feature: HashMap::new(), strict: false, candidate: None, product: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -503,6 +503,14 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
                 l.declare(fd, &f.name, &f.code.file)?;
             }
         }
+    }
+    // the product's settings name the store's functions (log 41)
+    for (words, n) in &store.product {
+        let key = words.join("_");
+        if !l.funcs.iter().any(|g| g.key == key && g.platform.is_none()) {
+            return Err(lex::error(&store.product_file, 0, format!("the product bounds '{}', which is no function of the store", words.join(" "))));
+        }
+        l.product.insert(key, *n);
     }
     for f in &store.features {
         l.cur = f.name.clone();
@@ -786,6 +794,16 @@ struct Lowerer {
     /// inside a push chain's `while` (log 39): the candidate, which `_`
     /// reads as; None elsewhere, where `_` is a reduction's accumulator
     candidate: Option<Val>,
+    /// the product's bounds (log 41), by function key
+    product: HashMap<String, i64>,
+}
+
+/// where a range's values go (log 41): a new ring with them resident,
+/// or straight into an existing stream, pushed as a block
+#[derive(Clone, Copy)]
+enum RangeSink<'a> {
+    New(Option<&'a str>),
+    Into(&'a str, &'a Val),
 }
 
 /// what kind of body is being lowered: the scheduler runs after a push
@@ -869,12 +887,26 @@ struct Body {
     /// chain, which is what `existing` calls (log 28)
     func: Option<FnInfo>,
     below: Option<String>,
+    /// the product's trip count for this function's loops (log 41):
+    /// `bound <function>: N` in the store's `product.md`
+    product_bound: Option<i64>,
 }
 
 impl Body {
     fn tmp(&mut self) -> String {
         self.ntmp += 1;
         format!("_{}", self.ntmp)
+    }
+
+    /// a loop's opening line, `loop(hdr) {`, carrying the product's
+    /// bound when the function has one and the loop does not already
+    /// show its count (a range with literal bounds does)
+    fn open_loop(&mut self, prefix: &str, hdr: &str, counted: bool) {
+        let bound = match self.product_bound {
+            Some(n) if !counted => format!(" bound {}", n),
+            _ => String::new(),
+        };
+        self.line(&format!("{}loop({}){} {{", prefix, hdr, bound));
     }
 
     fn line(&mut self, s: &str) {
@@ -1394,7 +1426,7 @@ impl Lowerer {
     /// which puts every variable's initial value in it, and the
     /// scheduler with a function per node (log 25)
     fn emit_context(&mut self, store: &Store) -> Result<(), Error> {
-        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Reset, func: None, below: None };
+        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Reset, func: None, below: None, product_bound: None };
         b.line("q: ptr = addr __out_n");
         b.line("store 0: i64, q");
         b.line("a: ptr = addr __arena");
@@ -1454,12 +1486,12 @@ impl Lowerer {
                                 Some(Init::Value(e)) if !wired => {
                                     self.resident_init(v, &ty, e, &mut b)?
                                 }
-                                Some(Init::Pushes { items, cond, bound }) => {
+                                Some(Init::Pushes { items, cond }) => {
                                     let s = self.empty_stream(v, &ty, &mut b, None)?;
                                     // the items before the first task call
                                     // are pushed here; the calls are nodes
                                     let n = items.iter().position(|e| matches!(self.task_call(e, None, &b.file), Ok(Some(_)))).unwrap_or(items.len());
-                                    self.lower_pushes(&v.name, &s, &items[..n], cond.as_ref(), *bound, &mut b)?;
+                                    self.lower_pushes(&v.name, &s, &items[..n], cond.as_ref(), &mut b)?;
                                     s
                                 }
                                 Some(Init::Construct(_)) => return Err(lex::error(&b.file, v.line, format!("'{}$' is a stream: it is filled with `<<`, or made from a list or a range", v.name))),
@@ -1559,7 +1591,7 @@ impl Lowerer {
                 let name = if i == n - 1 { info.ir.clone() } else { format!("{}__before_{}", info.ir, info.chain[i + 1]) };
                 let body = format!("{}__{}({})", info.ir, info.chain[i], args.join(", "));
                 let under = if i == 0 { None } else { Some(format!("{}__before_{}({})", info.ir, info.chain[i], args.join(", "))) };
-                let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None };
+                let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
                 b.line(&format!("on: u1 = __get___enabled_{}()", info.chain[i]));
                 if rets.is_empty() {
                     b.line("if on {");
@@ -1619,7 +1651,7 @@ impl Lowerer {
     /// since; a node with no inputs, once. After a run the node is
     /// finished when all its inputs have ended.
     fn emit_node(&mut self, k: usize, node: &Node) -> Result<(), Error> {
-        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: node.file.clone(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None };
+        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: node.file.clone(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
         b.line(&format!("fin: u1 = __get___node{}_fin()", k));
         b.line("notfin: u1 = xor fin, 1");
         let mut readers = Vec::new();
@@ -1782,7 +1814,7 @@ impl Lowerer {
         } else {
             (info.ir.clone(), None)
         };
-        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: results.clone(), file: file.to_string(), depth: 0, loops: Vec::new(), kind, func: Some(info.clone()), below };
+        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: results.clone(), file: file.to_string(), depth: 0, loops: Vec::new(), kind, func: Some(info.clone()), below, product_bound: self.product.get(&key).copied() };
         let mut sig = format!("fn {}(", name);
         let mut sig_params: Vec<(String, Ty)> = Vec::new();
         if info.task {
@@ -1818,6 +1850,9 @@ impl Lowerer {
                 }
                 b.declare(n, t.clone());
             }
+        }
+        if let Some(n) = b.product_bound {
+            writeln!(self.out, "; product setting: bound {}: {}", key.replace('_', " "), n).unwrap();
         }
         writeln!(self.out, "{} {{", sig).unwrap();
         if let Some(kinds) = &info.platform {
@@ -2016,14 +2051,14 @@ impl Lowerer {
         Ok(t_term && e_term && els.is_some())
     }
 
-    /// `loop (vars) while (c) bound N gives x` (log 12, 40): the carried
+    /// `loop (vars) while (c) gives x` (log 12, 40): the carried
     /// variables are the header's and the loop's own — gone after it;
     /// `while` is tested at the top of every pass, a body that falls off
     /// its end continues with the current versions, and every `break`
     /// yields the given variables, which leave into the names `into`
     /// says, and the outer streams the body moved
     #[allow(clippy::too_many_arguments)]
-    fn lower_loop(&mut self, vars: &[super::syntax::VarDecl], cond: Option<&Expr>, bound: Option<i64>, body: &[Stmt], gives: &[String], into: Option<&LoopInto>, line: usize, b: &mut Body) -> Result<bool, Error> {
+    fn lower_loop(&mut self, vars: &[super::syntax::VarDecl], cond: Option<&Expr>, body: &[Stmt], gives: &[String], into: Option<&LoopInto>, line: usize, b: &mut Body) -> Result<bool, Error> {
         let file = b.file.clone();
         // the initial values, in the block before the loop
         let mut header = Vec::new();
@@ -2141,17 +2176,12 @@ impl Lowerer {
         let ctx = b.loops.pop().unwrap();
         // after the loop its variables are gone; the outer scope stands
         b.vars = outer;
-        let bound = match bound {
-            Some(n) if n > 0 => format!(" bound {}", n),
-            Some(_) => return Err(lex::error(&file, line, "'bound' takes a positive number")),
-            None => String::new(),
-        };
         // a loop with no way out has no results and nothing after it
         if ctx.breaks == 0 {
             if !gives.is_empty() {
                 return Err(lex::error(&file, line, format!("the loop never leaves, so it gives nothing: a `while`, or a `break`, is how '{}' comes out", gives[0])));
             }
-            b.line(&format!("loop({}){} {{", hdr.join(", "), bound));
+            b.open_loop("", &hdr.join(", "), false);
             b.out.push_str(&body_lines);
             b.line("}");
             return Ok(true);
@@ -2215,7 +2245,7 @@ impl Lowerer {
             };
             defs.push(format!("{}: {}", ir, ty.ir()));
         }
-        b.line(&format!("{} = loop({}){} {{", defs.join(", "), hdr.join(", "), bound));
+        b.open_loop(&format!("{} = ", defs.join(", ")), &hdr.join(", "), false);
         b.out.push_str(&body_lines);
         b.line("}");
         for (name, v, local) in after {
@@ -2233,11 +2263,11 @@ impl Lowerer {
     /// bounds fix the direction, and the IR is the plain counted loop
     /// `probe cost` reads; otherwise the step is chosen at run time and
     /// the test is on the signed distance left
-    fn lower_for(&mut self, var: &str, seq: &Expr, bound: Option<i64>, body: &[Stmt], b: &mut Body) -> Result<(), Error> {
+    fn lower_for(&mut self, var: &str, seq: &Expr, body: &[Stmt], b: &mut Body) -> Result<(), Error> {
         let file = b.file.clone();
         self.no_moved_stream(body, b)?;
         let ExprKind::Range { from, to, inclusive } = &seq.kind else {
-            return self.lower_for_seq(var, seq, bound, body, b);
+            return self.lower_for_seq(var, seq, body, b);
         };
         if b.vars.contains_key(var) {
             return Err(lex::error(&file, seq.line, format!("'{}' is already declared", var)));
@@ -2259,11 +2289,7 @@ impl Lowerer {
         if !matches!(ty, Ty::Num(_)) || ty != tv.ty {
             return Err(lex::error(&file, seq.line, format!("a range runs over one number type, given {} and {}", fv.ty.ir(), tv.ty.ir())));
         }
-        let bound = match bound {
-            Some(n) if n > 0 => format!(" bound {}", n),
-            Some(_) => return Err(lex::error(&file, seq.line, "'bound' takes a positive number")),
-            None => String::new(),
-        };
+        let counted = fv.literal && tv.literal;
         // the direction, and the test that leaves
         let (op, step, test) = if fv.literal && tv.literal {
             let a: i64 = fv.text.parse().map_err(|_| lex::error(&file, from.line, "a range's bounds are integers"))?;
@@ -2345,7 +2371,7 @@ impl Lowerer {
         b.loops.pop();
         b.vars = before;
         b.vars.remove(var);
-        b.line(&format!("loop({}: {} = {}){} {{", x, ty.ir(), fv.text, bound));
+        b.open_loop("", &format!("{}: {} = {}", x, ty.ir(), fv.text), counted);
         b.out.push_str(&body_lines);
         b.line("}");
         Ok(())
@@ -2354,7 +2380,7 @@ impl Lowerer {
     /// `for (x in items$)`: a loop over the unread items by index, the
     /// reader not moved, the item peeked at the top of each pass and
     /// gone after the loop (log 38)
-    fn lower_for_seq(&mut self, var: &str, seq: &Expr, bound: Option<i64>, body: &[Stmt], b: &mut Body) -> Result<(), Error> {
+    fn lower_for_seq(&mut self, var: &str, seq: &Expr, body: &[Stmt], b: &mut Body) -> Result<(), Error> {
         let file = b.file.clone();
         let sv = self.lower_expr(seq, None, b, None)?;
         let Some(e) = sv.ty.elem().cloned() else {
@@ -2363,11 +2389,6 @@ impl Lowerer {
         if b.vars.contains_key(var) {
             return Err(lex::error(&file, seq.line, format!("'{}' is already declared", var)));
         }
-        let bound = match bound {
-            Some(n) if n > 0 => format!(" bound {}", n),
-            Some(_) => return Err(lex::error(&file, seq.line, "'bound' takes a positive number")),
-            None => String::new(),
-        };
         let first = self.first_reader(&sv, b);
         let n = b.tmp();
         b.line(&format!("{}: i64 = count {}", n, first));
@@ -2397,7 +2418,7 @@ impl Lowerer {
         b.vars = before;
         b.vars.remove(var);
         b.vars.remove(&k);
-        b.line(&format!("loop({}: i64 = 0){} {{", k, bound));
+        b.open_loop("", &format!("{}: i64 = 0", k), false);
         b.out.push_str(&body_lines);
         b.line("}");
         Ok(())
@@ -2619,10 +2640,10 @@ impl Lowerer {
                             self.assign(&v.name, s.clone(), b, v.line)?;
                             self.run_task(&info, &args, hz, &s, b, e.line)?;
                         }
-                        (Some(Init::Pushes { items, cond, bound }), _) => {
+                        (Some(Init::Pushes { items, cond }), _) => {
                             let s = self.empty_stream(v, &ty, b, Some(&v.name))?;
                             self.assign(&v.name, s.clone(), b, v.line)?;
-                            self.lower_pushes(&v.name, &s, items, cond.as_ref(), *bound, b)?;
+                            self.lower_pushes(&v.name, &s, items, cond.as_ref(), b)?;
                         }
                         (Some(Init::Construct(_)), _) => return Err(lex::error(&file, v.line, format!("'{}$' is a stream: it is filled with `<<`, or made from a list or a range", v.name))),
                         (None, _) => {
@@ -2661,9 +2682,9 @@ impl Lowerer {
                 Ok(false)
             }
             Stmt::If { cond, then, els, .. } => self.lower_if(cond, then, els.as_deref(), b),
-            Stmt::Loop { vars, cond, bound, body, gives, into, line } => self.lower_loop(vars, cond.as_ref(), *bound, body, gives, into.as_ref(), *line, b),
-            Stmt::For { var, seq, bound, body, .. } => {
-                self.lower_for(var, seq, *bound, body, b)?;
+            Stmt::Loop { vars, cond, body, gives, into, line } => self.lower_loop(vars, cond.as_ref(), body, gives, into.as_ref(), *line, b),
+            Stmt::For { var, seq, body, .. } => {
+                self.lower_for(var, seq, body, b)?;
                 Ok(false)
             }
             Stmt::Break { line } => {
@@ -2733,7 +2754,7 @@ impl Lowerer {
                 b.line("}");
                 Ok(false)
             }
-            Stmt::Push { target, items, cond, bound, line } => {
+            Stmt::Push { target, items, cond, line } => {
                 let ExprKind::Seq(n) = &target.kind else {
                     return Err(lex::error(&file, *line, "`<<` pushes into a stream, named `x$`"));
                 };
@@ -2744,7 +2765,7 @@ impl Lowerer {
                     });
                 }
                 let s = self.lower_expr(&Expr { kind: ExprKind::Name(n.clone()), line: *line }, None, b, None)?;
-                self.lower_pushes(n, &s, items, cond.as_ref(), *bound, b)?;
+                self.lower_pushes(n, &s, items, cond.as_ref(), b)?;
                 self.trigger(n, b);
                 Ok(false)
             }
@@ -3147,7 +3168,7 @@ impl Lowerer {
                     b.line(&format!("continue {}", k2));
                     b.depth -= 1;
                     let body = b.out.split_off(start);
-                    b.line(&format!("loop({}: i64 = 0) {{", k));
+                    b.open_loop("", &format!("{}: i64 = 0", k), false);
                     b.out.push_str(&body);
                     b.line("}");
                     return Ok(r);
@@ -3173,7 +3194,7 @@ impl Lowerer {
                 b.line(&format!("{}: i64 = max({}, {})", cap, n, least));
                 b.line(&format!("{}: {} = __stream_{}({}, {})", c, rty.ir(), r.ty.ir(), CLOCK_HZ, cap));
                 b.line(&format!("{}: i64 = __now()", t));
-                b.line(&format!("loop({}: i64 = 0) {{", k));
+                b.open_loop("", &format!("{}: i64 = 0", k), false);
                 b.out.push_str(&body);
                 b.line("}");
                 let _ = dst;
@@ -3223,7 +3244,7 @@ impl Lowerer {
                 b.depth -= 1;
                 let body = b.out.split_off(start);
                 let out = name_for(dst, &aty, b);
-                b.line(&format!("{}: {} = loop({}: i64 = 1, {}: {} = {}) {{", out, aty.ir(), k, a, aty.ir(), seed));
+                b.open_loop(&format!("{}: {} = ", out, aty.ir()), &format!("{}: i64 = 1, {}: {} = {}", k, a, aty.ir(), seed), false);
                 b.out.push_str(&body);
                 b.line("}");
                 Ok(Val { text: out, ty: aty, literal: false })
@@ -3261,8 +3282,10 @@ impl Lowerer {
 
     /// `[a through b]`, `[a to b]`: a new stream with the items resident,
     /// pushed by a loop that counts down when a > b — with literal
-    /// bounds, the plain counted loop `probe cost` reads (log 13, 38)
-    fn lower_range(&mut self, from: &Expr, to: &Expr, inclusive: bool, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+    /// bounds, the plain counted loop `probe cost` reads (log 13, 38);
+    /// or, pushed as a block, `x$ << [a through b]`, the same loop
+    /// pushing each value straight into `x$` (log 41)
+    fn lower_range(&mut self, from: &Expr, to: &Expr, inclusive: bool, b: &mut Body, sink: RangeSink, line: usize) -> Result<Val, Error> {
         let file = b.file.clone();
         for e in [from, to] {
             if matches!(e.kind, ExprKind::Float(_)) {
@@ -3282,6 +3305,26 @@ impl Lowerer {
         if !signed || ty != tv.ty {
             return Err(lex::error(&file, line, format!("a range counts over a signed integer, given {} and {}", fv.ty.ir(), tv.ty.ir())));
         }
+        if let RangeSink::Into(name, s) = sink {
+            if s.ty.elem() != Some(&ty) {
+                return Err(lex::error(&file, line, format!("'{}$' holds {} but the range counts over {}", name, s.ty.elem().map(|t| t.ir()).unwrap_or_default(), ty.ir())));
+            }
+        }
+        // where each value goes: a new ring, stamped once, or the stream
+        let target = |l: &mut Lowerer, count: &str, b: &mut Body| -> (Val, Option<String>) {
+            match sink {
+                RangeSink::New(dst) => {
+                    let (c, t) = l.new_resident(&ty, count, b, dst);
+                    (c, Some(t))
+                }
+                RangeSink::Into(_, s) => (s.clone(), None),
+            }
+        };
+        let emit = |l: &mut Lowerer, c: &Val, t: &Option<String>, x: &str, b: &mut Body| match (t, sink) {
+            (Some(t), _) => b.line(&format!("push {}, {}, {}", c.text, t, x)),
+            (None, RangeSink::Into(name, _)) => l.emit_push(name, c, &Val { text: x.to_string(), ty: ty.clone(), literal: false }, b),
+            _ => unreachable!(),
+        };
         if fv.literal && tv.literal {
             let a: i64 = fv.text.parse().map_err(|_| lex::error(&file, from.line, "a range's bounds are integers"))?;
             let z: i64 = tv.text.parse().map_err(|_| lex::error(&file, to.line, "a range's bounds are integers"))?;
@@ -3293,9 +3336,9 @@ impl Lowerer {
                 (false, false) => "cmp.gt",
             };
             let count = (a - z).abs() + inclusive as i64;
-            let (c, t) = self.new_resident(&ty, &count.to_string(), b, dst);
+            let (c, t) = target(self, &count.to_string(), b);
             let x = b.tmp();
-            b.line(&format!("loop({}: {} = {}) {{", x, ty.ir(), a));
+            b.open_loop("", &format!("{}: {} = {}", x, ty.ir(), a), true);
             b.depth += 1;
             let more = b.tmp();
             b.line(&format!("{}: u1 = {} {}, {}", more, cc, x, z));
@@ -3305,7 +3348,7 @@ impl Lowerer {
             b.line("break");
             b.depth -= 1;
             b.line("}");
-            b.line(&format!("push {}, {}, {}", c.text, t, x));
+            emit(self, &c, &t, &x, b);
             let x2 = b.tmp();
             b.line(&format!("{}: {} = {} {}, 1", x2, ty.ir(), if up { "add" } else { "sub" }, x));
             b.line(&format!("continue {}", x2));
@@ -3340,10 +3383,10 @@ impl Lowerer {
         };
         let n = b.tmp();
         b.line(&format!("{}: i64 = conv {}", n, count));
-        let (c, t) = self.new_resident(&ty, &n, b, dst);
+        let (c, t) = target(self, &n, b);
         let k = b.tmp();
         let x = b.tmp();
-        b.line(&format!("loop({}: i64 = 0, {}: {} = {}) {{", k, x, ty.ir(), fv.text));
+        b.open_loop("", &format!("{}: i64 = 0, {}: {} = {}", k, x, ty.ir(), fv.text), false);
         b.depth += 1;
         let done = b.tmp();
         b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
@@ -3352,7 +3395,7 @@ impl Lowerer {
         b.line("break");
         b.depth -= 1;
         b.line("}");
-        b.line(&format!("push {}, {}, {}", c.text, t, x));
+        emit(self, &c, &t, &x, b);
         let k2 = b.tmp();
         b.line(&format!("{}: i64 = add {}, 1", k2, k));
         let x2 = b.tmp();
@@ -3732,7 +3775,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
     /// the right reading as its latest item; `while` repeats the last
     /// push for as long as the condition holds of the candidate, which
     /// it reads as `_` (log 23, 39)
-    fn lower_pushes(&mut self, name: &str, s: &Val, items: &[Expr], cond: Option<&Expr>, bound: Option<i64>, b: &mut Body) -> Result<(), Error> {
+    fn lower_pushes(&mut self, name: &str, s: &Val, items: &[Expr], cond: Option<&Expr>, b: &mut Body) -> Result<(), Error> {
         let file = b.file.clone();
         let Ty::Stream(elem) = s.ty.clone() else { unreachable!() };
         let elem = *elem;
@@ -3760,14 +3803,17 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 self.run_task(&info, &args, hz, s, b, e.line)?;
                 continue;
             }
+            // a range pushed as a block: its values, straight in (log 41)
+            if let ExprKind::Range { from, to, inclusive } = &e.kind {
+                if cond.is_some() && last {
+                    return Err(lex::error(&file, e.line, "a block is pushed once: `while` repeats an item"));
+                }
+                self.lower_range(from, to, *inclusive, b, RangeSink::Into(name, s), e.line)?;
+                continue;
+            }
             match cond {
                 Some(c) if last => {
-                    // `bound N` (log 33) goes onto the chain's loop as onto
-                    // any loop: a declared trip count, trusted, for `probe cost`
-                    match bound {
-                        Some(n) => b.line(&format!("loop() bound {} {{", n)),
-                        None => b.line("loop() {"),
-                    }
+                    b.open_loop("", "", false);
                     b.depth += 1;
                     self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
                     let v = item(self, e, b);
@@ -3814,7 +3860,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                         let n = b.tmp();
                         b.line(&format!("{}: i64 = len {}", n, view));
                         let k = b.tmp();
-                        b.line(&format!("loop({}: i64 = 0) {{", k));
+                        b.open_loop("", &format!("{}: i64 = 0", k), false);
                         b.depth += 1;
                         let done = b.tmp();
                         b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
@@ -4097,7 +4143,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 None => Err(lex::error(&file, e.line, "'_' marks the accumulator of a reduction, or the candidate in a chain's `while`: it goes with a stream in an operator or a call")),
             },
             ExprKind::List(items) => self.lower_list(items, want, b, dst, e.line),
-            ExprKind::Range { from, to, inclusive } => self.lower_range(from, to, *inclusive, b, dst, e.line),
+            ExprKind::Range { from, to, inclusive } => self.lower_range(from, to, *inclusive, b, RangeSink::New(dst), e.line),
             ExprKind::Index(base, idx) => {
                 // `x$[i]`: the i-th unread item, `peek` (log 38)
                 let sv = self.lower_expr(base, None, b, None)?;

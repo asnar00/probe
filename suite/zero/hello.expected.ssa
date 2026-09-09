@@ -287,29 +287,20 @@ fn run__countdown() {
     ret
 }
 fn count_down() {
-    i: int$ = __stream_int(1000000, 64)
-    _1: int = const 10
-    count_down_from(i, _1, 1: i64)
-    _2: int[], _3: i64, i_2: int$ = frame(i)
-    _4: int$ = __copy_int(_2)
-    print__ints(_4)
-    ret
-}
-fn count_down_from(i: int$, n: int, __hz: i64) {
-    __push(i, n)
-    __sleep(__hz)
-    loop() bound 10 {
-        _1: int = latest i
-        _2: int = sub _1, 1
-        _3: u1 = cmp.gt _2, 0
-        if _3 {
+    i: int$ = __regular_int(1, 64)
+    loop(_1: int = 10) {
+        _2: u1 = cmp.ge _1, 1
+        if _2 {
         } else {
             break
         }
-        __push(i, _2)
-        __sleep(__hz)
-        continue
+        __push(i, _1)
+        _3: int = sub _1, 1
+        continue _3
     }
+    _4: int[], _5: i64, i_2: int$ = frame(i)
+    _6: int$ = __copy_int(_4)
+    print__ints(_6)
     ret
 }
 
@@ -374,6 +365,18 @@ fn __stream_int(hz: i64, cap: i64) -> int$ {
     tb: ptr = arena_alloc(a, ttotal)
     buffer_init(tb, 8, cap)
     ring_init(r, vb, tb, hz)
+    s: int$ = stream r
+    ret s
+}
+fn __regular_int(hz: i64, cap: i64) -> int$ {
+    a: ptr = addr __arena
+    r: ptr = arena_alloc(a, 64)
+    sz: i64 = sizeof int
+    bytes: i64 = mul sz, cap
+    total: i64 = add bytes, 16
+    vb: ptr = arena_alloc(a, total)
+    buffer_init(vb, sz, cap)
+    ring_regular(r, vb, hz, 1, 0)
     s: int$ = stream r
     ret s
 }

@@ -3,8 +3,6 @@ on run()
     existing run()
 
 on count down()
-    int i$ = count down from (10) at (1 hz)
+    int i$ at (1 hz)
+    i$ << [10 through 1]
     print (frame i$)
-
-on (int i$) << count down from (int n)
-    i$ << n << (i$ - 1) while (_ > 0) bound 10

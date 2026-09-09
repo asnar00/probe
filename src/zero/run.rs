@@ -247,3 +247,30 @@ fn show(vals: &[i64]) -> String {
     let v: Vec<String> = vals.iter().map(|v| v.to_string()).collect();
     v.join(", ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// a product's bound (log 41) reaches every loop of the function it
+    /// names, marked as the product's, and `probe cost` counts it
+    #[test]
+    fn a_product_bound_reaches_the_loops() {
+        let ir = emit(Path::new("suite/zero/tasks")).unwrap();
+        assert!(ir.contains("; product setting: bound count down from: 5\nfn count_down_from("), "{}", ir);
+        let body: String = ir.lines().skip_while(|l| !l.starts_with("fn count_down_from(")).take_while(|l| *l != "}").collect::<Vec<_>>().join("\n");
+        assert!(body.contains("loop() bound 5 {"), "{}", body);
+        let policy = suite::backend_policy(Backend::Native).unwrap();
+        let module = build(&ir, &policy, 1).unwrap();
+        let mut coster = crate::cost::Coster::new(&module, None, None, None);
+        let r = coster.report("count_down_from").unwrap();
+        assert!(r.loops.iter().any(|l| l.contains("x5 (declared)")), "{:?}", r.loops);
+        // hello's countdown shows its count without a bound anywhere
+        let ir = emit(Path::new("suite/zero/hello")).unwrap();
+        assert!(!ir.contains("product setting"));
+        let module = build(&ir, &policy, 1).unwrap();
+        let mut coster = crate::cost::Coster::new(&module, None, None, None);
+        let r = coster.report("count_down").unwrap();
+        assert!(r.loops.iter().any(|l| l.contains("count_down: loop at b1 x10 (")), "{:?}", r.loops);
+    }
+}

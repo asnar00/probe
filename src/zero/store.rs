@@ -20,6 +20,11 @@ pub struct Store {
     /// folders (log 28); empty when there is none, and every layer is
     /// then one level
     pub layers: Vec<String>,
+    /// the product's settings (log 41): `bound <function words>: N`
+    /// lines in `product.md` beside the feature folders, the words and
+    /// the trip count; empty when there is no product file
+    pub product: Vec<(Vec<String>, i64)>,
+    pub product_file: String,
 }
 
 impl Store {
@@ -112,7 +117,35 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     let layers = read_layers(dir)?;
     check_tree(&mut features, &layers)?;
     features.insert(0, builtin_platform(&types)?);
-    Ok(Store { path: dir.to_path_buf(), features, layers })
+    let (product, product_file) = read_product(dir)?;
+    Ok(Store { path: dir.to_path_buf(), features, layers, product, product_file })
+}
+
+/// `product.md`: what the product sets and no feature says (zero.md
+/// section 1, log 41). In the bootstrap it is one kind of line, `bound
+/// <function words>: N`, a trip count for every loop of that function
+/// the IR does not show the count of; every other line is prose
+fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, String), Error> {
+    let path = dir.join("product.md");
+    let file = path.display().to_string();
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok((Vec::new(), file)) };
+    let mut settings: Vec<(Vec<String>, i64)> = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let Some(rest) = line.trim().strip_prefix("bound ") else { continue };
+        let Some((words, n)) = rest.split_once(':') else {
+            return Err(lex::error(&file, i + 1, "a bound is `bound <function words>: N`"));
+        };
+        let words: Vec<String> = words.split_whitespace().map(str::to_string).collect();
+        let n: i64 = n.trim().parse().map_err(|_| lex::error(&file, i + 1, format!("a bound is a positive number, not '{}'", n.trim())))?;
+        if words.is_empty() || n <= 0 {
+            return Err(lex::error(&file, i + 1, "a bound is `bound <function words>: N`, N positive"));
+        }
+        if settings.iter().any(|(w, _)| *w == words) {
+            return Err(lex::error(&file, i + 1, format!("'{}' is bounded twice", words.join(" "))));
+        }
+        settings.push((words, n));
+    }
+    Ok((settings, file))
 }
 
 /// `layers.md`: the store's layers, one `- name` per line, lowest first

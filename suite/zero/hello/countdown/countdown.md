@@ -8,17 +8,16 @@ layer: runtime
 Section 16's `feature Countdown extends Hello`: `count down()` then `existing run()`.
 
 ## overview
-Before hello says hello, `count down` prints 10 to 1 on one line, one number a second on the store's clock, which the suite moves as fast as it can.
+Before hello says hello, `count down` prints 10 to 1 on one line: a stream at one hertz, the range `[10 through 1]` pushed into it, so the ten numbers sit one second apart on the stream's clock.
 
 ## interface
 - `run` counts down, then does what it did before.
-- `count down` wires section 10's task `count down from (10)` at `1 hz` and prints the frame it produced.
-- `count down from (n)` is the task: n, n − 1, ... 1, pushing while the candidate `_` is above zero.
+- `count down` declares `int i$ at (1 hz)`, pushes `[10 through 1]` into it, and prints the frame.
 
 ## rules
-- Section 16 writes `print [10 through 1] at (1 hz)`; here the rate is on the task's wiring and `print` takes the frame, one line with a space between the numbers (log 28).
-- With `countdown.enabled` false, `run` falls through to hello's.
-- `bound 10` on the task's chain is section 7's declared trip count on the repeated push, the number section 16 counts from; it goes onto the IR's `loop() bound 10 {`, trusted, not checked, so `probe cost` on `run` counts the countdown as ten passes (log 33).
+- Section 16 writes `print [10 through 1] at (1 hz)`; here the rate is on the stream's declaration, the range is pushed into it, and `print` takes the frame, one line with a space between the numbers (log 28, 41).
+- With countdown off (`>run() with countdown off`), `run` falls through to hello's.
+- The count is in the code as the range's literal bounds, so `probe cost` on `run` counts the countdown's loop as ten passes without a bound anywhere: a bound is a product setting, never a word in feature code (question 19, log 41).
 
 ## testing
 >count down() → "10 9 8 7 6 5 4 3 2 1"
