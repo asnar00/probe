@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: an edge moves a batch through one view — `162ba63` · 2026-09-10
+
+```
+fn __edge1(i: int$, __hz: i64) -> int$
+    _1: int[] = unread(i)
+    _2: i64 = len _1
+    loop(_3: i64 = 0)
+```
+
+The parity pass, hop 10 (fm3 log 75). A `for` over a stream now takes the unread items as one view and loads each (`src/zero/lower.rs`, `lower_for_seq`) where it peeked at each, and the edge's sink (above, `suite/zero/hello.expected.ssa`) is `for __item in i$` with the pushes, then one `advance`; `lib/stream.ssa`'s `frame` and `unread` pack the view from the buffer's typed pointer as `peek` reads. The cost tool, counting the loop once, says hello 2 089 → 2 113 and static 1 971 → 1 995; honestly ten items lose about 190. Every path: zero 477/477 on the CPU paths and 460 + 17 skipped on air, probe test 977/977, 968 + 9, 977, 977, 946 + 31; cargo test 108.
+
+---
+
 ### stream: the ring's item path is lean — `dc3526a` · 2026-09-10
 
 ```
