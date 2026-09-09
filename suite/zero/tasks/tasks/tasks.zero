@@ -1,7 +1,7 @@
-int x$ <<
+int x$
 int d$ = doubled(x$)
 int e$ = closer(x$)
-int y$ <<
+int y$
 int q$ = doubled(y$)
 int w$ << count up to (3) << count down from (3)
 int size = 4
@@ -89,6 +89,11 @@ on (int n) = composed at a rate()
     int k, int t = position s$
     n = k * 10 + t / 1000000
 
+on (int n) = fed a literal()
+    int i$ = [1, 2, 3]
+    int d$ = doubled(i$)
+    n = count d$ * 10 + latest d$
+
 on (int n) = run now moves the reader()
     int i$ << 1 << 2 << 3
     int d$ = doubled(i$)
@@ -96,7 +101,7 @@ on (int n) = run now moves the reader()
 
 on (int n) = run now inside a loop()
     int i$ << 1 << 2 << 3 << 4
-    int d$ <<
+    int d$
     loop (int k = 10) while (k < 12)
         i$ << k
         d$ << doubled(i$)

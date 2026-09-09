@@ -2,6 +2,7 @@ type token =
     int kind, start, n
 
 int log$ << 100
+int seen = 0
 
 on (int n) = pushed()
     int i$ << 1 << 2 << 3
@@ -111,3 +112,33 @@ on (int n) = blocked()
 on (int n) = blocked regular()
     int r$ at (1 khz) << [1, 2, 3]
     n = count r$ * 10 + latest r$
+
+on (int n) = indexed()
+    int i$ << 5 << 6 << 7
+    n = i$[1] * 10 + i$[2]
+
+on (int n) = summed()
+    int i$ << 1 << 2 << 3
+    n = i$ + _
+
+on (int n) = mapped()
+    int i$ << 1 << 2 << 3
+    int j$ = i$ * 2
+    n = j$ + _
+
+on (int n) = walked over()
+    int i$ << 1 << 2 << 3
+    for (x in i$)
+        seen = seen + x
+    n = seen
+
+on (int n) = unread only()
+    int i$ << 1 << 2 << 3 << 4
+    advance i$ by (2)
+    n = (i$ + _) * 10 + count i$
+
+on (int n) = framed pushed()
+    int i$ << 1 << 2
+    int f$ = frame i$
+    f$ << 9
+    n = count f$ * 10 + latest f$

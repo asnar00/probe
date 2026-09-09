@@ -21,4 +21,4 @@ Every store composes the compiler's `platform` feature first, in the lowest laye
 >count to three() → "1 2 3"
 
 ## hostile
-`on print (string s)` in a store's feature is refused: "'print' is a platform function of feature platform: the platform is called, not redefined". `print (1.5)` is refused: "no 'print' takes these arguments: it is declared for (u8[]) and (int[])".
+`on print (string s)` in a store's feature is refused: "'print' is a platform function of feature platform: the platform is called, not redefined". `print (1.5)` is refused: "no 'print' takes these arguments: the methods are print (string), print (int$)".

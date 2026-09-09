@@ -28,12 +28,11 @@ pub enum Ty {
     Bool,
     /// a number, by its IR name: `int`, `u8`, `f32`, `number`, ...
     Num(String),
-    /// a sequence `T$`: the IR's rank-1 view `T[]`; a `string` is `u8$`
-    Seq(Box<Ty>),
-    /// a stream `T$` (log 23): the IR's `T$`, a reader's view of a ring,
-    /// regular (at a rate) or not; a stream of a struct is a generated
-    /// struct of one stream per field
-    Stream(Box<Ty>, bool),
+    /// a stream `T$` (section 9, log 38): the IR's `T$`, a reader's view
+    /// of a ring, whether its items arrive over time or are all present
+    /// (a sequence); a `string` is `u8$`; a stream of a struct is a
+    /// generated struct of one stream per field
+    Stream(Box<Ty>),
     /// a declared struct, by name
     Struct(String),
     /// a declared enumeration, by name
@@ -47,8 +46,7 @@ impl Ty {
         match self {
             Ty::Bool => "u1".into(),
             Ty::Num(n) => n.clone(),
-            Ty::Seq(e) => format!("{}[]", e.ir()),
-            Ty::Stream(e, _) => match e.as_ref() {
+            Ty::Stream(e) => match e.as_ref() {
                 Ty::Struct(n) => format!("__s_{}", n),
                 e => format!("{}$", e.ir()),
             },
@@ -58,13 +56,23 @@ impl Ty {
     }
 
     fn string() -> Ty {
-        Ty::Seq(Box::new(Ty::Num("u8".into())))
+        Ty::Stream(Box::new(Ty::Num("u8".into())))
     }
 
-    /// the element type of a sequence, or none
+    /// the element type of a stream, or none
     fn elem(&self) -> Option<&Ty> {
         match self {
-            Ty::Seq(e) => Some(e),
+            Ty::Stream(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// a stream of numbers or enumerations: one the sequence words
+    /// (map, zip, reduce, `frame`) read as one view; a stream of structs
+    /// is not
+    fn items(&self) -> Option<&Ty> {
+        match self {
+            Ty::Stream(e) if matches!(e.as_ref(), Ty::Num(_) | Ty::Enum(_)) => Some(e),
             _ => None,
         }
     }
@@ -245,8 +253,7 @@ fn type_word(t: &Ty) -> String {
     match t {
         Ty::Bool => "bool".into(),
         Ty::Num(n) => n.clone(),
-        Ty::Seq(e) => format!("{}s", type_word(e)),
-        Ty::Stream(e, _) => format!("{}_stream", type_word(e)),
+        Ty::Stream(e) => format!("{}s", type_word(e)),
         Ty::Struct(n) | Ty::Enum(n) => n.clone(),
         Ty::None => String::new(),
     }
@@ -359,11 +366,26 @@ fn __out_byte(i: i64) -> u8 {
     ret b
 }
 
-; a string: a view of n bytes at p
+; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
 fn __str(p: ptr, n: i64) -> u8[] {
     q: ptr(u8) = cast p
     v: u8[] = pack q, n, 1
     ret v
+}
+
+; a push into any stream (log 38): stamped with the clock on a ring
+; without a rate, the next sample on one with a rate
+fn __push(s: number$, v: number) {
+    r: ptr = get s, ring
+    step: i64 = load r, 40
+    regular: u1 = cmp.gt step, 0
+    if regular {
+        push(s, v)
+    } else {
+        t: i64 = __now()
+        push(s, t, v)
+    }
+    ret
 }
 
 ; one byte, when there is room
@@ -416,9 +438,9 @@ fn __print_int(x: int) {
 }
 "#;
 
-/// a ring's capacity: the front end's number until residency is
-/// computed (section 9, log 23); a reader more than half this behind
-/// fails the library's check
+/// a ring's capacity, or the item count where it is larger (log 38):
+/// the front end's number until residency is computed (section 9, log
+/// 23); a reader more than half this behind fails the library's check
 const RING_ITEMS: usize = 64;
 
 /// the clock of a stream without a rate: microsecond ticks
@@ -459,7 +481,7 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), news: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), type_feature: HashMap::new(), strict: false };
+    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), type_feature: HashMap::new(), strict: false };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -509,20 +531,20 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         }
     }
     l.emit_links();
-    if !l.news.is_empty() {
-        writeln!(l.out, "\n; a sequence of n items, carved from the arena: a buffer, then the view over it").unwrap();
-    }
-    for t in &l.news {
-        writeln!(l.out, "fn __new_{}(n: i64) -> {}[] {{\n    a: ptr = addr __arena\n    sz: i64 = sizeof {}\n    bytes: i64 = mul n, sz\n    total: i64 = add bytes, 16\n    p: ptr = arena_alloc(a, total)\n    buffer_init(p, sz, n)\n    v: {}[] = slice p\n    ret v\n}}", t, t, t, t).unwrap();
-    }
     if !l.rings.is_empty() {
-        writeln!(l.out, "\n; a stream's ring, carved from the arena: {} items, and a tick per item unless regular; a reader's view at its start", RING_ITEMS).unwrap();
+        writeln!(l.out, "\n; a stream's ring, carved from the arena: cap items ({} unless more are resident), and a tick per item unless regular; a reader's view at its start", RING_ITEMS).unwrap();
     }
     for (t, regular) in &l.rings {
-        let ticks = if *regular { String::new() } else { format!("    tb: ptr = arena_alloc(a, {})\n    buffer_init(tb, 8, {})\n", RING_ITEMS * 8 + 16, RING_ITEMS) };
+        let ticks = if *regular { String::new() } else { "    tbytes: i64 = mul cap, 8\n    ttotal: i64 = add tbytes, 16\n    tb: ptr = arena_alloc(a, ttotal)\n    buffer_init(tb, 8, cap)\n".to_string() };
         let init = if *regular { "ring_regular(r, vb, hz, 1, 0)".to_string() } else { "ring_init(r, vb, tb, hz)".to_string() };
         let name = if *regular { "regular" } else { "stream" };
-        writeln!(l.out, "fn __{}_{}(hz: i64) -> {}$ {{\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, 64)\n    sz: i64 = sizeof {}\n    bytes: i64 = mul sz, {}\n    total: i64 = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, {})\n{}    {}\n    s: {}$ = stream r\n    ret s\n}}", name, t, t, t, RING_ITEMS, RING_ITEMS, ticks, init, t).unwrap();
+        writeln!(l.out, "fn __{}_{}(hz: i64, cap: i64) -> {}$ {{\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, 64)\n    sz: i64 = sizeof {}\n    bytes: i64 = mul sz, cap\n    total: i64 = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, cap)\n{}    {}\n    s: {}$ = stream r\n    ret s\n}}", name, t, t, t, ticks, init, t).unwrap();
+    }
+    if !l.copies.is_empty() {
+        writeln!(l.out, "\n; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give").unwrap();
+    }
+    for t in &l.copies {
+        writeln!(l.out, "fn __copy_{}(v: {}[]) -> {}$ {{\n    n: i64 = len v\n    least: i64 = const {}\n    cap: i64 = max(n, least)\n    s: {}$ = __stream_{}({}, cap)\n    t: i64 = __now()\n    loop(i: i64 = 0) {{\n        done: u1 = cmp.ge i, n\n        if done {{\n            break\n        }}\n        x: {} = load v, i\n        push s, t, x\n        i2: i64 = add i, 1\n        continue i2\n    }}\n    ret s\n}}", t, t, t, RING_ITEMS, t, t, CLOCK_HZ, t).unwrap();
     }
     let mut ir = String::new();
     writeln!(ir, "; lowered from the zero store {}", store.path.display()).unwrap();
@@ -683,11 +705,11 @@ fn literal_default(e: &Expr) -> Option<Ty> {
         ExprKind::Int(_) => Some(Ty::Num("int".into())),
         ExprKind::Float(_) => Some(Ty::Num("float".into())),
         ExprKind::Neg(x) => literal_default(x),
-        ExprKind::Range { .. } => Some(Ty::Seq(Box::new(Ty::Num("int".into())))),
+        ExprKind::Range { .. } => Some(Ty::Stream(Box::new(Ty::Num("int".into())))),
         ExprKind::List(items) => {
             let first = literal_default(items.first()?)?;
             if items.iter().all(|i| literal_default(i).as_ref() == Some(&first)) {
-                Some(Ty::Seq(Box::new(first)))
+                Some(Ty::Stream(Box::new(first)))
             } else {
                 None
             }
@@ -718,8 +740,8 @@ fn zero_ty(t: &Ty) -> String {
             },
             n => n.to_string(),
         },
-        Ty::Seq(e) if **e == Ty::Num("u8".into()) => "string".into(),
-        Ty::Seq(e) | Ty::Stream(e, _) => format!("{}$", zero_ty(e)),
+        Ty::Stream(e) if **e == Ty::Num("u8".into()) => "string".into(),
+        Ty::Stream(e) => format!("{}$", zero_ty(e)),
         Ty::Struct(n) | Ty::Enum(n) => n.clone(),
         Ty::None => String::new(),
     }
@@ -736,8 +758,9 @@ struct Lowerer {
     nstr: usize,
     /// the feature-scope variables, in composition order
     fvars: Vec<FVar>,
-    /// the element types sequences were made of: one `__new_T` each
-    news: std::collections::BTreeSet<String>,
+    /// the element types views were copied into streams of: one
+    /// `__copy_T` each
+    copies: std::collections::BTreeSet<String>,
     /// the rings made: element type and whether regular, one
     /// `__stream_T` or `__regular_T` each
     rings: std::collections::BTreeSet<(String, bool)>,
@@ -924,8 +947,8 @@ impl Lowerer {
         Ok(())
     }
 
-    /// a type by zero's name
-    fn ty(&self, name: &str, seq: bool, file: &str, line: usize) -> Result<Ty, Error> {
+    /// a type by zero's name; with `seq`, a stream of it (`T x$`)
+    fn ty(&mut self, name: &str, seq: bool, file: &str, line: usize) -> Result<Ty, Error> {
         let t = match builtin_type(name) {
             Some(t) => t,
             None => match self.types.get(name) {
@@ -940,21 +963,74 @@ impl Lowerer {
         if !seq {
             return Ok(t);
         }
-        // the items of a sequence are numbers and enumerations in this milestone
-        match t {
-            Ty::Num(_) | Ty::Enum(_) => Ok(Ty::Seq(Box::new(t))),
-            _ => Err(lex::error(file, line, format!("a sequence of {}: only numbers and enumerations in this milestone", t.ir()))),
-        }
+        self.stream_ty(t, file, line)
     }
 
-    /// a new sequence of n items in the arena, through the generated
-    /// `__new_T` for its element type
-    fn new_seq(&mut self, elem: &Ty, n: &str, b: &mut Body, dst: Option<&str>) -> Val {
-        let ty = Ty::Seq(Box::new(elem.clone()));
-        self.news.insert(elem.ir());
+    /// a new stream whose items are all present (log 38): a ring of at
+    /// least `cap` items — the count, or `RING_ITEMS` when that is
+    /// larger — in the arena, stamped once at the clock's now; the
+    /// caller pushes the items with `push s, t, x`
+    fn new_resident(&mut self, elem: &Ty, cap: &str, b: &mut Body, dst: Option<&str>) -> (Val, String) {
+        let ty = Ty::Stream(Box::new(elem.clone()));
+        self.rings.insert((elem.ir(), false));
+        let cap = match cap.parse::<usize>() {
+            Ok(n) => n.max(RING_ITEMS).to_string(),
+            Err(_) => {
+                let least = b.tmp();
+                b.line(&format!("{}: i64 = const {}", least, RING_ITEMS));
+                let m = b.tmp();
+                b.line(&format!("{}: i64 = max({}, {})", m, cap, least));
+                m
+            }
+        };
         let out = name_for(dst, &ty, b);
-        b.line(&format!("{}: {} = __new_{}({})", out, ty.ir(), elem.ir(), n));
+        b.line(&format!("{}: {} = __stream_{}({}, {})", out, ty.ir(), elem.ir(), CLOCK_HZ, cap));
+        let t = b.tmp();
+        b.line(&format!("{}: i64 = __now()", t));
+        (Val { text: out, ty, literal: false }, t)
+    }
+
+    /// a view's items as a new stream, through the generated `__copy_T`
+    fn copy_view(&mut self, elem: &Ty, view: &str, b: &mut Body, dst: Option<&str>) -> Val {
+        let ty = Ty::Stream(Box::new(elem.clone()));
+        self.copies.insert(elem.ir());
+        self.rings.insert((elem.ir(), false));
+        let out = name_for(dst, &ty, b);
+        b.line(&format!("{}: {} = __copy_{}({})", out, ty.ir(), elem.ir(), view));
         Val { text: out, ty, literal: false }
+    }
+
+    /// a stream's unread items as one view, the reader not moved: what
+    /// the sequence words read (log 38)
+    fn unread_view(&mut self, s: &Val, b: &mut Body) -> String {
+        let e = s.ty.elem().unwrap();
+        let v = b.tmp();
+        b.line(&format!("{}: {}[] = unread({})", v, e.ir(), s.text));
+        v
+    }
+
+    /// how many items a stream has unread, as an int
+    fn count_of(&mut self, s: &Val, b: &mut Body, dst: Option<&str>) -> Val {
+        let first = self.first_reader(s, b);
+        let n = b.tmp();
+        b.line(&format!("{}: i64 = count {}", n, first));
+        let ty = Ty::Num("int".into());
+        let out = name_for(dst, &ty, b);
+        b.line(&format!("{}: int = conv {}", out, n));
+        Val { text: out, ty, literal: false }
+    }
+
+    /// the i-th unread item of a stream: `x$[i]`, `peek x$ at (i)`
+    fn peek_at(&mut self, s: &Val, i: &str, b: &mut Body, dst: Option<&str>) -> Val {
+        let elem = s.ty.elem().unwrap().clone();
+        match self.stream_fields(&s.ty) {
+            Some(f) => self.read_fields(s, &f, "peek", &format!(", {}", i), b, dst),
+            None => {
+                let out = name_for(dst, &elem, b);
+                b.line(&format!("{}: {} = peek {}, {}", out, elem.ir(), s.text, i));
+                Val { text: out, ty: elem, literal: false }
+            }
+        }
     }
 
     fn declare_type(&mut self, t: &super::syntax::TypeDecl, file: &str) -> Result<(), Error> {
@@ -1031,14 +1107,8 @@ impl Lowerer {
         let key = mangle(&f.name);
         let mut params = Vec::new();
         for p in f.params() {
-            // a task's `$` parameters are the streams it reads (log 25)
-            let ty = if f.task && p.seq {
-                let elem = self.ty(&p.ty, false, file, p.line)?;
-                self.stream_ty(elem, false, file, p.line)?
-            } else {
-                self.ty(&p.ty, p.seq, file, p.line)?
-            };
-            params.push((p.name.clone(), ty));
+            // a `$` parameter is a stream, which a task reads and moves (log 25)
+            params.push((p.name.clone(), self.ty(&p.ty, p.seq, file, p.line)?));
         }
         let mut results = Vec::new();
         if f.task {
@@ -1048,13 +1118,8 @@ impl Lowerer {
             if !r.seq {
                 return Err(lex::error(file, f.line, format!("a task's result is the stream it produces: `on ({} {}$) << ...`", r.ty, r.name)));
             }
-            let elem = self.ty(&r.ty, false, file, r.line)?;
-            results.push((r.name.clone(), self.stream_ty(elem, false, file, r.line)?));
         }
         for r in &f.results {
-            if f.task {
-                break;
-            }
             results.push((r.name.clone(), self.ty(&r.ty, r.seq, file, r.line)?));
         }
         let operator = f.name.iter().any(|p| matches!(p, NamePart::Sym(_)));
@@ -1178,7 +1243,7 @@ impl Lowerer {
         args.iter()
             .zip(&info.params)
             .filter_map(|(a, (_, t))| match (&a.kind, t) {
-                (ExprKind::Seq(n), Ty::Stream(..)) => Some(n.clone()),
+                (ExprKind::Seq(n), Ty::Stream(_)) => Some(n.clone()),
                 _ => None,
             })
             .collect()
@@ -1190,20 +1255,20 @@ impl Lowerer {
     fn run_task(&mut self, info: &FnInfo, args: &[Expr], hz: i64, out: &Val, b: &mut Body, line: usize) -> Result<(), Error> {
         let file = b.file.clone();
         self.reach(&spoken(info), &info.feature, &file, line)?;
-        let Ty::Stream(want, _) = &info.results[0].1 else { unreachable!() };
-        let Ty::Stream(have, _) = &out.ty else { unreachable!() };
+        let Ty::Stream(want) = &info.results[0].1 else { unreachable!() };
+        let Ty::Stream(have) = &out.ty else { unreachable!() };
         if want != have {
             return Err(lex::error(&file, line, format!("'{}' produces {} and '{}' holds {}", info.key, want.ir(), out.text, have.ir())));
         }
         let mut ops = vec![out.text.clone()];
         let mut moved: Vec<(String, Ty)> = Vec::new();
         for (a, (pname, pty)) in args.iter().zip(&info.params) {
-            if let Ty::Stream(pe, _) = pty {
+            if let Ty::Stream(pe) = pty {
                 let ExprKind::Seq(n) = &a.kind else {
-                    return Err(lex::error(&file, a.line, format!("'{}' reads '{}$' as a stream: give it a stream variable", info.key, pname)));
+                    return Err(lex::error(&file, a.line, format!("'{}' reads '{}$' as a stream it moves: give it a stream variable", info.key, pname)));
                 };
-                let Some(Ty::Stream(ae, _)) = self.stream_var(n, b) else {
-                    return Err(lex::error(&file, a.line, format!("'{}$' is not a stream: '{}' reads one here", n, info.key)));
+                let Some(Ty::Stream(ae)) = self.stream_var(n, b) else {
+                    return Err(lex::error(&file, a.line, format!("'{}$' is not declared: '{}' reads a stream here", n, info.key)));
                 };
                 if ae != *pe {
                     return Err(lex::error(&file, a.line, format!("'{}' reads a stream of {}, '{}$' holds {}", info.key, pe.ir(), n, ae.ir())));
@@ -1274,14 +1339,14 @@ impl Lowerer {
             };
             self.reach(&spoken(&info), &info.feature, file, e.line)?;
             for (a, (pname, pty)) in args.iter().zip(&info.params) {
-                if let Ty::Stream(pe, _) = pty {
+                if let Ty::Stream(pe) = pty {
                     let ExprKind::Seq(n) = &a.kind else {
                         return Err(lex::error(file, a.line, format!("'{}' reads '{}$' as a stream: wire a feature-scope stream to it", info.key, pname)));
                     };
                     match self.fvar(n).map(|f| f.ty.clone()) {
-                        Some(Ty::Stream(ae, _)) if ae == *pe => {}
-                        Some(Ty::Stream(ae, _)) => return Err(lex::error(file, a.line, format!("'{}' reads a stream of {}, '{}$' holds {}", info.key, pe.ir(), n, ae.ir()))),
-                        Some(t) => return Err(lex::error(file, a.line, format!("'{}$' is a {}, not a stream: a stream is declared with `<<` or `at (n hz)`", n, t.ir()))),
+                        Some(Ty::Stream(ae)) if ae == *pe => {}
+                        Some(Ty::Stream(ae)) => return Err(lex::error(file, a.line, format!("'{}' reads a stream of {}, '{}$' holds {}", info.key, pe.ir(), n, ae.ir()))),
+                        Some(t) => return Err(lex::error(file, a.line, format!("'{}$' is a {}, not a stream", n, t.ir()))),
                         None => return Err(lex::error(file, a.line, format!("'{}$' is not a feature-scope stream", n))),
                     }
                     self.reach(&format!("{}$", n), &self.fvar(n).unwrap().feature.clone(), file, a.line)?;
@@ -1340,7 +1405,7 @@ impl Lowerer {
         for (k, node) in self.nodes.iter().enumerate() {
             let mut fields = Vec::new();
             for (a, (pname, pty)) in node.args.iter().zip(&node.info.params) {
-                if let (ExprKind::Seq(_), Ty::Stream(..)) = (&a.kind, pty) {
+                if let (ExprKind::Seq(_), Ty::Stream(_)) = (&a.kind, pty) {
                     fields.push((format!("__node{}_{}", k + 1, pname), pty.clone()));
                     // how many items the ring had when the node last ran
                     fields.push((format!("__node{}_{}_seen", k + 1, pname), Ty::Num("i64".into())));
@@ -1376,24 +1441,25 @@ impl Lowerer {
                     self.cur = feat.name.clone();
                     let ty = self.fvar(&v.name).unwrap().ty.clone();
                     let val = match &v.init {
-                        _ if matches!(ty, Ty::Stream(..)) => {
-                            let hz = match &v.rate {
-                                Some(r) => self.rate_hz(r, &b.file)?,
-                                None => CLOCK_HZ,
-                            };
-                            let s = self.make_stream(&ty, hz, &mut b, None)?;
+                        _ if matches!(ty, Ty::Stream(_)) => {
+                            let wired = matches!(&v.init, Some(Init::Value(e)) if matches!(self.task_call(e, None, &b.file), Ok(Some(_))));
                             match &v.init {
+                                // a stream with its items resident: the ring
+                                // the expression made (log 38)
+                                Some(Init::Value(e)) if !wired => {
+                                    self.resident_init(v, &ty, e, &mut b)?
+                                }
                                 Some(Init::Pushes { items, cond, bound }) => {
+                                    let s = self.empty_stream(v, &ty, &mut b, None)?;
                                     // the items before the first task call
                                     // are pushed here; the calls are nodes
                                     let n = items.iter().position(|e| matches!(self.task_call(e, None, &b.file), Ok(Some(_)))).unwrap_or(items.len());
                                     self.lower_pushes(&v.name, &s, &items[..n], cond.as_ref(), *bound, &mut b)?;
+                                    s
                                 }
-                                None => {}
-                                Some(Init::Value(_)) => {}
-                                Some(_) => return Err(lex::error(&b.file, v.line, "a stream is filled with `<<`")),
+                                Some(Init::Construct(_)) => return Err(lex::error(&b.file, v.line, format!("'{}$' is a stream: it is filled with `<<`, or made from a list or a range", v.name))),
+                                _ => self.empty_stream(v, &ty, &mut b, None)?,
                             }
-                            s
                         }
                         None => self.zero_val(&ty, &mut b),
                         Some(Init::Value(e)) => {
@@ -1419,7 +1485,7 @@ impl Lowerer {
             // reader is a value: a copy is its own position)
             for node in &self.nodes {
                 for (a, (_, pty)) in node.args.iter().zip(&node.info.params) {
-                    if let (ExprKind::Seq(n), Ty::Stream(..)) = (&a.kind, pty) {
+                    if let (ExprKind::Seq(n), Ty::Stream(_)) = (&a.kind, pty) {
                         inits.push(init_of[n].clone());
                         inits.push("0".into());
                     }
@@ -1554,7 +1620,7 @@ impl Lowerer {
         let mut readers = Vec::new();
         let mut pending: Option<String> = None;
         for (a, (pname, pty)) in node.args.iter().zip(&node.info.params) {
-            let Ty::Stream(..) = pty else { continue };
+            let Ty::Stream(_) = pty else { continue };
             let r = b.tmp();
             b.line(&format!("{}: {} = __get___node{}_{}()", r, pty.ir(), k, pname));
             let rv = Val { text: r.clone(), ty: pty.clone(), literal: false };
@@ -1590,7 +1656,7 @@ impl Lowerer {
         let mut ops = vec![out.text.clone()];
         let mut ri = 0;
         for (a, (_, pty)) in node.args.iter().zip(&node.info.params) {
-            if let Ty::Stream(..) = pty {
+            if let Ty::Stream(_) = pty {
                 ops.push(readers[ri].1.clone());
                 ri += 1;
             } else {
@@ -1691,18 +1757,18 @@ impl Lowerer {
 
     fn lower_fn(&mut self, f: &FnDecl, feature: &str, file: &str) -> Result<(), Error> {
         let key = mangle(&f.name);
+        // methods (log 36): the one declared for these parameter types
+        let mut tys = Vec::new();
+        for p in f.params() {
+            tys.push(self.ty(&p.ty, p.seq, file, p.line)?);
+        }
         let mut candidates: Vec<&FnInfo> = self.funcs.iter().filter(|g| g.key == key && g.parts == f.name && g.params.len() == f.params().count()).collect();
         if candidates.len() > 1 {
-            // methods (log 36): the one declared for these parameter types
-            let mut tys = Vec::new();
-            for p in f.params() {
-                tys.push(self.ty(&p.ty, p.seq, file, p.line)?);
-            }
             candidates.retain(|g| g.params.iter().map(|(_, t)| t.clone()).collect::<Vec<Ty>>() == tys);
         }
         let info = candidates[0].clone();
         // a task's IR results are its stream parameters, moved on (log 25)
-        let results: Vec<(String, Ty)> = if info.task { info.params.iter().filter(|(_, t)| matches!(t, Ty::Stream(..))).cloned().collect() } else { info.results.clone() };
+        let results: Vec<(String, Ty)> = if info.task { info.params.iter().filter(|(_, t)| matches!(t, Ty::Stream(_))).cloned().collect() } else { info.results.clone() };
         let kind = if info.task { BodyKind::Task { out: info.results[0].0.clone(), hz: "__hz".into() } } else { BodyKind::Fn };
         // in a chain the body is `key__feature`, and `existing` is the link below
         let (name, below) = if info.chain.len() > 1 {
@@ -1994,7 +2060,7 @@ impl Lowerer {
                 continue;
             }
             if let Some(v) = b.vars.get(&n) {
-                if matches!(v.ty, Ty::Stream(..)) && v.set {
+                if matches!(v.ty, Ty::Stream(_)) && v.set {
                     header.push((n.clone(), v.ty.clone(), v.ir.clone()));
                     carried.push(n.clone());
                     tys.push(v.ty.clone());
@@ -2189,13 +2255,14 @@ impl Lowerer {
         Ok(())
     }
 
-    /// `for (x in items$)`: a loop over the index, the item loaded at
-    /// the top of each pass and gone after the loop
+    /// `for (x in items$)`: a loop over the unread items by index, the
+    /// reader not moved, the item peeked at the top of each pass and
+    /// gone after the loop (log 38)
     fn lower_for_seq(&mut self, var: &str, seq: &Expr, bound: Option<i64>, body: &[Stmt], b: &mut Body) -> Result<(), Error> {
         let file = b.file.clone();
         let sv = self.lower_expr(seq, None, b, None)?;
         let Some(e) = sv.ty.elem().cloned() else {
-            return Err(lex::error(&file, seq.line, format!("a `for` runs over a sequence or a range, not a {}", sv.ty.ir())));
+            return Err(lex::error(&file, seq.line, format!("a `for` runs over a stream or a range, not a {}", sv.ty.ir())));
         };
         if b.vars.contains_key(var) {
             return Err(lex::error(&file, seq.line, format!("'{}' is already declared", var)));
@@ -2205,8 +2272,9 @@ impl Lowerer {
             Some(_) => return Err(lex::error(&file, seq.line, "'bound' takes a positive number")),
             None => String::new(),
         };
+        let first = self.first_reader(&sv, b);
         let n = b.tmp();
-        b.line(&format!("{}: i64 = len {}", n, sv.text));
+        b.line(&format!("{}: i64 = count {}", n, first));
         let k = b.tmp();
         b.loops.push(LoopCtx { carried: Vec::new(), explicit: 0, item: Some((k.clone(), "add", "1".into())), loaded: Some(var.to_string()), breaks: 1 });
         let depth = b.loops.len();
@@ -2221,8 +2289,8 @@ impl Lowerer {
         b.line("break");
         b.depth -= 1;
         b.line("}");
-        let x = b.define(var, e.clone());
-        b.line(&format!("{}: {} = load {}, {}", x, e.ir(), sv.text, k));
+        b.declare(var, e.clone());
+        self.peek_at(&sv, &k, b, Some(var));
         let terminated = self.lower_block(body, b)?;
         if !terminated {
             self.step_for(b);
@@ -2253,18 +2321,9 @@ impl Lowerer {
     fn zero_val(&mut self, t: &Ty, b: &mut Body) -> Val {
         match t {
             Ty::Bool | Ty::Num(_) | Ty::Enum(_) => Val { text: "0".into(), ty: t.clone(), literal: true },
-            Ty::Seq(e) => {
-                // the empty view: nothing at the null byte
-                let p = b.tmp();
-                b.line(&format!("{}: ptr = addr __nul", p));
-                let q = b.tmp();
-                b.line(&format!("{}: ptr({}) = cast {}", q, e.ir(), p));
-                let n = b.tmp();
-                b.line(&format!("{}: {} = pack {}, 0, 1", n, t.ir(), q));
-                Val { text: n, ty: t.clone(), literal: false }
-            }
             Ty::Struct(name) => self.construct(name, &[], b, None, 0).unwrap_or(Val { text: "0".into(), ty: t.clone(), literal: true }),
-            Ty::Stream(..) => self.make_stream(t, CLOCK_HZ, b, None).unwrap_or(Val { text: "0".into(), ty: t.clone(), literal: true }),
+            // an empty stream
+            Ty::Stream(_) => self.make_stream(t, CLOCK_HZ, false, b, None),
             Ty::None => Val { text: String::new(), ty: Ty::None, literal: false },
         }
     }
@@ -2446,23 +2505,34 @@ impl Lowerer {
                 }
                 let ty = self.decl_ty(v, Some(&b.vars), &file)?;
                 b.declare(&v.name, ty.clone());
-                if let Ty::Stream(..) = &ty {
-                    // a stream: its ring, then the chain of pushes, or the
-                    // task that fills it, run now (log 25)
-                    let hz = match &v.rate {
-                        Some(r) => self.rate_hz(r, &file)?,
-                        None => CLOCK_HZ,
+                if let Ty::Stream(_) = &ty {
+                    // a stream (log 38): the ring an expression made with
+                    // its items resident; or an empty ring, then the chain
+                    // of pushes, or the task that fills it, run now (log 25)
+                    let task = match &v.init {
+                        Some(Init::Value(e)) => self.task_call(e, Some(&b.vars), &file)?,
+                        _ => None,
                     };
-                    let s = self.make_stream(&ty, hz, b, Some(&v.name))?;
-                    self.assign(&v.name, s.clone(), b, v.line)?;
-                    match &v.init {
-                        Some(Init::Pushes { items, cond, bound }) => self.lower_pushes(&v.name, &s, items, cond.as_ref(), *bound, b)?,
-                        None => {}
-                        Some(Init::Value(e)) => {
-                            let (info, args, hz) = self.task_call(e, Some(&b.vars), &file)?.unwrap();
-                            self.run_task(&info, &args, hz, &s, b, e.line)?
+                    match (&v.init, task) {
+                        (Some(Init::Value(e)), None) => {
+                            let s = self.resident_init(v, &ty, e, b)?;
+                            self.assign(&v.name, s, b, v.line)?;
                         }
-                        Some(_) => return Err(lex::error(&file, v.line, "a stream is filled with `<<`")),
+                        (Some(Init::Value(e)), Some((info, args, hz))) => {
+                            let s = self.empty_stream(v, &ty, b, Some(&v.name))?;
+                            self.assign(&v.name, s.clone(), b, v.line)?;
+                            self.run_task(&info, &args, hz, &s, b, e.line)?;
+                        }
+                        (Some(Init::Pushes { items, cond, bound }), _) => {
+                            let s = self.empty_stream(v, &ty, b, Some(&v.name))?;
+                            self.assign(&v.name, s.clone(), b, v.line)?;
+                            self.lower_pushes(&v.name, &s, items, cond.as_ref(), *bound, b)?;
+                        }
+                        (Some(Init::Construct(_)), _) => return Err(lex::error(&file, v.line, format!("'{}$' is a stream: it is filled with `<<`, or made from a list or a range", v.name))),
+                        (None, _) => {
+                            let s = self.empty_stream(v, &ty, b, Some(&v.name))?;
+                            self.assign(&v.name, s, b, v.line)?;
+                        }
                     }
                     return Ok(false);
                 }
@@ -2573,7 +2643,7 @@ impl Lowerer {
                 };
                 if self.stream_var(n, b).is_none() {
                     return Err(match self.seq_or_fvar_ty(n, b) {
-                        Some(t) => lex::error(&file, *line, format!("'{}$' is a {}, not a stream: a stream is declared with `<<` or `at (n hz)`", n, t.ir())),
+                        Some(t) => lex::error(&file, *line, format!("'{}$' is a {}, not a stream", n, t.ir())),
                         None => lex::error(&file, *line, format!("'{}$' is not declared", n)),
                     });
                 }
@@ -2774,12 +2844,10 @@ impl Lowerer {
                     }
                 }
             }
-            // the item's type is what the tower sees
-            let item = match (v.ty.elem(), ty) {
-                (Some(e), Ty::Seq(_)) => {
-                    let _ = e;
-                    v.ty.clone()
-                }
+            // a stream where an item is wanted is mapped over: the
+            // item's type is what the tower sees
+            let item = match (v.ty.items(), ty) {
+                (Some(_), Ty::Stream(_)) => v.ty.clone(),
                 (Some(e), _) => {
                     lifted.push(true);
                     e.clone()
@@ -2903,24 +2971,30 @@ impl Lowerer {
         Ok((vals.into_iter().map(|v| v.text).collect(), rtys))
     }
 
-    /// Map, zip and reduce (log 19): `vals` are an operation's operands,
-    /// those marked lifted being sequences whose items the operation
-    /// takes one at a time; `op` emits the operation on one set of items.
-    /// With no accumulator the results make a new sequence, as long as
-    /// the longest input, a shorter one reading as zero past its end;
-    /// with one, the operation folds over the one sequence, from its
-    /// first item, an empty sequence giving the accumulator's zero.
+    /// Map, zip and reduce (log 19, 38): `vals` are an operation's
+    /// operands, those marked lifted being streams whose unread items
+    /// the operation takes one at a time; `op` emits the operation on
+    /// one set of items. With no accumulator the results make a new
+    /// stream, as long as the longest input, a shorter one reading as
+    /// zero past its end; with one, the operation folds over the one
+    /// stream, from its first item, an empty one giving the
+    /// accumulator's zero.
     fn lift(&mut self, mut vals: Vec<Val>, lifted: Vec<bool>, acc: Option<(usize, Ty)>, b: &mut Body, dst: Option<&str>, line: usize, op: &dyn Fn(&mut Lowerer, &[Val], &mut Body) -> Result<Val, Error>) -> Result<Val, Error> {
         let file = b.file.clone();
         let seqs: Vec<usize> = (0..vals.len()).filter(|&i| lifted[i]).collect();
         if acc.is_some() && seqs.len() != 1 {
-            return Err(lex::error(&file, line, "a reduction folds one sequence"));
+            return Err(lex::error(&file, line, "a reduction folds one stream"));
         }
         let mut lens = Vec::new();
         for &i in &seqs {
+            if vals[i].ty.items().is_none() {
+                return Err(lex::error(&file, line, format!("a map over a {}: a stream of structs is not mapped, zipped or reduced in this milestone", zero_ty(&vals[i].ty))));
+            }
+            let view = self.unread_view(&vals[i], b);
             let n = b.tmp();
-            b.line(&format!("{}: i64 = len {}", n, vals[i].text));
+            b.line(&format!("{}: i64 = len {}", n, view));
             lens.push(n);
+            vals[i].text = view;
         }
         let mut n = lens[0].clone();
         for l in &lens[1..] {
@@ -2970,18 +3044,30 @@ impl Lowerer {
                 load_items(b, &mut vals, &k);
                 let r = op(self, &vals, b)?;
                 let r = b.materialize(&r);
-                b.line(&format!("store {}, {}, {}", r.text, c, k));
+                let t = b.tmp();
+                b.line(&format!("push {}, {}, {}", c, t, r.text));
                 let k2 = b.tmp();
                 b.line(&format!("{}: i64 = add {}, 1", k2, k));
                 b.line(&format!("continue {}", k2));
                 b.depth -= 1;
                 let body = b.out.split_off(start);
-                let rty = Ty::Seq(Box::new(r.ty.clone()));
-                self.news.insert(r.ty.ir());
-                b.line(&format!("{}: {} = __new_{}({})", c, rty.ir(), r.ty.ir(), n));
+                if !matches!(r.ty, Ty::Num(_) | Ty::Enum(_)) {
+                    return Err(lex::error(&file, line, format!("a map giving a {}: a stream holds numbers and enumerations", zero_ty(&r.ty))));
+                }
+                // the results' ring, before the loop: as many items as the
+                // longest input, stamped once
+                let rty = Ty::Stream(Box::new(r.ty.clone()));
+                self.rings.insert((r.ty.ir(), false));
+                let least = b.tmp();
+                b.line(&format!("{}: i64 = const {}", least, RING_ITEMS));
+                let cap = b.tmp();
+                b.line(&format!("{}: i64 = max({}, {})", cap, n, least));
+                b.line(&format!("{}: {} = __stream_{}({}, {})", c, rty.ir(), r.ty.ir(), CLOCK_HZ, cap));
+                b.line(&format!("{}: i64 = __now()", t));
                 b.line(&format!("loop({}: i64 = 0) {{", k));
                 b.out.push_str(&body);
                 b.line("}");
+                let _ = dst;
                 Ok(Val { text: c, ty: rty, literal: false })
             }
             Some((ai, aty)) => {
@@ -3036,7 +3122,7 @@ impl Lowerer {
         }
     }
 
-    /// `[a, b, c]`: a new sequence holding the items
+    /// `[a, b, c]`: a new stream with the items resident
     fn lower_list(&mut self, items: &[Expr], want: Option<&Ty>, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
         let file = b.file.clone();
         let want_e = want.and_then(|t| t.elem()).cloned();
@@ -3046,26 +3132,27 @@ impl Lowerer {
         }
         let e = want_e.or_else(|| vals.iter().find(|v| !v.literal).map(|v| v.ty.clone())).or_else(|| vals.first().map(|v| v.ty.clone()));
         let Some(e) = e else {
-            return Err(lex::error(&file, line, "an empty list needs a type: declare the sequence, `int i$`"));
+            return Err(lex::error(&file, line, "an empty list needs a type: declare the stream, `int i$`"));
         };
         if !matches!(e, Ty::Num(_) | Ty::Enum(_)) {
-            return Err(lex::error(&file, line, format!("a sequence of {}: only numbers and enumerations in this milestone", e.ir())));
+            return Err(lex::error(&file, line, format!("a list of {}: only numbers and enumerations in this milestone", zero_ty(&e))));
         }
         for (it, v) in items.iter().zip(&vals) {
             if !(v.ty == e || (v.literal && fits_literal(v, &e))) {
                 return Err(lex::error(&file, it.line, format!("the items are {}, this one is a {}", e.ir(), v.ty.ir())));
             }
         }
-        let c = self.new_seq(&e, &vals.len().to_string(), b, dst);
-        for (i, v) in vals.iter().enumerate() {
-            // a literal stored through a view takes the item's type
-            b.line(&format!("store {}, {}, {}", v.text, c.text, i));
+        let (c, t) = self.new_resident(&e, &vals.len().to_string(), b, dst);
+        for v in &vals {
+            // a literal pushed after a stream takes the item's type
+            b.line(&format!("push {}, {}, {}", c.text, t, v.text));
         }
         Ok(c)
     }
 
-    /// `[a through b]`, `[a to b]`: the items counted from the bounds
-    /// and filled by a loop, counting down when a > b
+    /// `[a through b]`, `[a to b]`: a new stream with the items resident,
+    /// pushed by a loop that counts down when a > b — with literal
+    /// bounds, the plain counted loop `probe cost` reads (log 13, 38)
     fn lower_range(&mut self, from: &Expr, to: &Expr, inclusive: bool, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
         let file = b.file.clone();
         for e in [from, to] {
@@ -3085,6 +3172,37 @@ impl Lowerer {
         let signed = matches!(&ty, Ty::Num(n) if n == "int" || (n.starts_with('i') && n[1..].parse::<u32>().is_ok()));
         if !signed || ty != tv.ty {
             return Err(lex::error(&file, line, format!("a range counts over a signed integer, given {} and {}", fv.ty.ir(), tv.ty.ir())));
+        }
+        if fv.literal && tv.literal {
+            let a: i64 = fv.text.parse().map_err(|_| lex::error(&file, from.line, "a range's bounds are integers"))?;
+            let z: i64 = tv.text.parse().map_err(|_| lex::error(&file, to.line, "a range's bounds are integers"))?;
+            let up = a <= z;
+            let cc = match (up, inclusive) {
+                (true, true) => "cmp.le",
+                (true, false) => "cmp.lt",
+                (false, true) => "cmp.ge",
+                (false, false) => "cmp.gt",
+            };
+            let count = (a - z).abs() + inclusive as i64;
+            let (c, t) = self.new_resident(&ty, &count.to_string(), b, dst);
+            let x = b.tmp();
+            b.line(&format!("loop({}: {} = {}) {{", x, ty.ir(), a));
+            b.depth += 1;
+            let more = b.tmp();
+            b.line(&format!("{}: u1 = {} {}, {}", more, cc, x, z));
+            b.line(&format!("if {} {{", more));
+            b.line("} else {");
+            b.depth += 1;
+            b.line("break");
+            b.depth -= 1;
+            b.line("}");
+            b.line(&format!("push {}, {}, {}", c.text, t, x));
+            let x2 = b.tmp();
+            b.line(&format!("{}: {} = {} {}, 1", x2, ty.ir(), if up { "add" } else { "sub" }, x));
+            b.line(&format!("continue {}", x2));
+            b.depth -= 1;
+            b.line("}");
+            return Ok(c);
         }
         let fv = b.materialize(&fv);
         let tv = b.materialize(&tv);
@@ -3113,7 +3231,7 @@ impl Lowerer {
         };
         let n = b.tmp();
         b.line(&format!("{}: i64 = conv {}", n, count));
-        let c = self.new_seq(&ty, &n, b, dst);
+        let (c, t) = self.new_resident(&ty, &n, b, dst);
         let k = b.tmp();
         let x = b.tmp();
         b.line(&format!("loop({}: i64 = 0, {}: {} = {}) {{", k, x, ty.ir(), fv.text));
@@ -3125,7 +3243,7 @@ impl Lowerer {
         b.line("break");
         b.depth -= 1;
         b.line("}");
-        b.line(&format!("store {}, {}, {}", x, c.text, k));
+        b.line(&format!("push {}, {}, {}", c.text, t, x));
         let k2 = b.tmp();
         b.line(&format!("{}: i64 = add {}, 1", k2, k));
         let x2 = b.tmp();
@@ -3195,33 +3313,14 @@ impl Lowerer {
         Ok(Val { text: name, ty, literal: false })
     }
 
-    /// an operator with a sequence on a side: a map (the slice library's
-    /// chunked form for a sequence on the left and a scalar on the
-    /// right) or a zip
+    /// an operator with a stream on a side: a map or a zip over the
+    /// unread items, a loop of pushes into a new stream (log 38)
     fn seq_bin(&mut self, op: &str, lv: Val, rv: Val, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
         let file = b.file.clone();
         if is_comparison(op) {
-            return Err(lex::error(&file, line, "a comparison over a sequence is not in this milestone"));
+            return Err(lex::error(&file, line, "a comparison over a stream is not in this milestone"));
         }
         let lifted = vec![lv.ty.elem().is_some(), rv.ty.elem().is_some()];
-        if lifted[0] && !lifted[1] && matches!(op, "+" | "-" | "*" | "/") {
-            let e = lv.ty.elem().unwrap().clone();
-            let mut sv = rv;
-            if sv.literal && fits_literal(&sv, &e) {
-                sv.ty = e.clone();
-            }
-            if sv.ty != e {
-                return Err(lex::error(&file, line, format!("'{}' on a sequence of {} and a {}", op, e.ir(), sv.ty.ir())));
-            }
-            if !matches!(e, Ty::Num(_)) {
-                return Err(lex::error(&file, line, format!("'{}' takes numbers, not a {}", op, e.ir())));
-            }
-            let n = b.tmp();
-            b.line(&format!("{}: i64 = len {}", n, lv.text));
-            let c = self.new_seq(&e, &n, b, dst);
-            b.line(&format!("{} {}, {}, {}", op_name(op), c.text, lv.text, sv.text));
-            return Ok(c);
-        }
         let op = op.to_string();
         let f = move |s: &mut Lowerer, ev: &[Val], b: &mut Body| s.emit_bin(&op, ev[0].clone(), ev[1].clone(), None, b, None, line);
         self.lift(vec![lv, rv], lifted, None, b, dst, line, &f)
@@ -3235,14 +3334,15 @@ impl Lowerer {
         let seq = if acc_left { r } else { l };
         let sv = self.lower_expr(seq, None, b, None)?;
         let Some(e) = sv.ty.elem().cloned() else {
-            return Err(lex::error(&file, line, "'_' goes with a sequence on the other side"));
+            return Err(lex::error(&file, line, "'_' goes with a stream on the other side"));
         };
         if is_comparison(op) || !matches!(e, Ty::Num(_)) {
-            return Err(lex::error(&file, line, format!("'{}' does not reduce a sequence of {}", op, e.ir())));
+            return Err(lex::error(&file, line, format!("'{}' does not reduce a stream of {}", op, zero_ty(&e))));
         }
         if op == "+" {
+            let view = self.unread_view(&sv, b);
             let name = name_for(dst, &e, b);
-            b.line(&format!("{}: {} = sum {}", name, e.ir(), sv.text));
+            b.line(&format!("{}: {} = sum {}", name, e.ir(), view));
             return Ok(Val { text: name, ty: e, literal: false });
         }
         let acc = Val { text: "_".into(), ty: e.clone(), literal: false };
@@ -3300,31 +3400,56 @@ impl Lowerer {
     /// fixes, if any; `dst` a name the result should be defined under.
     // --- streams (section 9, log 23) ---
 
-    /// a declaration's type: a stream when it is made with `<<` or has a
-    /// rate, a sequence or a plain value otherwise
+    /// a declaration's type: a stream for a `$` name (log 38), a plain
+    /// value otherwise
     fn decl_ty(&mut self, v: &super::syntax::VarDecl, vars: Option<&HashMap<String, Var>>, file: &str) -> Result<Ty, Error> {
-        // a wiring, `T x$ = task(...)`, declares a stream too (log 25)
-        let wired = match &v.init {
-            Some(Init::Value(e)) => self.task_call(e, vars, file)?.is_some(),
-            _ => false,
-        };
-        if wired && !v.seq {
-            return Err(lex::error(file, v.line, format!("a task produces a stream: `{} {}$ = ...`", v.ty, v.name)));
-        }
-        let stream = v.seq && (v.rate.is_some() || wired || matches!(v.init, Some(Init::Pushes { .. })));
-        if !stream {
+        if !v.seq {
+            // a wiring, `T x$ = task(...)`, declares a stream (log 25)
+            if let Some(Init::Value(e)) = &v.init {
+                if self.task_call(e, vars, file)?.is_some() {
+                    return Err(lex::error(file, v.line, format!("a task produces a stream: `{} {}$ = ...`", v.ty, v.name)));
+                }
+            }
             if v.rate.is_some() {
                 return Err(lex::error(file, v.line, "a rate belongs on a stream, `T x$ at (n hz)`"));
             }
-            return self.ty(&v.ty, v.seq, file, v.line);
         }
-        let elem = self.ty(&v.ty, false, file, v.line)?;
-        self.stream_ty(elem, v.rate.is_some(), file, v.line)
+        self.ty(&v.ty, v.seq, file, v.line)
+    }
+
+    /// a `$` declaration's empty ring: regular at its rate, or on the
+    /// clock; `T x$ <<` with nothing after is refused, a bare `T x$`
+    /// being the empty stream (question 12)
+    fn empty_stream(&mut self, v: &super::syntax::VarDecl, ty: &Ty, b: &mut Body, dst: Option<&str>) -> Result<Val, Error> {
+        if let Some(Init::Pushes { items, cond, .. }) = &v.init {
+            if items.is_empty() && cond.is_none() {
+                return Err(lex::error(&b.file, v.line, format!("a bare `{} {}$` declares an empty stream: drop the `<<`", v.ty, v.name)));
+            }
+        }
+        let hz = match &v.rate {
+            Some(r) => self.rate_hz(r, &b.file)?,
+            None => CLOCK_HZ,
+        };
+        Ok(self.make_stream(ty, hz, v.rate.is_some(), b, dst))
+    }
+
+    /// `T x$ = e` (log 38): the stream the expression made, its items
+    /// resident — a list, a range, a string, a map, a function's result,
+    /// or another stream's reader; never at a rate
+    fn resident_init(&mut self, v: &super::syntax::VarDecl, ty: &Ty, e: &Expr, b: &mut Body) -> Result<Val, Error> {
+        if v.rate.is_some() {
+            return Err(lex::error(&b.file, v.line, format!("a rate goes on an empty stream, `{} {}$ at (n hz)`, which `<<` then fills", v.ty, v.name)));
+        }
+        let val = self.lower_expr(e, Some(ty), b, Some(&v.name))?;
+        if val.ty != *ty {
+            return Err(lex::error(&b.file, e.line, format!("'{}$' is {} but the value is a {}", v.name, zero_ty(ty), zero_ty(&val.ty))));
+        }
+        Ok(val)
     }
 
     /// a stream of an element type: numbers, enumerations, and structs of
     /// those, the last as a generated struct of one stream per field
-    fn stream_ty(&mut self, elem: Ty, regular: bool, file: &str, line: usize) -> Result<Ty, Error> {
+    fn stream_ty(&mut self, elem: Ty, file: &str, line: usize) -> Result<Ty, Error> {
         match &elem {
             Ty::Num(_) | Ty::Enum(_) => {}
             Ty::Struct(name) => {
@@ -3343,7 +3468,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
             }
             _ => return Err(lex::error(file, line, format!("a stream of {}: a stream holds numbers, enumerations or structs of those", elem.ir()))),
         }
-        Ok(Ty::Stream(Box::new(elem), regular))
+        Ok(Ty::Stream(Box::new(elem)))
     }
 
     /// `at (n hz)` as a number of hertz
@@ -3362,34 +3487,35 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
 
     /// a stream of a struct: its fields and their types
     fn stream_fields(&self, ty: &Ty) -> Option<Vec<(String, Ty)>> {
-        let Ty::Stream(e, _) = ty else { return None };
+        let Ty::Stream(e) = ty else { return None };
         let Ty::Struct(name) = e.as_ref() else { return None };
         let Some(TypeInfo::Struct(fields)) = self.types.get(name) else { unreachable!() };
         Some(fields.iter().map(|(f, t, _)| (f.clone(), t.clone())).collect())
     }
 
-    /// a new stream: its ring in the arena, and a reader at its start
-    fn make_stream(&mut self, ty: &Ty, hz: i64, b: &mut Body, dst: Option<&str>) -> Result<Val, Error> {
-        let Ty::Stream(elem, regular) = ty else { unreachable!() };
-        let maker = if *regular { "regular" } else { "stream" };
+    /// a new empty stream: its ring in the arena, regular (at a rate) or
+    /// with a tick per item, and a reader at its start
+    fn make_stream(&mut self, ty: &Ty, hz: i64, regular: bool, b: &mut Body, dst: Option<&str>) -> Val {
+        let Ty::Stream(elem) = ty else { unreachable!() };
+        let maker = if regular { "regular" } else { "stream" };
         match self.stream_fields(ty) {
             None => {
-                self.rings.insert((elem.ir(), *regular));
+                self.rings.insert((elem.ir(), regular));
                 let out = name_for(dst, ty, b);
-                b.line(&format!("{}: {} = __{}_{}({})", out, ty.ir(), maker, elem.ir(), hz));
-                Ok(Val { text: out, ty: ty.clone(), literal: false })
+                b.line(&format!("{}: {} = __{}_{}({}, {})", out, ty.ir(), maker, elem.ir(), hz, RING_ITEMS));
+                Val { text: out, ty: ty.clone(), literal: false }
             }
             Some(fields) => {
                 let mut parts = Vec::new();
                 for (_, t) in &fields {
-                    self.rings.insert((t.ir(), *regular));
+                    self.rings.insert((t.ir(), regular));
                     let r = b.tmp();
-                    b.line(&format!("{}: {}$ = __{}_{}({})", r, t.ir(), maker, t.ir(), hz));
+                    b.line(&format!("{}: {}$ = __{}_{}({}, {})", r, t.ir(), maker, t.ir(), hz, RING_ITEMS));
                     parts.push(r);
                 }
                 let out = name_for(dst, ty, b);
                 b.line(&format!("{}: {} = pack {}", out, ty.ir(), parts.join(", ")));
-                Ok(Val { text: out, ty: ty.clone(), literal: false })
+                Val { text: out, ty: ty.clone(), literal: false }
             }
         }
     }
@@ -3400,7 +3526,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
             Some(v) => v.ty.clone(),
             None => self.fvar(name)?.ty.clone(),
         };
-        matches!(ty, Ty::Stream(..)).then_some(ty)
+        matches!(ty, Ty::Stream(_)).then_some(ty)
     }
 
     /// the type of any variable in scope, for a message
@@ -3434,7 +3560,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
 
     /// a read of every field's stream, packed: `latest`, `peek`
     fn read_fields(&mut self, s: &Val, fields: &[(String, Ty)], op: &str, arg: &str, b: &mut Body, dst: Option<&str>) -> Val {
-        let Ty::Stream(elem, _) = &s.ty else { unreachable!() };
+        let Ty::Stream(elem) = &s.ty else { unreachable!() };
         let mut vals = Vec::new();
         for (f, t) in fields {
             let r = b.tmp();
@@ -3450,7 +3576,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
 
     /// the most recent item of a stream
     fn latest_of(&mut self, s: &Val, ty: &Ty, b: &mut Body, dst: Option<&str>) -> Result<Val, Error> {
-        let Ty::Stream(elem, _) = ty else { unreachable!() };
+        let Ty::Stream(elem) = ty else { unreachable!() };
         match self.stream_fields(ty) {
             Some(fields) => Ok(self.read_fields(s, &fields, "latest", "", b, dst)),
             None => {
@@ -3461,9 +3587,9 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
         }
     }
 
-    /// one push: a tick from the virtual clock unless the ring is
-    /// regular; a struct pushed field by field at one tick; a task's
-    /// own output sleeps to its next tick after (log 25)
+    /// one push, through `__push` (log 38): a tick from the virtual
+    /// clock unless the ring is regular; a struct pushed field by field;
+    /// a task's own output sleeps to its next tick after (log 25)
     fn emit_push(&mut self, name: &str, s: &Val, v: &Val, b: &mut Body) {
         self.emit_push_only(s, v, b);
         if let BodyKind::Task { out, hz } = &b.kind {
@@ -3475,23 +3601,19 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
     }
 
     fn emit_push_only(&mut self, s: &Val, v: &Val, b: &mut Body) {
-        let Ty::Stream(_, regular) = &s.ty else { unreachable!() };
-        let tick = if *regular {
-            String::new()
-        } else {
-            let t = b.tmp();
-            b.line(&format!("{}: i64 = __now()", t));
-            format!("{}, ", t)
-        };
         match self.stream_fields(&s.ty) {
-            None => b.line(&format!("push {}, {}{}", s.text, tick, v.text)),
+            None => {
+                // a literal is typed first: `__push` is a template
+                let v = b.materialize(v);
+                b.line(&format!("__push({}, {})", s.text, v.text));
+            }
             Some(fields) => {
                 for (f, t) in &fields {
                     let r = b.tmp();
                     b.line(&format!("{}: {}$ = get {}, {}", r, t.ir(), s.text, f));
                     let x = b.tmp();
                     b.line(&format!("{}: {} = get {}, {}", x, t.ir(), v.text, f));
-                    b.line(&format!("push {}, {}{}", r, tick, x));
+                    b.line(&format!("__push({}, {})", r, x));
                 }
             }
         }
@@ -3502,9 +3624,9 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
     /// push for as long as the condition holds of the candidate (log 23)
     fn lower_pushes(&mut self, name: &str, s: &Val, items: &[Expr], cond: Option<&Expr>, bound: Option<i64>, b: &mut Body) -> Result<(), Error> {
         let file = b.file.clone();
-        let Ty::Stream(elem, regular) = s.ty.clone() else { unreachable!() };
+        let Ty::Stream(elem) = s.ty.clone() else { unreachable!() };
         let elem = *elem;
-        let block_ty = Ty::Seq(Box::new(elem.clone()));
+        let block_ty = Ty::Stream(Box::new(elem.clone()));
         let item = |l: &mut Lowerer, e: &Expr, b: &mut Body| -> Result<Val, Error> {
             let mut v = l.lower_expr(e, Some(&elem), b, None)?;
             if v.literal && fits_literal(&v, &elem) {
@@ -3569,15 +3691,14 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     self.push_read = None;
                     let v = v?;
                     if v.ty == block_ty {
-                        // `x$ << block$`: the library's block push on a
-                        // regular ring; item by item at the clock's tick
-                        // on an irregular one
-                        if regular && self.stream_fields(&s.ty).is_none() {
-                            b.line(&format!("push {}, {}", s.text, v.text));
-                            continue;
+                        // `x$ << block$`: the block's unread items, one
+                        // push each
+                        if v.ty.items().is_none() {
+                            return Err(lex::error(&file, e.line, "a stream of structs is pushed an item at a time"));
                         }
+                        let view = self.unread_view(&v, b);
                         let n = b.tmp();
-                        b.line(&format!("{}: i64 = len {}", n, v.text));
+                        b.line(&format!("{}: i64 = len {}", n, view));
                         let k = b.tmp();
                         b.line(&format!("loop({}: i64 = 0) {{", k));
                         b.depth += 1;
@@ -3589,7 +3710,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                         b.depth -= 1;
                         b.line("}");
                         let x = b.tmp();
-                        b.line(&format!("{}: {} = load {}, {}", x, elem.ir(), v.text, k));
+                        b.line(&format!("{}: {} = load {}, {}", x, elem.ir(), view, k));
                         self.emit_push(name, s, &Val { text: x, ty: elem.clone(), literal: false }, b);
                         let k2 = b.tmp();
                         b.line(&format!("{}: i64 = add {}, 1", k2, k));
@@ -3634,7 +3755,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
         moved_streams(body, &mut moved, &|parts| self.task_streams(parts));
         for n in moved {
             if let Some(v) = b.vars.get(&n) {
-                if matches!(v.ty, Ty::Stream(..)) {
+                if matches!(v.ty, Ty::Stream(_)) {
                     return Err(lex::error(&b.file, stmt_line(&body[0]), format!("'{}$' is moved inside a `for`: move a stream inside a `loop`, which carries it", n)));
                 }
             }
@@ -3667,28 +3788,19 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
             }
         };
         let ty = self.stream_var(&sname, b).unwrap();
-        let Ty::Stream(elem, _) = ty.clone() else { unreachable!() };
+        let Ty::Stream(elem) = ty.clone() else { unreachable!() };
         let fields = self.stream_fields(&ty);
         let s = self.lower_expr(&Expr { kind: ExprKind::Name(sname.clone()), line }, None, b, None)?;
         let no_struct = |l: &Lowerer, what: &str| -> Result<(), Error> {
             if fields.is_some() {
                 let _ = l;
-                return Err(lex::error(&file, line, format!("{} on a stream of structs: a sequence of structs is not in this milestone", what)));
+                return Err(lex::error(&file, line, format!("{} on a stream of structs is not in this milestone", what)));
             }
             Ok(())
         };
         let none = Val { text: String::new(), ty: Ty::None, literal: false };
-        let seq_ty = Ty::Seq(elem.clone());
         match (w.as_str(), infix, rest) {
-            ("count", false, []) => {
-                let first = self.first_reader(&s, b);
-                let n = b.tmp();
-                b.line(&format!("{}: i64 = count {}", n, first));
-                let ty = Ty::Num("int".into());
-                let out = name_for(dst, &ty, b);
-                b.line(&format!("{}: int = conv {}", out, n));
-                Ok(Some(Val { text: out, ty, literal: false }))
-            }
+            ("count", false, []) => Ok(Some(self.count_of(&s, b, dst))),
             ("latest", false, []) => Ok(Some(self.latest_of(&s, &ty, b, dst)?)),
             ("peek", false, [Part::Word(at), arg]) if at == "at" => {
                 let Some(a) = one_arg(arg) else { return Ok(None) };
@@ -3697,14 +3809,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     return Err(lex::error(&file, a.line, "'peek' takes an integer index"));
                 }
                 let i = self.as_i64(&iv, b);
-                match fields {
-                    Some(f) => Ok(Some(self.read_fields(&s, &f, "peek", &format!(", {}", i), b, dst))),
-                    None => {
-                        let out = name_for(dst, &elem, b);
-                        b.line(&format!("{}: {} = peek {}, {}", out, elem.ir(), s.text, i));
-                        Ok(Some(Val { text: out, ty: *elem, literal: false }))
-                    }
-                }
+                Ok(Some(self.peek_at(&s, &i, b, dst)))
             }
             ("advance", false, [Part::Word(by), arg]) if by == "by" => {
                 let Some(a) = one_arg(arg) else { return Ok(None) };
@@ -3732,14 +3837,17 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 Ok(Some(none))
             }
             ("frame", false, []) => {
+                // everything unread, as a new stream (a copy, log 38),
+                // and the reader moved past it
                 no_struct(self, "'frame'")?;
-                let f = name_for(dst, &seq_ty, b);
+                let f = b.tmp();
                 let k = b.tmp();
                 let sty = ty.clone();
                 let ft = f.clone();
-                let moved = |_: &mut Lowerer, out: &str, b: &mut Body| b.line(&format!("{}: {}, {}: i64, {}: {} = frame({})", ft, seq_ty.ir(), k, out, sty.ir(), s.text));
+                let eir = elem.ir();
+                let moved = |_: &mut Lowerer, out: &str, b: &mut Body| b.line(&format!("{}: {}[], {}: i64, {}: {} = frame({})", ft, eir, k, out, sty.ir(), s.text));
                 self.rebind_stream(&sname, &s, &moved, b, line)?;
-                Ok(Some(Val { text: f, ty: Ty::Seq(elem), literal: false }))
+                Ok(Some(self.copy_view(&elem, &f, b, dst)))
             }
             ("ended", false, []) => {
                 let first = self.first_reader(&s, b);
@@ -3770,9 +3878,9 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     return Err(lex::error(&file, a.line, "'behind' takes an integer count"));
                 }
                 let k = self.as_i64(&kv, b);
-                let out = name_for(dst, &seq_ty, b);
-                b.line(&format!("{}: {} = behind {}, {}", out, seq_ty.ir(), s.text, k));
-                Ok(Some(Val { text: out, ty: seq_ty, literal: false }))
+                let h = b.tmp();
+                b.line(&format!("{}: {}[] = behind {}, {}", h, elem.ir(), s.text, k));
+                Ok(Some(self.copy_view(&elem, &h, b, dst)))
             }
             ("at", true, [arg]) => {
                 no_struct(self, "'at'")?;
@@ -3794,9 +3902,9 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 if t1.ty != time || t2.ty != time {
                     return Err(lex::error(&file, line, "'x$ from (t1) to (t2)' takes two times"));
                 }
-                let out = name_for(dst, &seq_ty, b);
-                b.line(&format!("{}: {} = window {}, {}, {}", out, seq_ty.ir(), s.text, t1.text, t2.text));
-                Ok(Some(Val { text: out, ty: seq_ty, literal: false }))
+                let w = b.tmp();
+                b.line(&format!("{}: {}[] = window {}, {}, {}", w, elem.ir(), s.text, t1.text, t2.text));
+                Ok(Some(self.copy_view(&elem, &w, b, dst)))
             }
             _ => Ok(None),
         }
@@ -3834,8 +3942,8 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     }
                 }
                 let v = self.lower_expr(&Expr { kind: ExprKind::Name(w.clone()), line: e.line }, want, b, dst)?;
-                if v.ty.elem().is_none() && !matches!(v.ty, Ty::Stream(..)) {
-                    return Err(lex::error(&file, e.line, format!("'{}$' is not a sequence: '{}' is a {}", w, w, v.ty.ir())));
+                if v.ty.elem().is_none() {
+                    return Err(lex::error(&file, e.line, format!("'{}$' is not a stream: '{}' is a {}", w, w, v.ty.ir())));
                 }
                 Ok(v)
             }
@@ -3876,19 +3984,21 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
             ExprKind::List(items) => self.lower_list(items, want, b, dst, e.line),
             ExprKind::Range { from, to, inclusive } => self.lower_range(from, to, *inclusive, b, dst, e.line),
             ExprKind::Index(base, idx) => {
+                // `x$[i]`: the i-th unread item, `peek` (log 38)
                 let sv = self.lower_expr(base, None, b, None)?;
-                let Some(elem) = sv.ty.elem().cloned() else {
+                if sv.ty.elem().is_none() {
                     return Err(lex::error(&file, e.line, format!("an index into a {}, which has no items", sv.ty.ir())));
-                };
+                }
                 let iv = self.lower_expr(idx, Some(&Ty::Num("int".into())), b, None)?;
                 if !matches!(iv.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, idx.line, "an index is an integer"));
                 }
-                let out = name_for(dst, &elem, b);
-                b.line(&format!("{}: {} = load {}, {}", out, elem.ir(), sv.text, iv.text));
-                Ok(Val { text: out, ty: elem, literal: false })
+                let i = self.as_i64(&iv, b);
+                Ok(self.peek_at(&sv, &i, b, dst))
             }
             ExprKind::Str(s) => {
+                // a string literal: its bytes in `data`, copied into a
+                // stream of bytes each time it is evaluated (log 38)
                 self.nstr += 1;
                 let name = format!("__s{}", self.nstr);
                 self.data.push(format!("data {} = \"{}\"", name, s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")));
@@ -3896,9 +4006,9 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 b.line(&format!("{}: ptr = addr {}", p, name));
                 let n = b.tmp();
                 b.line(&format!("{}: i64 = len {}", n, name));
-                let out = name_for(dst, &Ty::string(), b);
-                b.line(&format!("{}: u8[] = __str({}, {})", out, p, n));
-                Ok(Val { text: out, ty: Ty::string(), literal: false })
+                let v = b.tmp();
+                b.line(&format!("{}: u8[] = __str({}, {})", v, p, n));
+                Ok(self.copy_view(&Ty::Num("u8".into()), &v, b, dst))
             }
             ExprKind::Name(n) => match b.vars.get(n) {
                 Some(v) if v.set => Ok(Val { text: v.ir.clone(), ty: v.ty.clone(), literal: false }),
@@ -3956,7 +4066,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     None
                 } else {
                     match want {
-                        Some(Ty::Seq(inner)) => Some(inner.as_ref()),
+                        Some(Ty::Stream(inner)) => Some(inner.as_ref()),
                         Some(t @ Ty::Num(_)) => Some(t),
                         _ => None,
                     }
@@ -4054,7 +4164,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                         return match self.ty(w, false, &file, e.line)? {
                             Ty::Struct(name) => self.construct(&name, args, b, dst, e.line),
                             Ty::Enum(_) => Err(lex::error(&file, e.line, format!("{} is an enumeration: name a case", w))),
-                            Ty::Seq(_) | Ty::None => Err(lex::error(&file, e.line, format!("{} cannot be constructed", w))),
+                            Ty::Stream(_) | Ty::None => Err(lex::error(&file, e.line, format!("{} cannot be constructed", w))),
                             to => {
                                 let [a] = args.as_slice() else {
                                     return Err(lex::error(&file, e.line, format!("a conversion is {}(x)", w)));
@@ -4074,11 +4184,11 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                         };
                     }
                 }
-                // `s[0]` on a sequence declared without `$` (a string):
+                // `s[0]` on a stream declared without `$` (a string):
                 // the parser saw a word and a one-item list
                 if let [Part::Word(w), Part::Value(Expr { kind: ExprKind::List(items), line })] = parts.as_slice() {
-                    let is_seq = b.vars.get(w).map(|v| v.ty.elem().is_some()).or_else(|| self.fvar(w).map(|f| f.ty.elem().is_some()));
-                    if items.len() == 1 && is_seq == Some(true) {
+                    let is_stream = b.vars.get(w).map(|v| v.ty.elem().is_some()).or_else(|| self.fvar(w).map(|f| f.ty.elem().is_some()));
+                    if items.len() == 1 && is_stream == Some(true) {
                         let base = Expr { kind: ExprKind::Name(w.clone()), line: *line };
                         return self.lower_expr(&Expr { kind: ExprKind::Index(Box::new(base), Box::new(items[0].clone())), line: *line }, want, b, dst);
                     }
@@ -4087,7 +4197,6 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 if let Some(v) = self.stream_word(parts, b, dst, e.line)? {
                     return Ok(v);
                 }
-                // `count x$`: a sequence's length, as an int
                 // a unit on a variable, `m ms` (log 33): the time it names,
                 // computed once at the boundary
                 if let [Part::Word(w), Part::Word(u)] = parts.as_slice() {
@@ -4108,16 +4217,12 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                         }
                         _ => None,
                     };
+                    // `count (e)`: how many unread items a stream has
                     if let (true, Some(a)) = (w == "count", arg) {
                         let start = b.out.len();
                         let sv = self.lower_expr(a, None, b, None)?;
                         if sv.ty.elem().is_some() {
-                            let n = b.tmp();
-                            b.line(&format!("{}: i64 = len {}", n, sv.text));
-                            let ty = Ty::Num("int".into());
-                            let out = name_for(dst, &ty, b);
-                            b.line(&format!("{}: int = conv {}", out, n));
-                            return Ok(Val { text: out, ty, literal: false });
+                            return Ok(self.count_of(&sv, b, dst));
                         }
                         b.out.truncate(start);
                     }
@@ -4320,7 +4425,7 @@ fn spoken(info: &FnInfo) -> String {
 /// a task's element type, in zero's spelling where it has one
 fn task_elem(info: &FnInfo) -> String {
     match &info.results[0].1 {
-        Ty::Stream(e, _) => match e.as_ref() {
+        Ty::Stream(e) => match e.as_ref() {
             Ty::Num(n) if n == "u8" => "uint8".into(),
             Ty::Num(n) => match n.as_str() {
                 "i8" | "i16" | "i32" | "i64" => format!("int{}", &n[1..]),

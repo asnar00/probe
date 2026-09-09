@@ -1,7 +1,7 @@
 type token =
     int kind, start, n
 
-uint8 chars$ <<
+uint8 chars$
 token t$ = lex(chars$)
 
 on (int k) = kind of (uint8 c)

@@ -300,6 +300,21 @@ fn frame(s: number$) -> (number[], i64, number$) {
     s2: number$ = set s, pos, pushed
     ret f, pos, s2
 }
+; the unread items as a view, the reader not moved: what `frame` gives
+; without the move, for a reader that looks without taking
+fn unread(s: number$) -> number[] {
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    base: i64 = load r, 8
+    pos: i64 = get s, pos
+    resident: u1 = cmp.ge pos, base
+    check resident
+    vals: number[] = ring_values(r)
+    start: i64 = sub pos, base
+    n: i64 = sub pushed, pos
+    f: number[] = view vals, start, n
+    ret f
+}
 fn latest(s: number$) -> number {
     r: ptr = get s, ring
     pushed: i64 = load r

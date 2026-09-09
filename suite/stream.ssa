@@ -26,6 +26,7 @@
 ;! position_end -> 5, -1
 ;! regular_position -> 3, 3
 ;! struct_of_streams 7 -> 7, 1
+;! unread_view -> 12, 5
 
 ; an irregular ring of bytes on a microsecond clock: values and ticks
 data vb: buffer(u8, 8)
@@ -289,6 +290,17 @@ fn regular_position() -> (i64, i64) {
     s2: f32$ = advance(s, 3)
     k: i64, t: i64 = position(s2)
     ret k, t
+}
+; the unread items as a view without moving: after two of five, the
+; view holds 3, 4, 5, and the reader still counts five
+fn unread_view() -> (u8, i64) {
+    s: u8$ = fresh()
+    five(s)
+    s2: u8$ = advance(s, 2)
+    u: u8[] = unread(s2)
+    total: u8 = sum u
+    still: i64 = count s
+    ret total, still
 }
 ; a push without a tick needs a regular ring
 fn irregular_push() -> u8 {

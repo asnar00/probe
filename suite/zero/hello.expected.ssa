@@ -50,11 +50,26 @@ fn __out_byte(i: i64) -> u8 {
     ret b
 }
 
-; a string: a view of n bytes at p
+; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
 fn __str(p: ptr, n: i64) -> u8[] {
     q: ptr(u8) = cast p
     v: u8[] = pack q, n, 1
     ret v
+}
+
+; a push into any stream (log 38): stamped with the clock on a ring
+; without a rate, the next sample on one with a rate
+fn __push(s: number$, v: number) {
+    r: ptr = get s, ring
+    step: i64 = load r, 40
+    regular: u1 = cmp.gt step, 0
+    if regular {
+        push(s, v)
+    } else {
+        t: i64 = __now()
+        push(s, t, v)
+    }
+    ret
 }
 
 ; one byte, when there is room
@@ -197,12 +212,13 @@ fn __set___enabled_bye(v: u1) {
 }
 
 ; feature platform (layer platform)
-fn print(s: u8[]) {
+fn print(s: u8$) {
     q: ptr = addr __out_n
     k0: i64 = load q
     o: ptr = addr __out
-    p: ptr(u8) = ptr s
-    n: i64 = len s
+    f: u8[] = unread(s)
+    p: ptr(u8) = ptr f
+    n: i64 = len f
     k1: i64 = loop(i: i64 = 0, k: i64 = k0) {
         done: u1 = cmp.ge i, n
         if done {
@@ -228,8 +244,9 @@ fn print(s: u8[]) {
     store k4, q
     ret
 }
-fn print__ints(x: int[]) {
-    n: i64 = len x
+fn print__ints(x: int$) {
+    f: int[] = unread(x)
+    n: i64 = len f
     loop(i: i64 = 0) {
         done: u1 = cmp.ge i, n
         if done {
@@ -240,7 +257,7 @@ fn print__ints(x: int[]) {
         } else {
             __out_ch(32)
         }
-        v: int = load x, i
+        v: int = load f, i
         __print_int(v)
         i2: i64 = add i, 1
         continue i2
@@ -258,7 +275,8 @@ fn hello() {
     _1: ptr = addr __s1
     _2: i64 = len __s1
     _3: u8[] = __str(_1, _2)
-    print(_3)
+    _4: u8$ = __copy_u8(_3)
+    print(_4)
     ret
 }
 
@@ -269,27 +287,26 @@ fn run__countdown() {
     ret
 }
 fn count_down() {
-    i: int$ = __stream_int(1000000)
+    i: int$ = __stream_int(1000000, 64)
     _1: int = const 10
     count_down_from(i, _1, 1: i64)
     _2: int[], _3: i64, i_2: int$ = frame(i)
-    print__ints(_2)
+    _4: int$ = __copy_int(_2)
+    print__ints(_4)
     ret
 }
 fn count_down_from(i: int$, n: int, __hz: i64) {
-    _1: i64 = __now()
-    push i, _1, n
+    __push(i, n)
     __sleep(__hz)
     loop() bound 10 {
-        _2: int = latest i
-        _3: int = sub _2, 1
-        _4: u1 = cmp.gt _3, 0
-        if _4 {
+        _1: int = latest i
+        _2: int = sub _1, 1
+        _3: u1 = cmp.gt _2, 0
+        if _3 {
         } else {
             break
         }
-        _5: i64 = __now()
-        push i, _5, _3
+        __push(i, _2)
         __sleep(__hz)
         continue
     }
@@ -306,7 +323,8 @@ fn goodbye() {
     _1: ptr = addr __s2
     _2: i64 = len __s2
     _3: u8[] = __str(_1, _2)
-    print(_3)
+    _4: u8$ = __copy_u8(_3)
+    print(_4)
     ret
 }
 fn run_without_countdown() {
@@ -342,18 +360,74 @@ fn run__before_countdown() {
     ret
 }
 
-; a stream's ring, carved from the arena: 64 items, and a tick per item unless regular; a reader's view at its start
-fn __stream_int(hz: i64) -> int$ {
+; a stream's ring, carved from the arena: cap items (64 unless more are resident), and a tick per item unless regular; a reader's view at its start
+fn __stream_int(hz: i64, cap: i64) -> int$ {
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
     sz: i64 = sizeof int
-    bytes: i64 = mul sz, 64
+    bytes: i64 = mul sz, cap
     total: i64 = add bytes, 16
     vb: ptr = arena_alloc(a, total)
-    buffer_init(vb, sz, 64)
-    tb: ptr = arena_alloc(a, 528)
-    buffer_init(tb, 8, 64)
+    buffer_init(vb, sz, cap)
+    tbytes: i64 = mul cap, 8
+    ttotal: i64 = add tbytes, 16
+    tb: ptr = arena_alloc(a, ttotal)
+    buffer_init(tb, 8, cap)
     ring_init(r, vb, tb, hz)
     s: int$ = stream r
+    ret s
+}
+fn __stream_u8(hz: i64, cap: i64) -> u8$ {
+    a: ptr = addr __arena
+    r: ptr = arena_alloc(a, 64)
+    sz: i64 = sizeof u8
+    bytes: i64 = mul sz, cap
+    total: i64 = add bytes, 16
+    vb: ptr = arena_alloc(a, total)
+    buffer_init(vb, sz, cap)
+    tbytes: i64 = mul cap, 8
+    ttotal: i64 = add tbytes, 16
+    tb: ptr = arena_alloc(a, ttotal)
+    buffer_init(tb, 8, cap)
+    ring_init(r, vb, tb, hz)
+    s: u8$ = stream r
+    ret s
+}
+
+; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give
+fn __copy_int(v: int[]) -> int$ {
+    n: i64 = len v
+    least: i64 = const 64
+    cap: i64 = max(n, least)
+    s: int$ = __stream_int(1000000, cap)
+    t: i64 = __now()
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: int = load v, i
+        push s, t, x
+        i2: i64 = add i, 1
+        continue i2
+    }
+    ret s
+}
+fn __copy_u8(v: u8[]) -> u8$ {
+    n: i64 = len v
+    least: i64 = const 64
+    cap: i64 = max(n, least)
+    s: u8$ = __stream_u8(1000000, cap)
+    t: i64 = __now()
+    loop(i: i64 = 0) {
+        done: u1 = cmp.ge i, n
+        if done {
+            break
+        }
+        x: u8 = load v, i
+        push s, t, x
+        i2: i64 = add i, 1
+        continue i2
+    }
     ret s
 }

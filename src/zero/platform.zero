@@ -3,8 +3,9 @@ platform ir
     q: ptr = addr __out_n
     k0: i64 = load q
     o: ptr = addr __out
-    p: ptr(u8) = ptr s
-    n: i64 = len s
+    f: u8[] = unread(s)
+    p: ptr(u8) = ptr f
+    n: i64 = len f
     k1: i64 = loop(i: i64 = 0, k: i64 = k0) {
         done: u1 = cmp.ge i, n
         if done {
@@ -32,7 +33,8 @@ platform ir
 
 on print (int x$)
 platform ir
-    n: i64 = len x
+    f: int[] = unread(x)
+    n: i64 = len f
     loop(i: i64 = 0) {
         done: u1 = cmp.ge i, n
         if done {
@@ -43,7 +45,7 @@ platform ir
         } else {
             __out_ch(32)
         }
-        v: int = load x, i
+        v: int = load f, i
         __print_int(v)
         i2: i64 = add i, 1
         continue i2

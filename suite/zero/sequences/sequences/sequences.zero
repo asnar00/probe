@@ -104,3 +104,23 @@ on (int n) = marks total()
 on (int n) = halves()
     float f$ = [1.5, 2.5]
     n = int((f$ + _) * 2)
+
+on (int n) = pushed into()
+    int i$ = [1, 2]
+    i$ << 3
+    n = count i$ * 10 + latest i$
+
+on (int n) = read ahead()
+    int i$ = [5, 6, 7]
+    advance i$ by (1)
+    n = i$[0] * 10 + count i$
+
+on (int n) = framed sum()
+    int i$ = [1 through 4]
+    int f$ = frame i$
+    n = (f$ + _) * 10 + count i$
+
+on (int n) = bytes pushed()
+    uint8 b$ = "hi"
+    b$ << 33
+    n = count b$ * 100 + int(b$[2])
