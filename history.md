@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: bounds are product settings — `602c8e3` · 2026-09-09
+
+```
+on count down()
+    int i$ at (1 hz)
+    i$ << [10 through 1]
+    print (frame i$)
+```
+
+Rulings pass item 7 (question 19, log 41). `bound N` leaves the language — the parser takes it nowhere and `bound` is a name word again — because a trip count is a product setting, never a number in feature code. hello's countdown is written as section 16 reads (`suite/zero/hello/countdown/countdown.zero` above): a stream at one hertz, the range pushed into it; a range pushed as a block now pushes its values straight in (`lower_range` with a sink in `src/zero/lower.rs`), so `probe cost suite/zero/hello.expected.ssa run` shows `count_down: loop at b1 x10 (_1 from 10 by -1 to 1)` with no bound anywhere and `run` at 640288 ssa, down from 1767127. Where the tool still needs a count, a store's `product.md` says `bound <function words>: N` (`src/zero/store.rs`) and the front end puts it on that function's loops, marked `; product setting`; `suite/zero/tasks/product.md` is the first. zero 227/227 on native, wasm, riscv and arm-qemu, 218 + 9 skipped on air; probe test 971, 962 + 9, 971, 971, 941 + 30; cargo test 94 passed.
+
+---
+
 ### zero: loops give their result — `a6d1bd8` · 2026-09-09
 
 ```
