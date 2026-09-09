@@ -4,6 +4,23 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: multiple dispatch — `9ac8778` · 2026-09-09
+
+```
+on (int32 k) = kind of (number x)
+    k = 1
+
+on (int32 k) = kind of (int x)
+    k = 2
+
+on (int32 k) = kind of (int32 x)
+    k = 3
+```
+
+Rulings pass item 2 (question 18, log 36), Julia's model, generalising the platform-only overloading of log 31. A name is a set of methods: a declaration with the same parameter types redefines that method and joins its chain, other types are a new method, named in the IR by its types (`kind_of__i32`, `mul__Vec_Vec`). A call (`src/zero/lower.rs`, `find_methods`, `choose`, `pick`) tries each method on its arguments and takes the most specific of those that fit, `int32` before `int` before `number`; with none most specific it is refused as ambiguous, naming the contenders. A literal, or a list of literals, is its own type first — `describe (3)` takes `describe (int)` over `describe (float)`, `describe ([1, 2])` takes `describe (int$)` over `describe (string)` — and a method taking a sequence beats a map of the item method. Found on the way: a literal meeting an abstract parameter binds it to the literal's own type as a typed constant, since the IR reads a bare `2.5` under `number` as an integer. `suite/zero/functions` gains `describe`, `kind of`, `area of` and a second feature `more` (sixteen cases), `types` a second `*` on `Vec`. zero 206/206 on native, wasm, riscv and arm-qemu, 197 + 9 skipped on air; probe test 970, 961 + 9, 970, 970, 940 + 30; cargo test 93 passed.
+
+---
+
 ### zero: assigning the result ends the function — `b060dff` · 2026-09-09
 
 ```
