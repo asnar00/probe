@@ -366,6 +366,10 @@ fn received(s: number$) -> i64
 ; everything since this reader last looked: the values, the index of
 ; the first (its tick is `tick_of`, its time `time_at`), and the
 ; stream moved on
+; ... the view packed from the buffer's typed pointer at the reader's
+; slot (log 75): the unread items are at most half, so they lie inside
+; the buffer whole once the reader is resident, and nothing is checked
+; twice
 fn frame(s: number$) -> (number[], i64, number$)
     r: ptr = get s, ring
     pushed: i64 = load r
@@ -373,10 +377,15 @@ fn frame(s: number$) -> (number[], i64, number$)
     pos: i64 = get s, pos
     resident: u1 = cmp.ge pos, base
     check resident
-    vals: number[] = ring_values(r)
-    start: i64 = ring_index(s, pos)
+    vb: ptr = load r, 16
+    cap: i64 = load vb, 8
+    half: i64 = div cap, 2
+    start: i64 = rem pos, half
+    raw: ptr = ptradd vb, 16
+    q: ptr(number) = cast raw
+    p: ptr(number) = index q, start
     n: i64 = sub pushed, pos
-    f: number[] = view vals, start, n
+    f: number[] = pack p, n, 1
     s2: number$ = set s, pos, pushed
     ret f, pos, s2
 ; the unread items as a view, the reader not moved: what `frame` gives
@@ -388,10 +397,15 @@ fn unread(s: number$) -> number[]
     pos: i64 = get s, pos
     resident: u1 = cmp.ge pos, base
     check resident
-    vals: number[] = ring_values(r)
-    start: i64 = ring_index(s, pos)
+    vb: ptr = load r, 16
+    cap: i64 = load vb, 8
+    half: i64 = div cap, 2
+    start: i64 = rem pos, half
+    raw: ptr = ptradd vb, 16
+    q: ptr(number) = cast raw
+    p: ptr(number) = index q, start
     n: i64 = sub pushed, pos
-    f: number[] = view vals, start, n
+    f: number[] = pack p, n, 1
     ret f
 ; one item read through the buffer's typed pointer at its slot, as the
 ; push stored it, after the checks a reader is owed: no view packed

@@ -408,20 +408,24 @@ fn count_down()
     __run()
     ret
 fn __edge1(i: int$, __hz: i64) -> int$
-    i_4: int$ = loop(i_2: int$ = i)
-        _1: i64 = count i_2
-        _2: int = conv _1
-        _3: u1 = cmp.eq _2, 0
-        if _3
-            break i_2
-        _4: u8$ = __get_out()
-        _5: int = peek i_2, 0
-        push__u8s_int(_4, _5)
+    _1: int[] = unread(i)
+    _2: i64 = len _1
+    loop(_3: i64 = 0)
+        _4: u1 = cmp.ge _3, _2
+        if _4
+            break
+        __item: int = load _1, _3
+        _5: u8$ = __get_out()
+        push__u8s_int(_5, __item)
         _6: u8 = const 10
-        push(_4, _6)
-        i_3: int$ = advance(i_2, 1)
-        continue i_3
-    ret i_4
+        push(_5, _6)
+        _7: i64 = add _3, 1
+        continue _7
+    _8: i64 = count i
+    _9: int = conv _8
+    _10: i64 = conv _9
+    i_2: int$ = advance(i, _10)
+    ret i_2
 
 ; feature bye (layer runtime)
 fn run__bye()

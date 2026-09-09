@@ -1911,26 +1911,21 @@ impl Lowerer {
         self.reach(&format!("{}$", sname), &sf.feature, file, items[0].line)?;
         let name = format!("__edge{}", self.edges.len() + 1);
         let seq = |n: &str| Expr { kind: ExprKind::Seq(n.to_string()), line };
-        let int = |v: i64| Expr { kind: ExprKind::Int(v), line };
         let phrase = |parts: Vec<Part>| Expr { kind: ExprKind::Phrase(parts), line };
+        // `for __item in i$` with the pushes, then the reader moved past
+        // what it read (log 75): one view and one advance move a batch
         let count = phrase(vec![Part::Word("count".into()), Part::Value(seq(sname))]);
-        let empty = Expr { kind: ExprKind::Bin("==".into(), Box::new(count), Box::new(int(0))), line };
-        let peek = phrase(vec![Part::Word("peek".into()), Part::Value(seq(sname)), Part::Word("at".into()), Part::Args(vec![Arg { name: None, value: int(0) }])]);
-        let mut pushed = vec![peek];
+        let mut pushed = vec![Expr { kind: ExprKind::Name("__item".into()), line }];
         pushed.extend(items[1..].iter().cloned());
-        let advance = phrase(vec![Part::Word("advance".into()), Part::Value(seq(sname)), Part::Word("by".into()), Part::Args(vec![Arg { name: None, value: int(1) }])]);
-        let body = vec![
-            Stmt::If { cond: empty, then: vec![Stmt::Break { line }], els: None, line },
-            Stmt::Push { target: seq(tname), items: pushed, cond: None, line },
-            Stmt::Expr { expr: advance, line },
-        ];
+        let advance = phrase(vec![Part::Word("advance".into()), Part::Value(seq(sname)), Part::Word("by".into()), Part::Args(vec![Arg { name: None, value: count }])]);
+        let body = vec![Stmt::Push { target: seq(tname), items: pushed, cond: None, line }];
         let fd = FnDecl {
             line,
             results: Vec::new(),
             name: vec![NamePart::Word(name.clone()), NamePart::Group],
             groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: sname.clone(), seq: true, line }]],
             task: false,
-            body: vec![Stmt::Loop { vars: Vec::new(), cond: None, body, yields: Vec::new(), into: None, line }],
+            body: vec![Stmt::For { var: "__item".into(), seq: seq(sname), body, line }, Stmt::Expr { expr: advance, line }],
             platform: Vec::new(),
         };
         self.declare(&fd, feature, file)?;
@@ -3006,9 +3001,17 @@ impl Lowerer {
         if b.vars.contains_key(var) {
             return Err(lex::error(&file, seq.line, format!("'{}' is already declared", var)));
         }
-        let first = self.first_reader(&sv, b);
+        // the unread items as one view, a load per item (log 75); a
+        // stream of structs, whose fields are rings, peeks each
+        let view = if self.stream_fields(&sv.ty).is_none() { Some(self.unread_view(&sv, b)) } else { None };
         let n = b.tmp();
-        b.line(&format!("{}: i64 = count {}", n, first));
+        match &view {
+            Some(v) => b.line(&format!("{}: i64 = len {}", n, v)),
+            None => {
+                let first = self.first_reader(&sv, b);
+                b.line(&format!("{}: i64 = count {}", n, first));
+            }
+        }
         let k = b.tmp();
         b.loops.push(LoopCtx { carried: Vec::new(), results: Vec::new(), explicit: 0, item: Some((k.clone(), "add", "1".into())), loaded: Some(var.to_string()), breaks: 1 });
         let depth = b.loops.len();
@@ -3023,7 +3026,15 @@ impl Lowerer {
         b.line("break");
         b.depth -= 1;
         b.declare(var, e.clone());
-        self.peek_at(&sv, &k, b, Some(var));
+        match &view {
+            Some(v) => {
+                let out = name_for(Some(var), &e, b);
+                b.line(&format!("{}: {} = load {}, {}", out, e.ir(), v, k));
+            }
+            None => {
+                self.peek_at(&sv, &k, b, Some(var));
+            }
+        }
         let terminated = self.lower_block(body, b)?;
         if !terminated {
             self.step_for(b);
@@ -5296,9 +5307,6 @@ fn name_for(dst: Option<&str>, ty: &Ty, b: &mut Body) -> String {
     }
 }
 
-/// the streams a block moves: the names `advance x$ by (n)` and
-/// `frame x$` are applied to, anywhere in it, and the stream arguments
-/// of a task call (`task` says which, log 25)
 /// The streams a body asks a time of (log 73, zero.md section 9): the
 /// names under `x$ at (t)` with `t` not a rate, `x$ from (a) to (b)`
 /// and `position x$`; and whether one of them is a parameter of the
@@ -5395,6 +5403,9 @@ fn time_words_in(e: &Expr, params: &[String], out: &mut std::collections::HashSe
     }
 }
 
+/// the streams a block moves: the names `advance x$ by (n)` and
+/// `frame x$` are applied to, anywhere in it, and the stream arguments
+/// of a task call (`task` says which, log 25)
 fn moved_streams(stmts: &[Stmt], out: &mut Vec<String>, task: &dyn Fn(&[Part]) -> Vec<String>) {
     for s in stmts {
         match s {
