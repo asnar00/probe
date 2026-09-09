@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the case line's context — `0066081` · 2026-09-09
+
+```
+## testing
+>run() → "10 9 8 7 6 5 4 3 2 1\nhello world\ngoodbye"
+>run() with countdown off → "hello world\ngoodbye"
+```
+
+Rulings pass item 9 (question 14, log 43). Switching a feature is not in the language: `countdown.enabled = false` is refused in `src/zero/lower.rs`, and a case names the context it runs in after its call (`suite/zero/hello/bye/bye.md` above; `with more off, most on` joins several). `src/zero/store.rs` keeps the clause, `resolve_case` turns each feature into a call of its `enabled` setter, and `src/suite.rs` makes those calls on every path between `__zero_reset()` and a new `__zero_start()`, which runs the scheduler — split from the reset so a node of a feature that is off never runs (`Call.before`, `Case.before`, `driver.js`'s `before` list, the machines' `__caseN`). `suite/zero/features/most` says its switches on case lines now, nine cases where it had ten functions. zero 230/230 on native, wasm, riscv and arm-qemu, 221 + 9 skipped on air; probe test 971, 962 + 9, 971, 971, 941 + 30; cargo test 94 passed.
+
+---
+
 ### zero: `order.md` — `11d53a3` · 2026-09-09
 
 ```
