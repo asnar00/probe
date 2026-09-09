@@ -41,10 +41,9 @@ on (int n) = framed()
 
 on (int n) = walked()
     int i$ << 1 << 2 << 3 << 4
-    loop (int acc = 0) while (count i$ > 0)
+    n = loop (int acc = 0) while (count i$ > 0) gives acc
         acc = acc + peek i$ at (0)
         advance i$ by (1)
-    n = acc
 
 on (int n) = history()
     int i$ << 1 << 2 << 3 << 4

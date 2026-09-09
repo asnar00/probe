@@ -12,7 +12,7 @@ A stream is a value over time. `T x$` declares an empty one; `<<` pushes its fir
 ## interface
 - `pushed`, `chained`, `repeated` and `counted down from (k)` make streams with `<<`, the last two with a `while` testing `_`; `latest tested` tests `i$` instead and gets one item more.
 - `peeked`, `advanced`, `framed`, `history` read a stream with `peek`, `advance`, `frame` and `behind`.
-- `walked` moves a stream inside a `loop`, which carries it.
+- `walked` moves a stream inside a `loop`, which carries it and gives the sum it made.
 - `positioned` and `position unread` take `position`'s two results, on a regular and an irregular stream.
 - `still open`, `now closed`, `pushed after end` are `end` and `ended`.
 - `sampled` and `windowed` declare a rate and read by time, `x$ at (t)` and `x$ from (t1) to (t2)`.

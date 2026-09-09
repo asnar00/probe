@@ -4,15 +4,14 @@ on (int n) = within (int k)
 
 on (int s) = guarded sum (int k)
     check (k >= 0)
-    loop (int i = 1, int acc = 0) while (i <= k)
-        continue (i + 1, acc + i)
-    s = acc
+    s = [0 through k] + _
+
+on (int v) = small (int i)
+    check (i < 4)
+    v = i
 
 on (int n) = bounded (int k)
-    loop (int i = 1, int acc = 0) while (i <= k)
-        check (i < 4)
-        continue (i + 1, acc + i)
-    n = acc
+    n = small ([1 to k + 1]) + _
 
 on (int n) = either (int k)
     if (k > 10)

@@ -17,32 +17,29 @@ on describe (int x)
         print "not negative"
 
 on (int s) = sum to (int n)
-    loop (int i = 1, int acc = 0) while (i <= n) bound 100
-        continue (i + 1, acc + i)
-    s = acc
+    s = [0 through n] + _
 
 on (int g) = gcd of (int a) and (int b)
-    loop (int x = a, int y = b) while (y != 0)
+    g = loop (int x = a, int y = b) while (y != 0) gives x
         int r = x % y
         continue (y, r)
-    g = x
 
 on (int p) = power of two above (int n)
-    loop (int q = 1)
+    int q = loop (int q = 1) gives q
         if (q > n)
             break
         q = q * 2
     p = q
 
 on (int d) = digits of (int n)
-    loop (int x = n, int count = 1)
+    int x, int count = loop (int x = n, int count = 1) gives x, count
         if (x < 10)
             break
         continue (x / 10, count + 1)
     d = count
 
 on (int n) = collatz steps (int start)
-    loop (int x = start, int steps = 0)
+    n = loop (int x = start, int steps = 0) gives steps
         if (x == 1)
             break
         if (x % 2 == 0)
@@ -50,14 +47,19 @@ on (int n) = collatz steps (int start)
         else
             x = 3 * x + 1
         steps = steps + 1
-    n = steps
+
+on (int r) = row (int i)
+    r = [0 through i] + _
 
 on (int t) = triangle (int n)
-    loop (int i = 1, int total = 0) while (i <= n)
-        loop (int j = 1, int row = 0) while (j <= i)
-            continue (j + 1, row + j)
-        continue (i + 1, total + row)
-    t = total
+    t = row ([1 to n + 1]) + _
+
+on (int n) = two counters()
+    int a = loop (int i = 0) while (i < 3) gives i
+        continue (i + 1)
+    int b = loop (int i = 0) while (i < 5) gives i
+        continue (i + 1)
+    n = a * 10 + b
 
 on ticks ()
     for (i in [1 through 3])
@@ -76,6 +78,8 @@ on halves ()
             continue
         print "odd"
 
+on step (int i)
+    print "step"
+
 on steps from (int a) to (int b)
-    for (i in [a through b])
-        print "step"
+    step ([a through b])

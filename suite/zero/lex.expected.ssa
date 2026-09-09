@@ -445,18 +445,18 @@ fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$ {
             c_4: u8$ = advance(c_2, 1)
             continue c_4
         }
-        i_2: int, n_3: int = loop(i: int = 1, n: int = -1) {
+        n: int = loop(i: int = 1, m: int = -1) {
             _16: i64 = count c_2
             _17: int = conv _16
             _18: u1 = cmp.ge i, _17
             if _18 {
                 _19: u1 = ended(c_2)
-                n_2: int = if _19 {
+                m_2: int = if _19 {
                     yield i
                 } else {
-                    yield n
+                    yield m
                 }
-                break i, n_2
+                break m_2
             }
             _20: i64 = conv i
             _21: u8 = peek c_2, _20
@@ -466,13 +466,13 @@ fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$ {
                 _24: int = add i, 1
                 continue _24, -1
             }
-            break i, i
+            break i
         }
-        _25: u1 = cmp.lt n_3, 0
+        _25: u1 = cmp.lt n, 0
         if _25 {
             break c_2
         }
-        _26: token = pack k, start, n_3
+        _26: token = pack k, start, n
         _27: int$ = get t, kind
         _28: int = get _26, kind
         __push(_27, _28)
@@ -483,7 +483,7 @@ fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$ {
         _32: int = get _26, n
         __push(_31, _32)
         __sleep(__hz)
-        _33: i64 = conv n_3
+        _33: i64 = conv n
         c_5: u8$ = advance(c_2, _33)
         continue c_5
     }

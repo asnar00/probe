@@ -111,7 +111,9 @@ pub enum Stmt {
     Multi { vars: Vec<Param>, value: Expr, line: usize },
     Assign { targets: Vec<Target>, value: Expr, line: usize },
     If { cond: Expr, then: Vec<Stmt>, els: Option<Vec<Stmt>>, line: usize },
-    Loop { vars: Vec<VarDecl>, cond: Option<Expr>, bound: Option<i64>, body: Vec<Stmt>, line: usize },
+    /// `loop (vars) while (c) gives x, y` (log 40): `gives` names the
+    /// carried variables that leave, into declared or existing names
+    Loop { vars: Vec<VarDecl>, cond: Option<Expr>, bound: Option<i64>, body: Vec<Stmt>, gives: Vec<String>, into: Option<LoopInto>, line: usize },
     For { var: String, seq: Expr, bound: Option<i64>, body: Vec<Stmt>, line: usize },
     Continue { values: Vec<Expr>, line: usize },
     Break { line: usize },
@@ -119,6 +121,13 @@ pub enum Stmt {
     /// `x$ << a << b while (c)`
     Push { target: Expr, items: Vec<Expr>, cond: Option<Expr>, bound: Option<i64>, line: usize },
     Expr { expr: Expr, line: usize },
+}
+
+/// where a loop's given values go: `int total = loop ...` declares,
+/// `total = loop ...` assigns
+pub enum LoopInto {
+    Declare(Vec<Param>),
+    Assign(Vec<Target>),
 }
 
 #[derive(Clone, Debug)]
@@ -198,11 +207,13 @@ pub struct Parser<'a> {
     /// how deep in `[ ]` the parser is: only there do `to` and
     /// `through` end a phrase (log 15)
     ranges: usize,
+    /// inside a loop's header line, where `gives` ends a phrase
+    header: usize,
 }
 
 pub fn parse_feature(name: &str, src: &str, file: &str, types: &HashSet<String>) -> Result<Feature, Error> {
     let toks = lex::lex(src, file)?;
-    let mut p = Parser { toks, pos: 0, file, types, ranges: 0 };
+    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0 };
     let mut decls = Vec::new();
     while !p.at_end() {
         decls.push(p.parse_decl()?);
@@ -215,7 +226,7 @@ pub fn parse_call(text: &str, file: &str, line: usize, types: &HashSet<String>) 
     let mut toks = Vec::new();
     lex::lex_line(text, line, file, &mut toks)?;
     toks.push(Token { tok: Tok::Newline, line });
-    let mut p = Parser { toks, pos: 0, file, types, ranges: 0 };
+    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0 };
     let e = p.parse_expr()?;
     if !p.at(&Tok::Newline) {
         return Err(p.err("the call has something after it"));
@@ -648,36 +659,7 @@ impl<'a> Parser<'a> {
             }
             Some(Tok::Word(w)) if w == "loop" => {
                 self.pos += 1;
-                let mut vars = Vec::new();
-                if self.eat_sym("(") {
-                    while !self.at_sym(")") {
-                        vars.push(self.parse_var()?);
-                        if !self.eat_sym(",") {
-                            break;
-                        }
-                    }
-                    self.expect_sym(")")?;
-                }
-                let mut cond = None;
-                let mut bound = None;
-                loop {
-                    if self.eat_word("while") {
-                        cond = Some(self.parse_expr()?);
-                    } else if self.eat_word("bound") {
-                        match self.next()? {
-                            Tok::Int(n) => bound = Some(n),
-                            t => {
-                                self.pos -= 1;
-                                return Err(self.err(format!("'bound' takes a number, not {}", t)));
-                            }
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                self.expect_newline()?;
-                let body = self.parse_block()?;
-                Ok(Stmt::Loop { vars, cond, bound, body, line })
+                self.parse_loop(None, line)
             }
             Some(Tok::Word(w)) if w == "for" => {
                 self.pos += 1;
@@ -730,6 +712,26 @@ impl<'a> Parser<'a> {
                 Ok(Stmt::Check { cond, line })
             }
             Some(Tok::Word(w)) if SCOPES.contains(&w.as_str()) => Err(self.err(format!("'{}' belongs on a feature-scope variable, outside any function", w))),
+            // `int total = loop (...) ... gives acc`: a loop's results declared
+            Some(Tok::Word(w)) if self.is_type(&w) && self.loop_ahead() => {
+                let mut vars = Vec::new();
+                loop {
+                    let pline = self.line();
+                    let ty = self.expect_word()?;
+                    if !self.is_type(&ty) {
+                        self.pos -= 1;
+                        return Err(self.err(format!("'{}' is not a type: each of a loop's results is its type then its name", ty)));
+                    }
+                    let (name, seq) = self.expect_name()?;
+                    vars.push(Param { ty, name, seq, line: pline });
+                    if !self.eat_sym(",") {
+                        break;
+                    }
+                }
+                self.expect_sym("=")?;
+                self.expect_word()?;
+                self.parse_loop(Some(LoopInto::Declare(vars)), line)
+            }
             Some(Tok::Word(w)) if self.is_type(&w) && matches!(self.peek_at(1), Some(Tok::Word(_)) | Some(Tok::Seq(_))) => {
                 let v = self.parse_var()?;
                 // `int q, int r = ...`: several typed names, one initializer
@@ -769,6 +771,10 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.expect_sym("=")?;
+                // `total = loop (...) ... gives acc`: a loop's results assigned
+                if self.eat_word("loop") {
+                    return self.parse_loop(Some(LoopInto::Assign(targets)), line);
+                }
                 let value = self.parse_expr()?;
                 self.expect_newline()?;
                 Ok(Stmt::Assign { targets, value, line })
@@ -787,6 +793,67 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_expr()?;
                 self.expect_newline()?;
                 Ok(Stmt::Expr { expr, line })
+            }
+        }
+    }
+
+    /// `loop (vars) [while (c)] [bound N] [gives x, y]`, then the body;
+    /// `into` says where the given values go (log 40)
+    fn parse_loop(&mut self, into: Option<LoopInto>, line: usize) -> Result<Stmt, Error> {
+        let mut vars = Vec::new();
+        if self.eat_sym("(") {
+            while !self.at_sym(")") {
+                vars.push(self.parse_var()?);
+                if !self.eat_sym(",") {
+                    break;
+                }
+            }
+            self.expect_sym(")")?;
+        }
+        let mut cond = None;
+        let mut bound = None;
+        let mut gives = Vec::new();
+        self.header += 1;
+        loop {
+            if self.eat_word("while") {
+                cond = Some(self.parse_expr()?);
+            } else if self.eat_word("bound") {
+                match self.next()? {
+                    Tok::Int(n) => bound = Some(n),
+                    t => {
+                        self.pos -= 1;
+                        self.header -= 1;
+                        return Err(self.err(format!("'bound' takes a number, not {}", t)));
+                    }
+                }
+            } else if self.eat_word("gives") {
+                loop {
+                    gives.push(self.expect_word()?);
+                    if !self.eat_sym(",") {
+                        break;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+        self.header -= 1;
+        self.expect_newline()?;
+        let body = self.parse_block()?;
+        Ok(Stmt::Loop { vars, cond, bound, body, gives, into, line })
+    }
+
+    /// `T a[, T b] = loop` ahead on this line: a loop's results declared
+    fn loop_ahead(&self) -> bool {
+        let mut i = self.pos;
+        loop {
+            let (Some(Tok::Word(_)), Some(Tok::Word(_) | Tok::Seq(_))) = (self.toks.get(i).map(|t| &t.tok), self.toks.get(i + 1).map(|t| &t.tok)) else {
+                return false;
+            };
+            match self.toks.get(i + 2).map(|t| &t.tok) {
+                Some(Tok::Sym("=")) => return matches!(self.toks.get(i + 3).map(|t| &t.tok), Some(Tok::Word(w)) if w == "loop"),
+                Some(Tok::Sym(",")) => i += 3,
+                _ => return false,
             }
         }
     }
@@ -1000,7 +1067,7 @@ impl<'a> Parser<'a> {
     /// a word that ends a phrase: a statement's own word, or a range's
     /// `to` and `through` inside `[ ]`
     fn ends_phrase(&self, w: &str) -> bool {
-        matches!(w, "then" | "else" | "while" | "bound" | "merge" | "in") || (self.ranges > 0 && matches!(w, "through" | "to"))
+        matches!(w, "then" | "else" | "while" | "bound" | "merge" | "in") || (self.ranges > 0 && matches!(w, "through" | "to")) || (self.header > 0 && w == "gives")
     }
 
     /// the parts of a phrase: words, bracketed argument groups, and bare
