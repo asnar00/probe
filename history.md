@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a braced file is read with a warning — `5632719` · 2026-09-10
+
+```
+warn  old.ssa:2: written with braces; the IR indents its blocks now, and `probe indent -w old.ssa` rewrites it
+```
+
+Third pass item 1, third landing (fm3 log 56). The brace form is still read — a file written last week runs — but every command that reads a file says so: the line above in `probe test`'s report, and `warning: ...` on standard error from `parse`, `compile`, `run`, `cost` and the rest. The line named is the file's own, the prelude being appended after it. Nothing generated earns one. That closes the item: the IR indents, the tree is converted, the printer and every emitter write the indented form, and the old form is a warning away from gone. Every path unchanged; cargo test 101 passed.
+
+---
+
 ### zero: the tree indents — `99eedb7` · 2026-09-10
 
 ```
