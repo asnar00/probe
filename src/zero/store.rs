@@ -36,6 +36,8 @@ pub struct Store {
     /// and its subtree are not among the features, but their marks are
     /// kept so a case naming one can be told why
     pub marks: HashMap<String, Mark>,
+    /// the product's clock (log 77): `clock: real` or `clock: virtual`
+    pub clock: Clock,
 }
 
 /// how a product builds a feature (section 12): switchable at run time,
@@ -45,6 +47,16 @@ pub enum Mark {
     Dynamic,
     StaticOn,
     StaticOff,
+}
+
+/// the clock a store runs on (log 77): the virtual one the suite moves
+/// as fast as it can, or the machine's, which `probe zero <store> run`
+/// takes unless told `--fast`; a `clock: real` or `clock: virtual` line
+/// in `product.md`, virtual where there is none
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Clock {
+    Virtual,
+    Real,
 }
 
 impl Store {
@@ -178,7 +190,7 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     let layers = read_order(dir)?;
     check_tree(&mut features, &layers)?;
     features.insert(0, builtin_platform(&types)?);
-    let (product, int_width, float_width, marks, product_file) = read_product(dir)?;
+    let (product, int_width, float_width, marks, clock, product_file) = read_product(dir)?;
     for (name, mark) in &marks {
         if !features.iter().any(|f| &f.name == name) {
             return Err(lex::error(&product_file, 0, format!("the product marks '{}', which is no feature of the store", name)));
@@ -190,7 +202,7 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     // a static-off feature leaves the store with everything under it
     // (log 71): a child under a parent that is never on could never be on
     let mut gone: Vec<String> = Vec::new();
-    let store = Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width, float_width, marks };
+    let store = Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width, float_width, marks, clock };
     for (name, mark) in &store.marks {
         if *mark == Mark::StaticOff {
             gone.extend(store.subtree(name));
@@ -242,15 +254,17 @@ fn check_published(name: &str, zfile: &str, date: &str) -> Result<(), Error> {
 /// <function words>: N`, a trip count for every loop of that function
 /// the IR does not show the count of; `int: 32` or `int: 64`, the
 /// width of `int` (log 47), and `float: 32` or `float: 64`, the width
-/// of `float` (log 52); every other line is prose
-fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, Option<u32>, Option<u32>, HashMap<String, Mark>, String), Error> {
+/// of `float` (log 52), and `clock: real` or `clock: virtual` (log 77);
+/// every other line is prose
+fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, Option<u32>, Option<u32>, HashMap<String, Mark>, Clock, String), Error> {
     let path = dir.join("product.md");
     let file = path.display().to_string();
-    let Ok(text) = std::fs::read_to_string(&path) else { return Ok((Vec::new(), None, None, HashMap::new(), file)) };
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok((Vec::new(), None, None, HashMap::new(), Clock::Virtual, file)) };
     let mut settings: Vec<(Vec<String>, i64)> = Vec::new();
     let mut int_width = None;
     let mut float_width = None;
     let mut marks: HashMap<String, Mark> = HashMap::new();
+    let mut clock: Option<Clock> = None;
     for (i, line) in text.lines().enumerate() {
         // a feature's mark (log 71): `<feature>: static on | static off | dynamic`
         if let Some((name, rest)) = line.trim().split_once(':') {
@@ -290,6 +304,19 @@ fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, Option<u32>, Opt
             width("float", w, &mut float_width)?;
             continue;
         }
+        // the clock (log 77): the machine's, or the virtual one the suite moves
+        if let Some(w) = line.trim().strip_prefix("clock:") {
+            let c = match w.trim() {
+                "real" => Clock::Real,
+                "virtual" => Clock::Virtual,
+                other => return Err(lex::error(&file, i + 1, format!("the product's clock is real or virtual, not '{}'", other))),
+            };
+            if clock.is_some() {
+                return Err(lex::error(&file, i + 1, "the product's clock is set twice"));
+            }
+            clock = Some(c);
+            continue;
+        }
         let Some(rest) = line.trim().strip_prefix("bound ") else { continue };
         let Some((words, n)) = rest.split_once(':') else {
             return Err(lex::error(&file, i + 1, "a bound is `bound <function words>: N`"));
@@ -304,7 +331,7 @@ fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, Option<u32>, Opt
         }
         settings.push((words, n));
     }
-    Ok((settings, int_width, float_width, marks, file))
+    Ok((settings, int_width, float_width, marks, clock.unwrap_or(Clock::Virtual), file))
 }
 
 /// `order.md`: the store's layers, one `- name` per line, lowest first,

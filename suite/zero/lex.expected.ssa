@@ -17,7 +17,7 @@ fn __now() -> i64
     k: i64 = load p
     ret k
 
-; a task wired at a rate, after each push: the clock moves on one
+; a task wired at a rate, after each push: the clock reaches the next
 ; period, in whole ticks, as a rated ring steps
 fn __sleep(hz: i64)
     rated: u1 = cmp.gt hz, 0
@@ -26,7 +26,7 @@ fn __sleep(hz: i64)
         c: i64 = load p
         d: i64 = div 1000000, hz
         c2: i64 = add c, d
-        store c2, p
+        __wait(c2)
     ret
 
 ; the output stream `out$` (section 15, log 57), read back by the runner
@@ -55,6 +55,14 @@ fn __str(p: ptr, n: i64) -> u8[]
     v: u8[] = pack q, n, 1
     ret v
 
+
+; the clock reaches t (log 77): the virtual clock jumps there
+fn __wait(t: i64)
+    p: ptr = addr __clock
+    c: i64 = load p
+    m: i64 = max(c, t)
+    store m, p
+    ret
 
 ; a push into any stream (log 38): stamped with the clock on a ring
 ; that keeps ticks, the next sample on one that does not

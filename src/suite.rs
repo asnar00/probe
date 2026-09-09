@@ -433,6 +433,40 @@ extern "C" fn on_trap(_sig: i32) {
     }
 }
 
+/// the call on a thread, the program's output ring read beside it and
+/// printed as it fills (log 77): the runner is the platform's reader of
+/// `out$` (fm3 question 31), and on the real clock the program sleeps
+/// between what it writes
+fn watched<T: Send>(jit: &emit::jit::JitCode, f: impl FnOnce() -> T + Send) -> T {
+    use std::io::Write;
+    std::thread::scope(|s| {
+        let h = s.spawn(f);
+        let mut seen = 0i64;
+        let mut out = std::io::stdout();
+        loop {
+            let done = h.is_finished();
+            if let Ok(n) = jit.call("__out_len", &[]) {
+                let mut bytes = Vec::new();
+                for i in seen..n {
+                    if let Ok(b) = jit.call("__out_byte", &[i]) {
+                        bytes.push(b as u8);
+                    }
+                }
+                if !bytes.is_empty() {
+                    let _ = out.write_all(&bytes);
+                    let _ = out.flush();
+                    seen = n;
+                }
+            }
+            if done {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        h.join().expect("the call's thread ended without a result")
+    })
+}
+
 /// run f in a forked child: a `check` that fails there is a breakpoint
 /// trap that ends the child, not the suite. With a JIT whose program has
 /// an output buffer, the child reads it back on the trap, so a failed
@@ -739,6 +773,9 @@ pub struct Call {
     pub checks: bool,
     pub text: bool,
     pub before: Vec<(String, Vec<i64>)>,
+    /// the program's output printed as it lands (log 77): the call on a
+    /// thread, the ring read beside it; native only
+    pub live: bool,
 }
 
 /// what a call gave: its results, and the text the program printed
@@ -786,12 +823,15 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
                     if start {
                         jit.call("__zero_start", &[])?;
                     }
-                    let values = match call.nrets {
-                        0 => jit.call(&call.func, &call.args).map(|_| Vec::new())?,
-                        1 => jit.call(&call.func, &call.args).map(|v| vec![fix(0, v)])?,
-                        2 => jit.call2(&call.func, &call.args).map(|(a, b)| vec![fix(0, a), fix(1, b)])?,
-                        n => return Err(format!("{} results not supported by the runner", n)),
+                    let invoke = || -> Result<Vec<i64>, String> {
+                        Ok(match call.nrets {
+                            0 => jit.call(&call.func, &call.args).map(|_| Vec::new())?,
+                            1 => jit.call(&call.func, &call.args).map(|v| vec![fix(0, v)])?,
+                            2 => jit.call2(&call.func, &call.args).map(|(a, b)| vec![fix(0, a), fix(1, b)])?,
+                            n => return Err(format!("{} results not supported by the runner", n)),
+                        })
                     };
+                    let values = if call.live { watched(&jit, invoke)? } else { invoke()? };
                     let mut text = String::new();
                     if call.text {
                         let n = jit.call("__out_len", &[])?;

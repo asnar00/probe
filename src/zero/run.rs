@@ -311,9 +311,13 @@ fn skip_note(funcs: &[lower::FnInfo], reaches: &str, kind: &str) -> String {
     format!("'{}' has no platform body for {}", name, kind)
 }
 
-/// run one case of a store on the native JIT and print what it gave
-pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize) -> Result<String, String> {
-    let s = store::read(dir).map_err(|e| e.to_string())?;
+/// run one case of a store on the native JIT (log 77): the case line
+/// first, the program's output as it lands, then what the case gave
+/// after an arrow — the numbers, or the output as the case's quoted
+/// text; on the real clock unless `fast`
+pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bool) -> Result<String, String> {
+    let mut s = store::read(dir).map_err(|e| e.to_string())?;
+    s.clock = if fast { store::Clock::Virtual } else { store::Clock::Real };
     let policy = &store_policy(&s, policy);
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
     let calls = calls_of(&s, &l, policy)?;
@@ -328,12 +332,23 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize) -> Resul
         return Err(format!("{} is out of reach here: {}", text.split('→').next().unwrap_or("").trim(), skip_note(&l.funcs, why, kind)));
     }
     let off = effective(&s, &BTreeSet::new(), &p).unwrap_or_default();
-    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: call.expect == store::Expect::Check, text: true, before: setters(&off, &call.input) };
+    {
+        use std::io::Write;
+        println!("{}", text.split('→').next().unwrap_or("").trim());
+        let _ = std::io::stdout().flush();
+    }
+    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: call.expect == store::Expect::Check, text: true, before: setters(&off, &call.input), live: true };
     let got = suite::run_calls(&module, &l.ir, Backend::Native, &[sc], "zero-run", level)?.remove(0)?;
     let vals: Vec<String> = got.values.iter().map(|v| v.to_string()).collect();
     let mut out = String::new();
-    out.push_str(&got.text);
-    out.push_str(&format!("{} → {}\n", text.split('→').next().unwrap_or("").trim(), vals.join(", ")));
+    if !got.text.is_empty() && !got.text.ends_with('\n') {
+        out.push('\n');
+    }
+    let shown = match call.expect {
+        store::Expect::Text(_) => format!("{:?}", got.text.strip_suffix('\n').unwrap_or(&got.text)),
+        _ => vals.join(", "),
+    };
+    out.push_str(&format!("→ {}\n", shown));
     Ok(out)
 }
 
@@ -355,7 +370,9 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
     for sdir in &stores {
         let name = sdir.file_name().unwrap().to_string_lossy().to_string();
         let result = (|| -> Result<(Vec<Planned>, Vec<Run>, Vec<Over>, ssa::Module, lower::Lowered), String> {
-            let s = store::read(sdir).map_err(|e| e.to_string())?;
+            let mut s = store::read(sdir).map_err(|e| e.to_string())?;
+            // the suite keeps the virtual clock whatever the product says (log 77)
+            s.clock = store::Clock::Virtual;
             let policy = store_policy(&s, &policy);
             let l = lower::lower(&s).map_err(|e| e.to_string())?;
             let cases = calls_of(&s, &l, &policy)?;
@@ -414,6 +431,7 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                     // every case reads the text back: a failed check names its site there
                     text: true,
                     before: setters(&r.off, &c.input),
+                    live: false,
                 }
             })
             .collect();
@@ -587,7 +605,7 @@ mod tests {
         assert!(!ir.contains("product's int width"), "{}", ir);
         let run = |policy: &ssa::Policy| -> Vec<i64> {
             let module = build(&ir, policy, 1).unwrap();
-            let calls: Vec<suite::Call> = ["chosen", "fchosen"].iter().map(|f| suite::Call { func: f.to_string(), args: vec![], nrets: 1, checks: false, text: true, before: vec![] }).collect();
+            let calls: Vec<suite::Call> = ["chosen", "fchosen"].iter().map(|f| suite::Call { func: f.to_string(), args: vec![], nrets: 1, checks: false, text: true, before: vec![], live: false }).collect();
             suite::run_calls(&module, &ir, Backend::Native, &calls, "zero-width", 1).unwrap().into_iter().map(|g| g.unwrap().values[0]).collect()
         };
         // the native policy: 64-bit int and float
@@ -650,6 +668,35 @@ mod tests {
         assert!(err.contains("the platform feature is what a program runs on"), "{}", err);
         let err = with("# p\n\nbase: static on\nbase: dynamic\n", ">value() → 1\n").expect_err("marked twice");
         assert!(err.contains("'base' is marked twice"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// the product's clock (log 77): real, and the store waits on the
+    /// machine's counter through a `platform arm64` body; virtual, and
+    /// the clock jumps; anything else refused
+    #[test]
+    fn a_product_chooses_the_clock() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-clock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-10T10:00:00\n\n## testing\n>run() → \"1\\n2\"\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "int i$ at (2 hz)\nout$ << i$ << \"\\n\"\n\non run()\n    i$ << [1 through 2]\n").unwrap();
+        let with = |product: &str| -> Result<String, String> {
+            std::fs::write(dir.join("product.md"), product).unwrap();
+            let s = store::read(&dir).map_err(|e| e.to_string())?;
+            Ok(lower::lower(&s).map_err(|e| e.to_string())?.ir)
+        };
+        let real = with("# p\n\nclock: real\n").unwrap();
+        assert!(real.contains("fn __counter() -> i64\n") && real.contains("platform arm64\n    __counter() -> i64\n        mrs r, cntpct_el0\n"), "{}", real);
+        assert!(real.contains("fn __wait(t: i64)\n    loop()\n        r: i64 = __real_now()\n"), "{}", real);
+        assert!(real.contains("c0: i64 = __counter()\n    q: ptr = addr __base\n    store c0, q\n"), "{}", real);
+        let fast = with("# p\n\nclock: virtual\n").unwrap();
+        assert!(!fast.contains("__counter") && fast.contains("fn __wait(t: i64)\n    p: ptr = addr __clock\n    c: i64 = load p\n    m: i64 = max(c, t)\n"), "{}", fast);
+        // the edge over the rated stream waits for each item's tick: k / 2 hz
+        assert!(fast.contains("_7: i64 = mul _6, 1000000\n        _8: i64 = div _7, 2\n        __wait(_8)\n"), "{}", fast);
+        assert_eq!(with("# p\n").unwrap(), fast);
+        let err = with("# p\n\nclock: sidereal\n").expect_err("accepted a sidereal clock");
+        assert!(err.contains("the product's clock is real or virtual, not 'sidereal'"), "{}", err);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

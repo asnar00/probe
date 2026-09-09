@@ -425,7 +425,7 @@ fn __now() -> i64
     k: i64 = load p
     ret k
 
-; a task wired at a rate, after each push: the clock moves on one
+; a task wired at a rate, after each push: the clock reaches the next
 ; period, in whole ticks, as a rated ring steps
 fn __sleep(hz: i64)
     rated: u1 = cmp.gt hz, 0
@@ -434,7 +434,7 @@ fn __sleep(hz: i64)
         c: i64 = load p
         d: i64 = div 1000000, hz
         c2: i64 = add c, d
-        store c2, p
+        __wait(c2)
     ret
 
 ; the output stream `out$` (section 15, log 57), read back by the runner
@@ -463,6 +463,70 @@ fn __str(p: ptr, n: i64) -> u8[]
     v: u8[] = pack q, n, 1
     ret v
 
+"#;
+
+/// the clock reaches a time (log 77): on the virtual clock it jumps
+/// there, the suite running as fast as it can
+const VIRTUAL_CLOCK: &str = r#"
+; the clock reaches t (log 77): the virtual clock jumps there
+fn __wait(t: i64)
+    p: ptr = addr __clock
+    c: i64 = load p
+    m: i64 = max(c, t)
+    store m, p
+    ret
+"#;
+
+/// ... and on the real clock it waits on the machine's counter: the
+/// board's `now()` and `hz()` as a `platform arm64` body, read at the
+/// reset into `__base`; a path without the rule fails the check rather
+/// than spin forever
+const REAL_CLOCK: &str = r#"
+; the real clock (log 77): the machine's counter, read at the reset and
+; whenever the store's clock must reach a time
+data __base: array(i64, 1)
+
+fn __counter() -> i64
+    z: u1 = const 0
+    check z
+    ret 0
+platform arm64
+    __counter() -> i64
+        mrs r, cntpct_el0
+
+fn __counter_hz() -> i64
+    z: u1 = const 0
+    check z
+    ret 0
+platform arm64
+    __counter_hz() -> i64
+        mrs r, cntfrq_el0
+
+; microseconds since the reset
+fn __real_now() -> i64
+    c: i64 = __counter()
+    p: ptr = addr __base
+    b: i64 = load p
+    e: i64 = sub c, b
+    m: i64 = mul e, 1000000
+    hz: i64 = __counter_hz()
+    us: i64 = div m, hz
+    ret us
+
+; the clock reaches t (log 77): the real one is waited for
+fn __wait(t: i64)
+    loop()
+        r: i64 = __real_now()
+        done: u1 = cmp.ge r, t
+        if done
+            break
+        else
+            continue
+    p: ptr = addr __clock
+    c: i64 = load p
+    m: i64 = max(c, t)
+    store m, p
+    ret
 "#;
 
 /// a push into any stream (log 38): stamped with the clock on a ring
@@ -554,7 +618,7 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new() };
+    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -669,6 +733,8 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     let mut ir = String::new();
     writeln!(ir, "; lowered from the zero store {}", store.path.display()).unwrap();
     ir.push_str(PRELUDE);
+    // the one function that differs per clock (log 77)
+    ir.push_str(if store.clock == super::store::Clock::Real { REAL_CLOCK } else { VIRTUAL_CLOCK });
     ir.push_str(if l.rings.iter().any(|(_, regular)| !regular) { PUSH_BRANCHED } else { PUSH_PLAIN });
     if !l.type_lines.is_empty() {
         ir.push('\n');
@@ -1099,6 +1165,17 @@ struct Lowerer {
     /// the features the product marks static on (log 71): no field, no
     /// switch, no gate, and a chain body under its link's name
     statics: std::collections::HashSet<String>,
+    /// the feature-scope streams that have a rate (log 77): declared
+    /// with one, or wired to a rated task; a consumer takes each of
+    /// their items at its tick
+    rated: std::collections::HashSet<String>,
+    /// ... and the hz of those declared with one, whose ring is regular
+    /// at that rate (item k at tick k)
+    rates: HashMap<String, i64>,
+    /// the edge functions (log 72) by IR name, each with the stream it reads
+    edge_fns: HashMap<String, String>,
+    /// the product's clock (log 77)
+    clock: super::store::Clock,
     /// the feature that declared each type
     type_feature: HashMap<String, String>,
     /// while `choose` tries a method: which round of literal typing
@@ -1931,8 +2008,9 @@ impl Lowerer {
         self.declare(&fd, feature, file)?;
         let i = self.funcs.len() - 1;
         self.funcs[i].ir = name.clone();
-        self.funcs[i].plain = name;
+        self.funcs[i].plain = name.clone();
         self.funcs[i].task = true;
+        self.edge_fns.insert(name, sname.clone());
         let info = self.funcs[i].clone();
         self.node_inputs.insert(sname.clone());
         let text = format!("{}$ << {}", tname, items.iter().map(phrase_text).collect::<Vec<_>>().join(" << "));
@@ -1979,6 +2057,12 @@ impl Lowerer {
         b.line("store 0: i64, k");
         b.line("r: ptr = addr __running");
         b.line("store 0: i64, r");
+        // the real clock starts at the reset (log 77)
+        if self.clock == super::store::Clock::Real {
+            b.line("c0: i64 = __counter()");
+            b.line("q: ptr = addr __base");
+            b.line("store c0, q");
+        }
         // a node's state: its own reader of each input, and whether it
         // has finished, as fields after the variables
         for (k, node) in self.nodes.iter().enumerate() {
@@ -2032,6 +2116,7 @@ impl Lowerer {
                             if let Some(Init::Value(e)) = &v.init {
                                 if matches!(self.task_call(e, None, &b.file), Ok(Some((_, _, hz))) if hz > 0) {
                                     self.timed.insert(v.name.clone());
+                                    self.rated.insert(v.name.clone());
                                 }
                             }
                             match &v.init {
@@ -3012,6 +3097,16 @@ impl Lowerer {
                 b.line(&format!("{}: i64 = count {}", n, first));
             }
         }
+        // an edge over a rated source takes each item at its tick (log
+        // 77): the item's index is the reader's position plus the loop's
+        let paced = match (&b.func, &seq.kind) {
+            (Some(f), ExprKind::Seq(src)) if self.edge_fns.get(&f.ir) == Some(src) && self.rated.contains(src) => Some(src.clone()),
+            _ => None,
+        };
+        let pos = b.tmp();
+        if paced.is_some() {
+            b.line(&format!("{}: i64 = get {}, pos", pos, sv.text));
+        }
         let k = b.tmp();
         b.loops.push(LoopCtx { carried: Vec::new(), results: Vec::new(), explicit: 0, item: Some((k.clone(), "add", "1".into())), loaded: Some(var.to_string()), breaks: 1 });
         let depth = b.loops.len();
@@ -3034,6 +3129,31 @@ impl Lowerer {
             None => {
                 self.peek_at(&sv, &k, b, Some(var));
             }
+        }
+        if let Some(src) = &paced {
+            let abs = b.tmp();
+            b.line(&format!("{}: i64 = add {}, {}", abs, pos, k));
+            let t = match self.rates.get(src) {
+                // a declared rate: item k at k / hz seconds
+                Some(&hz) => {
+                    let us = b.tmp();
+                    b.line(&format!("{}: i64 = mul {}, 1000000", us, abs));
+                    if hz == 1 {
+                        us
+                    } else {
+                        let t = b.tmp();
+                        b.line(&format!("{}: i64 = div {}, {}", t, us, hz));
+                        t
+                    }
+                }
+                // a rated task's output: its ticks are the store's clock's
+                None => {
+                    let t = b.tmp();
+                    b.line(&format!("{}: i64 = tick_of({}, {})", t, sv.text, abs));
+                    t
+                }
+            };
+            b.line(&format!("__wait({})", t));
         }
         let terminated = self.lower_block(body, b)?;
         if !terminated {
@@ -4320,6 +4440,8 @@ impl Lowerer {
         let regular = if v.rate.is_some() {
             if b.kind == BodyKind::Reset {
                 self.regular.insert(v.name.clone());
+                self.rated.insert(v.name.clone());
+                self.rates.insert(v.name.clone(), hz);
             } else {
                 self.regular_locals.insert(v.name.clone());
             }

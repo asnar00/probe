@@ -39,6 +39,14 @@ fn __str(p: ptr, n: i64) -> u8[]
     ret v
 
 
+; the clock reaches t (log 77): the virtual clock jumps there
+fn __wait(t: i64)
+    p: ptr = addr __clock
+    c: i64 = load p
+    m: i64 = max(c, t)
+    store m, p
+    ret
+
 ; a push into any stream: no ring in this store keeps ticks (log 73)
 fn __push(s: number$, v: number)
     push(s, v)
@@ -410,21 +418,25 @@ fn count_down()
 fn __edge1(i: int$, __hz: i64) -> int$
     _1: int[] = unread(i)
     _2: i64 = len _1
-    loop(_3: i64 = 0)
-        _4: u1 = cmp.ge _3, _2
-        if _4
+    _3: i64 = get i, pos
+    loop(_4: i64 = 0)
+        _5: u1 = cmp.ge _4, _2
+        if _5
             break
-        __item: int = load _1, _3
-        _5: u8$ = __get_out()
-        push__u8s_int(_5, __item)
-        _6: u8 = const 10
-        push(_5, _6)
-        _7: i64 = add _3, 1
-        continue _7
-    _8: i64 = count i
-    _9: int = conv _8
-    _10: i64 = conv _9
-    i_2: int$ = advance(i, _10)
+        __item: int = load _1, _4
+        _6: i64 = add _3, _4
+        _7: i64 = mul _6, 1000000
+        __wait(_7)
+        _8: u8$ = __get_out()
+        push__u8s_int(_8, __item)
+        _9: u8 = const 10
+        push(_8, _9)
+        _10: i64 = add _4, 1
+        continue _10
+    _11: i64 = count i
+    _12: int = conv _11
+    _13: i64 = conv _12
+    i_2: int$ = advance(i, _13)
     ret i_2
 
 ; feature bye (layer runtime)

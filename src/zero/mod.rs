@@ -19,7 +19,8 @@ use std::process::ExitCode;
 pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
     let usage = || {
         eprintln!("usage: probe zero <store> emit          print the store's IR");
-        eprintln!("       probe zero <store> run <case>    run one ## testing case natively");
+        eprintln!("       probe zero <store> run <case>    run one ## testing case natively, on the real clock");
+        eprintln!("                            [--fast|-t]  ... as fast as it can, on the virtual clock");
         eprintln!("       probe zero test [dir] [path]     run every store under dir (suite/zero)");
         eprintln!("                                        on a path: wasm, riscv, arm-qemu, air (native by default)");
         ExitCode::FAILURE
@@ -57,16 +58,21 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Some(store) if args.get(1).map(String::as_str) == Some("run") && args.len() >= 3 => match run::run(Path::new(store), &args[2], &policy, level) {
-            Ok(out) => {
-                print!("{}", out);
-                ExitCode::SUCCESS
+        Some(store) if args.get(1).map(String::as_str) == Some("run") && args.len() >= 3 => {
+            // on the real clock unless told to run as fast as it can (log 77)
+            let fast = args[2..].iter().any(|a| a == "--fast" || a == "-t");
+            let Some(case) = args[2..].iter().find(|a| *a != "--fast" && *a != "-t") else { return usage() };
+            match run::run(Path::new(store), case, &policy, level, fast) {
+                Ok(out) => {
+                    print!("{}", out);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{}", e);
+                    ExitCode::FAILURE
+                }
             }
-            Err(e) => {
-                eprintln!("{}", e);
-                ExitCode::FAILURE
-            }
-        },
+        }
         _ => usage(),
     }
 }
