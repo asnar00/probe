@@ -290,6 +290,14 @@ fn no_inline(module: &Module, out: &[bool], natives: &Natives, budget: u64) -> (
         let Some(i) = (0..n).filter(|&i| !out[i] && !no[i] && copies[i] > 1).max_by_key(|&i| sizes[i] * (copies[i] - 1)) else { break };
         let saving = sizes[i] * (copies[i] - 1);
         if total <= budget && saving <= budget / 4 {
+            if report && inlined != total {
+                eprintln!("PROBE_AIR_SIZE: the kernel compiled is {} instructions, its called functions once", total);
+                let mut order: Vec<usize> = (0..n).filter(|&i| !out[i] && !no[i] && copies[i] > 1).collect();
+                order.sort_by_key(|&i| std::cmp::Reverse(sizes[i] * (copies[i] - 1)));
+                for &i in order.iter().take(12) {
+                    eprintln!("PROBE_AIR_SIZE:   {:<28} {:>8} inlined x {} copies", module.funcs[i].name, sizes[i], copies[i]);
+                }
+            }
             break;
         }
         no[i] = true;

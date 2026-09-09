@@ -133,7 +133,7 @@ None of them contains a single hand-written opcode.
 Shared by the register machines and wasm:
 
 - **A linear-scan register allocator** (`src/regalloc.rs`) with register classes: the emitter hands it pools and gets back a register or spill slot per value.
-- **An SSA pass pipeline** (`src/opt.rs`): simplify-cfg, const-fold, dce, sink. Optimization levels are prefixes of that one list, so every level is a correct stopping point and every pass is checked by the suite on every backend.
+- **An SSA pass pipeline** (`src/opt.rs`): simplify-cfg, const-fold, elide-stores (a store that writes back what was just loaded from the program's own memory goes, so a struct written back with one field changed stores one word), dce, sink. Optimization levels are prefixes of that one list, so every level is a correct stopping point and every pass is checked by the suite on every backend.
 - **An incremental JIT arena** (`src/arena.rs`): each function in its own slot with slack, calls routed through counting trampolines, so an edited function recompiles in place and a hot one is promoted through the full pipeline without disturbing its neighbours.
 
 

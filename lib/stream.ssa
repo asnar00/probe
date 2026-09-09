@@ -159,8 +159,8 @@ fn ceil_tick(x: time) -> i64
 ; an item sits in both halves, so any half consecutive items are one view
 fn ring_index(s: number$, k: i64) -> i64
     r: ptr = get s, ring
-    vals: number[] = ring_values(r)
-    cap: i64 = len vals
+    vb: ptr = load r, 16
+    cap: i64 = load vb, 8
     half: i64 = div cap, 2
     i: i64 = rem k, half
     ret i
@@ -173,49 +173,65 @@ fn ring_pushed(r: ptr, pushed: i64, half: i64)
     base: i64 = max(over, zero)
     store base, r, 8
     ret
-; an irregular ring's producer: an item at a tick, ticks never going back
+; an irregular ring's producer: an item at a tick, ticks never going
+; back. A push stores through a pointer to the buffer's elements: its
+; slot is under half by construction, so the view's checks would prove
+; nothing; readers take the checked view, `ring_values`
 fn push(s: number$, tick: i64, v: number)
-    open(s)
     r: ptr = get s, ring
+    e: i64 = load r, 56
+    still: u1 = cmp.eq e, 0
+    check still
     step: i64 = load r, 40
     irregular: u1 = cmp.eq step, 0
     check irregular
     pushed: i64 = load r
     base: i64 = load r, 8
-    ticks: i64[] = ring_ticks(r)
-    some: u1 = cmp.gt pushed, base
-    if some
-        prev: i64 = sub pushed, 1
-        pi: i64 = ring_index(s, prev)
-        pt: i64 = load ticks, pi
-        ordered: u1 = cmp.ge tick, pt
-        check ordered
-    vals: number[] = ring_values(r)
-    cap: i64 = len vals
+    vb: ptr = load r, 16
+    cap: i64 = load vb, 8
     half: i64 = div cap, 2
     slot: i64 = rem pushed, half
     twin: i64 = add slot, half
-    store v, vals, slot
-    store v, vals, twin
+    tb: ptr = load r, 24
+    thdr: i64 = const 16
+    traw: ptr = ptradd tb, thdr
+    ticks: ptr(i64) = cast traw
+    some: u1 = cmp.gt pushed, base
+    if some
+        prev: i64 = sub pushed, 1
+        pi: i64 = rem prev, half
+        pt: i64 = load ticks, pi
+        ordered: u1 = cmp.ge tick, pt
+        check ordered
+    hdr: i64 = const 16
+    raw: ptr = ptradd vb, hdr
+    q: ptr(number) = cast raw
+    store v, q, slot
+    store v, q, twin
     store tick, ticks, slot
     store tick, ticks, twin
     ring_pushed(r, pushed, half)
     ret
 ; a regular ring's producer: the next sample
 fn push(s: number$, v: number)
-    open(s)
     r: ptr = get s, ring
+    e: i64 = load r, 56
+    still: u1 = cmp.eq e, 0
+    check still
     step: i64 = load r, 40
     regular: u1 = cmp.gt step, 0
     check regular
     pushed: i64 = load r
-    vals: number[] = ring_values(r)
-    cap: i64 = len vals
+    vb: ptr = load r, 16
+    cap: i64 = load vb, 8
     half: i64 = div cap, 2
     slot: i64 = rem pushed, half
     twin: i64 = add slot, half
-    store v, vals, slot
-    store v, vals, twin
+    hdr: i64 = const 16
+    raw: ptr = ptradd vb, hdr
+    q: ptr(number) = cast raw
+    store v, q, slot
+    store v, q, twin
     ring_pushed(r, pushed, half)
     ret
 ; ... a block at a time

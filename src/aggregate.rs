@@ -58,6 +58,10 @@ struct Lower<'a> {
     alias: HashMap<u32, ValueId>,
     /// the struct types of the values that were retyped to their first leaf
     orig: HashMap<u32, Type>,
+    /// a u1 leaf that a struct load made from a byte in memory -> that
+    /// byte: stored back unchanged, the byte itself goes, so a store of a
+    /// field a program never touched is a write-back the optimizer can see
+    loaded_byte: HashMap<u32, ValueId>,
     out: Vec<Inst>,
     keep: Vectors,
 }
@@ -72,7 +76,7 @@ fn lower_function(f: &mut Function, keep_vectors: Vectors) -> Result<(), String>
         rets.extend(ls.into_iter().map(|(t, _)| t));
     }
     f.rets = rets;
-    let mut lo = Lower { f, rows: HashMap::new(), alias: HashMap::new(), orig: HashMap::new(), out: Vec::new(), keep: keep_vectors };
+    let mut lo = Lower { f, rows: HashMap::new(), alias: HashMap::new(), orig: HashMap::new(), loaded_byte: HashMap::new(), out: Vec::new(), keep: keep_vectors };
     let n = lo.f.values.len();
     for i in 0..n {
         let id = ValueId(i as u32);
@@ -239,6 +243,7 @@ impl Lower<'_> {
                         let byte = self.byte_temp(*leaf);
                         self.out.push(Inst::Load { dst: byte, addr, off: off + *foff as i64, index });
                         self.out.push(Inst::Cast { op: CastOp::Conv, dst: *leaf, src: byte });
+                        self.loaded_byte.insert(leaf.0, byte);
                     } else {
                         self.out.push(Inst::Load { dst: *leaf, addr, off: off + *foff as i64, index });
                     }
@@ -252,8 +257,14 @@ impl Lower<'_> {
                 let index = index.map(|(i, s)| (r(self, i), s));
                 for (leaf, (lty, foff)) in row.iter().zip(&ls) {
                     if matches!(lty, Type::Int { bits: 1, .. }) {
-                        let byte = self.byte_temp(*leaf);
-                        self.out.push(Inst::Cast { op: CastOp::Conv, dst: byte, src: *leaf });
+                        let byte = match self.loaded_byte.get(&leaf.0) {
+                            Some(&b) => b,
+                            None => {
+                                let byte = self.byte_temp(*leaf);
+                                self.out.push(Inst::Cast { op: CastOp::Conv, dst: byte, src: *leaf });
+                                byte
+                            }
+                        };
                         self.out.push(Inst::Store { val: byte, addr, off: off + *foff as i64, index });
                     } else {
                         self.out.push(Inst::Store { val: *leaf, addr, off: off + *foff as i64, index });

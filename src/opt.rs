@@ -23,6 +23,7 @@ pub type PassFn = fn(&mut Function);
 pub const PASSES: &[(&str, PassFn)] = &[
     ("simplify-cfg", simplify_cfg),
     ("const-fold", const_fold),
+    ("elide-stores", elide_stores),
     ("dce", dce),
     ("sink", sink),
 ];
@@ -456,6 +457,66 @@ fn dce(func: &mut Function) {
 }
 
 // ---------------------------------------------------------------------------
+// elide-stores: a store that writes back what was just loaded
+//
+// A struct in memory is read and written whole — `c = load p`, `c2 = set
+// c, f, v`, `store c2, p` — and dissolves to a load and a store per field,
+// so writing one field of an eighteen-field context stores eighteen
+// words, seventeen of them the values just loaded from the same place.
+// Within a block, a store of the very value the same address and offset
+// gave to a load, with nothing having touched memory since, changes
+// nothing and goes; dce then drops the loads nothing reads. Only memory
+// reached through `addr` or `scratch` — the program's own data, never a
+// device register, where a write-back can mean something — and only
+// stores whose width is known. Any other store forgets what may alias
+// it: the same address's overlapping bytes, and every other address.
+
+fn elide_stores(func: &mut Function) {
+    let own: Vec<bool> = {
+        let mut own = vec![false; func.values.len()];
+        for block in &func.blocks {
+            for inst in &block.insts {
+                if let Inst::Addr { dst, .. } | Inst::Scratch { dst, .. } = inst {
+                    own[dst.0 as usize] = true;
+                }
+            }
+        }
+        own
+    };
+    let bytes = |func: &Function, v: ValueId| -> Option<i64> { func.width(func.ty(v)).map(|bits| (bits as i64 + 7) / 8) };
+    for b in 0..func.blocks.len() {
+        // (address, offset, bytes, the value memory holds there)
+        let mut known: Vec<(ValueId, i64, i64, ValueId)> = Vec::new();
+        let insts = std::mem::take(&mut func.blocks[b].insts);
+        let mut kept = Vec::with_capacity(insts.len());
+        for inst in insts {
+            match &inst {
+                Inst::Load { dst, addr, off, index: None } if own[addr.0 as usize] => {
+                    if let Some(n) = bytes(func, *dst) {
+                        known.push((*addr, *off, n, *dst));
+                    }
+                }
+                Inst::Store { val, addr, off, index: None } => {
+                    match bytes(func, *val) {
+                        Some(n) => {
+                            if own[addr.0 as usize] && known.iter().any(|&(a, o, m, v)| a == *addr && o == *off && m == n && v == *val) {
+                                continue;
+                            }
+                            known.retain(|&(a, o, m, _)| a == *addr && (o + m <= *off || *off + n <= o));
+                        }
+                        None => known.clear(),
+                    }
+                }
+                Inst::Store { .. } | Inst::Call { .. } | Inst::CallInd { .. } => known.clear(),
+                _ => {}
+            }
+            kept.push(inst);
+        }
+        func.blocks[b].insts = kept;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // sink: within-block scheduling to reduce live ranges
 //
 // Consumers can't generally move up past what they depend on, so this
@@ -601,6 +662,43 @@ entry:
         let insts = &m.funcs[0].blocks[0].insts;
         assert_eq!(insts.len(), 2, "{}", m);
         assert!(matches!(insts[0], ssa::Inst::IConst { imm: 43, .. }), "{}", m);
+    }
+
+    #[test]
+    fn a_field_store_writes_one_field() {
+        // a struct read, one field set, and the struct stored back: after
+        // dissolution, only the changed field's store remains
+        let src = r"
+type ctx = struct { a: i64, b: i64, c: ptr, d: u1, e: u1 }
+data mem: array(ctx, 1)
+fn set_b(v: i64) {
+    p: ptr = addr mem
+    c: ctx = load p
+    c2: ctx = set c, b, v
+    store c2, p
+    ret
+}
+";
+        let m = opt_at(src, super::MAX_LEVEL);
+        let stores = m.funcs[0].blocks.iter().flat_map(|b| b.insts.iter()).filter(|i| matches!(i, ssa::Inst::Store { .. })).count();
+        let loads = m.funcs[0].blocks.iter().flat_map(|b| b.insts.iter()).filter(|i| matches!(i, ssa::Inst::Load { .. })).count();
+        assert_eq!((stores, loads), (1, 0), "{}", m);
+    }
+
+    #[test]
+    fn a_write_back_through_a_pointer_stays() {
+        // the pointer is not the program's own memory (a device register
+        // reached by its address): the store is kept
+        let src = r"
+fn ack(p: ptr) {
+    x: i64 = load p, 8
+    store x, p, 8
+    ret
+}
+";
+        let m = opt_at(src, super::MAX_LEVEL);
+        let stores = m.funcs[0].blocks.iter().flat_map(|b| b.insts.iter()).filter(|i| matches!(i, ssa::Inst::Store { .. })).count();
+        assert_eq!(stores, 1, "{}", m);
     }
 
     #[test]
