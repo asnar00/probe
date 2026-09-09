@@ -232,11 +232,12 @@ fn push(s: number$, v: number)
     base: i64 = max(over, 0: i64)
     store base, r, 8
     ret
-; ... a block at a time: copied into the slots from the next one and
-; again half further on, the rest into the start of each half where the
-; block crosses the seam, so a block is two copies, four across the seam,
-; and the count moves once; a block longer than half could never be
-; resident whole and fails
+; ... a block at a time (log 69, 80): copied whole into the slots from
+; the next one — the slot is under half and the block at most half, so
+; it never reaches the end; past the seam it lands on the twin positions
+; — and again half further on, split where that reaches the end, the
+; rest into the start of the buffer: three copies, and the count moves
+; once; a block longer than half could never be resident whole and fails
 fn push(s: number$, block: number[])
     r: ptr = get s, ring
     e: i64 = load r, 56
@@ -253,12 +254,12 @@ fn push(s: number$, block: number[])
     fits: u1 = cmp.le n, half
     check fits
     slot: i64 = rem pushed, half
+    d1: number[] = view vals, slot, n
+    copy d1, block
+    twin: i64 = add slot, half
     room: i64 = sub half, slot
     first: i64 = min(n, room)
     a: number[] = view block, 0, first
-    d1: number[] = view vals, slot, first
-    copy d1, a
-    twin: i64 = add slot, half
     d2: number[] = view vals, twin, first
     copy d2, a
     rest: i64 = sub n, first
@@ -267,8 +268,6 @@ fn push(s: number$, block: number[])
         b: number[] = view block, first, rest
         d3: number[] = view vals, 0, rest
         copy d3, b
-        d4: number[] = view vals, half, rest
-        copy d4, b
     next: i64 = add pushed, n
     store next, r
     over: i64 = sub next, half
@@ -302,14 +301,14 @@ fn push(s: number$, tick: i64, block: number[])
         ordered: u1 = cmp.ge tick, pt
         check ordered
     slot: i64 = rem pushed, half
+    d1: number[] = view vals, slot, n
+    copy d1, block
+    t1: i64[] = view ticks, slot, n
+    fill t1, tick
+    twin: i64 = add slot, half
     room: i64 = sub half, slot
     first: i64 = min(n, room)
     a: number[] = view block, 0, first
-    d1: number[] = view vals, slot, first
-    copy d1, a
-    t1: i64[] = view ticks, slot, first
-    fill t1, tick
-    twin: i64 = add slot, half
     d2: number[] = view vals, twin, first
     copy d2, a
     t2: i64[] = view ticks, twin, first
@@ -322,10 +321,6 @@ fn push(s: number$, tick: i64, block: number[])
         copy d3, b
         t3: i64[] = view ticks, 0, rest
         fill t3, tick
-        d4: number[] = view vals, half, rest
-        copy d4, b
-        t4: i64[] = view ticks, half, rest
-        fill t4, tick
     next: i64 = add pushed, n
     store next, r
     over: i64 = sub next, half
