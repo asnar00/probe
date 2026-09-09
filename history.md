@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `order.md` — `11d53a3` · 2026-09-09
+
+```
+# order
+*the store's layers, lowest first*
+
+- runtime
+- tools
+```
+
+Rulings pass item 8 (question 16, log 42). The layer list is `order.md` beside a store's feature folders (`suite/zero/features/order.md` above): `src/zero/store.rs`'s `read_order` wants a line saying `lowest first` before the `- name` lines, refuses the file without it, and tells a store still holding `layers.md` of the rename. Composition order stays the earliest origin timestamp until a store is a repository with a ledger; two features that share one are now refused naming both, unless each origin says `same commit` after its timestamp, when they compose by name — the ledger's rule for one commit, spelled in the `.md` header, written up for Ash as question 24. zero 227/227 on native, wasm, riscv and arm-qemu, 218 + 9 skipped on air; probe test 971, 962 + 9, 971, 971, 941 + 30; cargo test 94 passed.
+
+---
+
 ### zero: bounds are product settings — `602c8e3` · 2026-09-09
 
 ```
