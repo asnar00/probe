@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### cost: a callee's loop is bounded by what its call site knows — `1630ada` · 2026-09-10
+
+```
+copy_u8: loop at b8 x11 (j from at least 0 by 1 to at most 11), body 10 ssa
+emit_str: loop at loop x12 (i from 0 by 1 to 12), body 14 ssa
+```
+
+The parity pass, hop 11 (fm3 log 76): the measure. `src/cost.rs` costs a function per call site's knowledge — a range per integer argument, memoised by name and ranges, carried through by constants, arithmetic, `min`/`max`, a loop parameter's start and step, and every `check` or branch — so a string literal's length reaches the library's copy (above, from `probe cost suite/zero/hello.expected.ssa run` and the oracle); and the pass that leaves a loop is charged once, so a bottom-tested loop is no longer short a body. Both sides now count by one rule: `hello-mod.ssa` 441 → 735, `hello-min.ssa` 402 → 696; hello 2 113 → 3 865, static 1 995 → 3 675, the block pushes' copies and the loop scheduler's empty pass now visible. Every path: zero 477/477 on the CPU paths and 460 + 17 skipped on air, probe test 977/977, 968 + 9, 977, 977, 946 + 31; cargo test 110.
+
+
 ### zero: an edge moves a batch through one view — `162ba63` · 2026-09-10
 
 ```
