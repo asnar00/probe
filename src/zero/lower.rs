@@ -894,7 +894,7 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, dead_ticks: std::collections::HashSet::new(), regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
+    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, dead_ticks: std::collections::HashSet::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -922,6 +922,16 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         }
     }
     l.name_methods(&store.features.iter().map(|f| (f.name.clone(), f.code.file.clone())).collect())?;
+    // is any task wired at a rate (log 83)? looked for before any body
+    // is lowered, since a task's body serves every wiring
+    l.any_rated_wiring = store.features.iter().any(|f| {
+        f.code.decls.iter().any(|d| match d {
+            Decl::Var(v) => matches!(&v.init, Some(Init::Value(e)) if is_rated_wiring(e)),
+            Decl::Wire(e) => is_rated_wiring(e),
+            Decl::Fn(fd) => wired_at_a_rate(&fd.body),
+            _ => false,
+        })
+    });
     // which streams something asks a time of (log 73): looked for
     // before any ring is made
     for f in &store.features {
@@ -1453,6 +1463,9 @@ struct Lowerer {
     /// the tick names of the function being lowered that `position`
     /// binds and nothing reads (log 82): the index is a `get`, no tick
     dead_ticks: std::collections::HashSet<String>,
+    /// does any wiring in the store carry `at (n hz)` (log 83)? If none
+    /// does, every `__hz` is 0 and a task's pushes need no sleep
+    any_rated_wiring: bool,
     /// the streams declared at a rate, feature-scope and, per body, local
     /// (log 57): a push into one calls the regular push directly, since
     /// the compiler chose the ring, where `__push` charges the clock's
@@ -4985,7 +4998,9 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
             self.emit_push_only(s, v, b);
         }
         if let BodyKind::Task { out, hz } = &b.kind {
-            if out.as_deref() == Some(name) {
+            // no wiring in the store has a rate: every `__hz` is 0 and
+            // the sleep would be a branch not taken (log 83)
+            if out.as_deref() == Some(name) && self.any_rated_wiring {
                 let hz = hz.clone();
                 b.line(&format!("__sleep({})", hz));
             }
@@ -5907,6 +5922,22 @@ fn time_words(stmts: &[Stmt], whole: &[Stmt], params: &[String], out: &mut std::
             Stmt::Break { .. } => {}
         }
     }
+}
+
+/// a phrase ending `at (n hz)`: a task wired at a rate, as `task_call`
+/// reads it (log 83)
+fn is_rated_wiring(e: &Expr) -> bool {
+    matches!(&e.kind, ExprKind::Phrase(parts) if matches!(parts.as_slice(), [.., Part::Word(at), Part::Args(a)] if at == "at" && a.len() == 1 && matches!(&a[0].value.kind, ExprKind::Unit(_, u) if u == "hz" || u == "khz")))
+}
+
+/// does any local declaration in the block wire a task at a rate?
+fn wired_at_a_rate(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        Stmt::Var(v) => matches!(&v.init, Some(Init::Value(e)) if is_rated_wiring(e)),
+        Stmt::If { then, els, .. } => wired_at_a_rate(then) || els.as_ref().is_some_and(|e| wired_at_a_rate(e)),
+        Stmt::Loop { body, .. } | Stmt::For { body, .. } => wired_at_a_rate(body),
+        _ => false,
+    })
 }
 
 /// `position x$`, the phrase

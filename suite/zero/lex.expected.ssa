@@ -12,18 +12,6 @@ data __clock: array(i64, 1)
 ; the scheduler is running: a push from inside a task does not start it again
 data __running: array(i64, 1)
 
-; a task wired at a rate, after each push: the clock reaches the next
-; period, in whole ticks, as a rated ring steps
-fn __sleep(hz: i64)
-    rated: u1 = cmp.gt hz, 0
-    if rated
-        p: ptr = addr __clock
-        c: i64 = load p
-        d: i64 = div 1000000, hz
-        c2: i64 = add c, d
-        __wait(c2)
-    ret
-
 ; the output stream `out$` (section 15, log 57), read back by the runner
 ; through the platform feature's own reader, which nothing advances:
 ; how many bytes it holds, and each one
@@ -49,15 +37,6 @@ fn __str(p: ptr, n: i64) -> u8[]
     q: ptr(u8) = cast p
     v: u8[] = pack q, n, 1
     ret v
-
-
-; the clock reaches t (log 77): the virtual clock jumps there
-fn __wait(t: i64)
-    p: ptr = addr __clock
-    c: i64 = load p
-    m: i64 = max(c, t)
-    store m, p
-    ret
 
 ; a push into any stream: no ring in this store keeps ticks (log 73)
 fn __push(s: number$, v: number)
@@ -394,7 +373,6 @@ fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$
             _13: int$ = get t, n
             _14: int = get _8, n
             __push(_13, _14)
-            __sleep(__hz)
             c_4: u8$ = advance(c_2, 1)
             continue c_4
         n: int = loop(i: int = 1, m: int = -1)
@@ -429,7 +407,6 @@ fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$
         _30: int$ = get t, n
         _31: int = get _25, n
         __push(_30, _31)
-        __sleep(__hz)
         _32: i64 = conv n
         c_5: u8$ = advance(c_2, _32)
         continue c_5
