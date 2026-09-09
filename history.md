@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `_` is the candidate — `cde1a74` · 2026-09-09
+
+```
+on (int i$) << count down from (int n)
+    i$ << n << (i$ - 1) while (_ > 0)
+
+on (int i$) << count up to (int n)
+    i$ << 1 << (i$ + 1) while (_ <= n)
+```
+
+Rulings pass item 5 (question 9, log 39). A push chain's `while` still tests the item about to be pushed and pushes it only when the test holds, but that item is now `_` — the value in hand, as in a reduction — and the stream's own name in the condition is its latest item, the one meaning `x$` has everywhere (`Lowerer.candidate` in `src/zero/lower.rs`, read by the `_` arm, an operator, or a call's argument while the condition is lowered). `while (i$ < 5)` is not refused: it gives `[1, 2, 3, 4, 5]` where `while (_ < 5)` gives `[1, 2, 3, 4]`, and `suite/zero/streams` keeps one case of each. Every chain in the stores and the three programs is rewritten with `_`, their emitted IR unchanged; section 10's examples in zero.md follow section 9 now. zero 226/226 on native, wasm, riscv and arm-qemu, 217 + 9 skipped on air; probe test 971, 962 + 9, 971, 971, 941 + 30; cargo test 93 passed.
+
+---
+
 ### zero: one `$` — `d884367` · 2026-09-09
 
 ```
