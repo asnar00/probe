@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: static and dynamic features — `16e4e57` · 2026-09-10
+
+```
+platform: static on
+hello: static on
+countdown: static on
+bye: static on
+```
+
+The parity pass, hop 6 (fm3 log 71), Ash's ruling that a product marks each feature. `product.md` (above, `suite/zero/static/product.md`) takes a line per feature, `static on`, `static off` or `dynamic`. Static off and the feature leaves the store with everything under it before lowering (`src/zero/store.rs`); static on and it has no context field, switch or gate, its chain body standing under its link's name so `run` calls `run__countdown` calls `run__hello` by name (`src/zero/lower.rs`), and the runner never switches it. `suite/zero/static` is hello with every feature static, the counterpart of the hand-written oracle: `run` 1 870 on 325 lines against 412 on 77; `suite/zero/marks` shows the three marks. A front-end change: probe zero test 476/476 native, cargo test zero:: 17.
+
+---
+
 ### zero: the emitted IR carries only what the store reaches — `7f72bb3` · 2026-09-10
 
 The parity pass, hop 5 (fm3 log 70). Every store's text carried the platform feature's whole library and an accessor for every context field. `lower` (`src/zero/lower.rs`, `prune`) now keeps what the roots reach — the store's own functions, the platform functions a case names, the runner's entries — by the calls written `name(` in the text, a name standing for a method set where it is one; what nothing reaches goes with its comment, and so does a `data` string nothing names. hello.expected.ssa 582 → 410 lines with `run` unchanged at 1 940; lex 583 → 525, clock 316 → 302. A front-end change: probe zero test 465/465 native, cargo test zero:: 16.
