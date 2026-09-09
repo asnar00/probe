@@ -2,6 +2,15 @@
 
 What landed, one short entry per commit — or per group, when several arrived together as one piece of work. Newest first. `git show <hash>` has the full story for any of them.
 
+### zero: the arrival bound on an edge's loop — `fc3ac20` · 2026-09-10
+
+```
+    ; the most items one event pushes into i$: 10 (log 79)
+    loop(_4: i64 = 0) bound 10
+```
+
+The parity pass, hop 13 (fm3 log 79). `arrivals` in `src/zero/lower.rs` counts what each push statement from a plain function pushes into a feature-scope stream when every item is countable, and an edge's loop over that stream is emitted with the largest as its `bound` (above, `suite/zero/hello.expected.ssa`): under the static schedule the edge runs after every such statement, so it never sees more. The tool is now honest for the countdown: hello 2 318 → 3 767, static 2 232 → 3 681, the edge's loop `x10 (declared)` where it was counted once. A front-end change: zero 477/477 native, cargo test zero:: 18.
+
 ---
 
 ### zero: the scheduler is a static schedule where the node graph is acyclic — `5499381` · 2026-09-10
