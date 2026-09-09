@@ -20,6 +20,7 @@ Third pass item 2 (rulings-3, log 57): output is the system stream `out$`, decla
 - A sink is wired, never run: `log(out$)` inside a function is refused, and `uint8 x$ = log(out$)` is refused since it fills nothing. A sink takes no rate.
 - A stream consumer's body is `ir`: a target's rule lines take one word per operand, and a stream is four (question 32).
 - With this feature off its node does not run, and `logged` stays at its initial value.
+- `out$` and `in$` are *system streams* (section 15, log 84): the platform declares them and the platform reads them, so their ring never has to slide and the front end pushes into them with the library's `push_plain`, a store and a count, where a general stream keeps the full ring. Their capacity is a limit rather than a window — 4 096 bytes for `out$`, 512 for `in$`, the compiler's numbers — and a program that writes past it fails a check instead of losing what it wrote. A sink of a store's own, like `log` here, reads the same buffer as `write` does.
 
 ## testing
 >logged after hello() → 6

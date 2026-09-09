@@ -33,6 +33,9 @@
 ;! block_across_the_seam -> 340, 4
 ;! block_with_a_tick -> 36, 4
 ;! block_too_long -> check
+;! plain_pushes -> 3, 4
+;! plain_block -> 7, 4
+;! plain_too_many -> check
 
 ; an irregular ring of bytes on a microsecond clock: values and ticks;
 ; a ring keeps half its slots resident (each item sits in both halves),
@@ -56,6 +59,9 @@ data blk: buffer(f32, 4)
 data fblk: buffer(f32, 4)
 data bblk: buffer(u8, 4)
 data big: buffer(f32, 16)
+; a regular byte ring a system stream's push writes into (log 84)
+data pvb: buffer(u8, 16)
+data prg: array(u64, 8)
 ; two rings of int for the struct of streams
 data ivb: buffer(int, 16)
 data itb: buffer(i64, 16)
@@ -82,6 +88,51 @@ fn fresh() -> u8$
     ring_init(r, a, b, 1000000)
     s: u8$ = stream r
     ret s
+
+fn plain_ring() -> u8$
+    r: ptr = addr prg
+    a: ptr = addr pvb
+    ring_regular(r, a, 1000000, 1, 0)
+    s: u8$ = stream r
+    ret s
+
+; a system stream's push (log 84): its only reader is the platform, so
+; the ring never has to slide — the item goes to slot k and the count
+; moves, which is where every reader already looks. Mixed with the
+; ordinary push, which also mirrors, both read back the same
+fn plain_pushes() -> (u8, i64)
+    s: u8$ = plain_ring()
+    push_plain(s, 1: u8)
+    push_plain(s, 2: u8)
+    push(s, 3: u8)
+    push_plain(s, 4: u8)
+    x: u8 = peek s, 2
+    n: i64 = count s
+    ret x, n
+; ... and a block of them, one copy with no seam to split at
+fn plain_block() -> (u8, i64)
+    s: u8$ = plain_ring()
+    p: ptr = addr bblk
+    b: u8[] = slice p
+    fill b, 7
+    push_plain(s, b)
+    last: u8 = latest s
+    n: i64 = count s
+    ret last, n
+; the capacity is a limit and not a window: past what stays resident a
+; system stream fails the check where a ring would have slid
+fn plain_too_many() -> u8
+    s: u8$ = plain_ring()
+    loop(k: i64 = 1)
+        done: u1 = cmp.gt k, 9
+        if done
+            break
+        v: u8 = conv k
+        push_plain(s, v)
+        k2: i64 = add k, 1
+        continue k2
+    x: u8 = latest s
+    ret x
 
 ; a frame holds everything since the reader last looked
 fn frames() -> (u8, i64)

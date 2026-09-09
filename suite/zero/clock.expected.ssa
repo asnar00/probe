@@ -46,7 +46,7 @@ fn __out_byte(i: i64) -> u8
 ; pushes, which under the runner is a case's `with in "text"`
 fn __in_ch(c: u8)
     s: u8$ = __get_in()
-    __push(s, c)
+    push_plain(s, c)
     ret
 
 

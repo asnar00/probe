@@ -30,7 +30,9 @@
 ; weighs the two items around t, exactly in rational arithmetic, and
 ; rounds once into the element's type. Producers `push s, tick, v` on an
 ; irregular ring (ticks non-decreasing, checked) and `push s, v` or
-; `push s, block` on a regular one; consumers take a `frame` (everything
+; `push s, block` on a regular one — or `push_plain`, for a stream whose
+; only reader is the platform, which never has to slide and so stores
+; and counts; consumers take a `frame` (everything
 ; since they last looked, as a view, with the index of its first item,
 ; and the stream advanced), `count`, `latest`, `peek` and `advance`,
 ; `behind` and `last` for history, `sample s, t`, or a
@@ -231,6 +233,50 @@ fn push(s: number$, v: number)
     over: i64 = sub next, half
     base: i64 = max(over, 0: i64)
     store base, r, 8
+    ret
+; a system stream's producer (log 84, question 41, zero.md section 15):
+; its only reader is the platform, so nothing looks behind it and
+; nothing samples it — the ring never has to slide, item k stays at
+; slot k for ever, and the push is a store and a count, which is what
+; the mirror and the base compute anyway while the count is under half.
+; Past half the ring would have to slide, and this fails instead: a
+; system stream's capacity is a limit, not a window. The ring is an
+; ordinary regular one, so `push` still works on it and every reader
+; is unchanged
+fn push_plain(s: number$, v: number)
+    r: ptr = get s, ring
+    e: i64 = load r, 56
+    still: u1 = cmp.eq e, 0
+    check still
+    pushed: i64 = load r
+    vb: ptr = load r, 16
+    cap: i64 = load vb, 8
+    half: i64 = div cap, 2
+    room: u1 = cmp.lt pushed, half
+    check room
+    raw: ptr = ptradd vb, 16
+    q: ptr(number) = cast raw
+    store v, q, pushed
+    next: i64 = add pushed, 1
+    store next, r
+    ret
+; ... and a block of them, one copy with no seam to split at
+fn push_plain(s: number$, block: number[])
+    r: ptr = get s, ring
+    e: i64 = load r, 56
+    still: u1 = cmp.eq e, 0
+    check still
+    n: i64 = len block
+    pushed: i64 = load r
+    vals: number[] = ring_values(r)
+    cap: i64 = len vals
+    half: i64 = div cap, 2
+    next: i64 = add pushed, n
+    fits: u1 = cmp.le next, half
+    check fits
+    d: number[] = view vals, pushed, n
+    copy d, block
+    store next, r
     ret
 ; ... a block at a time (log 69, 80): copied whole into the slots from
 ; the next one — the slot is under half and the block at most half, so

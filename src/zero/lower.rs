@@ -1045,7 +1045,8 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     }
     let mut ir = String::new();
     writeln!(ir, "; lowered from the zero store {}", store.path.display()).unwrap();
-    ir.push_str(PRELUDE);
+    // the platform's push of an arriving byte is a system stream's too
+    ir.push_str(&if l.timed_all || l.timed.contains("in") { PRELUDE.to_string() } else { PRELUDE.replace("__push(s, c)", "push_plain(s, c)") });
     // the one function that differs per clock (log 77)
     ir.push_str(if store.clock == super::store::Clock::Real { REAL_CLOCK } else { VIRTUAL_CLOCK });
     ir.push_str(if l.rings.iter().any(|(_, regular)| !regular) { PUSH_BRANCHED } else { PUSH_PLAIN });
@@ -4894,6 +4895,21 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
         self.make_stream_cap(ty, hz, regular, RING_ITEMS, b, dst)
     }
 
+    /// Is the name a system stream (zero.md section 15, log 84)? One of
+    /// the platform feature's own `out$` and `in$`, not shadowed here,
+    /// and nothing in the store asks a time of it — so its only reader
+    /// is the platform, its ring never slides, and a push into it is a
+    /// store and a count
+    fn system(&self, name: &str, b: &Body) -> bool {
+        if b.vars.contains_key(name) || (name != "out" && name != "in") {
+            return false;
+        }
+        if self.timed_all || self.timed.contains(name) {
+            return false;
+        }
+        self.fvar(name).is_some_and(|v| v.feature == "platform" && matches!(v.ty, Ty::Stream(_)))
+    }
+
     fn make_stream_cap(&mut self, ty: &Ty, hz: i64, regular: bool, cap: usize, b: &mut Body, dst: Option<&str>) -> Val {
         let Ty::Stream(elem) = ty else { unreachable!() };
         let maker = if regular { "regular" } else { "stream" };
@@ -4991,7 +5007,12 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
     /// a task's own output sleeps to its next tick after (log 25)
     fn emit_push(&mut self, name: &str, s: &Val, v: &Val, b: &mut Body) {
         let regular = if b.vars.contains_key(name) { self.regular_locals.contains(name) } else { self.regular.contains(name) };
-        if regular && self.stream_fields(&s.ty).is_none() {
+        if self.system(name, b) && self.stream_fields(&s.ty).is_none() {
+            // a system stream's only reader is the platform (log 84):
+            // the ring never slides, so the push is a store and a count
+            let v = b.materialize(v);
+            b.line(&format!("push_plain({}, {})", s.text, v.text));
+        } else if regular && self.stream_fields(&s.ty).is_none() {
             let v = b.materialize(v);
             b.line(&format!("push({}, {})", s.text, v.text));
         } else {
@@ -5208,7 +5229,7 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
         let own = matches!(&b.kind, BodyKind::Task { out, .. } if out.as_deref() == Some(name));
         if !own && self.stream_fields(&s.ty).is_none() {
             let regular = if b.vars.contains_key(name) { self.regular_locals.contains(name) } else { self.regular.contains(name) };
-            let word = if regular { "push" } else { "__push" };
+            let word = if self.system(name, b) { "push_plain" } else if regular { "push" } else { "__push" };
             b.line(&format!("{}({}, {})", word, s.text, view));
             return;
         }

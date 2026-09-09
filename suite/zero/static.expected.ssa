@@ -29,7 +29,7 @@ fn __out_byte(i: i64) -> u8
 ; pushes, which under the runner is a case's `with in "text"`
 fn __in_ch(c: u8)
     s: u8$ = __get_in()
-    __push(s, c)
+    push_plain(s, c)
     ret
 
 ; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
@@ -323,9 +323,9 @@ fn hello()
     _2: ptr = addr __s6
     _3: i64 = len __s6
     _4: u8[] = __str(_2, _3)
-    push(_1, _4)
+    push_plain(_1, _4)
     _5: u8 = const 10
-    push(_1, _5)
+    push_plain(_1, _5)
     __run_out()
     ret
 
@@ -362,7 +362,7 @@ fn __edge1(i: int$, __hz: i64) -> int$
         _8: u8$ = __get_out()
         push__u8s_int(_8, __item)
         _9: u8 = const 10
-        push(_8, _9)
+        push_plain(_8, _9)
         _10: i64 = add _4, 1
         continue _10
     _11: i64 = count i
@@ -381,9 +381,9 @@ fn goodbye()
     _2: ptr = addr __s7
     _3: i64 = len __s7
     _4: u8[] = __str(_2, _3)
-    push(_1, _4)
+    push_plain(_1, _4)
     _5: u8 = const 10
-    push(_1, _5)
+    push_plain(_1, _5)
     __run_out()
     ret
 
