@@ -30,6 +30,21 @@ pub struct Store {
     pub int_width: Option<u32>,
     /// the product's `float` width (log 52): `float: 32` or `float: 64`
     pub float_width: Option<u32>,
+    /// the product's mark per feature (section 12, log 71): a
+    /// `<feature>: static on`, `static off` or `dynamic` line in
+    /// `product.md`; dynamic where there is none. A static-off feature
+    /// and its subtree are not among the features, but their marks are
+    /// kept so a case naming one can be told why
+    pub marks: HashMap<String, Mark>,
+}
+
+/// how a product builds a feature (section 12): switchable at run time,
+/// always on with no gate and no switch, or left out entirely
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mark {
+    Dynamic,
+    StaticOn,
+    StaticOff,
 }
 
 impl Store {
@@ -163,8 +178,32 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     let layers = read_order(dir)?;
     check_tree(&mut features, &layers)?;
     features.insert(0, builtin_platform(&types)?);
-    let (product, int_width, float_width, product_file) = read_product(dir)?;
-    Ok(Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width, float_width })
+    let (product, int_width, float_width, marks, product_file) = read_product(dir)?;
+    for (name, mark) in &marks {
+        if !features.iter().any(|f| &f.name == name) {
+            return Err(lex::error(&product_file, 0, format!("the product marks '{}', which is no feature of the store", name)));
+        }
+        if name == "platform" && *mark == Mark::StaticOff {
+            return Err(lex::error(&product_file, 0, "the platform feature is what a program runs on: it may be static on or dynamic, not static off"));
+        }
+    }
+    // a static-off feature leaves the store with everything under it
+    // (log 71): a child under a parent that is never on could never be on
+    let mut gone: Vec<String> = Vec::new();
+    let store = Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width, float_width, marks };
+    for (name, mark) in &store.marks {
+        if *mark == Mark::StaticOff {
+            gone.extend(store.subtree(name));
+        }
+    }
+    let mut store = store;
+    for name in &gone {
+        if store.marks.get(name).copied().unwrap_or(Mark::Dynamic) != Mark::StaticOff {
+            store.marks.insert(name.clone(), Mark::StaticOff);
+        }
+    }
+    store.features.retain(|f| !gone.contains(&f.name));
+    Ok(store)
 }
 
 /// A published feature's code is immutable (structure.md's lifecycle,
@@ -204,14 +243,34 @@ fn check_published(name: &str, zfile: &str, date: &str) -> Result<(), Error> {
 /// the IR does not show the count of; `int: 32` or `int: 64`, the
 /// width of `int` (log 47), and `float: 32` or `float: 64`, the width
 /// of `float` (log 52); every other line is prose
-fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, Option<u32>, Option<u32>, String), Error> {
+fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, Option<u32>, Option<u32>, HashMap<String, Mark>, String), Error> {
     let path = dir.join("product.md");
     let file = path.display().to_string();
-    let Ok(text) = std::fs::read_to_string(&path) else { return Ok((Vec::new(), None, None, file)) };
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok((Vec::new(), None, None, HashMap::new(), file)) };
     let mut settings: Vec<(Vec<String>, i64)> = Vec::new();
     let mut int_width = None;
     let mut float_width = None;
+    let mut marks: HashMap<String, Mark> = HashMap::new();
     for (i, line) in text.lines().enumerate() {
+        // a feature's mark (log 71): `<feature>: static on | static off | dynamic`
+        if let Some((name, rest)) = line.trim().split_once(':') {
+            let mark = match rest.trim() {
+                "static on" => Some(Mark::StaticOn),
+                "static off" => Some(Mark::StaticOff),
+                "dynamic" => Some(Mark::Dynamic),
+                _ => None,
+            };
+            if let Some(mark) = mark {
+                let name = name.trim();
+                if name.is_empty() || name.contains(' ') || name.starts_with("bound ") {
+                    return Err(lex::error(&file, i + 1, "a feature's mark is `<feature>: static on`, `static off` or `dynamic`"));
+                }
+                if marks.insert(name.to_string(), mark).is_some() {
+                    return Err(lex::error(&file, i + 1, format!("'{}' is marked twice", name)));
+                }
+                continue;
+            }
+        }
         let width = |which: &str, rest: &str, slot: &mut Option<u32>| -> Result<(), Error> {
             let w = rest.trim();
             if !matches!(w, "32" | "64") {
@@ -245,7 +304,7 @@ fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, Option<u32>, Opt
         }
         settings.push((words, n));
     }
-    Ok((settings, int_width, float_width, file))
+    Ok((settings, int_width, float_width, marks, file))
 }
 
 /// `order.md`: the store's layers, one `- name` per line, lowest first,

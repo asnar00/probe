@@ -90,7 +90,7 @@ fn calls_of(s: &store::Store, l: &lower::Lowered, policy: &ssa::Policy) -> Resul
 fn contexts(s: &store::Store) -> Vec<(String, BTreeSet<String>)> {
     let mut out = vec![(String::new(), BTreeSet::new())];
     for f in &s.features {
-        if f.name != "platform" {
+        if f.name != "platform" && s.marks.get(&f.name) != Some(&store::Mark::StaticOn) {
             out.push((format!("with {} off", f.name), [f.name.clone()].into_iter().collect()));
         }
     }
@@ -611,6 +611,48 @@ mod tests {
     /// the stream first and no result, named in the IR by both types; a
     /// store's own method for a struct stands beside the library's; the
     /// forms that are not methods are refused naming what they are
+    /// a product's marks (log 71): a static-on feature cannot be
+    /// switched, a static-off one is not in the program, a mark names a
+    /// feature, and the platform feature is never static off
+    #[test]
+    fn a_product_marks_its_features() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-marks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (name, parent, code, case) in [("base", "", "on (int v) = value()\n    v = 1\n", ">value() → 1\n"), ("gone", "base", "on (int v) = value()\n    v = existing value() + 1\n", ">value() → 2\n")] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            let parent = if parent.is_empty() { String::new() } else { format!("parent: {}\n", parent) };
+            std::fs::write(dir.join(format!("{}/{}.md", name, name)), format!("# {}\n*x*\n\n{}layer: runtime\n\n> (suite) 2026-09-10T10:0{}:00\n\n## testing\n{}", name, parent, if name == "base" { 0 } else { 1 }, case)).unwrap();
+            std::fs::write(dir.join(format!("{}/{}.zero", name, name)), code).unwrap();
+        }
+        let with = |product: &str, case: &str| -> Result<String, String> {
+            std::fs::write(dir.join("product.md"), product).unwrap();
+            std::fs::write(dir.join("base/base.md"), format!("# base\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-10T10:00:00\n\n## testing\n{}", case)).unwrap();
+            let s = store::read(&dir).map_err(|e| e.to_string())?;
+            let l = lower::lower(&s).map_err(|e| e.to_string())?;
+            let native = suite::backend_policy(Backend::Native).unwrap();
+            calls_of(&s, &l, &native)?;
+            Ok(l.ir)
+        };
+        // static on: no field, no gate, no setter; the chain called by name
+        let ir = with("# p\n\nbase: static on\n", ">value() → 1\n").unwrap();
+        assert!(!ir.contains("__enabled_base") && !ir.contains("fn __on_base") && ir.contains("fn value__gone() -> int\n    _1: int = value__base()\n"), "{}", ir);
+        let err = with("# p\n\nbase: static on\n", ">value() → 1\n>value() with base off → 1\n").expect_err("switched a static feature");
+        assert!(err.contains("`with base off`: base is static on in the product and cannot be switched"), "{}", err);
+        // static off: not in the program, its subtree with it
+        let ir = with("# p\n\ngone: static off\n", ">value() → 1\n").unwrap();
+        assert!(!ir.contains("value__gone") && !ir.contains("__enabled_gone") && ir.contains("fn value() -> int\n"), "{}", ir);
+        let err = with("# p\n\ngone: static off\n", ">value() → 1\n>value() with gone off → 1\n").expect_err("named a static-off feature");
+        assert!(err.contains("`with gone off`: gone is static off in the product, so its code and its cases are not in the program"), "{}", err);
+        // a mark names a feature; the platform feature runs the program
+        let err = with("# p\n\nnowhere: static on\n", ">value() → 1\n").expect_err("marked no feature");
+        assert!(err.contains("the product marks 'nowhere', which is no feature of the store"), "{}", err);
+        let err = with("# p\n\nplatform: static off\n", ">value() → 1\n").expect_err("switched the platform off");
+        assert!(err.contains("the platform feature is what a program runs on"), "{}", err);
+        let err = with("# p\n\nbase: static on\nbase: dynamic\n", ">value() → 1\n").expect_err("marked twice");
+        assert!(err.contains("'base' is marked twice"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_push_is_dispatched_on_the_item() {
         let dir = std::env::temp_dir().join(format!("probe-zero-push-{}", std::process::id()));

@@ -17,7 +17,7 @@
 //! with named constants, a string a `u8[]` view of bytes.
 
 use super::lex::{self, Error};
-use super::store::{Case, Expect, Store};
+use super::store::{Case, Expect, Mark, Store};
 use super::syntax::{Arg, Decl, Expr, ExprKind, FnDecl, Init, LoopInto, NamePart, Part, Stmt, TypeKind};
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -356,6 +356,9 @@ pub struct Lowered {
     pub funcs: Vec<FnInfo>,
     /// the features, in composition order
     pub features: Vec<String>,
+    /// the product's mark per feature (log 71), the static-off ones
+    /// included though they are not among the features
+    pub marks: HashMap<String, Mark>,
 }
 
 /// The rounds of dispatch on a literal (log 36, 47, 52): first as its
@@ -536,11 +539,14 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new() };
+    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
         l.parents.insert(f.name.clone(), f.parent.clone());
+        if store.marks.get(&f.name) == Some(&Mark::StaticOn) {
+            l.statics.insert(f.name.clone());
+        }
     }
     // types first, then every signature, then the variables (a wiring
     // names a task), so a body may use what a later feature declares
@@ -658,7 +664,30 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         roots.insert(entry.to_string());
     }
     let ir = prune(&ir, &roots);
-    Ok(Lowered { ir, funcs: l.funcs, features: l.features })
+    Ok(Lowered { ir, funcs: l.funcs, features: l.features, marks: store.marks.clone() })
+}
+
+/// in a chain, the name feature i's body is emitted under: `key__f`, or
+/// the plain name when it is the newest and static, since no link
+/// stands above it (log 71)
+fn body_name(info: &FnInfo, i: usize, statics: &std::collections::HashSet<String>) -> String {
+    if i + 1 == info.chain.len() && statics.contains(&info.chain[i]) {
+        info.plain.clone()
+    } else {
+        format!("{}__{}", info.ir, info.chain[i])
+    }
+}
+
+/// what a call from above reaches at feature i of a chain: the link
+/// that gates on i's switch, or i's body itself when i is static
+fn link_name(info: &FnInfo, i: usize, statics: &std::collections::HashSet<String>) -> String {
+    if statics.contains(&info.chain[i]) {
+        body_name(info, i, statics)
+    } else if i + 1 == info.chain.len() {
+        info.plain.clone()
+    } else {
+        format!("{}__before_{}", info.ir, info.chain[i + 1])
+    }
 }
 
 /// the emitted text without the functions nothing reaches from the
@@ -828,8 +857,14 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str, int_bits: u32) -
         vals.push(v);
     }
     for (feature, on) in &case.context {
+        let clause = format!("`with {} {}`", feature, if *on { "on" } else { "off" });
+        match lowered.marks.get(feature) {
+            Some(Mark::StaticOff) => return Err(lex::error(file, case.line, format!("{}: {} is static off in the product, so its code and its cases are not in the program", clause, feature))),
+            Some(Mark::StaticOn) => return Err(lex::error(file, case.line, format!("{}: {} is static on in the product and cannot be switched", clause, feature))),
+            _ => {}
+        }
         if !lowered.features.contains(feature) {
-            return Err(lex::error(file, case.line, format!("`with {} {}`: no feature named '{}' in the store", feature, if *on { "on" } else { "off" }, feature)));
+            return Err(lex::error(file, case.line, format!("{}: no feature named '{}' in the store", clause, feature)));
         }
     }
     Ok(Call { func: info.ir.clone(), args: vals, nrets: info.results.len(), expect: case.expect.clone(), context: case.context.clone(), input: case.input.clone().unwrap_or_default().into_bytes() })
@@ -1013,6 +1048,9 @@ struct Lowerer {
     /// each feature's parent (log 51): the effective state of a feature
     /// is its own flag and every ancestor's, read by `__on_<feature>`
     parents: HashMap<String, Option<String>>,
+    /// the features the product marks static on (log 71): no field, no
+    /// switch, no gate, and a chain body under its link's name
+    statics: std::collections::HashSet<String>,
     /// the feature that declared each type
     type_feature: HashMap<String, String>,
     /// while `choose` tries a method: which round of literal typing
@@ -1818,9 +1856,15 @@ impl Lowerer {
                 self.fvars.push(FVar { name, ty, scope: "node".into(), merge: "last".into(), feature: node.feature.clone() });
             }
         }
-        // every feature's implicit `enabled` (section 5, log 28), first
-        for (i, f) in self.features.clone().iter().enumerate() {
-            self.fvars.insert(i, FVar { name: format!("__enabled_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone() });
+        // every dynamic feature's implicit `enabled` (section 5, log 28),
+        // first; a static feature has no switch (log 71)
+        let mut at = 0;
+        for f in self.features.clone().iter() {
+            if self.statics.contains(f) {
+                continue;
+            }
+            self.fvars.insert(at, FVar { name: format!("__enabled_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone() });
+            at += 1;
         }
         if !self.fvars.is_empty() {
             let mut fields = Vec::new();
@@ -1834,7 +1878,7 @@ impl Lowerer {
             self.data.push("data __ctx_mem: array(__ctx, 1)".into());
             // the initial values, in composition order: every feature on,
             // then the variables, then the nodes' state
-            let mut inits: Vec<String> = self.features.iter().map(|_| "1".to_string()).collect();
+            let mut inits: Vec<String> = self.features.iter().filter(|f| !self.statics.contains(*f)).map(|_| "1".to_string()).collect();
             let mut init_of: HashMap<String, String> = HashMap::new();
             for feat in &store.features {
                 for d in &feat.code.decls {
@@ -1927,9 +1971,17 @@ impl Lowerer {
         // (section 14, log 51): the gate reads this, and a switch writes
         // one field, so a parent off and on again leaves its children as
         // they were
-        writeln!(self.out, "\n; a feature's effective state: its own enabled and its ancestors', read by every gate").unwrap();
+        // ... a static feature is always on and reads nothing: a dynamic
+        // feature under one reads its own flag and its nearest dynamic
+        // ancestor's (log 71)
+        if self.features.iter().any(|f| !self.statics.contains(f)) {
+            writeln!(self.out, "\n; a feature's effective state: its own enabled and its ancestors', read by every gate").unwrap();
+        }
         for f in &self.features {
-            match self.parents.get(f).cloned().flatten() {
+            if self.statics.contains(f) {
+                continue;
+            }
+            match self.dynamic_ancestor(f) {
                 Some(p) => writeln!(self.out, "fn __on_{}() -> u1\n    own: u1 = __get___enabled_{}()\n    up: u1 = __on_{}()\n    on: u1 = and own, up\n    ret on", f, f, p).unwrap(),
                 None => writeln!(self.out, "fn __on_{}() -> u1\n    own: u1 = __get___enabled_{}()\n    ret own", f, f).unwrap(),
             }
@@ -1973,11 +2025,19 @@ impl Lowerer {
                 1 => format!(" -> {}", rets[0]),
                 _ => format!(" -> ({})", rets.join(", ")),
             };
+            if info.chain.iter().all(|f| self.statics.contains(f)) {
+                // every feature static: the bodies call each other by name
+                continue;
+            }
             writeln!(self.out, "\n; {}: the chain {}, newest outermost; a link whose feature is off falls through", info.ir, info.chain.iter().rev().cloned().collect::<Vec<_>>().join(", ")).unwrap();
             for i in (0..n).rev() {
-                let name = if i == n - 1 { info.plain.clone() } else { format!("{}__before_{}", info.ir, info.chain[i + 1]) };
-                let body = format!("{}__{}({})", info.ir, info.chain[i], args.join(", "));
-                let under = if i == 0 { None } else { Some(format!("{}__before_{}({})", info.ir, info.chain[i], args.join(", "))) };
+                if self.statics.contains(&info.chain[i]) {
+                    // a static feature's body stands where its link would (log 71)
+                    continue;
+                }
+                let name = link_name(&info, i, &self.statics);
+                let body = format!("{}({})", body_name(&info, i, &self.statics), args.join(", "));
+                let under = if i == 0 { None } else { Some(format!("{}({})", link_name(&info, i - 1, &self.statics), args.join(", "))) };
                 let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
                 b.line(&format!("on: u1 = __on_{}()", info.chain[i]));
                 if rets.is_empty() {
@@ -2068,10 +2128,16 @@ impl Lowerer {
             readers.push((pname.clone(), r, pty.clone(), a.line));
         }
         let pending = pending.unwrap_or_else(|| "notfin".into());
-        // a feature that is off runs no node; its readers keep their place
-        b.line(&format!("on: u1 = __on_{}()", node.feature));
-        b.line(&format!("due: u1 = and {}, on", pending));
-        b.line("ran: u1 = if due");
+        // a feature that is off runs no node; its readers keep their
+        // place. A static feature is never off (log 71)
+        let due = if self.statics.contains(&node.feature) {
+            pending
+        } else {
+            b.line(&format!("on: u1 = __on_{}()", node.feature));
+            b.line(&format!("due: u1 = and {}, on", pending));
+            "due".to_string()
+        };
+        b.line(&format!("ran: u1 = if {}", due));
         b.depth += 1;
         let mut ops = Vec::new();
         if let Some(out) = &node.out {
@@ -2158,8 +2224,25 @@ impl Lowerer {
     /// and ancestors', through the generated `__on_<feature>`
     fn read_on(&mut self, feature: &str, b: &mut Body, dst: Option<&str>) -> Val {
         let out = name_for(dst, &Ty::Bool, b);
-        b.line(&format!("{}: u1 = __on_{}()", out, feature));
+        if self.statics.contains(feature) {
+            b.line(&format!("{}: u1 = const 1", out));
+        } else {
+            b.line(&format!("{}: u1 = __on_{}()", out, feature));
+        }
         Val { text: out, ty: Ty::Bool, literal: false }
+    }
+
+    /// the nearest ancestor of a feature that is dynamic, whose state
+    /// the feature's own gate conjoins with (log 71)
+    fn dynamic_ancestor(&self, feature: &str) -> Option<String> {
+        let mut p = self.parents.get(feature).cloned().flatten();
+        while let Some(f) = p {
+            if !self.statics.contains(&f) {
+                return Some(f);
+            }
+            p = self.parents.get(&f).cloned().flatten();
+        }
+        None
     }
 
     /// a feature variable read: a call to its getter
@@ -2200,7 +2283,7 @@ impl Lowerer {
         // in a chain the body is `key__feature`, and `existing` is the link below
         let (name, below) = if info.chain.len() > 1 {
             let i = info.chain.iter().position(|c| c == feature).unwrap();
-            (format!("{}__{}", info.ir, feature), if i == 0 { None } else { Some(format!("{}__before_{}", info.ir, feature)) })
+            (body_name(&info, i, &self.statics), if i == 0 { None } else { Some(link_name(&info, i - 1, &self.statics)) })
         } else {
             (info.plain.clone(), None)
         };

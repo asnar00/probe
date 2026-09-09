@@ -1,0 +1,2 @@
+on (int b) = bonus()
+    b = 6

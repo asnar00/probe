@@ -1,0 +1,385 @@
+
+; the arena every sequence is carved from, emptied before every case
+data __heap: array(u8, 65536)
+data __arena: array(i64, 3)
+
+; the store's virtual clock (log 63): integer ticks on a clock of a
+; million a second, the bootstrap's step; zero at every case, moved by
+; a rated task sleeping between its pushes and by nothing else; a push
+; into a stream without a rate is stamped with it. Exact time is the
+; boundary's: `x$ at (t)` and `position` convert once, in the library
+data __clock: array(i64, 1)
+; the scheduler is running: a push from inside a task does not start it again
+data __running: array(i64, 1)
+
+fn __now() -> i64
+    p: ptr = addr __clock
+    k: i64 = load p
+    ret k
+
+; the output stream `out$` (section 15, log 57), read back by the runner
+; through the platform feature's own reader, which nothing advances:
+; how many bytes it holds, and each one
+fn __out_len() -> i64
+    s: u8$ = __get_out()
+    n: i64 = count(s)
+    ret n
+
+fn __out_byte(i: i64) -> u8
+    s: u8$ = __get_out()
+    b: u8 = peek(s, i)
+    ret b
+
+; the input stream `in$` (section 15, log 62): one byte the platform
+; pushes, which under the runner is a case's `with in "text"`
+fn __in_ch(c: u8)
+    s: u8$ = __get_in()
+    __push(s, c)
+    ret
+
+; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
+fn __str(p: ptr, n: i64) -> u8[]
+    q: ptr(u8) = cast p
+    v: u8[] = pack q, n, 1
+    ret v
+
+; a push into any stream (log 38): stamped with the clock on a ring
+; without a rate, the next sample on one with a rate
+fn __push(s: number$, v: number)
+    r: ptr = get s, ring
+    step: i64 = load r, 40
+    regular: u1 = cmp.gt step, 0
+    if regular
+        push(s, v)
+    else
+        t: i64 = __now()
+        push(s, t, v)
+    ret
+fn __push(s: number$, block: number[])
+    r: ptr = get s, ring
+    step: i64 = load r, 40
+    regular: u1 = cmp.gt step, 0
+    if regular
+        push(s, block)
+    else
+        t: i64 = __now()
+        push(s, t, block)
+    ret
+
+
+; the context: one field per feature-scope variable — name: scope, merge (feature)
+;   out: user, last (platform)
+;   in: user, last (platform)
+;   __node1_c: node, last (platform)
+;   __node1_c_seen: node, last (platform)
+;   __node1_fin: node, last (platform)
+type __ctx = struct
+    out: u8$
+    in: u8$
+    __node1_c: u8$
+    __node1_c_seen: i64
+    __node1_fin: u1
+
+data __ctx_mem: array(__ctx, 1)
+data __s6 = "hello world"
+data __s7 = "goodbye"
+
+; before every case: the arena emptied, the variables at their initial values
+fn __zero_reset()
+    a: ptr = addr __arena
+    h: ptr = addr __heap
+    arena_init(a, h, 65536)
+    k: ptr = addr __clock
+    store 0: i64, k
+    r: ptr = addr __running
+    store 0: i64, r
+    _1: u8$ = __regular_u8(1000000, 4096)
+    _2: u8$ = __stream_u8(1000000, 512)
+    _3: __ctx = pack _1, _2, _1, 0, 0
+    p: ptr = addr __ctx_mem
+    store _3, p
+    ret
+
+; after the case's context is set: the nodes run
+fn __zero_start()
+    __run()
+    ret
+
+fn __get_out() -> u8$
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: u8$ = get c, out
+    ret v
+
+fn __get_in() -> u8$
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: u8$ = get c, in
+    ret v
+
+fn __get___node1_c() -> u8$
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: u8$ = get c, __node1_c
+    ret v
+
+fn __set___node1_c(v: u8$)
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    c2: __ctx = set c, __node1_c, v
+    store c2, p
+    ret
+
+fn __get___node1_c_seen() -> i64
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: i64 = get c, __node1_c_seen
+    ret v
+
+fn __set___node1_c_seen(v: i64)
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    c2: __ctx = set c, __node1_c_seen, v
+    store c2, p
+    ret
+
+fn __get___node1_fin() -> u1
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: u1 = get c, __node1_fin
+    ret v
+
+fn __set___node1_fin(v: u1)
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    c2: __ctx = set c, __node1_fin, v
+    store c2, p
+    ret
+
+; node 1: write (out$) — run when an input has more than the node has seen, or has ended and the node has not run since
+fn __node1() -> u1
+    fin: u1 = __get___node1_fin()
+    notfin: u1 = xor fin, 1
+    _1: u8$ = __get___node1_c()
+    _2: i64 = received(_1)
+    _3: i64 = __get___node1_c_seen()
+    _4: u1 = cmp.gt _2, _3
+    _5: u1 = ended(_1)
+    _6: u1 = and _5, notfin
+    _7: u1 = or _4, _6
+    ran: u1 = if _7
+        _8: u8$ = write(_1, 0: i64)
+        __set___node1_c(_8)
+        _9: i64 = received(_8)
+        __set___node1_c_seen(_9)
+        _10: u1 = ended(_8)
+        __set___node1_fin(_10)
+        yield 1
+    else
+        yield 0
+    ret ran
+
+; the scheduler (log 25): passes over the nodes in declaration order until a pass runs nothing
+fn __run()
+    p: ptr = addr __running
+    busy: i64 = load p
+    idle: u1 = cmp.eq busy, 0
+    if idle
+        store 1: i64, p
+        loop()
+            r1: u1 = __node1()
+            if r1
+                continue
+            else
+                break
+        store 0: i64, p
+    ret
+
+; feature platform (layer platform)
+fn write(c: u8$, __hz: i64) -> u8$
+    n: i64 = count(c)
+    c2: u8$ = advance(c, n)
+    ret c2
+fn push__u8s_int(o: u8$, x: int)
+    _1: u1 = cmp.lt x, 0
+    if _1
+        _2: u8 = const 45
+        __push(o, _2)
+    _3: u1 = cmp.lt x, 0
+    m: int = if _3
+        yield x
+    else
+        _4: int = sub 0, x
+        yield _4
+    top: int = loop(p: int = 1)
+        _5: int = div m, p
+        _6: u1 = cmp.le _5, -10
+        if _6
+        else
+            break p
+        p_2: int = mul p, 10
+        continue p_2
+    loop(p_3: int = top)
+        _7: u1 = cmp.gt p_3, 0
+        if _7
+        else
+            break
+        _8: int = div m, p_3
+        _9: int = rem _8, 10
+        _10: int = sub 48, _9
+        _11: u8 = conv _10
+        __push(o, _11)
+        p_4: int = div p_3, 10
+        continue p_4
+    ret
+fn push__u8s_ints(o: u8$, x: int$)
+    loop(i: int = 0)
+        _1: i64 = count x
+        _2: int = conv _1
+        _3: u1 = cmp.lt i, _2
+        if _3
+        else
+            break
+        _4: u1 = cmp.gt i, 0
+        if _4
+            _5: u8 = const 32
+            __push(o, _5)
+        _6: i64 = conv i
+        _7: int = peek x, _6
+        push__u8s_int(o, _7)
+        i_2: int = add i, 1
+        continue i_2
+    ret
+fn print__ints(x: int$)
+    _1: u8$ = __get_out()
+    push__u8s_ints(_1, x)
+    _2: u8 = const 10
+    push(_1, _2)
+    __run()
+    ret
+
+; feature hello (layer runtime)
+fn run__hello()
+    hello()
+    ret
+fn hello()
+    _1: u8$ = __get_out()
+    _2: ptr = addr __s6
+    _3: i64 = len __s6
+    _4: u8[] = __str(_2, _3)
+    push(_1, _4)
+    _5: u8 = const 10
+    push(_1, _5)
+    __run()
+    ret
+
+; feature countdown (layer runtime)
+fn run__countdown()
+    count_down()
+    run__hello()
+    ret
+fn count_down()
+    i: int$ = __regular_int(1, 64)
+    loop(_1: int = 10)
+        _2: u1 = cmp.ge _1, 1
+        if _2
+        else
+            break
+        push(i, _1)
+        _3: int = sub _1, 1
+        continue _3
+    _4: int[], _5: i64, i_2: int$ = frame(i)
+    _6: int$ = __copy_int(_4)
+    print__ints(_6)
+    ret
+
+; feature bye (layer runtime)
+fn run()
+    run__countdown()
+    goodbye()
+    ret
+fn goodbye()
+    _1: u8$ = __get_out()
+    _2: ptr = addr __s7
+    _3: i64 = len __s7
+    _4: u8[] = __str(_2, _3)
+    push(_1, _4)
+    _5: u8 = const 10
+    push(_1, _5)
+    __run()
+    ret
+
+; a stream's ring, carved from the arena: cap items resident (64 unless more are), twice that in slots since the ring mirrors each item (log 65), and a tick per item unless regular; a reader's view at its start
+fn __stream_int(hz: i64, cap: i64) -> int$
+    a: ptr = addr __arena
+    r: ptr = arena_alloc(a, 64)
+    slots: i64 = mul cap, 2
+    sz: i64 = sizeof int
+    bytes: i64 = mul sz, slots
+    total: i64 = add bytes, 16
+    vb: ptr = arena_alloc(a, total)
+    buffer_init(vb, sz, slots)
+    tbytes: i64 = mul slots, 8
+    ttotal: i64 = add tbytes, 16
+    tb: ptr = arena_alloc(a, ttotal)
+    buffer_init(tb, 8, slots)
+    ring_init(r, vb, tb, hz)
+    s: int$ = stream r
+    ret s
+fn __regular_int(hz: i64, cap: i64) -> int$
+    a: ptr = addr __arena
+    r: ptr = arena_alloc(a, 64)
+    slots: i64 = mul cap, 2
+    sz: i64 = sizeof int
+    bytes: i64 = mul sz, slots
+    total: i64 = add bytes, 16
+    vb: ptr = arena_alloc(a, total)
+    buffer_init(vb, sz, slots)
+    ring_regular(r, vb, hz, 1, 0)
+    s: int$ = stream r
+    ret s
+fn __stream_u8(hz: i64, cap: i64) -> u8$
+    a: ptr = addr __arena
+    r: ptr = arena_alloc(a, 64)
+    slots: i64 = mul cap, 2
+    sz: i64 = sizeof u8
+    bytes: i64 = mul sz, slots
+    total: i64 = add bytes, 16
+    vb: ptr = arena_alloc(a, total)
+    buffer_init(vb, sz, slots)
+    tbytes: i64 = mul slots, 8
+    ttotal: i64 = add tbytes, 16
+    tb: ptr = arena_alloc(a, ttotal)
+    buffer_init(tb, 8, slots)
+    ring_init(r, vb, tb, hz)
+    s: u8$ = stream r
+    ret s
+fn __regular_u8(hz: i64, cap: i64) -> u8$
+    a: ptr = addr __arena
+    r: ptr = arena_alloc(a, 64)
+    slots: i64 = mul cap, 2
+    sz: i64 = sizeof u8
+    bytes: i64 = mul sz, slots
+    total: i64 = add bytes, 16
+    vb: ptr = arena_alloc(a, total)
+    buffer_init(vb, sz, slots)
+    ring_regular(r, vb, hz, 1, 0)
+    s: u8$ = stream r
+    ret s
+
+; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give
+fn __copy_int(v: int[]) -> int$
+    n: i64 = len v
+    least: i64 = const 64
+    cap: i64 = max(n, least)
+    s: int$ = __stream_int(1000000, cap)
+    t: i64 = __now()
+    loop(i: i64 = 0)
+        done: u1 = cmp.ge i, n
+        if done
+            break
+        x: int = load v, i
+        push s, t, x
+        i2: i64 = add i, 1
+        continue i2
+    ret s

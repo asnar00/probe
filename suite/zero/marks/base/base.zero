@@ -1,0 +1,8 @@
+on (int v) = value()
+    v = 1
+
+on (int b) = bonus()
+    b = 0
+
+on (int e) = on()
+    e = if (base.enabled) then (1) else (0)

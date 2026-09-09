@@ -1,0 +1,5 @@
+on run()
+    hello()
+
+on hello()
+    out$ << "hello world" << "\n"
