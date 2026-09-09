@@ -115,6 +115,18 @@ fn builtin_type(name: &str) -> Option<Ty> {
 /// own type does, and so does an abstract type above it in the tower
 /// (ssa.md, *Abstract numeric types*): the call instantiates the
 /// template with the argument's type
+/// a type with no abstract name in it, which the IR takes as it is
+/// rather than as a template's parameter (log 52): a widthed number,
+/// `bool`, a struct, an enumeration, or a stream of one
+fn is_concrete(t: &Ty) -> bool {
+    match t {
+        Ty::Num(n) => n == "bf16" || (n.len() > 1 && matches!(&n[..1], "i" | "u" | "f") && n[1..].parse::<u32>().is_ok()),
+        Ty::Bool | Ty::Struct(_) | Ty::Enum(_) => true,
+        Ty::Stream(e) => is_concrete(e),
+        Ty::None => false,
+    }
+}
+
 fn fits(arg: &Ty, param: &Ty) -> bool {
     if arg == param {
         return true;
@@ -264,8 +276,16 @@ pub struct FnInfo {
     /// the mangled name a call is matched by
     pub key: String,
     /// the IR function's name: the key, except for an operator on a
-    /// declared type (`add_Vec`) and the front end's builtins
+    /// declared type (`add_Vec`) and a method after the first of its
+    /// name, which the IR names by its parameter types (log 52)
     pub ir: String,
+    /// the name the definition is written under: the key when the
+    /// name's methods form an IR method set (log 52), else the IR name
+    pub plain: String,
+    /// the name's methods are all concrete and form one method set in
+    /// the IR, every definition under the key: a call on the key with a
+    /// literal typed `int` or `float` is resolved by the policy
+    pub in_set: bool,
     pub parts: Vec<NamePart>,
     pub params: Vec<(String, Ty)>,
     pub results: Vec<(String, Ty)>,
@@ -288,17 +308,6 @@ pub struct FnInfo {
 
 /// the kinds of place a platform body may name in this milestone
 const KINDS: [&str; 5] = ["ir", "arm64", "riscv64", "wasm32", "air"];
-
-/// a type as a method's IR name spells it: `int`, `ints`, `u8s` (log 36)
-fn type_word(t: &Ty) -> String {
-    match t {
-        Ty::Bool => "bool".into(),
-        Ty::Num(n) => n.clone(),
-        Ty::Stream(e) => format!("{}s", type_word(e)),
-        Ty::Struct(n) | Ty::Enum(n) => n.clone(),
-        Ty::None => String::new(),
-    }
-}
 
 /// a wiring at feature scope (log 25): one task call the scheduler runs
 /// into a feature-scope stream
@@ -342,15 +351,11 @@ pub struct Lowered {
     pub funcs: Vec<FnInfo>,
     /// the features, in composition order
     pub features: Vec<String>,
-    /// the product's `int` width as a type, `i64` or `i32` (log 47):
-    /// what a bare integer literal is taken as between two concrete
-    /// widths
-    pub int_ty: Ty,
 }
 
-/// The rounds of dispatch on a literal (log 36, 47): first as its own
-/// type (`3` an `int`, `2.5` a `float`), then an integer literal as
-/// the product's `int` width, then a literal fitting any number type
+/// The rounds of dispatch on a literal (log 36, 47, 52): first as its
+/// own type (`3` an `int`, `2.5` a `float`), then as a concrete width
+/// the policy may take, tried per width, then fitting any number type
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Round {
     Own,
@@ -362,6 +367,14 @@ enum Round {
 fn int_ty() -> Ty {
     Ty::Num("int".into())
 }
+
+/// the abstract `float`, a decimal literal's own type
+fn float_ty() -> Ty {
+    Ty::Num("float".into())
+}
+
+/// the widths the policy may give `int` and `float` (log 52)
+const WIDTHS: [u32; 2] = [32, 64];
 
 /// what the runner calls for a case: the IR function, its integer
 /// arguments, how many results it has, what the case expects, and the
@@ -545,8 +558,8 @@ fn is_comparison(op: &str) -> bool {
     matches!(op, "<" | ">" | "<=" | ">=" | "==" | "!=")
 }
 
-pub fn lower(store: &Store, int_bits: u32) -> Result<Lowered, Error> {
-    let mut l = Lowerer { int_ty: Ty::Num(format!("i{}", int_bits)), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new() };
+pub fn lower(store: &Store) -> Result<Lowered, Error> {
+    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -570,6 +583,7 @@ pub fn lower(store: &Store, int_bits: u32) -> Result<Lowered, Error> {
             }
         }
     }
+    l.name_methods(&store.features.iter().map(|f| (f.name.clone(), f.code.file.clone())).collect())?;
     // the product's settings name the store's functions (log 41)
     for (words, n) in &store.product {
         let key = words.join("_");
@@ -638,11 +652,11 @@ pub fn lower(store: &Store, int_bits: u32) -> Result<Lowered, Error> {
         }
     }
     ir.push_str(&l.out);
-    Ok(Lowered { ir, funcs: l.funcs, features: l.features, int_ty: l.int_ty })
+    Ok(Lowered { ir, funcs: l.funcs, features: l.features })
 }
 
 /// resolve a `## testing` case against the lowered store
-pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str) -> Result<Call, Error> {
+pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str, int_bits: u32) -> Result<Call, Error> {
     let ExprKind::Phrase(parts) = &case.call.kind else {
         return Err(lex::error(file, case.line, "a case calls a function"));
     };
@@ -650,12 +664,14 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str) -> Result<Call, 
     let cands: Vec<FnInfo> = cands.into_iter().cloned().collect();
     // a case's arguments are literals: a method takes them when each is
     // a number where a number is wanted, a bool where a bool is; a
-    // number is an `int` first, then the product's width, then any
-    // number type (as `choose` does with literals, log 47)
+    // number is an `int` first, then the width the case runs at — a
+    // case is the runner's, not the IR's, so it knows the path's width
+    // (log 52) — then any number type
+    let width = Ty::Num(format!("i{}", int_bits));
     let takes = |a: &Expr, ty: &Ty, round: Round| match (&a.kind, ty) {
         (ExprKind::Int(_), Ty::Num(n)) => match round {
             Round::Own => fits(&int_ty(), &Ty::Num(n.clone())),
-            Round::Product => fits(&lowered.int_ty, &Ty::Num(n.clone())),
+            Round::Product => fits(&width, &Ty::Num(n.clone())),
             Round::Any => true,
         },
         (ExprKind::Int(_), Ty::Enum(_)) | (ExprKind::Bool(_), Ty::Bool) => true,
@@ -782,18 +798,18 @@ fn pick(cands: &[FnInfo], applicable: &[usize]) -> Result<usize, Vec<usize>> {
 }
 
 /// a literal's own type: `int` for `3`, `float` for `2.5`, `int$` for
-/// `[1, 2]`; a range is a sequence of ints. `int` is what an integer
-/// literal is taken as: the abstract `int`, or the product's width in
-/// that round of dispatch (log 47)
-fn literal_default(e: &Expr, int: &Ty) -> Option<Ty> {
+/// `[1, 2]`; a range is a sequence of ints. `int` and `float` are what
+/// an integer and a decimal literal are taken as: the abstract types,
+/// or a width being tried (log 52)
+fn literal_default(e: &Expr, int: &Ty, float: &Ty) -> Option<Ty> {
     match &e.kind {
         ExprKind::Int(_) => Some(int.clone()),
-        ExprKind::Float(_) => Some(Ty::Num("float".into())),
-        ExprKind::Neg(x) => literal_default(x, int),
+        ExprKind::Float(_) => Some(float.clone()),
+        ExprKind::Neg(x) => literal_default(x, int, float),
         ExprKind::Range { .. } => Some(Ty::Stream(Box::new(int.clone()))),
         ExprKind::List(items) => {
-            let first = literal_default(items.first()?, int)?;
-            if items.iter().all(|i| literal_default(i, int).as_ref() == Some(&first)) {
+            let first = literal_default(items.first()?, int, float)?;
+            if items.iter().all(|i| literal_default(i, int, float).as_ref() == Some(&first)) {
                 Some(Ty::Stream(Box::new(first)))
             } else {
                 None
@@ -872,8 +888,9 @@ struct Lowerer {
     /// while `choose` tries a method: which round of literal typing
     /// this is (log 47); `Any` outside a trial
     round: Round,
-    /// the product's `int` width as a type (log 47)
-    int_ty: Ty,
+    /// while a width the policy may take is tried (log 52): what an
+    /// integer and a decimal literal are taken as
+    trial: (Ty, Ty),
     /// inside a push chain's `while` (log 39): the candidate, which `_`
     /// reads as; None elsewhere, where `_` is a reduction's accumulator
     candidate: Option<Val>,
@@ -1285,7 +1302,7 @@ impl Lowerer {
         }
         let ptys = |g: &FnInfo| g.params.iter().map(|(_, t)| t.clone()).collect::<Vec<Ty>>();
         let rtys = |g: &FnInfo| g.results.iter().map(|(_, t)| t.clone()).collect::<Vec<Ty>>();
-        let mine = FnInfo { key: key.clone(), ir: String::new(), parts: f.name.clone(), params, results, feature: feature.to_string(), task: f.task, chain: vec![feature.to_string()], platform };
+        let mine = FnInfo { key: key.clone(), ir: String::new(), plain: String::new(), in_set: false, parts: f.name.clone(), params, results, feature: feature.to_string(), task: f.task, chain: vec![feature.to_string()], platform };
         if let Some(&i) = set.iter().find(|&&i| ptys(&self.funcs[i]) == ptys(&mine)) {
             let other = &self.funcs[i];
             if other.platform.is_some() || mine.platform.is_some() {
@@ -1315,18 +1332,56 @@ impl Lowerer {
                 return Err(lex::error(file, f.line, format!("'{}' is a task: a task's name has one method", spoken(&self.funcs[i]))));
             }
         }
-        let ir = match (set.is_empty(), operator) {
-            (true, false) => key.clone(),
-            (true, true) => format!("{}_{}", key, mine.params[0].1.ir()),
-            (false, _) => {
-                let words: Vec<String> = mine.params.iter().map(|(_, t)| type_word(t)).collect();
-                format!("{}__{}", key, words.join("_"))
-            }
+        // an operator on a declared type is named now, `add_Vec`, and
+        // never forms a set, the IR's `add` being an operation; the
+        // other methods are named once every feature has declared
+        // (`name_methods`, log 52)
+        let (ir, plain) = if operator {
+            let tys: Vec<String> = mine.params.iter().map(|(_, t)| t.ir()).collect();
+            let op = if set.is_empty() { format!("{}_{}", key, mine.params[0].1.ir()) } else { crate::ssa::method_name(&key, &tys) };
+            (op.clone(), op)
+        } else {
+            (String::new(), String::new())
         };
-        if let Some(other) = self.funcs.iter().find(|g| g.ir == ir) {
-            return Err(lex::error(file, f.line, format!("'{}' would be {} in the IR, which feature {}'s '{}' already is", spelled(&mine), ir, other.feature, spelled(other))));
+        self.funcs.push(FnInfo { ir, plain, ..mine });
+        Ok(())
+    }
+
+    /// The IR names of a name's methods (log 36, 52): the first keeps
+    /// the key, a later one is the key and its parameter types,
+    /// `describe__float`, as `ssa::method_name` spells it. A name all of
+    /// whose methods are concrete is emitted as one IR method set —
+    /// every definition under the key, the IR naming the later ones
+    /// the same way — so a call on the key with a literal typed `int`
+    /// or `float` is resolved by the policy. A name with a method over
+    /// an abstract type is not: such a method is a template in the IR,
+    /// instantiated under names of its own, so each method keeps its
+    /// unique name and the first, a lone template, its default
+    /// instance under the key
+    fn name_methods(&mut self, files: &HashMap<String, String>) -> Result<(), Error> {
+        let mut keys: Vec<String> = Vec::new();
+        for f in &self.funcs {
+            if f.ir.is_empty() && !keys.contains(&f.key) {
+                keys.push(f.key.clone());
+            }
         }
-        self.funcs.push(FnInfo { ir, ..mine });
+        for key in keys {
+            let idx: Vec<usize> = (0..self.funcs.len()).filter(|&i| self.funcs[i].key == key && self.funcs[i].ir.is_empty()).collect();
+            let set = idx.len() > 1 && idx.iter().all(|&i| self.funcs[i].params.iter().all(|(_, t)| is_concrete(t)));
+            for (k, &i) in idx.iter().enumerate() {
+                let tys: Vec<String> = self.funcs[i].params.iter().map(|(_, t)| t.ir()).collect();
+                let ir = if k == 0 { key.clone() } else { crate::ssa::method_name(&key, &tys) };
+                self.funcs[i].plain = if set { key.clone() } else { ir.clone() };
+                self.funcs[i].ir = ir;
+                self.funcs[i].in_set = set;
+            }
+        }
+        for i in 0..self.funcs.len() {
+            if let Some(j) = (0..i).find(|&j| self.funcs[j].ir == self.funcs[i].ir) {
+                let (mine, other) = (&self.funcs[i], &self.funcs[j]);
+                return Err(lex::error(files.get(&mine.feature).map(String::as_str).unwrap_or(""), 0, format!("'{}' would be {} in the IR, which feature {}'s '{}' already is", spelled(mine), mine.ir, other.feature, spelled(other))));
+            }
+        }
         Ok(())
     }
 
@@ -1684,7 +1739,7 @@ impl Lowerer {
             };
             writeln!(self.out, "\n; {}: the chain {}, newest outermost; a link whose feature is off falls through", info.ir, info.chain.iter().rev().cloned().collect::<Vec<_>>().join(", ")).unwrap();
             for i in (0..n).rev() {
-                let name = if i == n - 1 { info.ir.clone() } else { format!("{}__before_{}", info.ir, info.chain[i + 1]) };
+                let name = if i == n - 1 { info.plain.clone() } else { format!("{}__before_{}", info.ir, info.chain[i + 1]) };
                 let body = format!("{}__{}({})", info.ir, info.chain[i], args.join(", "));
                 let under = if i == 0 { None } else { Some(format!("{}__before_{}({})", info.ir, info.chain[i], args.join(", "))) };
                 let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
@@ -1916,7 +1971,7 @@ impl Lowerer {
             let i = info.chain.iter().position(|c| c == feature).unwrap();
             (format!("{}__{}", info.ir, feature), if i == 0 { None } else { Some(format!("{}__before_{}", info.ir, feature)) })
         } else {
-            (info.ir.clone(), None)
+            (info.plain.clone(), None)
         };
         let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: results.clone(), file: file.to_string(), depth: 0, loops: Vec::new(), kind, func: Some(info.clone()), below, product_bound: self.product.get(&key).copied() };
         let mut sig = format!("fn {}(", name);
@@ -3051,9 +3106,9 @@ impl Lowerer {
             let mut v = self.lower_expr(a, Some(ty), b, None)?;
             if round != Round::Any {
                 // a literal, or a list of them, as its own type — or as
-                // the product's int width (log 47) — while `choose` asks
-                let int = if round == Round::Product { self.int_ty.clone() } else { int_ty() };
-                if let Some(d) = literal_default(a, &int) {
+                // the width being tried (log 52) — while `choose` asks
+                let (int, float) = if round == Round::Product { self.trial.clone() } else { (int_ty(), float_ty()) };
+                if let Some(d) = literal_default(a, &int, &float) {
                     if !fits(&d, ty) {
                         return Err(lex::error(&file, a.line, format!("'{}' wants a {} here, given an {}", info.key, ty.ir(), d.ir())));
                     }
@@ -3066,12 +3121,17 @@ impl Lowerer {
             // literal's own type, `int` or `float`, as a typed constant:
             // the IR cannot type `2.5` under `number` on its own
             if v.literal && ty.abstract_name().is_some() {
-                if let Some(d) = literal_default(a, &int_ty()) {
+                if let Some(d) = literal_default(a, &int_ty(), &float_ty()) {
                     if &d != ty && fits(&d, ty) {
                         v.ty = d;
                         v = b.materialize(&v);
                     }
                 }
+            }
+            // a literal to the first method of a set, called by the plain
+            // name, says its type: the IR's set resolves by it (log 52)
+            if v.literal && info.in_set && info.ir == info.key {
+                v.text = format!("{}: {}", v.text, v.ty.ir());
             }
             // a stream where an item is wanted is mapped over: the
             // item's type is what the tower sees
@@ -3154,46 +3214,119 @@ impl Lowerer {
             return Ok((one.clone(), r));
         }
         let mut last_err = None;
-        for round in [Round::Own, Round::Product, Round::Any] {
-            // taken as they are, before widened (log 37), before mapped
-            let mut direct = Vec::new();
-            let mut widened = Vec::new();
-            let mut mapped = Vec::new();
-            for (i, cand) in cands.iter().enumerate() {
-                let (start, ntmp, vars, defs, ndata, nstr) = (b.out.len(), b.ntmp, b.vars.clone(), b.defs.clone(), self.data.len(), self.nstr);
-                self.round = round;
-                let tried = self.lower_call_args(cand, args, b);
-                self.round = Round::Any;
-                match tried {
-                    Ok((_, lifted, acc, _, _)) if lifted.iter().any(|&l| l) || acc.is_some() => mapped.push(i),
-                    Ok((_, _, _, _, true)) => widened.push(i),
-                    Ok(_) => direct.push(i),
-                    Err(err) => last_err = Some(err),
+        // a literal as its own type
+        let own = self.applicable(cands, args, b, Round::Own, (int_ty(), float_ty()), &mut last_err);
+        if !own.is_empty() {
+            let i = pick(cands, &own).map_err(|amb| ambiguous(cands, &amb, &file, line))?;
+            let r = self.lower_call_args(&cands[i], args, b)?;
+            return Ok((cands[i].clone(), r));
+        }
+        // a literal as a concrete width the policy may take, each tried
+        // (log 52): one method for every width is simply chosen; several
+        // are emitted on the name for the policy to choose among. The
+        // widths are the policy's two, whatever `product.md` pins: the
+        // pin reaches the policy, never the text
+        let mut picks: Vec<usize> = Vec::new();
+        for iw in WIDTHS {
+            for fw in WIDTHS {
+                let trial = (Ty::Num(format!("i{}", iw)), Ty::Num(format!("f{}", fw)));
+                let app = self.applicable(cands, args, b, Round::Product, trial, &mut last_err);
+                if app.is_empty() {
+                    picks.clear();
+                    break;
                 }
-                b.out.truncate(start);
-                b.ntmp = ntmp;
-                b.vars = vars;
-                b.defs = defs;
-                self.data.truncate(ndata);
-                self.nstr = nstr;
+                let i = pick(cands, &app).map_err(|amb| ambiguous(cands, &amb, &file, line))?;
+                if !picks.contains(&i) {
+                    picks.push(i);
+                }
             }
-            let applicable = [direct, widened, mapped].into_iter().find(|g| !g.is_empty()).unwrap_or_default();
-            if applicable.is_empty() {
-                continue;
+        }
+        match picks.as_slice() {
+            [] => {}
+            [i] => {
+                let r = self.lower_call_args(&cands[*i], args, b)?;
+                return Ok((cands[*i].clone(), r));
             }
-            let i = pick(cands, &applicable).map_err(|amb| ambiguous(cands, &amb, &file, line))?;
-            if round == Round::Product {
-                // the width decided: say so where a reader of the IR
-                // will look (log 47), the warning the ruling allows
-                let sigs: Vec<String> = cands.iter().map(spelled).collect();
-                b.line(&format!("; a bare literal took the product's int width, {}, choosing among {}", zero_ty(&self.int_ty), sigs.join(", ")));
-            }
+            _ => return self.policy_call(cands, &picks, args, b, line),
+        }
+        // a literal fitting any number type
+        let any = self.applicable(cands, args, b, Round::Any, (int_ty(), float_ty()), &mut last_err);
+        if !any.is_empty() {
+            let i = pick(cands, &any).map_err(|amb| ambiguous(cands, &amb, &file, line))?;
             let r = self.lower_call_args(&cands[i], args, b)?;
             return Ok((cands[i].clone(), r));
         }
         let sigs: Vec<String> = cands.iter().map(spelled).collect();
         let err = last_err.unwrap();
         Err(lex::error(&file, err.line, format!("no '{}' takes these arguments: the methods are {}", spoken(&cands[0]), sigs.join(", "))))
+    }
+
+    /// the methods that take the arguments in one round of literal
+    /// typing, each tried and rolled back: taken as they are, before
+    /// widened (log 37), before mapped
+    fn applicable(&mut self, cands: &[FnInfo], args: &[Expr], b: &mut Body, round: Round, trial: (Ty, Ty), last_err: &mut Option<Error>) -> Vec<usize> {
+        let mut direct = Vec::new();
+        let mut widened = Vec::new();
+        let mut mapped = Vec::new();
+        for (i, cand) in cands.iter().enumerate() {
+            let (start, ntmp, vars, defs, ndata, nstr) = (b.out.len(), b.ntmp, b.vars.clone(), b.defs.clone(), self.data.len(), self.nstr);
+            self.round = round;
+            self.trial = trial.clone();
+            let tried = self.lower_call_args(cand, args, b);
+            self.round = Round::Any;
+            match tried {
+                Ok((_, lifted, acc, _, _)) if lifted.iter().any(|&l| l) || acc.is_some() => mapped.push(i),
+                Ok((_, _, _, _, true)) => widened.push(i),
+                Ok(_) => direct.push(i),
+                Err(err) => *last_err = Some(err),
+            }
+            b.out.truncate(start);
+            b.ntmp = ntmp;
+            b.vars = vars;
+            b.defs = defs;
+            self.data.truncate(ndata);
+            self.nstr = nstr;
+        }
+        [direct, widened, mapped].into_iter().find(|g| !g.is_empty()).unwrap_or_default()
+    }
+
+    /// a call the policy decides (question 27, log 52): the widths the
+    /// policy may take chose different methods, so the call is emitted
+    /// on the plain name, which is a method set in the IR, with each
+    /// literal that told them apart typed `int` or `float` — the
+    /// policy's — and the IR picks the method by its resolved type. The
+    /// methods must give the same results and differ only at such
+    /// literals, or the call is ambiguous and a conversion says which
+    fn policy_call(&mut self, cands: &[FnInfo], picks: &[usize], args: &[Expr], b: &mut Body, line: usize) -> Result<(FnInfo, (Vec<Val>, Vec<bool>, Option<(usize, Ty)>, Vec<Ty>, bool)), Error> {
+        let file = b.file.clone();
+        let first = &cands[picks[0]];
+        let rtys = |g: &FnInfo| g.results.iter().map(|(_, t)| t.clone()).collect::<Vec<Ty>>();
+        let names: Vec<String> = picks.iter().map(|&i| spelled(&cands[i])).collect();
+        if !first.in_set {
+            return Err(lex::error(&file, line, format!("ambiguous: {} all take these arguments and the policy's width would choose, but a method of the name is over an abstract type, so the IR cannot hold them as one set; convert the literal", names.join(" and "))));
+        }
+        if picks.iter().any(|&i| rtys(&cands[i]) != rtys(first)) {
+            return Err(lex::error(&file, line, format!("ambiguous: the policy's width would choose among {}, which give different results; convert the literal", names.join(" and "))));
+        }
+        let (mut vals, lifted, acc, rtys, converted) = self.lower_call_args(first, args, b)?;
+        for k in 0..first.params.len() {
+            let tys: Vec<&Ty> = picks.iter().map(|&i| &cands[i].params[k].1).collect();
+            if tys.iter().all(|t| *t == tys[0]) {
+                continue;
+            }
+            let literal = literal_default(&args[k], &int_ty(), &float_ty()).filter(|_| vals[k].literal);
+            let family = match literal {
+                Some(Ty::Num(n)) if n == "int" => "int",
+                Some(Ty::Num(n)) if n == "float" => "float",
+                _ => return Err(lex::error(&file, line, format!("ambiguous: {} all take these arguments and the policy's width would choose; convert the argument that differs", names.join(" and ")))),
+            };
+            if !tys.iter().all(|t| fits(t, &Ty::Num(family.into())) && t.abstract_name().is_none()) {
+                return Err(lex::error(&file, line, format!("ambiguous: {} all take these arguments and none is the most specific; convert the literal", names.join(" and "))));
+            }
+            let text = vals[k].text.split(':').next().unwrap().trim().to_string();
+            vals[k] = Val { text: format!("{}: {}", text, family), ty: Ty::Num(family.into()), literal: false };
+        }
+        Ok((FnInfo { ir: first.plain.clone(), ..first.clone() }, (vals, lifted, acc, rtys, converted)))
     }
 
     /// a call's arguments where no sequence is lifted: the operand texts
@@ -3644,16 +3777,16 @@ impl Lowerer {
     fn find_operator(&self, op: &str, l: &Ty, r: &Val, file: &str, line: usize) -> Result<Option<FnInfo>, Error> {
         let cands: Vec<FnInfo> = self.funcs.iter().filter(|f| matches!(f.parts.as_slice(), [NamePart::Group, NamePart::Sym(s), NamePart::Group] if s == op)).cloned().collect();
         // a literal on the right is its own type first, `int` or
-        // `float`, then an integer one the product's width (log 47)
+        // `float`, then any number (an operator symbol has one method
+        // per left type, so no width is in question, log 52)
         let decimal = r.text.contains('.');
         let takes = |p: &Ty, round: Round| match (r.literal, round) {
-            (true, Round::Own) => fits(&(if decimal { Ty::Num("float".into()) } else { int_ty() }), p),
-            (true, Round::Product) => !decimal && fits(&self.int_ty, p),
-            (true, Round::Any) => fits_literal(r, p),
+            (true, Round::Own) => fits(&(if decimal { float_ty() } else { int_ty() }), p),
+            (true, _) => fits_literal(r, p),
             (false, _) => fits(&r.ty, p),
         };
         let mut applicable = Vec::new();
-        for round in [Round::Own, Round::Product, Round::Any] {
+        for round in [Round::Own, Round::Any] {
             applicable = (0..cands.len()).filter(|&i| fits(l, &cands[i].params[0].1) && takes(&cands[i].params[1].1, round)).collect();
             if !applicable.is_empty() {
                 break;

@@ -28,6 +28,8 @@ pub struct Store {
     /// the product's `int` width (log 47): an `int: 32` or `int: 64`
     /// line in `product.md`; None to take the path's policy
     pub int_width: Option<u32>,
+    /// the product's `float` width (log 52): `float: 32` or `float: 64`
+    pub float_width: Option<u32>,
 }
 
 impl Store {
@@ -158,8 +160,8 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     let layers = read_order(dir)?;
     check_tree(&mut features, &layers)?;
     features.insert(0, builtin_platform(&types)?);
-    let (product, int_width, product_file) = read_product(dir)?;
-    Ok(Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width })
+    let (product, int_width, float_width, product_file) = read_product(dir)?;
+    Ok(Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width, float_width })
 }
 
 /// A published feature's code is immutable (structure.md's lifecycle,
@@ -196,24 +198,34 @@ fn check_published(name: &str, zfile: &str, date: &str) -> Result<(), Error> {
 /// `product.md`: what the product sets and no feature says (zero.md
 /// section 1, log 41). In the bootstrap it is two kinds of line: `bound
 /// <function words>: N`, a trip count for every loop of that function
-/// the IR does not show the count of; and `int: 32` or `int: 64`, the
-/// width of `int` (log 47); every other line is prose
-fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, Option<u32>, String), Error> {
+/// the IR does not show the count of; `int: 32` or `int: 64`, the
+/// width of `int` (log 47), and `float: 32` or `float: 64`, the width
+/// of `float` (log 52); every other line is prose
+fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, Option<u32>, Option<u32>, String), Error> {
     let path = dir.join("product.md");
     let file = path.display().to_string();
-    let Ok(text) = std::fs::read_to_string(&path) else { return Ok((Vec::new(), None, file)) };
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok((Vec::new(), None, None, file)) };
     let mut settings: Vec<(Vec<String>, i64)> = Vec::new();
     let mut int_width = None;
+    let mut float_width = None;
     for (i, line) in text.lines().enumerate() {
-        if let Some(w) = line.trim().strip_prefix("int:") {
-            let w = w.trim();
+        let width = |which: &str, rest: &str, slot: &mut Option<u32>| -> Result<(), Error> {
+            let w = rest.trim();
             if !matches!(w, "32" | "64") {
-                return Err(lex::error(&file, i + 1, format!("the product's int width is 32 or 64, not '{}'", w)));
+                return Err(lex::error(&file, i + 1, format!("the product's {} width is 32 or 64, not '{}'", which, w)));
             }
-            if int_width.is_some() {
-                return Err(lex::error(&file, i + 1, "the product's int width is set twice"));
+            if slot.is_some() {
+                return Err(lex::error(&file, i + 1, format!("the product's {} width is set twice", which)));
             }
-            int_width = w.parse().ok();
+            *slot = w.parse().ok();
+            Ok(())
+        };
+        if let Some(w) = line.trim().strip_prefix("int:") {
+            width("int", w, &mut int_width)?;
+            continue;
+        }
+        if let Some(w) = line.trim().strip_prefix("float:") {
+            width("float", w, &mut float_width)?;
             continue;
         }
         let Some(rest) = line.trim().strip_prefix("bound ") else { continue };
@@ -230,7 +242,7 @@ fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, Option<u32>, Str
         }
         settings.push((words, n));
     }
-    Ok((settings, int_width, file))
+    Ok((settings, int_width, float_width, file))
 }
 
 /// `order.md`: the store's layers, one `- name` per line, lowest first,

@@ -1795,6 +1795,8 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
         cur_rets: Vec::new(),
         sigs: HashMap::new(),
         plain_fns: std::collections::HashSet::new(),
+        methods: HashMap::new(),
+        renames: HashMap::new(),
         data: Vec::new(),
     };
     // pass 0: type declarations, wherever they appear (a declaration may
@@ -2003,6 +2005,22 @@ struct Parser {
     /// the names of plain functions (not templates' default instances):
     /// one of these, with matching parameters, is called as written
     plain_fns: std::collections::HashSet<String>,
+    /// method sets: a plain name defined more than once with different
+    /// parameter types, each definition's types and its internal name —
+    /// the first keeps the name, the rest are `name__<types>` — and a
+    /// call by the name resolved among them by its argument types once
+    /// the policy has resolved both (see *Method sets* in ssa.md)
+    methods: HashMap<String, Vec<(Vec<Type>, String)>>,
+    /// the internal name of each later definition of a method set, by
+    /// the position of its `fn` token, for pass 2
+    renames: HashMap<usize, String>,
+}
+
+/// the internal name of a method after the first: the name and its
+/// parameter types' names, `width_of__i64`, `print__u8s`
+pub fn method_name(name: &str, tys: &[String]) -> String {
+    let word = |t: &String| t.chars().map(|c| if c == '$' { 's' } else if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect::<String>();
+    format!("{}__{}", name, tys.iter().map(word).collect::<Vec<_>>().join("_"))
 }
 
 /// nesting guard for type declarations that instantiate themselves
@@ -2584,10 +2602,14 @@ impl Parser {
         let name = self.expect_ident()?;
         self.expect(Tok::LParen)?;
         let mut tys = Vec::new();
+        // the types as written, for a method's name: one text on every
+        // policy (`int$`, not the width it resolves to)
+        let mut written = Vec::new();
         if !self.eat(&Tok::RParen) {
             loop {
                 self.expect_ident()?;
                 self.expect(Tok::Colon)?;
+                written.push(self.type_expr_at(self.pos, &[])?.0.to_string());
                 tys.push(self.expect_type()?);
                 if self.eat(&Tok::RParen) {
                     break;
@@ -2595,8 +2617,26 @@ impl Parser {
                 self.expect(Tok::Comma)?;
             }
         }
-        self.plain_fns.insert(name.clone());
-        self.sigs.insert(name, tys);
+        // a name defined again with other parameter types is a method
+        // set: this definition is named inside by its types
+        let internal = match self.sigs.get(&name).cloned() {
+            Some(first) if first == tys => {
+                self.pos = at;
+                return Err(self.err(format!("'{}' is defined twice with the same parameter types", name)));
+            }
+            Some(first) => {
+                let internal = method_name(&name, &written);
+                let set = self.methods.entry(name.clone()).or_insert_with(|| vec![(first, name.clone())]);
+                if !set.iter().any(|(t, _)| *t == tys) {
+                    set.push((tys.clone(), internal.clone()));
+                }
+                self.renames.insert(at, internal.clone());
+                internal
+            }
+            _ => name,
+        };
+        self.plain_fns.insert(internal.clone());
+        self.sigs.insert(internal, tys);
         self.pos = at;
         Ok(())
     }
@@ -4199,6 +4239,10 @@ impl Parser {
         self.pos += 1; // past `fn`
 
         let mut name = self.expect_ident()?;
+        // a later definition of a method set, under its internal name
+        if let Some(n) = self.renames.get(&lo) {
+            name = n.clone();
+        }
         if let Some(n) = instance {
             // skip the (P, Q) group; the env already binds them (a template
             // over abstract types has none: its first group is the values)
@@ -5483,11 +5527,19 @@ impl Parser {
             callee = self.request_instance(&callee, args, None)?;
         }
         self.expect(Tok::LParen)?;
-        let wants: Vec<Type> = self.sigs.get(&callee).cloned().unwrap_or_default();
+        // a literal argument takes the parameter's type; to a method set,
+        // only where every method agrees on it (`3: int` says the rest)
+        let wants: Vec<Option<Type>> = match self.methods.get(&callee) {
+            Some(set) => {
+                let n = set.iter().map(|(t, _)| t.len()).max().unwrap_or(0);
+                (0..n).map(|k| set.iter().map(|(t, _)| t.get(k).map(|&t| self.policy.resolve(t))).reduce(|a, b| if a == b { a } else { None }).flatten()).collect()
+            }
+            None => self.sigs.get(&callee).map(|s| s.iter().map(|&t| Some(t)).collect()).unwrap_or_default(),
+        };
         let mut args = Vec::new();
         if !self.eat(&Tok::RParen) {
             loop {
-                let want = wants.get(args.len()).copied();
+                let want = wants.get(args.len()).copied().flatten();
                 args.push(self.parse_operand(scope, want)?);
                 if self.eat(&Tok::RParen) {
                     break;
@@ -5499,6 +5551,22 @@ impl Parser {
         // — widths and abstract types bound by every parameter, the most
         // specific definition of the name winning
         let atys: Vec<Type> = args.iter().map(|&a| scope.values[a.0 as usize].ty).collect();
+        // a method set: the definition whose parameter types are the
+        // arguments' once the policy has resolved both
+        if !is_inst {
+            if let Some(set) = self.methods.get(&callee).cloned() {
+                let resolved = |tys: &[Type]| tys.iter().map(|&t| self.policy.resolve(t)).collect::<Vec<_>>();
+                let atys = resolved(&atys);
+                return match set.iter().find(|(tys, _)| resolved(tys) == atys) {
+                    Some((_, internal)) => Ok((Callee::Name(internal.clone()), args)),
+                    None => {
+                        let names: Vec<String> = atys.iter().map(|&t| self.tyname_of(t)).collect();
+                        let sigs: Vec<String> = set.iter().map(|(tys, _)| format!("({})", tys.iter().map(|&t| self.tyname_of(t)).collect::<Vec<_>>().join(", "))).collect();
+                        Err(self.err(format!("no '{}' takes ({}): its methods take {}", callee, names.join(", "), sigs.join(", "))))
+                    }
+                };
+            }
+        }
         // a plain function whose parameters match is called as written; a
         // template's default instance under a plain name defers to the
         // types (a result wanted may choose another instance)

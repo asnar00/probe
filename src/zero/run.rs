@@ -11,22 +11,27 @@ use crate::{opt, ssa};
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
-/// lower a store and print its IR, under a policy for the width a bare
-/// literal takes (log 47)
-pub fn emit(dir: &Path, policy: &ssa::Policy) -> Result<String, String> {
+/// lower a store and print its IR: one text on every path, the widths
+/// being the policy's (log 52)
+pub fn emit(dir: &Path) -> Result<String, String> {
     let s = store::read(dir).map_err(|e| e.to_string())?;
-    let policy = store_policy(&s, policy);
-    let l = lower::lower(&s, int_bits(&policy)).map_err(|e| e.to_string())?;
+    let l = lower::lower(&s).map_err(|e| e.to_string())?;
     Ok(l.ir)
 }
 
-/// the policy a store is lowered and built under (log 47): the path's,
-/// with `int` at the width the store's `product.md` sets, if it does
+/// the policy a store is built under (log 47, 52): the path's, with
+/// `int` and `float` at the widths the store's `product.md` sets, if
+/// it does
 pub fn store_policy(s: &store::Store, policy: &ssa::Policy) -> ssa::Policy {
-    match s.int_width {
+    let policy = match s.int_width {
         Some(32) => ssa::Policy { int: ssa::Type::I32, ..*policy },
         Some(64) => ssa::Policy { int: ssa::Type::I64, ..*policy },
         _ => *policy,
+    };
+    match s.float_width {
+        Some(32) => policy.with_float(8, 23),
+        Some(64) => policy.with_float(11, 52),
+        _ => policy,
     }
 }
 
@@ -62,12 +67,14 @@ struct Planned {
     line: usize,
 }
 
-/// the calls a store's cases make, in the order the features compose
-fn calls_of(s: &store::Store, l: &lower::Lowered) -> Result<Vec<Planned>, String> {
+/// the calls a store's cases make, in the order the features compose;
+/// a case's literal arguments are typed at the width the store is
+/// built at (log 52)
+fn calls_of(s: &store::Store, l: &lower::Lowered, policy: &ssa::Policy) -> Result<Vec<Planned>, String> {
     let mut out = Vec::new();
     for (rank, f) in s.features.iter().enumerate() {
         for c in &f.cases {
-            let call = lower::resolve_case(l, c, &f.md_file).map_err(|e| e.to_string())?;
+            let call = lower::resolve_case(l, c, &f.md_file, int_bits(policy)).map_err(|e| e.to_string())?;
             out.push(Planned { text: c.text.clone(), call, feature: f.name.clone(), rank, file: f.md_file.clone(), line: c.line });
         }
     }
@@ -302,8 +309,8 @@ fn skip_note(funcs: &[lower::FnInfo], reaches: &str, kind: &str) -> String {
 pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize) -> Result<String, String> {
     let s = store::read(dir).map_err(|e| e.to_string())?;
     let policy = &store_policy(&s, policy);
-    let l = lower::lower(&s, int_bits(policy)).map_err(|e| e.to_string())?;
-    let calls = calls_of(&s, &l)?;
+    let l = lower::lower(&s).map_err(|e| e.to_string())?;
+    let calls = calls_of(&s, &l, policy)?;
     let p = calls
         .into_iter()
         .find(|p| p.text.split('→').next().unwrap_or("").trim() == which.trim() || p.call.func == which.trim())
@@ -344,8 +351,8 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
         let result = (|| -> Result<(Vec<Planned>, Vec<Run>, Vec<Over>, ssa::Module, lower::Lowered), String> {
             let s = store::read(sdir).map_err(|e| e.to_string())?;
             let policy = store_policy(&s, &policy);
-            let l = lower::lower(&s, int_bits(&policy)).map_err(|e| e.to_string())?;
-            let cases = calls_of(&s, &l)?;
+            let l = lower::lower(&s).map_err(|e| e.to_string())?;
+            let cases = calls_of(&s, &l, &policy)?;
             let (runs, over) = plan(&s, &cases)?;
             let module = build(&l.ir, &policy, level)?;
             Ok((cases, runs, over, module, l))
@@ -484,9 +491,10 @@ mod tests {
     /// switches off does not run there
     #[test]
     fn every_case_in_every_context() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
         let s = store::read(Path::new("suite/zero/hello")).unwrap();
-        let l = lower::lower(&s, 64).unwrap();
-        let cases = calls_of(&s, &l).unwrap();
+        let l = lower::lower(&s).unwrap();
+        let cases = calls_of(&s, &l, &native).unwrap();
         let (runs, over) = plan(&s, &cases).unwrap();
         let labels: Vec<String> = contexts(&s).into_iter().map(|(l, _)| l).collect();
         assert_eq!(labels, ["", "with hello off", "with countdown off", "with bye off"]);
@@ -504,8 +512,8 @@ mod tests {
         // through to functions', so `describe (3)` stands beside `describe (4)`
         let s = store::read(Path::new("suite/zero/functions")).unwrap();
         assert!(s.features.iter().any(|f| f.name == "more" && f.existing_cases));
-        let l = lower::lower(&s, 64).unwrap();
-        let cases = calls_of(&s, &l).unwrap();
+        let l = lower::lower(&s).unwrap();
+        let cases = calls_of(&s, &l, &native).unwrap();
         let (runs, over) = plan(&s, &cases).unwrap();
         let plain: Vec<String> = runs.iter().filter(|r| r.label.is_empty()).map(|r| cases[r.case].text.clone()).collect();
         assert!(plain.contains(&"describe (3) → \"int\"".to_string()) && plain.contains(&"describe (4) → \"int\"".to_string()), "{:?}", plain);
@@ -521,8 +529,8 @@ mod tests {
         std::fs::write(dir.join("b/b.md"), head("b", "1", "parent: a\n", ">f (2) → 2\n")).unwrap();
         std::fs::write(dir.join("b/b.zero"), "on (int n) = h()\n    n = 6\n").unwrap();
         let s = store::read(&dir).unwrap();
-        let l = lower::lower(&s, 64).unwrap();
-        let cases = calls_of(&s, &l).unwrap();
+        let l = lower::lower(&s).unwrap();
+        let cases = calls_of(&s, &l, &native).unwrap();
         let (runs, over) = plan(&s, &cases).unwrap();
         let texts = |label: &str| -> Vec<String> { runs.iter().filter(|r| r.label == label).map(|r| cases[r.case].text.clone()).collect() };
         assert_eq!(texts(""), ["g() → 5", "f (2) → 2"]);
@@ -532,15 +540,15 @@ mod tests {
         // `>existing` with nothing older to fall through to is refused
         std::fs::write(dir.join("b/b.md"), head("b", "1", "parent: a\n", ">existing\n>h() → 6\n")).unwrap();
         let s = store::read(&dir).unwrap();
-        let cases = calls_of(&s, &lower::lower(&s, 64).unwrap()).unwrap();
+        let cases = calls_of(&s, &lower::lower(&s).unwrap(), &native).unwrap();
         let err = match plan(&s, &cases) { Err(e) => e, Ok(_) => panic!("accepted") };
         assert!(err.contains("`>existing` in feature b's testing, but no older feature has cases for h()"), "{}", err);
         let _ = std::fs::remove_dir_all(&dir);
         // a line's `off` switches one field (log 51); the descendants go
         // off through the gate, which `closure` says
         let s = store::read(Path::new("suite/zero/features")).unwrap();
-        let l = lower::lower(&s, 64).unwrap();
-        let cases = calls_of(&s, &l).unwrap();
+        let l = lower::lower(&s).unwrap();
+        let cases = calls_of(&s, &l, &native).unwrap();
         let base_off = cases.iter().find(|p| p.text.starts_with("greeted() with base off")).unwrap();
         let off = effective(&s, &BTreeSet::new(), base_off).unwrap();
         assert_eq!(off.iter().cloned().collect::<Vec<_>>(), ["base"]);
@@ -554,37 +562,42 @@ mod tests {
         assert!(l.ir.contains("fn __on_more() -> u1 {\n    own: u1 = __get___enabled_more()\n    up: u1 = __on_base()\n    on: u1 = and own, up\n    ret on\n}"), "{}", l.ir);
     }
 
-    /// a bare literal between two concrete widths takes the product's
-    /// `int` width (log 47): the path's policy, or `product.md`'s `int:`
-    /// line, which also sets the policy the store is built under
+    /// a bare literal between two concrete widths is emitted for the
+    /// policy to choose (log 47, 52): the call is one text, `3: int` on
+    /// the name, and `product.md`'s `int:` and `float:` lines set the
+    /// policy the store is built under
     #[test]
-    fn a_product_sets_the_int_width() {
+    fn a_product_sets_the_widths() {
         let dir = std::env::temp_dir().join(format!("probe-zero-width-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
-        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>chosen() → 32\n").unwrap();
-        std::fs::write(dir.join("h/h.zero"), "on (int32 w) = width of (int32 x)\n    w = 32\n\non (int32 w) = width of (int64 x)\n    w = 64\n\non (int32 w) = chosen()\n    w = width of (3)\n").unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>chosen() → 32\n>fchosen() → 32\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "on (int32 w) = width of (int32 x)\n    w = 32\n\non (int32 w) = width of (int64 x)\n    w = 64\n\non (int32 w) = chosen()\n    w = width of (3)\n\non (int32 w) = fwidth of (float32 x)\n    w = 32\n\non (int32 w) = fwidth of (float64 x)\n    w = 64\n\non (int32 w) = fchosen()\n    w = fwidth of (2.5)\n").unwrap();
         let native = suite::backend_policy(Backend::Native).unwrap();
-        // without a product file the policy's width, i64 natively
-        let ir = emit(&dir, &native).unwrap();
-        assert!(ir.contains("; a bare literal took the product's int width, int64, choosing among width of (int32), width of (int64)\n    w: i32 = width_of__i64(3)"), "{}", ir);
-        // with `int: 32` the store is pinned, and built under i32
-        std::fs::write(dir.join("product.md"), "# product\n\nint: 32\n").unwrap();
+        // the text says the policy decides, and does not change with it
+        let ir = emit(&dir).unwrap();
+        assert!(ir.contains("fn width_of(x: i32) -> i32 {") && ir.contains("fn width_of(x: i64) -> i32 {"), "{}", ir);
+        assert!(ir.contains("    w: i32 = width_of(3: int)\n") && ir.contains("    w: i32 = fwidth_of(2.5: float)\n"), "{}", ir);
+        assert!(!ir.contains("product's int width"), "{}", ir);
+        let run = |policy: &ssa::Policy| -> Vec<i64> {
+            let module = build(&ir, policy, 1).unwrap();
+            let calls: Vec<suite::Call> = ["chosen", "fchosen"].iter().map(|f| suite::Call { func: f.to_string(), args: vec![], nrets: 1, checks: false, text: true, before: vec![] }).collect();
+            suite::run_calls(&module, &ir, Backend::Native, &calls, "zero-width", 1).unwrap().into_iter().map(|g| g.unwrap().values[0]).collect()
+        };
+        // the native policy: 64-bit int and float
+        assert_eq!(run(&native), [64, 64]);
+        // `int: 32` and `float: 32` pin the store, and the same text runs the other methods
+        std::fs::write(dir.join("product.md"), "# product\n\nint: 32\nfloat: 32\n").unwrap();
         let s = store::read(&dir).unwrap();
-        assert_eq!(s.int_width, Some(32));
+        assert_eq!((s.int_width, s.float_width), (Some(32), Some(32)));
         let policy = store_policy(&s, &native);
-        assert_eq!(int_bits(&policy), 32);
-        let l = lower::lower(&s, int_bits(&policy)).unwrap();
-        assert!(l.ir.contains("int width, int32, choosing among"), "{}", l.ir);
-        assert!(l.ir.contains("w: i32 = width_of(3)"), "{}", l.ir);
-        let module = build(&l.ir, &policy, 1).unwrap();
-        let call = suite::Call { func: "chosen".into(), args: vec![], nrets: 1, checks: false, text: true, before: vec![] };
-        let got = suite::run_calls(&module, &l.ir, Backend::Native, &[call], "zero-width", 1).unwrap().remove(0).unwrap();
-        assert_eq!(got.values, vec![32]);
+        assert_eq!((int_bits(&policy), policy.float), (32, (8, 23)));
+        assert_eq!(lower::lower(&s).unwrap().ir, ir);
+        assert_eq!(run(&policy), [32, 32]);
         // a width the policy cannot take is refused
-        std::fs::write(dir.join("product.md"), "# product\n\nint: 16\n").unwrap();
-        let err = match store::read(&dir) { Err(e) => e.to_string(), Ok(_) => panic!("accepted int: 16") };
-        assert!(err.contains("the product's int width is 32 or 64, not '16'"), "{}", err);
+        std::fs::write(dir.join("product.md"), "# product\n\nfloat: 16\n").unwrap();
+        let err = match store::read(&dir) { Err(e) => e.to_string(), Ok(_) => panic!("accepted float: 16") };
+        assert!(err.contains("the product's float width is 32 or 64, not '16'"), "{}", err);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -592,7 +605,7 @@ mod tests {
     /// names, marked as the product's, and `probe cost` counts it
     #[test]
     fn a_product_bound_reaches_the_loops() {
-        let ir = emit(Path::new("suite/zero/tasks"), &suite::backend_policy(Backend::Native).unwrap()).unwrap();
+        let ir = emit(Path::new("suite/zero/tasks")).unwrap();
         assert!(ir.contains("; product setting: bound count down from: 5\nfn count_down_from("), "{}", ir);
         let body: String = ir.lines().skip_while(|l| !l.starts_with("fn count_down_from(")).take_while(|l| *l != "}").collect::<Vec<_>>().join("\n");
         assert!(body.contains("loop() bound 5 {"), "{}", body);
@@ -602,7 +615,7 @@ mod tests {
         let r = coster.report("count_down_from").unwrap();
         assert!(r.loops.iter().any(|l| l.contains("x5 (declared)")), "{:?}", r.loops);
         // hello's countdown shows its count without a bound anywhere
-        let ir = emit(Path::new("suite/zero/hello"), &policy).unwrap();
+        let ir = emit(Path::new("suite/zero/hello")).unwrap();
         assert!(!ir.contains("product setting"));
         let module = build(&ir, &policy, 1).unwrap();
         let mut coster = crate::cost::Coster::new(&module, None, None, None);
