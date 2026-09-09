@@ -79,6 +79,11 @@ pub struct Compiled {
     /// functions left out, with why
     pub skipped: Vec<(String, String)>,
     pub has_kernel: bool,
+    /// the kernel's size with every function inlined, and the budget
+    /// it was compiled under: what a runner halves when Apple's
+    /// compiler crashes on the kernel anyway (fm3 log 58)
+    pub inlined: u64,
+    pub budget: u64,
 }
 
 // LLVM's numbers
@@ -221,14 +226,15 @@ const INLINE_BUDGET: u64 = 400_000;
 /// the kept functions to compile as calls rather than inline: none
 /// while the kernel fits the budget; past it, the functions whose
 /// inlining costs the most copies, greedily, until the estimate fits
-fn no_inline(module: &Module, out: &[bool], natives: &Natives) -> Vec<bool> {
+fn no_inline(module: &Module, out: &[bool], natives: &Natives, budget: u64) -> (Vec<bool>, u64) {
     let (sizes, sites) = inlined_sizes(module, out, natives);
     let mut no = vec![false; module.funcs.len()];
-    let Some(k) = module.funcs.iter().position(|f| f.name == "__kernel") else { return no };
+    let Some(k) = module.funcs.iter().position(|f| f.name == "__kernel") else { return (no, 0) };
     let mut total = sizes[k];
+    let inlined = total;
     let report = std::env::var("PROBE_AIR_SIZE").is_ok();
     if report {
-        eprintln!("PROBE_AIR_SIZE: the kernel inlined is {} instructions (budget {})", total, INLINE_BUDGET);
+        eprintln!("PROBE_AIR_SIZE: the kernel inlined is {} instructions (budget {})", total, budget);
     }
     // the saving of calling f instead: every copy but one
     let mut order: Vec<usize> = (0..module.funcs.len()).filter(|&i| !out[i] && sites[i] > 1).collect();
@@ -239,7 +245,7 @@ fn no_inline(module: &Module, out: &[bool], natives: &Natives) -> Vec<bool> {
         }
     }
     for &i in &order {
-        if total <= INLINE_BUDGET {
+        if total <= budget {
             break;
         }
         no[i] = true;
@@ -248,7 +254,7 @@ fn no_inline(module: &Module, out: &[bool], natives: &Natives) -> Vec<bool> {
             eprintln!("PROBE_AIR_SIZE:   {} called, not inlined; about {} left", module.funcs[i].name, total);
         }
     }
-    no
+    (no, inlined)
 }
 
 /// the call graph, with an indirect call an edge to every
@@ -313,6 +319,14 @@ fn address_taken(module: &Module) -> Vec<String> {
 }
 
 pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, String> {
+    compile_under(module, platform, INLINE_BUDGET)
+}
+
+/// compiled with the kernel's inlined size held under `budget`: the
+/// default is `INLINE_BUDGET`, and a runner whose kernel Apple's
+/// compiler crashed on anyway comes back with half the kernel's size
+/// (fm3 log 58)
+pub fn compile_under(module: &Module, platform: &Platform, budget: u64) -> Result<Compiled, String> {
     let natives = platform.natives(module);
     let (data, data_offsets) = crate::ssa::layout_data(module);
     let data_size = ((data.len() as u64) + 15) & !15;
@@ -374,7 +388,7 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
 
     // every global value first: functions, dispatchers, the kernel,
     // the intrinsics rules use
-    let called = no_inline(module, &out, &natives);
+    let (called, inlined) = no_inline(module, &out, &natives, budget);
     for (i, f) in module.funcs.iter().enumerate() {
         if out[i] {
             continue;
@@ -390,10 +404,13 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
         // that (`INLINE_BUDGET`) has its costliest functions `noinline`
         // instead, so the choice is never Apple's. PROBE_AIR_INLINE=
         // none|noinline puts the old forms back, for looking
+        // PROBE_AIR_NOINLINE=f,g names functions to call instead, for
+        // bisecting what Apple's inliner cannot take
+        let named = std::env::var("PROBE_AIR_NOINLINE").map(|v| v.split(',').any(|n| n == f.name)).unwrap_or(false);
         match std::env::var("PROBE_AIR_INLINE").as_deref() {
             Ok("noinline") => cx.m.functions[id].attrs.push(14),
             Ok("none") => {}
-            _ if called[i] => cx.m.functions[id].attrs.push(14),
+            _ if called[i] || named => cx.m.functions[id].attrs.push(14),
             _ => cx.m.functions[id].attrs.push(2),
         }
         cx.fn_ids.insert(f.name.clone(), (id, fty));
@@ -505,7 +522,7 @@ pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, St
     let bitcode = cx.m.write();
     let kernels: &[&str] = if has_kernel { &["__kernel"] } else { &[] };
     let metallib = bitcode::metallib(&bitcode, kernels);
-    Ok(Compiled { bitcode, metallib, layout: Layout { data, slab }, skipped, has_kernel })
+    Ok(Compiled { bitcode, metallib, layout: Layout { data, slab }, skipped, has_kernel, inlined, budget })
 }
 
 struct Cx<'a> {

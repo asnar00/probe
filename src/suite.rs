@@ -1714,36 +1714,54 @@ fn machine_output(
             let driver = gen_driver(module, cases, AIR_HEAP, "", false)?;
             let full = format!("{}\n{}\n{}", driver, helpers_air(), ssa::with_prelude(src));
             let m2 = build(&full)?;
-            let c = crate::emit_air::compile_with(&m2, platform)?;
-            if !c.has_kernel {
-                return Err(format!("the driver's kernel was left out: {:?}", c.skipped));
-            }
-            let data_size = (c.layout.data.len() as u64 + 15) & !15;
-            if data_size + c.layout.slab > AIR_AREA {
-                return Err(format!("data ({}) and scratch ({}) overrun the driver's area at {:#x}", data_size, c.layout.slab, AIR_AREA));
-            }
-            let lib = scratch.join(format!("{}.metallib", name));
-            let mem = scratch.join(format!("{}.mem", name));
-            std::fs::write(&lib, &c.metallib).map_err(|e| e.to_string())?;
-            // the bitcode too, for llvm-dis when something is wrong
-            std::fs::write(scratch.join(format!("{}.bc", name)), &c.bitcode).map_err(|e| e.to_string())?;
-            std::fs::write(&mem, &c.layout.data).map_err(|e| e.to_string())?;
-            let mut cmd = Command::new("python3");
-            cmd.arg("tools/driver_metal.py").arg("--suite").arg(&lib).arg(&mem);
-            cmd.arg(AIR_MEM.to_string()).arg(AIR_AREA.to_string()).arg((AIR_HEAP - AIR_AREA).to_string());
-            // what the driver says (Metal's compiler failing, a faulting kernel)
-            // is the failure when there is no output
-            let errs = scratch.join(format!("{}.err", name));
-            let f = std::fs::File::create(&errs).map_err(|e| e.to_string())?;
-            cmd.stderr(f);
-            let out = exec_io(cmd, 120, Some(&[]), true)?;
-            if out.is_empty() {
-                let said = std::fs::read_to_string(&errs).unwrap_or_default();
-                if let Some(l) = said.lines().rev().find(|l| !l.trim().is_empty()) {
-                    return Err(format!("the driver: {}", l.trim()));
+            // Apple's compiler crashes on some kernels its inlined size
+            // does not predict (fm3 log 58: a store at 100k where
+            // another passes at 360k): when the pipeline dies of an
+            // interrupted connection, the kernel is compiled again with
+            // its costliest copies called, the budget halved from the
+            // kernel's own size, until it runs or nothing is left to call
+            let mut budget = None;
+            loop {
+                let c = match budget {
+                    Some(b) => crate::emit_air::compile_under(&m2, platform, b)?,
+                    None => crate::emit_air::compile_with(&m2, platform)?,
+                };
+                if !c.has_kernel {
+                    return Err(format!("the driver's kernel was left out: {:?}", c.skipped));
                 }
+                let data_size = (c.layout.data.len() as u64 + 15) & !15;
+                if data_size + c.layout.slab > AIR_AREA {
+                    return Err(format!("data ({}) and scratch ({}) overrun the driver's area at {:#x}", data_size, c.layout.slab, AIR_AREA));
+                }
+                let lib = scratch.join(format!("{}.metallib", name));
+                let mem = scratch.join(format!("{}.mem", name));
+                std::fs::write(&lib, &c.metallib).map_err(|e| e.to_string())?;
+                // the bitcode too, for llvm-dis when something is wrong
+                std::fs::write(scratch.join(format!("{}.bc", name)), &c.bitcode).map_err(|e| e.to_string())?;
+                std::fs::write(&mem, &c.layout.data).map_err(|e| e.to_string())?;
+                let mut cmd = Command::new("python3");
+                cmd.arg("tools/driver_metal.py").arg("--suite").arg(&lib).arg(&mem);
+                cmd.arg(AIR_MEM.to_string()).arg(AIR_AREA.to_string()).arg((AIR_HEAP - AIR_AREA).to_string());
+                // what the driver says (Metal's compiler failing, a faulting kernel)
+                // is the failure when there is no output
+                let errs = scratch.join(format!("{}.err", name));
+                let f = std::fs::File::create(&errs).map_err(|e| e.to_string())?;
+                cmd.stderr(f);
+                let out = exec_io(cmd, 120, Some(&[]), true)?;
+                if out.is_empty() {
+                    let said = std::fs::read_to_string(&errs).unwrap_or_default();
+                    if let Some(l) = said.lines().rev().find(|l| !l.trim().is_empty()) {
+                        let next = c.inlined.min(c.budget) / 2;
+                        if l.contains("XPC_ERROR_CONNECTION_INTERRUPTED") && next >= 1024 {
+                            eprintln!("note: {}: Apple's compiler crashed on the kernel ({} inlined under a budget of {}); compiling again under {}", name, c.inlined, c.budget, next);
+                            budget = Some(next);
+                            continue;
+                        }
+                        return Err(format!("the driver: {}", l.trim()));
+                    }
+                }
+                return Ok(out);
             }
-            Ok(out)
         }
         Backend::Native | Backend::Wasm => Err("not a machine path".into()),
     }
