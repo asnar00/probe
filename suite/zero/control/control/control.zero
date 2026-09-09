@@ -23,26 +23,26 @@ on (int s) = sum below (int n)
     s = [0 to n] + _
 
 on (int g) = gcd of (int a) and (int b)
-    g = loop (int x = a, int y = b) while (y != 0) gives x
+    g = loop (int x = a, int y = b) while (y != 0) yields x
         int r = x % y
         continue (y, r)
 
 on (int p) = power of two above (int n)
-    int q = loop (int q = 1) gives q
+    int q = loop (int q = 1) yields q
         if (q > n)
             break
         q = q * 2
     p = q
 
 on (int d) = digits of (int n)
-    int x, int count = loop (int x = n, int count = 1) gives x, count
+    int x, int count = loop (int x = n, int count = 1) yields x, count
         if (x < 10)
             break
         continue (x / 10, count + 1)
     d = count
 
 on (int n) = collatz steps (int start)
-    n = loop (int x = start, int steps = 0) gives steps
+    n = loop (int x = start, int steps = 0) yields steps
         if (x == 1)
             break
         if (x % 2 == 0)
@@ -58,9 +58,9 @@ on (int t) = triangle (int n)
     t = row ([1 to n + 1]) + _
 
 on (int n) = two counters()
-    int a = loop (int i = 0) while (i < 3) gives i
+    int a = loop (int i = 0) while (i < 3) yields i
         continue (i + 1)
-    int b = loop (int i = 0) while (i < 5) gives i
+    int b = loop (int i = 0) while (i < 5) yields i
         continue (i + 1)
     n = a * 10 + b
 
@@ -86,3 +86,6 @@ on step (int i)
 
 on steps from (int a) to (int b)
     step ([a through b])
+
+on (int d) = gives twice (int x)
+    d = x * 2

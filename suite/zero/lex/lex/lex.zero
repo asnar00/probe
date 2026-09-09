@@ -31,7 +31,7 @@ on (token t$) << lex (uint8 c$)
             t$ << token(3, start, 1)
             advance c$ by (1)
             continue
-        int n = loop (int i = 1, int m = -1) gives m
+        int n = loop (int i = 1, int m = -1) yields m
             if (i >= count c$)
                 if (ended c$)
                     m = i

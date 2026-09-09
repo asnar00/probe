@@ -111,9 +111,9 @@ pub enum Stmt {
     Multi { vars: Vec<Param>, value: Expr, line: usize },
     Assign { targets: Vec<Target>, value: Expr, line: usize },
     If { cond: Expr, then: Vec<Stmt>, els: Option<Vec<Stmt>>, line: usize },
-    /// `loop (vars) while (c) gives x, y` (log 40): `gives` names the
+    /// `loop (vars) while (c) yields x, y` (log 40, 48): `yields` names the
     /// carried variables that leave, into declared or existing names
-    Loop { vars: Vec<VarDecl>, cond: Option<Expr>, body: Vec<Stmt>, gives: Vec<String>, into: Option<LoopInto>, line: usize },
+    Loop { vars: Vec<VarDecl>, cond: Option<Expr>, body: Vec<Stmt>, yields: Vec<String>, into: Option<LoopInto>, line: usize },
     For { var: String, seq: Expr, body: Vec<Stmt>, line: usize },
     Continue { values: Vec<Expr>, line: usize },
     Break { line: usize },
@@ -207,7 +207,7 @@ pub struct Parser<'a> {
     /// how deep in `[ ]` the parser is: only there do `to` and
     /// `through` end a phrase (log 15)
     ranges: usize,
-    /// inside a loop's header line, where `gives` ends a phrase
+    /// inside a loop's header line, where `yields` ends a phrase
     header: usize,
 }
 
@@ -687,7 +687,7 @@ impl<'a> Parser<'a> {
                 Ok(Stmt::Check { cond, line })
             }
             Some(Tok::Word(w)) if SCOPES.contains(&w.as_str()) => Err(self.err(format!("'{}' belongs on a feature-scope variable, outside any function", w))),
-            // `int total = loop (...) ... gives acc`: a loop's results declared
+            // `int total = loop (...) ... yields acc`: a loop's results declared
             Some(Tok::Word(w)) if self.is_type(&w) && self.loop_ahead() => {
                 let mut vars = Vec::new();
                 loop {
@@ -746,7 +746,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.expect_sym("=")?;
-                // `total = loop (...) ... gives acc`: a loop's results assigned
+                // `total = loop (...) ... yields acc`: a loop's results assigned
                 if self.eat_word("loop") {
                     return self.parse_loop(Some(LoopInto::Assign(targets)), line);
                 }
@@ -772,7 +772,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `loop (vars) [while (c)] [gives x, y]`, then the body;
+    /// `loop (vars) [while (c)] [yields x, y]`, then the body;
     /// `into` says where the given values go (log 40)
     fn parse_loop(&mut self, into: Option<LoopInto>, line: usize) -> Result<Stmt, Error> {
         let mut vars = Vec::new();
@@ -786,14 +786,14 @@ impl<'a> Parser<'a> {
             self.expect_sym(")")?;
         }
         let mut cond = None;
-        let mut gives = Vec::new();
+        let mut yields = Vec::new();
         self.header += 1;
         loop {
             if self.eat_word("while") {
                 cond = Some(self.parse_expr()?);
-            } else if self.eat_word("gives") {
+            } else if self.eat_word("yields") {
                 loop {
-                    gives.push(self.expect_word()?);
+                    yields.push(self.expect_word()?);
                     if !self.eat_sym(",") {
                         break;
                     }
@@ -805,7 +805,7 @@ impl<'a> Parser<'a> {
         self.header -= 1;
         self.expect_newline()?;
         let body = self.parse_block()?;
-        Ok(Stmt::Loop { vars, cond, body, gives, into, line })
+        Ok(Stmt::Loop { vars, cond, body, yields, into, line })
     }
 
     /// `T a[, T b] = loop` ahead on this line: a loop's results declared
@@ -1032,7 +1032,7 @@ impl<'a> Parser<'a> {
     /// a word that ends a phrase: a statement's own word, or a range's
     /// `to` and `through` inside `[ ]`
     fn ends_phrase(&self, w: &str) -> bool {
-        matches!(w, "then" | "else" | "while" | "merge" | "in") || (self.ranges > 0 && matches!(w, "through" | "to")) || (self.header > 0 && w == "gives")
+        matches!(w, "then" | "else" | "while" | "merge" | "in") || (self.ranges > 0 && matches!(w, "through" | "to")) || (self.header > 0 && w == "yields")
     }
 
     /// the parts of a phrase: words, bracketed argument groups, and bare

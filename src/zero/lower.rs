@@ -2132,14 +2132,14 @@ impl Lowerer {
         Ok(t_term && e_term && els.is_some())
     }
 
-    /// `loop (vars) while (c) gives x` (log 12, 40): the carried
+    /// `loop (vars) while (c) yields x` (log 12, 40, 48): the carried
     /// variables are the header's and the loop's own — gone after it;
     /// `while` is tested at the top of every pass, a body that falls off
     /// its end continues with the current versions, and every `break`
     /// yields the given variables, which leave into the names `into`
     /// says, and the outer streams the body moved
     #[allow(clippy::too_many_arguments)]
-    fn lower_loop(&mut self, vars: &[super::syntax::VarDecl], cond: Option<&Expr>, body: &[Stmt], gives: &[String], into: Option<&LoopInto>, line: usize, b: &mut Body) -> Result<bool, Error> {
+    fn lower_loop(&mut self, vars: &[super::syntax::VarDecl], cond: Option<&Expr>, body: &[Stmt], yields: &[String], into: Option<&LoopInto>, line: usize, b: &mut Body) -> Result<bool, Error> {
         let file = b.file.clone();
         // the initial values, in the block before the loop
         let mut header = Vec::new();
@@ -2174,14 +2174,14 @@ impl Lowerer {
             carried.push(v.name.clone());
             tys.push(ty);
         }
-        // what the loop gives: carried variables, each once (log 40)
-        for (i, g) in gives.iter().enumerate() {
+        // what the loop yields: carried variables, each once (log 40)
+        for (i, g) in yields.iter().enumerate() {
             let Some(k) = carried.iter().position(|c| c == g) else {
-                return Err(lex::error(&file, line, format!("'{}' is not a variable the loop carries: `gives` names one of its header's, {}", g, if carried.is_empty() { "and this loop has none".to_string() } else { carried.join(", ") })));
+                return Err(lex::error(&file, line, format!("'{}' is not a variable the loop carries: `yields` names one of its header's, {}", g, if carried.is_empty() { "and this loop has none".to_string() } else { carried.join(", ") })));
             };
             let _ = k;
-            if gives[..i].contains(g) {
-                return Err(lex::error(&file, line, format!("'{}' is given twice", g)));
+            if yields[..i].contains(g) {
+                return Err(lex::error(&file, line, format!("'{}' is yielded twice", g)));
             }
         }
         let targets = match into {
@@ -2189,14 +2189,14 @@ impl Lowerer {
             Some(LoopInto::Assign(ts)) => ts.len(),
             None => 0,
         };
-        if into.is_some() && gives.is_empty() {
-            return Err(lex::error(&file, line, "`= loop` names what the loop gives: `... while (c) gives acc`"));
+        if into.is_some() && yields.is_empty() {
+            return Err(lex::error(&file, line, "`= loop` names what the loop yields: `... while (c) yields acc`"));
         }
-        if into.is_none() && !gives.is_empty() {
-            return Err(lex::error(&file, line, format!("the loop gives '{}' to nothing: `int total = loop (...) ... gives {}`", gives[0], gives[0])));
+        if into.is_none() && !yields.is_empty() {
+            return Err(lex::error(&file, line, format!("the loop yields '{}' to nothing: `int total = loop (...) ... yields {}`", yields[0], yields[0])));
         }
-        if into.is_some() && targets != gives.len() {
-            return Err(lex::error(&file, line, format!("the loop gives {} value(s) to {} name(s)", gives.len(), targets)));
+        if into.is_some() && targets != yields.len() {
+            return Err(lex::error(&file, line, format!("the loop yields {} value(s) to {} name(s)", yields.len(), targets)));
         }
         // a stream the body moves (`advance`, `frame`) is carried too: its
         // position threads through the loop as an ordinary value (log 23),
@@ -2217,7 +2217,7 @@ impl Lowerer {
                 }
             }
         }
-        let mut results: Vec<String> = gives.to_vec();
+        let mut results: Vec<String> = yields.to_vec();
         results.extend(streams.iter().cloned());
         // the carried variables are declared inside the loop
         let outer = b.vars.clone();
@@ -2259,8 +2259,8 @@ impl Lowerer {
         b.vars = outer;
         // a loop with no way out has no results and nothing after it
         if ctx.breaks == 0 {
-            if !gives.is_empty() {
-                return Err(lex::error(&file, line, format!("the loop never leaves, so it gives nothing: a `while`, or a `break`, is how '{}' comes out", gives[0])));
+            if !yields.is_empty() {
+                return Err(lex::error(&file, line, format!("the loop never leaves, so it yields nothing: a `while`, or a `break`, is how '{}' comes out", yields[0])));
             }
             b.open_loop("", &hdr.join(", "), false);
             b.out.push_str(&body_lines);
@@ -2272,7 +2272,7 @@ impl Lowerer {
         let depth = b.loops.len();
         let mut defs = Vec::new();
         let mut after: Vec<(String, Val, bool)> = Vec::new();
-        for (i, g) in gives.iter().enumerate() {
+        for (i, g) in yields.iter().enumerate() {
             let gty = tys[carried.iter().position(|c| c == g).unwrap()].clone();
             let (name, tline, declared) = match into.unwrap() {
                 LoopInto::Declare(ps) => {
@@ -2287,7 +2287,7 @@ impl Lowerer {
                 LoopInto::Assign(ts) => {
                     let t = &ts[i];
                     if t.feature.is_some() {
-                        return Err(lex::error(&file, t.line, "a loop gives values to variables"));
+                        return Err(lex::error(&file, t.line, "a loop yields values to variables"));
                     }
                     if b.vars.contains_key(&t.name) {
                         if !(self.completes(ts, b) && b.results.iter().any(|(n, _)| n == &t.name)) {
@@ -2770,7 +2770,7 @@ impl Lowerer {
                 Ok(false)
             }
             Stmt::If { cond, then, els, .. } => self.lower_if(cond, then, els.as_deref(), b),
-            Stmt::Loop { vars, cond, body, gives, into, line } => self.lower_loop(vars, cond.as_ref(), body, gives, into.as_ref(), *line, b),
+            Stmt::Loop { vars, cond, body, yields, into, line } => self.lower_loop(vars, cond.as_ref(), body, yields, into.as_ref(), *line, b),
             Stmt::For { var, seq, body, .. } => {
                 self.lower_for(var, seq, body, b)?;
                 Ok(false)
