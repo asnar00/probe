@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: tests are functions — `b03dc6c` · 2026-09-09
+
+```
+## testing
+>existing
+>times described() → 2
+>describe some() → "ints"
+>describe (4) → "int"
+```
+
+Second rulings pass item 5 (question 25, log 50). Ash: every function `run` has a test function `test run`, extended by the same mechanism as `run`. So a feature's `## testing` cases for a method are its definition of that method's test, and `src/zero/run.rs`'s `plan` composes them per context as the front end composes the method: the newest feature that is on is outermost and replaces the older feature's cases for the method, unless its section says `>existing` — the lines above are `suite/zero/functions/more`'s, whose redefinition of `describe (int)` calls `existing` and leaves every older case true — and a feature that is off drops out of the chain. This is the general form of the first pass's "same call, newer wins"; a plainer line of the same feature still yields to one naming the context. zero 319/319 on the four CPU paths (250 cases, 12 overridden), 308 + 11 skipped on air; cargo test 97 passed.
+
+---
+
 ### zero: creation time orders, and a published feature is immutable — `be8f4e0` · 2026-09-09
 
 ```
