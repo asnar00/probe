@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the docs pass — `c5c9e2b` · 2026-09-09
+
+```
+device string open_tool = ""
+```
+
+Rulings pass item 11 (log 45). Every example in zero.md sections 3 to 14 was checked against a store or run from a scratch one, and the line above, section 5's own, did not build: `""` emitted an empty `data` item the IR refuses. `src/zero/lower.rs` now points an empty literal at the prelude's `__nul` with length zero, and `suite/zero/variables` carries the line with two cases; `suite/zero/control` gains section 7's `[0 to n] + _` as `sum below`. `README.md`'s `probe zero` paragraph describes the contexts and overrides. zero 306/306 on native, wasm, riscv and arm-qemu (240 cases, 12 overridden), 295 + 11 skipped on air; probe test 971, 962 + 9, 971, 971, 941 + 30; cargo test 95 passed.
+
+---
+
 ### zero: every case in every context — `95229da` · 2026-09-09
 
 ```
