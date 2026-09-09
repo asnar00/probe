@@ -4,6 +4,17 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the emitted IR is abstract — method sets, the policy choosing a width — `227218e` · 2026-09-09
+
+```
+on (bool ok) = literal takes the float width()
+    ok = float width of (2.5) == float width()
+```
+
+Second rulings pass items 7 and 8 (questions 26 and 27, log 52). Ash: the front end emits abstract IR and never decides a width; the concrete IR is the policy's. The IR (`src/ssa.rs`) gains *method sets*: a plain name defined more than once with different parameter types is one name, the later definitions named inside by their types, and a call by the name resolved by the arguments' types once the policy has resolved them — `width_of(3: int)` reaches the 32-bit method on wasm and the 64-bit one elsewhere, from one text. The zero front end emits a name whose methods are all concrete as such a set, tries a bare literal at both widths, and where they choose differently writes the literal `: int` or `: float` and leaves the choice to the policy; `product.md`'s `int:` and new `float:` lines set the policy, never the text. The case above, in `suite/zero/functions`, holds on every path. zero 331/331 on the four CPU paths (255 cases, 13 overridden), 320 + 11 skipped on air; probe test on all five paths unchanged; cargo test 97 passed.
+
+---
+
 ### zero: the enabled gate is the ancestor conjunction — `0732f86` · 2026-09-09
 
 ```
