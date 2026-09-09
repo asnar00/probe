@@ -12,9 +12,9 @@ on (int a) = magnitude of (int x)
 
 on describe (int x)
     if (x < 0)
-        print "negative"
+        out$ << "negative" << "\n"
     else
-        print "not negative"
+        out$ << "not negative" << "\n"
 
 on (int s) = sum to (int n)
     s = [0 through n] + _
@@ -66,23 +66,23 @@ on (int n) = two counters()
 
 on ticks ()
     for (i in [1 through 3])
-        print "tick"
+        out$ << "tick" << "\n"
 
 on blast off ()
     for (i in [3 through 1])
         if (i == 1)
-            print "one"
+            out$ << "one" << "\n"
         else
-            print "more"
+            out$ << "more" << "\n"
 
 on halves ()
     for (i in [0 to 4])
         if (i % 2 == 0)
             continue
-        print "odd"
+        out$ << "odd" << "\n"
 
 on step (int i)
-    print "step"
+    out$ << "step" << "\n"
 
 on steps from (int a) to (int b)
     step ([a through b])

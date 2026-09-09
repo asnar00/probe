@@ -21,6 +21,9 @@ pub enum Decl {
     Fn(FnDecl),
     Type(TypeDecl),
     Var(VarDecl),
+    /// a bare phrase at feature scope, `write(out$)`: a sink wired to
+    /// the streams it reads, with no stream to fill (log 57)
+    Wire(Expr),
 }
 
 pub struct FnDecl {
@@ -351,7 +354,13 @@ impl<'a> Parser<'a> {
             Some(Tok::Word(w)) if w == "feature" => Err(self.err("a feature's name and parent are in its .md, not its code")),
             Some(Tok::Word(w)) if w == "platform" => Err(self.err("a platform body follows the function it gives a body to")),
             Some(Tok::Indent) => Err(self.err("an indented line outside any declaration")),
-            _ => Err(self.err(format!("expected 'on', 'type' or a variable declaration at the top of the feature, found {}", self.found()))),
+            // `write(out$)`: a sink wired at feature scope (log 57)
+            Some(Tok::Word(_)) => {
+                let e = self.parse_expr()?;
+                self.expect_newline()?;
+                Ok(Decl::Wire(e))
+            }
+            _ => Err(self.err(format!("expected 'on', 'type', a variable declaration or a wiring at the top of the feature, found {}", self.found()))),
         }
     }
 

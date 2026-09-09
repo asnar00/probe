@@ -1,31 +1,15 @@
-on print (string s)
+uint8 out$
+
+on write (uint8 c$)
 platform ir
-    q: ptr = addr __out_n
-    k0: i64 = load q
-    o: ptr = addr __out
-    f: u8[] = unread(s)
-    p: ptr(u8) = ptr f
-    n: i64 = len f
-    k1: i64 = loop(i: i64 = 0, k: i64 = k0)
-        done: u1 = cmp.ge i, n
-        if done
-            break k
-        c: u8 = load p, i
-        room: u1 = cmp.lt k, 4095
-        if room
-            store c, o, k, 1
-        i2: i64 = add i, 1
-        k2: i64 = add k, 1
-        continue i2, k2
-    room2: u1 = cmp.lt k1, 4095
-    k4: i64 = if room2
-        store 10: u8, o, k1, 1
-        k3: i64 = add k1, 1
-        yield k3
-    else
-        yield k1
-    store k4, q
-    ret
+    n: i64 = count(c)
+    c2: u8$ = advance(c, n)
+    ret c2
+
+write(out$)
+
+on print (string s)
+    out$ << s << "\n"
 
 on print (int x$)
 platform ir

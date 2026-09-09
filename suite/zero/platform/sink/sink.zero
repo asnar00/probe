@@ -1,0 +1,19 @@
+int64 logged = 0
+
+on log (uint8 c$)
+platform ir
+    n: i64 = count(c)
+    k: i64 = __get_logged()
+    k2: i64 = add k, n
+    __set_logged(k2)
+    c2: u8$ = advance(c, n)
+    ret c2
+
+log(out$)
+
+on (int64 n) = logged after hello()
+    out$ << "hello" << "\n"
+    n = logged
+
+on (int64 n) = logged after nothing()
+    n = logged

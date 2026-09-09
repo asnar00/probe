@@ -5,7 +5,7 @@ on describe (int x)
     existing describe (x)
 
 on describe (int x$)
-    print "ints"
+    out$ << "ints" << "\n"
 
 on (int n) = times described()
     describe (1)

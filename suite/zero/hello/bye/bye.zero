@@ -3,4 +3,4 @@ on run()
     goodbye()
 
 on goodbye()
-    print "goodbye"
+    out$ << "goodbye" << "\n"

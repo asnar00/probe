@@ -1,8 +1,6 @@
 ; lowered from the zero store suite/zero/lex
 
-; the print buffer: what `print` wrote, read back by the runner
-data __out: array(u8, 4096)
-data __out_n: array(i64, 1)
+; an empty string's bytes
 data __nul: array(u8, 1)
 
 ; the arena every sequence is carved from, emptied before every case
@@ -35,14 +33,17 @@ fn __sleep(hz: i64)
         store c2, p
     ret
 
+; the output stream `out$` (section 15, log 57), read back by the runner
+; through the platform feature's own reader, which nothing advances:
+; how many bytes it holds, and each one
 fn __out_len() -> i64
-    q: ptr = addr __out_n
-    n: i64 = load q
+    s: u8$ = __get_out()
+    n: i64 = count(s)
     ret n
 
 fn __out_byte(i: i64) -> u8
-    o: ptr = addr __out
-    b: u8 = load o, i, 1
+    s: u8$ = __get_out()
+    b: u8 = peek(s, i)
     ret b
 
 ; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
@@ -64,16 +65,10 @@ fn __push(s: number$, v: number)
         push(s, t, v)
     ret
 
-; one byte, when there is room
+; one byte into `out$`, a regular ring: the regular push, straight
 fn __out_ch(c: u8)
-    q: ptr = addr __out_n
-    k: i64 = load q
-    o: ptr = addr __out
-    room: u1 = cmp.lt k, 4095
-    if room
-        store c, o, k, 1
-        k2: i64 = add k, 1
-        store k2, q
+    s: u8$ = __get_out()
+    push(s, c)
     ret
 
 ; an int in decimal
@@ -118,29 +113,36 @@ type __s_token = struct
 ; the context: one field per feature-scope variable — name: scope, merge (feature)
 ;   __enabled_platform: user, last (platform)
 ;   __enabled_lex: user, last (lex)
+;   out: user, last (platform)
 ;   chars: user, last (lex)
 ;   t: user, last (lex)
-;   __node1_c: node, last (lex)
-;   __node1_c_seen: node, last (lex)
-;   __node1_fin: node, last (lex)
+;   __node1_c: node, last (platform)
+;   __node1_c_seen: node, last (platform)
+;   __node1_fin: node, last (platform)
+;   __node2_c: node, last (lex)
+;   __node2_c_seen: node, last (lex)
+;   __node2_fin: node, last (lex)
 type __ctx = struct
     __enabled_platform: u1
     __enabled_lex: u1
+    out: u8$
     chars: u8$
     t: __s_token
     __node1_c: u8$
     __node1_c_seen: i64
     __node1_fin: u1
+    __node2_c: u8$
+    __node2_c_seen: i64
+    __node2_fin: u1
 
 data __ctx_mem: array(__ctx, 1)
-data __s1 = "let x = 4"
-data __s2 = "2;\n"
-data __s3 = "let"
+data __s1 = "\n"
+data __s2 = "let x = 4"
+data __s3 = "2;\n"
+data __s4 = "let"
 
-; before every case: the print buffer emptied, the variables at their initial values
+; before every case: the arena emptied, the variables at their initial values
 fn __zero_reset()
-    q: ptr = addr __out_n
-    store 0: i64, q
     a: ptr = addr __arena
     h: ptr = addr __heap
     arena_init(a, h, 65536)
@@ -149,14 +151,15 @@ fn __zero_reset()
     store z, k
     r: ptr = addr __running
     store 0: i64, r
-    _1: u8$ = __stream_u8(1000000, 64)
-    _2: int$ = __stream_int(1000000, 64)
+    _1: u8$ = __regular_u8(1000000, 4096)
+    _2: u8$ = __stream_u8(1000000, 64)
     _3: int$ = __stream_int(1000000, 64)
     _4: int$ = __stream_int(1000000, 64)
-    _5: __s_token = pack _2, _3, _4
-    _6: __ctx = pack 1, 1, _1, _5, _1, 0, 0
+    _5: int$ = __stream_int(1000000, 64)
+    _6: __s_token = pack _3, _4, _5
+    _7: __ctx = pack 1, 1, _1, _2, _6, _1, 0, 0, _2, 0, 0
     p: ptr = addr __ctx_mem
-    store _6, p
+    store _7, p
     ret
 
 ; after the case's context is set: the nodes run
@@ -187,6 +190,19 @@ fn __set___enabled_lex(v: u1)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __enabled_lex, v
+    store c2, p
+    ret
+
+fn __get_out() -> u8$
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: u8$ = get c, out
+    ret v
+
+fn __set_out(v: u8$)
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    c2: __ctx = set c, out, v
     store c2, p
     ret
 
@@ -255,6 +271,45 @@ fn __set___node1_fin(v: u1)
     store c2, p
     ret
 
+fn __get___node2_c() -> u8$
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: u8$ = get c, __node2_c
+    ret v
+
+fn __set___node2_c(v: u8$)
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    c2: __ctx = set c, __node2_c, v
+    store c2, p
+    ret
+
+fn __get___node2_c_seen() -> i64
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: i64 = get c, __node2_c_seen
+    ret v
+
+fn __set___node2_c_seen(v: i64)
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    c2: __ctx = set c, __node2_c_seen, v
+    store c2, p
+    ret
+
+fn __get___node2_fin() -> u1
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: u1 = get c, __node2_fin
+    ret v
+
+fn __set___node2_fin(v: u1)
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    c2: __ctx = set c, __node2_fin, v
+    store c2, p
+    ret
+
 ; a feature's effective state: its own enabled and its ancestors', read by every gate
 fn __on_platform() -> u1
     own: u1 = __get___enabled_platform()
@@ -263,7 +318,7 @@ fn __on_lex() -> u1
     own: u1 = __get___enabled_lex()
     ret own
 
-; node 1: token t$ = lex (chars$) — run when an input has more than the node has seen, or has ended and the node has not run since
+; node 1: write (out$) — run when an input has more than the node has seen, or has ended and the node has not run since
 fn __node1() -> u1
     fin: u1 = __get___node1_fin()
     notfin: u1 = xor fin, 1
@@ -276,18 +331,47 @@ fn __node1() -> u1
     _8: u1 = ended(_1)
     _9: u1 = and _8, notfin
     _10: u1 = or _7, _9
+    on: u1 = __on_platform()
+    due: u1 = and _10, on
+    ran: u1 = if due
+        _11: u8$ = write(_1, 0: i64)
+        __set___node1_c(_11)
+        _12: i64, _13: i64 = position(_11)
+        _14: i64 = count _11
+        _15: i64 = add _12, _14
+        __set___node1_c_seen(_15)
+        _16: u1 = ended(_11)
+        __set___node1_fin(_16)
+        yield 1
+    else
+        yield 0
+    ret ran
+
+; node 2: token t$ = lex (chars$) — run when an input has more than the node has seen, or has ended and the node has not run since
+fn __node2() -> u1
+    fin: u1 = __get___node2_fin()
+    notfin: u1 = xor fin, 1
+    _1: u8$ = __get___node2_c()
+    _2: i64, _3: i64 = position(_1)
+    _4: i64 = count _1
+    _5: i64 = add _2, _4
+    _6: i64 = __get___node2_c_seen()
+    _7: u1 = cmp.gt _5, _6
+    _8: u1 = ended(_1)
+    _9: u1 = and _8, notfin
+    _10: u1 = or _7, _9
     on: u1 = __on_lex()
     due: u1 = and _10, on
     ran: u1 = if due
         _11: __s_token = __get_t()
         _12: u8$ = lex(_11, _1, 0: i64)
-        __set___node1_c(_12)
+        __set___node2_c(_12)
         _13: i64, _14: i64 = position(_12)
         _15: i64 = count _12
         _16: i64 = add _13, _15
-        __set___node1_c_seen(_16)
+        __set___node2_c_seen(_16)
         _17: u1 = ended(_12)
-        __set___node1_fin(_17)
+        __set___node2_fin(_17)
         yield 1
     else
         yield 0
@@ -302,7 +386,9 @@ fn __run()
         store 1: i64, p
         loop()
             r1: u1 = __node1()
-            if r1
+            r2: u1 = __node2()
+            any2: u1 = or r1, r2
+            if any2
                 continue
             else
                 break
@@ -310,32 +396,34 @@ fn __run()
     ret
 
 ; feature platform (layer platform)
+fn write(c: u8$, __hz: i64) -> u8$
+    n: i64 = count(c)
+    c2: u8$ = advance(c, n)
+    ret c2
 fn print(s: u8$)
-    q: ptr = addr __out_n
-    k0: i64 = load q
-    o: ptr = addr __out
-    f: u8[] = unread(s)
-    p: ptr(u8) = ptr f
-    n: i64 = len f
-    k1: i64 = loop(i: i64 = 0, k: i64 = k0)
-        done: u1 = cmp.ge i, n
-        if done
-            break k
-        c: u8 = load p, i
-        room: u1 = cmp.lt k, 4095
-        if room
-            store c, o, k, 1
-        i2: i64 = add i, 1
-        k2: i64 = add k, 1
-        continue i2, k2
-    room2: u1 = cmp.lt k1, 4095
-    k4: i64 = if room2
-        store 10: u8, o, k1, 1
-        k3: i64 = add k1, 1
-        yield k3
-    else
-        yield k1
-    store k4, q
+    _1: u8$ = __get_out()
+    _2: u8[] = unread(s)
+    _3: i64 = len _2
+    loop(_4: i64 = 0)
+        _5: u1 = cmp.ge _4, _3
+        if _5
+            break
+        _6: u8 = load _2, _4
+        push(_1, _6)
+        _7: i64 = add _4, 1
+        continue _7
+    _8: ptr = addr __s1
+    _9: i64 = len __s1
+    _10: u8[] = __str(_8, _9)
+    loop(_11: i64 = 0)
+        _12: u1 = cmp.ge _11, _9
+        if _12
+            break
+        _13: u8 = load _10, _11
+        push(_1, _13)
+        _14: i64 = add _11, 1
+        continue _14
+    __run()
     ret
 fn print__ints(x: int$)
     f: int[] = unread(x)
@@ -454,41 +542,35 @@ fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$
     ret c_6
 fn arrive()
     _1: u8$ = __get_chars()
-    _2: ptr = addr __s1
-    _3: i64 = len __s1
+    _2: ptr = addr __s2
+    _3: i64 = len __s2
     _4: u8[] = __str(_2, _3)
-    _5: u8$ = __copy_u8(_4)
-    _6: u8[] = unread(_5)
-    _7: i64 = len _6
-    loop(_8: i64 = 0)
-        _9: u1 = cmp.ge _8, _7
-        if _9
+    loop(_5: i64 = 0)
+        _6: u1 = cmp.ge _5, _3
+        if _6
             break
-        _10: u8 = load _6, _8
-        __push(_1, _10)
-        _11: i64 = add _8, 1
-        continue _11
+        _7: u8 = load _4, _5
+        __push(_1, _7)
+        _8: i64 = add _5, 1
+        continue _8
     __run()
     ret
 fn arrive_again()
     _1: u8$ = __get_chars()
-    _2: ptr = addr __s2
-    _3: i64 = len __s2
+    _2: ptr = addr __s3
+    _3: i64 = len __s3
     _4: u8[] = __str(_2, _3)
-    _5: u8$ = __copy_u8(_4)
-    _6: u8[] = unread(_5)
-    _7: i64 = len _6
-    loop(_8: i64 = 0)
-        _9: u1 = cmp.ge _8, _7
-        if _9
+    loop(_5: i64 = 0)
+        _6: u1 = cmp.ge _5, _3
+        if _6
             break
-        _10: u8 = load _6, _8
-        __push(_1, _10)
-        _11: i64 = add _8, 1
-        continue _11
+        _7: u8 = load _4, _5
+        __push(_1, _7)
+        _8: i64 = add _5, 1
+        continue _8
     __run()
-    _12: u8$ = __get_chars()
-    end(_12)
+    _9: u8$ = __get_chars()
+    end(_9)
     __run()
     ret
 fn two_arrivals() -> (int, int)
@@ -588,32 +670,29 @@ fn kinds_tail() -> (int, int)
     ret a, b
 fn a_word_at_the_end() -> (int, int)
     _1: u8$ = __get_chars()
-    _2: ptr = addr __s3
-    _3: i64 = len __s3
+    _2: ptr = addr __s4
+    _3: i64 = len __s4
     _4: u8[] = __str(_2, _3)
-    _5: u8$ = __copy_u8(_4)
-    _6: u8[] = unread(_5)
-    _7: i64 = len _6
-    loop(_8: i64 = 0)
-        _9: u1 = cmp.ge _8, _7
-        if _9
+    loop(_5: i64 = 0)
+        _6: u1 = cmp.ge _5, _3
+        if _6
             break
-        _10: u8 = load _6, _8
-        __push(_1, _10)
-        _11: i64 = add _8, 1
-        continue _11
+        _7: u8 = load _4, _5
+        __push(_1, _7)
+        _8: i64 = add _5, 1
+        continue _8
     __run()
-    _12: __s_token = __get_t()
-    _13: int$ = get _12, kind
-    _14: i64 = count _13
-    a: int = conv _14
-    _15: u8$ = __get_chars()
-    end(_15)
+    _9: __s_token = __get_t()
+    _10: int$ = get _9, kind
+    _11: i64 = count _10
+    a: int = conv _11
+    _12: u8$ = __get_chars()
+    end(_12)
     __run()
-    _16: __s_token = __get_t()
-    _17: int$ = get _16, kind
-    _18: i64 = count _17
-    b: int = conv _18
+    _13: __s_token = __get_t()
+    _14: int$ = get _13, kind
+    _15: i64 = count _14
+    b: int = conv _15
     ret a, b
 
 ; a stream's ring, carved from the arena: cap items (64 unless more are resident), and a tick per item unless regular; a reader's view at its start
@@ -647,20 +726,14 @@ fn __stream_u8(hz: i64, cap: i64) -> u8$
     ring_init(r, vb, tb, hz)
     s: u8$ = stream r
     ret s
-
-; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give
-fn __copy_u8(v: u8[]) -> u8$
-    n: i64 = len v
-    least: i64 = const 64
-    cap: i64 = max(n, least)
-    s: u8$ = __stream_u8(1000000, cap)
-    t: i64 = __now()
-    loop(i: i64 = 0)
-        done: u1 = cmp.ge i, n
-        if done
-            break
-        x: u8 = load v, i
-        push s, t, x
-        i2: i64 = add i, 1
-        continue i2
+fn __regular_u8(hz: i64, cap: i64) -> u8$
+    a: ptr = addr __arena
+    r: ptr = arena_alloc(a, 64)
+    sz: i64 = sizeof u8
+    bytes: i64 = mul sz, cap
+    total: i64 = add bytes, 16
+    vb: ptr = arena_alloc(a, total)
+    buffer_init(vb, sz, cap)
+    ring_regular(r, vb, hz, 1, 0)
+    s: u8$ = stream r
     ret s

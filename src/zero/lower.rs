@@ -313,8 +313,8 @@ const KINDS: [&str; 5] = ["ir", "arm64", "riscv64", "wasm32", "air"];
 /// into a feature-scope stream
 struct Node {
     info: FnInfo,
-    /// the output stream variable
-    out: String,
+    /// the output stream variable; none for a sink (log 57)
+    out: Option<String>,
     /// the arguments in the parameters' order: a stream parameter's is
     /// the name of a feature-scope stream
     args: Vec<Expr>,
@@ -394,9 +394,7 @@ pub struct Call {
 /// `__str` (a string literal's view). `__zero_reset`, which the runner
 /// calls before each case, is generated per store (log 16)
 const PRELUDE: &str = r#"
-; the print buffer: what `print` wrote, read back by the runner
-data __out: array(u8, 4096)
-data __out_n: array(i64, 1)
+; an empty string's bytes
 data __nul: array(u8, 1)
 
 ; the arena every sequence is carved from, emptied before every case
@@ -429,14 +427,17 @@ fn __sleep(hz: i64)
         store c2, p
     ret
 
+; the output stream `out$` (section 15, log 57), read back by the runner
+; through the platform feature's own reader, which nothing advances:
+; how many bytes it holds, and each one
 fn __out_len() -> i64
-    q: ptr = addr __out_n
-    n: i64 = load q
+    s: u8$ = __get_out()
+    n: i64 = count(s)
     ret n
 
 fn __out_byte(i: i64) -> u8
-    o: ptr = addr __out
-    b: u8 = load o, i, 1
+    s: u8$ = __get_out()
+    b: u8 = peek(s, i)
     ret b
 
 ; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
@@ -458,16 +459,10 @@ fn __push(s: number$, v: number)
         push(s, t, v)
     ret
 
-; one byte, when there is room
+; one byte into `out$`, a regular ring: the regular push, straight
 fn __out_ch(c: u8)
-    q: ptr = addr __out_n
-    k: i64 = load q
-    o: ptr = addr __out
-    room: u1 = cmp.lt k, 4095
-    if room
-        store c, o, k, 1
-        k2: i64 = add k, 1
-        store k2, q
+    s: u8$ = __get_out()
+    push(s, c)
     ret
 
 ; an int in decimal
@@ -504,6 +499,9 @@ fn __print_int(x: int)
 /// the front end's number until residency is computed (section 9, log
 /// 23); a reader more than half this behind fails the library's check
 const RING_ITEMS: usize = 64;
+/// the bytes the platform's `out$` holds (log 57): the compiler's number,
+/// where the print buffer's 4096 was, until a product says
+const OUT_BYTES: usize = 4096;
 
 /// the clock of a stream without a rate: microsecond ticks
 const CLOCK_HZ: i64 = 1_000_000;
@@ -543,7 +541,7 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new() };
+    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -584,11 +582,22 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
             }
         }
     }
+    // a wiring with nothing to fill makes its function a sink (log 57)
     for f in &store.features {
         l.cur = f.name.clone();
         for d in &f.code.decls {
-            if let Decl::Var(v) = d {
-                l.collect_nodes(v, &f.name, &f.code.file)?;
+            if let Decl::Wire(e) = d {
+                l.mark_sink(e, &f.name, &f.code.file)?;
+            }
+        }
+    }
+    for f in &store.features {
+        l.cur = f.name.clone();
+        for d in &f.code.decls {
+            match d {
+                Decl::Var(v) => l.collect_nodes(v, &f.name, &f.code.file)?,
+                Decl::Wire(e) => l.collect_wire(e, &f.name, &f.code.file)?,
+                _ => {}
             }
         }
     }
@@ -858,6 +867,12 @@ struct Lowerer {
     /// the feature-scope streams some node reads: a push into one from a
     /// plain function is followed by `__run()`
     node_inputs: std::collections::HashSet<String>,
+    /// the streams declared at a rate, feature-scope and, per body, local
+    /// (log 57): a push into one calls the regular push directly, since
+    /// the compiler chose the ring, where `__push` charges the clock's
+    /// branch to every push in the cost model
+    regular: std::collections::HashSet<String>,
+    regular_locals: std::collections::HashSet<String>,
     /// the feature whose code is being lowered
     cur: String,
     /// every feature's layer height (log 28)
@@ -896,8 +911,9 @@ enum RangeSink<'a> {
 #[derive(Clone, PartialEq)]
 enum BodyKind {
     Fn,
-    /// the output stream's name, and the IR name of the rate parameter
-    Task { out: String, hz: String },
+    /// the output stream's name (none for a sink, log 57), and the IR
+    /// name of the rate parameter
+    Task { out: Option<String>, hz: String },
     Reset,
     Node,
 }
@@ -1112,6 +1128,27 @@ impl Lowerer {
     }
 
     /// a view's items as a new stream, through the generated `__copy_T`
+    /// a string literal's bytes as a view of `data`, and their count
+    fn str_view(&mut self, s: &str, b: &mut Body) -> (String, String) {
+        let p = b.tmp();
+        let n = b.tmp();
+        if s.is_empty() {
+            // `""` has no bytes to keep: the IR refuses an empty
+            // `data`, so it is `__nul` with a length of zero
+            b.line(&format!("{}: ptr = addr __nul", p));
+            b.line(&format!("{}: i64 = const 0", n));
+        } else {
+            self.nstr += 1;
+            let name = format!("__s{}", self.nstr);
+            self.data.push(format!("data {} = \"{}\"", name, s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")));
+            b.line(&format!("{}: ptr = addr {}", p, name));
+            b.line(&format!("{}: i64 = len {}", n, name));
+        }
+        let v = b.tmp();
+        b.line(&format!("{}: u8[] = __str({}, {})", v, p, n));
+        (v, n)
+    }
+
     fn copy_view(&mut self, elem: &Ty, view: &str, b: &mut Body, dst: Option<&str>) -> Val {
         let ty = Ty::Stream(Box::new(elem.clone()));
         self.copies.insert(elem.ir());
@@ -1414,6 +1451,9 @@ impl Lowerer {
     fn run_task(&mut self, info: &FnInfo, args: &[Expr], hz: i64, out: &Val, b: &mut Body, line: usize) -> Result<(), Error> {
         let file = b.file.clone();
         self.reach(&spoken(info), &info.feature, &file, line)?;
+        if info.results.is_empty() {
+            return Err(lex::error(&file, line, format!("'{}' is a sink: it is wired at feature scope, `{}(...)`, and not run here", spoken(info), info.key)));
+        }
         let Ty::Stream(want) = &info.results[0].1 else { unreachable!() };
         let Ty::Stream(have) = &out.ty else { unreachable!() };
         if want != have {
@@ -1496,6 +1536,9 @@ impl Lowerer {
             let Some((info, args, hz)) = self.task_call(e, None, file)? else {
                 return Err(lex::error(file, e.line, "a value pushed after a task call at feature scope: a chain's items come before its tasks"));
             };
+            if info.results.is_empty() {
+                return Err(lex::error(file, e.line, format!("'{}' is a sink: it fills no stream, so it is wired alone, `{}`", spoken(&info), phrase_text(e))));
+            }
             self.reach(&spoken(&info), &info.feature, file, e.line)?;
             for (a, (pname, pty)) in args.iter().zip(&info.params) {
                 if let Ty::Stream(pe) = pty {
@@ -1513,8 +1556,64 @@ impl Lowerer {
                 }
             }
             let text = format!("{} {}$ {} {}", v.ty, v.name, if matches!(v.init, Some(Init::Value(_))) { "=" } else { "<<" }, phrase_text(e));
-            self.nodes.push(Node { info, out: v.name.clone(), args, hz, feature: feature.to_string(), file: file.to_string(), text });
+            self.nodes.push(Node { info, out: Some(v.name.clone()), args, hz, feature: feature.to_string(), file: file.to_string(), text });
         }
+        Ok(())
+    }
+
+    /// The sinks a store wires (log 57): a bare phrase at feature scope,
+    /// `write(out$)`, names a function with a `$` parameter and no
+    /// result, which is a task from that line on — in the IR its stream
+    /// parameters are returned moved on, so the node carries its reader
+    fn mark_sink(&mut self, e: &Expr, feature: &str, file: &str) -> Result<(), Error> {
+        let ExprKind::Phrase(parts) = &e.kind else {
+            return Err(lex::error(file, e.line, "a line at feature scope is a declaration, or a wiring `sink(x$)`"));
+        };
+        if let [.., Part::Word(at), Part::Args(a)] = parts.as_slice() {
+            if at == "at" && a.len() == 1 && matches!(&a[0].value.kind, ExprKind::Unit(..)) {
+                return Err(lex::error(file, e.line, "a sink has no rate: it runs when its input has more"));
+            }
+        }
+        let is_var = |w: &str| self.fvar(w).is_some();
+        let (cands, args) = find_methods(&self.funcs, parts, &is_var, file, e.line)?;
+        let i = self.funcs.iter().position(|g| g.key == cands[0].key && g.parts == cands[0].parts).unwrap();
+        let info = &self.funcs[i];
+        if !info.results.is_empty() {
+            return Err(lex::error(file, e.line, format!("'{}' gives a result: a wiring fills a stream, `{} x$ = {}`, or names a sink, a function with a `$` parameter and no result", spoken(info), if info.task { task_elem(info) } else { "T".into() }, phrase_text(e))));
+        }
+        if !info.params.iter().any(|(_, t)| matches!(t, Ty::Stream(_))) {
+            return Err(lex::error(file, e.line, format!("'{}' reads no stream: a sink has a `$` parameter", spoken(info))));
+        }
+        if info.chain.len() > 1 {
+            return Err(lex::error(file, e.line, format!("'{}' is a sink: a task is not redefined in this milestone", spoken(info))));
+        }
+        let _ = (args, feature);
+        self.funcs[i].task = true;
+        Ok(())
+    }
+
+    /// the node a wiring line declares: its inputs are feature-scope
+    /// streams, and it fills nothing
+    fn collect_wire(&mut self, e: &Expr, feature: &str, file: &str) -> Result<(), Error> {
+        let Some((info, args, hz)) = self.task_call(e, None, file)? else { unreachable!() };
+        self.reach(&spoken(&info), &info.feature, file, e.line)?;
+        for (a, (pname, pty)) in args.iter().zip(&info.params) {
+            if let Ty::Stream(pe) = pty {
+                let ExprKind::Seq(n) = &a.kind else {
+                    return Err(lex::error(file, a.line, format!("'{}' reads '{}$' as a stream: wire a feature-scope stream to it", info.key, pname)));
+                };
+                match self.fvar(n).map(|f| f.ty.clone()) {
+                    Some(Ty::Stream(ae)) if ae == *pe => {}
+                    Some(Ty::Stream(ae)) => return Err(lex::error(file, a.line, format!("'{}' reads a stream of {}, '{}$' holds {}", info.key, pe.ir(), n, ae.ir()))),
+                    Some(t) => return Err(lex::error(file, a.line, format!("'{}$' is a {}, not a stream", n, t.ir()))),
+                    None => return Err(lex::error(file, a.line, format!("'{}$' is not a feature-scope stream", n))),
+                }
+                self.reach(&format!("{}$", n), &self.fvar(n).unwrap().feature.clone(), file, a.line)?;
+                self.node_inputs.insert(n.clone());
+            }
+        }
+        let text = phrase_text(e);
+        self.nodes.push(Node { info, out: None, args, hz, feature: feature.to_string(), file: file.to_string(), text });
         Ok(())
     }
 
@@ -1549,8 +1648,6 @@ impl Lowerer {
     /// scheduler with a function per node (log 25)
     fn emit_context(&mut self, store: &Store) -> Result<(), Error> {
         let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Reset, func: None, below: None, product_bound: None };
-        b.line("q: ptr = addr __out_n");
-        b.line("store 0: i64, q");
         b.line("a: ptr = addr __arena");
         b.line("h: ptr = addr __heap");
         b.line("arena_init(a, h, 65536)");
@@ -1617,6 +1714,13 @@ impl Lowerer {
                                     s
                                 }
                                 Some(Init::Construct(_)) => return Err(lex::error(&b.file, v.line, format!("'{}$' is a stream: it is filled with `<<`, or made from a list or a range", v.name))),
+                                // the platform's `out$` (log 57): a regular ring of
+                                // OUT_BYTES, a byte's tick its index, so a push
+                                // costs no clock stamp
+                                None if feat.name == "platform" && v.name == "out" => {
+                                    self.regular.insert(v.name.clone());
+                                    self.make_stream_cap(&ty, CLOCK_HZ, true, OUT_BYTES, &mut b, None)
+                                }
                                 _ => self.empty_stream(v, &ty, &mut b, None)?,
                             }
                         }
@@ -1657,7 +1761,7 @@ impl Lowerer {
             b.line(&format!("store {}, p", c));
         }
         b.line("ret");
-        writeln!(self.out, "\n; before every case: the print buffer emptied, the variables at their initial values").unwrap();
+        writeln!(self.out, "\n; before every case: the arena emptied, the variables at their initial values").unwrap();
         writeln!(self.out, "fn __zero_reset()").unwrap();
         self.out.push_str(&b.out);
         // the case's context is set between the reset and the start, so
@@ -1820,8 +1924,10 @@ impl Lowerer {
         b.line(&format!("due: u1 = and {}, on", pending));
         b.line("ran: u1 = if due");
         b.depth += 1;
-        let out = self.read_fvar(&node.out, &mut b, None, 0)?;
-        let mut ops = vec![out.text.clone()];
+        let mut ops = Vec::new();
+        if let Some(out) = &node.out {
+            ops.push(self.read_fvar(out, &mut b, None, 0)?.text);
+        }
         let mut ri = 0;
         for (a, (_, pty)) in node.args.iter().zip(&node.info.params) {
             if let Ty::Stream(_) = pty {
@@ -1931,6 +2037,7 @@ impl Lowerer {
 
     fn lower_fn(&mut self, f: &FnDecl, feature: &str, file: &str) -> Result<(), Error> {
         let key = mangle(&f.name);
+        self.regular_locals.clear();
         // methods (log 36): the one declared for these parameter types
         let mut tys = Vec::new();
         for p in f.params() {
@@ -1943,7 +2050,7 @@ impl Lowerer {
         let info = candidates[0].clone();
         // a task's IR results are its stream parameters, moved on (log 25)
         let results: Vec<(String, Ty)> = if info.task { info.params.iter().filter(|(_, t)| matches!(t, Ty::Stream(_))).cloned().collect() } else { info.results.clone() };
-        let kind = if info.task { BodyKind::Task { out: info.results[0].0.clone(), hz: "__hz".into() } } else { BodyKind::Fn };
+        let kind = if info.task { BodyKind::Task { out: info.results.first().map(|(n, _)| n.clone()), hz: "__hz".into() } } else { BodyKind::Fn };
         // in a chain the body is `key__feature`, and `existing` is the link below
         let (name, below) = if info.chain.len() > 1 {
             let i = info.chain.iter().position(|c| c == feature).unwrap();
@@ -1954,8 +2061,8 @@ impl Lowerer {
         let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: results.clone(), file: file.to_string(), depth: 0, loops: Vec::new(), kind, func: Some(info.clone()), below, product_bound: self.product.get(&key).copied() };
         let mut sig = format!("fn {}(", name);
         let mut sig_params: Vec<(String, Ty)> = Vec::new();
-        if info.task {
-            sig_params.push(info.results[0].clone());
+        if let (true, Some(r)) = (info.task, info.results.first()) {
+            sig_params.push(r.clone());
         }
         sig_params.extend(info.params.iter().cloned());
         if info.task {
@@ -2984,7 +3091,7 @@ impl Lowerer {
         let (cands, args) = find_methods(&self.funcs, parts, &is_var, &file, line)?;
         let cands: Vec<FnInfo> = cands.into_iter().cloned().collect();
         if cands[0].task {
-            return Err(lex::error(&file, line, format!("'{}' is a task: it is wired into a stream, `{} x$ = {}`", spoken(&cands[0]), task_elem(&cands[0]), phrase_text(value))));
+            return Err(lex::error(&file, line, task_refusal(&cands[0], value)));
         }
         let (info, (vals, lifted, acc, rtys, _)) = self.choose(&cands, &args, b, line)?;
         if lifted.iter().any(|&l| l) || acc.is_some() {
@@ -3787,6 +3894,13 @@ impl Lowerer {
             Some(r) => self.rate_hz(r, &b.file)?,
             None => CLOCK_HZ,
         };
+        if v.rate.is_some() {
+            if b.kind == BodyKind::Reset {
+                self.regular.insert(v.name.clone());
+            } else {
+                self.regular_locals.insert(v.name.clone());
+            }
+        }
         Ok(self.make_stream(ty, hz, v.rate.is_some(), b, dst))
     }
 
@@ -3853,13 +3967,17 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
     /// a new empty stream: its ring in the arena, regular (at a rate) or
     /// with a tick per item, and a reader at its start
     fn make_stream(&mut self, ty: &Ty, hz: i64, regular: bool, b: &mut Body, dst: Option<&str>) -> Val {
+        self.make_stream_cap(ty, hz, regular, RING_ITEMS, b, dst)
+    }
+
+    fn make_stream_cap(&mut self, ty: &Ty, hz: i64, regular: bool, cap: usize, b: &mut Body, dst: Option<&str>) -> Val {
         let Ty::Stream(elem) = ty else { unreachable!() };
         let maker = if regular { "regular" } else { "stream" };
         match self.stream_fields(ty) {
             None => {
                 self.rings.insert((elem.ir(), regular));
                 let out = name_for(dst, ty, b);
-                b.line(&format!("{}: {} = __{}_{}({}, {})", out, ty.ir(), maker, elem.ir(), hz, RING_ITEMS));
+                b.line(&format!("{}: {} = __{}_{}({}, {})", out, ty.ir(), maker, elem.ir(), hz, cap));
                 Val { text: out, ty: ty.clone(), literal: false }
             }
             Some(fields) => {
@@ -3867,7 +3985,7 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
                 for (_, t) in &fields {
                     self.rings.insert((t.ir(), regular));
                     let r = b.tmp();
-                    b.line(&format!("{}: {}$ = __{}_{}({}, {})", r, t.ir(), maker, t.ir(), hz, RING_ITEMS));
+                    b.line(&format!("{}: {}$ = __{}_{}({}, {})", r, t.ir(), maker, t.ir(), hz, cap));
                     parts.push(r);
                 }
                 let out = name_for(dst, ty, b);
@@ -3948,9 +4066,15 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
     /// clock unless the ring is regular; a struct pushed field by field;
     /// a task's own output sleeps to its next tick after (log 25)
     fn emit_push(&mut self, name: &str, s: &Val, v: &Val, b: &mut Body) {
-        self.emit_push_only(s, v, b);
+        let regular = if b.vars.contains_key(name) { self.regular_locals.contains(name) } else { self.regular.contains(name) };
+        if regular && self.stream_fields(&s.ty).is_none() {
+            let v = b.materialize(v);
+            b.line(&format!("push({}, {})", s.text, v.text));
+        } else {
+            self.emit_push_only(s, v, b);
+        }
         if let BodyKind::Task { out, hz } = &b.kind {
-            if out == name {
+            if out.as_deref() == Some(name) {
                 let hz = hz.clone();
                 b.line(&format!("__sleep({})", hz));
             }
@@ -4015,6 +4139,33 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
                 }
                 self.lower_range(from, to, *inclusive, b, RangeSink::Into(name, s), e.line)?;
                 continue;
+            }
+            // a string literal pushed into a stream of bytes: its bytes,
+            // straight from `data`, with no ring for the literal (log 57)
+            if let (ExprKind::Str(text), Ty::Num(u8)) = (&e.kind, &elem) {
+                if u8 == "u8" {
+                    if cond.is_some() && last {
+                        return Err(lex::error(&file, e.line, "a block is pushed once: `while` repeats an item"));
+                    }
+                    let (view, n) = self.str_view(text, b);
+                    let i = b.tmp();
+                    b.line(&format!("loop({}: i64 = 0)", i));
+                    b.depth += 1;
+                    let done = b.tmp();
+                    b.line(&format!("{}: u1 = cmp.ge {}, {}", done, i, n));
+                    b.line(&format!("if {}", done));
+                    b.depth += 1;
+                    b.line("break");
+                    b.depth -= 1;
+                    let c = b.tmp();
+                    b.line(&format!("{}: u8 = load {}, {}", c, view, i));
+                    self.emit_push(name, s, &Val { text: c, ty: elem.clone(), literal: false }, b);
+                    let i2 = b.tmp();
+                    b.line(&format!("{}: i64 = add {}, 1", i2, i));
+                    b.line(&format!("continue {}", i2));
+                    b.depth -= 1;
+                    continue;
+                }
             }
             match cond {
                 Some(c) if last => {
@@ -4361,22 +4512,7 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
             ExprKind::Str(s) => {
                 // a string literal: its bytes in `data`, copied into a
                 // stream of bytes each time it is evaluated (log 38)
-                let p = b.tmp();
-                let n = b.tmp();
-                if s.is_empty() {
-                    // `""` has no bytes to keep: the IR refuses an empty
-                    // `data`, so it is `__nul` with a length of zero
-                    b.line(&format!("{}: ptr = addr __nul", p));
-                    b.line(&format!("{}: i64 = const 0", n));
-                } else {
-                    self.nstr += 1;
-                    let name = format!("__s{}", self.nstr);
-                    self.data.push(format!("data {} = \"{}\"", name, s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")));
-                    b.line(&format!("{}: ptr = addr {}", p, name));
-                    b.line(&format!("{}: i64 = len {}", n, name));
-                }
-                let v = b.tmp();
-                b.line(&format!("{}: u8[] = __str({}, {})", v, p, n));
+                let (v, _) = self.str_view(s, b);
                 Ok(self.copy_view(&Ty::Num("u8".into()), &v, b, dst))
             }
             ExprKind::Name(n) => match b.vars.get(n) {
@@ -4599,8 +4735,7 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
                 let (cands, args) = find_methods(&self.funcs, parts, &is_var, &file, e.line)?;
                 let cands: Vec<FnInfo> = cands.into_iter().cloned().collect();
                 if cands[0].task {
-                    let info = &cands[0];
-                    return Err(lex::error(&file, e.line, format!("'{}' is a task: it is wired into a stream, `{} x$ = {}`", spoken(info), task_elem(info), phrase_text(e))));
+                    return Err(lex::error(&file, e.line, task_refusal(&cands[0], e)));
                 }
                 // the method the arguments choose (section 6, log 36)
                 let (info, (vals, lifted, acc, rtys, _)) = self.choose(&cands, &args, b, e.line)?;
@@ -4802,9 +4937,20 @@ fn spoken(info: &FnInfo) -> String {
     info.parts.iter().filter_map(|p| if let NamePart::Word(w) = p { Some(w.as_str()) } else { None }).collect::<Vec<_>>().join(" ")
 }
 
+/// a task named where a call is: it is wired, into a stream or, as a
+/// sink, alone (log 25, 57)
+fn task_refusal(info: &FnInfo, e: &Expr) -> String {
+    if info.results.is_empty() {
+        format!("'{}' is a sink: it is wired at feature scope, `{}`, and not run here", spoken(info), phrase_text(e))
+    } else {
+        format!("'{}' is a task: it is wired into a stream, `{} x$ = {}`", spoken(info), task_elem(info), phrase_text(e))
+    }
+}
+
 /// a task's element type, in zero's spelling where it has one
 fn task_elem(info: &FnInfo) -> String {
-    match &info.results[0].1 {
+    let Some((_, r)) = info.results.first() else { return "nothing".into() };
+    match r {
         Ty::Stream(e) => match e.as_ref() {
             Ty::Num(n) if n == "u8" => "uint8".into(),
             Ty::Num(n) => match n.as_str() {

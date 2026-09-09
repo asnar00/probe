@@ -50,7 +50,7 @@ on (bool b) = flags()
     b = a == false
 
 on greet (string who)
-    print who
+    out$ << who << "\n"
 
 on hello()
     greet "world"

@@ -44,16 +44,16 @@ on (int p) = power of two above (int n)
         continue (q * 2)
 
 on describe (int x)
-    print "int"
+    out$ << "int" << "\n"
 
 on describe (float x)
-    print "float"
+    out$ << "float" << "\n"
 
 on describe (bool b)
-    print "bool"
+    out$ << "bool" << "\n"
 
 on describe (string s)
-    print "string"
+    out$ << "string" << "\n"
 
 on describe a word()
     describe "hi"

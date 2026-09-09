@@ -25,7 +25,7 @@ on (int n) = outside()
     n = i$[5]
 
 on (int n) = after printing()
-    print "so far"
+    out$ << "so far" << "\n"
     int k = 1
     check (k == 2)
     n = k

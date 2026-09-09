@@ -73,11 +73,11 @@ on (bool b) = switched on()
     b = mode == Mode.on
 
 on named()
-    print name
+    out$ << name << "\n"
 
 on renamed()
     name = "one"
-    print name
+    out$ << name << "\n"
 
 on (bool b) = flagged()
     flag = true

@@ -2,4 +2,4 @@ on run()
     hello()
 
 on hello()
-    print "hello world"
+    out$ << "hello world" << "\n"

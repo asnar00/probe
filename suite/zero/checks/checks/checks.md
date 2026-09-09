@@ -13,7 +13,7 @@ Plan item 10 of milestone 0: section 14 of zero.md — `check (c)`, `→ check` 
 - `within (k)` checks k < 5 and gives k; `guarded sum (k)` checks k is not negative and sums 1 to k.
 - `bounded (k)` maps `small (i)`, which checks its item, over a range and reduces, so the check runs once per item; `either (k)` checks inside one arm of an `if`.
 - `outside` fails the library's own check, an index past the end, which names no zero site.
-- `after printing` prints, then fails: what was printed comes before the site.
+- `after printing` writes to `out$`, then fails: what was written comes before the site.
 
 ## rules
 - `check` takes a bool; the check is a statement, and the code after it runs only when it held.

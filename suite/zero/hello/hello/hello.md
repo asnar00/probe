@@ -10,7 +10,7 @@ Plan items 9 and 12 of milestone 0: section 16's three features, `hello`, `count
 `run` says hello. The other two features extend it: `countdown` counts down before it, `bye` says goodbye after it.
 
 ## interface
-- `run` is the program; `hello` prints "hello world".
+- `run` is the program; `hello` writes "hello world" to `out$` (third pass: output is a stream, `out$ << "hello world" << "\n"`).
 
 ## rules
 - `run` is a chain: bye's, then countdown's, then hello's, each calling `existing run()` where it wants the earlier ones.
