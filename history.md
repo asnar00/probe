@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: implicit conversion — `2ef0fcc` · 2026-09-09
+
+```
+on (float64 q) = ratio of (int32 a) to (int32 b)
+    q = a / b
+
+on (int64 p) = product of (int32 a) and (int32 b)
+    p = a * b
+```
+
+Rulings pass item 3 (question 1, log 37), loosening log 7's one-type rule to conversions that lose nothing. Two concrete number types compute in the type that holds every value of both exactly (`wider` in `src/zero/lower.rs`): the wider of two widths of one signedness, a signed type wide enough for an unsigned one, the wider float, and for a float with an integer the float whose significand holds it — so `int64` with `float64` is refused rather than rounded, where Julia would round. An operator then computes in the expression's wanted type when both operands widen to it exactly: `ratio of` divides as floats, `product of` multiplies at 64 bits. A value widens on assignment, into a field, a `continue`, a loop header, a call's result and a concrete parameter; an abstract parameter binds to the widest of what its arguments bring; `if then else` arms meet in the wider. Narrowing stays `int32(x)`, and every refusal names that form. `suite/zero/types` gains eight cases. zero 214/214 on native, wasm, riscv and arm-qemu, 205 + 9 skipped on air; probe test 970, 961 + 9, 970, 970, 940 + 30; cargo test 93 passed.
+
+---
+
 ### zero: multiple dispatch — `9ac8778` · 2026-09-09
 
 ```
