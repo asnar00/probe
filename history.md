@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### stream: a block push is a copy into each half — `6f88776` · 2026-09-10
+
+```
+    a: number[] = view block, 0, first
+    d1: number[] = view vals, slot, first
+    copy d1, a
+```
+
+The parity pass, hop 4 (fm3 log 69). `lib/stream.ssa`'s `push(s, block)` pushed a block's items one by one; it now copies the block into both halves of the ring (above), split where it crosses the seam, and moves the count once; an irregular ring takes `push(s, tick, block)`, and `received(s)` joins the library. The front end pushes a string, a struct's field text or a sequence's unread items as one block, and a one-byte string as the byte itself. Hello's `run` 2 253 → 1 940 on 582 lines from 722; on the tool a block is 282 whatever its length, since `copy`'s loops are counted once, where the honest cost is a few operations a chunk (fm3 question 37). Three new stream cases. probe test 976/976 native, 967 + 9 skipped wasm, 976 riscv, 976 arm-qemu, 945 + 31 skipped air; zero 465/465 on the CPU paths, 448 + 17 skipped air; cargo test 107.
+
+---
+
 ### zero: a node's due test reads the ring's count — `115ce71` · 2026-09-10
 
 ```
