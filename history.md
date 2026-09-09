@@ -4,6 +4,17 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### stream: the ring's base moves to the read side — `41a5aff` · 2026-09-10
+
+```
+fn ring_base(r: ptr) -> i64
+    ...
+    over: i64 = sub pushed, half
+    b: i64 = max(over, 0: i64)
+```
+
+The parity pass, hop 19 (fm3 log 86). `lib/stream.ssa`'s ring header held `base`, the index of the first resident item, and every push computed and stored it — but it is `max(pushed - half, 0)`, a function of the count in the header and the buffer's slots, so the readers compute it. `frame`, `unread`, `peek` and `latest` load `pushed`, the buffer, its capacity and `half` already, so each gains a subtract and a `max` and loses a load; the sampling and history words — `behind`, `last`, `before`, `sample`, `window`, `tick_of`'s irregular arm — call `ring_base` (above). `latest`'s check and the ticked push's ordering check become `pushed > 0`, which is what they meant, since the newest item's predecessor is always resident; the header's second slot is spare. hello's `run` 2 715 → 2 597 against the oracle's 1 165, static's 2 629 → 2 511 against 1 126, lex's case 1 499 → 1 475 against 415 and `lex` 236 → 228. Library only, so no store's emitted IR changes: all five paths, `probe test` 980/980 native, zero 477/477 on the four CPU paths and 460/460 on air, cargo test 111.
+
 ### zero: `position` is the index alone, `time of` asks the time — `b0ba7ae` · 2026-09-10
 
 ```
