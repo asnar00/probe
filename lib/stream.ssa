@@ -164,19 +164,10 @@ fn ring_index(s: number$, k: i64) -> i64
     half: i64 = div cap, 2
     i: i64 = rem k, half
     ret i
-; after a push: the count, and where the resident items start
-fn ring_pushed(r: ptr, pushed: i64, half: i64)
-    next: i64 = add pushed, 1
-    store next, r
-    over: i64 = sub next, half
-    zero: i64 = const 0
-    base: i64 = max(over, zero)
-    store base, r, 8
-    ret
 ; an irregular ring's producer: an item at a tick, ticks never going
 ; back. A push stores through a pointer to the buffer's elements: its
 ; slot is under half by construction, so the view's checks would prove
-; nothing; readers take the checked view, `ring_values`
+; nothing; then the count, and where the resident items start
 fn push(s: number$, tick: i64, v: number)
     r: ptr = get s, ring
     e: i64 = load r, 56
@@ -193,8 +184,7 @@ fn push(s: number$, tick: i64, v: number)
     slot: i64 = rem pushed, half
     twin: i64 = add slot, half
     tb: ptr = load r, 24
-    thdr: i64 = const 16
-    traw: ptr = ptradd tb, thdr
+    traw: ptr = ptradd tb, 16
     ticks: ptr(i64) = cast traw
     some: u1 = cmp.gt pushed, base
     if some
@@ -203,16 +193,21 @@ fn push(s: number$, tick: i64, v: number)
         pt: i64 = load ticks, pi
         ordered: u1 = cmp.ge tick, pt
         check ordered
-    hdr: i64 = const 16
-    raw: ptr = ptradd vb, hdr
+    raw: ptr = ptradd vb, 16
     q: ptr(number) = cast raw
     store v, q, slot
     store v, q, twin
     store tick, ticks, slot
     store tick, ticks, twin
-    ring_pushed(r, pushed, half)
+    next: i64 = add pushed, 1
+    store next, r
+    over: i64 = sub next, half
+    nbase: i64 = max(over, 0: i64)
+    store nbase, r, 8
     ret
-; a regular ring's producer: the next sample
+; a regular ring's producer: the next sample, after the ring's two
+; checks — not ended, and regular, since a push without a tick into a
+; ticked ring would leave its tick stale (`irregular_push`)
 fn push(s: number$, v: number)
     r: ptr = get s, ring
     e: i64 = load r, 56
@@ -227,12 +222,15 @@ fn push(s: number$, v: number)
     half: i64 = div cap, 2
     slot: i64 = rem pushed, half
     twin: i64 = add slot, half
-    hdr: i64 = const 16
-    raw: ptr = ptradd vb, hdr
+    raw: ptr = ptradd vb, 16
     q: ptr(number) = cast raw
     store v, q, slot
     store v, q, twin
-    ring_pushed(r, pushed, half)
+    next: i64 = add pushed, 1
+    store next, r
+    over: i64 = sub next, half
+    base: i64 = max(over, 0: i64)
+    store base, r, 8
     ret
 ; ... a block at a time: copied into the slots from the next one and
 ; again half further on, the rest into the start of each half where the
@@ -395,16 +393,22 @@ fn unread(s: number$) -> number[]
     n: i64 = sub pushed, pos
     f: number[] = view vals, start, n
     ret f
+; one item read through the buffer's typed pointer at its slot, as the
+; push stored it, after the checks a reader is owed: no view packed
 fn latest(s: number$) -> number
     r: ptr = get s, ring
     pushed: i64 = load r
     base: i64 = load r, 8
     some: u1 = cmp.gt pushed, base
     check some
-    vals: number[] = ring_values(r)
+    vb: ptr = load r, 16
+    cap: i64 = load vb, 8
+    half: i64 = div cap, 2
     last: i64 = sub pushed, 1
-    i: i64 = ring_index(s, last)
-    v: number = load vals, i
+    i: i64 = rem last, half
+    raw: ptr = ptradd vb, 16
+    q: ptr(number) = cast raw
+    v: number = load q, i
     ret v
 ; the i-th unread item, the reader not moved; and the reader moved on n
 fn peek(s: number$, i: i64) -> number
@@ -417,9 +421,13 @@ fn peek(s: number$, i: i64) -> number
     at: i64 = add pos, i
     inside: u1 = cmp.lt at, pushed
     check inside
-    vals: number[] = ring_values(r)
-    k: i64 = ring_index(s, at)
-    v: number = load vals, k
+    vb: ptr = load r, 16
+    cap: i64 = load vb, 8
+    half: i64 = div cap, 2
+    k: i64 = rem at, half
+    raw: ptr = ptradd vb, 16
+    q: ptr(number) = cast raw
+    v: number = load q, k
     ret v
 fn advance(s: number$, n: i64) -> number$
     r: ptr = get s, ring

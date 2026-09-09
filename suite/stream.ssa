@@ -29,6 +29,7 @@
 ;! unread_view -> 12, 5
 ;! wrapped -> 57, 7
 ;! wrapped_history -> 27, 57
+;! peeked_across_the_seam -> 7, 12
 ;! block_across_the_seam -> 340, 4
 ;! block_with_a_tick -> 36, 4
 ;! block_too_long -> check
@@ -178,6 +179,23 @@ fn wrapped_history() -> (u8, u8)
     w: u8[] = window s, t1, t2
     ws: u8 = sum w
     ret hs, ws
+; ... and a reader six in peeks across it: the first unread is 7 and
+; the latest 12, each one load through the buffer's pointer (log 74)
+fn peeked_across_the_seam() -> (u8, u8)
+    s: u8$ = fresh()
+    loop(k: i64 = 1)
+        done: u1 = cmp.gt k, 12
+        if done
+            break
+        t: i64 = mul k, 1000
+        v: u8 = conv k
+        push s, t, v
+        k2: i64 = add k, 1
+        continue k2
+    s2: u8$ = advance(s, 6)
+    a: u8 = peek s2, 0
+    z: u8 = latest s2
+    ret a, z
 ; six items into the regular ring of sixteen, then a block of four: it
 ; lands across the seam, and a reader six in frames the four as one view
 fn block_across_the_seam() -> (i32, i64)
