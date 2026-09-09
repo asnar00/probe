@@ -2,6 +2,18 @@
 
 What landed, one short entry per commit — or per group, when several arrived together as one piece of work. Newest first. `git show <hash>` has the full story for any of them.
 
+---
+
+### stream: a block push is three copies — `a568218` · 2026-09-10
+
+```
+    slot: i64 = rem pushed, half
+    d1: number[] = view vals, slot, n
+    copy d1, block
+```
+
+The parity pass, hop 14 (fm3 log 80). `lib/stream.ssa`'s block pushes land the block whole from its slot (above) — under half from a slot under half, it never reaches the end, and past the seam it writes the twin positions — and split only the twin copy where it reaches the end: three copies where there were four, the same slots with the same items, `suite/stream.ssa` unchanged at 29. hello 3 767 → 3 487 on the tool, static 3 681 → 3 401. Every path: zero 477/477 on the CPU paths and 460 + 17 skipped on air, probe test 977/977, 968 + 9, 977, 977, 946 + 31; cargo test 111.
+
 ### zero: the arrival bound on an edge's loop — `fc3ac20` · 2026-09-10
 
 ```
