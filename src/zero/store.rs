@@ -33,6 +33,23 @@ impl Store {
     pub fn rank(&self, layer: &str) -> usize {
         self.layers.iter().position(|l| l == layer).unwrap_or(0)
     }
+
+    /// a feature and every feature under it in the parent tree: what a
+    /// switch of that feature takes with it, since the enabled gate is
+    /// the ancestor conjunction (structure.md, log 44)
+    pub fn subtree(&self, name: &str) -> Vec<String> {
+        let mut out = vec![name.to_string()];
+        let mut i = 0;
+        while i < out.len() {
+            for f in &self.features {
+                if f.parent.as_deref() == Some(out[i].as_str()) && !out.contains(&f.name) {
+                    out.push(f.name.clone());
+                }
+            }
+            i += 1;
+        }
+        out
+    }
 }
 
 pub struct FeatureDoc {

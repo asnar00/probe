@@ -305,14 +305,14 @@ pub struct Lowered {
 
 /// what the runner calls for a case: the IR function, its integer
 /// arguments, how many results it has, what the case expects, and the
-/// context the case runs in (log 43): the setter of each named
-/// feature's `enabled` and the value to give it
+/// context its line names (log 43, 44): each feature and whether it is
+/// on, checked to be the store's; the runner turns it into setter calls
 pub struct Call {
     pub func: String,
     pub args: Vec<i64>,
     pub nrets: usize,
     pub expect: Expect,
-    pub before: Vec<(String, Vec<i64>)>,
+    pub context: Vec<(String, bool)>,
 }
 
 /// the IR every store gets: the output buffer `print` appends to, the
@@ -622,14 +622,12 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str) -> Result<Call, 
         };
         vals.push(v);
     }
-    let mut before = Vec::new();
     for (feature, on) in &case.context {
         if !lowered.features.contains(feature) {
             return Err(lex::error(file, case.line, format!("`with {} {}`: no feature named '{}' in the store", feature, if *on { "on" } else { "off" }, feature)));
         }
-        before.push((format!("__set___enabled_{}", feature), vec![*on as i64]));
     }
-    Ok(Call { func: info.ir.clone(), args: vals, nrets: info.results.len(), expect: case.expect.clone(), before })
+    Ok(Call { func: info.ir.clone(), args: vals, nrets: info.results.len(), expect: case.expect.clone(), context: case.context.clone() })
 }
 
 /// the refusal of an ambiguous call, naming the methods that contend
