@@ -2,6 +2,24 @@
 
 What landed, one short entry per commit — or per group, when several arrived together as one piece of work. Newest first. `git show <hash>` has the full story for any of them.
 
+---
+
+### zero: the scheduler is a static schedule where the node graph is acyclic — `5499381` · 2026-09-10
+
+```
+fn __run_out()
+    p: ptr = addr __running
+    busy: i64 = load p
+    idle: u1 = cmp.eq busy, 0
+    if idle
+        store 1: i64, p
+        r1: u1 = __node1()
+        store 0: i64, p
+    ret
+```
+
+The parity pass, hop 12 (fm3 log 78, question 40). `src/zero/lower.rs` works out what each node may push into (`Pushes`, an over-approximation chased through the store's functions), orders the nodes with every producer before its consumers, and emits `__run()` as one ordered pass and `__run_<s>()` per stream a node reads (above, `suite/zero/hello.expected.ssa`), run after a push from a plain function; the loop stays for a cyclic graph, and no store in the suite has one. hello 3 919 → 2 318 on the tool, static 3 729 → 2 232, the loop's 712 a site becoming 88 at hello's. A front-end change: zero 477/477 native and wasm, cargo test zero:: 18.
+
 ### zero: the real clock on `run`, an edge taking each item at its tick, and the output laid out case line first — `beaec74` · 2026-09-10
 
 ```
