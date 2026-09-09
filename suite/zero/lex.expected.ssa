@@ -55,8 +55,9 @@ fn __str(p: ptr, n: i64) -> u8[]
     v: u8[] = pack q, n, 1
     ret v
 
+
 ; a push into any stream (log 38): stamped with the clock on a ring
-; without a rate, the next sample on one with a rate
+; that keeps ticks, the next sample on one that does not
 fn __push(s: number$, v: number)
     r: ptr = get s, ring
     step: i64 = load r, 40

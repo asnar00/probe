@@ -12,11 +12,6 @@ data __clock: array(i64, 1)
 ; the scheduler is running: a push from inside a task does not start it again
 data __running: array(i64, 1)
 
-fn __now() -> i64
-    p: ptr = addr __clock
-    k: i64 = load p
-    ret k
-
 ; the output stream `out$` (section 15, log 57), read back by the runner
 ; through the platform feature's own reader, which nothing advances:
 ; how many bytes it holds, and each one
@@ -43,27 +38,13 @@ fn __str(p: ptr, n: i64) -> u8[]
     v: u8[] = pack q, n, 1
     ret v
 
-; a push into any stream (log 38): stamped with the clock on a ring
-; without a rate, the next sample on one with a rate
+
+; a push into any stream: no ring in this store keeps ticks (log 73)
 fn __push(s: number$, v: number)
-    r: ptr = get s, ring
-    step: i64 = load r, 40
-    regular: u1 = cmp.gt step, 0
-    if regular
-        push(s, v)
-    else
-        t: i64 = __now()
-        push(s, t, v)
+    push(s, v)
     ret
 fn __push(s: number$, block: number[])
-    r: ptr = get s, ring
-    step: i64 = load r, 40
-    regular: u1 = cmp.gt step, 0
-    if regular
-        push(s, block)
-    else
-        t: i64 = __now()
-        push(s, t, block)
+    push(s, block)
     ret
 
 
@@ -102,7 +83,7 @@ fn __zero_reset()
     r: ptr = addr __running
     store 0: i64, r
     _1: u8$ = __regular_u8(1000000, 4096)
-    _2: u8$ = __stream_u8(1000000, 512)
+    _2: u8$ = __regular_u8(1000000, 512)
     _3: int$ = __regular_int(1, 64)
     _4: __ctx = pack _1, _2, _3, _1, 0, 0, _3, 0, 0
     p: ptr = addr __ctx_mem
@@ -388,22 +369,6 @@ fn __regular_int(hz: i64, cap: i64) -> int$
     buffer_init(vb, sz, slots)
     ring_regular(r, vb, hz, 1, 0)
     s: int$ = stream r
-    ret s
-fn __stream_u8(hz: i64, cap: i64) -> u8$
-    a: ptr = addr __arena
-    r: ptr = arena_alloc(a, 64)
-    slots: i64 = mul cap, 2
-    sz: i64 = sizeof u8
-    bytes: i64 = mul sz, slots
-    total: i64 = add bytes, 16
-    vb: ptr = arena_alloc(a, total)
-    buffer_init(vb, sz, slots)
-    tbytes: i64 = mul slots, 8
-    ttotal: i64 = add tbytes, 16
-    tb: ptr = arena_alloc(a, ttotal)
-    buffer_init(tb, 8, slots)
-    ring_init(r, vb, tb, hz)
-    s: u8$ = stream r
     ret s
 fn __regular_u8(hz: i64, cap: i64) -> u8$
     a: ptr = addr __arena

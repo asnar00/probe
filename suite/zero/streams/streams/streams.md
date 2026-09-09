@@ -22,13 +22,13 @@ A stream is a value over time. `T x$` declares an empty one; `<<` pushes its fir
 - `indexed`, `summed`, `mapped`, `walked over`, `unread only` and `framed pushed` use the sequence words on a pushed stream: an index, `+ _`, `* 2`, a `for` adding into the feature variable `seen`, a reduction after `advance`, and a push into a frame.
 
 ## rules
-- Every `$` name is a stream: a bare declaration is empty, `<<` pushes, `at (n hz)` sets a rate, and `=` gives it the items of a list, a range, a string or another stream's result. `frame`, `behind` and `from ... to` give new streams holding copies of the items, stamped at the clock's now.
+- Every `$` name is a stream: a bare declaration is empty, `<<` pushes, `at (n hz)` sets a rate, and `=` gives it the items of a list, a range, a string or another stream's result. `frame`, `behind` and `from ... to` give new streams holding copies of the items, stamped at the clock's now where the copy is timed.
 - `x$ << block$` pushes every unread item of another stream, one push each.
 - `x$ << e while (c)`: the candidate is computed from the latest item and pushed only when the condition holds; in the condition `_` is the candidate and `x$` is still the latest item, so `while (_ < 5)` stops before 5 and `while (i$ < 5)` after it (question 9).
 - `advance` and `frame` move the reader; inside a `loop` the loop carries the stream, and after it the variable holds the moved reader.
 - `x$[i]`, `for`, map, zip and reduce read the unread items and do not move the reader, so they agree with `count`.
 - A stream of structs holds numbers and enumerations in its fields, and takes `peek`, `x$[i]`, `latest`, `advance`, `count`, `for`, `end` and `ended`; `frame`, `behind`, `at`, `from`/`to`, map, zip and reduce on one wait for sequences of structs.
-- A push after `end` is a failed check. A push is stamped from the store's clock on a stream without a rate, which nothing moves yet; `position`'s tick is then 0, or -1 when nothing is unread.
+- A push after `end` is a failed check. A stream is timed only when something asks for time (section 9, log 73): a rate on its declaration or its wiring, or a time word applied to its name anywhere in the store — `x$ at (t)`, `x$ from (a) to (b)`, `position x$` — and a time word on a function's stream parameter times every stream in the store, since any may be passed there. A timed stream without a rate keeps a tick per item, stamped from the store's clock, which nothing moves yet, so `position`'s tick is 0, or -1 when nothing is unread; every other stream is a plain ring with no ticks, and a push into it is a store and a count. Here `x$` and `i$` are timed by `positioned` and `position unread`, and the rest are plain.
 - A ring keeps 64 items resident, or as many as a list, a range or a copy puts in it, in twice that many slots (each item sits in both halves, so a frame across the seam is one view and a push never slides); a reader more than that behind fails a check. Every ring is carved from the store's arena.
 
 ## testing

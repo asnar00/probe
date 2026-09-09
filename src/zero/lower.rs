@@ -463,8 +463,14 @@ fn __str(p: ptr, n: i64) -> u8[]
     v: u8[] = pack q, n, 1
     ret v
 
+"#;
+
+/// a push into any stream (log 38): stamped with the clock on a ring
+/// that keeps ticks, the next sample on one that does not — or, in a
+/// store where no ring keeps ticks (log 73), the plain push itself
+const PUSH_BRANCHED: &str = r#"
 ; a push into any stream (log 38): stamped with the clock on a ring
-; without a rate, the next sample on one with a rate
+; that keeps ticks, the next sample on one that does not
 fn __push(s: number$, v: number)
     r: ptr = get s, ring
     step: i64 = load r, 40
@@ -484,6 +490,15 @@ fn __push(s: number$, block: number[])
     else
         t: i64 = __now()
         push(s, t, block)
+    ret
+"#;
+const PUSH_PLAIN: &str = r#"
+; a push into any stream: no ring in this store keeps ticks (log 73)
+fn __push(s: number$, v: number)
+    push(s, v)
+    ret
+fn __push(s: number$, block: number[])
+    push(s, block)
     ret
 "#;
 
@@ -539,7 +554,7 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new() };
+    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -567,6 +582,16 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         }
     }
     l.name_methods(&store.features.iter().map(|f| (f.name.clone(), f.code.file.clone())).collect())?;
+    // which streams something asks a time of (log 73): looked for
+    // before any ring is made
+    for f in &store.features {
+        for d in &f.code.decls {
+            if let Decl::Fn(fd) = d {
+                let params: Vec<String> = fd.params().filter(|p| p.seq).map(|p| p.name.clone()).collect();
+                time_words(&fd.body, &params, &mut l.timed, &mut l.timed_all);
+            }
+        }
+    }
     // the product's settings name the store's functions (log 41)
     for (words, n) in &store.product {
         let key = words.join("_");
@@ -632,14 +657,19 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         writeln!(l.out, "fn __{}_{}(hz: i64, cap: i64) -> {}$\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, 64)\n    slots: i64 = mul cap, 2\n    sz: i64 = sizeof {}\n    bytes: i64 = mul sz, slots\n    total: i64 = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, slots)\n{}    {}\n    s: {}$ = stream r\n    ret s", name, t, t, t, ticks, init, t).unwrap();
     }
     if !l.copies.is_empty() {
-        writeln!(l.out, "\n; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give").unwrap();
+        writeln!(l.out, "\n; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give; stamped once where something asks its time (log 73)").unwrap();
     }
-    for t in &l.copies {
-        writeln!(l.out, "fn __copy_{}(v: {}[]) -> {}$\n    n: i64 = len v\n    least: i64 = const {}\n    cap: i64 = max(n, least)\n    s: {}$ = __stream_{}({}, cap)\n    t: i64 = __now()\n    loop(i: i64 = 0)\n        done: u1 = cmp.ge i, n\n        if done\n            break\n        x: {} = load v, i\n        push s, t, x\n        i2: i64 = add i, 1\n        continue i2\n    ret s", t, t, t, RING_ITEMS, t, t, CLOCK_HZ, t).unwrap();
+    for (t, regular) in &l.copies {
+        if *regular {
+            writeln!(l.out, "fn __copy_{}(v: {}[]) -> {}$\n    n: i64 = len v\n    least: i64 = const {}\n    cap: i64 = max(n, least)\n    s: {}$ = __regular_{}({}, cap)\n    loop(i: i64 = 0)\n        done: u1 = cmp.ge i, n\n        if done\n            break\n        x: {} = load v, i\n        push s, x\n        i2: i64 = add i, 1\n        continue i2\n    ret s", t, t, t, RING_ITEMS, t, t, CLOCK_HZ, t).unwrap();
+        } else {
+            writeln!(l.out, "fn __copy_timed_{}(v: {}[]) -> {}$\n    n: i64 = len v\n    least: i64 = const {}\n    cap: i64 = max(n, least)\n    s: {}$ = __stream_{}({}, cap)\n    t: i64 = __now()\n    loop(i: i64 = 0)\n        done: u1 = cmp.ge i, n\n        if done\n            break\n        x: {} = load v, i\n        push s, t, x\n        i2: i64 = add i, 1\n        continue i2\n    ret s", t, t, t, RING_ITEMS, t, t, CLOCK_HZ, t).unwrap();
+        }
     }
     let mut ir = String::new();
     writeln!(ir, "; lowered from the zero store {}", store.path.display()).unwrap();
     ir.push_str(PRELUDE);
+    ir.push_str(if l.rings.iter().any(|(_, regular)| !regular) { PUSH_BRANCHED } else { PUSH_PLAIN });
     if !l.type_lines.is_empty() {
         ir.push('\n');
         for t in &l.type_lines {
@@ -1029,7 +1059,7 @@ struct Lowerer {
     fvars: Vec<FVar>,
     /// the element types views were copied into streams of: one
     /// `__copy_T` each
-    copies: std::collections::BTreeSet<String>,
+    copies: std::collections::BTreeSet<(String, bool)>,
     /// the rings made: element type and whether regular, one
     /// `__stream_T` or `__regular_T` each
     rings: std::collections::BTreeSet<(String, bool)>,
@@ -1045,6 +1075,12 @@ struct Lowerer {
     /// the edges (log 72): the sink the front end wrote for each, its
     /// feature and its file, lowered with that feature's functions
     edges: Vec<(FnDecl, String, String)>,
+    /// the streams something asks a time of (log 73): the names a time
+    /// word is applied to anywhere in the store; and whether a time
+    /// word is applied to a function's stream parameter, when every
+    /// unrated stream keeps its ticks, since any may be passed there
+    timed: std::collections::HashSet<String>,
+    timed_all: bool,
     /// the streams declared at a rate, feature-scope and, per body, local
     /// (log 57): a push into one calls the regular push directly, since
     /// the compiler chose the ring, where `__push` charges the clock's
@@ -1288,9 +1324,10 @@ impl Lowerer {
     /// least `cap` items — the count, or `RING_ITEMS` when that is
     /// larger — in the arena, stamped once at the clock's now; the
     /// caller pushes the items with `push s, t, x`
-    fn new_resident(&mut self, elem: &Ty, cap: &str, b: &mut Body, dst: Option<&str>) -> (Val, String) {
+    fn new_resident(&mut self, elem: &Ty, cap: &str, b: &mut Body, dst: Option<&str>) -> (Val, Option<String>) {
         let ty = Ty::Stream(Box::new(elem.clone()));
-        self.rings.insert((elem.ir(), false));
+        let regular = self.plain(dst, b);
+        self.rings.insert((elem.ir(), regular));
         let cap = match cap.parse::<usize>() {
             Ok(n) => n.max(RING_ITEMS).to_string(),
             Err(_) => {
@@ -1302,10 +1339,13 @@ impl Lowerer {
             }
         };
         let out = name_for(dst, &ty, b);
-        b.line(&format!("{}: {} = __stream_{}({}, {})", out, ty.ir(), elem.ir(), CLOCK_HZ, cap));
+        b.line(&format!("{}: {} = __{}_{}({}, {})", out, ty.ir(), if regular { "regular" } else { "stream" }, elem.ir(), CLOCK_HZ, cap));
+        if regular {
+            return (Val { text: out, ty, literal: false }, None);
+        }
         let t = b.tmp();
         b.line(&format!("{}: i64 = __now()", t));
-        (Val { text: out, ty, literal: false }, t)
+        (Val { text: out, ty, literal: false }, Some(t))
     }
 
     /// a view's items as a new stream, through the generated `__copy_T`
@@ -1332,11 +1372,32 @@ impl Lowerer {
 
     fn copy_view(&mut self, elem: &Ty, view: &str, b: &mut Body, dst: Option<&str>) -> Val {
         let ty = Ty::Stream(Box::new(elem.clone()));
-        self.copies.insert(elem.ir());
-        self.rings.insert((elem.ir(), false));
+        let regular = self.plain(dst, b);
+        self.copies.insert((elem.ir(), regular));
+        self.rings.insert((elem.ir(), regular));
         let out = name_for(dst, &ty, b);
-        b.line(&format!("{}: {} = __copy_{}({})", out, ty.ir(), elem.ir(), view));
+        b.line(&format!("{}: {} = __copy_{}{}({})", out, ty.ir(), if regular { "" } else { "timed_" }, elem.ir(), view));
         Val { text: out, ty, literal: false }
+    }
+
+    /// Is a stream plain (log 73)? Nothing in the store asks a time of
+    /// it — no time word on its name, none on any stream parameter —
+    /// so its ring keeps no ticks and it joins the `regular` set, its
+    /// pushes going straight to `push`
+    fn plain(&mut self, name: Option<&str>, b: &Body) -> bool {
+        if self.timed_all {
+            return false;
+        }
+        let Some(n) = name else { return true };
+        if self.timed.contains(n) {
+            return false;
+        }
+        if b.kind == BodyKind::Reset {
+            self.regular.insert(n.to_string());
+        } else {
+            self.regular_locals.insert(n.to_string());
+        }
+        true
     }
 
     /// a stream's unread items as one view, the reader not moved: what
@@ -1972,6 +2033,12 @@ impl Lowerer {
                     let val = match &v.init {
                         _ if matches!(ty, Ty::Stream(_)) => {
                             let wired = matches!(&v.init, Some(Init::Value(e)) if matches!(self.task_call(e, None, &b.file), Ok(Some(_))));
+                            // wired to a task at a rate: timed by the rate (log 73)
+                            if let Some(Init::Value(e)) = &v.init {
+                                if matches!(self.task_call(e, None, &b.file), Ok(Some((_, _, hz))) if hz > 0) {
+                                    self.timed.insert(v.name.clone());
+                                }
+                            }
                             match &v.init {
                                 // a stream with its items resident: the ring
                                 // the expression made (log 38)
@@ -1996,7 +2063,10 @@ impl Lowerer {
                                 }
                                 // the platform's `in$` (log 62): a sparse ring of
                                 // IN_BYTES, a keyboard being sparse on the clock
-                                None if feat.name == "platform" && v.name == "in" => self.make_stream_cap(&ty, CLOCK_HZ, false, IN_BYTES, &mut b, None),
+                                None if feat.name == "platform" && v.name == "in" => {
+                                    let regular = self.plain(Some("in"), &b);
+                                    self.make_stream_cap(&ty, CLOCK_HZ, regular, IN_BYTES, &mut b, None)
+                                }
                                 _ => self.empty_stream(v, &ty, &mut b, None)?,
                             }
                         }
@@ -2985,7 +3055,10 @@ impl Lowerer {
             Ty::Bool | Ty::Num(_) | Ty::Enum(_) => Val { text: "0".into(), ty: t.clone(), literal: true },
             Ty::Struct(name) => self.construct(name, &[], b, None, 0).unwrap_or(Val { text: "0".into(), ty: t.clone(), literal: true }),
             // an empty stream
-            Ty::Stream(_) => self.make_stream(t, CLOCK_HZ, false, b, None),
+            Ty::Stream(_) => {
+                let regular = self.plain(None, b);
+                self.make_stream(t, CLOCK_HZ, regular, b, None)
+            }
             Ty::None => Val { text: String::new(), ty: Ty::None, literal: false },
         }
     }
@@ -3188,6 +3261,9 @@ impl Lowerer {
                             self.assign(&v.name, s, b, v.line)?;
                         }
                         (Some(Init::Value(e)), Some((info, args, hz))) => {
+                            if hz > 0 {
+                                self.timed.insert(v.name.clone());
+                            }
                             let s = self.empty_stream(v, &ty, b, Some(&v.name))?;
                             self.assign(&v.name, s.clone(), b, v.line)?;
                             self.run_task(&info, &args, hz, &s, b, e.line)?;
@@ -3813,8 +3889,13 @@ impl Lowerer {
                     return Ok(r);
                 }
                 let r = b.materialize(&r);
+                let regular = self.plain(dst, b);
                 let t = b.tmp();
-                b.line(&format!("push {}, {}, {}", c, t, r.text));
+                if regular {
+                    b.line(&format!("push {}, {}", c, r.text));
+                } else {
+                    b.line(&format!("push {}, {}, {}", c, t, r.text));
+                }
                 let k2 = b.tmp();
                 b.line(&format!("{}: i64 = add {}, 1", k2, k));
                 b.line(&format!("continue {}", k2));
@@ -3826,13 +3907,15 @@ impl Lowerer {
                 // the results' ring, before the loop: as many items as the
                 // longest input, stamped once
                 let rty = Ty::Stream(Box::new(r.ty.clone()));
-                self.rings.insert((r.ty.ir(), false));
+                self.rings.insert((r.ty.ir(), regular));
                 let least = b.tmp();
                 b.line(&format!("{}: i64 = const {}", least, RING_ITEMS));
                 let cap = b.tmp();
                 b.line(&format!("{}: i64 = max({}, {})", cap, n, least));
-                b.line(&format!("{}: {} = __stream_{}({}, {})", c, rty.ir(), r.ty.ir(), CLOCK_HZ, cap));
-                b.line(&format!("{}: i64 = __now()", t));
+                b.line(&format!("{}: {} = __{}_{}({}, {})", c, rty.ir(), if regular { "regular" } else { "stream" }, r.ty.ir(), CLOCK_HZ, cap));
+                if !regular {
+                    b.line(&format!("{}: i64 = __now()", t));
+                }
                 b.open_loop("", &format!("{}: i64 = 0", k), false);
                 b.out.push_str(&body);
                 let _ = dst;
@@ -3910,7 +3993,10 @@ impl Lowerer {
         let (c, t) = self.new_resident(&e, &vals.len().to_string(), b, dst);
         for v in &vals {
             // a literal pushed after a stream takes the item's type
-            b.line(&format!("push {}, {}, {}", c.text, t, v.text));
+            match &t {
+                Some(t) => b.line(&format!("push {}, {}, {}", c.text, t, v.text)),
+                None => b.line(&format!("push {}, {}", c.text, v.text)),
+            }
         }
         Ok(c)
     }
@@ -3946,7 +4032,7 @@ impl Lowerer {
             }
         }
         // where each value goes: a new ring, stamped once, or the stream
-        let target = |l: &mut Lowerer, count: &str, b: &mut Body| -> (Val, Option<String>) {
+        let target = |l: &mut Lowerer, count: &str, b: &mut Body| -> (Val, Option<Option<String>>) {
             match sink {
                 RangeSink::New(dst) => {
                     let (c, t) = l.new_resident(&ty, count, b, dst);
@@ -3955,8 +4041,9 @@ impl Lowerer {
                 RangeSink::Into(_, s) => (s.clone(), None),
             }
         };
-        let emit = |l: &mut Lowerer, c: &Val, t: &Option<String>, x: &str, b: &mut Body| match (t, sink) {
-            (Some(t), _) => b.line(&format!("push {}, {}, {}", c.text, t, x)),
+        let emit = |l: &mut Lowerer, c: &Val, t: &Option<Option<String>>, x: &str, b: &mut Body| match (t, sink) {
+            (Some(Some(t)), _) => b.line(&format!("push {}, {}, {}", c.text, t, x)),
+            (Some(None), _) => b.line(&format!("push {}, {}", c.text, x)),
             (None, RangeSink::Into(name, _)) => l.emit_push(name, c, &Val { text: x.to_string(), ty: ty.clone(), literal: false }, b),
             _ => unreachable!(),
         };
@@ -4217,14 +4304,19 @@ impl Lowerer {
             Some(r) => self.rate_hz(r, &b.file)?,
             None => CLOCK_HZ,
         };
-        if v.rate.is_some() {
+        // at a rate, or plain because nothing asks its time (log 73):
+        // a regular ring; else one that keeps a tick per item
+        let regular = if v.rate.is_some() {
             if b.kind == BodyKind::Reset {
                 self.regular.insert(v.name.clone());
             } else {
                 self.regular_locals.insert(v.name.clone());
             }
-        }
-        Ok(self.make_stream(ty, hz, v.rate.is_some(), b, dst))
+            true
+        } else {
+            self.plain(Some(&v.name), b)
+        };
+        Ok(self.make_stream(ty, hz, regular, b, dst))
     }
 
     /// `T x$ = e` (log 38): the stream the expression made, its items
@@ -5207,6 +5299,102 @@ fn name_for(dst: Option<&str>, ty: &Ty, b: &mut Body) -> String {
 /// the streams a block moves: the names `advance x$ by (n)` and
 /// `frame x$` are applied to, anywhere in it, and the stream arguments
 /// of a task call (`task` says which, log 25)
+/// The streams a body asks a time of (log 73, zero.md section 9): the
+/// names under `x$ at (t)` with `t` not a rate, `x$ from (a) to (b)`
+/// and `position x$`; and whether one of them is a parameter of the
+/// function, when any stream may be passed there and the store keeps
+/// every unrated stream's ticks
+fn time_words(stmts: &[Stmt], params: &[String], out: &mut std::collections::HashSet<String>, on_param: &mut bool) {
+    for s in stmts {
+        match s {
+            Stmt::Var(v) => time_words_init(v, params, out, on_param),
+            Stmt::Multi { value, .. } | Stmt::Assign { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => time_words_in(value, params, out, on_param),
+            Stmt::If { cond, then, els, .. } => {
+                time_words_in(cond, params, out, on_param);
+                time_words(then, params, out, on_param);
+                if let Some(e) = els {
+                    time_words(e, params, out, on_param);
+                }
+            }
+            Stmt::Loop { vars, cond, body, .. } => {
+                for v in vars {
+                    time_words_init(v, params, out, on_param);
+                }
+                cond.iter().for_each(|e| time_words_in(e, params, out, on_param));
+                time_words(body, params, out, on_param);
+            }
+            Stmt::For { seq, body, .. } => {
+                time_words_in(seq, params, out, on_param);
+                time_words(body, params, out, on_param);
+            }
+            Stmt::Continue { values, .. } => values.iter().for_each(|e| time_words_in(e, params, out, on_param)),
+            Stmt::Push { items, cond, .. } => {
+                items.iter().for_each(|e| time_words_in(e, params, out, on_param));
+                cond.iter().for_each(|e| time_words_in(e, params, out, on_param));
+            }
+            Stmt::Break { .. } => {}
+        }
+    }
+}
+
+fn time_words_init(v: &super::syntax::VarDecl, params: &[String], out: &mut std::collections::HashSet<String>, on_param: &mut bool) {
+    match &v.init {
+        Some(Init::Value(e)) => time_words_in(e, params, out, on_param),
+        Some(Init::Construct(args)) => args.iter().for_each(|a| time_words_in(&a.value, params, out, on_param)),
+        Some(Init::Pushes { items, cond }) => {
+            items.iter().for_each(|e| time_words_in(e, params, out, on_param));
+            cond.iter().for_each(|e| time_words_in(e, params, out, on_param));
+        }
+        None => {}
+    }
+}
+
+fn time_words_in(e: &Expr, params: &[String], out: &mut std::collections::HashSet<String>, on_param: &mut bool) {
+    let mut asked = |n: &String| {
+        if params.contains(n) {
+            *on_param = true;
+        }
+        out.insert(n.clone());
+    };
+    match &e.kind {
+        ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => time_words_in(x, params, out, on_param),
+        ExprKind::List(items) => items.iter().for_each(|x| time_words_in(x, params, out, on_param)),
+        ExprKind::Range { from, to, .. } => {
+            time_words_in(from, params, out, on_param);
+            time_words_in(to, params, out, on_param);
+        }
+        ExprKind::Bin(_, l, r) | ExprKind::Index(l, r) => {
+            time_words_in(l, params, out, on_param);
+            time_words_in(r, params, out, on_param);
+        }
+        ExprKind::IfElse(c, t, f) => {
+            time_words_in(c, params, out, on_param);
+            time_words_in(t, params, out, on_param);
+            time_words_in(f, params, out, on_param);
+        }
+        ExprKind::Phrase(parts) | ExprKind::Existing(parts) => {
+            let is_rate = |a: &Part| match a {
+                Part::Args(list) if list.len() == 1 => matches!(&list[0].value.kind, ExprKind::Unit(_, u) if u == "hz" || u == "khz"),
+                _ => false,
+            };
+            match parts.as_slice() {
+                [Part::Value(Expr { kind: ExprKind::Seq(n), .. }), Part::Word(at), a] if at == "at" && !is_rate(a) => asked(n),
+                [Part::Value(Expr { kind: ExprKind::Seq(n), .. }), Part::Word(from), _, Part::Word(to), _] if from == "from" && to == "to" => asked(n),
+                [Part::Word(position), Part::Value(Expr { kind: ExprKind::Seq(n), .. })] if position == "position" => asked(n),
+                _ => {}
+            }
+            for p in parts {
+                match p {
+                    Part::Args(list) => list.iter().for_each(|a| time_words_in(&a.value, params, out, on_param)),
+                    Part::Value(x) => time_words_in(x, params, out, on_param),
+                    Part::Word(_) => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn moved_streams(stmts: &[Stmt], out: &mut Vec<String>, task: &dyn Fn(&[Part]) -> Vec<String>) {
     for s in stmts {
         match s {
