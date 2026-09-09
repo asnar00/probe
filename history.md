@@ -4,6 +4,15 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: no sleep in a store with no rated wiring — `e569a59` · 2026-09-10
+
+```
+            __push(_13, _14)
+            c_4: u8$ = advance(c_2, 1)
+```
+
+The parity pass, hop 16 (fm3 log 83). A task's body stepped its clock with `__sleep(__hz)` after every push into its own output, `__hz` being 0 wherever the wiring had no rate; `src/zero/lower.rs` now looks for an `at (n hz)` tail on every wiring in the store before lowering (`any_rated_wiring`, `is_rated_wiring`, `wired_at_a_rate`) and `emit_push` writes no sleep where there is none (above, `suite/zero/lex.expected.ssa`: the token's pushes then the advance, no sleep between). A store with a rated wiring keeps every sleep, since a nested task runs at its caller's `__hz`. lex's comparable case 1 861 → 1 813 against the oracle's 415, `lex` 252 → 236, 495 → 478 lines; clock and hello unchanged. A front-end change: zero 477/477 native, cargo test zero:: 18.
+
 ### zero: a dead tick asks no time — `394f9e7` · 2026-09-10
 
 ```
