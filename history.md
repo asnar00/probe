@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream is timed only when something asks for time — `608bc51` · 2026-09-10
+
+```
+fn __push(s: number$, v: number)
+    push(s, v)
+    ret
+```
+
+The parity pass, hop 8 (fm3 log 73), Ash's ruling that a stream is timed only when a rate or a time word touches it. `time_words` in `src/zero/lower.rs` walks every body before a ring is made, for `x$ at (t)`, `x$ from (a) to (b)` and `position x$` by name (one on a function's stream parameter times the whole store); every other unrated stream, `in$` included, is a plain ring with no ticks, joining the `regular` set, and a store with no ticked ring gets the `__push` above (`suite/zero/hello.expected.ssa`) in place of the clock branch the cost tool always walked. Before → after: hello 2 335 on 435 → 2 179 on 401, static 2 217 on 348 → 2 061 on 314; `push__u8s_int` 150 → 98; lex unchanged, it asks for its input's tick. A front-end change: probe zero test 477/477 native, cargo test zero:: 17.
+
+---
+
 ### zero: a stream on the right of `<<` at feature scope is an edge — `48615a8` · 2026-09-10
 
 ```
