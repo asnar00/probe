@@ -19,6 +19,9 @@ on describe (int x)
 on (int s) = sum to (int n)
     s = [0 through n] + _
 
+on (int s) = sum below (int n)
+    s = [0 to n] + _
+
 on (int g) = gcd of (int a) and (int b)
     g = loop (int x = a, int y = b) while (y != 0) gives x
         int r = x % y

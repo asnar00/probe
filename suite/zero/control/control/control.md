@@ -13,7 +13,7 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 - `sign of (x)` is -1, 1 or 0: an `else if` whose arms each assign the result and so end the function there, and a result left alone on the third path is its zero.
 - `magnitude of (x)` keeps a temporary, assigns it again inside an `if` with no `else`, and assigns the result last: assigning the result would end the function, so a value that is tested or changed is a temporary until it is final.
 - `describe (x)` prints one of two strings.
-- `sum to (n)` is a range reduced, `[0 through n] + _`: no loop is written.
+- `sum to (n)` is a range reduced, `[0 through n] + _`: no loop is written; `sum below (n)` is section 7's `[0 to n] + _`, the exclusive range, 0 to n - 1.
 - `gcd of (a) and (b)` gives `x` straight into the result, declares a variable inside the body and continues with it.
 - `power of two above (n)` has no `while`: it leaves by `break` inside an `if`, assigns its carried variable in the body, which the pass's end carries, and gives it into a declared `int q`.
 - `digits of (n)` breaks from an `if`, continues with computed values, and gives both carried variables into two declared names.
@@ -41,6 +41,8 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 >describe (2) → "not negative"
 >sum to (10) → 55
 >sum to (0) → 0
+>sum below (5) → 10
+>sum below (0) → 0
 >gcd of (48) and (18) → 6
 >gcd of (7) and (5) → 1
 >power of two above (10) → 16

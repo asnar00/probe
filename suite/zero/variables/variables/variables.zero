@@ -6,6 +6,7 @@ type Mode = off | on | auto
 int size = 40
 static int port = 8822
 device int opened = 0
+device string open_tool = ""
 group int quota = 100
 int count = 0 merge sum
 Vec origin(1, 2, 3)
@@ -49,6 +50,13 @@ on (int q) = quota left after (int used)
 on (int n) = opened once()
     opened = opened + 1
     n = opened
+
+on (int n) = no tool open()
+    n = count open_tool
+
+on (int n) = tool opened()
+    open_tool = "edit"
+    n = count open_tool
 
 on (int n) = origin sum()
     n = int(origin.x + origin.y + origin.z)

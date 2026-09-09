@@ -12,7 +12,7 @@ A variable declared inside a function is a value: type, name, and a value or its
 ## interface
 - `the size` reads a feature variable; `set size (s)` assigns it; `grown` does both through a call.
 - `bump` adds one to `count`, which is declared `merge sum`; `bumped twice` and `bumped (k) times` show it kept between calls, the second from inside a loop; `fresh count` shows it reset between cases.
-- `port number` reads a `static` variable, `opened once` a `device` one, `quota left after (used)` a `group` one.
+- `port number` reads a `static` variable, `opened once` a `device` one, `quota left after (used)` a `group` one; `open_tool` is section 5's `device string open_tool = ""`, empty until `tool opened` names one.
 - `origin sum` and `moved origin` read and assign a struct; `is auto` and `switched on` an enumeration; `named` and `renamed` a string; `flagged` a bool.
 - `shadowed by (size)` and `shadowed locally` show a parameter and a local hiding the feature variable of the same name.
 - `locals` declares the five forms of section 5 inside a function.
@@ -34,6 +34,8 @@ A variable declared inside a function is a value: type, name, and a value or its
 >port number() → 8822
 >quota left after (30) → 70
 >opened once() → 1
+>no tool open() → 0
+>tool opened() → 4
 >origin sum() → 6
 >moved origin() → 4
 >is auto() → 1

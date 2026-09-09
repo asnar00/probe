@@ -4168,13 +4168,20 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
             ExprKind::Str(s) => {
                 // a string literal: its bytes in `data`, copied into a
                 // stream of bytes each time it is evaluated (log 38)
-                self.nstr += 1;
-                let name = format!("__s{}", self.nstr);
-                self.data.push(format!("data {} = \"{}\"", name, s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")));
                 let p = b.tmp();
-                b.line(&format!("{}: ptr = addr {}", p, name));
                 let n = b.tmp();
-                b.line(&format!("{}: i64 = len {}", n, name));
+                if s.is_empty() {
+                    // `""` has no bytes to keep: the IR refuses an empty
+                    // `data`, so it is `__nul` with a length of zero
+                    b.line(&format!("{}: ptr = addr __nul", p));
+                    b.line(&format!("{}: i64 = const 0", n));
+                } else {
+                    self.nstr += 1;
+                    let name = format!("__s{}", self.nstr);
+                    self.data.push(format!("data {} = \"{}\"", name, s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")));
+                    b.line(&format!("{}: ptr = addr {}", p, name));
+                    b.line(&format!("{}: i64 = len {}", n, name));
+                }
                 let v = b.tmp();
                 b.line(&format!("{}: u8[] = __str({}, {})", v, p, n));
                 Ok(self.copy_view(&Ty::Num("u8".into()), &v, b, dst))
