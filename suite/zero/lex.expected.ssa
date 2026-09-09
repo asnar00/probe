@@ -362,42 +362,37 @@ fn print__ints(x: int[]) {
 ; feature lex (layer runtime)
 fn kind_of(c: u8) -> int {
     _1: u1 = cmp.le c, 32
-    k_11: int = if _1 {
+    if _1 {
         k: int = const 0
-        yield k
+        ret k
     } else {
         _2: u1 = cmp.gt c, 122
-        k_10: int = if _2 {
+        if _2 {
             k_2: int = const 3
-            yield k_2
+            ret k_2
         } else {
             _3: u1 = cmp.ge c, 97
-            k_9: int = if _3 {
+            if _3 {
                 k_3: int = const 1
-                yield k_3
+                ret k_3
             } else {
                 _4: u1 = cmp.gt c, 57
-                k_8: int = if _4 {
+                if _4 {
                     k_4: int = const 3
-                    yield k_4
+                    ret k_4
                 } else {
                     _5: u1 = cmp.ge c, 48
-                    k_7: int = if _5 {
+                    if _5 {
                         k_5: int = const 2
-                        yield k_5
+                        ret k_5
                     } else {
                         k_6: int = const 3
-                        yield k_6
+                        ret k_6
                     }
-                    yield k_7
                 }
-                yield k_8
             }
-            yield k_9
         }
-        yield k_10
     }
-    ret k_11
 }
 fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$ {
     c_6: u8$ = loop(c_2: u8$ = c) {

@@ -10,8 +10,8 @@ Plan item 4 of milestone 0: section 7 of zero.md — `if`/`else`, `loop ... whil
 An `if` statement runs one of two blocks; a variable it assigns has, after it, the value from whichever arm ran. A `loop` names the variables it carries and their starting values; `while` is tested at the top of every pass, `continue` gives the next values, `break` leaves, and after the loop the carried variables hold what the loop left with. A `for` runs its body once per value of a range.
 
 ## interface
-- `sign of (x)` is -1, 1 or 0: an `else if`, and a result left alone on the third path is its zero.
-- `magnitude of (x)` assigns its result again inside an `if` with no `else`.
+- `sign of (x)` is -1, 1 or 0: an `else if` whose arms each assign the result and so end the function there, and a result left alone on the third path is its zero.
+- `magnitude of (x)` keeps a temporary, assigns it again inside an `if` with no `else`, and assigns the result last: assigning the result would end the function, so a value that is tested or changed is a temporary until it is final.
 - `describe (x)` prints one of two strings.
 - `sum to (n)` carries a counter and an accumulator under `while` with `bound 100`, and takes the accumulator after the loop.
 - `gcd of (a) and (b)` declares a variable inside the body and continues with it.

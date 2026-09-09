@@ -1626,24 +1626,55 @@ impl Lowerer {
         Ok(())
     }
 
-    /// Lower a block's statements; true when the block ends in `break`
-    /// or `continue` (or an `if` or `loop` that always does). A
-    /// statement after that would never run, and is refused here with
-    /// its zero line rather than by the IR with an IR line (log 14).
+    /// Lower a block's statements; true when the block ends by leaving:
+    /// `break` or `continue`, an assignment that gives the function its
+    /// last result (section 6: assigning the result ends the function),
+    /// or an `if` or `loop` that always does. A statement after that
+    /// would never run, and is refused here with its zero line rather
+    /// than by the IR with an IR line (log 14).
     fn lower_block(&mut self, stmts: &[Stmt], b: &mut Body) -> Result<bool, Error> {
+        let mut terminated = false;
         for (i, s) in stmts.iter().enumerate() {
-            self.lower_stmt(s, b)?;
-            if i + 1 < stmts.len() && terminates(&stmts[..=i]) {
-                return Err(lex::error(&b.file, stmt_line(&stmts[i + 1]), "this never runs: the statement before it leaves the block"));
+            terminated = self.lower_stmt(s, b)?;
+            if terminated && i + 1 < stmts.len() {
+                let why = match s {
+                    Stmt::Assign { line, .. } => format!("the function ended when its result was assigned on line {}", line),
+                    _ => "the statement before it leaves the block".to_string(),
+                };
+                return Err(lex::error(&b.file, stmt_line(&stmts[i + 1]), format!("this never runs: {}", why)));
             }
         }
-        Ok(terminates(stmts))
+        Ok(terminated)
+    }
+
+    /// After an assignment in a function's body: when every result now
+    /// has a value, the function ends here with `ret` (section 6). A
+    /// task's body pushes its result and never ends this way
+    fn finish_if_done(&mut self, b: &mut Body) -> bool {
+        if b.kind != BodyKind::Fn || b.results.is_empty() {
+            return false;
+        }
+        if !b.results.iter().all(|(n, _)| b.vars.get(n).map_or(false, |v| v.set)) {
+            return false;
+        }
+        let names: Vec<String> = b.results.iter().map(|(n, _)| n.clone()).collect();
+        let vals = b.current(&names);
+        b.line(&format!("ret {}", vals.join(", ")));
+        true
+    }
+
+    /// would assigning these targets give the function its last result?
+    /// Such an assignment ends the function, so it may stand inside a
+    /// loop, where an ordinary assignment to an outer variable may not
+    fn completes(&self, targets: &[super::syntax::Target], b: &Body) -> bool {
+        b.kind == BodyKind::Fn && !b.results.is_empty() && b.results.iter().all(|(n, _)| b.vars.get(n).map_or(false, |v| v.set) || targets.iter().any(|t| &t.name == n))
     }
 
     /// `if (c)` as a statement (log 11): the variables an arm assigns
     /// become the results of the IR's value-yielding `if`, each arm
-    /// yielding its version, so the code after reads the join's names
-    fn lower_if(&mut self, cond: &Expr, then: &[Stmt], els: Option<&[Stmt]>, b: &mut Body) -> Result<(), Error> {
+    /// yielding its version, so the code after reads the join's names.
+    /// True when both arms leave, so the `if` does
+    fn lower_if(&mut self, cond: &Expr, then: &[Stmt], els: Option<&[Stmt]>, b: &mut Body) -> Result<bool, Error> {
         let file = b.file.clone();
         let cv = self.lower_expr(cond, Some(&Ty::Bool), b, None)?;
         if cv.ty != Ty::Bool {
@@ -1717,7 +1748,7 @@ impl Lowerer {
             }
         }
         b.line("}");
-        Ok(())
+        Ok(t_term && e_term && els.is_some())
     }
 
     /// `loop (vars) while (c) bound N` (log 12): the carried variables
@@ -2114,7 +2145,8 @@ impl Lowerer {
         Ok(())
     }
 
-    fn lower_stmt(&mut self, s: &Stmt, b: &mut Body) -> Result<(), Error> {
+    /// Lower one statement; true when it ends the block (see `lower_block`)
+    fn lower_stmt(&mut self, s: &Stmt, b: &mut Body) -> Result<bool, Error> {
         let file = b.file.clone();
         match s {
             Stmt::Assign { targets, value, line } => {
@@ -2130,17 +2162,22 @@ impl Lowerer {
                             return Err(lex::error(&file, *line, format!("'{}.enabled' is a bool, given a {}", feat, v.ty.ir())));
                         }
                         b.line(&format!("__set___enabled_{}({})", feat, v.text));
-                        return Ok(());
+                        return Ok(false);
                     }
                 }
                 if targets.iter().any(|t| t.feature.is_some()) {
                     return Err(lex::error(&file, *line, "a feature's `enabled` is assigned on its own"));
                 }
                 // a local is a new SSA version; a feature variable is a
-                // call to its setter, allowed anywhere
+                // call to its setter, allowed anywhere; the assignment
+                // that gives the last result ends the function, so it
+                // may stand anywhere too
+                let completes = self.completes(targets, b);
                 for t in targets {
                     if b.vars.contains_key(&t.name) {
-                        b.assignable(&t.name, t.line)?;
+                        if !(completes && b.results.iter().any(|(n, _)| n == &t.name)) {
+                            b.assignable(&t.name, t.line)?;
+                        }
                     } else if self.fvar(&t.name).is_none() {
                         return Err(lex::error(&file, t.line, format!("'{}' is not declared: a variable is its type then its name", t.name)));
                     }
@@ -2150,15 +2187,18 @@ impl Lowerer {
                     if !b.vars.contains_key(&t.name) {
                         let ty = self.fvar(&t.name).unwrap().ty.clone();
                         let v = self.lower_expr(value, Some(&ty), b, None)?;
-                        return self.write_fvar(&t.name, v, b, *line);
+                        self.write_fvar(&t.name, v, b, *line)?;
+                        return Ok(false);
                     }
                     let ty = b.vars[&t.name].ty.clone();
                     let v = self.lower_expr(value, Some(&ty), b, Some(&t.name))?;
-                    return self.assign(&t.name, v, b, *line);
+                    self.assign(&t.name, v, b, *line)?;
+                    return Ok(self.finish_if_done(b));
                 }
                 let names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
                 let tys: Vec<Ty> = names.iter().map(|n| match b.vars.get(n) { Some(v) => v.ty.clone(), None => self.fvar(n).unwrap().ty.clone() }).collect();
-                self.lower_multi(value, &names, &tys, b, *line)
+                self.lower_multi(value, &names, &tys, b, *line)?;
+                Ok(self.finish_if_done(b))
             }
             Stmt::Multi { vars, value, line } => {
                 let mut names = Vec::new();
@@ -2172,7 +2212,8 @@ impl Lowerer {
                     names.push(p.name.clone());
                     tys.push(ty);
                 }
-                self.lower_multi(value, &names, &tys, b, *line)
+                self.lower_multi(value, &names, &tys, b, *line)?;
+                Ok(false)
             }
             Stmt::Var(v) => {
                 if !v.scope.is_empty() || v.merge.is_some() {
@@ -2192,34 +2233,36 @@ impl Lowerer {
                     };
                     let s = self.make_stream(&ty, hz, b, Some(&v.name))?;
                     self.assign(&v.name, s.clone(), b, v.line)?;
-                    return match &v.init {
-                        Some(Init::Pushes { items, cond, bound }) => self.lower_pushes(&v.name, &s, items, cond.as_ref(), *bound, b),
-                        None => Ok(()),
+                    match &v.init {
+                        Some(Init::Pushes { items, cond, bound }) => self.lower_pushes(&v.name, &s, items, cond.as_ref(), *bound, b)?,
+                        None => {}
                         Some(Init::Value(e)) => {
                             let (info, args, hz) = self.task_call(e, Some(&b.vars), &file)?.unwrap();
-                            self.run_task(&info, &args, hz, &s, b, e.line)
+                            self.run_task(&info, &args, hz, &s, b, e.line)?
                         }
-                        Some(_) => Err(lex::error(&file, v.line, "a stream is filled with `<<`")),
-                    };
+                        Some(_) => return Err(lex::error(&file, v.line, "a stream is filled with `<<`")),
+                    }
+                    return Ok(false);
                 }
                 match &v.init {
                     None => {
                         let z = self.zero_val(&ty, b);
-                        self.assign(&v.name, z, b, v.line)
+                        self.assign(&v.name, z, b, v.line)?
                     }
                     Some(Init::Value(e)) => {
                         let val = self.lower_expr(e, Some(&ty), b, Some(&v.name))?;
-                        self.assign(&v.name, val, b, v.line)
+                        self.assign(&v.name, val, b, v.line)?
                     }
                     Some(Init::Construct(args)) => {
                         let Ty::Struct(name) = &ty else {
                             return Err(lex::error(&file, v.line, format!("'{}' is not a struct to construct", v.ty)));
                         };
                         let val = self.construct(&name.clone(), args, b, Some(&v.name), v.line)?;
-                        self.assign(&v.name, val, b, v.line)
+                        self.assign(&v.name, val, b, v.line)?
                     }
                     Some(Init::Pushes { .. }) => unreachable!(),
                 }
+                Ok(false)
             }
             Stmt::Expr { expr, line } => {
                 match &expr.kind {
@@ -2227,11 +2270,14 @@ impl Lowerer {
                     _ => return Err(lex::error(&file, *line, "a statement is a call, an assignment or a declaration")),
                 }
                 self.lower_expr(expr, None, b, None)?;
-                Ok(())
+                Ok(false)
             }
             Stmt::If { cond, then, els, .. } => self.lower_if(cond, then, els.as_deref(), b),
-            Stmt::Loop { vars, cond, bound, body, line } => self.lower_loop(vars, cond.as_ref(), *bound, body, *line, b).map(|_| ()),
-            Stmt::For { var, seq, bound, body, .. } => self.lower_for(var, seq, *bound, body, b),
+            Stmt::Loop { vars, cond, bound, body, line } => self.lower_loop(vars, cond.as_ref(), *bound, body, *line, b),
+            Stmt::For { var, seq, bound, body, .. } => {
+                self.lower_for(var, seq, *bound, body, b)?;
+                Ok(false)
+            }
             Stmt::Break { line } => {
                 if b.loops.is_empty() {
                     return Err(lex::error(&file, *line, "'break' outside a loop"));
@@ -2241,7 +2287,7 @@ impl Lowerer {
                 let carried = if ctx.item.is_some() { Vec::new() } else { ctx.carried.clone() };
                 let vals = b.current(&carried);
                 b.line(format!("break {}", vals.join(", ")).trim_end());
-                Ok(())
+                Ok(true)
             }
             Stmt::Continue { values, line } => {
                 let Some(ctx) = b.loops.last() else {
@@ -2252,14 +2298,14 @@ impl Lowerer {
                         return Err(lex::error(&file, *line, "a `for` steps its item by itself: 'continue' takes no values here"));
                     }
                     self.step_for(b);
-                    return Ok(());
+                    return Ok(true);
                 }
                 let carried = ctx.carried.clone();
                 let explicit = ctx.explicit;
                 if values.is_empty() {
                     let vals = b.current(&carried);
                     b.line(format!("continue {}", vals.join(", ")).trim_end());
-                    return Ok(());
+                    return Ok(true);
                 }
                 if values.len() != explicit {
                     return Err(lex::error(&file, *line, format!("the loop declares {} variable(s), 'continue' gives {}", explicit, values.len())));
@@ -2276,7 +2322,7 @@ impl Lowerer {
                 // a stream the loop carries for the body goes on as it stands
                 vals.extend(b.current(&carried[explicit..]));
                 b.line(&format!("continue {}", vals.join(", ")));
-                Ok(())
+                Ok(true)
             }
             Stmt::Check { cond, line } => {
                 // `check (c)` (section 14, log 29): the IR's trap when c
@@ -2299,7 +2345,7 @@ impl Lowerer {
                 b.line(&format!("check {}", z));
                 b.depth -= 1;
                 b.line("}");
-                Ok(())
+                Ok(false)
             }
             Stmt::Push { target, items, cond, bound, line } => {
                 let ExprKind::Seq(n) = &target.kind else {
@@ -2314,7 +2360,7 @@ impl Lowerer {
                 let s = self.lower_expr(&Expr { kind: ExprKind::Name(n.clone()), line: *line }, None, b, None)?;
                 self.lower_pushes(n, &s, items, cond.as_ref(), *bound, b)?;
                 self.trigger(n, b);
-                Ok(())
+                Ok(false)
             }
         }
     }
@@ -3767,9 +3813,6 @@ fn name_for(dst: Option<&str>, ty: &Ty, b: &mut Body) -> String {
     }
 }
 
-/// does a block end by leaving: `break`, `continue`, an `if` whose two
-/// arms both do, or a `loop` with no `while` and no `break`? The IR's
-/// rule (ssa.md, *Termination rules*), checked on the zero tree
 /// the streams a block moves: the names `advance x$ by (n)` and
 /// `frame x$` are applied to, anywhere in it, and the stream arguments
 /// of a task call (`task` says which, log 25)
@@ -3877,24 +3920,6 @@ fn phrase_text(e: &Expr) -> String {
         }
     }
     expr(e)
-}
-
-fn terminates(stmts: &[Stmt]) -> bool {
-    match stmts.last() {
-        Some(Stmt::Break { .. }) | Some(Stmt::Continue { .. }) => true,
-        Some(Stmt::If { then, els: Some(e), .. }) => terminates(then) && terminates(e),
-        Some(Stmt::Loop { cond: None, body, .. }) => !has_break(body),
-        _ => false,
-    }
-}
-
-/// a `break` of this loop, in the body or in an `if` inside it
-fn has_break(stmts: &[Stmt]) -> bool {
-    stmts.iter().any(|s| match s {
-        Stmt::Break { .. } => true,
-        Stmt::If { then, els, .. } => has_break(then) || els.as_ref().map_or(false, |e| has_break(e)),
-        _ => false,
-    })
 }
 
 fn stmt_line(s: &Stmt) -> usize {

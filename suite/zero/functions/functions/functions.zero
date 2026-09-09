@@ -27,3 +27,18 @@ on (int c) = clamp (int x) between (int lo) and (int hi)
 on (int32 y) = narrow (int32 x)
     int32 big = 1000000
     y = smaller of (x) and (big)
+
+on (int r) = first positive of (int a) and (int b)
+    if (a > 0)
+        r = a
+    r = b
+
+on (int lo, int hi) = ordered (int a) and (int b)
+    lo = if (a < b) then (a) else (b)
+    hi = a + b - lo
+
+on (int p) = power of two above (int n)
+    loop (int q = 1)
+        if (q > n)
+            p = q
+        continue (q * 2)

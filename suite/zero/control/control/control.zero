@@ -5,9 +5,10 @@ on (int s) = sign of (int x)
         s = 1
 
 on (int a) = magnitude of (int x)
-    a = x
+    int m = x
     if (x < 0)
-        a = -x
+        m = -x
+    a = m
 
 on describe (int x)
     if (x < 0)
