@@ -7,12 +7,12 @@ layer: runtime
 Plan item 12 of milestone 0: section 9's `x$ at (t)` with the time computed once at the boundary, over section 10's task at a rate.
 
 ## overview
-`ticks (5)` pushes 1 to 5 into `t$`, wired at `4 hz` on the store's clock, so the ticks fall at 0, 250, 500, 750 and 1000 ms. `value at (m)` turns the milliseconds into a `time` once, at the boundary, and reads the stream at it by its rule, nearest; `where it stands` moves the feature's reader on two items and reports where it is, an index and a tick.
+`ticks (5)` pushes 1 to 5 into `t$`, wired at `4 hz` on the store's clock, so the ticks fall at 0, 250, 500, 750 and 1000 ms. `value at (m)` turns the milliseconds into a `time` once, at the boundary, and reads the stream at it by its rule, nearest; `where it stands` moves the feature's reader on two items and reports where it is, `position t$` for the index and `time of t$` for the tick.
 
 ## interface
 - `ticks (n)` is the task; `int t$ = ticks(5) at (4 hz)` wires it.
 - `value at (m)` is `t$ at (m ms)`.
-- `where it stands` advances `t$` by two and gives `position t$`: the index of the next unread item and its tick, in microseconds.
+- `where it stands` advances `t$` by two and gives `position t$`, the index of the next unread item, and `time of t$`, its tick in microseconds; `position` asks no time and `time of` is what times the stream (log 85, question 42).
 
 ## rules
 - Inside the stream time is the ring's ticks; at the boundary it is `time`, exact seconds (section 9). `m ms` on a variable is `millis(m)` computed once per call (log 33).

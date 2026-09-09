@@ -15,7 +15,7 @@ A task is a function that produces a stream over time: it is declared with `<<` 
 - `d$`, `e$` and `q$` are wired at feature scope to `x$` and `y$`, empty streams the cases push into; `w$` chains two tasks; `z$` is wired with a feature variable as its argument.
 - `sawtoothed`, `counted down`, `counted up` run tasks now, into a local stream.
 - `wired at feature scope`, `wired from a variable`, `fed twice`, `carried between runs`, `closed`, `closed once` read the nodes' streams.
-- `rated`, `sampled at a rate`, `composed at a rate` wire a task at `1 hz` and read the clock through `position` and `x$ at (t)`.
+- `rated`, `sampled at a rate`, `composed at a rate` wire a task at `1 hz` and read the clock through `time of x$` and `x$ at (t)`; `position x$` beside them is the index alone and asks no time.
 - `fed a literal` passes a stream made from a list to a task; `run now moves the reader`, `run now inside a loop` pass a local stream to a task, which moves it.
 - `right$ << left$ << 0` is an edge (section 9, log 72): `left$` wired into `right$`, each item moved as it arrives and a `0` pushed after each; `edged` pushes into `left$` and reads `right$`.
 

@@ -22,7 +22,7 @@ on (token t$) << lex (uint8 c$)
         if (count c$ == 0)
             break
         int k = kind of (peek c$ at (0))
-        int start, int tick = position c$
+        int start = position c$
         if (k == 0)
             advance c$ by (1)
             continue

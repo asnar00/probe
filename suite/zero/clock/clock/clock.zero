@@ -8,4 +8,5 @@ on (int v) = value at (int m)
 
 on (int i, int tick) = where it stands()
     advance t$ by (2)
-    i, tick = position t$
+    i = position t$
+    tick = time of t$

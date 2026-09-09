@@ -54,13 +54,15 @@ on (int n) = history()
 on (int n) = positioned()
     int x$ at (1000 hz) << 1 << 2 << 3
     advance x$ by (2)
-    int k, int t = position x$
+    int k = position x$
+    int t = time of x$
     n = k * 10 + t
 
 on (int n) = position unread()
     int i$ << 1 << 2
     advance i$ by (2)
-    int k, int t = position i$
+    int k = position i$
+    int t = time of i$
     n = k * 10 + t
 
 on (bool b) = still open()

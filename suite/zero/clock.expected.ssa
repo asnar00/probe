@@ -324,9 +324,11 @@ fn where_it_stands() -> (int, int)
     _2: int$ = advance(_1, 2)
     __set_t(_2)
     _3: int$ = __get_t()
-    _4: i64, _5: i64 = position(_3)
+    _4: i64 = get _3, pos
     i: int = conv _4
-    tick: int = conv _5
+    _5: int$ = __get_t()
+    _6: i64, _7: i64 = position(_5)
+    tick: int = conv _7
     ret i, tick
 
 ; a stream's ring, carved from the arena: cap items resident (64 unless more are), twice that in slots since the ring mirrors each item (log 65), and a tick per item unless regular; a reader's view at its start

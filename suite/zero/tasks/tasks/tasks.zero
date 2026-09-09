@@ -79,7 +79,8 @@ on (int n) = closed once()
 on (int n) = rated()
     int c$ = count down from (3) at (1 hz)
     advance c$ by (2)
-    int k, int t = position c$
+    int k = position c$
+    int t = time of c$
     n = k * 10 + t / 1000000
 
 on (int n) = sampled at a rate()
@@ -89,7 +90,8 @@ on (int n) = sampled at a rate()
 on (int n) = composed at a rate()
     int s$ = sawtooth(2) at (1 hz)
     advance s$ by (3)
-    int k, int t = position s$
+    int k = position s$
+    int t = time of s$
     n = k * 10 + t / 1000000
 
 on (int n) = fed a literal()
