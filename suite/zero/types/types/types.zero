@@ -68,3 +68,44 @@ on (int n) = scaled by a vec()
     Vec a(1, 2, 3)
     Vec b(2, 2, 2)
     n = sum of fields (a * b)
+
+on (float64 q) = ratio of (int32 a) to (int32 b)
+    q = a / b
+
+on (int n) = ratio times ten (int32 a) and (int32 b)
+    n = int(ratio of (a) to (b) * 10)
+
+on (int64 p) = product of (int32 a) and (int32 b)
+    p = a * b
+
+on (int64 s) = mixed sum()
+    int32 a = 5
+    int64 b = 6
+    s = a + b
+
+on (int n) = mixed float()
+    int16 a = 3
+    float32 x = 0.5
+    float64 y = a + x
+    n = int(y * 2)
+
+on (bool b) = compared across widths()
+    int16 a = 300
+    float32 x = 299.5
+    b = a > x
+
+on (number n) = smaller of (number a) and (number b)
+    n = if (a < b) then (a) else (b)
+
+on (int n) = smaller across types()
+    int16 a = 7
+    float32 x = 2.5
+    n = int(smaller of (a) and (x) * 2)
+
+on (int64 w) = widened on assignment()
+    int32 x = 40
+    w = x
+
+on (int32 y) = narrowed explicitly()
+    int64 big = 300000
+    y = int32(big)

@@ -129,6 +129,86 @@ fn fits(arg: &Ty, param: &Ty) -> bool {
     }
 }
 
+/// The type two concrete number types compute in without loss, the
+/// wider or more accurate of them (question 1, log 37): the wider of
+/// two signed or two unsigned widths; a signed type wider than an
+/// unsigned one, or the signed type twice the unsigned width; the wider
+/// of two floats, `float32` for `bfloat16` with `float16`; a float and
+/// an integer compute in the float when it holds every value of the
+/// integer exactly (`float32` holds `int16`, `float64` holds `int32`),
+/// else in the smallest float that does, and there is none for
+/// `int64` and wider. None where nothing holds both exactly, and
+/// always for an abstract type (`int` has no width here) or a library
+/// type (`time`, `rational`, ...): those convert only by `T(x)`
+fn wider(a: &Ty, b: &Ty) -> Option<Ty> {
+    if a == b {
+        return Some(a.clone());
+    }
+    let (Ty::Num(x), Ty::Num(y)) = (a, b) else {
+        return None;
+    };
+    // an integer's class and width, or a float's class and its width
+    let class = |s: &str| -> Option<(char, u32)> {
+        match s {
+            "f16" => Some(('f', 16)),
+            "bf16" => Some(('b', 16)),
+            "f32" => Some(('f', 32)),
+            "f64" => Some(('f', 64)),
+            _ => {
+                let c = s.chars().next()?;
+                let n = s[1..].parse::<u32>().ok()?;
+                if matches!(c, 'i' | 'u') && [8, 16, 32, 64, 128].contains(&n) {
+                    Some((c, n))
+                } else {
+                    None
+                }
+            }
+        }
+    };
+    let ((ca, na), (cb, nb)) = (class(x)?, class(y)?);
+    // the bits a float holds exactly, and the bits an integer needs
+    let holds = |c: char, n: u32| match (c, n) {
+        ('f', 16) => 11,
+        ('b', 16) => 8,
+        ('f', 32) => 24,
+        ('f', 64) => 53,
+        _ => 0,
+    };
+    let needs = |c: char, n: u32| if c == 'i' { n - 1 } else { n };
+    let t = match ((ca, na), (cb, nb)) {
+        (('i', n), ('i', m)) => format!("i{}", n.max(m)),
+        (('u', n), ('u', m)) => format!("u{}", n.max(m)),
+        (('i', n), ('u', m)) | (('u', m), ('i', n)) => {
+            let k = if n > m { n } else { n.max(2 * m) };
+            if k > 128 {
+                return None;
+            }
+            format!("i{}", k)
+        }
+        (('f', n), ('f', m)) => format!("f{}", n.max(m)),
+        (('b', _), ('f', m)) | (('f', m), ('b', _)) => format!("f{}", m.max(32)),
+        ((fc @ ('f' | 'b'), fw), (ic @ ('i' | 'u'), iw)) | ((ic @ ('i' | 'u'), iw), (fc @ ('f' | 'b'), fw)) => {
+            let need = needs(ic, iw);
+            if holds(fc, fw) >= need {
+                if fc == ca && fw == na { x.clone() } else { y.clone() }
+            } else if need <= 24 {
+                "f32".into()
+            } else if need <= 53 {
+                "f64".into()
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+    Some(Ty::Num(t))
+}
+
+/// does `from` convert to `to` without loss, `to` being wider?
+fn widens(from: &Ty, to: &Ty) -> bool {
+    from != to && wider(from, to).as_ref() == Some(to)
+}
+
 /// a function the store defines, as the lowering knows it
 #[derive(Clone, Debug)]
 pub struct FnInfo {
@@ -1604,9 +1684,7 @@ impl Lowerer {
         let f = self.fvar(name).unwrap().clone();
         self.reach(name, &f.feature, &b.file, line)?;
         let ty = f.ty;
-        if !(v.ty == ty || (v.literal && fits_literal(&v, &ty))) {
-            return Err(lex::error(&b.file, line, format!("'{}' is {} but the value is {}", name, ty.ir(), v.ty.ir())));
-        }
+        let v = self.coerce(v, &ty, &format!("'{}'", name), b, None, line)?;
         b.line(&format!("__set_{}({})", name, v.text));
         Ok(())
     }
@@ -1890,10 +1968,7 @@ impl Lowerer {
                 None => self.zero_val(&ty, b),
                 Some(Init::Value(e)) => {
                     let val = self.lower_expr(e, Some(&ty), b, None)?;
-                    if !(val.ty == ty || (val.literal && fits_literal(&val, &ty))) {
-                        return Err(lex::error(&file, e.line, format!("'{}' is {} but the value is {}", v.name, ty.ir(), val.ty.ir())));
-                    }
-                    val
+                    self.coerce(val, &ty, &format!("'{}'", v.name), b, None, e.line)?
                 }
                 Some(Init::Construct(args)) => {
                     let Ty::Struct(name) = &ty else {
@@ -2219,10 +2294,7 @@ impl Lowerer {
             let v = match given {
                 Some(a) => {
                     let v = self.lower_expr(&a.value, Some(fty), b, None)?;
-                    if !(v.ty == *fty || (v.literal && fits_literal(&v, fty))) {
-                        return Err(lex::error(&file, a.value.line, format!("field '{}' of {} is {}, given a {}", fname, name, fty.ir(), v.ty.ir())));
-                    }
-                    v
+                    self.coerce(v, fty, &format!("field '{}' of {}", fname, name), b, None, a.value.line)?
                 }
                 None => match default {
                     Some(d) => Val { text: d.clone(), ty: fty.clone(), literal: true },
@@ -2237,9 +2309,45 @@ impl Lowerer {
         Ok(Val { text: out, ty, literal: false })
     }
 
+    /// a value converted to a wider number type (log 37): the IR's
+    /// `conv`, under `dst`'s next version when it is that type
+    fn widen_to(&mut self, v: &Val, to: &Ty, b: &mut Body, dst: Option<&str>) -> Val {
+        if &v.ty == to {
+            return v.clone();
+        }
+        if v.literal {
+            return Val { text: v.text.clone(), ty: to.clone(), literal: true };
+        }
+        let name = name_for(dst, to, b);
+        b.line(&format!("{}: {} = conv {}", name, to.ir(), v.text));
+        Val { text: name, ty: to.clone(), literal: false }
+    }
+
+    /// The value a place of type `ty` takes from `v` (question 1, log
+    /// 37): the value itself, a literal retyped, or a value of a
+    /// narrower type widened by a `conv`. A narrowing, or a pair
+    /// nothing holds exactly, is refused naming the explicit form
+    fn coerce(&mut self, v: Val, ty: &Ty, what: &str, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        if v.ty == *ty {
+            return Ok(v);
+        }
+        if v.literal {
+            if fits_literal(&v, ty) {
+                return Ok(Val { text: v.text, ty: ty.clone(), literal: true });
+            }
+            return Err(lex::error(&b.file, line, format!("{} is {} but the value is a decimal", what, zero_ty(ty))));
+        }
+        if widens(&v.ty, ty) {
+            return Ok(self.widen_to(&v, ty, b, dst));
+        }
+        let how = if widens(ty, &v.ty) { "narrows it, which is not implied" } else { "converts it; nothing widens it exactly" };
+        Err(lex::error(&b.file, line, format!("{} is {} but the value is {}: {}(...) {}", what, zero_ty(ty), zero_ty(&v.ty), zero_ty(ty), how)))
+    }
+
     /// assign a value to a declared variable: a literal becomes a
     /// `const` under the variable's name; a value that already has a
-    /// name is not copied — the variable names it too
+    /// name is not copied — the variable names it too; a narrower
+    /// number is widened (log 37)
     fn assign(&mut self, name: &str, v: Val, b: &mut Body, line: usize) -> Result<(), Error> {
         let var = b.vars[name].clone();
         if v.literal {
@@ -2250,9 +2358,7 @@ impl Lowerer {
             b.line(&format!("{}: {} = const {}", ir, var.ty.ir(), v.text));
             return Ok(());
         }
-        if v.ty != var.ty {
-            return Err(lex::error(&b.file, line, format!("'{}' is {} but the value is {}", name, var.ty.ir(), v.ty.ir())));
-        }
+        let v = self.coerce(v, &var.ty, &format!("'{}'", name), b, Some(name), line)?;
         if var.ir != v.text {
             let v2 = b.vars.get_mut(name).unwrap();
             v2.ir = v.text;
@@ -2430,9 +2536,7 @@ impl Lowerer {
                 for (e, n) in values.iter().zip(&carried) {
                     let ty = b.vars[n].ty.clone();
                     let v = self.lower_expr(e, Some(&ty), b, None)?;
-                    if !(v.ty == ty || (v.literal && fits_literal(&v, &ty))) {
-                        return Err(lex::error(&file, e.line, format!("'{}' is {} but 'continue' gives a {}", n, ty.ir(), v.ty.ir())));
-                    }
+                    let v = self.coerce(v, &ty, &format!("'{}'", n), b, None, e.line)?;
                     vals.push(v.text);
                 }
                 // a stream the loop carries for the body goes on as it stands
@@ -2565,7 +2669,7 @@ impl Lowerer {
         if cands[0].task {
             return Err(lex::error(&file, line, format!("'{}' is a task: it is wired into a stream, `{} x$ = {}`", spoken(&cands[0]), task_elem(&cands[0]), phrase_text(value))));
         }
-        let (info, (vals, lifted, acc, rtys)) = self.choose(&cands, &args, b, line)?;
+        let (info, (vals, lifted, acc, rtys, _)) = self.choose(&cands, &args, b, line)?;
         if lifted.iter().any(|&l| l) || acc.is_some() {
             return Err(lex::error(&file, line, format!("'{}' gives several results: it is not mapped over a sequence", info.key)));
         }
@@ -2575,18 +2679,25 @@ impl Lowerer {
         }
         let ops: Vec<String> = vals.into_iter().map(|v| v.text).collect();
         for ((n, want), got) in names.iter().zip(tys).zip(&rtys) {
-            if want != got {
+            if want != got && !widens(got, want) {
                 return Err(lex::error(&file, line, format!("'{}' is {} but '{}' gives {}", n, want.ir(), info.key, got.ir())));
             }
         }
         // a feature variable among the targets takes its result through
-        // a temporary and its setter
+        // a temporary and its setter; a narrower result widens through
+        // a temporary and a `conv` (log 37)
         let mut sets = Vec::new();
+        let mut convs = Vec::new();
         let defs: Vec<String> = names
             .iter()
             .zip(tys)
-            .map(|(n, t)| {
-                if b.vars.contains_key(n) {
+            .zip(&rtys)
+            .map(|((n, t), got)| {
+                if got != t {
+                    let tmp = b.tmp();
+                    convs.push((n.clone(), tmp.clone(), got.clone()));
+                    format!("{}: {}", tmp, got.ir())
+                } else if b.vars.contains_key(n) {
                     format!("{}: {}", b.define(n, t.clone()), t.ir())
                 } else {
                     let tmp = b.tmp();
@@ -2596,6 +2707,16 @@ impl Lowerer {
             })
             .collect();
         b.line(&format!("{} = {}({})", defs.join(", "), info.ir, ops.join(", ")));
+        for (n, tmp, got) in convs {
+            let v = Val { text: tmp, ty: got, literal: false };
+            if b.vars.contains_key(&n) {
+                let ty = b.vars[&n].ty.clone();
+                let w = self.widen_to(&v, &ty, b, Some(&n));
+                self.assign(&n, w, b, line)?;
+            } else {
+                self.write_fvar(&n, v, b, line)?;
+            }
+        }
         for (n, tmp) in sets {
             b.line(&format!("__set_{}({})", n, tmp));
         }
@@ -2606,7 +2727,7 @@ impl Lowerer {
     /// types with the tower's abstract names bound by the arguments; an
     /// argument that is a sequence where the parameter is an item is
     /// marked lifted (a map), and `_` marks the accumulator (a reduce)
-    fn lower_call_args(&mut self, info: &FnInfo, args: &[Expr], b: &mut Body) -> Result<(Vec<Val>, Vec<bool>, Option<(usize, Ty)>, Vec<Ty>), Error> {
+    fn lower_call_args(&mut self, info: &FnInfo, args: &[Expr], b: &mut Body) -> Result<(Vec<Val>, Vec<bool>, Option<(usize, Ty)>, Vec<Ty>, bool), Error> {
         let file = b.file.clone();
         // strictness is this call's alone: a call inside an argument
         // chooses for itself
@@ -2615,6 +2736,10 @@ impl Lowerer {
         let mut lifted = Vec::new();
         let mut acc = None;
         let mut bound: HashMap<String, Ty> = HashMap::new();
+        // the arguments that bound an abstract name: index, name, lifted
+        let mut binders: Vec<(usize, String, bool)> = Vec::new();
+        // did any argument widen? `choose` prefers a method where none did
+        let mut converted = false;
         for (i, (a, (_, ty))) in args.iter().zip(&info.params).enumerate() {
             if matches!(a.kind, ExprKind::Acc) {
                 if acc.is_some() {
@@ -2664,15 +2789,45 @@ impl Lowerer {
             if lifted.len() < vals.len() + 1 {
                 lifted.push(false);
             }
+            let lifted_here = *lifted.last().unwrap();
             if !fits(&item, ty) {
-                return Err(lex::error(&file, a.line, format!("'{}' wants a {} here, given a {}", info.key, ty.ir(), v.ty.ir())));
+                // a narrower number widens to a concrete parameter (log 37)
+                if !lifted_here && widens(&item, ty) {
+                    v = self.widen_to(&v, ty, b, None);
+                    converted = true;
+                } else {
+                    return Err(lex::error(&file, a.line, format!("'{}' wants a {} here, given a {}", info.key, ty.ir(), v.ty.ir())));
+                }
             }
             if let Some(name) = ty.abstract_name() {
                 if &item != ty {
-                    bound.entry(name.to_string()).or_insert(item.clone());
+                    // the substitution: each abstract name binds to the
+                    // widest of the types its arguments bring (log 37)
+                    let prev = bound.get(name).cloned();
+                    let joined = match &prev {
+                        None => item.clone(),
+                        Some(p) => match wider(p, &item) {
+                            Some(w) => w,
+                            None => return Err(lex::error(&file, a.line, format!("'{}' takes {} at two places, given a {} and a {}: no number type holds both exactly; convert one", info.key, name, zero_ty(p), zero_ty(&item)))),
+                        },
+                    };
+                    bound.insert(name.to_string(), joined);
+                    binders.push((vals.len(), name.to_string(), lifted_here));
                 }
             }
             vals.push(v);
+        }
+        // the arguments narrower than what their name bound to widen
+        for (i, name, lifted_here) in binders {
+            let to = bound[&name].clone();
+            let have = if lifted_here { vals[i].ty.elem().cloned().unwrap() } else { vals[i].ty.clone() };
+            if have != to {
+                if lifted_here {
+                    return Err(lex::error(&file, args[i].line, format!("'{}' binds {} to {} here, and a sequence of {} is not widened item by item", info.key, name, zero_ty(&to), zero_ty(&vals[i].ty))));
+                }
+                vals[i] = self.widen_to(&vals[i].clone(), &to, b, None);
+                converted = true;
+            }
         }
         let resolve = |t: &Ty| match t.abstract_name().and_then(|n| bound.get(n)) {
             Some(bt) => bt.clone(),
@@ -2684,7 +2839,7 @@ impl Lowerer {
             vals[i].ty = aty.clone();
             (i, aty)
         });
-        Ok((vals, lifted, acc, rtys))
+        Ok((vals, lifted, acc, rtys, converted))
     }
 
     /// The method a call takes (section 6, log 36). Each candidate is
@@ -2695,7 +2850,7 @@ impl Lowerer {
     /// one the call would have to map over a sequence; among what is
     /// left `pick` decides. The winner's arguments are then lowered for
     /// good
-    fn choose(&mut self, cands: &[FnInfo], args: &[Expr], b: &mut Body, line: usize) -> Result<(FnInfo, (Vec<Val>, Vec<bool>, Option<(usize, Ty)>, Vec<Ty>)), Error> {
+    fn choose(&mut self, cands: &[FnInfo], args: &[Expr], b: &mut Body, line: usize) -> Result<(FnInfo, (Vec<Val>, Vec<bool>, Option<(usize, Ty)>, Vec<Ty>, bool)), Error> {
         let file = b.file.clone();
         if let [one] = cands {
             let r = self.lower_call_args(one, args, b)?;
@@ -2703,7 +2858,9 @@ impl Lowerer {
         }
         let mut last_err = None;
         for strict in [true, false] {
+            // taken as they are, before widened (log 37), before mapped
             let mut direct = Vec::new();
+            let mut widened = Vec::new();
             let mut mapped = Vec::new();
             for (i, cand) in cands.iter().enumerate() {
                 let (start, ntmp, vars, defs, ndata, nstr) = (b.out.len(), b.ntmp, b.vars.clone(), b.defs.clone(), self.data.len(), self.nstr);
@@ -2711,7 +2868,8 @@ impl Lowerer {
                 let tried = self.lower_call_args(cand, args, b);
                 self.strict = false;
                 match tried {
-                    Ok((_, lifted, acc, _)) if lifted.iter().any(|&l| l) || acc.is_some() => mapped.push(i),
+                    Ok((_, lifted, acc, _, _)) if lifted.iter().any(|&l| l) || acc.is_some() => mapped.push(i),
+                    Ok((_, _, _, _, true)) => widened.push(i),
                     Ok(_) => direct.push(i),
                     Err(err) => last_err = Some(err),
                 }
@@ -2722,7 +2880,7 @@ impl Lowerer {
                 self.data.truncate(ndata);
                 self.nstr = nstr;
             }
-            let applicable = if direct.is_empty() { mapped } else { direct };
+            let applicable = [direct, widened, mapped].into_iter().find(|g| !g.is_empty()).unwrap_or_default();
             if applicable.is_empty() {
                 continue;
             }
@@ -2738,7 +2896,7 @@ impl Lowerer {
     /// a call's arguments where no sequence is lifted: the operand texts
     fn lower_args(&mut self, info: &FnInfo, args: &[Expr], b: &mut Body) -> Result<(Vec<String>, Vec<Ty>), Error> {
         let file = b.file.clone();
-        let (vals, lifted, acc, rtys) = self.lower_call_args(info, args, b)?;
+        let (vals, lifted, acc, rtys, _) = self.lower_call_args(info, args, b)?;
         if lifted.iter().any(|&l| l) || acc.is_some() {
             return Err(lex::error(&file, args[0].line, format!("'{}' gives several results: it is not mapped over a sequence", info.key)));
         }
@@ -2980,21 +3138,49 @@ impl Lowerer {
 
     /// arithmetic or a comparison on two scalars: a literal takes the
     /// other side's type, two literals make one a value first
-    fn emit_bin(&mut self, op: &str, mut lv: Val, mut rv: Val, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+    /// An operator on two numbers (log 7, 37). A literal takes the other
+    /// side's type. Two concrete types compute in the wider of them,
+    /// the narrower converted; then, when the expression's wanted type
+    /// is a concrete number both widen to exactly, in that — the result
+    /// type drives the conversion, so `float64 q = a / b` on two
+    /// `int32`s divides as floats. A comparison gives a bool
+    fn emit_bin(&mut self, op: &str, mut lv: Val, mut rv: Val, want: Option<&Ty>, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
         let file = b.file.clone();
         let cmp = is_comparison(op);
         if lv.literal && !rv.literal {
+            if !fits_literal(&lv, &rv.ty) {
+                return Err(lex::error(&file, line, format!("'{}' on a decimal and a {}", op, zero_ty(&rv.ty))));
+            }
             lv.ty = rv.ty.clone();
         }
         if rv.literal && !lv.literal {
+            if !fits_literal(&rv, &lv.ty) {
+                return Err(lex::error(&file, line, format!("'{}' on a {} and a decimal", op, zero_ty(&lv.ty))));
+            }
             rv.ty = lv.ty.clone();
         }
         if lv.literal && rv.literal {
+            // two literals: the decimal one, if either, says the type
+            if rv.text.contains('.') && !lv.text.contains('.') {
+                lv.ty = rv.ty.clone();
+            }
             lv = b.materialize(&lv);
             rv.ty = lv.ty.clone();
         }
         if lv.ty != rv.ty {
-            return Err(lex::error(&file, line, format!("'{}' on a {} and a {}: both sides must have one type", op, lv.ty.ir(), rv.ty.ir())));
+            let Some(common) = wider(&lv.ty, &rv.ty) else {
+                return Err(lex::error(&file, line, format!("'{}' on a {} and a {}: no number type holds both exactly; convert one, {}(x)", op, zero_ty(&lv.ty), zero_ty(&rv.ty), zero_ty(&rv.ty))));
+            };
+            lv = self.widen_to(&lv, &common, b, None);
+            rv = self.widen_to(&rv, &common, b, None);
+        }
+        if !cmp {
+            if let Some(w @ Ty::Num(_)) = want {
+                if widens(&lv.ty, w) {
+                    lv = self.widen_to(&lv, w, b, None);
+                    rv = self.widen_to(&rv, w, b, None);
+                }
+            }
         }
         let equality = cmp && matches!(op, "==" | "!=");
         match &lv.ty {
@@ -3037,7 +3223,7 @@ impl Lowerer {
             return Ok(c);
         }
         let op = op.to_string();
-        let f = move |s: &mut Lowerer, ev: &[Val], b: &mut Body| s.emit_bin(&op, ev[0].clone(), ev[1].clone(), b, None, line);
+        let f = move |s: &mut Lowerer, ev: &[Val], b: &mut Body| s.emit_bin(&op, ev[0].clone(), ev[1].clone(), None, b, None, line);
         self.lift(vec![lv, rv], lifted, None, b, dst, line, &f)
     }
 
@@ -3062,7 +3248,7 @@ impl Lowerer {
         let acc = Val { text: "_".into(), ty: e.clone(), literal: false };
         let (vals, lifted, ai) = if acc_left { (vec![acc, sv], vec![false, true], 0) } else { (vec![sv, acc], vec![true, false], 1) };
         let op = op.to_string();
-        let f = move |s: &mut Lowerer, ev: &[Val], b: &mut Body| s.emit_bin(&op, ev[0].clone(), ev[1].clone(), b, None, line);
+        let f = move |s: &mut Lowerer, ev: &[Val], b: &mut Body| s.emit_bin(&op, ev[0].clone(), ev[1].clone(), None, b, None, line);
         self.lift(vals, lifted, Some((ai, e)), b, dst, line, &f)
     }
 
@@ -3796,7 +3982,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 if lv.ty.elem().is_some() || rv.ty.elem().is_some() {
                     return self.seq_bin(op, lv, rv, b, dst, e.line);
                 }
-                self.emit_bin(op, lv, rv, b, dst, e.line)
+                self.emit_bin(op, lv, rv, want, b, dst, e.line)
             }
             ExprKind::IfElse(c, a, d) => {
                 let cv = self.lower_expr(c, Some(&Ty::Bool), b, None)?;
@@ -3808,19 +3994,30 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 // yields the literal, which the join's parameter types
                 let start = b.out.len();
                 b.depth += 1;
-                let av = self.lower_expr(a, want, b, None)?;
-                let a_lines = b.out.split_off(start);
-                let dv = self.lower_expr(d, if av.literal { want } else { Some(&av.ty) }, b, None)?;
-                let d_lines = b.out.split_off(start);
-                b.depth -= 1;
+                let mut av = self.lower_expr(a, want, b, None)?;
+                let mut a_lines = b.out.split_off(start);
+                let mut dv = self.lower_expr(d, if av.literal { want } else { Some(&av.ty) }, b, None)?;
+                let mut d_lines = b.out.split_off(start);
                 let ty = match (av.literal, dv.literal) {
                     (true, false) => dv.ty.clone(),
                     (true, true) => want.cloned().filter(|w| fits_literal(&av, w)).unwrap_or(av.ty.clone()),
                     _ => av.ty.clone(),
                 };
+                // arms of two concrete types meet in the wider (log 37),
+                // each converted inside its own arm
                 if !av.literal && !dv.literal && av.ty != dv.ty {
-                    return Err(lex::error(&file, e.line, format!("the arms of 'if' give a {} and a {}", av.ty.ir(), dv.ty.ir())));
+                    let Some(common) = wider(&av.ty, &dv.ty) else {
+                        return Err(lex::error(&file, e.line, format!("the arms of 'if' give a {} and a {}: no number type holds both exactly", zero_ty(&av.ty), zero_ty(&dv.ty))));
+                    };
+                    b.out.push_str(&a_lines);
+                    av = self.widen_to(&av, &common, b, None);
+                    a_lines = b.out.split_off(start);
+                    b.out.push_str(&d_lines);
+                    dv = self.widen_to(&dv, &common, b, None);
+                    d_lines = b.out.split_off(start);
                 }
+                b.depth -= 1;
+                let ty = if av.literal || dv.literal { ty } else { av.ty.clone() };
                 let name = name_for(dst, &ty, b);
                 b.line(&format!("{}: {} = if {} {{", name, ty.ir(), cv.text));
                 b.out.push_str(&a_lines);
@@ -3933,7 +4130,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     return Err(lex::error(&file, e.line, format!("'{}' is a task: it is wired into a stream, `{} x$ = {}`", spoken(info), task_elem(info), phrase_text(e))));
                 }
                 // the method the arguments choose (section 6, log 36)
-                let (info, (vals, lifted, acc, rtys)) = self.choose(&cands, &args, b, e.line)?;
+                let (info, (vals, lifted, acc, rtys, _)) = self.choose(&cands, &args, b, e.line)?;
                 self.reach(&spoken(&info), &info.feature, &file, e.line)?;
                 if lifted.iter().any(|&l| l) || acc.is_some() {
                     if rtys.len() != 1 {
