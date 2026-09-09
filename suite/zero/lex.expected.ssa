@@ -12,11 +12,6 @@ data __clock: array(i64, 1)
 ; the scheduler is running: a push from inside a task does not start it again
 data __running: array(i64, 1)
 
-fn __now() -> i64
-    p: ptr = addr __clock
-    k: i64 = load p
-    ret k
-
 ; a task wired at a rate, after each push: the clock reaches the next
 ; period, in whole ticks, as a rated ring steps
 fn __sleep(hz: i64)
@@ -64,27 +59,12 @@ fn __wait(t: i64)
     store m, p
     ret
 
-; a push into any stream (log 38): stamped with the clock on a ring
-; that keeps ticks, the next sample on one that does not
+; a push into any stream: no ring in this store keeps ticks (log 73)
 fn __push(s: number$, v: number)
-    r: ptr = get s, ring
-    step: i64 = load r, 40
-    regular: u1 = cmp.gt step, 0
-    if regular
-        push(s, v)
-    else
-        t: i64 = __now()
-        push(s, t, v)
+    push(s, v)
     ret
 fn __push(s: number$, block: number[])
-    r: ptr = get s, ring
-    step: i64 = load r, 40
-    regular: u1 = cmp.gt step, 0
-    if regular
-        push(s, block)
-    else
-        t: i64 = __now()
-        push(s, t, block)
+    push(s, block)
     ret
 
 type token = struct
@@ -135,10 +115,10 @@ fn __zero_reset()
     r: ptr = addr __running
     store 0: i64, r
     _1: u8$ = __regular_u8(1000000, 4096)
-    _2: u8$ = __stream_u8(1000000, 512)
-    _3: int$ = __stream_int(1000000, 64)
-    _4: int$ = __stream_int(1000000, 64)
-    _5: int$ = __stream_int(1000000, 64)
+    _2: u8$ = __regular_u8(1000000, 512)
+    _3: int$ = __regular_int(1000000, 64)
+    _4: int$ = __regular_int(1000000, 64)
+    _5: int$ = __regular_int(1000000, 64)
     _6: __s_token = pack _3, _4, _5
     _7: __ctx = pack 1, 1, _1, _2, _6, _1, 0, 0, _2, 0, 0
     p: ptr = addr __ctx_mem
@@ -396,63 +376,62 @@ fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$
             break c_2
         _4: u8 = peek c_2, 0
         k: int = kind_of(_4)
-        _5: i64, _6: i64 = position(c_2)
+        _5: i64 = get c_2, pos
         start: int = conv _5
-        tick: int = conv _6
-        _7: u1 = cmp.eq k, 0
-        if _7
+        _6: u1 = cmp.eq k, 0
+        if _6
             c_3: u8$ = advance(c_2, 1)
             continue c_3
-        _8: u1 = cmp.eq k, 3
-        if _8
-            _9: token = pack 3, start, 1
-            _10: int$ = get t, kind
-            _11: int = get _9, kind
-            __push(_10, _11)
-            _12: int$ = get t, start
-            _13: int = get _9, start
-            __push(_12, _13)
-            _14: int$ = get t, n
-            _15: int = get _9, n
-            __push(_14, _15)
+        _7: u1 = cmp.eq k, 3
+        if _7
+            _8: token = pack 3, start, 1
+            _9: int$ = get t, kind
+            _10: int = get _8, kind
+            __push(_9, _10)
+            _11: int$ = get t, start
+            _12: int = get _8, start
+            __push(_11, _12)
+            _13: int$ = get t, n
+            _14: int = get _8, n
+            __push(_13, _14)
             __sleep(__hz)
             c_4: u8$ = advance(c_2, 1)
             continue c_4
         n: int = loop(i: int = 1, m: int = -1)
-            _16: i64 = count c_2
-            _17: int = conv _16
-            _18: u1 = cmp.ge i, _17
-            if _18
-                _19: u1 = ended(c_2)
-                m_2: int = if _19
+            _15: i64 = count c_2
+            _16: int = conv _15
+            _17: u1 = cmp.ge i, _16
+            if _17
+                _18: u1 = ended(c_2)
+                m_2: int = if _18
                     yield i
                 else
                     yield m
                 break m_2
-            _20: i64 = conv i
-            _21: u8 = peek c_2, _20
-            _22: int = kind_of(_21)
-            _23: u1 = cmp.eq _22, k
-            if _23
-                _24: int = add i, 1
-                continue _24, -1
+            _19: i64 = conv i
+            _20: u8 = peek c_2, _19
+            _21: int = kind_of(_20)
+            _22: u1 = cmp.eq _21, k
+            if _22
+                _23: int = add i, 1
+                continue _23, -1
             break i
-        _25: u1 = cmp.lt n, 0
-        if _25
+        _24: u1 = cmp.lt n, 0
+        if _24
             break c_2
-        _26: token = pack k, start, n
-        _27: int$ = get t, kind
-        _28: int = get _26, kind
-        __push(_27, _28)
-        _29: int$ = get t, start
-        _30: int = get _26, start
-        __push(_29, _30)
-        _31: int$ = get t, n
-        _32: int = get _26, n
-        __push(_31, _32)
+        _25: token = pack k, start, n
+        _26: int$ = get t, kind
+        _27: int = get _25, kind
+        __push(_26, _27)
+        _28: int$ = get t, start
+        _29: int = get _25, start
+        __push(_28, _29)
+        _30: int$ = get t, n
+        _31: int = get _25, n
+        __push(_30, _31)
         __sleep(__hz)
-        _33: i64 = conv n
-        c_5: u8$ = advance(c_2, _33)
+        _32: i64 = conv n
+        c_5: u8$ = advance(c_2, _32)
         continue c_5
     ret c_6
 fn arrive_again()
@@ -460,7 +439,7 @@ fn arrive_again()
     _2: ptr = addr __s6
     _3: i64 = len __s6
     _4: u8[] = __str(_2, _3)
-    __push(_1, _4)
+    push(_1, _4)
     __run_in()
     _5: u8$ = __get_in()
     end(_5)
@@ -570,7 +549,7 @@ fn a_word_at_the_end() -> (int, int)
     ret a, b
 
 ; a stream's ring, carved from the arena: cap items resident (64 unless more are), twice that in slots since the ring mirrors each item (log 65), and a tick per item unless regular; a reader's view at its start
-fn __stream_int(hz: i64, cap: i64) -> int$
+fn __regular_int(hz: i64, cap: i64) -> int$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
     slots: i64 = mul cap, 2
@@ -579,28 +558,8 @@ fn __stream_int(hz: i64, cap: i64) -> int$
     total: i64 = add bytes, 16
     vb: ptr = arena_alloc(a, total)
     buffer_init(vb, sz, slots)
-    tbytes: i64 = mul slots, 8
-    ttotal: i64 = add tbytes, 16
-    tb: ptr = arena_alloc(a, ttotal)
-    buffer_init(tb, 8, slots)
-    ring_init(r, vb, tb, hz)
+    ring_regular(r, vb, hz, 1, 0)
     s: int$ = stream r
-    ret s
-fn __stream_u8(hz: i64, cap: i64) -> u8$
-    a: ptr = addr __arena
-    r: ptr = arena_alloc(a, 64)
-    slots: i64 = mul cap, 2
-    sz: i64 = sizeof u8
-    bytes: i64 = mul sz, slots
-    total: i64 = add bytes, 16
-    vb: ptr = arena_alloc(a, total)
-    buffer_init(vb, sz, slots)
-    tbytes: i64 = mul slots, 8
-    ttotal: i64 = add tbytes, 16
-    tb: ptr = arena_alloc(a, ttotal)
-    buffer_init(tb, 8, slots)
-    ring_init(r, vb, tb, hz)
-    s: u8$ = stream r
     ret s
 fn __regular_u8(hz: i64, cap: i64) -> u8$
     a: ptr = addr __arena

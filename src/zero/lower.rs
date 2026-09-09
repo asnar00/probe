@@ -894,7 +894,7 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
+    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, dead_ticks: std::collections::HashSet::new(), regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -928,7 +928,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         for d in &f.code.decls {
             if let Decl::Fn(fd) = d {
                 let params: Vec<String> = fd.params().filter(|p| p.seq).map(|p| p.name.clone()).collect();
-                time_words(&fd.body, &params, &mut l.timed, &mut l.timed_all);
+                time_words(&fd.body, &fd.body, &params, &mut l.timed, &mut l.timed_all);
             }
         }
     }
@@ -1450,6 +1450,9 @@ struct Lowerer {
     /// unrated stream keeps its ticks, since any may be passed there
     timed: std::collections::HashSet<String>,
     timed_all: bool,
+    /// the tick names of the function being lowered that `position`
+    /// binds and nothing reads (log 82): the index is a `get`, no tick
+    dead_ticks: std::collections::HashSet<String>,
     /// the streams declared at a rate, feature-scope and, per body, local
     /// (log 57): a push into one calls the regular push directly, since
     /// the compiler chose the ring, where `__push` charges the clock's
@@ -2836,6 +2839,7 @@ impl Lowerer {
     fn lower_fn(&mut self, f: &FnDecl, feature: &str, file: &str) -> Result<(), Error> {
         let key = mangle(&f.name);
         self.regular_locals.clear();
+        self.dead_ticks = dead_ticks(&f.body);
         // methods (log 36): the one declared for these parameter types
         let mut tys = Vec::new();
         for p in f.params() {
@@ -3943,6 +3947,15 @@ impl Lowerer {
                 }
                 let s = self.lower_expr(&Expr { kind: ExprKind::Name(n.clone()), line }, None, b, None)?;
                 let first = self.first_reader(&s, b);
+                // a tick nothing reads is not asked for (log 82): the
+                // index is the reader's own, and the ring may be plain
+                if self.dead_ticks.contains(&names[1]) {
+                    let k = b.tmp();
+                    b.line(&format!("{}: i64 = get {}, pos", k, first));
+                    let ir = b.define(&names[0], int.clone());
+                    b.line(&format!("{}: int = conv {}", ir, k));
+                    return Ok(());
+                }
                 let (k, t) = (b.tmp(), b.tmp());
                 b.line(&format!("{}: i64, {}: i64 = position({})", k, t, first));
                 for (name, tmp) in names.iter().zip([k, t]) {
@@ -5860,16 +5873,19 @@ fn item_count(e: &Expr, bytes: bool) -> Option<i64> {
     }
 }
 
-fn time_words(stmts: &[Stmt], params: &[String], out: &mut std::collections::HashSet<String>, on_param: &mut bool) {
+fn time_words(stmts: &[Stmt], whole: &[Stmt], params: &[String], out: &mut std::collections::HashSet<String>, on_param: &mut bool) {
     for s in stmts {
         match s {
             Stmt::Var(v) => time_words_init(v, params, out, on_param),
+            // `int i, int t = position x$` with `t` never read asks no
+            // time (log 82)
+            Stmt::Multi { vars, value, .. } if is_position(value) && vars.len() == 2 && !reads_name(whole, &vars[1].name) => {}
             Stmt::Multi { value, .. } | Stmt::Assign { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => time_words_in(value, params, out, on_param),
             Stmt::If { cond, then, els, .. } => {
                 time_words_in(cond, params, out, on_param);
-                time_words(then, params, out, on_param);
+                time_words(then, whole, params, out, on_param);
                 if let Some(e) = els {
-                    time_words(e, params, out, on_param);
+                    time_words(e, whole, params, out, on_param);
                 }
             }
             Stmt::Loop { vars, cond, body, .. } => {
@@ -5877,11 +5893,11 @@ fn time_words(stmts: &[Stmt], params: &[String], out: &mut std::collections::Has
                     time_words_init(v, params, out, on_param);
                 }
                 cond.iter().for_each(|e| time_words_in(e, params, out, on_param));
-                time_words(body, params, out, on_param);
+                time_words(body, whole, params, out, on_param);
             }
             Stmt::For { seq, body, .. } => {
                 time_words_in(seq, params, out, on_param);
-                time_words(body, params, out, on_param);
+                time_words(body, whole, params, out, on_param);
             }
             Stmt::Continue { values, .. } => values.iter().for_each(|e| time_words_in(e, params, out, on_param)),
             Stmt::Push { items, cond, .. } => {
@@ -5890,6 +5906,75 @@ fn time_words(stmts: &[Stmt], params: &[String], out: &mut std::collections::Has
             }
             Stmt::Break { .. } => {}
         }
+    }
+}
+
+/// `position x$`, the phrase
+fn is_position(e: &Expr) -> bool {
+    matches!(&e.kind, ExprKind::Phrase(parts) if matches!(parts.as_slice(), [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(_), .. })] if w == "position"))
+}
+
+/// the tick names a function binds by `T i, T t = position x$` and
+/// never reads (log 82)
+fn dead_ticks(body: &[Stmt]) -> std::collections::HashSet<String> {
+    fn walk(stmts: &[Stmt], whole: &[Stmt], out: &mut std::collections::HashSet<String>) {
+        for s in stmts {
+            match s {
+                Stmt::Multi { vars, value, .. } if is_position(value) && vars.len() == 2 && !reads_name(whole, &vars[1].name) => {
+                    out.insert(vars[1].name.clone());
+                }
+                Stmt::If { then, els, .. } => {
+                    walk(then, whole, out);
+                    if let Some(e) = els {
+                        walk(e, whole, out);
+                    }
+                }
+                Stmt::Loop { body, .. } | Stmt::For { body, .. } => walk(body, whole, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    walk(body, body, &mut out);
+    out
+}
+
+/// does any expression in the block read the name?
+fn reads_name(stmts: &[Stmt], name: &str) -> bool {
+    let init = |v: &super::syntax::VarDecl| match &v.init {
+        Some(Init::Value(e)) => reads_in(e, name),
+        Some(Init::Construct(args)) => args.iter().any(|a| reads_in(&a.value, name)),
+        Some(Init::Pushes { items, cond }) => items.iter().any(|e| reads_in(e, name)) || cond.iter().any(|e| reads_in(e, name)),
+        None => false,
+    };
+    stmts.iter().any(|s| match s {
+        Stmt::Var(v) => init(v),
+        Stmt::Multi { value, .. } | Stmt::Assign { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => reads_in(value, name),
+        Stmt::If { cond, then, els, .. } => reads_in(cond, name) || reads_name(then, name) || els.as_ref().is_some_and(|e| reads_name(e, name)),
+        Stmt::Loop { vars, cond, body, .. } => vars.iter().any(init) || cond.iter().any(|e| reads_in(e, name)) || reads_name(body, name),
+        Stmt::For { seq, body, .. } => reads_in(seq, name) || reads_name(body, name),
+        Stmt::Continue { values, .. } => values.iter().any(|e| reads_in(e, name)),
+        Stmt::Push { items, cond, .. } => items.iter().any(|e| reads_in(e, name)) || cond.iter().any(|e| reads_in(e, name)),
+        Stmt::Break { .. } => false,
+    })
+}
+
+fn reads_in(e: &Expr, name: &str) -> bool {
+    match &e.kind {
+        ExprKind::Name(n) => n == name,
+        ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => reads_in(x, name),
+        ExprKind::List(items) => items.iter().any(|x| reads_in(x, name)),
+        ExprKind::Range { from, to, .. } => reads_in(from, name) || reads_in(to, name),
+        ExprKind::Bin(_, l, r) | ExprKind::Index(l, r) => reads_in(l, name) || reads_in(r, name),
+        ExprKind::IfElse(c, t, f) => reads_in(c, name) || reads_in(t, name) || reads_in(f, name),
+        ExprKind::Phrase(parts) | ExprKind::Existing(parts) => parts.iter().any(|p| match p {
+            Part::Args(list) => list.iter().any(|a| reads_in(&a.value, name)),
+            Part::Value(x) => reads_in(x, name),
+            // a variable among a phrase's words is a word until the
+            // lowering resolves it: taken as a read
+            Part::Word(w) => w == name,
+        }),
+        _ => false,
     }
 }
 
