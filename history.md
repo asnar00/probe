@@ -4,6 +4,17 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a bare literal takes the product's int width — `740a8b7` · 2026-09-09
+
+```
+on (bool ok) = literal takes the int width()
+    ok = width of (3) == int width()
+```
+
+Second rulings pass item 2 (question 22, log 47). With `width of` declared over `int32` and over `int64` and no `int` method, `width of (3)` was refused as ambiguous; Ash: pick the product's `int` width. Dispatch in `src/zero/lower.rs` gains a round between "the literal's own type" and "any number" that takes an integer literal as the product's width — the path's policy, `int64` here and `int32` on wasm, unless the store's `product.md` says `int: 32` or `int: 64`, which pins the store on every path and sets the policy it is built under (`src/zero/store.rs`, `src/zero/run.rs`). The IR notes each call the width decided. The case above holds at both widths, `int width` reading its answer from an overflow. zero 318/318 on native, wasm, riscv and arm-qemu (249 cases, 12 overridden), 307 + 11 skipped on air; probe test 971, 962 + 9, 971, 971, 941 + 30; cargo test 96 passed.
+
+---
+
 ### zero: an int64 may meet a float64 — `8f4931b` · 2026-09-09
 
 ```
