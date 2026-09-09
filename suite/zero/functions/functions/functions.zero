@@ -87,3 +87,23 @@ on (int a) = area of (int w) by (int h)
 
 on (int a) = area of (int side)
     a = side * side
+
+on (int32 w) = width of (int32 x)
+    w = 32
+
+on (int32 w) = width of (int64 x)
+    w = 64
+
+on (int32 w) = int width()
+    int x = 2147483647
+    int y = x + 1
+    w = if (y < 0) then (32) else (64)
+
+on (bool ok) = literal takes the int width()
+    ok = width of (3) == int width()
+
+on (int32 w) = width at thirty two bits()
+    w = width of (int32(3))
+
+on (int32 w) = width at sixty four bits()
+    w = width of (int64(3))

@@ -342,6 +342,25 @@ pub struct Lowered {
     pub funcs: Vec<FnInfo>,
     /// the features, in composition order
     pub features: Vec<String>,
+    /// the product's `int` width as a type, `i64` or `i32` (log 47):
+    /// what a bare integer literal is taken as between two concrete
+    /// widths
+    pub int_ty: Ty,
+}
+
+/// The rounds of dispatch on a literal (log 36, 47): first as its own
+/// type (`3` an `int`, `2.5` a `float`), then an integer literal as
+/// the product's `int` width, then a literal fitting any number type
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Round {
+    Own,
+    Product,
+    Any,
+}
+
+/// the abstract `int`, a literal's own type
+fn int_ty() -> Ty {
+    Ty::Num("int".into())
 }
 
 /// what the runner calls for a case: the IR function, its integer
@@ -526,8 +545,8 @@ fn is_comparison(op: &str) -> bool {
     matches!(op, "<" | ">" | "<=" | ">=" | "==" | "!=")
 }
 
-pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), type_feature: HashMap::new(), strict: false, candidate: None, product: HashMap::new() };
+pub fn lower(store: &Store, int_bits: u32) -> Result<Lowered, Error> {
+    let mut l = Lowerer { int_ty: Ty::Num(format!("i{}", int_bits)), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -618,7 +637,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         }
     }
     ir.push_str(&l.out);
-    Ok(Lowered { ir, funcs: l.funcs, features: l.features })
+    Ok(Lowered { ir, funcs: l.funcs, features: l.features, int_ty: l.int_ty })
 }
 
 /// resolve a `## testing` case against the lowered store
@@ -630,16 +649,20 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str) -> Result<Call, 
     let cands: Vec<FnInfo> = cands.into_iter().cloned().collect();
     // a case's arguments are literals: a method takes them when each is
     // a number where a number is wanted, a bool where a bool is; a
-    // number is an `int` first, and any number type only when no
-    // method takes an `int` (as `choose` does with literals)
-    let takes = |a: &Expr, ty: &Ty, strict: bool| match (&a.kind, ty) {
-        (ExprKind::Int(_), Ty::Num(n)) => !strict || fits(&Ty::Num("int".into()), &Ty::Num(n.clone())),
+    // number is an `int` first, then the product's width, then any
+    // number type (as `choose` does with literals, log 47)
+    let takes = |a: &Expr, ty: &Ty, round: Round| match (&a.kind, ty) {
+        (ExprKind::Int(_), Ty::Num(n)) => match round {
+            Round::Own => fits(&int_ty(), &Ty::Num(n.clone())),
+            Round::Product => fits(&lowered.int_ty, &Ty::Num(n.clone())),
+            Round::Any => true,
+        },
         (ExprKind::Int(_), Ty::Enum(_)) | (ExprKind::Bool(_), Ty::Bool) => true,
         _ => false,
     };
     let mut applicable = Vec::new();
-    for strict in [true, false] {
-        applicable = (0..cands.len()).filter(|&i| args.iter().zip(&cands[i].params).all(|(a, (_, t))| takes(a, t, strict))).collect();
+    for round in [Round::Own, Round::Product, Round::Any] {
+        applicable = (0..cands.len()).filter(|&i| args.iter().zip(&cands[i].params).all(|(a, (_, t))| takes(a, t, round))).collect();
         if !applicable.is_empty() {
             break;
         }
@@ -758,16 +781,18 @@ fn pick(cands: &[FnInfo], applicable: &[usize]) -> Result<usize, Vec<usize>> {
 }
 
 /// a literal's own type: `int` for `3`, `float` for `2.5`, `int$` for
-/// `[1, 2]`; a range is a sequence of ints
-fn literal_default(e: &Expr) -> Option<Ty> {
+/// `[1, 2]`; a range is a sequence of ints. `int` is what an integer
+/// literal is taken as: the abstract `int`, or the product's width in
+/// that round of dispatch (log 47)
+fn literal_default(e: &Expr, int: &Ty) -> Option<Ty> {
     match &e.kind {
-        ExprKind::Int(_) => Some(Ty::Num("int".into())),
+        ExprKind::Int(_) => Some(int.clone()),
         ExprKind::Float(_) => Some(Ty::Num("float".into())),
-        ExprKind::Neg(x) => literal_default(x),
-        ExprKind::Range { .. } => Some(Ty::Stream(Box::new(Ty::Num("int".into())))),
+        ExprKind::Neg(x) => literal_default(x, int),
+        ExprKind::Range { .. } => Some(Ty::Stream(Box::new(int.clone()))),
         ExprKind::List(items) => {
-            let first = literal_default(items.first()?)?;
-            if items.iter().all(|i| literal_default(i).as_ref() == Some(&first)) {
+            let first = literal_default(items.first()?, int)?;
+            if items.iter().all(|i| literal_default(i, int).as_ref() == Some(&first)) {
                 Some(Ty::Stream(Box::new(first)))
             } else {
                 None
@@ -840,8 +865,11 @@ struct Lowerer {
     features: Vec<String>,
     /// the feature that declared each type
     type_feature: HashMap<String, String>,
-    /// while `choose` tries a method: a literal argument is its own type
-    strict: bool,
+    /// while `choose` tries a method: which round of literal typing
+    /// this is (log 47); `Any` outside a trial
+    round: Round,
+    /// the product's `int` width as a type (log 47)
+    int_ty: Ty,
     /// inside a push chain's `while` (log 39): the candidate, which `_`
     /// reads as; None elsewhere, where `_` is a reduction's accumulator
     candidate: Option<Val>,
@@ -2976,9 +3004,9 @@ impl Lowerer {
     /// marked lifted (a map), and `_` marks the accumulator (a reduce)
     fn lower_call_args(&mut self, info: &FnInfo, args: &[Expr], b: &mut Body) -> Result<(Vec<Val>, Vec<bool>, Option<(usize, Ty)>, Vec<Ty>, bool), Error> {
         let file = b.file.clone();
-        // strictness is this call's alone: a call inside an argument
+        // the round is this call's alone: a call inside an argument
         // chooses for itself
-        let strict = std::mem::replace(&mut self.strict, false);
+        let round = std::mem::replace(&mut self.round, Round::Any);
         let mut vals = Vec::new();
         let mut lifted = Vec::new();
         let mut acc = None;
@@ -2998,10 +3026,11 @@ impl Lowerer {
                 continue;
             }
             let mut v = self.lower_expr(a, Some(ty), b, None)?;
-            if strict {
-                // a literal, or a list of them, as its own type, while
-                // `choose` asks for that
-                if let Some(d) = literal_default(a) {
+            if round != Round::Any {
+                // a literal, or a list of them, as its own type — or as
+                // the product's int width (log 47) — while `choose` asks
+                let int = if round == Round::Product { self.int_ty.clone() } else { int_ty() };
+                if let Some(d) = literal_default(a, &int) {
                     if !fits(&d, ty) {
                         return Err(lex::error(&file, a.line, format!("'{}' wants a {} here, given an {}", info.key, ty.ir(), d.ir())));
                     }
@@ -3014,7 +3043,7 @@ impl Lowerer {
             // literal's own type, `int` or `float`, as a typed constant:
             // the IR cannot type `2.5` under `number` on its own
             if v.literal && ty.abstract_name().is_some() {
-                if let Some(d) = literal_default(a) {
+                if let Some(d) = literal_default(a, &int_ty()) {
                     if &d != ty && fits(&d, ty) {
                         v.ty = d;
                         v = b.materialize(&v);
@@ -3102,16 +3131,16 @@ impl Lowerer {
             return Ok((one.clone(), r));
         }
         let mut last_err = None;
-        for strict in [true, false] {
+        for round in [Round::Own, Round::Product, Round::Any] {
             // taken as they are, before widened (log 37), before mapped
             let mut direct = Vec::new();
             let mut widened = Vec::new();
             let mut mapped = Vec::new();
             for (i, cand) in cands.iter().enumerate() {
                 let (start, ntmp, vars, defs, ndata, nstr) = (b.out.len(), b.ntmp, b.vars.clone(), b.defs.clone(), self.data.len(), self.nstr);
-                self.strict = strict;
+                self.round = round;
                 let tried = self.lower_call_args(cand, args, b);
-                self.strict = false;
+                self.round = Round::Any;
                 match tried {
                     Ok((_, lifted, acc, _, _)) if lifted.iter().any(|&l| l) || acc.is_some() => mapped.push(i),
                     Ok((_, _, _, _, true)) => widened.push(i),
@@ -3130,6 +3159,12 @@ impl Lowerer {
                 continue;
             }
             let i = pick(cands, &applicable).map_err(|amb| ambiguous(cands, &amb, &file, line))?;
+            if round == Round::Product {
+                // the width decided: say so where a reader of the IR
+                // will look (log 47), the warning the ruling allows
+                let sigs: Vec<String> = cands.iter().map(spelled).collect();
+                b.line(&format!("; a bare literal took the product's int width, {}, choosing among {}", zero_ty(&self.int_ty), sigs.join(", ")));
+            }
             let r = self.lower_call_args(&cands[i], args, b)?;
             return Ok((cands[i].clone(), r));
         }
@@ -3585,16 +3620,18 @@ impl Lowerer {
     /// (log 36); a literal on the right fits any number
     fn find_operator(&self, op: &str, l: &Ty, r: &Val, file: &str, line: usize) -> Result<Option<FnInfo>, Error> {
         let cands: Vec<FnInfo> = self.funcs.iter().filter(|f| matches!(f.parts.as_slice(), [NamePart::Group, NamePart::Sym(s), NamePart::Group] if s == op)).cloned().collect();
-        // a literal on the right is its own type first, `int` or `float`
-        let own = if r.text.contains('.') { Ty::Num("float".into()) } else { Ty::Num("int".into()) };
-        let takes = |p: &Ty, strict: bool| match (r.literal, strict) {
-            (true, true) => fits(&own, p),
-            (true, false) => fits_literal(r, p),
+        // a literal on the right is its own type first, `int` or
+        // `float`, then an integer one the product's width (log 47)
+        let decimal = r.text.contains('.');
+        let takes = |p: &Ty, round: Round| match (r.literal, round) {
+            (true, Round::Own) => fits(&(if decimal { Ty::Num("float".into()) } else { int_ty() }), p),
+            (true, Round::Product) => !decimal && fits(&self.int_ty, p),
+            (true, Round::Any) => fits_literal(r, p),
             (false, _) => fits(&r.ty, p),
         };
         let mut applicable = Vec::new();
-        for strict in [true, false] {
-            applicable = (0..cands.len()).filter(|&i| fits(l, &cands[i].params[0].1) && takes(&cands[i].params[1].1, strict)).collect();
+        for round in [Round::Own, Round::Product, Round::Any] {
+            applicable = (0..cands.len()).filter(|&i| fits(l, &cands[i].params[0].1) && takes(&cands[i].params[1].1, round)).collect();
             if !applicable.is_empty() {
                 break;
             }

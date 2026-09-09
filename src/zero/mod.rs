@@ -47,7 +47,7 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
                 }
             }
         }
-        Some(store) if args.get(1).map(String::as_str) == Some("emit") => match run::emit(Path::new(store)) {
+        Some(store) if args.get(1).map(String::as_str) == Some("emit") => match run::emit(Path::new(store), &policy) {
             Ok(ir) => {
                 print!("{}", ir);
                 ExitCode::SUCCESS

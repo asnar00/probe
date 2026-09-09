@@ -11,11 +11,32 @@ use crate::{opt, ssa};
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
-/// lower a store and print its IR
-pub fn emit(dir: &Path) -> Result<String, String> {
+/// lower a store and print its IR, under a policy for the width a bare
+/// literal takes (log 47)
+pub fn emit(dir: &Path, policy: &ssa::Policy) -> Result<String, String> {
     let s = store::read(dir).map_err(|e| e.to_string())?;
-    let l = lower::lower(&s).map_err(|e| e.to_string())?;
+    let policy = store_policy(&s, policy);
+    let l = lower::lower(&s, int_bits(&policy)).map_err(|e| e.to_string())?;
     Ok(l.ir)
+}
+
+/// the policy a store is lowered and built under (log 47): the path's,
+/// with `int` at the width the store's `product.md` sets, if it does
+pub fn store_policy(s: &store::Store, policy: &ssa::Policy) -> ssa::Policy {
+    match s.int_width {
+        Some(32) => ssa::Policy { int: ssa::Type::I32, ..*policy },
+        Some(64) => ssa::Policy { int: ssa::Type::I64, ..*policy },
+        _ => *policy,
+    }
+}
+
+/// the width of `int` under a policy, the width a bare integer literal
+/// takes between two concrete widths (log 47)
+pub fn int_bits(policy: &ssa::Policy) -> u32 {
+    match policy.int {
+        ssa::Type::I32 => 32,
+        _ => 64,
+    }
 }
 
 /// the lowered store as a module under a policy: parsed, resolved,
@@ -237,7 +258,8 @@ fn skip_note(funcs: &[lower::FnInfo], reaches: &str, kind: &str) -> String {
 /// run one case of a store on the native JIT and print what it gave
 pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize) -> Result<String, String> {
     let s = store::read(dir).map_err(|e| e.to_string())?;
-    let l = lower::lower(&s).map_err(|e| e.to_string())?;
+    let policy = &store_policy(&s, policy);
+    let l = lower::lower(&s, int_bits(policy)).map_err(|e| e.to_string())?;
     let calls = calls_of(&s, &l)?;
     let p = calls
         .into_iter()
@@ -278,7 +300,8 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
         let name = sdir.file_name().unwrap().to_string_lossy().to_string();
         let result = (|| -> Result<(Vec<Planned>, Vec<Run>, Vec<Over>, ssa::Module, lower::Lowered), String> {
             let s = store::read(sdir).map_err(|e| e.to_string())?;
-            let l = lower::lower(&s).map_err(|e| e.to_string())?;
+            let policy = store_policy(&s, &policy);
+            let l = lower::lower(&s, int_bits(&policy)).map_err(|e| e.to_string())?;
             let cases = calls_of(&s, &l)?;
             let (runs, over) = plan(&s, &cases)?;
             let module = build(&l.ir, &policy, level)?;
@@ -419,7 +442,7 @@ mod tests {
     #[test]
     fn every_case_in_every_context() {
         let s = store::read(Path::new("suite/zero/hello")).unwrap();
-        let l = lower::lower(&s).unwrap();
+        let l = lower::lower(&s, 64).unwrap();
         let cases = calls_of(&s, &l).unwrap();
         let (runs, over) = plan(&s, &cases).unwrap();
         let labels: Vec<String> = contexts(&s).into_iter().map(|(l, _)| l).collect();
@@ -435,7 +458,7 @@ mod tests {
         assert!(over.iter().any(|o| o.text == "run() → \"hello world\" [with bye off]" && o.by_feature == "countdown"), "{:?}", over.iter().map(|o| &o.text).collect::<Vec<_>>());
         // a line's `off` takes the subtree; an `on` the runner contradicts does not stand
         let s = store::read(Path::new("suite/zero/features")).unwrap();
-        let l = lower::lower(&s).unwrap();
+        let l = lower::lower(&s, 64).unwrap();
         let cases = calls_of(&s, &l).unwrap();
         let base_off = cases.iter().find(|p| p.text.starts_with("greeted() with base off")).unwrap();
         let off = effective(&s, &BTreeSet::new(), base_off).unwrap().unwrap();
@@ -448,11 +471,45 @@ mod tests {
         assert!(effective(&s, &BTreeSet::new(), &contradiction).unwrap_err().contains("`with more on` contradicts"));
     }
 
+    /// a bare literal between two concrete widths takes the product's
+    /// `int` width (log 47): the path's policy, or `product.md`'s `int:`
+    /// line, which also sets the policy the store is built under
+    #[test]
+    fn a_product_sets_the_int_width() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-width-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>chosen() → 32\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "on (int32 w) = width of (int32 x)\n    w = 32\n\non (int32 w) = width of (int64 x)\n    w = 64\n\non (int32 w) = chosen()\n    w = width of (3)\n").unwrap();
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        // without a product file the policy's width, i64 natively
+        let ir = emit(&dir, &native).unwrap();
+        assert!(ir.contains("; a bare literal took the product's int width, int64, choosing among width of (int32), width of (int64)\n    w: i32 = width_of__i64(3)"), "{}", ir);
+        // with `int: 32` the store is pinned, and built under i32
+        std::fs::write(dir.join("product.md"), "# product\n\nint: 32\n").unwrap();
+        let s = store::read(&dir).unwrap();
+        assert_eq!(s.int_width, Some(32));
+        let policy = store_policy(&s, &native);
+        assert_eq!(int_bits(&policy), 32);
+        let l = lower::lower(&s, int_bits(&policy)).unwrap();
+        assert!(l.ir.contains("int width, int32, choosing among"), "{}", l.ir);
+        assert!(l.ir.contains("w: i32 = width_of(3)"), "{}", l.ir);
+        let module = build(&l.ir, &policy, 1).unwrap();
+        let call = suite::Call { func: "chosen".into(), args: vec![], nrets: 1, checks: false, text: true, before: vec![] };
+        let got = suite::run_calls(&module, &l.ir, Backend::Native, &[call], "zero-width", 1).unwrap().remove(0).unwrap();
+        assert_eq!(got.values, vec![32]);
+        // a width the policy cannot take is refused
+        std::fs::write(dir.join("product.md"), "# product\n\nint: 16\n").unwrap();
+        let err = match store::read(&dir) { Err(e) => e.to_string(), Ok(_) => panic!("accepted int: 16") };
+        assert!(err.contains("the product's int width is 32 or 64, not '16'"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// a product's bound (log 41) reaches every loop of the function it
     /// names, marked as the product's, and `probe cost` counts it
     #[test]
     fn a_product_bound_reaches_the_loops() {
-        let ir = emit(Path::new("suite/zero/tasks")).unwrap();
+        let ir = emit(Path::new("suite/zero/tasks"), &suite::backend_policy(Backend::Native).unwrap()).unwrap();
         assert!(ir.contains("; product setting: bound count down from: 5\nfn count_down_from("), "{}", ir);
         let body: String = ir.lines().skip_while(|l| !l.starts_with("fn count_down_from(")).take_while(|l| *l != "}").collect::<Vec<_>>().join("\n");
         assert!(body.contains("loop() bound 5 {"), "{}", body);
@@ -462,7 +519,7 @@ mod tests {
         let r = coster.report("count_down_from").unwrap();
         assert!(r.loops.iter().any(|l| l.contains("x5 (declared)")), "{:?}", r.loops);
         // hello's countdown shows its count without a bound anywhere
-        let ir = emit(Path::new("suite/zero/hello")).unwrap();
+        let ir = emit(Path::new("suite/zero/hello"), &policy).unwrap();
         assert!(!ir.contains("product setting"));
         let module = build(&ir, &policy, 1).unwrap();
         let mut coster = crate::cost::Coster::new(&module, None, None, None);
