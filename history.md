@@ -4,6 +4,24 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the IR reads its blocks from indentation — `a7a0370` · 2026-09-10
+
+```
+fn sum(n: i64) -> i64
+    acc: i64 = loop(i: i64 = 0, a: i64 = 0)
+        done: u1 = cmp.ge i, n
+        if done
+            break a
+        a2: i64 = add a, i
+        i2: i64 = add i, 1
+        continue i2, a2
+    ret acc
+```
+
+Third pass item 1, first landing (fm3 log 53, 54). Ash: the IR drops its braces and indents its blocks as zero does. The lexer measures indentation and a layout pass makes of it the block tokens the braces gave, so the parser reads one stream: a line indented past its header opens a block, a dedent closes, a label heads a basic block with its instructions under it, `if c` then `else` is an empty arm, a `struct`'s fields and a `data` item's values are lines, `platform arm64` takes its rules under it. A literal `{` still opens a block of its own, so braced and indented text parse together — the prelude is appended to every program. `struct(x: f32, y: f32)` is the one-line spelling a type's name uses. `probe indent <file>` (`-w` in place) rewrites a braced file keeping every comment, and a test round-trips every `.ssa` in the tree through it. Nothing in the tree is converted yet. Every path unchanged; cargo test 101 passed.
+
+---
+
 ### zero: the emitted IR is abstract — method sets, the policy choosing a width — `227218e` · 2026-09-09
 
 ```
