@@ -29,6 +29,9 @@
 ;! unread_view -> 12, 5
 ;! wrapped -> 57, 7
 ;! wrapped_history -> 27, 57
+;! block_across_the_seam -> 340, 4
+;! block_with_a_tick -> 36, 4
+;! block_too_long -> check
 
 ; an irregular ring of bytes on a microsecond clock: values and ticks;
 ; a ring keeps half its slots resident (each item sits in both halves),
@@ -47,6 +50,11 @@ data arg: array(u64, 8)
 data ovb: buffer(f32, 16)
 data org: array(u64, 8)
 data blk: buffer(f32, 4)
+; blocks pushed whole: four floats across the regular ring's seam, four
+; bytes at one tick, and one too long to be resident
+data fblk: buffer(f32, 4)
+data bblk: buffer(u8, 4)
+data big: buffer(f32, 16)
 ; two rings of int for the struct of streams
 data ivb: buffer(int, 16)
 data itb: buffer(i64, 16)
@@ -170,6 +178,56 @@ fn wrapped_history() -> (u8, u8)
     w: u8[] = window s, t1, t2
     ws: u8 = sum w
     ret hs, ws
+; six items into the regular ring of sixteen, then a block of four: it
+; lands across the seam, and a reader six in frames the four as one view
+fn block_across_the_seam() -> (i32, i64)
+    s: f32$ = khz()
+    tens(s)
+    push s, 50.0
+    push s, 60.0
+    p: ptr = addr fblk
+    b: f32[] = slice p
+    store 70.0, b, 0
+    store 80.0, b, 1
+    store 90.0, b, 2
+    store 100.0, b, 3
+    push s, b
+    s2: f32$ = advance(s, 6)
+    f: f32[], k0: i64, s3: f32$ = frame(s2)
+    total: f32 = sum f
+    n: i64 = len f
+    ti: i32 = conv total
+    ret ti, n
+; three bytes at 1, 2, 3 ms, then a block of four at 6 ms: the frame
+; holds all seven, and the window from 6 ms to 7 ms the block
+fn block_with_a_tick() -> (u8, i64)
+    s: u8$ = fresh()
+    push s, 1000, 1
+    push s, 2000, 2
+    push s, 3000, 3
+    p: ptr = addr bblk
+    b: u8[] = slice p
+    store 6, b, 0
+    store 7, b, 1
+    store 8, b, 2
+    store 9, b, 3
+    push s, 6000, b
+    f: u8[], k0: i64, s2: u8$ = frame(s)
+    total: u8 = sum f
+    t1: time = millis(6)
+    t2: time = millis(7)
+    w: u8[] = window s, t1, t2
+    n: i64 = len w
+    ret total, n
+; a block of sixteen into a ring that keeps eight fails
+fn block_too_long() -> i64
+    s: f32$ = khz()
+    p: ptr = addr big
+    b: f32[] = slice p
+    fill b, 1.0
+    push s, b
+    n: i64 = count s
+    ret n
 ; twelve items into a ring of sixteen: the last eight are resident, the
 ; latest is 12, and the window from 9 ms holds the last four
 fn sliding() -> (u8, i64)

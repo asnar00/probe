@@ -460,13 +460,6 @@ fn __str(p: ptr, n: i64) -> u8[]
     v: u8[] = pack q, n, 1
     ret v
 
-; how many items a stream's ring has received, whoever reads it: what a
-; node compares with what it has seen (log 68)
-fn __pushed(s: number$) -> i64
-    r: ptr = get s, ring
-    n: i64 = load r
-    ret n
-
 ; a push into any stream (log 38): stamped with the clock on a ring
 ; without a rate, the next sample on one with a rate
 fn __push(s: number$, v: number)
@@ -478,6 +471,16 @@ fn __push(s: number$, v: number)
     else
         t: i64 = __now()
         push(s, t, v)
+    ret
+fn __push(s: number$, block: number[])
+    r: ptr = get s, ring
+    step: i64 = load r, 40
+    regular: u1 = cmp.gt step, 0
+    if regular
+        push(s, block)
+    else
+        t: i64 = __now()
+        push(s, t, block)
     ret
 "#;
 
@@ -1996,7 +1999,7 @@ impl Lowerer {
     /// `position` computes a tick the test throws away)
     fn pushed_of(&mut self, reader: &str, b: &mut Body) -> String {
         let pushed = b.tmp();
-        b.line(&format!("{}: i64 = __pushed({})", pushed, reader));
+        b.line(&format!("{}: i64 = received({})", pushed, reader));
         pushed
     }
 
@@ -4281,14 +4284,29 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
         }
     }
 
-    /// a string's bytes into a stream of bytes, straight from `data` (log 57)
+    /// a string's bytes into a stream of bytes, straight from `data` (log
+    /// 57): as one block, or as the byte itself when it is one (log 69)
     fn push_text(&mut self, name: &str, s: &Val, text: &str, b: &mut Body) {
+        if text.len() == 1 {
+            let v = Val { text: text.as_bytes()[0].to_string(), ty: Ty::Num("u8".into()), literal: true };
+            self.emit_push(name, s, &v, b);
+            return;
+        }
         let (view, n) = self.str_view(text, b);
         self.push_view(name, s, &Ty::Num("u8".into()), &view, &n, b);
     }
 
-    /// the `n` items of a view pushed one by one
+    /// the `n` items of a view pushed as one block (log 69) — one by one
+    /// only into a rated task's own output, whose clock steps a period
+    /// per item
     fn push_view(&mut self, name: &str, s: &Val, elem: &Ty, view: &str, n: &str, b: &mut Body) {
+        let own = matches!(&b.kind, BodyKind::Task { out, .. } if out.as_deref() == Some(name));
+        if !own && self.stream_fields(&s.ty).is_none() {
+            let regular = if b.vars.contains_key(name) { self.regular_locals.contains(name) } else { self.regular.contains(name) };
+            let word = if regular { "push" } else { "__push" };
+            b.line(&format!("{}({}, {})", word, s.text, view));
+            return;
+        }
         let k = b.tmp();
         b.open_loop("", &format!("{}: i64 = 0", k), false);
         b.depth += 1;
