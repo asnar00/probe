@@ -279,21 +279,15 @@ fn __node2() -> u1
         yield 0
     ret ran
 
-; the scheduler (log 25): passes over the nodes in declaration order until a pass runs nothing
+; the scheduler (log 25, 78): the node graph is acyclic, so one pass in producer-before-consumer order settles it — every node at the start, and after a push into a stream the nodes it reaches
 fn __run()
     p: ptr = addr __running
     busy: i64 = load p
     idle: u1 = cmp.eq busy, 0
     if idle
         store 1: i64, p
-        loop()
-            r1: u1 = __node1()
-            r2: u1 = __node2()
-            any2: u1 = or r1, r2
-            if any2
-                continue
-            else
-                break
+        r1: u1 = __node1()
+        r2: u1 = __node2()
         store 0: i64, p
     ret
 

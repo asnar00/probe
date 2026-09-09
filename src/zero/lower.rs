@@ -617,8 +617,284 @@ fn is_comparison(op: &str) -> bool {
     matches!(op, "<" | ">" | "<=" | ">=" | "==" | "!=")
 }
 
+/// what a body may push into, for the scheduler's graph (log 78): the
+/// feature-scope streams it pushes into by name or ends, and those it
+/// passes to a store function that pushes into that parameter, chased
+/// through every definition a phrase may reach; a body's own parameters
+/// and locals are not feature-scope names. An over-approximation
+/// wherever it is unsure: a spurious edge costs the loop, never a
+/// missed run
+struct Pushes<'a> {
+    l: &'a Lowerer,
+    /// every definition of a key: its parameter names in order, and its body
+    bodies: HashMap<String, Vec<(Vec<String>, &'a [Stmt])>>,
+    /// per key: the feature-scope streams pushed, the parameters pushed
+    known: HashMap<String, (std::collections::HashSet<String>, std::collections::HashSet<String>)>,
+    /// the keys being computed: a recursion meets them and assumes the worst
+    active: std::collections::HashSet<String>,
+    file: String,
+}
+
+type Names = std::collections::HashSet<String>;
+
+impl<'a> Pushes<'a> {
+    /// the streams a key's definitions may push into, cached
+    fn of_key(&mut self, key: &str) -> (Names, Names) {
+        if let Some(k) = self.known.get(key) {
+            return k.clone();
+        }
+        if self.active.contains(key) {
+            // recursive: every stream parameter of every definition
+            let params: Names = self.bodies.get(key).map(|ds| ds.iter().flat_map(|(ps, _)| ps.iter().cloned()).collect()).unwrap_or_default();
+            return (Names::new(), params);
+        }
+        self.active.insert(key.to_string());
+        let (mut out, mut own) = (Names::new(), Names::new());
+        let defs = self.bodies.get(key).cloned().unwrap_or_default();
+        for (params, body) in defs {
+            let bound: Names = params.iter().cloned().collect();
+            let mut mine = Names::new();
+            self.of(body, &bound, &mut out, &mut mine);
+            own.extend(mine.into_iter().filter(|n| params.contains(n)));
+        }
+        self.active.remove(key);
+        self.known.insert(key.to_string(), (out.clone(), own.clone()));
+        (out, own)
+    }
+
+    /// the streams `stmts` may push into, `bound` being the names that
+    /// are not feature-scope: into `out` the feature-scope ones, into
+    /// `own` the bound ones
+    fn of(&mut self, stmts: &[Stmt], bound: &Names, out: &mut Names, own: &mut Names) {
+        let mut bound = bound.clone();
+        for s in stmts {
+            match s {
+                Stmt::Var(v) => {
+                    self.init(v, &bound, out, own);
+                    bound.insert(v.name.clone());
+                }
+                Stmt::Multi { vars, value, .. } => {
+                    self.expr(value, &bound, out, own);
+                    for p in vars {
+                        bound.insert(p.name.clone());
+                    }
+                }
+                Stmt::Assign { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => self.expr(value, &bound, out, own),
+                Stmt::If { cond, then, els, .. } => {
+                    self.expr(cond, &bound, out, own);
+                    self.of(then, &bound, out, own);
+                    if let Some(e) = els {
+                        self.of(e, &bound, out, own);
+                    }
+                }
+                Stmt::Loop { vars, cond, body, .. } => {
+                    let mut inner = bound.clone();
+                    for v in vars {
+                        self.init(v, &inner, out, own);
+                        inner.insert(v.name.clone());
+                    }
+                    if let Some(c) = cond {
+                        self.expr(c, &inner, out, own);
+                    }
+                    self.of(body, &inner, out, own);
+                }
+                Stmt::For { var, seq, body, .. } => {
+                    self.expr(seq, &bound, out, own);
+                    let mut inner = bound.clone();
+                    inner.insert(var.clone());
+                    self.of(body, &inner, out, own);
+                }
+                Stmt::Continue { values, .. } => values.iter().for_each(|e| self.expr(e, &bound, out, own)),
+                Stmt::Break { .. } => {}
+                Stmt::Push { target, items, cond, .. } => {
+                    if let ExprKind::Seq(n) = &target.kind {
+                        self.pushed(n, &bound, out, own);
+                    }
+                    items.iter().for_each(|e| self.expr(e, &bound, out, own));
+                    cond.iter().for_each(|e| self.expr(e, &bound, out, own));
+                }
+            }
+        }
+    }
+
+    fn pushed(&self, n: &str, bound: &Names, out: &mut Names, own: &mut Names) {
+        if bound.contains(n) {
+            own.insert(n.to_string());
+        } else if self.l.fvar(n).is_some_and(|f| matches!(f.ty, Ty::Stream(_))) {
+            out.insert(n.to_string());
+        }
+    }
+
+    fn init(&mut self, v: &super::syntax::VarDecl, bound: &Names, out: &mut Names, own: &mut Names) {
+        match &v.init {
+            Some(Init::Value(e)) => self.expr(e, bound, out, own),
+            Some(Init::Construct(args)) => args.iter().for_each(|a| self.expr(&a.value, bound, out, own)),
+            Some(Init::Pushes { items, cond }) => {
+                items.iter().for_each(|e| self.expr(e, bound, out, own));
+                cond.iter().for_each(|e| self.expr(e, bound, out, own));
+            }
+            None => {}
+        }
+    }
+
+    fn expr(&mut self, e: &Expr, bound: &Names, out: &mut Names, own: &mut Names) {
+        match &e.kind {
+            ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => self.expr(x, bound, out, own),
+            ExprKind::List(items) => items.iter().for_each(|x| self.expr(x, bound, out, own)),
+            ExprKind::Range { from, to, .. } => {
+                self.expr(from, bound, out, own);
+                self.expr(to, bound, out, own);
+            }
+            ExprKind::Bin(_, l, r) | ExprKind::Index(l, r) => {
+                self.expr(l, bound, out, own);
+                self.expr(r, bound, out, own);
+            }
+            ExprKind::IfElse(c, t, f) => {
+                self.expr(c, bound, out, own);
+                self.expr(t, bound, out, own);
+                self.expr(f, bound, out, own);
+            }
+            ExprKind::Phrase(parts) | ExprKind::Existing(parts) => {
+                for p in parts {
+                    match p {
+                        Part::Args(list) => list.iter().for_each(|a| self.expr(&a.value, bound, out, own)),
+                        Part::Value(x) => self.expr(x, bound, out, own),
+                        Part::Word(_) => {}
+                    }
+                }
+                let is_var = |w: &str| bound.contains(w) || self.l.fvar(w).is_some();
+                match find_methods(&self.l.funcs, parts, &is_var, &self.file, e.line) {
+                    Ok((cands, args)) if !cands.is_empty() => {
+                        let cands: Vec<(String, Vec<String>)> = cands.iter().map(|c| (c.key.clone(), c.params.iter().map(|(n, _)| n.clone()).collect())).collect();
+                        for (key, params) in cands {
+                            let (theirs, pushed) = self.of_key(&key);
+                            out.extend(theirs);
+                            for (i, pname) in params.iter().enumerate() {
+                                if pushed.contains(pname) {
+                                    if let Some(Expr { kind: ExprKind::Seq(n), .. }) = args.get(i) {
+                                        self.pushed(n, bound, out, own);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // a compiler word: `end x$` is what a consumer sees as more
+                    _ => {
+                        if let [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(n), .. })] = parts.as_slice() {
+                            if w == "end" {
+                                self.pushed(n, bound, out, own);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Lowerer {
+    /// the scheduler's order (log 78): the nodes in a stable topological
+    /// order of the graph node → stream it may push into → node reading
+    /// it (declaration order among the unrelated), and the stream a cycle
+    /// runs through if there is one
+    fn schedule(&self, store: &Store, nodes: &[Node]) -> Option<(Vec<usize>, Vec<Names>, Option<String>)> {
+        let mut bodies: HashMap<String, Vec<(Vec<String>, &[Stmt])>> = HashMap::new();
+        fn add<'b>(fd: &'b FnDecl, bodies: &mut HashMap<String, Vec<(Vec<String>, &'b [Stmt])>>) {
+            let mut params: Vec<String> = fd.results.iter().map(|p| p.name.clone()).collect();
+            params.extend(fd.params().map(|p| p.name.clone()));
+            bodies.entry(mangle(&fd.name)).or_default().push((params, fd.body.as_slice()));
+        }
+        for f in &store.features {
+            for d in &f.code.decls {
+                if let Decl::Fn(fd) = d {
+                    add(fd, &mut bodies);
+                }
+            }
+        }
+        for (fd, _, _) in &self.edges {
+            add(fd, &mut bodies);
+        }
+        let mut walker = Pushes { l: self, bodies, known: HashMap::new(), active: Names::new(), file: store.product_file.clone() };
+        let n = nodes.len();
+        let mut reads: Vec<Names> = Vec::new();
+        let mut writes: Vec<Names> = Vec::new();
+        for node in nodes {
+            let mut r = Names::new();
+            for (a, (_, pty)) in node.args.iter().zip(&node.info.params) {
+                if let (ExprKind::Seq(s), Ty::Stream(_)) = (&a.kind, pty) {
+                    r.insert(s.clone());
+                }
+            }
+            let (theirs, pushed) = walker.of_key(&node.info.key);
+            let mut w = theirs;
+            if let Some(o) = &node.out {
+                w.insert(o.clone());
+            }
+            for (a, (pname, _)) in node.args.iter().zip(&node.info.params) {
+                if let (ExprKind::Seq(s), true) = (&a.kind, pushed.contains(pname)) {
+                    w.insert(s.clone());
+                }
+            }
+            reads.push(r);
+            writes.push(w);
+        }
+        // edges k → j where k may push into what j reads
+        let mut succs: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut indeg = vec![0usize; n];
+        for k in 0..n {
+            for j in 0..n {
+                if let Some(s) = writes[k].iter().find(|s| reads[j].contains(*s)).cloned() {
+                    if k == j {
+                        return Some((Vec::new(), writes, Some(s)));
+                    }
+                    succs[k].push(j);
+                    indeg[j] += 1;
+                }
+            }
+        }
+        // Kahn's order, the lowest declaration index first
+        let mut order = Vec::new();
+        let mut ready: std::collections::BTreeSet<usize> = (0..n).filter(|&k| indeg[k] == 0).collect();
+        while let Some(&k) = ready.iter().next() {
+            ready.remove(&k);
+            order.push(k);
+            for &j in &succs[k] {
+                indeg[j] -= 1;
+                if indeg[j] == 0 {
+                    ready.insert(j);
+                }
+            }
+        }
+        if order.len() < n {
+            let k = (0..n).find(|k| !order.contains(k)).unwrap();
+            let through = writes[k].iter().find(|s| (0..n).any(|j| !order.contains(&j) && reads[j].contains(*s))).cloned().unwrap_or_default();
+            return Some((Vec::new(), writes, Some(through)));
+        }
+        Some((order, writes, None))
+    }
+
+    /// the nodes a push into `s$` reaches, in the schedule's order: those
+    /// reading it, then those reading what they may push into
+    fn reached(&self, s: &str, nodes: &[Node], order: &[usize], writes: &[Names]) -> Vec<usize> {
+        let reads = |k: usize| -> Names {
+            nodes[k].args.iter().zip(&nodes[k].info.params).filter_map(|(a, (_, t))| match (&a.kind, t) { (ExprKind::Seq(n), Ty::Stream(_)) => Some(n.clone()), _ => None }).collect()
+        };
+        let mut live: Names = Names::new();
+        live.insert(s.to_string());
+        let mut out = Vec::new();
+        for &k in order {
+            if reads(k).iter().any(|r| live.contains(r)) {
+                out.push(k);
+                live.extend(writes[k].iter().cloned());
+            }
+        }
+        out
+    }
+}
+
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock };
+    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock, static_schedule: false };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -1176,6 +1452,9 @@ struct Lowerer {
     edge_fns: HashMap<String, String>,
     /// the product's clock (log 77)
     clock: super::store::Clock,
+    /// the scheduler is a static schedule (log 78): the node graph is
+    /// acyclic, and a push into a stream runs `__run_<stream>()`
+    static_schedule: bool,
     /// the feature that declared each type
     type_feature: HashMap<String, String>,
     /// while `choose` tries a method: which round of literal typing
@@ -2223,8 +2502,34 @@ impl Lowerer {
         for (k, node) in nodes.iter().enumerate() {
             self.emit_node(k + 1, node)?;
         }
-        if !nodes.is_empty() {
-            writeln!(self.out, "\n; the scheduler (log 25): passes over the nodes in declaration order until a pass runs nothing").unwrap();
+        // the node graph (log 78): what each node reads, what it may push
+        // into, and an order with every producer before its consumers
+        let schedule = if nodes.is_empty() { None } else { self.schedule(store, &nodes) };
+        if let Some((order, writes, cycle)) = &schedule {
+            if let Some(through) = cycle {
+                writeln!(self.out, "\n; the scheduler (log 25): passes over the nodes in declaration order until a pass runs nothing — the node graph has a cycle through {}$ (log 78)", through).unwrap();
+            } else {
+                self.static_schedule = true;
+                let guard = "    p: ptr = addr __running\n    busy: i64 = load p\n    idle: u1 = cmp.eq busy, 0\n    if idle\n        store 1: i64, p";
+                writeln!(self.out, "\n; the scheduler (log 25, 78): the node graph is acyclic, so one pass in producer-before-consumer order settles it — every node at the start, and after a push into a stream the nodes it reaches").unwrap();
+                writeln!(self.out, "fn __run()\n{}", guard).unwrap();
+                for &k in order {
+                    writeln!(self.out, "        r{}: u1 = __node{}()", k + 1, k + 1).unwrap();
+                }
+                writeln!(self.out, "        store 0: i64, p\n    ret").unwrap();
+                let mut inputs: Vec<&String> = self.node_inputs.iter().collect();
+                inputs.sort();
+                for s in inputs {
+                    let reached = self.reached(s, &nodes, order, writes);
+                    writeln!(self.out, "fn __run_{}()\n{}", s, guard).unwrap();
+                    for &k in &reached {
+                        writeln!(self.out, "        r{}: u1 = __node{}()", k + 1, k + 1).unwrap();
+                    }
+                    writeln!(self.out, "        store 0: i64, p\n    ret").unwrap();
+                }
+            }
+        }
+        if !nodes.is_empty() && !self.static_schedule {
             writeln!(self.out, "fn __run()\n    p: ptr = addr __running\n    busy: i64 = load p\n    idle: u1 = cmp.eq busy, 0\n    if idle\n        store 1: i64, p\n        loop()").unwrap();
             let mut any = String::new();
             for k in 1..=nodes.len() {
@@ -4856,7 +5161,11 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
     /// node reads: the scheduler runs (log 25)
     fn trigger(&self, name: &str, b: &mut Body) {
         if b.kind == BodyKind::Fn && self.node_inputs.contains(name) {
-            b.line("__run()");
+            if self.static_schedule {
+                b.line(&format!("__run_{}()", name));
+            } else {
+                b.line("__run()");
+            }
         }
     }
 

@@ -327,21 +327,34 @@ fn __node2() -> u1
         yield 0
     ret ran
 
-; the scheduler (log 25): passes over the nodes in declaration order until a pass runs nothing
+; the scheduler (log 25, 78): the node graph is acyclic, so one pass in producer-before-consumer order settles it — every node at the start, and after a push into a stream the nodes it reaches
 fn __run()
     p: ptr = addr __running
     busy: i64 = load p
     idle: u1 = cmp.eq busy, 0
     if idle
         store 1: i64, p
-        loop()
-            r1: u1 = __node1()
-            r2: u1 = __node2()
-            any2: u1 = or r1, r2
-            if any2
-                continue
-            else
-                break
+        r2: u1 = __node2()
+        r1: u1 = __node1()
+        store 0: i64, p
+    ret
+fn __run_i()
+    p: ptr = addr __running
+    busy: i64 = load p
+    idle: u1 = cmp.eq busy, 0
+    if idle
+        store 1: i64, p
+        r2: u1 = __node2()
+        r1: u1 = __node1()
+        store 0: i64, p
+    ret
+fn __run_out()
+    p: ptr = addr __running
+    busy: i64 = load p
+    idle: u1 = cmp.eq busy, 0
+    if idle
+        store 1: i64, p
+        r1: u1 = __node1()
         store 0: i64, p
     ret
 
@@ -395,7 +408,7 @@ fn hello()
     push(_1, _4)
     _5: u8 = const 10
     push(_1, _5)
-    __run()
+    __run_out()
     ret
 
 ; feature countdown (layer runtime)
@@ -413,7 +426,7 @@ fn count_down()
         push(_1, _2)
         _4: int = sub _2, 1
         continue _4
-    __run()
+    __run_i()
     ret
 fn __edge1(i: int$, __hz: i64) -> int$
     _1: int[] = unread(i)
@@ -452,7 +465,7 @@ fn goodbye()
     push(_1, _4)
     _5: u8 = const 10
     push(_1, _5)
-    __run()
+    __run_out()
     ret
 
 ; run: the chain bye, countdown, hello, newest outermost; a link whose feature is off falls through

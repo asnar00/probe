@@ -331,21 +331,24 @@ fn __node2() -> u1
         yield 0
     ret ran
 
-; the scheduler (log 25): passes over the nodes in declaration order until a pass runs nothing
+; the scheduler (log 25, 78): the node graph is acyclic, so one pass in producer-before-consumer order settles it — every node at the start, and after a push into a stream the nodes it reaches
 fn __run()
     p: ptr = addr __running
     busy: i64 = load p
     idle: u1 = cmp.eq busy, 0
     if idle
         store 1: i64, p
-        loop()
-            r1: u1 = __node1()
-            r2: u1 = __node2()
-            any2: u1 = or r1, r2
-            if any2
-                continue
-            else
-                break
+        r1: u1 = __node1()
+        r2: u1 = __node2()
+        store 0: i64, p
+    ret
+fn __run_in()
+    p: ptr = addr __running
+    busy: i64 = load p
+    idle: u1 = cmp.eq busy, 0
+    if idle
+        store 1: i64, p
+        r2: u1 = __node2()
         store 0: i64, p
     ret
 
@@ -458,10 +461,10 @@ fn arrive_again()
     _3: i64 = len __s6
     _4: u8[] = __str(_2, _3)
     __push(_1, _4)
-    __run()
+    __run_in()
     _5: u8$ = __get_in()
     end(_5)
-    __run()
+    __run_in()
     ret
 fn two_arrivals() -> (int, int)
     _1: __s_token = __get_t()
@@ -559,7 +562,7 @@ fn a_word_at_the_end() -> (int, int)
     a: int = conv _3
     _4: u8$ = __get_in()
     end(_4)
-    __run()
+    __run_in()
     _5: __s_token = __get_t()
     _6: int$ = get _5, kind
     _7: i64 = count _6
