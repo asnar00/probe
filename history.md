@@ -4,6 +4,22 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: loops give their result — `a6d1bd8` · 2026-09-09
+
+```
+on (int g) = gcd of (int a) and (int b)
+    g = loop (int x = a, int y = b) while (y != 0) gives x
+        int r = x % y
+        continue (y, r)
+
+on (int t) = triangle (int n)
+    t = row ([1 to n + 1]) + _
+```
+
+Rulings pass item 6 (question 4, log 40), reversing log 12. A `loop`'s carried variables are its own and gone after it; `gives` at the end of the header names the ones that come out, into a declared name, an existing one, a result, or several (`src/zero/syntax.rs` `parse_loop`, `src/zero/lower.rs` `lower_loop`), and every `break` yields them. `gives` is reserved only inside a loop's header; section 7's other candidate, `acc after loop (...)`, is written up in `questions.md` 23. A function with no result now maps over a stream as a loop of calls, and every store is rewritten to a sequence form where one would do — sums as `[0 through n] + _`, `triangle` as a map and a reduction, a check per item as a mapped function — leaving `loop` where a reader moves an item at a time or a search has no count. Found: `[1 through n]` counts down when n < 1, so "1 to n" is spelled `[1 to n + 1]`. zero 227/227 on native, wasm, riscv and arm-qemu, 218 + 9 skipped on air; probe test 971, 962 + 9, 971, 971, 941 + 30; cargo test 93 passed.
+
+---
+
 ### zero: `_` is the candidate — `cde1a74` · 2026-09-09
 
 ```
