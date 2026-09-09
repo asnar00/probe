@@ -137,6 +137,33 @@ fn fits(arg: &Ty, param: &Ty) -> bool {
     }
 }
 
+/// The type two concrete number types compute in (question 1, log 37;
+/// question 21, log 46): the type that holds every value of both
+/// exactly where one exists (`wider_exact`), else the widest type of
+/// the family that holds them best — a float and an integer no float's
+/// significand holds (`int64` and wider) compute in `float64`,
+/// rounding above 2^53, and `int128` with `uint128` in `int128`,
+/// modulo its range. None for an abstract type (`int` has no width
+/// here) or a library type (`time`, `rational`, ...): those convert
+/// only by `T(x)`
+fn wider(a: &Ty, b: &Ty) -> Option<Ty> {
+    if let Some(t) = wider_exact(a, b) {
+        return Some(t);
+    }
+    let (Ty::Num(x), Ty::Num(y)) = (a, b) else {
+        return None;
+    };
+    let float = |s: &str| matches!(s, "f16" | "bf16" | "f32" | "f64");
+    let int = |s: &str| s.len() > 1 && s.starts_with(['i', 'u']) && [8, 16, 32, 64, 128].contains(&s[1..].parse::<u32>().unwrap_or(0));
+    if (float(x) && int(y)) || (int(x) && float(y)) {
+        return Some(Ty::Num("f64".into()));
+    }
+    if int(x) && int(y) {
+        return Some(Ty::Num("i128".into()));
+    }
+    None
+}
+
 /// The type two concrete number types compute in without loss, the
 /// wider or more accurate of them (question 1, log 37): the wider of
 /// two signed or two unsigned widths; a signed type wider than an
@@ -147,8 +174,8 @@ fn fits(arg: &Ty, param: &Ty) -> bool {
 /// else in the smallest float that does, and there is none for
 /// `int64` and wider. None where nothing holds both exactly, and
 /// always for an abstract type (`int` has no width here) or a library
-/// type (`time`, `rational`, ...): those convert only by `T(x)`
-fn wider(a: &Ty, b: &Ty) -> Option<Ty> {
+/// type (`time`, `rational`, ...)
+fn wider_exact(a: &Ty, b: &Ty) -> Option<Ty> {
     if a == b {
         return Some(a.clone());
     }
@@ -212,9 +239,23 @@ fn wider(a: &Ty, b: &Ty) -> Option<Ty> {
     Some(Ty::Num(t))
 }
 
-/// does `from` convert to `to` without loss, `to` being wider?
+/// is a conversion from `from` to `to` implied, `to` being what the
+/// pair computes in? Exact where `wider_exact` says so, else lossy
+/// (log 46), which `widen_to` notes in the IR
 fn widens(from: &Ty, to: &Ty) -> bool {
     from != to && wider(from, to).as_ref() == Some(to)
+}
+
+/// how an implied conversion loses bits, for the note in the IR: none
+/// where it is exact, else the rounding or the wrap
+fn loses(from: &Ty, to: &Ty) -> Option<String> {
+    if wider_exact(from, to).as_ref() == Some(to) {
+        return None;
+    }
+    Some(match to {
+        Ty::Num(t) if t == "f64" => format!("{} into {}: rounded above 2^53", zero_ty(from), zero_ty(to)),
+        _ => format!("{} into {}: modulo the range", zero_ty(from), zero_ty(to)),
+    })
 }
 
 /// a function the store defines, as the lowering knows it
@@ -2498,7 +2539,9 @@ impl Lowerer {
     }
 
     /// a value converted to a wider number type (log 37): the IR's
-    /// `conv`, under `dst`'s next version when it is that type
+    /// `conv`, under `dst`'s next version when it is that type; a
+    /// conversion that can lose bits carries a note above it (log 46),
+    /// the warning the ruling allows
     fn widen_to(&mut self, v: &Val, to: &Ty, b: &mut Body, dst: Option<&str>) -> Val {
         if &v.ty == to {
             return v.clone();
@@ -2506,15 +2549,20 @@ impl Lowerer {
         if v.literal {
             return Val { text: v.text.clone(), ty: to.clone(), literal: true };
         }
+        if let Some(note) = loses(&v.ty, to) {
+            b.line(&format!("; {}", note));
+        }
         let name = name_for(dst, to, b);
         b.line(&format!("{}: {} = conv {}", name, to.ir(), v.text));
         Val { text: name, ty: to.clone(), literal: false }
     }
 
     /// The value a place of type `ty` takes from `v` (question 1, log
-    /// 37): the value itself, a literal retyped, or a value of a
-    /// narrower type widened by a `conv`. A narrowing, or a pair
-    /// nothing holds exactly, is refused naming the explicit form
+    /// 37; log 46): the value itself, a literal retyped, or a value
+    /// widened by a `conv` where the place's type is what the pair
+    /// computes in. Refused naming the explicit form where the place is
+    /// the narrower type, where a third type holds both better, or
+    /// where nothing converts an abstract or library type
     fn coerce(&mut self, v: Val, ty: &Ty, what: &str, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
         if v.ty == *ty {
             return Ok(v);
@@ -2528,7 +2576,11 @@ impl Lowerer {
         if widens(&v.ty, ty) {
             return Ok(self.widen_to(&v, ty, b, dst));
         }
-        let how = if widens(ty, &v.ty) { "narrows it, which is not implied" } else { "converts it; nothing widens it exactly" };
+        let how = match wider(&v.ty, ty) {
+            Some(w) if w == v.ty => "narrows it, which is not implied".to_string(),
+            Some(w) => format!("is not implied: {} holds both better", zero_ty(&w)),
+            None => "converts it; nothing widens it".to_string(),
+        };
         Err(lex::error(&b.file, line, format!("{} is {} but the value is {}: {}(...) {}", what, zero_ty(ty), zero_ty(&v.ty), zero_ty(ty), how)))
     }
 
@@ -3001,7 +3053,7 @@ impl Lowerer {
                         None => item.clone(),
                         Some(p) => match wider(p, &item) {
                             Some(w) => w,
-                            None => return Err(lex::error(&file, a.line, format!("'{}' takes {} at two places, given a {} and a {}: no number type holds both exactly; convert one", info.key, name, zero_ty(p), zero_ty(&item)))),
+                            None => return Err(lex::error(&file, a.line, format!("'{}' takes {} at two places, given a {} and a {}: no number type computes both; convert one", info.key, name, zero_ty(p), zero_ty(&item)))),
                         },
                     };
                     bound.insert(name.to_string(), joined);
@@ -3447,7 +3499,7 @@ impl Lowerer {
         }
         if lv.ty != rv.ty {
             let Some(common) = wider(&lv.ty, &rv.ty) else {
-                return Err(lex::error(&file, line, format!("'{}' on a {} and a {}: no number type holds both exactly; convert one, {}(x)", op, zero_ty(&lv.ty), zero_ty(&rv.ty), zero_ty(&rv.ty))));
+                return Err(lex::error(&file, line, format!("'{}' on a {} and a {}: no number type computes both; convert one, {}(x)", op, zero_ty(&lv.ty), zero_ty(&rv.ty), zero_ty(&rv.ty))));
             };
             lv = self.widen_to(&lv, &common, b, None);
             rv = self.widen_to(&rv, &common, b, None);
@@ -4293,7 +4345,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 // each converted inside its own arm
                 if !av.literal && !dv.literal && av.ty != dv.ty {
                     let Some(common) = wider(&av.ty, &dv.ty) else {
-                        return Err(lex::error(&file, e.line, format!("the arms of 'if' give a {} and a {}: no number type holds both exactly", zero_ty(&av.ty), zero_ty(&dv.ty))));
+                        return Err(lex::error(&file, e.line, format!("the arms of 'if' give a {} and a {}: no number type computes both", zero_ty(&av.ty), zero_ty(&dv.ty))));
                     };
                     b.out.push_str(&a_lines);
                     av = self.widen_to(&av, &common, b, None);

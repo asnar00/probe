@@ -109,3 +109,30 @@ on (int64 w) = widened on assignment()
 on (int32 y) = narrowed explicitly()
     int64 big = 300000
     y = int32(big)
+
+on (int n) = mixed wide()
+    int64 a = 3
+    float64 x = 0.5
+    float64 y = a + x
+    n = int(y * 2)
+
+on (int64 d) = rounding above fifty three bits()
+    int64 big = 9007199254740993
+    float64 f = big
+    d = int64(f) - big
+
+on (bool b) = compared above fifty three bits()
+    int64 a = 9007199254740993
+    float64 x = 9007199254740992.0
+    b = a > x
+
+on (int n) = smaller across wide types()
+    int64 a = 7
+    float64 x = 2.5
+    n = int(smaller of (a) and (x) * 2)
+
+on (int n) = picked wide (bool c)
+    int64 a = 9
+    float32 x = 1.5
+    float64 y = if (c) then (a) else (x)
+    n = int(y * 2)
