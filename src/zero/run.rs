@@ -119,9 +119,12 @@ fn effective(s: &store::Store, x: &BTreeSet<String>, p: &Planned) -> Option<BTre
 
 /// the calls that build a context before a case: each feature
 /// switched off, its own `enabled` field set to 0 and no other
-/// (everything is on after the reset, log 43)
-fn setters(off: &BTreeSet<String>) -> Vec<(String, Vec<i64>)> {
-    off.iter().map(|f| (format!("__set___enabled_{}", f), vec![0])).collect()
+/// (everything is on after the reset, log 43); then the case's input,
+/// a byte per call into `in$` (log 62), before the program starts
+fn setters(off: &BTreeSet<String>, input: &[u8]) -> Vec<(String, Vec<i64>)> {
+    let mut calls: Vec<(String, Vec<i64>)> = off.iter().map(|f| (format!("__set___enabled_{}", f), vec![0])).collect();
+    calls.extend(input.iter().map(|&c| ("__in_ch".to_string(), vec![c as i64])));
+    calls
 }
 
 /// a case overridden in one context: the case with the runner's label,
@@ -140,11 +143,12 @@ struct Run {
     label: String,
 }
 
-/// the call of a case as written, `run()`, `counted (10)`
+/// the call of a case as written, `run()`, `counted (10)`, before any
+/// `with` clause
 fn call_text(p: &Planned) -> String {
     let head = p.text.split('→').next().unwrap_or("").trim();
-    match head.rfind(')') {
-        Some(i) => head[..i + 1].to_string(),
+    match head.find(") with ").map(|i| i + 1).or_else(|| head.rfind(')').map(|i| i + 1)) {
+        Some(i) => head[..i].to_string(),
         None => head.to_string(),
     }
 }
@@ -211,7 +215,9 @@ fn plan(s: &store::Store, cases: &[Planned]) -> Result<(Vec<Run>, Vec<Over>), St
         if !standing[i] {
             continue;
         }
-        let same: Vec<usize> = (0..runs.len()).filter(|&j| standing[j] && runs[j].off == runs[i].off && cases[runs[j].case].feature == cases[runs[i].case].feature && cases[runs[j].case].call.func == cases[runs[i].case].call.func && cases[runs[j].case].call.args == cases[runs[i].case].call.args).collect();
+        // a case's input is part of its call (log 62): two lines
+        // with different inputs are two promises
+        let same: Vec<usize> = (0..runs.len()).filter(|&j| standing[j] && runs[j].off == runs[i].off && cases[runs[j].case].feature == cases[runs[i].case].feature && cases[runs[j].case].call.func == cases[runs[i].case].call.func && cases[runs[j].case].call.args == cases[runs[i].case].call.args && cases[runs[j].case].call.input == cases[runs[i].case].call.input).collect();
         if same.len() < 2 {
             continue;
         }
@@ -322,7 +328,7 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize) -> Resul
         return Err(format!("{} is out of reach here: {}", text.split('→').next().unwrap_or("").trim(), skip_note(&l.funcs, why, kind)));
     }
     let off = effective(&s, &BTreeSet::new(), &p).unwrap_or_default();
-    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: call.expect == store::Expect::Check, text: true, before: setters(&off) };
+    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: call.expect == store::Expect::Check, text: true, before: setters(&off, &call.input) };
     let got = suite::run_calls(&module, &l.ir, Backend::Native, &[sc], "zero-run", level)?.remove(0)?;
     let vals: Vec<String> = got.values.iter().map(|v| v.to_string()).collect();
     let mut out = String::new();
@@ -407,7 +413,7 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                     checks: c.expect == store::Expect::Check,
                     // every case reads the text back: a failed check names its site there
                     text: true,
-                    before: setters(&r.off),
+                    before: setters(&r.off, &c.input),
                 }
             })
             .collect();
@@ -553,10 +559,10 @@ mod tests {
         let off = effective(&s, &BTreeSet::new(), base_off).unwrap();
         assert_eq!(off.iter().cloned().collect::<Vec<_>>(), ["base"]);
         assert_eq!(s.closure(&off).iter().cloned().collect::<Vec<_>>(), ["base", "more", "most", "tool"]);
-        assert_eq!(setters(&off), [("__set___enabled_base".to_string(), vec![0])]);
+        assert_eq!(setters(&off, b"hi"), [("__set___enabled_base".to_string(), vec![0]), ("__in_ch".to_string(), vec![104]), ("__in_ch".to_string(), vec![105])]);
         // a case does not stand where its feature is effectively off; a
         // line is a sequence of switches, `on` restoring a flag
-        let sequence = Planned { text: String::new(), call: lower::Call { func: "switches".into(), args: vec![], nrets: 2, expect: store::Expect::Values(vec![0, 1]), context: vec![("more".into(), false), ("base".into(), false), ("base".into(), true)] }, feature: "most".into(), rank: 3, file: "most.md".into(), line: 1 };
+        let sequence = Planned { text: String::new(), call: lower::Call { func: "switches".into(), args: vec![], nrets: 2, expect: store::Expect::Values(vec![0, 1]), context: vec![("more".into(), false), ("base".into(), false), ("base".into(), true)], input: vec![] }, feature: "most".into(), rank: 3, file: "most.md".into(), line: 1 };
         assert!(effective(&s, &["base".to_string()].into_iter().collect(), &sequence).is_none());
         assert_eq!(effective(&s, &["tool".to_string()].into_iter().collect(), &sequence).unwrap().iter().cloned().collect::<Vec<_>>(), ["more", "tool"]);
         assert!(l.ir.contains("fn __on_more() -> u1\n    own: u1 = __get___enabled_more()\n    up: u1 = __on_base()\n    on: u1 = and own, up\n    ret on\n"), "{}", l.ir);

@@ -46,6 +46,13 @@ fn __out_byte(i: i64) -> u8
     b: u8 = peek(s, i)
     ret b
 
+; the input stream `in$` (section 15, log 62): one byte the platform
+; pushes, which under the runner is a case's `with in "text"`
+fn __in_ch(c: u8)
+    s: u8$ = __get_in()
+    __push(s, c)
+    ret
+
 ; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
 fn __str(p: ptr, n: i64) -> u8[]
     q: ptr(u8) = cast p
@@ -79,7 +86,7 @@ type __s_token = struct
 ;   __enabled_platform: user, last (platform)
 ;   __enabled_lex: user, last (lex)
 ;   out: user, last (platform)
-;   chars: user, last (lex)
+;   in: user, last (platform)
 ;   t: user, last (lex)
 ;   __node1_c: node, last (platform)
 ;   __node1_c_seen: node, last (platform)
@@ -91,7 +98,7 @@ type __ctx = struct
     __enabled_platform: u1
     __enabled_lex: u1
     out: u8$
-    chars: u8$
+    in: u8$
     t: __s_token
     __node1_c: u8$
     __node1_c_seen: i64
@@ -113,9 +120,7 @@ data __s9 = " "
 data __s10 = " "
 data __s11 = "\n"
 data __s12 = "\n"
-data __s13 = "let x = 4"
-data __s14 = "2;\n"
-data __s15 = "let"
+data __s13 = "2;\n"
 
 ; before every case: the arena emptied, the variables at their initial values
 fn __zero_reset()
@@ -128,7 +133,7 @@ fn __zero_reset()
     r: ptr = addr __running
     store 0: i64, r
     _1: u8$ = __regular_u8(1000000, 4096)
-    _2: u8$ = __stream_u8(1000000, 64)
+    _2: u8$ = __stream_u8(1000000, 512)
     _3: int$ = __stream_int(1000000, 64)
     _4: int$ = __stream_int(1000000, 64)
     _5: int$ = __stream_int(1000000, 64)
@@ -182,16 +187,16 @@ fn __set_out(v: u8$)
     store c2, p
     ret
 
-fn __get_chars() -> u8$
+fn __get_in() -> u8$
     p: ptr = addr __ctx_mem
     c: __ctx = load p
-    v: u8$ = get c, chars
+    v: u8$ = get c, in
     ret v
 
-fn __set_chars(v: u8$)
+fn __set_in(v: u8$)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
-    c2: __ctx = set c, chars, v
+    c2: __ctx = set c, in, v
     store c2, p
     ret
 
@@ -323,7 +328,7 @@ fn __node1() -> u1
         yield 0
     ret ran
 
-; node 2: token t$ = lex (chars$) — run when an input has more than the node has seen, or has ended and the node has not run since
+; node 2: token t$ = lex (in$) — run when an input has more than the node has seen, or has ended and the node has not run since
 fn __node2() -> u1
     fin: u1 = __get___node2_fin()
     notfin: u1 = xor fin, 1
@@ -781,8 +786,8 @@ fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$
         c_5: u8$ = advance(c_2, _33)
         continue c_5
     ret c_6
-fn arrive()
-    _1: u8$ = __get_chars()
+fn arrive_again()
+    _1: u8$ = __get_in()
     _2: ptr = addr __s13
     _3: i64 = len __s13
     _4: u8[] = __str(_2, _3)
@@ -795,27 +800,11 @@ fn arrive()
         _8: i64 = add _5, 1
         continue _8
     __run()
-    ret
-fn arrive_again()
-    _1: u8$ = __get_chars()
-    _2: ptr = addr __s14
-    _3: i64 = len __s14
-    _4: u8[] = __str(_2, _3)
-    loop(_5: i64 = 0)
-        _6: u1 = cmp.ge _5, _3
-        if _6
-            break
-        _7: u8 = load _4, _5
-        __push(_1, _7)
-        _8: i64 = add _5, 1
-        continue _8
-    __run()
-    _9: u8$ = __get_chars()
+    _9: u8$ = __get_in()
     end(_9)
     __run()
     ret
 fn two_arrivals() -> (int, int)
-    arrive()
     _1: __s_token = __get_t()
     _2: int$ = get _1, kind
     _3: i64 = count _2
@@ -827,7 +816,6 @@ fn two_arrivals() -> (int, int)
     b: int = conv _6
     ret a, b
 fn number_start() -> int
-    arrive()
     arrive_again()
     _1: __s_token = __get_t()
     _2: int$ = get _1, kind
@@ -840,7 +828,6 @@ fn number_start() -> int
     s: int = get x, start
     ret s
 fn number_length() -> int
-    arrive()
     arrive_again()
     _1: __s_token = __get_t()
     _2: int$ = get _1, kind
@@ -853,7 +840,6 @@ fn number_length() -> int
     n: int = get x, n
     ret n
 fn kinds() -> (int, int)
-    arrive()
     arrive_again()
     _1: __s_token = __get_t()
     _2: int$ = get _1, kind
@@ -875,7 +861,6 @@ fn kinds() -> (int, int)
     b: int = get y, kind
     ret a, b
 fn third_kind() -> int
-    arrive()
     arrive_again()
     _1: __s_token = __get_t()
     _2: int$ = get _1, kind
@@ -888,7 +873,6 @@ fn third_kind() -> int
     k: int = get x, kind
     ret k
 fn kinds_tail() -> (int, int)
-    arrive()
     arrive_again()
     _1: __s_token = __get_t()
     _2: int$ = get _1, kind
@@ -910,30 +894,17 @@ fn kinds_tail() -> (int, int)
     b: int = get y, kind
     ret a, b
 fn a_word_at_the_end() -> (int, int)
-    _1: u8$ = __get_chars()
-    _2: ptr = addr __s15
-    _3: i64 = len __s15
-    _4: u8[] = __str(_2, _3)
-    loop(_5: i64 = 0)
-        _6: u1 = cmp.ge _5, _3
-        if _6
-            break
-        _7: u8 = load _4, _5
-        __push(_1, _7)
-        _8: i64 = add _5, 1
-        continue _8
+    _1: __s_token = __get_t()
+    _2: int$ = get _1, kind
+    _3: i64 = count _2
+    a: int = conv _3
+    _4: u8$ = __get_in()
+    end(_4)
     __run()
-    _9: __s_token = __get_t()
-    _10: int$ = get _9, kind
-    _11: i64 = count _10
-    a: int = conv _11
-    _12: u8$ = __get_chars()
-    end(_12)
-    __run()
-    _13: __s_token = __get_t()
-    _14: int$ = get _13, kind
-    _15: i64 = count _14
-    b: int = conv _15
+    _5: __s_token = __get_t()
+    _6: int$ = get _5, kind
+    _7: i64 = count _6
+    b: int = conv _7
     ret a, b
 
 ; a stream's ring, carved from the arena: cap items (64 unless more are resident), and a tick per item unless regular; a reader's view at its start

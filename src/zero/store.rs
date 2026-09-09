@@ -95,6 +95,9 @@ pub struct Case {
     /// the case's context (section 14, log 43): `with <feature> off`
     /// and `on` clauses after the call, each a feature and its state
     pub context: Vec<(String, bool)>,
+    /// the case's input (section 15, log 62): `with in "text"`, the
+    /// bytes the runner pushes into `in$` before the program starts
+    pub input: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -394,30 +397,38 @@ fn read_prose(name: &str, prose: &str, file: &str, types: &HashSet<String>, code
     Ok(FeatureDoc { name: name.to_string(), parent, layer, origins, published, existing_cases, cases, code, md_file: file.to_string() })
 }
 
-/// `>call(args) [with <feature> off, <feature> on] → result`: the
-/// result a number or several, a quoted string (what `print`
-/// produced), or `check` (the call must trap); the context clause
-/// follows the call's last `)` (log 43)
+/// `>call(args) [with <feature> off, <feature> on, in "text"] →
+/// result`: the result a number or several, a quoted string (the
+/// program's output), or `check` (the call must trap); the `with`
+/// clause after the call's `)` names the context (log 43) and the
+/// input the runner pushes into `in$` (log 62)
 fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> Result<Case, Error> {
     let (call, expect) = text
         .split_once('→')
         .or_else(|| text.split_once("->"))
         .ok_or_else(|| lex::error(file, line, "a case is `>call(args) → result`"))?;
-    let (call, context) = match call.rfind(')') {
-        Some(i) if call[i + 1..].trim().starts_with("with ") => {
-            let clause = call[i + 1..].trim().strip_prefix("with ").unwrap();
-            let mut context = Vec::new();
-            for part in clause.split(',') {
-                let words: Vec<&str> = part.split_whitespace().collect();
-                match words.as_slice() {
-                    [name, "off"] => context.push((name.to_string(), false)),
-                    [name, "on"] => context.push((name.to_string(), true)),
-                    _ => return Err(lex::error(file, line, "a case's context is `with <feature> off` or `on`, several joined by commas")),
+    let mut context = Vec::new();
+    let mut input = None;
+    let call = match call.find(") with ") {
+        Some(i) => {
+            let mut toks = Vec::new();
+            lex::lex_line(call[i + 7..].trim(), line, file, &mut toks)?;
+            let toks: Vec<lex::Tok> = toks.into_iter().map(|t| t.tok).collect();
+            for part in toks.split(|t| matches!(t, lex::Tok::Sym(","))) {
+                match part {
+                    [lex::Tok::Word(name), lex::Tok::Word(w)] if w == "off" => context.push((name.clone(), false)),
+                    [lex::Tok::Word(name), lex::Tok::Word(w)] if w == "on" => context.push((name.clone(), true)),
+                    [lex::Tok::Word(w), lex::Tok::Str(text)] if w == "in" => {
+                        if input.replace(text.clone()).is_some() {
+                            return Err(lex::error(file, line, "a case has one `in \"text\"`"));
+                        }
+                    }
+                    _ => return Err(lex::error(file, line, "a case's `with` clause is `<feature> off`, `<feature> on` or `in \"text\"`, several joined by commas")),
                 }
             }
-            (&call[..i + 1], context)
+            &call[..i + 1]
         }
-        _ => (call, Vec::new()),
+        None => call,
     };
     let expect = expect.trim();
     let expect = if expect == "check" {
@@ -447,7 +458,7 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
         Expect::Values(vals)
     };
     let call_expr = syntax::parse_call(call.trim(), file, line, types)?;
-    Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect, context })
+    Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect, context, input })
 }
 
 #[cfg(test)]
@@ -470,6 +481,22 @@ mod tests {
     fn git(dir: &Path, date: &str, args: &[&str]) {
         let out = std::process::Command::new("git").arg("-C").arg(dir).args(["-c", "user.name=probe", "-c", "user.email=probe@probe", "-c", "commit.gpgsign=false"]).args(args).env("GIT_AUTHOR_DATE", date).env("GIT_COMMITTER_DATE", date).output().unwrap();
         assert!(out.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// a case's `with` clause (log 43, 62): switches and an `in "text"`
+    /// in any order, the string's commas and brackets its own
+    #[test]
+    fn a_case_line_names_its_context_and_its_input() {
+        let types = HashSet::new();
+        let c = parse_case("echo() with sink off, in \"a, (b)\", format on → \"a, (b)\"", "x.md", 3, &types).unwrap();
+        assert_eq!(c.context, [("sink".to_string(), false), ("format".to_string(), true)]);
+        assert_eq!(c.input.as_deref(), Some("a, (b)"));
+        assert_eq!(c.expect, Expect::Text("a, (b)".into()));
+        let plain = parse_case("run() → 1", "x.md", 4, &types).unwrap();
+        assert!(plain.context.is_empty() && plain.input.is_none());
+        let err = |t: &str| parse_case(t, "x.md", 5, &types).err().unwrap().to_string();
+        assert!(err("f() with in \"a\", in \"b\" → 1").contains("a case has one `in \"text\"`"));
+        assert!(err("f() with in hi → 1").contains("a case's `with` clause is `<feature> off`, `<feature> on` or `in \"text\"`"));
     }
 
     /// composition order is creation time and a tie orders by name

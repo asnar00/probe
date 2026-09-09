@@ -1,4 +1,5 @@
 uint8 out$
+uint8 in$
 
 on write (uint8 c$)
 platform ir

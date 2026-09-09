@@ -46,6 +46,13 @@ fn __out_byte(i: i64) -> u8
     b: u8 = peek(s, i)
     ret b
 
+; the input stream `in$` (section 15, log 62): one byte the platform
+; pushes, which under the runner is a case's `with in "text"`
+fn __in_ch(c: u8)
+    s: u8$ = __get_in()
+    __push(s, c)
+    ret
+
 ; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
 fn __str(p: ptr, n: i64) -> u8[]
     q: ptr(u8) = cast p
@@ -72,6 +79,7 @@ fn __push(s: number$, v: number)
 ;   __enabled_countdown: user, last (countdown)
 ;   __enabled_bye: user, last (bye)
 ;   out: user, last (platform)
+;   in: user, last (platform)
 ;   __node1_c: node, last (platform)
 ;   __node1_c_seen: node, last (platform)
 ;   __node1_fin: node, last (platform)
@@ -81,6 +89,7 @@ type __ctx = struct
     __enabled_countdown: u1
     __enabled_bye: u1
     out: u8$
+    in: u8$
     __node1_c: u8$
     __node1_c_seen: i64
     __node1_fin: u1
@@ -114,9 +123,10 @@ fn __zero_reset()
     r: ptr = addr __running
     store 0: i64, r
     _1: u8$ = __regular_u8(1000000, 4096)
-    _2: __ctx = pack 1, 1, 1, 1, _1, _1, 0, 0
+    _2: u8$ = __stream_u8(1000000, 512)
+    _3: __ctx = pack 1, 1, 1, 1, _1, _2, _1, 0, 0
     p: ptr = addr __ctx_mem
-    store _2, p
+    store _3, p
     ret
 
 ; after the case's context is set: the nodes run
@@ -186,6 +196,19 @@ fn __set_out(v: u8$)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, out, v
+    store c2, p
+    ret
+
+fn __get_in() -> u8$
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: u8$ = get c, in
+    ret v
+
+fn __set_in(v: u8$)
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    c2: __ctx = set c, in, v
     store c2, p
     ret
 
@@ -734,6 +757,21 @@ fn __regular_int(hz: i64, cap: i64) -> int$
     buffer_init(vb, sz, cap)
     ring_regular(r, vb, hz, 1, 0)
     s: int$ = stream r
+    ret s
+fn __stream_u8(hz: i64, cap: i64) -> u8$
+    a: ptr = addr __arena
+    r: ptr = arena_alloc(a, 64)
+    sz: i64 = sizeof u8
+    bytes: i64 = mul sz, cap
+    total: i64 = add bytes, 16
+    vb: ptr = arena_alloc(a, total)
+    buffer_init(vb, sz, cap)
+    tbytes: i64 = mul cap, 8
+    ttotal: i64 = add tbytes, 16
+    tb: ptr = arena_alloc(a, ttotal)
+    buffer_init(tb, 8, cap)
+    ring_init(r, vb, tb, hz)
+    s: u8$ = stream r
     ret s
 fn __regular_u8(hz: i64, cap: i64) -> u8$
     a: ptr = addr __arena

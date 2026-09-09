@@ -391,6 +391,8 @@ pub struct Call {
     pub nrets: usize,
     pub expect: Expect,
     pub context: Vec<(String, bool)>,
+    /// the bytes the runner pushes into `in$` before the start (log 62)
+    pub input: Vec<u8>,
 }
 
 /// the IR every store gets: the arena, the clock, the two functions
@@ -445,6 +447,13 @@ fn __out_byte(i: i64) -> u8
     b: u8 = peek(s, i)
     ret b
 
+; the input stream `in$` (section 15, log 62): one byte the platform
+; pushes, which under the runner is a case's `with in "text"`
+fn __in_ch(c: u8)
+    s: u8$ = __get_in()
+    __push(s, c)
+    ret
+
 ; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
 fn __str(p: ptr, n: i64) -> u8[]
     q: ptr(u8) = cast p
@@ -472,6 +481,9 @@ const RING_ITEMS: usize = 64;
 /// the bytes the platform's `out$` holds (log 57): the compiler's number,
 /// where the print buffer's 4096 was, until a product says
 const OUT_BYTES: usize = 4096;
+/// the bytes the platform's `in$` holds (log 62): a sparse ring keeps a
+/// tick per byte, and a case's input is a line
+const IN_BYTES: usize = 512;
 
 /// the clock of a stream without a rate: microsecond ticks
 const CLOCK_HZ: i64 = 1_000_000;
@@ -674,7 +686,7 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str, int_bits: u32) -
             return Err(lex::error(file, case.line, format!("`with {} {}`: no feature named '{}' in the store", feature, if *on { "on" } else { "off" }, feature)));
         }
     }
-    Ok(Call { func: info.ir.clone(), args: vals, nrets: info.results.len(), expect: case.expect.clone(), context: case.context.clone() })
+    Ok(Call { func: info.ir.clone(), args: vals, nrets: info.results.len(), expect: case.expect.clone(), context: case.context.clone(), input: case.input.clone().unwrap_or_default().into_bytes() })
 }
 
 /// the refusal of an ambiguous call, naming the methods that contend
@@ -1710,6 +1722,9 @@ impl Lowerer {
                                     self.regular.insert(v.name.clone());
                                     self.make_stream_cap(&ty, CLOCK_HZ, true, OUT_BYTES, &mut b, None)
                                 }
+                                // the platform's `in$` (log 62): a sparse ring of
+                                // IN_BYTES, a keyboard being sparse on the clock
+                                None if feat.name == "platform" && v.name == "in" => self.make_stream_cap(&ty, CLOCK_HZ, false, IN_BYTES, &mut b, None),
                                 _ => self.empty_stream(v, &ty, &mut b, None)?,
                             }
                         }
