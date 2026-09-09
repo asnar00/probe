@@ -68,9 +68,9 @@ Each of these is refused with the file and line named. An assignment inside a lo
 
 `probe cost` on the emitted IR (`probe zero suite/zero/control emit > control.ssa; probe cost control.ssa ticks blast_off`) reports:
 
-    ticks: loop at b1 x3 (i from 1 by 1 to 3), body 1412 ssa
-    blast_off: loop at b1 x3 (i from 3 by -1 to 1), body 1415 ssa
+    ticks: loop at b1 x3 (i from 1 by 1 to 3), body 650 ssa
+    blast_off: loop at b1 x3 (i from 3 by -1 to 1), body 653 ssa
 
-(a pass is one write of a string literal to `out$`, its bytes pushed straight from `data` into the regular ring and the scheduler run once after, log 57; each string's bytes show as a counted inner loop of their own — `x4` for "tick", `x1` for the newline)
+(a pass is one write of a string literal to `out$`, its bytes pushed as one block from `data` into the ring and the scheduler run once after, log 57 and 69; the block's copy shows as a counted inner loop of its own, `copy_u8: loop at b8 x4 (j from at least 0 by 1 to at most 4)`, the literal's length carried into the library by the cost tool, log 76)
 
 and `sum_to`'s range and `steps_from_to`'s, whose bounds are run-time values, as unbounded, counted once.

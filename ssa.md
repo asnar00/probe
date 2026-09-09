@@ -580,7 +580,7 @@ sum: i64 = loop(i: i64 = zero, acc: i64 = zero)
 - `break` exits, yielding the loop's results (bound on the left; a loop with no results uses bare `break`).
 - Every path through the body must end with `break`, `continue`, or `ret`.
 - `break`/`continue` bind to the innermost enclosing loop.
-- `loop(...) bound N` declares the loop's trip count — trusted, not checked — for the analyses that need one (`probe cost`; residency, later). A loop that steps a variable by a constant to a constant shows its count without one.
+- `loop(...) bound N` declares the loop's trip count, N traversals of its back edge — trusted, not checked — for the analyses that need one (`probe cost`; residency, later). A loop that steps a variable by a constant to a value whose range the call site knows shows its count without one, and the pass that leaves the loop is charged once besides.
 
 Lowering: a header block whose parameters are the loop variables (`continue` jumps to it), and an exit block whose parameters are the results (`break` jumps to it).
 
