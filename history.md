@@ -4,6 +4,24 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: one `$` — `d884367` · 2026-09-09
+
+```
+on (int n) = pushed into()
+    int i$ = [1, 2]
+    i$ << 3
+    n = count i$ * 10 + latest i$
+
+on (int n) = unread only()
+    int i$ << 1 << 2 << 3 << 4
+    advance i$ by (2)
+    n = (i$ + _) * 10 + count i$
+```
+
+Rulings pass item 4 (question 12, log 38). The front end's two types for a `$` name, a sequence over the arena and a stream over a ring, are one: `Ty::Stream` in `src/zero/lower.rs`, the IR's `T$`, whether the items arrive over time or are all present. A bare `T x$` is an empty stream, `T x$ <<` with nothing after is refused, and a list, a range, a string literal or a function's result is a stream with those items resident. The section 8 words read a stream's unread items where its reader stands — `x$[i]` is a `peek`, `for`, map, zip and reduce go through the library's new `unread(s)` view — so `count` and the words agree after an `advance`. `frame`, `behind` and `from ... to` copy their view into a new ring; a push goes through a prelude template `__push` that reads the ring's step, so a regular ring is no longer a type of its own. Every sequence is a ring of at least 64 items, and a range with literal bounds fills it with the counted loop `probe cost` reads. `sequences` and `streams` each gain the other's words (ten cases), `tasks` and `lex` lose their bare `<<`. zero 225/225 on native, wasm, riscv and arm-qemu, 216 + 9 skipped on air; probe test 971, 962 + 9, 971, 971, 941 + 30; cargo test 93 passed.
+
+---
+
 ### zero: implicit conversion — `2ef0fcc` · 2026-09-09
 
 ```
