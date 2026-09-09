@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: every case in every context — `95229da` · 2026-09-09
+
+```
+## testing
+>hello() → "hello world"
+>run() → "hello world"
+```
+
+Rulings pass item 10 (question 15, log 44). `probe zero test` runs each store's cases with every feature on and once per feature with it off alone, a feature off taking its descendants with it (`Store::subtree` in `src/zero/store.rs`); a case stands wherever its own feature is on. Two cases making the same call in one context are one promise: the newest feature's stands, then the line naming more features, and the rest print as `over`. So `suite/zero/hello/hello/hello.md` promises the line above, countdown's `run()` overrides it, bye's overrides that, and with `bye` off countdown's stands and passes. `src/zero/run.rs` plans the runs (`contexts`, `effective`, `plan`) and counts them: zero 302/302 on native, wasm, riscv and arm-qemu (236 cases, 12 overridden), 291 + 11 skipped on air; probe test 971, 962 + 9, 971, 971, 941 + 30; cargo test 95 passed.
+
+---
+
 ### zero: the case line's context — `0066081` · 2026-09-09
 
 ```
