@@ -292,7 +292,18 @@ pub enum TypeExpr {
 }
 
 impl fmt::Display for TypeExpr {
+    /// on one line, the spelling a type's name uses: a pack's or struct's
+    /// fields in parentheses, `struct(x: f32, y: f32)`
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.fmt_at(f, None)
+    }
+}
+
+impl TypeExpr {
+    /// written at a depth (a declaration): a pack's or struct's fields
+    /// go one per line, indented one level past what holds them; with
+    /// no depth, on one line
+    fn fmt_at(&self, f: &mut fmt::Formatter, depth: Option<usize>) -> fmt::Result {
         match self {
             TypeExpr::Int { signed, bits } => {
                 write!(f, "{}({})", if *signed { "i" } else { "u" }, bits)
@@ -302,13 +313,21 @@ impl fmt::Display for TypeExpr {
                 let a: Vec<String> = args.iter().map(|e| e.to_string()).collect();
                 write!(f, "{}({})", name, a.join(", "))
             }
-            TypeExpr::Pack(fields) => {
-                let fs: Vec<String> = fields.iter().map(|(n, t)| format!("{}: {}", n, t)).collect();
-                write!(f, "pack {{ {} }}", fs.join(", "))
-            }
-            TypeExpr::Struct(fields) => {
-                let fs: Vec<String> = fields.iter().map(|(n, t)| format!("{}: {}", n, t)).collect();
-                write!(f, "struct {{ {} }}", fs.join(", "))
+            TypeExpr::Pack(fields) | TypeExpr::Struct(fields) => {
+                write!(f, "{}", if matches!(self, TypeExpr::Pack(_)) { "pack" } else { "struct" })?;
+                match depth {
+                    Some(d) => {
+                        for (n, t) in fields {
+                            write!(f, "\n{}{}: ", "    ".repeat(d + 1), n)?;
+                            t.fmt_at(f, Some(d + 1))?;
+                        }
+                        Ok(())
+                    }
+                    None => {
+                        let fs: Vec<String> = fields.iter().map(|(n, t)| format!("{}: {}", n, t)).collect();
+                        write!(f, "({})", fs.join(", "))
+                    }
+                }
             }
             TypeExpr::Vector(inner, n) => write!(f, "{}x{}", inner, n),
             TypeExpr::TPtr(inner) => write!(f, "ptr({})", inner),
@@ -568,10 +587,11 @@ pub struct TypeDef {
 impl fmt::Display for TypeDef {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.params.is_empty() {
-            write!(f, "type {} = {}", self.name, self.body)
+            write!(f, "type {} = ", self.name)?;
         } else {
-            write!(f, "type {}({}) = {}", self.name, self.params.join(", "), self.body)
+            write!(f, "type {}({}) = ", self.name, self.params.join(", "))?;
         }
+        self.body.fmt_at(f, Some(0))
     }
 }
 
@@ -1076,7 +1096,7 @@ impl fmt::Display for DataDef {
                 }
                 v.to_string()
             }).collect();
-            write!(f, " = {{ {} }}", vals.join(", "))?;
+            write!(f, " = {}", vals.join(", "))?;
         }
         Ok(())
     }
@@ -1176,6 +1196,10 @@ pub struct Module {
     /// grammar, checked when parsed; `Platform::natives` adds a
     /// target's blocks to its file's rules
     pub platform: Vec<(String, String)>,
+    /// the first line of the text that wrote a block with a brace: the
+    /// brace form is still read, and warned on once the tree indents
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub braced: Option<usize>,
 }
 
 impl Module {
@@ -1395,8 +1419,12 @@ enum Tok {
     Comma,
     LParen,
     RParen,
-    LBrace,
-    RBrace,
+    /// the start of a block: a `{`, or the first line indented under a
+    /// header (the lexer's layout pass makes the two one token)
+    Open,
+    /// the end of a block: a `}`, or the line that returns to an
+    /// earlier indentation
+    Close,
     Arrow,
     Equals,
     Plus,
@@ -1427,8 +1455,8 @@ impl fmt::Display for Tok {
             Tok::Comma => write!(f, "','"),
             Tok::LParen => write!(f, "'('"),
             Tok::RParen => write!(f, "')'"),
-            Tok::LBrace => write!(f, "'{{'"),
-            Tok::RBrace => write!(f, "'}}'"),
+            Tok::Open => write!(f, "the start of a block"),
+            Tok::Close => write!(f, "the end of a block"),
             Tok::Arrow => write!(f, "'->'"),
             Tok::Equals => write!(f, "'='"),
             Tok::Plus => write!(f, "'+'"),
@@ -1456,14 +1484,47 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
+/// what the lexer hands the parser: the tokens, and the first line that
+/// used a brace, if any (the brace form is still read, and warned on
+/// once the tree is indented)
+struct Lexed {
+    toks: Vec<(Tok, usize)>,
+    braced: Option<usize>,
+}
+
+fn lex(src: &str) -> Result<Lexed, ParseError> {
     let mut toks = Vec::new();
+    // the indentation of every line that has tokens: (index of its
+    // first token, columns), for the layout pass
+    let mut indents: Vec<(usize, usize)> = Vec::new();
+    let mut braced = None;
     let mut line = 1;
     let mut chars = src.chars().peekable();
 
     let err = |line: usize, msg: String| ParseError { line, msg };
 
+    // a line's leading whitespace is its indentation, measured once
+    let mut at_start = true;
+    let mut indent = 0usize;
     while let Some(&c) = chars.peek() {
+        if at_start {
+            indent = 0;
+            while let Some(&w) = chars.peek() {
+                match w {
+                    ' ' => indent += 1,
+                    '\r' => {}
+                    '\t' => return Err(err(line, "a tab in the indentation: indent with spaces".into())),
+                    _ => break,
+                }
+                chars.next();
+            }
+            at_start = false;
+            match chars.peek() {
+                Some('\n') | Some(';') | None => {}
+                Some(_) => indents.push((toks.len(), indent)),
+            }
+            continue;
+        }
         match c {
             '\n' => {
                 chars.next();
@@ -1472,6 +1533,7 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                     toks.push((Tok::Newline, line));
                 }
                 line += 1;
+                at_start = true;
             }
             ' ' | '\t' | '\r' => {
                 chars.next();
@@ -1529,11 +1591,13 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
             }
             '{' => {
                 chars.next();
-                toks.push((Tok::LBrace, line));
+                braced.get_or_insert(line);
+                toks.push((Tok::Open, line));
             }
             '}' => {
                 chars.next();
-                toks.push((Tok::RBrace, line));
+                braced.get_or_insert(line);
+                toks.push((Tok::Close, line));
             }
             '=' => {
                 chars.next();
@@ -1607,10 +1671,14 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
                 // of platform rules, taken raw to the `}` line: their
                 // grammar is the platform file's, not this lexer's
                 if at_line_start && s == "platform" {
-                    if let Some((target, text, n)) = lex_platform_block(&mut chars).map_err(|m| err(line, m))? {
+                    if let Some((target, text, n, brace)) = lex_platform_block(&mut chars, indent).map_err(|m| err(line, m))? {
+                        if brace {
+                            braced.get_or_insert(line);
+                        }
                         toks.push((Tok::Platform(target, text), line));
                         toks.push((Tok::Newline, line + n));
                         line += n;
+                        at_start = true;
                         continue;
                     }
                 }
@@ -1622,13 +1690,116 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
     if !matches!(toks.last(), Some((Tok::Newline, _)) | None) {
         toks.push((Tok::Newline, line));
     }
-    Ok(toks)
+    let toks = layout(toks, &indents)?;
+    Ok(Lexed { toks, braced })
 }
 
-/// after `platform` at the start of a line: `<target> {`, then every
-/// line up to one holding `}` alone, as text. None when the line is not
-/// that shape (the word is then an identifier as before)
-fn lex_platform_block(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<Option<(String, String, usize)>, String> {
+/// The layout pass: indentation opens and closes blocks as braces did.
+/// A line indented past the line before it opens a block under that
+/// line — an `Open` at the end of the header, where the `{` stood — and
+/// a line back at an earlier indentation closes every block opened
+/// since, a `Close` and a newline each, where the `}` line stood; the
+/// parser sees the one stream it always saw. A label line (`name:`,
+/// `name(params):`) heads a basic block whose instructions are
+/// indented under it and opens no token block. A literal `{` opens a
+/// block inside which indentation is insignificant, as it always was,
+/// closed by its `}`, so a braced file and an indented one parse
+/// together — the prelude is appended to every program.
+fn layout(toks: Vec<(Tok, usize)>, indents: &[(usize, usize)]) -> Result<Vec<(Tok, usize)>, ParseError> {
+    #[derive(PartialEq)]
+    enum Kind {
+        Literal,
+        Indent,
+        Label,
+    }
+    struct Block {
+        kind: Kind,
+        body: usize,
+    }
+    let mut out: Vec<(Tok, usize)> = Vec::with_capacity(toks.len() + 32);
+    let mut stack: Vec<Block> = Vec::new();
+    // the line before: its indentation, and whether it was a label
+    let mut prev: Option<(usize, bool)> = None;
+    let base = indents.first().map(|&(_, n)| n).unwrap_or(0);
+    let mut i = 0;
+    let mut li = 0;
+    while i < toks.len() {
+        let indent = indents[li].1;
+        debug_assert_eq!(indents[li].0, i);
+        li += 1;
+        let mut j = i;
+        while !matches!(toks[j].0, Tok::Newline) {
+            j += 1;
+        }
+        let line = toks[i].1;
+        let is_label = matches!(toks[j - 1].0, Tok::Colon);
+        let in_literal = matches!(stack.last(), Some(Block { kind: Kind::Literal, .. }));
+        if !in_literal {
+            match prev {
+                Some((p, label)) if indent > p => {
+                    if label {
+                        stack.push(Block { kind: Kind::Label, body: indent });
+                    } else {
+                        let nl = out.pop().expect("the header's newline");
+                        out.push((Tok::Open, nl.1));
+                        out.push(nl);
+                        stack.push(Block { kind: Kind::Indent, body: indent });
+                    }
+                }
+                Some((p, _)) if indent < p => {
+                    while matches!(stack.last(), Some(b) if b.body > indent) {
+                        if stack.pop().unwrap().kind == Kind::Indent {
+                            out.push((Tok::Close, line));
+                            out.push((Tok::Newline, line));
+                        }
+                    }
+                    let open = match stack.last() {
+                        Some(b) => b.body,
+                        None => base,
+                    };
+                    if open != indent {
+                        return Err(ParseError { line, msg: "the indentation of this line matches no open block".into() });
+                    }
+                }
+                _ => {}
+            }
+        }
+        for k in i..=j {
+            match toks[k].0 {
+                Tok::Open => stack.push(Block { kind: Kind::Literal, body: 0 }),
+                Tok::Close => {
+                    if stack.last().map(|b| &b.kind) != Some(&Kind::Literal) {
+                        return Err(ParseError { line, msg: "'}' closes no block opened by '{'".into() });
+                    }
+                    stack.pop();
+                }
+                _ => {}
+            }
+            out.push(toks[k].clone());
+        }
+        prev = Some((indent, is_label));
+        i = j + 1;
+    }
+    while let Some(b) = stack.pop() {
+        match b.kind {
+            Kind::Indent => {
+                let line = out.last().map(|t| t.1).unwrap_or(0);
+                out.push((Tok::Close, line));
+                out.push((Tok::Newline, line));
+            }
+            Kind::Literal => return Err(ParseError { line: out.last().map(|t| t.1).unwrap_or(0), msg: "unterminated block: a '{' is never closed".into() }),
+            Kind::Label => {}
+        }
+    }
+    Ok(out)
+}
+
+/// after `platform` at the start of a line: `<target>`, then the rules
+/// indented under it — or, in the brace form, `<target> {` and every
+/// line up to one holding `}` alone — as text, with the number of lines
+/// taken and whether braces were used. None when the line is not that
+/// shape (the word is then an identifier as before)
+fn lex_platform_block(chars: &mut std::iter::Peekable<std::str::Chars>, base: usize) -> Result<Option<(String, String, usize, bool)>, String> {
     let mut look = chars.clone();
     while look.peek() == Some(&' ') {
         look.next();
@@ -1637,39 +1808,101 @@ fn lex_platform_block(chars: &mut std::iter::Peekable<std::str::Chars>) -> Resul
     while look.peek() == Some(&' ') {
         look.next();
     }
-    if target.is_empty() || look.next() != Some('{') {
+    if target.is_empty() {
         return Ok(None);
+    }
+    let brace = look.peek() == Some(&'{');
+    if brace {
+        look.next();
     }
     while matches!(look.peek(), Some(' ') | Some('\r')) {
         look.next();
     }
-    if look.next() != Some('\n') {
-        return Err("`platform <target> {` takes the rest of its line".into());
+    if look.peek() == Some(&';') {
+        while !matches!(look.peek(), Some('\n') | None) {
+            look.next();
+        }
+    }
+    match look.next() {
+        Some('\n') => {}
+        _ if brace => return Err("`platform <target> {` takes the rest of its line".into()),
+        _ => return Ok(None),
     }
     let mut text = String::new();
     let mut lines = 1;
-    loop {
-        let mut l = String::new();
+    if brace {
         loop {
-            match look.next() {
-                Some('\n') => break,
-                Some(c) => l.push(c),
-                None => return Err(format!("the platform block for {} has no closing `}}` line", target)),
+            let mut l = String::new();
+            loop {
+                match look.next() {
+                    Some('\n') => break,
+                    Some(c) => l.push(c),
+                    None => return Err(format!("the platform block for {} has no closing `}}` line", target)),
+                }
+            }
+            lines += 1;
+            if l.trim() == "}" {
+                break;
+            }
+            text.push_str(&l);
+            text.push('\n');
+        }
+    } else {
+        // every line indented past the header; a blank line stays in the
+        // block only when a rule line follows it
+        let mut blanks = 0usize;
+        let mut before_blanks = look.clone();
+        loop {
+            let mark = look.clone();
+            let mut l = String::new();
+            let mut ended = false;
+            loop {
+                match look.next() {
+                    Some('\n') => break,
+                    Some(c) => l.push(c),
+                    None => {
+                        ended = true;
+                        break;
+                    }
+                }
+            }
+            if l.trim().is_empty() {
+                if ended {
+                    look = if blanks > 0 { before_blanks } else { mark };
+                    break;
+                }
+                if blanks == 0 {
+                    before_blanks = mark;
+                }
+                blanks += 1;
+                continue;
+            }
+            let indent = l.chars().take_while(|c| *c == ' ').count();
+            if indent <= base || l.contains('\t') {
+                look = if blanks > 0 { before_blanks } else { mark };
+                break;
+            }
+            for _ in 0..blanks {
+                text.push('\n');
+            }
+            lines += blanks + 1;
+            blanks = 0;
+            text.push_str(&l);
+            text.push('\n');
+            if ended {
+                break;
             }
         }
-        lines += 1;
-        if l.trim() == "}" {
-            break;
+        if text.is_empty() {
+            return Err(format!("the platform block for {} has no rules: indent them under it", target));
         }
-        text.push_str(&l);
-        text.push('\n');
     }
     *chars = look;
     // the block's own indentation goes: a rule header is at the block's
     // left edge and its instruction lines are indented past it
     let indent = text.lines().filter(|l| !l.trim().is_empty()).map(|l| l.len() - l.trim_start().len()).min().unwrap_or(0);
     let text: String = text.lines().map(|l| if l.len() >= indent { format!("{}\n", &l[indent..]) } else { "\n".to_string() }).collect();
-    Ok(Some((target, text, lines)))
+    Ok(Some((target, text, lines, brace)))
 }
 
 fn lex_name(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
@@ -1778,7 +2011,7 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
 /// parse under a policy: a bare `float` is `float(E, M)` for the policy's
 /// (E, M) (the policy's `int` is applied afterwards by `resolve_types`)
 pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
-    let toks = lex(src)?;
+    let Lexed { toks, braced } = lex(src)?;
     let mut p = Parser {
         toks,
         pos: 0,
@@ -1925,6 +2158,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
         funcs,
         int_mul64: mul64,
         platform,
+        braced,
     };
     // values wider than a word: checked as written, then lowered to words
     // so that no backend ever sees one
@@ -2170,8 +2404,20 @@ impl Parser {
             Ok(())
         } else {
             self.pos -= 1;
+            if want == Tok::Newline && got == Tok::Open {
+                return Err(self.err("unexpected indentation: the next line is indented under this one, which opens no block"));
+            }
             Err(self.err(format!("expected {}, found {}", want, got)))
         }
+    }
+
+    /// the start of a block after a header: the lines indented under
+    /// it, or a `{`
+    fn expect_block(&mut self, after: &str) -> Result<(), ParseError> {
+        if self.eat(&Tok::Open) {
+            return Ok(());
+        }
+        Err(self.err(format!("expected a block indented under {}", after)))
     }
 
     fn eat(&mut self, want: &Tok) -> bool {
@@ -2282,7 +2528,7 @@ impl Parser {
                     if depth == 0 {
                         // ... and the result types after `->`, up to the body
                         let mut k = j + 1;
-                        while !matches!(self.toks.get(k).map(|t| &t.0), Some(Tok::LBrace) | Some(Tok::Newline) | None) {
+                        while !matches!(self.toks.get(k).map(|t| &t.0), Some(Tok::Open) | Some(Tok::Newline) | None) {
                             if let Some(Tok::Ident(w)) = self.toks.get(k).map(|t| &t.0) {
                                 if self.toks.get(k + 1).map(|t| &t.0) != Some(&Tok::LParen) && self.abstract_base(w).is_some() {
                                     return true;
@@ -2862,8 +3108,19 @@ impl Parser {
     }
 
     /// skip to the end of the current line (a declaration already parsed)
+    /// past the end of the line — and of any block it opens, so a
+    /// declaration whose fields or values are lines under it goes whole
     fn skip_line(&mut self) {
-        while !matches!(self.next(), Ok(Tok::Newline) | Err(_)) {}
+        let mut depth = 0usize;
+        loop {
+            match self.next() {
+                Ok(Tok::Open) => depth += 1,
+                Ok(Tok::Close) => depth = depth.saturating_sub(1),
+                Ok(Tok::Newline) if depth == 0 => break,
+                Err(_) => break,
+                _ => {}
+            }
+        }
     }
 
     /// `data name = "text"`, `data name: array(T, N) = { v, ... }`, or
@@ -2927,9 +3184,12 @@ impl Parser {
         let size = bits.div_ceil(8).next_power_of_two() as usize;
         let mut bytes = Vec::new();
         let mut n = 0usize;
+        // `= "text"`, `= v, v, ...` to the end of the line, or the values
+        // on lines indented under the declaration (or between braces)
         if self.eat(&Tok::Equals) {
-            match self.next()? {
-                Tok::Str(s) => {
+            match self.peek() {
+                Some(Tok::Str(_)) => {
+                    let Tok::Str(s) = self.next()? else { unreachable!() };
                     if size != 1 {
                         self.pos -= 1;
                         return Err(self.err("a string initializes an array of bytes".to_string()));
@@ -2937,33 +3197,14 @@ impl Parser {
                     bytes = s.into_bytes();
                     n = bytes.len();
                 }
-                Tok::LBrace => loop {
-                    self.skip_newlines();
-                    if self.eat(&Tok::RBrace) {
-                        break;
-                    }
-                    match self.next()? {
-                        Tok::Int(v) => {
-                            bytes.extend_from_slice(&v.to_le_bytes()[..size]);
-                            n += 1;
-                        }
-                        t => {
-                            self.pos -= 1;
-                            return Err(self.err(format!("expected an integer in the initializer, found {}", t)));
-                        }
-                    }
-                    self.skip_newlines();
-                    if !self.eat(&Tok::Comma) {
-                        self.skip_newlines();
-                        self.expect(Tok::RBrace)?;
-                        break;
-                    }
-                },
-                t => {
-                    self.pos -= 1;
-                    return Err(self.err(format!("expected a string or {{ values }}, found {}", t)));
+                Some(Tok::Open) => {
+                    self.pos += 1;
+                    self.parse_values(size, &mut bytes, &mut n, true)?;
                 }
+                _ => self.parse_values(size, &mut bytes, &mut n, false)?,
             }
+        } else if self.eat(&Tok::Open) {
+            self.parse_values(size, &mut bytes, &mut n, true)?;
         }
         match count {
             Some(c) if n == 0 => {
@@ -2983,6 +3224,36 @@ impl Parser {
             return Err(self.err(format!("group '{}' is declared with its array type and nothing else: a threadgroup's memory starts as nothing", name)));
         }
         self.data.push(DataDef { name, elem, dims, elem_name, count: n, bytes, shared });
+        Ok(())
+    }
+
+    /// a data item's values: integers with commas between, to the end
+    /// of the line, or (`block`) over the lines of a block, a line's
+    /// end standing for a comma
+    fn parse_values(&mut self, size: usize, bytes: &mut Vec<u8>, n: &mut usize, block: bool) -> Result<(), ParseError> {
+        loop {
+            if block {
+                self.skip_newlines();
+                if self.eat(&Tok::Close) {
+                    break;
+                }
+            } else if matches!(self.peek(), Some(Tok::Newline)) {
+                break;
+            }
+            match self.next()? {
+                Tok::Int(v) => {
+                    bytes.extend_from_slice(&v.to_le_bytes()[..size]);
+                    *n += 1;
+                }
+                t => {
+                    self.pos -= 1;
+                    return Err(self.err(format!("expected an integer in the initializer, found {}", t)));
+                }
+            }
+            if !self.eat(&Tok::Comma) && !matches!(self.peek(), Some(Tok::Newline) | Some(Tok::Close)) {
+                return Err(self.err(format!("expected ',' between values, found {}", self.peek().unwrap())));
+            }
+        }
         Ok(())
     }
 
@@ -3070,18 +3341,23 @@ impl Parser {
                 at(i).map(|t| t.to_string()).unwrap_or("end of input".into())
             )));
         };
+        // `struct` or `pack` and its fields: one per line indented under
+        // the word, or on one line in parentheses (`struct(x: f32, y: f32)`,
+        // the spelling a type's name uses), or between braces with commas
         if name == "pack" || name == "struct" {
             let is_struct = name == "struct";
-            if at(i + 1) != Some(&Tok::LBrace) {
-                return Err(err(format!("expected '{{' after '{}'", name)));
-            }
+            let closer = match at(i + 1) {
+                Some(Tok::Open) => Tok::Close,
+                Some(Tok::LParen) => Tok::RParen,
+                _ => return Err(err(format!("expected the fields of the {} indented under it, or in parentheses", name))),
+            };
             let mut j = i + 2;
             let mut fields: Vec<(String, TypeExpr)> = Vec::new();
             loop {
                 while at(j) == Some(&Tok::Newline) {
                     j += 1;
                 }
-                if at(j) == Some(&Tok::RBrace) {
+                if at(j) == Some(&closer) {
                     j += 1;
                     break;
                 }
@@ -3097,13 +3373,10 @@ impl Parser {
                 let (fty, next) = self.type_expr_at(j + 2, params)?;
                 fields.push((fname.clone(), fty));
                 j = next;
-                while at(j) == Some(&Tok::Newline) {
-                    j += 1;
-                }
                 if at(j) == Some(&Tok::Comma) {
                     j += 1;
-                } else if at(j) != Some(&Tok::RBrace) {
-                    return Err(err("expected ',' or '}' after a field".into()));
+                } else if at(j) != Some(&closer) && !(closer == Tok::Close && at(j) == Some(&Tok::Newline)) {
+                    return Err(err(format!("expected ',' or {} after a field", if closer == Tok::Close { "the end of the line" } else { "')'" })));
                 }
             }
             if fields.is_empty() {
@@ -3860,7 +4133,7 @@ impl Parser {
         let mut p = self.pos;
         while let Some((t, _)) = self.toks.get(p) {
             match t {
-                Tok::Newline | Tok::RBrace => break,
+                Tok::Newline | Tok::Close => break,
                 Tok::Comma => commas += 1,
                 _ => {}
             }
@@ -4077,17 +4350,19 @@ impl Parser {
         let mut depth = 0usize;
         for i in start..self.toks.len() {
             match self.toks[i].0 {
-                Tok::LBrace => depth += 1,
-                Tok::RBrace => {
+                Tok::Open => depth += 1,
+                Tok::Close => {
                     depth -= 1;
                     if depth == 0 {
                         return Ok((start, i));
                     }
                 }
+                // the signature's line ends before its body opens
+                Tok::Newline if depth == 0 => return Err(self.err("expected a block indented under the function's signature")),
                 _ => {}
             }
         }
-        Err(self.err("unterminated function: missing '}'"))
+        Err(self.err("unterminated function: its block is never closed"))
     }
 
     /// Every value definition in the format is the pattern `name : type` —
@@ -4211,7 +4486,7 @@ impl Parser {
                                     .then(|| name.clone());
                             }
                         }
-                        Tok::Newline | Tok::LBrace | Tok::Equals => return None,
+                        Tok::Newline | Tok::Open | Tok::Equals => return None,
                         _ => {}
                     }
                     j += 1;
@@ -4287,14 +4562,14 @@ impl Parser {
             }
         }
 
-        self.expect(Tok::LBrace)?;
+        self.expect_block("the function's signature")?;
         self.skip_newlines();
         self.cur_rets = rets.clone();
 
         // A body that opens with statements instead of a label is in
         // structured form; it parses via if/loop constructs and lowers to
         // the same block graph on the fly.
-        if self.label_at(self.pos).is_none() && !matches!(self.peek(), Some(Tok::RBrace)) {
+        if self.label_at(self.pos).is_none() && !matches!(self.peek(), Some(Tok::Close)) {
             let blocks = self.parse_structured_body(&mut scope)?;
             return Ok(Function {
                 name,
@@ -4312,7 +4587,7 @@ impl Parser {
         let mut blocks: Vec<Block> = Vec::new();
         loop {
             match self.peek() {
-                Some(Tok::RBrace) => {
+                Some(Tok::Close) => {
                     self.pos += 1;
                     break;
                 }
@@ -5598,7 +5873,7 @@ impl Parser {
         };
         st.new_block(Vec::new()); // entry
         self.parse_struct_stmts(scope, &mut st)?;
-        self.expect(Tok::RBrace)?;
+        self.expect(Tok::Close)?;
         Ok(st.blocks)
     }
 
@@ -5608,13 +5883,13 @@ impl Parser {
     fn parse_struct_stmts(&mut self, scope: &mut FuncScope, st: &mut StructEmit) -> Result<bool, ParseError> {
         self.skip_newlines();
         loop {
-            if matches!(self.peek(), Some(Tok::RBrace)) {
+            if matches!(self.peek(), Some(Tok::Close)) {
                 return Ok(false);
             }
             let terminated = self.parse_struct_stmt(scope, st)?;
             self.skip_newlines();
             if terminated {
-                if !matches!(self.peek(), Some(Tok::RBrace)) {
+                if !matches!(self.peek(), Some(Tok::Close)) {
                     return Err(self.err("unreachable code after a terminating statement"));
                 }
                 return Ok(true);
@@ -5757,7 +6032,8 @@ impl Parser {
     ) -> Result<bool, ParseError> {
         let cond = self.parse_operand(scope, Some(Type::U1))?;
         self.flush(st); // the condition's consts belong before the branch
-        self.expect(Tok::LBrace)?;
+        // `if c` with nothing indented under it is an empty arm
+        let then_block = self.eat(&Tok::Open);
         self.expect(Tok::Newline)?;
 
         let before = st.cur;
@@ -5766,8 +6042,13 @@ impl Parser {
         st.yield_stack.push((Vec::new(), dst_types)); // collects edges into the join
 
         st.cur = then_b.0 as usize;
-        let t_then = self.parse_struct_stmts(scope, st)?;
-        self.expect(Tok::RBrace)?;
+        let t_then = if then_block {
+            let t = self.parse_struct_stmts(scope, st)?;
+            self.expect(Tok::Close)?;
+            t
+        } else {
+            false
+        };
         if !t_then {
             if !dsts.is_empty() {
                 return Err(self.err("this if yields values, so each arm must end with 'yield'"));
@@ -5779,14 +6060,26 @@ impl Parser {
             st.yield_stack.last_mut().unwrap().0.push(at);
         }
 
-        if matches!(self.peek(), Some(Tok::Ident(k)) if k == "else") {
-            self.pos += 1;
-            self.expect(Tok::LBrace)?;
+        // `else` follows the arm's end on the same line (`} else {`) or,
+        // indented, on the next line
+        let mut at = self.pos;
+        while matches!(self.toks.get(at).map(|t| &t.0), Some(Tok::Newline)) {
+            at += 1;
+        }
+        if matches!(self.toks.get(at).map(|t| &t.0), Some(Tok::Ident(k)) if k == "else") {
+            self.pos = at + 1;
+            let else_block = self.eat(&Tok::Open);
             self.expect(Tok::Newline)?;
             let else_b = st.new_block(Vec::new());
             st.cur = else_b.0 as usize;
-            let t_else = self.parse_struct_stmts(scope, st)?;
-            self.expect(Tok::RBrace)?;
+            let t_else = if else_block {
+                let t = self.parse_struct_stmts(scope, st)?;
+                self.expect(Tok::Close)?;
+                self.expect(Tok::Newline)?;
+                t
+            } else {
+                false
+            };
             if !t_else {
                 if !dsts.is_empty() {
                     return Err(
@@ -5820,8 +6113,10 @@ impl Parser {
             });
             let at = (before, st.blocks[before].insts.len() - 1);
             st.yield_stack.last_mut().unwrap().0.push(at);
+            if then_block {
+                self.expect(Tok::Newline)?;
+            }
         }
-        self.expect(Tok::Newline)?;
 
         let (pending, _) = st.yield_stack.pop().unwrap();
         if pending.is_empty() {
@@ -5869,7 +6164,7 @@ impl Parser {
         } else {
             None
         };
-        self.expect(Tok::LBrace)?;
+        self.expect_block("the loop's header")?;
         self.expect(Tok::Newline)?;
 
         let header = st.new_block(params);
@@ -5886,7 +6181,7 @@ impl Parser {
         });
         st.cur = header.0 as usize;
         let terminated = self.parse_struct_stmts(scope, st)?;
-        self.expect(Tok::RBrace)?;
+        self.expect(Tok::Close)?;
         self.expect(Tok::Newline)?;
         if !terminated {
             return Err(self.err("loop body must end with break, continue, or ret"));
@@ -5973,9 +6268,14 @@ impl fmt::Display for Module {
             write!(f, "{}", func)?;
         }
         for (target, text) in &self.platform {
-            writeln!(f, "\nplatform {} {{", target)?;
-            write!(f, "{}", text)?;
-            writeln!(f, "}}")?;
+            writeln!(f, "\nplatform {}", target)?;
+            for l in text.lines() {
+                if l.trim().is_empty() {
+                    writeln!(f)?;
+                } else {
+                    writeln!(f, "    {}", l)?;
+                }
+            }
         }
         Ok(())
     }
@@ -6114,10 +6414,10 @@ impl fmt::Display for Function {
                 write!(f, " -> ({})", ts.join(", "))?;
             }
         }
-        writeln!(f, " {{")?;
+        writeln!(f)?;
         for block in &self.blocks {
             if block.params.is_empty() {
-                writeln!(f, "{}:", block.name)?;
+                writeln!(f, "    {}:", block.name)?;
             } else {
                 let ps = block
                     .params
@@ -6125,7 +6425,7 @@ impl fmt::Display for Function {
                     .map(|&p| self.fmt_def(p))
                     .collect::<Vec<_>>()
                     .join(", ");
-                writeln!(f, "{}({}):", block.name, ps)?;
+                writeln!(f, "    {}({}):", block.name, ps)?;
             }
             for inst in &block.insts {
                 // a literal's hidden instructions print at its use instead
@@ -6133,10 +6433,10 @@ impl fmt::Display for Function {
                 if !dsts.is_empty() && dsts.iter().all(|&d| self.is_hidden(d)) {
                     continue;
                 }
-                writeln!(f, "    {}", self.fmt_inst(inst))?;
+                writeln!(f, "        {}", self.fmt_inst(inst))?;
             }
         }
-        writeln!(f, "}}")
+        Ok(())
     }
 }
 
@@ -6921,6 +7221,54 @@ exit:
         assert_eq!(printed, m2.to_string());
     }
 
+    /// the indented form (fm3 rulings-3 item 1, log 53): a block is the
+    /// lines indented under its header, a label's instructions stand
+    /// under it, an empty arm is `if c` with `else` on the next line,
+    /// fields and values are lines; the two forms are one module, and
+    /// meet in one text
+    #[test]
+    fn indented_form() {
+        let braced = "type p = struct { x: i64, y: i64 }\ndata t: array(i32, 2) = { 3, -4 }\nfn sum(n: i64) -> i64 {\n    acc: i64 = loop(i: i64 = 0, a: i64 = 0) {\n        done: u1 = cmp.ge i, n\n        if done {\n            break a\n        }\n        a2: i64 = add a, i\n        i2: i64 = add i, 1\n        continue i2, a2\n    }\n    ret acc\n}\nfn pick(c: u1) -> i64 {\n    r: i64 = if c {\n        yield 7\n    } else {\n        yield 9\n    }\n    if c {\n    } else {\n        ret 1\n    }\n    ret r\n}\nfn flat(n: i64) -> i64 {\nentry:\n    jmp next(n)\nnext(k: i64):\n    ret k\n}\nplatform arm64 {\n    pick(c: u1) -> i64\n        add r, c, c\n}\n";
+        let indented = "type p = struct\n    x: i64\n    y: i64\ndata t: array(i32, 2)\n    3\n    -4\nfn sum(n: i64) -> i64\n    acc: i64 = loop(i: i64 = 0, a: i64 = 0)\n        done: u1 = cmp.ge i, n\n        if done\n            break a\n        a2: i64 = add a, i\n        i2: i64 = add i, 1\n        continue i2, a2\n    ret acc\nfn pick(c: u1) -> i64\n    r: i64 = if c\n        yield 7\n    else\n        yield 9\n    if c\n    else\n        ret 1\n    ret r\nfn flat(n: i64) -> i64\n    entry:\n        jmp next(n)\n    next(k: i64):\n        ret k\nplatform arm64\n    pick(c: u1) -> i64\n        add r, c, c\n";
+        let a = parse(braced).expect("braced");
+        let b = parse(indented).expect("indented");
+        verify(&b).expect("verify");
+        assert_eq!(a.to_string(), b.to_string());
+        assert_eq!(a.platform, b.platform);
+        assert_eq!(a.braced, Some(1));
+        assert_eq!(b.braced, None);
+        // the printer writes the indented form, which reads back
+        let printed = b.to_string();
+        assert!(!printed.contains('{') && printed.contains("fn flat(n: i64) -> i64\n    entry:\n        jmp next(n)\n    next(k: i64):\n        ret k\n"), "{}", printed);
+        assert_eq!(parse(&printed).unwrap().to_string(), printed);
+        // a braced function beside an indented one in one text: the
+        // prelude is appended to every program in whichever form it is
+        let mixed = format!("{}{}", &braced[braced.find("fn flat").unwrap()..braced.find("platform").unwrap()], &indented[indented.find("fn pick").unwrap()..indented.find("fn flat").unwrap()]);
+        let m = parse(&mixed).expect("mixed");
+        assert_eq!(m.funcs.len(), 2);
+        assert_eq!(m.braced, Some(1));
+        // on one line, the fields in parentheses: what a type's name says
+        let paren = parse("type p = struct(x: i64, y: i64)\nfn f(q: pack(a: u1, b: u7)) -> p\n    r: p = pack 1, 2\n    ret r\n").expect("paren");
+        // (the struct is dissolved into its fields after parsing)
+        assert_eq!(paren.to_string(), "type p = struct\n    x: i64\n    y: i64\n\nfn f(q: pack(a: u1, b: u7)) -> (i64, i64)\n    entry:\n        ret 1, 2\n");
+        // labels at the instructions' own level parse too
+        let level = "fn flat(n: i64) -> i64\n    entry:\n    jmp next(n)\n    next(k: i64):\n    ret k\n";
+        assert_eq!(parse(level).unwrap().to_string(), parse("fn flat(n: i64) -> i64 {\nentry:\n    jmp next(n)\nnext(k: i64):\n    ret k\n}\n").unwrap().to_string());
+    }
+
+    #[test]
+    fn layout_errors() {
+        let err = |src: &str| parse(src).err().map(|e| format!("line {}: {}", e.line, e.msg)).unwrap_or_else(|| panic!("accepted:\n{}", src));
+        assert_eq!(err("fn f() -> i64\n\tret 1\n"), "line 2: a tab in the indentation: indent with spaces");
+        assert_eq!(err("fn f() -> i64\n    x: i64 = const 1\n  ret x\n"), "line 3: the indentation of this line matches no open block");
+        assert_eq!(err("fn f() -> i64\n    x: i64 = const 1\n        y: i64 = add x, 1\n    ret y\n"), "line 2: unexpected indentation: the next line is indented under this one, which opens no block");
+        assert_eq!(err("fn f() -> i64\nret 1\n"), "line 1: expected a block indented under the function's signature");
+        assert_eq!(err("fn f() -> i64\n    r: i64 = loop()\n    ret r\n"), "line 2: expected a block indented under the loop's header");
+        assert_eq!(err("platform arm64\nfn f() -> i64\n    ret 1\n"), "line 1: the platform block for arm64 has no rules: indent them under it");
+        assert_eq!(err("fn f() -> i64 {\n    ret 1\n"), "line 2: unterminated block: a '{' is never closed");
+        assert_eq!(err("fn f() -> i64\n    ret 1\n}\n"), "line 3: '}' closes no block opened by '{'");
+    }
+
     #[test]
     fn parses_structure() {
         let m = parse(SUM).unwrap();
@@ -7259,7 +7607,7 @@ entry:
         let m2 = parse(&printed).expect("reparse");
         verify(&m2).expect("reverify");
         assert_eq!(printed, m2.to_string());
-        assert!(printed.starts_with("type rgb = pack { r: u5, g: u6, b: u5 }\n"), "{}", printed);
+        assert!(printed.starts_with("type rgb = pack\n    r: u5\n    g: u6\n    b: u5\n"), "{}", printed);
     }
 
     #[test]
@@ -7334,7 +7682,7 @@ fn half(f: f16, b: byte, w: word(2 * 6)) -> (u5, u8, u12) {
         assert_eq!(m.func("half").unwrap().rets[2], Type::int(false, 12));
         // declarations print as written, and the whole thing round-trips
         let printed = m.to_string();
-        assert!(printed.starts_with("type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }\ntype f32 = float(8, 23)\n"), "{}", printed);
+        assert!(printed.starts_with("type float(E, M) = pack\n    mantissa: u(M)\n    exponent: u(E)\n    sign: u1\ntype f32 = float(8, 23)\n"), "{}", printed);
         assert!(printed.contains("type bits(E, M) = u(E + M + 1)\n"), "{}", printed);
         assert!(printed.contains("fn half(f: f16, b: byte, w: word(2 * 6)) -> (u5, u8, u12)") || printed.contains("fn half(f: f16, b: u8, w: u12)"), "{}", printed);
         let m2 = parse(&printed).expect("reparse");

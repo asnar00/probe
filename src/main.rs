@@ -8,6 +8,7 @@ mod emit_wasm;
 mod cost;
 mod footprint;
 mod fuzz;
+mod indent;
 mod scorecard;
 mod structure;
 mod testfloat;
@@ -121,6 +122,7 @@ fn main() -> ExitCode {
             Err(e) => fail(&e),
         },
         Some("parse") if args.len() >= 2 => cmd_parse(&args[1], policy),
+        Some("indent") if args.len() >= 2 => cmd_indent(&args[1..]),
         Some("learn") if args.len() >= 2 => {
             let out = args
                 .iter()
@@ -360,6 +362,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!("usage: probe parse <file.ssa>");
+            eprintln!("       probe indent <file.ssa> | -w <file.ssa>...   the brace form rewritten indented (-w: in place)");
             eprintln!("       probe learn <target.probe> [-o encodings.json]");
             eprintln!("       probe compile <file.ssa>");
             eprintln!("       probe run <file.ssa> <function> [args...]");
@@ -419,6 +422,34 @@ fn cmd_parse(path: &str, policy: ssa::Policy) -> ExitCode {
             eprintln!("{}: {}", path, e);
         }
         return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+/// `probe indent <file>` prints the file in the indented form; `-w`
+/// rewrites each file in place, naming the ones that changed
+fn cmd_indent(args: &[String]) -> ExitCode {
+    let (write, files) = match args.first().map(String::as_str) {
+        Some("-w") => (true, &args[1..]),
+        _ => (false, args),
+    };
+    for path in files {
+        let src = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => return fail(&format!("{}: {}", path, e)),
+        };
+        let out = match indent::indent(&src) {
+            Ok(t) => t,
+            Err(e) => return fail(&format!("{}: {}", path, e)),
+        };
+        if !write {
+            print!("{}", out);
+        } else if out != src {
+            if let Err(e) = std::fs::write(path, &out) {
+                return fail(&format!("{}: {}", path, e));
+            }
+            println!("indented {}", path);
+        }
     }
     ExitCode::SUCCESS
 }

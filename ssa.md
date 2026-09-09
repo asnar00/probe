@@ -14,7 +14,7 @@ The input language of the lowest compiler stage. A module of functions; each fun
 - Comments: `;` to end of line.
 - Names: `[A-Za-z0-9_]+`, for values, blocks, functions, and types alike. No prefixes — position says which is which: a name before `:` defines a value, after `:` names a type, before `(` names a function being called, after `jmp`/`br` names a block. Each value is defined exactly once.
 - Integer literals: decimal, optionally negative (`42`, `-7`), or hex (`0x2a`). Float literals: a decimal with a fraction or an exponent (`1.5`, `2e10`, `-1.0e-3`), plus `inf`, `-inf`, `nan`.
-- Whitespace is insignificant except as a separator; newlines end instructions.
+- Newlines end instructions, and indentation is the structure (fm3 rulings-3, 2026-09-10): a block — a function's body, an `if` arm, a loop's body, a `struct` or `pack`'s fields, a `data` item's values, a platform's rules — is the lines indented under its header, and a line back at an earlier indentation ends every block opened since; a line must return to an indentation that is open. A flat function's basic block is its label with the instructions indented under it. Indent with spaces; a tab in the indentation is an error. The brace form the IR had before (`fn f() {` … `}`, `struct { … }`) is still read, the two may meet in one text (the prelude is appended to every program), and `probe indent <file>` rewrites a file in the indented form (`-w` in place).
 
 ## Types
 
