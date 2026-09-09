@@ -4,6 +4,27 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `out$` is a system stream — `ad1a4fc` · 2026-09-10
+
+```
+on hello()
+    out$ << "hello world" << "\n"
+```
+
+Third pass item 2 (fm3 log 57, questions 31, 32). Ash: output is a stream, not a function. The compiler's `platform` feature declares `uint8 out$` and its consumer `on write (uint8 c$)`, wired `write(out$)` — a *sink*, a function with a stream parameter and no result that the bare wiring line makes a task — and `print` is a zero word over it. The print buffer is gone: `out$` is a ring of 4096 bytes carved at every reset, and the runners read it through the platform's own reader on every path, unchanged in name. hello's `run` (above, `suite/zero/hello/hello/hello.zero`) costs 57 602 SSA where it cost 640 310: a string literal pushes its bytes straight, and a ring the compiler knows is regular takes the regular push. The `platform` store shows a store's own sink of `out$`. zero 346/346 on the CPU paths, 333 + 13 skipped on air; cargo test 101.
+
+---
+
+### air: compile again when Apple's compiler crashes — `c4a3fc9` · 2026-09-10
+
+```
+note: platform: Apple's compiler crashed on the kernel (100323 inlined under a budget of 400000); compiling again under 50161
+```
+
+Found under the third pass's item 2 (fm3 log 58). The zero `platform` store, with a second consumer of `out$`, crashed Apple's compile service as one kernel at 100 323 inlined instructions, where `streams` passes fully inlined at 361 871: the instruction count is not what Apple's compiler minds, and bisecting with a new `PROBE_AIR_NOINLINE=f,g` knob found that calling any of several large pieces lets it compile, not which one it is. So the air runner reacts to the crash itself: `compile_under` takes a budget, `Compiled` reports the kernel's size, and on an interrupted connection the runner compiles again under half of it, costliest copies called first, until the kernel runs. A kernel that compiles first time is untouched.
+
+---
+
 ### zero: a braced file is read with a warning — `5632719` · 2026-09-10
 
 ```
