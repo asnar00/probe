@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `yields` — `5c0e052` · 2026-09-09
+
+```
+int n = loop (int i = 1, int m = -1) yields m
+```
+
+Second rulings pass item 3 (question 23, log 48). The word that names what a loop gives is `yields`, Ash's choice over the first pass's `gives` and the offered `after`: the same place at the end of the header, the same meaning, reserved only there. `src/zero/syntax.rs` and the lowering's messages say `yields`; the seven loops in `suite/zero/control`, `suite/zero/streams` and `suite/zero/lex` are rewritten, the line above being the lexer's; `lex.expected.ssa` is unchanged, since the word never reaches the IR. `gives` is a name word again, and `control` names a function `gives twice` to show it. zero 319/319 on native, wasm, riscv and arm-qemu (250 cases, 12 overridden), 308 + 11 skipped on air; probe test 971, 962 + 9, 971, 971, 941 + 30; cargo test 96 passed.
+
+---
+
 ### zero: a bare literal takes the product's int width — `740a8b7` · 2026-09-09
 
 ```
