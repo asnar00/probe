@@ -4,6 +4,14 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a dead tick asks no time — `394f9e7` · 2026-09-10
+
+```
+        _5: i64 = get c_2, pos
+```
+
+The parity pass, hop 15 (fm3 log 82, question 42). `src/zero/lower.rs`'s `time_words` no longer takes `T i, T t = position x$` as a time word when `t` is read nowhere in the function (`reads_name`, `dead_ticks`), and `lower_multi` emits the reader's index as a `get` (above, `suite/zero/lex.expected.ssa`) with no tick and no library call. lex's `int start, int tick = position c$` had timed `in$`, and through the parameter the whole store, for a tick it never used; `in$` is a plain ring now. lex's comparable case 2 700 → 1 861 on the tool against the hand oracle's 415, `lex` 377 → 252, 534 → 495 lines; hello and static unchanged at 3 487 and 3 401. A front-end change: zero 477/477 native, cargo test zero:: 18.
+
 ### stream: a block push is three copies — `a568218` · 2026-09-10
 
 ```
