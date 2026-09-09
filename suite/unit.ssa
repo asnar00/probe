@@ -51,107 +51,87 @@
 type u8u = unit(8)
 type s8u = sunit(8)
 
-fn umul8(a: u8u, b: u8u) -> u8u {
+fn umul8(a: u8u, b: u8u) -> u8u
     r: u8u = mul a, b
     ret r
-}
-fn uadd8(a: u8u, b: u8u) -> u8u {
+fn uadd8(a: u8u, b: u8u) -> u8u
     r: u8u = add a, b
     ret r
-}
-fn usub8(a: u8u, b: u8u) -> u8u {
+fn usub8(a: u8u, b: u8u) -> u8u
     r: u8u = sub a, b
     ret r
-}
-fn udiv8(a: u8u, b: u8u) -> u8u {
+fn udiv8(a: u8u, b: u8u) -> u8u
     r: u8u = div a, b
     ret r
-}
-fn ufromf32(a: f32) -> u8u {
+fn ufromf32(a: f32) -> u8u
     r: u8u = conv a
     ret r
-}
-fn utof32(a: u8u) -> f32 {
+fn utof32(a: u8u) -> f32
     r: f32 = conv a
     ret r
-}
-fn smul8(a: s8u, b: s8u) -> s8u {
+fn smul8(a: s8u, b: s8u) -> s8u
     r: s8u = mul a, b
     ret r
-}
-fn sadd8(a: s8u, b: s8u) -> s8u {
+fn sadd8(a: s8u, b: s8u) -> s8u
     r: s8u = add a, b
     ret r
-}
-fn sneg8(a: s8u) -> s8u {
+fn sneg8(a: s8u) -> s8u
     r: s8u = neg a
     ret r
-}
-fn sabs8(a: s8u) -> s8u {
+fn sabs8(a: s8u) -> s8u
     r: s8u = abs a
     ret r
-}
-fn sdiv8(a: s8u, b: s8u) -> s8u {
+fn sdiv8(a: s8u, b: s8u) -> s8u
     r: s8u = div a, b
     ret r
-}
-fn sfromf32(a: f32) -> s8u {
+fn sfromf32(a: f32) -> s8u
     r: s8u = conv a
     ret r
-}
-fn stof32(a: s8u) -> f32 {
+fn stof32(a: s8u) -> f32
     r: f32 = conv a
     ret r
-}
 
 ; --- the abstract unit and sunit: percentages in and out ---
-fn to_unit(p: i32) -> unit {
+fn to_unit(p: i32) -> unit
     fp: float = conv p
     f: float = div fp, 100.0
     r: unit = conv f
     ret r
-}
-fn from_unit(u: unit) -> i32 {
+fn from_unit(u: unit) -> i32
     f: float = conv u
     h: float = fma f, 100.0, 0.5
     r: i32 = conv h
     ret r
-}
 ; a percent of a percent
-fn pct(a: i32, b: i32) -> i32 {
+fn pct(a: i32, b: i32) -> i32
     ua: unit = to_unit(a)
     ub: unit = to_unit(b)
     p: unit = mul ua, ub
     r: i32 = from_unit(p)
     ret r
-}
-fn to_sunit(p: i32) -> sunit {
+fn to_sunit(p: i32) -> sunit
     fp: float = conv p
     f: float = div fp, 100.0
     r: sunit = conv f
     ret r
-}
-fn from_sunit(u: sunit) -> i32 {
+fn from_sunit(u: sunit) -> i32
     f: float = conv u
     neg: u1 = cmp.lt f, 0.0
-    half: float = if neg {
+    half: float = if neg
         yield -0.5
-    } else {
+    else
         yield 0.5
-    }
     h: float = fma f, 100.0, half
     r: i32 = conv h
     ret r
-}
-fn spct(a: i32, b: i32) -> i32 {
+fn spct(a: i32, b: i32) -> i32
     ua: sunit = to_sunit(a)
     ub: sunit = to_sunit(b)
     p: sunit = mul ua, ub
     r: i32 = from_sunit(p)
     ret r
-}
 ; a + (b - a) * t, t a percentage
-fn lerp(a: i32, b: i32, t: i32) -> i32 {
+fn lerp(a: i32, b: i32, t: i32) -> i32
     ut: unit = to_unit(t)
     fa: float = conv a
     fb: float = conv b
@@ -161,4 +141,3 @@ fn lerp(a: i32, b: i32, t: i32) -> i32 {
     h: float = add m, 0.5
     r: i32 = conv h
     ret r
-}

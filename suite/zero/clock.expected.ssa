@@ -16,100 +16,86 @@ data __clock: array(time, 1)
 ; the scheduler is running: a push from inside a task does not start it again
 data __running: array(i64, 1)
 
-fn __now() -> i64 {
+fn __now() -> i64
     p: ptr = addr __clock
     c: time = load p
     h: time = seconds(1000000)
     x: time = mul c, h
     k: i64 = conv x
     ret k
-}
 
 ; a task wired at a rate, after each push: the clock moves on one period
-fn __sleep(hz: i64) {
+fn __sleep(hz: i64)
     rated: u1 = cmp.gt hz, 0
-    if rated {
+    if rated
         p: ptr = addr __clock
         c: time = load p
         d: time = period(hz)
         c2: time = add c, d
         store c2, p
-    }
     ret
-}
 
-fn __out_len() -> i64 {
+fn __out_len() -> i64
     q: ptr = addr __out_n
     n: i64 = load q
     ret n
-}
 
-fn __out_byte(i: i64) -> u8 {
+fn __out_byte(i: i64) -> u8
     o: ptr = addr __out
     b: u8 = load o, i, 1
     ret b
-}
 
 ; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
-fn __str(p: ptr, n: i64) -> u8[] {
+fn __str(p: ptr, n: i64) -> u8[]
     q: ptr(u8) = cast p
     v: u8[] = pack q, n, 1
     ret v
-}
 
 ; a push into any stream (log 38): stamped with the clock on a ring
 ; without a rate, the next sample on one with a rate
-fn __push(s: number$, v: number) {
+fn __push(s: number$, v: number)
     r: ptr = get s, ring
     step: i64 = load r, 40
     regular: u1 = cmp.gt step, 0
-    if regular {
+    if regular
         push(s, v)
-    } else {
+    else
         t: i64 = __now()
         push(s, t, v)
-    }
     ret
-}
 
 ; one byte, when there is room
-fn __out_ch(c: u8) {
+fn __out_ch(c: u8)
     q: ptr = addr __out_n
     k: i64 = load q
     o: ptr = addr __out
     room: u1 = cmp.lt k, 4095
-    if room {
+    if room
         store c, o, k, 1
         k2: i64 = add k, 1
         store k2, q
-    }
     ret
-}
 
 ; an int in decimal
-fn __print_int(x: int) {
+fn __print_int(x: int)
     negative: u1 = cmp.lt x, 0
-    m: int = if negative {
+    m: int = if negative
         __out_ch(45)
         y: int = sub 0, x
         yield y
-    } else {
+    else
         yield x
-    }
-    top: int = loop(p: int = 1) {
+    top: int = loop(p: int = 1)
         q: int = div m, p
         more: u1 = cmp.ge q, 10
-        if more {
+        if more
             p2: int = mul p, 10
             continue p2
-        }
         break p
-    }
-    loop(p3: int = top) {
+    loop(p3: int = top)
         done: u1 = cmp.eq p3, 0
-        if done {
+        if done
             break
-        }
         d: int = div m, p3
         r: int = rem d, 10
         a: int = add r, 48
@@ -117,9 +103,7 @@ fn __print_int(x: int) {
         __out_ch(c)
         p4: int = div p3, 10
         continue p4
-    }
     ret
-}
 
 
 ; the context: one field per feature-scope variable — name: scope, merge (feature)
@@ -127,12 +111,16 @@ fn __print_int(x: int) {
 ;   __enabled_clock: user, last (clock)
 ;   t: user, last (clock)
 ;   __node1_fin: node, last (clock)
-type __ctx = struct { __enabled_platform: u1, __enabled_clock: u1, t: int$, __node1_fin: u1 }
+type __ctx = struct
+    __enabled_platform: u1
+    __enabled_clock: u1
+    t: int$
+    __node1_fin: u1
 
 data __ctx_mem: array(__ctx, 1)
 
 ; before every case: the print buffer emptied, the variables at their initial values
-fn __zero_reset() {
+fn __zero_reset()
     q: ptr = addr __out_n
     store 0: i64, q
     a: ptr = addr __arena
@@ -148,204 +136,173 @@ fn __zero_reset() {
     p: ptr = addr __ctx_mem
     store _2, p
     ret
-}
 
 ; after the case's context is set: the nodes run
-fn __zero_start() {
+fn __zero_start()
     __run()
     ret
-}
 
-fn __get___enabled_platform() -> u1 {
+fn __get___enabled_platform() -> u1
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: u1 = get c, __enabled_platform
     ret v
-}
 
-fn __set___enabled_platform(v: u1) {
+fn __set___enabled_platform(v: u1)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __enabled_platform, v
     store c2, p
     ret
-}
 
-fn __get___enabled_clock() -> u1 {
+fn __get___enabled_clock() -> u1
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: u1 = get c, __enabled_clock
     ret v
-}
 
-fn __set___enabled_clock(v: u1) {
+fn __set___enabled_clock(v: u1)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __enabled_clock, v
     store c2, p
     ret
-}
 
-fn __get_t() -> int$ {
+fn __get_t() -> int$
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: int$ = get c, t
     ret v
-}
 
-fn __set_t(v: int$) {
+fn __set_t(v: int$)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, t, v
     store c2, p
     ret
-}
 
-fn __get___node1_fin() -> u1 {
+fn __get___node1_fin() -> u1
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: u1 = get c, __node1_fin
     ret v
-}
 
-fn __set___node1_fin(v: u1) {
+fn __set___node1_fin(v: u1)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __node1_fin, v
     store c2, p
     ret
-}
 
 ; a feature's effective state: its own enabled and its ancestors', read by every gate
-fn __on_platform() -> u1 {
+fn __on_platform() -> u1
     own: u1 = __get___enabled_platform()
     ret own
-}
-fn __on_clock() -> u1 {
+fn __on_clock() -> u1
     own: u1 = __get___enabled_clock()
     ret own
-}
 
 ; node 1: int t$ = ticks (5) at (4 hz) — run when an input has more than the node has seen, or has ended and the node has not run since
-fn __node1() -> u1 {
+fn __node1() -> u1
     fin: u1 = __get___node1_fin()
     notfin: u1 = xor fin, 1
     on: u1 = __on_clock()
     due: u1 = and notfin, on
-    ran: u1 = if due {
+    ran: u1 = if due
         _1: int$ = __get_t()
         _2: int = const 5
         ticks(_1, _2, 4: i64)
         __set___node1_fin(1)
         yield 1
-    } else {
+    else
         yield 0
-    }
     ret ran
-}
 
 ; the scheduler (log 25): passes over the nodes in declaration order until a pass runs nothing
-fn __run() {
+fn __run()
     p: ptr = addr __running
     busy: i64 = load p
     idle: u1 = cmp.eq busy, 0
-    if idle {
+    if idle
         store 1: i64, p
-        loop() {
+        loop()
             r1: u1 = __node1()
-            if r1 {
+            if r1
                 continue
-            } else {
+            else
                 break
-            }
-        }
         store 0: i64, p
-    }
     ret
-}
 
 ; feature platform (layer platform)
-fn print(s: u8$) {
+fn print(s: u8$)
     q: ptr = addr __out_n
     k0: i64 = load q
     o: ptr = addr __out
     f: u8[] = unread(s)
     p: ptr(u8) = ptr f
     n: i64 = len f
-    k1: i64 = loop(i: i64 = 0, k: i64 = k0) {
+    k1: i64 = loop(i: i64 = 0, k: i64 = k0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break k
-        }
         c: u8 = load p, i
         room: u1 = cmp.lt k, 4095
-        if room {
+        if room
             store c, o, k, 1
-        }
         i2: i64 = add i, 1
         k2: i64 = add k, 1
         continue i2, k2
-    }
     room2: u1 = cmp.lt k1, 4095
-    k4: i64 = if room2 {
+    k4: i64 = if room2
         store 10: u8, o, k1, 1
         k3: i64 = add k1, 1
         yield k3
-    } else {
+    else
         yield k1
-    }
     store k4, q
     ret
-}
-fn print__ints(x: int$) {
+fn print__ints(x: int$)
     f: int[] = unread(x)
     n: i64 = len f
-    loop(i: i64 = 0) {
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break
-        }
         first: u1 = cmp.eq i, 0
-        if first {
-        } else {
+        if first
+        else
             __out_ch(32)
-        }
         v: int = load f, i
         __print_int(v)
         i2: i64 = add i, 1
         continue i2
-    }
     __out_ch(10)
     ret
-}
 
 ; feature clock (layer runtime)
-fn ticks(t: int$, n: int, __hz: i64) {
+fn ticks(t: int$, n: int, __hz: i64)
     _1: int = const 1
     __push(t, _1)
     __sleep(__hz)
-    loop() {
+    loop()
         _2: int = latest t
         _3: int = add _2, 1
         _4: u1 = cmp.le _3, n
-        if _4 {
-        } else {
+        if _4
+        else
             break
-        }
         __push(t, _3)
         __sleep(__hz)
         continue
-    }
     ret
-}
-fn value_at(m: int) -> int {
+fn value_at(m: int) -> int
     _1: int$ = __get_t()
     _2: i64 = conv m
     _3: time = millis(_2)
     v: int = sample _1, _3
     ret v
-}
-fn where_it_stands() -> (int, int) {
+fn where_it_stands() -> (int, int)
     _1: int$ = __get_t()
     _2: int$ = advance(_1, 2)
     __set_t(_2)
@@ -354,10 +311,9 @@ fn where_it_stands() -> (int, int) {
     i: int = conv _4
     tick: int = conv _5
     ret i, tick
-}
 
 ; a stream's ring, carved from the arena: cap items (64 unless more are resident), and a tick per item unless regular; a reader's view at its start
-fn __stream_int(hz: i64, cap: i64) -> int$ {
+fn __stream_int(hz: i64, cap: i64) -> int$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
     sz: i64 = sizeof int
@@ -372,4 +328,3 @@ fn __stream_int(hz: i64, cap: i64) -> int$ {
     ring_init(r, vb, tb, hz)
     s: int$ = stream r
     ret s
-}

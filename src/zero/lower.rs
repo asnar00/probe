@@ -410,100 +410,86 @@ data __clock: array(time, 1)
 ; the scheduler is running: a push from inside a task does not start it again
 data __running: array(i64, 1)
 
-fn __now() -> i64 {
+fn __now() -> i64
     p: ptr = addr __clock
     c: time = load p
     h: time = seconds(1000000)
     x: time = mul c, h
     k: i64 = conv x
     ret k
-}
 
 ; a task wired at a rate, after each push: the clock moves on one period
-fn __sleep(hz: i64) {
+fn __sleep(hz: i64)
     rated: u1 = cmp.gt hz, 0
-    if rated {
+    if rated
         p: ptr = addr __clock
         c: time = load p
         d: time = period(hz)
         c2: time = add c, d
         store c2, p
-    }
     ret
-}
 
-fn __out_len() -> i64 {
+fn __out_len() -> i64
     q: ptr = addr __out_n
     n: i64 = load q
     ret n
-}
 
-fn __out_byte(i: i64) -> u8 {
+fn __out_byte(i: i64) -> u8
     o: ptr = addr __out
     b: u8 = load o, i, 1
     ret b
-}
 
 ; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
-fn __str(p: ptr, n: i64) -> u8[] {
+fn __str(p: ptr, n: i64) -> u8[]
     q: ptr(u8) = cast p
     v: u8[] = pack q, n, 1
     ret v
-}
 
 ; a push into any stream (log 38): stamped with the clock on a ring
 ; without a rate, the next sample on one with a rate
-fn __push(s: number$, v: number) {
+fn __push(s: number$, v: number)
     r: ptr = get s, ring
     step: i64 = load r, 40
     regular: u1 = cmp.gt step, 0
-    if regular {
+    if regular
         push(s, v)
-    } else {
+    else
         t: i64 = __now()
         push(s, t, v)
-    }
     ret
-}
 
 ; one byte, when there is room
-fn __out_ch(c: u8) {
+fn __out_ch(c: u8)
     q: ptr = addr __out_n
     k: i64 = load q
     o: ptr = addr __out
     room: u1 = cmp.lt k, 4095
-    if room {
+    if room
         store c, o, k, 1
         k2: i64 = add k, 1
         store k2, q
-    }
     ret
-}
 
 ; an int in decimal
-fn __print_int(x: int) {
+fn __print_int(x: int)
     negative: u1 = cmp.lt x, 0
-    m: int = if negative {
+    m: int = if negative
         __out_ch(45)
         y: int = sub 0, x
         yield y
-    } else {
+    else
         yield x
-    }
-    top: int = loop(p: int = 1) {
+    top: int = loop(p: int = 1)
         q: int = div m, p
         more: u1 = cmp.ge q, 10
-        if more {
+        if more
             p2: int = mul p, 10
             continue p2
-        }
         break p
-    }
-    loop(p3: int = top) {
+    loop(p3: int = top)
         done: u1 = cmp.eq p3, 0
-        if done {
+        if done
             break
-        }
         d: int = div m, p3
         r: int = rem d, 10
         a: int = add r, 48
@@ -511,9 +497,7 @@ fn __print_int(x: int) {
         __out_ch(c)
         p4: int = div p3, 10
         continue p4
-    }
     ret
-}
 "#;
 
 /// a ring's capacity, or the item count where it is larger (log 38):
@@ -626,13 +610,13 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         let ticks = if *regular { String::new() } else { "    tbytes: i64 = mul cap, 8\n    ttotal: i64 = add tbytes, 16\n    tb: ptr = arena_alloc(a, ttotal)\n    buffer_init(tb, 8, cap)\n".to_string() };
         let init = if *regular { "ring_regular(r, vb, hz, 1, 0)".to_string() } else { "ring_init(r, vb, tb, hz)".to_string() };
         let name = if *regular { "regular" } else { "stream" };
-        writeln!(l.out, "fn __{}_{}(hz: i64, cap: i64) -> {}$ {{\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, 64)\n    sz: i64 = sizeof {}\n    bytes: i64 = mul sz, cap\n    total: i64 = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, cap)\n{}    {}\n    s: {}$ = stream r\n    ret s\n}}", name, t, t, t, ticks, init, t).unwrap();
+        writeln!(l.out, "fn __{}_{}(hz: i64, cap: i64) -> {}$\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, 64)\n    sz: i64 = sizeof {}\n    bytes: i64 = mul sz, cap\n    total: i64 = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, cap)\n{}    {}\n    s: {}$ = stream r\n    ret s", name, t, t, t, ticks, init, t).unwrap();
     }
     if !l.copies.is_empty() {
         writeln!(l.out, "\n; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give").unwrap();
     }
     for t in &l.copies {
-        writeln!(l.out, "fn __copy_{}(v: {}[]) -> {}$ {{\n    n: i64 = len v\n    least: i64 = const {}\n    cap: i64 = max(n, least)\n    s: {}$ = __stream_{}({}, cap)\n    t: i64 = __now()\n    loop(i: i64 = 0) {{\n        done: u1 = cmp.ge i, n\n        if done {{\n            break\n        }}\n        x: {} = load v, i\n        push s, t, x\n        i2: i64 = add i, 1\n        continue i2\n    }}\n    ret s\n}}", t, t, t, RING_ITEMS, t, t, CLOCK_HZ, t).unwrap();
+        writeln!(l.out, "fn __copy_{}(v: {}[]) -> {}$\n    n: i64 = len v\n    least: i64 = const {}\n    cap: i64 = max(n, least)\n    s: {}$ = __stream_{}({}, cap)\n    t: i64 = __now()\n    loop(i: i64 = 0)\n        done: u1 = cmp.ge i, n\n        if done\n            break\n        x: {} = load v, i\n        push s, t, x\n        i2: i64 = add i, 1\n        continue i2\n    ret s", t, t, t, RING_ITEMS, t, t, CLOCK_HZ, t).unwrap();
     }
     let mut ir = String::new();
     writeln!(ir, "; lowered from the zero store {}", store.path.display()).unwrap();
@@ -1006,7 +990,7 @@ impl Body {
             Some(n) if !counted => format!(" bound {}", n),
             _ => String::new(),
         };
-        self.line(&format!("{}loop({}){} {{", prefix, hdr, bound));
+        self.line(&format!("{}loop({}){}", prefix, hdr, bound));
     }
 
     fn line(&mut self, s: &str) {
@@ -1204,7 +1188,7 @@ impl Lowerer {
                 if out.is_empty() {
                     return Err(lex::error(file, t.line, format!("type {} has no fields", t.name)));
                 }
-                self.type_lines.push(format!("type {} = struct {{ {} }}", t.name, ir.join(", ")));
+                self.type_lines.push(format!("type {} = struct\n    {}", t.name, ir.join("\n    ")));
                 self.types.insert(t.name.clone(), TypeInfo::Struct(out));
                 self.type_feature.insert(t.name.clone(), self.cur.clone());
             }
@@ -1603,7 +1587,7 @@ impl Lowerer {
                 self.type_lines.push(format!(";   {}: {}, {} ({})", f.name, f.scope, f.merge, f.feature));
                 fields.push(format!("{}: {}", f.name, f.ty.ir()));
             }
-            self.type_lines.push(format!("type __ctx = struct {{ {} }}", fields.join(", ")));
+            self.type_lines.push(format!("type __ctx = struct\n    {}", fields.join("\n    ")));
             self.data.push("data __ctx_mem: array(__ctx, 1)".into());
             // the initial values, in composition order: every feature on,
             // then the variables, then the nodes' state
@@ -1674,18 +1658,17 @@ impl Lowerer {
         }
         b.line("ret");
         writeln!(self.out, "\n; before every case: the print buffer emptied, the variables at their initial values").unwrap();
-        writeln!(self.out, "fn __zero_reset() {{").unwrap();
+        writeln!(self.out, "fn __zero_reset()").unwrap();
         self.out.push_str(&b.out);
-        self.out.push_str("}\n");
         // the case's context is set between the reset and the start, so
         // a node of a feature that is off never runs (log 43)
         if !self.nodes.is_empty() {
-            writeln!(self.out, "\n; after the case's context is set: the nodes run\nfn __zero_start() {{\n    __run()\n    ret\n}}").unwrap();
+            writeln!(self.out, "\n; after the case's context is set: the nodes run\nfn __zero_start()\n    __run()\n    ret").unwrap();
         }
         for f in &self.fvars {
             let t = f.ty.ir();
-            writeln!(self.out, "\nfn __get_{}() -> {} {{\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    v: {} = get c, {}\n    ret v\n}}", f.name, t, t, f.name).unwrap();
-            writeln!(self.out, "\nfn __set_{}(v: {}) {{\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    c2: __ctx = set c, {}, v\n    store c2, p\n    ret\n}}", f.name, t, f.name).unwrap();
+            writeln!(self.out, "\nfn __get_{}() -> {}\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    v: {} = get c, {}\n    ret v", f.name, t, t, f.name).unwrap();
+            writeln!(self.out, "\nfn __set_{}(v: {})\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    c2: __ctx = set c, {}, v\n    store c2, p\n    ret", f.name, t, f.name).unwrap();
         }
         // a feature is on when its own flag and every ancestor's are
         // (section 14, log 51): the gate reads this, and a switch writes
@@ -1694,8 +1677,8 @@ impl Lowerer {
         writeln!(self.out, "\n; a feature's effective state: its own enabled and its ancestors', read by every gate").unwrap();
         for f in &self.features {
             match self.parents.get(f).cloned().flatten() {
-                Some(p) => writeln!(self.out, "fn __on_{}() -> u1 {{\n    own: u1 = __get___enabled_{}()\n    up: u1 = __on_{}()\n    on: u1 = and own, up\n    ret on\n}}", f, f, p).unwrap(),
-                None => writeln!(self.out, "fn __on_{}() -> u1 {{\n    own: u1 = __get___enabled_{}()\n    ret own\n}}", f, f).unwrap(),
+                Some(p) => writeln!(self.out, "fn __on_{}() -> u1\n    own: u1 = __get___enabled_{}()\n    up: u1 = __on_{}()\n    on: u1 = and own, up\n    ret on", f, f, p).unwrap(),
+                None => writeln!(self.out, "fn __on_{}() -> u1\n    own: u1 = __get___enabled_{}()\n    ret own", f, f).unwrap(),
             }
         }
         let nodes = std::mem::take(&mut self.nodes);
@@ -1704,7 +1687,7 @@ impl Lowerer {
         }
         if !nodes.is_empty() {
             writeln!(self.out, "\n; the scheduler (log 25): passes over the nodes in declaration order until a pass runs nothing").unwrap();
-            writeln!(self.out, "fn __run() {{\n    p: ptr = addr __running\n    busy: i64 = load p\n    idle: u1 = cmp.eq busy, 0\n    if idle {{\n        store 1: i64, p\n        loop() {{").unwrap();
+            writeln!(self.out, "fn __run()\n    p: ptr = addr __running\n    busy: i64 = load p\n    idle: u1 = cmp.eq busy, 0\n    if idle\n        store 1: i64, p\n        loop()").unwrap();
             let mut any = String::new();
             for k in 1..=nodes.len() {
                 writeln!(self.out, "            r{}: u1 = __node{}()", k, k).unwrap();
@@ -1715,7 +1698,7 @@ impl Lowerer {
                     any = format!("any{}", k);
                 }
             }
-            writeln!(self.out, "            if {} {{\n                continue\n            }} else {{\n                break\n            }}\n        }}\n        store 0: i64, p\n    }}\n    ret\n}}", any).unwrap();
+            writeln!(self.out, "            if {}\n                continue\n            else\n                break\n        store 0: i64, p\n    ret", any).unwrap();
         }
         self.nodes = nodes;
         Ok(())
@@ -1745,29 +1728,28 @@ impl Lowerer {
                 let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
                 b.line(&format!("on: u1 = __on_{}()", info.chain[i]));
                 if rets.is_empty() {
-                    b.line("if on {");
+                    b.line("if on");
                     b.depth += 1;
                     b.line(&body);
                     b.depth -= 1;
                     if let Some(u) = under {
-                        b.line("} else {");
+                        b.line("else");
                         b.depth += 1;
                         b.line(&u);
                         b.depth -= 1;
                     }
-                    b.line("}");
                     b.line("ret");
                 } else {
                     let outs: Vec<String> = (0..rets.len()).map(|_| b.tmp()).collect();
                     let defs: Vec<String> = outs.iter().zip(&rets).map(|(o, t)| format!("{}: {}", o, t)).collect();
-                    b.line(&format!("{} = if on {{", defs.join(", ")));
+                    b.line(&format!("{} = if on", defs.join(", ")));
                     b.depth += 1;
                     let vs: Vec<String> = (0..rets.len()).map(|_| b.tmp()).collect();
                     let ds: Vec<String> = vs.iter().zip(&rets).map(|(v, t)| format!("{}: {}", v, t)).collect();
                     b.line(&format!("{} = {}", ds.join(", "), body));
                     b.line(&format!("yield {}", vs.join(", ")));
                     b.depth -= 1;
-                    b.line("} else {");
+                    b.line("else");
                     b.depth += 1;
                     match under {
                         Some(u) => {
@@ -1785,12 +1767,10 @@ impl Lowerer {
                         }
                     }
                     b.depth -= 1;
-                    b.line("}");
                     b.line(&format!("ret {}", outs.join(", ")));
                 }
-                writeln!(self.out, "fn {}({}){} {{", name, params.join(", "), sig_ret).unwrap();
+                writeln!(self.out, "fn {}({}){}", name, params.join(", "), sig_ret).unwrap();
                 self.out.push_str(&b.out);
-                self.out.push_str("}\n");
             }
         }
     }
@@ -1838,7 +1818,7 @@ impl Lowerer {
         // a feature that is off runs no node; its readers keep their place
         b.line(&format!("on: u1 = __on_{}()", node.feature));
         b.line(&format!("due: u1 = and {}, on", pending));
-        b.line("ran: u1 = if due {");
+        b.line("ran: u1 = if due");
         b.depth += 1;
         let out = self.read_fvar(&node.out, &mut b, None, 0)?;
         let mut ops = vec![out.text.clone()];
@@ -1884,16 +1864,14 @@ impl Lowerer {
         b.line(&format!("__set___node{}_fin({})", k, done.unwrap_or_else(|| "1".into())));
         b.line("yield 1");
         b.depth -= 1;
-        b.line("} else {");
+        b.line("else");
         b.depth += 1;
         b.line("yield 0");
         b.depth -= 1;
-        b.line("}");
         b.line("ret ran");
         writeln!(self.out, "\n; node {}: {} — run when an input has more than the node has seen, or has ended and the node has not run since", k, node.text).unwrap();
-        writeln!(self.out, "fn __node{}() -> u1 {{", k).unwrap();
+        writeln!(self.out, "fn __node{}() -> u1", k).unwrap();
         self.out.push_str(&b.out);
-        self.out.push_str("}\n");
         Ok(())
     }
 
@@ -2013,7 +1991,7 @@ impl Lowerer {
         if let Some(n) = b.product_bound {
             writeln!(self.out, "; product setting: bound {}: {}", key.replace('_', " "), n).unwrap();
         }
-        writeln!(self.out, "{} {{", sig).unwrap();
+        writeln!(self.out, "{}", sig).unwrap();
         if let Some(kinds) = &info.platform {
             return self.lower_platform(f, &info, kinds, &sig_params, &results, &mut b);
         }
@@ -2033,7 +2011,6 @@ impl Lowerer {
             b.line(format!("ret {}", rets.join(", ")).trim_end());
         }
         self.out.push_str(&b.out);
-        self.out.push_str("}\n");
         Ok(())
     }
 
@@ -2066,7 +2043,6 @@ impl Lowerer {
             }
         }
         self.out.push_str(&b.out);
-        self.out.push_str("}\n");
         let params: Vec<String> = sig_params.iter().map(|(n, t)| format!("{}: {}", n, t.ir())).collect();
         let ret = results.first().map(|(_, t)| t.ir()).unwrap_or_else(|| "()".into());
         for k in kinds {
@@ -2074,12 +2050,11 @@ impl Lowerer {
                 continue;
             }
             let (_, lines) = f.platform.iter().find(|(ks, _)| ks.contains(k)).unwrap();
-            writeln!(self.out, "platform {} {{", k).unwrap();
+            writeln!(self.out, "platform {}", k).unwrap();
             writeln!(self.out, "    {}({}) -> {}", info.ir, params.join(", "), ret).unwrap();
             for l in lines {
                 writeln!(self.out, "        {}", l).unwrap();
             }
-            writeln!(self.out, "}}").unwrap();
         }
         let _ = file;
         Ok(())
@@ -2182,13 +2157,13 @@ impl Lowerer {
         let then_yields = if t_term { Vec::new() } else { yields(&mut then_lines, &then_vars, b) };
         let else_yields = if e_term { Vec::new() } else { yields(&mut else_lines, &else_vars, b) };
         let head = if changed.is_empty() {
-            format!("if {} {{", cv.text)
+            format!("if {}", cv.text)
         } else {
             let defs: Vec<String> = changed.iter().map(|n| {
                 let ty = before[n].ty.clone();
                 format!("{}: {}", b.define(n, ty.clone()), ty.ir())
             }).collect();
-            format!("{} = if {} {{", defs.join(", "), cv.text)
+            format!("{} = if {}", defs.join(", "), cv.text)
         };
         b.line(&head);
         b.out.push_str(&then_lines);
@@ -2198,7 +2173,7 @@ impl Lowerer {
             b.depth -= 1;
         }
         if els.is_some() || !changed.is_empty() {
-            b.line("} else {");
+            b.line("else");
             b.out.push_str(&else_lines);
             if !e_term && !changed.is_empty() {
                 b.depth += 1;
@@ -2206,7 +2181,6 @@ impl Lowerer {
                 b.depth -= 1;
             }
         }
-        b.line("}");
         Ok(t_term && e_term && els.is_some())
     }
 
@@ -2316,13 +2290,12 @@ impl Lowerer {
                 return Err(lex::error(&file, c.line, "'while' takes a bool"));
             }
             let cv = b.materialize(&cv);
-            b.line(&format!("if {} {{", cv.text));
-            b.line("} else {");
+            b.line(&format!("if {}", cv.text));
+            b.line("else");
             b.depth += 1;
             let vals = b.current(&results);
             b.line(format!("break {}", vals.join(", ")).trim_end());
             b.depth -= 1;
-            b.line("}");
             b.loops.last_mut().unwrap().breaks += 1;
         }
         let terminated = self.lower_block(body, b)?;
@@ -2342,7 +2315,6 @@ impl Lowerer {
             }
             b.open_loop("", &hdr.join(", "), false);
             b.out.push_str(&body_lines);
-            b.line("}");
             return Ok(true);
         }
         // the results' names: a given value under its target's own name
@@ -2406,7 +2378,6 @@ impl Lowerer {
         }
         b.open_loop(&format!("{} = ", defs.join(", ")), &hdr.join(", "), false);
         b.out.push_str(&body_lines);
-        b.line("}");
         for (name, v, local) in after {
             if local {
                 self.assign(&name, v, b, line)?;
@@ -2475,15 +2446,14 @@ impl Lowerer {
             let down = b.tmp();
             b.line(&format!("{}: u1 = cmp.lt {}, 0", down, d));
             let step = b.tmp();
-            b.line(&format!("{}: {} = if {} {{", step, ty.ir(), down));
+            b.line(&format!("{}: {} = if {}", step, ty.ir(), down));
             b.depth += 1;
             b.line("yield -1");
             b.depth -= 1;
-            b.line("} else {");
+            b.line("else");
             b.depth += 1;
             b.line("yield 1");
             b.depth -= 1;
-            b.line("}");
             ("add", step, None)
         };
         b.loops.push(LoopCtx { carried: Vec::new(), results: Vec::new(), explicit: 0, item: Some((var.to_string(), op, step.clone())), loaded: None, breaks: 1 });
@@ -2508,18 +2478,16 @@ impl Lowerer {
             }
         };
         if test.is_some() {
-            b.line(&format!("if {} {{", done));
-            b.line("} else {");
+            b.line(&format!("if {}", done));
+            b.line("else");
             b.depth += 1;
             b.line("break");
             b.depth -= 1;
-            b.line("}");
         } else {
-            b.line(&format!("if {} {{", done));
+            b.line(&format!("if {}", done));
             b.depth += 1;
             b.line("break");
             b.depth -= 1;
-            b.line("}");
         }
         let terminated = self.lower_block(body, b)?;
         if !terminated {
@@ -2532,7 +2500,6 @@ impl Lowerer {
         b.vars.remove(var);
         b.open_loop("", &format!("{}: {} = {}", x, ty.ir(), fv.text), counted);
         b.out.push_str(&body_lines);
-        b.line("}");
         Ok(())
     }
 
@@ -2560,11 +2527,10 @@ impl Lowerer {
         b.depth += 1;
         let done = b.tmp();
         b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
-        b.line(&format!("if {} {{", done));
+        b.line(&format!("if {}", done));
         b.depth += 1;
         b.line("break");
         b.depth -= 1;
-        b.line("}");
         b.declare(var, e.clone());
         self.peek_at(&sv, &k, b, Some(var));
         let terminated = self.lower_block(body, b)?;
@@ -2579,7 +2545,6 @@ impl Lowerer {
         b.vars.remove(&k);
         b.open_loop("", &format!("{}: i64 = 0", k), false);
         b.out.push_str(&body_lines);
-        b.line("}");
         Ok(())
     }
 
@@ -2906,8 +2871,8 @@ impl Lowerer {
                     return Err(lex::error(&file, *line, "'check' takes a bool"));
                 }
                 let cv = b.materialize(&cv);
-                b.line(&format!("if {} {{", cv.text));
-                b.line("} else {");
+                b.line(&format!("if {}", cv.text));
+                b.line("else");
                 b.depth += 1;
                 let base = file.rsplit('/').next().unwrap_or(&file).to_string();
                 let site = Expr { kind: ExprKind::Str(format!("check at {}:{}", base, line)), line: *line };
@@ -2917,7 +2882,6 @@ impl Lowerer {
                 b.line(&format!("{}: u1 = const 0", z));
                 b.line(&format!("check {}", z));
                 b.depth -= 1;
-                b.line("}");
                 Ok(false)
             }
             Stmt::Push { target, items, cond, line } => {
@@ -3380,17 +3344,16 @@ impl Lowerer {
                 if zip {
                     let inside = b.tmp();
                     b.line(&format!("{}: u1 = cmp.lt {}, {}", inside, from, lens[j]));
-                    b.line(&format!("{}: {} = if {} {{", x, e.ir(), inside));
+                    b.line(&format!("{}: {} = if {}", x, e.ir(), inside));
                     b.depth += 1;
                     let y = b.tmp();
                     b.line(&format!("{}: {} = load {}, {}", y, e.ir(), vals[i].text, from));
                     b.line(&format!("yield {}", y));
                     b.depth -= 1;
-                    b.line("} else {");
+                    b.line("else");
                     b.depth += 1;
                     b.line("yield 0");
                     b.depth -= 1;
-                    b.line("}");
                 } else {
                     b.line(&format!("{}: {} = load {}, {}", x, e.ir(), vals[i].text, from));
                 }
@@ -3404,11 +3367,10 @@ impl Lowerer {
                 b.depth += 1;
                 let done = b.tmp();
                 b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
-                b.line(&format!("if {} {{", done));
+                b.line(&format!("if {}", done));
                 b.depth += 1;
                 b.line("break");
                 b.depth -= 1;
-                b.line("}");
                 load_items(b, &mut vals, &k);
                 let r = op(self, &vals, b)?;
                 if r.ty == Ty::None {
@@ -3421,7 +3383,6 @@ impl Lowerer {
                     let body = b.out.split_off(start);
                     b.open_loop("", &format!("{}: i64 = 0", k), false);
                     b.out.push_str(&body);
-                    b.line("}");
                     return Ok(r);
                 }
                 let r = b.materialize(&r);
@@ -3447,7 +3408,6 @@ impl Lowerer {
                 b.line(&format!("{}: i64 = __now()", t));
                 b.open_loop("", &format!("{}: i64 = 0", k), false);
                 b.out.push_str(&body);
-                b.line("}");
                 let _ = dst;
                 Ok(Val { text: c, ty: rty, literal: false })
             }
@@ -3458,11 +3418,11 @@ impl Lowerer {
                 let empty = b.tmp();
                 b.line(&format!("{}: u1 = cmp.eq {}, 0", empty, n));
                 let seed = b.tmp();
-                b.line(&format!("{}: {} = if {} {{", seed, aty.ir(), empty));
+                b.line(&format!("{}: {} = if {}", seed, aty.ir(), empty));
                 b.depth += 1;
                 b.line("yield 0");
                 b.depth -= 1;
-                b.line("} else {");
+                b.line("else");
                 b.depth += 1;
                 let first = b.tmp();
                 b.line(&format!("{}: {} = load {}, 0", first, e.ir(), v));
@@ -3471,17 +3431,15 @@ impl Lowerer {
                 }
                 b.line(&format!("yield {}", first));
                 b.depth -= 1;
-                b.line("}");
                 let a = b.tmp();
                 let start = b.out.len();
                 b.depth += 1;
                 let done = b.tmp();
                 b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
-                b.line(&format!("if {} {{", done));
+                b.line(&format!("if {}", done));
                 b.depth += 1;
                 b.line(&format!("break {}", a));
                 b.depth -= 1;
-                b.line("}");
                 load_items(b, &mut vals, &k);
                 vals[ai] = Val { text: a.clone(), ty: aty.clone(), literal: false };
                 let r = op(self, &vals, b)?;
@@ -3497,7 +3455,6 @@ impl Lowerer {
                 let out = name_for(dst, &aty, b);
                 b.open_loop(&format!("{}: {} = ", out, aty.ir()), &format!("{}: i64 = 1, {}: {} = {}", k, a, aty.ir(), seed), false);
                 b.out.push_str(&body);
-                b.line("}");
                 Ok(Val { text: out, ty: aty, literal: false })
             }
         }
@@ -3593,18 +3550,16 @@ impl Lowerer {
             b.depth += 1;
             let more = b.tmp();
             b.line(&format!("{}: u1 = {} {}, {}", more, cc, x, z));
-            b.line(&format!("if {} {{", more));
-            b.line("} else {");
+            b.line(&format!("if {}", more));
+            b.line("else");
             b.depth += 1;
             b.line("break");
             b.depth -= 1;
-            b.line("}");
             emit(self, &c, &t, &x, b);
             let x2 = b.tmp();
             b.line(&format!("{}: {} = {} {}, 1", x2, ty.ir(), if up { "add" } else { "sub" }, x));
             b.line(&format!("continue {}", x2));
             b.depth -= 1;
-            b.line("}");
             return Ok(c);
         }
         let fv = b.materialize(&fv);
@@ -3614,15 +3569,14 @@ impl Lowerer {
         let down = b.tmp();
         b.line(&format!("{}: u1 = cmp.lt {}, 0", down, d));
         let step = b.tmp();
-        b.line(&format!("{}: {} = if {} {{", step, ty.ir(), down));
+        b.line(&format!("{}: {} = if {}", step, ty.ir(), down));
         b.depth += 1;
         b.line("yield -1");
         b.depth -= 1;
-        b.line("} else {");
+        b.line("else");
         b.depth += 1;
         b.line("yield 1");
         b.depth -= 1;
-        b.line("}");
         let span = b.tmp();
         b.line(&format!("{}: {} = mul {}, {}", span, ty.ir(), d, step));
         let count = if inclusive {
@@ -3641,11 +3595,10 @@ impl Lowerer {
         b.depth += 1;
         let done = b.tmp();
         b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
-        b.line(&format!("if {} {{", done));
+        b.line(&format!("if {}", done));
         b.depth += 1;
         b.line("break");
         b.depth -= 1;
-        b.line("}");
         emit(self, &c, &t, &x, b);
         let k2 = b.tmp();
         b.line(&format!("{}: i64 = add {}, 1", k2, k));
@@ -3653,7 +3606,6 @@ impl Lowerer {
         b.line(&format!("{}: {} = add {}, {}", x2, ty.ir(), x, step));
         b.line(&format!("continue {}, {}", k2, x2));
         b.depth -= 1;
-        b.line("}");
         Ok(c)
     }
 
@@ -3868,7 +3820,7 @@ impl Lowerer {
                 }
                 if self.sstructs.insert(name.clone()) {
                     self.type_lines.push(format!("; a stream of {}: one ring per field
-type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
+type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
                 }
             }
             _ => return Err(lex::error(file, line, format!("a stream of {}: a stream holds numbers, enumerations or structs of those", elem.ir()))),
@@ -4087,16 +4039,14 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     if v.ty == block_ty {
                         return Err(lex::error(&file, e.line, "a block is pushed once: `while` repeats an item"));
                     }
-                    b.line(&format!("if {} {{", cv.text));
-                    b.line("} else {");
+                    b.line(&format!("if {}", cv.text));
+                    b.line("else");
                     b.depth += 1;
                     b.line("break");
                     b.depth -= 1;
-                    b.line("}");
                     self.emit_push(name, s, &v, b);
                     b.line("continue");
                     b.depth -= 1;
-                    b.line("}");
                 }
                 _ => {
                     self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
@@ -4117,11 +4067,10 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                         b.depth += 1;
                         let done = b.tmp();
                         b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
-                        b.line(&format!("if {} {{", done));
+                        b.line(&format!("if {}", done));
                         b.depth += 1;
                         b.line("break");
                         b.depth -= 1;
-                        b.line("}");
                         let x = b.tmp();
                         b.line(&format!("{}: {} = load {}, {}", x, elem.ir(), view, k));
                         self.emit_push(name, s, &Val { text: x, ty: elem.clone(), literal: false }, b);
@@ -4129,7 +4078,6 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                         b.line(&format!("{}: i64 = add {}, 1", k2, k));
                         b.line(&format!("continue {}", k2));
                         b.depth -= 1;
-                        b.line("}");
                         continue;
                     }
                     self.emit_push(name, s, &v, b);
@@ -4550,17 +4498,16 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 b.depth -= 1;
                 let ty = if av.literal || dv.literal { ty } else { av.ty.clone() };
                 let name = name_for(dst, &ty, b);
-                b.line(&format!("{}: {} = if {} {{", name, ty.ir(), cv.text));
+                b.line(&format!("{}: {} = if {}", name, ty.ir(), cv.text));
                 b.out.push_str(&a_lines);
                 b.depth += 1;
                 b.line(&format!("yield {}", av.text));
                 b.depth -= 1;
-                b.line("} else {");
+                b.line("else");
                 b.out.push_str(&d_lines);
                 b.depth += 1;
                 b.line(&format!("yield {}", dv.text));
                 b.depth -= 1;
-                b.line("}");
                 Ok(Val { text: name, ty, literal: false })
             }
             ExprKind::Phrase(parts) => {

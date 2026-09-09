@@ -24,39 +24,29 @@ data slices: array(u64, 1)
 data deadline: array(u64, 1)
 
 ; --- the board ---
-fn vectors(t: ptr) {
+fn vectors(t: ptr)
     ret
-}
-fn resume() -> ptr {
+fn resume() -> ptr
     ret 0
-}
-fn resume_at(p: ptr) {
+fn resume_at(p: ptr)
     ret
-}
-fn now() -> u64 {
+fn now() -> u64
     ret 0
-}
-fn hz() -> u64 {
+fn hz() -> u64
     ret 0
-}
-fn timer_at(t: u64) {
+fn timer_at(t: u64)
     ret
-}
-fn irq_on() {
+fn irq_on()
     ret
-}
-fn irq_ack() -> u32 {
+fn irq_ack() -> u32
     ret 0
-}
-fn irq_done(id: u32) {
+fn irq_done(id: u32)
     ret
-}
-fn psci(code: u64) {
+fn psci(code: u64)
     ret
-}
 
 ; --- the kernel: set up task b, start the timer, become task a ---
-fn __start() {
+fn __start()
     h: fn(u64, u64, u64) -> u64 = addr __trap
     hp: ptr = cast h
     vectors(hp)
@@ -77,14 +67,13 @@ fn __start() {
     irq_on()
     task_a()
     ret
-}
 
 ; the timer: one more slice, and the other task's turn
-fn __irq(sp: ptr) -> ptr {
+fn __irq(sp: ptr) -> ptr
     id: u32 = irq_ack()
     timer: u32 = platform irq_timer
     is: u1 = cmp.eq id, timer
-    back: ptr = if is {
+    back: ptr = if is
         f: u64 = hz()
         step: u64 = div f, 20
         dp: ptr = addr deadline
@@ -97,13 +86,11 @@ fn __irq(sp: ptr) -> ptr {
         s1: u64 = add s, 1
         store s1, sp2
         done: u1 = cmp.ge s1, 10
-        if done {
+        if done
             putc(10)
             exit()
-            loop() {
+            loop()
                 continue
-            }
-        }
         ; this task's place, then the other's
         t: ptr = addr tasks
         cp: ptr = addr current
@@ -123,53 +110,42 @@ fn __irq(sp: ptr) -> ptr {
         sp3: ptr = load it, 8
         resume_at(pc2)
         yield sp3
-    } else {
+    else
         yield sp
-    }
     irq_done(id)
     ret back
-}
 
-fn __trap(n: u64, a: u64, b: u64) -> u64 {
+fn __trap(n: u64, a: u64, b: u64) -> u64
     exit()
     ret n
-}
 
 ; --- the tasks: a letter per slice, then wait for the next ---
-fn task_a() {
+fn task_a()
     run(97)
     ret
-}
-fn task_b() {
+fn task_b()
     run(98)
     ret
-}
-fn run(c: u8) {
+fn run(c: u8)
     sp: ptr = addr slices
     now: u64 = load sp
-    loop(seen: u64 = now) {
+    loop(seen: u64 = now)
         putc(c)
-        next: u64 = loop() {
+        next: u64 = loop()
             s: u64 = load sp
             same: u1 = cmp.eq s, seen
-            if same {
+            if same
                 continue
-            }
             break s
-        }
         continue next
-    }
-}
 
-fn putc(c: u8) {
+fn putc(c: u8)
     uart: ptr = platform uart
     c32: u32 = conv c
     store c32, uart
     ret
-}
-fn exit() {
+fn exit()
     f: ptr = platform finisher
     store 0x5555: u32, f
     psci(0x84000008)
     ret
-}

@@ -25,10 +25,11 @@ n: i64 = fit i32, left            ; how many i32 lanes the machine takes of `lef
 and the vector operations extended to the scalable type: `v: i32xV = load p, n` loads n lanes; `w: i32xV = add v, u` requires equal counts (the IR's contract, as lane counts must match today); `store w, q` stores its count; `sum w`, `min w` reduce over the count; `splat x, n`. No `get`/`set`/`pack`/`unpack` with a constant lane on a scalable vector (a lane index is a value, so `lane v, i` would be an indexed read — a new instruction if wanted). A loop is then:
 
 ```
-loop(i: i64 = 0) {
+loop(i: i64 = 0)
     left: i64 = sub count, i
     done: u1 = cmp.eq left, 0
-    if done { break }
+    if done
+        break
     n: i64 = fit f32, left
     a: f32xV = load pa, i, 4
     b: f32xV = load pb, i, 4
@@ -36,7 +37,6 @@ loop(i: i64 = 0) {
     store c, pc, i, 4
     i2: i64 = add i, n
     continue i2
-}
 ```
 
 The meaning is *independent of the machine*: `fit` may return any number from 1 up to `left`, and the program is correct for all of them — which is exactly the property that makes it checkable. On RVV, `fit` is `vsetvli` and every rule sets `vsetvli x0, n_reg, e32` from the value (as they set `vsetivli` from the constant now — the design of "the rule sets its own state" carries over unchanged). On NEON, `fit` is `min(left, 4)` and a scalable `f32xV` is an `f32x4` plus a count, with the tail handled by... masked loads NEON does not have: so `fit` on NEON returns 4 only while `left >= 4`, and 1 otherwise — the tail runs one lane at a time, in the same code. On wasm and the GPU, `fit` returns 1 (or 4 for the GPU, which takes vectors whole). **The lane form and the referee**: `fit` = 1 everywhere it is not a rule, and `i32xV` with one lane is an `i32` — so the scalable program *is* its own scalar program, and the check against the lane form is the same loop with `fit` pinned to 1 (`--platform=riscv64-nov`).

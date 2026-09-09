@@ -14,28 +14,23 @@
 ;! prefix_max -1 -> -2
 ;! half_sum 0x3c00 -> 0x3c00
 
-fn sum_f(x: f32) -> f32 {
+fn sum_f(x: f32) -> f32
     s: f32 = simd_sum x
     ret s
-}
-fn sum_i(x: i32) -> i32 {
+fn sum_i(x: i32) -> i32
     s: i32 = simd_sum x
     ret s
-}
-fn sum_u(x: u32) -> u32 {
+fn sum_u(x: u32) -> u32
     s: u32 = simd_sum x
     ret s
-}
-fn thread_zero() -> i64 {
+fn thread_zero() -> i64
     l: i64 = simd_thread()
     ret l
-}
-fn first() -> u1 {
+fn first() -> u1
     f: u1 = simd_first()
     ret f
-}
 ; all, any and the ballot of one vote
-fn votes(c: u1) -> u64 {
+fn votes(c: u1) -> u64
     a: u1 = simd_all(c)
     n: u1 = simd_any(c)
     b: u64 = simd_ballot(c)
@@ -45,9 +40,8 @@ fn votes(c: u1) -> u64 {
     s: u64 = or a64, n2
     r: u64 = mul b, s
     ret r
-}
 ; a shuffle from thread 0, a broadcast, an xor: all the value itself
-fn shuffles(x: i32) -> i32 {
+fn shuffles(x: i32) -> i32
     zero: i64 = const 0
     one: i64 = const 1
     a: i32 = simd_shuffle x, zero
@@ -56,14 +50,11 @@ fn shuffles(x: i32) -> i32 {
     s: i32 = add a, b
     t: i32 = add s, c
     ret t
-}
-fn prefix_max(x: i32) -> i32 {
+fn prefix_max(x: i32) -> i32
     p: i32 = simd_prefix_sum x
     m: i32 = simd_max x
     s: i32 = add p, m
     ret s
-}
-fn half_sum(x: f16) -> f16 {
+fn half_sum(x: f16) -> f16
     s: f16 = simd_sum x
     ret s
-}

@@ -34,68 +34,55 @@
 
 type q8 = fixed(8, 8)
 
-fn fmul88(a: q8, b: q8) -> q8 {
+fn fmul88(a: q8, b: q8) -> q8
     r: q8 = mul a, b
     ret r
-}
-fn fdiv88(a: q8, b: q8) -> q8 {
+fn fdiv88(a: q8, b: q8) -> q8
     r: q8 = div a, b
     ret r
-}
-fn fadd88(a: q8, b: q8) -> q8 {
+fn fadd88(a: q8, b: q8) -> q8
     r: q8 = add a, b
     ret r
-}
-fn fsub88(a: q8, b: q8) -> q8 {
+fn fsub88(a: q8, b: q8) -> q8
     r: q8 = sub a, b
     ret r
-}
-fn fneg88(a: q8) -> q8 {
+fn fneg88(a: q8) -> q8
     r: q8 = neg a
     ret r
-}
-fn flt88(a: q8, b: q8) -> u1 {
+fn flt88(a: q8, b: q8) -> u1
     r: u1 = cmp.lt a, b
     ret r
-}
-fn fmax88(a: q8, b: q8) -> q8 {
+fn fmax88(a: q8, b: q8) -> q8
     r: q8 = max a, b
     ret r
-}
-fn toint88(a: q8) -> i32 {
+fn toint88(a: q8) -> i32
     r: i32 = conv a
     ret r
-}
-fn fromint88(a: i32) -> q8 {
+fn fromint88(a: i32) -> q8
     r: q8 = conv a
     ret r
-}
-fn fromf32(a: f32) -> q8 {
+fn fromf32(a: f32) -> q8
     r: q8 = conv a
     ret r
-}
-fn tof32(a: q8) -> f32 {
+fn tof32(a: q8) -> f32
     r: f32 = conv a
     ret r
-}
 
 ; --- the abstract fixed: whatever width the policy picks ---
-fn mulf(a: i32, b: i32) -> i32 {
+fn mulf(a: i32, b: i32) -> i32
     fa: fixed = conv a
     fb: fixed = conv b
     p: fixed = mul fa, fb
     r: i32 = conv p
     ret r
-}
 ; toward minus infinity on the way back to an integer
-fn divf(a: i32, b: i32) -> i32 {
+fn divf(a: i32, b: i32) -> i32
     fa: fixed = conv a
     fb: fixed = conv b
     q: fixed = div fa, fb
     r: i32 = conv q
     ret r
-}
-fn avg(a: i32, b: i32) -> i32 {
+fn avg(a: i32, b: i32) -> i32
     fa: fixed = conv a
     fb: fixed = conv b
     s: fixed = add fa, fb
@@ -103,9 +90,8 @@ fn avg(a: i32, b: i32) -> i32 {
     h: fixed = div s, two
     r: i32 = conv h
     ret r
-}
 ; (x / 2 / 2) * 4
-fn quarter(x: i32) -> i32 {
+fn quarter(x: i32) -> i32
     fx: fixed = conv x
     two: fixed = conv 2: i32
     h: fixed = div fx, two
@@ -114,28 +100,24 @@ fn quarter(x: i32) -> i32 {
     y: fixed = mul q, four
     r: i32 = conv y
     ret r
-}
-fn absf(a: i32) -> i32 {
+fn absf(a: i32) -> i32
     fa: fixed = conv a
     m: fixed = abs fa
     r: i32 = conv m
     ret r
-}
 ; int -> float -> fixed -> float -> int
-fn viafloat(a: i32) -> i32 {
+fn viafloat(a: i32) -> i32
     f: float = conv a
     x: fixed = conv f
     g: float = conv x
     r: i32 = conv g
     ret r
-}
 ; the fraction field of 5 / 2 is one half, in F bits: here as a 16-bit
 ; pattern read from a fixed(8, 8)
-fn frac(a: i32, b: i32) -> u16 {
+fn frac(a: i32, b: i32) -> u16
     fa: q8 = conv a
     fb: q8 = conv b
     q: q8 = div fa, fb
     f: u8 = get q, frac
     w: u16 = conv f
     ret w
-}

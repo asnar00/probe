@@ -49,35 +49,27 @@
 
 type f128 = float(15, 112)
 
-fn fadd128(a: f128, b: f128) -> f128 {
+fn fadd128(a: f128, b: f128) -> f128
     r: f128 = add a, b
     ret r
-}
-fn fsub128(a: f128, b: f128) -> f128 {
+fn fsub128(a: f128, b: f128) -> f128
     r: f128 = sub a, b
     ret r
-}
-fn fmul128(a: f128, b: f128) -> f128 {
+fn fmul128(a: f128, b: f128) -> f128
     r: f128 = mul a, b
     ret r
-}
-fn fdiv128(a: f128, b: f128) -> f128 {
+fn fdiv128(a: f128, b: f128) -> f128
     r: f128 = div a, b
     ret r
-}
-fn fsqrt128(a: f128) -> f128 {
+fn fsqrt128(a: f128) -> f128
     r: f128 = sqrt a
     ret r
-}
-fn ffma128(a: f128, b: f128, c: f128) -> f128 {
+fn ffma128(a: f128, b: f128, c: f128) -> f128
     r: f128 = fma a, b, c
     ret r
-}
-fn f64to128(a: f64) -> f128 {
+fn f64to128(a: f64) -> f128
     r: f128 = conv a
     ret r
-}
-fn f128to64(a: f128) -> f64 {
+fn f128to64(a: f128) -> f64
     r: f64 = conv a
     ret r
-}

@@ -57,23 +57,23 @@ fn ops_for(w: &str) -> Vec<Op> {
     for op in ["add", "sub", "mul", "div"] {
         push(
             format!("{}_{}", w, op),
-            format!("fn {w}_{op}(a: {w}, b: {w}) -> {w} {{\n    r: {w} = {op} a, b\n    ret r\n}}\n"),
+            format!("fn {w}_{op}(a: {w}, b: {w}) -> {w}\n    r: {w} = {op} a, b\n    ret r\n"),
             2, bits_of(w), false, Some((e, m)),
         );
     }
-    push(format!("{}_sqrt", w), format!("fn {w}_sqrt(a: {w}) -> {w} {{\n    r: {w} = sqrt a\n    ret r\n}}\n"), 1, bits_of(w), false, Some((e, m)));
-    push(format!("{}_mulAdd", w), format!("fn {w}_mulAdd(a: {w}, b: {w}, c: {w}) -> {w} {{\n    r: {w} = fma a, b, c\n    ret r\n}}\n"), 3, bits_of(w), false, Some((e, m)));
+    push(format!("{}_sqrt", w), format!("fn {w}_sqrt(a: {w}) -> {w}\n    r: {w} = sqrt a\n    ret r\n"), 1, bits_of(w), false, Some((e, m)));
+    push(format!("{}_mulAdd", w), format!("fn {w}_mulAdd(a: {w}, b: {w}, c: {w}) -> {w}\n    r: {w} = fma a, b, c\n    ret r\n"), 3, bits_of(w), false, Some((e, m)));
     for (tf, cond) in [("eq", "eq"), ("le", "le"), ("lt", "lt")] {
-        push(format!("{}_{}", w, tf), format!("fn {w}_{tf}(a: {w}, b: {w}) -> u1 {{\n    r: u1 = cmp.{cond} a, b\n    ret r\n}}\n"), 2, 1, false, None);
+        push(format!("{}_{}", w, tf), format!("fn {w}_{tf}(a: {w}, b: {w}) -> u1\n    r: u1 = cmp.{cond} a, b\n    ret r\n"), 2, 1, false, None);
     }
     for other in ["f16", "f32", "f64"] {
         if other != w {
-            push(format!("{}_to_{}", w, other), format!("fn {w}_to_{other}(a: {w}) -> {other} {{\n    r: {other} = conv a\n    ret r\n}}\n"), 1, bits_of(other), false, width(other));
+            push(format!("{}_to_{}", w, other), format!("fn {w}_to_{other}(a: {w}) -> {other}\n    r: {other} = conv a\n    ret r\n"), 1, bits_of(other), false, width(other));
         }
     }
     for (ti, ty) in [("i32", "i32"), ("i64", "i64"), ("ui32", "u32"), ("ui64", "u64")] {
-        push(format!("{}_to_{}", w, ti), format!("fn {w}_to_{ti}(a: {w}) -> {ty} {{\n    r: {ty} = conv a\n    ret r\n}}\n"), 1, bits_of(ti), true, None);
-        push(format!("{}_to_{}", ti, w), format!("fn {ti}_to_{w}(a: {ty}) -> {w} {{\n    r: {w} = conv a\n    ret r\n}}\n"), 1, bits_of(w), false, Some((e, m)));
+        push(format!("{}_to_{}", w, ti), format!("fn {w}_to_{ti}(a: {w}) -> {ty}\n    r: {ty} = conv a\n    ret r\n"), 1, bits_of(ti), true, None);
+        push(format!("{}_to_{}", ti, w), format!("fn {ti}_to_{w}(a: {ty}) -> {w}\n    r: {w} = conv a\n    ret r\n"), 1, bits_of(w), false, Some((e, m)));
     }
     ops
 }
@@ -236,7 +236,7 @@ pub fn run_air(only: &[String], level: usize, policy: ssa::Policy, tf_level: u8)
                 let inside = &sig[sig.find('(').unwrap() + 1..sig.find(')').unwrap()];
                 inside.split(',').nth(i).unwrap().split(':').nth(1).unwrap().trim()
             };
-            let mut k = String::from("fn __kernel(mem: ptr, area: ptr, id: i64) {\n");
+            let mut k = String::from("fn __kernel(mem: ptr, area: ptr, id: i64)\n");
             let _ = writeln!(k, "    base: i64 = mul id, {}", op.nargs * 8);
             k.push_str("    p: ptr = ptradd area, base\n");
             let mut names = Vec::new();
@@ -257,7 +257,7 @@ pub fn run_air(only: &[String], level: usize, policy: ssa::Policy, tf_level: u8)
                 }
                 names.push(format!("a{i}"));
             }
-            let rt = op.wrapper.lines().next().unwrap().rsplit("->").next().unwrap().trim().trim_end_matches('{').trim().to_string();
+            let rt = op.wrapper.lines().next().unwrap().rsplit("->").next().unwrap().trim().to_string();
             let _ = writeln!(k, "    r: {} = {}({})", rt, op.name, names.join(", "));
             if rt.starts_with('f') {
                 let rb = if rt == "f16" { 16 } else if rt == "f32" { 32 } else { 64 };
@@ -270,7 +270,7 @@ pub fn run_air(only: &[String], level: usize, policy: ssa::Policy, tf_level: u8)
             } else {
                 k.push_str("    ru: u64 = conv r\n");
             }
-            let _ = writeln!(k, "    q: ptr = ptradd area, {}\n    store ru, q, id, 8\n    ret\n}}", n * op.nargs * 8);
+            let _ = writeln!(k, "    q: ptr = ptradd area, {}\n    store ru, q, id, 8\n    ret", n * op.nargs * 8);
             let _ = wbits;
             let src = format!("{}\n{}", op.wrapper, k);
             let mut module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| format!("{}: {}", op.name, e))?;

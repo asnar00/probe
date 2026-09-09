@@ -19,7 +19,7 @@ A task is a function that produces a stream over time: it is declared with `<<` 
 - `fed a literal` passes a stream made from a list to a task; `run now moves the reader`, `run now inside a loop` pass a local stream to a task, which moves it.
 
 ## rules
-- `product.md` beside this folder bounds `count down from` and `count up to` at 5 for `probe cost`, the largest their wirings ask: the emitted IR carries `; product setting: bound count down from: 5` and `loop() bound 5 {` on each chain, and the code says no number (log 41).
+- `product.md` beside this folder bounds `count down from` and `count up to` at 5 for `probe cost`, the largest their wirings ask: the emitted IR carries `; product setting: bound count down from: 5` and `loop() bound 5` on each chain, and the code says no number (log 41).
 - A task has one result, a `$`; its `$` parameters are the streams it reads and moves, a bare `T x$` at feature scope being an empty one. A task named as a value is refused: it is wired into a stream.
 - In a function, `T x$ = task(...)`, `T x$ << task(...)` and `x$ << task(...)` run the task now; each stream argument is a stream variable and takes the reader the task returns, and a `loop` around the call carries it.
 - At feature scope the same forms wire a node. A node runs when an input has unread items, or has ended and the node has not run since; a node with no input runs once, when the store is reset; after a run a node is finished when all its inputs have ended.

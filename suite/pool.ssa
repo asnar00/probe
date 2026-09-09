@@ -11,7 +11,7 @@
 ;! aligned u8[0*256] -> 1
 
 ; two slots of 32 bytes are 32 bytes apart
-fn take_two(mem: ptr) -> i64 {
+fn take_two(mem: ptr) -> i64
     p: ptr = scratch 40
     pool_init(p, mem, 200, 24, 4)
     a: ptr = pool_take(p)
@@ -21,10 +21,9 @@ fn take_two(mem: ptr) -> i64 {
     d: u64 = sub ba, aa
     r: i64 = cast d
     ret r
-}
 
 ; a slot given back is the next one taken
-fn give_and_retake(mem: ptr) -> u1 {
+fn give_and_retake(mem: ptr) -> u1
     p: ptr = scratch 40
     pool_init(p, mem, 200, 24, 4)
     a: ptr = pool_take(p)
@@ -35,9 +34,8 @@ fn give_and_retake(mem: ptr) -> u1 {
     ca: u64 = cast c
     r: u1 = cmp.eq aa, ca
     ret r
-}
 
-fn out_count(mem: ptr) -> i64 {
+fn out_count(mem: ptr) -> i64
     p: ptr = scratch 40
     pool_init(p, mem, 200, 24, 4)
     a: ptr = pool_take(p)
@@ -46,10 +44,9 @@ fn out_count(mem: ptr) -> i64 {
     pool_give(p, a)
     n: i64 = pool_out(p)
     ret n
-}
 
 ; give back in a different order from taking; count is right
-fn any_order(mem: ptr) -> i64 {
+fn any_order(mem: ptr) -> i64
     p: ptr = scratch 40
     pool_init(p, mem, 200, 24, 4)
     a: ptr = pool_take(p)
@@ -67,10 +64,9 @@ fn any_order(mem: ptr) -> i64 {
     check ne
     n: i64 = pool_out(p)
     ret n
-}
 
 ; exactly count slots can be out at once
-fn all_slots(mem: ptr) -> i64 {
+fn all_slots(mem: ptr) -> i64
     p: ptr = scratch 40
     pool_init(p, mem, 200, 24, 4)
     pool_take(p)
@@ -79,10 +75,9 @@ fn all_slots(mem: ptr) -> i64 {
     pool_take(p)
     n: i64 = pool_out(p)
     ret n
-}
 
 ; slots hold their own values
-fn distinct_values(mem: ptr) -> i64 {
+fn distinct_values(mem: ptr) -> i64
     p: ptr = scratch 40
     pool_init(p, mem, 200, 24, 4)
     a: ptr = pool_take(p)
@@ -97,9 +92,8 @@ fn distinct_values(mem: ptr) -> i64 {
     s1: i64 = add av, bv
     s: i64 = add s1, cv
     ret s
-}
 
-fn aligned(mem: ptr) -> u1 {
+fn aligned(mem: ptr) -> u1
     p: ptr = scratch 40
     pool_init(p, mem, 200, 24, 4)
     pool_take(p)
@@ -108,4 +102,3 @@ fn aligned(mem: ptr) -> u1 {
     low: u64 = and qa, 15
     r: u1 = cmp.eq low, 0
     ret r
-}

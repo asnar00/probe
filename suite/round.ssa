@@ -44,7 +44,6 @@ fn tof32down = conv(11, 52, 8, 23, 2)
 ; a whole function under one mode, written once: the policy's (the suite
 ; runs at the default, nearest even; --round=up makes this 0x3f800001)
 ;! sumsq 0x3f800000 0x33800000 -> 0x3f800000
-fn sumsq(a: f32, b: f32) -> f32 {
+fn sumsq(a: f32, b: f32) -> f32
     r: f32 = add a, b
     ret r
-}

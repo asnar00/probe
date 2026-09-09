@@ -1,5 +1,5 @@
-; a module's own platform rules: `platform <target> { ... }` carries
-; rules in the platform file's grammar, and a target's blocks join its
+; a module's own platform rules: `platform <target>` with the rules
+; indented under it carries them in the platform file's grammar, and a target's blocks join its
 ; file's rules, so the function's IR body is the reference and the rule
 ; is what the target emits (the body runs under --soft, and on a target
 ; with no block). What zero's `platform` bodies lower to (fm3 milestone 0).
@@ -8,30 +8,24 @@
 ;! plus -7 3 -> -4
 ;! twice_minus 10 3 -> 17
 
-fn plus(a: i64, b: i64) -> i64 {
+fn plus(a: i64, b: i64) -> i64
     r: i64 = add a, b
     ret r
-}
-platform arm64 {
+platform arm64
     plus(a: i64, b: i64) -> i64
         add r, a, b
-}
-platform riscv64 {
+platform riscv64
     plus(a: i64, b: i64) -> i64
         add r, a, b
-}
-platform wasm32 {
+platform wasm32
     plus(a: i64, b: i64) -> i64
         i64.add
-}
-platform air {
+platform air
     plus(a: i64, b: i64) -> i64
         add
-}
 
 ; a caller: the rule replaces the callee's body, not the call
-fn twice_minus(a: i64, b: i64) -> i64 {
+fn twice_minus(a: i64, b: i64) -> i64
     s: i64 = plus(a, a)
     r: i64 = sub s, b
     ret r
-}

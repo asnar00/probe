@@ -15,65 +15,54 @@
 ;! scalar_indexed i64[5,6,7] 2 -> 7
 
 ; a 4 by 3 grid of i32, given as 12 values: row j is elements 4j..4j+3
-fn sum_row(p: ptr, j: i64) -> i32 {
+fn sum_row(p: ptr, j: i64) -> i32
     g: ptr(array(i32, 4, 3)) = cast p
-    s: i32 = loop(i: i64 = 0, acc: i32 = 0) {
+    s: i32 = loop(i: i64 = 0, acc: i32 = 0)
         done: u1 = cmp.ge i, 4
-        if done {
+        if done
             break acc
-        }
         v: i32 = load g, i, j
         acc2: i32 = add acc, v
         i2: i64 = add i, 1
         continue i2, acc2
-    }
     ret s
-}
 
 ; every element, by column then row: the sum is the sum
-fn transpose_sum(p: ptr) -> i32 {
+fn transpose_sum(p: ptr) -> i32
     g: ptr(array(i32, 4, 3)) = cast p
-    s: i32 = loop(i: i64 = 0, acc: i32 = 0) {
+    s: i32 = loop(i: i64 = 0, acc: i32 = 0)
         done: u1 = cmp.ge i, 4
-        if done {
+        if done
             break acc
-        }
-        col: i32 = loop(j: i64 = 0, c: i32 = 0) {
+        col: i32 = loop(j: i64 = 0, c: i32 = 0)
             done2: u1 = cmp.ge j, 3
-            if done2 {
+            if done2
                 break c
-            }
             v: i32 = load g, i, j
             c2: i32 = add c, v
             j2: i64 = add j, 1
             continue j2, c2
-        }
         acc2: i32 = add acc, col
         i2: i64 = add i, 1
         continue i2, acc2
-    }
     ret s
-}
 
 ; a 3-D array in scratch, sized by its type: store i + 10j + 100k, read
 ; one back
-fn grid3() -> i32 {
+fn grid3() -> i32
     g: ptr(array(i32, 2, 3, 4)) = scratch
-    loop(k: i64 = 0) {
+    loop(k: i64 = 0)
         dk: u1 = cmp.ge k, 4
-        if dk {
+        if dk
             break
-        }
-        loop(j: i64 = 0) {
+        loop(j: i64 = 0)
             dj: u1 = cmp.ge j, 3
-            if dj {
+            if dj
                 break
-            }
-            loop(i: i64 = 0) {
+            loop(i: i64 = 0)
                 di: u1 = cmp.ge i, 2
-                if di {
+                if di
                     break
-                }
                 j10: i64 = mul j, 10
                 k100: i64 = mul k, 100
                 a: i64 = add i, j10
@@ -82,13 +71,10 @@ fn grid3() -> i32 {
                 store v, g, i, j, k
                 i2: i64 = add i, 1
                 continue i2
-            }
             j2: i64 = add j, 1
             continue j2
-        }
         k2: i64 = add k, 1
         continue k2
-    }
     ; wait: the loops above have no results; the reads
     r: i32 = load g, 1, 0, 0
     r2: i32 = load g, 0, 2, 0
@@ -96,18 +82,16 @@ fn grid3() -> i32 {
     s1: i32 = add r, r2
     s: i32 = add s1, r3
     ret s
-}
 
 ; the address of an element is a typed pointer to it
-fn element_ptr(p: ptr, i: i64) -> i64 {
+fn element_ptr(p: ptr, i: i64) -> i64
     a: ptr(array(i64, 4)) = cast p
     e: ptr(i64) = index a, i
     v: i64 = load e
     ret v
-}
 
 ; scratch sized from the type; a scalar pointer indexed
-fn scratch_typed(x: i64) -> i64 {
+fn scratch_typed(x: i64) -> i64
     p: ptr(array(i64, 4)) = scratch
     store x, p, 0
     y: i64 = mul x, 3
@@ -116,18 +100,16 @@ fn scratch_typed(x: i64) -> i64 {
     b: i64 = load p, 3
     s: i64 = add a, b
     ret s
-}
 
 ; data with a shape, reached through a typed pointer
-data table: array(i32, 3, 2) = { 1, 2, 3, 10, 20, 30 }
-fn typed_data(i: i64) -> i32 {
+data table: array(i32, 3, 2) = 1, 2, 3, 10, 20, 30
+fn typed_data(i: i64) -> i32
     t: ptr(array(i32, 3, 2)) = addr table
     v: i32 = load t, i, 1
     ret v
-}
 
 ; an array of vectors: elements are structs, loaded whole
-fn vector_elems() -> i32 {
+fn vector_elems() -> i32
     a: ptr(array(i32x4, 2)) = scratch
     v: i32x4 = pack 1, 2, 3, 4
     w: i32x4 = pack 10, 20, 30, 40
@@ -147,17 +129,14 @@ fn vector_elems() -> i32 {
     u: i32 = sub t, y1
     r: i32 = add u, 2
     ret r
-}
 
 ; a ptr(T) with no index is the T at it
-fn first_elem(p: ptr) -> i64 {
+fn first_elem(p: ptr) -> i64
     q: ptr(i64) = cast p
     v: i64 = load q
     ret v
-}
 ; ... and with one index, the i-th T
-fn scalar_indexed(p: ptr, i: i64) -> i64 {
+fn scalar_indexed(p: ptr, i: i64) -> i64
     q: ptr(i64) = cast p
     v: i64 = load q, i
     ret v
-}

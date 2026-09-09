@@ -9,36 +9,29 @@
 ; umin, vmin/vminu, abs and neg over vectors); elsewhere these bodies
 ; are what runs, and what the instructions are checked against.
 
-fn min(a: number, b: number) -> number {
+fn min(a: number, b: number) -> number
     lt: u1 = cmp.lt a, b
-    r: number = if lt {
+    r: number = if lt
         yield a
-    } else {
+    else
         yield b
-    }
     ret r
-}
-fn max(a: number, b: number) -> number {
+fn max(a: number, b: number) -> number
     gt: u1 = cmp.gt a, b
-    r: number = if gt {
+    r: number = if gt
         yield a
-    } else {
+    else
         yield b
-    }
     ret r
-}
 ; -a; the most negative value stays itself, as the machines have it
-fn neg(a: number) -> number {
+fn neg(a: number) -> number
     r: number = sub 0, a
     ret r
-}
-fn abs(a: number) -> number {
+fn abs(a: number) -> number
     negative: u1 = cmp.lt a, 0
-    r: number = if negative {
+    r: number = if negative
         m: number = sub 0, a
         yield m
-    } else {
+    else
         yield a
-    }
     ret r
-}

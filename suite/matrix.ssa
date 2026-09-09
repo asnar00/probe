@@ -31,32 +31,27 @@ data c3: buffer(i32, 24)
 
 ; the 3x4 grid 0..11, by indexed stores — every case builds its own,
 ; since a path may start each case with fresh memory
-fn ramp(a: i32[,]) {
-    loop(i: i64 = 0) {
+fn ramp(a: i32[,])
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, 3
-        if done {
+        if done
             break
-        }
-        loop(j: i64 = 0) {
+        loop(j: i64 = 0)
             done2: u1 = cmp.ge j, 4
-            if done2 {
+            if done2
                 break
-            }
             i4: i64 = mul i, 4
             k: i64 = add i4, j
             v: i32 = conv k
             store v, a, i, j
             j2: i64 = add j, 1
             continue j2
-        }
         i2: i64 = add i, 1
         continue i2
-    }
     ret
-}
 
 ; the grid's whole sum, and the element at (1, 2)
-fn grid() -> (i32, i32) {
+fn grid() -> (i32, i32)
     p: ptr = addr m
     a: i32[,] = slice p, 3, 4
     ramp(a)
@@ -67,11 +62,10 @@ fn grid() -> (i32, i32) {
     y: i32 = mul x, n32
     e: i32 = sub y, 4
     ret s, e
-}
 
 ; rows: the sum of row 1 (4+5+6+7 = 22) and of column 1 through the
 ; transpose (1+5+9 = 15)... row 0 = 0..3 sums to 6
-fn rows_cols() -> (i32, i32) {
+fn rows_cols() -> (i32, i32)
     p: ptr = addr m
     a: i32[,] = slice p, 3, 4
     ramp(a)
@@ -81,10 +75,9 @@ fn rows_cols() -> (i32, i32) {
     c1: i32[] = at t, 1
     s1: i32 = sum c1
     ret s0, s1
-}
 
 ; the transpose's shape, and its element (2, 1) — which is (1, 2) of the grid
-fn transposed() -> (i64, i32) {
+fn transposed() -> (i64, i32)
     p: ptr = addr m
     a: i32[,] = slice p, 3, 4
     ramp(a)
@@ -96,11 +89,10 @@ fn transposed() -> (i64, i32) {
     x: i32 = load t, 2, 1
     y: i32 = sub x, 3
     ret n5, y
-}
 
 ; a 2x2 block at (1, 1): 5 6 / 9 10 sums to 30; doubled through add
 ; into a second grid's block: 60; its max 20 — and a 1-element block
-fn blocks() -> (i32, i32) {
+fn blocks() -> (i32, i32)
     p: ptr = addr m
     q: ptr = addr m2
     a: i32[,] = slice p, 3, 4
@@ -117,11 +109,10 @@ fn blocks() -> (i32, i32) {
     v: i32 = sum one
     w: i32 = sub v, 7
     ret s2, w
-}
 
 ; a column is a strided rank-1 view: fill it, scale it, sum it — the
 ; contiguous path is not taken and the answer is the same
-fn strided() -> (i32, i32) {
+fn strided() -> (i32, i32)
     p: ptr = addr m2
     b: i32[,] = slice p, 3, 4
     fill b, 1
@@ -134,11 +125,10 @@ fn strided() -> (i32, i32) {
     all: i32 = sum b
     a2: i32 = add all, 3
     ret sc, a2
-}
 
 ; rank 3: 2x3x4 filled with 1, the slab at 1 filled with 3: sums 12 + 36
 ; = 48... plus a per-slab reduction
-fn cube() -> (i32, i32) {
+fn cube() -> (i32, i32)
     p: ptr = addr c3
     a: i32[,,] = slice p, 2, 3, 4
     fill a, 1
@@ -152,10 +142,9 @@ fn cube() -> (i32, i32) {
     y: i32 = sub x, 5
     s2: i32 = add s, 36
     ret s2, y
-}
 
 ; per-row maxima and sums of the 3x4 grid, into rank-1 views
-fn rowmax() -> (i32, i32) {
+fn rowmax() -> (i32, i32)
     p: ptr = addr m
     a: i32[,] = slice p, 3, 4
     ramp(a)
@@ -170,23 +159,20 @@ fn rowmax() -> (i32, i32) {
     y: i32 = load sm, 0
     y2: i32 = add y, 6
     ret x2, y2
-}
 
-fn outside2() -> i32 {
+fn outside2() -> i32
     p: ptr = addr m
     a: i32[,] = slice p, 3, 4
     x: i32 = load a, 3, 0
     ret x
-}
 
-fn ragged() -> i32 {
+fn ragged() -> i32
     p: ptr = addr m
     q: ptr = addr m2
     a: i32[,] = slice p, 3, 4
     b: i32[,] = slice q, 4, 3
     add b, a, a
     ret 0
-}
 
 data ma: buffer(i32, 6)
 data mb: buffer(i32, 6)
@@ -196,7 +182,7 @@ data fc: buffer(f32, 4)
 data fs: buffer(f32, 2)
 
 ; the dot of a vector with itself: 1 + 4 + 9 + 16
-fn dotp(a0: i32, a1: i32, a2: i32, a3: i32) -> i32 {
+fn dotp(a0: i32, a1: i32, a2: i32, a3: i32) -> i32
     q: ptr = addr m2
     all: i32[] = slice q
     v: i32[] = view all, 0, 4
@@ -206,21 +192,19 @@ fn dotp(a0: i32, a1: i32, a2: i32, a3: i32) -> i32 {
     store a3, v, 3
     d: i32 = dot v, v
     ret d
-}
 
 ; [[1 2 3] [4 5 6]] times [[7 8] [9 10] [11 12]] is [[58 64] [139 154]]
-fn matmul_small() -> (i32, i32) {
+fn matmul_small() -> (i32, i32)
     pa: ptr = addr ma
     pb: ptr = addr mb
     pc: ptr = addr mc
     a: i32[,] = slice pa, 2, 3
     b: i32[,] = slice pb, 3, 2
     c: i32[,] = slice pc, 2, 2
-    loop(k: i64 = 0) {
+    loop(k: i64 = 0)
         done: u1 = cmp.ge k, 6
-        if done {
+        if done
             break
-        }
         k32: i32 = conv k
         va: i32 = add k32, 1
         vb: i32 = add k32, 7
@@ -232,7 +216,6 @@ fn matmul_small() -> (i32, i32) {
         store vb, b, i2, j2
         k2: i64 = add k, 1
         continue k2
-    }
     matmul c, a, b
     one: i32 = const 1
     x: i32 = load c, 0, 0
@@ -240,11 +223,10 @@ fn matmul_small() -> (i32, i32) {
     z: i32 = load c, 0, one
     t: i32 = add x, y
     ret t, z
-}
 
 ; row 0 of the grid made [1 2 3 4] (a view: the grid changes too, to 70)
 ; and added to every row: 70 + 30; the last element 11 + 4
-fn broadcast() -> (i32, i32) {
+fn broadcast() -> (i32, i32)
     p: ptr = addr m
     q: ptr = addr m2
     a: i32[,] = slice p, 3, 4
@@ -256,11 +238,10 @@ fn broadcast() -> (i32, i32) {
     s: i32 = sum c
     e: i32 = load c, 2, 3
     ret s, e
-}
 
 ; a buffer taken from a heap and given back: ten i32 of 3 sum to 30,
 ; and nothing is out afterwards
-fn heap_buffers(mem: ptr) -> (i32, i64) {
+fn heap_buffers(mem: ptr) -> (i32, i64)
     h: ptr = scratch 56
     heap_init(h, mem, 8192, 256)
     b: ptr = buffer_take(h, 4, 10)
@@ -270,11 +251,10 @@ fn heap_buffers(mem: ptr) -> (i32, i64) {
     buffer_give(h, b)
     out: i64 = load h, 32
     ret s, out
-}
 
 ; rows of [[1 3] [1 1]] divided by their sums, [4 2]: a per-row scalar
 ; is a column broadcast, which is a row broadcast on the transposes
-fn normalize() -> (f32, f32) {
+fn normalize() -> (f32, f32)
     p: ptr = addr fr
     q: ptr = addr fc
     r: ptr = addr fs
@@ -292,32 +272,29 @@ fn normalize() -> (f32, f32) {
     x: f32 = load c, 0, 1
     y: f32 = load c, 1, 0
     ret x, y
-}
 
 ; --- sampling a view by coordinate (lib/sample.ssa): bilinear, x along
 ; the columns, y along the rows, the edges clamped ---
 ; on the 3x4 ramp: (1.5, 0.5) is between 1, 2, 5, 6: 3.5, rounded into
 ; i32 as 3; (3, 2) is the last element exactly
-fn bilinear() -> (i32, i32) {
+fn bilinear() -> (i32, i32)
     p: ptr = addr m
     a: i32[,] = slice p, 3, 4
     ramp(a)
     x: i32 = sample a, 1.5, 0.5
     y: i32 = sample a, 3.0, 2.0
     ret x, y
-}
 ; off the left and below the bottom is the corner 8; off the right at
 ; y = 0.2 is 3 + 4 * 0.2, rounded into i32 as 3
-fn bilinear_edges() -> (i32, i32) {
+fn bilinear_edges() -> (i32, i32)
     p: ptr = addr m
     a: i32[,] = slice p, 3, 4
     ramp(a)
     x: i32 = sample a, -1.0, 5.0
     y: i32 = sample a, 3.7, 0.2
     ret x, y
-}
 ; a 2x2 of floats 0, 10, 20, 30: the centre is 15.0
-fn bilinear_f32() -> f32 {
+fn bilinear_f32() -> f32
     p: ptr = addr f
     a: f32[,] = slice p, 2, 2
     store 0.0, a, 0, 0
@@ -327,4 +304,3 @@ fn bilinear_f32() -> f32 {
     h: f32 = const 0.5
     x: f32 = sample a, h, h
     ret x
-}

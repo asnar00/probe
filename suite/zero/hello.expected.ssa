@@ -16,100 +16,86 @@ data __clock: array(time, 1)
 ; the scheduler is running: a push from inside a task does not start it again
 data __running: array(i64, 1)
 
-fn __now() -> i64 {
+fn __now() -> i64
     p: ptr = addr __clock
     c: time = load p
     h: time = seconds(1000000)
     x: time = mul c, h
     k: i64 = conv x
     ret k
-}
 
 ; a task wired at a rate, after each push: the clock moves on one period
-fn __sleep(hz: i64) {
+fn __sleep(hz: i64)
     rated: u1 = cmp.gt hz, 0
-    if rated {
+    if rated
         p: ptr = addr __clock
         c: time = load p
         d: time = period(hz)
         c2: time = add c, d
         store c2, p
-    }
     ret
-}
 
-fn __out_len() -> i64 {
+fn __out_len() -> i64
     q: ptr = addr __out_n
     n: i64 = load q
     ret n
-}
 
-fn __out_byte(i: i64) -> u8 {
+fn __out_byte(i: i64) -> u8
     o: ptr = addr __out
     b: u8 = load o, i, 1
     ret b
-}
 
 ; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
-fn __str(p: ptr, n: i64) -> u8[] {
+fn __str(p: ptr, n: i64) -> u8[]
     q: ptr(u8) = cast p
     v: u8[] = pack q, n, 1
     ret v
-}
 
 ; a push into any stream (log 38): stamped with the clock on a ring
 ; without a rate, the next sample on one with a rate
-fn __push(s: number$, v: number) {
+fn __push(s: number$, v: number)
     r: ptr = get s, ring
     step: i64 = load r, 40
     regular: u1 = cmp.gt step, 0
-    if regular {
+    if regular
         push(s, v)
-    } else {
+    else
         t: i64 = __now()
         push(s, t, v)
-    }
     ret
-}
 
 ; one byte, when there is room
-fn __out_ch(c: u8) {
+fn __out_ch(c: u8)
     q: ptr = addr __out_n
     k: i64 = load q
     o: ptr = addr __out
     room: u1 = cmp.lt k, 4095
-    if room {
+    if room
         store c, o, k, 1
         k2: i64 = add k, 1
         store k2, q
-    }
     ret
-}
 
 ; an int in decimal
-fn __print_int(x: int) {
+fn __print_int(x: int)
     negative: u1 = cmp.lt x, 0
-    m: int = if negative {
+    m: int = if negative
         __out_ch(45)
         y: int = sub 0, x
         yield y
-    } else {
+    else
         yield x
-    }
-    top: int = loop(p: int = 1) {
+    top: int = loop(p: int = 1)
         q: int = div m, p
         more: u1 = cmp.ge q, 10
-        if more {
+        if more
             p2: int = mul p, 10
             continue p2
-        }
         break p
-    }
-    loop(p3: int = top) {
+    loop(p3: int = top)
         done: u1 = cmp.eq p3, 0
-        if done {
+        if done
             break
-        }
         d: int = div m, p3
         r: int = rem d, 10
         a: int = add r, 48
@@ -117,9 +103,7 @@ fn __print_int(x: int) {
         __out_ch(c)
         p4: int = div p3, 10
         continue p4
-    }
     ret
-}
 
 
 ; the context: one field per feature-scope variable — name: scope, merge (feature)
@@ -127,14 +111,18 @@ fn __print_int(x: int) {
 ;   __enabled_hello: user, last (hello)
 ;   __enabled_countdown: user, last (countdown)
 ;   __enabled_bye: user, last (bye)
-type __ctx = struct { __enabled_platform: u1, __enabled_hello: u1, __enabled_countdown: u1, __enabled_bye: u1 }
+type __ctx = struct
+    __enabled_platform: u1
+    __enabled_hello: u1
+    __enabled_countdown: u1
+    __enabled_bye: u1
 
 data __ctx_mem: array(__ctx, 1)
 data __s1 = "hello world"
 data __s2 = "goodbye"
 
 ; before every case: the print buffer emptied, the variables at their initial values
-fn __zero_reset() {
+fn __zero_reset()
     q: ptr = addr __out_n
     store 0: i64, q
     a: ptr = addr __arena
@@ -149,227 +137,191 @@ fn __zero_reset() {
     p: ptr = addr __ctx_mem
     store _1, p
     ret
-}
 
-fn __get___enabled_platform() -> u1 {
+fn __get___enabled_platform() -> u1
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: u1 = get c, __enabled_platform
     ret v
-}
 
-fn __set___enabled_platform(v: u1) {
+fn __set___enabled_platform(v: u1)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __enabled_platform, v
     store c2, p
     ret
-}
 
-fn __get___enabled_hello() -> u1 {
+fn __get___enabled_hello() -> u1
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: u1 = get c, __enabled_hello
     ret v
-}
 
-fn __set___enabled_hello(v: u1) {
+fn __set___enabled_hello(v: u1)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __enabled_hello, v
     store c2, p
     ret
-}
 
-fn __get___enabled_countdown() -> u1 {
+fn __get___enabled_countdown() -> u1
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: u1 = get c, __enabled_countdown
     ret v
-}
 
-fn __set___enabled_countdown(v: u1) {
+fn __set___enabled_countdown(v: u1)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __enabled_countdown, v
     store c2, p
     ret
-}
 
-fn __get___enabled_bye() -> u1 {
+fn __get___enabled_bye() -> u1
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: u1 = get c, __enabled_bye
     ret v
-}
 
-fn __set___enabled_bye(v: u1) {
+fn __set___enabled_bye(v: u1)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __enabled_bye, v
     store c2, p
     ret
-}
 
 ; a feature's effective state: its own enabled and its ancestors', read by every gate
-fn __on_platform() -> u1 {
+fn __on_platform() -> u1
     own: u1 = __get___enabled_platform()
     ret own
-}
-fn __on_hello() -> u1 {
+fn __on_hello() -> u1
     own: u1 = __get___enabled_hello()
     ret own
-}
-fn __on_countdown() -> u1 {
+fn __on_countdown() -> u1
     own: u1 = __get___enabled_countdown()
     up: u1 = __on_hello()
     on: u1 = and own, up
     ret on
-}
-fn __on_bye() -> u1 {
+fn __on_bye() -> u1
     own: u1 = __get___enabled_bye()
     up: u1 = __on_hello()
     on: u1 = and own, up
     ret on
-}
 
 ; feature platform (layer platform)
-fn print(s: u8$) {
+fn print(s: u8$)
     q: ptr = addr __out_n
     k0: i64 = load q
     o: ptr = addr __out
     f: u8[] = unread(s)
     p: ptr(u8) = ptr f
     n: i64 = len f
-    k1: i64 = loop(i: i64 = 0, k: i64 = k0) {
+    k1: i64 = loop(i: i64 = 0, k: i64 = k0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break k
-        }
         c: u8 = load p, i
         room: u1 = cmp.lt k, 4095
-        if room {
+        if room
             store c, o, k, 1
-        }
         i2: i64 = add i, 1
         k2: i64 = add k, 1
         continue i2, k2
-    }
     room2: u1 = cmp.lt k1, 4095
-    k4: i64 = if room2 {
+    k4: i64 = if room2
         store 10: u8, o, k1, 1
         k3: i64 = add k1, 1
         yield k3
-    } else {
+    else
         yield k1
-    }
     store k4, q
     ret
-}
-fn print__ints(x: int$) {
+fn print__ints(x: int$)
     f: int[] = unread(x)
     n: i64 = len f
-    loop(i: i64 = 0) {
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break
-        }
         first: u1 = cmp.eq i, 0
-        if first {
-        } else {
+        if first
+        else
             __out_ch(32)
-        }
         v: int = load f, i
         __print_int(v)
         i2: i64 = add i, 1
         continue i2
-    }
     __out_ch(10)
     ret
-}
 
 ; feature hello (layer runtime)
-fn run__hello() {
+fn run__hello()
     hello()
     ret
-}
-fn hello() {
+fn hello()
     _1: ptr = addr __s1
     _2: i64 = len __s1
     _3: u8[] = __str(_1, _2)
     _4: u8$ = __copy_u8(_3)
     print(_4)
     ret
-}
 
 ; feature countdown (layer runtime)
-fn run__countdown() {
+fn run__countdown()
     count_down()
     run__before_countdown()
     ret
-}
-fn count_down() {
+fn count_down()
     i: int$ = __regular_int(1, 64)
-    loop(_1: int = 10) {
+    loop(_1: int = 10)
         _2: u1 = cmp.ge _1, 1
-        if _2 {
-        } else {
+        if _2
+        else
             break
-        }
         __push(i, _1)
         _3: int = sub _1, 1
         continue _3
-    }
     _4: int[], _5: i64, i_2: int$ = frame(i)
     _6: int$ = __copy_int(_4)
     print__ints(_6)
     ret
-}
 
 ; feature bye (layer runtime)
-fn run__bye() {
+fn run__bye()
     run__before_bye()
     goodbye()
     ret
-}
-fn goodbye() {
+fn goodbye()
     _1: ptr = addr __s2
     _2: i64 = len __s2
     _3: u8[] = __str(_1, _2)
     _4: u8$ = __copy_u8(_3)
     print(_4)
     ret
-}
 
 ; run: the chain bye, countdown, hello, newest outermost; a link whose feature is off falls through
-fn run() {
+fn run()
     on: u1 = __on_bye()
-    if on {
+    if on
         run__bye()
-    } else {
+    else
         run__before_bye()
-    }
     ret
-}
-fn run__before_bye() {
+fn run__before_bye()
     on: u1 = __on_countdown()
-    if on {
+    if on
         run__countdown()
-    } else {
+    else
         run__before_countdown()
-    }
     ret
-}
-fn run__before_countdown() {
+fn run__before_countdown()
     on: u1 = __on_hello()
-    if on {
+    if on
         run__hello()
-    }
     ret
-}
 
 ; a stream's ring, carved from the arena: cap items (64 unless more are resident), and a tick per item unless regular; a reader's view at its start
-fn __stream_int(hz: i64, cap: i64) -> int$ {
+fn __stream_int(hz: i64, cap: i64) -> int$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
     sz: i64 = sizeof int
@@ -384,8 +336,7 @@ fn __stream_int(hz: i64, cap: i64) -> int$ {
     ring_init(r, vb, tb, hz)
     s: int$ = stream r
     ret s
-}
-fn __regular_int(hz: i64, cap: i64) -> int$ {
+fn __regular_int(hz: i64, cap: i64) -> int$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
     sz: i64 = sizeof int
@@ -396,8 +347,7 @@ fn __regular_int(hz: i64, cap: i64) -> int$ {
     ring_regular(r, vb, hz, 1, 0)
     s: int$ = stream r
     ret s
-}
-fn __stream_u8(hz: i64, cap: i64) -> u8$ {
+fn __stream_u8(hz: i64, cap: i64) -> u8$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
     sz: i64 = sizeof u8
@@ -412,42 +362,35 @@ fn __stream_u8(hz: i64, cap: i64) -> u8$ {
     ring_init(r, vb, tb, hz)
     s: u8$ = stream r
     ret s
-}
 
 ; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give
-fn __copy_int(v: int[]) -> int$ {
+fn __copy_int(v: int[]) -> int$
     n: i64 = len v
     least: i64 = const 64
     cap: i64 = max(n, least)
     s: int$ = __stream_int(1000000, cap)
     t: i64 = __now()
-    loop(i: i64 = 0) {
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break
-        }
         x: int = load v, i
         push s, t, x
         i2: i64 = add i, 1
         continue i2
-    }
     ret s
-}
-fn __copy_u8(v: u8[]) -> u8$ {
+fn __copy_u8(v: u8[]) -> u8$
     n: i64 = len v
     least: i64 = const 64
     cap: i64 = max(n, least)
     s: u8$ = __stream_u8(1000000, cap)
     t: i64 = __now()
-    loop(i: i64 = 0) {
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break
-        }
         x: u8 = load v, i
         push s, t, x
         i2: i64 = add i, 1
         continue i2
-    }
     ret s
-}

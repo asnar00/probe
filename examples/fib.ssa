@@ -1,15 +1,14 @@
 ; naive recursion — exercises call/bl fixups and the frame discipline
-fn fib(n: i64) -> i64 {
-entry:
-    small: u1 = cmp.lt n, 2
-    br small, base, rec
-base:
-    ret n
-rec:
-    n1: i64 = sub n, 1
-    a: i64 = fib(n1)
-    n2: i64 = sub n, 2
-    b: i64 = fib(n2)
-    r: i64 = add a, b
-    ret r
-}
+fn fib(n: i64) -> i64
+    entry:
+        small: u1 = cmp.lt n, 2
+        br small, base, rec
+    base:
+        ret n
+    rec:
+        n1: i64 = sub n, 1
+        a: i64 = fib(n1)
+        n2: i64 = sub n, 2
+        b: i64 = fib(n2)
+        r: i64 = add a, b
+        ret r

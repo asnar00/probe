@@ -30,67 +30,54 @@
 
 type r8 = rational(8, 8)
 
-fn radd88(a: r8, b: r8) -> r8 {
+fn radd88(a: r8, b: r8) -> r8
     r: r8 = add a, b
     ret r
-}
-fn rsub88(a: r8, b: r8) -> r8 {
+fn rsub88(a: r8, b: r8) -> r8
     r: r8 = sub a, b
     ret r
-}
-fn rmul88(a: r8, b: r8) -> r8 {
+fn rmul88(a: r8, b: r8) -> r8
     r: r8 = mul a, b
     ret r
-}
-fn rdiv88(a: r8, b: r8) -> r8 {
+fn rdiv88(a: r8, b: r8) -> r8
     r: r8 = div a, b
     ret r
-}
-fn rneg88(a: r8) -> r8 {
+fn rneg88(a: r8) -> r8
     r: r8 = neg a
     ret r
-}
-fn rlt88(a: r8, b: r8) -> u1 {
+fn rlt88(a: r8, b: r8) -> u1
     r: u1 = cmp.lt a, b
     ret r
-}
-fn req88(a: r8, b: r8) -> u1 {
+fn req88(a: r8, b: r8) -> u1
     r: u1 = cmp.eq a, b
     ret r
-}
-fn rmax88(a: r8, b: r8) -> r8 {
+fn rmax88(a: r8, b: r8) -> r8
     r: r8 = max a, b
     ret r
-}
-fn rtoi(a: r8) -> i32 {
+fn rtoi(a: r8) -> i32
     r: i32 = conv a
     ret r
-}
-fn rfromi(a: i32) -> r8 {
+fn rfromi(a: i32) -> r8
     r: r8 = conv a
     ret r
-}
-fn rtof32(a: r8) -> f32 {
+fn rtof32(a: r8) -> f32
     r: f32 = conv a
     ret r
-}
-fn rfromf32(a: f32) -> r8 {
+fn rfromf32(a: f32) -> r8
     r: r8 = conv a
     ret r
-}
 
 ; --- the abstract rational: exact where floats are not ---
 ; (n / 3) * 3 == n
-fn thirds(n: i32) -> i32 {
+fn thirds(n: i32) -> i32
     rn: rational = conv n
     three: rational = conv 3: i32
     t: rational = div rn, three
     b: rational = mul t, three
     r: i32 = conv b
     ret r
-}
 ; 1/2 + 1/3 + 1/6 == 1
-fn harmonic() -> i32 {
+fn harmonic() -> i32
     one: rational = conv 1: i32
     two: rational = conv 2: i32
     three: rational = conv 3: i32
@@ -102,9 +89,8 @@ fn harmonic() -> i32 {
     b: rational = add a, s
     r: i32 = conv b
     ret r
-}
 ; the mean of two integers, in hundredths
-fn mean(a: i32, b: i32) -> i32 {
+fn mean(a: i32, b: i32) -> i32
     ra: rational = conv a
     rb: rational = conv b
     two: rational = conv 2: i32
@@ -114,7 +100,6 @@ fn mean(a: i32, b: i32) -> i32 {
     c: rational = mul m, hundred
     r: i32 = conv c
     ret r
-}
 
 ; --- rational(64, 64): products and sums whose 64-bit intermediates
 ; would overflow; the library works in 128 bits. Results as (numerator,
@@ -128,40 +113,34 @@ fn mean(a: i32, b: i32) -> i32 {
 ;! r64div 1099511627777 3 2199023255555 5 -> 1099511627777, 1319413953333
 ;! r64div -4611686018427387904 3 4611686018427387904 5 -> -5, 3
 type r64 = rational(64, 64)
-fn r64mk(a: i64, b: u64) -> r64 {
-    n: i64, d: u64 = if 1 {
+fn r64mk(a: i64, b: u64) -> r64
+    n: i64, d: u64 = if 1
         yield a, b
-    } else {
+    else
         yield a, b
-    }
     p: r64 = pack n, d
     ret p
-}
-fn r64mul(a: i64, b: u64, c: i64, e: u64) -> (i64, u64) {
+fn r64mul(a: i64, b: u64, c: i64, e: u64) -> (i64, u64)
     x: r64 = r64mk(a, b)
     y: r64 = r64mk(c, e)
     r: r64 = mul x, y
     n: i64, d: u64 = unpack r
     ret n, d
-}
-fn r64add(a: i64, b: u64, c: i64, e: u64) -> (i64, u64) {
+fn r64add(a: i64, b: u64, c: i64, e: u64) -> (i64, u64)
     x: r64 = r64mk(a, b)
     y: r64 = r64mk(c, e)
     r: r64 = add x, y
     n: i64, d: u64 = unpack r
     ret n, d
-}
-fn r64sub(a: i64, b: u64, c: i64, e: u64) -> (i64, u64) {
+fn r64sub(a: i64, b: u64, c: i64, e: u64) -> (i64, u64)
     x: r64 = r64mk(a, b)
     y: r64 = r64mk(c, e)
     r: r64 = sub x, y
     n: i64, d: u64 = unpack r
     ret n, d
-}
-fn r64div(a: i64, b: u64, c: i64, e: u64) -> (i64, u64) {
+fn r64div(a: i64, b: u64, c: i64, e: u64) -> (i64, u64)
     x: r64 = r64mk(a, b)
     y: r64 = r64mk(c, e)
     r: r64 = div x, y
     n: i64, d: u64 = unpack r
     ret n, d
-}

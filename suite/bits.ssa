@@ -43,256 +43,213 @@
 ;! loadi32 i32[-1] -> -1
 ;! storebyte u8[0,0] 200 -> 200
 
-fn add5(a: i5, b: i5) -> i5 {
-entry:
-    r: i5 = add a, b
-    ret r
-}
-fn uadd5(a: u5, b: u5) -> u5 {
-entry:
-    r: u5 = add a, b
-    ret r
-}
-fn mul5(a: i5, b: i5) -> i5 {
-entry:
-    r: i5 = mul a, b
-    ret r
-}
-fn umul3(a: u3, b: u3) -> u3 {
-entry:
-    r: u3 = mul a, b
-    ret r
-}
-fn div5(a: i5, b: i5) -> i5 {
-entry:
-    r: i5 = div a, b
-    ret r
-}
-fn udiv5(a: u5, b: u5) -> u5 {
-entry:
-    r: u5 = div a, b
-    ret r
-}
-fn rem5(a: i5, b: i5) -> i5 {
-entry:
-    r: i5 = rem a, b
-    ret r
-}
-fn urem5(a: u5, b: u5) -> u5 {
-entry:
-    r: u5 = rem a, b
-    ret r
-}
+fn add5(a: i5, b: i5) -> i5
+    entry:
+        r: i5 = add a, b
+        ret r
+fn uadd5(a: u5, b: u5) -> u5
+    entry:
+        r: u5 = add a, b
+        ret r
+fn mul5(a: i5, b: i5) -> i5
+    entry:
+        r: i5 = mul a, b
+        ret r
+fn umul3(a: u3, b: u3) -> u3
+    entry:
+        r: u3 = mul a, b
+        ret r
+fn div5(a: i5, b: i5) -> i5
+    entry:
+        r: i5 = div a, b
+        ret r
+fn udiv5(a: u5, b: u5) -> u5
+    entry:
+        r: u5 = div a, b
+        ret r
+fn rem5(a: i5, b: i5) -> i5
+    entry:
+        r: i5 = rem a, b
+        ret r
+fn urem5(a: u5, b: u5) -> u5
+    entry:
+        r: u5 = rem a, b
+        ret r
 ; shifting by the width or more is unspecified for narrow types
-fn shl5(a: i5, b: i5) -> i5 {
-entry:
-    r: i5 = shl a, b
-    ret r
-}
-fn ushl5(a: u5, b: u5) -> u5 {
-entry:
-    r: u5 = shl a, b
-    ret r
-}
-fn shr5(a: i5, b: i5) -> i5 {
-entry:
-    r: i5 = shr a, b
-    ret r
-}
-fn ushr5(a: u5, b: u5) -> u5 {
-entry:
-    r: u5 = shr a, b
-    ret r
-}
-fn lt5(a: i5, b: i5) -> u1 {
-entry:
-    r: u1 = cmp.lt a, b
-    ret r
-}
-fn ult5(a: u5, b: u5) -> u1 {
-entry:
-    r: u1 = cmp.lt a, b
-    ret r
-}
-fn add1(a: i1, b: i1) -> i1 {
-entry:
-    r: i1 = add a, b
-    ret r
-}
-fn uadd1(a: u1, b: u1) -> u1 {
-entry:
-    r: u1 = add a, b
-    ret r
-}
-fn add12(a: i12, b: i12) -> i12 {
-entry:
-    r: i12 = add a, b
-    ret r
-}
-fn add40(a: i40, b: i40) -> i40 {
-entry:
-    r: i40 = add a, b
-    ret r
-}
-fn uadd40(a: u40, b: u40) -> u40 {
-entry:
-    r: u40 = add a, b
-    ret r
-}
+fn shl5(a: i5, b: i5) -> i5
+    entry:
+        r: i5 = shl a, b
+        ret r
+fn ushl5(a: u5, b: u5) -> u5
+    entry:
+        r: u5 = shl a, b
+        ret r
+fn shr5(a: i5, b: i5) -> i5
+    entry:
+        r: i5 = shr a, b
+        ret r
+fn ushr5(a: u5, b: u5) -> u5
+    entry:
+        r: u5 = shr a, b
+        ret r
+fn lt5(a: i5, b: i5) -> u1
+    entry:
+        r: u1 = cmp.lt a, b
+        ret r
+fn ult5(a: u5, b: u5) -> u1
+    entry:
+        r: u1 = cmp.lt a, b
+        ret r
+fn add1(a: i1, b: i1) -> i1
+    entry:
+        r: i1 = add a, b
+        ret r
+fn uadd1(a: u1, b: u1) -> u1
+    entry:
+        r: u1 = add a, b
+        ret r
+fn add12(a: i12, b: i12) -> i12
+    entry:
+        r: i12 = add a, b
+        ret r
+fn add40(a: i40, b: i40) -> i40
+    entry:
+        r: i40 = add a, b
+        ret r
+fn uadd40(a: u40, b: u40) -> u40
+    entry:
+        r: u40 = add a, b
+        ret r
 ; ext fills by the source's signedness; the result is canonical for its type
-fn ext5to8(a: i5) -> i8 {
-entry:
-    r: i8 = conv a
-    ret r
-}
-fn uext5to8(a: u5) -> u8 {
-entry:
-    r: u8 = conv a
-    ret r
-}
-fn ext5tou8(a: i5) -> u8 {
-entry:
-    r: u8 = conv a
-    ret r
-}
-fn uext5toi8(a: u5) -> i8 {
-entry:
-    r: i8 = conv a
-    ret r
-}
-fn trunc8to5(a: i8) -> i5 {
-entry:
-    r: i5 = conv a
-    ret r
-}
-fn utrunc8to5(a: u8) -> u5 {
-entry:
-    r: u5 = conv a
-    ret r
-}
-fn bitcast5(a: i5) -> u5 {
-entry:
-    r: u5 = cast a
-    ret r
-}
-fn bitcastu5(a: u5) -> i5 {
-entry:
-    r: i5 = cast a
-    ret r
-}
+fn ext5to8(a: i5) -> i8
+    entry:
+        r: i8 = conv a
+        ret r
+fn uext5to8(a: u5) -> u8
+    entry:
+        r: u8 = conv a
+        ret r
+fn ext5tou8(a: i5) -> u8
+    entry:
+        r: u8 = conv a
+        ret r
+fn uext5toi8(a: u5) -> i8
+    entry:
+        r: i8 = conv a
+        ret r
+fn trunc8to5(a: i8) -> i5
+    entry:
+        r: i5 = conv a
+        ret r
+fn utrunc8to5(a: u8) -> u5
+    entry:
+        r: u5 = conv a
+        ret r
+fn bitcast5(a: i5) -> u5
+    entry:
+        r: u5 = cast a
+        ret r
+fn bitcastu5(a: u5) -> i5
+    entry:
+        r: i5 = cast a
+        ret r
 ; narrow values through calls stay canonical on both sides
-fn negate5(a: i5) -> i5 {
-entry:
-    r: i5 = sub 0, a
-    ret r
-}
-fn neg5(a: i5) -> i5 {
-entry:
-    r: i5 = negate5(a)
-    ret r
-}
+fn negate5(a: i5) -> i5
+    entry:
+        r: i5 = sub 0, a
+        ret r
+fn neg5(a: i5) -> i5
+    entry:
+        r: i5 = negate5(a)
+        ret r
 ; count increments of an i5 from 0 until it wraps negative
-fn count5() -> i64 {
-    r: i64 = loop(i: i5 = 0, n: i64 = 0) {
+fn count5() -> i64
+    r: i64 = loop(i: i5 = 0, n: i64 = 0)
         neg: u1 = cmp.lt i, 0
-        if neg {
+        if neg
             break n
-        }
         i2: i5 = add i, 1
         n2: i64 = add n, 1
         continue i2, n2
-    }
     ret r
-}
 ; sum of every u8 value, accumulated in a u16
-fn sumbytes_u8() -> u16 {
-    r: u16 = loop(i: u8 = 0, acc: u16 = 0) {
+fn sumbytes_u8() -> u16
+    r: u16 = loop(i: u8 = 0, acc: u16 = 0)
         w: u16 = conv i
         acc2: u16 = add acc, w
         done: u1 = cmp.eq i, 255
-        if done {
+        if done
             break acc2
-        }
         i2: u8 = add i, 1
         continue i2, acc2
-    }
     ret r
-}
 ; abstract uint follows int's width; this case fits both
-fn ushr(a: uint, b: uint) -> uint {
-entry:
-    r: uint = shr a, b
-    ret r
-}
+fn ushr(a: uint, b: uint) -> uint
+    entry:
+        r: uint = shr a, b
+        ret r
 ; 8- and 16-bit memory, sign- and zero-extending loads
-fn sumbytes(p: ptr) -> i64 {
-entry:
-    one: i64 = const 1
-    two: i64 = const 2
-    three: i64 = const 3
-    p1: ptr = ptradd p, one
-    p2: ptr = ptradd p, two
-    p3: ptr = ptradd p, three
-    a: i8 = load p
-    b: i8 = load p1
-    c: i8 = load p2
-    d: i8 = load p3
-    aw: i64 = conv a
-    bw: i64 = conv b
-    cw: i64 = conv c
-    dw: i64 = conv d
-    s1: i64 = add aw, bw
-    s2: i64 = add s1, cw
-    s3: i64 = add s2, dw
-    ret s3
-}
-fn sumubytes(p: ptr) -> u64 {
-entry:
-    one: i64 = const 1
-    p1: ptr = ptradd p, one
-    a: u8 = load p
-    b: u8 = load p1
-    aw: u64 = conv a
-    bw: u64 = conv b
-    s: u64 = add aw, bw
-    ret s
-}
-fn sumhalves(p: ptr) -> i64 {
-entry:
-    two: i64 = const 2
-    p1: ptr = ptradd p, two
-    a: i16 = load p
-    b: i16 = load p1
-    aw: i64 = conv a
-    bw: i64 = conv b
-    s: i64 = add aw, bw
-    ret s
-}
-fn sumuhalves(p: ptr) -> u64 {
-entry:
-    two: i64 = const 2
-    p1: ptr = ptradd p, two
-    a: u16 = load p
-    b: u16 = load p1
-    aw: u64 = conv a
-    bw: u64 = conv b
-    s: u64 = add aw, bw
-    ret s
-}
-fn loadu32(p: ptr) -> u32 {
-entry:
-    r: u32 = load p
-    ret r
-}
-fn loadi32(p: ptr) -> i32 {
-entry:
-    r: i32 = load p
-    ret r
-}
+fn sumbytes(p: ptr) -> i64
+    entry:
+        one: i64 = const 1
+        two: i64 = const 2
+        three: i64 = const 3
+        p1: ptr = ptradd p, one
+        p2: ptr = ptradd p, two
+        p3: ptr = ptradd p, three
+        a: i8 = load p
+        b: i8 = load p1
+        c: i8 = load p2
+        d: i8 = load p3
+        aw: i64 = conv a
+        bw: i64 = conv b
+        cw: i64 = conv c
+        dw: i64 = conv d
+        s1: i64 = add aw, bw
+        s2: i64 = add s1, cw
+        s3: i64 = add s2, dw
+        ret s3
+fn sumubytes(p: ptr) -> u64
+    entry:
+        one: i64 = const 1
+        p1: ptr = ptradd p, one
+        a: u8 = load p
+        b: u8 = load p1
+        aw: u64 = conv a
+        bw: u64 = conv b
+        s: u64 = add aw, bw
+        ret s
+fn sumhalves(p: ptr) -> i64
+    entry:
+        two: i64 = const 2
+        p1: ptr = ptradd p, two
+        a: i16 = load p
+        b: i16 = load p1
+        aw: i64 = conv a
+        bw: i64 = conv b
+        s: i64 = add aw, bw
+        ret s
+fn sumuhalves(p: ptr) -> u64
+    entry:
+        two: i64 = const 2
+        p1: ptr = ptradd p, two
+        a: u16 = load p
+        b: u16 = load p1
+        aw: u64 = conv a
+        bw: u64 = conv b
+        s: u64 = add aw, bw
+        ret s
+fn loadu32(p: ptr) -> u32
+    entry:
+        r: u32 = load p
+        ret r
+fn loadi32(p: ptr) -> i32
+    entry:
+        r: i32 = load p
+        ret r
 ; a byte store must leave its neighbour alone: read back both as a u16
-fn storebyte(p: ptr, v: u8) -> u16 {
-entry:
-    store v, p
-    r: u16 = load p
-    ret r
-}
+fn storebyte(p: ptr, v: u8) -> u16
+    entry:
+        store v, p
+        r: u16 = load p
+        ret r

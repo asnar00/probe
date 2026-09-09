@@ -10,20 +10,16 @@ data failed = "check failed at 0x"
 data other = "trap "
 data newline = "\n"
 
-fn vectors(t: ptr) {
+fn vectors(t: ptr)
     ret
-}
-fn cause() -> u64 {
+fn cause() -> u64
     ret 0
-}
-fn resume() -> ptr {
+fn resume() -> ptr
     ret 0
-}
-fn psci(code: u64) {
+fn psci(code: u64)
     ret
-}
 
-fn __start() {
+fn __start()
     h: fn(u64, u64, u64) -> u64 = addr __trap
     hp: ptr = cast h
     vectors(hp)
@@ -35,80 +31,67 @@ fn __start() {
     putc(98)
     exit()
     ret
-}
 
-fn __trap(n: u64, a: u64, b: u64) -> u64 {
+fn __trap(n: u64, a: u64, b: u64) -> u64
     c: u64 = cause()
     chk: u64 = platform trap_check
     is: u1 = cmp.eq c, chk
-    if is {
+    if is
         fp: ptr = addr failed
         fn: i64 = len failed
         say(fp, fn)
         p: ptr = resume()
         pa: u64 = cast p
         print_hex(pa)
-    } else {
+    else
         op: ptr = addr other
         on: i64 = len other
         say(op, on)
         print_hex(c)
-    }
     np: ptr = addr newline
     say(np, 1)
     exit()
     ; the machine ends a little after it is told to; returning would
     ; run the check again (riscv resumes at the ebreak itself)
-    loop() {
+    loop()
         continue
-    }
-}
 
-fn putc(c: u8) {
+fn putc(c: u8)
     uart: ptr = platform uart
     c32: u32 = conv c
     store c32, uart
     ret
-}
-fn say(p: ptr, n: i64) {
-    loop(i: i64 = 0) {
+fn say(p: ptr, n: i64)
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break
-        }
         c: u8 = load p, i, 1
         putc(c)
         i2: i64 = add i, 1
         continue i2
-    }
     ret
-}
-fn print_hex(v: u64) {
-    loop(sh: i64 = 60) {
+fn print_hex(v: u64)
+    loop(sh: i64 = 60)
         neg: u1 = cmp.lt sh, 0
-        if neg {
+        if neg
             break
-        }
         shu: u64 = conv sh
         t: u64 = shr v, shu
         d: u64 = and t, 15
         big: u1 = cmp.gt d, 9
-        base: u64 = if big {
+        base: u64 = if big
             yield 87
-        } else {
+        else
             yield 48
-        }
         cv: u64 = add d, base
         c: u8 = conv cv
         putc(c)
         sh2: i64 = sub sh, 4
         continue sh2
-    }
     ret
-}
-fn exit() {
+fn exit()
     f: ptr = platform finisher
     store 0x5555: u32, f
     psci(0x84000008)
     ret
-}

@@ -6,138 +6,121 @@
 ; whose reduced form does not fit is halved down to an approximation.
 ; Conversions from floats take the best approximation the widths allow,
 ; by continued fractions.
-type rational(N, D) = pack { numerator: i(N), denominator: u(D) }
+type rational(N, D) = pack
+    numerator: i(N)
+    denominator: u(D)
 
-fn gcd64(a: u64, b: u64) -> u64 {
-    g: u64 = loop(x: u64 = a, y: u64 = b) {
+fn gcd64(a: u64, b: u64) -> u64
+    g: u64 = loop(x: u64 = a, y: u64 = b)
         y0: u1 = cmp.eq y, 0
-        if y0 {
+        if y0
             break x
-        }
         r: u64 = rem x, y
         continue y, r
-    }
     ret g
-}
 ; the same over 128 bits, taken only when a part does not fit 64 (a
 ; u128 remainder is a library loop)
-fn gcd128(a: u128, b: u128) -> u128 {
+fn gcd128(a: u128, b: u128) -> u128
     lim: u128 = const 1 << 64
     asmall: u1 = cmp.lt a, lim
     bsmall: u1 = cmp.lt b, lim
     small: u1 = and asmall, bsmall
-    if small {
+    if small
         a64: u64 = conv a
         b64: u64 = conv b
         g64: u64 = gcd64(a64, b64)
         g: u128 = conv g64
         ret g
-    }
-    gw: u128 = loop(x: u128 = a, y: u128 = b) {
+    gw: u128 = loop(x: u128 = a, y: u128 = b)
         y0: u1 = cmp.eq y, 0
-        if y0 {
+        if y0
             break x
-        }
         r: u128 = rem x, y
         continue y, r
-    }
     ret gw
-}
 ; a / b, in 64 bits when both fit
-fn div128(a: u128, b: u128) -> u128 {
+fn div128(a: u128, b: u128) -> u128
     lim: u128 = const 1 << 64
     asmall: u1 = cmp.lt a, lim
     bsmall: u1 = cmp.lt b, lim
     small: u1 = and asmall, bsmall
-    if small {
+    if small
         a64: u64 = conv a
         b64: u64 = conv b
         q64: u64 = div a64, b64
         q: u128 = conv q64
         ret q
-    }
     qw: u128 = div a, b
     ret qw
-}
 
 ; sign, |numerator|, denominator, and whether it is NaR
-fn rparts(N, D)(a: rational(N, D)) -> (u1, u64, u64, u1) {
+fn rparts(N, D)(a: rational(N, D)) -> (u1, u64, u64, u1)
     n: i(N) = get a, numerator
     d: u(D) = get a, denominator
     n64: i64 = conv n
     d64: u64 = conv d
     neg: u1 = cmp.lt n64, 0
-    m: i64 = if neg {
+    m: i64 = if neg
         nn: i64 = sub 0, n64
         yield nn
-    } else {
+    else
         yield n64
-    }
     mu: u64 = cast m
     nar: u1 = cmp.eq d64, 0
     ret neg, mu, d64, nar
-}
 
 ; the rational nearest sign * m / d that fits: reduced, then halved
 ; while too wide (an approximation only when the exact answer cannot
 ; be represented); d = 0 is NaR
-fn rmk(N, D)(neg: u1, m: u128, d: u128) -> rational(N, D) {
+fn rmk(N, D)(neg: u1, m: u128, d: u128) -> rational(N, D)
     nar: u1 = cmp.eq d, 0
-    if nar {
+    if nar
         z: rational(N, D) = pack 0, 0
         ret z
-    }
     m0: u1 = cmp.eq m, 0
-    if m0 {
+    if m0
         zero: rational(N, D) = pack 0, 1
         ret zero
-    }
     g: u128 = gcd128(m, d)
     m1: u128 = div128(m, g)
     d1: u128 = div128(d, g)
     nmax: u128 = const (1 << (N - 1)) - 1
     dmax: u128 = const ((1 << (D - 1)) - 1) * 2 + 1
-    m2: u128, d2: u128 = loop(mm: u128 = m1, dd: u128 = d1) {
+    m2: u128, d2: u128 = loop(mm: u128 = m1, dd: u128 = d1)
         mbig: u1 = cmp.gt mm, nmax
         dbig: u1 = cmp.gt dd, dmax
         big: u1 = or mbig, dbig
-        if big {
+        if big
             mh: u128 = shr mm, 1
             dh0: u128 = shr dd, 1
             dz: u1 = cmp.eq dh0, 0
-            dh: u128 = if dz {
+            dh: u128 = if dz
                 yield 1
-            } else {
+            else
                 yield dh0
-            }
             continue mh, dh
-        }
         break mm, dd
-    }
     ; reduce again: halving can reintroduce a common factor
     g2: u128 = gcd128(m2, d2)
     m3: u128 = div128(m2, g2)
     d3: u128 = div128(d2, g2)
     mneg: u128 = sub 0, m3
-    ms: u128 = if neg {
+    ms: u128 = if neg
         yield mneg
-    } else {
+    else
         yield m3
-    }
     n: i(N) = conv ms
     dn: u(D) = conv d3
     r: rational(N, D) = pack n, dn
     ret r
-}
 
-fn add(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D) {
+fn add(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D)
     sa: u1, ma: u64, da: u64, na: u1 = rparts(N, D)(a)
     sb: u1, mb: u64, db: u64, nb: u1 = rparts(N, D)(b)
     nar: u1 = or na, nb
-    if nar {
+    if nar
         z: rational(N, D) = pack 0, 0
         ret z
-    }
     ; |a| b.d and |b| a.d, in 128 bits
     maw: u128 = conv ma
     mbw: u128 = conv mb
@@ -147,32 +130,28 @@ fn add(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D) {
     y: u128 = mul mbw, daw
     d: u128 = mul daw, dbw
     same: u1 = cmp.eq sa, sb
-    s: u1, m: u128 = if same {
+    s: u1, m: u128 = if same
         t: u128 = add x, y
         yield sa, t
-    } else {
+    else
         xlt: u1 = cmp.lt x, y
-        s2: u1, m2: u128 = if xlt {
+        s2: u1, m2: u128 = if xlt
             t2: u128 = sub y, x
             yield sb, t2
-        } else {
+        else
             t3: u128 = sub x, y
             yield sa, t3
-        }
         yield s2, m2
-    }
     r: rational(N, D) = rmk(N, D)(s, m, d)
     ret r
-}
 ; not add(a, neg b): negating first could round b, and the result once more
-fn sub(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D) {
+fn sub(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D)
     sa: u1, ma: u64, da: u64, na: u1 = rparts(N, D)(a)
     sb0: u1, mb: u64, db: u64, nb: u1 = rparts(N, D)(b)
     nar: u1 = or na, nb
-    if nar {
+    if nar
         z: rational(N, D) = pack 0, 0
         ret z
-    }
     sb: u1 = xor sb0, 1
     maw: u128 = conv ma
     mbw: u128 = conv mb
@@ -182,47 +161,41 @@ fn sub(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D) {
     y: u128 = mul mbw, daw
     d: u128 = mul daw, dbw
     same: u1 = cmp.eq sa, sb
-    s: u1, m: u128 = if same {
+    s: u1, m: u128 = if same
         t: u128 = add x, y
         yield sa, t
-    } else {
+    else
         xlt: u1 = cmp.lt x, y
-        s2: u1, m2: u128 = if xlt {
+        s2: u1, m2: u128 = if xlt
             t2: u128 = sub y, x
             yield sb, t2
-        } else {
+        else
             t3: u128 = sub x, y
             yield sa, t3
-        }
         yield s2, m2
-    }
     r: rational(N, D) = rmk(N, D)(s, m, d)
     ret r
-}
 ; through the parts, so the most negative numerator does not wrap
-fn neg(N, D)(a: rational(N, D)) -> rational(N, D) {
+fn neg(N, D)(a: rational(N, D)) -> rational(N, D)
     s: u1, m: u64, d: u64, nar: u1 = rparts(N, D)(a)
     ns: u1 = xor s, 1
     mw: u128 = conv m
     dw: u128 = conv d
     r: rational(N, D) = rmk(N, D)(ns, mw, dw)
     ret r
-}
-fn abs(N, D)(a: rational(N, D)) -> rational(N, D) {
+fn abs(N, D)(a: rational(N, D)) -> rational(N, D)
     s: u1, m: u64, d: u64, nar: u1 = rparts(N, D)(a)
     mw: u128 = conv m
     dw: u128 = conv d
     r: rational(N, D) = rmk(N, D)(0, mw, dw)
     ret r
-}
-fn mul(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D) {
+fn mul(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D)
     sa: u1, ma: u64, da: u64, na: u1 = rparts(N, D)(a)
     sb: u1, mb: u64, db: u64, nb: u1 = rparts(N, D)(b)
     nar: u1 = or na, nb
-    if nar {
+    if nar
         z: rational(N, D) = pack 0, 0
         ret z
-    }
     s: u1 = xor sa, sb
     maw: u128 = conv ma
     mbw: u128 = conv mb
@@ -232,15 +205,13 @@ fn mul(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D) {
     d: u128 = mul daw, dbw
     r: rational(N, D) = rmk(N, D)(s, m, d)
     ret r
-}
-fn div(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D) {
+fn div(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D)
     sa: u1, ma: u64, da: u64, na: u1 = rparts(N, D)(a)
     sb: u1, mb: u64, db: u64, nb: u1 = rparts(N, D)(b)
     nar: u1 = or na, nb
-    if nar {
+    if nar
         z: rational(N, D) = pack 0, 0
         ret z
-    }
     s: u1 = xor sa, sb
     maw: u128 = conv ma
     mbw: u128 = conv mb
@@ -250,10 +221,9 @@ fn div(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D) {
     d: u128 = mul daw, mbw
     r: rational(N, D) = rmk(N, D)(s, m, d)
     ret r
-}
 
 ; ordering: -1 below, 0 equal, 1 above, 2 unordered (NaR); cross-multiplied
-fn rcmp(N, D)(a: rational(N, D), b: rational(N, D)) -> i32 {
+fn rcmp(N, D)(a: rational(N, D), b: rational(N, D)) -> i32
     an: i(N) = get a, numerator
     ad: u(D) = get a, denominator
     bn: i(N) = get b, numerator
@@ -261,9 +231,8 @@ fn rcmp(N, D)(a: rational(N, D), b: rational(N, D)) -> i32 {
     ad0: u1 = cmp.eq ad, 0
     bd0: u1 = cmp.eq bd, 0
     nar: u1 = or ad0, bd0
-    if nar {
+    if nar
         ret 2
-    }
     anw: i128 = conv an
     bnw: i128 = conv bn
     adw: i128 = conv ad
@@ -271,164 +240,135 @@ fn rcmp(N, D)(a: rational(N, D), b: rational(N, D)) -> i32 {
     x: i128 = mul anw, bdw
     y: i128 = mul bnw, adw
     lt: u1 = cmp.lt x, y
-    if lt {
+    if lt
         ret -1
-    }
     gt: u1 = cmp.gt x, y
-    if gt {
+    if gt
         ret 1
-    }
     ret 0
-}
-fn lt(N, D)(a: rational(N, D), b: rational(N, D)) -> u1 {
+fn lt(N, D)(a: rational(N, D), b: rational(N, D)) -> u1
     t: i32 = rcmp(N, D)(a, b)
     r: u1 = cmp.eq t, -1
     ret r
-}
-fn le(N, D)(a: rational(N, D), b: rational(N, D)) -> u1 {
+fn le(N, D)(a: rational(N, D), b: rational(N, D)) -> u1
     t: i32 = rcmp(N, D)(a, b)
     r: u1 = cmp.le t, 0
     ret r
-}
-fn gt(N, D)(a: rational(N, D), b: rational(N, D)) -> u1 {
+fn gt(N, D)(a: rational(N, D), b: rational(N, D)) -> u1
     t: i32 = rcmp(N, D)(a, b)
     r: u1 = cmp.eq t, 1
     ret r
-}
-fn ge(N, D)(a: rational(N, D), b: rational(N, D)) -> u1 {
+fn ge(N, D)(a: rational(N, D), b: rational(N, D)) -> u1
     t: i32 = rcmp(N, D)(a, b)
     tu: u32 = cast t
     r: u1 = cmp.le tu, 1
     ret r
-}
-fn eq(N, D)(a: rational(N, D), b: rational(N, D)) -> u1 {
+fn eq(N, D)(a: rational(N, D), b: rational(N, D)) -> u1
     t: i32 = rcmp(N, D)(a, b)
     r: u1 = cmp.eq t, 0
     ret r
-}
-fn ne(N, D)(a: rational(N, D), b: rational(N, D)) -> u1 {
+fn ne(N, D)(a: rational(N, D), b: rational(N, D)) -> u1
     t: i32 = rcmp(N, D)(a, b)
     r: u1 = cmp.ne t, 0
     ret r
-}
-fn min(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D) {
+fn min(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D)
     t: i32 = rcmp(N, D)(a, b)
     nar: u1 = cmp.eq t, 2
-    if nar {
+    if nar
         z: rational(N, D) = pack 0, 0
         ret z
-    }
     lt: u1 = cmp.eq t, -1
-    if lt {
+    if lt
         ret a
-    }
     ret b
-}
-fn max(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D) {
+fn max(N, D)(a: rational(N, D), b: rational(N, D)) -> rational(N, D)
     t: i32 = rcmp(N, D)(a, b)
     nar: u1 = cmp.eq t, 2
-    if nar {
+    if nar
         z: rational(N, D) = pack 0, 0
         ret z
-    }
     gt: u1 = cmp.eq t, 1
-    if gt {
+    if gt
         ret a
-    }
     ret b
-}
 
 ; --- conversions ---
-fn conv(W, N, D)(a: i(W)) -> rational(N, D) {
+fn conv(W, N, D)(a: i(W)) -> rational(N, D)
     x: i64 = conv a
     neg: u1 = cmp.lt x, 0
-    m: i64 = if neg {
+    m: i64 = if neg
         nn: i64 = sub 0, x
         yield nn
-    } else {
+    else
         yield x
-    }
     mu: u64 = cast m
     mw: u128 = conv mu
     r: rational(N, D) = rmk(N, D)(neg, mw, 1)
     ret r
-}
-fn conv(W, N, D)(a: u(W)) -> rational(N, D) {
+fn conv(W, N, D)(a: u(W)) -> rational(N, D)
     m: u128 = conv a
     r: rational(N, D) = rmk(N, D)(0, m, 1)
     ret r
-}
 ; to an integer: toward zero; NaR is 0
-fn conv(N, D, W)(a: rational(N, D)) -> i(W) {
+fn conv(N, D, W)(a: rational(N, D)) -> i(W)
     s: u1, m: u64, d: u64, nar: u1 = rparts(N, D)(a)
-    if nar {
+    if nar
         ret 0
-    }
     q: u64 = div m, d
     qi: i64 = cast q
-    v: i64 = if s {
+    v: i64 = if s
         nn: i64 = sub 0, qi
         yield nn
-    } else {
+    else
         yield qi
-    }
     r: i(W) = conv v
     ret r
-}
-fn conv(N, D, W)(a: rational(N, D)) -> u(W) {
+fn conv(N, D, W)(a: rational(N, D)) -> u(W)
     s: u1, m: u64, d: u64, nar: u1 = rparts(N, D)(a)
     bad: u1 = or nar, s
-    if bad {
+    if bad
         ret 0
-    }
     q: u64 = div m, d
     r: u(W) = conv q
     ret r
-}
-fn conv(N, D, E, M)(a: rational(N, D)) -> float(E, M) {
+fn conv(N, D, E, M)(a: rational(N, D)) -> float(E, M)
     n: i(N) = get a, numerator
     d: u(D) = get a, denominator
     nar: u1 = cmp.eq d, 0
-    if nar {
+    if nar
         ret nan
-    }
     fn_: float(E, M) = conv n
     fd: float(E, M) = conv d
     r: float(E, M) = div fn_, fd
     ret r
-}
 ; from a float by continued fractions: the last convergent whose parts
 ; fit; NaN and infinities are NaR
-fn conv(E, M, N, D)(a: float(E, M)) -> rational(N, D) {
+fn conv(E, M, N, D)(a: float(E, M)) -> rational(N, D)
     an: u1 = cmp.ne a, a
-    if an {
+    if an
         z: rational(N, D) = pack 0, 0
         ret z
-    }
     aa: float(E, M) = abs a
     big: float(E, M) = conv 9223372036854775807: i64
     huge: u1 = cmp.ge aa, big
-    if huge {
+    if huge
         z2: rational(N, D) = pack 0, 0
         ret z2
-    }
     neg: u1 = cmp.lt a, 0.0
     nmax: u128 = const (1 << (N - 1)) - 1
     dmax: u128 = const ((1 << (D - 1)) - 1) * 2 + 1
     ; convergents h/k: h = a h1 + h2, k = a k1 + k2
-    h: u128, k: u128 = loop(i: i32 = 0, x: float(E, M) = aa, h1: u128 = 1, h2: u128 = 0, k1: u128 = 0, k2: u128 = 1) {
+    h: u128, k: u128 = loop(i: i32 = 0, x: float(E, M) = aa, h1: u128 = 1, h2: u128 = 0, k1: u128 = 0, k2: u128 = 1)
         many: u1 = cmp.eq i, 64
-        if many {
+        if many
             break h1, k1
-        }
         ai: i64 = conv x
         au64: u64 = cast ai
         au: u128 = conv au64
         ; would this term overflow the widths? keep the last
         abig: u1 = cmp.gt au, nmax
-        if abig {
+        if abig
             break h1, k1
-        }
         hn: u128 = mul au, h1
         hs: u128 = add hn, h2
         kn: u128 = mul au, k1
@@ -436,19 +376,15 @@ fn conv(E, M, N, D)(a: float(E, M)) -> rational(N, D) {
         hbig: u1 = cmp.gt hs, nmax
         kbig: u1 = cmp.gt ks, dmax
         over: u1 = or hbig, kbig
-        if over {
+        if over
             break h1, k1
-        }
         af: float(E, M) = conv ai
         frac: float(E, M) = sub x, af
         exact: u1 = cmp.eq frac, 0.0
-        if exact {
+        if exact
             break hs, ks
-        }
         x2: float(E, M) = div 1.0, frac
         i2: i32 = add i, 1
         continue i2, x2, hs, h1, ks, k1
-    }
     r: rational(N, D) = rmk(N, D)(neg, h, k)
     ret r
-}

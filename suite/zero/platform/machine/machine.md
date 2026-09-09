@@ -7,7 +7,7 @@ layer: runtime
 Plan item 11 of milestone 0: section 15's `platform <kind>` bodies on a function declaration, lowered to the IR's platform rules.
 
 ## overview
-A platform function has no zero body. Each `platform <kind>` line gives it a body for one kind of place: `arm64`, `riscv64`, `wasm32` and `air` are the IR's targets, and a body for one is written in that target's rule lines, which the IR carries in a `platform <target> { ... }` block after the function; `ir` is a body in the IR itself, and serves every target that has no rule of its own. A function with no body for the place a program runs on is out of reach there: the runner skips its cases, naming the function and the kind.
+A platform function has no zero body. Each `platform <kind>` line gives it a body for one kind of place: `arm64`, `riscv64`, `wasm32` and `air` are the IR's targets, and a body for one is written in that target's rule lines, which the IR carries under a `platform <target>` line after the function; `ir` is a body in the IR itself, and serves every target that has no rule of its own. A function with no body for the place a program runs on is out of reach there: the runner skips its cases, naming the function and the kind.
 
 ## interface
 - `(a) plus (b)` adds two `int64` by the machine's own instruction on every target: `add` on arm64 and riscv64, `i64.add` on wasm32, `add` on air.

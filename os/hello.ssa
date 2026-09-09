@@ -9,34 +9,29 @@
 
 data greeting = "hello world ᕦ(ツ)ᕤ\n"
 
-fn __start() {
+fn __start()
     uart: ptr = platform uart
     p: ptr = addr greeting
     n: i64 = len greeting
-    loop(i: i64 = 0) {
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break
-        }
         c: u8 = load p, i, 1
         c32: u32 = conv c
         store c32, uart
         i2: i64 = add i, 1
         continue i2
-    }
     exit()
     ret
-}
 
 ; end the machine: riscv's finisher takes 0x5555 for a clean exit; on
 ; arm64 that store lands in spare RAM and psci() does the work (the
 ; platform replaces its body with a hypervisor call)
-fn exit() {
+fn exit()
     f: ptr = platform finisher
     store 0x5555: u32, f
     psci(0x84000008)
     ret
-}
-fn psci(code: u64) {
+fn psci(code: u64)
     ret
-}

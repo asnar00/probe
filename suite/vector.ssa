@@ -65,37 +65,33 @@ type v4 = i32x4
 
 ; (the native runner returns two values at most; the qemu and wasm
 ; paths any number — so two lanes come back, chosen to differ)
-fn add4(a0: i32, a1: i32, a2: i32, a3: i32, b0: i32, b1: i32, b2: i32, b3: i32) -> (i32, i32) {
+fn add4(a0: i32, a1: i32, a2: i32, a3: i32, b0: i32, b1: i32, b2: i32, b3: i32) -> (i32, i32)
     a: v4 = pack a0, a1, a2, a3
     b: v4 = pack b0, b1, b2, b3
     c: v4 = add a, b
     r0: i32, r1: i32, r2: i32, r3: i32 = unpack c
     ret r1, r3
-}
 
-fn mul_splat(a0: i32, a1: i32, a2: i32, a3: i32, k: i32) -> (i32, i32) {
+fn mul_splat(a0: i32, a1: i32, a2: i32, a3: i32, k: i32) -> (i32, i32)
     a: i32x4 = pack a0, a1, a2, a3
     ks: i32x4 = splat k
     c: i32x4 = mul a, ks
     r0: i32, r1: i32, r2: i32, r3: i32 = unpack c
     ret r0, r3
-}
 
-fn lanes(a0: i32, a1: i32, a2: i32, a3: i32) -> i32 {
+fn lanes(a0: i32, a1: i32, a2: i32, a3: i32) -> i32
     a: i32x4 = pack a0, a1, a2, a3
     x: i32 = get a, 2
     ret x
-}
 
-fn set_lane(a0: i32, a1: i32, a2: i32, a3: i32, x: i32) -> (i32, i32) {
+fn set_lane(a0: i32, a1: i32, a2: i32, a3: i32, x: i32) -> (i32, i32)
     a: i32x4 = pack a0, a1, a2, a3
     b: i32x4 = set a, 1, x
     r0: i32, r1: i32, r2: i32, r3: i32 = unpack b
     ret r1, r3
-}
 
 ; a comparison gives a vector of u1; here folded into a mask
-fn cmp_lanes(a0: i32, a1: i32, a2: i32, a3: i32, k: i32) -> u8 {
+fn cmp_lanes(a0: i32, a1: i32, a2: i32, a3: i32, k: i32) -> u8
     a: i32x4 = pack a0, a1, a2, a3
     ks: i32x4 = splat k
     m: u1x4 = cmp.gt a, ks
@@ -111,10 +107,9 @@ fn cmp_lanes(a0: i32, a1: i32, a2: i32, a3: i32, k: i32) -> u8 {
     o2: u8 = or o1, s2
     o3: u8 = or o2, s3
     ret o3
-}
 
 ; a horizontal sum, lane by lane
-fn dot(a0: i32, a1: i32, a2: i32, a3: i32, b0: i32, b1: i32, b2: i32, b3: i32) -> i32 {
+fn dot(a0: i32, a1: i32, a2: i32, a3: i32, b0: i32, b1: i32, b2: i32, b3: i32) -> i32
     a: i32x4 = pack a0, a1, a2, a3
     b: i32x4 = pack b0, b1, b2, b3
     p: i32x4 = mul a, b
@@ -123,27 +118,24 @@ fn dot(a0: i32, a1: i32, a2: i32, a3: i32, b0: i32, b1: i32, b2: i32, b3: i32) -
     s23: i32 = add p2, p3
     s: i32 = add s01, s23
     ret s
-}
 
 ; float lanes: each lane's add is the float library's, or the FPU's
-fn fadd4(a0: f32, a1: f32, a2: f32, a3: f32, h: f32) -> (f32, f32) {
+fn fadd4(a0: f32, a1: f32, a2: f32, a3: f32, h: f32) -> (f32, f32)
     a: f32x4 = pack a0, a1, a2, a3
     hs: f32x4 = splat h
     c: f32x4 = add a, hs
     r0: f32, r1: f32, r2: f32, r3: f32 = unpack c
     ret r1, r3
-}
 
 ; a library operation on every lane
-fn fsqrt4(a0: f32, a1: f32, a2: f32, a3: f32) -> (f32, f32) {
+fn fsqrt4(a0: f32, a1: f32, a2: f32, a3: f32) -> (f32, f32)
     a: f32x4 = pack a0, a1, a2, a3
     c: f32x4 = sqrt a
     r0: f32, r1: f32, r2: f32, r3: f32 = unpack c
     ret r0, r3
-}
 
 ; stored and loaded whole: lanes consecutive in memory
-fn via_memory(p: ptr, a0: i64, a1: i64, a2: i64, a3: i64) -> i64 {
+fn via_memory(p: ptr, a0: i64, a1: i64, a2: i64, a3: i64) -> i64
     a: i64x4 = pack a0, a1, a2, a3
     store a, p
     b: i64x4 = load p
@@ -155,25 +147,22 @@ fn via_memory(p: ptr, a0: i64, a1: i64, a2: i64, a3: i64) -> i64 {
     t: i64 = add s, x
     u: i64 = sub t, b2
     ret u
-}
 
 ; conversion lane by lane
-fn widen(a: u8, b: u8) -> i32 {
+fn widen(a: u8, b: u8) -> i32
     v: u8x2 = pack a, b
     w: i32x2 = conv v
     w0: i32, w1: i32 = unpack w
     s: i32 = add w0, w1
     ret s
-}
 
 ; eight byte lanes, as a block parameter
-fn bytes_sum(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8) -> i32 {
+fn bytes_sum(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8) -> i32
     v: u8x8 = pack a, b, c, d, e, f, g, h
-    s: i32 = loop(i: i64 = 0, acc: i32 = 0, w: u8x8 = v) {
+    s: i32 = loop(i: i64 = 0, acc: i32 = 0, w: u8x8 = v)
         done: u1 = cmp.ge i, 1
-        if done {
+        if done
             break acc
-        }
         x0: u8, x1: u8, x2: u8, x3: u8, x4: u8, x5: u8, x6: u8, x7: u8 = unpack w
         y0: i32 = conv x0
         y1: i32 = conv x1
@@ -192,50 +181,44 @@ fn bytes_sum(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8) -> i32 {
         acc2: i32 = add u0, u1
         i2: i64 = add i, 1
         continue i2, acc2, w
-    }
     ret s
-}
 
 ; Tx1 is T
-fn one_lane(x: i32) -> i32x1 {
+fn one_lane(x: i32) -> i32x1
     y: i32x1 = add x, 1
     ret y
-}
 
 ; an abstract lane type: the policy's float, whatever it is — and a + b
 ; is b + a in every lane
-fn abstract_float(a: float, b: float) -> u1 {
+fn abstract_float(a: float, b: float) -> u1
     v: floatx2 = pack a, b
     w: floatx2 = pack b, a
     s: floatx2 = add v, w
     r0: float, r1: float = unpack s
     same: u1 = cmp.eq r0, r1
     ret same
-}
 
 ; --- the cases below reach every kind of vector instruction a platform
 ; may take whole (NEON on arm64: targets/arm64.platform); everywhere
 ; else they are the lanes, which is what the rules are checked against ---
 
-fn fadd2(a0: f64, a1: f64, h: f64) -> (f64, f64) {
+fn fadd2(a0: f64, a1: f64, h: f64) -> (f64, f64)
     a: f64x2 = pack a0, a1
     hs: f64x2 = splat h
     c: f64x2 = add a, hs
     r0: f64, r1: f64 = unpack c
     ret r0, r1
-}
 
 ; a*b + c in one rounding per lane
-fn fma4(a0: f32, a1: f32, a2: f32, a3: f32, b: f32, c: f32) -> (f32, f32) {
+fn fma4(a0: f32, a1: f32, a2: f32, a3: f32, b: f32, c: f32) -> (f32, f32)
     a: f32x4 = pack a0, a1, a2, a3
     bs: f32x4 = splat b
     cs: f32x4 = splat c
     f: f32x4 = fma a, bs, cs
     r0: f32, r1: f32, r2: f32, r3: f32 = unpack f
     ret r1, r3
-}
 
-fn minmax4(a0: f32, a1: f32, a2: f32, a3: f32, k: f32) -> (f32, f32) {
+fn minmax4(a0: f32, a1: f32, a2: f32, a3: f32, k: f32) -> (f32, f32)
     a: f32x4 = pack a0, a1, a2, a3
     ks: f32x4 = splat k
     lo: f32x4 = min a, ks
@@ -243,11 +226,10 @@ fn minmax4(a0: f32, a1: f32, a2: f32, a3: f32, k: f32) -> (f32, f32) {
     l0: f32, l1: f32, l2: f32, l3: f32 = unpack lo
     h0: f32, h1: f32, h2: f32, h3: f32 = unpack hi
     ret l1, h3
-}
 
 ; a comparison's lanes as a mask; a NaN lane is greater than nothing
 ; and unequal to everything
-fn fmask(a0: f32, a1: f32, a2: f32, a3: f32, k: f32) -> (u8, u8) {
+fn fmask(a0: f32, a1: f32, a2: f32, a3: f32, k: f32) -> (u8, u8)
     a: f32x4 = pack a0, a1, a2, a3
     ks: f32x4 = splat k
     g: u1x4 = cmp.gt a, ks
@@ -257,9 +239,8 @@ fn fmask(a0: f32, a1: f32, a2: f32, a3: f32, k: f32) -> (u8, u8) {
     gm: u8 = mask4(g0, g1, g2, g3)
     nm: u8 = mask4(n0, n1, n2, n3)
     ret gm, nm
-}
 
-fn mask4(b0: u1, b1: u1, b2: u1, b3: u1) -> u8 {
+fn mask4(b0: u1, b1: u1, b2: u1, b3: u1) -> u8
     c0: u8 = conv b0
     c1: u8 = conv b1
     c2: u8 = conv b2
@@ -271,11 +252,10 @@ fn mask4(b0: u1, b1: u1, b2: u1, b3: u1) -> u8 {
     o2: u8 = or o1, s2
     o3: u8 = or o2, s3
     ret o3
-}
 
 ; unsigned lanes compare unsigned; the same bits cast to signed lanes
 ; compare signed
-fn umask(a0: u32, a1: u32, a2: u32, a3: u32, k: u32) -> (u8, u8) {
+fn umask(a0: u32, a1: u32, a2: u32, a3: u32, k: u32) -> (u8, u8)
     a: u32x4 = pack a0, a1, a2, a3
     ks: u32x4 = splat k
     u: u1x4 = cmp.gt a, ks
@@ -287,10 +267,9 @@ fn umask(a0: u32, a1: u32, a2: u32, a3: u32, k: u32) -> (u8, u8) {
     um: u8 = mask4(u0, u1, u2, u3)
     sm: u8 = mask4(s0, s1, s2, s3)
     ret um, sm
-}
 
 ; shifts by a vector of counts; a signed right shift keeps the sign
-fn shifts(a0: i32, a1: i32, a2: i32, a3: i32, n0: i32, n1: i32, n2: i32, n3: i32) -> (i32, i32) {
+fn shifts(a0: i32, a1: i32, a2: i32, a3: i32, n0: i32, n1: i32, n2: i32, n3: i32) -> (i32, i32)
     a: i32x4 = pack a0, a1, a2, a3
     n: i32x4 = pack n0, n1, n2, n3
     l: i32x4 = shl a, n
@@ -298,35 +277,31 @@ fn shifts(a0: i32, a1: i32, a2: i32, a3: i32, n0: i32, n1: i32, n2: i32, n3: i32
     l2: i32 = get l, 2
     r2: i32 = get r, 2
     ret l2, r2
-}
 
-fn ushr(a: u32, n: u32) -> u32 {
+fn ushr(a: u32, n: u32) -> u32
     v: u32x4 = splat a
     ns: u32x4 = splat n
     r: u32x4 = shr v, ns
     x: u32 = get r, 0
     ret x
-}
 
 ; float to integer truncates toward zero
-fn fconv(a0: f32, a1: f32, a2: f32, a3: f32) -> (i32, i32) {
+fn fconv(a0: f32, a1: f32, a2: f32, a3: f32) -> (i32, i32)
     a: f32x4 = pack a0, a1, a2, a3
     i: i32x4 = conv a
     r0: i32 = get i, 0
     r1: i32 = get i, 1
     ret r0, r1
-}
 
-fn iconv(a0: i32, a1: i32, a2: i32, a3: i32) -> (f32, f32) {
+fn iconv(a0: i32, a1: i32, a2: i32, a3: i32) -> (f32, f32)
     a: i32x4 = pack a0, a1, a2, a3
     f: f32x4 = conv a
     r0: f32 = get f, 0
     r1: f32 = get f, 1
     ret r0, r1
-}
 
 ; float lanes through memory, at the alignment of a lane
-fn via_memory_f(p: ptr, a0: f32, a1: f32, a2: f32, a3: f32) -> (f32, f32) {
+fn via_memory_f(p: ptr, a0: f32, a1: f32, a2: f32, a3: f32) -> (f32, f32)
     a: f32x4 = pack a0, a1, a2, a3
     store a, p
     b: f32x4 = load p
@@ -335,30 +310,26 @@ fn via_memory_f(p: ptr, a0: f32, a1: f32, a2: f32, a3: f32) -> (f32, f32) {
     x: f32 = load p, 20
     y: f32 = load p, 8
     ret y, x
-}
 
 ; a vector carried around a loop: sum of i * k over i < n, in every lane
-fn vloop(n: i64, k0: i32, k1: i32, k2: i32, k3: i32) -> (i32, i32) {
+fn vloop(n: i64, k0: i32, k1: i32, k2: i32, k3: i32) -> (i32, i32)
     w: i32x4 = pack k0, k1, k2, k3
     z: i32x4 = sub w, w
-    acc: i32x4 = loop(i: i64 = 0, s: i32x4 = z) {
+    acc: i32x4 = loop(i: i64 = 0, s: i32x4 = z)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break s
-        }
         i32v: i32 = conv i
         iv: i32x4 = splat i32v
         p: i32x4 = mul iv, w
         s1: i32x4 = add s, p
         i1: i64 = add i, 1
         continue i1, s1
-    }
     r0: i32, r1: i32, r2: i32, r3: i32 = unpack acc
     ret r1, r3
-}
 
 ; ten vectors live at once: more than the registers, so some spill
-fn many(a: i32) -> (i32, i32) {
+fn many(a: i32) -> (i32, i32)
     b1: i32 = add a, 1
     b2: i32 = add a, 2
     b3: i32 = add a, 3
@@ -390,10 +361,9 @@ fn many(a: i32) -> (i32, i32) {
     r0: i32 = get t3, 0
     r3: i32 = get t3, 3
     ret r0, r3
-}
 
 ; masks combined: lo < a < hi, and either
-fn masks(a0: i32, a1: i32, a2: i32, a3: i32, lo: i32, hi: i32) -> (u8, u8) {
+fn masks(a0: i32, a1: i32, a2: i32, a3: i32, lo: i32, hi: i32) -> (u8, u8)
     a: i32x4 = pack a0, a1, a2, a3
     los: i32x4 = splat lo
     his: i32x4 = splat hi
@@ -406,19 +376,17 @@ fn masks(a0: i32, a1: i32, a2: i32, a3: i32, lo: i32, hi: i32) -> (u8, u8) {
     bm: u8 = mask4(b0, b1, b2, b3)
     em: u8 = mask4(e0, e1, e2, e3)
     ret bm, em
-}
 
-fn fnegabs(x: f32) -> (f32, f32) {
+fn fnegabs(x: f32) -> (f32, f32)
     v: f32x4 = splat x
     n: f32x4 = neg v
     a: f32x4 = abs v
     n0: f32 = get n, 0
     a0: f32 = get a, 0
     ret n0, a0
-}
 
 ; the bits of float lanes, and back
-fn bits(x: f32, one: f32) -> (u32, f32) {
+fn bits(x: f32, one: f32) -> (u32, f32)
     v: f32x4 = splat x
     u: u32x4 = cast v
     b1: u32 = get u, 1
@@ -427,9 +395,8 @@ fn bits(x: f32, one: f32) -> (u32, f32) {
     s: f32x4 = add back, ones
     s0: f32 = get s, 0
     ret b1, s0
-}
 
-fn i64x2ops(a0: i64, a1: i64, b0: i64, b1: i64) -> (i64, i64) {
+fn i64x2ops(a0: i64, a1: i64, b0: i64, b1: i64) -> (i64, i64)
     a: i64x2 = pack a0, a1
     b: i64x2 = pack b0, b1
     s: i64x2 = add a, b
@@ -437,10 +404,9 @@ fn i64x2ops(a0: i64, a1: i64, b0: i64, b1: i64) -> (i64, i64) {
     s0: i64 = get s, 0
     d1: i64 = get d, 1
     ret s0, d1
-}
 
 ; two-lane comparisons: doubles, and 64-bit integers
-fn cmp2(x0: f64, x1: f64, k: f64, a0: i64, a1: i64, b0: i64, b1: i64) -> (u8, u8) {
+fn cmp2(x0: f64, x1: f64, k: f64, a0: i64, a1: i64, b0: i64, b1: i64) -> (u8, u8)
     x: f64x2 = pack x0, x1
     ks: f64x2 = splat k
     g: u1x2 = cmp.gt x, ks
@@ -452,80 +418,69 @@ fn cmp2(x0: f64, x1: f64, k: f64, a0: i64, a1: i64, b0: i64, b1: i64) -> (u8, u8
     gm: u8 = mask2(g0, g1)
     hm: u8 = mask2(h0, h1)
     ret gm, hm
-}
 
-fn mask2(b0: u1, b1: u1) -> u8 {
+fn mask2(b0: u1, b1: u1) -> u8
     c0: u8 = conv b0
     c1: u8 = conv b1
     s1: u8 = shl c1, 1
     o: u8 = or c0, s1
     ret o
-}
 
 ; --- vectors across a call: parameters, results, and mixed with the
 ; other classes (each class crosses in its own registers) ---
-fn vsum(a: i32x4, b: i32x4) -> i32x4 {
+fn vsum(a: i32x4, b: i32x4) -> i32x4
     c: i32x4 = add a, b
     ret c
-}
-fn through_call(a0: i32, a1: i32, a2: i32, a3: i32, b0: i32, b1: i32, b2: i32, b3: i32) -> (i32, i32) {
+fn through_call(a0: i32, a1: i32, a2: i32, a3: i32, b0: i32, b1: i32, b2: i32, b3: i32) -> (i32, i32)
     a: i32x4 = pack a0, a1, a2, a3
     b: i32x4 = pack b0, b1, b2, b3
     c: i32x4 = vsum(a, b)
     r0: i32, r1: i32, r2: i32, r3: i32 = unpack c
     ret r1, r3
-}
-fn vaddh(a: f32x4, h: f32) -> f32x4 {
+fn vaddh(a: f32x4, h: f32) -> f32x4
     hs: f32x4 = splat h
     c: f32x4 = add a, hs
     ret c
-}
-fn through_call_f(a0: f32, a1: f32, a2: f32, a3: f32, h: f32) -> (f32, f32) {
+fn through_call_f(a0: f32, a1: f32, a2: f32, a3: f32, h: f32) -> (f32, f32)
     a: f32x4 = pack a0, a1, a2, a3
     c: f32x4 = vaddh(a, h)
     r0: f32, r1: f32, r2: f32, r3: f32 = unpack c
     ret r1, r3
-}
-fn mixed(k: i32, a: f32x4, h: f32) -> (i32, f32x4) {
+fn mixed(k: i32, a: f32x4, h: f32) -> (i32, f32x4)
     k2: i32 = add k, 1
     hs: f32x4 = splat h
     c: f32x4 = add a, hs
     ret k2, c
-}
-fn mixed_call(k: i32, a0: f32, a1: f32, a2: f32, a3: f32, h: f32) -> (i32, f32) {
+fn mixed_call(k: i32, a0: f32, a1: f32, a2: f32, a3: f32, h: f32) -> (i32, f32)
     a: f32x4 = pack a0, a1, a2, a3
     k2: i32, c: f32x4 = mixed(k, a, h)
     x: f32 = get c, 1
     ret k2, x
-}
 
 ; --- the other shapes: 64-bit vectors (i32x2, f32x2, i16x4, u8x8) and
 ; 128-bit ones of narrow lanes (i16x8, u8x16), with the conversions
 ; between lane widths ---
-fn add2(a0: i32, a1: i32, b0: i32, b1: i32) -> (i32, i32) {
+fn add2(a0: i32, a1: i32, b0: i32, b1: i32) -> (i32, i32)
     a: i32x2 = pack a0, a1
     b: i32x2 = pack b0, b1
     c: i32x2 = add a, b
     r0: i32, r1: i32 = unpack c
     ret r0, r1
-}
-fn fadd2s(a0: f32, a1: f32, h: f32) -> (f32, f32) {
+fn fadd2s(a0: f32, a1: f32, h: f32) -> (f32, f32)
     a: f32x2 = pack a0, a1
     hs: f32x2 = splat h
     c: f32x2 = add a, hs
     r0: f32, r1: f32 = unpack c
     ret r0, r1
-}
-fn mul4h(a0: i16, a1: i16, a2: i16, a3: i16, k: i16) -> (i16, i16) {
+fn mul4h(a0: i16, a1: i16, a2: i16, a3: i16, k: i16) -> (i16, i16)
     a: i16x4 = pack a0, a1, a2, a3
     ks: i16x4 = splat k
     c: i16x4 = mul a, ks
     r0: i16 = get c, 0
     r3: i16 = get c, 3
     ret r0, r3
-}
 ; bytes wrap at 256; the same sum in 16-bit lanes does not
-fn bytes8(x: u8, y: u8) -> (u8, i16) {
+fn bytes8(x: u8, y: u8) -> (u8, i16)
     a: u8x8 = splat x
     b: u8x8 = splat y
     s: u8x8 = add a, b
@@ -537,24 +492,21 @@ fn bytes8(x: u8, y: u8) -> (u8, i16) {
     t: i16x8 = add c, d
     r1: i16 = get t, 5
     ret r0, r1
-}
-fn cmp8(a0: i8, a1: i8, a2: i8, a3: i8, k: i8) -> u8 {
+fn cmp8(a0: i8, a1: i8, a2: i8, a3: i8, k: i8) -> u8
     a: i8x8 = pack a0, a1, a2, a3, a0, a1, a2, a3
     ks: i8x8 = splat k
     m: u1x8 = cmp.gt a, ks
     b0: u1, b1: u1, b2: u1, b3: u1, b4: u1, b5: u1, b6: u1, b7: u1 = unpack m
     r: u8 = mask8(b0, b1, b2, b3, b4, b5, b6, b7)
     ret r
-}
-fn mask8(b0: u1, b1: u1, b2: u1, b3: u1, b4: u1, b5: u1, b6: u1, b7: u1) -> u8 {
+fn mask8(b0: u1, b1: u1, b2: u1, b3: u1, b4: u1, b5: u1, b6: u1, b7: u1) -> u8
     lo: u8 = mask4(b0, b1, b2, b3)
     hi: u8 = mask4(b4, b5, b6, b7)
     hs: u8 = shl hi, 4
     r: u8 = or lo, hs
     ret r
-}
 ; sixteen byte lanes: a comparison every lane agrees on, masked with one none does
-fn cmp16(x: u8, y: u8) -> (u1, u1) {
+fn cmp16(x: u8, y: u8) -> (u1, u1)
     a: u8x16 = splat x
     b: u8x16 = splat y
     lt: u1x16 = cmp.lt a, b
@@ -563,42 +515,36 @@ fn cmp16(x: u8, y: u8) -> (u1, u1) {
     r0: u1 = get lt, 15
     r1: u1 = get both, 0
     ret r0, r1
-}
-fn widen4(a0: i16, a1: i16, a2: i16, a3: i16) -> (i32, i32) {
+fn widen4(a0: i16, a1: i16, a2: i16, a3: i16) -> (i32, i32)
     a: i16x4 = pack a0, a1, a2, a3
     w: i32x4 = conv a
     r1: i32 = get w, 1
     r3: i32 = get w, 3
     ret r1, r3
-}
-fn narrow4(a0: i32, a1: i32, a2: i32, a3: i32) -> (i16, i16) {
+fn narrow4(a0: i32, a1: i32, a2: i32, a3: i32) -> (i16, i16)
     a: i32x4 = pack a0, a1, a2, a3
     n: i16x4 = conv a
     r0: i16 = get n, 0
     r1: i16 = get n, 1
     ret r0, r1
-}
-fn fwiden(a0: f32, a1: f32) -> (f64, f64) {
+fn fwiden(a0: f32, a1: f32) -> (f64, f64)
     a: f32x2 = pack a0, a1
     w: f64x2 = conv a
     r0: f64, r1: f64 = unpack w
     ret r0, r1
-}
-fn fnarrow(a0: f64, a1: f64) -> (f32, f32) {
+fn fnarrow(a0: f64, a1: f64) -> (f32, f32)
     a: f64x2 = pack a0, a1
     n: f32x2 = conv a
     r0: f32, r1: f32 = unpack n
     ret r0, r1
-}
-fn shl8(a0: i8, a1: i8, a2: i8, a3: i8, n: i8) -> (i8, i8) {
+fn shl8(a0: i8, a1: i8, a2: i8, a3: i8, n: i8) -> (i8, i8)
     a: i8x8 = pack a0, a1, a2, a3, a0, a1, a2, a3
     ns: i8x8 = splat n
     s: i8x8 = shl a, ns
     r0: i8 = get s, 0
     r3: i8 = get s, 3
     ret r0, r3
-}
-fn via_memory_2(p: ptr, a0: i32, a1: i32) -> i32 {
+fn via_memory_2(p: ptr, a0: i32, a1: i32) -> i32
     a: i32x2 = pack a0, a1
     store a, p
     b: i32x2 = load p
@@ -607,18 +553,16 @@ fn via_memory_2(p: ptr, a0: i32, a1: i32) -> i32 {
     y: i32 = load p, 0
     s: i32 = add x, y
     ret s
-}
-fn ucmp4h(a0: u16, a1: u16, a2: u16, a3: u16, k: u16) -> u8 {
+fn ucmp4h(a0: u16, a1: u16, a2: u16, a3: u16, k: u16) -> u8
     a: u16x4 = pack a0, a1, a2, a3
     ks: u16x4 = splat k
     m: u1x4 = cmp.gt a, ks
     b0: u1, b1: u1, b2: u1, b3: u1 = unpack m
     r: u8 = mask4(b0, b1, b2, b3)
     ret r
-}
 
 ; --- a mask through memory, where it is a byte per lane ---
-fn mask4_mem(p: ptr, a0: i32, a1: i32, a2: i32, a3: i32, k: i32) -> (u8, u32) {
+fn mask4_mem(p: ptr, a0: i32, a1: i32, a2: i32, a3: i32, k: i32) -> (u8, u32)
     a: i32x4 = pack a0, a1, a2, a3
     ks: i32x4 = splat k
     m: u1x4 = cmp.gt a, ks
@@ -628,8 +572,7 @@ fn mask4_mem(p: ptr, a0: i32, a1: i32, a2: i32, a3: i32, k: i32) -> (u8, u32) {
     r: u8 = mask4(b0, b1, b2, b3)
     bytes: u32 = load p
     ret r, bytes
-}
-fn mask2_mem(p: ptr, x0: f64, x1: f64, k: f64) -> (u8, u16) {
+fn mask2_mem(p: ptr, x0: f64, x1: f64, k: f64) -> (u8, u16)
     x: f64x2 = pack x0, x1
     ks: f64x2 = splat k
     m: u1x2 = cmp.gt x, ks
@@ -639,8 +582,7 @@ fn mask2_mem(p: ptr, x0: f64, x1: f64, k: f64) -> (u8, u16) {
     r: u8 = mask2(b0, b1)
     bytes: u16 = load p
     ret r, bytes
-}
-fn mask8_mem(p: ptr, a0: i8, a1: i8, a2: i8, a3: i8, k: i8) -> (u8, u64) {
+fn mask8_mem(p: ptr, a0: i8, a1: i8, a2: i8, a3: i8, k: i8) -> (u8, u64)
     a: i8x8 = pack a0, a1, a2, a3, a0, a1, a2, a3
     ks: i8x8 = splat k
     m: u1x8 = cmp.gt a, ks
@@ -650,8 +592,7 @@ fn mask8_mem(p: ptr, a0: i8, a1: i8, a2: i8, a3: i8, k: i8) -> (u8, u64) {
     r: u8 = mask8(b0, b1, b2, b3, b4, b5, b6, b7)
     bytes: u64 = load p
     ret r, bytes
-}
-fn mask16_mem(p: ptr, x: u8, y: u8) -> (u1, u64) {
+fn mask16_mem(p: ptr, x: u8, y: u8) -> (u1, u64)
     a: u8x16 = splat x
     b: u8x16 = splat y
     m: u1x16 = cmp.lt a, b
@@ -660,4 +601,3 @@ fn mask16_mem(p: ptr, x: u8, y: u8) -> (u1, u64) {
     r: u1 = get c, 15
     bytes: u64 = load p, 8
     ret r, bytes
-}

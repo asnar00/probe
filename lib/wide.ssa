@@ -10,135 +10,115 @@
 ; lowering turns into word operations. Division by zero gives q = 0,
 ; r = a — the loop must end somewhere; the CPUs' answer differs anyway.
 
-fn udivrem(W)(a: u(W), b: u(W)) -> (u(W), u(W)) {
+fn udivrem(W)(a: u(W), b: u(W)) -> (u(W), u(W))
     bz: u1 = cmp.eq b, 0
-    if bz {
+    if bz
         ret 0, a
-    }
     steps: i32 = const W
     top_shift: u(W) = const W - 1
-    q: u(W), r: u(W) = loop(i: i32 = 0, qa: u(W) = 0, ra: u(W) = 0, x: u(W) = a) {
+    q: u(W), r: u(W) = loop(i: i32 = 0, qa: u(W) = 0, ra: u(W) = 0, x: u(W) = a)
         done: u1 = cmp.ge i, steps
-        if done {
+        if done
             break qa, ra
-        }
         top: u(W) = shr x, top_shift
         r1: u(W) = shl ra, 1
         r2: u(W) = or r1, top
         x2: u(W) = shl x, 1
         q1: u(W) = shl qa, 1
         fits: u1 = cmp.ge r2, b
-        r3: u(W), q2: u(W) = if fits {
+        r3: u(W), q2: u(W) = if fits
             rs: u(W) = sub r2, b
             qs: u(W) = or q1, 1
             yield rs, qs
-        } else {
+        else
             yield r2, q1
-        }
         i2: i32 = add i, 1
         continue i2, q2, r3, x2
-    }
     ret q, r
-}
 
-fn div(W)(a: u(W), b: u(W)) -> u(W) {
+fn div(W)(a: u(W), b: u(W)) -> u(W)
     q: u(W), r: u(W) = udivrem(W)(a, b)
     ret q
-}
 
-fn rem(W)(a: u(W), b: u(W)) -> u(W) {
+fn rem(W)(a: u(W), b: u(W)) -> u(W)
     q: u(W), r: u(W) = udivrem(W)(a, b)
     ret r
-}
 
 ; signed: divide magnitudes, then the quotient takes the signs' xor and
 ; the remainder the dividend's (MIN / -1 wraps to MIN, as at every width)
-fn div(W)(a: i(W), b: i(W)) -> i(W) {
+fn div(W)(a: i(W), b: i(W)) -> i(W)
     na: u1 = cmp.lt a, 0
     nb: u1 = cmp.lt b, 0
     au: u(W) = cast a
     bu: u(W) = cast b
-    am: u(W) = if na {
+    am: u(W) = if na
         n: u(W) = sub 0, au
         yield n
-    } else {
+    else
         yield au
-    }
-    bm: u(W) = if nb {
+    bm: u(W) = if nb
         n2: u(W) = sub 0, bu
         yield n2
-    } else {
+    else
         yield bu
-    }
     q: u(W) = div am, bm
     neg: u1 = xor na, nb
-    qs: u(W) = if neg {
+    qs: u(W) = if neg
         n3: u(W) = sub 0, q
         yield n3
-    } else {
+    else
         yield q
-    }
     r: i(W) = cast qs
     ret r
-}
 
-fn rem(W)(a: i(W), b: i(W)) -> i(W) {
+fn rem(W)(a: i(W), b: i(W)) -> i(W)
     na: u1 = cmp.lt a, 0
     nb: u1 = cmp.lt b, 0
     au: u(W) = cast a
     bu: u(W) = cast b
-    am: u(W) = if na {
+    am: u(W) = if na
         n: u(W) = sub 0, au
         yield n
-    } else {
+    else
         yield au
-    }
-    bm: u(W) = if nb {
+    bm: u(W) = if nb
         n2: u(W) = sub 0, bu
         yield n2
-    } else {
+    else
         yield bu
-    }
     m: u(W) = rem am, bm
-    ms: u(W) = if na {
+    ms: u(W) = if na
         n3: u(W) = sub 0, m
         yield n3
-    } else {
+    else
         yield m
-    }
     r: i(W) = cast ms
     ret r
-}
 
 ; --- multiplication without a multiplier ---
 ; `mul` dispatches here when the platform variant has no multiply
 ; instruction (a RISC-V core without M): shift-and-add over the type
 ; itself, W steps at most, stopping when the multiplier runs out of bits.
 ; Signed and unsigned products agree in their low W bits.
-fn mul(W)(a: u(W), b: u(W)) -> u(W) {
-    r: u(W) = loop(x: u(W) = a, y: u(W) = b, acc: u(W) = 0) {
+fn mul(W)(a: u(W), b: u(W)) -> u(W)
+    r: u(W) = loop(x: u(W) = a, y: u(W) = b, acc: u(W) = 0)
         done: u1 = cmp.eq y, 0
-        if done {
+        if done
             break acc
-        }
         bit: u(W) = and y, 1
         odd: u1 = cmp.ne bit, 0
-        acc2: u(W) = if odd {
+        acc2: u(W) = if odd
             s: u(W) = add acc, x
             yield s
-        } else {
+        else
             yield acc
-        }
         x2: u(W) = shl x, 1
         y2: u(W) = shr y, 1
         continue x2, y2, acc2
-    }
     ret r
-}
-fn mul(W)(a: i(W), b: i(W)) -> i(W) {
+fn mul(W)(a: i(W), b: i(W)) -> i(W)
     au: u(W) = cast a
     bu: u(W) = cast b
     p: u(W) = mul au, bu
     r: i(W) = cast p
     ret r
-}

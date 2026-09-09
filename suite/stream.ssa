@@ -51,40 +51,35 @@ data ivb2: buffer(int, 8)
 data itb2: buffer(i64, 8)
 
 ; five items at 1, 2, 3, 4, 5 milliseconds with values 1..5
-fn five(s: u8$) {
-    loop(k: i64 = 1) {
+fn five(s: u8$)
+    loop(k: i64 = 1)
         done: u1 = cmp.gt k, 5
-        if done {
+        if done
             break
-        }
         t: i64 = mul k, 1000
         v: u8 = conv k
         push s, t, v
         k2: i64 = add k, 1
         continue k2
-    }
     ret
-}
-fn fresh() -> u8$ {
+fn fresh() -> u8$
     r: ptr = addr rg
     a: ptr = addr vb
     b: ptr = addr tb
     ring_init(r, a, b, 1000000)
     s: u8$ = stream r
     ret s
-}
 
 ; a frame holds everything since the reader last looked
-fn frames() -> (u8, i64) {
+fn frames() -> (u8, i64)
     s: u8$ = fresh()
     five(s)
     f: u8[], k0: i64, s2: u8$ = frame(s)
     n: i64 = len f
     total: u8 = sum f
     ret total, n
-}
 ; ... and nothing the second time; count says how much is waiting
-fn frames_again() -> (i64, i64) {
+fn frames_again() -> (i64, i64)
     s: u8$ = fresh()
     five(s)
     waiting: i64 = count s
@@ -92,10 +87,9 @@ fn frames_again() -> (i64, i64) {
     g: u8[], k1: i64, s3: u8$ = frame(s2)
     n: i64 = len g
     ret n, waiting
-}
 ; a reader taking less than a frame: peek at the third unread item,
 ; move on two, and the next frame is what is left
-fn peeked() -> (u8, i64) {
+fn peeked() -> (u8, i64)
     s: u8$ = fresh()
     five(s)
     x: u8 = peek s, 2
@@ -103,9 +97,8 @@ fn peeked() -> (u8, i64) {
     f: u8[], k0: i64, s3: u8$ = frame(s2)
     n: i64 = len f
     ret x, n
-}
 ; nearest at 3.4 ms is the item at 3; hold at 3.9 ms is 3 too
-fn samples() -> (u8, u8) {
+fn samples() -> (u8, u8)
     s: u8$ = fresh()
     five(s)
     t1: time = micros(3400)
@@ -114,9 +107,8 @@ fn samples() -> (u8, u8) {
     t2: time = micros(3900)
     y: u8 = sample h, t2
     ret x, y
-}
 ; two views of one ring: nearest at 3.6 ms gives 4, hold gives 3
-fn rules() -> (u8, u8) {
+fn rules() -> (u8, u8)
     s: u8$ = fresh()
     five(s)
     t: time = micros(3600)
@@ -124,9 +116,8 @@ fn rules() -> (u8, u8) {
     h: u8$ = sampling(s, 1)
     y: u8 = sample h, t
     ret x, y
-}
 ; the items in [2 ms, 5 ms): 2, 3, 4
-fn windowed() -> (u8, u8) {
+fn windowed() -> (u8, u8)
     s: u8$ = fresh()
     five(s)
     t1: time = millis(2)
@@ -135,82 +126,71 @@ fn windowed() -> (u8, u8) {
     total: u8 = sum w
     first: u8 = load w, 0
     ret total, first
-}
 ; twelve items into a ring of eight: the newer half slid down when it
 ; filled, the latest is 12, and the window from 9 ms holds the last four
-fn sliding() -> (u8, i64) {
+fn sliding() -> (u8, i64)
     s: u8$ = fresh()
-    loop(k: i64 = 1) {
+    loop(k: i64 = 1)
         done: u1 = cmp.gt k, 12
-        if done {
+        if done
             break
-        }
         t: i64 = mul k, 1000
         v: u8 = conv k
         push s, t, v
         k2: i64 = add k, 1
         continue k2
-    }
     last: u8 = latest s
     t1: time = millis(9)
     t2: time = millis(13)
     w: u8[] = window s, t1, t2
     n: i64 = len w
     ret last, n
-}
 ; a sample before the first item fails, unless the edge rule clamps
-fn early() -> u8 {
+fn early() -> u8
     s: u8$ = fresh()
     five(s)
     t: time = micros(500)
     x: u8 = sample s, t
     ret x
-}
 ; a reader that fell behind the resident items fails a check
-fn stale() -> i64 {
+fn stale() -> i64
     s: u8$ = fresh()
-    loop(k: i64 = 1) {
+    loop(k: i64 = 1)
         done: u1 = cmp.gt k, 12
-        if done {
+        if done
             break
-        }
         t: i64 = mul k, 1000
         v: u8 = conv k
         push s, t, v
         k2: i64 = add k, 1
         continue k2
-    }
     f: u8[], k0: i64, s2: u8$ = frame(s)
     n: i64 = len f
     ret n
-}
 ; times must not go backwards
-fn unordered() -> u8 {
+fn unordered() -> u8
     s: u8$ = fresh()
     five(s)
     push s, 1000, 9
     x: u8 = latest s
     ret x
-}
 
 ; --- regular rings: item k at tick t0 + k * step of a clock, the
 ; producer's push without a tick ---
-fn khz() -> f32$ {
+fn khz() -> f32$
     r: ptr = addr frg
     a: ptr = addr fvb
     ring_regular(r, a, 1000, 1, 0)
     s: f32$ = stream r
     ret s
-}
-fn tens(s: f32$) {
+fn tens(s: f32$)
     push s, 10.0
     push s, 20.0
     push s, 30.0
     push s, 40.0
     ret
-}
 ; four samples at 0, 1, 2, 3 ms: a frame's times are computed from its first index
-fn regular_frames() -> (i64, i64) {
+fn regular_frames() -> (i64, i64)
     s: f32$ = khz()
     tens(s)
     f: f32[], k0: i64, s2: f32$ = frame(s)
@@ -219,9 +199,8 @@ fn regular_frames() -> (i64, i64) {
     t3: time = time_at(s, k3)
     us: i64 = to_micros(t3)
     ret n, us
-}
 ; at 1.6 ms: linear gives 26, nearest gives 30 (as tenths)
-fn interpolated() -> (i32, i32) {
+fn interpolated() -> (i32, i32)
     s: f32$ = khz()
     tens(s)
     t: time = micros(1600)
@@ -232,10 +211,9 @@ fn interpolated() -> (i32, i32) {
     xi: i32 = conv x10
     yi: i32 = conv y
     ret xi, yi
-}
 ; on the byte stream, 2.75 ms between 2 and 3 is 2 (rounded once,
 ; toward zero); a slope going down, 10 to 4, at its midpoint is 7
-fn interpolated_int() -> (u8, u8) {
+fn interpolated_int() -> (u8, u8)
     s: u8$ = fresh()
     five(s)
     l: u8$ = sampling(s, 2)
@@ -248,52 +226,46 @@ fn interpolated_int() -> (u8, u8) {
     tm: time = micros(1500)
     y: u8 = sample l2, tm
     ret x, y
-}
 ; the producer closes the stream: `ended` says so to every reader, a
 ; push after it fails a check
-fn closing() -> (u1, u1) {
+fn closing() -> (u1, u1)
     s: u8$ = fresh()
     five(s)
     before: u1 = ended(s)
     end(s)
     after: u1 = ended(s)
     ret before, after
-}
-fn push_after_end() -> u8 {
+fn push_after_end() -> u8
     s: u8$ = fresh()
     five(s)
     end(s)
     push s, 6000, 6
     x: u8 = latest s
     ret x
-}
 ; where a reader stands: after two of five, the third is next, at 3 ms
-fn positions() -> (i64, i64) {
+fn positions() -> (i64, i64)
     s: u8$ = fresh()
     five(s)
     s2: u8$ = advance(s, 2)
     k: i64, t: i64 = position(s2)
     ret k, t
-}
 ; ... and with nothing unread on an irregular ring, no tick
-fn position_end() -> (i64, i64) {
+fn position_end() -> (i64, i64)
     s: u8$ = fresh()
     five(s)
     f: u8[], k0: i64, s2: u8$ = frame(s)
     k: i64, t: i64 = position(s2)
     ret k, t
-}
 ; on a regular ring the next tick is always known: item 3 is at 3
-fn regular_position() -> (i64, i64) {
+fn regular_position() -> (i64, i64)
     s: f32$ = khz()
     tens(s)
     s2: f32$ = advance(s, 3)
     k: i64, t: i64 = position(s2)
     ret k, t
-}
 ; the unread items as a view without moving: after two of five, the
 ; view holds 3, 4, 5, and the reader still counts five
-fn unread_view() -> (u8, i64) {
+fn unread_view() -> (u8, i64)
     s: u8$ = fresh()
     five(s)
     s2: u8$ = advance(s, 2)
@@ -301,19 +273,17 @@ fn unread_view() -> (u8, i64) {
     total: u8 = sum u
     still: i64 = count s
     ret total, still
-}
 ; a push without a tick needs a regular ring
-fn irregular_push() -> u8 {
+fn irregular_push() -> u8
     s: u8$ = fresh()
     push s, 7
     x: u8 = latest s
     ret x
-}
 
 ; --- audio: a dense regular stream, a block at a time, through a
 ; biquad — a node that reads behind its frame on its input and behind
 ; its own output, so its state is the rings' history, not its own ---
-fn audio() -> (f32$, f32$) {
+fn audio() -> (f32$, f32$)
     r: ptr = addr arg
     a: ptr = addr avb
     ring_regular(r, a, 48000, 1, 0)
@@ -323,9 +293,8 @@ fn audio() -> (f32$, f32$) {
     x: f32$ = stream r
     o: f32$ = stream r2
     ret x, o
-}
 ; a block of four: an impulse, or silence
-fn block(first: f32) -> f32[] {
+fn block(first: f32) -> f32[]
     p: ptr = addr blk
     b: f32[] = slice p
     store first, b, 0
@@ -333,10 +302,9 @@ fn block(first: f32) -> f32[] {
     store 0.0, b, 2
     store 0.0, b, 3
     ret b
-}
 ; one application of y[n] = b0 x[n] + b1 x[n-1] + b2 x[n-2] - a1 y[n-1] - a2 y[n-2]
 ; to the frame of x since this reader looked, into out; the reader moved on
-fn biquad(x: f32$, out: f32$, b0: f32, b1: f32, b2: f32, a1: f32, a2: f32) -> f32$ {
+fn biquad(x: f32$, out: f32$, b0: f32, b1: f32, b2: f32, a1: f32, a2: f32) -> f32$
     f: f32[], k0: i64, x2: f32$ = frame(x)
     hx: f32[] = behind x, 2
     hy: f32[] = last out, 2
@@ -345,11 +313,10 @@ fn biquad(x: f32$, out: f32$, b0: f32, b1: f32, b2: f32, a1: f32, a2: f32) -> f3
     px2: f32 = tail(hx, 2)
     py1: f32 = tail(hy, 1)
     py2: f32 = tail(hy, 2)
-    loop(i: i64 = 0, x1: f32 = px1, xx2: f32 = px2, y1: f32 = py1, y2: f32 = py2) bound 64 {
+    loop(i: i64 = 0, x1: f32 = px1, xx2: f32 = px2, y1: f32 = py1, y2: f32 = py2) bound 64
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break
-        }
         xn: f32 = load f, i
         t0: f32 = mul b0, xn
         t1: f32 = mul b1, x1
@@ -363,11 +330,9 @@ fn biquad(x: f32$, out: f32$, b0: f32, b1: f32, b2: f32, a1: f32, a2: f32) -> f3
         push out, y
         i2: i64 = add i, 1
         continue i2, xn, x1, y, y1
-    }
     ret x2
-}
 ; an FIR (a = 0): an impulse gives the taps back: 1, 0.5, 0.25, 0
-fn biquad_fir() -> (u32, u32) {
+fn biquad_fir() -> (u32, u32)
     x: f32$, o: f32$ = audio()
     imp: f32[] = block(1.0)
     push x, imp
@@ -380,11 +345,10 @@ fn biquad_fir() -> (u32, u32) {
     w1: u32 = cast v1
     w2: u32 = cast v2
     ret w1, w2
-}
 ; y[n] = x[n] + 0.5 y[n-1]: an impulse block then a silent one, and the
 ; decay carries across the blocks through the output's history:
 ; 1/32 at 5, 1/128 at 7
-fn biquad_iir() -> (u32, u32) {
+fn biquad_iir() -> (u32, u32)
     x: f32$, o: f32$ = audio()
     imp: f32[] = block(1.0)
     push x, imp
@@ -400,23 +364,23 @@ fn biquad_iir() -> (u32, u32) {
     w5: u32 = cast v5
     w7: u32 = cast v7
     ret w5, w7
-}
 
 ; a struct of streams — one ring per field, the front end's form of a
 ; stream of structs — passed as a parameter: its `int$` field was made
 ; concrete when the struct was declared, and a body's `int` is abstract
 ; until the module is resolved; both are the policy's int, and a push
 ; of one into the other finds the library's `push`
-type pair_rings = struct { a: int$, b: int$ }
-fn push_pair(r: pair_rings, v: int) {
+type pair_rings = struct
+    a: int$
+    b: int$
+fn push_pair(r: pair_rings, v: int)
     ra: int$ = get r, a
     x: int = add v, 0
     push ra, 5, x
     rb: int$ = get r, b
     push rb, 5, 1
     ret
-}
-fn struct_of_streams(v: int) -> (int, int) {
+fn struct_of_streams(v: int) -> (int, int)
     a: ptr = addr rg
     va: ptr = addr ivb
     ta: ptr = addr itb
@@ -432,4 +396,3 @@ fn struct_of_streams(v: int) -> (int, int) {
     x: int = latest sa
     y: int = latest sb
     ret x, y
-}

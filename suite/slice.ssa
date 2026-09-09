@@ -21,7 +21,7 @@ data ib: buffer(i32, 8)
 data i64s: buffer(i64, 4)
 
 ; c = 2 a + b, over four floats: a = 1..4, b = 0.5
-fn axpy(two: f32) -> (f32, f32) {
+fn axpy(two: f32) -> (f32, f32)
     pa: ptr = addr fa
     pb: ptr = addr fb
     pc: ptr = addr fc
@@ -40,10 +40,9 @@ fn axpy(two: f32) -> (f32, f32) {
     r1: f32 = load tc, 1
     r3: f32 = load tc, 3
     ret r1, r3
-}
 
 ; two views into one buffer: the halves; fill each, sum the whole
-fn views() -> (i32, i32) {
+fn views() -> (i32, i32)
     p: ptr = addr ia
     all: i32[] = slice p
     lo: i32[] = view all, 0, 4
@@ -56,32 +55,28 @@ fn views() -> (i32, i32) {
     t: i32 = mul s, n32
     m: i32 = sub t, 9
     ret m, t
-}
 
-fn reduce() -> (i32, i32) {
+fn reduce() -> (i32, i32)
     p: ptr = addr ib
     a: i32[] = slice p
     ta: ptr(i32) = ptr a
-    loop(i: i64 = 0) {
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, 8
-        if done {
+        if done
             break
-        }
         i32v: i32 = conv i
         v: i32 = add i32v, 1
         store v, ta, i
         i2: i64 = add i, 1
         continue i2
-    }
     s: i32 = sum a
     lo: i32 = min a
     hi: i32 = max a
     lo10: i32 = mul lo, 10
     lohi: i32 = add lo10, hi
     ret s, lohi
-}
 
-fn ints(k: i64) -> (i64, i64) {
+fn ints(k: i64) -> (i64, i64)
     p: ptr = addr i64s
     a: i64[] = slice p
     fill a, k
@@ -91,41 +86,36 @@ fn ints(k: i64) -> (i64, i64) {
     neg a, a
     t: i64 = sum a
     ret s, t
-}
 
 ; lengths that differ fail a check
-fn mismatch() -> i32 {
+fn mismatch() -> i32
     p: ptr = addr ia
     all: i32[] = slice p
     part: i32[] = view all, 0, 3
     add part, all, all
     ret 0
-}
 
 ; a view past the end fails a check
-fn outside() -> i32 {
+fn outside() -> i32
     p: ptr = addr ia
     all: i32[] = slice p
     bad: i32[] = view all, 6, 4
     n: i64 = len bad
     r: i32 = conv n
     ret r
-}
 
 ; a slice of the wrong element size fails a check
-fn wrong_elem() -> i32 {
+fn wrong_elem() -> i32
     p: ptr = addr ia
     a: i64[] = slice p
     n: i64 = len a
     r: i32 = conv n
     ret r
-}
 
 ; a buffer made at run time in memory the caller gives
-fn runtime_buffer(mem: ptr, k: i64) -> i64 {
+fn runtime_buffer(mem: ptr, k: i64) -> i64
     buffer_init(mem, 8, 3)
     a: i64[] = slice mem
     fill a, k
     s: i64 = sum a
     ret s
-}

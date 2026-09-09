@@ -27,19 +27,17 @@ data __thread_default: array(u8, 16384)
 data __thread_table: array(u64, 64)
 
 ; the platform's; nothing where there is no register
-fn thread_key() -> ptr {
+fn thread_key() -> ptr
     ret 0
-}
 
-fn thread() -> ptr {
+fn thread() -> ptr
     k: ptr = thread_key()
     ku: u64 = cast k
     t: ptr = addr __thread_table
-    found: ptr = loop(i: i64 = 0) {
+    found: ptr = loop(i: i64 = 0)
         done: u1 = cmp.ge i, 32
-        if done {
+        if done
             break 0: ptr
-        }
         two: i64 = mul i, 2
         key: u64 = load t, two, 8
         blockat: i64 = add two, 1
@@ -47,21 +45,17 @@ fn thread() -> ptr {
         taken: u1 = cmp.ne block, 0
         same: u1 = cmp.eq key, ku
         hit: u1 = and taken, same
-        if hit {
+        if hit
             b: ptr = cast block
             break b
-        }
         i1: i64 = add i, 1
         continue i1
-    }
     none: u1 = cmp.eq found, 0
-    if none {
+    if none
         d: ptr = addr __thread_default
         ret d
-    }
     ret found
-}
-fn thread_set_slot(slot: i64, b: ptr) {
+fn thread_set_slot(slot: i64, b: ptr)
     ok: u1 = cmp.lt slot, 32
     check ok
     k: ptr = thread_key()
@@ -73,11 +67,8 @@ fn thread_set_slot(slot: i64, b: ptr) {
     blockat: i64 = add two, 1
     store bu, t, blockat, 8
     ret
-}
-fn thread_set(b: ptr) {
+fn thread_set(b: ptr)
     thread_set_slot(0, b)
     ret
-}
-fn thread_block_bytes() -> i64 {
+fn thread_block_bytes() -> i64
     ret 16384
-}

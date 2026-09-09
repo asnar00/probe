@@ -16,37 +16,32 @@
 ;! roundtrip 999999999 -> 999999999
 ;! frame_plus_sample_us  -> 41689
 
-fn cd_nanos(n: i64) -> i64 {
+fn cd_nanos(n: i64) -> i64
     p: time = period(44100)
     m: time = conv n
     t: time = mul p, m
     r: i64 = to_nanos(t)
     ret r
-}
-fn third_plus_sixth_ms() -> i64 {
+fn third_plus_sixth_ms() -> i64
     a: time = period(3)
     b: time = period(6)
     s: time = add a, b
     r: i64 = to_millis(s)
     ret r
-}
-fn one_second(n: i64) -> u1 {
+fn one_second(n: i64) -> u1
     p: time = period(44100)
     m: time = conv n
     t: time = mul p, m
     one: time = seconds(1)
     r: u1 = cmp.eq t, one
     ret r
-}
-fn roundtrip(n: i64) -> i64 {
+fn roundtrip(n: i64) -> i64
     t: time = nanos(n)
     r: i64 = to_nanos(t)
     ret r
-}
-fn frame_plus_sample_us() -> i64 {
+fn frame_plus_sample_us() -> i64
     f: time = period(24)
     s: time = period(44100)
     t: time = add f, s
     r: i64 = to_micros(t)
     ret r
-}

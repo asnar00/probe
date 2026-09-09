@@ -1,7 +1,7 @@
 ; a function with obvious slack: constant chains that fold away, dead
 ; computation, and structured ifs whose lowered arms are pure forwarders
 ;! shipping 3 -> 1940
-fn shipping(items: i64) -> i64 {
+fn shipping(items: i64) -> i64
     ; constant configuration, foldable to nothing
     kg_per_item: i64 = const 40
     rate: i64 = mul 12, kg_per_item
@@ -10,10 +10,8 @@ fn shipping(items: i64) -> i64 {
     cost: i64 = add cost0, 500
     ; forwarding-arm if: lowered arms are empty jumps
     big: u1 = cmp.gt cost, 100000
-    capped: i64 = if big {
+    capped: i64 = if big
         yield 100000
-    } else {
+    else
         yield cost
-    }
     ret capped
-}

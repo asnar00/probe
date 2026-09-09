@@ -16,100 +16,86 @@ data __clock: array(time, 1)
 ; the scheduler is running: a push from inside a task does not start it again
 data __running: array(i64, 1)
 
-fn __now() -> i64 {
+fn __now() -> i64
     p: ptr = addr __clock
     c: time = load p
     h: time = seconds(1000000)
     x: time = mul c, h
     k: i64 = conv x
     ret k
-}
 
 ; a task wired at a rate, after each push: the clock moves on one period
-fn __sleep(hz: i64) {
+fn __sleep(hz: i64)
     rated: u1 = cmp.gt hz, 0
-    if rated {
+    if rated
         p: ptr = addr __clock
         c: time = load p
         d: time = period(hz)
         c2: time = add c, d
         store c2, p
-    }
     ret
-}
 
-fn __out_len() -> i64 {
+fn __out_len() -> i64
     q: ptr = addr __out_n
     n: i64 = load q
     ret n
-}
 
-fn __out_byte(i: i64) -> u8 {
+fn __out_byte(i: i64) -> u8
     o: ptr = addr __out
     b: u8 = load o, i, 1
     ret b
-}
 
 ; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
-fn __str(p: ptr, n: i64) -> u8[] {
+fn __str(p: ptr, n: i64) -> u8[]
     q: ptr(u8) = cast p
     v: u8[] = pack q, n, 1
     ret v
-}
 
 ; a push into any stream (log 38): stamped with the clock on a ring
 ; without a rate, the next sample on one with a rate
-fn __push(s: number$, v: number) {
+fn __push(s: number$, v: number)
     r: ptr = get s, ring
     step: i64 = load r, 40
     regular: u1 = cmp.gt step, 0
-    if regular {
+    if regular
         push(s, v)
-    } else {
+    else
         t: i64 = __now()
         push(s, t, v)
-    }
     ret
-}
 
 ; one byte, when there is room
-fn __out_ch(c: u8) {
+fn __out_ch(c: u8)
     q: ptr = addr __out_n
     k: i64 = load q
     o: ptr = addr __out
     room: u1 = cmp.lt k, 4095
-    if room {
+    if room
         store c, o, k, 1
         k2: i64 = add k, 1
         store k2, q
-    }
     ret
-}
 
 ; an int in decimal
-fn __print_int(x: int) {
+fn __print_int(x: int)
     negative: u1 = cmp.lt x, 0
-    m: int = if negative {
+    m: int = if negative
         __out_ch(45)
         y: int = sub 0, x
         yield y
-    } else {
+    else
         yield x
-    }
-    top: int = loop(p: int = 1) {
+    top: int = loop(p: int = 1)
         q: int = div m, p
         more: u1 = cmp.ge q, 10
-        if more {
+        if more
             p2: int = mul p, 10
             continue p2
-        }
         break p
-    }
-    loop(p3: int = top) {
+    loop(p3: int = top)
         done: u1 = cmp.eq p3, 0
-        if done {
+        if done
             break
-        }
         d: int = div m, p3
         r: int = rem d, 10
         a: int = add r, 48
@@ -117,13 +103,17 @@ fn __print_int(x: int) {
         __out_ch(c)
         p4: int = div p3, 10
         continue p4
-    }
     ret
-}
 
-type token = struct { kind: int, start: int, n: int }
+type token = struct
+    kind: int
+    start: int
+    n: int
 ; a stream of token: one ring per field
-type __s_token = struct { kind: int$, start: int$, n: int$ }
+type __s_token = struct
+    kind: int$
+    start: int$
+    n: int$
 
 ; the context: one field per feature-scope variable — name: scope, merge (feature)
 ;   __enabled_platform: user, last (platform)
@@ -133,7 +123,14 @@ type __s_token = struct { kind: int$, start: int$, n: int$ }
 ;   __node1_c: node, last (lex)
 ;   __node1_c_seen: node, last (lex)
 ;   __node1_fin: node, last (lex)
-type __ctx = struct { __enabled_platform: u1, __enabled_lex: u1, chars: u8$, t: __s_token, __node1_c: u8$, __node1_c_seen: i64, __node1_fin: u1 }
+type __ctx = struct
+    __enabled_platform: u1
+    __enabled_lex: u1
+    chars: u8$
+    t: __s_token
+    __node1_c: u8$
+    __node1_c_seen: i64
+    __node1_fin: u1
 
 data __ctx_mem: array(__ctx, 1)
 data __s1 = "let x = 4"
@@ -141,7 +138,7 @@ data __s2 = "2;\n"
 data __s3 = "let"
 
 ; before every case: the print buffer emptied, the variables at their initial values
-fn __zero_reset() {
+fn __zero_reset()
     q: ptr = addr __out_n
     store 0: i64, q
     a: ptr = addr __arena
@@ -161,131 +158,113 @@ fn __zero_reset() {
     p: ptr = addr __ctx_mem
     store _6, p
     ret
-}
 
 ; after the case's context is set: the nodes run
-fn __zero_start() {
+fn __zero_start()
     __run()
     ret
-}
 
-fn __get___enabled_platform() -> u1 {
+fn __get___enabled_platform() -> u1
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: u1 = get c, __enabled_platform
     ret v
-}
 
-fn __set___enabled_platform(v: u1) {
+fn __set___enabled_platform(v: u1)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __enabled_platform, v
     store c2, p
     ret
-}
 
-fn __get___enabled_lex() -> u1 {
+fn __get___enabled_lex() -> u1
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: u1 = get c, __enabled_lex
     ret v
-}
 
-fn __set___enabled_lex(v: u1) {
+fn __set___enabled_lex(v: u1)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __enabled_lex, v
     store c2, p
     ret
-}
 
-fn __get_chars() -> u8$ {
+fn __get_chars() -> u8$
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: u8$ = get c, chars
     ret v
-}
 
-fn __set_chars(v: u8$) {
+fn __set_chars(v: u8$)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, chars, v
     store c2, p
     ret
-}
 
-fn __get_t() -> __s_token {
+fn __get_t() -> __s_token
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: __s_token = get c, t
     ret v
-}
 
-fn __set_t(v: __s_token) {
+fn __set_t(v: __s_token)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, t, v
     store c2, p
     ret
-}
 
-fn __get___node1_c() -> u8$ {
+fn __get___node1_c() -> u8$
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: u8$ = get c, __node1_c
     ret v
-}
 
-fn __set___node1_c(v: u8$) {
+fn __set___node1_c(v: u8$)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __node1_c, v
     store c2, p
     ret
-}
 
-fn __get___node1_c_seen() -> i64 {
+fn __get___node1_c_seen() -> i64
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: i64 = get c, __node1_c_seen
     ret v
-}
 
-fn __set___node1_c_seen(v: i64) {
+fn __set___node1_c_seen(v: i64)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __node1_c_seen, v
     store c2, p
     ret
-}
 
-fn __get___node1_fin() -> u1 {
+fn __get___node1_fin() -> u1
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: u1 = get c, __node1_fin
     ret v
-}
 
-fn __set___node1_fin(v: u1) {
+fn __set___node1_fin(v: u1)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __node1_fin, v
     store c2, p
     ret
-}
 
 ; a feature's effective state: its own enabled and its ancestors', read by every gate
-fn __on_platform() -> u1 {
+fn __on_platform() -> u1
     own: u1 = __get___enabled_platform()
     ret own
-}
-fn __on_lex() -> u1 {
+fn __on_lex() -> u1
     own: u1 = __get___enabled_lex()
     ret own
-}
 
 ; node 1: token t$ = lex (chars$) — run when an input has more than the node has seen, or has ended and the node has not run since
-fn __node1() -> u1 {
+fn __node1() -> u1
     fin: u1 = __get___node1_fin()
     notfin: u1 = xor fin, 1
     _1: u8$ = __get___node1_c()
@@ -299,7 +278,7 @@ fn __node1() -> u1 {
     _10: u1 = or _7, _9
     on: u1 = __on_lex()
     due: u1 = and _10, on
-    ran: u1 = if due {
+    ran: u1 = if due
         _11: __s_token = __get_t()
         _12: u8$ = lex(_11, _1, 0: i64)
         __set___node1_c(_12)
@@ -310,142 +289,119 @@ fn __node1() -> u1 {
         _17: u1 = ended(_12)
         __set___node1_fin(_17)
         yield 1
-    } else {
+    else
         yield 0
-    }
     ret ran
-}
 
 ; the scheduler (log 25): passes over the nodes in declaration order until a pass runs nothing
-fn __run() {
+fn __run()
     p: ptr = addr __running
     busy: i64 = load p
     idle: u1 = cmp.eq busy, 0
-    if idle {
+    if idle
         store 1: i64, p
-        loop() {
+        loop()
             r1: u1 = __node1()
-            if r1 {
+            if r1
                 continue
-            } else {
+            else
                 break
-            }
-        }
         store 0: i64, p
-    }
     ret
-}
 
 ; feature platform (layer platform)
-fn print(s: u8$) {
+fn print(s: u8$)
     q: ptr = addr __out_n
     k0: i64 = load q
     o: ptr = addr __out
     f: u8[] = unread(s)
     p: ptr(u8) = ptr f
     n: i64 = len f
-    k1: i64 = loop(i: i64 = 0, k: i64 = k0) {
+    k1: i64 = loop(i: i64 = 0, k: i64 = k0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break k
-        }
         c: u8 = load p, i
         room: u1 = cmp.lt k, 4095
-        if room {
+        if room
             store c, o, k, 1
-        }
         i2: i64 = add i, 1
         k2: i64 = add k, 1
         continue i2, k2
-    }
     room2: u1 = cmp.lt k1, 4095
-    k4: i64 = if room2 {
+    k4: i64 = if room2
         store 10: u8, o, k1, 1
         k3: i64 = add k1, 1
         yield k3
-    } else {
+    else
         yield k1
-    }
     store k4, q
     ret
-}
-fn print__ints(x: int$) {
+fn print__ints(x: int$)
     f: int[] = unread(x)
     n: i64 = len f
-    loop(i: i64 = 0) {
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break
-        }
         first: u1 = cmp.eq i, 0
-        if first {
-        } else {
+        if first
+        else
             __out_ch(32)
-        }
         v: int = load f, i
         __print_int(v)
         i2: i64 = add i, 1
         continue i2
-    }
     __out_ch(10)
     ret
-}
 
 ; feature lex (layer runtime)
-fn kind_of(c: u8) -> int {
+fn kind_of(c: u8) -> int
     _1: u1 = cmp.le c, 32
-    if _1 {
+    if _1
         k: int = const 0
         ret k
-    } else {
+    else
         _2: u1 = cmp.gt c, 122
-        if _2 {
+        if _2
             k_2: int = const 3
             ret k_2
-        } else {
+        else
             _3: u1 = cmp.ge c, 97
-            if _3 {
+            if _3
                 k_3: int = const 1
                 ret k_3
-            } else {
+            else
                 _4: u1 = cmp.gt c, 57
-                if _4 {
+                if _4
                     k_4: int = const 3
                     ret k_4
-                } else {
+                else
                     _5: u1 = cmp.ge c, 48
-                    if _5 {
+                    if _5
                         k_5: int = const 2
                         ret k_5
-                    } else {
+                    else
                         k_6: int = const 3
                         ret k_6
-                    }
-                }
-            }
-        }
-    }
-}
-fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$ {
-    c_6: u8$ = loop(c_2: u8$ = c) {
+fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$
+    c_6: u8$ = loop(c_2: u8$ = c)
         _1: i64 = count c_2
         _2: int = conv _1
         _3: u1 = cmp.eq _2, 0
-        if _3 {
+        if _3
             break c_2
-        }
         _4: u8 = peek c_2, 0
         k: int = kind_of(_4)
         _5: i64, _6: i64 = position(c_2)
         start: int = conv _5
         tick: int = conv _6
         _7: u1 = cmp.eq k, 0
-        if _7 {
+        if _7
             c_3: u8$ = advance(c_2, 1)
             continue c_3
-        }
         _8: u1 = cmp.eq k, 3
-        if _8 {
+        if _8
             _9: token = pack 3, start, 1
             _10: int$ = get t, kind
             _11: int = get _9, kind
@@ -459,34 +415,28 @@ fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$ {
             __sleep(__hz)
             c_4: u8$ = advance(c_2, 1)
             continue c_4
-        }
-        n: int = loop(i: int = 1, m: int = -1) {
+        n: int = loop(i: int = 1, m: int = -1)
             _16: i64 = count c_2
             _17: int = conv _16
             _18: u1 = cmp.ge i, _17
-            if _18 {
+            if _18
                 _19: u1 = ended(c_2)
-                m_2: int = if _19 {
+                m_2: int = if _19
                     yield i
-                } else {
+                else
                     yield m
-                }
                 break m_2
-            }
             _20: i64 = conv i
             _21: u8 = peek c_2, _20
             _22: int = kind_of(_21)
             _23: u1 = cmp.eq _22, k
-            if _23 {
+            if _23
                 _24: int = add i, 1
                 continue _24, -1
-            }
             break i
-        }
         _25: u1 = cmp.lt n, 0
-        if _25 {
+        if _25
             break c_2
-        }
         _26: token = pack k, start, n
         _27: int$ = get t, kind
         _28: int = get _26, kind
@@ -501,10 +451,8 @@ fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$ {
         _33: i64 = conv n
         c_5: u8$ = advance(c_2, _33)
         continue c_5
-    }
     ret c_6
-}
-fn arrive() {
+fn arrive()
     _1: u8$ = __get_chars()
     _2: ptr = addr __s1
     _3: i64 = len __s1
@@ -512,20 +460,17 @@ fn arrive() {
     _5: u8$ = __copy_u8(_4)
     _6: u8[] = unread(_5)
     _7: i64 = len _6
-    loop(_8: i64 = 0) {
+    loop(_8: i64 = 0)
         _9: u1 = cmp.ge _8, _7
-        if _9 {
+        if _9
             break
-        }
         _10: u8 = load _6, _8
         __push(_1, _10)
         _11: i64 = add _8, 1
         continue _11
-    }
     __run()
     ret
-}
-fn arrive_again() {
+fn arrive_again()
     _1: u8$ = __get_chars()
     _2: ptr = addr __s2
     _3: i64 = len __s2
@@ -533,23 +478,20 @@ fn arrive_again() {
     _5: u8$ = __copy_u8(_4)
     _6: u8[] = unread(_5)
     _7: i64 = len _6
-    loop(_8: i64 = 0) {
+    loop(_8: i64 = 0)
         _9: u1 = cmp.ge _8, _7
-        if _9 {
+        if _9
             break
-        }
         _10: u8 = load _6, _8
         __push(_1, _10)
         _11: i64 = add _8, 1
         continue _11
-    }
     __run()
     _12: u8$ = __get_chars()
     end(_12)
     __run()
     ret
-}
-fn two_arrivals() -> (int, int) {
+fn two_arrivals() -> (int, int)
     arrive()
     _1: __s_token = __get_t()
     _2: int$ = get _1, kind
@@ -561,8 +503,7 @@ fn two_arrivals() -> (int, int) {
     _6: i64 = count _5
     b: int = conv _6
     ret a, b
-}
-fn number_start() -> int {
+fn number_start() -> int
     arrive()
     arrive_again()
     _1: __s_token = __get_t()
@@ -575,8 +516,7 @@ fn number_start() -> int {
     x: token = pack _3, _5, _7
     s: int = get x, start
     ret s
-}
-fn number_length() -> int {
+fn number_length() -> int
     arrive()
     arrive_again()
     _1: __s_token = __get_t()
@@ -589,8 +529,7 @@ fn number_length() -> int {
     x: token = pack _3, _5, _7
     n: int = get x, n
     ret n
-}
-fn kinds() -> (int, int) {
+fn kinds() -> (int, int)
     arrive()
     arrive_again()
     _1: __s_token = __get_t()
@@ -612,8 +551,7 @@ fn kinds() -> (int, int) {
     a: int = get x, kind
     b: int = get y, kind
     ret a, b
-}
-fn third_kind() -> int {
+fn third_kind() -> int
     arrive()
     arrive_again()
     _1: __s_token = __get_t()
@@ -626,8 +564,7 @@ fn third_kind() -> int {
     x: token = pack _3, _5, _7
     k: int = get x, kind
     ret k
-}
-fn kinds_tail() -> (int, int) {
+fn kinds_tail() -> (int, int)
     arrive()
     arrive_again()
     _1: __s_token = __get_t()
@@ -649,8 +586,7 @@ fn kinds_tail() -> (int, int) {
     a: int = get x, kind
     b: int = get y, kind
     ret a, b
-}
-fn a_word_at_the_end() -> (int, int) {
+fn a_word_at_the_end() -> (int, int)
     _1: u8$ = __get_chars()
     _2: ptr = addr __s3
     _3: i64 = len __s3
@@ -658,16 +594,14 @@ fn a_word_at_the_end() -> (int, int) {
     _5: u8$ = __copy_u8(_4)
     _6: u8[] = unread(_5)
     _7: i64 = len _6
-    loop(_8: i64 = 0) {
+    loop(_8: i64 = 0)
         _9: u1 = cmp.ge _8, _7
-        if _9 {
+        if _9
             break
-        }
         _10: u8 = load _6, _8
         __push(_1, _10)
         _11: i64 = add _8, 1
         continue _11
-    }
     __run()
     _12: __s_token = __get_t()
     _13: int$ = get _12, kind
@@ -681,10 +615,9 @@ fn a_word_at_the_end() -> (int, int) {
     _18: i64 = count _17
     b: int = conv _18
     ret a, b
-}
 
 ; a stream's ring, carved from the arena: cap items (64 unless more are resident), and a tick per item unless regular; a reader's view at its start
-fn __stream_int(hz: i64, cap: i64) -> int$ {
+fn __stream_int(hz: i64, cap: i64) -> int$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
     sz: i64 = sizeof int
@@ -699,8 +632,7 @@ fn __stream_int(hz: i64, cap: i64) -> int$ {
     ring_init(r, vb, tb, hz)
     s: int$ = stream r
     ret s
-}
-fn __stream_u8(hz: i64, cap: i64) -> u8$ {
+fn __stream_u8(hz: i64, cap: i64) -> u8$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
     sz: i64 = sizeof u8
@@ -715,24 +647,20 @@ fn __stream_u8(hz: i64, cap: i64) -> u8$ {
     ring_init(r, vb, tb, hz)
     s: u8$ = stream r
     ret s
-}
 
 ; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give
-fn __copy_u8(v: u8[]) -> u8$ {
+fn __copy_u8(v: u8[]) -> u8$
     n: i64 = len v
     least: i64 = const 64
     cap: i64 = max(n, least)
     s: u8$ = __stream_u8(1000000, cap)
     t: i64 = __now()
-    loop(i: i64 = 0) {
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break
-        }
         x: u8 = load v, i
         push s, t, x
         i2: i64 = add i, 1
         continue i2
-    }
     ret s
-}

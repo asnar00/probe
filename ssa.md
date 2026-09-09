@@ -24,8 +24,8 @@ The input language of the lowest compiler stage. A module of functions; each fun
 | `uN`    | unsigned integer of N bits (`u1` is the boolean, `u23`, `u64`) |
 | `ptr`   | pointer (64-bit natively; a 32-bit offset on wasm)         |
 | `name`, `name(8, 23)` | a declared type, plain or instantiated with widths (see *Type declarations*) |
-| `pack { ... }` | bitfields packed into at most 256 bits (see *Packs*) |
-| `struct { ... }` | fields side by side, never a bit pattern (see *Structs*) |
+| `pack`, `pack(a: u1, b: u7)` | bitfields packed into at most 256 bits, the fields on lines under the word or in parentheses on one line (see *Packs*) |
+| `struct`, `struct(x: f32, y: f32)` | fields side by side, never a bit pattern, written as a pack's are (see *Structs*) |
 | `fn(i64, i64) -> i64`, `fn(ptr)`, `fn() -> (i64, i64)` | a function value: the signature is the type (see *Calls*) |
 | `f32x4`, `i32x8`, `u1x4`, `floatx4`, `intxN` | a vector: N lanes of one type, `TxN` (see *Vectors*); `Tx1` is `T` |
 | `ptr(T)`, `ptr(array(f32, 512, 512))` | a typed pointer: an address that knows what it points at (see *Typed pointers and arrays*) |
@@ -42,12 +42,11 @@ Floats are reserved for a later version (`float` will join `int` as an abstract 
 ## Structure
 
 ```
-fn name(a: i64, b: ptr) -> i64 {
-entry:
-    ...
-next(x: i64):
-    ...
-}
+fn name(a: i64, b: ptr) -> i64
+    entry:
+        ...
+    next(x: i64):
+        ...
 ```
 
 - A function declares named, typed parameters and zero or more return types. Internally the return is always a tuple; the text format allows `-> i64` as shorthand for `-> (i64)`, `-> (i64, i64)` for multiple values, and omitting the arrow entirely for none.
@@ -180,7 +179,7 @@ a: i64 = load q                      ; ... the i64 at it
 b: i64 = load q, i                   ; ... or the i-th i64 from it
 t: ptr(array(f32x4, 8)) = scratch    ; sized by its type
 d: ptr(array(i32, 3, 2)) = addr table
-data table: array(i32, 3, 2) = { 1, 2, 3, 10, 20, 30 }
+data table: array(i32, 3, 2) = 1, 2, 3, 10, 20, 30
 ```
 
 `ptr` is an address of bytes, and stays that. `ptr(T)` is an address that knows it points at a T — a scalar, a vector, a struct, or an array `array(T, W, H, ...)` with a shape, innermost dimension first, row-major, naturally aligned — so that `load`, `store` and `index` take indices instead of a byte offset and a step: as many as the shape has dimensions (none or one for a scalar pointee), each an `i64` or a literal. The element type is checked against the value loaded or stored. An array is a memory type: no value has one; it is what a typed pointer points at, what `scratch` sizes itself by when its result is typed, and what `data` declares (`addr` gives a `ptr`, or a `ptr(...)` to the item's array or its element). A typed pointer casts to and from `ptr` and `u64`, compares, and travels like any 64-bit value (32 on wasm). A typed access is lowered as it is parsed — the shape makes the offset, the element the step, through a hidden cast to `ptr` — so no backend meets one and `probe parse` shows the arithmetic. Textures and other opaque device resources are not arrays: those will be handles with platform operations, when a target has them.
@@ -189,7 +188,7 @@ data table: array(i32, 3, 2) = { 1, 2, 3, 10, 20, 30 }
 
 ```
 data greeting = "hello world ᕦ(ツ)ᕤ\n"        ; an array of bytes, UTF-8, no terminator
-data table: array(i32, 4) = { 10, 20, 30, -40 }
+data table: array(i32, 4) = 10, 20, 30, -40
 data buffer: array(u8, 256)                   ; zeros
 p: ptr = addr greeting                        ; its address
 n: i64 = len greeting                         ; its element count, a constant (24 here)
@@ -300,8 +299,13 @@ ret                         ; none
 A `pack` is a record of bitfields laid out **lowest bits first**: the first field occupies bit 0 upward, the next starts where it ends, and the total must fit in 256 bits (above 64 it is a wide value, in words). Fields are integers or other packs; a pack value is carried as the unsigned integer of its total width and can go anywhere a value can — parameters, block parameters, returns, memory if it is 8, 16, 32, or 64 bits wide or whole words.
 
 ```
-type rgb = pack { r: u5, g: u6, b: u5 }      ; 16 bits: r = bits 0-4, g = 5-10, b = 11-15
-type pix = pack { c: rgb, a: u8 }            ; 24 bits, nested
+type rgb = pack      ; 16 bits: r = bits 0-4, g = 5-10, b = 11-15
+    r: u5
+    g: u6
+    b: u5
+type pix = pack            ; 24 bits, nested
+    c: rgb
+    a: u8
 
 c: rgb = pack r, g, b                        ; one value per field, in order
 g: u6 = get c, g                             ; read a field (iN fields sign-extend)
@@ -405,7 +409,10 @@ hy: f32[] = last out, 2                       ; the two last pushed: a producer'
 ### Structs
 
 ```
-type point = struct { x: f32, y: f32, z: f32 }
+type point = struct
+    x: f32
+    y: f32
+    z: f32
 p: point = pack x, y, z
 z: f32 = get p, z
 q: point = set p, z, 1.0
@@ -420,27 +427,29 @@ A `struct` is a group of fields — integers, packs, `ptr`, wide values, other s
 `type` names a type, optionally with integer parameters that stand for widths. The right-hand side is any type expression: a pack, `i(expr)` or `u(expr)` with a width expression over the parameters (`+ - *` and parentheses), a builtin, or another declared type instantiated with arguments.
 
 ```
-type float(E, M) = pack { mantissa: u(M), exponent: u(E), sign: u1 }
+type float(E, M) = pack
+    mantissa: u(M)
+    exponent: u(E)
+    sign: u1
 type f32 = float(8, 23)
 type f16 = float(5, 10)
 type bits(E, M) = u(E + M + 1)
 type byte = u8
 ```
 
-A parametric type is instantiated wherever it is used with arguments — `x: float(8, 23)`, `y: bits(5, 10)` — and an alias is instantiated where it is declared. `f32`, `float(8, 23)`, and `pack { mantissa: u23, exponent: u8, sign: u1 }` are one type; it prints under the first name it was given. Declarations may appear anywhere at the top level; each may refer only to types declared before it.
+A parametric type is instantiated wherever it is used with arguments — `x: float(8, 23)`, `y: bits(5, 10)` — and an alias is instantiated where it is declared. `f32`, `float(8, 23)`, and `pack(mantissa: u23, exponent: u8, sign: u1)` are one type; it prints under the first name it was given. Declarations may appear anywhere at the top level; each may refer only to types declared before it.
 
 ### Generic functions
 
 A function can take the same kind of width parameters, in a group before its value parameters. It is a template: nothing is compiled until it is instantiated, either by name or at a call site, and each instantiation is an ordinary function whose body was parsed with the parameters bound. One rule chooses the instance wherever a name is applied to operands — the operation form `r: T = op a, b`, a statement on a view, a call by name — every parameter unifies with its argument (widths and abstract types bound together), a defining form wants a definition with a result of its type and a statement one with none, and of the definitions that fit the most specific wins (see *Abstract numeric types*) — so `u(M + 5)` is a concrete type there, and `const` may be a width expression.
 
 ```
-fn add(E, M, round)(a: float(E, M), b: float(E, M)) -> float(E, M) {
+fn add(E, M, round)(a: float(E, M), b: float(E, M)) -> float(E, M)
     ...
     n1: float(E, M) = fnan(E, M)()      ; instantiates fnan for this E, M
     ...
     r: float(E, M) = fpack(E, M, round)(sh, nx32, nf)
     ret r
-}
 fn fadd32 = add(8, 23)                      ; a named instantiation
 r: f16 = add(5, 10)(x, y)              ; an anonymous one, add_5_10_0
 s: f16 = add x, y                           ; the same, by dispatch
@@ -484,21 +493,20 @@ without M, F, D
 
 ```
 ; sum of 0..n
-fn sum(n: i64) -> i64 {
-entry:
-    zero: i64 = const 0
-    jmp loop(zero, zero)
-loop(i: i64, acc: i64):
-    done: u1 = cmp.ge i, n
-    br done, exit, body
-body:
-    acc2: i64 = add acc, i
-    one:  i64 = const 1
-    i2:   i64 = add i, one
-    jmp loop(i2, acc2)
-exit:
-    ret acc
-}
+fn sum(n: i64) -> i64
+    entry:
+        zero: i64 = const 0
+        jmp loop(zero, zero)
+    loop(i: i64, acc: i64):
+        done: u1 = cmp.ge i, n
+        br done, exit, body
+    body:
+        acc2: i64 = add acc, i
+        one:  i64 = const 1
+        i2:   i64 = add i, one
+        jmp loop(i2, acc2)
+    exit:
+        ret acc
 ```
 
 ## Abstract numeric types
@@ -509,7 +517,7 @@ exit:
 
 **Method sets.** A plain name defined more than once with different parameter types is one name with several methods: the first definition keeps the name, each later one is named inside by its parameter types as written (`width_of__i64`, `print__u8s`), and a call by the name resolves to the method whose parameter types are the arguments' once the policy has resolved both — so `width_of(3: int)` reaches `width_of(x: i32)` under a 32-bit policy and `width_of(x: i64)` under a 64-bit one, from one text. A literal argument to a set takes the parameter's type only where every method agrees on it; elsewhere it says its own, `3: int` being the policy's. A call no method takes is refused naming the methods' types, and a name defined twice with the same parameter types is refused. A definition over an abstract type is a template, not a method: it is instantiated by its arguments as above and does not join a set. The zero front end emits a name all of whose methods are concrete this way, so that the policy, not the front end, chooses a method by width.
 
-`float` is the same idea for the library's `float(E, M)`: a bare `float` is `float(E, M)` for the policy's E and M — `(11, 52)` on the register machines, `(8, 23)` on wasm32, or whatever `--float=f16|bf16|f32|f64|E,M` says — instantiated as the parser meets it (a parametric type's bare name is abstract when the policy has arguments for it). So `fn half(x: float) -> float { r: float = div x, 2.0 }` is written once, dispatches to the library's `div(E, M)` for the chosen width, and lands on the platform's `fdiv` where there is one.
+`float` is the same idea for the library's `float(E, M)`: a bare `float` is `float(E, M)` for the policy's E and M — `(11, 52)` on the register machines, `(8, 23)` on wasm32, or whatever `--float=f16|bf16|f32|f64|E,M` says — instantiated as the parser meets it (a parametric type's bare name is abstract when the policy has arguments for it). So `fn half(x: float) -> float` with `r: float = div x, 2.0` in its body is written once, dispatches to the library's `div(E, M)` for the chosen width, and lands on the platform's `fdiv` where there is one.
 
 `rational(N, D)` (`lib/rational.ssa`) is `numerator / denominator`, an `i(N)` over a `u(D)` kept reduced, with 128-bit intermediates so N and D go to 64; `lib/time.ssa` builds on `rational(64, 64)`: `type time`, `seconds`/`millis`/`micros`/`nanos`/`period` in, `to_*` out, and every operation the rational library's — exact, so nothing drifts.
 
@@ -522,7 +530,7 @@ exit:
 `scalar` names a *family*: a bare `scalar` is whichever of `float`, `fixed`, `rational`, `unit`, `sunit` the policy says (`float` unless `--scalar=...`), itself bare, so that family's width applies. A program over `scalar` — `suite/scalar.ssa` — runs unchanged in every family; the suite runs it in all five. Because types live on variables, resolution is a single rewrite of the value tables before verification; opcodes, instructions, and everything downstream see only concrete types.
 
 ```
-fn gcd(a: int, b: int) -> int {     ; width chosen per target/policy
+fn gcd(a: int, b: int) -> int       ; width chosen per target/policy
     ...
     r: int = rem x, y               ; same ops, abstractly typed
 ```
@@ -541,17 +549,18 @@ The design follows the MLIR `scf` pattern: constructs *yield values* instead of 
 ### if
 
 ```
-if c {                         ; plain: arms fall through to what follows
+if c                           ; plain: the arm falls through to what follows
     ...
-}
 
-if c { ... } else { ... }      ; either arm may end with break/continue/ret
+if c                           ; either arm may end with break/continue/ret;
+    ...                        ; an arm with nothing under it is empty
+else
+    ...
 
-r: i64 = if c {               ; value-yielding: results bound on the left,
+r: i64 = if c                  ; value-yielding: results bound on the left,
     yield a                    ; each arm must end with 'yield' (matching
-} else {                        ; count and types), and else is required
+else                           ; count and types), and else is required
     yield b
-}
 ```
 
 Lowering: `br` into two arm blocks; `yield`s and fallthroughs become jumps to a join block whose parameters are the bound results.
@@ -559,21 +568,19 @@ Lowering: `br` into two arm blocks; `yield`s and fallthroughs become jumps to a 
 ### loop
 
 ```
-sum: i64 = loop(i: i64 = zero, acc: i64 = zero) {
+sum: i64 = loop(i: i64 = zero, acc: i64 = zero)
     done: u1 = cmp.ge i, n
-    if done {
+    if done
         break acc              ; exit the loop, yielding its results
-    }
     ...
     continue i2, acc2         ; back edge: new values for the loop vars
-}
 ```
 
 - The parenthesized list declares **loop-carried variables** with their initial values; `continue` supplies the next iteration's values.
 - `break` exits, yielding the loop's results (bound on the left; a loop with no results uses bare `break`).
 - Every path through the body must end with `break`, `continue`, or `ret`.
 - `break`/`continue` bind to the innermost enclosing loop.
-- `loop(...) bound N {` declares the loop's trip count — trusted, not checked — for the analyses that need one (`probe cost`; residency, later). A loop that steps a variable by a constant to a constant shows its count without one.
+- `loop(...) bound N` declares the loop's trip count — trusted, not checked — for the analyses that need one (`probe cost`; residency, later). A loop that steps a variable by a constant to a constant shows its count without one.
 
 Lowering: a header block whose parameters are the loop variables (`continue` jumps to it), and an exit block whose parameters are the results (`break` jumps to it).
 

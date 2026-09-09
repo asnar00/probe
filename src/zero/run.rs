@@ -559,7 +559,7 @@ mod tests {
         let sequence = Planned { text: String::new(), call: lower::Call { func: "switches".into(), args: vec![], nrets: 2, expect: store::Expect::Values(vec![0, 1]), context: vec![("more".into(), false), ("base".into(), false), ("base".into(), true)] }, feature: "most".into(), rank: 3, file: "most.md".into(), line: 1 };
         assert!(effective(&s, &["base".to_string()].into_iter().collect(), &sequence).is_none());
         assert_eq!(effective(&s, &["tool".to_string()].into_iter().collect(), &sequence).unwrap().iter().cloned().collect::<Vec<_>>(), ["more", "tool"]);
-        assert!(l.ir.contains("fn __on_more() -> u1 {\n    own: u1 = __get___enabled_more()\n    up: u1 = __on_base()\n    on: u1 = and own, up\n    ret on\n}"), "{}", l.ir);
+        assert!(l.ir.contains("fn __on_more() -> u1\n    own: u1 = __get___enabled_more()\n    up: u1 = __on_base()\n    on: u1 = and own, up\n    ret on\n"), "{}", l.ir);
     }
 
     /// a bare literal between two concrete widths is emitted for the
@@ -576,7 +576,7 @@ mod tests {
         let native = suite::backend_policy(Backend::Native).unwrap();
         // the text says the policy decides, and does not change with it
         let ir = emit(&dir).unwrap();
-        assert!(ir.contains("fn width_of(x: i32) -> i32 {") && ir.contains("fn width_of(x: i64) -> i32 {"), "{}", ir);
+        assert!(ir.contains("fn width_of(x: i32) -> i32\n") && ir.contains("fn width_of(x: i64) -> i32\n"), "{}", ir);
         assert!(ir.contains("    w: i32 = width_of(3: int)\n") && ir.contains("    w: i32 = fwidth_of(2.5: float)\n"), "{}", ir);
         assert!(!ir.contains("product's int width"), "{}", ir);
         let run = |policy: &ssa::Policy| -> Vec<i64> {
@@ -607,8 +607,8 @@ mod tests {
     fn a_product_bound_reaches_the_loops() {
         let ir = emit(Path::new("suite/zero/tasks")).unwrap();
         assert!(ir.contains("; product setting: bound count down from: 5\nfn count_down_from("), "{}", ir);
-        let body: String = ir.lines().skip_while(|l| !l.starts_with("fn count_down_from(")).take_while(|l| *l != "}").collect::<Vec<_>>().join("\n");
-        assert!(body.contains("loop() bound 5 {"), "{}", body);
+        let body: String = ir.lines().skip_while(|l| !l.starts_with("fn count_down_from(")).skip(1).take_while(|l| l.starts_with(' ') || l.is_empty()).collect::<Vec<_>>().join("\n");
+        assert!(body.contains("loop() bound 5\n"), "{}", body);
         let policy = suite::backend_policy(Backend::Native).unwrap();
         let module = build(&ir, &policy, 1).unwrap();
         let mut coster = crate::cost::Coster::new(&module, None, None, None);

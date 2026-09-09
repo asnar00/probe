@@ -7,38 +7,35 @@
 ;! minmax -1 1 -> -1, 1
 ;! recombine 17 5 -> 17
 
-fn divmod(a: i64, b: i64) -> (i64, i64) {
-entry:
-    q: i64 = div a, b
-    r: i64 = rem a, b
-    ret q, r
-}
+fn divmod(a: i64, b: i64) -> (i64, i64)
+    entry:
+        q: i64 = div a, b
+        r: i64 = rem a, b
+        ret q, r
 
-fn minmax(a: i64, b: i64) -> (i64, i64) {
-entry:
-    lt: u1 = cmp.lt a, b
-    br lt, ab, ba
-ab:
-    ret a, b
-ba:
-    ret b, a
-}
+fn minmax(a: i64, b: i64) -> (i64, i64)
+    entry:
+        lt: u1 = cmp.lt a, b
+        br lt, ab, ba
+    ab:
+        ret a, b
+    ba:
+        ret b, a
 
 ; q*b + r must reconstruct a — exercises multi-value call results
-fn recombine(a: i64, b: i64) -> i64 {
-entry:
-    q: i64, r: i64 = divmod(a, b)
-    t: i64 = mul q, b
-    s: i64 = add t, r
-    ret s
-}
+fn recombine(a: i64, b: i64) -> i64
+    entry:
+        q: i64, r: i64 = divmod(a, b)
+        t: i64 = mul q, b
+        s: i64 = add t, r
+        ret s
 
 ; --- more arguments than registers: the ninth and on cross on the stack,
 ; each class counting its own; here twelve integers, ten floats and
 ; three vectors at once (the vectors dissolve into lanes on some paths,
 ; which is more of the same) ---
 ;! many_args 1 2 3 4 5 6 7 8 -> 1052, 0x41f00000
-fn many_args(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> (i32, f32) {
+fn many_args(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> (i32, f32)
     fa: f32 = conv a
     fb: f32 = conv b
     fc: f32 = conv c
@@ -48,9 +45,8 @@ fn many_args(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> 
     w: i32x4 = pack e, f, g, h
     r: i32, s: f32 = twelve_and_ten(a, b, c, d, e, f, g, h, a, b, c, d, fa, fb, fc, fd, fe, fa, fb, fc, fd, fe, v, w, v)
     ret r, s
-}
 ; the integers a..h then a..d again, the last four weighing 100; the floats a..e twice; lane 3 of v + w + v
-fn twelve_and_ten(i0: i32, i1: i32, i2: i32, i3: i32, i4: i32, i5: i32, i6: i32, i7: i32, i8: i32, i9: i32, i10: i32, i11: i32, f0: f32, f1: f32, f2: f32, f3: f32, f4: f32, f5: f32, f6: f32, f7: f32, f8: f32, f9: f32, v0: i32x4, v1: i32x4, v2: i32x4) -> (i32, f32) {
+fn twelve_and_ten(i0: i32, i1: i32, i2: i32, i3: i32, i4: i32, i5: i32, i6: i32, i7: i32, i8: i32, i9: i32, i10: i32, i11: i32, f0: f32, f1: f32, f2: f32, f3: f32, f4: f32, f5: f32, f6: f32, f7: f32, f8: f32, f9: f32, v0: i32x4, v1: i32x4, v2: i32x4) -> (i32, f32)
     s0: i32 = add i0, i1
     s1: i32 = add s0, i2
     s2: i32 = add s1, i3
@@ -77,4 +73,3 @@ fn twelve_and_ten(i0: i32, i1: i32, i2: i32, i3: i32, i4: i32, i5: i32, i6: i32,
     g7: f32 = add g6, f9
     fs: f32 = add g3, g7
     ret total, fs
-}

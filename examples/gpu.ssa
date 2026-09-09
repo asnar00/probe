@@ -5,9 +5,9 @@
 ; (from the repository root: the platform files are found there; the
 ; outputs land in target/air/)
 
-data offsets: array(i64, 2) = { 1, 100 }
+data offsets: array(i64, 2) = 1, 100
 
-fn __kernel(mem: ptr, area: ptr, id: i64) {
+fn __kernel(mem: ptr, area: ptr, id: i64)
     ten: i64 = mul id, 10
     d: ptr = addr offsets
     one: i64 = load d
@@ -15,11 +15,9 @@ fn __kernel(mem: ptr, area: ptr, id: i64) {
     w: i64 = twice(v)
     store w, area, id, 8
     ret
-}
-fn twice(x: i64) -> i64 {
+fn twice(x: i64) -> i64
     p: ptr = scratch 16
     store x, p
     y: i64 = load p
     r: i64 = add x, y
     ret r
-}

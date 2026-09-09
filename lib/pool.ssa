@@ -7,11 +7,16 @@
 ; themselves; a byte per slot in front of them says which are out, so
 ; giving back a slot twice, or one that was never taken, is a failed
 ; check. Running out is a failed check too.
-type pool = struct { base: ptr, slot: i64, count: i64, head: i64, out: i64 }
+type pool = struct
+    base: ptr
+    slot: i64
+    count: i64
+    head: i64
+    out: i64
 
 ; `mem` of `size` bytes becomes `count` slots of `slot` bytes (rounded
 ; up to 16), after `count` flag bytes (rounded up to 16)
-fn pool_init(p: ptr, mem: ptr, size: i64, slot: i64, count: i64) {
+fn pool_init(p: ptr, mem: ptr, size: i64, slot: i64, count: i64)
     s15: i64 = add slot, 15
     slot16: i64 = and s15, -16
     c15: i64 = add count, 15
@@ -34,11 +39,10 @@ fn pool_init(p: ptr, mem: ptr, size: i64, slot: i64, count: i64) {
     store 0: i64, p, 24
     store 0: i64, p, 32
     ; every slot free, each threading to the next
-    loop(i: i64 = 0) {
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, count
-        if done {
+        if done
             break
-        }
         off: i64 = mul i, slot16
         q: ptr = ptradd base, off
         i1: i64 = add i, 1
@@ -46,18 +50,15 @@ fn pool_init(p: ptr, mem: ptr, size: i64, slot: i64, count: i64) {
         fl: ptr = ptradd a, i
         store 0: u8, fl
         continue i1
-    }
     ret
-}
 
-fn pool_slot(p: ptr, i: i64) -> ptr {
+fn pool_slot(p: ptr, i: i64) -> ptr
     base: ptr = load p
     slot: i64 = load p, 8
     off: i64 = mul i, slot
     q: ptr = ptradd base, off
     ret q
-}
-fn pool_flag(p: ptr, i: i64) -> ptr {
+fn pool_flag(p: ptr, i: i64) -> ptr
     base: ptr = load p
     count: i64 = load p, 16
     c15: i64 = add count, 15
@@ -66,10 +67,9 @@ fn pool_flag(p: ptr, i: i64) -> ptr {
     a: ptr = ptradd base, neg
     f: ptr = ptradd a, i
     ret f
-}
 
 ; a slot; the pool must have one
-fn pool_take(p: ptr) -> ptr {
+fn pool_take(p: ptr) -> ptr
     count: i64 = load p, 16
     head: i64 = load p, 24
     have: u1 = cmp.lt head, count
@@ -83,10 +83,9 @@ fn pool_take(p: ptr) -> ptr {
     f: ptr = pool_flag(p, head)
     store 1: u8, f
     ret q
-}
 
 ; a slot back; it must be one of this pool's, and out
-fn pool_give(p: ptr, q: ptr) {
+fn pool_give(p: ptr, q: ptr)
     base: ptr = load p
     slot: i64 = load p, 8
     count: i64 = load p, 16
@@ -114,9 +113,7 @@ fn pool_give(p: ptr, q: ptr) {
     out1: i64 = sub out, 1
     store out1, p, 32
     ret
-}
 
-fn pool_out(p: ptr) -> i64 {
+fn pool_out(p: ptr) -> i64
     out: i64 = load p, 32
     ret out
-}

@@ -6,28 +6,24 @@ platform ir
     f: u8[] = unread(s)
     p: ptr(u8) = ptr f
     n: i64 = len f
-    k1: i64 = loop(i: i64 = 0, k: i64 = k0) {
+    k1: i64 = loop(i: i64 = 0, k: i64 = k0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break k
-        }
         c: u8 = load p, i
         room: u1 = cmp.lt k, 4095
-        if room {
+        if room
             store c, o, k, 1
-        }
         i2: i64 = add i, 1
         k2: i64 = add k, 1
         continue i2, k2
-    }
     room2: u1 = cmp.lt k1, 4095
-    k4: i64 = if room2 {
+    k4: i64 = if room2
         store 10: u8, o, k1, 1
         k3: i64 = add k1, 1
         yield k3
-    } else {
+    else
         yield k1
-    }
     store k4, q
     ret
 
@@ -35,20 +31,17 @@ on print (int x$)
 platform ir
     f: int[] = unread(x)
     n: i64 = len f
-    loop(i: i64 = 0) {
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break
-        }
         first: u1 = cmp.eq i, 0
-        if first {
-        } else {
+        if first
+        else
             __out_ch(32)
-        }
         v: int = load f, i
         __print_int(v)
         i2: i64 = add i, 1
         continue i2
-    }
     __out_ch(10)
     ret

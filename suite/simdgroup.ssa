@@ -9,7 +9,7 @@
 ;! __kernel 64 32 -> 496000001, 496001000, 496003003, 496006002
 ;! __kernel 128 64 2 -> 496000001, 496001000, 496003003, 496006002
 
-fn __kernel(mem: ptr, area: ptr, id: i64) {
+fn __kernel(mem: ptr, area: ptr, id: i64)
     x: i32 = conv id
     s: i32 = simd_sum x
     p: i32 = simd_prefix_sum x
@@ -24,4 +24,3 @@ fn __kernel(mem: ptr, area: ptr, id: i64) {
     r: i64 = add c, o64
     store r, area, id, 8
     ret
-}

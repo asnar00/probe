@@ -6,11 +6,14 @@
 ; arena is reset only at a moment when nothing points into it any
 ; more — a period boundary, a call's end — and a pointer kept past
 ; that moment is the program's bug. Running out is a failed check.
-type arena = struct { base: ptr, size: i64, used: i64 }
+type arena = struct
+    base: ptr
+    size: i64
+    used: i64
 
 ; the memory given may start anywhere; the arena starts at its first
 ; 16-aligned byte, so every allocation is 16-aligned absolutely
-fn arena_init(a: ptr, base: ptr, size: i64) {
+fn arena_init(a: ptr, base: ptr, size: i64)
     b: u64 = cast base
     b15: u64 = add b, 15
     aligned: u64 = and b15, -16
@@ -22,10 +25,9 @@ fn arena_init(a: ptr, base: ptr, size: i64) {
     store left, a, 8
     store 0: i64, a, 16
     ret
-}
 
 ; n bytes, 16-aligned; the arena must have room
-fn arena_alloc(a: ptr, n: i64) -> ptr {
+fn arena_alloc(a: ptr, n: i64) -> ptr
     base: ptr = load a
     size: i64 = load a, 8
     used: i64 = load a, 16
@@ -37,28 +39,23 @@ fn arena_alloc(a: ptr, n: i64) -> ptr {
     store end, a, 16
     p: ptr = ptradd base, used
     ret p
-}
 
-fn arena_used(a: ptr) -> i64 {
+fn arena_used(a: ptr) -> i64
     used: i64 = load a, 16
     ret used
-}
 
 ; the stack flavour: a mark is a count to come back to
-fn arena_mark(a: ptr) -> i64 {
+fn arena_mark(a: ptr) -> i64
     used: i64 = load a, 16
     ret used
-}
-fn arena_release(a: ptr, m: i64) {
+fn arena_release(a: ptr, m: i64)
     used: i64 = load a, 16
     ok: u1 = cmp.le m, used
     check ok
     store m, a, 16
     ret
-}
 
 ; the frame flavour: everything at once
-fn arena_reset(a: ptr) {
+fn arena_reset(a: ptr)
     store 0: i64, a, 16
     ret
-}

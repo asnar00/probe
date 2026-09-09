@@ -13,13 +13,26 @@
 ;! moved 1065353216 1073741824 1077936128 1091567616 -> 1094713344
 ;! abstract_fields 3 4 -> 7
 
-type point = struct { x: f32, y: f32, z: f32 }
-type mixed = struct { tag: u8, n: i64, w: u128 }
-type item = struct { k: i32, v: i32 }
-type triple = struct { a: i32, b: i32, c: i32 }
-type line = struct { from: point, to: point }
+type point = struct
+    x: f32
+    y: f32
+    z: f32
+type mixed = struct
+    tag: u8
+    n: i64
+    w: u128
+type item = struct
+    k: i32
+    v: i32
+type triple = struct
+    a: i32
+    b: i32
+    c: i32
+type line = struct
+    from: point
+    to: point
 
-fn dot(a: point, b: point) -> f32 {
+fn dot(a: point, b: point) -> f32
     ax: f32 = get a, x
     ay: f32 = get a, y
     az: f32 = get a, z
@@ -32,9 +45,8 @@ fn dot(a: point, b: point) -> f32 {
     s1: f32 = add px, py
     s: f32 = add s1, pz
     ret s
-}
 ; a struct through memory: fields at byte offsets 0, 8, 16 (size 32)
-fn roundtrip(p: ptr, t: u8, n: i64) -> i64 {
+fn roundtrip(p: ptr, t: u8, n: i64) -> i64
     s: mixed = pack t, n, 5
     store s, p
     r: mixed = load p
@@ -46,46 +58,38 @@ fn roundtrip(p: ptr, t: u8, n: i64) -> i64 {
     s1: i64 = add a64, b
     s2: i64 = add s1, w64
     ret s2
-}
 ; an array of 8-byte structs: the stride is the struct's size
-fn sum_v(p: ptr, n: i64) -> i32 {
-    r: i32 = loop(i: i64 = 0, acc: i32 = 0) {
+fn sum_v(p: ptr, n: i64) -> i32
+    r: i32 = loop(i: i64 = 0, acc: i32 = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break acc
-        }
         it: item = load p, i, 8
         v: i32 = get it, v
         acc2: i32 = add acc, v
         i2: i64 = add i, 1
         continue i2, acc2
-    }
     ret r
-}
 ; ... and a 12-byte one: a stride that is no power of two
-fn sum_c(p: ptr, n: i64) -> i32 {
-    r: i32 = loop(i: i64 = 0, acc: i32 = 0) {
+fn sum_c(p: ptr, n: i64) -> i32
+    r: i32 = loop(i: i64 = 0, acc: i32 = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break acc
-        }
         t: triple = load p, i, 12
         c: i32 = get t, c
         acc2: i32 = add acc, c
         i2: i64 = add i, 1
         continue i2, acc2
-    }
     ret r
-}
 ; nested: a struct of structs, fields of fields
-fn far(a: point, b: point) -> f32 {
+fn far(a: point, b: point) -> f32
     l: line = pack a, b
     t: point = get l, to
     r: f32 = get t, z
     ret r
-}
 ; set replaces one field
-fn moved(a: point, nz: f32) -> f32 {
+fn moved(a: point, nz: f32) -> f32
     m: point = set a, z, nz
     x: f32 = get m, x
     y: f32 = get m, y
@@ -93,21 +97,20 @@ fn moved(a: point, nz: f32) -> f32 {
     s1: f32 = add x, y
     s: f32 = add s1, z
     ret s
-}
 
 ; a struct's fields may be abstract: `int` is the policy's width from the
 ; declaration on, so the layout is known and a later mention of the type
-; finds the same entry (`pair` here is `struct { a: i64, b: i64 }` under
+; finds the same entry (`pair` here is `struct(a: i64, b: i64)` under
 ; --int=i64 and 32-bit under --int=i32, the same source)
-type pair = struct { a: int, b: int }
-fn pair_sum(p: pair) -> int {
+type pair = struct
+    a: int
+    b: int
+fn pair_sum(p: pair) -> int
     a: int = get p, a
     b: int = get p, b
     s: int = add a, b
     ret s
-}
-fn abstract_fields(x: int, y: int) -> int {
+fn abstract_fields(x: int, y: int) -> int
     p: pair = pack x, y
     s: int = pair_sum(p)
     ret s
-}

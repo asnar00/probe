@@ -15,7 +15,7 @@
 ;! halve_twice 12 -> 3
 
 ; sqrt(a*a + b*b)
-fn hyp(a: i32, b: i32) -> i32 {
+fn hyp(a: i32, b: i32) -> i32
     fa: float = conv a
     fb: float = conv b
     s: float = fma fa, fa, 0.0
@@ -23,8 +23,7 @@ fn hyp(a: i32, b: i32) -> i32 {
     r: float = sqrt t
     i: i32 = conv r
     ret i
-}
-fn mean3(a: i32, b: i32, c: i32) -> i32 {
+fn mean3(a: i32, b: i32, c: i32) -> i32
     fa: float = conv a
     fb: float = conv b
     fc: float = conv c
@@ -33,54 +32,45 @@ fn mean3(a: i32, b: i32, c: i32) -> i32 {
     m: float = div s2, 3.0
     r: i32 = conv m
     ret r
-}
 ; 3x^2 + 2x + 1
-fn poly(x: i32) -> i32 {
+fn poly(x: i32) -> i32
     fx: float = conv x
     a: float = fma fx, 3.0, 2.0
     b: float = fma a, fx, 1.0
     r: i32 = conv b
     ret r
-}
-fn scaled(x: i32) -> i32 {
+fn scaled(x: i32) -> i32
     fx: float = conv x
     y: float = mul fx, 3.0
     r: i32 = conv y
     ret r
-}
 ; a / b rounded to nearest (ties away from zero, via floor(x + 0.5))
-fn nearest(a: i32, b: i32) -> i32 {
+fn nearest(a: i32, b: i32) -> i32
     fa: float = conv a
     fb: float = conv b
     q: float = div fa, fb
     h: float = add q, 0.5
     r: i32 = conv h
     ret r
-}
-fn bigger(a: i32, b: i32) -> i32 {
+fn bigger(a: i32, b: i32) -> i32
     fa: float = conv a
     fb: float = conv b
     m: float = max fa, fb
     r: i32 = conv m
     ret r
-}
 ; abstract floats through calls and loops
-fn half(x: float) -> float {
+fn half(x: float) -> float
     r: float = div x, 2.0
     ret r
-}
-fn halve_twice(x: i32) -> i32 {
+fn halve_twice(x: i32) -> i32
     fx: float = conv x
-    y: float = loop(i: i32 = 0, v: float = fx) {
+    y: float = loop(i: i32 = 0, v: float = fx)
         done: u1 = cmp.eq i, 2
-        if done {
+        if done
             break v
-        }
         v2: float = half(v)
         i2: i32 = add i, 1
         continue i2, v2
-    }
     r: i32 = conv y
     ret r
-}
 

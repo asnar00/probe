@@ -253,7 +253,7 @@ impl Gen {
                     self.rng.pick(&u1s).0.clone()
                 };
                 let name = self.fresh();
-                self.emit(&format!("{}: {} = if {} {{", name, t.name, c));
+                self.emit(&format!("{}: {} = if {}", name, t.name, c));
                 let mark = self.vals.len();
                 self.depth += 1;
                 self.statement();
@@ -262,7 +262,7 @@ impl Gen {
                 self.emit(&format!("yield {}", ya));
                 self.depth -= 1;
                 self.vals.truncate(mark);
-                self.emit("} else {");
+                self.emit("else");
                 self.depth += 1;
                 self.statement();
                 let b = self.of(|u| *u == t);
@@ -270,7 +270,6 @@ impl Gen {
                 self.emit(&format!("yield {}", yb));
                 self.depth -= 1;
                 self.vals.truncate(mark);
-                self.emit("}");
                 self.vals.push((name, t));
             }
             12 if !ints.is_empty() && self.depth < 2 => {
@@ -280,16 +279,15 @@ impl Gen {
                 let name = self.fresh();
                 let acc = self.fresh();
                 let i = self.fresh();
-                self.emit(&format!("{}: {} = loop({}: u8 = 0, {}: {} = {}) {{", name, t.name, i, acc, t.name, x));
+                self.emit(&format!("{}: {} = loop({}: u8 = 0, {}: {} = {})", name, t.name, i, acc, t.name, x));
                 let mark = self.vals.len();
                 self.depth += 1;
                 self.emit(&format!("done: u1 = cmp.ge {}, {}", i, k).replace("done", &format!("d{}", self.n)));
                 let dn = format!("d{}", self.n);
-                self.emit(&format!("if {} {{", dn));
+                self.emit(&format!("if {}", dn));
                 self.depth += 1;
                 self.emit(&format!("break {}", acc));
                 self.depth -= 1;
-                self.emit("}");
                 self.vals.push((acc.clone(), t.clone()));
                 self.vals.push((i.clone(), Ty { name: "u8".into(), kind: Kind::Int { signed: false, bits: 8 } }));
                 self.statement();
@@ -300,7 +298,6 @@ impl Gen {
                 self.emit(&format!("continue {}, {}", i2, nxt));
                 self.depth -= 1;
                 self.vals.truncate(mark);
-                self.emit("}");
                 self.vals.push((name, t));
             }
             13 if !self.funcs.is_empty() => {
@@ -337,7 +334,7 @@ impl Gen {
                 format!("{}: {}", n, t.name)
             })
             .collect();
-        let _ = writeln!(self.out, "fn {}({}) -> i64 {{", name, params.join(", "));
+        let _ = writeln!(self.out, "fn {}({}) -> i64", name, params.join(", "));
         let len = 4 + self.rng.below(16);
         for _ in 0..len {
             self.statement();
@@ -358,7 +355,7 @@ impl Gen {
                 self.def(&Ty { name: "i64".into(), kind: Kind::Int { signed: true, bits: 64 } }, &format!("conv {}", bits))
             }
         };
-        let _ = writeln!(self.out, "    ret {}\n}}", r);
+        let _ = writeln!(self.out, "    ret {}", r);
         ptys
     }
 }

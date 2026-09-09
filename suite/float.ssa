@@ -1,97 +1,74 @@
 ; the float library (lib/float.ssa) instantiated for fp8, fp16, bf16, f32,
 ; f64 through the plain opcodes
-fn fadd8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
+fn fadd8(a: float(4, 3), b: float(4, 3)) -> float(4, 3)
     r: float(4, 3) = add a, b
     ret r
-}
-fn fadd16(a: float(5, 10), b: float(5, 10)) -> float(5, 10) {
+fn fadd16(a: float(5, 10), b: float(5, 10)) -> float(5, 10)
     r: float(5, 10) = add a, b
     ret r
-}
-fn faddb16(a: float(8, 7), b: float(8, 7)) -> float(8, 7) {
+fn faddb16(a: float(8, 7), b: float(8, 7)) -> float(8, 7)
     r: float(8, 7) = add a, b
     ret r
-}
-fn fadd32(a: float(8, 23), b: float(8, 23)) -> float(8, 23) {
+fn fadd32(a: float(8, 23), b: float(8, 23)) -> float(8, 23)
     r: float(8, 23) = add a, b
     ret r
-}
-fn fadd64(a: float(11, 52), b: float(11, 52)) -> float(11, 52) {
+fn fadd64(a: float(11, 52), b: float(11, 52)) -> float(11, 52)
     r: float(11, 52) = add a, b
     ret r
-}
-fn fsub8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
+fn fsub8(a: float(4, 3), b: float(4, 3)) -> float(4, 3)
     r: float(4, 3) = sub a, b
     ret r
-}
-fn fsub16(a: float(5, 10), b: float(5, 10)) -> float(5, 10) {
+fn fsub16(a: float(5, 10), b: float(5, 10)) -> float(5, 10)
     r: float(5, 10) = sub a, b
     ret r
-}
-fn fsub32(a: float(8, 23), b: float(8, 23)) -> float(8, 23) {
+fn fsub32(a: float(8, 23), b: float(8, 23)) -> float(8, 23)
     r: float(8, 23) = sub a, b
     ret r
-}
-fn fsub64(a: float(11, 52), b: float(11, 52)) -> float(11, 52) {
+fn fsub64(a: float(11, 52), b: float(11, 52)) -> float(11, 52)
     r: float(11, 52) = sub a, b
     ret r
-}
-fn fmul8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
+fn fmul8(a: float(4, 3), b: float(4, 3)) -> float(4, 3)
     r: float(4, 3) = mul a, b
     ret r
-}
-fn fmul16(a: float(5, 10), b: float(5, 10)) -> float(5, 10) {
+fn fmul16(a: float(5, 10), b: float(5, 10)) -> float(5, 10)
     r: float(5, 10) = mul a, b
     ret r
-}
-fn fmulb16(a: float(8, 7), b: float(8, 7)) -> float(8, 7) {
+fn fmulb16(a: float(8, 7), b: float(8, 7)) -> float(8, 7)
     r: float(8, 7) = mul a, b
     ret r
-}
-fn fmul32(a: float(8, 23), b: float(8, 23)) -> float(8, 23) {
+fn fmul32(a: float(8, 23), b: float(8, 23)) -> float(8, 23)
     r: float(8, 23) = mul a, b
     ret r
-}
-fn fmul64(a: float(11, 52), b: float(11, 52)) -> float(11, 52) {
+fn fmul64(a: float(11, 52), b: float(11, 52)) -> float(11, 52)
     r: float(11, 52) = mul a, b
     ret r
-}
-fn fdiv8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
+fn fdiv8(a: float(4, 3), b: float(4, 3)) -> float(4, 3)
     r: float(4, 3) = div a, b
     ret r
-}
-fn fdiv16(a: float(5, 10), b: float(5, 10)) -> float(5, 10) {
+fn fdiv16(a: float(5, 10), b: float(5, 10)) -> float(5, 10)
     r: float(5, 10) = div a, b
     ret r
-}
-fn fdiv32(a: float(8, 23), b: float(8, 23)) -> float(8, 23) {
+fn fdiv32(a: float(8, 23), b: float(8, 23)) -> float(8, 23)
     r: float(8, 23) = div a, b
     ret r
-}
-fn fdiv64(a: float(11, 52), b: float(11, 52)) -> float(11, 52) {
+fn fdiv64(a: float(11, 52), b: float(11, 52)) -> float(11, 52)
     r: float(11, 52) = div a, b
     ret r
-}
-fn fsqrt8(a: float(4, 3)) -> float(4, 3) {
+fn fsqrt8(a: float(4, 3)) -> float(4, 3)
     r: float(4, 3) = sqrt a
     ret r
-}
-fn fsqrt16(a: float(5, 10)) -> float(5, 10) {
+fn fsqrt16(a: float(5, 10)) -> float(5, 10)
     r: float(5, 10) = sqrt a
     ret r
-}
-fn fsqrtb16(a: float(8, 7)) -> float(8, 7) {
+fn fsqrtb16(a: float(8, 7)) -> float(8, 7)
     r: float(8, 7) = sqrt a
     ret r
-}
-fn fsqrt32(a: float(8, 23)) -> float(8, 23) {
+fn fsqrt32(a: float(8, 23)) -> float(8, 23)
     r: float(8, 23) = sqrt a
     ret r
-}
-fn fsqrt64(a: float(11, 52)) -> float(11, 52) {
+fn fsqrt64(a: float(11, 52)) -> float(11, 52)
     r: float(11, 52) = sqrt a
     ret r
-}
 
 ;! fadd8 56 56 -> 64
 ;! fadd8 60 60 -> 68
@@ -248,224 +225,172 @@ fn fsqrt64(a: float(11, 52)) -> float(11, 52) {
 ;! ops32 1075838976 1056964608 -> 1053609165
 
 ; conversions by the opcode: the types on both sides choose the generic
-fn f32tof64(a: f32) -> f64 {
+fn f32tof64(a: f32) -> f64
     r: f64 = conv a
     ret r
-}
-fn f64tof32(a: f64) -> f32 {
+fn f64tof32(a: f64) -> f32
     r: f32 = conv a
     ret r
-}
-fn f16tof32(a: f16) -> f32 {
+fn f16tof32(a: f16) -> f32
     r: f32 = conv a
     ret r
-}
-fn f32tof16(a: f32) -> f16 {
+fn f32tof16(a: f32) -> f16
     r: f16 = conv a
     ret r
-}
-fn f8tof32(a: float(4, 3)) -> f32 {
+fn f8tof32(a: float(4, 3)) -> f32
     r: f32 = conv a
     ret r
-}
-fn f32tof8(a: f32) -> float(4, 3) {
+fn f32tof8(a: f32) -> float(4, 3)
     r: float(4, 3) = conv a
     ret r
-}
-fn i32tof32(a: i32) -> f32 {
+fn i32tof32(a: i32) -> f32
     r: f32 = conv a
     ret r
-}
-fn u32tof32(a: u32) -> f32 {
+fn u32tof32(a: u32) -> f32
     r: f32 = conv a
     ret r
-}
-fn i64tof32(a: i64) -> f32 {
+fn i64tof32(a: i64) -> f32
     r: f32 = conv a
     ret r
-}
-fn u64tof64(a: u64) -> f64 {
+fn u64tof64(a: u64) -> f64
     r: f64 = conv a
     ret r
-}
-fn i32tof64(a: i32) -> f64 {
+fn i32tof64(a: i32) -> f64
     r: f64 = conv a
     ret r
-}
-fn i64tof64(a: i64) -> f64 {
+fn i64tof64(a: i64) -> f64
     r: f64 = conv a
     ret r
-}
-fn i32tof16(a: i32) -> f16 {
+fn i32tof16(a: i32) -> f16
     r: f16 = conv a
     ret r
-}
-fn f32toi32(a: f32) -> i32 {
+fn f32toi32(a: f32) -> i32
     r: i32 = conv a
     ret r
-}
-fn f32tou32(a: f32) -> u32 {
+fn f32tou32(a: f32) -> u32
     r: u32 = conv a
     ret r
-}
-fn f32toi64(a: f32) -> i64 {
+fn f32toi64(a: f32) -> i64
     r: i64 = conv a
     ret r
-}
-fn f64toi64(a: f64) -> i64 {
+fn f64toi64(a: f64) -> i64
     r: i64 = conv a
     ret r
-}
-fn f64tou64(a: f64) -> u64 {
+fn f64tou64(a: f64) -> u64
     r: u64 = conv a
     ret r
-}
-fn f16toi32(a: f16) -> i32 {
+fn f16toi32(a: f16) -> i32
     r: i32 = conv a
     ret r
-}
 
 ; comparisons and sign operations by the opcode
-fn lt32(a: f32, b: f32) -> u1 {
+fn lt32(a: f32, b: f32) -> u1
     r: u1 = cmp.lt a, b
     ret r
-}
-fn le32(a: f32, b: f32) -> u1 {
+fn le32(a: f32, b: f32) -> u1
     r: u1 = cmp.le a, b
     ret r
-}
-fn gt32(a: f32, b: f32) -> u1 {
+fn gt32(a: f32, b: f32) -> u1
     r: u1 = cmp.gt a, b
     ret r
-}
-fn ge32(a: f32, b: f32) -> u1 {
+fn ge32(a: f32, b: f32) -> u1
     r: u1 = cmp.ge a, b
     ret r
-}
-fn eq32(a: f32, b: f32) -> u1 {
+fn eq32(a: f32, b: f32) -> u1
     r: u1 = cmp.eq a, b
     ret r
-}
-fn ne32(a: f32, b: f32) -> u1 {
+fn ne32(a: f32, b: f32) -> u1
     r: u1 = cmp.ne a, b
     ret r
-}
-fn lt64(a: f64, b: f64) -> u1 {
+fn lt64(a: f64, b: f64) -> u1
     r: u1 = cmp.lt a, b
     ret r
-}
-fn ge64(a: f64, b: f64) -> u1 {
+fn ge64(a: f64, b: f64) -> u1
     r: u1 = cmp.ge a, b
     ret r
-}
-fn eq64(a: f64, b: f64) -> u1 {
+fn eq64(a: f64, b: f64) -> u1
     r: u1 = cmp.eq a, b
     ret r
-}
-fn lt16(a: f16, b: f16) -> u1 {
+fn lt16(a: f16, b: f16) -> u1
     r: u1 = cmp.lt a, b
     ret r
-}
-fn lt8(a: float(4, 3), b: float(4, 3)) -> u1 {
+fn lt8(a: float(4, 3), b: float(4, 3)) -> u1
     r: u1 = cmp.lt a, b
     ret r
-}
-fn gt8(a: float(4, 3), b: float(4, 3)) -> u1 {
+fn gt8(a: float(4, 3), b: float(4, 3)) -> u1
     r: u1 = cmp.gt a, b
     ret r
-}
-fn neg32(a: f32) -> f32 {
+fn neg32(a: f32) -> f32
     r: f32 = neg a
     ret r
-}
-fn abs32(a: f32) -> f32 {
+fn abs32(a: f32) -> f32
     r: f32 = abs a
     ret r
-}
-fn abs64(a: f64) -> f64 {
+fn abs64(a: f64) -> f64
     r: f64 = abs a
     ret r
-}
-fn neg16(a: f16) -> f16 {
+fn neg16(a: f16) -> f16
     r: f16 = neg a
     ret r
-}
 ; clamp to [0, 1]: NaN falls through both tests to 0
-fn clamp01(a: f32) -> f32 {
+fn clamp01(a: f32) -> f32
     hi: u1 = cmp.gt a, 1.0
-    if hi {
+    if hi
         ret 1.0
-    }
     ok: u1 = cmp.ge a, 0.0
-    if ok {
+    if ok
         ret a
-    }
     ret 0.0
-}
 
-fn fma32(a: f32, b: f32, c: f32) -> f32 {
+fn fma32(a: f32, b: f32, c: f32) -> f32
     r: f32 = fma a, b, c
     ret r
-}
-fn fma64(a: f64, b: f64, c: f64) -> f64 {
+fn fma64(a: f64, b: f64, c: f64) -> f64
     r: f64 = fma a, b, c
     ret r
-}
-fn fma16(a: f16, b: f16, c: f16) -> f16 {
+fn fma16(a: f16, b: f16, c: f16) -> f16
     r: f16 = fma a, b, c
     ret r
-}
-fn fma8(a: float(4, 3), b: float(4, 3), c: float(4, 3)) -> float(4, 3) {
+fn fma8(a: float(4, 3), b: float(4, 3), c: float(4, 3)) -> float(4, 3)
     r: float(4, 3) = fma a, b, c
     ret r
-}
-fn min32(a: f32, b: f32) -> f32 {
+fn min32(a: f32, b: f32) -> f32
     r: f32 = min a, b
     ret r
-}
-fn max32(a: f32, b: f32) -> f32 {
+fn max32(a: f32, b: f32) -> f32
     r: f32 = max a, b
     ret r
-}
-fn min64(a: f64, b: f64) -> f64 {
+fn min64(a: f64, b: f64) -> f64
     r: f64 = min a, b
     ret r
-}
-fn max16(a: f16, b: f16) -> f16 {
+fn max16(a: f16, b: f16) -> f16
     r: f16 = max a, b
     ret r
-}
-fn min8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
+fn min8(a: float(4, 3), b: float(4, 3)) -> float(4, 3)
     r: float(4, 3) = min a, b
     ret r
-}
 
 ; a library-defined operation, by its name: sqrt is not an integer opcode
-fn root32(a: f32) -> f32 {
+fn root32(a: f32) -> f32
     r: f32 = sqrt a
     ret r
-}
 
 ; every opcode on floats: ((a - b) * b) / a
-fn ops32(a: f32, b: f32) -> f32 {
+fn ops32(a: f32, b: f32) -> f32
     d: f32 = sub a, b
     m: f32 = mul d, b
     q: f32 = div m, a
     ret q
-}
 
 ; `add` on floats, three times over: 1.0 + 2.0 + 3.0 = 6.0
-fn sum3(a: f32, b: f32, c: f32) -> f32 {
+fn sum3(a: f32, b: f32, c: f32) -> f32
     ab: f32 = add a, b
     r: f32 = add ab, c
     ret r
-}
-fn sum64(a: f64, b: f64) -> f64 {
+fn sum64(a: f64, b: f64) -> f64
     r: f64 = add a, b
     ret r
-}
-fn sum8(a: float(4, 3), b: float(4, 3)) -> float(4, 3) {
+fn sum8(a: float(4, 3), b: float(4, 3)) -> float(4, 3)
     r: float(4, 3) = add a, b
     ret r
-}
 

@@ -10,71 +10,61 @@
 
 
 ; --- 2 lanes ---
-fn sum(v: numberx2) -> number {
+fn sum(v: numberx2) -> number
     l0: number, l1: number = unpack v
     t0: number = add l0, l1
     ret t0
-}
-fn min(v: numberx2) -> number {
+fn min(v: numberx2) -> number
     l0: number, l1: number = unpack v
     t0: number = min l0, l1
     ret t0
-}
-fn max(v: numberx2) -> number {
+fn max(v: numberx2) -> number
     l0: number, l1: number = unpack v
     t0: number = max l0, l1
     ret t0
-}
-fn all(N)(v: u(N)x2) -> u(N) {
+fn all(N)(v: u(N)x2) -> u(N)
     l0: u(N), l1: u(N) = unpack v
     t0: u(N) = and l0, l1
     ret t0
-}
-fn any(N)(v: u(N)x2) -> u(N) {
+fn any(N)(v: u(N)x2) -> u(N)
     l0: u(N), l1: u(N) = unpack v
     t0: u(N) = or l0, l1
     ret t0
-}
 
 ; --- 4 lanes ---
-fn sum(v: numberx4) -> number {
+fn sum(v: numberx4) -> number
     l0: number, l1: number, l2: number, l3: number = unpack v
     t0: number = add l0, l1
     t1: number = add l2, l3
     t2: number = add t0, t1
     ret t2
-}
-fn min(v: numberx4) -> number {
+fn min(v: numberx4) -> number
     l0: number, l1: number, l2: number, l3: number = unpack v
     t0: number = min l0, l1
     t1: number = min l2, l3
     t2: number = min t0, t1
     ret t2
-}
-fn max(v: numberx4) -> number {
+fn max(v: numberx4) -> number
     l0: number, l1: number, l2: number, l3: number = unpack v
     t0: number = max l0, l1
     t1: number = max l2, l3
     t2: number = max t0, t1
     ret t2
-}
-fn all(N)(v: u(N)x4) -> u(N) {
+fn all(N)(v: u(N)x4) -> u(N)
     l0: u(N), l1: u(N), l2: u(N), l3: u(N) = unpack v
     t0: u(N) = and l0, l1
     t1: u(N) = and l2, l3
     t2: u(N) = and t0, t1
     ret t2
-}
-fn any(N)(v: u(N)x4) -> u(N) {
+fn any(N)(v: u(N)x4) -> u(N)
     l0: u(N), l1: u(N), l2: u(N), l3: u(N) = unpack v
     t0: u(N) = or l0, l1
     t1: u(N) = or l2, l3
     t2: u(N) = or t0, t1
     ret t2
-}
 
 ; --- 8 lanes ---
-fn sum(v: numberx8) -> number {
+fn sum(v: numberx8) -> number
     l0: number, l1: number, l2: number, l3: number, l4: number, l5: number, l6: number, l7: number = unpack v
     t0: number = add l0, l1
     t1: number = add l2, l3
@@ -84,8 +74,7 @@ fn sum(v: numberx8) -> number {
     t5: number = add t2, t3
     t6: number = add t4, t5
     ret t6
-}
-fn min(v: numberx8) -> number {
+fn min(v: numberx8) -> number
     l0: number, l1: number, l2: number, l3: number, l4: number, l5: number, l6: number, l7: number = unpack v
     t0: number = min l0, l1
     t1: number = min l2, l3
@@ -95,8 +84,7 @@ fn min(v: numberx8) -> number {
     t5: number = min t2, t3
     t6: number = min t4, t5
     ret t6
-}
-fn max(v: numberx8) -> number {
+fn max(v: numberx8) -> number
     l0: number, l1: number, l2: number, l3: number, l4: number, l5: number, l6: number, l7: number = unpack v
     t0: number = max l0, l1
     t1: number = max l2, l3
@@ -106,8 +94,7 @@ fn max(v: numberx8) -> number {
     t5: number = max t2, t3
     t6: number = max t4, t5
     ret t6
-}
-fn all(N)(v: u(N)x8) -> u(N) {
+fn all(N)(v: u(N)x8) -> u(N)
     l0: u(N), l1: u(N), l2: u(N), l3: u(N), l4: u(N), l5: u(N), l6: u(N), l7: u(N) = unpack v
     t0: u(N) = and l0, l1
     t1: u(N) = and l2, l3
@@ -117,8 +104,7 @@ fn all(N)(v: u(N)x8) -> u(N) {
     t5: u(N) = and t2, t3
     t6: u(N) = and t4, t5
     ret t6
-}
-fn any(N)(v: u(N)x8) -> u(N) {
+fn any(N)(v: u(N)x8) -> u(N)
     l0: u(N), l1: u(N), l2: u(N), l3: u(N), l4: u(N), l5: u(N), l6: u(N), l7: u(N) = unpack v
     t0: u(N) = or l0, l1
     t1: u(N) = or l2, l3
@@ -128,10 +114,9 @@ fn any(N)(v: u(N)x8) -> u(N) {
     t5: u(N) = or t2, t3
     t6: u(N) = or t4, t5
     ret t6
-}
 
 ; --- 16 lanes ---
-fn sum(v: numberx16) -> number {
+fn sum(v: numberx16) -> number
     l0: number, l1: number, l2: number, l3: number, l4: number, l5: number, l6: number, l7: number, l8: number, l9: number, l10: number, l11: number, l12: number, l13: number, l14: number, l15: number = unpack v
     t0: number = add l0, l1
     t1: number = add l2, l3
@@ -149,8 +134,7 @@ fn sum(v: numberx16) -> number {
     t13: number = add t10, t11
     t14: number = add t12, t13
     ret t14
-}
-fn min(v: numberx16) -> number {
+fn min(v: numberx16) -> number
     l0: number, l1: number, l2: number, l3: number, l4: number, l5: number, l6: number, l7: number, l8: number, l9: number, l10: number, l11: number, l12: number, l13: number, l14: number, l15: number = unpack v
     t0: number = min l0, l1
     t1: number = min l2, l3
@@ -168,8 +152,7 @@ fn min(v: numberx16) -> number {
     t13: number = min t10, t11
     t14: number = min t12, t13
     ret t14
-}
-fn max(v: numberx16) -> number {
+fn max(v: numberx16) -> number
     l0: number, l1: number, l2: number, l3: number, l4: number, l5: number, l6: number, l7: number, l8: number, l9: number, l10: number, l11: number, l12: number, l13: number, l14: number, l15: number = unpack v
     t0: number = max l0, l1
     t1: number = max l2, l3
@@ -187,8 +170,7 @@ fn max(v: numberx16) -> number {
     t13: number = max t10, t11
     t14: number = max t12, t13
     ret t14
-}
-fn all(N)(v: u(N)x16) -> u(N) {
+fn all(N)(v: u(N)x16) -> u(N)
     l0: u(N), l1: u(N), l2: u(N), l3: u(N), l4: u(N), l5: u(N), l6: u(N), l7: u(N), l8: u(N), l9: u(N), l10: u(N), l11: u(N), l12: u(N), l13: u(N), l14: u(N), l15: u(N) = unpack v
     t0: u(N) = and l0, l1
     t1: u(N) = and l2, l3
@@ -206,8 +188,7 @@ fn all(N)(v: u(N)x16) -> u(N) {
     t13: u(N) = and t10, t11
     t14: u(N) = and t12, t13
     ret t14
-}
-fn any(N)(v: u(N)x16) -> u(N) {
+fn any(N)(v: u(N)x16) -> u(N)
     l0: u(N), l1: u(N), l2: u(N), l3: u(N), l4: u(N), l5: u(N), l6: u(N), l7: u(N), l8: u(N), l9: u(N), l10: u(N), l11: u(N), l12: u(N), l13: u(N), l14: u(N), l15: u(N) = unpack v
     t0: u(N) = or l0, l1
     t1: u(N) = or l2, l3
@@ -225,16 +206,12 @@ fn any(N)(v: u(N)x16) -> u(N) {
     t13: u(N) = or t10, t11
     t14: u(N) = or t12, t13
     ret t14
-}
 
 ; --- one lane: a chunk of a number on a platform without vector
 ; registers is the number itself ---
-fn sum(v: number) -> number {
+fn sum(v: number) -> number
     ret v
-}
-fn min(v: number) -> number {
+fn min(v: number) -> number
     ret v
-}
-fn max(v: number) -> number {
+fn max(v: number) -> number
     ret v
-}

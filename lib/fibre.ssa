@@ -17,62 +17,53 @@
 ; scheduler's frame at 64, the frames at 192, the done flags at 8384,
 ; a word per fibre at 9728 (zero when it starts; lib/gpu.ssa counts
 ; simdgroup operations in it)
-fn fibre_state() -> ptr {
+fn fibre_state() -> ptr
     t: ptr = thread()
     ret t
-}
-fn fibre_sched() -> ptr {
+fn fibre_sched() -> ptr
     t: ptr = thread()
     p: ptr = ptradd t, 64
     ret p
-}
-fn fibre_done_flags() -> ptr {
+fn fibre_done_flags() -> ptr
     t: ptr = thread()
     p: ptr = ptradd t, 8384
     ret p
-}
 
 ; the platform's; a no-op where there is no rule
-fn fibre_switch(save: ptr, to: ptr) {
+fn fibre_switch(save: ptr, to: ptr)
     ret
-}
 
-fn fibre_frame(k: i64) -> ptr {
+fn fibre_frame(k: i64) -> ptr
     t: ptr = thread()
     off0: i64 = mul k, 128
     off: i64 = add off0, 192
     p: ptr = ptradd t, off
     ret p
-}
 
-fn fibres_active() -> u1 {
+fn fibres_active() -> u1
     st: ptr = fibre_state()
     a: u64 = load st, 16
     r: u1 = cmp.ne a, 0
     ret r
-}
 
-fn fibre_current() -> i64 {
+fn fibre_current() -> i64
     st: ptr = fibre_state()
     c: u64 = load st, 8
     r: i64 = cast c
     ret r
-}
 
 ; the current fibre gives up its turn
-fn fibre_yield() {
+fn fibre_yield()
     a: u1 = fibres_active()
-    if a {
+    if a
         k: i64 = fibre_current()
         mine: ptr = fibre_frame(k)
         sched: ptr = fibre_sched()
         fibre_switch(mine, sched)
-    }
     ret
-}
 
 ; where a fresh fibre begins: its body, then done for good
-fn fibre_entry() {
+fn fibre_entry()
     k: i64 = fibre_current()
     st: ptr = fibre_state()
     b: u64 = load st, 24
@@ -84,29 +75,25 @@ fn fibre_entry() {
     sched: ptr = fibre_sched()
     fibre_switch(mine, sched)
     ret
-}
 
-fn fibre_word(k: i64) -> ptr {
+fn fibre_word(k: i64) -> ptr
     t: ptr = thread()
     off: i64 = mul k, 8
     p: ptr = ptradd t, 9728
     w: ptr = ptradd p, off
     ret w
-}
 
-fn fibres_run(count: i64, stacks: ptr, stack_bytes: i64, body: fn(i64)) {
+fn fibres_run(count: i64, stacks: ptr, stack_bytes: i64, body: fn(i64))
     ok: u1 = cmp.le count, 64
     check ok
-    loop(z: i64 = 0) {
+    loop(z: i64 = 0)
         zdone: u1 = cmp.ge z, count
-        if zdone {
+        if zdone
             break
-        }
         zw: ptr = fibre_word(z)
         store 0: i64, zw
         z1: i64 = add z, 1
         continue z1
-    }
     st: ptr = fibre_state()
     c64: u64 = cast count
     store c64, st, 0
@@ -114,29 +101,25 @@ fn fibres_run(count: i64, stacks: ptr, stack_bytes: i64, body: fn(i64)) {
     store b, st, 24
     stacked: i64 = platform fibre_stacks
     one_stack: u1 = cmp.eq stacked, 0
-    if one_stack {
+    if one_stack
         ; one after another, no turns
-        loop(q: i64 = 0) {
+        loop(q: i64 = 0)
             last: u1 = cmp.ge q, count
-            if last {
+            if last
                 break
-            }
             body(q)
             q1: i64 = add q, 1
             continue q1
-        }
         ret
-    }
     lr_off: i64 = platform fibre_lr
     sp_off: i64 = platform fibre_sp
     e: fn() = addr fibre_entry
     entry: u64 = cast e
     d: ptr = fibre_done_flags()
-    loop(k: i64 = 0) {
+    loop(k: i64 = 0)
         done: u1 = cmp.ge k, count
-        if done {
+        if done
             break
-        }
         fr: ptr = fibre_frame(k)
         k1: i64 = add k, 1
         top_off: i64 = mul k1, stack_bytes
@@ -146,32 +129,25 @@ fn fibres_run(count: i64, stacks: ptr, stack_bytes: i64, body: fn(i64)) {
         store entry, fr, lr_off, 1
         store 0: u64, d, k, 8
         continue k1
-    }
     store 1: u64, st, 16
     sched: ptr = fibre_sched()
-    loop() {
-        live: u1 = loop(j: i64 = 0, any: u1 = 0) {
+    loop()
+        live: u1 = loop(j: i64 = 0, any: u1 = 0)
             at_end: u1 = cmp.ge j, count
-            if at_end {
+            if at_end
                 break any
-            }
             dj: u64 = load d, j, 8
             finished: u1 = cmp.ne dj, 0
             j1: i64 = add j, 1
-            if finished {
+            if finished
                 continue j1, any
-            }
             jj: u64 = cast j
             store jj, st, 8
             frj: ptr = fibre_frame(j)
             fibre_switch(sched, frj)
             continue j1, 1
-        }
-        if live {
+        if live
             continue
-        }
         break
-    }
     store 0: u64, st, 16
     ret
-}

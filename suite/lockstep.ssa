@@ -8,16 +8,14 @@
 ;! __kernel 64 32 -> check
 ;! __kernel 128 64 2 -> check
 
-fn __kernel(mem: ptr, area: ptr, id: i64) {
+fn __kernel(mem: ptr, area: ptr, id: i64)
     x: i32 = conv id
     five: u1 = cmp.eq id, 5
-    r: i32 = if five {
+    r: i32 = if five
         yield x
-    } else {
+    else
         s: i32 = simd_sum x
         yield s
-    }
     r64: i64 = conv r
     store r64, area, id, 8
     ret
-}

@@ -86,49 +86,36 @@ data frame_label = "frame "
 data colon = ":"
 
 ; --- the board ---
-fn vectors(t: ptr) {
+fn vectors(t: ptr)
     ret
-}
-fn resume() -> ptr {
+fn resume() -> ptr
     ret 0
-}
-fn resume_at(p: ptr) {
+fn resume_at(p: ptr)
     ret
-}
-fn now() -> u64 {
+fn now() -> u64
     ret 0
-}
-fn hz() -> u64 {
+fn hz() -> u64
     ret 0
-}
-fn timer_at(t: u64) {
+fn timer_at(t: u64)
     ret
-}
-fn timer_off() {
+fn timer_off()
     ret
-}
-fn irq_on() {
+fn irq_on()
     ret
-}
-fn irq_ack() -> u32 {
+fn irq_ack() -> u32
     ret 0
-}
-fn irq_done(id: u32) {
+fn irq_done(id: u32)
     ret
-}
-fn reschedule() {
+fn reschedule()
     ret
-}
-fn idle() {
+fn idle()
     ret
-}
-fn psci(code: u64) {
+fn psci(code: u64)
     ret
-}
 
 ; --- time ---
 ; the machine's counter since boot, as exact seconds
-fn now_time() -> time {
+fn now_time() -> time
     sp: ptr = addr start
     s: u64 = load sp
     t: u64 = now()
@@ -140,9 +127,8 @@ fn now_time() -> time {
     p: time = period(fi)
     r: time = mul c, p
     ret r
-}
 ; a time as a count of the machine's counter, the tick after it
-fn ticks_of(t: time) -> u64 {
+fn ticks_of(t: time) -> u64
     sp: ptr = addr start
     s: u64 = load sp
     f: u64 = hz()
@@ -154,18 +140,16 @@ fn ticks_of(t: time) -> u64 {
     nu: u64 = conv n1
     r: u64 = add s, nu
     ret r
-}
 
 ; --- the kernel ---
-fn task_block(i: i64) -> ptr {
+fn task_block(i: i64) -> ptr
     t: ptr = addr tasks
     off: i64 = mul i, 80
     p: ptr = ptradd t, off
     ret p
-}
 ; a task: a stack from the pool, its function as the place to resume,
 ; runnable now
-fn spawn(i: i64, f: fn()) {
+fn spawn(i: i64, f: fn())
     p: ptr = task_block(i)
     pc: ptr = cast f
     sp: ptr = addr stack_pool
@@ -178,22 +162,19 @@ fn spawn(i: i64, f: fn()) {
     store 1: i64, p, 32
     store stack, p, 72
     ret
-}
 ; a one-shot task: at time t, f(arg), then gone — a free task slot, the
 ; three words it needs, and the task that runs them
-fn run_at(t: time, f: fn(ptr), arg: ptr) {
-    i: i64 = loop(j: i64 = 1) {
+fn run_at(t: time, f: fn(ptr), arg: ptr)
+    i: i64 = loop(j: i64 = 1)
         has_slot: u1 = cmp.le j, 4
         check has_slot
         bj: ptr = task_block(j)
         st: i64 = load bj, 32
         free: u1 = cmp.eq st, 0
-        if free {
+        if free
             break j
-        }
         j1: i64 = add j, 1
         continue j1
-    }
     b: ptr = task_block(i)
     store f, b, 40
     store arg, b, 48
@@ -202,8 +183,7 @@ fn run_at(t: time, f: fn(ptr), arg: ptr) {
     spawn(i, g)
     reschedule()
     ret
-}
-fn oneshot() {
+fn oneshot()
     cp: ptr = addr current
     c: u64 = load cp
     i: i64 = conv c
@@ -215,12 +195,10 @@ fn oneshot() {
     f(arg)
     store 2: i64, b, 32
     reschedule()
-    loop() {
+    loop()
         idle()
         continue
-    }
-}
-fn __start() {
+fn __start()
     h: fn(u64, u64, u64) -> u64 = addr __trap
     hp: ptr = cast h
     vectors(hp)
@@ -270,7 +248,7 @@ fn __start() {
     ; the idle task: the consumer of closed frames, and when the twenty
     ; wakes and ten frames are done, the report
     wp: ptr = addr wakes
-    loop() {
+    loop()
         consume()
         w: u64 = load wp
         frp: ptr = addr frames
@@ -278,7 +256,7 @@ fn __start() {
         w20: u1 = cmp.ge w, 20
         f11: u1 = cmp.ge fr, 11
         done: u1 = and w20, f11
-        if done {
+        if done
             ip: ptr = addr interrupts
             n: u64 = load ip
             ni: i64 = conv n
@@ -301,20 +279,16 @@ fn __start() {
             hln: i64 = len heap_label
             say(hlp, hln)
             exit()
-            loop() {
+            loop()
                 continue
-            }
-        }
         idle()
         continue
-    }
-}
 
 ; every interrupt: the timer's, or a task asking. Either way: keep
 ; where the running task is, pick the runnable task with the earliest
 ; deadline (the idle task when there is none), arm the timer to the
 ; earliest deadline still to come, and go there.
-fn __irq(sp: ptr) -> ptr {
+fn __irq(sp: ptr) -> ptr
     hp: ptr = addr the_heap
     heap_seal(hp)
     id: u32 = irq_ack()
@@ -323,13 +297,12 @@ fn __irq(sp: ptr) -> ptr {
     is_timer: u1 = cmp.eq id, timer
     is_soft: u1 = cmp.eq id, soft
     mine: u1 = or is_timer, is_soft
-    back: ptr = if mine {
-        if is_timer {
+    back: ptr = if mine
+        if is_timer
             ip: ptr = addr interrupts
             n: u64 = load ip
             n1: u64 = add n, 1
             store n1, ip
-        }
         cp: ptr = addr current
         cur: u64 = load cp
         ci: i64 = conv cur
@@ -342,67 +315,58 @@ fn __irq(sp: ptr) -> ptr {
         run_due(tnow)
         ; the earliest passed deadline runs; the earliest future one
         ; sets the timer
-        best: i64, next: time = loop(i: i64 = 1, b: i64 = 0, bw: time = tnow, nx: time = tnow, have: u1 = 0) {
+        best: i64, next: time = loop(i: i64 = 1, b: i64 = 0, bw: time = tnow, nx: time = tnow, have: u1 = 0)
             over: u1 = cmp.gt i, 4
-            if over {
+            if over
                 break b, nx
-            }
             p: ptr = task_block(i)
             i2: i64 = add i, 1
             st: i64 = load p, 32
             not_live: u1 = cmp.ne st, 1
-            if not_live {
+            if not_live
                 ; a task that ended, once it is not the one interrupted:
                 ; its stack goes back to the pool, its slot is free
                 ended: u1 = cmp.eq st, 2
                 not_me: u1 = cmp.ne i, ci
                 reclaim: u1 = and ended, not_me
-                if reclaim {
+                if reclaim
                     stack: ptr = load p, 72
                     spp: ptr = addr stack_pool
                     pool_give(spp, stack)
                     store 0: i64, p, 32
-                }
                 continue i2, b, bw, nx, have
-            }
             w: time = load p, 16
             due: u1 = cmp.le w, tnow
-            if due {
+            if due
                 earlier: u1 = cmp.lt w, bw
                 none_yet: u1 = cmp.eq b, 0
                 take: u1 = or earlier, none_yet
-                if take {
+                if take
                     continue i2, i, w, nx, have
-                }
                 continue i2, b, bw, nx, have
-            }
             sooner: u1 = cmp.lt w, nx
             first: u1 = cmp.eq have, 0
             take2: u1 = or sooner, first
-            if take2 {
+            if take2
                 continue i2, b, bw, w, 1
-            }
             continue i2, b, bw, nx, have
-        }
         ; ... or a callback still to come; a timer left armed in the
         ; past would fire again at once
         next2: time = next_callback(tnow, next)
         later: u1 = cmp.gt next2, tnow
-        if later {
+        if later
             at: u64 = ticks_of(next2)
             timer_at(at)
-        } else {
+        else
             timer_off()
-        }
         ; a switch to a task, on record: a word in this frame's arena
         chosen_task: u1 = cmp.ne best, 0
         switched: u1 = cmp.ne best, ci
         record: u1 = and chosen_task, switched
-        if record {
+        if record
             rec: ptr = current_records()
             r: ptr = arena_alloc(rec, 8)
             store best, r
-        }
         bu: u64 = conv best
         store bu, cp
         chosen: ptr = task_block(best)
@@ -410,110 +374,92 @@ fn __irq(sp: ptr) -> ptr {
         sp2: ptr = load chosen, 8
         resume_at(pc2)
         yield sp2
-    } else {
+    else
         yield sp
-    }
     irq_done(id)
     heap_unseal(hp)
     ret back
-}
 
 ; --- callbacks ---
-fn timer_slot(i: i64) -> ptr {
+fn timer_slot(i: i64) -> ptr
     t: ptr = addr timers
     off: i64 = mul i, 32
     p: ptr = ptradd t, off
     ret p
-}
 ; run a function value at a time (inside the interrupt: short, and it
 ; must not sleep); from a task or from another callback
-fn at(t: time, f: fn(ptr), arg: ptr) {
-    loop(i: i64 = 0) {
+fn at(t: time, f: fn(ptr), arg: ptr)
+    loop(i: i64 = 0)
         full: u1 = cmp.ge i, 4
-        if full {
+        if full
             break
-        }
         p: ptr = timer_slot(i)
         g: fn(ptr) = load p, 16
         gb: u64 = cast g
         free: u1 = cmp.eq gb, 0
-        if free {
+        if free
             store t, p
             store f, p, 16
             store arg, p, 24
             break
-        }
         i1: i64 = add i, 1
         continue i1
-    }
     reschedule()
     ret
-}
 ; ... or a duration from now; the time that makes it, for the caller
-fn after(d: time, f: fn(ptr), arg: ptr) -> time {
+fn after(d: time, f: fn(ptr), arg: ptr) -> time
     n: time = now_time()
     t: time = add n, d
     at(t, f, arg)
     ret t
-}
 ; the callbacks whose time has come, in slot order
-fn run_due(tnow: time) {
-    loop(i: i64 = 0) {
+fn run_due(tnow: time)
+    loop(i: i64 = 0)
         over: u1 = cmp.ge i, 4
-        if over {
+        if over
             break
-        }
         i1: i64 = add i, 1
         p: ptr = timer_slot(i)
         g: fn(ptr) = load p, 16
         gb: u64 = cast g
         free: u1 = cmp.eq gb, 0
-        if free {
+        if free
             continue i1
-        }
         t: time = load p
         due: u1 = cmp.le t, tnow
-        if due {
+        if due
             arg: ptr = load p, 24
             none: u64 = const 0
             store none, p, 16
             g(arg)
-        }
         continue i1
-    }
     ret
-}
 ; the earliest callback time still to come, if sooner than `next`
 ; (which may be no deadline at all: not after tnow)
-fn next_callback(tnow: time, next: time) -> time {
-    r: time = loop(i: i64 = 0, nx: time = next) {
+fn next_callback(tnow: time, next: time) -> time
+    r: time = loop(i: i64 = 0, nx: time = next)
         over: u1 = cmp.ge i, 4
-        if over {
+        if over
             break nx
-        }
         i1: i64 = add i, 1
         p: ptr = timer_slot(i)
         g: fn(ptr) = load p, 16
         gb: u64 = cast g
         free: u1 = cmp.eq gb, 0
-        if free {
+        if free
             continue i1, nx
-        }
         t: time = load p
         future: u1 = cmp.gt t, tnow
         sooner: u1 = cmp.lt t, nx
         none: u1 = cmp.le nx, tnow
         take0: u1 = or sooner, none
         take: u1 = and future, take0
-        if take {
+        if take
             continue i1, t
-        }
         continue i1, nx
-    }
     ret r
-}
 ; --- frames ---
-fn current_records() -> ptr {
+fn current_records() -> ptr
     aa: ptr = addr arenas
     cp: ptr = addr current_arena
     c: u64 = load cp
@@ -521,11 +467,10 @@ fn current_records() -> ptr {
     off: i64 = mul ci, 24
     p: ptr = ptradd aa, off
     ret p
-}
 ; the frame callback: the consumer must be done with the other arena
 ; (it had a whole frame), then the arenas change places, and the next
 ; flip is a tenth of a second on
-fn flip(arg: ptr) {
+fn flip(arg: ptr)
     fp: ptr = addr frames
     f: u64 = load fp
     cp2: ptr = addr consumed
@@ -548,15 +493,14 @@ fn flip(arg: ptr) {
     next: time = add twentieth, step
     at(next, ff, arg)
     ret
-}
 ; the consumer: a frame closed since last time is printed and reset
-fn consume() {
+fn consume()
     fp: ptr = addr frames
     f: u64 = load fp
     cp2: ptr = addr consumed
     c: u64 = load cp2
     behind: u1 = cmp.lt c, f
-    if behind {
+    if behind
         ; the closed frame is the arena not current
         cp: ptr = addr current_arena
         cur: u64 = load cp
@@ -575,11 +519,10 @@ fn consume() {
         say(colp, 1)
         base: ptr = load a
         used: i64 = arena_used(a)
-        loop(i: i64 = 0) {
+        loop(i: i64 = 0)
             done: u1 = cmp.ge i, used
-            if done {
+            if done
                 break
-            }
             t: i64 = load base, i, 1
             lp2: ptr = addr letters
             l8: u8 = load lp2, t, 1
@@ -587,16 +530,13 @@ fn consume() {
             putc(l8)
             i16: i64 = add i, 16
             continue i16
-        }
         putc(10)
         arena_reset(a)
         store c1, cp2
-    }
     ret
-}
 
 ; the callbacks themselves: report, and the first registers the second
-fn ping(arg: ptr) {
+fn ping(arg: ptr)
     t: time = load arg
     bp: ptr = addr bang
     bn: i64 = len bang
@@ -618,10 +558,9 @@ fn ping(arg: ptr) {
     fp: fn(ptr) = addr pong
     at(t2, fp, pp)
     ret
-}
 ; the one-shot task's work: a region of its own from the heap, used
 ; through an arena, given back — a task's lifetime, carved and returned
-fn star(arg: ptr) {
+fn star(arg: ptr)
     hp: ptr = addr the_heap
     mem: ptr = heap_take(hp, 4096)
     a: ptr = scratch 24
@@ -629,29 +568,25 @@ fn star(arg: ptr) {
     msg: ptr = arena_alloc(a, 64)
     bp: ptr = addr starlabel
     bn: i64 = len starlabel
-    loop(i: i64 = 0) {
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, bn
-        if done {
+        if done
             break
-        }
         c: u8 = load bp, i, 1
         store c, msg, i, 1
         i1: i64 = add i, 1
         continue i1
-    }
     t: time = load arg
     report(msg, bn, t)
     heap_give(hp, mem, 4096)
     ret
-}
-fn pong(arg: ptr) {
+fn pong(arg: ptr)
     t: time = load arg
     bp: ptr = addr bangbang
     bn: i64 = len bangbang
     report(bp, bn, t)
     ret
-}
-fn report(label: ptr, n: i64, t: time) {
+fn report(label: ptr, n: i64, t: time)
     say(label, n)
     now: time = now_time()
     late: time = sub now, t
@@ -664,49 +599,41 @@ fn report(label: ptr, n: i64, t: time) {
     print_dec(lu)
     putc(10)
     ret
-}
 
-fn __trap(n: u64, a: u64, b: u64) -> u64 {
+fn __trap(n: u64, a: u64, b: u64) -> u64
     exit()
     ret n
-}
 
 ; sleep until a time: set the deadline, hand the cpu over, and — the
 ; interrupt being asynchronous — wait for the time to have come
-fn sleep_until(i: i64, t: time) {
+fn sleep_until(i: i64, t: time)
     p: ptr = task_block(i)
     store t, p, 16
     reschedule()
-    loop() {
+    loop()
         n: time = now_time()
         due: u1 = cmp.ge n, t
-        if due {
+        if due
             break
-        }
         idle()
         continue
-    }
     ret
-}
 
 ; --- the tasks: wake every period, report the wake ---
-fn task_a() {
+fn task_a()
     p: time = period(10)
     run(97, 1, p, 10)
     ret
-}
-fn task_b() {
+fn task_b()
     p: time = period(3)
     run(98, 2, p, 3)
     ret
-}
-fn task_c() {
+fn task_c()
     p: time = period(7)
     run(99, 3, p, 7)
     ret
-}
-fn run(letter: u8, i: i64, per: time, count: i64) {
-    loop(k: i64 = 1) {
+fn run(letter: u8, i: i64, per: time, count: i64)
+    loop(k: i64 = 1)
         kt: time = seconds(k)
         d: time = mul per, kt
         sleep_until(i, d)
@@ -725,59 +652,49 @@ fn run(letter: u8, i: i64, per: time, count: i64) {
         wo: ptr = addr worst
         wv: i64 = load wo
         more: u1 = cmp.gt lu, wv
-        if more {
+        if more
             store lu, wo
-        }
         wp: ptr = addr wakes
         w: u64 = load wp
         w1: u64 = add w, 1
         store w1, wp
         last: u1 = cmp.ge k, count
-        if last {
+        if last
             ; done: sleep forever
             far: time = seconds(1000000)
             sleep_until(i, far)
-        }
         k1: i64 = add k, 1
         continue k1
-    }
-}
 
 ; --- output ---
-fn putc(c: u8) {
+fn putc(c: u8)
     uart: ptr = platform uart
     c32: u32 = conv c
     store c32, uart
     ret
-}
-fn say(p: ptr, n: i64) {
-    loop(i: i64 = 0) {
+fn say(p: ptr, n: i64)
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break
-        }
         c: u8 = load p, i, 1
         putc(c)
         i2: i64 = add i, 1
         continue i2
-    }
     ret
-}
-fn say_summary() {
+fn say_summary()
     p: ptr = addr summary
     n: i64 = len summary
     say(p, n)
     ret
-}
-fn say_us() {
+fn say_us()
     p: ptr = addr us
     n: i64 = len us
     say(p, n)
     ret
-}
-fn print_dec(v: i64) {
+fn print_dec(v: i64)
     buf: ptr = scratch 32
-    n: i64 = loop(x: i64 = v, i: i64 = 0) {
+    n: i64 = loop(x: i64 = v, i: i64 = 0)
         d: i64 = rem x, 10
         c: u8 = conv d
         c48: u8 = add c, 48
@@ -785,26 +702,20 @@ fn print_dec(v: i64) {
         x2: i64 = div x, 10
         i2: i64 = add i, 1
         done: u1 = cmp.eq x2, 0
-        if done {
+        if done
             break i2
-        }
         continue x2, i2
-    }
-    loop(j: i64 = n) {
+    loop(j: i64 = n)
         z: u1 = cmp.le j, 0
-        if z {
+        if z
             break
-        }
         j1: i64 = sub j, 1
         ch: u8 = load buf, j1, 1
         putc(ch)
         continue j1
-    }
     ret
-}
-fn exit() {
+fn exit()
     f: ptr = platform finisher
     store 0x5555: u32, f
     psci(0x84000008)
     ret
-}

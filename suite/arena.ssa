@@ -13,7 +13,7 @@
 ;! checks_pass 0 -> check
 ;! overflows i64[0,0,0,0,0,0,0,0,0,0] -> check
 
-fn two_allocs(buf: ptr) -> i64 {
+fn two_allocs(buf: ptr) -> i64
     a: ptr = scratch 24
     arena_init(a, buf, 80)
     p: ptr = arena_alloc(a, 8)
@@ -23,10 +23,9 @@ fn two_allocs(buf: ptr) -> i64 {
     d: u64 = sub qa, pa
     r: i64 = cast d
     ret r
-}
 
 ; every allocation is 16-aligned, whatever was asked for
-fn aligned(buf: ptr) -> u1 {
+fn aligned(buf: ptr) -> u1
     a: ptr = scratch 24
     arena_init(a, buf, 80)
     p: ptr = arena_alloc(a, 3)
@@ -35,9 +34,8 @@ fn aligned(buf: ptr) -> u1 {
     low: u64 = and qa, 15
     r: u1 = cmp.eq low, 0
     ret r
-}
 
-fn roundtrip(buf: ptr, x: i64, y: i64) -> i64 {
+fn roundtrip(buf: ptr, x: i64, y: i64) -> i64
     a: ptr = scratch 24
     arena_init(a, buf, 80)
     p: ptr = arena_alloc(a, 8)
@@ -48,10 +46,9 @@ fn roundtrip(buf: ptr, x: i64, y: i64) -> i64 {
     yv: i64 = load q
     r: i64 = add xv, yv
     ret r
-}
 
 ; after a reset the next allocation is the first one again
-fn reset_reuses(buf: ptr) -> u1 {
+fn reset_reuses(buf: ptr) -> u1
     a: ptr = scratch 24
     arena_init(a, buf, 80)
     p: ptr = arena_alloc(a, 32)
@@ -61,10 +58,9 @@ fn reset_reuses(buf: ptr) -> u1 {
     qa: u64 = cast q
     r: u1 = cmp.eq pa, qa
     ret r
-}
 
 ; a mark taken, allocations, a release: the count is back
-fn mark_release(buf: ptr) -> i64 {
+fn mark_release(buf: ptr) -> i64
     a: ptr = scratch 24
     arena_init(a, buf, 80)
     arena_alloc(a, 48)
@@ -73,10 +69,9 @@ fn mark_release(buf: ptr) -> i64 {
     arena_release(a, m)
     u: i64 = arena_used(a)
     ret u
-}
 
 ; exactly the declared size fits
-fn fills_exactly(buf: ptr) -> i64 {
+fn fills_exactly(buf: ptr) -> i64
     a: ptr = scratch 24
     arena_init(a, buf, 80)
     arena_alloc(a, 16)
@@ -85,11 +80,10 @@ fn fills_exactly(buf: ptr) -> i64 {
     arena_alloc(a, 16)
     u: i64 = arena_used(a)
     ret u
-}
 
 ; a check that holds is nothing
 ; a third allocation does not fit: a failed check, not a pointer past the end
-fn overflows(buf: ptr) -> i64 {
+fn overflows(buf: ptr) -> i64
     a: ptr = scratch 24
     arena_init(a, buf, 80)
     p: ptr = arena_alloc(a, 32)
@@ -97,10 +91,8 @@ fn overflows(buf: ptr) -> i64 {
     r: ptr = arena_alloc(a, 32)
     ra: i64 = cast r
     ret ra
-}
-fn checks_pass(x: i64) -> i64 {
+fn checks_pass(x: i64) -> i64
     pos: u1 = cmp.gt x, 0
     check pos
     check 1
     ret x
-}

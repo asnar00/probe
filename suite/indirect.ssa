@@ -25,75 +25,62 @@
 type unary = fn(i64) -> i64
 type binary = fn(i64, i64) -> i64
 
-fn sq(x: i64) -> i64 {
+fn sq(x: i64) -> i64
     r: i64 = mul x, x
     ret r
-}
-fn neg(x: i64) -> i64 {
+fn neg(x: i64) -> i64
     r: i64 = sub 0, x
     ret r
-}
-fn add64(a: i64, b: i64) -> i64 {
+fn add64(a: i64, b: i64) -> i64
     r: i64 = add a, b
     ret r
-}
-fn sub64(a: i64, b: i64) -> i64 {
+fn sub64(a: i64, b: i64) -> i64
     r: i64 = sub a, b
     ret r
-}
-fn max64(a: i64, b: i64) -> i64 {
+fn max64(a: i64, b: i64) -> i64
     lt: u1 = cmp.lt a, b
-    r: i64 = if lt {
+    r: i64 = if lt
         yield b
-    } else {
+    else
         yield a
-    }
     ret r
-}
 
 ; a value of the type, called
-fn apply(f: unary, x: i64) -> i64 {
+fn apply(f: unary, x: i64) -> i64
     r: i64 = f(x)
     ret r
-}
-fn apply_sq(x: i64) -> i64 {
+fn apply_sq(x: i64) -> i64
     f: unary = addr sq
     r: i64 = apply(f, x)
     ret r
-}
-fn apply_neg(x: i64) -> i64 {
+fn apply_neg(x: i64) -> i64
     f: unary = addr neg
     r: i64 = apply(f, x)
     ret r
-}
 
 ; chosen by a condition, then called
-fn pick(which: u1, a: i64, b: i64) -> i64 {
-    f: binary = if which {
+fn pick(which: u1, a: i64, b: i64) -> i64
+    f: binary = if which
         g: binary = addr add64
         yield g
-    } else {
+    else
         h: binary = addr sub64
         yield h
-    }
     r: i64 = f(a, b)
     ret r
-}
 
 ; twice: f(f(x))
-fn twice(f: unary, x: i64) -> i64 {
+fn twice(f: unary, x: i64) -> i64
     y: i64 = f(x)
     z: i64 = f(y)
     ret z
-}
-fn twice_sq(x: i64) -> i64 {
+fn twice_sq(x: i64) -> i64
     f: unary = addr sq
     r: i64 = twice(f, x)
     ret r
-}
 
 ; stored and loaded like any 64-bit value
-fn via_memory(p: ptr, x: i64) -> i64 {
+fn via_memory(p: ptr, x: i64) -> i64
     f: unary = addr sq
     g: unary = addr add6
     store f, p
@@ -103,147 +90,122 @@ fn via_memory(p: ptr, x: i64) -> i64 {
     y: i64 = f2(x)
     z: i64 = g2(y)
     ret z
-}
-fn add6(x: i64) -> i64 {
+fn add6(x: i64) -> i64
     r: i64 = add x, 6
     ret r
-}
 
 ; a reducer carried around a loop as a block parameter
-fn fold(p: ptr, n: i64, which: u1) -> i64 {
-    f: binary = if which {
+fn fold(p: ptr, n: i64, which: u1) -> i64
+    f: binary = if which
         g: binary = addr max64
         yield g
-    } else {
+    else
         h: binary = addr add64
         yield h
-    }
-    acc: i64 = loop(i: i64 = 0, s: i64 = 0, r: binary = f) {
+    acc: i64 = loop(i: i64 = 0, s: i64 = 0, r: binary = f)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break s
-        }
         v: i64 = load p, i, 8
         s2: i64 = r(s, v)
         i2: i64 = add i, 1
         continue i2, s2, r
-    }
     ret acc
-}
 
 ; two results through a value
-fn divmod(a: i64, b: i64) -> (i64, i64) {
+fn divmod(a: i64, b: i64) -> (i64, i64)
     q: i64 = div a, b
     r: i64 = rem a, b
     ret q, r
-}
-fn divmod_ind(a: i64, b: i64) -> (i64, i64) {
+fn divmod_ind(a: i64, b: i64) -> (i64, i64)
     f: fn(i64, i64) -> (i64, i64) = addr divmod
     q: i64, r: i64 = f(a, b)
     ret q, r
-}
 
 ; float arguments and result through a value (a library type; on a
 ; platform with an FPU they travel in float registers)
-fn hyp(a: f32, b: f32) -> f32 {
+fn hyp(a: f32, b: f32) -> f32
     aa: f32 = mul a, a
     bb: f32 = mul b, b
     s: f32 = add aa, bb
     r: f32 = sqrt s
     ret r
-}
-fn hyp_ind(a: f32, b: f32) -> f32 {
+fn hyp_ind(a: f32, b: f32) -> f32
     f: fn(f32, f32) -> f32 = addr hyp
     r: f32 = f(a, b)
     ret r
-}
 
 ; recursion through a value
-fn fact(n: i64) -> i64 {
+fn fact(n: i64) -> i64
     done: u1 = cmp.le n, 1
-    r: i64 = if done {
+    r: i64 = if done
         yield 1
-    } else {
+    else
         f: unary = addr fact
         m: i64 = sub n, 1
         p: i64 = f(m)
         q: i64 = mul n, p
         yield q
-    }
     ret r
-}
-fn fact_ind(n: i64) -> i64 {
+fn fact_ind(n: i64) -> i64
     f: unary = addr fact
     r: i64 = f(n)
     ret r
-}
 
 ; a function value returned from a function
-fn choose(which: u1) -> unary {
-    f: unary = if which {
+fn choose(which: u1) -> unary
+    f: unary = if which
         g: unary = addr dbl
         yield g
-    } else {
+    else
         h: unary = addr inc
         yield h
-    }
     ret f
-}
-fn dbl(x: i64) -> i64 {
+fn dbl(x: i64) -> i64
     r: i64 = add x, x
     ret r
-}
-fn inc(x: i64) -> i64 {
+fn inc(x: i64) -> i64
     r: i64 = add x, 1
     ret r
-}
-fn chosen(which: u1, x: i64) -> i64 {
+fn chosen(which: u1, x: i64) -> i64
     f: unary = choose(which)
     r: i64 = f(x)
     ret r
-}
 
 ; no results: a callback that writes memory
-fn put(p: ptr, i: i64) {
+fn put(p: ptr, i: i64)
     store i, p, i, 8
     ret
-}
-fn fill(p: ptr, n: i64) -> i64 {
+fn fill(p: ptr, n: i64) -> i64
     f: fn(ptr, i64) = addr put
-    loop(i: i64 = 0) {
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break
-        }
         f(p, i)
         i2: i64 = add i, 1
         continue i2
-    }
     v: i64 = load p, 16
     s: i64 = add v, 1
     ret s
-}
 
 ; results ignored at the call site
-fn stepped(x: i64) -> i64 {
+fn stepped(x: i64) -> i64
     f: unary = addr sq
     f(x)
     r: i64 = add x, x
     ret r
-}
 
 ; a function value is its address: the same function gives the same value
-fn same_fn(which: u1) -> u1 {
+fn same_fn(which: u1) -> u1
     f: unary = addr sq
-    g: unary = if which {
+    g: unary = if which
         h: unary = addr sq
         yield h
-    } else {
+    else
         h2: unary = addr neg
         yield h2
-    }
     fa: u64 = cast f
     ga: u64 = cast g
     eq: u1 = cmp.eq fa, ga
     ret eq
-}

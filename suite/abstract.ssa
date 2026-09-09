@@ -16,67 +16,55 @@
 ;! aeven 10 -> 1
 ;! aeven 7 -> 0
 
-fn agcd(a: int, b: int) -> int {
-    g: int = loop(x: int = a, y: int = b) {
+fn agcd(a: int, b: int) -> int
+    g: int = loop(x: int = a, y: int = b)
         done: u1 = cmp.eq y, 0
-        if done {
+        if done
             break x
-        }
         r: int = rem x, y
         continue y, r
-    }
     ret g
-}
 
-fn asum(n: int) -> int {
-    r: int = loop(i: int = 0, acc: int = 0) {
+fn asum(n: int) -> int
+    r: int = loop(i: int = 0, acc: int = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break acc
-        }
         acc2: int = add acc, i
         i2: int = add i, 1
         continue i2, acc2
-    }
     ret r
-}
 
-fn afib(n: int) -> int {
+fn afib(n: int) -> int
     small: u1 = cmp.lt n, 2
-    if small {
+    if small
         ret n
-    }
     n1: int = sub n, 1
     a: int = afib(n1)
     n2: int = sub n, 2
     b: int = afib(n2)
     r: int = add a, b
     ret r
-}
 
 ; abstract and concrete types mix freely: u1 conditions, int arithmetic
-fn aclamp(v: int, lo: int, hi: int) -> int {
+fn aclamp(v: int, lo: int, hi: int) -> int
     below: u1 = cmp.lt v, lo
-    r: int = if below {
+    r: int = if below
         yield lo
-    } else {
+    else
         above: u1 = cmp.gt v, hi
-        s: int = if above {
+        s: int = if above
             yield hi
-        } else {
+        else
             yield v
-        }
         yield s
-    }
     ret r
-}
 
-fn aeven(n: int) -> u1 {
+fn aeven(n: int) -> u1
     bit: int = and n, 1
     flip: int = xor bit, 1
     r: u1 = conv flip
     ret r
-}
 
 ; a view whose element is `int`, stored into and loaded from by a plain
 ; function (no abstract type in its signature, so its body's `int` stays
@@ -84,12 +72,11 @@ fn aeven(n: int) -> u1 {
 ; the policy's width at its declaration): judged under the policy (fm3
 ; milestone 0, where `print i$` over `int i$ = [1 through 3]` met it)
 data ints: buffer(int, 4)
-fn ints_int() -> int[] {
+fn ints_int() -> int[]
     p: ptr = addr ints
     v: int[] = slice p
     ret v
-}
-fn aview(k: i64) -> i64 {
+fn aview(k: i64) -> i64
     v: int[] = ints_int()
     x: int = const 5
     store x, v, 1
@@ -97,4 +84,3 @@ fn aview(k: i64) -> i64 {
     z: i64 = conv y
     r: i64 = add z, k
     ret r
-}

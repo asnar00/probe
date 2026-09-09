@@ -7,18 +7,15 @@
 ; one core does nothing, and main never runs. The core has no way
 ; back: main should end in a loop.
 
-fn core_boot() {
+fn core_boot()
     ret
-}
 ; a core with nothing to do: waits for an interrupt (the platform's
 ; `wfi`), once; a finished core loops on it
-fn core_idle() {
+fn core_idle()
     ret
-}
-fn core_start(core: i64, entry: ptr, rec: ptr) {
+fn core_start(core: i64, entry: ptr, rec: ptr)
     ret
-}
-fn core_launch(core: i64, rec: ptr, stack_top: ptr, main: fn(ptr), arg: ptr) {
+fn core_launch(core: i64, rec: ptr, stack_top: ptr, main: fn(ptr), arg: ptr)
     store stack_top, rec
     mp: ptr = cast main
     store mp, rec, 8
@@ -28,4 +25,3 @@ fn core_launch(core: i64, rec: ptr, stack_top: ptr, main: fn(ptr), arg: ptr) {
     ep: ptr = cast e
     core_start(core, ep, rec)
     ret
-}

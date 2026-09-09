@@ -6,7 +6,7 @@
 ; edges clamp. The weights are the coordinate's type; each element is
 ; converted into it, mixed, and the result converted back, rounded once
 ; — so a byte image sampled with f32 coordinates gives a byte.
-fn sample(img: number[,], x: scalar, y: scalar) -> number {
+fn sample(img: number[,], x: scalar, y: scalar) -> number
     w: i64 = shape img, 1
     h: i64 = shape img, 0
     j0: i64, fx: scalar = axis(x, w)
@@ -26,45 +26,38 @@ fn sample(img: number[,], x: scalar, y: scalar) -> number {
     m: scalar = mix(top, bottom, fy)
     r: number = conv m
     ret r
-}
 ; the index at or below a coordinate, clamped into the axis, and the
 ; fraction above it
-fn axis(c: scalar, n: i64) -> (i64, scalar) {
+fn axis(c: scalar, n: i64) -> (i64, scalar)
     last: i64 = sub n, 1
     below: u1 = cmp.lt c, 0
-    i: i64, f: scalar = if below {
+    i: i64, f: scalar = if below
         yield 0, 0
-    } else {
+    else
         ci: i64 = conv c
         beyond: u1 = cmp.ge ci, last
-        k: i64, g: scalar = if beyond {
+        k: i64, g: scalar = if beyond
             yield last, 0
-        } else {
+        else
             cf: scalar = conv ci
             d: scalar = sub c, cf
             yield ci, d
-        }
         yield k, g
-    }
     ret i, f
-}
 ; the index after i, staying inside the axis
-fn neighbour(i: i64, n: i64) -> i64 {
+fn neighbour(i: i64, n: i64) -> i64
     last: i64 = sub n, 1
     at_end: u1 = cmp.ge i, last
-    j: i64 = if at_end {
+    j: i64 = if at_end
         yield last
-    } else {
+    else
         yield i
-    }
     k: i64 = add j, 1
     m: i64 = min(k, last)
     ret m
-}
 ; a + (b - a) * f
-fn mix(a: scalar, b: scalar, f: scalar) -> scalar {
+fn mix(a: scalar, b: scalar, f: scalar) -> scalar
     d: scalar = sub b, a
     p: scalar = mul d, f
     r: scalar = add a, p
     ret r
-}

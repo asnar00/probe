@@ -11,81 +11,75 @@
 ;! hypot2 3 4 -> 25
 ;! collatz 27 -> 111
 
-fn sum(n: i64) -> i64 {
-entry:
-    jmp loop(0, 0)
-loop(i: i64, acc: i64):
-    done: u1 = cmp.ge i, n
-    br done, exit, body
-body:
-    acc2: i64 = add acc, i
-    i2: i64 = add i, 1
-    jmp loop(i2, acc2)
-exit:
-    ret acc
-}
+fn sum(n: i64) -> i64
+    entry:
+        jmp loop(0, 0)
+    loop(i: i64, acc: i64):
+        done: u1 = cmp.ge i, n
+        br done, exit, body
+    body:
+        acc2: i64 = add acc, i
+        i2: i64 = add i, 1
+        jmp loop(i2, acc2)
+    exit:
+        ret acc
 
-fn gcd(a: i64, b: i64) -> i64 {
-entry:
-    jmp loop(a, b)
-loop(x: i64, y: i64):
-    done: u1 = cmp.eq y, 0
-    br done, exit, step
-step:
-    r: i64 = rem x, y
-    jmp loop(y, r)
-exit:
-    ret x
-}
+fn gcd(a: i64, b: i64) -> i64
+    entry:
+        jmp loop(a, b)
+    loop(x: i64, y: i64):
+        done: u1 = cmp.eq y, 0
+        br done, exit, step
+    step:
+        r: i64 = rem x, y
+        jmp loop(y, r)
+    exit:
+        ret x
 
-fn fib(n: i64) -> i64 {
-entry:
-    small: u1 = cmp.lt n, 2
-    br small, base, rec
-base:
-    ret n
-rec:
-    n1: i64 = sub n, 1
-    a: i64 = fib(n1)
-    n2: i64 = sub n, 2
-    b: i64 = fib(n2)
-    r: i64 = add a, b
-    ret r
-}
+fn fib(n: i64) -> i64
+    entry:
+        small: u1 = cmp.lt n, 2
+        br small, base, rec
+    base:
+        ret n
+    rec:
+        n1: i64 = sub n, 1
+        a: i64 = fib(n1)
+        n2: i64 = sub n, 2
+        b: i64 = fib(n2)
+        r: i64 = add a, b
+        ret r
 
-fn square(x: i64) -> i64 {
-entry:
-    r: i64 = mul x, x
-    ret r
-}
+fn square(x: i64) -> i64
+    entry:
+        r: i64 = mul x, x
+        ret r
 
-fn hypot2(a: i64, b: i64) -> i64 {
-entry:
-    aa: i64 = square(a)
-    bb: i64 = square(b)
-    s: i64 = add aa, bb
-    ret s
-}
+fn hypot2(a: i64, b: i64) -> i64
+    entry:
+        aa: i64 = square(a)
+        bb: i64 = square(b)
+        s: i64 = add aa, bb
+        ret s
 
 ; steps to reach 1: n -> n/2 (even) | 3n+1 (odd)
-fn collatz(n: i64) -> i64 {
-entry:
-    jmp loop(n, 0)
-loop(x: i64, steps: i64):
-    done: u1 = cmp.eq x, 1
-    br done, exit, step
-step:
-    parity: i64 = and x, 1
-    odd: u1 = conv parity
-    s2: i64 = add steps, 1
-    br odd, odd, even
-odd:
-    t: i64 = mul x, 3
-    t1: i64 = add t, 1
-    jmp loop(t1, s2)
-even:
-    h: i64 = div x, 2
-    jmp loop(h, s2)
-exit:
-    ret steps
-}
+fn collatz(n: i64) -> i64
+    entry:
+        jmp loop(n, 0)
+    loop(x: i64, steps: i64):
+        done: u1 = cmp.eq x, 1
+        br done, exit, step
+    step:
+        parity: i64 = and x, 1
+        odd: u1 = conv parity
+        s2: i64 = add steps, 1
+        br odd, odd, even
+    odd:
+        t: i64 = mul x, 3
+        t1: i64 = add t, 1
+        jmp loop(t1, s2)
+    even:
+        h: i64 = div x, 2
+        jmp loop(h, s2)
+    exit:
+        ret steps

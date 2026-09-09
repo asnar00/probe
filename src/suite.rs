@@ -1022,72 +1022,68 @@ const ARM_HEAP: u64 = 0x4140_0000;
 fn helpers(uart: u64) -> String {
     format!(
         r"
-fn __pch(c: u64) {{
-entry:
+fn __pch(c: u64)
     u: ptr = const {}
     c32: u32 = conv c
     store c32, u
     ret
-}}
 ",
         uart
     ) + PHEX
 }
 
 const PHEX: &str = r"
-fn __phex(v: u64) {
-entry:
-    sh0: u64 = const 60
-    jmp loop(sh0)
-loop(sh: u64):
-    t: u64 = shr v, sh
-    m: u64 = const 15
-    n: u64 = and t, m
-    nine: u64 = const 9
-    big: u1 = cmp.gt n, nine
-    bigi: u64 = conv big
-    gap: u64 = const 39
-    adj: u64 = mul bigi, gap
-    z: u64 = const 48
-    c1: u64 = add n, z
-    c: u64 = add c1, adj
-    __pch(c)
-    zero: u64 = const 0
-    done: u1 = cmp.eq sh, zero
-    four: u64 = const 4
-    sh2: u64 = sub sh, four
-    br done, exit, loop(sh2)
-exit:
-    ret
-}
+fn __phex(v: u64)
+    entry:
+        sh0: u64 = const 60
+        jmp loop(sh0)
+    loop(sh: u64):
+        t: u64 = shr v, sh
+        m: u64 = const 15
+        n: u64 = and t, m
+        nine: u64 = const 9
+        big: u1 = cmp.gt n, nine
+        bigi: u64 = conv big
+        gap: u64 = const 39
+        adj: u64 = mul bigi, gap
+        z: u64 = const 48
+        c1: u64 = add n, z
+        c: u64 = add c1, adj
+        __pch(c)
+        zero: u64 = const 0
+        done: u1 = cmp.eq sh, zero
+        four: u64 = const 4
+        sh2: u64 = sub sh, four
+        br done, exit, loop(sh2)
+    exit:
+        ret
 ";
 
 /// the zero runner's output buffer, read back through the program's
 /// `__out_len()` and `__out_byte(i)` (see zero/lower.rs) and printed as
 /// one hex word per byte on a line of its own, after the results
 const PTEXT: &str = r"
-fn __ptext() {
-entry:
-    n: i64 = __out_len()
-    i0: i64 = const 0
-    jmp loop(i0)
-loop(i: i64):
-    done: u1 = cmp.ge i, n
-    br done, exit, body
-body:
-    b: u8 = __out_byte(i)
-    w: u64 = conv b
-    __phex(w)
-    sp: u64 = const 32
-    __pch(sp)
-    one: i64 = const 1
-    i2: i64 = add i, one
-    jmp loop(i2)
-exit:
-    nl: u64 = const 10
-    __pch(nl)
-    ret
-}
+fn __ptext()
+    entry:
+        n: i64 = __out_len()
+        i0: i64 = const 0
+        jmp loop(i0)
+    loop(i: i64):
+        done: u1 = cmp.ge i, n
+        br done, exit, body
+    body:
+        b: u8 = __out_byte(i)
+        w: u64 = conv b
+        __phex(w)
+        sp: u64 = const 32
+        __pch(sp)
+        one: i64 = const 1
+        i2: i64 = add i, one
+        jmp loop(i2)
+    exit:
+        nl: u64 = const 10
+        __pch(nl)
+        ret
 ";
 
 /// Generate __start: run every case, print each result as hex, then run
@@ -1207,7 +1203,7 @@ fn gen_driver(
     // one function per case (a driver's frame would otherwise outgrow
     // what a single function may spill), called in order from __start
     let mut s = String::new();
-    let mut start = String::from("fn __start() {\nentry:\n");
+    let mut start = String::from("fn __start()\n");
     if trap {
         // the trap handler below, installed the way os/check.ssa does
         // (`vectors` is the platform's; the stub is what the rule replaces)
@@ -1226,7 +1222,7 @@ fn gen_driver(
     };
     let reset = module.func("__zero_reset").is_some();
     for (ci, case) in cases.iter().enumerate() {
-        s.push_str(&format!("fn __case{}() {{\nentry:\n", ci));
+        s.push_str(&format!("fn __case{}()\n", ci));
         start.push_str(&format!("    __case{}()\n", ci));
         if reset {
             // the zero runner: the program's state is reset before every
@@ -1266,7 +1262,7 @@ fn gen_driver(
             }
             let nl = tmp(&mut s, "u64", "const 10".into());
             s.push_str(&format!("    __pch({})\n", nl));
-            s.push_str("    ret\n}\n");
+            s.push_str("    ret\n");
             continue;
         }
         let func = module
@@ -1349,18 +1345,18 @@ fn gen_driver(
         if case.text_out {
             s.push_str("    __ptext()\n");
         }
-        s.push_str("    ret\n}\n");
+        s.push_str("    ret\n");
     }
     if cases.iter().any(|c| c.text_out) {
         s.push_str(PTEXT);
     }
     start.push_str(exit_ssa);
-    start.push_str("    ret\n}\n");
+    start.push_str("    ret\n");
     if trap {
         // a failed check lands here: say so, and end the machine (the
         // machine takes a moment to end, and returning would run the
         // check again)
-        s.push_str("fn __trap(__n: u64, __a: u64, __b: u64) -> u64 {\nentry:\n");
+        s.push_str("fn __trap(__n: u64, __a: u64, __b: u64) -> u64\n");
         for c in "check\n".bytes() {
             let t = tmp(&mut s, "u64", format!("const {}", c));
             s.push_str(&format!("    __pch({})\n", t));
@@ -1370,7 +1366,7 @@ fn gen_driver(
             s.push_str("    __ptext()\n");
         }
         s.push_str(exit_ssa);
-        s.push_str("    jmp spin\nspin:\n    jmp spin\n}\nfn vectors(__t: ptr) {\nentry:\n    ret\n}\n");
+        s.push_str("    loop()\n        continue\nfn vectors(__t: ptr)\n    ret\n");
     }
     // __start first: the bare-metal preamble falls into the first function
     Ok(format!("{}{}", start, s))
@@ -1669,7 +1665,7 @@ fn machine_output(
             // exit through a stub whose body is patched below into a PSCI
             // SYSTEM_OFF hypervisor call (x0 = 0x84000008; hvc #0)
             let driver = gen_driver(module, cases, ARM_HEAP, "    __qemu_exit()\n", trap)?;
-            let stub = "fn __qemu_exit() {\nentry:\n    ret\n}\n";
+            let stub = "fn __qemu_exit()\n    ret\n";
             let full = format!("{}\n{}\n{}\n{}", driver, helpers(ARM_UART), stub, ssa::with_prelude(src));
             let m2 = build(&full)?;
             // the code follows the preamble, which is where a vector table's
@@ -1778,107 +1774,101 @@ data __karea: array(i64, 1024)
 data __kstacks: array(u8, 262144)
 data __kthread: array(u8, {})
 data __kshape: array(i64, 4)
-fn __kbody(__tid: i64) {{
-entry:
-    __t: ptr = thread()
-    __g: i64 = load __t, 32
-    __grp: i64 = load __t, 40
-    __gid: i64 = mul __grp, __g
-    __id: i64 = add __gid, __tid
-    __area: ptr = addr __karea
-    __z: ptr = const 0
-    {}
-    ret
-}}
-fn __run_groups(__n: i64, __g: i64, __first: i64, __step: i64, __block: ptr, __stacks: ptr) {{
-entry:
-    thread_set_slot(__first, __block)
-    store __g, __block, 32
-    __groups: i64 = div __n, __g
-    __b: fn(i64) = addr __kbody
-    jmp loop(__first)
-loop(__grp: i64):
-    __done: u1 = cmp.ge __grp, __groups
-    br __done, exit, body
-body:
-    store __grp, __block, 40
-    __sz: i64 = const 4096
-    fibres_run(__g, __stacks, __sz, __b)
-    __next: i64 = add __grp, __step
-    jmp loop(__next)
-exit:
-    ret
-}}
-fn __core_rec(__c: i64) -> ptr {{
-entry:
-    __mb: i64 = const 1048576
-    __off: i64 = mul __c, __mb
-    __base: i64 = const {}
-    __at: i64 = add __base, __off
-    __rec: ptr = cast __at
-    ret __rec
-}}
-fn __core_main(__rec: ptr) {{
-entry:
-    __c: i64 = load __rec, 24
-    __sh: ptr = addr __kshape
-    __n: i64 = load __sh, 0
-    __g: i64 = load __sh, 8
-    __m: i64 = load __sh, 16
-    __block: ptr = ptradd __rec, 64
-    __stk: i64 = const 786432
-    __stacks: ptr = ptradd __rec, __stk
-    __run_groups(__n, __g, __c, __m, __block, __stacks)
-    __one: i64 = const 1
-    store __one, __rec, 32
-    jmp park
-park:
-    core_idle()
-    jmp park
-}}
-fn __run_kernel(__n: i64, __g: i64, __m: i64) {{
-entry:
-    __sh: ptr = addr __kshape
-    store __n, __sh, 0
-    store __g, __sh, 8
-    store __m, __sh, 16
-    __main: fn(ptr) = addr __core_main
-    __one: i64 = const 1
-    jmp launch(__one)
-launch(__c: i64):
-    __all: u1 = cmp.ge __c, __m
-    br __all, run, start
-start:
-    __rec: ptr = __core_rec(__c)
-    __stk: i64 = const 786432
-    __top: ptr = ptradd __rec, __stk
-    core_launch(__c, __rec, __top, __main, __rec)
-    __c1: i64 = add __c, __one
-    jmp launch(__c1)
-run:
-    __kt: ptr = addr __kthread
-    __s: ptr = addr __kstacks
-    __zero: i64 = const 0
-    __run_groups(__n, __g, __zero, __m, __kt, __s)
-    jmp wait(__one)
-wait(__w: i64):
-    __done: u1 = cmp.ge __w, __m
-    br __done, exit, poll
-poll:
-    __wrec: ptr = __core_rec(__w)
-    __flag: i64 = load __wrec, 32
-    __ready: u1 = cmp.ne __flag, 0
-    __w1: i64 = add __w, __one
-    br __ready, wait(__w1), poll
-exit:
-    ret
-}}
-fn __area_word(__i: i64) -> i64 {{
-entry:
-    __a: ptr = addr __karea
-    __v: i64 = load __a, __i, 8
-    ret __v
-}}
+fn __kbody(__tid: i64)
+    entry:
+        __t: ptr = thread()
+        __g: i64 = load __t, 32
+        __grp: i64 = load __t, 40
+        __gid: i64 = mul __grp, __g
+        __id: i64 = add __gid, __tid
+        __area: ptr = addr __karea
+        __z: ptr = const 0
+        {}
+        ret
+fn __run_groups(__n: i64, __g: i64, __first: i64, __step: i64, __block: ptr, __stacks: ptr)
+    entry:
+        thread_set_slot(__first, __block)
+        store __g, __block, 32
+        __groups: i64 = div __n, __g
+        __b: fn(i64) = addr __kbody
+        jmp loop(__first)
+    loop(__grp: i64):
+        __done: u1 = cmp.ge __grp, __groups
+        br __done, exit, body
+    body:
+        store __grp, __block, 40
+        __sz: i64 = const 4096
+        fibres_run(__g, __stacks, __sz, __b)
+        __next: i64 = add __grp, __step
+        jmp loop(__next)
+    exit:
+        ret
+fn __core_rec(__c: i64) -> ptr
+    entry:
+        __mb: i64 = const 1048576
+        __off: i64 = mul __c, __mb
+        __base: i64 = const {}
+        __at: i64 = add __base, __off
+        __rec: ptr = cast __at
+        ret __rec
+fn __core_main(__rec: ptr)
+    entry:
+        __c: i64 = load __rec, 24
+        __sh: ptr = addr __kshape
+        __n: i64 = load __sh, 0
+        __g: i64 = load __sh, 8
+        __m: i64 = load __sh, 16
+        __block: ptr = ptradd __rec, 64
+        __stk: i64 = const 786432
+        __stacks: ptr = ptradd __rec, __stk
+        __run_groups(__n, __g, __c, __m, __block, __stacks)
+        __one: i64 = const 1
+        store __one, __rec, 32
+        jmp park
+    park:
+        core_idle()
+        jmp park
+fn __run_kernel(__n: i64, __g: i64, __m: i64)
+    entry:
+        __sh: ptr = addr __kshape
+        store __n, __sh, 0
+        store __g, __sh, 8
+        store __m, __sh, 16
+        __main: fn(ptr) = addr __core_main
+        __one: i64 = const 1
+        jmp launch(__one)
+    launch(__c: i64):
+        __all: u1 = cmp.ge __c, __m
+        br __all, run, start
+    start:
+        __rec: ptr = __core_rec(__c)
+        __stk: i64 = const 786432
+        __top: ptr = ptradd __rec, __stk
+        core_launch(__c, __rec, __top, __main, __rec)
+        __c1: i64 = add __c, __one
+        jmp launch(__c1)
+    run:
+        __kt: ptr = addr __kthread
+        __s: ptr = addr __kstacks
+        __zero: i64 = const 0
+        __run_groups(__n, __g, __zero, __m, __kt, __s)
+        jmp wait(__one)
+    wait(__w: i64):
+        __done: u1 = cmp.ge __w, __m
+        br __done, exit, poll
+    poll:
+        __wrec: ptr = __core_rec(__w)
+        __flag: i64 = load __wrec, 32
+        __ready: u1 = cmp.ne __flag, 0
+        __w1: i64 = add __w, __one
+        br __ready, wait(__w1), poll
+    exit:
+        ret
+fn __area_word(__i: i64) -> i64
+    entry:
+        __a: ptr = addr __karea
+        __v: i64 = load __a, __i, 8
+        ret __v
 ",
         16384 + group_bytes,
         call,
@@ -1891,27 +1881,25 @@ entry:
 fn helpers_air() -> String {
     String::from(
         r"
-data __cur: array(i64, 1) = { 0 }
-fn __kernel(mem: ptr, area: ptr, id: i64) {
-entry:
-    p: ptr = addr __cur
-    a: u64 = cast area
-    store a, p
-    __start()
-    ret
-}
-fn __pch(c: u64) {
-entry:
-    p: ptr = addr __cur
-    cur: u64 = load p
-    q: ptr = cast cur
-    b: u8 = conv c
-    store b, q
-    one: u64 = const 1
-    cur1: u64 = add cur, one
-    store cur1, p
-    ret
-}
+data __cur: array(i64, 1) = 0
+fn __kernel(mem: ptr, area: ptr, id: i64)
+    entry:
+        p: ptr = addr __cur
+        a: u64 = cast area
+        store a, p
+        __start()
+        ret
+fn __pch(c: u64)
+    entry:
+        p: ptr = addr __cur
+        cur: u64 = load p
+        q: ptr = cast cur
+        b: u8 = conv c
+        store b, q
+        one: u64 = const 1
+        cur1: u64 = add cur, one
+        store cur1, p
+        ret
 ",
     ) + PHEX
 }

@@ -45,51 +45,37 @@ data took = "took "
 data irqs = " interrupts\n"
 
 ; --- the board ---
-fn vectors(t: ptr) {
+fn vectors(t: ptr)
     ret
-}
-fn cause() -> u64 {
+fn cause() -> u64
     ret 0
-}
-fn resume() -> ptr {
+fn resume() -> ptr
     ret 0
-}
-fn resume_at(p: ptr) {
+fn resume_at(p: ptr)
     ret
-}
-fn syscall(n: u64, a: u64, b: u64) -> u64 {
+fn syscall(n: u64, a: u64, b: u64) -> u64
     ret 0
-}
-fn psci(code: u64) {
+fn psci(code: u64)
     ret
-}
-fn irq_on() {
+fn irq_on()
     ret
-}
-fn uart_irq_on() {
+fn uart_irq_on()
     ret
-}
-fn irq_ack() -> u32 {
+fn irq_ack() -> u32
     ret 0
-}
-fn irq_claim() -> u32 {
+fn irq_claim() -> u32
     ret 0
-}
-fn irq_done(id: u32) {
+fn irq_done(id: u32)
     ret
-}
-fn idle() {
+fn idle()
     ret
-}
-fn now() -> u64 {
+fn now() -> u64
     ret 0
-}
-fn hz() -> u64 {
+fn hz() -> u64
     ret 0
-}
 
 ; --- the kernel ---
-fn __start() {
+fn __start()
     t: ptr = addr calls
     w: fn(u64, u64) -> u64 = addr sys_write
     r: fn(u64, u64) -> u64 = addr sys_read
@@ -117,33 +103,29 @@ fn __start() {
     main()
     exit()
     ret
-}
 
 ; a byte arrived: everything the port has goes into the stream, each
 ; byte with the counter's tick it was taken at
-fn __irq() {
+fn __irq()
     id: u32 = irq_ack()
     ext: u32 = platform irq_external
     is_ext: u1 = cmp.eq id, ext
-    src: u32 = if is_ext {
+    src: u32 = if is_ext
         s: u32 = irq_claim()
         yield s
-    } else {
+    else
         yield id
-    }
     uart_id: u32 = platform irq_uart
     is_uart: u1 = cmp.eq src, uart_id
-    if is_uart {
+    if is_uart
         ip: ptr = addr uart_irqs
         n: u64 = load ip
         n1: u64 = add n, 1
         store n1, ip
         drain()
-    }
     irq_done(src)
     ret
-}
-fn drain() {
+fn drain()
     uart: ptr = platform uart
     off: i64 = platform uart_status
     status: ptr = ptradd uart, off
@@ -151,40 +133,36 @@ fn drain() {
     ready: u8 = platform uart_ready
     r: ptr = addr rg
     keys: u8$ = stream r
-    loop() {
+    loop()
         s: u8 = load status
         m: u8 = and s, mask
         ok: u1 = cmp.eq m, ready
         empty: u1 = cmp.ne ok, 1
-        if empty {
+        if empty
             break
-        }
         c: u8 = load uart
         t: i64 = tick()
         push keys, t, c
         continue
-    }
     ret
-}
 ; the machine's counter since boot
-fn tick() -> i64 {
+fn tick() -> i64
     sp: ptr = addr start
     s: u64 = load sp
     t: u64 = now()
     e: u64 = sub t, s
     ei: i64 = conv e
     ret ei
-}
 
 ; every trap lands here with the trapped code's first three argument
 ; registers; what it returns replaces the first. A system call is
 ; dispatched through the table and resumed past the instruction that
 ; made it; anything else ends the machine.
-fn __trap(n: u64, a: u64, b: u64) -> u64 {
+fn __trap(n: u64, a: u64, b: u64) -> u64
     c: u64 = cause()
     sc: u64 = platform trap_syscall
     is: u1 = cmp.eq c, sc
-    r: u64 = if is {
+    r: u64 = if is
         t: ptr = addr calls
         i: i64 = conv n
         f: fn(u64, u64) -> u64 = load t, i, 8
@@ -194,86 +172,72 @@ fn __trap(n: u64, a: u64, b: u64) -> u64 {
         p2: ptr = ptradd p, skip
         resume_at(p2)
         yield v
-    } else {
+    else
         exit()
         yield n
-    }
     ret r
-}
 
 ; write(p, n): n bytes from p to the serial port
-fn sys_write(p: u64, n: u64) -> u64 {
+fn sys_write(p: u64, n: u64) -> u64
     q: ptr = cast p
     m: i64 = conv n
-    loop(i: i64 = 0) {
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, m
-        if done {
+        if done
             break
-        }
         c: u8 = load q, i, 1
         putc(c)
         i2: i64 = add i, 1
         continue i2
-    }
     ret n
-}
 
 ; read(p, n): a line from the stream into p, at most n bytes, the
 ; newline dropped; returns the count. Sleeps until a line is there,
 ; then moves the reader past it and keeps it for the next call.
-fn sys_read(p: u64, n: u64) -> u64 {
+fn sys_read(p: u64, n: u64) -> u64
     q: ptr = cast p
     m: i64 = conv n
     rp: ptr = addr reader
     keys: u8$ = load rp
     ; the unread bytes, up to and including a newline
-    line: i64 = loop() {
+    line: i64 = loop()
         have: i64 = count keys
-        found: i64 = loop(i: i64 = 0) {
+        found: i64 = loop(i: i64 = 0)
             at_end: u1 = cmp.ge i, have
-            if at_end {
+            if at_end
                 break -1
-            }
             c: u8 = peek keys, i
             nl: u1 = cmp.eq c, 10
-            if nl {
+            if nl
                 break i
-            }
             i2: i64 = add i, 1
             continue i2
-        }
         ready: u1 = cmp.ge found, 0
-        if ready {
+        if ready
             break found
-        }
         idle()
         continue
-    }
-    got: i64 = loop(k: i64 = 0, j: i64 = 0) {
+    got: i64 = loop(k: i64 = 0, j: i64 = 0)
         at_nl: u1 = cmp.ge k, line
-        if at_nl {
+        if at_nl
             break j
-        }
         b: u8 = peek keys, k
         k2: i64 = add k, 1
         full: u1 = cmp.ge j, m
-        if full {
+        if full
             continue k2, j
-        }
         store b, q, j, 1
         j2: i64 = add j, 1
         continue k2, j2
-    }
     past: i64 = add line, 1
     keys2: u8$ = advance(keys, past)
     store keys2, rp
     r: u64 = conv got
     ret r
-}
 
 
 ; exit: how many interrupts the input took, then the machine ends
-fn sys_exit(a: u64, b: u64) -> u64 {
+fn sys_exit(a: u64, b: u64) -> u64
     ip: ptr = addr uart_irqs
     n: u64 = load ip
     ni: i64 = conv n
@@ -286,31 +250,26 @@ fn sys_exit(a: u64, b: u64) -> u64 {
     say_bytes(ipp, ipn)
     exit()
     ret 0
-}
 
 ; --- the serial port ---
-fn putc(c: u8) {
+fn putc(c: u8)
     uart: ptr = platform uart
     c32: u32 = conv c
     store c32, uart
     ret
-}
-fn say_bytes(p: ptr, n: i64) {
-    loop(i: i64 = 0) {
+fn say_bytes(p: ptr, n: i64)
+    loop(i: i64 = 0)
         done: u1 = cmp.ge i, n
-        if done {
+        if done
             break
-        }
         c: u8 = load p, i, 1
         putc(c)
         i2: i64 = add i, 1
         continue i2
-    }
     ret
-}
-fn print_dec(v: i64) {
+fn print_dec(v: i64)
     buf: ptr = scratch 32
-    n: i64 = loop(x: i64 = v, i: i64 = 0) {
+    n: i64 = loop(x: i64 = v, i: i64 = 0)
         d: i64 = rem x, 10
         c: u8 = conv d
         c48: u8 = add c, 48
@@ -318,40 +277,34 @@ fn print_dec(v: i64) {
         x2: i64 = div x, 10
         i2: i64 = add i, 1
         done: u1 = cmp.eq x2, 0
-        if done {
+        if done
             break i2
-        }
         continue x2, i2
-    }
-    loop(j: i64 = n) {
+    loop(j: i64 = n)
         z: u1 = cmp.le j, 0
-        if z {
+        if z
             break
-        }
         j1: i64 = sub j, 1
         ch: u8 = load buf, j1, 1
         putc(ch)
         continue j1
-    }
     ret
-}
 
 ; end the machine (as os/hello.ssa does)
-fn exit() {
+fn exit()
     f: ptr = platform finisher
     store 0x5555: u32, f
     psci(0x84000008)
     ret
-}
 
 ; --- the program: system calls only ---
-fn main() {
+fn main()
     buf: ptr = addr line
     lp: u64 = cast buf
     pp: ptr = addr prompt
     ep: ptr = addr echo
     np: ptr = addr newline
-    loop() {
+    loop()
         say(pp, 2)
         n: u64 = syscall(1, lp, 64)
         three: u1 = cmp.eq n, 3
@@ -364,19 +317,15 @@ fn main() {
         t1: u1 = and three, isb
         t2: u1 = and t1, isy
         bye: u1 = and t2, ise
-        if bye {
+        if bye
             break
-        }
         say(ep, 6)
         syscall(0, lp, n)
         say(np, 1)
         continue
-    }
     syscall(2, 0, 0)
     ret
-}
-fn say(p: ptr, n: u64) {
+fn say(p: ptr, n: u64)
     a: u64 = cast p
     syscall(0, a, n)
     ret
-}

@@ -61,84 +61,69 @@
 
 type money = decimal(32, 2)
 
-fn dmk(m: i32) -> money {
+fn dmk(m: i32) -> money
     r: money = pack m
     ret r
-}
-fn dget(x: money) -> i32 {
+fn dget(x: money) -> i32
     r: i32 = get x, m
     ret r
-}
-fn dadd(a: i32, b: i32) -> i32 {
+fn dadd(a: i32, b: i32) -> i32
     x: money = dmk(a)
     y: money = dmk(b)
     s: money = add x, y
     r: i32 = dget(s)
     ret r
-}
-fn dsub(a: i32, b: i32) -> i32 {
+fn dsub(a: i32, b: i32) -> i32
     x: money = dmk(a)
     y: money = dmk(b)
     s: money = sub x, y
     r: i32 = dget(s)
     ret r
-}
-fn dmul(a: i32, b: i32) -> i32 {
+fn dmul(a: i32, b: i32) -> i32
     x: money = dmk(a)
     y: money = dmk(b)
     s: money = mul x, y
     r: i32 = dget(s)
     ret r
-}
-fn ddiv(a: i32, b: i32) -> i32 {
+fn ddiv(a: i32, b: i32) -> i32
     x: money = dmk(a)
     y: money = dmk(b)
     s: money = div x, y
     r: i32 = dget(s)
     ret r
-}
-fn dlt(a: i32, b: i32) -> u1 {
+fn dlt(a: i32, b: i32) -> u1
     x: money = dmk(a)
     y: money = dmk(b)
     r: u1 = cmp.lt x, y
     ret r
-}
-fn from_int(a: i64) -> i32 {
+fn from_int(a: i64) -> i32
     x: money = conv a
     r: i32 = dget(x)
     ret r
-}
-fn to_int(a: i32) -> i64 {
+fn to_int(a: i32) -> i64
     x: money = dmk(a)
     r: i64 = conv x
     ret r
-}
-fn from_f64(a: f64) -> i32 {
+fn from_f64(a: f64) -> i32
     x: money = conv a
     r: i32 = dget(x)
     ret r
-}
-fn to_f64(a: i32) -> f64 {
+fn to_f64(a: i32) -> f64
     x: money = dmk(a)
     r: f64 = conv x
     ret r
-}
-fn cents_lit() -> i32 {
+fn cents_lit() -> i32
     x: money = const 12.34
     r: i32 = dget(x)
     ret r
-}
 ; 1000 times 0.001 is not representable in cents; 1000 times 0.10 is 100.00
-fn sum_thousand_pennies() -> i32 {
-    t: money = loop(i: i32 = 0, acc: money = 0) {
+fn sum_thousand_pennies() -> i32
+    t: money = loop(i: i32 = 0, acc: money = 0)
         done: u1 = cmp.ge i, 1000
-        if done {
+        if done
             break acc
-        }
         acc2: money = add acc, 0.1
         i2: i32 = add i, 1
         continue i2, acc2
-    }
     r: i32 = dget(t)
     ret r
-}

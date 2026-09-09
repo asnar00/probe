@@ -5,7 +5,7 @@
 ; -> [49600, 49601, ..., 49631, 152000, ..., 152031]: 0..31 sum to 496,
 ;    32..63 to 1520
 
-fn __kernel(mem: ptr, area: ptr, id: i64) {
+fn __kernel(mem: ptr, area: ptr, id: i64)
     x: i32 = conv id
     s: i32 = simd_sum x
     s64: i64 = conv s
@@ -14,4 +14,3 @@ fn __kernel(mem: ptr, area: ptr, id: i64) {
     r: i64 = add h, t
     store r, area, id, 8
     ret
-}

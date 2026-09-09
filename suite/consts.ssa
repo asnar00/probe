@@ -5,23 +5,18 @@
 ;! cbig -> 1311768467463790320
 ;! cmin -> -9223372036854775808
 
-fn c0() -> i64 {
-entry:
-    ret 0
-}
-fn cneg1() -> i64 {
-entry:
-    ret -1
-}
-fn cbeef() -> i64 {
-entry:
-    ret 0xdeadbeef
-}
-fn cbig() -> i64 {
-entry:
-    ret 0x123456789abcdef0
-}
-fn cmin() -> i64 {
-entry:
-    ret -9223372036854775808
-}
+fn c0() -> i64
+    entry:
+        ret 0
+fn cneg1() -> i64
+    entry:
+        ret -1
+fn cbeef() -> i64
+    entry:
+        ret 0xdeadbeef
+fn cbig() -> i64
+    entry:
+        ret 0x123456789abcdef0
+fn cmin() -> i64
+    entry:
+        ret -9223372036854775808
