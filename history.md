@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### stream: the ring's item path is lean — `dc3526a` · 2026-09-10
+
+```
+    raw: ptr = ptradd vb, 16
+    q: ptr(number) = cast raw
+    v: number = load q, k
+```
+
+The parity pass, hop 9 (fm3 log 74). `lib/stream.ssa`'s item pushes do their count and base inline with no `ring_pushed` call and no `const` for the header, and `peek` and `latest` read one item back through the buffer's typed pointer (above) after the checks a reader is owed, where they packed a checked view and called `ring_index` for one load. Both checks on a push stay: `suite/stream.ssa`'s `irregular_push` pins the `regular` one, and `peeked_across_the_seam` is new. A push 32 → 30 on the tool, `peek` 34 → 18; hello 2 179 → 2 089, static 2 061 → 1 971, lex 395 → 357. Every path: zero 477/477 on the CPU paths and 460 + 17 skipped on air, probe test 977/977, 968 + 9, 977, 977, 946 + 31; cargo test 108.
+
+---
+
 ### zero: a stream is timed only when something asks for time — `608bc51` · 2026-09-10
 
 ```
