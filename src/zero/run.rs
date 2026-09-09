@@ -122,12 +122,11 @@ fn setters(off: &BTreeSet<String>) -> Vec<(String, Vec<i64>)> {
 }
 
 /// a case overridden in one context: the case with the runner's label,
-/// the context, and the feature and case that stand instead
+/// the context, and why it does not run there
 struct Over {
     text: String,
     context: String,
-    by_feature: String,
-    by_text: String,
+    why: String,
 }
 
 /// one run of a case: in which effective context, under which of the
@@ -138,44 +137,91 @@ struct Run {
     label: String,
 }
 
-/// Every run a store's cases make (log 44): each case once per
-/// distinct effective context it stands in; and, where two cases in one
-/// effective context make the same call — the same function and
-/// arguments — the newest feature's stands, then the one whose line
-/// names more features, and the others are overridden there. Gives the
-/// standing runs and a report line per override
+/// the call of a case as written, `run()`, `counted (10)`
+fn call_text(p: &Planned) -> String {
+    let head = p.text.split('→').next().unwrap_or("").trim();
+    match head.rfind(')') {
+        Some(i) => head[..i + 1].to_string(),
+        None => head.to_string(),
+    }
+}
+
+/// Every run a store's cases make (section 14, log 50). In each of the
+/// runner's contexts a feature's cases for a method are its definition
+/// of that method's test function, and the definitions compose as the
+/// front end composes the method: the newest feature that is on and has
+/// cases for it is outermost, and falls through to the next older one
+/// only when its testing section says `>existing`; a feature that is
+/// off is not in the chain, so the older cases stand again. A case
+/// whose feature is not in the chain is overridden there. A standing
+/// case runs once per distinct effective context — the runner's with
+/// the case's own line applied — and where two lines of one feature
+/// make the same call in one effective context, the line naming more
+/// switches stands. Gives the runs and a report line per override
 fn plan(s: &store::Store, cases: &[Planned]) -> Result<(Vec<Run>, Vec<Over>), String> {
+    // `>existing` falls through to an older definition, which must exist
+    for (rank, f) in s.features.iter().enumerate().filter(|(_, f)| f.existing_cases) {
+        let own: Vec<&Planned> = cases.iter().filter(|p| p.feature == f.name).collect();
+        if !own.iter().any(|p| cases.iter().any(|q| q.rank < rank && q.call.func == p.call.func)) {
+            let calls: Vec<String> = own.iter().map(|p| call_text(p)).collect();
+            return Err(format!("{}: `>existing` in feature {}'s testing, but no older feature has cases for {}: nothing to fall through to", f.md_file, f.name, if calls.is_empty() { "any function".to_string() } else { calls.join(", ") }));
+        }
+    }
     let mut runs: Vec<Run> = Vec::new();
+    let mut over = Vec::new();
     let mut seen: HashSet<(usize, BTreeSet<String>)> = HashSet::new();
     for (label, x) in contexts(s) {
+        // the chain of test definitions per method in this context,
+        // newest first: the features whose cases stand
+        let methods: BTreeSet<&str> = cases.iter().map(|p| p.call.func.as_str()).collect();
+        let mut chains: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+        for m in methods {
+            let mut chain = Vec::new();
+            for f in s.features.iter().rev() {
+                if x.contains(&f.name) || !cases.iter().any(|p| p.feature == f.name && p.call.func == m) {
+                    continue;
+                }
+                chain.push(f.name.as_str());
+                if !f.existing_cases {
+                    break;
+                }
+            }
+            chains.insert(m, chain);
+        }
         for (i, p) in cases.iter().enumerate() {
             let Some(off) = effective(s, &x, p)? else { continue };
+            let chain = &chains[p.call.func.as_str()];
+            if !chain.iter().any(|f| *f == p.feature) {
+                over.push(Over { text: labelled(&p.text, &label), context: describe(&x), why: format!("replaced by {}'s cases for {}", chain[0], call_text(p)) });
+                continue;
+            }
             if seen.insert((i, off.clone())) {
                 runs.push(Run { case: i, off, label: label.clone() });
             }
         }
     }
+    // within a feature, one promise per call per effective context:
+    // the line naming more switches stands
     let mut standing = vec![true; runs.len()];
-    let mut over = Vec::new();
     for i in 0..runs.len() {
         if !standing[i] {
             continue;
         }
-        let same: Vec<usize> = (0..runs.len()).filter(|&j| standing[j] && runs[j].off == runs[i].off && cases[runs[j].case].call.func == cases[runs[i].case].call.func && cases[runs[j].case].call.args == cases[runs[i].case].call.args).collect();
+        let same: Vec<usize> = (0..runs.len()).filter(|&j| standing[j] && runs[j].off == runs[i].off && cases[runs[j].case].feature == cases[runs[i].case].feature && cases[runs[j].case].call.func == cases[runs[i].case].call.func && cases[runs[j].case].call.args == cases[runs[i].case].call.args).collect();
         if same.len() < 2 {
             continue;
         }
-        let weight = |j: usize| (cases[runs[j].case].rank, cases[runs[j].case].call.context.len());
+        let weight = |j: usize| cases[runs[j].case].call.context.len();
         let best = *same.iter().max_by_key(|&&j| weight(j)).unwrap();
         if let Some(&tie) = same.iter().find(|&&j| j != best && weight(j) == weight(best)) {
             let (a, b) = (&cases[runs[best].case], &cases[runs[tie].case]);
-            return Err(format!("{}:{} and line {} both claim `{}` in one context ({}): one case per call per context", a.file, a.line, b.line, a.text.split('→').next().unwrap_or("").trim(), describe(&runs[best].off)));
+            return Err(format!("{}:{} and line {} both claim `{}` in one context ({}): one case per call per context", a.file, a.line, b.line, call_text(a), describe(&runs[best].off)));
         }
         for &j in &same {
             if j != best {
                 standing[j] = false;
                 let (o, w) = (&cases[runs[j].case], &cases[runs[best].case]);
-                over.push(Over { text: labelled(&o.text, &runs[j].label), context: describe(&runs[j].off), by_feature: w.feature.clone(), by_text: w.text.clone() });
+                over.push(Over { text: labelled(&o.text, &runs[j].label), context: describe(&runs[j].off), why: format!("the line `{}` stands there", w.text) });
             }
         }
     }
@@ -339,7 +385,7 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
         ncases += cases.len();
         nover += over.len();
         for o in &over {
-            report.log.push_str(&format!("over  {:<16} {} ({}): overridden by {}'s `{}`\n", name, o.text, o.context, o.by_feature, o.by_text));
+            report.log.push_str(&format!("over  {:<16} {} ({}): {}\n", name, o.text, o.context, o.why));
         }
         let (runs, skipped): (Vec<&Run>, Vec<&Run>) = runs.iter().partition(|r| !unreached.contains_key(&cases[r.case].call.func));
         for r in skipped {
@@ -455,7 +501,44 @@ mod tests {
         assert_eq!(standing("with bye off"), ["hello() → \"hello world\"", "count down() → \"10 9 8 7 6 5 4 3 2 1\"", "run() → \"10 9 8 7 6 5 4 3 2 1\\nhello world\""]);
         assert_eq!(standing("with countdown off"), ["hello() → \"hello world\""]);
         assert_eq!(over.len(), 5);
-        assert!(over.iter().any(|o| o.text == "run() → \"hello world\" [with bye off]" && o.by_feature == "countdown"), "{:?}", over.iter().map(|o| &o.text).collect::<Vec<_>>());
+        assert!(over.iter().any(|o| o.text == "run() → \"hello world\" [with bye off]" && o.why == "replaced by countdown's cases for run()"), "{:?}", over.iter().map(|o| &o.text).collect::<Vec<_>>());
+        assert!(over.iter().any(|o| o.text == "run() → \"10 9 8 7 6 5 4 3 2 1\\nhello world\\ngoodbye\" [with countdown off]" && o.why == "the line `run() with countdown off → \"hello world\\ngoodbye\"` stands there"), "{:?}", over.iter().map(|o| &o.why).collect::<Vec<_>>());
+        // `>existing` (log 50): more's cases for `describe (int)` fall
+        // through to functions', so `describe (3)` stands beside `describe (4)`
+        let s = store::read(Path::new("suite/zero/functions")).unwrap();
+        assert!(s.features.iter().any(|f| f.name == "more" && f.existing_cases));
+        let l = lower::lower(&s, 64).unwrap();
+        let cases = calls_of(&s, &l).unwrap();
+        let (runs, over) = plan(&s, &cases).unwrap();
+        let plain: Vec<String> = runs.iter().filter(|r| r.label.is_empty()).map(|r| cases[r.case].text.clone()).collect();
+        assert!(plain.contains(&"describe (3) → \"int\"".to_string()) && plain.contains(&"describe (4) → \"int\"".to_string()), "{:?}", plain);
+        assert!(over.is_empty());
+        // without it, more's cases for the method replace functions'
+        let dir = std::env::temp_dir().join(format!("probe-zero-existing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let head = |name: &str, when: &str, parent: &str, existing: &str| format!("# {}\n*x*\n\n{}layer: runtime\n\n> (suite) 2026-09-08T10:0{}:00\n\n## testing\n{}", name, parent, when, existing);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        std::fs::write(dir.join("a/a.md"), head("a", "0", "", ">f (1) → 1\n>g() → 5\n")).unwrap();
+        std::fs::write(dir.join("a/a.zero"), "on (int n) = f (int k)\n    n = k\n\non (int n) = g()\n    n = 5\n").unwrap();
+        std::fs::write(dir.join("b/b.md"), head("b", "1", "parent: a\n", ">f (2) → 2\n")).unwrap();
+        std::fs::write(dir.join("b/b.zero"), "on (int n) = h()\n    n = 6\n").unwrap();
+        let s = store::read(&dir).unwrap();
+        let l = lower::lower(&s, 64).unwrap();
+        let cases = calls_of(&s, &l).unwrap();
+        let (runs, over) = plan(&s, &cases).unwrap();
+        let texts = |label: &str| -> Vec<String> { runs.iter().filter(|r| r.label == label).map(|r| cases[r.case].text.clone()).collect() };
+        assert_eq!(texts(""), ["g() → 5", "f (2) → 2"]);
+        assert_eq!(texts("with b off"), ["f (1) → 1", "g() → 5"]);
+        assert_eq!(over.len(), 1);
+        assert_eq!((over[0].text.as_str(), over[0].context.as_str(), over[0].why.as_str()), ("f (1) → 1", "every feature on", "replaced by b's cases for f (1)"));
+        // `>existing` with nothing older to fall through to is refused
+        std::fs::write(dir.join("b/b.md"), head("b", "1", "parent: a\n", ">existing\n>h() → 6\n")).unwrap();
+        let s = store::read(&dir).unwrap();
+        let cases = calls_of(&s, &lower::lower(&s, 64).unwrap()).unwrap();
+        let err = match plan(&s, &cases) { Err(e) => e, Ok(_) => panic!("accepted") };
+        assert!(err.contains("`>existing` in feature b's testing, but no older feature has cases for h()"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
         // a line's `off` takes the subtree; an `on` the runner contradicts does not stand
         let s = store::read(Path::new("suite/zero/features")).unwrap();
         let l = lower::lower(&s, 64).unwrap();

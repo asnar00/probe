@@ -65,6 +65,10 @@ pub struct FeatureDoc {
     /// 49): the feature has other users and its code is immutable from
     /// that date; None while it is in private development
     pub published: Option<String>,
+    /// `>existing` among the cases (section 14, log 50): this feature's
+    /// test functions call the older features' cases too, rather than
+    /// replacing them
+    pub existing_cases: bool,
     pub cases: Vec<Case>,
     pub code: Feature,
     pub md_file: String,
@@ -102,7 +106,7 @@ const PLATFORM_FILE: &str = "src/zero/platform.zero";
 fn builtin_platform(types: &HashSet<String>) -> Result<FeatureDoc, Error> {
     let code = syntax::parse_feature("platform", PLATFORM_ZERO, PLATFORM_FILE, types)?;
     let origin = Origin { when: "0000-00-00T00:00:00".into(), text: "(probe) the compiler's own feature: the platform functions every store has".into() };
-    Ok(FeatureDoc { name: "platform".into(), parent: None, layer: Some("platform".into()), origins: vec![origin], published: None, cases: Vec::new(), code, md_file: PLATFORM_FILE.into() })
+    Ok(FeatureDoc { name: "platform".into(), parent: None, layer: Some("platform".into()), origins: vec![origin], published: None, existing_cases: false, cases: Vec::new(), code, md_file: PLATFORM_FILE.into() })
 }
 
 /// Read a store: every folder with a `.md` and a `.zero` of its own name.
@@ -316,6 +320,7 @@ fn read_prose(name: &str, prose: &str, file: &str, types: &HashSet<String>, code
     let mut published = None;
     let mut origins: Vec<Origin> = Vec::new();
     let mut cases = Vec::new();
+    let mut existing_cases = false;
     let mut section = String::new();
     let mut in_head = true;
     for (i, line) in prose.lines().enumerate() {
@@ -354,7 +359,12 @@ fn read_prose(name: &str, prose: &str, file: &str, types: &HashSet<String>, code
                 }
             }
         } else if section == "testing" {
-            if let Some(c) = t.strip_prefix('>') {
+            if t == ">existing" {
+                if existing_cases {
+                    return Err(lex::error(file, ln, "`>existing` is said once in a testing section"));
+                }
+                existing_cases = true;
+            } else if let Some(c) = t.strip_prefix('>') {
                 cases.push(parse_case(c, file, ln, types)?);
             }
         }
@@ -364,7 +374,7 @@ fn read_prose(name: &str, prose: &str, file: &str, types: &HashSet<String>, code
     }
     // composition order is the earliest origin
     origins.sort_by(|a, b| a.when.cmp(&b.when));
-    Ok(FeatureDoc { name: name.to_string(), parent, layer, origins, published, cases, code, md_file: file.to_string() })
+    Ok(FeatureDoc { name: name.to_string(), parent, layer, origins, published, existing_cases, cases, code, md_file: file.to_string() })
 }
 
 /// `>call(args) [with <feature> off, <feature> on] → result`: the
