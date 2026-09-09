@@ -42,3 +42,48 @@ on (int p) = power of two above (int n)
         if (q > n)
             p = q
         continue (q * 2)
+
+on describe (int x)
+    print "int"
+
+on describe (float x)
+    print "float"
+
+on describe (bool b)
+    print "bool"
+
+on describe (string s)
+    print "string"
+
+on describe a word()
+    describe "hi"
+
+on describe a decimal()
+    describe (2.5)
+
+on (int32 k) = kind of (number x)
+    k = 1
+
+on (int32 k) = kind of (int x)
+    k = 2
+
+on (int32 k) = kind of (int32 x)
+    k = 3
+
+on (int32 k) = kind at thirty two bits (int32 x)
+    k = kind of (x)
+
+on (int32 k) = kind at sixty four bits (int64 x)
+    k = kind of (x)
+
+on (int32 k) = kind of a float (float32 x)
+    k = kind of (x)
+
+on (int32 k) = kind of a decimal()
+    k = kind of (2.5)
+
+on (int a) = area of (int w) by (int h)
+    a = w * h
+
+on (int a) = area of (int side)
+    a = side * side

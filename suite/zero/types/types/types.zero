@@ -60,3 +60,11 @@ on (string s) = name()
 
 on named()
     print (name())
+
+on (Vec v) = (Vec a) * (Vec b)
+    v = Vec(a.x * b.x, a.y * b.y, a.z * b.z)
+
+on (int n) = scaled by a vec()
+    Vec a(1, 2, 3)
+    Vec b(2, 2, 2)
+    n = sum of fields (a * b)

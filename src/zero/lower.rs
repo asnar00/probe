@@ -160,7 +160,7 @@ pub struct FnInfo {
 /// the kinds of place a platform body may name in this milestone
 const KINDS: [&str; 5] = ["ir", "arm64", "riscv64", "wasm32", "air"];
 
-/// a type as an overload's IR name spells it: `int`, `ints`, `u8s`
+/// a type as a method's IR name spells it: `int`, `ints`, `u8s` (log 36)
 fn type_word(t: &Ty) -> String {
     match t {
         Ty::Bool => "bool".into(),
@@ -379,7 +379,7 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), news: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), type_feature: HashMap::new() };
+    let mut l = Lowerer { funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), news: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), type_feature: HashMap::new(), strict: false };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -470,27 +470,60 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str) -> Result<Call, 
     let ExprKind::Phrase(parts) = &case.call.kind else {
         return Err(lex::error(file, case.line, "a case calls a function"));
     };
-    let (info, args) = find_function(&lowered.funcs, parts, &|_| false, file, case.line)?;
+    let (cands, args) = find_methods(&lowered.funcs, parts, &|_| false, file, case.line)?;
+    let cands: Vec<FnInfo> = cands.into_iter().cloned().collect();
+    // a case's arguments are literals: a method takes them when each is
+    // a number where a number is wanted, a bool where a bool is; a
+    // number is an `int` first, and any number type only when no
+    // method takes an `int` (as `choose` does with literals)
+    let takes = |a: &Expr, ty: &Ty, strict: bool| match (&a.kind, ty) {
+        (ExprKind::Int(_), Ty::Num(n)) => !strict || fits(&Ty::Num("int".into()), &Ty::Num(n.clone())),
+        (ExprKind::Int(_), Ty::Enum(_)) | (ExprKind::Bool(_), Ty::Bool) => true,
+        _ => false,
+    };
+    let mut applicable = Vec::new();
+    for strict in [true, false] {
+        applicable = (0..cands.len()).filter(|&i| args.iter().zip(&cands[i].params).all(|(a, (_, t))| takes(a, t, strict))).collect();
+        if !applicable.is_empty() {
+            break;
+        }
+    }
+    if applicable.is_empty() {
+        return Err(lex::error(file, case.line, "a case's arguments are numbers"));
+    }
+    let info = match pick(&cands, &applicable) {
+        Ok(i) => &cands[i],
+        Err(amb) => return Err(ambiguous(&cands, &amb, file, case.line)),
+    };
     if info.task {
         return Err(lex::error(file, case.line, format!("'{}' is a task: a case calls a function that reads its stream", info.key)));
     }
     let mut vals = Vec::new();
-    for (a, (_, ty)) in args.iter().zip(&info.params) {
-        let v = match (&a.kind, ty) {
-            (ExprKind::Int(v), Ty::Num(_) | Ty::Enum(_)) => *v,
-            (ExprKind::Bool(b), Ty::Bool) => *b as i64,
-            _ => return Err(lex::error(file, case.line, "a case's arguments are numbers")),
+    for a in &args {
+        let v = match &a.kind {
+            ExprKind::Int(v) => *v,
+            ExprKind::Bool(b) => *b as i64,
+            _ => unreachable!(),
         };
         vals.push(v);
     }
     Ok(Call { func: info.ir.clone(), args: vals, nrets: info.results.len(), expect: case.expect.clone() })
 }
 
-/// The function a phrase names, and its arguments in order: the bracket
-/// groups and bare values are arguments, and every word is part of the
-/// name — unless no function reads that way, when a word that names a
-/// variable in scope is an argument too (log 17)
-fn find_function<'a>(funcs: &'a [FnInfo], parts: &[Part], is_var: &dyn Fn(&str) -> bool, file: &str, line: usize) -> Result<(&'a FnInfo, Vec<Expr>), Error> {
+/// the refusal of an ambiguous call, naming the methods that contend
+fn ambiguous(cands: &[FnInfo], amb: &[usize], file: &str, line: usize) -> Error {
+    let names: Vec<String> = amb.iter().map(|&i| spelled(&cands[i])).collect();
+    lex::error(file, line, format!("ambiguous: {} all take these arguments and none is the most specific; convert an argument, or declare a method for these types", names.join(" and ")))
+}
+
+/// The methods a phrase may name, and its arguments in order: the
+/// bracket groups and bare values are arguments, and every word is
+/// part of the name — unless no function reads that way, when a word
+/// that names a variable in scope is an argument too (log 17). A name
+/// is a set of methods (section 6, log 36): every method with these
+/// words and this many parameters is returned, and the caller picks
+/// one by the arguments' types with `pick`
+fn find_methods<'a>(funcs: &'a [FnInfo], parts: &[Part], is_var: &dyn Fn(&str) -> bool, file: &str, line: usize) -> Result<(Vec<&'a FnInfo>, Vec<Expr>), Error> {
     let read = |vars_are_args: bool| -> Result<(Vec<NamePart>, Vec<Expr>), Error> {
         let mut name = Vec::new();
         let mut args = Vec::new();
@@ -518,25 +551,98 @@ fn find_function<'a>(funcs: &'a [FnInfo], parts: &[Part], is_var: &dyn Fn(&str) 
         }
         Ok((name, args))
     };
-    let lookup = |name: &[NamePart]| -> Option<&'a FnInfo> {
+    let named = |name: &[NamePart]| -> Vec<&'a FnInfo> {
         let key = mangle(name);
-        funcs.iter().filter(|f| f.key == key && !f.parts.iter().any(|p| matches!(p, NamePart::Sym(_)))).last()
+        funcs.iter().filter(|f| f.key == key && !f.parts.iter().any(|p| matches!(p, NamePart::Sym(_)))).collect()
     };
     let (name, args) = read(false)?;
-    if let Some(info) = lookup(&name) {
-        if info.params.len() == args.len() {
-            return Ok((info, args));
-        }
+    let found: Vec<&FnInfo> = named(&name).into_iter().filter(|f| f.params.len() == args.len()).collect();
+    if !found.is_empty() {
+        return Ok((found, args));
     }
     let (name, args) = read(true)?;
-    let Some(info) = lookup(&name) else {
+    let all = named(&name);
+    let found: Vec<&FnInfo> = all.iter().copied().filter(|f| f.params.len() == args.len()).collect();
+    if !found.is_empty() {
+        return Ok((found, args));
+    }
+    let Some(first) = all.first() else {
         let words: Vec<String> = name.iter().filter_map(|p| if let NamePart::Word(w) = p { Some(w.clone()) } else { None }).collect();
         return Err(lex::error(file, line, format!("no function named '{}'", words.join(" "))));
     };
-    if info.params.len() != args.len() {
-        return Err(lex::error(file, line, format!("'{}' takes {} argument(s), given {}", info.key, info.params.len(), args.len())));
+    let mut arities: Vec<usize> = all.iter().map(|f| f.params.len()).collect();
+    arities.sort();
+    arities.dedup();
+    let takes: Vec<String> = arities.iter().map(|n| n.to_string()).collect();
+    Err(lex::error(file, line, format!("'{}' takes {} argument(s), given {}", first.key, takes.join(" or "), args.len())))
+}
+
+/// Multiple dispatch (section 6, log 36): among the methods that take
+/// the arguments (`applicable`, indices into `cands`), the most
+/// specific wins — the one whose every parameter type fits the
+/// corresponding parameter of each of the others, `int32` before
+/// `int` before `number`. With no such method the call is ambiguous,
+/// and Err holds the contenders
+fn pick(cands: &[FnInfo], applicable: &[usize]) -> Result<usize, Vec<usize>> {
+    let at_least = |a: &FnInfo, b: &FnInfo| a.params.iter().zip(&b.params).all(|((_, x), (_, y))| fits(x, y));
+    let minimal: Vec<usize> = applicable
+        .iter()
+        .copied()
+        .filter(|&i| !applicable.iter().any(|&j| j != i && at_least(&cands[j], &cands[i]) && !at_least(&cands[i], &cands[j])))
+        .collect();
+    match minimal.as_slice() {
+        [one] => Ok(*one),
+        _ => Err(minimal),
     }
-    Ok((info, args))
+}
+
+/// a literal's own type: `int` for `3`, `float` for `2.5`, `int$` for
+/// `[1, 2]`; a range is a sequence of ints
+fn literal_default(e: &Expr) -> Option<Ty> {
+    match &e.kind {
+        ExprKind::Int(_) => Some(Ty::Num("int".into())),
+        ExprKind::Float(_) => Some(Ty::Num("float".into())),
+        ExprKind::Neg(x) => literal_default(x),
+        ExprKind::Range { .. } => Some(Ty::Seq(Box::new(Ty::Num("int".into())))),
+        ExprKind::List(items) => {
+            let first = literal_default(items.first()?)?;
+            if items.iter().all(|i| literal_default(i).as_ref() == Some(&first)) {
+                Some(Ty::Seq(Box::new(first)))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// a method as a message names it: its words and its parameter types
+/// in zero's spelling, `describe (int32)`
+fn spelled(info: &FnInfo) -> String {
+    let tys: Vec<String> = info.params.iter().map(|(_, t)| zero_ty(t)).collect();
+    format!("{} ({})", spoken(info), tys.join(", "))
+}
+
+/// a type in zero's spelling, for messages
+fn zero_ty(t: &Ty) -> String {
+    match t {
+        Ty::Bool => "bool".into(),
+        Ty::Num(n) => match n.as_str() {
+            "u8" => "uint8".into(),
+            "bf16" => "bfloat16".into(),
+            n if n.len() > 1 && n[1..].parse::<u32>().is_ok() => match &n[..1] {
+                "i" => format!("int{}", &n[1..]),
+                "u" => format!("uint{}", &n[1..]),
+                "f" => format!("float{}", &n[1..]),
+                _ => n.to_string(),
+            },
+            n => n.to_string(),
+        },
+        Ty::Seq(e) if **e == Ty::Num("u8".into()) => "string".into(),
+        Ty::Seq(e) | Ty::Stream(e, _) => format!("{}$", zero_ty(e)),
+        Ty::Struct(n) | Ty::Enum(n) => n.clone(),
+        Ty::None => String::new(),
+    }
 }
 
 struct Lowerer {
@@ -572,6 +678,8 @@ struct Lowerer {
     features: Vec<String>,
     /// the feature that declared each type
     type_feature: HashMap<String, String>,
+    /// while `choose` tries a method: a literal argument is its own type
+    strict: bool,
 }
 
 /// what kind of body is being lowered: the scheduler runs after a push
@@ -889,65 +997,71 @@ impl Lowerer {
             if operator {
                 return Err(lex::error(file, f.line, "an operator is not a platform function"));
             }
-            // an overload (log 31): the same words for other parameter
-            // types, named in the IR by its types
-            if let Some(other) = self.funcs.iter().find(|g| g.key == key && g.parts == f.name && g.params.len() == params.len() && g.platform.is_some()) {
-                if self.funcs.iter().any(|g| g.key == key && g.params == params) {
-                    return Err(lex::error(file, f.line, format!("'{}' is declared twice for these types", spoken(other))));
-                }
-                let words: Vec<String> = params.iter().map(|(_, t)| type_word(t)).collect();
-                let ir = format!("{}__{}", key, words.join("_"));
-                self.funcs.push(FnInfo { key, ir, parts: f.name.clone(), params, results, feature: feature.to_string(), task: false, chain: vec![feature.to_string()], platform });
-                return Ok(());
-            }
         }
-        let ir = if operator {
-            // an operator on a declared type: named by the opcode and its
-            // first operand's type, since the IR does not dispatch
-            // arithmetic on structs and plain functions cannot share a name
+        if operator {
+            // an operator on a declared type: the IR does not dispatch
+            // arithmetic on structs, so it is a function named by the
+            // opcode and its first operand's type (log 9)
             if f.name.len() != 3 || !matches!(f.name.as_slice(), [NamePart::Group, NamePart::Sym(_), NamePart::Group]) || params.len() != 2 {
                 return Err(lex::error(file, f.line, "an operator is `on (T r) = (T a) op (U b)`"));
             }
             if !matches!(params[0].1, Ty::Struct(_)) {
                 return Err(lex::error(file, f.line, "an operator's first operand is a declared struct type; numbers have the IR's operators"));
             }
-            format!("{}_{}", key, params[0].1.ir())
-        } else {
-            key.clone()
-        };
-        if let Some(other) = self.funcs.iter().find(|g| g.ir == ir) {
-            if other.platform.is_some() || platform.is_some() {
-                return Err(lex::error(file, f.line, format!("'{}' is a platform function of feature {}: the platform is called, not redefined (section 15)", spoken(other), other.feature)));
+        }
+        // a name is a set of methods (section 6, log 36): every function
+        // with these words. The same parameter types are the same
+        // method, which a later feature redefines and chains (log 28);
+        // other types are a new method of the name, told apart in the
+        // IR by its types
+        let set: Vec<usize> = self.funcs.iter().enumerate().filter(|(_, g)| g.key == key).map(|(i, _)| i).collect();
+        if let Some(&i) = set.iter().find(|&&i| self.funcs[i].parts != f.name) {
+            return Err(lex::error(file, f.line, format!("'{}' clashes with a function of feature {} that mangles to the same name", key, self.funcs[i].feature)));
+        }
+        let ptys = |g: &FnInfo| g.params.iter().map(|(_, t)| t.clone()).collect::<Vec<Ty>>();
+        let rtys = |g: &FnInfo| g.results.iter().map(|(_, t)| t.clone()).collect::<Vec<Ty>>();
+        let mine = FnInfo { key: key.clone(), ir: String::new(), parts: f.name.clone(), params, results, feature: feature.to_string(), task: f.task, chain: vec![feature.to_string()], platform };
+        if let Some(&i) = set.iter().find(|&&i| ptys(&self.funcs[i]) == ptys(&mine)) {
+            let other = &self.funcs[i];
+            if other.platform.is_some() || mine.platform.is_some() {
+                return Err(lex::error(file, f.line, format!("'{}' is a platform function of feature {}: the platform is called, not redefined (section 15)", spelled(other), other.feature)));
             }
-            if operator && other.params != params {
-                return Err(lex::error(file, f.line, format!("a second operator on {} with this symbol clashes with feature {}'s: the IR names it by its first operand's type only", params[0].1.ir(), other.feature)));
-            }
-            if other.parts != f.name || other.params.len() != params.len() {
-                return Err(lex::error(file, f.line, format!("'{}' clashes with a function of feature {} that mangles to the same name", key, other.feature)));
-            }
-            // a redefinition (log 28): the same signature from a later
-            // feature joins the chain, and its body will call `existing`
             let last = other.chain.last().cloned().unwrap_or_default();
             if last == feature {
-                return Err(lex::error(file, f.line, format!("'{}' is defined twice in feature {}", spoken(other), feature)));
+                return Err(lex::error(file, f.line, format!("'{}' is defined twice in feature {}", spelled(other), feature)));
             }
             if other.task || f.task {
-                return Err(lex::error(file, f.line, format!("'{}' is a task: a task is not redefined in this milestone", spoken(other))));
+                return Err(lex::error(file, f.line, format!("'{}' is a task: a task is not redefined in this milestone", spelled(other))));
             }
             if operator {
                 return Err(lex::error(file, f.line, "an operator is not redefined in this milestone"));
             }
-            if other.params != params || other.results != results {
-                return Err(lex::error(file, f.line, format!("'{}' redefines feature {}'s with different parameters or results: a redefinition keeps the signature", spoken(other), last)));
+            if rtys(other) != rtys(&mine) {
+                return Err(lex::error(file, f.line, format!("'{}' redefines feature {}'s with different results: a redefinition keeps the signature", spelled(other), last)));
             }
-            self.reach(&spoken(other), &last, file, f.line)?;
-            let i = self.funcs.iter().position(|g| g.ir == ir).unwrap();
-            // the function stays the first definer's: a lower layer's
+            self.reach(&spelled(other), &last, file, f.line)?;
+            // the method stays the first definer's: a lower layer's
             // name, which control may flow up through (section 12)
             self.funcs[i].chain.push(feature.to_string());
             return Ok(());
         }
-        self.funcs.push(FnInfo { key, ir, parts: f.name.clone(), params, results, feature: feature.to_string(), task: f.task, chain: vec![feature.to_string()], platform });
+        if let Some(&i) = set.first() {
+            if self.funcs[i].task || f.task {
+                return Err(lex::error(file, f.line, format!("'{}' is a task: a task's name has one method", spoken(&self.funcs[i]))));
+            }
+        }
+        let ir = match (set.is_empty(), operator) {
+            (true, false) => key.clone(),
+            (true, true) => format!("{}_{}", key, mine.params[0].1.ir()),
+            (false, _) => {
+                let words: Vec<String> = mine.params.iter().map(|(_, t)| type_word(t)).collect();
+                format!("{}__{}", key, words.join("_"))
+            }
+        };
+        if let Some(other) = self.funcs.iter().find(|g| g.ir == ir) {
+            return Err(lex::error(file, f.line, format!("'{}' would be {} in the IR, which feature {}'s '{}' already is", spelled(&mine), ir, other.feature, spelled(other))));
+        }
+        self.funcs.push(FnInfo { ir, ..mine });
         Ok(())
     }
 
@@ -961,9 +1075,11 @@ impl Lowerer {
             _ => (parts.as_slice(), None),
         };
         let is_var = |w: &str| vars.is_some_and(|v| v.contains_key(w)) || self.fvar(w).is_some();
-        let Ok((info, args)) = find_function(&self.funcs, parts, &is_var, file, e.line) else {
+        let Ok((cands, args)) = find_methods(&self.funcs, parts, &is_var, file, e.line) else {
             return Ok(None);
         };
+        // a task's name has one method (log 36)
+        let info = cands[0];
         if !info.task {
             return Ok(None);
         }
@@ -1499,7 +1615,7 @@ impl Lowerer {
         let key = mangle(&f.name);
         let mut candidates: Vec<&FnInfo> = self.funcs.iter().filter(|g| g.key == key && g.parts == f.name && g.params.len() == f.params().count()).collect();
         if candidates.len() > 1 {
-            // overloads (log 31): the one declared for these parameter types
+            // methods (log 36): the one declared for these parameter types
             let mut tys = Vec::new();
             for p in f.params() {
                 tys.push(self.ty(&p.ty, p.seq, file, p.line)?);
@@ -2377,8 +2493,8 @@ impl Lowerer {
             return Err(lex::error(&file, line, format!("no earlier definition of '{}' for 'existing' to call{}", spoken(&info), if info.chain.len() > 1 { ": this is the first" } else { "" })));
         };
         let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
-        let (named, args) = find_function(std::slice::from_ref(&info), parts, &is_var, &file, line).map_err(|_| lex::error(&file, line, format!("'existing' names the function it is in: `existing {}(...)`", spoken(&info))))?;
-        let named = named.clone();
+        let (named, args) = find_methods(std::slice::from_ref(&info), parts, &is_var, &file, line).map_err(|_| lex::error(&file, line, format!("'existing' names the function it is in: `existing {}(...)`", spoken(&info))))?;
+        let named = named[0].clone();
         let (ops, rtys) = self.lower_args(&named, &args, b)?;
         Ok((format!("{}({})", below, ops.join(", ")), rtys))
     }
@@ -2444,16 +2560,20 @@ impl Lowerer {
             }
         }
         let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
-        let (info, args) = find_function(&self.funcs, parts, &is_var, &file, line)?;
-        let info = info.clone();
-        if info.task {
-            return Err(lex::error(&file, line, format!("'{}' is a task: it is wired into a stream, `{} x$ = {}`", spoken(&info), task_elem(&info), phrase_text(value))));
+        let (cands, args) = find_methods(&self.funcs, parts, &is_var, &file, line)?;
+        let cands: Vec<FnInfo> = cands.into_iter().cloned().collect();
+        if cands[0].task {
+            return Err(lex::error(&file, line, format!("'{}' is a task: it is wired into a stream, `{} x$ = {}`", spoken(&cands[0]), task_elem(&cands[0]), phrase_text(value))));
+        }
+        let (info, (vals, lifted, acc, rtys)) = self.choose(&cands, &args, b, line)?;
+        if lifted.iter().any(|&l| l) || acc.is_some() {
+            return Err(lex::error(&file, line, format!("'{}' gives several results: it is not mapped over a sequence", info.key)));
         }
         self.reach(&spoken(&info), &info.feature, &file, line)?;
         if info.results.len() != names.len() {
             return Err(lex::error(&file, line, format!("'{}' gives {} result(s), {} wanted", info.key, info.results.len(), names.len())));
         }
-        let (ops, rtys) = self.lower_args(&info, &args, b)?;
+        let ops: Vec<String> = vals.into_iter().map(|v| v.text).collect();
         for ((n, want), got) in names.iter().zip(tys).zip(&rtys) {
             if want != got {
                 return Err(lex::error(&file, line, format!("'{}' is {} but '{}' gives {}", n, want.ir(), info.key, got.ir())));
@@ -2488,6 +2608,9 @@ impl Lowerer {
     /// marked lifted (a map), and `_` marks the accumulator (a reduce)
     fn lower_call_args(&mut self, info: &FnInfo, args: &[Expr], b: &mut Body) -> Result<(Vec<Val>, Vec<bool>, Option<(usize, Ty)>, Vec<Ty>), Error> {
         let file = b.file.clone();
+        // strictness is this call's alone: a call inside an argument
+        // chooses for itself
+        let strict = std::mem::replace(&mut self.strict, false);
         let mut vals = Vec::new();
         let mut lifted = Vec::new();
         let mut acc = None;
@@ -2503,8 +2626,28 @@ impl Lowerer {
                 continue;
             }
             let mut v = self.lower_expr(a, Some(ty), b, None)?;
+            if strict {
+                // a literal, or a list of them, as its own type, while
+                // `choose` asks for that
+                if let Some(d) = literal_default(a) {
+                    if !fits(&d, ty) {
+                        return Err(lex::error(&file, a.line, format!("'{}' wants a {} here, given an {}", info.key, ty.ir(), d.ir())));
+                    }
+                }
+            }
             if v.literal && fits_literal(&v, ty) {
                 v.ty = ty.clone();
+            }
+            // a literal meeting an abstract parameter binds it to the
+            // literal's own type, `int` or `float`, as a typed constant:
+            // the IR cannot type `2.5` under `number` on its own
+            if v.literal && ty.abstract_name().is_some() {
+                if let Some(d) = literal_default(a) {
+                    if &d != ty && fits(&d, ty) {
+                        v.ty = d;
+                        v = b.materialize(&v);
+                    }
+                }
             }
             // the item's type is what the tower sees
             let item = match (v.ty.elem(), ty) {
@@ -2542,6 +2685,54 @@ impl Lowerer {
             (i, aty)
         });
         Ok((vals, lifted, acc, rtys))
+    }
+
+    /// The method a call takes (section 6, log 36). Each candidate is
+    /// tried on the arguments — a try that fails leaves nothing behind —
+    /// first with every literal as its own type (`3` an `int`, `2.5` a
+    /// `float`), then, when no method takes that, with a literal fitting
+    /// any number type; a method that takes an argument as it is beats
+    /// one the call would have to map over a sequence; among what is
+    /// left `pick` decides. The winner's arguments are then lowered for
+    /// good
+    fn choose(&mut self, cands: &[FnInfo], args: &[Expr], b: &mut Body, line: usize) -> Result<(FnInfo, (Vec<Val>, Vec<bool>, Option<(usize, Ty)>, Vec<Ty>)), Error> {
+        let file = b.file.clone();
+        if let [one] = cands {
+            let r = self.lower_call_args(one, args, b)?;
+            return Ok((one.clone(), r));
+        }
+        let mut last_err = None;
+        for strict in [true, false] {
+            let mut direct = Vec::new();
+            let mut mapped = Vec::new();
+            for (i, cand) in cands.iter().enumerate() {
+                let (start, ntmp, vars, defs, ndata, nstr) = (b.out.len(), b.ntmp, b.vars.clone(), b.defs.clone(), self.data.len(), self.nstr);
+                self.strict = strict;
+                let tried = self.lower_call_args(cand, args, b);
+                self.strict = false;
+                match tried {
+                    Ok((_, lifted, acc, _)) if lifted.iter().any(|&l| l) || acc.is_some() => mapped.push(i),
+                    Ok(_) => direct.push(i),
+                    Err(err) => last_err = Some(err),
+                }
+                b.out.truncate(start);
+                b.ntmp = ntmp;
+                b.vars = vars;
+                b.defs = defs;
+                self.data.truncate(ndata);
+                self.nstr = nstr;
+            }
+            let applicable = if direct.is_empty() { mapped } else { direct };
+            if applicable.is_empty() {
+                continue;
+            }
+            let i = pick(cands, &applicable).map_err(|amb| ambiguous(cands, &amb, &file, line))?;
+            let r = self.lower_call_args(&cands[i], args, b)?;
+            return Ok((cands[i].clone(), r));
+        }
+        let sigs: Vec<String> = cands.iter().map(spelled).collect();
+        let err = last_err.unwrap();
+        Err(lex::error(&file, err.line, format!("no '{}' takes these arguments: the methods are {}", spoken(&cands[0]), sigs.join(", "))))
     }
 
     /// a call's arguments where no sequence is lifted: the operand texts
@@ -2891,12 +3082,32 @@ impl Lowerer {
         found
     }
 
-    /// the user's operator for a struct on the left
-    fn find_operator(&self, op: &str, l: &Ty, r: &Ty) -> Option<FnInfo> {
-        self.funcs
-            .iter()
-            .find(|f| matches!(f.parts.as_slice(), [NamePart::Group, NamePart::Sym(s), NamePart::Group] if s == op) && &f.params[0].1 == l && fits(r, &f.params[1].1))
-            .cloned()
+    /// the program's operator for a struct on the left: among the
+    /// methods of the symbol that take the operands, the most specific
+    /// (log 36); a literal on the right fits any number
+    fn find_operator(&self, op: &str, l: &Ty, r: &Val, file: &str, line: usize) -> Result<Option<FnInfo>, Error> {
+        let cands: Vec<FnInfo> = self.funcs.iter().filter(|f| matches!(f.parts.as_slice(), [NamePart::Group, NamePart::Sym(s), NamePart::Group] if s == op)).cloned().collect();
+        // a literal on the right is its own type first, `int` or `float`
+        let own = if r.text.contains('.') { Ty::Num("float".into()) } else { Ty::Num("int".into()) };
+        let takes = |p: &Ty, strict: bool| match (r.literal, strict) {
+            (true, true) => fits(&own, p),
+            (true, false) => fits_literal(r, p),
+            (false, _) => fits(&r.ty, p),
+        };
+        let mut applicable = Vec::new();
+        for strict in [true, false] {
+            applicable = (0..cands.len()).filter(|&i| fits(l, &cands[i].params[0].1) && takes(&cands[i].params[1].1, strict)).collect();
+            if !applicable.is_empty() {
+                break;
+            }
+        }
+        if applicable.is_empty() {
+            return Ok(None);
+        }
+        match pick(&cands, &applicable) {
+            Ok(i) => Ok(Some(cands[i].clone())),
+            Err(amb) => Err(ambiguous(&cands, &amb, file, line)),
+        }
     }
 
     /// Lower an expression to a value. `want` is the type the context
@@ -3418,6 +3629,7 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
             }
             ExprKind::Float(s) => {
                 let ty = match want {
+                    Some(Ty::Num(n)) if is_integer(n) => return Err(lex::error(&file, e.line, format!("a decimal where an {} is wanted", zero_ty(&Ty::Num(n.clone()))))),
                     Some(Ty::Num(n)) => Ty::Num(n.clone()),
                     Some(Ty::Bool) => return Err(lex::error(&file, e.line, "a decimal where a bool is wanted")),
                     _ => Ty::Num("float".into()),
@@ -3566,10 +3778,13 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                 let lv = self.lower_expr(l, operand_want, b, None)?;
                 // a struct on the left: the program's own operator
                 if let Ty::Struct(_) = &lv.ty {
-                    let rv = self.lower_expr(r, None, b, None)?;
-                    let Some(info) = self.find_operator(op, &lv.ty, &rv.ty) else {
-                        return Err(lex::error(&file, e.line, format!("no '{}' is defined on a {} and a {}", op, lv.ty.ir(), rv.ty.ir())));
+                    let mut rv = self.lower_expr(r, None, b, None)?;
+                    let Some(info) = self.find_operator(op, &lv.ty, &rv, &file, e.line)? else {
+                        return Err(lex::error(&file, e.line, format!("no '{}' is defined on a {} and a {}", op, zero_ty(&lv.ty), zero_ty(&rv.ty))));
                     };
+                    if rv.literal {
+                        rv.ty = info.params[1].1.clone();
+                    }
                     let ty = info.results[0].1.clone();
                     let name = name_for(dst, &ty, b);
                     b.line(&format!("{}: {} = {}({}, {})", name, ty.ir(), info.ir, lv.text, rv.text));
@@ -3711,45 +3926,15 @@ type __s_{} = struct {{ {} }}", name, name, ir.join(", ")));
                     }
                 }
                 let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
-                let (info, args) = find_function(&self.funcs, parts, &is_var, &file, e.line)?;
-                let info = info.clone();
-                if info.task {
-                    return Err(lex::error(&file, e.line, format!("'{}' is a task: it is wired into a stream, `{} x$ = {}`", spoken(&info), task_elem(&info), phrase_text(e))));
+                let (cands, args) = find_methods(&self.funcs, parts, &is_var, &file, e.line)?;
+                let cands: Vec<FnInfo> = cands.into_iter().cloned().collect();
+                if cands[0].task {
+                    let info = &cands[0];
+                    return Err(lex::error(&file, e.line, format!("'{}' is a task: it is wired into a stream, `{} x$ = {}`", spoken(info), task_elem(info), phrase_text(e))));
                 }
+                // the method the arguments choose (section 6, log 36)
+                let (info, (vals, lifted, acc, rtys)) = self.choose(&cands, &args, b, e.line)?;
                 self.reach(&spoken(&info), &info.feature, &file, e.line)?;
-                // a platform function declared for several parameter
-                // types (log 31): the first whose parameters take the
-                // arguments, in declaration order
-                let overloads: Vec<FnInfo> = self.funcs.iter().filter(|g| g.key == info.key && g.parts == info.parts && g.params.len() == info.params.len() && g.platform.is_some()).cloned().collect();
-                let (info, vals, lifted, acc, rtys) = if overloads.len() > 1 {
-                    let mut chosen = None;
-                    let mut last_err = None;
-                    for cand in &overloads {
-                        let (start, ntmp, vars, defs) = (b.out.len(), b.ntmp, b.vars.clone(), b.defs.clone());
-                        match self.lower_call_args(cand, &args, b) {
-                            Ok(r) => {
-                                chosen = Some((cand.clone(), r));
-                                break;
-                            }
-                            Err(err) => {
-                                b.out.truncate(start);
-                                b.ntmp = ntmp;
-                                b.vars = vars;
-                                b.defs = defs;
-                                last_err = Some(err);
-                            }
-                        }
-                    }
-                    let Some((cand, (vals, lifted, acc, rtys))) = chosen else {
-                        let sigs: Vec<String> = overloads.iter().map(|g| format!("({})", g.params.iter().map(|(_, t)| t.ir()).collect::<Vec<_>>().join(", "))).collect();
-                        let e = last_err.unwrap();
-                        return Err(lex::error(&file, e.line, format!("no '{}' takes these arguments: it is declared for {}", spoken(&info), sigs.join(" and "))));
-                    };
-                    (cand, vals, lifted, acc, rtys)
-                } else {
-                    let (vals, lifted, acc, rtys) = self.lower_call_args(&info, &args, b)?;
-                    (info, vals, lifted, acc, rtys)
-                };
                 if lifted.iter().any(|&l| l) || acc.is_some() {
                     if rtys.len() != 1 {
                         return Err(lex::error(&file, e.line, format!("'{}' over a sequence: the function gives one result", info.key)));
@@ -3952,10 +4137,17 @@ fn task_elem(info: &FnInfo) -> String {
     }
 }
 
-/// may a literal be assigned to a variable of this type?
+/// may a literal be assigned to a variable of this type? A number
+/// literal fits any number type, except that a decimal does not fit
+/// an integer
 fn fits_literal(v: &Val, ty: &Ty) -> bool {
     match (&v.ty, ty) {
-        (Ty::Num(_), Ty::Num(_)) => true,
+        (Ty::Num(_), Ty::Num(t)) => !(v.text.contains('.') && is_integer(t)),
         (a, b) => a == b,
     }
+}
+
+/// an integer type, abstract or concrete, by its IR name
+fn is_integer(t: &str) -> bool {
+    t == "int" || t == "uint" || (t.len() > 1 && t.starts_with(['i', 'u']) && t[1..].parse::<u32>().is_ok())
 }

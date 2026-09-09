@@ -10,9 +10,9 @@ Plan item 3 of milestone 0: section 4 of zero.md — abstract and concrete numbe
 `Vec` is three floats side by side with a default of zero each; it is built by position, by name, or from nothing, and `+` and `*` on it are functions the feature defines. `Tristate` is an enumeration of three cases. A `string` is a sequence of bytes, printed as it is.
 
 ## interface
-- `(a) + (b)` on two `Vec`s adds field by field; `(a) * (k)` scales a `Vec` by a float.
+- `(a) + (b)` on two `Vec`s adds field by field; `(a) * (k)` scales a `Vec` by a float, and `(a) * (b)` on two `Vec`s multiplies field by field: two methods of `*` on a `Vec`, chosen by the right operand.
 - `sum of fields (v)` folds a `Vec` into an `int`, converting with `int(...)`.
-- `added`, `scaled`, `by name`, `defaulted` build `Vec`s the four ways and sum them.
+- `added`, `scaled`, `by name`, `defaulted` build `Vec`s the four ways and sum them; `scaled by a vec` uses the second `*`.
 - `flipped (x)` swaps `no` and `yes` and leaves `maybe`; `is maybe (t)` compares with the qualified case `Tristate.maybe`.
 - `widened (x)` converts an `int32` to `int`; `low byte (x)` converts an `int` to `uint8`, which wraps.
 - `halved` divides a float and truncates; `flags` compares bools.
@@ -27,6 +27,7 @@ Plan item 3 of milestone 0: section 4 of zero.md — abstract and concrete numbe
 ## testing
 >added() → 66
 >scaled() → 15
+>scaled by a vec() → 12
 >by name() → 4
 >defaulted() → 0
 >flipped (1) → 0
@@ -42,4 +43,4 @@ Plan item 3 of milestone 0: section 4 of zero.md — abstract and concrete numbe
 >named() → "zero"
 
 ## hostile
-`Vec v(1, 2, 3, 4)` is refused: "Vec has 3 field(s), given 4". `t < yes` on a `Tristate` is refused: only `==` and `!=` apply. A second `+` whose first operand is a `Vec` is refused as a clash.
+`Vec v(1, 2, 3, 4)` is refused: "Vec has 3 field(s), given 4". `t < yes` on a `Tristate` is refused: only `==` and `!=` apply. A second `+` on the same operand types, `(Vec a) + (Vec b)` again, is refused: "an operator is not redefined in this milestone"; on other types it is a second method (`*` here), and `a * 2` with both `(Vec) * (float)` and `(Vec) * (Vec)` declared takes the float one, a literal fitting a number.
