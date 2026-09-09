@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: an int64 may meet a float64 — `8f4931b` · 2026-09-09
+
+```
+on (int64 d) = rounding above fifty three bits()
+    int64 big = 9007199254740993
+    float64 f = big
+    d = int64(f) - big
+```
+
+Second rulings pass item 1 (question 21, log 46). The accuracy rule of the first pass refused an `int64` beside any float, since no float holds every `int64`; Ash called that overly restrictive — arithmetic is modulo its range, and the writer knows it. `wider` in `src/zero/lower.rs` keeps the exact table as `wider_exact` and otherwise gives the widest type of the family, `float64` for an `int64` with a float, so the lines above are accepted and the case gives -1: the conversion rounds above 2^53, and the emitted IR says so in a comment above the `conv`, the warning the ruling allows. A narrowing, and a `float32` from an `int32` that `float64` holds better, stay refused. `suite/zero/types` gains six cases. zero 312/312 on native, wasm, riscv and arm-qemu (246 cases, 12 overridden), 301 + 11 skipped on air; probe test 971, 962 + 9, 971, 971, 941 + 30; cargo test 95 passed.
+
+---
+
 ### zero: the docs pass — `c5c9e2b` · 2026-09-09
 
 ```
