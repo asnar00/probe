@@ -6,6 +6,9 @@ int q$ = doubled(y$)
 int w$ << count up to (3) << count down from (3)
 int size = 4
 int z$ = count down from (size)
+int left$
+int right$
+right$ << left$ << 0
 
 on (int i$) << count down from (int n)
     i$ << n << (i$ - 1) while (_ > 0)
@@ -107,3 +110,8 @@ on (int n) = run now inside a loop()
         d$ << doubled(i$)
         continue (k + 1)
     n = count d$ * 10 + latest d$
+
+on (int a, int b) = edged()
+    left$ << 1 << 2
+    a = count right$
+    b = right$[0] * 1000 + right$[1] * 100 + right$[2] * 10 + right$[3]

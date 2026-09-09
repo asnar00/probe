@@ -70,15 +70,23 @@ fn __push(s: number$, block: number[])
 ; the context: one field per feature-scope variable — name: scope, merge (feature)
 ;   out: user, last (platform)
 ;   in: user, last (platform)
+;   i: user, last (countdown)
 ;   __node1_c: node, last (platform)
 ;   __node1_c_seen: node, last (platform)
 ;   __node1_fin: node, last (platform)
+;   __node2_i: node, last (countdown)
+;   __node2_i_seen: node, last (countdown)
+;   __node2_fin: node, last (countdown)
 type __ctx = struct
     out: u8$
     in: u8$
+    i: int$
     __node1_c: u8$
     __node1_c_seen: i64
     __node1_fin: u1
+    __node2_i: int$
+    __node2_i_seen: i64
+    __node2_fin: u1
 
 data __ctx_mem: array(__ctx, 1)
 data __s6 = "hello world"
@@ -95,9 +103,10 @@ fn __zero_reset()
     store 0: i64, r
     _1: u8$ = __regular_u8(1000000, 4096)
     _2: u8$ = __stream_u8(1000000, 512)
-    _3: __ctx = pack _1, _2, _1, 0, 0
+    _3: int$ = __regular_int(1, 64)
+    _4: __ctx = pack _1, _2, _3, _1, 0, 0, _3, 0, 0
     p: ptr = addr __ctx_mem
-    store _3, p
+    store _4, p
     ret
 
 ; after the case's context is set: the nodes run
@@ -115,6 +124,12 @@ fn __get_in() -> u8$
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: u8$ = get c, in
+    ret v
+
+fn __get_i() -> int$
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: int$ = get c, i
     ret v
 
 fn __get___node1_c() -> u8$
@@ -156,6 +171,45 @@ fn __set___node1_fin(v: u1)
     store c2, p
     ret
 
+fn __get___node2_i() -> int$
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: int$ = get c, __node2_i
+    ret v
+
+fn __set___node2_i(v: int$)
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    c2: __ctx = set c, __node2_i, v
+    store c2, p
+    ret
+
+fn __get___node2_i_seen() -> i64
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: i64 = get c, __node2_i_seen
+    ret v
+
+fn __set___node2_i_seen(v: i64)
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    c2: __ctx = set c, __node2_i_seen, v
+    store c2, p
+    ret
+
+fn __get___node2_fin() -> u1
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: u1 = get c, __node2_fin
+    ret v
+
+fn __set___node2_fin(v: u1)
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    c2: __ctx = set c, __node2_fin, v
+    store c2, p
+    ret
+
 ; node 1: write (out$) — run when an input has more than the node has seen, or has ended and the node has not run since
 fn __node1() -> u1
     fin: u1 = __get___node1_fin()
@@ -179,6 +233,29 @@ fn __node1() -> u1
         yield 0
     ret ran
 
+; node 2: out$ << i$ << "\n" — run when an input has more than the node has seen, or has ended and the node has not run since
+fn __node2() -> u1
+    fin: u1 = __get___node2_fin()
+    notfin: u1 = xor fin, 1
+    _1: int$ = __get___node2_i()
+    _2: i64 = received(_1)
+    _3: i64 = __get___node2_i_seen()
+    _4: u1 = cmp.gt _2, _3
+    _5: u1 = ended(_1)
+    _6: u1 = and _5, notfin
+    _7: u1 = or _4, _6
+    ran: u1 = if _7
+        _8: int$ = __edge1(_1, 0: i64)
+        __set___node2_i(_8)
+        _9: i64 = received(_8)
+        __set___node2_i_seen(_9)
+        _10: u1 = ended(_8)
+        __set___node2_fin(_10)
+        yield 1
+    else
+        yield 0
+    ret ran
+
 ; the scheduler (log 25): passes over the nodes in declaration order until a pass runs nothing
 fn __run()
     p: ptr = addr __running
@@ -188,7 +265,9 @@ fn __run()
         store 1: i64, p
         loop()
             r1: u1 = __node1()
-            if r1
+            r2: u1 = __node2()
+            any2: u1 = or r1, r2
+            if any2
                 continue
             else
                 break
@@ -232,31 +311,6 @@ fn push__u8s_int(o: u8$, x: int)
         p_4: int = div p_3, 10
         continue p_4
     ret
-fn push__u8s_ints(o: u8$, x: int$)
-    loop(i: int = 0)
-        _1: i64 = count x
-        _2: int = conv _1
-        _3: u1 = cmp.lt i, _2
-        if _3
-        else
-            break
-        _4: u1 = cmp.gt i, 0
-        if _4
-            _5: u8 = const 32
-            __push(o, _5)
-        _6: i64 = conv i
-        _7: int = peek x, _6
-        push__u8s_int(o, _7)
-        i_2: int = add i, 1
-        continue i_2
-    ret
-fn print__ints(x: int$)
-    _1: u8$ = __get_out()
-    push__u8s_ints(_1, x)
-    _2: u8 = const 10
-    push(_1, _2)
-    __run()
-    ret
 
 ; feature hello (layer runtime)
 fn run__hello()
@@ -279,19 +333,32 @@ fn run__countdown()
     run__hello()
     ret
 fn count_down()
-    i: int$ = __regular_int(1, 64)
-    loop(_1: int = 10)
-        _2: u1 = cmp.ge _1, 1
-        if _2
+    _1: int$ = __get_i()
+    loop(_2: int = 10)
+        _3: u1 = cmp.ge _2, 1
+        if _3
         else
             break
-        push(i, _1)
-        _3: int = sub _1, 1
-        continue _3
-    _4: int[], _5: i64, i_2: int$ = frame(i)
-    _6: int$ = __copy_int(_4)
-    print__ints(_6)
+        push(_1, _2)
+        _4: int = sub _2, 1
+        continue _4
+    __run()
     ret
+fn __edge1(i: int$, __hz: i64) -> int$
+    i_4: int$ = loop(i_2: int$ = i)
+        _1: i64 = count i_2
+        _2: int = conv _1
+        _3: u1 = cmp.eq _2, 0
+        if _3
+            break i_2
+        _4: u8$ = __get_out()
+        _5: int = peek i_2, 0
+        push__u8s_int(_4, _5)
+        _6: u8 = const 10
+        push(_4, _6)
+        i_3: int$ = advance(i_2, 1)
+        continue i_3
+    ret i_4
 
 ; feature bye (layer runtime)
 fn run()
@@ -310,22 +377,6 @@ fn goodbye()
     ret
 
 ; a stream's ring, carved from the arena: cap items resident (64 unless more are), twice that in slots since the ring mirrors each item (log 65), and a tick per item unless regular; a reader's view at its start
-fn __stream_int(hz: i64, cap: i64) -> int$
-    a: ptr = addr __arena
-    r: ptr = arena_alloc(a, 64)
-    slots: i64 = mul cap, 2
-    sz: i64 = sizeof int
-    bytes: i64 = mul sz, slots
-    total: i64 = add bytes, 16
-    vb: ptr = arena_alloc(a, total)
-    buffer_init(vb, sz, slots)
-    tbytes: i64 = mul slots, 8
-    ttotal: i64 = add tbytes, 16
-    tb: ptr = arena_alloc(a, ttotal)
-    buffer_init(tb, 8, slots)
-    ring_init(r, vb, tb, hz)
-    s: int$ = stream r
-    ret s
 fn __regular_int(hz: i64, cap: i64) -> int$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
@@ -365,21 +416,4 @@ fn __regular_u8(hz: i64, cap: i64) -> u8$
     buffer_init(vb, sz, slots)
     ring_regular(r, vb, hz, 1, 0)
     s: u8$ = stream r
-    ret s
-
-; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give
-fn __copy_int(v: int[]) -> int$
-    n: i64 = len v
-    least: i64 = const 64
-    cap: i64 = max(n, least)
-    s: int$ = __stream_int(1000000, cap)
-    t: i64 = __now()
-    loop(i: i64 = 0)
-        done: u1 = cmp.ge i, n
-        if done
-            break
-        x: int = load v, i
-        push s, t, x
-        i2: i64 = add i, 1
-        continue i2
     ret s

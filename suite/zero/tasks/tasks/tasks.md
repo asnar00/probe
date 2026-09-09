@@ -17,6 +17,7 @@ A task is a function that produces a stream over time: it is declared with `<<` 
 - `wired at feature scope`, `wired from a variable`, `fed twice`, `carried between runs`, `closed`, `closed once` read the nodes' streams.
 - `rated`, `sampled at a rate`, `composed at a rate` wire a task at `1 hz` and read the clock through `position` and `x$ at (t)`.
 - `fed a literal` passes a stream made from a list to a task; `run now moves the reader`, `run now inside a loop` pass a local stream to a task, which moves it.
+- `right$ << left$ << 0` is an edge (section 9, log 72): `left$` wired into `right$`, each item moved as it arrives and a `0` pushed after each; `edged` pushes into `left$` and reads `right$`.
 
 ## rules
 - `product.md` beside this folder bounds `count down from` and `count up to` at 5 for `probe cost`, the largest their wirings ask: the emitted IR carries `; product setting: bound count down from: 5` and `loop() bound 5` on each chain, and the code says no number (log 41).
@@ -26,6 +27,7 @@ A task is a function that produces a stream over time: it is declared with `<<` 
 - The scheduler runs at the end of the store's reset and after every push or `end`, from a plain function, into a stream some node reads; a task never starts it.
 - A task wired `at (n hz)` sleeps one period after each push into its own output; the clock starts at zero for every case and nothing else moves it. The output ring is irregular, its ticks a period apart. A task composed into another's output runs at the outer rate.
 - `while` after a task call is refused; so is a task call before a pushed item in a feature-scope chain.
+- A stream on the right of `<<` at feature scope is an edge, a node like a wiring's: it runs when the stream on the right has more than it has seen, moves every unread item into the stream on the left by the dispatch a push uses, an item of the element type as itself, and pushes the rest of the chain after each item; it is gated by its feature and carries its reader between runs. The first item of such a line must be a stream, and it takes no `while`.
 
 ## testing
 >sawtoothed() → 1051
@@ -43,6 +45,7 @@ A task is a function that produces a stream over time: it is declared with `<<` 
 >fed a literal() → 36
 >run now moves the reader() → 3
 >run now inside a loop() → 82
+>edged() → 4, 1020
 
 ## hostile
-`int n = count up to (3)` is refused: "'count up to' is a task: it is wired into a stream, `int x$ = count up to (3)`". `x$ << count up to (3) while (x$ < 9)` is refused: "a task call is not repeated with `while`: the task's own chain says when it stops". `int c$ = count up to (3) at (2 ms)` is refused: "a rate is `at (n hz)` or `at (n khz)`, n positive". `on (int a$, int b$) << two()` is refused: "a task produces one stream: `on (T x$) << name (...)`". `on (int n) << f()` is refused: "a task's result is the stream it produces: `on (int n$) << ...`". `int d$ << doubled(x$) << 5` at feature scope is refused: "a value pushed after a task call at feature scope: a chain's items come before its tasks". `int x$ <<` with nothing after it is refused: "a bare `int x$` declares an empty stream: drop the `<<`". A node whose task never takes what its input has would run once per arrival and no more; a task whose own loop never stops is what would hang, and the runner's timeout is what stops it.
+`int n = count up to (3)` is refused: "'count up to' is a task: it is wired into a stream, `int x$ = count up to (3)`". `x$ << count up to (3) while (x$ < 9)` is refused: "a task call is not repeated with `while`: the task's own chain says when it stops". `int c$ = count up to (3) at (2 ms)` is refused: "a rate is `at (n hz)` or `at (n khz)`, n positive". `on (int a$, int b$) << two()` is refused: "a task produces one stream: `on (T x$) << name (...)`". `on (int n) << f()` is refused: "a task's result is the stream it produces: `on (int n$) << ...`". `int d$ << doubled(x$) << 5` at feature scope is refused: "a value pushed after a task call at feature scope: a chain's items come before its tasks". `right$ << left$ while (_ > 0)` at feature scope is refused: "an edge has no `while`: it moves every item its stream receives". `int x$ <<` with nothing after it is refused: "a bare `int x$` declares an empty stream: drop the `<<`". A node whose task never takes what its input has would run once per arrival and no more; a task whose own loop never stops is what would hang, and the runner's timeout is what stops it.

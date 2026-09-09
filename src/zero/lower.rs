@@ -539,7 +539,7 @@ fn is_comparison(op: &str) -> bool {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new() };
+    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -598,6 +598,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
             match d {
                 Decl::Var(v) => l.collect_nodes(v, &f.name, &f.code.file)?,
                 Decl::Wire(e) => l.collect_wire(e, &f.name, &f.code.file)?,
+                Decl::Edge { target, items, cond, line } => l.collect_edge(target, items, cond.as_ref(), *line, &f.name, &f.code.file)?,
                 _ => {}
             }
         }
@@ -611,6 +612,14 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
                 l.lower_fn(fd, &f.name, &f.code.file)?;
             }
         }
+        // the feature's edges (log 72), sinks the front end wrote
+        let edges = std::mem::take(&mut l.edges);
+        for (fd, feature, file) in &edges {
+            if feature == &f.name {
+                l.lower_fn(fd, feature, file)?;
+            }
+        }
+        l.edges = edges;
     }
     l.emit_links();
     if !l.rings.is_empty() {
@@ -1033,6 +1042,9 @@ struct Lowerer {
     /// the feature-scope streams some node reads: a push into one from a
     /// plain function is followed by `__run()`
     node_inputs: std::collections::HashSet<String>,
+    /// the edges (log 72): the sink the front end wrote for each, its
+    /// feature and its file, lowered with that feature's functions
+    edges: Vec<(FnDecl, String, String)>,
     /// the streams declared at a rate, feature-scope and, per body, local
     /// (log 57): a push into one calls the regular push directly, since
     /// the compiler chose the ring, where `__push` charges the clock's
@@ -1799,6 +1811,77 @@ impl Lowerer {
         }
         let text = phrase_text(e);
         self.nodes.push(Node { info, out: None, args, hz, feature: feature.to_string(), file: file.to_string(), text });
+        Ok(())
+    }
+
+    /// An edge (log 72, zero.md section 9): `out$ << i$ << "\n"` at
+    /// feature scope wires `i$` into `out$`. It is a sink the front end
+    /// writes for itself — a loop of `count`, `peek`, the pushes and
+    /// `advance`, the lexer's shape — wired as `write(out$)` is (log
+    /// 57), so the scheduler moves each item as it arrives, by the
+    /// dispatch a push in a function uses, and pushes the rest of the
+    /// chain after each item (question 38)
+    fn collect_edge(&mut self, target: &Expr, items: &[Expr], cond: Option<&Expr>, line: usize, feature: &str, file: &str) -> Result<(), Error> {
+        let ExprKind::Seq(tname) = &target.kind else {
+            return Err(lex::error(file, line, "`<<` pushes into a stream, named `x$`"));
+        };
+        let Some(tf) = self.fvar(tname).cloned() else {
+            return Err(lex::error(file, line, format!("'{}$' is not a feature-scope stream", tname)));
+        };
+        let Ty::Stream(telem) = &tf.ty else {
+            return Err(lex::error(file, line, format!("'{}$' is a {}, not a stream", tname, tf.ty.ir())));
+        };
+        let ExprKind::Seq(sname) = &items[0].kind else {
+            return Err(lex::error(file, items[0].line, format!("a line at feature scope pushing into '{}$' is an edge, `{}$ << x$`, and its first item is a stream; items are pushed on the declaration, `{} {}$ << ...`", tname, tname, zero_ty(telem), tname)));
+        };
+        if cond.is_some() {
+            return Err(lex::error(file, line, "an edge has no `while`: it moves every item its stream receives"));
+        }
+        if sname == tname {
+            return Err(lex::error(file, line, format!("'{}$' would feed itself", tname)));
+        }
+        let Some(sf) = self.fvar(sname).cloned() else {
+            return Err(lex::error(file, items[0].line, format!("'{}$' is not a feature-scope stream: an edge reads one", sname)));
+        };
+        let Ty::Stream(selem) = &sf.ty else {
+            return Err(lex::error(file, items[0].line, format!("'{}$' is a {}, not a stream", sname, sf.ty.ir())));
+        };
+        self.reach(&format!("{}$", tname), &tf.feature, file, line)?;
+        self.reach(&format!("{}$", sname), &sf.feature, file, items[0].line)?;
+        let name = format!("__edge{}", self.edges.len() + 1);
+        let seq = |n: &str| Expr { kind: ExprKind::Seq(n.to_string()), line };
+        let int = |v: i64| Expr { kind: ExprKind::Int(v), line };
+        let phrase = |parts: Vec<Part>| Expr { kind: ExprKind::Phrase(parts), line };
+        let count = phrase(vec![Part::Word("count".into()), Part::Value(seq(sname))]);
+        let empty = Expr { kind: ExprKind::Bin("==".into(), Box::new(count), Box::new(int(0))), line };
+        let peek = phrase(vec![Part::Word("peek".into()), Part::Value(seq(sname)), Part::Word("at".into()), Part::Args(vec![Arg { name: None, value: int(0) }])]);
+        let mut pushed = vec![peek];
+        pushed.extend(items[1..].iter().cloned());
+        let advance = phrase(vec![Part::Word("advance".into()), Part::Value(seq(sname)), Part::Word("by".into()), Part::Args(vec![Arg { name: None, value: int(1) }])]);
+        let body = vec![
+            Stmt::If { cond: empty, then: vec![Stmt::Break { line }], els: None, line },
+            Stmt::Push { target: seq(tname), items: pushed, cond: None, line },
+            Stmt::Expr { expr: advance, line },
+        ];
+        let fd = FnDecl {
+            line,
+            results: Vec::new(),
+            name: vec![NamePart::Word(name.clone()), NamePart::Group],
+            groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: sname.clone(), seq: true, line }]],
+            task: false,
+            body: vec![Stmt::Loop { vars: Vec::new(), cond: None, body, yields: Vec::new(), into: None, line }],
+            platform: Vec::new(),
+        };
+        self.declare(&fd, feature, file)?;
+        let i = self.funcs.len() - 1;
+        self.funcs[i].ir = name.clone();
+        self.funcs[i].plain = name;
+        self.funcs[i].task = true;
+        let info = self.funcs[i].clone();
+        self.node_inputs.insert(sname.clone());
+        let text = format!("{}$ << {}", tname, items.iter().map(phrase_text).collect::<Vec<_>>().join(" << "));
+        self.nodes.push(Node { info, out: None, args: vec![items[0].clone()], hz: 0, feature: feature.to_string(), file: file.to_string(), text });
+        self.edges.push((fd, feature.to_string(), file.to_string()));
         Ok(())
     }
 

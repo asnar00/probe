@@ -1,8 +1,9 @@
+int i$ at (1 hz)
+out$ << i$ << "\n"
+
 on run()
     count down()
     existing run()
 
 on count down()
-    int i$ at (1 hz)
     i$ << [10 through 1]
-    print (frame i$)

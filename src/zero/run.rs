@@ -508,12 +508,12 @@ mod tests {
         assert!(s.subtree("hello").contains(&"bye".to_string()));
         assert!(runs.iter().all(|r| r.label != "with hello off"));
         let standing = |label: &str| -> Vec<String> { runs.iter().filter(|r| r.label == label).map(|r| cases[r.case].text.clone()).collect() };
-        assert_eq!(standing(""), ["hello() → \"hello world\"", "count down() → \"10 9 8 7 6 5 4 3 2 1\"", "run() → \"10 9 8 7 6 5 4 3 2 1\\nhello world\\ngoodbye\"", "run() with countdown off → \"hello world\\ngoodbye\""]);
-        assert_eq!(standing("with bye off"), ["hello() → \"hello world\"", "count down() → \"10 9 8 7 6 5 4 3 2 1\"", "run() → \"10 9 8 7 6 5 4 3 2 1\\nhello world\""]);
+        assert_eq!(standing(""), ["hello() → \"hello world\"", "count down() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\"", "run() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nhello world\\ngoodbye\"", "run() with countdown off → \"hello world\\ngoodbye\""]);
+        assert_eq!(standing("with bye off"), ["hello() → \"hello world\"", "count down() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\"", "run() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nhello world\""]);
         assert_eq!(standing("with countdown off"), ["hello() → \"hello world\""]);
         assert_eq!(over.len(), 5);
         assert!(over.iter().any(|o| o.text == "run() → \"hello world\" [with bye off]" && o.why == "replaced by countdown's cases for run()"), "{:?}", over.iter().map(|o| &o.text).collect::<Vec<_>>());
-        assert!(over.iter().any(|o| o.text == "run() → \"10 9 8 7 6 5 4 3 2 1\\nhello world\\ngoodbye\" [with countdown off]" && o.why == "the line `run() with countdown off → \"hello world\\ngoodbye\"` stands there"), "{:?}", over.iter().map(|o| &o.why).collect::<Vec<_>>());
+        assert!(over.iter().any(|o| o.text == "run() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nhello world\\ngoodbye\" [with countdown off]" && o.why == "the line `run() with countdown off → \"hello world\\ngoodbye\"` stands there"), "{:?}", over.iter().map(|o| &o.why).collect::<Vec<_>>());
         // `>existing` (log 50): more's cases for `describe (int)` fall
         // through to functions', so `describe (3)` stands beside `describe (4)`
         let s = store::read(Path::new("suite/zero/functions")).unwrap();

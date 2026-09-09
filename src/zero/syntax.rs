@@ -24,6 +24,10 @@ pub enum Decl {
     /// a bare phrase at feature scope, `write(out$)`: a sink wired to
     /// the streams it reads, with no stream to fill (log 57)
     Wire(Expr),
+    /// `out$ << i$ << "\n"` at feature scope: an edge (log 72), a
+    /// standing connection the scheduler moves items along, the rest
+    /// of the chain pushed after each
+    Edge { target: Expr, items: Vec<Expr>, cond: Option<Expr>, line: usize },
 }
 
 pub struct FnDecl {
@@ -359,6 +363,17 @@ impl<'a> Parser<'a> {
                 let e = self.parse_expr()?;
                 self.expect_newline()?;
                 Ok(Decl::Wire(e))
+            }
+            // `out$ << i$`: an edge (log 72)
+            Some(Tok::Seq(_)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) => {
+                let line = self.line();
+                let target = self.parse_primary()?;
+                let (items, cond) = self.parse_pushes()?;
+                if items.is_empty() {
+                    return Err(self.err("nothing to push: an edge is `out$ << i$`"));
+                }
+                self.expect_newline()?;
+                Ok(Decl::Edge { target, items, cond, line })
             }
             _ => Err(self.err(format!("expected 'on', 'type', a variable declaration or a wiring at the top of the feature, found {}", self.found()))),
         }

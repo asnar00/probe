@@ -15,12 +15,12 @@ After everything `run` did before, `goodbye` prints "goodbye". Being the newest 
 - `goodbye` prints "goodbye".
 
 ## rules
-- The program prints the countdown on one line, then "hello world", then "goodbye".
+- The program writes the countdown, a number to a line, then "hello world", then "goodbye".
 - With Countdown off — `>run() with countdown off`, the runner's context, since no code switches a feature (section 14, log 43) — `run` is bye's link calling hello's: "hello world", then "goodbye"; the countdown's state is kept for when it is on again.
 - Being the newest, this feature's `run()` case overrides countdown's and hello's wherever `bye` is on; and in the runner's own `countdown off` context the second line here stands over the first, being the one that names the context (log 44).
 
 ## testing
->run() → "10 9 8 7 6 5 4 3 2 1\nhello world\ngoodbye"
+>run() → "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\nhello world\ngoodbye"
 >run() with countdown off → "hello world\ngoodbye"
 
 ## hostile
