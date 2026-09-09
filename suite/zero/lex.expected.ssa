@@ -906,45 +906,48 @@ fn a_word_at_the_end() -> (int, int)
     b: int = conv _7
     ret a, b
 
-; a stream's ring, carved from the arena: cap items (64 unless more are resident), and a tick per item unless regular; a reader's view at its start
+; a stream's ring, carved from the arena: cap items resident (64 unless more are), twice that in slots since the ring mirrors each item (log 65), and a tick per item unless regular; a reader's view at its start
 fn __stream_int(hz: i64, cap: i64) -> int$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
+    slots: i64 = mul cap, 2
     sz: i64 = sizeof int
-    bytes: i64 = mul sz, cap
+    bytes: i64 = mul sz, slots
     total: i64 = add bytes, 16
     vb: ptr = arena_alloc(a, total)
-    buffer_init(vb, sz, cap)
-    tbytes: i64 = mul cap, 8
+    buffer_init(vb, sz, slots)
+    tbytes: i64 = mul slots, 8
     ttotal: i64 = add tbytes, 16
     tb: ptr = arena_alloc(a, ttotal)
-    buffer_init(tb, 8, cap)
+    buffer_init(tb, 8, slots)
     ring_init(r, vb, tb, hz)
     s: int$ = stream r
     ret s
 fn __stream_u8(hz: i64, cap: i64) -> u8$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
+    slots: i64 = mul cap, 2
     sz: i64 = sizeof u8
-    bytes: i64 = mul sz, cap
+    bytes: i64 = mul sz, slots
     total: i64 = add bytes, 16
     vb: ptr = arena_alloc(a, total)
-    buffer_init(vb, sz, cap)
-    tbytes: i64 = mul cap, 8
+    buffer_init(vb, sz, slots)
+    tbytes: i64 = mul slots, 8
     ttotal: i64 = add tbytes, 16
     tb: ptr = arena_alloc(a, ttotal)
-    buffer_init(tb, 8, cap)
+    buffer_init(tb, 8, slots)
     ring_init(r, vb, tb, hz)
     s: u8$ = stream r
     ret s
 fn __regular_u8(hz: i64, cap: i64) -> u8$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
+    slots: i64 = mul cap, 2
     sz: i64 = sizeof u8
-    bytes: i64 = mul sz, cap
+    bytes: i64 = mul sz, slots
     total: i64 = add bytes, 16
     vb: ptr = arena_alloc(a, total)
-    buffer_init(vb, sz, cap)
+    buffer_init(vb, sz, slots)
     ring_regular(r, vb, hz, 1, 0)
     s: u8$ = stream r
     ret s

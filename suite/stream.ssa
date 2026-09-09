@@ -27,13 +27,17 @@
 ;! regular_position -> 3, 3
 ;! struct_of_streams 7 -> 7, 1
 ;! unread_view -> 12, 5
+;! wrapped -> 57, 7
+;! wrapped_history -> 27, 57
 
-; an irregular ring of bytes on a microsecond clock: values and ticks
-data vb: buffer(u8, 8)
-data tb: buffer(i64, 8)
+; an irregular ring of bytes on a microsecond clock: values and ticks;
+; a ring keeps half its slots resident (each item sits in both halves),
+; so sixteen slots hold the last eight
+data vb: buffer(u8, 16)
+data tb: buffer(i64, 16)
 data rg: array(u64, 8)
 ; a regular ring at 1 kHz: values only
-data fvb: buffer(f32, 8)
+data fvb: buffer(f32, 16)
 data frg: array(u64, 8)
 ; the audio rings and a block: the filter reads a frame of 4 and 2
 ; behind it on both streams, so 6 resident is what it needs — what
@@ -44,11 +48,11 @@ data ovb: buffer(f32, 16)
 data org: array(u64, 8)
 data blk: buffer(f32, 4)
 ; two rings of int for the struct of streams
-data ivb: buffer(int, 8)
-data itb: buffer(i64, 8)
+data ivb: buffer(int, 16)
+data itb: buffer(i64, 16)
 data rg2: array(u64, 8)
-data ivb2: buffer(int, 8)
-data itb2: buffer(i64, 8)
+data ivb2: buffer(int, 16)
+data itb2: buffer(i64, 16)
 
 ; five items at 1, 2, 3, 4, 5 milliseconds with values 1..5
 fn five(s: u8$)
@@ -126,8 +130,48 @@ fn windowed() -> (u8, u8)
     total: u8 = sum w
     first: u8 = load w, 0
     ret total, first
-; twelve items into a ring of eight: the newer half slid down when it
-; filled, the latest is 12, and the window from 9 ms holds the last four
+; twelve items into a ring of sixteen, which keeps the last eight resident
+; and stores each item in both halves: a reader six in takes a frame of
+; six that runs across the seam as one view, 7 to 12
+fn wrapped() -> (u8, u8)
+    s: u8$ = fresh()
+    loop(k: i64 = 1)
+        done: u1 = cmp.gt k, 12
+        if done
+            break
+        t: i64 = mul k, 1000
+        v: u8 = conv k
+        push s, t, v
+        k2: i64 = add k, 1
+        continue k2
+    s2: u8$ = advance(s, 6)
+    f: u8[], k0: i64, s3: u8$ = frame(s2)
+    total: u8 = sum f
+    first: u8 = load f, 0
+    ret total, first
+; ... and a history and a window across it: the three behind a reader
+; ten in are 8, 9, 10; the window from 7 ms to 13 ms holds 7 to 12
+fn wrapped_history() -> (u8, u8)
+    s: u8$ = fresh()
+    loop(k: i64 = 1)
+        done: u1 = cmp.gt k, 12
+        if done
+            break
+        t: i64 = mul k, 1000
+        v: u8 = conv k
+        push s, t, v
+        k2: i64 = add k, 1
+        continue k2
+    s2: u8$ = advance(s, 10)
+    h: u8[] = behind s2, 3
+    hs: u8 = sum h
+    t1: time = millis(7)
+    t2: time = millis(13)
+    w: u8[] = window s, t1, t2
+    ws: u8 = sum w
+    ret hs, ws
+; twelve items into a ring of sixteen: the last eight are resident, the
+; latest is 12, and the window from 9 ms holds the last four
 fn sliding() -> (u8, i64)
     s: u8$ = fresh()
     loop(k: i64 = 1)

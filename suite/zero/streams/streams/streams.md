@@ -29,7 +29,7 @@ A stream is a value over time. `T x$` declares an empty one; `<<` pushes its fir
 - `x$[i]`, `for`, map, zip and reduce read the unread items and do not move the reader, so they agree with `count`.
 - A stream of structs holds numbers and enumerations in its fields, and takes `peek`, `x$[i]`, `latest`, `advance`, `count`, `for`, `end` and `ended`; `frame`, `behind`, `at`, `from`/`to`, map, zip and reduce on one wait for sequences of structs.
 - A push after `end` is a failed check. A push is stamped from the store's clock on a stream without a rate, which nothing moves yet; `position`'s tick is then 0, or -1 when nothing is unread.
-- A ring holds 64 items, or as many as a list, a range or a copy puts in it; a reader more than half that behind fails a check. Every ring is carved from the store's arena.
+- A ring keeps 64 items resident, or as many as a list, a range or a copy puts in it, in twice that many slots (each item sits in both halves, so a frame across the seam is one view and a push never slides); a reader more than that behind fails a check. Every ring is carved from the store's arena.
 
 ## testing
 >pushed() → 3

@@ -598,13 +598,13 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     }
     l.emit_links();
     if !l.rings.is_empty() {
-        writeln!(l.out, "\n; a stream's ring, carved from the arena: cap items ({} unless more are resident), and a tick per item unless regular; a reader's view at its start", RING_ITEMS).unwrap();
+        writeln!(l.out, "\n; a stream's ring, carved from the arena: cap items resident ({} unless more are), twice that in slots since the ring mirrors each item (log 65), and a tick per item unless regular; a reader's view at its start", RING_ITEMS).unwrap();
     }
     for (t, regular) in &l.rings {
-        let ticks = if *regular { String::new() } else { "    tbytes: i64 = mul cap, 8\n    ttotal: i64 = add tbytes, 16\n    tb: ptr = arena_alloc(a, ttotal)\n    buffer_init(tb, 8, cap)\n".to_string() };
+        let ticks = if *regular { String::new() } else { "    tbytes: i64 = mul slots, 8\n    ttotal: i64 = add tbytes, 16\n    tb: ptr = arena_alloc(a, ttotal)\n    buffer_init(tb, 8, slots)\n".to_string() };
         let init = if *regular { "ring_regular(r, vb, hz, 1, 0)".to_string() } else { "ring_init(r, vb, tb, hz)".to_string() };
         let name = if *regular { "regular" } else { "stream" };
-        writeln!(l.out, "fn __{}_{}(hz: i64, cap: i64) -> {}$\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, 64)\n    sz: i64 = sizeof {}\n    bytes: i64 = mul sz, cap\n    total: i64 = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, cap)\n{}    {}\n    s: {}$ = stream r\n    ret s", name, t, t, t, ticks, init, t).unwrap();
+        writeln!(l.out, "fn __{}_{}(hz: i64, cap: i64) -> {}$\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, 64)\n    slots: i64 = mul cap, 2\n    sz: i64 = sizeof {}\n    bytes: i64 = mul sz, slots\n    total: i64 = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, slots)\n{}    {}\n    s: {}$ = stream r\n    ret s", name, t, t, t, ticks, init, t).unwrap();
     }
     if !l.copies.is_empty() {
         writeln!(l.out, "\n; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give").unwrap();
