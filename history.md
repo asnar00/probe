@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### stream: the ring never slides — `40a1098` · 2026-09-10
+
+```
+    slot: i64 = rem pushed, half
+    twin: i64 = add slot, half
+    store v, vals, slot
+    store v, vals, twin
+```
+
+The parity pass, hop 1 (fm3 log 65). Hello's `run` cost 9 157 SSA and 9 100 of it was forty-one pushes at 222 each: `probe cost` walks the longest path, so every push was charged `ring_slot`'s slide of the newer half over the older. `lib/stream.ssa`'s ring (above) now stores each item in both halves of its buffer, so the last half items are always one contiguous view wherever the seam falls, nothing ever moves, and readers index by `k mod half`; the front end carves twice the items it keeps, and `suite/stream.ssa` gains `wrapped` and `wrapped_history` across the seam. `run` 9 157 → 3 820 on 722 lines (from 718), a push 222 → 51, lex's `lex` 956 → 599; less than the 2 200 hoped, since the checked stores and the slice are most of the 51. probe test 973/973 native (two new cases), 964 + 9 skipped wasm, 973 riscv, 973 arm-qemu, 943 + 30 skipped air; zero 465/465 on the CPU paths, 448 + 17 skipped air; cargo test 105.
+
+---
+
 ### README: the store's clock — `8798d5e` · 2026-09-10
 
 Third pass item 6, the docs. `README.md`'s `probe zero` section says what the last three landings made true: `<<` methods format into `out$`, a case's `with in "text"` pushes into `in$`, and the store's virtual clock is an integer tick counter. fm3's `zero.md` carries a third-pass line at the head of sections 3, 6, 9, 10, 14 and 15, and its log runs to entry 64 and its questions to 35. At the close of the pass: `probe test` 971/971 native, 962 + 9 skipped wasm, 971 riscv, 971 arm-qemu, 941 + 30 skipped air; `probe zero test` 465/465 on the four CPU paths, 448 + 17 skipped on air; cargo test 105 passed.
