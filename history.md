@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the clock is integer ticks — `81d2a6c` · 2026-09-10
+
+```
+fn __now() -> i64
+    p: ptr = addr __clock
+    k: i64 = load p
+    ret k
+```
+
+Third pass item 5 (fm3 log 63, 64). Ash: the store's clock is an integer tick counter, microseconds in the bootstrap, and a push stamps a tick with no rational arithmetic on the per-item path. The prelude's `__clock` (`src/zero/lower.rs`, above) is one `i64`: `__now()` loads it and `__sleep` adds a period in whole ticks, as a rated ring steps; exact `time` stays at the boundary. `probe cost` on hello's `run`: 204 929 before, 9 157 after; a sparse push 49 196 → 253. The cheaper clock put the `tasks` kernel under air's inlining budget, where Apple's compiler hung on 23 inlined copies of the scheduler, so `emit_air` now counts copies through inlined callers and calls a function whose copies pass a quarter of the budget. zero 465/465 on the CPU paths, 448 + 17 skipped on air; cargo test 104.
+
+---
+
 ### zero: `in$` is a system stream — `1c7e43f` · 2026-09-10
 
 ```
