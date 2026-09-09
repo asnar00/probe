@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream on the right of `<<` at feature scope is an edge — `48615a8` · 2026-09-10
+
+```
+int i$ at (1 hz)
+out$ << i$ << "\n"
+
+on count down()
+    i$ << [10 through 1]
+```
+
+The parity pass, hop 7 (fm3 log 72, question 38), Ash's ruling that `out$ << i$` is wiring. A feature-scope line beginning with a `$` name and `<<` (above, `suite/zero/hello/countdown/countdown.zero`) is an edge: the front end writes a sink for it, a loop of `count`, `peek`, the pushes and `advance` (`src/zero/lower.rs`, `collect_edge`), and wires it as `write(out$)` is, so the scheduler moves each item as it arrives by the dispatch a push uses and pushes the rest of the chain after it; each count is now a line. hello's frame, copy and sequence method go. Before → after: hello 1 940 on 410 → 2 335 on 435, static 1 870 on 325 → 2 217 on 348 — the tool charges the edge's loop to every scheduler pass at all three `__run()` sites, while the honest cost fell by the copy, about 450. A front-end change: probe zero test 477/477 native, cargo test zero:: 17.
+
+---
+
 ### zero: static and dynamic features — `16e4e57` · 2026-09-10
 
 ```
