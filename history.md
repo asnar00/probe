@@ -2,6 +2,16 @@
 
 What landed, one short entry per commit — or per group, when several arrived together as one piece of work. Newest first. `git show <hash>` has the full story for any of them.
 
+### zero: the real clock on `run`, an edge taking each item at its tick, and the output laid out case line first — `beaec74` · 2026-09-10
+
+```
+        _6: i64 = add _3, _4
+        _7: i64 = mul _6, 1000000
+        __wait(_7)
+```
+
+Ash's review asks (fm3 log 77, question 39). `probe zero <store> run "run()"` now prints the case line, then the program's output as it lands — the JIT call on a thread of the forked child, the child reading the ring beside it (`src/suite.rs`, `watched`) — then `→` and what the case gave; hello's countdown takes 9.2 s, a number a second, and `--fast` 0.15 s. The one function that differs per clock is `__wait(t)`: a jump of the virtual clock, or a spin on `cntpct_el0` as a `platform arm64` body, chosen by the product's `clock:` line, which `run` sets to real and `test` to virtual (`src/zero/store.rs`, `lower.rs`). And an edge over a stream with a rate takes each item at its tick (above, `suite/zero/hello.expected.ssa`), since nothing in hello ever slept. hello 3 865 → 3 919, static 3 675 → 3 729 on the tool. Every path: zero 477/477 on the CPU paths and 460 + 17 skipped on air, probe test 977/977, 968 + 9, 977, 977, 946 + 31; cargo test 111.
+
 ---
 
 ### cost: a callee's loop is bounded by what its call site knows — `1630ada` · 2026-09-10
@@ -13,6 +23,7 @@ emit_str: loop at loop x12 (i from 0 by 1 to 12), body 14 ssa
 
 The parity pass, hop 11 (fm3 log 76): the measure. `src/cost.rs` costs a function per call site's knowledge — a range per integer argument, memoised by name and ranges, carried through by constants, arithmetic, `min`/`max`, a loop parameter's start and step, and every `check` or branch — so a string literal's length reaches the library's copy (above, from `probe cost suite/zero/hello.expected.ssa run` and the oracle); and the pass that leaves a loop is charged once, so a bottom-tested loop is no longer short a body. Both sides now count by one rule: `hello-mod.ssa` 441 → 735, `hello-min.ssa` 402 → 696; hello 2 113 → 3 865, static 1 995 → 3 675, the block pushes' copies and the loop scheduler's empty pass now visible. Every path: zero 477/477 on the CPU paths and 460 + 17 skipped on air, probe test 977/977, 968 + 9, 977, 977, 946 + 31; cargo test 110.
 
+---
 
 ### zero: an edge moves a batch through one view — `162ba63` · 2026-09-10
 
