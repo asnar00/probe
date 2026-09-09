@@ -626,8 +626,9 @@ mod tests {
         for call in ["push__u8s_int(", "push__u8s_pair(", "push__u8s_float(", "push__u8s_u1("] {
             assert!(ir.contains(call), "{} not called: {}", call, ir);
         }
-        // the library's methods are templates over the abstract types
-        assert!(ir.contains("fn push__u8s_int(o: u8$, x: int)\n") && ir.contains("fn push__u8s_ints(o: u8$, x: int$)\n"), "{}", ir);
+        // the library's methods are templates over the abstract types; the
+        // ones nothing reaches are not in the text (log 70)
+        assert!(ir.contains("fn push__u8s_int(o: u8$, x: int)\n") && !ir.contains("fn push__u8s_ints("), "{}", ir);
         let refused = |code: &str| emit_with(code).expect_err("accepted");
         assert!(refused("on (int o$) << (int x)\n    o$ << 1\n\non f()\n    out$ << 1\n").contains("'int' pushed into 'int$' is the push itself, not a method"));
         assert!(refused("on (uint8 o$) << (uint8 c$)\n    o$ << \"?\"\n\non f()\n    out$ << 1\n").contains("'string' pushed into 'string' is the block push of section 9, not a method"));

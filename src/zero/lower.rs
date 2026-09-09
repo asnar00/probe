@@ -640,7 +640,143 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         }
     }
     ir.push_str(&l.out);
+    // the text carries what the store reaches (log 70): every function
+    // of the store's own features, the platform feature's that a case
+    // names, and the runner's entries are roots
+    let mut roots: std::collections::HashSet<String> = l.funcs.iter().filter(|f| f.feature != "platform").map(|f| f.ir.clone()).collect();
+    for f in &store.features {
+        roots.insert(format!("__set___enabled_{}", f.name));
+        for c in &f.cases {
+            if let ExprKind::Phrase(parts) = &c.call.kind {
+                if let Ok((cands, _)) = find_methods(&l.funcs, parts, &|_| false, &f.md_file, c.line) {
+                    roots.extend(cands.iter().map(|g| g.ir.clone()));
+                }
+            }
+        }
+    }
+    for entry in ["__zero_reset", "__zero_start", "__out_len", "__out_byte", "__in_ch"] {
+        roots.insert(entry.to_string());
+    }
+    let ir = prune(&ir, &roots);
     Ok(Lowered { ir, funcs: l.funcs, features: l.features })
+}
+
+/// the emitted text without the functions nothing reaches from the
+/// roots, and the `data` strings nothing names (log 70). A top-level
+/// item is a `fn` with its indented lines and any `platform` block
+/// after it, a `type` or a `data`; a function reaches another by a
+/// call written `name(` — the emitted functions are only ever called
+/// so, and an operation form names the IR's library, which is not in
+/// the text. The comment and blank lines above an item go with it; a
+/// `; feature` heading stays
+fn prune(ir: &str, roots: &std::collections::HashSet<String>) -> String {
+    // the items: (the loose lines above, the item's lines, its name if a fn or data)
+    let mut items: Vec<(Vec<&str>, Vec<&str>, Option<(bool, String)>)> = Vec::new();
+    let mut loose: Vec<&str> = Vec::new();
+    for line in ir.lines() {
+        let top = !line.is_empty() && !line.starts_with(' ') && !line.starts_with(';');
+        if top && !line.starts_with("platform ") {
+            let word = line.split(|c: char| c == ' ' || c == '(' || c == ':').next().unwrap_or("");
+            let name = line[word.len()..].trim_start().split(|c: char| c == '(' || c == ':' || c == ' ' || c == '=').next().unwrap_or("").to_string();
+            let what = match word {
+                "fn" => Some((true, name)),
+                "data" => Some((false, name)),
+                _ => None,
+            };
+            items.push((std::mem::take(&mut loose), vec![line], what));
+        } else if top || line.starts_with(' ') {
+            match items.last_mut() {
+                Some(item) if loose.is_empty() => item.1.push(line),
+                _ => loose.push(line),
+            }
+        } else {
+            loose.push(line);
+        }
+    }
+    // reachability over the functions
+    let calls = |text: &[&str]| -> Vec<String> {
+        let mut out = Vec::new();
+        for line in text.iter().skip(1) {
+            let bytes = line.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+                    let start = i;
+                    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                        i += 1;
+                    }
+                    if i < bytes.len() && bytes[i] == b'(' {
+                        out.push(line[start..i].to_string());
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        out
+    };
+    // a name may be a method set's, several functions under it
+    let mut index: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, it) in items.iter().enumerate() {
+        if let Some((true, n)) = &it.2 {
+            index.entry(n.as_str()).or_default().push(i);
+        }
+    }
+    let mut kept = vec![false; items.len()];
+    let mut work: Vec<usize> = roots.iter().filter_map(|r| index.get(r.as_str())).flatten().copied().collect();
+    while let Some(i) = work.pop() {
+        if kept[i] {
+            continue;
+        }
+        kept[i] = true;
+        for c in calls(&items[i].1) {
+            if let Some(js) = index.get(c.as_str()) {
+                work.extend(js.iter().copied().filter(|&j| !kept[j]));
+            }
+        }
+    }
+    // a type stays; a data item stays when a kept function names it
+    let mut text = String::new();
+    for (i, it) in items.iter().enumerate() {
+        if let Some((false, _)) = &it.2 {
+            continue;
+        }
+        if it.2.is_none() || kept[i] {
+            text.push_str(&it.1.join("\n"));
+            text.push('\n');
+        }
+    }
+    for (i, it) in items.iter().enumerate() {
+        if let Some((false, n)) = &it.2 {
+            kept[i] = text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|w| w == n);
+        }
+    }
+    let mut out = String::new();
+    for (i, it) in items.iter().enumerate() {
+        let keep = it.2.is_none() || kept[i];
+        let heading: Vec<&str> = it.0.iter().copied().filter(|l| l.starts_with("; feature ")).collect();
+        if keep {
+            for l in &it.0 {
+                out.push_str(l);
+                out.push('\n');
+            }
+            for l in &it.1 {
+                out.push_str(l);
+                out.push('\n');
+            }
+        } else if !heading.is_empty() {
+            out.push('\n');
+            for l in heading {
+                out.push_str(l);
+                out.push('\n');
+            }
+        }
+    }
+    for l in loose {
+        out.push_str(l);
+        out.push('\n');
+    }
+    out
 }
 
 /// resolve a `## testing` case against the lowered store

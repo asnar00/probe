@@ -1,7 +1,3 @@
-; lowered from the zero store suite/zero/lex
-
-; an empty string's bytes
-data __nul: array(u8, 1)
 
 ; the arena every sequence is carved from, emptied before every case
 data __heap: array(u8, 65536)
@@ -118,11 +114,6 @@ type __ctx = struct
     __node2_fin: u1
 
 data __ctx_mem: array(__ctx, 1)
-data __s1 = "nan"
-data __s2 = "-inf"
-data __s3 = "inf"
-data __s4 = "true"
-data __s5 = "false"
 data __s6 = "2;\n"
 
 ; before every case: the arena emptied, the variables at their initial values
@@ -182,38 +173,17 @@ fn __get_out() -> u8$
     v: u8$ = get c, out
     ret v
 
-fn __set_out(v: u8$)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, out, v
-    store c2, p
-    ret
-
 fn __get_in() -> u8$
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: u8$ = get c, in
     ret v
 
-fn __set_in(v: u8$)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, in, v
-    store c2, p
-    ret
-
 fn __get_t() -> __s_token
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: __s_token = get c, t
     ret v
-
-fn __set_t(v: __s_token)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, t, v
-    store c2, p
-    ret
 
 fn __get___node1_c() -> u8$
     p: ptr = addr __ctx_mem
@@ -375,208 +345,6 @@ fn write(c: u8$, __hz: i64) -> u8$
     n: i64 = count(c)
     c2: u8$ = advance(c, n)
     ret c2
-fn push__u8s_int(o: u8$, x: int)
-    _1: u1 = cmp.lt x, 0
-    if _1
-        _2: u8 = const 45
-        __push(o, _2)
-    _3: u1 = cmp.lt x, 0
-    m: int = if _3
-        yield x
-    else
-        _4: int = sub 0, x
-        yield _4
-    top: int = loop(p: int = 1)
-        _5: int = div m, p
-        _6: u1 = cmp.le _5, -10
-        if _6
-        else
-            break p
-        p_2: int = mul p, 10
-        continue p_2
-    loop(p_3: int = top)
-        _7: u1 = cmp.gt p_3, 0
-        if _7
-        else
-            break
-        _8: int = div m, p_3
-        _9: int = rem _8, 10
-        _10: int = sub 48, _9
-        _11: u8 = conv _10
-        __push(o, _11)
-        p_4: int = div p_3, 10
-        continue p_4
-    ret
-fn push__u8s_uint(o: u8$, x: uint)
-    top: uint = loop(p: uint = 1)
-        _1: uint = div x, p
-        _2: u1 = cmp.ge _1, 10
-        if _2
-        else
-            break p
-        p_2: uint = mul p, 10
-        continue p_2
-    loop(p_3: uint = top)
-        _3: u1 = cmp.gt p_3, 0
-        if _3
-        else
-            break
-        _4: uint = div x, p_3
-        _5: uint = rem _4, 10
-        _6: uint = add 48, _5
-        _7: u8 = conv _6
-        __push(o, _7)
-        p_4: uint = div p_3, 10
-        continue p_4
-    ret
-fn push__u8s_float(o: u8$, x: float)
-    _1: u1 = cmp.ne x, x
-    if _1
-        _2: ptr = addr __s1
-        _3: i64 = len __s1
-        _4: u8[] = __str(_2, _3)
-        __push(o, _4)
-    else
-        _5: float = sub x, x
-        _6: float = sub x, x
-        _7: u1 = cmp.ne _5, _6
-        if _7
-            _8: u1 = cmp.lt x, 0.0
-            if _8
-                _9: ptr = addr __s2
-                _10: i64 = len __s2
-                _11: u8[] = __str(_9, _10)
-                __push(o, _11)
-            else
-                _12: ptr = addr __s3
-                _13: i64 = len __s3
-                _14: u8[] = __str(_12, _13)
-                __push(o, _14)
-        else
-            _15: u1 = cmp.lt x, 0.0
-            if _15
-                _16: u8 = const 45
-                __push(o, _16)
-            _17: u1 = cmp.lt x, 0.0
-            m: float = if _17
-                _18: float = sub 0.0, x
-                yield _18
-            else
-                yield x
-            whole: i64 = conv m
-            _19: float = conv whole
-            _20: float = sub m, _19
-            _21: float = mul _20, 1000000.0
-            _22: float = add _21, 0.5
-            scaled: i64 = conv _22
-            _23: u1 = cmp.ge scaled, 1000000
-            carry: i64 = if _23
-                yield 1
-            else
-                yield 0
-            _24: i64 = add whole, carry
-            push__u8s_int(o, _24)
-            _25: u8 = const 46
-            __push(o, _25)
-            _26: i64 = mul carry, 1000000
-            _27: i64 = sub scaled, _26
-            places_2: i64, digits_2: i64 = loop(places: i64 = 6, digits: i64 = _27)
-                _28: u1 = cmp.gt places, 1
-                if _28
-                else
-                    break places, digits
-                _29: i64 = rem digits, 10
-                _30: u1 = cmp.ne _29, 0
-                if _30
-                    break places, digits
-                _31: i64 = sub places, 1
-                _32: i64 = div digits, 10
-                continue _31, _32
-            top: i64 = loop(p: i64 = 1, k: i64 = 1)
-                _33: u1 = cmp.lt k, places_2
-                if _33
-                else
-                    break p
-                _34: i64 = mul p, 10
-                _35: i64 = add k, 1
-                continue _34, _35
-            loop(p_2: i64 = top)
-                _36: u1 = cmp.gt p_2, 0
-                if _36
-                else
-                    break
-                _37: i64 = div digits_2, p_2
-                _38: i64 = rem _37, 10
-                _39: i64 = add 48, _38
-                _40: u8 = conv _39
-                __push(o, _40)
-                p_3: i64 = div p_2, 10
-                continue p_3
-    ret
-fn push__u8s_u1(o: u8$, b: u1)
-    if b
-        _1: ptr = addr __s4
-        _2: i64 = len __s4
-        _3: u8[] = __str(_1, _2)
-        __push(o, _3)
-    else
-        _4: ptr = addr __s5
-        _5: i64 = len __s5
-        _6: u8[] = __str(_4, _5)
-        __push(o, _6)
-    ret
-fn push__u8s_ints(o: u8$, x: int$)
-    loop(i: int = 0)
-        _1: i64 = count x
-        _2: int = conv _1
-        _3: u1 = cmp.lt i, _2
-        if _3
-        else
-            break
-        _4: u1 = cmp.gt i, 0
-        if _4
-            _5: u8 = const 32
-            __push(o, _5)
-        _6: i64 = conv i
-        _7: int = peek x, _6
-        push__u8s_int(o, _7)
-        i_2: int = add i, 1
-        continue i_2
-    ret
-fn push__u8s_floats(o: u8$, x: float$)
-    loop(i: int = 0)
-        _1: i64 = count x
-        _2: int = conv _1
-        _3: u1 = cmp.lt i, _2
-        if _3
-        else
-            break
-        _4: u1 = cmp.gt i, 0
-        if _4
-            _5: u8 = const 32
-            __push(o, _5)
-        _6: i64 = conv i
-        _7: float = peek x, _6
-        push__u8s_float(o, _7)
-        i_2: int = add i, 1
-        continue i_2
-    ret
-fn print(s: u8$)
-    _1: u8$ = __get_out()
-    _2: u8[] = unread(s)
-    _3: i64 = len _2
-    push(_1, _2)
-    _4: u8 = const 10
-    push(_1, _4)
-    __run()
-    ret
-fn print__ints(x: int$)
-    _1: u8$ = __get_out()
-    push__u8s_ints(_1, x)
-    _2: u8 = const 10
-    push(_1, _2)
-    __run()
-    ret
 
 ; feature lex (layer runtime)
 fn kind_of(c: u8) -> int
