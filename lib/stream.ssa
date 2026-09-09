@@ -1,8 +1,8 @@
 ; lib/stream.ssa — streams: values over time. A stream `T$` is a
 ; reader's view of a ring of T: the ring, the position this reader has
 ; read to, a sampling rule and an edge rule. The ring is the producer's:
-; its header holds how many items have been pushed and where the
-; resident ones start, the values buffer, and the ring's clock — a rate
+; its header holds how many items have been pushed, the values buffer,
+; and the ring's clock — a rate
 ; in hz, and for a regular ring the step in ticks between items and the
 ; tick of the first; an irregular ring has a buffer of a tick per item
 ; instead. Several streams may view one ring, each with its own
@@ -20,7 +20,9 @@
 ; buffers are twice the capacity and each item is stored in both halves,
 ; item k at slot k mod half and again half further on, so the last half
 ; items are always one view wherever the seam falls, and a push is two
-; stores and a count. A reader that falls further behind than that
+; stores and a count. Where the resident items start is not stored: it
+; is `pushed - half` once the ring has filled and 0 before, which a
+; reader that has both in hand computes in two (`ring_base`, log 86). A reader that falls further behind than that
 ; fails a check (its items are gone); a sample before the first
 ; resident item fails a check unless the stream's edge rule is clamp
 ; (1), which gives the first.
@@ -38,7 +40,7 @@
 ; `behind` and `last` for history, `sample s, t`, or a
 ; `window s, t1, t2` of the items with t1 <= t < t2.
 
-; --- the ring: [pushed, base, values, ticks, hz, step, t0, ended] ---
+; --- the ring: [pushed, (spare), values, ticks, hz, step, t0, ended] ---
 ; an irregular ring: a tick per item, from a clock at hz
 fn ring_init(r: ptr, vb: ptr, tb: ptr, hz: i64)
     store 0: i64, r
@@ -121,7 +123,7 @@ fn tick_of(s: number$, k: i64) -> i64
         tr: i64 = add t0, d
         yield tr
     else
-        base: i64 = load r, 8
+        base: i64 = ring_base(r)
         pushed: i64 = load r
         resident: u1 = cmp.ge k, base
         check resident
@@ -157,6 +159,17 @@ fn ceil_tick(x: time) -> i64
     ret c
 
 ; --- the producer's side ---
+; where the resident items start (log 86): the push no longer stores
+; it, since it is `pushed - half` whenever the ring has filled, and a
+; reader that has `pushed` and `half` in hand computes it in two
+fn ring_base(r: ptr) -> i64
+    pushed: i64 = load r
+    vb: ptr = load r, 16
+    cap: i64 = load vb, 8
+    half: i64 = div cap, 2
+    over: i64 = sub pushed, half
+    b: i64 = max(over, 0: i64)
+    ret b
 ; the slot of item k: the buffer holds twice the resident count, and
 ; an item sits in both halves, so any half consecutive items are one view
 fn ring_index(s: number$, k: i64) -> i64
@@ -179,7 +192,6 @@ fn push(s: number$, tick: i64, v: number)
     irregular: u1 = cmp.eq step, 0
     check irregular
     pushed: i64 = load r
-    base: i64 = load r, 8
     vb: ptr = load r, 16
     cap: i64 = load vb, 8
     half: i64 = div cap, 2
@@ -188,7 +200,7 @@ fn push(s: number$, tick: i64, v: number)
     tb: ptr = load r, 24
     traw: ptr = ptradd tb, 16
     ticks: ptr(i64) = cast traw
-    some: u1 = cmp.gt pushed, base
+    some: u1 = cmp.gt pushed, 0
     if some
         prev: i64 = sub pushed, 1
         pi: i64 = rem prev, half
@@ -203,9 +215,6 @@ fn push(s: number$, tick: i64, v: number)
     store tick, ticks, twin
     next: i64 = add pushed, 1
     store next, r
-    over: i64 = sub next, half
-    nbase: i64 = max(over, 0: i64)
-    store nbase, r, 8
     ret
 ; a regular ring's producer: the next sample, after the ring's two
 ; checks — not ended, and regular, since a push without a tick into a
@@ -230,9 +239,6 @@ fn push(s: number$, v: number)
     store v, q, twin
     next: i64 = add pushed, 1
     store next, r
-    over: i64 = sub next, half
-    base: i64 = max(over, 0: i64)
-    store base, r, 8
     ret
 ; a system stream's producer (log 84, question 41, zero.md section 15):
 ; its only reader is the platform, so nothing looks behind it and
@@ -316,10 +322,6 @@ fn push(s: number$, block: number[])
         copy d3, b
     next: i64 = add pushed, n
     store next, r
-    over: i64 = sub next, half
-    zero: i64 = const 0
-    base: i64 = max(over, zero)
-    store base, r, 8
     ret
 ; ... and into an irregular ring, every item at one tick
 fn push(s: number$, tick: i64, block: number[])
@@ -332,14 +334,13 @@ fn push(s: number$, tick: i64, block: number[])
     check irregular
     n: i64 = len block
     pushed: i64 = load r
-    base0: i64 = load r, 8
     vals: number[] = ring_values(r)
     ticks: i64[] = ring_ticks(r)
     cap: i64 = len vals
     half: i64 = div cap, 2
     fits: u1 = cmp.le n, half
     check fits
-    some0: u1 = cmp.gt pushed, base0
+    some0: u1 = cmp.gt pushed, 0
     if some0
         prev: i64 = sub pushed, 1
         pi: i64 = rem prev, half
@@ -369,10 +370,6 @@ fn push(s: number$, tick: i64, block: number[])
         fill t3, tick
     next: i64 = add pushed, n
     store next, r
-    over: i64 = sub next, half
-    zero: i64 = const 0
-    base: i64 = max(over, zero)
-    store base, r, 8
     ret
 
 ; --- the consumer's side ---
@@ -414,13 +411,14 @@ fn received(s: number$) -> i64
 fn frame(s: number$) -> (number[], i64, number$)
     r: ptr = get s, ring
     pushed: i64 = load r
-    base: i64 = load r, 8
     pos: i64 = get s, pos
-    resident: u1 = cmp.ge pos, base
-    check resident
     vb: ptr = load r, 16
     cap: i64 = load vb, 8
     half: i64 = div cap, 2
+    over: i64 = sub pushed, half
+    base: i64 = max(over, 0: i64)
+    resident: u1 = cmp.ge pos, base
+    check resident
     start: i64 = rem pos, half
     raw: ptr = ptradd vb, 16
     q: ptr(number) = cast raw
@@ -434,13 +432,14 @@ fn frame(s: number$) -> (number[], i64, number$)
 fn unread(s: number$) -> number[]
     r: ptr = get s, ring
     pushed: i64 = load r
-    base: i64 = load r, 8
     pos: i64 = get s, pos
-    resident: u1 = cmp.ge pos, base
-    check resident
     vb: ptr = load r, 16
     cap: i64 = load vb, 8
     half: i64 = div cap, 2
+    over: i64 = sub pushed, half
+    base: i64 = max(over, 0: i64)
+    resident: u1 = cmp.ge pos, base
+    check resident
     start: i64 = rem pos, half
     raw: ptr = ptradd vb, 16
     q: ptr(number) = cast raw
@@ -453,8 +452,7 @@ fn unread(s: number$) -> number[]
 fn latest(s: number$) -> number
     r: ptr = get s, ring
     pushed: i64 = load r
-    base: i64 = load r, 8
-    some: u1 = cmp.gt pushed, base
+    some: u1 = cmp.gt pushed, 0
     check some
     vb: ptr = load r, 16
     cap: i64 = load vb, 8
@@ -469,16 +467,17 @@ fn latest(s: number$) -> number
 fn peek(s: number$, i: i64) -> number
     r: ptr = get s, ring
     pushed: i64 = load r
-    base: i64 = load r, 8
     pos: i64 = get s, pos
-    resident: u1 = cmp.ge pos, base
-    check resident
     at: i64 = add pos, i
     inside: u1 = cmp.lt at, pushed
     check inside
     vb: ptr = load r, 16
     cap: i64 = load vb, 8
     half: i64 = div cap, 2
+    over: i64 = sub pushed, half
+    base: i64 = max(over, 0: i64)
+    resident: u1 = cmp.ge pos, base
+    check resident
     k: i64 = rem at, half
     raw: ptr = ptradd vb, 16
     q: ptr(number) = cast raw
@@ -497,7 +496,7 @@ fn advance(s: number$, n: i64) -> number$
 ; the stream: the history a filter reads behind its frame
 fn behind(s: number$, k: i64) -> number[]
     r: ptr = get s, ring
-    base: i64 = load r, 8
+    base: i64 = ring_base(r)
     pos: i64 = get s, pos
     resident: u1 = cmp.ge pos, base
     check resident
@@ -513,7 +512,7 @@ fn behind(s: number$, k: i64) -> number[]
 fn last(s: number$, k: i64) -> number[]
     r: ptr = get s, ring
     pushed: i64 = load r
-    base: i64 = load r, 8
+    base: i64 = ring_base(r)
     have: i64 = sub pushed, base
     n: i64 = min(k, have)
     vals: number[] = ring_values(r)
@@ -540,7 +539,7 @@ fn tail(h: number[], k: i64) -> number
 fn before(s: number$, tick: i64) -> i64
     r: ptr = get s, ring
     pushed: i64 = load r
-    base: i64 = load r, 8
+    base: i64 = ring_base(r)
     n: i64 = sub pushed, base
     step: i64 = load r, 40
     regular: u1 = cmp.gt step, 0
@@ -608,7 +607,7 @@ fn lerp(a: number, b: number, w: time) -> number
 fn sample(s: number$, t: time) -> number
     r: ptr = get s, ring
     pushed: i64 = load r
-    base: i64 = load r, 8
+    base: i64 = ring_base(r)
     n: i64 = sub pushed, base
     some: u1 = cmp.gt n, 0
     check some
@@ -669,7 +668,7 @@ fn sample(s: number$, t: time) -> number
 fn window(s: number$, t1: time, t2: time) -> number[]
     r: ptr = get s, ring
     pushed: i64 = load r
-    base: i64 = load r, 8
+    base: i64 = ring_base(r)
     n: i64 = sub pushed, base
     vals: number[] = ring_values(r)
     x1: time = ticks(s, t1)
