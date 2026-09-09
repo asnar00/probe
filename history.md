@@ -4,6 +4,17 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: creation time orders, and a published feature is immutable — `be8f4e0` · 2026-09-09
+
+```
+layer: runtime
+published: 2026-09-09
+```
+
+Second rulings pass item 4 (question 24, log 49). Ash: features are created at different times and added together, so composition order is the origin timestamp whatever the commit, and two features created at once order by name. `src/zero/store.rs` drops the tie refusal and the `same commit` marker of the first pass. The two lines above are `suite/zero/skeleton`'s header: a feature `published` on a date has other users and its code is immutable from then, every change of meaning being a sub-feature. The bootstrap's ledger is git, so where the store is inside a repository the reader asks git about the `.zero` file and refuses an uncommitted change or a commit dated after the publication; outside a repository it cannot tell and says nothing, and the log lists what else it does not catch. A Rust test works a scratch store through a temporary repository. zero 319/319 on native, wasm, riscv and arm-qemu (250 cases, 12 overridden), 308 + 11 skipped on air; cargo test 97 passed.
+
+---
+
 ### zero: `yields` — `5c0e052` · 2026-09-09
 
 ```
