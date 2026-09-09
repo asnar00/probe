@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### stream: a push through the buffer's pointer; opt: elide-stores — `6c83534` · 2026-09-10
+
+```
+    ("elide-stores", elide_stores),
+```
+
+The parity pass, hop 2 (fm3 log 66, 67). A push in `lib/stream.ssa` now reads the buffer's own header and stores through a typed pointer to its elements — its slot is under half by construction, so the view's checks would prove nothing — and costs 32 SSA where it cost 51. That leaner kernel hung Apple's compiler on the `platform` store; bisected with `PROBE_AIR_NOINLINE`, the trigger is whole-struct stores into the one context global, inlined hundreds of times. `src/opt.rs` (above) gains a pass: a store that writes back the value just loaded from the same place in the program's own memory goes, and dce drops the loads, so a context setter stores one field (3 to 6 SSA, from 44 to 47); `src/aggregate.rs` stores a `u1` field's loaded byte back as itself so the pass sees it. Hello's `run` 3 820 → 2 547 on 722 lines; the `platform` and `features` kernels compile on air at the first try, and cargo test takes 110 s where the retries made it 321. probe test 973/973 native, 964 + 9 skipped wasm, 973 riscv, 973 arm-qemu, 943 + 30 skipped air; zero 465/465 on the CPU paths, 448 + 17 skipped air; cargo test 107.
+
+---
+
 ### stream: the ring never slides — `40a1098` · 2026-09-10
 
 ```
