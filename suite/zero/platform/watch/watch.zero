@@ -1,0 +1,12 @@
+int written = 0
+
+on (char o$) << (int x)
+    written = written + 1
+    existing o$ << x
+
+on (int n) = counted()
+    out$ << 1 << 2 << 3
+    n = written
+
+on numbers written()
+    out$ << 1 << 2 << 3

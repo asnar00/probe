@@ -369,7 +369,7 @@ fn a_word_at_the_end() -> (int, int)
     b: int = conv _5
     ret a, b
 
-; a stream's ring, carved from the arena: cap items resident (64 unless more are), twice that in slots since the ring mirrors each item (log 65), and a tick per item unless regular; a reader's view at its start
+; a stream's storage, carved from the arena: cap items (64 unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start
 fn __queue_token(hz: i64, cap: i64) -> token$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)

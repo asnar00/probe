@@ -1135,7 +1135,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     }
     l.emit_links();
     if !l.rings.is_empty() {
-        writeln!(l.out, "\n; a stream's ring, carved from the arena: cap items resident ({} unless more are), twice that in slots since the ring mirrors each item (log 65), and a tick per item unless regular; a reader's view at its start", RING_ITEMS).unwrap();
+        writeln!(l.out, "\n; a stream's storage, carved from the arena: cap items ({} unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start", RING_ITEMS).unwrap();
     }
     for (t, maker) in &l.rings {
         let ticks = if maker == "stream" { "    tbytes: i64 = mul slots, 8\n    ttotal: i64 = add tbytes, 16\n    tb: ptr = arena_alloc(a, ttotal)\n    buffer_init(tb, 8, slots)\n".to_string() } else { String::new() };
@@ -1213,23 +1213,34 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
 /// the plain name when it is the newest and static, since no link
 /// stands above it (log 71)
 fn body_name(info: &FnInfo, i: usize, statics: &std::collections::HashSet<String>) -> String {
-    if i + 1 == info.chain.len() && statics.contains(&info.chain[i]) {
-        info.plain.clone()
+    named_body(&info.ir, &info.plain, &info.chain, i, statics)
+}
+
+/// the same over any base name: the device copies of a `<<` method
+/// chain under their own name, `__out__int` and `__out__int__watch`
+/// (log 90)
+fn named_body(ir: &str, plain: &str, chain: &[String], i: usize, statics: &std::collections::HashSet<String>) -> String {
+    if i + 1 == chain.len() && statics.contains(&chain[i]) {
+        plain.to_string()
     } else {
-        format!("{}__{}", info.ir, info.chain[i])
+        format!("{}__{}", ir, chain[i])
+    }
+}
+
+fn named_link(ir: &str, plain: &str, chain: &[String], i: usize, statics: &std::collections::HashSet<String>) -> String {
+    if statics.contains(&chain[i]) {
+        named_body(ir, plain, chain, i, statics)
+    } else if i + 1 == chain.len() {
+        plain.to_string()
+    } else {
+        format!("{}__before_{}", ir, chain[i + 1])
     }
 }
 
 /// what a call from above reaches at feature i of a chain: the link
 /// that gates on i's switch, or i's body itself when i is static
 fn link_name(info: &FnInfo, i: usize, statics: &std::collections::HashSet<String>) -> String {
-    if statics.contains(&info.chain[i]) {
-        body_name(info, i, statics)
-    } else if i + 1 == info.chain.len() {
-        info.plain.clone()
-    } else {
-        format!("{}__before_{}", info.ir, info.chain[i + 1])
-    }
+    named_link(&info.ir, &info.plain, &info.chain, i, statics)
 }
 
 /// the emitted text without the functions nothing reaches from the
@@ -2194,8 +2205,13 @@ impl Lowerer {
             if other.task || f.task {
                 return Err(lex::error(file, f.line, format!("'{}' is a task: a task is not redefined in this milestone", spelled(other))));
             }
-            if operator {
-                return Err(lex::error(file, f.line, "an operator is not redefined in this milestone"));
+            // a `<<` method is redefined and chained like any other
+            // function: it is how a feature watches what a program
+            // writes, the device being written and never read
+            // (question 46, log 90). Arithmetic on a declared type is
+            // still not redefined in this milestone
+            if operator && !push_method {
+                return Err(lex::error(file, f.line, "an operator is not redefined in this milestone; a `<<` method is"));
             }
             if rtys(other) != rtys(&mine) {
                 return Err(lex::error(file, f.line, format!("'{}' redefines feature {}'s with different results: a redefinition keeps the signature", spelled(other), last)));
@@ -2518,7 +2534,7 @@ impl Lowerer {
         let mut pushed = vec![Expr { kind: ExprKind::Name("__item".into()), line }];
         pushed.extend(items[1..].iter().cloned());
         let advance = phrase(vec![Part::Word("advance".into()), Part::Value(seq(sname)), Part::Word("by".into()), Part::Args(vec![Arg { name: None, value: count }])]);
-        let body = vec![Stmt::Push { target: seq(tname), items: pushed, cond: None, line }];
+        let body = vec![Stmt::Push { target: seq(tname), items: pushed, cond: None, existing: false, line }];
         let fd = FnDecl {
             line,
             results: Vec::new(),
@@ -2889,6 +2905,37 @@ impl Lowerer {
                 writeln!(self.out, "fn {}({}){}", name, params.join(", "), sig_ret).unwrap();
                 self.out.push_str(&b.out);
             }
+            // ... and the same chain over the output device (log 90): a
+            // `<<` method is lowered twice (log 87), so a redefinition
+            // of it has two chains, and a feature that watches what is
+            // written sees it whichever copy the call site chose
+            let Some(dev) = self.device_fns.get(&info.ir).cloned() else { continue };
+            let dparams: Vec<String> = info.params.iter().skip(1).map(|(p, t)| format!("{}: {}", p, t.ir())).collect();
+            let dargs: Vec<String> = info.params.iter().skip(1).map(|(p, _)| p.clone()).collect();
+            writeln!(self.out, "\n; {}: the same chain over the output device, where the method's stream is not a value (log 87, 90)", dev).unwrap();
+            for i in (0..n).rev() {
+                if self.statics.contains(&info.chain[i]) {
+                    continue;
+                }
+                let name = named_link(&dev, &dev, &info.chain, i, &self.statics);
+                let body = format!("{}({})", named_body(&dev, &dev, &info.chain, i, &self.statics), dargs.join(", "));
+                let under = if i == 0 { None } else { Some(format!("{}({})", named_link(&dev, &dev, &info.chain, i - 1, &self.statics), dargs.join(", "))) };
+                let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
+                b.line(&format!("on: u1 = __on_{}()", info.chain[i]));
+                b.line("if on");
+                b.depth += 1;
+                b.line(&body);
+                b.depth -= 1;
+                if let Some(u) = under {
+                    b.line("else");
+                    b.depth += 1;
+                    b.line(&u);
+                    b.depth -= 1;
+                }
+                b.line("ret");
+                writeln!(self.out, "fn {}({})", name, dparams.join(", ")).unwrap();
+                self.out.push_str(&b.out);
+            }
         }
     }
 
@@ -3164,7 +3211,7 @@ impl Lowerer {
             b.line(format!("ret {}", rets.join(", ")).trim_end());
         }
         self.out.push_str(&b.out);
-        self.lower_device_fn(f, &info, file)
+        self.lower_device_fn(f, &info, feature, file)
     }
 
     /// The device copy of a `<<` method (log 87, questions 44 and 45).
@@ -3176,17 +3223,26 @@ impl Lowerer {
     /// method's device copy — and the call site chooses the copy by
     /// whether its stream argument is the device. The prune (log 70)
     /// keeps only the copies a store reaches
-    fn lower_device_fn(&mut self, f: &FnDecl, info: &FnInfo, file: &str) -> Result<(), Error> {
+    fn lower_device_fn(&mut self, f: &FnDecl, info: &FnInfo, feature: &str, file: &str) -> Result<(), Error> {
         let Some(dev) = self.device_fns.get(&info.ir).cloned() else { return Ok(()) };
         self.regular_locals.clear();
         let (sname, sty) = info.params[0].clone();
+        // a redefinition applies to both copies (log 90): the device
+        // copies chain under the device name, so `existing` inside one
+        // reaches the definition below it there
+        let (name, below) = if info.chain.len() > 1 {
+            let i = info.chain.iter().position(|c| c == feature).unwrap();
+            (named_body(&dev, &dev, &info.chain, i, &self.statics), if i == 0 { None } else { Some(named_link(&dev, &dev, &info.chain, i - 1, &self.statics)) })
+        } else {
+            (dev.clone(), None)
+        };
         let mut b = Body {
             out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(),
             file: file.to_string(), depth: 0, loops: Vec::new(), kind: BodyKind::Fn, func: Some(info.clone()),
-            below: None, product_bound: self.product.get(&info.key).copied(),
+            below, product_bound: self.product.get(&info.key).copied(),
         };
         b.vars.insert(sname.clone(), Var { ir: "__device".into(), ty: sty, set: true, loop_depth: 0 });
-        let mut sig = format!("fn {}(", dev);
+        let mut sig = format!("fn {}(", name);
         for (i, (n, t)) in info.params.iter().skip(1).enumerate() {
             if i > 0 {
                 sig.push_str(", ");
@@ -4149,10 +4205,13 @@ impl Lowerer {
                 b.depth -= 1;
                 Ok(false)
             }
-            Stmt::Push { target, items, cond, line } => {
+            Stmt::Push { target, items, cond, existing, line } => {
                 let ExprKind::Seq(n) = &target.kind else {
                     return Err(lex::error(&file, *line, "`<<` pushes into a stream, named `x$`"));
                 };
+                if *existing {
+                    return self.existing_push(n, &items[0], b, *line).map(|_| false);
+                }
                 if self.stream_var(n, b).is_none() {
                     return Err(match self.seq_or_fvar_ty(n, b) {
                         Some(t) => lex::error(&file, *line, format!("'{}$' is a {}, not a stream", n, t.ir())),
@@ -4183,6 +4242,39 @@ impl Lowerer {
         let named = named[0].clone();
         let (ops, rtys) = self.lower_args(&named, &args, b)?;
         Ok((format!("{}({})", below, ops.join(", ")), rtys))
+    }
+
+    /// `existing o$ << x` (question 46): the link below this body in
+    /// its chain, called with the stream and the item — the shape
+    /// `existing name(...)` cannot spell, a `<<` method's name being an
+    /// operator. The device copy of the method has its own chain, and
+    /// there the call takes the item alone, `o$` not being a value
+    fn existing_push(&mut self, name: &str, item: &Expr, b: &mut Body, line: usize) -> Result<(), Error> {
+        let file = b.file.clone();
+        let Some(info) = b.func.clone() else {
+            return Err(lex::error(&file, line, "'existing' belongs in a function's body"));
+        };
+        if !matches!(info.parts.as_slice(), [NamePart::Group, NamePart::Sym(op), NamePart::Group] if op == "<<") {
+            return Err(lex::error(&file, line, format!("`existing x$ << item` is for a `<<` method; this is '{}'", spoken(&info))));
+        }
+        if info.params[0].0 != name {
+            return Err(lex::error(&file, line, format!("'{}' is not this method's stream: `existing {}$ << item`", name, info.params[0].0)));
+        }
+        let Some(below) = b.below.clone() else {
+            return Err(lex::error(&file, line, format!("no earlier definition of '{}' for 'existing' to call{}", spoken(&info), if info.chain.len() > 1 { ": this is the first" } else { "" })));
+        };
+        let mut v = self.lower_expr(item, Some(&info.params[1].1), b, None)?;
+        if v.literal && fits_literal(&v, &info.params[1].1) {
+            v.ty = info.params[1].1.clone();
+        }
+        let v = b.materialize(&v);
+        if self.device_param.as_deref() == Some(name) {
+            b.line(&format!("{}({})", below, v.text));
+        } else {
+            let s = self.lower_expr(&Expr { kind: ExprKind::Name(name.to_string()), line }, None, b, None)?;
+            b.line(&format!("{}({}, {})", below, s.text, v.text));
+        }
+        Ok(())
     }
 
     /// `q, r = f(...)`: a call with several results defines several variables

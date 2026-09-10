@@ -125,8 +125,10 @@ pub enum Stmt {
     Continue { values: Vec<Expr>, line: usize },
     Break { line: usize },
     Check { cond: Expr, line: usize },
-    /// `x$ << a << b while (c)`
-    Push { target: Expr, items: Vec<Expr>, cond: Option<Expr>, line: usize },
+    /// `x$ << a << b while (c)`; `existing` on it calls the link below
+    /// this body in its chain, which is how a feature extends a `<<`
+    /// method — the one shape `existing name(...)` cannot spell
+    Push { target: Expr, items: Vec<Expr>, cond: Option<Expr>, existing: bool, line: usize },
     Expr { expr: Expr, line: usize },
 }
 
@@ -815,7 +817,23 @@ impl<'a> Parser<'a> {
                     return Err(self.err("nothing to push: `x$ << item`"));
                 }
                 self.expect_newline()?;
-                Ok(Stmt::Push { target, items, cond, line })
+                Ok(Stmt::Push { target, items, cond, existing: false, line })
+            }
+            // `existing o$ << x` inside a `<<` method: the definition
+            // below this one in the chain, which no `existing name(...)`
+            // can name, the method's name being an operator
+            Some(Tok::Word(w)) if w == "existing" && matches!(self.peek_at(1), Some(Tok::Seq(_))) && matches!(self.peek_at(2), Some(Tok::Sym("<<"))) => {
+                self.pos += 1;
+                let target = self.parse_primary()?;
+                let (items, cond) = self.parse_pushes()?;
+                if cond.is_some() {
+                    return Err(self.err("`existing x$ << item` takes no `while`: it calls the definition below once"));
+                }
+                if items.len() != 1 {
+                    return Err(self.err("`existing x$ << item` passes one item to the definition below"));
+                }
+                self.expect_newline()?;
+                Ok(Stmt::Push { target, items, cond, existing: true, line })
             }
             Some(Tok::Indent) => Err(self.err("an indented line with nothing to belong to")),
             _ => {
@@ -1186,7 +1204,7 @@ mod tests {
         assert!(matches!(f.body[1], Stmt::Var(_)));
         assert!(matches!(&f.body[2], Stmt::Expr { expr: Expr { kind: ExprKind::Phrase(p), .. }, .. } if p.len() == 3));
         assert!(matches!(&f.body[3], Stmt::Expr { expr: Expr { kind: ExprKind::Existing(p), .. }, .. } if p.len() == 2));
-        assert!(matches!(&f.body[4], Stmt::Push { items, cond: Some(_), .. } if items.len() == 2));
+        assert!(matches!(&f.body[4], Stmt::Push { items, cond: Some(_), existing: false, .. } if items.len() == 2));
         assert!(matches!(&f.body[5], Stmt::Expr { expr: Expr { kind: ExprKind::Phrase(p), .. }, .. } if matches!(p[1], Part::Value(_))));
     }
 
