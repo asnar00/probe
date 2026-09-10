@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a feature watches what is written, by redefining `<<` — `6525a2e` · 2026-09-10
+
+```
+on (char o$) << (int x)
+    written = written + 1
+    existing o$ << x
+```
+
+The parity pass, hop 22's second landing (fm3 log 90, question 46). ash ruled that a device is written and never read, and that a feature which wants to monitor what goes into one extends the `<<` method for the item it wants to see. `suite/zero/platform` gains `watch`, that feature (above), with `>counted() → 3`, `>counted() with watch off → 0` and the digits still written either way. Three things were in the way, all bugs in the chain of features rather than in the ruling: `declare` refused to redefine any operator, and a `<<` method is a method like any other; `existing o$ << x` did not parse, `existing` taking a phrase and a `<<` method's name being an operator, so `Stmt::Push` gains an `existing` flag; and the device copy of the method — a `<<` over a `char` stream is lowered twice (log 87) — was emitted under one name with no link below it, so it now chains under its own name, `__out__int__platform` and `__out__int__watch` the bodies and `__out__int` the link. A redefinition applies to both copies. Front-end only and nothing hello reaches: hello's `run` **1 622** before and after, its IR byte for byte the same. zero 536/536 runs over 301 cases on the four CPU paths and 517/517 on air, `probe test` 984/984, cargo test 112.
+
 ### stream: a stream is a queue unless a history word names it — `efc9d16` · 2026-09-10
 
 ```
