@@ -10,7 +10,7 @@ The parity pass (log 71): section 16's three features as in `suite/zero/hello`, 
 `run` says hello. The other two features extend it: `countdown` counts down before it, `bye` says goodbye after it.
 
 ## interface
-- `run` is the program; `hello` writes "hello world" to `out$` (third pass: output is a stream, `out$ << "hello world" << "\n"`).
+- `run` is the program; `hello` writes "hello world" to `out$` (third pass: output is written by pushing, `out$ << "hello world" << "\n"`; question 45: the push is the platform's write and `out$` stores nothing).
 
 ## rules
 - `run` is a chain: bye's, then countdown's, then hello's, each calling `existing run()` where it wants the earlier ones.

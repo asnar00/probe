@@ -20,14 +20,14 @@ A name ending in `$` is a stream. It is a sequence when its items are all presen
 - `pushed into`, `read ahead`, `framed sum` and `bytes pushed` use the stream words on sequences: a push after a list, `advance` before an index, `frame` of a range, a push onto a string.
 
 ## rules
-- A sequence's items are numbers or enumerations; a `string` is a `uint8$`.
+- A sequence's items are numbers, characters or enumerations; a `string` is a `char$`.
 - `[a through b]` includes b, `[a to b]` stops before it, and both count down when a > b.
 - An index counts from zero over the unread items and is checked; `count` is an `int`, how many are unread.
 - A function of one item applied to a sequence gives a sequence; of two items applied to two sequences, one as long as the longer, the shorter one's items zero past its end.
 - A reduction folds one sequence from its first item; an empty sequence gives the type's zero.
 - Map, zip, reduce, `for` and an index read the unread items and leave the reader where it is; `advance` and `frame` move it, and the words then agree with `count`.
 - A `for`'s item is not assigned; a sequence's memory is the store's, emptied before every case.
-- A push into a stream of bytes is by dispatch (third pass, log 59): `b$ << 33` would write the digits `3` `3`, so `bytes pushed` pushes a raw byte as `uint8(33)`.
+- A push into a stream of *characters* is by dispatch (third pass, log 59), so `out$ << 33` writes the digits `3` `3`; a push into a stream of `uint8` is the byte itself (question 44, log 87), so `bytes pushed` writes `b$ << 33` and gets one byte of 33. A string literal is a `char$`, and its bytes fill a `uint8$` too: the literal is bytes, and its element follows the stream it goes into.
 
 ## testing
 >how many() → 4

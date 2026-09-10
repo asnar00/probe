@@ -3,7 +3,7 @@ type token =
 
 token t$ = lex(in$)
 
-on (int k) = kind of (uint8 c)
+on (int k) = kind of (char c)
     if (c <= 32)
         k = 0
     else if (c > 122)
@@ -17,7 +17,7 @@ on (int k) = kind of (uint8 c)
     else
         k = 3
 
-on (token t$) << lex (uint8 c$)
+on (token t$) << lex (char c$)
     loop
         if (count c$ == 0)
             break

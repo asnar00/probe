@@ -25,4 +25,4 @@ Before hello says hello, `count down` writes 10 to 1, one to a line: a stream at
 >run() → "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\nhello world"
 
 ## hostile
-`count down` after the clock has moved still writes the same numbers: the ticks are the clock's, the values the pushes'. `out$ << 10 << 9` at feature scope is refused: "a line at feature scope pushing into 'out$' is an edge, `out$ << x$`, and its first item is a stream; items are pushed on the declaration, `uint8 out$ << ...`".
+`count down` after the clock has moved still writes the same numbers: the ticks are the clock's, the values the pushes'. `out$ << 10 << 9` at feature scope is refused: "a line at feature scope pushing into 'out$' is an edge, `out$ << x$`, and its first item is a stream; items are pushed on the declaration, `char out$ << ...`".

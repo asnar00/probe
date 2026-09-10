@@ -1,32 +1,24 @@
-uint8 out$
-uint8 in$
+char out$
+char in$
 
-on write (uint8 c$)
-platform ir
-    n: i64 = count(c)
-    c2: u8$ = advance(c, n)
-    ret c2
-
-write(out$)
-
-on (uint8 o$) << (int x)
+on (char o$) << (int x)
     if (x < 0)
         o$ << "-"
     int m = if (x < 0) then (x) else (0 - x)
     int top = loop (int p = 1) while (m / p <= -10) yields p
         p = p * 10
     loop (int p = top) while (p > 0)
-        o$ << uint8(48 - (m / p) % 10)
+        o$ << char(48 - (m / p) % 10)
         p = p / 10
 
-on (uint8 o$) << (uint x)
+on (char o$) << (uint x)
     uint top = loop (uint p = 1) while (x / p >= 10) yields p
         p = p * 10
     loop (uint p = top) while (p > 0)
-        o$ << uint8(48 + (x / p) % 10)
+        o$ << char(48 + (x / p) % 10)
         p = p / 10
 
-on (uint8 o$) << (float x)
+on (char o$) << (float x)
     if (x != x)
         o$ << "nan"
     else if (x - x != x - x)
@@ -50,23 +42,23 @@ on (uint8 o$) << (float x)
         int64 top = loop (int64 p = 1, int64 k = 1) while (k < places) yields p
             continue (p * 10, k + 1)
         loop (int64 p = top) while (p > 0)
-            o$ << uint8(48 + (digits / p) % 10)
+            o$ << char(48 + (digits / p) % 10)
             p = p / 10
 
-on (uint8 o$) << (bool b)
+on (char o$) << (bool b)
     if (b)
         o$ << "true"
     else
         o$ << "false"
 
-on (uint8 o$) << (int x$)
+on (char o$) << (int x$)
     loop (int i = 0) while (i < count x$)
         if (i > 0)
             o$ << " "
         o$ << x$[i]
         i = i + 1
 
-on (uint8 o$) << (float x$)
+on (char o$) << (float x$)
     loop (int i = 0) while (i < count x$)
         if (i > 0)
             o$ << " "

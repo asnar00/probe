@@ -1,6 +1,7 @@
 int64 logged = 0
+char copy$
 
-on log (uint8 c$)
+on log (char c$)
 platform ir
     n: i64 = count(c)
     k: i64 = __get_logged()
@@ -9,10 +10,11 @@ platform ir
     c2: u8$ = advance(c, n)
     ret c2
 
-log(out$)
+log(copy$)
 
 on (int64 n) = logged after hello()
     out$ << "hello" << "\n"
+    copy$ << "hello" << "\n"
     n = logged
 
 on (int64 n) = logged after nothing()

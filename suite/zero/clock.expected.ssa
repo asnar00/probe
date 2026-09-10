@@ -29,21 +29,34 @@ fn __sleep(hz: i64)
         __wait(c2)
     ret
 
-; the output stream `out$` (section 15, log 57), read back by the runner
-; through the platform feature's own reader, which nothing advances:
-; how many bytes it holds, and each one
+; the output device (section 15, question 45, log 87): `out$` looks like
+; a stream, but a push into it writes a character to the place and
+; stores nothing, so these two are the platform's write — one character,
+; and a block of them. There is no capacity, because there is no
+; storage. Under the runner the place is the capture below, which
+; `__out_len` and `__out_byte` read back; a real platform's body per
+; kind of place — a UART store on the boards, a write to the console
+; under an OS, the browser's log — is a `platform <target>` block on
+; each of these, beside the `ir` body, and is milestone 1's
+data __out: array(u8, 65536)
+data __out_n: array(i64, 1)
+
+; what the device was given, read back by the test runner: the capture
+; is the runner's, not the store's
 fn __out_len() -> i64
-    s: u8$ = __get_out()
-    n: i64 = count(s)
+    q: ptr = addr __out_n
+    n: i64 = load q
     ret n
 
 fn __out_byte(i: i64) -> u8
-    s: u8$ = __get_out()
-    b: u8 = peek(s, i)
+    p: ptr = addr __out
+    b: u8 = load p, i, 1
     ret b
 
-; the input stream `in$` (section 15, log 62): one byte the platform
-; pushes, which under the runner is a case's `with in "text"`
+; the input device (section 15, log 62, question 45): a character
+; arriving, which under the runner is a case's `with in "text"`. Its
+; ring is the device's own lookahead, sized by the runner, which a
+; consumer wired to `in$` reads with `peek`, `advance` and `count`
 fn __in_ch(c: u8)
     s: u8$ = __get_in()
     push_plain(s, c)
@@ -85,23 +98,16 @@ fn __push(s: number$, block: number[])
 ; the context: one field per feature-scope variable — name: scope, merge (feature)
 ;   __enabled_platform: user, last (platform)
 ;   __enabled_clock: user, last (clock)
-;   out: user, last (platform)
+;   out: the output device, which stores nothing (platform)
 ;   in: user, last (platform)
 ;   t: user, last (clock)
-;   __node1_c: node, last (platform)
-;   __node1_c_seen: node, last (platform)
-;   __node1_fin: node, last (platform)
-;   __node2_fin: node, last (clock)
+;   __node1_fin: node, last (clock)
 type __ctx = struct
     __enabled_platform: u1
     __enabled_clock: u1
-    out: u8$
     in: u8$
     t: int$
-    __node1_c: u8$
-    __node1_c_seen: i64
     __node1_fin: u1
-    __node2_fin: u1
 
 data __ctx_mem: array(__ctx, 1)
 
@@ -114,24 +120,19 @@ fn __zero_reset()
     store 0: i64, k
     r: ptr = addr __running
     store 0: i64, r
-    _1: u8$ = __regular_u8(1000000, 4096)
-    _2: u8$ = __regular_u8(1000000, 512)
-    _3: int$ = __stream_int(1000000, 64)
-    _4: __ctx = pack 1, 1, _1, _2, _3, _1, 0, 0, 0
+    o: ptr = addr __out_n
+    store 0: i64, o
+    _1: u8$ = __regular_u8(1000000, 512)
+    _2: int$ = __stream_int(1000000, 64)
+    _3: __ctx = pack 1, 1, _1, _2, 0
     p: ptr = addr __ctx_mem
-    store _4, p
+    store _3, p
     ret
 
 ; after the case's context is set: the nodes run
 fn __zero_start()
     __run()
     ret
-
-fn __get___enabled_platform() -> u1
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u1 = get c, __enabled_platform
-    ret v
 
 fn __set___enabled_platform(v: u1)
     p: ptr = addr __ctx_mem
@@ -153,12 +154,6 @@ fn __set___enabled_clock(v: u1)
     store c2, p
     ret
 
-fn __get_out() -> u8$
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u8$ = get c, out
-    ret v
-
 fn __get_in() -> u8$
     p: ptr = addr __ctx_mem
     c: __ctx = load p
@@ -178,32 +173,6 @@ fn __set_t(v: int$)
     store c2, p
     ret
 
-fn __get___node1_c() -> u8$
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u8$ = get c, __node1_c
-    ret v
-
-fn __set___node1_c(v: u8$)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node1_c, v
-    store c2, p
-    ret
-
-fn __get___node1_c_seen() -> i64
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: i64 = get c, __node1_c_seen
-    ret v
-
-fn __set___node1_c_seen(v: i64)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node1_c_seen, v
-    store c2, p
-    ret
-
 fn __get___node1_fin() -> u1
     p: ptr = addr __ctx_mem
     c: __ctx = load p
@@ -216,56 +185,13 @@ fn __set___node1_fin(v: u1)
     c2: __ctx = set c, __node1_fin, v
     store c2, p
     ret
-
-fn __get___node2_fin() -> u1
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u1 = get c, __node2_fin
-    ret v
-
-fn __set___node2_fin(v: u1)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node2_fin, v
-    store c2, p
-    ret
-
-; a feature's effective state: its own enabled and its ancestors', read by every gate
-fn __on_platform() -> u1
-    own: u1 = __get___enabled_platform()
-    ret own
 fn __on_clock() -> u1
     own: u1 = __get___enabled_clock()
     ret own
 
-; node 1: write (out$) — run when an input has more than the node has seen, or has ended and the node has not run since
+; node 1: int t$ = ticks (5) at (4 hz) — run when an input has more than the node has seen, or has ended and the node has not run since
 fn __node1() -> u1
     fin: u1 = __get___node1_fin()
-    notfin: u1 = xor fin, 1
-    _1: u8$ = __get___node1_c()
-    _2: i64 = received(_1)
-    _3: i64 = __get___node1_c_seen()
-    _4: u1 = cmp.gt _2, _3
-    _5: u1 = ended(_1)
-    _6: u1 = and _5, notfin
-    _7: u1 = or _4, _6
-    on: u1 = __on_platform()
-    due: u1 = and _7, on
-    ran: u1 = if due
-        _8: u8$ = write(_1, 0: i64)
-        __set___node1_c(_8)
-        _9: i64 = received(_8)
-        __set___node1_c_seen(_9)
-        _10: u1 = ended(_8)
-        __set___node1_fin(_10)
-        yield 1
-    else
-        yield 0
-    ret ran
-
-; node 2: int t$ = ticks (5) at (4 hz) — run when an input has more than the node has seen, or has ended and the node has not run since
-fn __node2() -> u1
-    fin: u1 = __get___node2_fin()
     notfin: u1 = xor fin, 1
     on: u1 = __on_clock()
     due: u1 = and notfin, on
@@ -273,7 +199,7 @@ fn __node2() -> u1
         _1: int$ = __get_t()
         _2: int = const 5
         ticks(_1, _2, 4: i64)
-        __set___node2_fin(1)
+        __set___node1_fin(1)
         yield 1
     else
         yield 0
@@ -287,15 +213,10 @@ fn __run()
     if idle
         store 1: i64, p
         r1: u1 = __node1()
-        r2: u1 = __node2()
         store 0: i64, p
     ret
 
 ; feature platform (layer platform)
-fn write(c: u8$, __hz: i64) -> u8$
-    n: i64 = count(c)
-    c2: u8$ = advance(c, n)
-    ret c2
 
 ; feature clock (layer runtime)
 fn ticks(t: int$, n: int, __hz: i64)

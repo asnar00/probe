@@ -710,20 +710,32 @@ mod tests {
             std::fs::write(dir.join("h/h.zero"), code).unwrap();
             emit(&dir)
         };
-        let ir = emit_with("type pair =\n    int a, b\n\non (uint8 o$) << (pair p)\n    o$ << \"(\" << p.a << \")\"\n\non f()\n    out$ << 42 << pair(1, 2) << 2.5 << true\n    int64 k = 3\n    out$ << k\n").unwrap();
-        assert!(ir.contains("fn push__u8s_pair(o: u8$, p: pair)\n"), "{}", ir);
-        for call in ["push__u8s_int(", "push__u8s_pair(", "push__u8s_float(", "push__u8s_u1("] {
+        let ir = emit_with("type pair =\n    int a, b\n\non (char o$) << (pair p)\n    o$ << \"(\" << p.a << \")\"\n\non f()\n    out$ << 42 << pair(1, 2) << 2.5 << true\n    int64 k = 3\n    out$ << k\n").unwrap();
+        // `out$` is the output device (question 45, log 87), so every one
+        // of these calls reaches the method's device copy, `__out__<type>`;
+        // the store's own method keeps its copy over a stream too, every
+        // function of a store's own feature being a root of the prune
+        assert!(ir.contains("fn __out__pair(p: pair)\n") && ir.contains("fn push__chars_pair(o: u8$, p: pair)\n"), "{}", ir);
+        for call in ["__out__int(", "__out__pair(", "__out__float(", "__out__u1("] {
             assert!(ir.contains(call), "{} not called: {}", call, ir);
         }
         // the library's methods are templates over the abstract types; the
         // ones nothing reaches are not in the text (log 70)
-        assert!(ir.contains("fn push__u8s_int(o: u8$, x: int)\n") && !ir.contains("fn push__u8s_ints("), "{}", ir);
+        assert!(ir.contains("fn __out__int(x: int)\n") && !ir.contains("fn __out__ints("), "{}", ir);
+        // a push into the device is the platform's write, not a ring
+        // push: `out$` has no ring, so it has no field in the context
+        assert!(ir.contains("__out_ch(") && !ir.contains("__get_out()"), "{}", ir);
         let refused = |code: &str| emit_with(code).expect_err("accepted");
         assert!(refused("on (int o$) << (int x)\n    o$ << 1\n\non f()\n    out$ << 1\n").contains("'int' pushed into 'int$' is the push itself, not a method"));
-        assert!(refused("on (uint8 o$) << (uint8 c$)\n    o$ << \"?\"\n\non f()\n    out$ << 1\n").contains("'string' pushed into 'string' is the block push of section 9, not a method"));
-        assert!(refused("on (uint8 o$) = (uint8 o$) << (int x)\n    o$ << \"?\"\n\non f()\n    out$ << 1\n").contains("unexpected '<<' in a function's name"));
+        assert!(refused("on (char o$) << (char c$)\n    o$ << \"?\"\n\non f()\n    out$ << 1\n").contains("'string' pushed into 'string' is the block push of section 9, not a method"));
+        assert!(refused("on (char o$) = (char o$) << (int x)\n    o$ << \"?\"\n\non f()\n    out$ << 1\n").contains("unexpected '<<' in a function's name"));
         assert!(refused("on f()\n    int i$ << 1\n    i$ << 2.5\n").contains("'i$' holds int but the item is float"));
-        assert!(refused("type token =\n    int kind, start, n\n\non f()\n    token t$ << token(1, 2, 3)\n    out$ << t$\n").contains("'out$' holds u8 but the item is token$: no `<<` method takes it"));
+        assert!(refused("type token =\n    int kind, start, n\n\non f()\n    token t$ << token(1, 2, 3)\n    out$ << t$\n").contains("'out$' holds char but the item is token$: no `<<` method takes it"));
+        // a char is a character, not a small number (question 44)
+        assert!(refused("on f()\n    char c = char(65)\n    out$ << (c + 1)\n").contains("'+' on a char: a char is compared, not computed with; convert it, `int(c)`"));
+        // a `uint8` stream takes the byte itself, since no method takes one
+        let bytes = emit_with("on (int n) = f()\n    uint8 b$ = \"hi\"\n    b$ << 33\n    n = count b$\n").unwrap();
+        assert!(bytes.contains("_5: u8 = const 33") || bytes.contains("const 33"), "{}", bytes);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

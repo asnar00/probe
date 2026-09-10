@@ -12,21 +12,56 @@ data __clock: array(i64, 1)
 ; the scheduler is running: a push from inside a task does not start it again
 data __running: array(i64, 1)
 
-; the output stream `out$` (section 15, log 57), read back by the runner
-; through the platform feature's own reader, which nothing advances:
-; how many bytes it holds, and each one
+; the output device (section 15, question 45, log 87): `out$` looks like
+; a stream, but a push into it writes a character to the place and
+; stores nothing, so these two are the platform's write — one character,
+; and a block of them. There is no capacity, because there is no
+; storage. Under the runner the place is the capture below, which
+; `__out_len` and `__out_byte` read back; a real platform's body per
+; kind of place — a UART store on the boards, a write to the console
+; under an OS, the browser's log — is a `platform <target>` block on
+; each of these, beside the `ir` body, and is milestone 1's
+data __out: array(u8, 65536)
+data __out_n: array(i64, 1)
+
+fn __out_ch(c: u8)
+    q: ptr = addr __out_n
+    n: i64 = load q
+    p: ptr = addr __out
+    store c, p, n, 1
+    n2: i64 = add n, 1
+    store n2, q
+    ret
+
+fn __out_block(v: u8[])
+    k: i64 = len v
+    q: ptr = addr __out_n
+    n: i64 = load q
+    p: ptr = addr __out
+    r: ptr(u8) = cast p
+    all: u8[] = pack r, 65536, 1
+    d: u8[] = view all, n, k
+    copy d, v
+    n2: i64 = add n, k
+    store n2, q
+    ret
+
+; what the device was given, read back by the test runner: the capture
+; is the runner's, not the store's
 fn __out_len() -> i64
-    s: u8$ = __get_out()
-    n: i64 = count(s)
+    q: ptr = addr __out_n
+    n: i64 = load q
     ret n
 
 fn __out_byte(i: i64) -> u8
-    s: u8$ = __get_out()
-    b: u8 = peek(s, i)
+    p: ptr = addr __out
+    b: u8 = load p, i, 1
     ret b
 
-; the input stream `in$` (section 15, log 62): one byte the platform
-; pushes, which under the runner is a case's `with in "text"`
+; the input device (section 15, log 62, question 45): a character
+; arriving, which under the runner is a case's `with in "text"`. Its
+; ring is the device's own lookahead, sized by the runner, which a
+; consumer wired to `in$` reads with `peek`, `advance` and `count`
 fn __in_ch(c: u8)
     s: u8$ = __get_in()
     push_plain(s, c)
@@ -47,39 +82,24 @@ fn __wait(t: i64)
     store m, p
     ret
 
-; a push into any stream: no ring in this store keeps ticks (log 73)
-fn __push(s: number$, v: number)
-    push(s, v)
-    ret
-fn __push(s: number$, block: number[])
-    push(s, block)
-    ret
-
 
 ; the context: one field per feature-scope variable — name: scope, merge (feature)
-;   out: user, last (platform)
+;   out: the output device, which stores nothing (platform)
 ;   in: user, last (platform)
 ;   i: user, last (countdown)
-;   __node1_c: node, last (platform)
-;   __node1_c_seen: node, last (platform)
-;   __node1_fin: node, last (platform)
-;   __node2_i: node, last (countdown)
-;   __node2_i_seen: node, last (countdown)
-;   __node2_fin: node, last (countdown)
+;   __node1_i: node, last (countdown)
+;   __node1_i_seen: node, last (countdown)
+;   __node1_fin: node, last (countdown)
 type __ctx = struct
-    out: u8$
     in: u8$
     i: int$
-    __node1_c: u8$
-    __node1_c_seen: i64
+    __node1_i: int$
+    __node1_i_seen: i64
     __node1_fin: u1
-    __node2_i: int$
-    __node2_i_seen: i64
-    __node2_fin: u1
 
 data __ctx_mem: array(__ctx, 1)
-data __s6 = "hello world"
-data __s7 = "goodbye"
+data __s11 = "hello world"
+data __s12 = "goodbye"
 
 ; before every case: the arena emptied, the variables at their initial values
 fn __zero_reset()
@@ -90,24 +110,19 @@ fn __zero_reset()
     store 0: i64, k
     r: ptr = addr __running
     store 0: i64, r
-    _1: u8$ = __regular_u8(1000000, 4096)
-    _2: u8$ = __regular_u8(1000000, 512)
-    _3: int$ = __regular_int(1, 64)
-    _4: __ctx = pack _1, _2, _3, _1, 0, 0, _3, 0, 0
+    o: ptr = addr __out_n
+    store 0: i64, o
+    _1: u8$ = __regular_u8(1000000, 512)
+    _2: int$ = __regular_int(1, 64)
+    _3: __ctx = pack _1, _2, _2, 0, 0
     p: ptr = addr __ctx_mem
-    store _4, p
+    store _3, p
     ret
 
 ; after the case's context is set: the nodes run
 fn __zero_start()
     __run()
     ret
-
-fn __get_out() -> u8$
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u8$ = get c, out
-    ret v
 
 fn __get_in() -> u8$
     p: ptr = addr __ctx_mem
@@ -121,29 +136,29 @@ fn __get_i() -> int$
     v: int$ = get c, i
     ret v
 
-fn __get___node1_c() -> u8$
+fn __get___node1_i() -> int$
     p: ptr = addr __ctx_mem
     c: __ctx = load p
-    v: u8$ = get c, __node1_c
+    v: int$ = get c, __node1_i
     ret v
 
-fn __set___node1_c(v: u8$)
+fn __set___node1_i(v: int$)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
-    c2: __ctx = set c, __node1_c, v
+    c2: __ctx = set c, __node1_i, v
     store c2, p
     ret
 
-fn __get___node1_c_seen() -> i64
+fn __get___node1_i_seen() -> i64
     p: ptr = addr __ctx_mem
     c: __ctx = load p
-    v: i64 = get c, __node1_c_seen
+    v: i64 = get c, __node1_i_seen
     ret v
 
-fn __set___node1_c_seen(v: i64)
+fn __set___node1_i_seen(v: i64)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
-    c2: __ctx = set c, __node1_c_seen, v
+    c2: __ctx = set c, __node1_i_seen, v
     store c2, p
     ret
 
@@ -160,86 +175,24 @@ fn __set___node1_fin(v: u1)
     store c2, p
     ret
 
-fn __get___node2_i() -> int$
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: int$ = get c, __node2_i
-    ret v
-
-fn __set___node2_i(v: int$)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node2_i, v
-    store c2, p
-    ret
-
-fn __get___node2_i_seen() -> i64
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: i64 = get c, __node2_i_seen
-    ret v
-
-fn __set___node2_i_seen(v: i64)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node2_i_seen, v
-    store c2, p
-    ret
-
-fn __get___node2_fin() -> u1
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u1 = get c, __node2_fin
-    ret v
-
-fn __set___node2_fin(v: u1)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node2_fin, v
-    store c2, p
-    ret
-
-; node 1: write (out$) — run when an input has more than the node has seen, or has ended and the node has not run since
+; node 1: out$ << i$ << "\n" — run when an input has more than the node has seen, or has ended and the node has not run since
 fn __node1() -> u1
     fin: u1 = __get___node1_fin()
     notfin: u1 = xor fin, 1
-    _1: u8$ = __get___node1_c()
+    _1: int$ = __get___node1_i()
     _2: i64 = received(_1)
-    _3: i64 = __get___node1_c_seen()
-    _4: u1 = cmp.gt _2, _3
-    _5: u1 = ended(_1)
-    _6: u1 = and _5, notfin
-    _7: u1 = or _4, _6
-    ran: u1 = if _7
-        _8: u8$ = write(_1, 0: i64)
-        __set___node1_c(_8)
-        _9: i64 = received(_8)
-        __set___node1_c_seen(_9)
-        _10: u1 = ended(_8)
-        __set___node1_fin(_10)
-        yield 1
-    else
-        yield 0
-    ret ran
-
-; node 2: out$ << i$ << "\n" — run when an input has more than the node has seen, or has ended and the node has not run since
-fn __node2() -> u1
-    fin: u1 = __get___node2_fin()
-    notfin: u1 = xor fin, 1
-    _1: int$ = __get___node2_i()
-    _2: i64 = received(_1)
-    _3: i64 = __get___node2_i_seen()
+    _3: i64 = __get___node1_i_seen()
     _4: u1 = cmp.gt _2, _3
     _5: u1 = ended(_1)
     _6: u1 = and _5, notfin
     _7: u1 = or _4, _6
     ran: u1 = if _7
         _8: int$ = __edge1(_1, 0: i64)
-        __set___node2_i(_8)
+        __set___node1_i(_8)
         _9: i64 = received(_8)
-        __set___node2_i_seen(_9)
+        __set___node1_i_seen(_9)
         _10: u1 = ended(_8)
-        __set___node2_fin(_10)
+        __set___node1_fin(_10)
         yield 1
     else
         yield 0
@@ -252,21 +205,10 @@ fn __run()
     idle: u1 = cmp.eq busy, 0
     if idle
         store 1: i64, p
-        r2: u1 = __node2()
         r1: u1 = __node1()
         store 0: i64, p
     ret
 fn __run_i()
-    p: ptr = addr __running
-    busy: i64 = load p
-    idle: u1 = cmp.eq busy, 0
-    if idle
-        store 1: i64, p
-        r2: u1 = __node2()
-        r1: u1 = __node1()
-        store 0: i64, p
-    ret
-fn __run_out()
     p: ptr = addr __running
     busy: i64 = load p
     idle: u1 = cmp.eq busy, 0
@@ -277,15 +219,12 @@ fn __run_out()
     ret
 
 ; feature platform (layer platform)
-fn write(c: u8$, __hz: i64) -> u8$
-    n: i64 = count(c)
-    c2: u8$ = advance(c, n)
-    ret c2
-fn push__u8s_int(o: u8$, x: int)
+; ... and the same over the output device, where a push is the platform's write (log 87)
+fn __out__int(x: int)
     _1: u1 = cmp.lt x, 0
     if _1
         _2: u8 = const 45
-        __push(o, _2)
+        __out_ch(_2)
     _3: u1 = cmp.lt x, 0
     m: int = if _3
         yield x
@@ -309,7 +248,7 @@ fn push__u8s_int(o: u8$, x: int)
         _9: int = rem _8, 10
         _10: int = sub 48, _9
         _11: u8 = conv _10
-        __push(o, _11)
+        __out_ch(_11)
         p_4: int = div p_3, 10
         continue p_4
     ret
@@ -319,14 +258,12 @@ fn run__hello()
     hello()
     ret
 fn hello()
-    _1: u8$ = __get_out()
-    _2: ptr = addr __s6
-    _3: i64 = len __s6
-    _4: u8[] = __str(_2, _3)
-    push_plain(_1, _4)
-    _5: u8 = const 10
-    push_plain(_1, _5)
-    __run_out()
+    _1: ptr = addr __s11
+    _2: i64 = len __s11
+    _3: u8[] = __str(_1, _2)
+    __out_block(_3)
+    _4: u8 = const 10
+    __out_ch(_4)
     ret
 
 ; feature countdown (layer runtime)
@@ -359,16 +296,15 @@ fn __edge1(i: int$, __hz: i64) -> int$
         _6: i64 = add _3, _4
         _7: i64 = mul _6, 1000000
         __wait(_7)
-        _8: u8$ = __get_out()
-        push__u8s_int(_8, __item)
-        _9: u8 = const 10
-        push_plain(_8, _9)
-        _10: i64 = add _4, 1
-        continue _10
-    _11: i64 = count i
-    _12: int = conv _11
-    _13: i64 = conv _12
-    i_2: int$ = advance(i, _13)
+        __out__int(__item)
+        _8: u8 = const 10
+        __out_ch(_8)
+        _9: i64 = add _4, 1
+        continue _9
+    _10: i64 = count i
+    _11: int = conv _10
+    _12: i64 = conv _11
+    i_2: int$ = advance(i, _12)
     ret i_2
 
 ; feature bye (layer runtime)
@@ -377,14 +313,12 @@ fn run()
     goodbye()
     ret
 fn goodbye()
-    _1: u8$ = __get_out()
-    _2: ptr = addr __s7
-    _3: i64 = len __s7
-    _4: u8[] = __str(_2, _3)
-    push_plain(_1, _4)
-    _5: u8 = const 10
-    push_plain(_1, _5)
-    __run_out()
+    _1: ptr = addr __s12
+    _2: i64 = len __s12
+    _3: u8[] = __str(_1, _2)
+    __out_block(_3)
+    _4: u8 = const 10
+    __out_ch(_4)
     ret
 
 ; a stream's ring, carved from the arena: cap items resident (64 unless more are), twice that in slots since the ring mirrors each item (log 65), and a tick per item unless regular; a reader's view at its start

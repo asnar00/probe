@@ -6,7 +6,7 @@ type point =
 
 type colour = red | green | blue
 
-on (uint8 o$) << (pair p)
+on (char o$) << (pair p)
     o$ << "(" << p.a << ", " << p.b << ")"
 
 on an int()
@@ -63,6 +63,9 @@ on a bool()
 on a byte()
     uint8 c = uint8(65)
     out$ << c
+
+on a char()
+    out$ << char(65) << char(33)
 
 on a struct()
     out$ << point(1, 2, 3)

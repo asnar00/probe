@@ -28,6 +28,12 @@ pub enum Ty {
     Bool,
     /// a number, by its IR name: `int`, `u8`, `f32`, `number`, ...
     Num(String),
+    /// a character (section 4, question 44): a type of its own, distinct
+    /// from `uint8`, so that `char$ << 42` asks for human-readable text
+    /// where `uint8$ << 42` would ask for a serialisation. It is a `u8`
+    /// in the IR, takes comparisons and conversions and no arithmetic,
+    /// and `string` is `char$`
+    Char,
     /// a stream `T$` (section 9, log 38): the IR's `T$`, a reader's view
     /// of a ring, whether its items arrive over time or are all present
     /// (a sequence); a `string` is `u8$`; a stream of a struct is a
@@ -45,6 +51,7 @@ impl Ty {
     fn ir(&self) -> String {
         match self {
             Ty::Bool => "u1".into(),
+            Ty::Char => "u8".into(),
             Ty::Num(n) => n.clone(),
             Ty::Stream(e) => match e.as_ref() {
                 Ty::Struct(n) => format!("__s_{}", n),
@@ -55,8 +62,19 @@ impl Ty {
         }
     }
 
+    /// the spelling a method's IR name is mangled from: the IR's type,
+    /// except that a `char` says so, so that a method over `char$` and
+    /// one over `uint8$` are two functions in the IR
+    fn mangled(&self) -> String {
+        match self {
+            Ty::Char => "char".into(),
+            Ty::Stream(e) if **e == Ty::Char => "char$".into(),
+            t => t.ir(),
+        }
+    }
+
     fn string() -> Ty {
-        Ty::Stream(Box::new(Ty::Num("u8".into())))
+        Ty::Stream(Box::new(Ty::Char))
     }
 
     /// the element type of a stream, or none
@@ -72,7 +90,7 @@ impl Ty {
     /// is not
     fn items(&self) -> Option<&Ty> {
         match self {
-            Ty::Stream(e) if matches!(e.as_ref(), Ty::Num(_) | Ty::Enum(_)) => Some(e),
+            Ty::Stream(e) if matches!(e.as_ref(), Ty::Num(_) | Ty::Enum(_) | Ty::Char) => Some(e),
             _ => None,
         }
     }
@@ -97,7 +115,8 @@ fn builtin_type(name: &str) -> Option<Ty> {
         "int32" => "i32".into(),
         "int64" => "i64".into(),
         "int128" => "i128".into(),
-        "uint8" | "byte" | "char" => "u8".into(),
+        "char" => return Some(Ty::Char),
+        "uint8" | "byte" => "u8".into(),
         "uint16" => "u16".into(),
         "uint32" => "u32".into(),
         "uint64" => "u64".into(),
@@ -121,7 +140,7 @@ fn builtin_type(name: &str) -> Option<Ty> {
 fn is_concrete(t: &Ty) -> bool {
     match t {
         Ty::Num(n) => n == "bf16" || (n.len() > 1 && matches!(&n[..1], "i" | "u" | "f") && n[1..].parse::<u32>().is_ok()),
-        Ty::Bool | Ty::Struct(_) | Ty::Enum(_) => true,
+        Ty::Bool | Ty::Char | Ty::Struct(_) | Ty::Enum(_) => true,
         Ty::Stream(e) => is_concrete(e),
         Ty::None => false,
     }
@@ -437,21 +456,56 @@ fn __sleep(hz: i64)
         __wait(c2)
     ret
 
-; the output stream `out$` (section 15, log 57), read back by the runner
-; through the platform feature's own reader, which nothing advances:
-; how many bytes it holds, and each one
+; the output device (section 15, question 45, log 87): `out$` looks like
+; a stream, but a push into it writes a character to the place and
+; stores nothing, so these two are the platform's write — one character,
+; and a block of them. There is no capacity, because there is no
+; storage. Under the runner the place is the capture below, which
+; `__out_len` and `__out_byte` read back; a real platform's body per
+; kind of place — a UART store on the boards, a write to the console
+; under an OS, the browser's log — is a `platform <target>` block on
+; each of these, beside the `ir` body, and is milestone 1's
+data __out: array(u8, 65536)
+data __out_n: array(i64, 1)
+
+fn __out_ch(c: u8)
+    q: ptr = addr __out_n
+    n: i64 = load q
+    p: ptr = addr __out
+    store c, p, n, 1
+    n2: i64 = add n, 1
+    store n2, q
+    ret
+
+fn __out_block(v: u8[])
+    k: i64 = len v
+    q: ptr = addr __out_n
+    n: i64 = load q
+    p: ptr = addr __out
+    r: ptr(u8) = cast p
+    all: u8[] = pack r, 65536, 1
+    d: u8[] = view all, n, k
+    copy d, v
+    n2: i64 = add n, k
+    store n2, q
+    ret
+
+; what the device was given, read back by the test runner: the capture
+; is the runner's, not the store's
 fn __out_len() -> i64
-    s: u8$ = __get_out()
-    n: i64 = count(s)
+    q: ptr = addr __out_n
+    n: i64 = load q
     ret n
 
 fn __out_byte(i: i64) -> u8
-    s: u8$ = __get_out()
-    b: u8 = peek(s, i)
+    p: ptr = addr __out
+    b: u8 = load p, i, 1
     ret b
 
-; the input stream `in$` (section 15, log 62): one byte the platform
-; pushes, which under the runner is a case's `with in "text"`
+; the input device (section 15, log 62, question 45): a character
+; arriving, which under the runner is a case's `with in "text"`. Its
+; ring is the device's own lookahead, sized by the runner, which a
+; consumer wired to `in$` reads with `peek`, `advance` and `count`
 fn __in_ch(c: u8)
     s: u8$ = __get_in()
     __push(s, c)
@@ -894,7 +948,7 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
+    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -922,6 +976,22 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         }
     }
     l.name_methods(&store.features.iter().map(|f| (f.name.clone(), f.code.file.clone())).collect())?;
+    // a `<<` method over a `char$` is lowered twice (log 87): as it is
+    // written, over a stream, and again over the output device, where
+    // `o$` has no value and every push into it is the platform's write.
+    // The names are settled here, before a body is lowered, because a
+    // call site may be reached before the method's own definition
+    for i in 0..l.funcs.len() {
+        let g = &l.funcs[i];
+        if g.platform.is_some() || g.params.len() != 2 || g.params[0].1 != Ty::string() {
+            continue;
+        }
+        if !matches!(g.parts.as_slice(), [NamePart::Group, NamePart::Sym(op), NamePart::Group] if op == "<<") {
+            continue;
+        }
+        let (ir, item) = (g.ir.clone(), g.params[1].1.mangled());
+        l.device_fns.insert(ir, crate::ssa::method_name("__out", &[item]));
+    }
     // is any task wired at a rate (log 83)? looked for before any body
     // is lowered, since a task's body serves every wiring
     l.any_rated_wiring = store.features.iter().any(|f| {
@@ -1408,6 +1478,7 @@ fn spelled(info: &FnInfo) -> String {
 fn zero_ty(t: &Ty) -> String {
     match t {
         Ty::Bool => "bool".into(),
+        Ty::Char => "char".into(),
         Ty::Num(n) => match n.as_str() {
             "u8" => "uint8".into(),
             "bf16" => "bfloat16".into(),
@@ -1419,7 +1490,7 @@ fn zero_ty(t: &Ty) -> String {
             },
             n => n.to_string(),
         },
-        Ty::Stream(e) if **e == Ty::Num("u8".into()) => "string".into(),
+        Ty::Stream(e) if **e == Ty::Char => "string".into(),
         Ty::Stream(e) => format!("{}$", zero_ty(e)),
         Ty::Struct(n) | Ty::Enum(n) => n.clone(),
         Ty::None => String::new(),
@@ -1513,6 +1584,13 @@ struct Lowerer {
     candidate: Option<Val>,
     /// the product's bounds (log 41), by function key
     product: HashMap<String, i64>,
+    /// while the device copy of a `<<` method is lowered (log 87): the
+    /// name of its stream parameter, which is the device rather than a
+    /// stream, so that every push into it is the platform's write and a
+    /// `<<` on it calls the device copy of that method
+    device_param: Option<String>,
+    /// the device copies emitted, by the IR name of the stream copy
+    device_fns: HashMap<String, String>,
 }
 
 /// where a range's values go (log 41): a new ring with them resident,
@@ -2017,7 +2095,7 @@ impl Lowerer {
         // other methods are named once every feature has declared
         // (`name_methods`, log 52)
         let (ir, plain) = if operator {
-            let tys: Vec<String> = mine.params.iter().map(|(_, t)| t.ir()).collect();
+            let tys: Vec<String> = mine.params.iter().map(|(_, t)| t.mangled()).collect();
             let op = if set.is_empty() && !push_method { format!("{}_{}", key, mine.params[0].1.ir()) } else { crate::ssa::method_name(&key, &tys) };
             (op.clone(), op)
         } else {
@@ -2381,6 +2459,8 @@ impl Lowerer {
         b.line("store 0: i64, k");
         b.line("r: ptr = addr __running");
         b.line("store 0: i64, r");
+        b.line("o: ptr = addr __out_n");
+        b.line("store 0: i64, o");
         // the real clock starts at the reset (log 77)
         if self.clock == super::store::Clock::Real {
             b.line("c0: i64 = __counter()");
@@ -2418,6 +2498,11 @@ impl Lowerer {
             self.type_lines.push(String::new());
             self.type_lines.push("; the context: one field per feature-scope variable — name: scope, merge (feature)".into());
             for f in &self.fvars {
+                // the device is declared and has no storage (question 45)
+                if self.device_var(f) {
+                    self.type_lines.push(format!(";   {}: the output device, which stores nothing ({})", f.name, f.feature));
+                    continue;
+                }
                 self.type_lines.push(format!(";   {}: {}, {} ({})", f.name, f.scope, f.merge, f.feature));
                 fields.push(format!("{}: {}", f.name, f.ty.ir()));
             }
@@ -2432,6 +2517,9 @@ impl Lowerer {
                     let Decl::Var(v) = d else { continue };
                     b.file = feat.code.file.clone();
                     self.cur = feat.name.clone();
+                    if self.fvar(&v.name).is_some_and(|f| self.device_var(f)) {
+                        continue;
+                    }
                     let ty = self.fvar(&v.name).unwrap().ty.clone();
                     let val = match &v.init {
                         _ if matches!(ty, Ty::Stream(_)) => {
@@ -2520,6 +2608,9 @@ impl Lowerer {
             writeln!(self.out, "\n; after the case's context is set: the nodes run\nfn __zero_start()\n    __run()\n    ret").unwrap();
         }
         for f in &self.fvars {
+            if self.device_var(f) {
+                continue;
+            }
             let t = f.ty.ir();
             writeln!(self.out, "\nfn __get_{}() -> {}\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    v: {} = get c, {}\n    ret v", f.name, t, t, f.name).unwrap();
             writeln!(self.out, "\nfn __set_{}(v: {})\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    c2: __ctx = set c, {}, v\n    store c2, p\n    ret", f.name, t, f.name).unwrap();
@@ -2832,6 +2923,11 @@ impl Lowerer {
     fn read_fvar(&mut self, name: &str, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
         let f = self.fvar(name).unwrap().clone();
         self.reach(name, &f.feature, &b.file, line)?;
+        // the device has no storage and so no value (question 45): the
+        // push sites know it by name, and every other use is refused
+        if self.device_var(&f) {
+            return Ok(Val { text: "__device".into(), ty: f.ty, literal: false });
+        }
         let out = name_for(dst, &f.ty, b);
         b.line(&format!("{}: {} = __get_{}()", out, f.ty.ir(), name));
         Ok(Val { text: out, ty: f.ty, literal: false })
@@ -2928,6 +3024,46 @@ impl Lowerer {
                 }
             }
             b.line(format!("ret {}", rets.join(", ")).trim_end());
+        }
+        self.out.push_str(&b.out);
+        self.lower_device_fn(f, &info, file)
+    }
+
+    /// The device copy of a `<<` method (log 87, questions 44 and 45).
+    /// `out$` is not a stream: a push into it is the platform's write,
+    /// and inside `on (char o$) << (int x)` the front end cannot see
+    /// which stream `o$` is. So the method is lowered a second time with
+    /// its stream parameter dropped — `o$` is the device there, every
+    /// push into it is the write, and a `<<` it calls in turn is that
+    /// method's device copy — and the call site chooses the copy by
+    /// whether its stream argument is the device. The prune (log 70)
+    /// keeps only the copies a store reaches
+    fn lower_device_fn(&mut self, f: &FnDecl, info: &FnInfo, file: &str) -> Result<(), Error> {
+        let Some(dev) = self.device_fns.get(&info.ir).cloned() else { return Ok(()) };
+        self.regular_locals.clear();
+        let (sname, sty) = info.params[0].clone();
+        let mut b = Body {
+            out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(),
+            file: file.to_string(), depth: 0, loops: Vec::new(), kind: BodyKind::Fn, func: Some(info.clone()),
+            below: None, product_bound: self.product.get(&info.key).copied(),
+        };
+        b.vars.insert(sname.clone(), Var { ir: "__device".into(), ty: sty, set: true, loop_depth: 0 });
+        let mut sig = format!("fn {}(", dev);
+        for (i, (n, t)) in info.params.iter().skip(1).enumerate() {
+            if i > 0 {
+                sig.push_str(", ");
+            }
+            write!(sig, "{}: {}", n, t.ir()).unwrap();
+            b.define(n, t.clone());
+        }
+        sig.push(')');
+        writeln!(self.out, "; ... and the same over the output device, where a push is the platform's write (log 87)").unwrap();
+        writeln!(self.out, "{}", sig).unwrap();
+        self.device_param = Some(sname);
+        let terminated = self.lower_block(&f.body, &mut b);
+        self.device_param = None;
+        if !terminated? {
+            b.line("ret");
         }
         self.out.push_str(&b.out);
         Ok(())
@@ -3547,7 +3683,7 @@ impl Lowerer {
     /// the empty string, a struct of its defaults
     fn zero_val(&mut self, t: &Ty, b: &mut Body) -> Val {
         match t {
-            Ty::Bool | Ty::Num(_) | Ty::Enum(_) => Val { text: "0".into(), ty: t.clone(), literal: true },
+            Ty::Bool | Ty::Num(_) | Ty::Enum(_) | Ty::Char => Val { text: "0".into(), ty: t.clone(), literal: true },
             Ty::Struct(name) => self.construct(name, &[], b, None, 0).unwrap_or(Val { text: "0".into(), ty: t.clone(), literal: true }),
             // an empty stream
             Ty::Stream(_) => {
@@ -4649,6 +4785,11 @@ impl Lowerer {
         let equality = cmp && matches!(op, "==" | "!=");
         match &lv.ty {
             Ty::Num(_) => {}
+            // a char is a character, not a small number (question 44):
+            // it is ordered, so the lexer may write `c <= 32`, and it
+            // is not added to
+            Ty::Char if cmp => {}
+            Ty::Char => return Err(lex::error(&file, line, format!("'{}' on a char: a char is compared, not computed with; convert it, `int(c)`", op))),
             Ty::Bool | Ty::Enum(_) if equality => {}
             Ty::Enum(_) => return Err(lex::error(&file, line, format!("'{}' on an enumeration: only '==' and '!=' apply", op))),
             t => return Err(lex::error(&file, line, format!("'{}' takes numbers, not a {}", op, t.ir()))),
@@ -4816,7 +4957,7 @@ impl Lowerer {
     /// those, the last as a generated struct of one stream per field
     fn stream_ty(&mut self, elem: Ty, file: &str, line: usize) -> Result<Ty, Error> {
         match &elem {
-            Ty::Num(_) | Ty::Enum(_) => {}
+            Ty::Num(_) | Ty::Enum(_) | Ty::Char => {}
             Ty::Struct(name) => {
                 let Some(TypeInfo::Struct(fields)) = self.types.get(name) else { unreachable!() };
                 let mut ir = Vec::new();
@@ -4869,6 +5010,27 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
     /// and nothing in the store asks a time of it — so its only reader
     /// is the platform, its ring never slides, and a push into it is a
     /// store and a count
+    /// Is the name the output device (zero.md section 15, question 45)?
+    /// The platform feature's own `out$`, not shadowed here — or, inside
+    /// the device copy of a `<<` method, that method's stream
+    /// parameter. A push into it is the platform's write and stores
+    /// nothing, so it has no ring, no field in the context and no node
+    fn device(&self, name: &str, b: &Body) -> bool {
+        if self.device_param.as_deref() == Some(name) {
+            return true;
+        }
+        if b.vars.contains_key(name) || name != "out" {
+            return false;
+        }
+        self.fvar(name).is_some_and(|v| v.feature == "platform" && matches!(v.ty, Ty::Stream(_)))
+    }
+
+    /// the same test on a feature-scope variable alone, for the context
+    /// and the accessors, which are emitted before any body
+    fn device_var(&self, f: &FVar) -> bool {
+        f.name == "out" && f.feature == "platform" && matches!(f.ty, Ty::Stream(_))
+    }
+
     fn system(&self, name: &str, b: &Body) -> bool {
         if b.vars.contains_key(name) || (name != "out" && name != "in") {
             return false;
@@ -4976,6 +5138,13 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
     /// a task's own output sleeps to its next tick after (log 25)
     fn emit_push(&mut self, name: &str, s: &Val, v: &Val, b: &mut Body) {
         let regular = if b.vars.contains_key(name) { self.regular_locals.contains(name) } else { self.regular.contains(name) };
+        if self.device(name, b) {
+            // the device stores nothing (question 45): the push is the
+            // platform's write
+            let v = b.materialize(v);
+            b.line(&format!("__out_ch({})", v.text));
+            return;
+        }
         if self.system(name, b) && self.stream_fields(&s.ty).is_none() {
             // a system stream's only reader is the platform (log 84):
             // the ring never slides, so the push is a store and a count
@@ -5055,8 +5224,8 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
             }
             // a string literal pushed into a stream of bytes: its bytes,
             // straight from `data`, with no ring for the literal (log 57)
-            if let (ExprKind::Str(text), Ty::Num(u8)) = (&e.kind, &elem) {
-                if u8 == "u8" {
+            if let ExprKind::Str(text) = &e.kind {
+                if elem.ir() == "u8" {
                     if cond.is_some() && last {
                         return Err(lex::error(&file, e.line, "a block is pushed once: `while` repeats an item"));
                     }
@@ -5141,7 +5310,12 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
                 v.ty = if is_concrete(p) { p.clone() } else if v.text.contains('.') { float_ty() } else { int_ty() };
             }
             let v = b.materialize(&v);
-            b.line(&format!("{}({}, {})", info.ir, s.text, v.text));
+            match self.device_fns.get(&info.ir) {
+                // the device copy (log 87): `o$` is not a value there,
+                // so the call takes the item alone
+                Some(dev) if self.device(name, b) => b.line(&format!("{}({})", dev, v.text)),
+                _ => b.line(&format!("{}({}, {})", info.ir, s.text, v.text)),
+            }
             return Ok(());
         }
         if v.literal && fits_literal(&v, &elem) {
@@ -5175,20 +5349,21 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
                 }
                 Ok(())
             }
-            _ => Err(lex::error(&file, line, format!("'{}$' holds {} but the item is {}{}", name, elem.ir(), zero_ty(&v.ty), if elem.ir() == "u8" { ": no `<<` method takes it" } else { "" }))),
+            _ => Err(lex::error(&file, line, format!("'{}$' holds {} but the item is {}{}", name, zero_ty(&elem), zero_ty(&v.ty), if elem == Ty::Char { ": no `<<` method takes it" } else { "" }))),
         }
     }
 
     /// a string's bytes into a stream of bytes, straight from `data` (log
     /// 57): as one block, or as the byte itself when it is one (log 69)
     fn push_text(&mut self, name: &str, s: &Val, text: &str, b: &mut Body) {
+        let elem = s.ty.elem().cloned().unwrap_or(Ty::Char);
         if text.len() == 1 {
-            let v = Val { text: text.as_bytes()[0].to_string(), ty: Ty::Num("u8".into()), literal: true };
+            let v = Val { text: text.as_bytes()[0].to_string(), ty: elem, literal: true };
             self.emit_push(name, s, &v, b);
             return;
         }
         let (view, n) = self.str_view(text, b);
-        self.push_view(name, s, &Ty::Num("u8".into()), &view, &n, b);
+        self.push_view(name, s, &elem, &view, &n, b);
     }
 
     /// the `n` items of a view pushed as one block (log 69) — one by one
@@ -5196,6 +5371,10 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
     /// per item
     fn push_view(&mut self, name: &str, s: &Val, elem: &Ty, view: &str, n: &str, b: &mut Body) {
         let own = matches!(&b.kind, BodyKind::Task { out, .. } if out.as_deref() == Some(name));
+        if self.device(name, b) {
+            b.line(&format!("__out_block({})", view));
+            return;
+        }
         if !own && self.stream_fields(&s.ty).is_none() {
             let regular = if b.vars.contains_key(name) { self.regular_locals.contains(name) } else { self.regular.contains(name) };
             let word = if self.system(name, b) { "push_plain" } else if regular { "push" } else { "__push" };
@@ -5521,9 +5700,16 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
             }
             ExprKind::Str(s) => {
                 // a string literal: its bytes in `data`, copied into a
-                // stream of bytes each time it is evaluated (log 38)
+                // stream of bytes each time it is evaluated (log 38).
+                // It is a `char$` (question 44) unless the context is a
+                // stream of another byte type: the literal is bytes, and
+                // its element follows the stream it goes into (log 87)
+                let elem = match want.and_then(Ty::elem) {
+                    Some(e) if e.ir() == "u8" => e.clone(),
+                    _ => Ty::Char,
+                };
                 let (v, _) = self.str_view(s, b);
-                Ok(self.copy_view(&Ty::Num("u8".into()), &v, b, dst))
+                Ok(self.copy_view(&elem, &v, b, dst))
             }
             ExprKind::Name(n) => match b.vars.get(n) {
                 Some(v) if v.set => Ok(Val { text: v.ir.clone(), ty: v.ty.clone(), literal: false }),
@@ -5684,11 +5870,20 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
                                     return Err(lex::error(&file, e.line, format!("a conversion is {}(x)", w)));
                                 };
                                 let v = self.lower_expr(&a.value, None, b, None)?;
-                                if !matches!(v.ty, Ty::Num(_) | Ty::Bool) || v.ty == Ty::Bool && to == Ty::Bool {
-                                    return Err(lex::error(&file, e.line, format!("{}(x) converts a number, not a {}", w, v.ty.ir())));
+                                if !matches!(v.ty, Ty::Num(_) | Ty::Bool | Ty::Char) || v.ty == Ty::Bool && to == Ty::Bool {
+                                    return Err(lex::error(&file, e.line, format!("{}(x) converts a number, not a {}", w, zero_ty(&v.ty))));
                                 }
                                 if to == Ty::Bool {
                                     return Err(lex::error(&file, e.line, "a bool is a comparison, not a conversion"));
+                                }
+                                // a conversion the IR cannot see is a
+                                // renaming: `uint8(c)` on a char is the
+                                // byte it already holds, under the type
+                                // asked for. A literal keeps its `conv`,
+                                // since a literal's type is what picks a
+                                // method at the call around it
+                                if !v.literal && to.ir() == v.ty.ir() {
+                                    return Ok(Val { ty: to, ..v });
                                 }
                                 let v = b.materialize(&v);
                                 let name = name_for(dst, &to, b);
@@ -6166,6 +6361,8 @@ fn task_elem(info: &FnInfo) -> String {
 fn fits_literal(v: &Val, ty: &Ty) -> bool {
     match (&v.ty, ty) {
         (Ty::Num(_), Ty::Num(t)) => !(v.text.contains('.') && is_integer(t)),
+        // a whole number literal is a character's code point
+        (Ty::Num(_), Ty::Char) => !v.text.contains('.'),
         (a, b) => a == b,
     }
 }

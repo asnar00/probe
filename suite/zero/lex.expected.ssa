@@ -12,21 +12,34 @@ data __clock: array(i64, 1)
 ; the scheduler is running: a push from inside a task does not start it again
 data __running: array(i64, 1)
 
-; the output stream `out$` (section 15, log 57), read back by the runner
-; through the platform feature's own reader, which nothing advances:
-; how many bytes it holds, and each one
+; the output device (section 15, question 45, log 87): `out$` looks like
+; a stream, but a push into it writes a character to the place and
+; stores nothing, so these two are the platform's write — one character,
+; and a block of them. There is no capacity, because there is no
+; storage. Under the runner the place is the capture below, which
+; `__out_len` and `__out_byte` read back; a real platform's body per
+; kind of place — a UART store on the boards, a write to the console
+; under an OS, the browser's log — is a `platform <target>` block on
+; each of these, beside the `ir` body, and is milestone 1's
+data __out: array(u8, 65536)
+data __out_n: array(i64, 1)
+
+; what the device was given, read back by the test runner: the capture
+; is the runner's, not the store's
 fn __out_len() -> i64
-    s: u8$ = __get_out()
-    n: i64 = count(s)
+    q: ptr = addr __out_n
+    n: i64 = load q
     ret n
 
 fn __out_byte(i: i64) -> u8
-    s: u8$ = __get_out()
-    b: u8 = peek(s, i)
+    p: ptr = addr __out
+    b: u8 = load p, i, 1
     ret b
 
-; the input stream `in$` (section 15, log 62): one byte the platform
-; pushes, which under the runner is a case's `with in "text"`
+; the input device (section 15, log 62, question 45): a character
+; arriving, which under the runner is a case's `with in "text"`. Its
+; ring is the device's own lookahead, sized by the runner, which a
+; consumer wired to `in$` reads with `peek`, `advance` and `count`
 fn __in_ch(c: u8)
     s: u8$ = __get_in()
     push_plain(s, c)
@@ -59,30 +72,23 @@ type __s_token = struct
 ; the context: one field per feature-scope variable — name: scope, merge (feature)
 ;   __enabled_platform: user, last (platform)
 ;   __enabled_lex: user, last (lex)
-;   out: user, last (platform)
+;   out: the output device, which stores nothing (platform)
 ;   in: user, last (platform)
 ;   t: user, last (lex)
-;   __node1_c: node, last (platform)
-;   __node1_c_seen: node, last (platform)
-;   __node1_fin: node, last (platform)
-;   __node2_c: node, last (lex)
-;   __node2_c_seen: node, last (lex)
-;   __node2_fin: node, last (lex)
+;   __node1_c: node, last (lex)
+;   __node1_c_seen: node, last (lex)
+;   __node1_fin: node, last (lex)
 type __ctx = struct
     __enabled_platform: u1
     __enabled_lex: u1
-    out: u8$
     in: u8$
     t: __s_token
     __node1_c: u8$
     __node1_c_seen: i64
     __node1_fin: u1
-    __node2_c: u8$
-    __node2_c_seen: i64
-    __node2_fin: u1
 
 data __ctx_mem: array(__ctx, 1)
-data __s6 = "2;\n"
+data __s11 = "2;\n"
 
 ; before every case: the arena emptied, the variables at their initial values
 fn __zero_reset()
@@ -93,27 +99,22 @@ fn __zero_reset()
     store 0: i64, k
     r: ptr = addr __running
     store 0: i64, r
-    _1: u8$ = __regular_u8(1000000, 4096)
-    _2: u8$ = __regular_u8(1000000, 512)
+    o: ptr = addr __out_n
+    store 0: i64, o
+    _1: u8$ = __regular_u8(1000000, 512)
+    _2: int$ = __regular_int(1000000, 64)
     _3: int$ = __regular_int(1000000, 64)
     _4: int$ = __regular_int(1000000, 64)
-    _5: int$ = __regular_int(1000000, 64)
-    _6: __s_token = pack _3, _4, _5
-    _7: __ctx = pack 1, 1, _1, _2, _6, _1, 0, 0, _2, 0, 0
+    _5: __s_token = pack _2, _3, _4
+    _6: __ctx = pack 1, 1, _1, _5, _1, 0, 0
     p: ptr = addr __ctx_mem
-    store _7, p
+    store _6, p
     ret
 
 ; after the case's context is set: the nodes run
 fn __zero_start()
     __run()
     ret
-
-fn __get___enabled_platform() -> u1
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u1 = get c, __enabled_platform
-    ret v
 
 fn __set___enabled_platform(v: u1)
     p: ptr = addr __ctx_mem
@@ -134,12 +135,6 @@ fn __set___enabled_lex(v: u1)
     c2: __ctx = set c, __enabled_lex, v
     store c2, p
     ret
-
-fn __get_out() -> u8$
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u8$ = get c, out
-    ret v
 
 fn __get_in() -> u8$
     p: ptr = addr __ctx_mem
@@ -191,55 +186,11 @@ fn __set___node1_fin(v: u1)
     c2: __ctx = set c, __node1_fin, v
     store c2, p
     ret
-
-fn __get___node2_c() -> u8$
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u8$ = get c, __node2_c
-    ret v
-
-fn __set___node2_c(v: u8$)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node2_c, v
-    store c2, p
-    ret
-
-fn __get___node2_c_seen() -> i64
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: i64 = get c, __node2_c_seen
-    ret v
-
-fn __set___node2_c_seen(v: i64)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node2_c_seen, v
-    store c2, p
-    ret
-
-fn __get___node2_fin() -> u1
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u1 = get c, __node2_fin
-    ret v
-
-fn __set___node2_fin(v: u1)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node2_fin, v
-    store c2, p
-    ret
-
-; a feature's effective state: its own enabled and its ancestors', read by every gate
-fn __on_platform() -> u1
-    own: u1 = __get___enabled_platform()
-    ret own
 fn __on_lex() -> u1
     own: u1 = __get___enabled_lex()
     ret own
 
-; node 1: write (out$) — run when an input has more than the node has seen, or has ended and the node has not run since
+; node 1: token t$ = lex (in$) — run when an input has more than the node has seen, or has ended and the node has not run since
 fn __node1() -> u1
     fin: u1 = __get___node1_fin()
     notfin: u1 = xor fin, 1
@@ -250,41 +201,16 @@ fn __node1() -> u1
     _5: u1 = ended(_1)
     _6: u1 = and _5, notfin
     _7: u1 = or _4, _6
-    on: u1 = __on_platform()
-    due: u1 = and _7, on
-    ran: u1 = if due
-        _8: u8$ = write(_1, 0: i64)
-        __set___node1_c(_8)
-        _9: i64 = received(_8)
-        __set___node1_c_seen(_9)
-        _10: u1 = ended(_8)
-        __set___node1_fin(_10)
-        yield 1
-    else
-        yield 0
-    ret ran
-
-; node 2: token t$ = lex (in$) — run when an input has more than the node has seen, or has ended and the node has not run since
-fn __node2() -> u1
-    fin: u1 = __get___node2_fin()
-    notfin: u1 = xor fin, 1
-    _1: u8$ = __get___node2_c()
-    _2: i64 = received(_1)
-    _3: i64 = __get___node2_c_seen()
-    _4: u1 = cmp.gt _2, _3
-    _5: u1 = ended(_1)
-    _6: u1 = and _5, notfin
-    _7: u1 = or _4, _6
     on: u1 = __on_lex()
     due: u1 = and _7, on
     ran: u1 = if due
         _8: __s_token = __get_t()
         _9: u8$ = lex(_8, _1, 0: i64)
-        __set___node2_c(_9)
+        __set___node1_c(_9)
         _10: i64 = received(_9)
-        __set___node2_c_seen(_10)
+        __set___node1_c_seen(_10)
         _11: u1 = ended(_9)
-        __set___node2_fin(_11)
+        __set___node1_fin(_11)
         yield 1
     else
         yield 0
@@ -298,7 +224,6 @@ fn __run()
     if idle
         store 1: i64, p
         r1: u1 = __node1()
-        r2: u1 = __node2()
         store 0: i64, p
     ret
 fn __run_in()
@@ -307,15 +232,11 @@ fn __run_in()
     idle: u1 = cmp.eq busy, 0
     if idle
         store 1: i64, p
-        r2: u1 = __node2()
+        r1: u1 = __node1()
         store 0: i64, p
     ret
 
 ; feature platform (layer platform)
-fn write(c: u8$, __hz: i64) -> u8$
-    n: i64 = count(c)
-    c2: u8$ = advance(c, n)
-    ret c2
 
 ; feature lex (layer runtime)
 fn kind_of(c: u8) -> int
@@ -413,8 +334,8 @@ fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$
     ret c_6
 fn arrive_again()
     _1: u8$ = __get_in()
-    _2: ptr = addr __s6
-    _3: i64 = len __s6
+    _2: ptr = addr __s11
+    _3: i64 = len __s11
     _4: u8[] = __str(_2, _3)
     push_plain(_1, _4)
     __run_in()

@@ -4,7 +4,7 @@
 layer: runtime
 
 > (suite) 2026-09-08T10:00:00
-Plan item 3 of milestone 0: section 4 of zero.md — abstract and concrete numbers, `bool`, structs with defaults and construction by position and name, field access, enumerations, `string` as `uint8$` with literals. Vectors and packs are not in this milestone.
+Plan item 3 of milestone 0: section 4 of zero.md — abstract and concrete numbers, `bool`, structs with defaults and construction by position and name, field access, enumerations, `string` as `char$` with literals. Vectors and packs are not in this milestone.
 
 ## overview
 `Vec` is three floats side by side with a default of zero each; it is built by position, by name, or from nothing, and `+` and `*` on it are functions the feature defines. `Tristate` is an enumeration of three cases. A `string` is a sequence of bytes, printed as it is.
@@ -28,7 +28,7 @@ Plan item 3 of milestone 0: section 4 of zero.md — abstract and concrete numbe
 - A struct's fields are concrete from its declaration: an `int` field is the target's width.
 - A field missing from a construction takes its declared default, or zero.
 - An enumeration compares with `==` and `!=` only; a case is named bare when the name is unique, or as `Type.case`.
-- A conversion is a type applied to a value: `int(x)`, `uint8(x)`. It is the explicit form, needed to narrow.
+- A conversion is a type applied to a value: `int(x)`, `uint8(x)`, `char(x)`. It is the explicit form, needed to narrow. A `char` is a character, not a small number (question 44): it is compared, converted, and never added to.
 - Conversions are implied towards the type that holds the operands best (questions 1 and 21). Two concrete numbers in an operator compute in the type that holds every value of both exactly where one exists: the wider of two signed or two unsigned widths, a signed type wide enough for an unsigned one, the wider float, and for a float with an integer the float that holds the integer exactly (`float32` holds `int16`, `float64` holds `int32`). Where none does, the widest of the family: an `int64` or wider with any float computes in `float64` and rounds above 2^53; arithmetic is modulo its range, and the writer of the code is expected to know it. Where the expression's result type is a concrete number both widen to, the operands are converted to it first. A value widens on assignment, into a field, into a parameter, and into the type an abstract name binds to, which is the widest of what its arguments bring. A narrowing, a conversion to a type where a wider one holds the pair better (`float32` from an `int32`, since `float64` holds both), and any conversion touching an abstract type (`int` has no width in the source) are refused naming `T(x)`.
 - A conversion that can lose bits is implied but noted: the emitted IR carries `; int64 into float64: rounded above 2^53` above the `conv`, the warning the ruling allows.
 
