@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `char` is a type of its own, and `out$` is a device — `96f1595` · 2026-09-10
+
+```
+fn __out_ch(c: u8)
+    q: ptr = addr __out_n
+    n: i64 = load q
+    p: ptr = addr __out
+    store c, p, n, 1
+```
+
+The parity pass, hop 20 (fm3 log 87, questions 44 and 45). Two of ash's rulings, which turned out to be one line of code. `uint8$ << 42` is ambiguous between a serialisation and human-readable text, so zero gains **`char`**, distinct from `uint8` and a `u8` in the IR: `string` is `char$`, a string literal is `char$`, and a char is compared and converted and never computed with — `c <= 32` is the lexer's line, `int(c)`, `uint8(c)`, `char(48 + d)` cross between. And **`out$` is not a buffer**: it looks like a stream, but pushing to it writes a character to the place and stores nothing, so a push is the platform's write (above, with `__out_block` for a block; an `ir` body now, a body per kind of place in milestone 1), with no ring, no capacity, no context field, no `write(out$)` sink and no scheduler node. Under the runner the place is the test capture that `__out_len` and `__out_byte` read. Inside `on (char o$) << (int x)` the front end cannot see which stream `o$` is, so each such method is lowered twice — over a stream, and over the device where every push into `o$` is the write — and the call site chooses. hello's `run` **2 597 → 1 683** SSA on 428 → 352 lines against the oracle's 1 165 on 174, 2.2× to **1.44×**; static 2 511 → 1 621; lex's case 1 475 → 1 397. All five paths, `probe test` 980/980, zero 481/481 on the four CPU paths and 464/464 on air, cargo test 111.
+
 ### stream: the ring's base moves to the read side — `41a5aff` · 2026-09-10
 
 ```
