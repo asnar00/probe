@@ -617,6 +617,19 @@ fn __push(s: any$, block: any[])
     push(s, block)
     ret
 "#;
+/// ... and where nothing in the store keeps history either, every
+/// stream is a queue (log 89, question 47), so a push through a
+/// parameter is the queue's too
+const PUSH_QUEUE: &str = r#"
+; a push into any stream: nothing in this store keeps history, so
+; every stream is a queue (log 89)
+fn __push(s: any$, v: any)
+    push_queue(s, v)
+    ret
+fn __push(s: any$, block: any[])
+    push_queue(s, block)
+    ret
+"#;
 
 /// a ring's capacity, or the item count where it is larger (log 38):
 /// the front end's number until residency is computed (section 9, log
@@ -631,6 +644,16 @@ const IN_BYTES: usize = 512;
 
 /// the clock of a stream without a rate: microsecond ticks
 const CLOCK_HZ: i64 = 1_000_000;
+
+/// the copy maker's name for a storage word: `__copy_T` for a ring,
+/// `__copy_timed_T` for one that stamps, `__copy_queue_T` for a queue
+fn copy_infix(maker: &str) -> &'static str {
+    match maker {
+        "queue" => "queue_",
+        "stream" => "timed_",
+        _ => "",
+    }
+}
 
 pub fn mangle(parts: &[NamePart]) -> String {
     let words: Vec<String> = parts
@@ -946,7 +969,7 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
+    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -992,6 +1015,15 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     }
     // is any task wired at a rate (log 83)? looked for before any body
     // is lowered, since a task's body serves every wiring
+    for f in &store.features {
+        for d in &f.code.decls {
+            let Decl::Var(v) = d else { continue };
+            if matches!(&v.init, Some(Init::Value(e)) if is_rated_wiring(e)) {
+                l.timed.insert(v.name.clone());
+                l.kept.insert(v.name.clone());
+            }
+        }
+    }
     l.any_rated_wiring = store.features.iter().any(|f| {
         f.code.decls.iter().any(|d| match d {
             Decl::Var(v) => matches!(&v.init, Some(Init::Value(e)) if is_rated_wiring(e)),
@@ -1006,10 +1038,20 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         for d in &f.code.decls {
             if let Decl::Fn(fd) = d {
                 let params: Vec<String> = fd.params().filter(|p| p.seq).map(|p| p.name.clone()).collect();
-                time_words(&fd.body, &params, &mut l.timed, &mut l.timed_all);
+                let mut w = Words { timed: std::mem::take(&mut l.timed), timed_all: l.timed_all, kept: std::mem::take(&mut l.kept), kept_all: l.kept_all, read: std::mem::take(&mut l.read_by_name) };
+                time_words(&fd.body, &params, &mut w);
+                l.timed = w.timed;
+                l.timed_all = w.timed_all;
+                l.kept = w.kept;
+                l.kept_all = w.kept_all;
+                l.read_by_name = w.read;
             }
         }
     }
+    // a store nothing keeps history in is all queues (log 89): every
+    // read may take the queue's word, which the push has already
+    // proved the residency for
+    l.all_queues = !l.kept_all && !l.timed_all && l.kept.is_empty() && l.timed.is_empty();
     // the product's settings name the store's functions (log 41)
     for (words, n) in &store.product {
         let key = words.join("_");
@@ -1095,18 +1137,25 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     if !l.rings.is_empty() {
         writeln!(l.out, "\n; a stream's ring, carved from the arena: cap items resident ({} unless more are), twice that in slots since the ring mirrors each item (log 65), and a tick per item unless regular; a reader's view at its start", RING_ITEMS).unwrap();
     }
-    for (t, regular) in &l.rings {
-        let ticks = if *regular { String::new() } else { "    tbytes: i64 = mul slots, 8\n    ttotal: i64 = add tbytes, 16\n    tb: ptr = arena_alloc(a, ttotal)\n    buffer_init(tb, 8, slots)\n".to_string() };
-        let init = if *regular { "ring_regular(r, vb, hz, 1, 0)".to_string() } else { "ring_init(r, vb, tb, hz)".to_string() };
-        let name = if *regular { "regular" } else { "stream" };
-        writeln!(l.out, "fn __{}_{}(hz: i64, cap: i64) -> {}$\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, 64)\n    slots: i64 = mul cap, 2\n    sz: i64 = sizeof {}\n    bytes: i64 = mul sz, slots\n    total: i64 = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, slots)\n{}    {}\n    s: {}$ = stream r\n    ret s", name, t, t, t, ticks, init, t).unwrap();
+    for (t, maker) in &l.rings {
+        let ticks = if maker == "stream" { "    tbytes: i64 = mul slots, 8\n    ttotal: i64 = add tbytes, 16\n    tb: ptr = arena_alloc(a, ttotal)\n    buffer_init(tb, 8, slots)\n".to_string() } else { String::new() };
+        let init = match maker.as_str() {
+            "queue" => "ring_queue(r, vb, hz, cap)",
+            "regular" => "ring_regular(r, vb, hz, 1, 0)",
+            _ => "ring_init(r, vb, tb, hz)",
+        };
+        // a ring's buffer is twice its resident count, each item stored
+        // in both halves (log 65); a queue's is a plain run of slots
+        let (line, slots) = if maker == "queue" { ("", "cap") } else { ("    slots: i64 = mul cap, 2\n", "slots") };
+        writeln!(l.out, "fn __{}_{}(hz: i64, cap: i64) -> {}$\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, 64)\n{}    sz: i64 = sizeof {}\n    bytes: i64 = mul sz, {}\n    total: i64 = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, {})\n{}    {}\n    s: {}$ = stream r\n    ret s", maker, t, t, line, t, slots, slots, ticks, init, t).unwrap();
     }
     if !l.copies.is_empty() {
         writeln!(l.out, "\n; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give; stamped once where something asks its time (log 73)").unwrap();
     }
-    for (t, regular) in &l.copies {
-        if *regular {
-            writeln!(l.out, "fn __copy_{}(v: {}[]) -> {}$\n    n: i64 = len v\n    least: i64 = const {}\n    cap: i64 = max(n, least)\n    s: {}$ = __regular_{}({}, cap)\n    loop(i: i64 = 0)\n        done: u1 = cmp.ge i, n\n        if done\n            break\n        x: {} = load v, i\n        push s, x\n        i2: i64 = add i, 1\n        continue i2\n    ret s", t, t, t, RING_ITEMS, t, t, CLOCK_HZ, t).unwrap();
+    for (t, maker) in &l.copies {
+        let push = if maker == "queue" { "push_queue(s, x)" } else { "push s, x" };
+        if maker != "stream" {
+            writeln!(l.out, "fn __copy_{}{}(v: {}[]) -> {}$\n    n: i64 = len v\n    least: i64 = const {}\n    cap: i64 = max(n, least)\n    s: {}$ = __{}_{}({}, cap)\n    loop(i: i64 = 0)\n        done: u1 = cmp.ge i, n\n        if done\n            break\n        x: {} = load v, i\n        {}\n        i2: i64 = add i, 1\n        continue i2\n    ret s", copy_infix(maker), t, t, t, RING_ITEMS, t, maker, t, CLOCK_HZ, t, push).unwrap();
         } else {
             writeln!(l.out, "fn __copy_timed_{}(v: {}[]) -> {}$\n    n: i64 = len v\n    least: i64 = const {}\n    cap: i64 = max(n, least)\n    s: {}$ = __stream_{}({}, cap)\n    t: i64 = __now()\n    loop(i: i64 = 0)\n        done: u1 = cmp.ge i, n\n        if done\n            break\n        x: {} = load v, i\n        push s, t, x\n        i2: i64 = add i, 1\n        continue i2\n    ret s", t, t, t, RING_ITEMS, t, t, CLOCK_HZ, t).unwrap();
         }
@@ -1114,10 +1163,16 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     let mut ir = String::new();
     writeln!(ir, "; lowered from the zero store {}", store.path.display()).unwrap();
     // the platform's push of an arriving byte is a system stream's too
-    ir.push_str(&if l.timed_all || l.timed.contains("in") { PRELUDE.to_string() } else { PRELUDE.replace("__push(s, c)", "push_plain(s, c)") });
+    ir.push_str(&if l.all_queues || l.queues.contains("in") { PRELUDE.replace("__push(s, c)", "push_queue(s, c)") } else { PRELUDE.to_string() });
     // the one function that differs per clock (log 77)
     ir.push_str(if store.clock == super::store::Clock::Real { REAL_CLOCK } else { VIRTUAL_CLOCK });
-    ir.push_str(if l.rings.iter().any(|(_, regular)| !regular) { PUSH_BRANCHED } else { PUSH_PLAIN });
+    ir.push_str(if l.rings.iter().any(|(_, m)| m == "stream") {
+        PUSH_BRANCHED
+    } else if l.all_queues {
+        PUSH_QUEUE
+    } else {
+        PUSH_PLAIN
+    });
     if !l.type_lines.is_empty() {
         ir.push('\n');
         for t in &l.type_lines {
@@ -1508,10 +1563,10 @@ struct Lowerer {
     fvars: Vec<FVar>,
     /// the element types views were copied into streams of: one
     /// `__copy_T` each
-    copies: std::collections::BTreeSet<(String, bool)>,
-    /// the rings made: element type and whether regular, one
-    /// `__stream_T` or `__regular_T` each
-    rings: std::collections::BTreeSet<(String, bool)>,
+    copies: std::collections::BTreeSet<(String, String)>,
+    /// the stores made: element type and the maker's word, one
+    /// `__stream_T`, `__regular_T` or `__queue_T` each (log 89)
+    rings: std::collections::BTreeSet<(String, String)>,
     /// inside a push chain: what the stream's own name reads as
     push_read: Option<(String, PushRead)>,
     /// the wirings at feature scope, in declaration order
@@ -1528,6 +1583,27 @@ struct Lowerer {
     /// unrated stream keeps its ticks, since any may be passed there
     timed: std::collections::HashSet<String>,
     timed_all: bool,
+    /// the streams the store keeps history in (log 89, question 47):
+    /// the names a history word or a time word is applied to anywhere,
+    /// and whether one is applied to a function's stream parameter, in
+    /// which case every stream keeps its history, since any may be
+    /// passed there. Every other stream is a queue: it holds an item
+    /// only until its reader has passed it, and the slot comes back
+    kept: std::collections::HashSet<String>,
+    kept_all: bool,
+    /// ... so nothing in the store is kept and every stream is a
+    /// queue, and every read takes the queue's word, which needs no
+    /// residency check. Where anything is kept, every read takes the
+    /// ring's word, which is right on a queue too
+    all_queues: bool,
+    /// the streams made as queues, feature-scope and, per body, local:
+    /// a push into one by name is `push_queue`
+    queues: std::collections::HashSet<String>,
+    queue_locals: std::collections::HashSet<String>,
+    /// the feature-scope streams a function reads items of by name
+    /// (question 48): a queue frees its slots only where the one
+    /// reader is a node the front end emits, so a stream named here,
+    /// or read by two nodes, keeps everything it is given
     /// does any wiring in the store carry `at (n hz)` (log 83)? If none
     /// does, every `__hz` is 0 and a task's pushes need no sleep
     any_rated_wiring: bool,
@@ -1567,6 +1643,10 @@ struct Lowerer {
     /// items one push statement from a plain function or the reset
     /// pushes into it, None when some statement's count is unknown
     arrivals: HashMap<String, Option<i64>>,
+    read_by_name: std::collections::HashSet<String>,
+    /// how many nodes read each feature-scope stream, counted before
+    /// the nodes are emitted (question 48)
+    node_reads: HashMap<String, usize>,
     /// the feature that declared each type
     type_feature: HashMap<String, String>,
     /// while `choose` tries a method: which round of literal typing
@@ -1801,8 +1881,8 @@ impl Lowerer {
     /// caller pushes the items with `push s, t, x`
     fn new_resident(&mut self, elem: &Ty, cap: &str, b: &mut Body, dst: Option<&str>) -> (Val, Option<String>) {
         let ty = Ty::Stream(Box::new(elem.clone()));
-        let regular = self.plain(dst, b);
-        self.rings.insert((elem.ir(), regular));
+        let maker = self.flavour(dst, b);
+        self.rings.insert((elem.ir(), maker.to_string()));
         let cap = match cap.parse::<usize>() {
             Ok(n) => n.max(RING_ITEMS).to_string(),
             Err(_) => {
@@ -1814,8 +1894,8 @@ impl Lowerer {
             }
         };
         let out = name_for(dst, &ty, b);
-        b.line(&format!("{}: {} = __{}_{}({}, {})", out, ty.ir(), if regular { "regular" } else { "stream" }, elem.ir(), CLOCK_HZ, cap));
-        if regular {
+        b.line(&format!("{}: {} = __{}_{}({}, {})", out, ty.ir(), maker, elem.ir(), CLOCK_HZ, cap));
+        if maker != "stream" {
             return (Val { text: out, ty, literal: false }, None);
         }
         let t = b.tmp();
@@ -1847,32 +1927,75 @@ impl Lowerer {
 
     fn copy_view(&mut self, elem: &Ty, view: &str, b: &mut Body, dst: Option<&str>) -> Val {
         let ty = Ty::Stream(Box::new(elem.clone()));
-        let regular = self.plain(dst, b);
-        self.copies.insert((elem.ir(), regular));
-        self.rings.insert((elem.ir(), regular));
+        let maker = self.flavour(dst, b);
+        self.copies.insert((elem.ir(), maker.to_string()));
+        self.rings.insert((elem.ir(), maker.to_string()));
         let out = name_for(dst, &ty, b);
-        b.line(&format!("{}: {} = __copy_{}{}({})", out, ty.ir(), if regular { "" } else { "timed_" }, elem.ir(), view));
+        b.line(&format!("{}: {} = __copy_{}{}({})", out, ty.ir(), copy_infix(maker), elem.ir(), view));
         Val { text: out, ty, literal: false }
     }
 
-    /// Is a stream plain (log 73)? Nothing in the store asks a time of
-    /// it — no time word on its name, none on any stream parameter —
-    /// so its ring keeps no ticks and it joins the `regular` set, its
-    /// pushes going straight to `push`
-    fn plain(&mut self, name: Option<&str>, b: &Body) -> bool {
-        if self.timed_all {
-            return false;
-        }
-        let Some(n) = name else { return true };
-        if self.timed.contains(n) {
-            return false;
-        }
-        if b.kind == BodyKind::Reset {
-            self.regular.insert(n.to_string());
+    /// What storage does a stream get (log 73, 89, questions 42, 47)?
+    /// The words in the store's text decide, and nothing else. Where
+    /// something asks a time of it — a time word on its name, or one
+    /// on any stream parameter — its ring keeps a tick per item
+    /// (`stream`). Where a history word keeps it but nothing times it,
+    /// it is a ring of values with a position (`regular`). Where
+    /// neither, it is a `queue`: it holds an item only until its
+    /// reader has passed it, and the slot comes back
+    fn flavour(&mut self, name: Option<&str>, b: &Body) -> &'static str {
+        // a queue's slots are a plain run, which the ring's words would
+        // read wrong, and a read through a function's stream parameter
+        // cannot be told apart — so a store that keeps anything keeps
+        // everything, and only an all-queue store has queues (log 89)
+        let kept = if !self.all_queues {
+            true
         } else {
-            self.regular_locals.insert(n.to_string());
+            match name {
+                Some(n) => self.kept.contains(n),
+                None => false,
+            }
+        };
+        let word = if !kept {
+            "queue"
+        } else if self.timed_all || name.is_some_and(|n| self.timed.contains(n)) {
+            "stream"
+        } else {
+            "regular"
+        };
+        if let Some(n) = name {
+            if word != "stream" {
+                let set = if b.kind == BodyKind::Reset { &mut self.regular } else { &mut self.regular_locals };
+                set.insert(n.to_string());
+            }
+            if word == "queue" {
+                let set = if b.kind == BodyKind::Reset { &mut self.queues } else { &mut self.queue_locals };
+                set.insert(n.to_string());
+            }
         }
-        true
+        word
+    }
+
+    /// May a node give a queue's slots back when it has run (log 89,
+    /// question 48)? The stream must be a queue, this node must be its
+    /// only node, and no function in the store may read its items by
+    /// name: `consumed` is one position, and several readers would
+    /// want the least of them, which no reader can compute alone
+    fn frees(&self, sname: &str) -> bool {
+        if !self.queues.contains(sname) || self.read_by_name.contains(sname) {
+            return false;
+        }
+        self.node_reads.get(sname) == Some(&1)
+    }
+
+    /// Is a push into this name the queue's (log 89)? Its ring was
+    /// made as a queue where the front end could see it, and in a
+    /// store nothing keeps history in every stream is one
+    fn is_queue(&self, name: &str, b: &Body) -> bool {
+        if self.all_queues {
+            return true;
+        }
+        if b.vars.contains_key(name) { self.queue_locals.contains(name) } else { self.queues.contains(name) }
     }
 
     /// a stream's unread items as one view, the reader not moved: what
@@ -1880,7 +2003,8 @@ impl Lowerer {
     fn unread_view(&mut self, s: &Val, b: &mut Body) -> String {
         let e = s.ty.elem().unwrap();
         let v = b.tmp();
-        b.line(&format!("{}: {}[] = unread({})", v, e.ir(), s.text));
+        let word = if self.all_queues { "unread_queue" } else { "unread" };
+        b.line(&format!("{}: {}[] = {}({})", v, e.ir(), word, s.text));
         v
     }
 
@@ -1899,7 +2023,13 @@ impl Lowerer {
     fn peek_at(&mut self, s: &Val, i: &str, b: &mut Body, dst: Option<&str>) -> Val {
         let elem = s.ty.elem().unwrap().clone();
         let out = name_for(dst, &elem, b);
-        b.line(&format!("{}: {} = peek {}, {}", out, elem.ir(), s.text, i));
+        if self.all_queues {
+            // a queue's reader needs no residency check: the push has
+            // already proved that nothing unread was overwritten (log 89)
+            b.line(&format!("{}: {} = peek_queue({}, {})", out, elem.ir(), s.text, i));
+        } else {
+            b.line(&format!("{}: {} = peek {}, {}", out, elem.ir(), s.text, i));
+        }
         Val { text: out, ty: elem, literal: false }
     }
 
@@ -2542,13 +2672,13 @@ impl Lowerer {
                                 // costs no clock stamp
                                 None if feat.name == "platform" && v.name == "out" => {
                                     self.regular.insert(v.name.clone());
-                                    self.make_stream_cap(&ty, CLOCK_HZ, true, OUT_BYTES, &mut b, None)
+                                    self.make_stream_cap(&ty, CLOCK_HZ, "regular", OUT_BYTES, &mut b, None)
                                 }
                                 // the platform's `in$` (log 62): a sparse ring of
                                 // IN_BYTES, a keyboard being sparse on the clock
                                 None if feat.name == "platform" && v.name == "in" => {
-                                    let regular = self.plain(Some("in"), &b);
-                                    self.make_stream_cap(&ty, CLOCK_HZ, regular, IN_BYTES, &mut b, None)
+                                    let maker = self.flavour(Some("in"), &b);
+                                    self.make_stream_cap(&ty, CLOCK_HZ, maker, IN_BYTES, &mut b, None)
                                 }
                                 _ => self.empty_stream(v, &ty, &mut b, None)?,
                             }
@@ -2625,6 +2755,15 @@ impl Lowerer {
                 None => writeln!(self.out, "fn __on_{}() -> u1\n    own: u1 = __get___enabled_{}()\n    ret own", f, f).unwrap(),
             }
         }
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for n in &self.nodes {
+            for a in &n.args {
+                if let ExprKind::Seq(x) = &a.kind {
+                    *counts.entry(x.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+        self.node_reads = counts;
         let nodes = std::mem::take(&mut self.nodes);
         for (k, node) in nodes.iter().enumerate() {
             self.emit_node(k + 1, node)?;
@@ -2789,7 +2928,11 @@ impl Lowerer {
                     pq
                 }
             });
-            readers.push((pname.clone(), r, pty.clone(), a.line));
+            let sname = match &a.kind {
+                ExprKind::Seq(n) => Some(n.clone()),
+                _ => None,
+            };
+            readers.push((pname.clone(), r, pty.clone(), sname));
         }
         let pending = pending.unwrap_or_else(|| "notfin".into());
         // a feature that is off runs no node; its readers keep their
@@ -2819,7 +2962,7 @@ impl Lowerer {
         ops.push(format!("{}: i64", node.hz));
         let call = format!("{}({})", node.info.ir, ops.join(", "));
         let mut moved = Vec::new();
-        for (_, _, ty, _) in &readers {
+        for (_, _, ty, _) in readers.iter() {
             let r2 = b.tmp();
             moved.push(format!("{}: {}", r2, ty.ir()));
         }
@@ -2829,9 +2972,14 @@ impl Lowerer {
             b.line(&format!("{} = {}", moved.join(", "), call));
         }
         let mut done: Option<String> = None;
-        for ((pname, _, _, _), m) in readers.iter().zip(&moved) {
+        for ((pname, _, _, sname), m) in readers.iter().zip(&moved) {
             let r2 = m.split(':').next().unwrap().to_string();
             b.line(&format!("__set___node{}_{}({})", k, pname, r2));
+            // the queue's slots come back where this node is its one
+            // reader (log 89, question 48)
+            if sname.as_deref().is_some_and(|n| self.frees(n)) {
+                b.line(&format!("free_queue({})", r2));
+            }
             let first = r2;
             let pushed = self.pushed_of(&first, &mut b);
             b.line(&format!("__set___node{}_{}_seen({})", k, pname, pushed));
@@ -3676,8 +3824,8 @@ impl Lowerer {
             Ty::Struct(name) => self.construct(name, &[], b, None, 0).unwrap_or(Val { text: "0".into(), ty: t.clone(), literal: true }),
             // an empty stream
             Ty::Stream(_) => {
-                let regular = self.plain(None, b);
-                self.make_stream(t, CLOCK_HZ, regular, b, None)
+                let maker = self.flavour(None, b);
+                self.make_stream(t, CLOCK_HZ, maker, b, None)
             }
             Ty::None => Val { text: String::new(), ty: Ty::None, literal: false },
         }
@@ -4491,9 +4639,11 @@ impl Lowerer {
                     return Ok(r);
                 }
                 let r = b.materialize(&r);
-                let regular = self.plain(dst, b);
+                let maker = self.flavour(dst, b);
                 let t = b.tmp();
-                if regular {
+                if maker == "queue" {
+                    b.line(&format!("push_queue({}, {})", c, r.text));
+                } else if maker == "regular" {
                     b.line(&format!("push {}, {}", c, r.text));
                 } else {
                     b.line(&format!("push {}, {}, {}", c, t, r.text));
@@ -4509,13 +4659,13 @@ impl Lowerer {
                 // the results' ring, before the loop: as many items as the
                 // longest input, stamped once
                 let rty = Ty::Stream(Box::new(r.ty.clone()));
-                self.rings.insert((r.ty.ir(), regular));
+                self.rings.insert((r.ty.ir(), maker.to_string()));
                 let least = b.tmp();
                 b.line(&format!("{}: i64 = const {}", least, RING_ITEMS));
                 let cap = b.tmp();
                 b.line(&format!("{}: i64 = max({}, {})", cap, n, least));
-                b.line(&format!("{}: {} = __{}_{}({}, {})", c, rty.ir(), if regular { "regular" } else { "stream" }, r.ty.ir(), CLOCK_HZ, cap));
-                if !regular {
+                b.line(&format!("{}: {} = __{}_{}({}, {})", c, rty.ir(), maker, r.ty.ir(), CLOCK_HZ, cap));
+                if maker == "stream" {
                     b.line(&format!("{}: i64 = __now()", t));
                 }
                 b.open_loop("", &format!("{}: i64 = 0", k), false);
@@ -4913,19 +5063,25 @@ impl Lowerer {
         };
         // at a rate, or plain because nothing asks its time (log 73):
         // a regular ring; else one that keeps a tick per item
-        let regular = if v.rate.is_some() {
+        let maker = if v.rate.is_some() {
             if b.kind == BodyKind::Reset {
-                self.regular.insert(v.name.clone());
                 self.rated.insert(v.name.clone());
                 self.rates.insert(v.name.clone(), hz);
-            } else {
-                self.regular_locals.insert(v.name.clone());
             }
-            true
+            // a rate paces the stream; it says nothing about history,
+            // so a rated stream nothing keeps is still a queue (log 89)
+            let m = self.flavour(Some(&v.name), b);
+            if m == "stream" {
+                let set = if b.kind == BodyKind::Reset { &mut self.regular } else { &mut self.regular_locals };
+                set.insert(v.name.clone());
+                "regular"
+            } else {
+                m
+            }
         } else {
-            self.plain(Some(&v.name), b)
+            self.flavour(Some(&v.name), b)
         };
-        Ok(self.make_stream(ty, hz, regular, b, dst))
+        Ok(self.make_stream(ty, hz, maker, b, dst))
     }
 
     /// `T x$ = e` (log 38): the stream the expression made, its items
@@ -4980,15 +5136,10 @@ impl Lowerer {
 
     /// a new empty stream: its ring in the arena, regular (at a rate) or
     /// with a tick per item, and a reader at its start
-    fn make_stream(&mut self, ty: &Ty, hz: i64, regular: bool, b: &mut Body, dst: Option<&str>) -> Val {
-        self.make_stream_cap(ty, hz, regular, RING_ITEMS, b, dst)
+    fn make_stream(&mut self, ty: &Ty, hz: i64, maker: &str, b: &mut Body, dst: Option<&str>) -> Val {
+        self.make_stream_cap(ty, hz, maker, RING_ITEMS, b, dst)
     }
 
-    /// Is the name a system stream (zero.md section 15, log 84)? One of
-    /// the platform feature's own `out$` and `in$`, not shadowed here,
-    /// and nothing in the store asks a time of it — so its only reader
-    /// is the platform, its ring never slides, and a push into it is a
-    /// store and a count
     /// Is the name the output device (zero.md section 15, question 45)?
     /// The platform feature's own `out$`, not shadowed here — or, inside
     /// the device copy of a `<<` method, that method's stream
@@ -5010,20 +5161,9 @@ impl Lowerer {
         f.name == "out" && f.feature == "platform" && matches!(f.ty, Ty::Stream(_))
     }
 
-    fn system(&self, name: &str, b: &Body) -> bool {
-        if b.vars.contains_key(name) || (name != "out" && name != "in") {
-            return false;
-        }
-        if self.timed_all || self.timed.contains(name) {
-            return false;
-        }
-        self.fvar(name).is_some_and(|v| v.feature == "platform" && matches!(v.ty, Ty::Stream(_)))
-    }
-
-    fn make_stream_cap(&mut self, ty: &Ty, hz: i64, regular: bool, cap: usize, b: &mut Body, dst: Option<&str>) -> Val {
+    fn make_stream_cap(&mut self, ty: &Ty, hz: i64, maker: &str, cap: usize, b: &mut Body, dst: Option<&str>) -> Val {
         let Ty::Stream(elem) = ty else { unreachable!() };
-        let maker = if regular { "regular" } else { "stream" };
-        self.rings.insert((elem.ir(), regular));
+        self.rings.insert((elem.ir(), maker.to_string()));
         let out = name_for(dst, ty, b);
         b.line(&format!("{}: {} = __{}_{}({}, {})", out, ty.ir(), maker, elem.ir(), hz, cap));
         Val { text: out, ty: ty.clone(), literal: false }
@@ -5057,7 +5197,11 @@ impl Lowerer {
     fn latest_of(&mut self, s: &Val, ty: &Ty, b: &mut Body, dst: Option<&str>) -> Result<Val, Error> {
         let Ty::Stream(elem) = ty else { unreachable!() };
         let out = name_for(dst, elem, b);
-        b.line(&format!("{}: {} = latest {}", out, elem.ir(), s.text));
+        if self.all_queues {
+            b.line(&format!("{}: {} = latest_queue({})", out, elem.ir(), s.text));
+        } else {
+            b.line(&format!("{}: {} = latest {}", out, elem.ir(), s.text));
+        }
         Ok(Val { text: out, ty: elem.as_ref().clone(), literal: false })
     }
 
@@ -5073,11 +5217,11 @@ impl Lowerer {
             b.line(&format!("__out_ch({})", v.text));
             return;
         }
-        if self.system(name, b) {
-            // a system stream's only reader is the platform (log 84):
-            // the ring never slides, so the push is a store and a count
+        if self.is_queue(name, b) {
+            // a queue holds an item only until its reader has passed
+            // it (log 89): the push checks that the slot is free
             let v = b.materialize(v);
-            b.line(&format!("push_plain({}, {})", s.text, v.text));
+            b.line(&format!("push_queue({}, {})", s.text, v.text));
         } else if regular {
             let v = b.materialize(v);
             b.line(&format!("push({}, {})", s.text, v.text));
@@ -5292,7 +5436,7 @@ impl Lowerer {
         }
         if !own {
             let regular = if b.vars.contains_key(name) { self.regular_locals.contains(name) } else { self.regular.contains(name) };
-            let word = if self.system(name, b) { "push_plain" } else if regular { "push" } else { "__push" };
+            let word = if self.is_queue(name, b) { "push_queue" } else if regular { "push" } else { "__push" };
             b.line(&format!("{}({}, {})", word, s.text, view));
             return;
         }
@@ -5440,7 +5584,8 @@ impl Lowerer {
                 let sty = ty.clone();
                 let ft = f.clone();
                 let eir = elem.ir();
-                let moved = |_: &mut Lowerer, out: &str, b: &mut Body| b.line(&format!("{}: {}[], {}: i64, {}: {} = frame({})", ft, eir, k, out, sty.ir(), s.text));
+                let word = if self.all_queues { "frame_queue" } else { "frame" };
+                let moved = |_: &mut Lowerer, out: &str, b: &mut Body| b.line(&format!("{}: {}[], {}: i64, {}: {} = {}({})", ft, eir, k, out, sty.ir(), word, s.text));
                 self.rebind_stream(&sname, &s, &moved, b, line)?;
                 Ok(Some(self.copy_view(&elem, &f, b, dst)))
             }
@@ -5991,33 +6136,44 @@ fn item_count(e: &Expr, bytes: bool) -> Option<i64> {
     }
 }
 
-fn time_words(stmts: &[Stmt], params: &[String], out: &mut std::collections::HashSet<String>, on_param: &mut bool) {
+/// what the words in a store's text say about its streams (log 73,
+/// 89): which are timed, which keep history, and which a function
+/// reads the items of by name
+struct Words {
+    timed: std::collections::HashSet<String>,
+    timed_all: bool,
+    kept: std::collections::HashSet<String>,
+    kept_all: bool,
+    read: std::collections::HashSet<String>,
+}
+
+fn time_words(stmts: &[Stmt], params: &[String], w: &mut Words) {
     for s in stmts {
         match s {
-            Stmt::Var(v) => time_words_init(v, params, out, on_param),
-            Stmt::Multi { value, .. } | Stmt::Assign { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => time_words_in(value, params, out, on_param),
+            Stmt::Var(v) => time_words_init(v, params, w),
+            Stmt::Multi { value, .. } | Stmt::Assign { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => time_words_in(value, params, w),
             Stmt::If { cond, then, els, .. } => {
-                time_words_in(cond, params, out, on_param);
-                time_words(then, params, out, on_param);
+                time_words_in(cond, params, w);
+                time_words(then, params, w);
                 if let Some(e) = els {
-                    time_words(e, params, out, on_param);
+                    time_words(e, params, w);
                 }
             }
             Stmt::Loop { vars, cond, body, .. } => {
                 for v in vars {
-                    time_words_init(v, params, out, on_param);
+                    time_words_init(v, params, w);
                 }
-                cond.iter().for_each(|e| time_words_in(e, params, out, on_param));
-                time_words(body, params, out, on_param);
+                cond.iter().for_each(|e| time_words_in(e, params, w));
+                time_words(body, params, w);
             }
             Stmt::For { seq, body, .. } => {
-                time_words_in(seq, params, out, on_param);
-                time_words(body, params, out, on_param);
+                time_words_in(seq, params, w);
+                time_words(body, params, w);
             }
-            Stmt::Continue { values, .. } => values.iter().for_each(|e| time_words_in(e, params, out, on_param)),
+            Stmt::Continue { values, .. } => values.iter().for_each(|e| time_words_in(e, params, w)),
             Stmt::Push { items, cond, .. } => {
-                items.iter().for_each(|e| time_words_in(e, params, out, on_param));
-                cond.iter().for_each(|e| time_words_in(e, params, out, on_param));
+                items.iter().for_each(|e| time_words_in(e, params, w));
+                cond.iter().for_each(|e| time_words_in(e, params, w));
             }
             Stmt::Break { .. } => {}
         }
@@ -6040,56 +6196,89 @@ fn wired_at_a_rate(stmts: &[Stmt]) -> bool {
     })
 }
 
-fn time_words_init(v: &super::syntax::VarDecl, params: &[String], out: &mut std::collections::HashSet<String>, on_param: &mut bool) {
+fn time_words_init(v: &super::syntax::VarDecl, params: &[String], w: &mut Words) {
     match &v.init {
-        Some(Init::Value(e)) => time_words_in(e, params, out, on_param),
-        Some(Init::Construct(args)) => args.iter().for_each(|a| time_words_in(&a.value, params, out, on_param)),
+        Some(Init::Value(e)) => time_words_in(e, params, w),
+        Some(Init::Construct(args)) => args.iter().for_each(|a| time_words_in(&a.value, params, w)),
         Some(Init::Pushes { items, cond }) => {
-            items.iter().for_each(|e| time_words_in(e, params, out, on_param));
-            cond.iter().for_each(|e| time_words_in(e, params, out, on_param));
+            items.iter().for_each(|e| time_words_in(e, params, w));
+            cond.iter().for_each(|e| time_words_in(e, params, w));
         }
         None => {}
     }
 }
 
-fn time_words_in(e: &Expr, params: &[String], out: &mut std::collections::HashSet<String>, on_param: &mut bool) {
-    let mut asked = |n: &String| {
-        if params.contains(n) {
-            *on_param = true;
-        }
-        out.insert(n.clone());
-    };
+/// the words that name a stream and read nothing of what is in it, so
+/// that a queue named only by these still frees its slots (question 48)
+fn no_item_read(parts: &[Part]) -> bool {
+    match parts {
+        [Part::Word(x), Part::Value(Expr { kind: ExprKind::Seq(_), .. })] => x == "count" || x == "ended" || x == "end" || x == "position",
+        [Part::Word(t), Part::Word(o), Part::Value(Expr { kind: ExprKind::Seq(_), .. })] => t == "time" && o == "of",
+        _ => false,
+    }
+}
+
+fn time_words_in(e: &Expr, params: &[String], w: &mut Words) {
     match &e.kind {
-        ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => time_words_in(x, params, out, on_param),
-        ExprKind::List(items) => items.iter().for_each(|x| time_words_in(x, params, out, on_param)),
+        // a stream named in an expression is read: `x$` is its latest
+        // item, `x$[i]` an item, `for x in x$` its unread ones
+        ExprKind::Seq(n) => {
+            w.read.insert(n.clone());
+        }
+        ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => time_words_in(x, params, w),
+        ExprKind::List(items) => items.iter().for_each(|x| time_words_in(x, params, w)),
         ExprKind::Range { from, to, .. } => {
-            time_words_in(from, params, out, on_param);
-            time_words_in(to, params, out, on_param);
+            time_words_in(from, params, w);
+            time_words_in(to, params, w);
         }
         ExprKind::Bin(_, l, r) | ExprKind::Index(l, r) => {
-            time_words_in(l, params, out, on_param);
-            time_words_in(r, params, out, on_param);
+            time_words_in(l, params, w);
+            time_words_in(r, params, w);
         }
         ExprKind::IfElse(c, t, f) => {
-            time_words_in(c, params, out, on_param);
-            time_words_in(t, params, out, on_param);
-            time_words_in(f, params, out, on_param);
+            time_words_in(c, params, w);
+            time_words_in(t, params, w);
+            time_words_in(f, params, w);
         }
         ExprKind::Phrase(parts) | ExprKind::Existing(parts) => {
             let is_rate = |a: &Part| match a {
                 Part::Args(list) if list.len() == 1 => matches!(&list[0].value.kind, ExprKind::Unit(_, u) if u == "hz" || u == "khz"),
                 _ => false,
             };
+            // a time word times the stream, and a timed stream keeps
+            // its history too; a history word keeps it without timing
+            // it (log 89, question 47). A word on a stream parameter
+            // marks the whole store, since any stream may be passed
+            // there and the bootstrap does not chase calls
+            let mut mark = |n: &String, timed: bool| {
+                if params.contains(n) {
+                    w.kept_all = true;
+                    if timed {
+                        w.timed_all = true;
+                    }
+                }
+                w.kept.insert(n.clone());
+                if timed {
+                    w.timed.insert(n.clone());
+                }
+            };
             match parts.as_slice() {
-                [Part::Value(Expr { kind: ExprKind::Seq(n), .. }), Part::Word(at), a] if at == "at" && !is_rate(a) => asked(n),
-                [Part::Value(Expr { kind: ExprKind::Seq(n), .. }), Part::Word(from), _, Part::Word(to), _] if from == "from" && to == "to" => asked(n),
-                [Part::Word(time), Part::Word(of), Part::Value(Expr { kind: ExprKind::Seq(n), .. })] if time == "time" && of == "of" => asked(n),
+                [Part::Value(Expr { kind: ExprKind::Seq(n), .. }), Part::Word(at), a] if at == "at" && !is_rate(a) => mark(n, true),
+                [Part::Value(Expr { kind: ExprKind::Seq(n), .. }), Part::Word(from), _, Part::Word(to), _] if from == "from" && to == "to" => mark(n, true),
+                [Part::Word(time), Part::Word(of), Part::Value(Expr { kind: ExprKind::Seq(n), .. })] if time == "time" && of == "of" => mark(n, true),
+                [Part::Word(latest), Part::Value(Expr { kind: ExprKind::Seq(n), .. })] if latest == "latest" => mark(n, false),
+                [Part::Value(Expr { kind: ExprKind::Seq(n), .. }), Part::Word(behind), _] if behind == "behind" => mark(n, false),
                 _ => {}
             }
+            let quiet = no_item_read(parts);
             for p in parts {
                 match p {
-                    Part::Args(list) => list.iter().for_each(|a| time_words_in(&a.value, params, out, on_param)),
-                    Part::Value(x) => time_words_in(x, params, out, on_param),
+                    Part::Args(list) => list.iter().for_each(|a| time_words_in(&a.value, params, w)),
+                    Part::Value(x) => {
+                        if !quiet {
+                            time_words_in(x, params, w)
+                        }
+                    }
                     Part::Word(_) => {}
                 }
             }

@@ -59,7 +59,7 @@ fn __out_byte(i: i64) -> u8
 ; consumer wired to `in$` reads with `peek`, `advance` and `count`
 fn __in_ch(c: u8)
     s: u8$ = __get_in()
-    push_plain(s, c)
+    __push(s, c)
     ret
 
 

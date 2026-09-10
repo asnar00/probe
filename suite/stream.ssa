@@ -33,9 +33,11 @@
 ;! block_across_the_seam -> 340, 4
 ;! block_with_a_tick -> 36, 4
 ;! block_too_long -> check
-;! plain_pushes -> 3, 4
-;! plain_block -> 7, 4
-;! plain_too_many -> check
+;! queue_pushes -> 3, 4
+;! queue_block -> 7, 4
+;! queue_full -> check
+;! queue_freed -> 12, 8
+;! queue_tokens -> 2, 20
 ;! struct_ring -> 3, 20
 ;! struct_frame -> 3, 4
 
@@ -61,7 +63,8 @@ data blk: buffer(f32, 4)
 data fblk: buffer(f32, 4)
 data bblk: buffer(u8, 4)
 data big: buffer(f32, 16)
-; a regular byte ring a system stream's push writes into (log 84)
+; a byte queue's slots, a plain run: sixteen, of which the queue below
+; takes eight, its capacity being its own number and not the buffer's
 data pvb: buffer(u8, 16)
 data prg: array(u64, 8)
 ; two rings of int for the struct of streams
@@ -91,50 +94,85 @@ fn fresh() -> u8$
     s: u8$ = stream r
     ret s
 
-fn plain_ring() -> u8$
+fn queue_ring() -> u8$
     r: ptr = addr prg
     a: ptr = addr pvb
-    ring_regular(r, a, 1000000, 1, 0)
+    ring_queue(r, a, 1000000, 8)
     s: u8$ = stream r
     ret s
+fn fill_queue(s: u8$, from: i64) -> u8$
+    loop(k: i64 = 0)
+        done: u1 = cmp.ge k, 8
+        if done
+            break
+        v0: i64 = add from, k
+        v: u8 = conv v0
+        push_queue(s, v)
+        k2: i64 = add k, 1
+        continue k2
+    ret s
 
-; a system stream's push (log 84): its only reader is the platform, so
-; the ring never has to slide — the item goes to slot k and the count
-; moves, which is where every reader already looks. Mixed with the
-; ordinary push, which also mirrors, both read back the same
-fn plain_pushes() -> (u8, i64)
-    s: u8$ = plain_ring()
-    push_plain(s, 1: u8)
-    push_plain(s, 2: u8)
-    push(s, 3: u8)
-    push_plain(s, 4: u8)
-    x: u8 = peek s, 2
+; a queue's push (log 89, question 47): a stream nothing in its store
+; keeps history in holds an item only until its reader has passed it,
+; so its slots are a plain run with the index of the first in the
+; header, item k at slot k - origin, and a push is a store and a count
+fn queue_pushes() -> (u8, i64)
+    s: u8$ = queue_ring()
+    push_queue(s, 1: u8)
+    push_queue(s, 2: u8)
+    push_queue(s, 3: u8)
+    push_queue(s, 4: u8)
+    x: u8 = peek_queue(s, 2)
     n: i64 = count s
     ret x, n
-; ... and a block of them, one copy with no seam to split at
-fn plain_block() -> (u8, i64)
-    s: u8$ = plain_ring()
+; ... and a block of them in one copy, there being no seam to split at
+fn queue_block() -> (u8, i64)
+    s: u8$ = queue_ring()
     p: ptr = addr bblk
     b: u8[] = slice p
     fill b, 7
-    push_plain(s, b)
-    last: u8 = latest s
+    push_queue(s, b)
+    last: u8 = latest_queue(s)
     n: i64 = count s
     ret last, n
-; the capacity is a limit and not a window: past what stays resident a
-; system stream fails the check where a ring would have slid
-fn plain_too_many() -> u8
-    s: u8$ = plain_ring()
-    loop(k: i64 = 1)
-        done: u1 = cmp.gt k, 9
-        if done
-            break
-        v: u8 = conv k
-        push_plain(s, v)
-        k2: i64 = add k, 1
-        continue k2
-    x: u8 = latest s
+; the capacity bounds what is unread: a ninth item pushed into eight
+; slots nothing has read fails the check at the push, where a ring
+; would have overwritten and failed its reader later
+fn queue_full() -> u8
+    s: u8$ = queue_ring()
+    s2: u8$ = fill_queue(s, 1)
+    push_queue(s2, 9: u8)
+    x: u8 = latest_queue(s2)
     ret x
+; ... and the slots come back when the reader has passed them: eight
+; pushed and all eight read, `free_queue` moves the origin, and eight
+; more fit where the ninth did not. The fourth of them, and the count
+fn queue_freed() -> (u8, i64)
+    s: u8$ = queue_ring()
+    s2: u8$ = fill_queue(s, 1)
+    s3: u8$ = advance(s2, 8)
+    free_queue(s3)
+    s4: u8$ = fill_queue(s3, 9)
+    x: u8 = peek_queue(s4, 3)
+    n: i64 = count s4
+    ret x, n
+; a queue of structs, as a ring may be (log 88): one push of the whole
+; token, one peek back, the second one's start
+fn queue_tokens() -> (i64, i64)
+    r: ptr = addr tokr
+    sz: i64 = sizeof tok
+    vb: ptr = addr tokvb
+    buffer_init(vb, sz, 16)
+    ring_queue(r, vb, 1000000, 16)
+    s: tok$ = stream r
+    a: tok = pack 1, 10, 2
+    push_queue(s, a)
+    b: tok = pack 2, 20, 3
+    push_queue(s, b)
+    n: i64 = count s
+    x: tok = peek_queue(s, 1)
+    k: i64 = get x, start
+    ret n, k
 
 ; a frame holds everything since the reader last looked
 fn frames() -> (u8, i64)

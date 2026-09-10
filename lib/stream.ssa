@@ -16,6 +16,17 @@
 ; meet by one such conversion at the point they meet. So a producer's
 ; push and a reader's frame do integer work only.
 ;
+; A ring is not the only storage. A stream is a **queue** unless a
+; history word or a time word names it (question 47): a queue holds an
+; item only until its reader has passed it, so its slots come back and
+; its capacity bounds what is unread rather than what is written. It
+; shares this header and this reader's view, but not the ring's
+; arithmetic: a queue is a plain run of slots with the index of the
+; first one in its header, so a push is a store and a count, a block
+; lands in one copy, and a reader that has passed everything gives
+; every slot back at once. The ring is what keeps history, and the
+; rest of this note is the ring's.
+;
 ; The resident items stay contiguous and nothing ever slides: the
 ; buffers are twice the capacity and each item is stored in both halves,
 ; item k at slot k mod half and again half further on, so the last half
@@ -32,9 +43,7 @@
 ; weighs the two items around t, exactly in rational arithmetic, and
 ; rounds once into the element's type. Producers `push s, tick, v` on an
 ; irregular ring (ticks non-decreasing, checked) and `push s, v` or
-; `push s, block` on a regular one — or `push_plain`, for a stream whose
-; only reader is the platform, which never has to slide and so stores
-; and counts; consumers take a `frame` (everything
+; `push s, block` on a regular one; consumers take a `frame` (everything
 ; since they last looked, as a view, with the index of its first item,
 ; and the stream advanced), `count`, `latest`, `peek` and `advance`,
 ; `behind` and `last` for history, `sample s, t`, or a
@@ -240,50 +249,146 @@ fn push(s: any$, v: any)
     next: i64 = add pushed, 1
     store next, r
     ret
-; a system stream's producer (log 84, question 41, zero.md section 15):
-; its only reader is the platform, so nothing looks behind it and
-; nothing samples it — the ring never has to slide, item k stays at
-; slot k for ever, and the push is a store and a count, which is what
-; the mirror and the base compute anyway while the count is under half.
-; Past half the ring would have to slide, and this fails instead: a
-; system stream's capacity is a limit, not a window. The ring is an
-; ordinary regular one, so `push` still works on it and every reader
-; is unchanged
-fn push_plain(s: any$, v: any)
+; --- the queue (question 47, zero.md section 9) ---
+; A stream is a queue unless a history word or a time word names it.
+; A queue holds an item only until its reader has passed it, and then
+; the slot comes back, so a push into one is a store and a count and
+; nothing else. It shares this header and this reader's view, but not
+; the ring's arithmetic: there is no mirror and no wrap, because there
+; is nothing to wrap around — the slots are a plain run, and the
+; header's spare word (8, free since log 86) holds `origin`, the index
+; of the item in slot 0, while the ticks pointer (24), a queue having
+; no ticks, holds `cap`, how many slots there are. Item k is at slot
+; `k - origin`, so every view of the unread items is one run with no
+; seam to split and a block lands in one copy. When a reader has
+; passed everything the front end calls `free_queue` and the origin
+; moves to it: the slots come back. Step is 1 and t0 is 0, and the
+; words that do not touch a slot — `count`, `advance`, `position`,
+; `received`, `ended`, `end`, `open` — are the ring's, unchanged. The
+; words that do touch one have a queue's form below, and the front end
+; takes them where nothing in the store keeps history.
+fn ring_queue(r: ptr, vb: ptr, hz: i64, cap: i64)
+    positive: u1 = cmp.gt cap, 0
+    check positive
+    store 0: i64, r
+    store 0: i64, r, 8
+    store vb, r, 16
+    store cap, r, 24
+    store hz, r, 32
+    store 1: i64, r, 40
+    store 0: i64, r, 48
+    store 0: i64, r, 56
+    ret
+; the queue's producer: the ended check, a check that there is a slot
+; — which is the queue's whole promise, and is why its readers need no
+; residency check — the store, and the count
+fn push_queue(s: any$, v: any)
     r: ptr = get s, ring
     e: i64 = load r, 56
     still: u1 = cmp.eq e, 0
     check still
     pushed: i64 = load r
-    vb: ptr = load r, 16
-    cap: i64 = load vb, 8
-    half: i64 = div cap, 2
-    room: u1 = cmp.lt pushed, half
+    origin: i64 = load r, 8
+    slot: i64 = sub pushed, origin
+    cap: i64 = load r, 24
+    room: u1 = cmp.lt slot, cap
     check room
+    vb: ptr = load r, 16
     raw: ptr = ptradd vb, 16
     q: ptr(any) = cast raw
-    store v, q, pushed
+    store v, q, slot
     next: i64 = add pushed, 1
     store next, r
     ret
-; ... and a block of them, one copy with no seam to split at
-fn push_plain(s: any$, block: any[])
+; ... and a block of them in one copy, there being no seam
+fn push_queue(s: any$, block: any[])
     r: ptr = get s, ring
     e: i64 = load r, 56
     still: u1 = cmp.eq e, 0
     check still
     n: i64 = len block
     pushed: i64 = load r
-    vals: any[] = ring_values(r)
-    cap: i64 = len vals
-    half: i64 = div cap, 2
-    next: i64 = add pushed, n
-    fits: u1 = cmp.le next, half
+    origin: i64 = load r, 8
+    slot: i64 = sub pushed, origin
+    cap: i64 = load r, 24
+    after: i64 = add slot, n
+    fits: u1 = cmp.le after, cap
     check fits
-    d: any[] = view vals, pushed, n
+    vals: any[] = ring_values(r)
+    d: any[] = view vals, slot, n
     copy d, block
+    next: i64 = add pushed, n
     store next, r
     ret
+; this reader has passed everything, so every slot comes back and the
+; run starts again at the beginning. Only the front end calls it, and
+; only where it can see that this reader is the queue's only one
+; (question 48): a view is a value, several may read one ring, and no
+; reader can take the minimum over the others
+fn free_queue(s: any$)
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    pos: i64 = get s, pos
+    drained: u1 = cmp.eq pos, pushed
+    if drained
+        store pos, r, 8
+    ret
+; the queue's own readers: the slot is the index less the origin, and
+; there is no residency check, the push having proved there was a slot
+fn peek_queue(s: any$, i: i64) -> any
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    pos: i64 = get s, pos
+    at: i64 = add pos, i
+    inside: u1 = cmp.lt at, pushed
+    check inside
+    origin: i64 = load r, 8
+    k: i64 = sub at, origin
+    vb: ptr = load r, 16
+    raw: ptr = ptradd vb, 16
+    q: ptr(any) = cast raw
+    v: any = load q, k
+    ret v
+fn latest_queue(s: any$) -> any
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    some: u1 = cmp.gt pushed, 0
+    check some
+    origin: i64 = load r, 8
+    last: i64 = sub pushed, 1
+    k: i64 = sub last, origin
+    vb: ptr = load r, 16
+    raw: ptr = ptradd vb, 16
+    q: ptr(any) = cast raw
+    v: any = load q, k
+    ret v
+fn unread_queue(s: any$) -> any[]
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    pos: i64 = get s, pos
+    origin: i64 = load r, 8
+    start: i64 = sub pos, origin
+    vb: ptr = load r, 16
+    raw: ptr = ptradd vb, 16
+    q: ptr(any) = cast raw
+    p: ptr(any) = index q, start
+    n: i64 = sub pushed, pos
+    f: any[] = pack p, n, 1
+    ret f
+fn frame_queue(s: any$) -> (any[], i64, any$)
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    pos: i64 = get s, pos
+    origin: i64 = load r, 8
+    start: i64 = sub pos, origin
+    vb: ptr = load r, 16
+    raw: ptr = ptradd vb, 16
+    q: ptr(any) = cast raw
+    p: ptr(any) = index q, start
+    n: i64 = sub pushed, pos
+    f: any[] = pack p, n, 1
+    s2: any$ = set s, pos, pushed
+    ret f, pos, s2
 ; ... a block at a time (log 69, 80): copied whole into the slots from
 ; the next one — the slot is under half and the block at most half, so
 ; it never reaches the end; past the seam it lands on the twin positions

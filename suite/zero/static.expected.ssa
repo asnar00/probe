@@ -64,7 +64,7 @@ fn __out_byte(i: i64) -> u8
 ; consumer wired to `in$` reads with `peek`, `advance` and `count`
 fn __in_ch(c: u8)
     s: u8$ = __get_in()
-    push_plain(s, c)
+    push_queue(s, c)
     ret
 
 ; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
@@ -112,8 +112,8 @@ fn __zero_reset()
     store 0: i64, r
     o: ptr = addr __out_n
     store 0: i64, o
-    _1: u8$ = __regular_u8(1000000, 512)
-    _2: int$ = __regular_int(1, 64)
+    _1: u8$ = __queue_u8(1000000, 512)
+    _2: int$ = __queue_int(1, 64)
     _3: __ctx = pack _1, _2, _2, 0, 0
     p: ptr = addr __ctx_mem
     store _3, p
@@ -189,6 +189,7 @@ fn __node1() -> u1
     ran: u1 = if _7
         _8: int$ = __edge1(_1, 0: i64)
         __set___node1_i(_8)
+        free_queue(_8)
         _9: i64 = received(_8)
         __set___node1_i_seen(_9)
         _10: u1 = ended(_8)
@@ -278,13 +279,13 @@ fn count_down()
         if _3
         else
             break
-        push(_1, _2)
+        push_queue(_1, _2)
         _4: int = sub _2, 1
         continue _4
     __run_i()
     ret
 fn __edge1(i: int$, __hz: i64) -> int$
-    _1: int[] = unread(i)
+    _1: int[] = unread_queue(i)
     _2: i64 = len _1
     _3: i64 = get i, pos
     ; the most items one event pushes into i$: 10 (log 79)
@@ -322,27 +323,25 @@ fn goodbye()
     ret
 
 ; a stream's ring, carved from the arena: cap items resident (64 unless more are), twice that in slots since the ring mirrors each item (log 65), and a tick per item unless regular; a reader's view at its start
-fn __regular_int(hz: i64, cap: i64) -> int$
+fn __queue_int(hz: i64, cap: i64) -> int$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
-    slots: i64 = mul cap, 2
     sz: i64 = sizeof int
-    bytes: i64 = mul sz, slots
+    bytes: i64 = mul sz, cap
     total: i64 = add bytes, 16
     vb: ptr = arena_alloc(a, total)
-    buffer_init(vb, sz, slots)
-    ring_regular(r, vb, hz, 1, 0)
+    buffer_init(vb, sz, cap)
+    ring_queue(r, vb, hz, cap)
     s: int$ = stream r
     ret s
-fn __regular_u8(hz: i64, cap: i64) -> u8$
+fn __queue_u8(hz: i64, cap: i64) -> u8$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
-    slots: i64 = mul cap, 2
     sz: i64 = sizeof u8
-    bytes: i64 = mul sz, slots
+    bytes: i64 = mul sz, cap
     total: i64 = add bytes, 16
     vb: ptr = arena_alloc(a, total)
-    buffer_init(vb, sz, slots)
-    ring_regular(r, vb, hz, 1, 0)
+    buffer_init(vb, sz, cap)
+    ring_queue(r, vb, hz, cap)
     s: u8$ = stream r
     ret s
