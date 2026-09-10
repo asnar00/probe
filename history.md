@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### stream: a ring may hold a struct — `0de20dd` · 2026-09-10
+
+```
+fn struct_ring() -> (i64, i64)
+    s: tok$ = fresh_toks()
+    three_toks(s)
+    n: i64 = count(s)
+    x: tok = peek s, 1
+```
+
+The parity pass, hop 21 (fm3 log 88, question 43). ash ruled that array-of-structs is the default: a stream of structs is **one ring whose item is the struct** — one buffer of `sizeof T` stride, one header, one position — so a token's push is one push, not one per field. `lib/stream.ssa` was written over `number$`, and `number` ranges over the number tower alone, so the IR's tower gains **`any`**, above `number`, whose family is every type; every word that reads items one at a time is written over it. `sample`'s linear rule and `lerp` weigh two items and round between them, which two structs have no midpoint for, so they keep `number` and refuse a struct ring by name. The zero front end stops splitting a struct: one `pack` and one `__push` for a token, one `peek` for a read, and the generated `__s_T` struct of parallel rings is gone; `frame` and `behind` work on a stream of structs now, which they could not before. lex's `lex` **228 → 174** SSA against the oracle's 90, its case 1 397 → **1 195** against 415 on 403 → 334 lines. `suite/stream.ssa` gains `struct_ring` and `struct_frame`: `probe test` 982/982, zero 482/482 on the four CPU paths and 465/465 on air, cargo test 112.
+
 ### zero: `char` is a type of its own, and `out$` is a device — `96f1595` · 2026-09-10
 
 ```
