@@ -2202,9 +2202,11 @@ struct GenericFn {
 
 /// where a name stands in the tower of abstract types, if it does:
 /// the higher, the less specific — a definition over `float` beats one
-/// over `scalar`, which beats one over `number`
+/// over `scalar`, which beats one over `number`, which beats one over
+/// `any`, whose family is every type there is
 fn abstract_level(name: &str) -> Option<u8> {
     match name {
+        "any" => Some(4),
         "number" => Some(3),
         "scalar" => Some(2),
         "int" | "uint" => Some(1),
@@ -2825,9 +2827,24 @@ impl Parser {
     /// what an abstract name means when nothing binds it: the policy's
     fn default_binding(&mut self, name: &str) -> Option<Type> {
         match name {
-            "number" | "int" => Some(self.policy.int),
+            // `any` has no natural default; the policy's int is the one
+            // that keeps a template's default instance the same function
+            // it was when the name was `number` (log 88)
+            "number" | "int" | "any" => Some(self.policy.int),
             "uint" => Some(Type::int(false, self.policy.int.int_bits()?)),
             _ => self.instantiate(&TypeExpr::Named { name: name.to_string(), args: Vec::new() }, &[], 0).ok(),
+        }
+    }
+
+    /// is the type a struct, or a stream or view whose element is one
+    /// (log 88)? A ring may hold a struct, and the words that weigh two
+    /// items refuse it by name
+    fn aggregate_element(&self, ty: Type) -> bool {
+        let Type::Struct(i) = ty else { return false };
+        let p = &self.packs[i as usize];
+        match p.elem {
+            Some((e, _)) => self.aggregate_element(e),
+            None => p.aggregate && p.lanes == 0 && p.origin.is_none(),
         }
     }
 
@@ -2837,6 +2854,11 @@ impl Parser {
         // a member of what the policy's int is a member of
         let ty = self.policy.resolve(ty);
         match name {
+            // `any` is every type (log 88): what a container written over
+            // its element rather than over arithmetic takes — a ring may
+            // hold a struct, so `lib/stream.ssa`'s push, peek and frame
+            // are over `any` where `sample` and `lerp` are over `number`
+            "any" => true,
             "number" => matches!(ty, Type::Int { .. }) || self.member_of("scalar", ty),
             "scalar" => matches!(ty, Type::Pack(i) if self.packs[i as usize].origin.is_some()),
             "int" => matches!(ty, Type::Int { signed: true, .. }),
@@ -5565,6 +5587,13 @@ impl Parser {
                     Some(None) => " as a statement".to_string(),
                     None => String::new(),
                 };
+                // a ring may hold a struct (log 88), and the words that
+                // work on its items one at a time take it; the two that
+                // weigh two items and round between them cannot, and say
+                // why rather than that nothing matches
+                if matches!(name, "sample" | "lerp") && atys.iter().any(|&t| self.aggregate_element(t)) {
+                    return Err(self.err(format!("'{}' wants a ring of numbers: a struct has no midpoint, so the interpolating words have no meaning on one — `peek`, `latest`, `frame` and `behind` do", name)));
+                }
                 Err(self.err(format!("no '{}' takes ({}){}: define a generic fn {} whose parameters and result match", name, names.join(", "), wants, name)))
             }
         }
@@ -7449,6 +7478,19 @@ next(x: i32):
         let m = parse(src).expect("parse");
         let errs = verify(&m).unwrap_err();
         assert!(errs.iter().any(|e| e.contains("branch to next")), "got: {:?}", errs);
+    }
+
+    /// a ring may hold a struct (log 88, question 43), and every word
+    /// that reads its items one at a time takes it; the two that weigh
+    /// two items and round between them refuse it by name
+    #[test]
+    fn refuses_the_interpolating_words_on_a_ring_of_structs() {
+        let src = "type tok = struct\n    kind: i64\n    start: i64\n\nfn bad(s: tok$, t: time) -> tok\n    v: tok = sample s, t\n    ret v\n";
+        let e = parse(&with_prelude(src)).unwrap_err();
+        assert!(e.msg.contains("a struct has no midpoint"), "got: {}", e.msg);
+        // ... where the words that read one item at a time do take it
+        let ok = "type tok = struct\n    kind: i64\n    start: i64\n\nfn fine(s: tok$) -> i64\n    v: tok = peek s, 0\n    k: i64 = get v, kind\n    ret k\n";
+        parse(&with_prelude(ok)).expect("a peek of a ring of structs");
     }
 
     #[test]

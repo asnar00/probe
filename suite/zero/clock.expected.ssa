@@ -72,8 +72,9 @@ fn __wait(t: i64)
     ret
 
 ; a push into any stream (log 38): stamped with the clock on a ring
-; that keeps ticks, the next sample on one that does not
-fn __push(s: number$, v: number)
+; that keeps ticks, the next sample on one that does not. Over `any`,
+; since a ring may hold a struct (log 88)
+fn __push(s: any$, v: any)
     r: ptr = get s, ring
     step: i64 = load r, 40
     regular: u1 = cmp.gt step, 0
@@ -83,7 +84,7 @@ fn __push(s: number$, v: number)
         t: i64 = __now()
         push(s, t, v)
     ret
-fn __push(s: number$, block: number[])
+fn __push(s: any$, block: any[])
     r: ptr = get s, ring
     step: i64 = load r, 40
     regular: u1 = cmp.gt step, 0

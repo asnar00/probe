@@ -101,6 +101,12 @@ on (int n) = tokens moved()
     token x = latest t$
     n = count t$ * 1000 + x.kind * 100 + x.start * 10 + x.n
 
+on (int n) = tokens framed()
+    token t$ << token(1, 0, 3) << token(2, 5, 2) << token(3, 9, 1)
+    token f$ = frame t$
+    token y = peek f$ at (2)
+    n = count f$ * 1000 + y.kind * 100 + y.start * 10 + y.n
+
 on (int n) = logged()
     log$ << 200 << 300
     n = count log$ * 1000 + latest log$

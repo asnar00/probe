@@ -16,7 +16,7 @@ A stream is a value over time. `T x$` declares an empty one; `<<` pushes its fir
 - `positioned` and `position unread` take `position x$` and `time of x$`, on a regular and an irregular stream.
 - `still open`, `now closed`, `pushed after end` are `end` and `ended`.
 - `sampled` and `windowed` declare a rate and read by time, `x$ at (t)` and `x$ from (t1) to (t2)`.
-- `tokens` and `tokens moved` push and read a stream of the struct `token`.
+- `tokens`, `tokens moved` and `tokens framed` push and read a stream of the struct `token`, which is one ring whose item is the struct (question 43, log 88).
 - `logged` and `logged and read` push into and read the feature-scope stream `log$`.
 - `blocked` and `blocked regular` push a block, `x$ << block$`: a string into a stream of bytes, a list into a regular stream.
 - `indexed`, `summed`, `mapped`, `walked over`, `unread only` and `framed pushed` use the sequence words on a pushed stream: an index, `+ _`, `* 2`, a `for` adding into the feature variable `seen`, a reduction after `advance`, and a push into a frame.
@@ -27,7 +27,7 @@ A stream is a value over time. `T x$` declares an empty one; `<<` pushes its fir
 - `x$ << e while (c)`: the candidate is computed from the latest item and pushed only when the condition holds; in the condition `_` is the candidate and `x$` is still the latest item, so `while (_ < 5)` stops before 5 and `while (i$ < 5)` after it (question 9).
 - `advance` and `frame` move the reader; inside a `loop` the loop carries the stream, and after it the variable holds the moved reader.
 - `x$[i]`, `for`, map, zip and reduce read the unread items and do not move the reader, so they agree with `count`.
-- A stream of structs holds numbers and enumerations in its fields, and takes `peek`, `x$[i]`, `latest`, `advance`, `count`, `for`, `end` and `ended`; `frame`, `behind`, `at`, `from`/`to`, map, zip and reduce on one wait for sequences of structs.
+- A stream of structs is a ring of structs (question 43, log 88): one buffer whose item is the struct, one header, one position, so a token's push is one push and a `peek` one read. Its fields are numbers and enumerations, the ring storing the struct whole. It takes `peek`, `x$[i]`, `latest`, `advance`, `count`, `for`, `frame`, `behind`, `end` and `ended`; `x$ at (t)` and `from`/`to` do not, a struct having no midpoint, and map, zip and reduce wait for sequences of structs.
 - A push after `end` is a failed check. A stream is timed only when something asks for time (section 9, log 73, 85): a rate on its declaration or its wiring, or a time word applied to its name anywhere in the store — `x$ at (t)`, `x$ from (a) to (b)`, `time of x$` — and a time word on a function's stream parameter times every stream in the store, since any may be passed there. `position x$` is not one of them: it gives the index of the next unread item and nothing else, a `get` of the reader's own position (question 42), so a program that never mentions time keeps every ring plain. A timed stream without a rate keeps a tick per item, stamped from the store's clock, which nothing moves yet, so `time of x$` is 0, or -1 when nothing is unread; every other stream is a plain ring with no ticks, and a push into it is a store and a count. Here `x$` and `i$` are timed by the `time of` in `positioned` and `position unread`, and the rest are plain.
 - A ring keeps 64 items resident, or as many as a list, a range or a copy puts in it, in twice that many slots (each item sits in both halves, so a frame across the seam is one view and a push never slides); a reader more than that behind fails a check. Every ring is carved from the store's arena.
 
@@ -51,6 +51,7 @@ A stream is a value over time. `T x$` declares an empty one; `<<` pushes its fir
 >windowed() → 23
 >tokens() → 341
 >tokens moved() → 1252
+>tokens framed() → 3391
 >logged() → 3300
 >logged and read() → 7
 >blocked() → 2105
@@ -63,4 +64,4 @@ A stream is a value over time. `T x$` declares an empty one; `<<` pushes its fir
 >framed pushed() → 39
 
 ## hostile
-`int k, int t = position x$` is refused: "'position' gives one int, the index of the next unread item: `int i = position x$`, and the time of that item is `time of x$`". `int i$ <<` with nothing after it is refused: "a bare `int i$` declares an empty stream: drop the `<<`". `int f$ = frame t$` on a stream of structs is refused: "'frame' on a stream of structs is not in this milestone"; so is `t$ + _`: "'+' does not reduce a stream of token". `advance i$ by (1)` inside a `for` is refused: "move a stream inside a `loop`, which carries it". `x$ at (1 hz)` in an expression is refused: "a rate belongs on a stream's declaration". `peek i$ at (5)` past the unread items is a failed check from the library; so is `i$[5]`. `int i$ << 3` in a function and `i$ << 4` in a `loop` body that does not carry `i$` are fine: a push moves no reader.
+`int k, int t = position x$` is refused: "'position' gives one int, the index of the next unread item: `int i = position x$`, and the time of that item is `time of x$`". `int i$ <<` with nothing after it is refused: "a bare `int i$` declares an empty stream: drop the `<<`". `t$ at (2 ms)` on a stream of structs is refused: "'at' on a stream of structs: a struct has no midpoint, so there is no value between two of them", and the IR refuses `sample` on a ring of structs by name for the same reason; `t$ + _` is refused: "'+' does not reduce a stream of token". `advance i$ by (1)` inside a `for` is refused: "move a stream inside a `loop`, which carries it". `x$ at (1 hz)` in an expression is refused: "a rate belongs on a stream's declaration". `peek i$ at (5)` past the unread items is a failed check from the library; so is `i$[5]`. `int i$ << 3` in a function and `i$ << 4` in a `loop` body that does not carry `i$` are fine: a push moves no reader.

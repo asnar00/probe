@@ -36,6 +36,8 @@
 ;! plain_pushes -> 3, 4
 ;! plain_block -> 7, 4
 ;! plain_too_many -> check
+;! struct_ring -> 3, 20
+;! struct_frame -> 3, 4
 
 ; an irregular ring of bytes on a microsecond clock: values and ticks;
 ; a ring keeps half its slots resident (each item sits in both halves),
@@ -567,3 +569,50 @@ fn struct_of_streams(v: int) -> (int, int)
     x: int = latest sa
     y: int = latest sb
     ret x, y
+
+; a ring whose item is a struct (log 88, question 43): one buffer of
+; `sizeof tok` stride, one header, one position, and a token's push is
+; one push. Every word that reads an item at a time works on it —
+; `push`, `count`, `peek`, `frame` — since `lib/stream.ssa` is written
+; over `any`; `sample` and `lerp` are not, having no midpoint between
+; two structs, and are refused by name
+type tok = struct
+    kind: i64
+    start: i64
+    n: i64
+data tokr: array(i64, 8)
+data tokvb: array(u8, 400)
+
+fn fresh_toks() -> tok$
+    r: ptr = addr tokr
+    sz: i64 = sizeof tok
+    vb: ptr = addr tokvb
+    buffer_init(vb, sz, 16)
+    ring_regular(r, vb, 1000000, 1, 0)
+    s: tok$ = stream r
+    ret s
+fn three_toks(s: tok$)
+    a: tok = pack 1, 10, 2
+    push s, a
+    b: tok = pack 2, 20, 3
+    push s, b
+    c: tok = pack 3, 30, 4
+    push s, c
+    ret
+; three tokens pushed, then counted and peeked: the second one's start
+fn struct_ring() -> (i64, i64)
+    s: tok$ = fresh_toks()
+    three_toks(s)
+    n: i64 = count(s)
+    x: tok = peek s, 1
+    k: i64 = get x, start
+    ret n, k
+; ... and framed: the view holds all three, the third one's length
+fn struct_frame() -> (i64, i64)
+    s: tok$ = fresh_toks()
+    three_toks(s)
+    f: tok[], k0: i64, s2: tok$ = frame(s)
+    m: i64 = len f
+    y: tok = load f, 2
+    v: i64 = get y, n
+    ret m, v

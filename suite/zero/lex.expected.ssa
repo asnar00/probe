@@ -52,10 +52,10 @@ fn __str(p: ptr, n: i64) -> u8[]
     ret v
 
 ; a push into any stream: no ring in this store keeps ticks (log 73)
-fn __push(s: number$, v: number)
+fn __push(s: any$, v: any)
     push(s, v)
     ret
-fn __push(s: number$, block: number[])
+fn __push(s: any$, block: any[])
     push(s, block)
     ret
 
@@ -63,11 +63,6 @@ type token = struct
     kind: int
     start: int
     n: int
-; a stream of token: one ring per field
-type __s_token = struct
-    kind: int$
-    start: int$
-    n: int$
 
 ; the context: one field per feature-scope variable — name: scope, merge (feature)
 ;   __enabled_platform: user, last (platform)
@@ -82,7 +77,7 @@ type __ctx = struct
     __enabled_platform: u1
     __enabled_lex: u1
     in: u8$
-    t: __s_token
+    t: token$
     __node1_c: u8$
     __node1_c_seen: i64
     __node1_fin: u1
@@ -102,13 +97,10 @@ fn __zero_reset()
     o: ptr = addr __out_n
     store 0: i64, o
     _1: u8$ = __regular_u8(1000000, 512)
-    _2: int$ = __regular_int(1000000, 64)
-    _3: int$ = __regular_int(1000000, 64)
-    _4: int$ = __regular_int(1000000, 64)
-    _5: __s_token = pack _2, _3, _4
-    _6: __ctx = pack 1, 1, _1, _5, _1, 0, 0
+    _2: token$ = __regular_token(1000000, 64)
+    _3: __ctx = pack 1, 1, _1, _2, _1, 0, 0
     p: ptr = addr __ctx_mem
-    store _6, p
+    store _3, p
     ret
 
 ; after the case's context is set: the nodes run
@@ -142,10 +134,10 @@ fn __get_in() -> u8$
     v: u8$ = get c, in
     ret v
 
-fn __get_t() -> __s_token
+fn __get_t() -> token$
     p: ptr = addr __ctx_mem
     c: __ctx = load p
-    v: __s_token = get c, t
+    v: token$ = get c, t
     ret v
 
 fn __get___node1_c() -> u8$
@@ -204,7 +196,7 @@ fn __node1() -> u1
     on: u1 = __on_lex()
     due: u1 = and _7, on
     ran: u1 = if due
-        _8: __s_token = __get_t()
+        _8: token$ = __get_t()
         _9: u8$ = lex(_8, _1, 0: i64)
         __set___node1_c(_9)
         _10: i64 = received(_9)
@@ -267,7 +259,7 @@ fn kind_of(c: u8) -> int
                     else
                         k_6: int = const 3
                         ret k_6
-fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$
+fn lex(t: token$, c: u8$, __hz: i64) -> u8$
     c_6: u8$ = loop(c_2: u8$ = c)
         _1: i64 = count c_2
         _2: int = conv _1
@@ -285,51 +277,35 @@ fn lex(t: __s_token, c: u8$, __hz: i64) -> u8$
         _7: u1 = cmp.eq k, 3
         if _7
             _8: token = pack 3, start, 1
-            _9: int$ = get t, kind
-            _10: int = get _8, kind
-            __push(_9, _10)
-            _11: int$ = get t, start
-            _12: int = get _8, start
-            __push(_11, _12)
-            _13: int$ = get t, n
-            _14: int = get _8, n
-            __push(_13, _14)
+            __push(t, _8)
             c_4: u8$ = advance(c_2, 1)
             continue c_4
         n: int = loop(i: int = 1, m: int = -1)
-            _15: i64 = count c_2
-            _16: int = conv _15
-            _17: u1 = cmp.ge i, _16
-            if _17
-                _18: u1 = ended(c_2)
-                m_2: int = if _18
+            _9: i64 = count c_2
+            _10: int = conv _9
+            _11: u1 = cmp.ge i, _10
+            if _11
+                _12: u1 = ended(c_2)
+                m_2: int = if _12
                     yield i
                 else
                     yield m
                 break m_2
-            _19: i64 = conv i
-            _20: u8 = peek c_2, _19
-            _21: int = kind_of(_20)
-            _22: u1 = cmp.eq _21, k
-            if _22
-                _23: int = add i, 1
-                continue _23, -1
+            _13: i64 = conv i
+            _14: u8 = peek c_2, _13
+            _15: int = kind_of(_14)
+            _16: u1 = cmp.eq _15, k
+            if _16
+                _17: int = add i, 1
+                continue _17, -1
             break i
-        _24: u1 = cmp.lt n, 0
-        if _24
+        _18: u1 = cmp.lt n, 0
+        if _18
             break c_2
-        _25: token = pack k, start, n
-        _26: int$ = get t, kind
-        _27: int = get _25, kind
-        __push(_26, _27)
-        _28: int$ = get t, start
-        _29: int = get _25, start
-        __push(_28, _29)
-        _30: int$ = get t, n
-        _31: int = get _25, n
-        __push(_30, _31)
-        _32: i64 = conv n
-        c_5: u8$ = advance(c_2, _32)
+        _19: token = pack k, start, n
+        __push(t, _19)
+        _20: i64 = conv n
+        c_5: u8$ = advance(c_2, _20)
         continue c_5
     ret c_6
 fn arrive_again()
@@ -344,120 +320,74 @@ fn arrive_again()
     __run_in()
     ret
 fn two_arrivals() -> (int, int)
-    _1: __s_token = __get_t()
-    _2: int$ = get _1, kind
-    _3: i64 = count _2
-    a: int = conv _3
+    _1: token$ = __get_t()
+    _2: i64 = count _1
+    a: int = conv _2
     arrive_again()
-    _4: __s_token = __get_t()
-    _5: int$ = get _4, kind
-    _6: i64 = count _5
-    b: int = conv _6
+    _3: token$ = __get_t()
+    _4: i64 = count _3
+    b: int = conv _4
     ret a, b
 fn number_start() -> int
     arrive_again()
-    _1: __s_token = __get_t()
-    _2: int$ = get _1, kind
-    _3: int = peek _2, 3
-    _4: int$ = get _1, start
-    _5: int = peek _4, 3
-    _6: int$ = get _1, n
-    _7: int = peek _6, 3
-    x: token = pack _3, _5, _7
+    _1: token$ = __get_t()
+    x: token = peek _1, 3
     s: int = get x, start
     ret s
 fn number_length() -> int
     arrive_again()
-    _1: __s_token = __get_t()
-    _2: int$ = get _1, kind
-    _3: int = peek _2, 3
-    _4: int$ = get _1, start
-    _5: int = peek _4, 3
-    _6: int$ = get _1, n
-    _7: int = peek _6, 3
-    x: token = pack _3, _5, _7
+    _1: token$ = __get_t()
+    x: token = peek _1, 3
     n: int = get x, n
     ret n
 fn kinds() -> (int, int)
     arrive_again()
-    _1: __s_token = __get_t()
-    _2: int$ = get _1, kind
-    _3: int = peek _2, 0
-    _4: int$ = get _1, start
-    _5: int = peek _4, 0
-    _6: int$ = get _1, n
-    _7: int = peek _6, 0
-    x: token = pack _3, _5, _7
-    _8: __s_token = __get_t()
-    _9: int$ = get _8, kind
-    _10: int = peek _9, 1
-    _11: int$ = get _8, start
-    _12: int = peek _11, 1
-    _13: int$ = get _8, n
-    _14: int = peek _13, 1
-    y: token = pack _10, _12, _14
+    _1: token$ = __get_t()
+    x: token = peek _1, 0
+    _2: token$ = __get_t()
+    y: token = peek _2, 1
     a: int = get x, kind
     b: int = get y, kind
     ret a, b
 fn third_kind() -> int
     arrive_again()
-    _1: __s_token = __get_t()
-    _2: int$ = get _1, kind
-    _3: int = peek _2, 2
-    _4: int$ = get _1, start
-    _5: int = peek _4, 2
-    _6: int$ = get _1, n
-    _7: int = peek _6, 2
-    x: token = pack _3, _5, _7
+    _1: token$ = __get_t()
+    x: token = peek _1, 2
     k: int = get x, kind
     ret k
 fn kinds_tail() -> (int, int)
     arrive_again()
-    _1: __s_token = __get_t()
-    _2: int$ = get _1, kind
-    _3: int = peek _2, 3
-    _4: int$ = get _1, start
-    _5: int = peek _4, 3
-    _6: int$ = get _1, n
-    _7: int = peek _6, 3
-    x: token = pack _3, _5, _7
-    _8: __s_token = __get_t()
-    _9: int$ = get _8, kind
-    _10: int = peek _9, 4
-    _11: int$ = get _8, start
-    _12: int = peek _11, 4
-    _13: int$ = get _8, n
-    _14: int = peek _13, 4
-    y: token = pack _10, _12, _14
+    _1: token$ = __get_t()
+    x: token = peek _1, 3
+    _2: token$ = __get_t()
+    y: token = peek _2, 4
     a: int = get x, kind
     b: int = get y, kind
     ret a, b
 fn a_word_at_the_end() -> (int, int)
-    _1: __s_token = __get_t()
-    _2: int$ = get _1, kind
-    _3: i64 = count _2
-    a: int = conv _3
-    _4: u8$ = __get_in()
-    end(_4)
+    _1: token$ = __get_t()
+    _2: i64 = count _1
+    a: int = conv _2
+    _3: u8$ = __get_in()
+    end(_3)
     __run_in()
-    _5: __s_token = __get_t()
-    _6: int$ = get _5, kind
-    _7: i64 = count _6
-    b: int = conv _7
+    _4: token$ = __get_t()
+    _5: i64 = count _4
+    b: int = conv _5
     ret a, b
 
 ; a stream's ring, carved from the arena: cap items resident (64 unless more are), twice that in slots since the ring mirrors each item (log 65), and a tick per item unless regular; a reader's view at its start
-fn __regular_int(hz: i64, cap: i64) -> int$
+fn __regular_token(hz: i64, cap: i64) -> token$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
     slots: i64 = mul cap, 2
-    sz: i64 = sizeof int
+    sz: i64 = sizeof token
     bytes: i64 = mul sz, slots
     total: i64 = add bytes, 16
     vb: ptr = arena_alloc(a, total)
     buffer_init(vb, sz, slots)
     ring_regular(r, vb, hz, 1, 0)
-    s: int$ = stream r
+    s: token$ = stream r
     ret s
 fn __regular_u8(hz: i64, cap: i64) -> u8$
     a: ptr = addr __arena

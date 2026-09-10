@@ -17,6 +17,7 @@ Characters arrive over time in `in$`, the `char` stream the platform feature dec
 
 ## rules
 - `lex` takes a whole token only once it has seen a character of another class after it, or the stream has ended.
+- `t$` is a stream of the struct `token`, which is one ring whose item is the struct (question 43, log 88): `t$ << token(k, start, n)` is one push and `peek t$ at (i)` one read.
 - After the first arrival three tokens have left and `4` waits; after the second, `42` (start 8, length 2) and `;` follow, and the newline is skipped.
 - `end in$` runs the node once more; a word that was waiting is pushed then.
 - The runner pushes a case's `in` before `__zero_start`, so `lex` has run over the first arrival when the case's function is called.

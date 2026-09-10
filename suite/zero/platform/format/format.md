@@ -21,7 +21,7 @@ A push into a stream of characters is dispatched on the item's type (section 6).
 - The methods are `on (char o$) << (T x)`: the stream, then the item, no result. A method may not take the stream's own element type or a sequence of it: those are the push itself.
 - A method over an abstract type is a template: `(int x)` serves `int64` and `int32`, `(float x)` serves `float32` and `float64`, each at its own precision.
 - A float prints six places rounded half up; a `float32` past 2^24 or a float past 2^63 prints digits it does not have (question 34).
-- A stream of structs is pushed an item at a time, as before.
+- A stream of structs is pushed an item at a time: it is a ring of structs, and a push of one is one push (question 43, log 88).
 
 ## testing
 >an int() → "42"

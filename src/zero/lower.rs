@@ -36,8 +36,8 @@ pub enum Ty {
     Char,
     /// a stream `T$` (section 9, log 38): the IR's `T$`, a reader's view
     /// of a ring, whether its items arrive over time or are all present
-    /// (a sequence); a `string` is `u8$`; a stream of a struct is a
-    /// generated struct of one stream per field
+    /// (a sequence); a `string` is `u8$`; a stream of a struct is one
+    /// ring whose item is the struct (log 88, question 43)
     Stream(Box<Ty>),
     /// a declared struct, by name
     Struct(String),
@@ -53,10 +53,7 @@ impl Ty {
             Ty::Bool => "u1".into(),
             Ty::Char => "u8".into(),
             Ty::Num(n) => n.clone(),
-            Ty::Stream(e) => match e.as_ref() {
-                Ty::Struct(n) => format!("__s_{}", n),
-                e => format!("{}$", e.ir()),
-            },
+            Ty::Stream(e) => format!("{}$", e.ir()),
             Ty::Struct(n) | Ty::Enum(n) => n.clone(),
             Ty::None => String::new(),
         }
@@ -588,8 +585,9 @@ fn __wait(t: i64)
 /// store where no ring keeps ticks (log 73), the plain push itself
 const PUSH_BRANCHED: &str = r#"
 ; a push into any stream (log 38): stamped with the clock on a ring
-; that keeps ticks, the next sample on one that does not
-fn __push(s: number$, v: number)
+; that keeps ticks, the next sample on one that does not. Over `any`,
+; since a ring may hold a struct (log 88)
+fn __push(s: any$, v: any)
     r: ptr = get s, ring
     step: i64 = load r, 40
     regular: u1 = cmp.gt step, 0
@@ -599,7 +597,7 @@ fn __push(s: number$, v: number)
         t: i64 = __now()
         push(s, t, v)
     ret
-fn __push(s: number$, block: number[])
+fn __push(s: any$, block: any[])
     r: ptr = get s, ring
     step: i64 = load r, 40
     regular: u1 = cmp.gt step, 0
@@ -612,10 +610,10 @@ fn __push(s: number$, block: number[])
 "#;
 const PUSH_PLAIN: &str = r#"
 ; a push into any stream: no ring in this store keeps ticks (log 73)
-fn __push(s: number$, v: number)
+fn __push(s: any$, v: any)
     push(s, v)
     ret
-fn __push(s: number$, block: number[])
+fn __push(s: any$, block: any[])
     push(s, block)
     ret
 "#;
@@ -948,7 +946,7 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), sstructs: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
+    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -1514,8 +1512,6 @@ struct Lowerer {
     /// the rings made: element type and whether regular, one
     /// `__stream_T` or `__regular_T` each
     rings: std::collections::BTreeSet<(String, bool)>,
-    /// the structs a stream was made of: `type __s_T` declared once
-    sstructs: std::collections::BTreeSet<String>,
     /// inside a push chain: what the stream's own name reads as
     push_read: Option<(String, PushRead)>,
     /// the wirings at feature scope, in declaration order
@@ -1890,7 +1886,7 @@ impl Lowerer {
 
     /// how many items a stream has unread, as an int
     fn count_of(&mut self, s: &Val, b: &mut Body, dst: Option<&str>) -> Val {
-        let first = self.first_reader(s, b);
+        let first = s.text.clone();
         let n = b.tmp();
         b.line(&format!("{}: i64 = count {}", n, first));
         let ty = Ty::Num("int".into());
@@ -1902,14 +1898,9 @@ impl Lowerer {
     /// the i-th unread item of a stream: `x$[i]`, `peek x$ at (i)`
     fn peek_at(&mut self, s: &Val, i: &str, b: &mut Body, dst: Option<&str>) -> Val {
         let elem = s.ty.elem().unwrap().clone();
-        match self.stream_fields(&s.ty) {
-            Some(f) => self.read_fields(s, &f, "peek", &format!(", {}", i), b, dst),
-            None => {
-                let out = name_for(dst, &elem, b);
-                b.line(&format!("{}: {} = peek {}, {}", out, elem.ir(), s.text, i));
-                Val { text: out, ty: elem, literal: false }
-            }
-        }
+        let out = name_for(dst, &elem, b);
+        b.line(&format!("{}: {} = peek {}, {}", out, elem.ir(), s.text, i));
+        Val { text: out, ty: elem, literal: false }
     }
 
     fn declare_type(&mut self, t: &super::syntax::TypeDecl, file: &str) -> Result<(), Error> {
@@ -2778,8 +2769,7 @@ impl Lowerer {
             let Ty::Stream(_) = pty else { continue };
             let r = b.tmp();
             b.line(&format!("{}: {} = __get___node{}_{}()", r, pty.ir(), k, pname));
-            let rv = Val { text: r.clone(), ty: pty.clone(), literal: false };
-            let first = self.first_reader(&rv, &mut b);
+            let first = r.clone();
             let pushed = self.pushed_of(&first, &mut b);
             let seen = b.tmp();
             b.line(&format!("{}: i64 = __get___node{}_{}_seen()", seen, k, pname));
@@ -2839,10 +2829,10 @@ impl Lowerer {
             b.line(&format!("{} = {}", moved.join(", "), call));
         }
         let mut done: Option<String> = None;
-        for ((pname, _, ty, _), m) in readers.iter().zip(&moved) {
+        for ((pname, _, _, _), m) in readers.iter().zip(&moved) {
             let r2 = m.split(':').next().unwrap().to_string();
             b.line(&format!("__set___node{}_{}({})", k, pname, r2));
-            let first = self.first_reader(&Val { text: r2, ty: ty.clone(), literal: false }, &mut b);
+            let first = r2;
             let pushed = self.pushed_of(&first, &mut b);
             b.line(&format!("__set___node{}_{}_seen({})", k, pname, pushed));
             let e = b.tmp();
@@ -3572,14 +3562,13 @@ impl Lowerer {
         if b.vars.contains_key(var) {
             return Err(lex::error(&file, seq.line, format!("'{}' is already declared", var)));
         }
-        // the unread items as one view, a load per item (log 75); a
-        // stream of structs, whose fields are rings, peeks each
-        let view = if self.stream_fields(&sv.ty).is_none() { Some(self.unread_view(&sv, b)) } else { None };
+        // the unread items as one view, a load per item (log 75)
+        let view = Some(self.unread_view(&sv, b));
         let n = b.tmp();
         match &view {
             Some(v) => b.line(&format!("{}: i64 = len {}", n, v)),
             None => {
-                let first = self.first_reader(&sv, b);
+                let first = sv.text.clone();
                 b.line(&format!("{}: i64 = count {}", n, first));
             }
         }
@@ -4953,26 +4942,24 @@ impl Lowerer {
         Ok(val)
     }
 
-    /// a stream of an element type: numbers, enumerations, and structs of
-    /// those, the last as a generated struct of one stream per field
+    /// a stream of an element type: numbers, enumerations, and structs
+    /// of those, the last a ring whose item is the struct (log 88,
+    /// question 43) — one buffer of `sizeof T` stride, one header, one
+    /// position, so a token's push is one push
     fn stream_ty(&mut self, elem: Ty, file: &str, line: usize) -> Result<Ty, Error> {
         match &elem {
             Ty::Num(_) | Ty::Enum(_) | Ty::Char => {}
             Ty::Struct(name) => {
                 let Some(TypeInfo::Struct(fields)) = self.types.get(name) else { unreachable!() };
-                let mut ir = Vec::new();
                 for (f, t, _) in fields {
-                    if !matches!(t, Ty::Num(_) | Ty::Enum(_)) {
-                        return Err(lex::error(file, line, format!("a stream of {}: field '{}' is a {}, and a stream of structs holds numbers and enumerations in its fields", name, f, t.ir())));
+                    // the ring stores the struct whole, so a field that
+                    // is itself a stream would put a view in a ring
+                    if !matches!(t, Ty::Num(_) | Ty::Enum(_) | Ty::Char) {
+                        return Err(lex::error(file, line, format!("a stream of {}: field '{}' is a {}, and a stream of structs holds numbers and enumerations in its fields", name, f, zero_ty(t))));
                     }
-                    ir.push(format!("{}: {}$", f, t.ir()));
-                }
-                if self.sstructs.insert(name.clone()) {
-                    self.type_lines.push(format!("; a stream of {}: one ring per field
-type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
                 }
             }
-            _ => return Err(lex::error(file, line, format!("a stream of {}: a stream holds numbers, enumerations or structs of those", elem.ir()))),
+            _ => return Err(lex::error(file, line, format!("a stream of {}: a stream holds numbers, enumerations or structs of those", zero_ty(&elem)))),
         }
         Ok(Ty::Stream(Box::new(elem)))
     }
@@ -4989,14 +4976,6 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
             }
         }
         Err(lex::error(file, e.line, "a rate is `at (n hz)` or `at (n khz)`, n positive"))
-    }
-
-    /// a stream of a struct: its fields and their types
-    fn stream_fields(&self, ty: &Ty) -> Option<Vec<(String, Ty)>> {
-        let Ty::Stream(e) = ty else { return None };
-        let Ty::Struct(name) = e.as_ref() else { return None };
-        let Some(TypeInfo::Struct(fields)) = self.types.get(name) else { unreachable!() };
-        Some(fields.iter().map(|(f, t, _)| (f.clone(), t.clone())).collect())
     }
 
     /// a new empty stream: its ring in the arena, regular (at a rate) or
@@ -5044,26 +5023,10 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
     fn make_stream_cap(&mut self, ty: &Ty, hz: i64, regular: bool, cap: usize, b: &mut Body, dst: Option<&str>) -> Val {
         let Ty::Stream(elem) = ty else { unreachable!() };
         let maker = if regular { "regular" } else { "stream" };
-        match self.stream_fields(ty) {
-            None => {
-                self.rings.insert((elem.ir(), regular));
-                let out = name_for(dst, ty, b);
-                b.line(&format!("{}: {} = __{}_{}({}, {})", out, ty.ir(), maker, elem.ir(), hz, cap));
-                Val { text: out, ty: ty.clone(), literal: false }
-            }
-            Some(fields) => {
-                let mut parts = Vec::new();
-                for (_, t) in &fields {
-                    self.rings.insert((t.ir(), regular));
-                    let r = b.tmp();
-                    b.line(&format!("{}: {}$ = __{}_{}({}, {})", r, t.ir(), maker, t.ir(), hz, cap));
-                    parts.push(r);
-                }
-                let out = name_for(dst, ty, b);
-                b.line(&format!("{}: {} = pack {}", out, ty.ir(), parts.join(", ")));
-                Val { text: out, ty: ty.clone(), literal: false }
-            }
-        }
+        self.rings.insert((elem.ir(), regular));
+        let out = name_for(dst, ty, b);
+        b.line(&format!("{}: {} = __{}_{}({}, {})", out, ty.ir(), maker, elem.ir(), hz, cap));
+        Val { text: out, ty: ty.clone(), literal: false }
     }
 
     /// the type of a stream variable in scope, local or feature-scope
@@ -5080,20 +5043,6 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
         b.vars.get(name).map(|v| v.ty.clone()).or_else(|| self.fvar(name).map(|f| f.ty.clone()))
     }
 
-    /// the reader the ring's counts are read from: the stream itself,
-    /// or a struct stream's first field
-    fn first_reader(&mut self, s: &Val, b: &mut Body) -> String {
-        match self.stream_fields(&s.ty) {
-            None => s.text.clone(),
-            Some(fields) => {
-                let (f, t) = &fields[0];
-                let r = b.tmp();
-                b.line(&format!("{}: {}$ = get {}, {}", r, t.ir(), s.text, f));
-                r
-            }
-        }
-    }
-
     /// an int as the i64 the library takes
     fn as_i64(&mut self, v: &Val, b: &mut Body) -> String {
         if v.literal || v.ty == Ty::Num("i64".into()) {
@@ -5104,33 +5053,12 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
         t
     }
 
-    /// a read of every field's stream, packed: `latest`, `peek`
-    fn read_fields(&mut self, s: &Val, fields: &[(String, Ty)], op: &str, arg: &str, b: &mut Body, dst: Option<&str>) -> Val {
-        let Ty::Stream(elem) = &s.ty else { unreachable!() };
-        let mut vals = Vec::new();
-        for (f, t) in fields {
-            let r = b.tmp();
-            b.line(&format!("{}: {}$ = get {}, {}", r, t.ir(), s.text, f));
-            let v = b.tmp();
-            b.line(&format!("{}: {} = {} {}{}", v, t.ir(), op, r, arg));
-            vals.push(v);
-        }
-        let out = name_for(dst, elem, b);
-        b.line(&format!("{}: {} = pack {}", out, elem.ir(), vals.join(", ")));
-        Val { text: out, ty: elem.as_ref().clone(), literal: false }
-    }
-
     /// the most recent item of a stream
     fn latest_of(&mut self, s: &Val, ty: &Ty, b: &mut Body, dst: Option<&str>) -> Result<Val, Error> {
         let Ty::Stream(elem) = ty else { unreachable!() };
-        match self.stream_fields(ty) {
-            Some(fields) => Ok(self.read_fields(s, &fields, "latest", "", b, dst)),
-            None => {
-                let out = name_for(dst, elem, b);
-                b.line(&format!("{}: {} = latest {}", out, elem.ir(), s.text));
-                Ok(Val { text: out, ty: elem.as_ref().clone(), literal: false })
-            }
-        }
+        let out = name_for(dst, elem, b);
+        b.line(&format!("{}: {} = latest {}", out, elem.ir(), s.text));
+        Ok(Val { text: out, ty: elem.as_ref().clone(), literal: false })
     }
 
     /// one push, through `__push` (log 38): a tick from the virtual
@@ -5145,12 +5073,12 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
             b.line(&format!("__out_ch({})", v.text));
             return;
         }
-        if self.system(name, b) && self.stream_fields(&s.ty).is_none() {
+        if self.system(name, b) {
             // a system stream's only reader is the platform (log 84):
             // the ring never slides, so the push is a store and a count
             let v = b.materialize(v);
             b.line(&format!("push_plain({}, {})", s.text, v.text));
-        } else if regular && self.stream_fields(&s.ty).is_none() {
+        } else if regular {
             let v = b.materialize(v);
             b.line(&format!("push({}, {})", s.text, v.text));
         } else {
@@ -5167,22 +5095,9 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
     }
 
     fn emit_push_only(&mut self, s: &Val, v: &Val, b: &mut Body) {
-        match self.stream_fields(&s.ty) {
-            None => {
-                // a literal is typed first: `__push` is a template
-                let v = b.materialize(v);
-                b.line(&format!("__push({}, {})", s.text, v.text));
-            }
-            Some(fields) => {
-                for (f, t) in &fields {
-                    let r = b.tmp();
-                    b.line(&format!("{}: {}$ = get {}, {}", r, t.ir(), s.text, f));
-                    let x = b.tmp();
-                    b.line(&format!("{}: {} = get {}, {}", x, t.ir(), v.text, f));
-                    b.line(&format!("__push({}, {})", r, x));
-                }
-            }
-        }
+        // a literal is typed first: `__push` is a template
+        let v = b.materialize(v);
+        b.line(&format!("__push({}, {})", s.text, v.text));
     }
 
     /// `x$ << a << b while (c)`: a push per item, the stream's name on
@@ -5375,7 +5290,7 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
             b.line(&format!("__out_block({})", view));
             return;
         }
-        if !own && self.stream_fields(&s.ty).is_none() {
+        if !own {
             let regular = if b.vars.contains_key(name) { self.regular_locals.contains(name) } else { self.regular.contains(name) };
             let word = if self.system(name, b) { "push_plain" } else if regular { "push" } else { "__push" };
             b.line(&format!("{}({}, {})", word, s.text, view));
@@ -5458,7 +5373,7 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
             if time == "time" && of == "of" {
                 if let Some(n) = name_of(x).filter(|n| self.stream_var(n, b).is_some()) {
                     let sv = self.lower_expr(&Expr { kind: ExprKind::Name(n), line }, None, b, None)?;
-                    let first = self.first_reader(&sv, b);
+                    let first = sv.text.clone();
                     let (k, t) = (b.tmp(), b.tmp());
                     b.line(&format!("{}: i64, {}: i64 = position({})", k, t, first));
                     let out = name_for(dst, &Ty::Num("int".into()), b);
@@ -5481,12 +5396,14 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
         };
         let ty = self.stream_var(&sname, b).unwrap();
         let Ty::Stream(elem) = ty.clone() else { unreachable!() };
-        let fields = self.stream_fields(&ty);
         let s = self.lower_expr(&Expr { kind: ExprKind::Name(sname.clone()), line }, None, b, None)?;
+        // the words that weigh two items and round between them have no
+        // meaning on a ring of structs (log 88); the IR refuses them by
+        // name too, and this says it with the zero line
         let no_struct = |l: &Lowerer, what: &str| -> Result<(), Error> {
-            if fields.is_some() {
+            if matches!(*elem, Ty::Struct(_)) {
                 let _ = l;
-                return Err(lex::error(&file, line, format!("{} on a stream of structs is not in this milestone", what)));
+                return Err(lex::error(&file, line, format!("{} on a stream of structs: a struct has no midpoint, so there is no value between two of them", what)));
             }
             Ok(())
         };
@@ -5511,27 +5428,13 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
                 }
                 let n = self.as_i64(&nv, b);
                 let sty = ty.clone();
-                let moved = |l: &mut Lowerer, out: &str, b: &mut Body| match l.stream_fields(&sty) {
-                    None => b.line(&format!("{}: {} = advance({}, {})", out, sty.ir(), s.text, n)),
-                    Some(fields) => {
-                        let mut parts = Vec::new();
-                        for (f, t) in &fields {
-                            let r = b.tmp();
-                            b.line(&format!("{}: {}$ = get {}, {}", r, t.ir(), s.text, f));
-                            let r2 = b.tmp();
-                            b.line(&format!("{}: {}$ = advance({}, {})", r2, t.ir(), r, n));
-                            parts.push(r2);
-                        }
-                        b.line(&format!("{}: {} = pack {}", out, sty.ir(), parts.join(", ")));
-                    }
-                };
+                let moved = |_: &mut Lowerer, out: &str, b: &mut Body| b.line(&format!("{}: {} = advance({}, {})", out, sty.ir(), s.text, n));
                 self.rebind_stream(&sname, &s, &moved, b, line)?;
                 Ok(Some(none))
             }
             ("frame", false, []) => {
                 // everything unread, as a new stream (a copy, log 38),
                 // and the reader moved past it
-                no_struct(self, "'frame'")?;
                 let f = b.tmp();
                 let k = b.tmp();
                 let sty = ty.clone();
@@ -5542,29 +5445,20 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
                 Ok(Some(self.copy_view(&elem, &f, b, dst)))
             }
             ("ended", false, []) => {
-                let first = self.first_reader(&s, b);
+                let first = s.text.clone();
                 let out = name_for(dst, &Ty::Bool, b);
                 b.line(&format!("{}: u1 = ended({})", out, first));
                 Ok(Some(Val { text: out, ty: Ty::Bool, literal: false }))
             }
             ("end", false, []) => {
-                match fields {
-                    None => b.line(&format!("end({})", s.text)),
-                    Some(fields) => {
-                        for (f, t) in &fields {
-                            let r = b.tmp();
-                            b.line(&format!("{}: {}$ = get {}, {}", r, t.ir(), s.text, f));
-                            b.line(&format!("end({})", r));
-                        }
-                    }
-                }
+                b.line(&format!("end({})", s.text));
                 self.trigger(&sname, b);
                 Ok(Some(none))
             }
             // the index of the next unread item, and nothing else: not a
             // time word, so it never times the stream (log 85, question 42)
             ("position", false, []) => {
-                let first = self.first_reader(&s, b);
+                let first = s.text.clone();
                 let k = b.tmp();
                 b.line(&format!("{}: i64 = get {}, pos", k, first));
                 let out = name_for(dst, &Ty::Num("int".into()), b);
@@ -5572,7 +5466,6 @@ type __s_{} = struct\n    {}", name, name, ir.join("\n    ")));
                 Ok(Some(Val { text: out, ty: Ty::Num("int".into()), literal: false }))
             }
             ("behind", true, [arg]) => {
-                no_struct(self, "'behind'")?;
                 let Some(a) = one_arg(arg) else { return Ok(None) };
                 let kv = self.lower_expr(&a, Some(&Ty::Num("int".into())), b, None)?;
                 if !matches!(kv.ty, Ty::Num(_)) {
