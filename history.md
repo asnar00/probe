@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### stream: a stream is a queue unless a history word names it — `efc9d16` · 2026-09-10
+
+```
+fn push_queue(s: any$, v: any)
+    ...
+    slot: i64 = sub pushed, origin
+    room: u1 = cmp.lt slot, cap
+    check room
+    store v, q, slot
+```
+
+The parity pass, hop 22 (fm3 log 89, question 47). ash ruled that the choice of underlying data structure depends on what is needed: a stream is a **queue** — it holds an item only until its reader has passed it — unless a history word or a time word in the store names it (`latest`, `behind`, `x$ at (t)`, `x$ from (a) to (b)`, `time of x$`), in which case it keeps the ring. The words in the text decide, as they decide timing; nothing is inferred from who reads a stream. The queue built first was the ring with a fullness check, and costing it before believing it gave 26 against the ring's 28 — the mirror and the seam are most of the push — so the queue drops the ring's arithmetic instead: the header's spare word holds `origin`, the index of the item in slot 0, and item k is at slot `k - origin`, a plain run with no mirror, no wrap and no seam. Push **22**, block push **88** against 248, `peek` **16** against 23. When a reader has passed everything, `free_queue` moves the origin and every slot comes back; the front end emits that after a node run where the node is the queue's only reader. `push_plain` and hop 17's system stream collapse into it. hello's `run` **1 683 → 1 622** against the oracle's 1 165, lex's case 1 195 → **1 143** against 415 and a turn of `lex` 174 → 150. `probe test` 984/984, zero 482/482 on the four CPU paths and 465/465 on air, cargo test 112.
+
 ### stream: a ring may hold a struct — `0de20dd` · 2026-09-10
 
 ```
