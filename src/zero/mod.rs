@@ -6,6 +6,7 @@
 
 pub mod lex;
 pub mod lower;
+pub mod meter;
 pub mod run;
 pub mod store;
 pub mod syntax;
@@ -22,6 +23,7 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         eprintln!("usage: probe zero <store> emit          print the store's IR");
         eprintln!("       probe zero <store> run <case>    run one ## testing case natively, on the real clock");
         eprintln!("                            [--fast|-t]  ... as fast as it can, on the virtual clock");
+        eprintln!("       probe zero meter <store|dir>     the lines that use a non-zeroic form: a store's, listed, or a row a store");
         eprintln!("       probe zero test [dir] [path]     run every store under dir (suite/zero)");
         eprintln!("                                        on a path: wasm, riscv, arm-qemu, air (native by default)");
         ExitCode::FAILURE
@@ -49,6 +51,18 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
                 }
             }
         }
+        // `probe zero meter <store|dir>` (fm3 log 129): what is not
+        // yet zeroic, counted and listed; nothing is lowered or refused
+        Some("meter") if args.len() == 2 => match meter::report(Path::new(&args[1])) {
+            Ok(text) => {
+                print!("{}", text);
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+                ExitCode::FAILURE
+            }
+        },
         Some(store) if args.get(1).map(String::as_str) == Some("emit") => match run::emit(Path::new(store)) {
             Ok(ir) => {
                 print!("{}", ir);
