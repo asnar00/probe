@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a program never writes `in$` — `7f45a72` · 2026-10-06
+
+```
+on arrive first()
+    src$ << "let x = 4"
+
+on arrive again()
+    src$ << "2;\n"
+    end src$
+```
+
+`suite/zero/lex/lex/lex.zero:49-54`, beside `token t$ = lex(in$)`, `char src$` and `token u$ = lex(src$)` at lines 4 to 6. The parity pass, hop 10, transformation 33 (fm3 log 101; question 35, ruled 5 October). The input device is the mirror of the output device, read and never written, so `src/zero/lower.rs` refuses a program's push into `in$`, an edge into it and `end in$`, naming the device and saying input comes from the platform, a case's `with in "text"`. The `lex` store was the one that did it; its task is now wired a second time to a stream of its own and the experiment's cases give the same results over `u$`, with `lexed() with in "let x = 4" → 3` keeping the device proven. Its comparable case against `lex-min.ssa` is now `two_arrivals` alone, both arrivals inside it: **1 063 against 415**, 2.56×, on 444 lines; it was 1 143 with the runner's bytes and the start. zero 567 → 569 runs native, 25 zero unit tests.
+
 ### zero: a stream declared and named nowhere else has no storage — `9cac9ef` · 2026-10-06
 
 ```
