@@ -4,6 +4,17 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### suite: a forked child says for itself that its JIT pages are to be run — `3e89209` · 2026-10-06
+
+```
+        #[cfg(target_os = "macos")]
+        unsafe {
+            pthread_jit_write_protect_np(1)
+        };
+```
+
+`src/suite.rs:509-512`, the first thing the child does in `forked`. A case that must end in a failed check runs in a forked child, so the trap ends the child and not the suite. Under the whole of `cargo test`, and never alone, such a child sometimes died of signal 10 at its first instruction where a failed check is signal 5: five sightings on 6 October in four different tests (`slice.ssa`'s `mismatch` twice, `arena.ssa`'s `checks_pass`, one in `zero_suite_native`). Whether JIT pages may be written or run is a switch that belongs to the thread, and a child forked from a thread that was interrupted while it was writing code can be left with it the wrong way round. A standalone test of the mechanism, threads writing code, forking and the child calling it under load: 1 and 3 deaths in 12 000 forks without the line, none in 12 000 with it. Applied on that evidence at Ash's word, to be looked at again if it comes back. `scratchpad/chain.sh` also reruns any failed test alone three times now and writes the result under the failure.
+
 ### zero: a queue's push asks whether its stream has ended only where it could have — `65d3856` · 2026-10-06
 
 ```
