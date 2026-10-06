@@ -8765,8 +8765,14 @@ fn time_words_in(e: &Expr, params: &[String], w: &mut Words) {
     match &e.kind {
         // a stream named in an expression is read: `x$` is its latest
         // item, `x$[i]` an item, `for x in x$` its unread ones
+        // ... unless the name is the function's own stream parameter,
+        // which is not the feature's stream however it is spelled, so
+        // a task over `x$` wired to `x$` still lets the queue free (fm3
+        // log 113)
         ExprKind::Seq(n) => {
-            w.read.insert(n.clone());
+            if !params.contains(n) {
+                w.read.insert(n.clone());
+            }
         }
         ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => time_words_in(x, params, w),
         ExprKind::List(items) => items.iter().for_each(|x| time_words_in(x, params, w)),

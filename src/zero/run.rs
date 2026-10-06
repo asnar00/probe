@@ -1265,6 +1265,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// a queue is freed by who reads it: a task's own parameter is not
+    /// a reading of the feature's stream of that name, and a function
+    /// that names the feature's stream is (fm3 log 113)
+    #[test]
+    fn a_parameter_is_not_a_reading_of_the_stream_it_is_spelled_like() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-spelled-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n").unwrap();
+        let frees = |param: &str, more: &str| -> bool {
+            let code = format!("int total = 0\nint x$\nsoak(x$)\n\non soak (int {p}$)\n    loop\n        if (count {p}$ == 0)\n            break\n        total = total + peek {p}$ at (0)\n        advance {p}$ by (1)\n\non feed()\n    x$ << 1\n{more}", p = param, more = more);
+            std::fs::write(dir.join("h/h.zero"), code).unwrap();
+            lower::lower(&store::read(&dir).unwrap()).unwrap().ir.contains("free_queue(")
+        };
+        // however the sink spells its parameter, the queue frees
+        assert!(frees("s", "") && frees("x", ""));
+        // a function that reads the feature's stream by name is a second
+        // reader, and one that hands it on names it too
+        assert!(!frees("x", "\non (int n) = first()\n    n = peek x$ at (0)\n"));
+        assert!(!frees("x", "\non (int n) = size (int s$)\n    n = peek s$ at (0)\n\non (int n) = sized()\n    n = size(x$)\n"));
+        // one that only counts it reads no item (question 48)
+        assert!(frees("x", "\non (int n) = waiting()\n    n = count x$\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// a second `count` of the same reader value is the first's number
     /// where nothing between could have pushed, and only there (fm3 log 112)
     #[test]
