@@ -806,6 +806,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `when` on a push (fm3 question 75 rule 3, log 126): the item goes
+    /// out where the condition holds. In a stream processor it is the
+    /// push under a branch in the function of one item; in a plain
+    /// function it is the `if` round the push. A push with `while` and
+    /// `when` both is refused, and so is `when` on an edge
+    #[test]
+    fn a_push_goes_out_when_its_condition_holds() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-when-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (3) → 1\n").unwrap();
+        let head = "int x$\nint d$ = kept(x$)\nint p$\n\non (int d$) << kept (int x$)\n    d$ << x$ when (x$ > 0)\n\n";
+        let with = |more: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}\n", head, more)).unwrap();
+            emit(&dir)
+        };
+        let ir = with("on (int n) = f (int k)\n    x$ << k\n    p$ << k when (k > 2)\n    n = count d$ + count p$").unwrap();
+        assert!(ir.contains("fn __z1_each(_x: int)\n    _this: ptr = addr __ctx_mem\n    _1: u1 = cmp.gt _x, 0\n    if _1\n        _2: __ctx = load _this\n        _3: int$ = get _2, d\n        push_queue_open(_3, _x)\n    ret\n"), "{}", ir);
+        assert!(ir.contains("    _3: u1 = cmp.gt k, 2\n    if _3\n        _4: __ctx = load _this\n        _5: int$ = get _4, p\n        push_queue_open(_5, k)\n"), "{}", ir);
+        for (more, said) in [
+            ("on f (int k)\n    p$ << k while (_ < 3) when (k > 2)", "h.zero:9: a push takes `while` or `when`, not both: `while` repeats the push, `when` says whether it happens"),
+            ("on f (int k)\n    p$ << k when (k > 2) while (_ < 3)", "h.zero:9: a push takes `while` or `when`, not both: `while` repeats the push, `when` says whether it happens"),
+            ("int q$\nq$ << p$ when (p$ > 0)", "h.zero:9: `when` on an edge is not built: an edge moves every item, and a stream processor of one line says which, `on (T t$) << some (T x$)` with `t$ << x$ when (condition)`"),
+        ] {
+            let err = with(more).expect_err(more);
+            assert!(err.ends_with(said), "{}: {}", more, err);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `or` and `and` join two conditions (fm3 question 66): `and`
     /// tighter than `or`, both looser than a comparison, both sides
     /// worked out, one operation each. A declared name that has `and`

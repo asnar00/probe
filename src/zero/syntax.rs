@@ -126,7 +126,9 @@ pub enum Stmt {
     /// `int q, int r = divide (a) by (b)`: several declared at once from one call
     Multi { vars: Vec<Param>, value: Expr, line: usize },
     Assign { targets: Vec<Target>, value: Expr, line: usize },
-    If { cond: Expr, then: Vec<Stmt>, els: Option<Vec<Stmt>>, line: usize },
+    /// `when` says the `if` was written as `x$ << item when (c)` (fm3
+    /// question 75 rule 3, log 126): the push under its condition
+    If { cond: Expr, then: Vec<Stmt>, els: Option<Vec<Stmt>>, line: usize, when: bool },
     /// `loop (vars) while (c) yields x, y` (log 40, 48): `yields` names the
     /// carried variables that leave, into declared or existing names
     Loop { vars: Vec<VarDecl>, cond: Option<Expr>, body: Vec<Stmt>, yields: Vec<String>, into: Option<LoopInto>, line: usize },
@@ -442,6 +444,9 @@ impl<'a> Parser<'a> {
                 let (items, cond) = self.parse_pushes()?;
                 if items.is_empty() {
                     return Err(self.err("nothing to push: an edge is `out$ << i$`"));
+                }
+                if self.at_word("when") {
+                    return Err(self.err("`when` on an edge is not built: an edge moves every item, and a stream processor of one line says which, `on (T t$) << some (T x$)` with `t$ << x$ when (condition)`"));
                 }
                 self.expect_newline()?;
                 Ok(Decl::Edge { target, items, cond, line })
@@ -766,7 +771,7 @@ impl<'a> Parser<'a> {
                 } else {
                     None
                 };
-                Ok(Stmt::If { cond, then, els, line })
+                Ok(Stmt::If { cond, then, els, line, when: false })
             }
             Some(Tok::Word(w)) if w == "loop" => {
                 self.pos += 1;
@@ -884,6 +889,19 @@ impl<'a> Parser<'a> {
                 let (items, cond) = self.parse_pushes()?;
                 if items.is_empty() {
                     return Err(self.err("nothing to push: `x$ << item`"));
+                }
+                // `x$ << item when (c)`: the push where the condition
+                // holds (fm3 question 75 rule 3)
+                if self.eat_word("when") {
+                    if cond.is_some() {
+                        return Err(self.err("a push takes `while` or `when`, not both: `while` repeats the push, `when` says whether it happens"));
+                    }
+                    let c = self.parse_expr()?;
+                    if self.at_word("while") {
+                        return Err(self.err("a push takes `while` or `when`, not both: `while` repeats the push, `when` says whether it happens"));
+                    }
+                    self.expect_newline()?;
+                    return Ok(Stmt::If { cond: c, then: vec![Stmt::Push { target, items, cond: None, existing: false, line }], els: None, line, when: true });
                 }
                 self.expect_newline()?;
                 Ok(Stmt::Push { target, items, cond, existing: false, line })
@@ -1208,7 +1226,7 @@ impl<'a> Parser<'a> {
     /// a word that ends a phrase: a statement's own word, or a range's
     /// `to` and `through` inside `[ ]`
     fn ends_phrase(&self, w: &str) -> bool {
-        matches!(w, "then" | "else" | "while" | "merge" | "in") || (self.ranges > 0 && matches!(w, "through" | "to")) || (self.header > 0 && w == "yields")
+        matches!(w, "then" | "else" | "while" | "when" | "merge" | "in") || (self.ranges > 0 && matches!(w, "through" | "to")) || (self.header > 0 && w == "yields")
     }
 
     /// the parts of a phrase: words, bracketed argument groups, and bare

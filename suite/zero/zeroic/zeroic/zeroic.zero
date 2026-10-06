@@ -37,6 +37,13 @@ char word$
 int rw$ = repeats(word$)
 int h$
 int rh$ = risen(h$)
+int fi$
+int pos$ = positive(fi$)
+int ch$
+int cd$ = changes(ch$)
+int ev$
+int tens$ = tenths(ev$)
+int plain$
 
 on (int d$) << doubled (int x$)
     d$ << x$ * 2
@@ -187,3 +194,29 @@ on (int n) = kept through a block()
 on (int n) = two conditions()
     h$ << 3 << 5 << 4 << 100 << 0 << 7
     n = peek rh$ at (0) * 100000 + peek rh$ at (1) * 10000 + peek rh$ at (2) * 1000 + peek rh$ at (3) * 100 + peek rh$ at (4) * 10 + peek rh$ at (5)
+
+on (int e$) << positive (int x$)
+    e$ << x$ when (x$ > 0)
+
+on (int c$) << changes (int x$)
+    c$ << x$ when (x$ != x$[-1])
+
+on (int t$) << tenths (int x$)
+    t$ << x$ when (x$ % 10 == 0)
+
+on (int n) = filtered()
+    fi$ << 3 << -1 << 0 << 7
+    n = count pos$ * 100 + peek pos$ at (0) * 10 + peek pos$ at (1)
+
+on (int n) = changed()
+    ch$ << 1 << 1 << 2 << 2 << 2 << 1
+    n = count cd$ * 1000 + peek cd$ at (0) * 100 + peek cd$ at (1) * 10 + peek cd$ at (2)
+
+on (int n) = every tenth to (int k)
+    ev$ << [1 through k]
+    n = count tens$ * 1000 + peek tens$ at (count tens$ - 1)
+
+on (int n) = pushed above two (int k)
+    plain$ << k when (k > 2)
+    plain$ << 9
+    n = count plain$ * 10 + peek plain$ at (0)

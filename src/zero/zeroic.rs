@@ -21,10 +21,12 @@ pub struct Said {
     pub line: usize,
 }
 
-/// a push into the processor's own output
+/// a push into the processor's own output, and the condition it
+/// goes out under, `t$ << item when (c)`
 #[derive(Clone)]
 pub struct Out {
     pub item: Expr,
+    pub when: Option<Expr>,
     pub line: usize,
 }
 
@@ -248,6 +250,24 @@ fn handed_on(e: &Expr, x: &str, takers: &Takers) -> Option<String> {
     takers.iter().any(|(tk, seqs)| *tk == k && seqs.len() == args.len() && seqs.iter().zip(&args).any(|(s, a)| *s && *a)).then(|| words.join(" "))
 }
 
+/// a push statement of a processor's body, taken as its outputs
+fn pushed(s: &Stmt, when: Option<&Expr>, out: &str, file: &str, outs: &mut Vec<Out>) -> Result<(), Error> {
+    let Stmt::Push { target, items, cond, existing, line } = s else { unreachable!() };
+    if *existing {
+        return Err(lex::error(file, *line, "`existing` belongs in a `<<` method, not in a stream processor"));
+    }
+    if !is_seq(target, out) {
+        return Err(lex::error(file, *line, format!("a stream processor pushes into its own output, '{}$'", out)));
+    }
+    if cond.is_some() {
+        return Err(lex::error(file, *line, format!("`while` on a push repeats it, which is a loop, and a stream processor has none: say the stream by a line of its own, or write `{}$ << item when (condition)`", out)));
+    }
+    for e in items {
+        outs.push(Out { item: e.clone(), when: when.cloned(), line: *line });
+    }
+    Ok(())
+}
+
 /// How a declaration's body is read (fm3 question 65). `None` is the
 /// reading every task had: it is run over what has arrived, and walks
 /// it. A declaration with `<<` and one stream parameter and nothing
@@ -317,18 +337,10 @@ pub fn read(fd: &FnDecl, file: &str, takers: &Takers) -> Result<Option<Processor
                 p.said.push(Said { ty: v.ty.clone(), name: v.name.clone(), value: e.clone(), line: v.line });
             }
             Stmt::Var(v) => return Err(lex::error(file, v.line, format!("in a stream processor every line holds for every item, so each line says a stream: write `{} {}$ = ...`", v.ty, v.name))),
-            Stmt::Push { target, items, cond, existing, line } => {
-                if *existing {
-                    return Err(lex::error(file, *line, "`existing` belongs in a `<<` method, not in a stream processor"));
-                }
-                if !is_seq(target, out) {
-                    return Err(lex::error(file, *line, format!("a stream processor pushes into its own output, '{}$'", out)));
-                }
-                if cond.is_some() {
-                    return Err(lex::error(file, *line, format!("`while` on a push repeats it, which is a loop, and a stream processor has none: say the stream by a line of its own, or write `{}$ << item when (condition)`", out)));
-                }
-                for e in items {
-                    p.outs.push(Out { item: e.clone(), line: *line });
+            Stmt::Push { .. } => pushed(s, None, out, file, &mut p.outs)?,
+            Stmt::If { cond, then, when: true, .. } => {
+                for t in then {
+                    pushed(t, Some(cond), out, file, &mut p.outs)?;
                 }
             }
             Stmt::If { line, .. } => return Err(lex::error(file, *line, format!("an `if` round a line of a stream processor: every line holds for every item, so the condition goes on the push, `{}$ << item when (condition)`, or in the value, `if (c) then (a) else (b)`", out))),
@@ -380,6 +392,9 @@ pub fn read(fd: &FnDecl, file: &str, takers: &Takers) -> Result<Option<Processor
     }
     for o in &p.outs {
         walk(&o.item, &mut check);
+        if let Some(c) = &o.when {
+            walk(c, &mut check);
+        }
     }
     if let Some(e) = bad {
         return Err(e);
@@ -635,7 +650,11 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool) -> Written {
         body.push(Stmt::Var(VarDecl { line: d.line, scope: Vec::new(), ty: d.ty.clone(), name: local(&d.name), seq: false, init: Some(Init::Value(p.each(&d.value))), merge: None, rate: None }));
     }
     for o in &p.outs {
-        body.push(Stmt::Push { target: expr(ExprKind::Seq(out.to_string()), o.line), items: vec![p.each(&o.item)], cond: None, existing: false, line: o.line });
+        let push = Stmt::Push { target: expr(ExprKind::Seq(out.to_string()), o.line), items: vec![p.each(&o.item)], cond: None, existing: false, line: o.line };
+        body.push(match &o.when {
+            Some(c) => Stmt::If { cond: p.each(c), then: vec![push], els: None, line: o.line, when: true },
+            None => push,
+        });
     }
     for c in p.kept.iter().filter(|c| !c.input) {
         body.push(assign(&result(&c.name), name(&local(&c.name), line), line));
