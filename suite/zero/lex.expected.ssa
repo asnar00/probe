@@ -10,8 +10,6 @@ data __arena: array(i64, 3)
 ; a rate is stamped with it. Exact time is the boundary's: `x$ at (t)`
 ; and `position` convert once, in the library
 data __clock: array(i64, 1)
-; the scheduler is running: a push from inside a task does not start it again
-data __running: array(i64, 1)
 
 ; the output device (section 15, question 45, log 87): `out$` looks like
 ; a stream, but a push into it writes a character to the place and
@@ -69,8 +67,6 @@ type token = struct
 ;   __node1_c_seen: node, last (lex)
 ;   __node1_fin: node, last (lex)
 ;   __node2_c: node, last (lex)
-;   __node2_c_seen: node, last (lex)
-;   __node2_fin: node, last (lex)
 type __ctx = struct
     __enabled_platform: u1
     __enabled_lex: u1
@@ -82,8 +78,6 @@ type __ctx = struct
     __node1_c_seen: i64
     __node1_fin: u1
     __node2_c: u8$
-    __node2_c_seen: i64
-    __node2_fin: u1
 
 data __ctx_mem: array(__ctx, 1)
 data __s11 = "let x = 4"
@@ -97,15 +91,13 @@ fn __zero_reset()
     arena_init(a, h, 65536)
     k: ptr = addr __clock
     store 0: i64, k
-    r: ptr = addr __running
-    store 0: i64, r
     o: ptr = addr __out_n
     store 0: i64, o
     _1: u8$ = __queue_u8(1000000, 512)
     _2: token$ = __queue_token(1000000, 64)
     _3: u8$ = __queue_u8(1000000, 64)
     _4: token$ = __queue_token(1000000, 64)
-    _5: __ctx = pack 1, 1, _1, _2, _3, _4, _1, 0, 0, _3, 0, 0
+    _5: __ctx = pack 1, 1, _1, _2, _3, _4, _1, 0, 0, _3
     p: ptr = addr __ctx_mem
     store _5, p
     ret
@@ -210,32 +202,6 @@ fn __set___node2_c(v: u8$)
     c2: __ctx = set c, __node2_c, v
     store c2, p
     ret
-
-fn __get___node2_c_seen() -> i64
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: i64 = get c, __node2_c_seen
-    ret v
-
-fn __set___node2_c_seen(v: i64)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node2_c_seen, v
-    store c2, p
-    ret
-
-fn __get___node2_fin() -> u1
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u1 = get c, __node2_fin
-    ret v
-
-fn __set___node2_fin(v: u1)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node2_fin, v
-    store c2, p
-    ret
 fn __on_lex() -> u1
     own: u1 = __get___enabled_lex()
     ret own
@@ -272,57 +238,11 @@ fn __node1() -> u1
         yield 0
     ret ran
 
-; node 2: token u$ = lex (src$) — run when an input has more than the node has seen, or has ended and the node has not run since
-fn __node2() -> u1
-    fin: u1 = __get___node2_fin()
-    notfin: u1 = xor fin, 1
-    _1: u8$ = __get___node2_c()
-    _2: i64 = received(_1)
-    _3: i64 = __get___node2_c_seen()
-    _4: u1 = cmp.gt _2, _3
-    _5: u1 = ended(_1)
-    _6: u1 = and _5, notfin
-    _7: u1 = or _4, _6
-    on: u1 = __on_lex()
-    due: u1 = and _7, on
-    ran: u1 = if due
-        _8: token$ = __get_u()
-        _9: u8$ = lex(_8, _1, 0: i64)
-        __set___node2_c(_9)
-        free_queue(_9)
-        __set___node2_c_seen(_2)
-        __set___node2_fin(_5)
-        yield 1
-    else
-        off: u1 = xor on, 1
-        _10: u1 = and _4, off
-        if _10
-            _11: u8$ = set _1, pos, _2
-            __set___node2_c(_11)
-            free_queue(_11)
-            __set___node2_c_seen(_2)
-        yield 0
-    ret ran
+; node 2: token u$ = lex (src$) — woken by its pushers (fm3 log 103): a push into src$ from a plain function, or its first end, calls the task there
 
-; the scheduler (log 25, 78): the node graph is acyclic, so one pass in producer-before-consumer order settles it — every node at the start, and after a push into a stream the nodes it reaches
+; the scheduler (log 25, 78): the node graph is acyclic, so one pass in producer-before-consumer order settles it — every node its pushers do not wake at the start, and after a push into a stream the nodes it reaches; no trigger can be met while a node runs, so there is no guard, and a trigger that reaches one node is that node's call (fm3 log 103)
 fn __run()
-    p: ptr = addr __running
-    busy: i64 = load p
-    idle: u1 = cmp.eq busy, 0
-    if idle
-        store 1: i64, p
-        r1: u1 = __node1()
-        r2: u1 = __node2()
-        store 0: i64, p
-    ret
-fn __run_src()
-    p: ptr = addr __running
-    busy: i64 = load p
-    idle: u1 = cmp.eq busy, 0
-    if idle
-        store 1: i64, p
-        r2: u1 = __node2()
-        store 0: i64, p
+    r1: u1 = __node1()
     ret
 
 ; feature platform (layer platform)
@@ -411,7 +331,18 @@ fn arrive_first()
     _3: i64 = len __s11
     _4: u8[] = __str(_2, _3)
     push_queue(_1, _4)
-    __run_src()
+    _5: u8$ = __get___node2_c()
+    _6: u1 = __on_lex()
+    if _6
+        _7: token$ = __get_u()
+        _8: u8$ = lex(_7, _5, 0: i64)
+        __set___node2_c(_8)
+        free_queue(_8)
+    else
+        _9: i64 = received(_5)
+        _10: u8$ = set _5, pos, _9
+        __set___node2_c(_10)
+        free_queue(_10)
     ret
 fn arrive_again()
     _1: u8$ = __get_src()
@@ -419,10 +350,30 @@ fn arrive_again()
     _3: i64 = len __s12
     _4: u8[] = __str(_2, _3)
     push_queue(_1, _4)
-    __run_src()
-    _5: u8$ = __get_src()
-    end(_5)
-    __run_src()
+    _5: u8$ = __get___node2_c()
+    _6: u1 = __on_lex()
+    if _6
+        _7: token$ = __get_u()
+        _8: u8$ = lex(_7, _5, 0: i64)
+        __set___node2_c(_8)
+        free_queue(_8)
+    else
+        _9: i64 = received(_5)
+        _10: u8$ = set _5, pos, _9
+        __set___node2_c(_10)
+        free_queue(_10)
+    _11: u8$ = __get_src()
+    _12: u1 = ended(_11)
+    end(_11)
+    if _12
+    else
+        _13: u8$ = __get___node2_c()
+        _14: u1 = __on_lex()
+        if _14
+            _15: token$ = __get_u()
+            _16: u8$ = lex(_15, _13, 0: i64)
+            __set___node2_c(_16)
+            free_queue(_16)
     ret
 fn two_arrivals() -> (int, int)
     arrive_first()
@@ -481,16 +432,36 @@ fn a_word_at_the_end() -> (int, int)
     _3: i64 = len __s13
     _4: u8[] = __str(_2, _3)
     push_queue(_1, _4)
-    __run_src()
-    _5: token$ = __get_u()
-    _6: i64 = count _5
-    a: int = conv _6
-    _7: u8$ = __get_src()
-    end(_7)
-    __run_src()
-    _8: token$ = __get_u()
-    _9: i64 = count _8
-    b: int = conv _9
+    _5: u8$ = __get___node2_c()
+    _6: u1 = __on_lex()
+    if _6
+        _7: token$ = __get_u()
+        _8: u8$ = lex(_7, _5, 0: i64)
+        __set___node2_c(_8)
+        free_queue(_8)
+    else
+        _9: i64 = received(_5)
+        _10: u8$ = set _5, pos, _9
+        __set___node2_c(_10)
+        free_queue(_10)
+    _11: token$ = __get_u()
+    _12: i64 = count _11
+    a: int = conv _12
+    _13: u8$ = __get_src()
+    _14: u1 = ended(_13)
+    end(_13)
+    if _14
+    else
+        _15: u8$ = __get___node2_c()
+        _16: u1 = __on_lex()
+        if _16
+            _17: token$ = __get_u()
+            _18: u8$ = lex(_17, _15, 0: i64)
+            __set___node2_c(_18)
+            free_queue(_18)
+    _19: token$ = __get_u()
+    _20: i64 = count _19
+    b: int = conv _20
     ret a, b
 fn lexed() -> int
     _1: token$ = __get_t()

@@ -17,6 +17,7 @@ A task is a function that produces a stream over time: it is declared with `<<` 
 - `wired at feature scope`, `wired from a variable`, `fed twice`, `carried between runs`, `closed`, `closed once` read the nodes' streams.
 - `rated`, `sampled at a rate`, `composed at a rate` wire a task at `1 hz` and read the clock through `time of x$` and `x$ at (t)`; `position x$` beside them is the index alone and asks no time.
 - `fed a literal` passes a stream made from a list to a task; `run now moves the reader`, `run now inside a loop` pass a local stream to a task, which moves it.
+- `runs (x$)` pushes how many items it found unread each time it is run, and takes them; `r$` is wired to `v$`, so `r$` holds one item a run of the node. `a batch`, `nothing pushed (k)` and `ended twice` read it.
 - `right$ << left$ << 0` is an edge (section 9, log 72): `left$` wired into `right$`, each item moved as it arrives and a `0` pushed after each; `edged` pushes into `left$` and reads `right$`.
 
 ## rules
@@ -26,6 +27,8 @@ A task is a function that produces a stream over time: it is declared with `<<` 
 - At feature scope the same forms wire a node. A node runs when an input has unread items, or has ended and the node has not run since; a node with no input runs once, when the store is reset; after a run a node is finished when all its inputs have ended.
 - The scheduler runs at the end of the store's reset and after every push or `end`, from a plain function, into a stream some node reads; a task never starts it.
 - A task wired `at (n hz)` sleeps one period after each push into its own output; the clock starts at zero for every case and nothing else moves it. The output ring is irregular, its ticks a period apart. A task composed into another's output runs at the outer rate.
+- One push statement is one run of a node, after all its items: `v$ << 1 << 2 << 3` gives `a batch() → 13`, one run that found three. A statement that pushes nothing runs nothing: `v$ << [k to 1]` with `k` at 1 gives `nothing pushed (1) → 0`. The first `end` of a stream runs its nodes once more and a second runs nothing: `ended twice() → 20`, two runs, the push's and the first end's, the last finding nothing unread.
+- Those three are what a program could see of how a node is run, and they are pinned because the lowering changed under them (parity hop 11, fm3 log 103): the nodes on `x$`, `y$` and `v$` are woken by their pushers. Each of those streams is pushed into and ended only by plain functions that nothing the scheduler runs can reach, so a push statement calls the node's task there, in line, under the feature's gate, without asking whether the node is due; where the statement might push nothing the call stands under whether the stream received anything, and at an `end` under whether the stream had already ended. The three nodes with no input still run at the start.
 - `while` after a task call is refused; so is a task call before a pushed item in a feature-scope chain.
 - A stream on the right of `<<` at feature scope is an edge: it moves every item into the stream on the left by the dispatch a push uses, an item of the element type as itself, and pushes the rest of the chain after each item; it is gated by its feature. `left$` is only pushed into and wired, no word reads it, so it has no storage (question 50, fm3 log 92): `left$ << 1 << 2` calls the edge for each item, which pushes the item and then `0` into `right$`, a stream `edged` reads and so a stored one. Where a word reads an edge's source it is stored and the edge is a node like a wiring's, run when the source has more than it has seen and carrying its reader between runs; `suite/zero/edges` shows both. The first item of such a line must be a stream, and it takes no `while`.
 
@@ -46,6 +49,10 @@ A task is a function that produces a stream over time: it is declared with `<<` 
 >run now moves the reader() → 3
 >run now inside a loop() → 82
 >edged() → 4, 1020
+>a batch() → 13
+>nothing pushed (1) → 0
+>nothing pushed (3) → 1
+>ended twice() → 20
 
 ## hostile
 `int n = count up to (3)` is refused: "'count up to' is a task: it is wired into a stream, `int x$ = count up to (3)`". `x$ << count up to (3) while (x$ < 9)` is refused: "a task call is not repeated with `while`: the task's own chain says when it stops". `int c$ = count up to (3) at (2 ms)` is refused: "a rate is `at (n hz)` or `at (n khz)`, n positive". `on (int a$, int b$) << two()` is refused: "a task produces one stream: `on (T x$) << name (...)`". `on (int n) << f()` is refused: "a task's result is the stream it produces: `on (int n$) << ...`". `int d$ << doubled(x$) << 5` at feature scope is refused: "a value pushed after a task call at feature scope: a chain's items come before its tasks". `right$ << left$ while (_ > 0)` at feature scope is refused: "an edge has no `while`: it moves every item its stream receives". `int x$ <<` with nothing after it is refused: "a bare `int x$` declares an empty stream: drop the `<<`". A node whose task never takes what its input has would run once per arrival and no more; a task whose own loop never stops is what would hang, and the runner's timeout is what stops it.

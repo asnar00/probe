@@ -9,6 +9,8 @@ int z$ = count down from (size)
 int left$
 int right$
 right$ << left$ << 0
+int v$
+int r$ = runs(v$)
 
 on (int i$) << count down from (int n)
     i$ << n << (i$ - 1) while (_ > 0)
@@ -33,6 +35,10 @@ on (int e$) << closer (int x$)
         advance x$ by (1)
     if (ended x$)
         e$ << 99
+
+on (int r$) << runs (int x$)
+    r$ << count x$
+    advance x$ by (count x$)
 
 on (int n) = sawtoothed()
     int i$ = sawtooth(5)
@@ -117,3 +123,17 @@ on (int a, int b) = edged()
     left$ << 1 << 2
     a = count right$
     b = right$[0] * 1000 + right$[1] * 100 + right$[2] * 10 + right$[3]
+
+on (int n) = a batch()
+    v$ << 1 << 2 << 3
+    n = count r$ * 10 + latest r$
+
+on (int n) = nothing pushed (int k)
+    v$ << [k to 1]
+    n = count r$
+
+on (int n) = ended twice()
+    v$ << 7
+    end v$
+    end v$
+    n = count r$ * 10 + latest r$

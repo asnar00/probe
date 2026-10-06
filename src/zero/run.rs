@@ -1028,6 +1028,61 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// a node that only plain functions wake is called where they push
+    /// (fm3 log 103): no `__node`, no `seen`, no `fin`, and no guard
+    /// where no trigger can be met while a node runs; and each thing
+    /// that could let an item arrive with no trigger after it, or a
+    /// trigger be met while a node runs, leaves the node as it was
+    #[test]
+    fn a_node_its_pushers_wake() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-woken-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n").unwrap();
+        let task = "on (int d$) << doubled (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        d$ << peek x$ at (0) * 2\n        advance x$ by (1)\n\n";
+        let fed = "on (int n) = fed()\n    a$ << 1\n    n = count d$\n";
+        let emit_with = |decls: &str, more: &str| -> String {
+            std::fs::write(dir.join("h/h.zero"), format!("{}\n{}{}{}", decls, task, fed, more)).unwrap();
+            let s = store::read(&dir).unwrap();
+            lower::lower(&s).unwrap().ir
+        };
+        let wired = "int a$\nint d$ = doubled(a$)\n";
+        // woken: the task is called in `fed`, after the push, and the
+        // node keeps its reader and nothing else
+        let ir = emit_with(wired, "");
+        assert!(ir.contains("    push_queue(_1, _2)\n    _3: int$ = __get___node1_x()\n    _4: u1 = __on_h()\n    if _4\n        _5: int$ = __get_d()\n        _6: int$ = doubled(_5, _3, 0: i64)\n        __set___node1_x(_6)\n        free_queue(_6)\n    else\n        _7: i64 = received(_3)\n"), "{}", ir);
+        for gone in ["fn __node1(", "__running", "__zero_start", "__run", "_seen", "_fin"] {
+            assert!(!ir.contains(gone), "{}: {}", gone, ir);
+        }
+        // a statement that may push nothing wakes under whether anything
+        // arrived, and an `end` under whether the stream had ended
+        let ir = emit_with(wired, "\non some (int k)\n    a$ << [k to 1]\n\non close()\n    end a$\n");
+        assert!(ir.contains("    _1: int$ = __get_a()\n    _13: i64 = received(_1)\n") && ir.contains("    _14: i64 = received(_1)\n    _15: u1 = cmp.gt _14, _13\n    if _15\n        _16: int$ = __get___node1_x()\n"), "{}", ir);
+        assert!(ir.contains("    _2: u1 = ended(_1)\n    end(_1)\n    if _2\n    else\n        _3: int$ = __get___node1_x()\n"), "{}", ir);
+        let node = |ir: &str| ir.contains("fn __node1() -> u1\n") && ir.contains("__node1_x_seen") && ir.contains("fn __zero_start()");
+        // handed to a function, which may push into its parameter with
+        // no trigger after
+        let ir = emit_with(wired, "\non fill (int s$)\n    s$ << 9\n\non filled()\n    fill(a$)\n");
+        assert!(node(&ir) && !ir.contains("__running"), "{}", ir);
+        // pushed into by a task: a node, and no trigger in a task's body
+        let ir = emit_with("int a$\nint d$ = doubled(a$)\nint y$\nint e$ = feeder(y$)\n", "\non (int e$) << feeder (int y$)\n    a$ << 5\n    advance y$ by (count y$)\n");
+        assert!(node(&ir) && !ir.contains("__running"), "{}", ir);
+        // pushed into by a plain function a task can reach: a node, and
+        // the trigger in it may be met while a node runs, so the guard
+        let ir = emit_with("int a$\nint d$ = doubled(a$)\nint y$\nint e$ = feeder(y$)\n", "\non (int k) = bump (int v)\n    a$ << v\n    k = v\n\non (int e$) << feeder (int y$)\n    e$ << bump (1)\n    advance y$ by (count y$)\n");
+        assert!(node(&ir) && ir.contains("data __running") && ir.contains("fn __run_a()\n    p: ptr = addr __running\n"), "{}", ir);
+        // items on its declaration: it holds something at the start
+        let ir = emit_with("int a$ << 1 << 2\nint d$ = doubled(a$)\n", "");
+        assert!(node(&ir), "{}", ir);
+        // wired at a rate
+        let ir = emit_with("int a$\nint d$ = doubled(a$) at (2 hz)\n", "");
+        assert!(node(&ir), "{}", ir);
+        // a `platform` body of the store's own is not read
+        let ir = emit_with(wired, "\non (int64 r) = (int64 a) twice\nplatform ir\n    r: i64 = add a, a\n    ret r\n\non (int64 n) = two()\n    n = (1) twice\n");
+        assert!(node(&ir) && ir.contains("data __running"), "{}", ir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// a product's bound (log 41) reaches every loop of the function it
     /// names, marked as the product's, and `probe cost` counts it
     #[test]

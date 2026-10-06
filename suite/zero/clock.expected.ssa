@@ -10,8 +10,6 @@ data __arena: array(i64, 3)
 ; a rate is stamped with it. Exact time is the boundary's: `x$ at (t)`
 ; and `position` convert once, in the library
 data __clock: array(i64, 1)
-; the scheduler is running: a push from inside a task does not start it again
-data __running: array(i64, 1)
 
 fn __now() -> i64
     p: ptr = addr __clock
@@ -134,8 +132,6 @@ fn __zero_reset()
     arena_init(a, h, 65536)
     k: ptr = addr __clock
     store 0: i64, k
-    r: ptr = addr __running
-    store 0: i64, r
     mo: ptr = addr __out_n
     mn: i64 = load mo
     mt: ptr = addr __out_t
@@ -232,15 +228,9 @@ fn __node1() -> u1
         yield 0
     ret ran
 
-; the scheduler (log 25, 78): the node graph is acyclic, so one pass in producer-before-consumer order settles it — every node at the start, and after a push into a stream the nodes it reaches
+; the scheduler (log 25, 78): the node graph is acyclic, so one pass in producer-before-consumer order settles it — every node at the start, and after a push into a stream the nodes it reaches; no trigger can be met while a node runs, so there is no guard, and a trigger that reaches one node is that node's call (fm3 log 103)
 fn __run()
-    p: ptr = addr __running
-    busy: i64 = load p
-    idle: u1 = cmp.eq busy, 0
-    if idle
-        store 1: i64, p
-        r1: u1 = __node1()
-        store 0: i64, p
+    r1: u1 = __node1()
     ret
 
 ; feature platform (layer platform)

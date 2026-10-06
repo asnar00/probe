@@ -990,6 +990,10 @@ enum Ev {
     Unknown,
     /// a call that may enter these definitions
     Call(Vec<usize>),
+    /// the stream of this name is handed to something that may push into
+    /// it with no trigger after, or is assigned: nothing to the clock,
+    /// and what `woken` refuses a stream for (fm3 log 103)
+    Given(String),
 }
 
 /// what a phrase calls
@@ -998,8 +1002,8 @@ enum Callee {
     None,
     End(String),
     Unknown,
-    /// a task run now
-    Run(Vec<usize>),
+    /// a task run now, with the arguments
+    Run(Vec<usize>, Vec<Expr>),
     /// the store's functions, with the arguments
     Fns(Vec<usize>, Vec<Expr>),
 }
@@ -1114,7 +1118,7 @@ impl<'a> Beat<'a> {
                     }
                     Ev::Op => v.extend(&syms),
                     Ev::End(_) => v.extend(&tasks),
-                    Ev::Unknown => {}
+                    Ev::Unknown | Ev::Given(_) => {}
                     Ev::Call(ts) => v.extend(ts),
                 }
             }
@@ -1177,6 +1181,106 @@ impl<'a> Beat<'a> {
         (on_beat, before)
     }
 
+    /// Which streams only plain functions wake, and whether the
+    /// scheduler's guard can ever be found busy (fm3 log 103). A stream
+    /// a node reads is woken by its pushers when every push into it and
+    /// every `end` of it stands in a plain function that nothing the
+    /// scheduler runs and nothing the reset evaluates can reach: its
+    /// trigger is then never met while a node runs, and every arrival
+    /// is followed by one, so the node is due exactly when a statement
+    /// has just pushed or first ended, and need not ask. Refused, each
+    /// because items could then arrive with no trigger after them, or a
+    /// trigger be met elsewhere: a stream with anything on its
+    /// declaration, or the platform's; one handed to a call or a task
+    /// run, assigned, or pushed a task call's items (a name a body has
+    /// bound is that body's own); and every stream of a store with a
+    /// `platform` body of its own, which is IR this pass does not read.
+    /// The guard is dead where no plain body reached from a task, a
+    /// sink or an edge's function pushes into or ends a node's input
+    fn woken(mut self, store: &Store) -> (Names, bool) {
+        let n = self.defs.len();
+        let mut evs = Vec::new();
+        for d in 0..n {
+            let mut out = Vec::new();
+            let fd = self.defs[d].fd;
+            self.events(&fd.body, Some(d), &Self::scope_of(fd), &mut out);
+            evs.push(out);
+        }
+        self.evs = evs;
+        // what the reset evaluates: every initial value but a wiring,
+        // which is a node and runs at the start
+        let mut inits = Vec::new();
+        for f in &store.features {
+            for d in &f.code.decls {
+                let Decl::Var(v) = d else { continue };
+                let wired = |e: &Expr| matches!(self.l.task_call(e, None, &f.code.file), Ok(Some(_)));
+                match &v.init {
+                    Some(Init::Value(e)) if !wired(e) => self.events_expr(e, None, &Scope::new(), &mut inits),
+                    Some(Init::Construct(args)) => args.iter().for_each(|a| self.events_expr(&a.value, None, &Scope::new(), &mut inits)),
+                    Some(Init::Pushes { items, cond }) => {
+                        inits.push(Ev::Op);
+                        items.iter().chain(cond.iter()).filter(|e| !wired(e)).for_each(|e| self.events_expr(e, None, &Scope::new(), &mut inits));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // a `platform` body of the store's own is not read: it may do anything
+        let mut all = self.defs.iter().any(|d| d.user && !d.fd.platform.is_empty());
+        // what a node's run or the reset can reach
+        let syms: Vec<usize> = (0..n).filter(|&d| self.defs[d].sym).collect();
+        let mut inside = vec![false; n];
+        let mut work: Vec<usize> = (0..n).filter(|&d| self.defs[d].task).collect();
+        let step = |ev: &Ev, work: &mut Vec<usize>, all: &mut bool| match ev {
+            Ev::Push(s) => {
+                work.extend(self.edges_of(s));
+                work.extend(&syms);
+            }
+            Ev::Op => work.extend(&syms),
+            Ev::Call(ts) => work.extend(ts),
+            Ev::Unknown => *all = true,
+            Ev::End(_) | Ev::Given(_) => {}
+        };
+        for ev in &inits {
+            step(ev, &mut work, &mut all);
+        }
+        while let Some(d) = work.pop() {
+            if std::mem::replace(&mut inside[d], true) {
+                continue;
+            }
+            for ev in &self.evs[d] {
+                step(ev, &mut work, &mut all);
+            }
+        }
+        if all {
+            return (Names::new(), true);
+        }
+        let inputs = &self.l.node_inputs;
+        let touches = |ev: &Ev, s: &str| matches!(ev, Ev::Push(x) | Ev::End(x) if x == s);
+        // a task's own body is lowered with no trigger in it
+        let guard = (0..n).any(|d| inside[d] && !self.defs[d].task && self.evs[d].iter().any(|e| inputs.iter().any(|s| touches(e, s))));
+        let mut out = Names::new();
+        for s in inputs {
+            let declared = store.features.iter().any(|f| f.name != "platform" && f.code.decls.iter().any(|d| matches!(d, Decl::Var(v) if &v.name == s && v.seq && v.init.is_none())));
+            let mut ok = declared && !inits.iter().any(|e| touches(e, s) || matches!(e, Ev::Given(x) if x == s));
+            for d in 0..n {
+                let def = &self.defs[d];
+                for ev in &self.evs[d] {
+                    if touches(ev, s) {
+                        ok &= def.plain && !inside[d];
+                    }
+                    if matches!(ev, Ev::Given(x) if x == s) {
+                        ok = false;
+                    }
+                }
+            }
+            if ok {
+                out.insert(s.clone());
+            }
+        }
+        (out, guard)
+    }
+
     fn round(&mut self) {
         for d in 0..self.defs.len() {
             if !self.defs[d].plain {
@@ -1201,6 +1305,7 @@ impl<'a> Beat<'a> {
             Ev::End(n) => self.l.node_inputs.contains(n) && self.nodes_move,
             Ev::Unknown => true,
             Ev::Call(ts) => ts.iter().any(|&t| self.moves[t]),
+            Ev::Given(_) => false,
         }
     }
 
@@ -1262,7 +1367,7 @@ impl<'a> Beat<'a> {
             return if ts.is_empty() || own {
                 Callee::Unknown
             } else if cands.iter().any(|c| c.task) {
-                Callee::Run(ts)
+                Callee::Run(ts, args)
             } else {
                 Callee::Fns(ts, args)
             };
@@ -1296,7 +1401,11 @@ impl<'a> Beat<'a> {
                         scope.insert(p.name.clone(), single(p.seq, &p.ty));
                     }
                 }
-                Stmt::Assign { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => self.events_expr(value, d, &scope, out),
+                Stmt::Assign { targets, value, .. } => {
+                    targets.iter().filter(|t| !scope.contains_key(&t.name)).for_each(|t| out.push(Ev::Given(t.name.clone())));
+                    self.events_expr(value, d, &scope, out);
+                }
+                Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => self.events_expr(value, d, &scope, out),
                 Stmt::If { cond, then, els, .. } => {
                     self.events_expr(cond, d, &scope, out);
                     self.events(then, d, &scope, out);
@@ -1314,10 +1423,14 @@ impl<'a> Beat<'a> {
                         self.events_expr(c, d, &inner, out);
                     }
                     self.events(body, d, &inner, out);
-                    if let Some(LoopInto::Declare(ps)) = into {
-                        for p in ps {
-                            scope.insert(p.name.clone(), single(p.seq, &p.ty));
+                    match into {
+                        Some(LoopInto::Declare(ps)) => {
+                            for p in ps {
+                                scope.insert(p.name.clone(), single(p.seq, &p.ty));
+                            }
                         }
+                        Some(LoopInto::Assign(ts)) => ts.iter().filter(|t| !scope.contains_key(&t.name)).for_each(|t| out.push(Ev::Given(t.name.clone()))),
+                        None => {}
                     }
                 }
                 Stmt::For { var, seq, body, .. } => {
@@ -1333,6 +1446,13 @@ impl<'a> Beat<'a> {
                         ExprKind::Seq(n) => Ev::Push(n.clone()),
                         _ => Ev::Unknown,
                     });
+                    // an item that is a task call, or a phrase nothing
+                    // can name, pushes inside itself
+                    if let ExprKind::Seq(n) = &target.kind {
+                        if !scope.contains_key(n) && items.iter().any(|e| matches!(e.kind, ExprKind::Phrase(_)) && matches!(self.callee(e, d, &scope), Callee::Run(..) | Callee::Unknown)) {
+                            out.push(Ev::Given(n.clone()));
+                        }
+                    }
                     items.iter().chain(cond.iter()).for_each(|e| self.events_expr(e, d, &scope, out));
                 }
             }
@@ -1381,11 +1501,34 @@ impl<'a> Beat<'a> {
                         Part::Word(_) => {}
                     }
                 }
+                // a stream among the arguments is handed to what is
+                // called; where the phrase cannot be named, any stream
+                // it mentions is
+                let given = |x: &Expr, out: &mut Vec<Ev>| {
+                    if let ExprKind::Seq(n) | ExprKind::Name(n) = &x.kind {
+                        if !scope.contains_key(n) {
+                            out.push(Ev::Given(n.clone()));
+                        }
+                    }
+                };
                 match self.callee(e, d, scope) {
                     Callee::None => {}
                     Callee::End(n) => out.push(Ev::End(n)),
-                    Callee::Unknown => out.push(Ev::Unknown),
-                    Callee::Run(ts) | Callee::Fns(ts, _) => out.push(Ev::Call(ts)),
+                    Callee::Unknown => {
+                        out.push(Ev::Unknown);
+                        for p in parts {
+                            match p {
+                                Part::Args(list) => list.iter().for_each(|a| given(&a.value, out)),
+                                Part::Value(x) => given(x, out),
+                                Part::Word(w) if !scope.contains_key(w) => out.push(Ev::Given(w.clone())),
+                                Part::Word(_) => {}
+                            }
+                        }
+                    }
+                    Callee::Run(ts, args) | Callee::Fns(ts, args) => {
+                        args.iter().for_each(|a| given(a, out));
+                        out.push(Ev::Call(ts));
+                    }
                 }
             }
             _ => {}
@@ -1619,7 +1762,7 @@ impl<'a> Beat<'a> {
                 match self.callee(e, Some(d), scope) {
                     Callee::None => g,
                     Callee::End(n) => if self.l.node_inputs.contains(&n) && self.nodes_move { 1 } else { g },
-                    Callee::Unknown | Callee::Run(_) => 1,
+                    Callee::Unknown | Callee::Run(..) => 1,
                     Callee::Fns(ts, args) => self.flow_call(&ts, &args, g, matches!(e.kind, ExprKind::Existing(_)), scope),
                 }
             }
@@ -1809,7 +1952,7 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
+    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2542,6 +2685,23 @@ struct Lowerer {
     /// the scheduler is a static schedule (log 78): the node graph is
     /// acyclic, and a push into a stream runs `__run_<stream>()`
     static_schedule: bool,
+    /// the nodes their pushers wake (fm3 log 103), by the one stream
+    /// each reads, in the schedule's order: a push into the stream or
+    /// its first `end` calls the node's task in line, and the node
+    /// keeps no `seen`, no `fin` and no `__node<k>` of its own
+    wakes: HashMap<String, Vec<usize>>,
+    /// ... and the nodes each node input reaches that are not woken,
+    /// which the scheduler still runs after a push into it
+    rests: HashMap<String, Vec<usize>>,
+    /// can a trigger be met while a node runs? Where not, the
+    /// scheduler has no `__running` and a trigger that reaches one node
+    /// is that node's call
+    guard: bool,
+    /// while a push statement is lowered: its stream and its depth, so
+    /// that a single item pushed at that depth is known to have arrived
+    push_site: Option<(String, usize)>,
+    /// ... and that one has
+    sure_push: bool,
     /// the arrival bound (log 79): per feature-scope stream, the most
     /// items one push statement from a plain function or the reset
     /// pushes into it, None when some statement's count is unknown
@@ -3631,8 +3791,54 @@ impl Lowerer {
         b.line("arena_init(a, h, 65536)");
         b.line("k: ptr = addr __clock");
         b.line("store 0: i64, k");
-        // a store with no nodes has no scheduler to guard (fm3 log 92)
-        if !self.nodes.is_empty() {
+        // the node graph (log 78): what each node reads, what it may push
+        // into, and an order with every producer before its consumers.
+        // Settled before the context, since a node of an acyclic graph
+        // asks less of its input (fm3 log 102) and one its pushers wake
+        // keeps less in it (fm3 log 103)
+        let schedule = if self.nodes.is_empty() { None } else { self.schedule(store, &self.nodes) };
+        self.static_schedule = matches!(&schedule, Some((_, _, None)));
+        // which nodes their pushers wake: under the static schedule, a
+        // node that is not wired at a rate, whose task takes one stream
+        // and nothing else, that stream being one only plain functions
+        // push into and end (`Beat::woken`) and no node may push into,
+        // and every node before it in the stream's order being woken
+        // too, so the order of the pass stands. A stream with a rate
+        // triggers after each item; a statement into it keeps a trailing
+        // trigger too only where an item goes by a `<<` method, so no
+        // method may take its type
+        let mut woken: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        self.guard = true;
+        if let Some((order, writes, None)) = &schedule {
+            let (streams, guard) = Beat::new(self, store).woken(store);
+            self.guard = guard;
+            let mut inputs: Vec<String> = self.node_inputs.iter().cloned().collect();
+            inputs.sort();
+            for s in inputs {
+                let rated = store.features.iter().any(|f| f.code.decls.iter().any(|d| matches!(d, Decl::Var(v) if v.name == s && v.rate.is_some())));
+                let sty = self.fvar(&s).map(|f| f.ty.clone());
+                let method = self.funcs.iter().any(|g| matches!(g.parts.as_slice(), [NamePart::Group, NamePart::Sym(op), NamePart::Group] if op == "<<") && sty.as_ref().is_some_and(|t| g.params.first().is_some_and(|p| fits(t, &p.1))));
+                let may = streams.contains(&s) && !writes.iter().any(|w| w.contains(&s)) && !(rated && method);
+                let (mut wakes, mut rest) = (Vec::new(), Vec::new());
+                for k in self.reached(&s, &self.nodes, order, writes) {
+                    let node = &self.nodes[k];
+                    let one = node.info.params.len() == 1 && matches!(node.info.params[0].1, Ty::Stream(_)) && matches!(&node.args[0].kind, ExprKind::Seq(a) if a == &s);
+                    if may && one && node.hz == 0 && rest.is_empty() {
+                        wakes.push(k);
+                        woken.insert(k);
+                    } else {
+                        rest.push(k);
+                    }
+                }
+                self.wakes.insert(s.clone(), wakes);
+                self.rests.insert(s, rest);
+            }
+        }
+        let kept = self.nodes.len() - woken.len();
+        // a store with no nodes for the scheduler to run has none to
+        // guard (fm3 log 92), and neither has one where no trigger can
+        // be met while a node runs
+        if kept > 0 && self.guard {
             b.line("r: ptr = addr __running");
             b.line("store 0: i64, r");
         }
@@ -3658,10 +3864,14 @@ impl Lowerer {
                 if let (ExprKind::Seq(_), Ty::Stream(_)) = (&a.kind, pty) {
                     fields.push((format!("__node{}_{}", k + 1, pname), pty.clone()));
                     // how many items the ring had when the node last ran
-                    fields.push((format!("__node{}_{}_seen", k + 1, pname), Ty::Num("i64".into())));
+                    if !woken.contains(&k) {
+                        fields.push((format!("__node{}_{}_seen", k + 1, pname), Ty::Num("i64".into())));
+                    }
                 }
             }
-            fields.push((format!("__node{}_fin", k + 1), Ty::Bool));
+            if !woken.contains(&k) {
+                fields.push((format!("__node{}_fin", k + 1), Ty::Bool));
+            }
             for (name, ty) in fields {
                 self.fvars.push(FVar { name, ty, scope: "node".into(), merge: "last".into(), feature: node.feature.clone() });
             }
@@ -3776,14 +3986,18 @@ impl Lowerer {
             }
             // a node's readers start where its inputs' rings start (a
             // reader is a value: a copy is its own position)
-            for node in &self.nodes {
+            for (k, node) in self.nodes.iter().enumerate() {
                 for (a, (_, pty)) in node.args.iter().zip(&node.info.params) {
                     if let (ExprKind::Seq(n), Ty::Stream(_)) = (&a.kind, pty) {
                         inits.push(init_of[n].clone());
-                        inits.push("0".into());
+                        if !woken.contains(&k) {
+                            inits.push("0".into());
+                        }
                     }
                 }
-                inits.push("0".into());
+                if !woken.contains(&k) {
+                    inits.push("0".into());
+                }
             }
             let c = b.tmp();
             b.line(&format!("{}: __ctx = pack {}", c, inits.join(", ")));
@@ -3796,7 +4010,8 @@ impl Lowerer {
         self.out.push_str(&b.out);
         // the case's context is set between the reset and the start, so
         // a node of a feature that is off never runs (log 43)
-        if !self.nodes.is_empty() {
+        // ... a node its pushers wake has nothing to run on then (fm3 log 103)
+        if kept > 0 {
             writeln!(self.out, "\n; after the case's context is set: the nodes run\nfn __zero_start()\n    __run()\n    ret").unwrap();
         }
         for f in &self.fvars {
@@ -3836,36 +4051,55 @@ impl Lowerer {
         }
         self.node_reads = counts;
         let nodes = std::mem::take(&mut self.nodes);
-        // the node graph (log 78): what each node reads, what it may push
-        // into, and an order with every producer before its consumers.
-        // Settled before the nodes are emitted, since a node of an
-        // acyclic graph asks less of its input (fm3 log 102)
-        let schedule = if nodes.is_empty() { None } else { self.schedule(store, &nodes) };
-        self.static_schedule = matches!(&schedule, Some((_, _, None)));
         for (k, node) in nodes.iter().enumerate() {
+            if woken.contains(&k) {
+                let reads = match &node.args[0].kind {
+                    ExprKind::Seq(n) => n.as_str(),
+                    _ => unreachable!(),
+                };
+                writeln!(self.out, "\n; node {}: {} — woken by its pushers (fm3 log 103): a push into {}$ from a plain function, or its first end, calls the task there", k + 1, node.text, reads).unwrap();
+                continue;
+            }
             self.emit_node(k + 1, node)?;
         }
         if let Some((order, writes, cycle)) = &schedule {
             if let Some(through) = cycle {
                 writeln!(self.out, "\n; the scheduler (log 25): passes over the nodes in declaration order until a pass runs nothing — the node graph has a cycle through {}$ (log 78)", through).unwrap();
             } else {
-                self.static_schedule = true;
-                let guard = "    p: ptr = addr __running\n    busy: i64 = load p\n    idle: u1 = cmp.eq busy, 0\n    if idle\n        store 1: i64, p";
-                writeln!(self.out, "\n; the scheduler (log 25, 78): the node graph is acyclic, so one pass in producer-before-consumer order settles it — every node at the start, and after a push into a stream the nodes it reaches").unwrap();
-                writeln!(self.out, "fn __run()\n{}", guard).unwrap();
-                for &k in order {
-                    writeln!(self.out, "        r{}: u1 = __node{}()", k + 1, k + 1).unwrap();
+                let _ = writes;
+                // one entry: the guard round the nodes' calls where a
+                // trigger can be met while a node runs, and the calls
+                // alone where none can (fm3 log 103)
+                let entry = |name: &str, ks: &[usize], guard: bool| -> String {
+                    let mut f = format!("fn {}()\n", name);
+                    let pad = if guard { "        " } else { "    " };
+                    if guard {
+                        f.push_str("    p: ptr = addr __running\n    busy: i64 = load p\n    idle: u1 = cmp.eq busy, 0\n    if idle\n        store 1: i64, p\n");
+                    }
+                    for &k in ks {
+                        writeln!(f, "{}r{}: u1 = __node{}()", pad, k + 1, k + 1).unwrap();
+                    }
+                    if guard {
+                        f.push_str("        store 0: i64, p\n");
+                    }
+                    f.push_str("    ret");
+                    f
+                };
+                let start: Vec<usize> = order.iter().copied().filter(|k| !woken.contains(k)).collect();
+                if !start.is_empty() {
+                    let which = if woken.is_empty() { "every node" } else { "every node its pushers do not wake" };
+                    let guarded = if self.guard { "" } else { "; no trigger can be met while a node runs, so there is no guard, and a trigger that reaches one node is that node's call (fm3 log 103)" };
+                    writeln!(self.out, "\n; the scheduler (log 25, 78): the node graph is acyclic, so one pass in producer-before-consumer order settles it — {} at the start, and after a push into a stream the nodes it reaches{}", which, guarded).unwrap();
+                    writeln!(self.out, "{}", entry("__run", &start, self.guard)).unwrap();
                 }
-                writeln!(self.out, "        store 0: i64, p\n    ret").unwrap();
                 let mut inputs: Vec<&String> = self.node_inputs.iter().collect();
                 inputs.sort();
                 for s in inputs {
-                    let reached = self.reached(s, &nodes, order, writes);
-                    writeln!(self.out, "fn __run_{}()\n{}", s, guard).unwrap();
-                    for &k in &reached {
-                        writeln!(self.out, "        r{}: u1 = __node{}()", k + 1, k + 1).unwrap();
+                    let rest = &self.rests[s];
+                    if rest.is_empty() || (!self.guard && rest.len() == 1) {
+                        continue;
                     }
-                    writeln!(self.out, "        store 0: i64, p\n    ret").unwrap();
+                    writeln!(self.out, "{}", entry(&format!("__run_{}", s), rest, self.guard)).unwrap();
                 }
             }
         }
@@ -5365,13 +5599,42 @@ impl Lowerer {
                     self.bare_gates = Some((n.clone(), gates));
                 }
                 self.loose_push = false;
+                self.sure_push = false;
+                self.push_site = Some((n.clone(), b.depth));
+                let mark = b.out.len();
                 let done = self.lower_pushes(n, &s, items, cond.as_ref(), b);
+                self.push_site = None;
                 if bare {
                     self.bare_gates = None;
                 }
                 done?;
                 // a paced push has triggered after each item (log 93)
                 if self.paced(n, b).is_none() || self.loose_push {
+                    // the nodes the statement wakes (fm3 log 103) are due
+                    // if it pushed anything, as `received` over `seen`
+                    // said: a single item pushed at the statement's own
+                    // depth is known to have, and otherwise `received`
+                    // is read before the statement and after it. The
+                    // read before is written here, the lowering only now
+                    // knowing that it is needed
+                    if self.wakes_here(n, b) {
+                        if self.paced(n, b).is_some() {
+                            return Err(lex::error(&file, *line, format!("'{}$' has a rate and nodes its pushers wake, and this statement pushes through a method or a task: the front end should not have chosen to wake them (fm3 log 103)", n)));
+                        }
+                        if self.sure_push {
+                            self.wake(n, true, b);
+                        } else {
+                            let before = b.tmp();
+                            b.out.insert_str(mark, &format!("{}{}: i64 = received({})\n", "    ".repeat(b.depth + 1), before, s.text));
+                            let after = self.pushed_of(&s.text, b);
+                            let more = b.tmp();
+                            b.line(&format!("{}: u1 = cmp.gt {}, {}", more, after, before));
+                            b.line(&format!("if {}", more));
+                            b.depth += 1;
+                            self.wake(n, true, b);
+                            b.depth -= 1;
+                        }
+                    }
                     self.trigger(n, b);
                 }
                 Ok(false)
@@ -6514,9 +6777,15 @@ impl Lowerer {
         } else {
             self.emit_push_only(s, v, b);
         }
+        // one item, at the depth of the statement that pushes it: the
+        // statement is known to have pushed something (fm3 log 103)
+        if self.push_site.as_ref().is_some_and(|(n, d)| n == name && *d == b.depth) {
+            self.sure_push = true;
+        }
         // into a stream with a rate, from a plain function (log 93):
         // the nodes below take the item now, and then its step passes
         if let Some(hz) = self.paced(name, b) {
+            self.wake(name, true, b);
             self.trigger(name, b);
             self.step(hz, b);
         }
@@ -6715,6 +6984,10 @@ impl Lowerer {
             self.emit_push(name, s, &v, b);
             return;
         }
+        // a literal of at least one byte, at the statement's own depth
+        if !text.is_empty() && self.push_site.as_ref().is_some_and(|(n, d)| n == name && *d == b.depth) {
+            self.sure_push = true;
+        }
         let (view, n) = self.str_view(text, b);
         self.push_view(name, s, &elem, &view, &n, b);
     }
@@ -6820,13 +7093,86 @@ impl Lowerer {
     }
 
     /// after a push or an `end` from a plain function into a stream a
-    /// node reads: the scheduler runs (log 25)
+    /// node reads: the scheduler runs (log 25) — under the static
+    /// schedule the nodes the stream reaches that its pushers do not
+    /// wake, by `__run_<stream>()`, or by the node's own call where
+    /// there is one and no guard (fm3 log 103)
     fn trigger(&self, name: &str, b: &mut Body) {
         if b.kind == BodyKind::Fn && self.node_inputs.contains(name) {
-            if self.static_schedule {
-                b.line(&format!("__run_{}()", name));
-            } else {
+            if !self.static_schedule {
                 b.line("__run()");
+                return;
+            }
+            match self.rests.get(name).map(|v| v.as_slice()).unwrap_or_default() {
+                [] => {}
+                [k] if !self.guard => {
+                    let t = b.tmp();
+                    b.line(&format!("{}: u1 = __node{}()", t, k + 1));
+                }
+                _ => b.line(&format!("__run_{}()", name)),
+            }
+        }
+    }
+
+    /// has the stream nodes its pushers wake, in this body?
+    fn wakes_here(&self, name: &str, b: &Body) -> bool {
+        b.kind == BodyKind::Fn && !b.vars.contains_key(name) && self.wakes.get(name).is_some_and(|w| !w.is_empty())
+    }
+
+    /// The nodes a stream's pushers wake, run in line (fm3 log 103):
+    /// after a push statement that pushed something, or after the
+    /// stream's first `end`. Each is its reader fetched and, under its
+    /// feature's gate, its output fetched, its task called, the reader
+    /// stored and the queue freed where this node is its one reader.
+    /// Nothing is asked: something has just arrived, or the stream has
+    /// just ended, so the node is due. Where the feature is off, after
+    /// a push, the drop (question 51): the reader moved past what has
+    /// arrived; after an `end` nothing has arrived and there is none
+    fn wake(&mut self, name: &str, pushed: bool, b: &mut Body) {
+        if !self.wakes_here(name, b) {
+            return;
+        }
+        for k in self.wakes[name].clone() {
+            let node = &self.nodes[k];
+            let (pname, pty) = node.info.params[0].clone();
+            let (ir, feature, out) = (node.info.ir.clone(), node.feature.clone(), node.out.clone());
+            let r = b.tmp();
+            b.line(&format!("{}: {} = __get___node{}_{}()", r, pty.ir(), k + 1, pname));
+            let gated = !self.statics.contains(&feature);
+            if gated {
+                let on = b.tmp();
+                b.line(&format!("{}: u1 = __on_{}()", on, feature));
+                b.line(&format!("if {}", on));
+                b.depth += 1;
+            }
+            let mut ops = Vec::new();
+            if let Some(o) = &out {
+                let t = b.tmp();
+                b.line(&format!("{}: {} = __get_{}()", t, self.fvar(o).unwrap().ty.ir(), o));
+                ops.push(t);
+            }
+            ops.push(r.clone());
+            ops.push("0: i64".into());
+            let r2 = b.tmp();
+            b.line(&format!("{}: {} = {}({})", r2, pty.ir(), ir, ops.join(", ")));
+            b.line(&format!("__set___node{}_{}({})", k + 1, pname, r2));
+            if self.frees(name) {
+                b.line(&format!("free_queue({})", r2));
+            }
+            if gated {
+                b.depth -= 1;
+                if pushed {
+                    b.line("else");
+                    b.depth += 1;
+                    let p = self.pushed_of(&r, b);
+                    let r3 = b.tmp();
+                    b.line(&format!("{}: {} = set {}, pos, {}", r3, pty.ir(), r, p));
+                    b.line(&format!("__set___node{}_{}({})", k + 1, pname, r3));
+                    if self.frees(name) {
+                        b.line(&format!("free_queue({})", r3));
+                    }
+                    b.depth -= 1;
+                }
             }
         }
     }
@@ -6960,7 +7306,20 @@ impl Lowerer {
                 if self.input_device(&sname, Some(b)) {
                     return Err(lex::error(&file, line, INPUT_REFUSED));
                 }
-                b.line(&format!("end({})", s.text));
+                // the nodes the stream's pushers wake run at its first
+                // `end` and not at a second, as `fin` had it (fm3 log 103)
+                if self.wakes_here(&sname, b) {
+                    let was = b.tmp();
+                    b.line(&format!("{}: u1 = ended({})", was, s.text));
+                    b.line(&format!("end({})", s.text));
+                    b.line(&format!("if {}", was));
+                    b.line("else");
+                    b.depth += 1;
+                    self.wake(&sname, false, b);
+                    b.depth -= 1;
+                } else {
+                    b.line(&format!("end({})", s.text));
+                }
                 self.trigger(&sname, b);
                 Ok(Some(none))
             }

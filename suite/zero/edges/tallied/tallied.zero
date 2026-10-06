@@ -11,3 +11,7 @@ on keep (int x$)
 on (int n) = fed (int k)
     int pushed = existing fed (k)
     n = kept
+
+on (int n) = kept from (int k)
+    raw$ << [k to 1]
+    n = kept

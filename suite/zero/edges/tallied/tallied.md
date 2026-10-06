@@ -13,10 +13,15 @@ Parity hop 8 (question 51, fm3 log 92): a consumer that is off holds nothing.
 ## interface
 - `keep (x$)` adds every item to `kept`.
 - `fed (k)` does what it did before, then gives `kept`.
+- `kept from (k)` pushes the numbers from `k` down to 2 in one statement, a range that may hold nothing, and gives `kept`.
 
 ## rules
 - With this feature on, `fed (80)` gives the sum of 1 to 80, 3 240: the sink runs after each statement's push and the queue's slot comes back.
 - With it off, `edges`' own case stands, `fed (80) → 80`: eighty items are pushed toward a consumer that is off and none is held, so the queue of 64 never fills.
 
+- Parity hop 11 (fm3 log 103): `keep` is a node its pushers wake. `raw$` is pushed into only by plain functions that nothing the scheduler runs can reach, so a push into it calls `keep` there, under this feature's gate, and asks nothing; where the statement may have pushed no item, as `raw$ << [k to 1]` with `k` at 1, the call stands under whether `raw$` received anything, so a sink is never run over nothing.
+
 ## testing
 >fed (80) → 3240
+>kept from (4) → 9
+>kept from (1) → 0
