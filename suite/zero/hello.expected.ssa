@@ -264,20 +264,26 @@ fn run__countdown()
     run__before_countdown()
     ret
 fn count_down()
-    _1: u1 = __on_countdown()
-    loop(_2: int = 10)
-        _3: u1 = cmp.ge _2, 1
-        if _3
+    _1: ptr = addr __clock
+    _2: i64 = load _1
+    _3: i64 = add _2, 999999
+    _4: i64 = rem _3, 1000000
+    _5: i64 = sub _3, _4
+    __wait(_5)
+    _6: u1 = __on_countdown()
+    loop(_7: int = 10)
+        _8: u1 = cmp.ge _7, 1
+        if _8
         else
             break
-        if _1
-            __edge1(_2)
-        _4: ptr = addr __clock
-        _5: i64 = load _4
-        _6: i64 = add _5, 1000000
-        __wait(_6)
-        _7: int = sub _2, 1
-        continue _7
+        if _6
+            __edge1(_7)
+        _9: ptr = addr __clock
+        _10: i64 = load _9
+        _11: i64 = add _10, 1000000
+        __wait(_11)
+        _12: int = sub _7, 1
+        continue _12
     ret
 fn __edge1(__item: int)
     __out__int(__item)

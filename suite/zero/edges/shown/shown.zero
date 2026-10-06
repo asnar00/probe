@@ -1,2 +1,3 @@
 out$ << n$ << "\n"
 out$ << beat$ << "\n"
+out$ << quick$ << "\n"

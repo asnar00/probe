@@ -780,7 +780,7 @@ mod tests {
         // and the rated stream's step still passes
         let ir = lowered("# p\n\nshown: static off\n").unwrap();
         assert!(!ir.contains("__edge") && !ir.contains("__queue_int") && !ir.contains("__get_n"), "{}", ir);
-        assert!(ir.contains("    _7: i64 = add _6, 500000\n    __wait(_7)\n    ret\n"), "{}", ir);
+        assert!(ir.contains("    _12: i64 = add _11, 500000\n    __wait(_12)\n    ret\n"), "{}", ir);
         // wired by no feature at all: refused, naming the stream
         std::fs::write(dir.join("shown/shown.zero"), "out$ << beat$ << \"\\n\"\n").unwrap();
         for product in ["# p\n", "# p\n\nshown: static off\n"] {
@@ -791,6 +791,48 @@ mod tests {
         std::fs::write(dir.join("base/base.md"), "# base\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n>count n$ → 0\n").unwrap();
         let ir = lowered("# p\n").unwrap();
         assert!(ir.contains("fn __queue_int(") && ir.contains("fn __get_n()"), "{}", ir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// a push lands on its stream's beat (question 52 as refined, fm3
+    /// log 98): before a push statement's first item the clock is
+    /// rounded up to the stream's next slot, once a statement, and not
+    /// at all where the statement before it in the same block pushed
+    /// into the same stream; a period is `step`'s, so a slot is a whole
+    /// number of them
+    #[test]
+    fn a_push_lands_on_the_beat() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-beat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n").unwrap();
+        let lowered = |code: &str| -> String {
+            std::fs::write(dir.join("h/h.zero"), code).unwrap();
+            lower::lower(&store::read(&dir).unwrap()).unwrap().ir
+        };
+        let body = |ir: &str, f: &str| -> String { ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
+        let head = "int a$ at (3 hz)\nint b$ at (5 hz)\nout$ << a$ << \"\\n\"\nout$ << b$ << \"\\n\"\n\n";
+        // one statement of three items: one alignment, three steps, the
+        // slot a whole number of the period a step adds
+        let ir = lowered(&format!("{}on f()\n    a$ << 1 << 2 << 3\n", head));
+        let f = body(&ir, "f");
+        assert!(f.contains("    _3: i64 = add _2, 333332\n    _4: i64 = rem _3, 333333\n    _5: i64 = sub _3, _4\n    __wait(_5)\n"), "{}", f);
+        assert_eq!((f.matches(" = rem ").count(), f.matches(", 333333\n").count()), (1, 4), "{}", f);
+        // the statement before pushed into the same stream: on the beat already
+        let f = body(&lowered(&format!("{}on f()\n    a$ << 1\n    a$ << 2\n    a$ << 3\n", head)), "f");
+        assert_eq!(f.matches(" = rem ").count(), 1, "{}", f);
+        // by turns into two streams: each statement finds its own stream's slot
+        let f = body(&lowered(&format!("{}on f()\n    a$ << 1\n    b$ << 2\n    a$ << 3\n", head)), "f");
+        assert_eq!((f.matches(" = rem ").count(), f.matches("rem _3, 333333").count(), f.matches(", 200000\n").count()), (3, 1, 2), "{}", f);
+        // a statement between two pushes may have moved the clock; and a
+        // loop's first statement aligns on every pass
+        let f = body(&lowered(&format!("{}on f()\n    a$ << 1\n    out$ << \"x\"\n    a$ << 2\n", head)), "f");
+        assert_eq!(f.matches(" = rem ").count(), 2, "{}", f);
+        let f = body(&lowered(&format!("{}on f()\n    loop (int i = 1) while (i <= 3)\n        a$ << i\n        continue (i + 1)\n", head)), "f");
+        assert!(f.matches(" = rem ").count() == 1 && f.find("loop(").unwrap() < f.find(" = rem ").unwrap(), "{}", f);
+        // a stream with no rate has no beat
+        let f = body(&lowered("int c$\nout$ << c$ << \"\\n\"\n\non f()\n    c$ << 1\n"), "f");
+        assert!(!f.contains(" = rem ") && !f.contains("__wait"), "{}", f);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -817,7 +859,9 @@ mod tests {
         assert!(!fast.contains("__counter") && fast.contains("fn __wait(t: i64)\n    p: ptr = addr __clock\n    c: i64 = load p\n    m: i64 = max(c, t)\n"), "{}", fast);
         // the rated stream no word reads has no storage (fm3 log 92): the
         // push calls its edge, and then a step passes, half a second at 2 hz
-        assert!(fast.contains("        if _1\n            __edge1(_2)\n        _4: ptr = addr __clock\n        _5: i64 = load _4\n        _6: i64 = add _5, 500000\n        __wait(_6)\n"), "{}", fast);
+        assert!(fast.contains("        if _6\n            __edge1(_7)\n        _9: ptr = addr __clock\n        _10: i64 = load _9\n        _11: i64 = add _10, 500000\n        __wait(_11)\n"), "{}", fast);
+        // ... after the statement's first item is put on the stream's beat (fm3 log 98)
+        assert!(fast.contains("fn run()\n    _1: ptr = addr __clock\n    _2: i64 = load _1\n    _3: i64 = add _2, 499999\n    _4: i64 = rem _3, 500000\n    _5: i64 = sub _3, _4\n    __wait(_5)\n"), "{}", fast);
         assert!(fast.contains("fn __edge1(__item: int)\n") && !fast.contains("__run") && !fast.contains("__node") && !fast.contains("__get_i("), "{}", fast);
         assert_eq!(with("# p\n").unwrap(), fast);
         let err = with("# p\n\nclock: sidereal\n").expect_err("accepted a sidereal clock");

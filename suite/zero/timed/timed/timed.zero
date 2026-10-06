@@ -1,6 +1,8 @@
 int i$ at (1 hz)
+int half$ at (2 hz)
 int d$ = doubled(i$)
 out$ << d$ << "\n"
+out$ << half$ << "\n"
 
 on (int d$) << doubled (int x$)
     loop
@@ -15,3 +17,8 @@ on count down()
 on launch()
     count down()
     out$ << "liftoff" << "\n"
+
+on late()
+    half$ << 0
+    i$ << 4
+    out$ << "done" << "\n"

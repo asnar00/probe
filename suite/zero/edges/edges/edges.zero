@@ -1,5 +1,6 @@
 int n$
 int beat$ at (2 hz)
+int quick$ at (5 hz)
 int pair$
 int part$
 int heard$
@@ -16,6 +17,12 @@ on count down from (int k)
 
 on beats()
     beat$ << 1 << 2
+    out$ << "end" << "\n"
+
+on turns()
+    beat$ << 1
+    quick$ << 2
+    beat$ << 3
     out$ << "end" << "\n"
 
 on twice()

@@ -1020,7 +1020,7 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
+    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -1728,6 +1728,12 @@ struct Lowerer {
     /// or a task call, which push inside themselves, so the statement
     /// keeps its trailing trigger though the stream is paced (log 93)
     loose_push: bool,
+    /// as a statement is lowered: the stream the statement before it in
+    /// the same block pushed into, if that was a plain push. A push into
+    /// a stream with a rate leaves now at the end of a slot, so the next
+    /// statement's push into the same stream is on the beat already (fm3
+    /// log 98)
+    after_push: Option<String>,
     /// the product's clock (log 77)
     clock: super::store::Clock,
     /// the scheduler is a static schedule (log 78): the node graph is
@@ -3566,6 +3572,10 @@ impl Lowerer {
     fn lower_block(&mut self, stmts: &[Stmt], b: &mut Body) -> Result<bool, Error> {
         let mut terminated = false;
         for (i, s) in stmts.iter().enumerate() {
+            self.after_push = match i.checked_sub(1).map(|k| &stmts[k]) {
+                Some(Stmt::Push { target: Expr { kind: ExprKind::Seq(n), .. }, existing: false, .. }) => Some(n.clone()),
+                _ => None,
+            };
             terminated = self.lower_stmt(s, b)?;
             if terminated && i + 1 < stmts.len() {
                 let why = match s {
@@ -4451,6 +4461,14 @@ impl Lowerer {
                         Some(t) => lex::error(&file, *line, format!("'{}$' is a {}, not a stream", n, t.ir())),
                         None => lex::error(&file, *line, format!("'{}$' is not declared", n)),
                     });
+                }
+                // into a stream with a rate the statement's first item
+                // lands on the stream's beat (question 52, fm3 log 98),
+                // unless the statement before left now there
+                let on_beat = self.after_push.take().as_deref() == Some(n.as_str());
+                let rate = if self.is_bare(n, b) { self.rates.get(n).copied() } else { self.paced(n, b) };
+                if let (Some(hz), false) = (rate, on_beat) {
+                    self.align(hz, b);
                 }
                 let s = self.lower_expr(&Expr { kind: ExprKind::Name(n.clone()), line: *line }, None, b, None)?;
                 // into a stream with no storage (question 50): each
@@ -5841,6 +5859,30 @@ impl Lowerer {
         b.line(&format!("{}: i64 = add {}, 1", k2, k));
         b.line(&format!("continue {}", k2));
         b.depth -= 1;
+    }
+
+    /// Now reaches the next slot of a stream's beat (question 52 as
+    /// refined, `fm3/time.md` "a stream has a beat", fm3 log 98). A
+    /// stream with a rate has slots one period apart from its phase,
+    /// which is 0 s for every stream until `restart` is built, and an
+    /// item pushed into it lands in the next slot at or after the
+    /// pusher's now. So before a push statement's first item the clock
+    /// is rounded up to a whole multiple of the period and waited for;
+    /// each item's step then leaves it on the next slot. The period is
+    /// `step`'s, so slot k is at k periods whichever way it is reached.
+    /// A period of one step of the clock is every time there is
+    fn align(&mut self, hz: i64, b: &mut Body) {
+        let period = super::store::period(hz);
+        if period <= 1 {
+            return;
+        }
+        let (p, c, u, r, t) = (b.tmp(), b.tmp(), b.tmp(), b.tmp(), b.tmp());
+        b.line(&format!("{}: ptr = addr __clock", p));
+        b.line(&format!("{}: i64 = load {}", c, p));
+        b.line(&format!("{}: i64 = add {}, {}", u, c, period - 1));
+        b.line(&format!("{}: i64 = rem {}, {}", r, u, period));
+        b.line(&format!("{}: i64 = sub {}, {}", t, u, r));
+        b.line(&format!("__wait({})", t));
     }
 
     /// a step of a rate passes (question 52, fm3 log 92): the clock read,
