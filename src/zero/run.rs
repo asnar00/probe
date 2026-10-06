@@ -780,7 +780,10 @@ mod tests {
         // and the rated stream's step still passes
         let ir = lowered("# p\n\nshown: static off\n").unwrap();
         assert!(!ir.contains("__edge") && !ir.contains("__queue_int") && !ir.contains("__get_n"), "{}", ir);
-        assert!(ir.contains("    _12: i64 = add _11, 500000\n    __wait(_12)\n    ret\n"), "{}", ir);
+        // ... with no alignment before it, `count` being called where
+        // the clock is at 0 s and `n$` having nothing that moves it
+        // (question 56, fm3 log 99)
+        assert!(ir.contains("    _7: i64 = add _6, 500000\n    __wait(_7)\n    ret\n") && !ir.contains(" = rem "), "{}", ir);
         // wired by no feature at all: refused, naming the stream
         std::fs::write(dir.join("shown/shown.zero"), "out$ << beat$ << \"\\n\"\n").unwrap();
         for product in ["# p\n", "# p\n\nshown: static off\n"] {
@@ -811,7 +814,9 @@ mod tests {
             lower::lower(&store::read(&dir).unwrap()).unwrap().ir
         };
         let body = |ir: &str, f: &str| -> String { ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
-        let head = "int a$ at (3 hz)\nint b$ at (5 hz)\nout$ << a$ << \"\\n\"\nout$ << b$ << \"\\n\"\n\n";
+        // `f` is called by `g` after a push into a stream at `7 hz`, so
+        // nothing is known of the clock where `f` begins (fm3 log 99)
+        let head = "int a$ at (3 hz)\nint b$ at (5 hz)\nint c$ at (7 hz)\nout$ << a$ << \"\\n\"\nout$ << b$ << \"\\n\"\nout$ << c$ << \"\\n\"\n\non g()\n    c$ << 0\n    f()\n\n";
         // one statement of three items: one alignment, three steps, the
         // slot a whole number of the period a step adds
         let ir = lowered(&format!("{}on f()\n    a$ << 1 << 2 << 3\n", head));
@@ -824,15 +829,86 @@ mod tests {
         // by turns into two streams: each statement finds its own stream's slot
         let f = body(&lowered(&format!("{}on f()\n    a$ << 1\n    b$ << 2\n    a$ << 3\n", head)), "f");
         assert_eq!((f.matches(" = rem ").count(), f.matches("rem _3, 333333").count(), f.matches(", 200000\n").count()), (3, 1, 2), "{}", f);
-        // a statement between two pushes may have moved the clock; and a
-        // loop's first statement aligns on every pass
+        // a write to the device between two pushes moves no clock
+        // (question 56, fm3 log 99), so the second is still on the beat;
+        // a push into another stream between them does
         let f = body(&lowered(&format!("{}on f()\n    a$ << 1\n    out$ << \"x\"\n    a$ << 2\n", head)), "f");
-        assert_eq!(f.matches(" = rem ").count(), 2, "{}", f);
-        let f = body(&lowered(&format!("{}on f()\n    loop (int i = 1) while (i <= 3)\n        a$ << i\n        continue (i + 1)\n", head)), "f");
-        assert!(f.matches(" = rem ").count() == 1 && f.find("loop(").unwrap() < f.find(" = rem ").unwrap(), "{}", f);
+        assert_eq!(f.matches(" = rem ").count(), 1, "{}", f);
         // a stream with no rate has no beat
         let f = body(&lowered("int c$\nout$ << c$ << \"\\n\"\n\non f()\n    c$ << 1\n"), "f");
         assert!(!f.contains(" = rem ") && !f.contains("__wait"), "{}", f);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// the clock of code (question 56, fm3 log 99): the front end knows
+    /// what the clock is a whole multiple of at each point in a plain
+    /// function, and a push whose stream's period divides that is not
+    /// aligned; a function's entry is the weakest of its callers'; a
+    /// loop whose first statement is a rated push aligns once, before
+    /// it, under its own `while`; and the pass is off where a method of
+    /// the store can move the clock
+    #[test]
+    fn the_clock_of_code() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-code-clock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n").unwrap();
+        let lowered = |code: &str| -> String {
+            std::fs::write(dir.join("h/h.zero"), code).unwrap();
+            lower::lower(&store::read(&dir).unwrap()).unwrap().ir
+        };
+        let body = |ir: &str, f: &str| -> String { ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
+        let rems = |ir: &str, f: &str| body(ir, f).matches(" = rem ").count();
+        let head = "int a$ at (2 hz)\nint b$ at (1 hz)\nint c$ at (5 hz)\nout$ << a$ << \"\\n\"\nout$ << b$ << \"\\n\"\nout$ << c$ << \"\\n\"\n\n";
+        // called only where a case starts, at 0 s: nothing is aligned,
+        // and a push at `1 hz` leaves a multiple of the `2 hz` period
+        let ir = lowered(&format!("{}on f()\n    b$ << 1\n    out$ << \"x\"\n    a$ << 2\n", head));
+        assert_eq!(rems(&ir, "f"), 0, "{}", ir);
+        // ... but a push at `2 hz` does not leave a multiple of a second
+        let ir = lowered(&format!("{}on f()\n    a$ << 1\n    b$ << 2\n", head));
+        assert_eq!(rems(&ir, "f"), 1, "{}", ir);
+        // a function's entry is the weakest of its callers': `f` called
+        // by a case alone is on the beat; called also after a push at
+        // `5 hz` it is not, and aligns; called after its own stream's
+        // push it is on the beat again
+        let ir = lowered(&format!("{}on f()\n    a$ << 1\n\non g()\n    c$ << 0\n    f()\n", head));
+        assert_eq!((rems(&ir, "f"), rems(&ir, "g")), (1, 0), "{}", ir);
+        let ir = lowered(&format!("{}on f()\n    a$ << 1\n\non g()\n    a$ << 0\n    f()\n    b$ << 3\n", head));
+        assert_eq!((rems(&ir, "f"), rems(&ir, "g")), (0, 1), "{}", ir);
+        // where two paths meet, the weaker
+        let ir = lowered(&format!("{}on f (int k)\n    if (k > 0)\n        c$ << 0\n    a$ << 1\n", head));
+        assert_eq!(rems(&ir, "f"), 1, "{}", ir);
+        // a loop whose first statement is a rated push, entered off the
+        // beat: one alignment, before the loop, under the loop's own
+        // `while` asked of its first values; entered on the beat, none
+        let ir = lowered(&format!("{}on f (int k)\n    c$ << 0\n    loop (int i = 1) while (i <= k)\n        a$ << i\n        continue (i + 1)\n", head));
+        let f = body(&ir, "f");
+        assert!(f.contains("    _6: int = const 1\n    _7: u1 = cmp.le _6, k\n    if _7\n        _8: ptr = addr __clock\n        _9: i64 = load _8\n        _10: i64 = add _9, 499999\n        _11: i64 = rem _10, 500000\n        _12: i64 = sub _10, _11\n        __wait(_12)\n    loop(i: int = 1)\n"), "{}", f);
+        assert_eq!(f.matches(" = rem ").count(), 1, "{}", f);
+        let ir = lowered(&format!("{}on f (int k)\n    loop (int i = 1) while (i <= k)\n        a$ << i\n        continue (i + 1)\n", head));
+        assert_eq!(rems(&ir, "f"), 0, "{}", ir);
+        // ... with no `while` the first pass always runs, and there is no test
+        let ir = lowered(&format!("{}on f (int k)\n    c$ << 0\n    loop (int i = 1)\n        a$ << i\n        if (i == k)\n            break\n        continue (i + 1)\n", head));
+        let f = body(&ir, "f");
+        assert!(f.matches(" = rem ").count() == 1 && f.contains("\n    _9: i64 = rem _8, 500000\n    _10: i64 = sub _8, _9\n    __wait(_10)\n    loop(i: int = 1)\n"), "{}", f);
+        // a statement before the push in the body, or a way round that
+        // leaves the beat, and the push aligns on every pass as it did
+        let ir = lowered(&format!("{}on f (int k)\n    c$ << 0\n    loop (int i = 1) while (i <= k)\n        out$ << \"x\"\n        a$ << i\n        continue (i + 1)\n", head));
+        let f = body(&ir, "f");
+        assert!(f.matches(" = rem ").count() == 1 && f.find("loop(").unwrap() < f.find(" = rem ").unwrap(), "{}", f);
+        let ir = lowered(&format!("{}on f (int k)\n    loop (int i = 1) while (i <= k)\n        a$ << i\n        c$ << i\n        continue (i + 1)\n", head));
+        let f = body(&ir, "f");
+        assert!(f.matches(" = rem ").count() == 2 && f.find("loop(").unwrap() < f.find(" = rem ").unwrap(), "{}", f);
+        // an edge that can move the clock: the statement leaves nothing known
+        let ir = lowered("int a$ at (2 hz)\nint b$ at (5 hz)\nb$ << a$\nout$ << b$ << \"\\n\"\n\non f()\n    a$ << 1\n    a$ << 2\n    out$ << \"x\"\n    a$ << 3\n");
+        assert_eq!(rems(&ir, "f"), 1, "{}", ir);
+        // a function that can reach itself leaves nothing known
+        let ir = lowered(&format!("{}on f (int k)\n    a$ << k\n    if (k > 0)\n        f (k - 1)\n\non g()\n    f (2)\n    a$ << 9\n", head));
+        assert_eq!(rems(&ir, "g"), 1, "{}", ir);
+        // a `<<` method of the store's that can move the clock, and the
+        // pass is off: every push aligns as it did
+        let ir = lowered(&format!("{}type pair =\n    int x, y\n\non (char o$) << (pair p)\n    a$ << p.x\n\non f()\n    a$ << 1\n    out$ << \"x\"\n    a$ << 2\n", head));
+        assert_eq!(rems(&ir, "f"), 2, "{}", ir);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -859,9 +935,11 @@ mod tests {
         assert!(!fast.contains("__counter") && fast.contains("fn __wait(t: i64)\n    p: ptr = addr __clock\n    c: i64 = load p\n    m: i64 = max(c, t)\n"), "{}", fast);
         // the rated stream no word reads has no storage (fm3 log 92): the
         // push calls its edge, and then a step passes, half a second at 2 hz
-        assert!(fast.contains("        if _6\n            __edge1(_7)\n        _9: ptr = addr __clock\n        _10: i64 = load _9\n        _11: i64 = add _10, 500000\n        __wait(_11)\n"), "{}", fast);
-        // ... after the statement's first item is put on the stream's beat (fm3 log 98)
-        assert!(fast.contains("fn run()\n    _1: ptr = addr __clock\n    _2: i64 = load _1\n    _3: i64 = add _2, 499999\n    _4: i64 = rem _3, 500000\n    _5: i64 = sub _3, _4\n    __wait(_5)\n"), "{}", fast);
+        assert!(fast.contains("        if _1\n            __edge1(_2)\n        _4: ptr = addr __clock\n        _5: i64 = load _4\n        _6: i64 = add _5, 500000\n        __wait(_6)\n"), "{}", fast);
+        // ... and the statement's first item is on the stream's beat
+        // with nothing rounded (fm3 log 98, 99): `run` is only ever
+        // called by a case, at 0 s
+        assert!(fast.contains("fn run()\n    _1: u1 = __on_h()\n") && !fast.contains(", 499999\n"), "{}", fast);
         assert!(fast.contains("fn __edge1(__item: int)\n") && !fast.contains("__run") && !fast.contains("__node") && !fast.contains("__get_i("), "{}", fast);
         assert_eq!(with("# p\n").unwrap(), fast);
         let err = with("# p\n\nclock: sidereal\n").expect_err("accepted a sidereal clock");

@@ -25,6 +25,13 @@ on turns()
     beat$ << 3
     out$ << "end" << "\n"
 
+on drum (int k)
+    quick$ << 0
+    loop (int i = 1) while (i <= k)
+        beat$ << i
+        continue (i + 1)
+    out$ << "end" << "\n"
+
 on twice()
     pair$ << 1 << 2 << 3
 

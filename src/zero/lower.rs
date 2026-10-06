@@ -904,6 +904,792 @@ impl<'a> Pushes<'a> {
     }
 }
 
+/// The clock of code (question 56, fm3 log 99). Code runs because a
+/// clock ticked, so at each point in a plain function the front end
+/// knows what the store's one clock is a whole multiple of: 0 where it
+/// is exactly where the case started it, which every period divides; P
+/// where it is a multiple of a period P; 1 where nothing is known, the
+/// clock being whole microseconds. Where two paths meet the fact is
+/// their greatest common divisor. A push into a stream of period Q
+/// needs no alignment where Q divides the fact, and the pass leaves two
+/// sets for the lowering, keyed by the statement itself: the pushes
+/// that are on the beat, and the loops whose first statement's
+/// alignment is made once before them. A statement in neither is
+/// lowered as it always was, so a mistake of omission is an alignment
+/// kept.
+///
+/// The facts are followed through plain functions: one at each
+/// definition's entry, the weakest of every call that may enter it, a
+/// case's among them, and one at its exit. Everything else — a task, a
+/// sink, an edge's function, an operator or a `<<` method, a platform
+/// function, whatever the scheduler runs — is asked one thing, whether
+/// it can move the clock, and starts at nothing known. What can move
+/// the clock is the list of every place this file emits `__wait`,
+/// `__sleep` or a scheduler call: `step` and `align` (a push into a
+/// stream with a rate), `trigger` (a push into, or the `end` of, a
+/// stream a node reads), a task's sleep after a push into its own
+/// output where any wiring has a rate, a rated edge's wait in
+/// `lower_for_seq`, and `run_task`. A new one belongs in `moved_by`
+struct Beat<'a> {
+    l: &'a Lowerer,
+    defs: Vec<BeatDef<'a>>,
+    /// a call's key and argument count: the definitions it may enter
+    by_call: HashMap<(String, usize), Vec<usize>>,
+    /// per definition, what its body may do to the clock
+    evs: Vec<Vec<Ev>>,
+    moves: Vec<bool>,
+    /// can anything the scheduler runs move the clock?
+    nodes_move: bool,
+    /// can an operator or a `<<` method? Then every push and every
+    /// operator may, unseen, and the pass is off
+    sym_moves: bool,
+    /// has the store an operator or a method of its own? A loop's
+    /// `while` is then not asked twice
+    user_syms: bool,
+    entry: Vec<i64>,
+    exit: Vec<i64>,
+    /// the definitions that can reach themselves: they leave nothing known
+    looped: Vec<bool>,
+    /// the loops being walked: the facts at their `break`s and at their
+    /// `continue`s
+    loops: Vec<(Option<i64>, Option<i64>)>,
+    /// the facts have stopped changing: the choices are written down
+    record: bool,
+    need: HashMap<usize, bool>,
+    hoist: HashMap<usize, Option<i64>>,
+}
+
+/// a definition the pass knows: a function of a feature, or an edge's
+struct BeatDef<'a> {
+    fd: &'a FnDecl,
+    key: String,
+    arity: usize,
+    /// its feature's place in the composition order
+    at: usize,
+    /// a plain function, whose facts are followed
+    plain: bool,
+    /// an operator or a `<<` method, and whether it is the store's own
+    sym: bool,
+    user: bool,
+    /// a task, a sink or a stored edge's function: the scheduler's
+    task: bool,
+}
+
+/// what a body may do to the clock, read off the syntax
+enum Ev {
+    /// a push into the stream of this name
+    Push(String),
+    /// an operator, or a push's dispatch: a method of the store's may run
+    Op,
+    /// `end x$`: the scheduler may run
+    End(String),
+    /// a phrase the pass cannot name, or a task run at a rate
+    Unknown,
+    /// a call that may enter these definitions
+    Call(Vec<usize>),
+}
+
+/// what a phrase calls
+enum Callee {
+    /// one of the compiler's own words, or a variable: nothing
+    None,
+    End(String),
+    Unknown,
+    /// a task run now
+    Run(Vec<usize>),
+    /// the store's functions, with the arguments
+    Fns(Vec<usize>, Vec<Expr>),
+}
+
+/// the names a body has bound, and whether each is plainly one value
+type Scope = HashMap<String, bool>;
+
+fn gcd(a: i64, b: i64) -> i64 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// is a declared name plainly one value? A `$` and a string are streams
+fn single(seq: bool, ty: &str) -> bool {
+    !seq && ty != "string"
+}
+
+impl<'a> Beat<'a> {
+    fn new(l: &'a Lowerer, store: &'a Store) -> Beat<'a> {
+        let mut defs = Vec::new();
+        let mut add = |fd: &'a FnDecl, at: usize, edge: bool, user: bool| {
+            let key = mangle(&fd.name);
+            let arity = fd.params().count();
+            let sym = fd.name.iter().any(|p| matches!(p, NamePart::Sym(_)));
+            let task = fd.task || l.funcs.iter().any(|g| g.key == key && g.parts == fd.name && g.params.len() == arity && g.task);
+            defs.push(BeatDef { fd, key, arity, at, plain: !edge && !sym && !task && fd.platform.is_empty(), sym, user, task });
+        };
+        for (at, f) in store.features.iter().enumerate() {
+            for d in &f.code.decls {
+                if let Decl::Fn(fd) = d {
+                    add(fd, at, false, f.name != "platform");
+                }
+            }
+        }
+        for (fd, feature, _) in &l.edges {
+            add(fd, l.features.iter().position(|f| f == feature).unwrap_or(0), true, false);
+        }
+        let mut by_call: HashMap<(String, usize), Vec<usize>> = HashMap::new();
+        for (i, d) in defs.iter().enumerate() {
+            by_call.entry((d.key.clone(), d.arity)).or_default().push(i);
+        }
+        let n = defs.len();
+        let user_syms = defs.iter().any(|d| d.sym && d.user);
+        Beat { l, defs, by_call, evs: Vec::new(), moves: vec![false; n], nodes_move: false, sym_moves: false, user_syms, entry: vec![0; n], exit: vec![0; n], looped: vec![false; n], loops: Vec::new(), record: false, need: HashMap::new(), hoist: HashMap::new() }
+    }
+
+    /// a definition's parameters and results, bound
+    fn scope_of(fd: &FnDecl) -> Scope {
+        fd.results.iter().chain(fd.params()).map(|p| (p.name.clone(), single(p.seq, &p.ty))).collect()
+    }
+
+    /// the edges out of a stream with no storage, as definitions
+    fn edges_of(&self, n: &str) -> Vec<usize> {
+        let mut out = Vec::new();
+        for (edge, _) in self.l.bare_edges.get(n).map(|v| v.as_slice()).unwrap_or_default() {
+            out.extend(self.by_call.get(&(edge.clone(), 1)).into_iter().flatten().copied());
+        }
+        out
+    }
+
+    /// the pushes on the beat and the loops that align before they
+    /// begin, by the statement's address
+    fn solve(mut self, store: &Store) -> (std::collections::HashSet<usize>, HashMap<usize, i64>) {
+        let n = self.defs.len();
+        let mut evs = Vec::new();
+        for d in 0..n {
+            let mut out = Vec::new();
+            let fd = self.defs[d].fd;
+            self.events(&fd.body, Some(d), &Self::scope_of(fd), &mut out);
+            evs.push(out);
+        }
+        self.evs = evs;
+        // what can move the clock: the least set that holds
+        loop {
+            let mut changed = false;
+            for d in 0..n {
+                if self.moves[d] {
+                    continue;
+                }
+                let def = &self.defs[d];
+                if !def.fd.platform.is_empty() || (def.task && self.l.any_rated_wiring) || self.evs[d].iter().any(|e| self.moved_by(e)) {
+                    self.moves[d] = true;
+                    changed = true;
+                }
+            }
+            let sym = (0..n).any(|d| self.defs[d].sym && self.moves[d]);
+            let nodes = self.l.any_rated_wiring || self.l.nodes.iter().any(|k| k.hz > 0) || (0..n).any(|d| self.defs[d].task && self.moves[d]);
+            if sym != self.sym_moves || nodes != self.nodes_move {
+                self.sym_moves = sym;
+                self.nodes_move = nodes;
+                changed = true;
+            }
+            if !changed {
+                break;
+            }
+        }
+        if self.sym_moves {
+            return (std::collections::HashSet::new(), HashMap::new());
+        }
+        // a definition that can reach itself leaves nothing known
+        let syms: Vec<usize> = (0..n).filter(|&d| self.defs[d].sym).collect();
+        let tasks: Vec<usize> = (0..n).filter(|&d| self.defs[d].task).collect();
+        let next = |d: usize| -> Vec<usize> {
+            let mut v = Vec::new();
+            for ev in &self.evs[d] {
+                match ev {
+                    Ev::Push(s) => {
+                        v.extend(self.edges_of(s));
+                        v.extend(&syms);
+                        if self.l.node_inputs.contains(s) {
+                            v.extend(&tasks);
+                        }
+                    }
+                    Ev::Op => v.extend(&syms),
+                    Ev::End(_) => v.extend(&tasks),
+                    Ev::Unknown => {}
+                    Ev::Call(ts) => v.extend(ts),
+                }
+            }
+            v
+        };
+        let mut looped = vec![false; n];
+        for d in 0..n {
+            let mut seen = vec![false; n];
+            let mut work = next(d);
+            while let Some(t) = work.pop() {
+                if t == d {
+                    looped[d] = true;
+                    break;
+                }
+                if !std::mem::replace(&mut seen[t], true) {
+                    work.extend(next(t));
+                }
+            }
+        }
+        self.looped = looped;
+        // a case starts at 0 unless the start can move the clock: a node
+        // that can, or an initial value that calls something that can,
+        // the reset zeroing the clock before the initial values
+        let mut inits = Vec::new();
+        for f in &store.features {
+            for d in &f.code.decls {
+                if let Decl::Var(v) = d {
+                    self.events_init(v, None, &Scope::new(), &mut inits);
+                }
+            }
+        }
+        let start = if self.nodes_move || inits.iter().any(|e| self.moved_by(e)) { 1 } else { 0 };
+        self.entry = vec![start; n];
+        // what is not a plain function calls at nothing known
+        for d in 0..n {
+            if self.defs[d].plain {
+                continue;
+            }
+            for ev in &self.evs[d] {
+                if let Ev::Call(ts) = ev {
+                    for &t in ts {
+                        self.entry[t] = 1;
+                    }
+                }
+            }
+        }
+        // round the plain functions until no fact changes, then once
+        // more to write the choices down
+        loop {
+            let before = (self.entry.clone(), self.exit.clone());
+            self.round();
+            if (&self.entry, &self.exit) == (&before.0, &before.1) {
+                break;
+            }
+        }
+        self.record = true;
+        self.round();
+        let on_beat = self.need.iter().filter(|(_, need)| !**need).map(|(s, _)| *s).collect();
+        let before = self.hoist.iter().filter_map(|(s, hz)| hz.map(|hz| (*s, hz))).collect();
+        (on_beat, before)
+    }
+
+    fn round(&mut self) {
+        for d in 0..self.defs.len() {
+            if !self.defs[d].plain {
+                continue;
+            }
+            let fd = self.defs[d].fd;
+            // a function with results ends where its last result is
+            // assigned, so what it leaves is the weakest fact after any
+            // of its statements
+            let mut leaves = 0;
+            let end = self.flow_block(&fd.body, self.entry[d], d, &Self::scope_of(fd), &mut leaves);
+            let out = if self.looped[d] { 1 } else if fd.results.is_empty() { end } else { gcd(end, leaves) };
+            self.exit[d] = gcd(self.exit[d], out);
+        }
+    }
+
+    /// can this move the clock?
+    fn moved_by(&self, ev: &Ev) -> bool {
+        match ev {
+            Ev::Push(n) => self.sym_moves || self.l.rates.contains_key(n) || self.edges_of(n).iter().any(|&t| self.moves[t]) || (self.l.node_inputs.contains(n) && self.nodes_move),
+            Ev::Op => self.sym_moves,
+            Ev::End(n) => self.l.node_inputs.contains(n) && self.nodes_move,
+            Ev::Unknown => true,
+            Ev::Call(ts) => ts.iter().any(|&t| self.moves[t]),
+        }
+    }
+
+    /// what a phrase calls: the store's functions, any the name and the
+    /// argument count may reach; else `end x$`, after which the
+    /// scheduler may run; else one of the compiler's own words, which
+    /// move nothing; anything else is not known
+    fn callee(&self, e: &Expr, d: Option<usize>, scope: &Scope) -> Callee {
+        let is_var = |w: &str| scope.contains_key(w) || self.l.fvar(w).is_some();
+        let parts = match &e.kind {
+            ExprKind::Phrase(parts) => parts,
+            // `existing f(...)`: a definition in a feature composed before this one
+            ExprKind::Existing(parts) => {
+                let Some(d) = d else { return Callee::Unknown };
+                let def = &self.defs[d];
+                let mut args = Vec::new();
+                for p in parts {
+                    match p {
+                        Part::Args(list) => args.extend(list.iter().map(|a| a.value.clone())),
+                        Part::Value(x) => args.push(x.clone()),
+                        Part::Word(w) if is_var(w) => args.push(Expr { kind: ExprKind::Name(w.clone()), line: e.line }),
+                        Part::Word(_) => {}
+                    }
+                }
+                let below = self.by_call.get(&(def.key.clone(), def.arity)).into_iter().flatten().copied().filter(|&t| self.defs[t].at < def.at).collect();
+                return Callee::Fns(below, args);
+            }
+            _ => return Callee::None,
+        };
+        let seq = |p: &Part| matches!(p, Part::Value(Expr { kind: ExprKind::Seq(_), .. }));
+        let own = match parts.as_slice() {
+            [Part::Word(w)] => is_var(w) || w == "enabled" || self.l.enum_case(w).is_some(),
+            [Part::Word(w), Part::Args(_)] if self.l.types.contains_key(w) || builtin_type(w).is_some() => true,
+            [Part::Word(w), Part::Value(Expr { kind: ExprKind::List(_), .. })] => is_var(w),
+            [Part::Word(t), Part::Word(of), x] if t == "time" && of == "of" => seq(x),
+            [Part::Word(w), x] if seq(x) => matches!(w.as_str(), "count" | "latest" | "frame" | "ended" | "position" | "end"),
+            [Part::Word(w), x, Part::Word(k), _] if seq(x) => (w == "peek" && k == "at") || (w == "advance" && k == "by"),
+            [x, Part::Word(w), _] if seq(x) => w == "behind" || w == "at",
+            [x, Part::Word(f), _, Part::Word(t), _] if seq(x) => f == "from" && t == "to",
+            [Part::Word(w), Part::Word(u)] => is_var(w) && matches!(u.as_str(), "s" | "ms" | "us" | "ns"),
+            [Part::Word(w), _] => w == "count",
+            _ => false,
+        };
+        let reached = |cands: &[&FnInfo], n: usize| -> Vec<usize> {
+            let mut ts = Vec::new();
+            for c in cands {
+                for &t in self.by_call.get(&(c.key.clone(), n)).into_iter().flatten() {
+                    if !ts.contains(&t) {
+                        ts.push(t);
+                    }
+                }
+            }
+            ts
+        };
+        if let Ok((cands, args)) = find_methods(&self.l.funcs, parts, &is_var, "", e.line) {
+            let ts = reached(&cands, args.len());
+            // a function of the store's spelled as one of the compiler's
+            // words: which of the two the lowering takes is its to say
+            return if ts.is_empty() || own {
+                Callee::Unknown
+            } else if cands.iter().any(|c| c.task) {
+                Callee::Run(ts)
+            } else {
+                Callee::Fns(ts, args)
+            };
+        }
+        // a task run at a rate sleeps
+        if let [rest @ .., Part::Word(at), Part::Args(a)] = parts.as_slice() {
+            if at == "at" && a.len() == 1 && matches!(a[0].value.kind, ExprKind::Unit(..)) && find_methods(&self.l.funcs, rest, &is_var, "", e.line).is_ok_and(|(c, _)| c.iter().any(|c| c.task)) {
+                return Callee::Unknown;
+            }
+        }
+        if let [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(n), .. })] = parts.as_slice() {
+            if w == "end" {
+                return Callee::End(n.clone());
+            }
+        }
+        if own { Callee::None } else { Callee::Unknown }
+    }
+
+    /// what a block may do to the clock, in no order
+    fn events(&self, stmts: &[Stmt], d: Option<usize>, scope: &Scope, out: &mut Vec<Ev>) {
+        let mut scope = scope.clone();
+        for s in stmts {
+            match s {
+                Stmt::Var(v) => {
+                    self.events_init(v, d, &scope, out);
+                    scope.insert(v.name.clone(), single(v.seq, &v.ty));
+                }
+                Stmt::Multi { vars, value, .. } => {
+                    self.events_expr(value, d, &scope, out);
+                    for p in vars {
+                        scope.insert(p.name.clone(), single(p.seq, &p.ty));
+                    }
+                }
+                Stmt::Assign { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => self.events_expr(value, d, &scope, out),
+                Stmt::If { cond, then, els, .. } => {
+                    self.events_expr(cond, d, &scope, out);
+                    self.events(then, d, &scope, out);
+                    if let Some(e) = els {
+                        self.events(e, d, &scope, out);
+                    }
+                }
+                Stmt::Loop { vars, cond, body, into, .. } => {
+                    let mut inner = scope.clone();
+                    for v in vars {
+                        self.events_init(v, d, &inner, out);
+                        inner.insert(v.name.clone(), single(v.seq, &v.ty));
+                    }
+                    if let Some(c) = cond {
+                        self.events_expr(c, d, &inner, out);
+                    }
+                    self.events(body, d, &inner, out);
+                    if let Some(LoopInto::Declare(ps)) = into {
+                        for p in ps {
+                            scope.insert(p.name.clone(), single(p.seq, &p.ty));
+                        }
+                    }
+                }
+                Stmt::For { var, seq, body, .. } => {
+                    self.events_expr(seq, d, &scope, out);
+                    let mut inner = scope.clone();
+                    inner.insert(var.clone(), false);
+                    self.events(body, d, &inner, out);
+                }
+                Stmt::Continue { values, .. } => values.iter().for_each(|e| self.events_expr(e, d, &scope, out)),
+                Stmt::Break { .. } => {}
+                Stmt::Push { target, items, cond, .. } => {
+                    out.push(match &target.kind {
+                        ExprKind::Seq(n) => Ev::Push(n.clone()),
+                        _ => Ev::Unknown,
+                    });
+                    items.iter().chain(cond.iter()).for_each(|e| self.events_expr(e, d, &scope, out));
+                }
+            }
+        }
+    }
+
+    fn events_init(&self, v: &super::syntax::VarDecl, d: Option<usize>, scope: &Scope, out: &mut Vec<Ev>) {
+        match &v.init {
+            Some(Init::Value(e)) => self.events_expr(e, d, scope, out),
+            Some(Init::Construct(args)) => args.iter().for_each(|a| self.events_expr(&a.value, d, scope, out)),
+            Some(Init::Pushes { items, cond }) => {
+                out.push(Ev::Op);
+                items.iter().chain(cond.iter()).for_each(|e| self.events_expr(e, d, scope, out));
+            }
+            None => {}
+        }
+    }
+
+    fn events_expr(&self, e: &Expr, d: Option<usize>, scope: &Scope, out: &mut Vec<Ev>) {
+        match &e.kind {
+            ExprKind::Unit(x, _) | ExprKind::Field(x, _) => self.events_expr(x, d, scope, out),
+            ExprKind::Neg(x) => {
+                out.push(Ev::Op);
+                self.events_expr(x, d, scope, out);
+            }
+            ExprKind::List(items) => items.iter().for_each(|x| self.events_expr(x, d, scope, out)),
+            ExprKind::Range { from, to, .. } => {
+                self.events_expr(from, d, scope, out);
+                self.events_expr(to, d, scope, out);
+            }
+            ExprKind::Bin(_, l, r) | ExprKind::Index(l, r) => {
+                out.push(Ev::Op);
+                self.events_expr(l, d, scope, out);
+                self.events_expr(r, d, scope, out);
+            }
+            ExprKind::IfElse(c, t, f) => {
+                self.events_expr(c, d, scope, out);
+                self.events_expr(t, d, scope, out);
+                self.events_expr(f, d, scope, out);
+            }
+            ExprKind::Phrase(parts) | ExprKind::Existing(parts) => {
+                for p in parts {
+                    match p {
+                        Part::Args(list) => list.iter().for_each(|a| self.events_expr(&a.value, d, scope, out)),
+                        Part::Value(x) => self.events_expr(x, d, scope, out),
+                        Part::Word(_) => {}
+                    }
+                }
+                match self.callee(e, d, scope) {
+                    Callee::None => {}
+                    Callee::End(n) => out.push(Ev::End(n)),
+                    Callee::Unknown => out.push(Ev::Unknown),
+                    Callee::Run(ts) | Callee::Fns(ts, _) => out.push(Ev::Call(ts)),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// the fact after a block that began at `g`; `leaves` takes the
+    /// weakest fact after any statement
+    fn flow_block(&mut self, stmts: &[Stmt], mut g: i64, d: usize, scope: &Scope, leaves: &mut i64) -> i64 {
+        let mut scope = scope.clone();
+        for s in stmts {
+            g = self.flow_stmt(s, g, d, &mut scope, leaves);
+            *leaves = gcd(*leaves, g);
+        }
+        g
+    }
+
+    fn flow_stmt(&mut self, s: &Stmt, mut g: i64, d: usize, scope: &mut Scope, leaves: &mut i64) -> i64 {
+        match s {
+            Stmt::Var(v) => {
+                g = self.flow_init(v, g, d, scope);
+                scope.insert(v.name.clone(), single(v.seq, &v.ty));
+                g
+            }
+            Stmt::Multi { vars, value, .. } => {
+                g = self.flow_expr(value, g, d, scope);
+                for p in vars {
+                    scope.insert(p.name.clone(), single(p.seq, &p.ty));
+                }
+                g
+            }
+            Stmt::Assign { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => self.flow_expr(value, g, d, scope),
+            Stmt::If { cond, then, els, .. } => {
+                g = self.flow_expr(cond, g, d, scope);
+                let a = self.flow_block(then, g, d, scope, leaves);
+                let b = match els {
+                    Some(e) => self.flow_block(e, g, d, scope, leaves),
+                    None => g,
+                };
+                gcd(a, b)
+            }
+            Stmt::Loop { vars, cond, body, into, .. } => {
+                let mut inner = scope.clone();
+                for v in vars {
+                    g = self.flow_init(v, g, d, &inner);
+                    inner.insert(v.name.clone(), single(v.seq, &v.ty));
+                }
+                let cond = cond.as_ref();
+                let (head, mut out) = self.flow_loop(cond, body, g, d, &inner, leaves, false);
+                // the body's first statement pushes into a stream with a
+                // rate and would align at the head: if with the head on
+                // that beat every way round leaves it there, the
+                // alignment is made once before the loop, where the loop
+                // has a first pass. The `while` is then asked once more,
+                // of the initial values, so it must be safe to ask twice
+                let mut before = None;
+                let first = match body.first() {
+                    Some(Stmt::Push { target: Expr { kind: ExprKind::Seq(n), .. }, existing: false, .. }) if !inner.contains_key(n) => self.l.rates.get(n).copied().filter(|&hz| super::store::period(hz) > 1),
+                    _ => None,
+                };
+                if let Some(hz) = first {
+                    let q = super::store::period(hz);
+                    if head % q != 0 && !self.user_syms && cond.map_or(true, |c| self.twice(c, &inner)) {
+                        let (head, tried) = self.flow_loop(cond, body, q, d, &inner, leaves, false);
+                        if head % q == 0 {
+                            before = Some(hz);
+                            out = if cond.is_some() { gcd(g, tried) } else { tried };
+                        } else {
+                            // not proved: the facts and the choices are the first walk's
+                            self.flow_loop(cond, body, g, d, &inner, leaves, false);
+                        }
+                    }
+                }
+                if self.record {
+                    self.hoist.insert(s as *const Stmt as usize, before);
+                }
+                if let Some(LoopInto::Declare(ps)) = into {
+                    for p in ps {
+                        scope.insert(p.name.clone(), single(p.seq, &p.ty));
+                    }
+                }
+                out
+            }
+            Stmt::For { var, seq, body, .. } => {
+                g = self.flow_expr(seq, g, d, scope);
+                let mut inner = scope.clone();
+                inner.insert(var.clone(), false);
+                self.flow_loop(None, body, g, d, &inner, leaves, true).1
+            }
+            Stmt::Break { .. } => {
+                if let Some(l) = self.loops.last_mut() {
+                    l.0 = Some(l.0.map_or(g, |b| gcd(b, g)));
+                }
+                g
+            }
+            Stmt::Continue { values, .. } => {
+                for e in values {
+                    g = self.flow_expr(e, g, d, scope);
+                }
+                if let Some(l) = self.loops.last_mut() {
+                    l.1 = Some(l.1.map_or(g, |b| gcd(b, g)));
+                }
+                g
+            }
+            Stmt::Push { target, items, cond, existing, .. } => {
+                let ExprKind::Seq(n) = &target.kind else { return 1 };
+                let es: Vec<&Expr> = items.iter().chain(cond.iter()).collect();
+                // `existing o$ << x` is a method's, and no method moves the clock
+                if *existing {
+                    return self.flow_again(&es, g, d, scope);
+                }
+                let period = if scope.contains_key(n) { None } else { self.l.rates.get(n).map(|&hz| super::store::period(hz)) };
+                // at a rate the statement's first item lands on the
+                // beat: where the period divides the fact it is there
+                // already, and otherwise the alignment puts it there
+                let mut at = g;
+                if let Some(q) = period.filter(|&q| q > 1) {
+                    let on = g % q == 0;
+                    if self.record {
+                        self.need.insert(s as *const Stmt as usize, !on);
+                    }
+                    if !on {
+                        at = q;
+                    }
+                }
+                // each item is then a push and a step, so every later
+                // item is evaluated at a multiple of both
+                let lo = match period {
+                    None => at,
+                    Some(q) if q > 1 => gcd(at, q),
+                    Some(_) => 1,
+                };
+                // ... provided what takes the items cannot move the
+                // clock: the edges out of a stream with no storage, the
+                // nodes the scheduler runs after a push into one they read
+                let taken = !self.edges_of(n).iter().any(|&t| self.moves[t]) && !(self.l.node_inputs.contains(n) && self.nodes_move);
+                let after = self.flow_again(&es, if taken { lo } else { 1 }, d, scope);
+                if taken { after } else { 1 }
+            }
+        }
+    }
+
+    fn flow_init(&mut self, v: &super::syntax::VarDecl, mut g: i64, d: usize, scope: &Scope) -> i64 {
+        match &v.init {
+            Some(Init::Value(e)) => self.flow_expr(e, g, d, scope),
+            Some(Init::Construct(args)) => {
+                for a in args {
+                    g = self.flow_expr(&a.value, g, d, scope);
+                }
+                g
+            }
+            Some(Init::Pushes { items, cond }) => self.flow_again(&items.iter().chain(cond.iter()).collect::<Vec<_>>(), g, d, scope),
+            None => g,
+        }
+    }
+
+    /// expressions that may be evaluated more than once, each where the
+    /// last left the clock: the fact they began at if none changes it,
+    /// and nothing known otherwise
+    fn flow_again(&mut self, es: &[&Expr], g: i64, d: usize, scope: &Scope) -> i64 {
+        let mut same = true;
+        for e in es {
+            same &= self.flow_expr(e, g, d, scope) == g;
+        }
+        if same {
+            return g;
+        }
+        for e in es {
+            self.flow_expr(e, 1, d, scope);
+        }
+        1
+    }
+
+    /// a loop from `g`: the fact at its head, the weakest of the entry
+    /// and every way back, and the fact after it. A `for` leaves from
+    /// its head, a `while` from its test
+    fn flow_loop(&mut self, cond: Option<&Expr>, body: &[Stmt], g: i64, d: usize, scope: &Scope, leaves: &mut i64, each: bool) -> (i64, i64) {
+        let mut head = g;
+        loop {
+            let tested = match cond {
+                Some(c) => self.flow_expr(c, head, d, scope),
+                None => head,
+            };
+            self.loops.push((None, None));
+            let end = self.flow_block(body, tested, d, scope, leaves);
+            let (breaks, backs) = self.loops.pop().unwrap();
+            let next = gcd(head, backs.map_or(end, |b| gcd(b, end)));
+            if next == head {
+                let left = if each { head } else { tested };
+                let out = match (cond.is_some() || each, breaks) {
+                    (true, Some(b)) => gcd(left, b),
+                    (true, None) => left,
+                    (false, Some(b)) => b,
+                    (false, None) => tested,
+                };
+                return (head, out);
+            }
+            head = next;
+        }
+    }
+
+    fn flow_expr(&mut self, e: &Expr, mut g: i64, d: usize, scope: &Scope) -> i64 {
+        match &e.kind {
+            ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => self.flow_expr(x, g, d, scope),
+            ExprKind::List(items) => {
+                for x in items {
+                    g = self.flow_expr(x, g, d, scope);
+                }
+                g
+            }
+            ExprKind::Range { from: l, to: r, .. } | ExprKind::Bin(_, l, r) | ExprKind::Index(l, r) => {
+                g = self.flow_expr(l, g, d, scope);
+                self.flow_expr(r, g, d, scope)
+            }
+            ExprKind::IfElse(c, t, f) => {
+                g = self.flow_expr(c, g, d, scope);
+                gcd(self.flow_expr(t, g, d, scope), self.flow_expr(f, g, d, scope))
+            }
+            ExprKind::Phrase(parts) | ExprKind::Existing(parts) => {
+                for p in parts {
+                    match p {
+                        Part::Args(list) => {
+                            for a in list {
+                                g = self.flow_expr(&a.value, g, d, scope);
+                            }
+                        }
+                        Part::Value(x) => g = self.flow_expr(x, g, d, scope),
+                        Part::Word(_) => {}
+                    }
+                }
+                match self.callee(e, Some(d), scope) {
+                    Callee::None => g,
+                    Callee::End(n) => if self.l.node_inputs.contains(&n) && self.nodes_move { 1 } else { g },
+                    Callee::Unknown | Callee::Run(_) => 1,
+                    Callee::Fns(ts, args) => self.flow_call(&ts, &args, g, matches!(e.kind, ExprKind::Existing(_)), scope),
+                }
+            }
+            _ => g,
+        }
+    }
+
+    /// a call at `g` that may enter any of `ts`: each takes the fact at
+    /// its entry, and the call leaves the weakest of what they leave —
+    /// and of `g` itself where it goes through a chain's links, since
+    /// every feature in the chain may be off
+    fn flow_call(&mut self, ts: &[usize], args: &[Expr], g: i64, link: bool, scope: &Scope) -> i64 {
+        if ts.is_empty() {
+            return g;
+        }
+        let mut after = if ts.len() == 1 && !link { None } else { Some(g) };
+        for &t in ts {
+            let x = if !self.moves[t] {
+                g
+            } else if self.defs[t].plain && !self.looped[t] {
+                self.exit[t]
+            } else {
+                1
+            };
+            after = Some(after.map_or(x, |a| gcd(a, x)));
+        }
+        let after = after.unwrap();
+        // an argument that is not plainly one value may be a stream the
+        // function is applied to item by item: it is then entered again
+        // where its last run left the clock
+        let name = |n: &str| scope.get(n).copied().unwrap_or_else(|| self.l.fvar(n).is_some_and(|f| !matches!(f.ty, Ty::Stream(_))));
+        let one = args.iter().all(|a| match &a.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) => true,
+            ExprKind::Name(n) => name(n),
+            ExprKind::Phrase(parts) => matches!(parts.as_slice(), [Part::Word(w)] if name(w)),
+            _ => false,
+        });
+        let at = if one { g } else { gcd(g, after) };
+        for &t in ts {
+            if self.defs[t].plain {
+                self.entry[t] = gcd(self.entry[t], at);
+            }
+        }
+        after
+    }
+
+    /// may a loop's `while` be asked twice? Literals, names, operators
+    /// and the words that read a stream without moving it
+    fn twice(&self, e: &Expr, scope: &Scope) -> bool {
+        match &e.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Name(_) | ExprKind::Seq(_) => true,
+            ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => self.twice(x, scope),
+            ExprKind::Bin(_, l, r) | ExprKind::Index(l, r) => self.twice(l, scope) && self.twice(r, scope),
+            ExprKind::IfElse(c, t, f) => self.twice(c, scope) && self.twice(t, scope) && self.twice(f, scope),
+            ExprKind::Phrase(parts) => {
+                let is_var = |w: &str| scope.contains_key(w) || self.l.fvar(w).is_some();
+                if find_methods(&self.l.funcs, parts, &is_var, "", e.line).is_ok() {
+                    return false;
+                }
+                let seq = |p: &Part| matches!(p, Part::Value(Expr { kind: ExprKind::Seq(_), .. }));
+                match parts.as_slice() {
+                    [Part::Word(w)] => is_var(w),
+                    [Part::Word(w), x] if seq(x) => matches!(w.as_str(), "count" | "ended" | "position" | "latest"),
+                    [Part::Word(w), x, Part::Word(at), Part::Value(i)] if seq(x) && w == "peek" && at == "at" => self.twice(i, scope),
+                    [Part::Word(w), x, Part::Word(at), Part::Args(a)] if seq(x) && w == "peek" && at == "at" => a.iter().all(|a| self.twice(&a.value, scope)),
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+}
+
 impl Lowerer {
     /// the scheduler's order (log 78): the nodes in a stable topological
     /// order of the graph node → stream it may push into → node reading
@@ -1020,7 +1806,7 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
+    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -1170,6 +1956,11 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         l.arrivals = counts;
     }
     l.emit_context(store)?;
+    // which pushes are on their stream's beat already (question 56):
+    // settled once the nodes and the rates are, before any body
+    let (on_beat, loop_beats) = Beat::new(&l, store).solve(store);
+    l.on_beat = on_beat;
+    l.loop_beats = loop_beats;
     for f in &store.features {
         l.cur = f.name.clone();
         writeln!(l.out, "\n; feature {} (layer {})", f.name, f.layer.as_deref().unwrap_or("")).unwrap();
@@ -1734,6 +2525,15 @@ struct Lowerer {
     /// statement's push into the same stream is on the beat already (fm3
     /// log 98)
     after_push: Option<String>,
+    /// the clock of code (question 56, fm3 log 99), settled by `Beat`
+    /// before any function is lowered, each by the statement's address:
+    /// the push statements the clock is known to be on the beat at,
+    /// which need no alignment; the loops whose first statement's
+    /// alignment is made once before them, with the stream's rate; and,
+    /// as such a loop is lowered, that rate
+    on_beat: std::collections::HashSet<usize>,
+    loop_beats: HashMap<usize, i64>,
+    loop_beat: Option<i64>,
     /// the product's clock (log 77)
     clock: super::store::Clock,
     /// the scheduler is a static schedule (log 78): the node graph is
@@ -3700,6 +4500,8 @@ impl Lowerer {
     #[allow(clippy::too_many_arguments)]
     fn lower_loop(&mut self, vars: &[super::syntax::VarDecl], cond: Option<&Expr>, body: &[Stmt], yields: &[String], into: Option<&LoopInto>, line: usize, b: &mut Body) -> Result<bool, Error> {
         let file = b.file.clone();
+        let beat = self.loop_beat.take();
+        let mut firsts: Vec<(String, Ty, Val)> = Vec::new();
         // the initial values, in the block before the loop
         let mut header = Vec::new();
         let mut carried = Vec::new();
@@ -3729,6 +4531,7 @@ impl Lowerer {
             if v.rate.is_some() {
                 return Err(lex::error(&file, v.line, "a stream is declared before the loop, which then carries it"));
             }
+            firsts.push((v.name.clone(), ty.clone(), init.clone()));
             header.push((v.name.clone(), ty.clone(), init.text));
             carried.push(v.name.clone());
             tys.push(ty);
@@ -3778,6 +4581,32 @@ impl Lowerer {
         }
         let mut results: Vec<String> = yields.to_vec();
         results.extend(streams.iter().cloned());
+        // the body's first statement pushes into a stream with a rate,
+        // and every pass leaves the clock on that stream's beat
+        // (question 56, fm3 log 99): the first pass's alignment is made
+        // here, once, where there is a first pass — the `while` asked
+        // of the initial values, which `Beat` has checked may be asked
+        // twice. A loop of no passes pushes nothing and takes no time
+        if let Some(hz) = beat {
+            match cond {
+                None => self.align(hz, b),
+                Some(c) => {
+                    let outer = b.vars.clone();
+                    let depth = b.loops.len();
+                    for (n, ty, init) in &firsts {
+                        let v = b.materialize(init);
+                        b.vars.insert(n.clone(), Var { ir: v.text, ty: ty.clone(), set: true, loop_depth: depth });
+                    }
+                    let cv = self.lower_expr(c, Some(&Ty::Bool), b, None)?;
+                    let cv = b.materialize(&cv);
+                    b.vars = outer;
+                    b.line(&format!("if {}", cv.text));
+                    b.depth += 1;
+                    self.align(hz, b);
+                    b.depth -= 1;
+                }
+            }
+        }
         // the carried variables are declared inside the loop
         let outer = b.vars.clone();
         b.loops.push(LoopCtx { carried: carried.clone(), results: results.clone(), explicit: vars.len(), item: None, loaded: None, breaks: 0 });
@@ -4378,7 +5207,10 @@ impl Lowerer {
                 Ok(false)
             }
             Stmt::If { cond, then, els, .. } => self.lower_if(cond, then, els.as_deref(), b),
-            Stmt::Loop { vars, cond, body, yields, into, line } => self.lower_loop(vars, cond.as_ref(), body, yields, into.as_ref(), *line, b),
+            Stmt::Loop { vars, cond, body, yields, into, line } => {
+                self.loop_beat = self.loop_beats.get(&(s as *const Stmt as usize)).copied();
+                self.lower_loop(vars, cond.as_ref(), body, yields, into.as_ref(), *line, b)
+            }
             Stmt::For { var, seq, body, .. } => {
                 self.lower_for(var, seq, body, b)?;
                 Ok(false)
@@ -4464,8 +5296,9 @@ impl Lowerer {
                 }
                 // into a stream with a rate the statement's first item
                 // lands on the stream's beat (question 52, fm3 log 98),
-                // unless the statement before left now there
-                let on_beat = self.after_push.take().as_deref() == Some(n.as_str());
+                // unless the statement before left now there, or the
+                // clock is known to be on that beat here (question 56)
+                let on_beat = self.after_push.take().as_deref() == Some(n.as_str()) || self.on_beat.contains(&(s as *const Stmt as usize));
                 let rate = if self.is_bare(n, b) { self.rates.get(n).copied() } else { self.paced(n, b) };
                 if let (Some(hz), false) = (rate, on_beat) {
                     self.align(hz, b);

@@ -22,3 +22,11 @@ on late()
     half$ << 0
     i$ << 4
     out$ << "done" << "\n"
+
+on one()
+    i$ << 3
+
+on later()
+    half$ << 0
+    one()
+    out$ << "done" << "\n"
