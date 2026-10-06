@@ -300,7 +300,11 @@ fn push_queue(s: any$, v: any)
     next: i64 = add pushed, 1
     store next, r
     ret
-; ... and a block of them in one copy, there being no seam
+; ... and a block of them in one copy, there being no seam: into the
+; slots from the next one, reached as the item's push reaches its own,
+; through the buffer's typed pointer. The check above has proved the
+; run lies inside the slots, so no view of the whole buffer is made
+; only to be checked again (fm3 log 105)
 fn push_queue(s: any$, block: any[])
     r: ptr = get s, ring
     e: i64 = load r, 56
@@ -314,8 +318,11 @@ fn push_queue(s: any$, block: any[])
     after: i64 = add slot, n
     fits: u1 = cmp.le after, cap
     check fits
-    vals: any[] = ring_values(r)
-    d: any[] = view vals, slot, n
+    vb: ptr = load r, 16
+    raw: ptr = ptradd vb, 16
+    q: ptr(any) = cast raw
+    p: ptr(any) = index q, slot
+    d: any[] = pack p, n, 1
     copy d, block
     next: i64 = add pushed, n
     store next, r

@@ -35,6 +35,8 @@
 ;! block_too_long -> check
 ;! queue_pushes -> 3, 4
 ;! queue_block -> 7, 4
+;! queue_block_to_the_brim -> 79, 8
+;! queue_block_full -> check
 ;! queue_full -> check
 ;! queue_freed -> 12, 8
 ;! queue_tokens -> 2, 20
@@ -135,6 +137,51 @@ fn queue_block() -> (u8, i64)
     last: u8 = latest_queue(s)
     n: i64 = count s
     ret last, n
+; ... wherever the next slot is, and up to the last one: two items
+; pushed, read and freed, so the origin is 2 and the next slot is 0
+; again; then two blocks of four, the second ending exactly at the
+; eighth slot. The block's run is reached through the buffer's pointer
+; at the slot, the push's own check having proved it lies inside (fm3
+; log 105). The fourth item unread and the fifth, as ten times the one
+; and the other, and the count
+fn queue_block_to_the_brim() -> (i64, i64)
+    s: u8$ = queue_ring()
+    push_queue(s, 1: u8)
+    push_queue(s, 2: u8)
+    s2: u8$ = advance(s, 2)
+    free_queue(s2)
+    p: ptr = addr bblk
+    b: u8[] = slice p
+    fill b, 7
+    push_queue(s2, b)
+    fill b, 9
+    push_queue(s2, b)
+    x: u8 = peek_queue(s2, 3)
+    y: u8 = peek_queue(s2, 4)
+    x1: i64 = conv x
+    y1: i64 = conv y
+    x10: i64 = mul x1, 10
+    xy: i64 = add x10, y1
+    n: i64 = count s2
+    ret xy, n
+; ... and a block that would run past the last slot fails at the push:
+; six items unread, and four more into eight slots
+fn queue_block_full() -> u8
+    s: u8$ = queue_ring()
+    loop(k: i64 = 0)
+        done: u1 = cmp.ge k, 6
+        if done
+            break
+        v: u8 = conv k
+        push_queue(s, v)
+        k2: i64 = add k, 1
+        continue k2
+    p: ptr = addr bblk
+    b: u8[] = slice p
+    fill b, 7
+    push_queue(s, b)
+    x: u8 = latest_queue(s)
+    ret x
 ; the capacity bounds what is unread: a ninth item pushed into eight
 ; slots nothing has read fails the check at the push, where a ring
 ; would have overwritten and failed its reader later
