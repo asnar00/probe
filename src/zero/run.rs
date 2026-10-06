@@ -321,10 +321,13 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bo
     let policy = &store_policy(&s, policy);
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
     let calls = calls_of(&s, &l, policy)?;
-    let p = calls
-        .into_iter()
-        .find(|p| p.text.split('→').next().unwrap_or("").trim() == which.trim() || p.call.func == which.trim())
-        .ok_or_else(|| format!("no case '{}' in the store's ## testing sections", which))?;
+    // the case as its line begins, the newest feature's where several
+    // begin so, since that is the one that stands with every feature on;
+    // or the first case of a function named alone
+    let head = |p: &Planned| p.text.split('→').next().unwrap_or("").trim() == which.trim();
+    let at = calls.iter().rposition(head).or_else(|| calls.iter().position(|p| p.call.func == which.trim()));
+    let mut calls = calls;
+    let p = at.map(|i| calls.swap_remove(i)).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", which))?;
     let (text, call) = (p.text.clone(), &p.call);
     let module = build(&l.ir, policy, level)?;
     let kind = kind_of(Backend::Native);
@@ -332,12 +335,15 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bo
         return Err(format!("{} is out of reach here: {}", text.split('→').next().unwrap_or("").trim(), skip_note(&l.funcs, why, kind)));
     }
     let off = effective(&s, &BTreeSet::new(), &p).unwrap_or_default();
+    // the real clock leaves no marks (fm3 log 91): the times were
+    // watched; on the virtual one a timed case is shown with them
+    let timed = fast && matches!(call.expect, store::Expect::Timed(_));
     {
         use std::io::Write;
         println!("{}", text.split('→').next().unwrap_or("").trim());
         let _ = std::io::stdout().flush();
     }
-    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: call.expect == store::Expect::Check, text: true, before: setters(&off, &call.input), live: true };
+    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: call.expect == store::Expect::Check, text: true, before: setters(&off, &call.input), live: true, times: timed };
     let got = suite::run_calls(&module, &l.ir, Backend::Native, &[sc], "zero-run", level)?.remove(0)?;
     let vals: Vec<String> = got.values.iter().map(|v| v.to_string()).collect();
     let mut out = String::new();
@@ -345,7 +351,8 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bo
         out.push('\n');
     }
     let shown = match call.expect {
-        store::Expect::Text(_) => format!("{:?}", got.text.strip_suffix('\n').unwrap_or(&got.text)),
+        store::Expect::Timed(_) if timed => store::spell_timed(&pieces(&got)),
+        store::Expect::Text(_) | store::Expect::Timed(_) => format!("{:?}", got.text.strip_suffix('\n').unwrap_or(&got.text)),
         _ => vals.join(", "),
     };
     out.push_str(&format!("→ {}\n", shown));
@@ -432,6 +439,7 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                     text: true,
                     before: setters(&r.off, &c.input),
                     live: false,
+                    times: matches!(c.expect, store::Expect::Timed(_)),
                 }
             })
             .collect();
@@ -496,7 +504,48 @@ fn judge(expect: &store::Expect, got: Result<suite::Got, String>) -> (bool, Stri
                 (false, format!("(printed {:?})", text))
             }
         }
+        // what was written and when, in the case's own spelling, so the
+        // line can be pasted back
+        (store::Expect::Timed(want), Ok(g)) => {
+            let got = pieces(&g);
+            if &got == want {
+                (true, String::new())
+            } else {
+                (false, format!("(printed {})", store::spell_timed(&got)))
+            }
+        }
     }
+}
+
+/// What a call wrote, cut at its marks (fm3 log 91): a mark is the bytes
+/// written when the clock moved and the time it reached, so the text
+/// before the first mark was written at 0 and the text after a mark at
+/// that mark's time. A mark that added no bytes and one that repeats a
+/// time merge away, a stamp belonging to the characters (question 53);
+/// and the last piece loses one trailing newline, as a plain text result
+/// does
+fn pieces(got: &suite::Got) -> Vec<(String, i64)> {
+    let bytes = got.text.as_bytes();
+    let mut out: Vec<(String, i64)> = Vec::new();
+    let (mut from, mut now) = (0usize, 0i64);
+    let cut = |from: usize, to: usize, t: i64, out: &mut Vec<(String, i64)>| {
+        if to > from {
+            out.push((String::from_utf8_lossy(&bytes[from..to]).to_string(), t));
+        }
+    };
+    for mark in got.marks.chunks(2) {
+        let [n, t] = mark else { break };
+        let to = (*n).clamp(from as i64, bytes.len() as i64) as usize;
+        cut(from, to, now, &mut out);
+        (from, now) = (to, *t);
+    }
+    cut(from, bytes.len(), now, &mut out);
+    if let Some((last, _)) = out.last_mut() {
+        if last.ends_with('\n') {
+            last.pop();
+        }
+    }
+    store::merge_timed(out)
 }
 
 fn show(vals: &[i64]) -> String {
@@ -507,6 +556,24 @@ fn show(vals: &[i64]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// what a call wrote, cut at its marks (fm3 log 91): the text before
+    /// the first mark is at 0, a mark that added no bytes and one that
+    /// repeats a time merge away, and the last piece loses one newline
+    #[test]
+    fn the_text_is_cut_at_the_marks() {
+        let got = |text: &str, marks: &[i64]| pieces(&suite::Got { values: vec![], text: text.into(), marks: marks.to_vec() });
+        let p = |t: &str, us: i64| (t.to_string(), us);
+        assert_eq!(got("10\n9\nhi\n", &[3, 1_000_000]), [p("10\n", 0), p("9\nhi", 1_000_000)]);
+        // the clock moved twice with nothing written between, then stood still
+        assert_eq!(got("ab", &[0, 500_000, 0, 2_000_000, 1, 2_000_000]), [p("ab", 2_000_000)]);
+        // nothing after the last mark, and a last piece that was only a newline
+        assert_eq!(got("a\n", &[2, 3_000_000]), [p("a", 0)]);
+        assert_eq!(got("a\n\n", &[2, 3_000_000]), [p("a\n", 0)]);
+        assert_eq!(got("", &[0, 1_000_000]), []);
+        assert_eq!(got("plain\n", &[]), [p("plain", 0)]);
+        assert_eq!(store::spell_timed(&got("10\n9\n", &[3, 1_000_000])), "\"10\\n\" at 0 s, \"9\" at 1 s");
+    }
 
     /// the contexts a store's cases run in and the overrides among them
     /// (log 44): hello's three `run()` cases are one promise per
@@ -526,12 +593,12 @@ mod tests {
         assert!(s.subtree("hello").contains(&"bye".to_string()));
         assert!(runs.iter().all(|r| r.label != "with hello off"));
         let standing = |label: &str| -> Vec<String> { runs.iter().filter(|r| r.label == label).map(|r| cases[r.case].text.clone()).collect() };
-        assert_eq!(standing(""), ["hello() → \"hello world\"", "count down() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\"", "run() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nhello world\\ngoodbye\"", "run() with countdown off → \"hello world\\ngoodbye\""]);
+        assert_eq!(standing(""), ["hello() → \"hello world\"", "count down() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\"", "run() → \"10\\n\" at 0 s, \"9\\n\" at 1 s, \"8\\n\" at 2 s, \"7\\n\" at 3 s, \"6\\n\" at 4 s, \"5\\n\" at 5 s, \"4\\n\" at 6 s, \"3\\n\" at 7 s, \"2\\n\" at 8 s, \"1\\nhello world\\ngoodbye\" at 9 s", "run() with countdown off → \"hello world\\ngoodbye\""]);
         assert_eq!(standing("with bye off"), ["hello() → \"hello world\"", "count down() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\"", "run() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nhello world\""]);
         assert_eq!(standing("with countdown off"), ["hello() → \"hello world\""]);
         assert_eq!(over.len(), 5);
         assert!(over.iter().any(|o| o.text == "run() → \"hello world\" [with bye off]" && o.why == "replaced by countdown's cases for run()"), "{:?}", over.iter().map(|o| &o.text).collect::<Vec<_>>());
-        assert!(over.iter().any(|o| o.text == "run() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nhello world\\ngoodbye\" [with countdown off]" && o.why == "the line `run() with countdown off → \"hello world\\ngoodbye\"` stands there"), "{:?}", over.iter().map(|o| &o.why).collect::<Vec<_>>());
+        assert!(over.iter().any(|o| o.text == "run() → \"10\\n\" at 0 s, \"9\\n\" at 1 s, \"8\\n\" at 2 s, \"7\\n\" at 3 s, \"6\\n\" at 4 s, \"5\\n\" at 5 s, \"4\\n\" at 6 s, \"3\\n\" at 7 s, \"2\\n\" at 8 s, \"1\\nhello world\\ngoodbye\" at 9 s [with countdown off]" && o.why == "the line `run() with countdown off → \"hello world\\ngoodbye\"` stands there"), "{:?}", over.iter().map(|o| &o.why).collect::<Vec<_>>());
         // `>existing` (log 50): more's cases for `describe (int)` fall
         // through to functions', so `describe (3)` stands beside `describe (4)`
         let s = store::read(Path::new("suite/zero/functions")).unwrap();
@@ -605,7 +672,7 @@ mod tests {
         assert!(!ir.contains("product's int width"), "{}", ir);
         let run = |policy: &ssa::Policy| -> Vec<i64> {
             let module = build(&ir, policy, 1).unwrap();
-            let calls: Vec<suite::Call> = ["chosen", "fchosen"].iter().map(|f| suite::Call { func: f.to_string(), args: vec![], nrets: 1, checks: false, text: true, before: vec![], live: false }).collect();
+            let calls: Vec<suite::Call> = ["chosen", "fchosen"].iter().map(|f| suite::Call { func: f.to_string(), args: vec![], nrets: 1, checks: false, text: true, before: vec![], live: false, times: false }).collect();
             suite::run_calls(&module, &ir, Backend::Native, &calls, "zero-width", 1).unwrap().into_iter().map(|g| g.unwrap().values[0]).collect()
         };
         // the native policy: 64-bit int and float

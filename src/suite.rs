@@ -69,6 +69,9 @@ struct Case {
     /// the zero runner's cases: print the program's output buffer after
     /// the results, as a line of hex bytes (see `run_calls`)
     text_out: bool,
+    /// the zero runner's cases that assert on time (fm3 log 91): print
+    /// the program's marks after the text, as a line of hex words
+    times_out: bool,
     /// the zero runner's cases: calls made after `__zero_reset` and
     /// before `__zero_start`, which set the case's context (log 43)
     before: Vec<(String, Vec<ArgSpec>)>,
@@ -156,6 +159,7 @@ fn parse_case(line: &str) -> Result<Case, String> {
         checks,
         text: line.trim().to_string(),
         text_out: false,
+        times_out: false,
         before: Vec::new(),
     })
 }
@@ -499,7 +503,7 @@ fn forked<F: FnOnce() -> Result<Got, String>>(f: F, jit: Option<&emit::jit::JitC
         }
         let mut w = unsafe { std::fs::File::from_raw_fd(fds[1]) };
         let text = match f() {
-            Ok(g) => format!("{}\x1f{}", g.values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","), g.text),
+            Ok(g) => format!("{}\x1f{}\x1f{}", g.values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","), g.marks.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","), g.text),
             Err(e) => format!("error: {}", e),
         };
         let _ = w.write_all(text.as_bytes());
@@ -523,9 +527,11 @@ fn forked<F: FnOnce() -> Result<Got, String>>(f: F, jit: Option<&emit::jit::JitC
     if let Some(e) = text.strip_prefix("error: ") {
         return Err(e.to_string());
     }
-    let (vals, out_text) = text.split_once('\x1f').unwrap_or((&text, ""));
-    let values: Result<Vec<i64>, String> = if vals.is_empty() { Ok(Vec::new()) } else { vals.split(',').map(|v| v.trim().parse::<i64>().map_err(|e| e.to_string())).collect() };
-    values.map(|values| Got { values, text: out_text.to_string() })
+    // the results, the marks, the text: the text last, its bytes its own
+    let mut fields = text.splitn(3, '\x1f');
+    let (vals, marks, out_text) = (fields.next().unwrap_or(""), fields.next().unwrap_or(""), fields.next().unwrap_or(""));
+    let numbers = |l: &str| -> Result<Vec<i64>, String> { if l.is_empty() { Ok(Vec::new()) } else { l.split(',').map(|v| v.trim().parse::<i64>().map_err(|e| e.to_string())).collect() } };
+    Ok(Got { values: numbers(vals)?, text: out_text.to_string(), marks: numbers(marks)? })
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +578,7 @@ fn run_native(
                 }
                 (0..case.expected.len() as i64).map(|i| jit.call("__area_word", &[i])).collect()
             };
-            let got = if case.checks { forked(|| run().map(|values| Got { values, text: String::new() }), None).map(|g| g.values) } else { run() };
+            let got = if case.checks { forked(|| run().map(|values| Got { values, text: String::new(), marks: Vec::new() }), None).map(|g| g.values) } else { run() };
             finish_case(report, name, case, got);
             continue;
         }
@@ -616,7 +622,7 @@ fn run_native(
                 n => Err(format!("{} expected values not supported by the runner", n)),
             }
         };
-        let got = if case.checks { forked(|| run().map(|values| Got { values, text: String::new() }), None).map(|g| g.values) } else { run() };
+        let got = if case.checks { forked(|| run().map(|values| Got { values, text: String::new(), marks: Vec::new() }), None).map(|g| g.values) } else { run() };
         finish_case(report, name, case, got);
     }
 }
@@ -776,12 +782,19 @@ pub struct Call {
     /// the program's output printed as it lands (log 77): the call on a
     /// thread, the ring read beside it; native only
     pub live: bool,
+    /// when the text was written is wanted too (fm3 log 91): the marks
+    /// the program's clock left, read after the text
+    pub times: bool,
 }
 
 /// what a call gave: its results, and the text the program printed
 pub struct Got {
     pub values: Vec<i64>,
     pub text: String,
+    /// for a call that wants times: the words of the program's marks,
+    /// two a mark, the bytes written when the clock moved and the time
+    /// it reached
+    pub marks: Vec<i64>,
 }
 
 /// what a call that ended in a failed check gives back
@@ -841,7 +854,13 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
                         }
                         text = String::from_utf8_lossy(&bytes).to_string();
                     }
-                    Ok(Got { values, text })
+                    let mut marks = Vec::new();
+                    if call.times {
+                        for i in 0..jit.call("__out_marks", &[])? {
+                            marks.push(jit.call("__out_mark", &[i])?);
+                        }
+                    }
+                    Ok(Got { values, text, marks })
                 };
                 // every call in a child: a failed check the case did not
                 // expect ends the child and is reported, not the runner
@@ -881,7 +900,7 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
                     let bf = module.func(f).ok_or_else(|| format!("no function {} in the module", f))?;
                     before.push(format!("{{\"func\":\"{}\",\"args\":[{}]}}", f, args_json(bf, args)));
                 }
-                spec.push_str(&format!("{{\"func\":\"{}\",\"reset\":true,\"text\":{},\"before\":[{}],\"args\":[{}", call.func, call.text, before.join(","), args_json(func, &call.args)));
+                spec.push_str(&format!("{{\"func\":\"{}\",\"reset\":true,\"text\":{},\"times\":{},\"before\":[{}],\"args\":[{}", call.func, call.text, call.times, before.join(","), args_json(func, &call.args)));
                 spec.push_str("],\"rets\":[");
                 for (j, &t) in func.rets.iter().enumerate() {
                     if j > 0 {
@@ -918,12 +937,19 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
                     let t = lines.next().ok_or("no text line from node")?;
                     out_text = unjson(t.strip_prefix("text: ").unwrap_or(t));
                 }
+                let mut marks = Vec::new();
+                if call.times {
+                    let m = lines.next().ok_or("no marks line from node")?;
+                    for w in m.strip_prefix("marks:").unwrap_or(m).split_whitespace() {
+                        marks.push(w.parse::<i64>().map_err(|_| format!("bad mark '{}'", w))?);
+                    }
+                }
                 // a trap with a site named in the text is a failed check
                 let values = match values {
                     Err(e) if e.starts_with("trap:") && out_text.contains("check at ") => Err(checked_at(&out_text)),
                     v => v,
                 };
-                got.push(values.map(|values| Got { values, text: out_text }));
+                got.push(values.map(|values| Got { values, text: out_text, marks }));
             }
             Ok(got)
         }
@@ -933,7 +959,7 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
             std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
             let cases: Vec<Case> = calls
                 .iter()
-                .map(|c| Case { func: c.func.clone(), args: c.args.iter().map(|&v| ArgSpec::Int(v)).collect(), expected: vec![0; c.nrets], checks: c.checks, text: c.func.clone(), text_out: c.text, before: c.before.iter().map(|(f, a)| (f.clone(), a.iter().map(|&v| ArgSpec::Int(v)).collect())).collect() })
+                .map(|c| Case { func: c.func.clone(), args: c.args.iter().map(|&v| ArgSpec::Int(v)).collect(), expected: vec![0; c.nrets], checks: c.checks, text: c.func.clone(), text_out: c.text, times_out: c.times, before: c.before.iter().map(|(f, a)| (f.clone(), a.iter().map(|&v| ArgSpec::Int(v)).collect())).collect() })
                 .collect();
             let mut got: Vec<Result<Got, String>> = Vec::new();
             if backend == Backend::Air {
@@ -948,7 +974,7 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
                     } else if left_out.contains(&c.func) {
                         got.push(Err(format!("skip: {}: recursion, which AIR has not", c.func)));
                     } else {
-                        got.push(Ok(Got { values: Vec::new(), text: String::new() }));
+                        got.push(Ok(Got { values: Vec::new(), text: String::new(), marks: Vec::new() }));
                         kept.push(c.clone());
                     }
                 }
@@ -974,7 +1000,8 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
 
 /// a machine's output for a group of calls: a line of hex results per
 /// case (`check` when the boot ended in a failed check), followed by a
-/// line of hex bytes for a case that wants its text
+/// line of hex bytes for a case that wants its text, and a line of hex
+/// words for one that wants its marks
 fn parse_call_lines(out: &str, cases: &[Case]) -> Vec<Result<Got, String>> {
     let mut lines = out.lines();
     let mut got = Vec::new();
@@ -1007,7 +1034,23 @@ fn parse_call_lines(out: &str, cases: &[Case]) -> Vec<Result<Got, String>> {
             Err(e) if e == CHECKED => Err(checked_at(&text)),
             v => v,
         };
-        got.push(values.map(|values| Got { values, text }));
+        // the marks follow the text; a boot that ended in a check printed none
+        let marks = if case.times_out && values.is_ok() {
+            match lines.next().map(hex) {
+                Some(Ok(words)) => words,
+                Some(Err(e)) => {
+                    got.push(Err(e));
+                    continue;
+                }
+                None => {
+                    got.push(Err("no marks line from the machine".into()));
+                    continue;
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        got.push(values.map(|values| Got { values, text, marks }));
     }
     got
 }
@@ -1121,6 +1164,33 @@ fn __ptext()
     body:
         b: u8 = __out_byte(i)
         w: u64 = conv b
+        __phex(w)
+        sp: u64 = const 32
+        __pch(sp)
+        one: i64 = const 1
+        i2: i64 = add i, one
+        jmp loop(i2)
+    exit:
+        nl: u64 = const 10
+        __pch(nl)
+        ret
+";
+
+/// the zero runner's marks (fm3 log 91), read back through the program's
+/// `__out_marks()` and `__out_mark(i)` and printed as one hex word each
+/// on a line of their own, after the text
+const PMARKS: &str = r"
+fn __pmarks()
+    entry:
+        n: i64 = __out_marks()
+        i0: i64 = const 0
+        jmp loop(i0)
+    loop(i: i64):
+        done: u1 = cmp.ge i, n
+        br done, exit, body
+    body:
+        m: i64 = __out_mark(i)
+        w: u64 = cast m
         __phex(w)
         sp: u64 = const 32
         __pch(sp)
@@ -1392,10 +1462,16 @@ fn gen_driver(
         if case.text_out {
             s.push_str("    __ptext()\n");
         }
+        if case.times_out {
+            s.push_str("    __pmarks()\n");
+        }
         s.push_str("    ret\n");
     }
     if cases.iter().any(|c| c.text_out) {
         s.push_str(PTEXT);
+    }
+    if cases.iter().any(|c| c.times_out) {
+        s.push_str(PMARKS);
     }
     start.push_str(exit_ssa);
     start.push_str("    ret\n");

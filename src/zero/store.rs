@@ -131,7 +131,101 @@ pub struct Case {
 pub enum Expect {
     Values(Vec<i64>),
     Text(String),
+    /// what was written and when (question 52, fm3 log 91): the pieces
+    /// of the output in order, each with the time on the store's clock,
+    /// in microseconds, at which it was written; joined they are the
+    /// whole output
+    Timed(Vec<(String, i64)>),
     Check,
+}
+
+/// the shape of a timed result, for a refusal
+const TIMED_SHAPE: &str = "a timed result is every piece of the output in order, each `\"text\" at <n> s` or `<n> ms`, joined by commas: `\"10\\n\" at 0 s, \"9\\n\" at 1 s`";
+
+/// a time as a case writes it: whole seconds as `3 s`, a whole number
+/// of milliseconds under a second as `250 ms`, anything else as decimal
+/// seconds, `3.5 s`
+pub fn spell_time(us: i64) -> String {
+    if us % 1_000_000 == 0 {
+        format!("{} s", us / 1_000_000)
+    } else if us % 1000 == 0 && us < 1_000_000 {
+        format!("{} ms", us / 1000)
+    } else {
+        let frac = format!("{:06}", us % 1_000_000);
+        format!("{}.{} s", us / 1_000_000, frac.trim_end_matches('0'))
+    }
+}
+
+/// a timed result as a case writes it, so that what a run printed can
+/// be pasted back into the case
+pub fn spell_timed(pieces: &[(String, i64)]) -> String {
+    if pieces.is_empty() {
+        return "\"\" at 0 s".to_string();
+    }
+    pieces.iter().map(|(text, t)| format!("{:?} at {}", text, spell_time(*t))).collect::<Vec<_>>().join(", ")
+}
+
+/// a timed result's pieces by its two rules (question 53): a stamp
+/// belongs to the characters, so a piece with none is nothing and two
+/// pieces at one time are one piece
+pub fn merge_timed(pieces: Vec<(String, i64)>) -> Vec<(String, i64)> {
+    let mut out: Vec<(String, i64)> = Vec::new();
+    for (text, t) in pieces {
+        if text.is_empty() {
+            continue;
+        }
+        match out.last_mut() {
+            Some((last, lt)) if *lt == t => last.push_str(&text),
+            _ => out.push((text, t)),
+        }
+    }
+    out
+}
+
+/// `"text" at <n> s, "text" at <n> ms, ...`, already lexed
+fn parse_timed(toks: &[lex::Tok], file: &str, line: usize) -> Result<Expect, Error> {
+    let mut pieces: Vec<(String, i64)> = Vec::new();
+    for part in toks.split(|t| matches!(t, lex::Tok::Sym(","))) {
+        let [lex::Tok::Str(text), lex::Tok::Word(at), n, lex::Tok::Word(unit)] = part else {
+            return Err(lex::error(file, line, TIMED_SHAPE));
+        };
+        let per = match unit.as_str() {
+            "s" => 1_000_000i64,
+            "ms" => 1000,
+            _ => return Err(lex::error(file, line, TIMED_SHAPE)),
+        };
+        if at != "at" {
+            return Err(lex::error(file, line, TIMED_SHAPE));
+        }
+        // the number, whole or decimal, as a whole number of the clock's steps
+        let us = match n {
+            lex::Tok::Int(v) if *v >= 0 => v.checked_mul(per),
+            lex::Tok::Float(f) => {
+                let (whole, frac) = f.split_once('.').unwrap_or((f, ""));
+                let digits = per.ilog10() as usize;
+                let frac = frac.trim_end_matches('0');
+                if frac.len() > digits {
+                    return Err(lex::error(file, line, format!("the time {} {} is not a whole number of microseconds, the clock's step", f, unit)));
+                }
+                let scaled = format!("{:0<width$}", frac, width = digits);
+                whole.parse::<i64>().ok().and_then(|w| w.checked_mul(per)).and_then(|w| scaled.parse::<i64>().ok().and_then(|x| w.checked_add(x)))
+            }
+            _ => return Err(lex::error(file, line, TIMED_SHAPE)),
+        };
+        let Some(us) = us else {
+            return Err(lex::error(file, line, TIMED_SHAPE));
+        };
+        if text.is_empty() {
+            return Err(lex::error(file, line, "a piece of a timed result has at least one character: a time with nothing written at it says nothing"));
+        }
+        if let Some((_, last)) = pieces.last() {
+            if us < *last {
+                return Err(lex::error(file, line, format!("the times of a timed result do not go back: {} after {}", spell_time(us), spell_time(*last))));
+            }
+        }
+        pieces.push((text.clone(), us));
+    }
+    Ok(Expect::Timed(merge_timed(pieces)))
 }
 
 /// the compiler's own feature (log 31): the platform functions every
@@ -485,7 +579,8 @@ fn read_prose(name: &str, prose: &str, file: &str, types: &HashSet<String>, code
 
 /// `>call(args) [with <feature> off, <feature> on, in "text"] →
 /// result`: the result a number or several, a quoted string (the
-/// program's output), or `check` (the call must trap); the `with`
+/// program's output), that output in pieces each with its time,
+/// `"10\n" at 0 s, "9\n" at 1 s`, or `check` (the call must trap); the `with`
 /// clause after the call's `)` names the context (log 43) and the
 /// input the runner pushes into `in$` (log 62)
 fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> Result<Case, Error> {
@@ -524,7 +619,8 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
         lex::lex_line(expect, line, file, &mut toks)?;
         match toks.as_slice() {
             [lex::Token { tok: lex::Tok::Str(s), .. }] => Expect::Text(s.clone()),
-            _ => return Err(lex::error(file, line, "a text result is one quoted string")),
+            // text with times (fm3 log 91)
+            _ => parse_timed(&toks.iter().map(|t| t.tok.clone()).collect::<Vec<_>>(), file, line)?,
         }
     } else {
         let mut vals = Vec::new();
@@ -583,6 +679,31 @@ mod tests {
         let err = |t: &str| parse_case(t, "x.md", 5, &types).err().unwrap().to_string();
         assert!(err("f() with in \"a\", in \"b\" → 1").contains("a case has one `in \"text\"`"));
         assert!(err("f() with in hi → 1").contains("a case's `with` clause is `<feature> off`, `<feature> on` or `in \"text\"`"));
+    }
+
+    /// a case that asserts on time (question 52, 53, fm3 log 91): the
+    /// pieces of the output each with its time, a time a number and `s`
+    /// or `ms`; two pieces at one time are one; and what is refused
+    #[test]
+    fn a_case_line_asserts_on_time() {
+        let types = HashSet::new();
+        let timed = |t: &str| parse_case(t, "x.md", 7, &types).map(|c| c.expect);
+        assert_eq!(timed("run() → \"10\\n\" at 0 s, \"9\\n\" at 1 s, \"hello, world\" at 3.5 s").unwrap(), Expect::Timed(vec![("10\n".into(), 0), ("9\n".into(), 1_000_000), ("hello, world".into(), 3_500_000)]));
+        assert_eq!(timed("run() → \"a\" at 250 ms, \"b\" at 0.25 s, \"c\" at 251.5 ms").unwrap(), Expect::Timed(vec![("ab".into(), 250_000), ("c".into(), 251_500)]));
+        // one quoted string alone is the plain text result it was
+        assert_eq!(timed("run() → \"a\"").unwrap(), Expect::Text("a".into()));
+        // what a run prints parses back to itself
+        let pieces = vec![("10\n".to_string(), 0), ("say \"hi\"\n".to_string(), 1_500_000), ("x".to_string(), 2_000_250)];
+        assert_eq!(spell_timed(&pieces), "\"10\\n\" at 0 s, \"say \\\"hi\\\"\\n\" at 1.5 s, \"x\" at 2.00025 s");
+        assert_eq!(timed(&format!("f() → {}", spell_timed(&pieces))).unwrap(), Expect::Timed(pieces));
+        assert_eq!(spell_time(250_000), "250 ms");
+        let err = |t: &str| timed(t).err().unwrap().to_string();
+        for bad in ["f() → \"a\" at 1", "f() → \"a\" 1 s", "f() → \"a\" at 1 hz", "f() → \"a\" at 0 s \"b\" at 1 s", "f() → \"a\" at 0 s,", "f() → \"a\" at -1 s", "f() → \"a\", \"b\""] {
+            assert!(err(bad).contains("a timed result is every piece of the output in order, each `\"text\" at <n> s` or `<n> ms`, joined by commas"), "{}: {}", bad, err(bad));
+        }
+        assert!(err("f() → \"a\" at 2 s, \"b\" at 1 s").contains("the times of a timed result do not go back: 1 s after 2 s"));
+        assert!(err("f() → \"\" at 2 s").contains("a piece of a timed result has at least one character"));
+        assert!(err("f() → \"a\" at 0.0000001 s").contains("is not a whole number of microseconds"));
     }
 
     /// composition order is creation time and a tie orders by name

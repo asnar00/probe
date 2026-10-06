@@ -499,6 +499,23 @@ fn __out_byte(i: i64) -> u8
     b: u8 = load p, i, 1
     ret b
 
+; when it was written (question 52, fm3 log 91): each time the virtual
+; clock moves, `__wait` records a mark, two words, the bytes the device
+; had been given and the time the clock reached. The runner reads them
+; after the text for a case that asserts on time
+data __out_mk: array(i64, 8192)
+data __out_mk_n: array(i64, 1)
+
+fn __out_marks() -> i64
+    q: ptr = addr __out_mk_n
+    n: i64 = load q
+    ret n
+
+fn __out_mark(i: i64) -> i64
+    p: ptr = addr __out_mk
+    w: i64 = load p, i, 8
+    ret w
+
 ; the input device (section 15, log 62, question 45): a character
 ; arriving, which under the runner is a case's `with in "text"`. Its
 ; ring is the device's own lookahead, sized by the runner, which a
@@ -516,15 +533,29 @@ fn __str(p: ptr, n: i64) -> u8[]
 
 "#;
 
+/// `__zero_reset`'s two lines that forget the last case's marks
+const MARKS_RESET: [&str; 2] = ["mk: ptr = addr __out_mk_n", "store 0: i64, mk"];
+
 /// the clock reaches a time (log 77): on the virtual clock it jumps
 /// there, the suite running as fast as it can
 const VIRTUAL_CLOCK: &str = r#"
-; the clock reaches t (log 77): the virtual clock jumps there
+; the clock reaches t (log 77): the virtual clock jumps there, and marks
+; how much had been written when it did (fm3 log 91)
 fn __wait(t: i64)
     p: ptr = addr __clock
     c: i64 = load p
     m: i64 = max(c, t)
     store m, p
+    q: ptr = addr __out_n
+    n: i64 = load q
+    k: ptr = addr __out_mk_n
+    w: i64 = load k
+    a: ptr = addr __out_mk
+    store n, a, w, 8
+    w1: i64 = add w, 1
+    store m, a, w1, 8
+    w2: i64 = add w, 2
+    store w2, k
     ret
 "#;
 
@@ -1205,7 +1236,20 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     for entry in ["__zero_reset", "__zero_start", "__out_len", "__out_byte", "__in_ch"] {
         roots.insert(entry.to_string());
     }
-    let ir = prune(&ir, &roots);
+    // a store with a case that asserts on time has the marks' readers
+    // (fm3 log 91)
+    if store.features.iter().any(|f| f.cases.iter().any(|c| matches!(c.expect, Expect::Timed(_)))) {
+        roots.insert("__out_marks".to_string());
+        roots.insert("__out_mark".to_string());
+    }
+    let mut pruned = prune(&ir, &roots);
+    // ... and a store where nothing waits and no case reads a mark
+    // keeps no marks, so its reset does not zero their count
+    if !pruned.contains("\nfn __wait(") && !pruned.contains("\nfn __out_marks(") {
+        let reset: String = MARKS_RESET.iter().map(|l| format!("    {}\n", l)).collect();
+        pruned = prune(&ir.replacen(&reset, "", 1), &roots);
+    }
+    let ir = pruned;
     Ok(Lowered { ir, funcs: l.funcs, features: l.features, marks: store.marks.clone() })
 }
 
@@ -2598,6 +2642,10 @@ impl Lowerer {
         b.line("store 0: i64, r");
         b.line("o: ptr = addr __out_n");
         b.line("store 0: i64, o");
+        // the marks of the last case go with its text (fm3 log 91); the
+        // two lines leave again where nothing waits (`lower`)
+        b.line(MARKS_RESET[0]);
+        b.line(MARKS_RESET[1]);
         // the real clock starts at the reset (log 77)
         if self.clock == super::store::Clock::Real {
             b.line("c0: i64 = __counter()");

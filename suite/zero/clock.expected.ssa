@@ -53,6 +53,13 @@ fn __out_byte(i: i64) -> u8
     b: u8 = load p, i, 1
     ret b
 
+; when it was written (question 52, fm3 log 91): each time the virtual
+; clock moves, `__wait` records a mark, two words, the bytes the device
+; had been given and the time the clock reached. The runner reads them
+; after the text for a case that asserts on time
+data __out_mk: array(i64, 8192)
+data __out_mk_n: array(i64, 1)
+
 ; the input device (section 15, log 62, question 45): a character
 ; arriving, which under the runner is a case's `with in "text"`. Its
 ; ring is the device's own lookahead, sized by the runner, which a
@@ -63,12 +70,23 @@ fn __in_ch(c: u8)
     ret
 
 
-; the clock reaches t (log 77): the virtual clock jumps there
+; the clock reaches t (log 77): the virtual clock jumps there, and marks
+; how much had been written when it did (fm3 log 91)
 fn __wait(t: i64)
     p: ptr = addr __clock
     c: i64 = load p
     m: i64 = max(c, t)
     store m, p
+    q: ptr = addr __out_n
+    n: i64 = load q
+    k: ptr = addr __out_mk_n
+    w: i64 = load k
+    a: ptr = addr __out_mk
+    store n, a, w, 8
+    w1: i64 = add w, 1
+    store m, a, w1, 8
+    w2: i64 = add w, 2
+    store w2, k
     ret
 
 ; a push into any stream (log 38): stamped with the clock on a ring
@@ -123,6 +141,8 @@ fn __zero_reset()
     store 0: i64, r
     o: ptr = addr __out_n
     store 0: i64, o
+    mk: ptr = addr __out_mk_n
+    store 0: i64, mk
     _1: u8$ = __regular_u8(1000000, 512)
     _2: int$ = __stream_int(1000000, 64)
     _3: __ctx = pack 1, 1, _1, _2, 0

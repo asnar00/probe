@@ -71,11 +71,22 @@ for (const c of spec.cases) {
     );
     console.log(out.join(", "));
     if (c.text) console.log("text: " + JSON.stringify(readText(inst)));
+    if (c.times) console.log("marks: " + readMarks(inst).join(" "));
   } catch (e) {
     // the instance outlives a trap: the text says where a check failed
     console.log("trap: " + e.message);
     if (c.text) console.log("text: " + JSON.stringify(readText(inst)));
+    if (c.times) console.log("marks: " + readMarks(inst).join(" "));
   }
+}
+
+// when the text was written: the words of the program's marks, two a
+// mark, the bytes written when its clock moved and the time it reached
+function readMarks(inst) {
+  const n = Number(inst.exports.__out_marks());
+  const words = [];
+  for (let i = 0; i < n; i++) words.push(BigInt.asIntN(64, inst.exports.__out_mark(BigInt(i))).toString());
+  return words;
 }
 
 function readText(inst) {
