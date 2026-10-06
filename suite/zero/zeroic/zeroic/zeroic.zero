@@ -22,6 +22,21 @@ int old$
 int olds$ = doubled by walking(old$)
 int m$
 int t$ = trebled(m$)
+int a$
+int sa$ = summed(a$)
+int b$
+int sb$ = summed(b$)
+int sl$ = summed(lit$)
+int e$
+int de$ = differenced(e$)
+int f$
+int ff$ = fibbed(f$)
+int g$
+int sg$ = shuffled(g$)
+char word$
+int rw$ = repeats(word$)
+int h$
+int rh$ = risen(h$)
 
 on (int d$) << doubled (int x$)
     d$ << x$ * 2
@@ -107,3 +122,68 @@ on (int n) = many (int k)
 on (int n) = a line said()
     m$ << 4 << 5
     n = peek t$ at (0) * 100 + peek t$ at (1)
+
+on (int s$) << summed (int x$)
+    int t$ = t$[-1] + x$
+    s$ << t$
+
+on (int d$) << differenced (int x$)
+    d$ << x$ - x$[-1]
+
+on (int y$) << fibbed (int x$)
+    int f$ = x$ + f$[-1] + f$[-2]
+    y$ << f$
+
+on (int o$) << shuffled (int x$)
+    o$ << q$ + r$
+    int r$ = q$ * 2
+    int q$ = x$ + p$[-1]
+    int p$ = q$ + 1
+
+on (int n$) << repeats (char c$)
+    int same$ = if (c$ == c$[-1]) then (same$[-1] + 1) else (0)
+    n$ << same$
+
+on (int r$) << risen (int x$)
+    bool up$ = x$ > x$[-1] and x$[-1] > 0 or x$ == 100
+    r$ << if (up$) then (1) else (0)
+
+on (bool b) = between (int lo) and (int hi) holds (int x)
+    b = x >= lo and x <= hi
+
+on (int n) = joined (int x)
+    bool inside = between (1) and (9) holds (x)
+    bool odd = x % 2 == 1
+    n = if (inside and odd or x == 100) then (1) else (0)
+
+on (int m, int k) = a running sum()
+    a$ << 1 << 2 << 3
+    b$ << 10
+    a$ << 4
+    m = count sa$ * 1000 + peek sa$ at (2) * 100 + peek sa$ at (3)
+    k = peek sb$ at (0)
+
+on (int n) = summed from a literal()
+    n = peek sl$ at (0) * 100 + peek sl$ at (1) * 10 + peek sl$ at (2)
+
+on (int n) = a difference()
+    e$ << 5 << 8
+    e$ << 6
+    n = peek de$ at (0) * 100 + peek de$ at (1) * 10 + peek de$ at (2) + 2
+
+on (int n) = two back()
+    f$ << 1 << 0 << 0 << 0 << 0
+    n = peek ff$ at (2) * 100 + peek ff$ at (3) * 10 + peek ff$ at (4)
+
+on (int n) = lines shuffled()
+    g$ << 1 << 1
+    n = peek sg$ at (0) * 100 + peek sg$ at (1)
+
+on (int n) = kept through a block()
+    word$ << "aab"
+    word$ << "bb"
+    n = peek rw$ at (0) * 10000 + peek rw$ at (1) * 1000 + peek rw$ at (2) * 100 + peek rw$ at (3) * 10 + peek rw$ at (4)
+
+on (int n) = two conditions()
+    h$ << 3 << 5 << 4 << 100 << 0 << 7
+    n = peek rh$ at (0) * 100000 + peek rh$ at (1) * 10000 + peek rh$ at (2) * 1000 + peek rh$ at (3) * 100 + peek rh$ at (4) * 10 + peek rh$ at (5)

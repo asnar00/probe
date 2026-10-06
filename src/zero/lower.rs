@@ -3226,16 +3226,22 @@ struct Lowerer {
 struct ZProc {
     /// the context field that counts the items, where a line asks `position`
     at: Option<String>,
+    /// what the wiring keeps (question 75 rule 5): of each stream a
+    /// line looks back at, its type, the fields of its earlier values,
+    /// the nearest first, and whether it is the input itself
+    kept: Vec<(Ty, Vec<String>, bool)>,
 }
 
 /// the state of a wiring as a push statement holds it: the count of
-/// items so far, as a value and how many have been added to it since
+/// items so far, as a value and how many have been added to it since;
+/// and the earlier values of each kept stream, the nearest first
 #[derive(Clone)]
 struct ZThread {
     stream: String,
     depth: usize,
     each: String,
     at: Option<(String, i64)>,
+    kept: Vec<Vec<String>>,
 }
 
 /// The word that fills a new stream with its items (`new_resident`),
@@ -4109,7 +4115,12 @@ impl Lowerer {
         let stored = !self.bare.contains(n);
         let p = self.zeroic[&info.key].clone();
         let w = super::zeroic::write(&p, k, &v.name, stored);
-        for (name, ty) in &w.state {
+        let mut kept = Vec::new();
+        for c in &w.kept {
+            kept.push((self.ty(&c.ty, false, file, v.line)?, c.fields.clone(), c.input));
+        }
+        let zp = ZProc { at: w.at.clone(), kept };
+        for (name, ty) in &w.state() {
             let t = self.ty(ty, false, file, v.line)?;
             self.fvars.push(FVar { name: name.clone(), ty: t.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string() });
             self.zfields.push((name.clone(), t));
@@ -4122,7 +4133,7 @@ impl Lowerer {
         self.edges.push((w.each, feature.to_string(), file.to_string()));
         let Some(walker) = w.walker else {
             self.bare_edges.entry(n.clone()).or_default().push((each.clone(), feature.to_string()));
-            self.zprocs.insert(each, ZProc { at: w.state.iter().map(|(f, _)| f.clone()).find(|f| f.ends_with("_at")) });
+            self.zprocs.insert(each, zp);
             return Ok(());
         };
         let name = mangle(&walker.name);
@@ -7919,19 +7930,54 @@ impl Lowerer {
         Some(each.clone())
     }
 
-    /// a wiring's state fetched from the context
+    /// A wiring's state fetched from the context: one load of it, and
+    /// a field for each thing kept
     fn z_load(&mut self, zp: &ZProc, stream: &str, each: &str, b: &mut Body) -> ZThread {
-        let at = zp.at.as_ref().map(|f| (self.field_get(f, "index", None, b), 0));
-        ZThread { stream: stream.to_string(), depth: b.depth, each: each.to_string(), at }
+        let mut t = ZThread { stream: stream.to_string(), depth: b.depth, each: each.to_string(), at: None, kept: Vec::new() };
+        if zp.at.is_none() && zp.kept.is_empty() {
+            return t;
+        }
+        let c = b.tmp();
+        b.line(&format!("{}: __ctx = load {}", c, THIS));
+        if let Some(f) = &zp.at {
+            let v = b.tmp();
+            b.line(&format!("{}: index = get {}, {}", v, c, f));
+            t.at = Some((v, 0));
+        }
+        for (ty, fields, _) in &zp.kept {
+            let mut vals = Vec::new();
+            for f in fields {
+                let v = b.tmp();
+                b.line(&format!("{}: {} = get {}, {}", v, ty.ir(), c, f));
+                vals.push(v);
+            }
+            t.kept.push(vals);
+        }
+        t
     }
 
-    /// ... and stored back, where it moved
+    /// ... and stored back: one load, a `set` for each thing kept, one store
     fn z_store(&mut self, t: &ZThread, b: &mut Body) {
         let zp = self.zprocs[&t.each].clone();
+        let mut puts: Vec<(String, String)> = Vec::new();
         if let (Some(f), Some(_)) = (&zp.at, &t.at) {
-            let v = self.z_at(t, b);
-            self.field_put(f, &v, b);
+            puts.push((f.clone(), self.z_at(t, b)));
         }
+        for ((_, fields, _), vals) in zp.kept.iter().zip(&t.kept) {
+            puts.extend(fields.iter().cloned().zip(vals.iter().cloned()));
+        }
+        if puts.is_empty() {
+            return;
+        }
+        let mut c = b.tmp();
+        b.line(&format!("{}: __ctx = load {}", c, THIS));
+        for (f, v) in &puts {
+            let c2 = b.tmp();
+            b.line(&format!("{}: __ctx = set {}, {}, {}", c2, c, f, v));
+            self.written.insert(f.clone());
+            c = c2;
+        }
+        b.line(&format!("store {}, {}", c, THIS));
     }
 
     /// the count of items so far, as a value
@@ -7947,13 +7993,42 @@ impl Lowerer {
         }
     }
 
+    /// The call of a processor's function with an item and what is
+    /// kept, its line and the kept values as they stand after it: each
+    /// kept stream moved back a place, the present value of a said
+    /// stream the function's result, of the input the item
+    fn z_step(&mut self, zp: &ZProc, each: &str, item: &str, at: Option<&str>, kept: &[Vec<String>], b: &mut Body) -> Vec<Vec<String>> {
+        let mut ops = vec![item.to_string()];
+        ops.extend(at.map(str::to_string));
+        ops.extend(kept.iter().flatten().cloned());
+        let mut defs = Vec::new();
+        let mut next = Vec::new();
+        for ((ty, _, input), vals) in zp.kept.iter().zip(kept) {
+            let present = if *input {
+                item.to_string()
+            } else {
+                let r = b.tmp();
+                defs.push(format!("{}: {}", r, ty.ir()));
+                r
+            };
+            let mut moved = vec![present];
+            moved.extend(vals[..vals.len() - 1].iter().cloned());
+            next.push(moved);
+        }
+        let call = format!("{}({})", each, ops.join(", "));
+        if defs.is_empty() {
+            b.line(&call);
+        } else {
+            b.line(&format!("{} = {}", defs.join(", "), call));
+        }
+        next
+    }
+
     /// one item handed to a processor's function, the state moved on
     fn z_call(&mut self, t: &mut ZThread, item: &str, b: &mut Body) {
-        let mut ops = vec![item.to_string()];
-        if t.at.is_some() {
-            ops.push(self.z_at(t, b));
-        }
-        b.line(&format!("{}({})", t.each, ops.join(", ")));
+        let zp = self.zprocs[&t.each].clone();
+        let at = t.at.is_some().then(|| self.z_at(t, b));
+        t.kept = self.z_step(&zp, &t.each.clone(), item, at.as_deref(), &t.kept.clone(), b);
         if let Some((_, k)) = &mut t.at {
             *k += 1;
         }
@@ -7961,19 +8036,37 @@ impl Lowerer {
 
     /// A block's items handed to a processor's function one at a time:
     /// the loop the front end writes at a push (fm3 log 124, decision
-    /// 5). `from` is where the items lie, bytes at an address or a
+    /// 5), what the wiring keeps carried round it as the loop's own
+    /// values. `from` is where the items lie, bytes at an address or a
     /// view; `n` their count, a constant where `known`
     fn z_block(&mut self, from: &str, bytes: bool, n: &str, known: Option<i64>, elem: &Ty, b: &mut Body) {
         let mut t = self.zthread.take().unwrap();
+        let zp = self.zprocs[&t.each].clone();
         let base = t.at.is_some().then(|| self.z_at(&t, b));
         let k = b.tmp();
-        b.open_loop("", &format!("{}: index = 0", k), known.is_some());
+        // the kept values as the loop carries them, and as it leaves them
+        let mut hdr = format!("{}: index = 0", k);
+        let (mut carried, mut left, mut defs) = (Vec::new(), Vec::new(), Vec::new());
+        for ((ty, _, _), vals) in zp.kept.iter().zip(&t.kept) {
+            let (mut cs, mut ls) = (Vec::new(), Vec::new());
+            for v in vals {
+                let (c, l) = (b.tmp(), b.tmp());
+                write!(hdr, ", {}: {} = {}", c, ty.ir(), v).unwrap();
+                defs.push(format!("{}: {}", l, ty.ir()));
+                cs.push(c);
+                ls.push(l);
+            }
+            carried.push(cs);
+            left.push(ls);
+        }
+        let prefix = if defs.is_empty() { String::new() } else { format!("{} = ", defs.join(", ")) };
+        b.open_loop(&prefix, &hdr, known.is_some());
         b.depth += 1;
         let done = b.tmp();
         b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
         b.line(&format!("if {}", done));
         b.depth += 1;
-        b.line("break");
+        b.line(format!("break {}", carried.iter().flatten().cloned().collect::<Vec<_>>().join(", ")).trim_end());
         b.depth -= 1;
         let x = b.tmp();
         if bytes {
@@ -7981,17 +8074,19 @@ impl Lowerer {
         } else {
             b.line(&format!("{}: {} = load {}, {}", x, elem.ir(), from, k));
         }
-        let mut ops = vec![x];
-        if let Some(base) = &base {
+        let at = base.as_ref().map(|base| {
             let a = b.tmp();
             b.line(&format!("{}: index = add {}, {}", a, base, k));
-            ops.push(a);
-        }
-        b.line(&format!("{}({})", t.each, ops.join(", ")));
+            a
+        });
+        let next = self.z_step(&zp, &t.each.clone(), &x, at.as_deref(), &carried, b);
         let k2 = b.tmp();
         b.line(&format!("{}: index = add {}, 1", k2, k));
-        b.line(&format!("continue {}", k2));
+        let mut again = vec![k2];
+        again.extend(next.into_iter().flatten());
+        b.line(&format!("continue {}", again.join(", ")));
         b.depth -= 1;
+        t.kept = left;
         if let Some(base) = base {
             t.at = Some(match known {
                 Some(c) => (base, c),
@@ -8595,6 +8690,21 @@ impl Lowerer {
                 let name = name_for(dst, &v.ty, b);
                 b.line(&format!("{}: {} = neg {}", name, v.ty.ir(), v.text));
                 Ok(Val { text: name, ty: v.ty, literal: false })
+            }
+            // `a or b`, `a and b` (fm3 question 66): two conditions
+            // joined, both worked out, one operation
+            ExprKind::Bin(op, l, r) if op == "and" || op == "or" => {
+                let lv = self.lower_expr(l, Some(&Ty::Bool), b, None)?;
+                let rv = self.lower_expr(r, Some(&Ty::Bool), b, None)?;
+                for (v, x) in [(&lv, l), (&rv, r)] {
+                    if v.ty != Ty::Bool {
+                        return Err(lex::error(&file, x.line, format!("'{}' joins two conditions, and this side is not one: it is `{}`", op, zero_ty(&v.ty))));
+                    }
+                }
+                let (lv, rv) = (b.materialize(&lv), b.materialize(&rv));
+                let name = name_for(dst, &Ty::Bool, b);
+                b.line(&format!("{}: u1 = {} {}, {}", name, op, lv.text, rv.text));
+                Ok(Val { text: name, ty: Ty::Bool, literal: false })
             }
             ExprKind::Bin(op, l, r) => {
                 if self.candidate.is_none() && (matches!(l.kind, ExprKind::Acc) || matches!(r.kind, ExprKind::Acc)) {

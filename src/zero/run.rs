@@ -741,7 +741,6 @@ mod tests {
             ("    int k = x$ * 2\n    d$ << k", "h.zero:18: in a stream processor every line holds for every item, so each line says a stream: write `int k$ = ...`"),
             ("    d$ << x$ while (_ < 5)", "h.zero:18: `while` on a push repeats it, which is a loop, and a stream processor has none: say the stream by a line of its own, or write `d$ << item when (condition)`"),
             ("    e$ << x$", "h.zero:18: a stream processor pushes into its own output, 'd$'"),
-            ("    int k$ = k$ + x$\n    d$ << k$", "h.zero:18: 'k$' is said in terms of itself at the present item"),
             ("    d$ << d$ + x$", "h.zero:18: 'd$' is the output: a stream processor pushes into it and does not read it"),
         ] {
             let err = with(body).expect_err(body);
@@ -751,6 +750,79 @@ mod tests {
         std::fs::write(dir.join("h/h.zero"), "on (int d$) << doubled (int x$)\n    d$ << x$ * 2\n\non (int n) = f()\n    int i$ = [1, 2, 3]\n    int d$ = doubled(i$)\n    n = count d$\n").unwrap();
         let err = emit(&dir).expect_err("inside a function");
         assert!(err.ends_with("h.zero:6: 'doubled' is a stream processor with no loop in it: it is wired at feature scope, `int x$ = doubled(...)`, and running one inside a function is not built"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stream looks back (fm3 question 75 rule 2, log 125): `x$[-1]`
+    /// is the item one before the present one, zero before there is
+    /// anything, and a stream may be said in terms of its own earlier
+    /// items. What is kept is the compiler's: one earlier value for a
+    /// look one back, two for two, none for a stream read only now,
+    /// each a field of the wiring's own in the context. The lines may
+    /// be written in any order and give the same text. And what cannot
+    /// be said is refused, naming the line: a stream at its own
+    /// present item, a circle through present items, an index forward
+    /// of now, and one that is worked out
+    #[test]
+    fn a_stream_looks_back_and_never_forward() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-back-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 2\n").unwrap();
+        let head = "int x$\nint d$ = made(x$)\n\non (int n) = f()\n    x$ << 1 << 2\n    n = count d$\n\non (int d$) << made (int x$)\n";
+        let with = |body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}\n", head, body)).unwrap();
+            emit(&dir)
+        };
+        // two back keeps two, one back one, and a stream read only now none
+        let ir = with("    int a$ = x$ + a$[-1] + a$[-2]\n    int b$ = a$ - x$[-1]\n    int c$ = b$ * 2\n    d$ << c$").unwrap();
+        let ctx = &ir[ir.find("type __ctx = struct").unwrap()..ir.find("data __ctx_mem").unwrap()];
+        assert!(ctx.contains("    __z1_x_1: int\n    __z1_a_1: int\n    __z1_a_2: int\n"), "{}", ctx);
+        assert!(!ctx.contains("__z1_x_2") && !ctx.contains("__z1_b_") && !ctx.contains("__z1_c_"), "{}", ctx);
+        assert!(ir.contains("fn __z1_each(_x: int, __x_b1: int, __a_b1: int, __a_b2: int) -> int\n"), "{}", ir);
+        // the state is fetched once a statement, carried through its
+        // items and stored once; no read in the body is checked
+        let f = &ir[ir.find("fn f() -> int").unwrap()..];
+        let f = &f[..f[1..].find("\nfn ").map_or(f.len(), |i| i + 1)];
+        assert_eq!(f.matches("= get ").count() - f.matches("get _1, __enabled_h").count() - f.matches(", d\n").count(), 3, "{}", f);
+        assert_eq!(f.matches("store ").count(), 1, "{}", f);
+        let each = &ir[ir.find("fn __z1_each(").unwrap()..];
+        let each = &each[..each[1..].find("\nfn ").map_or(each.len(), |i| i + 1)];
+        assert!(!each.contains("check") && !each.contains("peek"), "{}", each);
+        // the lines in any order: the same text
+        let shuffled = with("    d$ << c$\n    int c$ = b$ * 2\n    int b$ = a$ - x$[-1]\n    int a$ = x$ + a$[-1] + a$[-2]").unwrap();
+        assert_eq!(ir, shuffled);
+        for (body, said) in [
+            ("    int k$ = k$ + x$\n    d$ << k$", "h.zero:9: 'k$' is said in terms of itself at the present item: a stream may look back at itself, `k$[-1]`, and never at itself now"),
+            ("    int a$ = b$ + x$\n    int b$ = a$ * 2\n    d$ << b$", "h.zero:9: 'a$' is said in terms of 'b$' at the present item, and 'b$' in terms of 'a$': a circle. One of them must look back, `b$[-1]`"),
+            ("    d$ << x$[1]", "h.zero:9: 'x$[1]' would be an item that has not come: a stream processor looks back, `x$[-1]`, and never forward"),
+            ("    d$ << x$[0]", "h.zero:9: 'x$[0]' is the present item: write `x$`"),
+            ("    int k$ = x$ * 2\n    d$ << k$[k$]", "h.zero:10: the index of 'k$' is worked out: in a stream processor an index is a literal, `k$[-1]` the item one before; an index that is not a literal is not built in this hop"),
+            ("    loop\n        if (count x$ == 0)\n            break\n        d$ << x$[-1]\n        advance x$ by (1)", "h.zero:12: this body is written both ways: line 9 walks its input (a loop), and line 12 holds for every item (`x$[-1]`). A stream processor either walks what has arrived, with loops and the reader's words, or says each stream once with no loop: write it one way"),
+        ] {
+            let err = with(body).expect_err(body);
+            assert!(err.ends_with(said), "{}: {}", body, err);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `or` and `and` join two conditions (fm3 question 66): `and`
+    /// tighter than `or`, both looser than a comparison, both sides
+    /// worked out, one operation each. A declared name that has `and`
+    /// in it is still the call it was, the parser being told which
+    /// words stand before it in a name
+    #[test]
+    fn two_conditions_are_joined() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-joined-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (5) → 1\n>sum of (1) and (2) → 3\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "on (int s) = sum of (int a) and (int b)\n    s = a + b\n\non (int n) = f (int x)\n    bool ok = x > 0 and x < 9 or x == 100 and sum of (x) and (1) > 3\n    n = if (ok) then (1) else (0)\n").unwrap();
+        let ir = emit(&dir).unwrap();
+        assert!(ir.contains("fn f(x: int) -> int\n    _1: u1 = cmp.gt x, 0\n    _2: u1 = cmp.lt x, 9\n    _3: u1 = and _1, _2\n    _4: u1 = cmp.eq x, 100\n    _5: int = sum_of_and(x, 1)\n    _6: u1 = cmp.gt _5, 3\n    _7: u1 = and _4, _6\n    ok: u1 = or _3, _7\n"), "{}", ir);
+        std::fs::write(dir.join("h/h.zero"), "on (int n) = f (int x)\n    n = if (x and x > 2) then (1) else (0)\n").unwrap();
+        let err = emit(&dir).expect_err("a number joined");
+        assert!(err.ends_with("h.zero:2: 'and' joins two conditions, and this side is not one: it is `int`"), "{}", err);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

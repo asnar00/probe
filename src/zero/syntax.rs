@@ -218,6 +218,65 @@ pub fn declared_types(src: &str) -> Vec<String> {
         .collect()
 }
 
+/// The words that stand before `and` and `or` in the names of the
+/// functions a file declares (fm3 question 66): `smaller of (a) and
+/// (b)` gives "and" after "smaller of". `and` and `or` join two
+/// conditions everywhere but where a declared name has them, and the
+/// parser, which knows no functions, is handed these with the type
+/// names, each spelled with a first character no type name has
+pub fn declared_joins(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for l in src.lines().filter(|l| l.starts_with("on ")) {
+        let mut toks = Vec::new();
+        if lex::lex_line(l, 0, "", &mut toks).is_err() {
+            continue;
+        }
+        // past `on`, and past the results where the first group is
+        // followed by `=` or `<<`
+        let mut i = 1;
+        if matches!(toks.get(1).map(|t| &t.tok), Some(Tok::Sym("("))) {
+            let mut depth = 0;
+            let mut k = 1;
+            while k < toks.len() {
+                match &toks[k].tok {
+                    Tok::Sym("(") => depth += 1,
+                    Tok::Sym(")") => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                k += 1;
+            }
+            if matches!(toks.get(k + 1).map(|t| &t.tok), Some(Tok::Sym("=")) | Some(Tok::Sym("<<"))) {
+                i = k + 2;
+            }
+        }
+        let mut words: Vec<String> = Vec::new();
+        let mut depth = 0;
+        for t in &toks[i.min(toks.len())..] {
+            match &t.tok {
+                Tok::Sym("(") => depth += 1,
+                Tok::Sym(")") => depth -= 1,
+                Tok::Word(w) if depth == 0 => {
+                    if w == "and" || w == "or" {
+                        out.push(join_key(w, &words));
+                    }
+                    words.push(w.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+fn join_key(w: &str, before: &[String]) -> String {
+    format!("\u{0}{} {}", w, before.join(" "))
+}
+
 pub struct Parser<'a> {
     toks: Vec<Token>,
     pos: usize,
@@ -927,7 +986,42 @@ impl<'a> Parser<'a> {
     // --- expressions ---
 
     pub fn parse_expr(&mut self) -> Result<Expr, Error> {
-        self.parse_compare()
+        self.parse_or()
+    }
+
+    /// `a or b`, then `a and b`, both looser than a comparison (fm3
+    /// question 66): two conditions joined, both always worked out
+    fn parse_or(&mut self) -> Result<Expr, Error> {
+        let mut l = self.parse_and()?;
+        while self.at_word("or") {
+            let line = self.line();
+            self.pos += 1;
+            let r = self.parse_and()?;
+            l = Expr { kind: ExprKind::Bin("or".to_string(), Box::new(l), Box::new(r)), line };
+        }
+        Ok(l)
+    }
+
+    fn parse_and(&mut self) -> Result<Expr, Error> {
+        let mut l = self.parse_compare()?;
+        while self.at_word("and") {
+            let line = self.line();
+            self.pos += 1;
+            let r = self.parse_compare()?;
+            l = Expr { kind: ExprKind::Bin("and".to_string(), Box::new(l), Box::new(r)), line };
+        }
+        Ok(l)
+    }
+
+    /// is `w`, met in a phrase whose words so far are `before`, a word
+    /// of some declared function's name there, and not the operator?
+    fn joins(&self, w: &str, before: &[String]) -> bool {
+        self.types.contains(&join_key(w, before))
+    }
+
+    /// does a word end a phrase as `and` or `or` between two conditions?
+    fn joiner(&self, w: &str, before: &[String]) -> bool {
+        (w == "and" || w == "or") && !self.joins(w, before)
     }
 
     fn parse_compare(&mut self) -> Result<Expr, Error> {
@@ -1034,7 +1128,7 @@ impl<'a> Parser<'a> {
             Tok::Seq(w) => {
                 // a phrase may begin with a sequence name when a word
                 // follows it: `x$ behind (2)`, `x$ at (t)` (section 9)
-                if matches!(self.peek(), Some(Tok::Word(v)) if !self.ends_phrase(v) && !UNITS.contains(&v.as_str())) {
+                if matches!(self.peek(), Some(Tok::Word(v)) if !self.ends_phrase(v) && !self.joiner(v, &[]) && !UNITS.contains(&v.as_str())) {
                     let mut parts = vec![Part::Value(Expr { kind: ExprKind::Seq(w), line })];
                     parts.extend(self.parse_parts()?);
                     return Ok(Expr { kind: ExprKind::Phrase(parts), line });
@@ -1049,7 +1143,7 @@ impl<'a> Parser<'a> {
                 self.pos -= 1;
                 let at = self.pos;
                 if let Ok(args) = self.parse_args() {
-                    if matches!(self.peek(), Some(Tok::Word(w)) if !self.ends_phrase(w) && !UNITS.contains(&w.as_str())) {
+                    if matches!(self.peek(), Some(Tok::Word(w)) if !self.ends_phrase(w) && !self.joiner(w, &[]) && !UNITS.contains(&w.as_str())) {
                         let mut parts = vec![Part::Args(args)];
                         parts.extend(self.parse_parts()?);
                         return Ok(Expr { kind: ExprKind::Phrase(parts), line });
@@ -1122,10 +1216,14 @@ impl<'a> Parser<'a> {
     /// ends an expression
     fn parse_parts(&mut self) -> Result<Vec<Part>, Error> {
         let mut parts = Vec::new();
+        // the words of the phrase so far: `and` and `or` are words of
+        // it only where a declared name has them after these
+        let mut words: Vec<String> = Vec::new();
         loop {
             match self.peek().cloned() {
-                Some(Tok::Word(w)) if !self.ends_phrase(&w) => {
+                Some(Tok::Word(w)) if !self.ends_phrase(&w) && !self.joiner(&w, &words) => {
                     self.pos += 1;
+                    words.push(w.clone());
                     parts.push(Part::Word(w));
                 }
                 Some(Tok::Sym("(")) => parts.push(Part::Args(self.parse_args()?)),
@@ -1176,7 +1274,9 @@ mod tests {
     use super::*;
 
     fn types() -> HashSet<String> {
-        ["Vec".to_string()].into_iter().collect()
+        let mut t: HashSet<String> = ["Vec".to_string()].into_iter().collect();
+        t.extend(declared_joins("on (number n) = smaller of (number a) and (number b)\n"));
+        t
     }
 
     #[test]

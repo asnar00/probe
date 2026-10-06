@@ -350,6 +350,9 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
         let code = std::fs::read_to_string(&zero).map_err(|e| lex::error(&zfile, 0, format!("{}", e)))?;
         let prose = std::fs::read_to_string(&md).map_err(|e| lex::error(&mfile, 0, format!("{}", e)))?;
         types.extend(syntax::declared_types(&code));
+        // ... and the words before `and` and `or` in a function's name
+        // (fm3 question 66), which the parser tells from the operator by
+        types.extend(syntax::declared_joins(&code));
         sources.push((name, zfile, code, mfile, prose));
     }
     let mut features = Vec::new();

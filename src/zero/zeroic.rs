@@ -28,6 +28,18 @@ pub struct Out {
     pub line: usize,
 }
 
+/// a stream a line looks back at, `x$[-1]`: how far back the furthest
+/// look goes is how many earlier values the wiring keeps of it
+#[derive(Clone)]
+pub struct Kept {
+    pub name: String,
+    pub ty: String,
+    pub depth: usize,
+    /// the input itself, whose present value is the item; else a said
+    /// stream, whose present value the function gives back
+    pub input: bool,
+}
+
 /// a declaration read the new way
 #[derive(Clone)]
 pub struct Processor {
@@ -39,6 +51,10 @@ pub struct Processor {
     pub outs: Vec<Out>,
     /// does a line ask `position x$`? Then the wiring counts its items
     pub position: bool,
+    /// what is kept (question 75 rule 5): the input first, then the
+    /// said streams by name, so the order the lines were written in
+    /// does not show in what is emitted
+    pub kept: Vec<Kept>,
 }
 
 /// the reader's words: a body that applies one to its input walks it
@@ -58,9 +74,12 @@ fn names(p: &Part, x: &str) -> bool {
     }
 }
 
-/// every expression of an expression, itself first
-fn walk(e: &Expr, f: &mut dyn FnMut(&Expr)) {
-    f(e);
+/// every expression of an expression, itself first; the visitor says
+/// whether to go on inside it
+fn walk(e: &Expr, f: &mut dyn FnMut(&Expr) -> bool) {
+    if !f(e) {
+        return;
+    }
     match &e.kind {
         ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => walk(x, f),
         ExprKind::List(items) => items.iter().for_each(|x| walk(x, f)),
@@ -87,8 +106,8 @@ fn walk(e: &Expr, f: &mut dyn FnMut(&Expr)) {
 }
 
 /// every expression a block holds
-fn walk_stmts(stmts: &[Stmt], f: &mut dyn FnMut(&Expr)) {
-    let init = |v: &VarDecl, f: &mut dyn FnMut(&Expr)| match &v.init {
+fn walk_stmts(stmts: &[Stmt], f: &mut dyn FnMut(&Expr) -> bool) {
+    let init = |v: &VarDecl, f: &mut dyn FnMut(&Expr) -> bool| match &v.init {
         Some(Init::Value(e)) => walk(e, f),
         Some(Init::Construct(args)) => args.iter().for_each(|a| walk(&a.value, f)),
         Some(Init::Pushes { items, cond }) => items.iter().chain(cond.iter()).for_each(|e| walk(e, f)),
@@ -142,6 +161,26 @@ fn pushes_into(stmts: &[Stmt], x: &str) -> Option<usize> {
         Stmt::If { then, els, .. } => pushes_into(then, x).or_else(|| els.as_deref().and_then(|e| pushes_into(e, x))),
         _ => None,
     })
+}
+
+/// The first mark of the new reading in a block (fm3 question 65), by
+/// its line and how it is written: a look back at the input,
+/// `x$[-1]`. A body that has one and also walks is written both ways
+fn new_mark(stmts: &[Stmt], x: &str) -> Option<(usize, String)> {
+    let mut found = None;
+    walk_stmts(stmts, &mut |e| {
+        if found.is_none() {
+            if let ExprKind::Index(base, idx) = &e.kind {
+                if let (true, ExprKind::Int(k)) = (is_seq(base, x), &idx.kind) {
+                    if *k < 0 {
+                        found = Some((e.line, format!("`{}$[{}]`", x, k)));
+                    }
+                }
+            }
+        }
+        true
+    });
+    found
 }
 
 /// the first thing in a block that walks: a loop, a `for`, an
@@ -224,11 +263,18 @@ pub fn read(fd: &FnDecl, file: &str, takers: &Takers) -> Result<Option<Processor
     }
     let params: Vec<&Param> = fd.params().collect();
     let streams: Vec<&&Param> = params.iter().filter(|p| p.seq).collect();
-    // a task with no input has no items for a line to hold for
-    let [input] = streams.as_slice() else { return Ok(None) };
-    if params.len() != 1 {
+    // a task with no input has no items for a line to hold for; one
+    // with more than its input keeps the reading it had, and is not
+    // built the new way in this hop
+    if streams.len() != 1 || params.len() != 1 {
+        for s in &streams {
+            if let Some((line, how)) = new_mark(&fd.body, &s.name) {
+                return Err(lex::error(file, line, format!("{} holds for every item, which is a stream processor with no loop in it; one that takes more than its one input is not built in this hop", how)));
+            }
+        }
         return Ok(None);
     }
+    let input = streams[0];
     let x = input.name.as_str();
     let out = fd.results[0].name.as_str();
     // the marks of the walking form
@@ -242,15 +288,20 @@ pub fn read(fd: &FnDecl, file: &str, takers: &Takers) -> Result<Option<Processor
                     old = Some((e.line, format!("'{}$' handed to '{}', which takes a stream", x, f)));
                 }
             }
+            true
         });
     }
     if old.is_none() {
         old = pushes_into(&fd.body, x).map(|line| (line, format!("a push into '{}$'", x)));
     }
-    if old.is_some() {
+    if let Some((line, how)) = &old {
+        // a body with a mark of each reading is written both ways
+        if let Some((nline, nhow)) = new_mark(&fd.body, x) {
+            return Err(lex::error(file, nline.max(*line), format!("this body is written both ways: line {} walks its input ({}), and line {} holds for every item ({}). A stream processor either walks what has arrived, with loops and the reader's words, or says each stream once with no loop: write it one way", line, how, nline, nhow)));
+        }
         return Ok(None);
     }
-    let mut p = Processor { line: fd.line, input: x.to_string(), item_ty: input.ty.clone(), said: Vec::new(), outs: Vec::new(), position: false };
+    let mut p = Processor { line: fd.line, input: x.to_string(), item_ty: input.ty.clone(), said: Vec::new(), outs: Vec::new(), position: false, kept: Vec::new() };
     for s in &fd.body {
         match s {
             Stmt::Var(v) if v.seq => {
@@ -286,20 +337,29 @@ pub fn read(fd: &FnDecl, file: &str, takers: &Takers) -> Result<Option<Processor
             Stmt::Assign { .. } | Stmt::Loop { .. } | Stmt::For { .. } | Stmt::Continue { .. } | Stmt::Break { .. } => unreachable!(),
         }
     }
-    // what the lines may say of the input and of each other
+    // what the lines may say of the input and of each other: the
+    // present item by the bare name, an earlier one by `x$[-1]`, and
+    // nothing forward (question 75 rule 2)
     let mut bad: Option<Error> = None;
     let said: Vec<String> = p.said.iter().map(|d| d.name.clone()).collect();
     let mut position = false;
-    let mut check = |e: &Expr| {
+    let mut backs: Vec<(String, usize)> = Vec::new();
+    let mut check = |e: &Expr| -> bool {
         if bad.is_some() {
-            return;
+            return false;
         }
         match &e.kind {
             ExprKind::Seq(n) if n == out => bad = Some(lex::error(file, e.line, format!("'{}$' is the output: a stream processor pushes into it and does not read it", out))),
-            ExprKind::Index(base, _) => {
+            ExprKind::Index(base, idx) => {
                 if let ExprKind::Seq(n) = &base.kind {
                     if n == x || said.contains(n) {
-                        bad = Some(lex::error(file, e.line, format!("'{}$[...]': a stream processor's lines read the present item, `{}$`", n, n)));
+                        match &idx.kind {
+                            ExprKind::Int(k) if *k < 0 => backs.push((n.clone(), k.unsigned_abs() as usize)),
+                            ExprKind::Int(0) => bad = Some(lex::error(file, e.line, format!("'{}$[0]' is the present item: write `{}$`", n, n))),
+                            ExprKind::Int(k) => bad = Some(lex::error(file, e.line, format!("'{}$[{}]' would be an item that has not come: a stream processor looks back, `{}$[-1]`, and never forward", n, k, n))),
+                            _ => bad = Some(lex::error(file, e.line, format!("the index of '{}$' is worked out: in a stream processor an index is a literal, `{}$[-1]` the item one before; an index that is not a literal is not built in this hop", n, n))),
+                        }
+                        return false;
                     }
                 }
             }
@@ -307,11 +367,13 @@ pub fn read(fd: &FnDecl, file: &str, takers: &Takers) -> Result<Option<Processor
                 if let [Part::Word(w), s] = parts.as_slice() {
                     if w == "position" && names(s, x) {
                         position = true;
+                        return false;
                     }
                 }
             }
             _ => {}
         }
+        true
     };
     for d in &p.said {
         walk(&d.value, &mut check);
@@ -323,22 +385,55 @@ pub fn read(fd: &FnDecl, file: &str, takers: &Takers) -> Result<Option<Processor
         return Err(e);
     }
     p.position = position;
-    // a line reads the lines above it: the present item of a stream
-    // said further down is not there yet
-    for (i, d) in p.said.iter().enumerate() {
-        let mut ahead: Option<(usize, String)> = None;
-        walk(&d.value, &mut |e| {
-            if let ExprKind::Seq(n) = &e.kind {
-                if ahead.is_none() && p.said[i..].iter().any(|l| &l.name == n) {
-                    ahead = Some((e.line, n.clone()));
-                }
-            }
-        });
-        if let Some((line, n)) = ahead {
-            let what = if n == d.name { format!("'{}$' is said in terms of itself at the present item", n) } else { format!("'{}$' is read here and said further down", n) };
-            return Err(lex::error(file, line, what));
+    // what is kept: of each stream looked back at, as many earlier
+    // values as the furthest look
+    let ty_of = |n: &str| if n == x { input.ty.clone() } else { p.said.iter().find(|d| d.name == n).unwrap().ty.clone() };
+    let mut kept: Vec<Kept> = Vec::new();
+    for (n, k) in backs {
+        match kept.iter_mut().find(|c| c.name == n) {
+            Some(c) => c.depth = c.depth.max(k),
+            None => kept.push(Kept { ty: ty_of(&n), input: n == x, name: n, depth: k }),
         }
     }
+    kept.sort_by(|a, b| b.input.cmp(&a.input).then(a.name.cmp(&b.name)));
+    p.kept = kept;
+    // a line may be said in terms of another's present item, and never
+    // of its own: the lines are ordered by what each reads now, by
+    // name where nothing orders them, so the order they were written
+    // in does not matter and does not show
+    let now = |d: &Said| -> Vec<(usize, String)> {
+        let mut out = Vec::new();
+        walk(&d.value, &mut |e| match &e.kind {
+            ExprKind::Index(base, idx) if matches!(&base.kind, ExprKind::Seq(n) if said.contains(n)) && matches!(idx.kind, ExprKind::Int(_)) => false,
+            ExprKind::Seq(n) if said.contains(n) => {
+                out.push((e.line, n.clone()));
+                true
+            }
+            _ => true,
+        });
+        out
+    };
+    let reads: Vec<Vec<(usize, String)>> = p.said.iter().map(now).collect();
+    for (d, r) in p.said.iter().zip(&reads) {
+        if let Some((line, _)) = r.iter().find(|(_, n)| n == &d.name) {
+            return Err(lex::error(file, *line, format!("'{}$' is said in terms of itself at the present item: a stream may look back at itself, `{}$[-1]`, and never at itself now", d.name, d.name)));
+        }
+    }
+    let mut order: Vec<usize> = Vec::new();
+    let mut left: Vec<usize> = (0..p.said.len()).collect();
+    left.sort_by(|&a, &b| p.said[a].name.cmp(&p.said[b].name));
+    while !left.is_empty() {
+        let ready = left.iter().position(|&i| reads[i].iter().all(|(_, n)| order.iter().any(|&o| &p.said[o].name == n)));
+        let Some(k) = ready else {
+            // a circle through present items: name it by the line that
+            // comes first in the text
+            let &i = left.iter().min_by_key(|&&i| p.said[i].line).unwrap();
+            let (line, n) = reads[i].iter().find(|(_, n)| left.iter().any(|&l| &p.said[l].name == n)).unwrap();
+            return Err(lex::error(file, *line, format!("'{}$' is said in terms of '{}$' at the present item, and '{}$' in terms of '{}$': a circle. One of them must look back, `{}$[-1]`", p.said[i].name, n, n, p.said[i].name, n)));
+        };
+        order.push(left.remove(k));
+    }
+    p.said = order.iter().map(|&i| p.said[i].clone()).collect();
     Ok(Some(p))
 }
 
@@ -402,6 +497,16 @@ pub fn local(n: &str) -> String {
     if n == "this" { "_this_".to_string() } else { format!("_{}", n) }
 }
 
+/// the item `k` before the present one of a stream: a parameter of the function
+fn back(n: &str, k: usize) -> String {
+    format!("__{}_b{}", n, k)
+}
+
+/// the present value of a kept stream: a result of the function
+fn result(n: &str) -> String {
+    format!("__{}_r", n)
+}
+
 impl Processor {
     fn is_stream(&self, n: &str) -> bool {
         n == self.input || self.said.iter().any(|d| d.name == n)
@@ -423,7 +528,10 @@ impl Processor {
             ExprKind::List(items) => ExprKind::List(items.iter().map(|x| self.each(x)).collect()),
             ExprKind::Range { from, to, inclusive } => ExprKind::Range { from: Box::new(self.each(from)), to: Box::new(self.each(to)), inclusive: *inclusive },
             ExprKind::Bin(op, l, r) => ExprKind::Bin(op.clone(), Box::new(self.each(l)), Box::new(self.each(r))),
-            ExprKind::Index(l, r) => ExprKind::Index(Box::new(self.each(l)), Box::new(self.each(r))),
+            ExprKind::Index(l, r) => match (&l.kind, &r.kind) {
+                (ExprKind::Seq(n), ExprKind::Int(k)) if self.is_stream(n) && *k < 0 => ExprKind::Name(back(n, k.unsigned_abs() as usize)),
+                _ => ExprKind::Index(Box::new(self.each(l)), Box::new(self.each(r))),
+            },
             ExprKind::IfElse(c, a, b) => ExprKind::IfElse(Box::new(self.each(c)), Box::new(self.each(a)), Box::new(self.each(b))),
             ExprKind::Phrase(parts) => {
                 if let [Part::Word(w), s] = parts.as_slice() {
@@ -451,15 +559,39 @@ impl Processor {
     }
 }
 
+/// what a wiring keeps of one stream: its type, and the context
+/// fields of its earlier values, the nearest first
+pub struct WKept {
+    pub ty: String,
+    pub fields: Vec<String>,
+    pub input: bool,
+}
+
 /// what the front end wrote for one wiring of a processor
 pub struct Written {
-    /// the function of one item: its parameters are the item, then the
-    /// count of items so far where a line asks `position`
+    /// The function of one item. Its parameters are the item; then the
+    /// count of items so far, where a line asks `position`; then, of
+    /// each stream a line looks back at, its earlier values, the
+    /// nearest first. Its results are the present values of the said
+    /// streams among those, in the same order: the wiring moves each
+    /// one back a place and keeps it
     pub each: FnDecl,
     /// where the input has storage: the sink that walks it
     pub walker: Option<FnDecl>,
-    /// the wiring's state, a feature-scope variable each: name and type
-    pub state: Vec<(String, String)>,
+    /// the field that counts the items
+    pub at: Option<String>,
+    pub kept: Vec<WKept>,
+}
+
+impl Written {
+    /// the wiring's state, a field of the context each: name and type
+    pub fn state(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self.at.iter().map(|f| (f.clone(), "index".to_string())).collect();
+        for k in &self.kept {
+            out.extend(k.fields.iter().map(|f| (f.clone(), k.ty.clone())));
+        }
+        out
+    }
 }
 
 fn param(ty: &str, n: &str, seq: bool, line: usize) -> Param {
@@ -470,18 +602,34 @@ fn call(f: &str, args: Vec<Expr>, line: usize) -> Expr {
     expr(ExprKind::Phrase(vec![Part::Word(f.to_string()), Part::Args(args.into_iter().map(|value| Arg { name: None, value }).collect())]), line)
 }
 
+fn assign(to: &str, value: Expr, line: usize) -> Stmt {
+    Stmt::Assign { targets: vec![Target { name: to.to_string(), seq: false, line, feature: None }], value, line }
+}
+
 /// The functions of wiring `k` of a processor, into the stream `out`.
 /// `stored` says the input has storage, so a sink walks it
 pub fn write(p: &Processor, k: usize, out: &str, stored: bool) -> Written {
     let line = p.line;
     let each_name = format!("__z{}_each", k);
-    let at_field = format!("__z{}_at", k);
+    let at = p.position.then(|| format!("__z{}_at", k));
+    let kept: Vec<WKept> = p.kept.iter().map(|c| WKept { ty: c.ty.clone(), fields: (1..=c.depth).map(|j| format!("__z{}_{}_{}", k, c.name, j)).collect(), input: c.input }).collect();
     let mut params = vec![param(&p.item_ty, &local(&p.input), false, line)];
-    let mut state = Vec::new();
     if p.position {
         params.push(param("index", AT, false, line));
-        state.push((at_field.clone(), "index".to_string()));
     }
+    let mut results = Vec::new();
+    for c in &p.kept {
+        for j in 1..=c.depth {
+            params.push(param(&c.ty, &back(&c.name, j), false, line));
+        }
+        if !c.input {
+            results.push(param(&c.ty, &result(&c.name), false, line));
+        }
+    }
+    // the lines in their order, each a value of the function; then the
+    // pushes; then the present values handed back. A function ends
+    // where its last result is given (section 6), so the results are
+    // named last, each the line's own value under another name
     let mut body = Vec::new();
     for d in &p.said {
         body.push(Stmt::Var(VarDecl { line: d.line, scope: Vec::new(), ty: d.ty.clone(), name: local(&d.name), seq: false, init: Some(Init::Value(p.each(&d.value))), merge: None, rate: None }));
@@ -489,22 +637,40 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool) -> Written {
     for o in &p.outs {
         body.push(Stmt::Push { target: expr(ExprKind::Seq(out.to_string()), o.line), items: vec![p.each(&o.item)], cond: None, existing: false, line: o.line });
     }
-    let each = FnDecl { line, results: Vec::new(), name: vec![NamePart::Word(each_name.clone()), NamePart::Group], groups: vec![params], task: false, body, platform: Vec::new() };
+    for c in p.kept.iter().filter(|c| !c.input) {
+        body.push(assign(&result(&c.name), name(&local(&c.name), line), line));
+    }
+    let each = FnDecl { line, results, name: vec![NamePart::Word(each_name.clone()), NamePart::Group], groups: vec![params], task: false, body, platform: Vec::new() };
     // the walking form (log 124, decision 7): each unread item handed
-    // to the function, the wiring's count moved on, and the reader
-    // moved past what it read, as an edge's sink does (log 75)
+    // to the function with what the wiring keeps, each kept stream
+    // moved back a place, the count moved on; and the reader moved
+    // past what it read, as an edge's sink does (log 75)
     let walker = stored.then(|| {
         let x = p.input.as_str();
         let seq = |n: &str| expr(ExprKind::Seq(n.to_string()), line);
         let mut args = vec![name("__item", line)];
-        let mut inner = Vec::new();
-        if p.position {
-            args.push(name(&at_field, line));
+        args.extend(at.iter().map(|f| name(f, line)));
+        for c in &kept {
+            args.extend(c.fields.iter().map(|f| name(f, line)));
         }
-        inner.push(Stmt::Expr { expr: call(&each_name, args, line), line });
-        if p.position {
-            let next = expr(ExprKind::Bin("+".into(), Box::new(name(&at_field, line)), Box::new(expr(ExprKind::Int(1), line))), line);
-            inner.push(Stmt::Assign { targets: vec![Target { name: at_field.clone(), seq: false, line, feature: None }], value: next, line });
+        let given: Vec<Param> = p.kept.iter().filter(|c| !c.input).map(|c| param(&c.ty, &format!("__now_{}", c.name), false, line)).collect();
+        let mut inner = Vec::new();
+        let made = call(&each_name, args, line);
+        match given.as_slice() {
+            [] => inner.push(Stmt::Expr { expr: made, line }),
+            [one] => inner.push(Stmt::Var(VarDecl { line, scope: Vec::new(), ty: one.ty.clone(), name: one.name.clone(), seq: false, init: Some(Init::Value(made)), merge: None, rate: None })),
+            _ => inner.push(Stmt::Multi { vars: given.clone(), value: made, line }),
+        }
+        for (c, w) in p.kept.iter().zip(&kept) {
+            for j in (1..w.fields.len()).rev() {
+                inner.push(assign(&w.fields[j], name(&w.fields[j - 1], line), line));
+            }
+            let present = if c.input { "__item".to_string() } else { format!("__now_{}", c.name) };
+            inner.push(assign(&w.fields[0], name(&present, line), line));
+        }
+        if let Some(f) = &at {
+            let next = expr(ExprKind::Bin("+".into(), Box::new(name(f, line)), Box::new(expr(ExprKind::Int(1), line))), line);
+            inner.push(assign(f, next, line));
         }
         let count = expr(ExprKind::Phrase(vec![Part::Word("count".into()), Part::Value(seq(x))]), line);
         let advance = expr(ExprKind::Phrase(vec![Part::Word("advance".into()), Part::Value(seq(x)), Part::Word("by".into()), Part::Args(vec![Arg { name: None, value: count }])]), line);
@@ -518,5 +684,5 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool) -> Written {
             platform: Vec::new(),
         }
     });
-    Written { each, walker, state }
+    Written { each, walker, at, kept }
 }
