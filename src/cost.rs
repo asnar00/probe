@@ -111,6 +111,57 @@ pub fn count_blocks(module: &mut Module, skip: &[&str]) {
     }
 }
 
+/// the word `count_from` adds a function's own share into
+pub const FROM: &str = "__dyn_from";
+
+/// One function counted as a case calls it (fm3 log 131): after
+/// `count_blocks`, the counter is read as `name` is entered, before
+/// its first block adds anything, and read again at each of its
+/// returns, the difference added to the word `FROM`. So `FROM` holds
+/// what the function counted from its entry to its return, everything
+/// it called included, over every call the run made of it. It is a
+/// difference and not a switch: no block's add changes. A function
+/// that calls itself would have its inner calls added twice, and is
+/// refused
+pub fn count_from(module: &mut Module, name: &str) -> Result<(), String> {
+    let f = module.funcs.iter_mut().find(|f| f.name == name).ok_or_else(|| format!("no function {} to count from", name))?;
+    let to_entry = |i: &Inst| match i {
+        Inst::Jmp { target, .. } => target.0 == 0,
+        Inst::Br { then_target, else_target, .. } => then_target.0 == 0 || else_target.0 == 0,
+        _ => false,
+    };
+    if f.blocks.iter().flat_map(|b| &b.insts).any(|i| matches!(i, Inst::Call { callee, .. } if callee == name)) {
+        return Err(format!("{} calls itself: its count from entry to return would be added twice", name));
+    }
+    if f.blocks.iter().flat_map(|b| &b.insts).any(to_entry) {
+        return Err(format!("{}'s first block is jumped back to: it is entered more than once a call", name));
+    }
+    let word = Type::Int { signed: true, bits: 64 };
+    let value = |f: &mut Function, tag: String, ty: Type| {
+        f.values.push(crate::ssa::ValueData { name: format!("__dyn_from_{}", tag), ty, literal: None });
+        ValueId(f.values.len() as u32 - 1)
+    };
+    let (p, before) = (value(f, "p".into(), Type::Ptr), value(f, "b".into(), word.clone()));
+    f.blocks[0].insts.splice(0..0, vec![Inst::Addr { dst: p, name: COUNTER.to_string() }, Inst::Load { dst: before, addr: p, off: 0, index: None }]);
+    for b in 0..f.blocks.len() {
+        let Some(Inst::Ret { .. }) = f.blocks[b].insts.last() else { continue };
+        let (p, now, q, acc) = (value(f, format!("p{}", b), Type::Ptr), value(f, format!("n{}", b), word.clone()), value(f, format!("q{}", b), Type::Ptr), value(f, format!("a{}", b), word.clone()));
+        let (d, sum) = (value(f, format!("d{}", b), word.clone()), value(f, format!("s{}", b), word.clone()));
+        let at = f.blocks[b].insts.len() - 1;
+        let read = vec![
+            Inst::Addr { dst: p, name: COUNTER.to_string() },
+            Inst::Load { dst: now, addr: p, off: 0, index: None },
+            Inst::Bin { op: BinOp::ISub, dst: d, lhs: now, rhs: before },
+            Inst::Addr { dst: q, name: FROM.to_string() },
+            Inst::Load { dst: acc, addr: q, off: 0, index: None },
+            Inst::Bin { op: BinOp::IAdd, dst: sum, lhs: acc, rhs: d },
+            Inst::Store { val: sum, addr: q, off: 0, index: None },
+        ];
+        f.blocks[b].insts.splice(at..at, read);
+    }
+    Ok(())
+}
+
 /// the IR instructions of a function, jumps aside
 fn ssa_count(f: &Function) -> usize {
     f.blocks.iter().flat_map(|b| b.insts.iter()).filter(|i| !matches!(i, Inst::Jmp { .. })).count()
@@ -960,6 +1011,81 @@ fn forked(a: i64) -> i64
         // the dear arm is what the tool charged; the cheap one is less
         assert_eq!(ran("forked", &[20]) as f64, tool[2]);
         assert!((ran("forked", &[3]) as f64) < tool[2]);
+    }
+
+    /// `probe count --from=f` (fm3 log 131): a function counted as a
+    /// case calls it, from its entry to its return with what it calls,
+    /// over every call the case makes of it, and nothing of the case's
+    /// own. Here the case sets a word the function branches on, so
+    /// the function counted alone takes the other arm
+    #[test]
+    fn a_function_is_counted_inside_a_case() {
+        let src = "data __dyn: array(i64, 1)
+data __dyn_from: array(i64, 1)
+data on: array(i64, 1)
+fn __dyn_zero()
+    p: ptr = addr __dyn
+    store 0: i64, p
+    q: ptr = addr __dyn_from
+    store 0: i64, q
+    ret
+fn __dyn_read() -> i64
+    p: ptr = addr __dyn_from
+    v: i64 = load p
+    ret v
+fn __dyn_all() -> i64
+    p: ptr = addr __dyn
+    v: i64 = load p
+    ret v
+fn helper(a: i64) -> i64
+    b: i64 = mul a, a
+    c: i64 = add b, 1
+    ret c
+fn work(a: i64) -> i64
+    p: ptr = addr on
+    e: i64 = load p
+    is: u1 = cmp.ne e, 0
+    r: i64 = if is
+        b: i64 = helper(a)
+        c: i64 = helper(b)
+        yield c
+    else
+        yield a
+    ret r
+fn case() -> i64
+    p: ptr = addr on
+    store 1: i64, p
+    a: i64 = work(2)
+    b: i64 = work(a)
+    store 0: i64, p
+    ret b
+";
+        let mut m = module(src);
+        let tool = super::Coster::new(&m, None, None, None).report("work").unwrap().ssa;
+        let skip = ["__dyn_zero", "__dyn_read", "__dyn_all"];
+        super::count_blocks(&mut m, &skip);
+        super::count_from(&mut m, "work").unwrap();
+        ssa::verify(&m).unwrap();
+        assert!(super::count_from(&mut m, "nothing").is_err());
+        let enc = crate::emit::Encoder::load("targets/arm64.encodings.json").unwrap();
+        let compiled = crate::emit::compile(&m, &enc).unwrap();
+        let jit = crate::emit::jit::JitCode::new(&compiled).unwrap();
+        let ran = |f: &str, arg: &[i64]| -> (i64, i64) {
+            jit.call("__dyn_zero", &[]).unwrap();
+            jit.call(f, arg).unwrap();
+            (jit.call("__dyn_read", &[]).unwrap(), jit.call("__dyn_all", &[]).unwrap())
+        };
+        // inside the case the switch is on: both calls take the dear
+        // arm, which is what the tool charges one call
+        let (from, all) = ran("case", &[]);
+        assert_eq!(from as f64, 2.0 * tool);
+        // the case's own instructions are counted and are not the function's
+        assert!(all > from);
+        // called alone the switch is off, and from its entry to its
+        // return is all there is
+        let (from, all) = ran("work", &[2]);
+        assert!((from as f64) < tool);
+        assert_eq!(from, all);
     }
 
     /// a loop stepping a parameter by a constant to a constant shows

@@ -169,27 +169,35 @@ fn main() -> ExitCode {
                 Err(e) => fail(&e),
             }
         }
-        // `probe count <file.ssa> <fn> [--after=f,g] [--only=f,g]`: what
+        // `probe count <file.ssa> <fn> [--after=f,g] [--only=f,g] [--from=f] [--where]`: what
         // one call of the function costs as it runs, by the cost tool's
         // own count put on every block (fm3 log 128); the functions
         // after `--after=` are called first and not counted
         Some("count") if args.len() >= 3 => {
             let after: Vec<String> = args.iter().find_map(|a| a.strip_prefix("--after=")).map(|l| l.split(',').map(str::to_string).collect()).unwrap_or_default();
-            let result = (|| -> Result<i64, String> {
+            // `--from=f` reports what `f` counted from its entry to its
+            // return, over every call of it the run made (fm3 log 131):
+            // one function as a case calls it
+            let from: Option<&str> = args.iter().find_map(|a| a.strip_prefix("--from="));
+            // one run, counting the blocks of the functions `only` names,
+            // or of all: the count, and the module's functions
+            let run = |only: Option<Vec<String>>| -> Result<(i64, Vec<String>), String> {
                 let src = std::fs::read_to_string(&args[1]).map_err(|e| format!("{}: {}", args[1], e))?;
-                let src = format!("data {c}: array(i64, 1)\nfn __dyn_zero()\n    p: ptr = addr {c}\n    store 0: i64, p\n    ret\nfn __dyn_read() -> i64\n    p: ptr = addr {c}\n    v: i64 = load p\n    ret v\n{}", src, c = cost::COUNTER);
+                let read = if from.is_some() { cost::FROM } else { cost::COUNTER };
+                let src = format!("data {c}: array(i64, 1)\ndata {w}: array(i64, 1)\nfn __dyn_zero()\n    p: ptr = addr {c}\n    store 0: i64, p\n    q: ptr = addr {w}\n    store 0: i64, q\n    ret\nfn __dyn_read() -> i64\n    p: ptr = addr {r}\n    v: i64 = load p\n    ret v\n{}", src, c = cost::COUNTER, w = cost::FROM, r = read);
                 let mut module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| e.to_string())?;
                 ssa::resolve_types(&mut module, &policy);
                 ssa::verify(&module).map_err(|e| e.join("; "))?;
                 opt::optimize(&mut module, level);
-                // `--only=f,g` counts those functions' own blocks alone:
-                // where a run's count goes
-                let only: Option<Vec<String>> = args.iter().find_map(|a| a.strip_prefix("--only=")).map(|l| l.split(',').map(str::to_string).collect());
+                let names: Vec<String> = module.funcs.iter().map(|f| f.name.clone()).filter(|n| !n.starts_with("__dyn_")).collect();
                 let mut skip: Vec<String> = vec!["__dyn_zero".into(), "__dyn_read".into()];
                 if let Some(only) = &only {
                     skip.extend(module.funcs.iter().map(|f| f.name.clone()).filter(|n| !only.contains(n)));
                 }
                 cost::count_blocks(&mut module, &skip.iter().map(String::as_str).collect::<Vec<_>>());
+                if let Some(f) = from {
+                    cost::count_from(&mut module, f)?;
+                }
                 ssa::verify(&module).map_err(|e| format!("after counting: {}", e.join("; ")))?;
                 let enc = emit::Encoder::load(ENCODINGS)?;
                 let compiled = emit::compile(&module, &enc)?;
@@ -204,11 +212,36 @@ fn main() -> ExitCode {
                 } else {
                     jit.call(&args[2], &[])?;
                 }
-                jit.call("__dyn_read", &[])
-            })();
+                Ok((jit.call("__dyn_read", &[])?, names))
+            };
+            // `--only=f,g` counts those functions' own blocks alone:
+            // where a run's count goes; `--where` is that for every
+            // function in turn, a row each that counted anything, the
+            // rows adding to the whole
+            let only: Option<Vec<String>> = args.iter().find_map(|a| a.strip_prefix("--only=")).map(|l| l.split(',').map(str::to_string).collect());
+            let rows = args.iter().any(|a| a == "--where");
+            let result = run(only).and_then(|(n, names)| {
+                if rows {
+                    let mut each: Vec<(i64, String)> = Vec::new();
+                    for f in names {
+                        let (k, _) = run(Some(vec![f.clone()]))?;
+                        if k != 0 {
+                            each.push((k, f));
+                        }
+                    }
+                    each.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+                    for (k, f) in &each {
+                        println!("  {:<30} {:>8}", f, k);
+                    }
+                }
+                Ok(n)
+            });
             match result {
                 Ok(n) => {
-                    println!("{:<24} {:>10} ssa, counted as it ran", args[2], n);
+                    match from {
+                        Some(f) => println!("{:<24} {:>10} ssa, counted as it ran inside {}", f, n, args[2]),
+                        None => println!("{:<24} {:>10} ssa, counted as it ran", args[2], n),
+                    }
                     ExitCode::SUCCESS
                 }
                 Err(e) => fail(&e),
@@ -425,7 +458,7 @@ fn main() -> ExitCode {
             eprintln!("       probe run <file.ssa> <function> [args...]");
             eprintln!("       probe tiers <file.ssa>");
             eprintln!("       probe cost <file.ssa> [fn...] [arm|riscv] [--assume=N]");
-            eprintln!("       probe count <file.ssa> <fn> [--after=f,g] [--only=f,g]   the same count, taken as the function runs");
+            eprintln!("       probe count <file.ssa> <fn> [--after=f,g] [--only=f,g] [--from=f] [--where]   the same count, taken as the function runs; --from: of f alone, as <fn> calls it; --where: a row a function");
             eprintln!("       probe live <file.ssa> <function> [args...]");
             eprintln!("       probe fuzz [count] [--seed=hex] [--slow]");
             eprintln!("       probe testfloat [f32|add|f16_to_i32...]");
