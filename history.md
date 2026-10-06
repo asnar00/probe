@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the clock of code — `e48a653` · 2026-10-06
+
+```
+on drum (int k)
+    quick$ << 0
+    loop (int i = 1) while (i <= k)
+        beat$ << i
+        continue (i + 1)
+    out$ << "end" << "\n"
+```
+
+`suite/zero/edges/edges/edges.zero:28-33`, `quick$` at `5 hz` and `beat$` at `2 hz`. The parity pass, hop 10, transformation 31 (fm3 log 99; question 56, ash: code runs because a clock ticked). Hop 9 rounded the clock up before every push statement into a rated stream, 17 SSA, which hello paid to learn it was at 0 s. `Beat` in `src/zero/lower.rs` now knows, at each point of a plain function, what the clock is a whole multiple of: 0 where a case started it, a period after a rated push, the gcd where paths meet and over a function's callers; a push whose period divides it is not aligned. Tasks, edges, methods and platform functions are asked only whether they can move the clock. A loop whose first statement is such a push aligns once before it, under its own `while`, so `drum (0)` still writes `end` at 200 ms. No output changes. hello's `run` **1 285 → 1 268** on 261 → 255 lines against 1 286; static **1 214 → 1 197** against 1 247; lex 1 143. zero 559 → 567 runs native, 24 zero unit tests.
+
 ### zero: a push lands on the stream's beat — `f583089` · 2026-10-06
 
 ```
