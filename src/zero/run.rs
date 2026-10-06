@@ -581,6 +581,8 @@ mod tests {
         assert_eq!(got("", &[(0, 1_000_000)]), []);
         assert_eq!(got("plain\n", &[]), [p("plain", 0)]);
         assert_eq!(store::spell_timed(&got("10\n9\n", &[(3, 1_000_000)])), "\"10\\n\" at 0 s, \"9\" at 1 s");
+        // three lines a second apart are spelt at their rate (fm3 log 97)
+        assert_eq!(store::spell_timed(&got("10\n9\n8\n", &[(3, 1_000_000), (5, 2_000_000)])), "\"10\\n9\\n8\" at 1 hz");
         // no marks read at all: the whole text at 0
         assert_eq!(pieces(&suite::Got { values: vec![], text: "x".into(), marks: vec![] }), [p("x", 0)]);
     }
@@ -603,12 +605,12 @@ mod tests {
         assert!(s.subtree("hello").contains(&"bye".to_string()));
         assert!(runs.iter().all(|r| r.label != "with hello off"));
         let standing = |label: &str| -> Vec<String> { runs.iter().filter(|r| r.label == label).map(|r| cases[r.case].text.clone()).collect() };
-        assert_eq!(standing(""), ["hello() → \"hello world\"", "count down() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\"", "run() → \"10\\n\" at 0 s, \"9\\n\" at 1 s, \"8\\n\" at 2 s, \"7\\n\" at 3 s, \"6\\n\" at 4 s, \"5\\n\" at 5 s, \"4\\n\" at 6 s, \"3\\n\" at 7 s, \"2\\n\" at 8 s, \"1\\n\" at 9 s, \"hello world\\ngoodbye\" at 10 s", "run() with countdown off → \"hello world\\ngoodbye\""]);
+        assert_eq!(standing(""), ["hello() → \"hello world\"", "count down() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\"", "run() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s", "run() with countdown off → \"hello world\\ngoodbye\""]);
         assert_eq!(standing("with bye off"), ["hello() → \"hello world\"", "count down() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\"", "run() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nhello world\""]);
         assert_eq!(standing("with countdown off"), ["hello() → \"hello world\""]);
         assert_eq!(over.len(), 5);
         assert!(over.iter().any(|o| o.text == "run() → \"hello world\" [with bye off]" && o.why == "replaced by countdown's cases for run()"), "{:?}", over.iter().map(|o| &o.text).collect::<Vec<_>>());
-        assert!(over.iter().any(|o| o.text == "run() → \"10\\n\" at 0 s, \"9\\n\" at 1 s, \"8\\n\" at 2 s, \"7\\n\" at 3 s, \"6\\n\" at 4 s, \"5\\n\" at 5 s, \"4\\n\" at 6 s, \"3\\n\" at 7 s, \"2\\n\" at 8 s, \"1\\n\" at 9 s, \"hello world\\ngoodbye\" at 10 s [with countdown off]" && o.why == "the line `run() with countdown off → \"hello world\\ngoodbye\"` stands there"), "{:?}", over.iter().map(|o| &o.why).collect::<Vec<_>>());
+        assert!(over.iter().any(|o| o.text == "run() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s [with countdown off]" && o.why == "the line `run() with countdown off → \"hello world\\ngoodbye\"` stands there"), "{:?}", over.iter().map(|o| &o.why).collect::<Vec<_>>());
         // `>existing` (log 50): more's cases for `describe (int)` fall
         // through to functions', so `describe (3)` stands beside `describe (4)`
         let s = store::read(Path::new("suite/zero/functions")).unwrap();

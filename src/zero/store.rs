@@ -145,8 +145,21 @@ pub enum Expect {
     Check,
 }
 
+/// the store's clock (log 63): a million steps a second, the bootstrap's
+/// step
+pub const CLOCK_HZ: i64 = 1_000_000;
+
+/// A rate's period in whole steps of the store's clock. One function
+/// for the program and for the case that asserts on it (fm3 log 97): a
+/// push into a stream with a rate moves the clock on by this (`step` in
+/// `lower.rs`), and a timed piece given `at` a rate puts its lines this
+/// far apart, so the two cannot differ by a rounding
+pub fn period(hz: i64) -> i64 {
+    CLOCK_HZ / hz
+}
+
 /// the shape of a timed result, for a refusal
-const TIMED_SHAPE: &str = "a timed result is every piece of the output in order, each `\"text\" at <n> s` or `<n> ms`, joined by commas: `\"10\\n\" at 0 s, \"9\\n\" at 1 s`";
+const TIMED_SHAPE: &str = "a timed result is every piece of the output in order, each `\"text\" at <n> s` or `<n> ms`, or `\"text\" at <n> hz` for its lines one a step, with `from <n> s` where they do not start at 0 s, joined by commas: `\"3\\n2\\n1\\n\" at 1 hz, \"liftoff\" at 3 s`";
 
 /// a time as a case writes it: whole seconds as `3 s`, a whole number
 /// of milliseconds under a second as `250 ms`, anything else as decimal
@@ -162,13 +175,40 @@ pub fn spell_time(us: i64) -> String {
     }
 }
 
-/// a timed result as a case writes it, so that what a run printed can
-/// be pasted back into the case
+/// A timed result as a case writes it, so that what a run printed can
+/// be pasted back into the case. A run of three or more pieces, each one
+/// line, a whole rate's period apart, is written as the rate form
+/// (question 53, fm3 log 97): `"10\n9\n8\n" at 1 hz`, with `from` where
+/// it does not start at 0 s; the last of a run may be a line with no
+/// newline. Everything else is listed, `"text" at <time>`
 pub fn spell_timed(pieces: &[(String, i64)]) -> String {
     if pieces.is_empty() {
         return "\"\" at 0 s".to_string();
     }
-    pieces.iter().map(|(text, t)| format!("{:?} at {}", text, spell_time(*t))).collect::<Vec<_>>().join(", ")
+    let one_line = |t: &str| !t.strip_suffix('\n').unwrap_or(t).contains('\n');
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < pieces.len() {
+        // the run that begins here, i through j
+        let mut j = i;
+        let d = pieces.get(i + 1).map_or(0, |next| next.1 - pieces[i].1);
+        let hz = if d > 0 { CLOCK_HZ / d } else { 0 };
+        if hz > 0 && period(hz) == d && one_line(&pieces[i].0) {
+            while j + 1 < pieces.len() && pieces[j].0.ends_with('\n') && one_line(&pieces[j + 1].0) && pieces[j + 1].1 - pieces[j].1 == d {
+                j += 1;
+            }
+        }
+        if j - i >= 2 {
+            let text: String = pieces[i..=j].iter().map(|p| p.0.as_str()).collect();
+            let from = if pieces[i].1 == 0 { String::new() } else { format!(" from {}", spell_time(pieces[i].1)) };
+            out.push(format!("{:?} at {} hz{}", text, hz, from));
+            i = j + 1;
+        } else {
+            out.push(format!("{:?} at {}", pieces[i].0, spell_time(pieces[i].1)));
+            i += 1;
+        }
+    }
+    out.join(", ")
 }
 
 /// a timed result's pieces by its two rules (question 53): a stamp
@@ -188,22 +228,20 @@ pub fn merge_timed(pieces: Vec<(String, i64)>) -> Vec<(String, i64)> {
     out
 }
 
-/// `"text" at <n> s, "text" at <n> ms, ...`, already lexed
+/// `"text" at <n> s, "text" at <n> ms, ...`, already lexed. A piece may
+/// be given `at` a rate in place of a time (question 53, C; fm3 log 97):
+/// `"10\n9\n8\n" at 1 hz` is its lines, one a step of that rate, from
+/// 0 s or `from` a time. A line is the text up to and including its
+/// newline, and text after the last newline is a line too. It expands
+/// here into the pieces the listed form gives
 fn parse_timed(toks: &[lex::Tok], file: &str, line: usize) -> Result<Expect, Error> {
-    let mut pieces: Vec<(String, i64)> = Vec::new();
-    for part in toks.split(|t| matches!(t, lex::Tok::Sym(","))) {
-        let [lex::Tok::Str(text), lex::Tok::Word(at), n, lex::Tok::Word(unit)] = part else {
-            return Err(lex::error(file, line, TIMED_SHAPE));
-        };
-        let per = match unit.as_str() {
+    // a number and `s` or `ms`, whole or decimal, as a whole number of the clock's steps
+    let time = |n: &lex::Tok, unit: &str| -> Result<i64, Error> {
+        let per = match unit {
             "s" => 1_000_000i64,
             "ms" => 1000,
             _ => return Err(lex::error(file, line, TIMED_SHAPE)),
         };
-        if at != "at" {
-            return Err(lex::error(file, line, TIMED_SHAPE));
-        }
-        // the number, whole or decimal, as a whole number of the clock's steps
         let us = match n {
             lex::Tok::Int(v) if *v >= 0 => v.checked_mul(per),
             lex::Tok::Float(f) => {
@@ -218,18 +256,49 @@ fn parse_timed(toks: &[lex::Tok], file: &str, line: usize) -> Result<Expect, Err
             }
             _ => return Err(lex::error(file, line, TIMED_SHAPE)),
         };
-        let Some(us) = us else {
-            return Err(lex::error(file, line, TIMED_SHAPE));
+        us.ok_or_else(|| lex::error(file, line, TIMED_SHAPE))
+    };
+    let mut pieces: Vec<(String, i64)> = Vec::new();
+    for part in toks.split(|t| matches!(t, lex::Tok::Sym(","))) {
+        let (text, n, unit, from) = match part {
+            [lex::Tok::Str(text), lex::Tok::Word(at), n, lex::Tok::Word(unit)] if at == "at" => (text, n, unit, None),
+            [lex::Tok::Str(text), lex::Tok::Word(at), n, lex::Tok::Word(unit), lex::Tok::Word(from), m, lex::Tok::Word(funit)] if at == "at" && from == "from" => (text, n, unit, Some((m, funit))),
+            _ => return Err(lex::error(file, line, TIMED_SHAPE)),
         };
         if text.is_empty() {
             return Err(lex::error(file, line, "a piece of a timed result has at least one character: a time with nothing written at it says nothing"));
         }
-        if let Some((_, last)) = pieces.last() {
-            if us < *last {
-                return Err(lex::error(file, line, format!("the times of a timed result do not go back: {} after {}", spell_time(us), spell_time(*last))));
+        let lines: Vec<(String, i64)> = match unit.as_str() {
+            // at a rate: the lines, one a step
+            "hz" | "khz" => {
+                let hz = match n {
+                    lex::Tok::Int(v) if *v > 0 => v.checked_mul(if unit == "khz" { 1000 } else { 1 }),
+                    _ => None,
+                };
+                let Some(hz) = hz else {
+                    return Err(lex::error(file, line, "the rate of a timed piece is a positive whole number and `hz` or `khz`, as a stream's is: `\"3\\n2\\n1\\n\" at 1 hz`"));
+                };
+                let step = period(hz);
+                if step == 0 {
+                    return Err(lex::error(file, line, format!("a rate of {} hz has no step on the store's clock, which has a million a second", hz)));
+                }
+                let start = match from {
+                    Some((m, funit)) => time(m, funit)?,
+                    None => 0,
+                };
+                text.split_inclusive('\n').enumerate().map(|(k, l)| (l.to_string(), start.saturating_add((k as i64).saturating_mul(step)))).collect()
             }
+            _ if from.is_some() => return Err(lex::error(file, line, "`from` says where a rate's lines start, `\"3\\n2\\n1\\n\" at 1 hz from 3.5 s`: a piece with a time has it already")),
+            _ => vec![(text.clone(), time(n, unit)?)],
+        };
+        for (text, us) in lines {
+            if let Some((_, last)) = pieces.last() {
+                if us < *last {
+                    return Err(lex::error(file, line, format!("the times of a timed result do not go back: {} after {}", spell_time(us), spell_time(*last))));
+                }
+            }
+            pieces.push((text, us));
         }
-        pieces.push((text.clone(), us));
     }
     Ok(Expect::Timed(merge_timed(pieces)))
 }
@@ -587,7 +656,8 @@ fn read_prose(name: &str, prose: &str, file: &str, types: &HashSet<String>, code
 /// `>call(args) [with <feature> off, <feature> on, in "text"] →
 /// result`: the result a number or several, a quoted string (the
 /// program's output), that output in pieces each with its time,
-/// `"10\n" at 0 s, "9\n" at 1 s`, or `check` (the call must trap); the `with`
+/// `"10\n" at 0 s, "9\n" at 1 s`, or with a rate for its lines,
+/// `"10\n9\n" at 1 hz`, or `check` (the call must trap); the `with`
 /// clause after the call's `)` names the context (log 43) and the
 /// input the runner pushes into `in$` (log 62)
 fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> Result<Case, Error> {
@@ -606,6 +676,10 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
                 match part {
                     [lex::Tok::Word(name), lex::Tok::Word(w)] if w == "off" => context.push((name.clone(), false)),
                     [lex::Tok::Word(name), lex::Tok::Word(w)] if w == "on" => context.push((name.clone(), true)),
+                    // an input with a time is ruled and waits for restart (question 53)
+                    [lex::Tok::Word(w), lex::Tok::Str(_), lex::Tok::Word(at), ..] if w == "in" && at == "at" => {
+                        return Err(lex::error(file, line, "a timed input, `in \"k\" at 3.5 s`, is ruled (question 53) and not built: delivering it needs a function suspended partway, which is restart's"));
+                    }
                     [lex::Tok::Word(w), lex::Tok::Str(text)] if w == "in" => {
                         if input.replace(text.clone()).is_some() {
                             return Err(lex::error(file, line, "a case has one `in \"text\"`"));
@@ -705,12 +779,72 @@ mod tests {
         assert_eq!(timed(&format!("f() → {}", spell_timed(&pieces))).unwrap(), Expect::Timed(pieces));
         assert_eq!(spell_time(250_000), "250 ms");
         let err = |t: &str| timed(t).err().unwrap().to_string();
-        for bad in ["f() → \"a\" at 1", "f() → \"a\" 1 s", "f() → \"a\" at 1 hz", "f() → \"a\" at 0 s \"b\" at 1 s", "f() → \"a\" at 0 s,", "f() → \"a\" at -1 s", "f() → \"a\", \"b\""] {
-            assert!(err(bad).contains("a timed result is every piece of the output in order, each `\"text\" at <n> s` or `<n> ms`, joined by commas"), "{}: {}", bad, err(bad));
+        for bad in ["f() → \"a\" at 1", "f() → \"a\" 1 s", "f() → \"a\" at 1 min", "f() → \"a\" at 0 s \"b\" at 1 s", "f() → \"a\" at 0 s,", "f() → \"a\" at -1 s", "f() → \"a\", \"b\""] {
+            assert!(err(bad).contains("a timed result is every piece of the output in order, each `\"text\" at <n> s` or `<n> ms`, or `\"text\" at <n> hz` for its lines one a step"), "{}: {}", bad, err(bad));
         }
         assert!(err("f() → \"a\" at 2 s, \"b\" at 1 s").contains("the times of a timed result do not go back: 1 s after 2 s"));
         assert!(err("f() → \"\" at 2 s").contains("a piece of a timed result has at least one character"));
         assert!(err("f() → \"a\" at 0.0000001 s").contains("is not a whole number of microseconds"));
+    }
+
+    /// a piece of a timed result given `at` a rate (question 53, C; fm3
+    /// log 97): its lines one a step, from 0 s or `from` a time, mixed
+    /// with listed pieces in order; a step is the period a push into a
+    /// stream of that rate moves the clock by; what is refused; and
+    /// what a run prints folds a regular run back and parses to itself
+    #[test]
+    fn a_timed_piece_may_be_at_a_rate() {
+        let types = HashSet::new();
+        let timed = |t: &str| parse_case(t, "x.md", 7, &types).map(|c| c.expect);
+        let p = |t: &str, us: i64| (t.to_string(), us);
+        let s = 1_000_000;
+        assert_eq!(timed("f() → \"10\\n9\\n8\\n\" at 1 hz").unwrap(), Expect::Timed(vec![p("10\n", 0), p("9\n", s), p("8\n", 2 * s)]));
+        assert_eq!(timed("f() → \"10\\n9\\n\" at 1 hz from 3.5 s").unwrap(), Expect::Timed(vec![p("10\n", 3_500_000), p("9\n", 4_500_000)]));
+        // text after the last newline is a line too, and `khz` is a thousand
+        assert_eq!(timed("f() → \"a\\nb\" at 2 khz from 250 ms").unwrap(), Expect::Timed(vec![p("a\n", 250_000), p("b", 250_500)]));
+        // mixed with listed pieces, in order; a piece at a line's time joins it
+        let hello = "run() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s";
+        let listed = "run() → \"10\\n\" at 0 s, \"9\\n\" at 1 s, \"8\\n\" at 2 s, \"7\\n\" at 3 s, \"6\\n\" at 4 s, \"5\\n\" at 5 s, \"4\\n\" at 6 s, \"3\\n\" at 7 s, \"2\\n\" at 8 s, \"1\\n\" at 9 s, \"hello world\\ngoodbye\" at 10 s";
+        assert_eq!(timed(hello).unwrap(), timed(listed).unwrap());
+        assert_eq!(timed("f() → \"a\" at 0 s, \"b\\nc\\n\" at 2 hz, \"d\" at 500 ms").unwrap(), Expect::Timed(vec![p("ab\n", 0), p("c\nd", 500_000)]));
+        // a step is the period the program steps by, a million over the
+        // rate in whole microseconds: three lines at 3 hz, and `period`
+        assert_eq!(timed("f() → \"a\\nb\\nc\\nd\" at 3 hz").unwrap(), Expect::Timed(vec![p("a\n", 0), p("b\n", 333_333), p("c\n", 666_666), p("d", 999_999)]));
+        assert_eq!((period(1), period(3), period(48_000)), (1_000_000, 333_333, 20));
+        // refused
+        let err = |t: &str| timed(t).err().unwrap().to_string();
+        assert!(err("f() → \"a\" at 1 s from 2 s").contains("`from` says where a rate's lines start"));
+        for bad in ["f() → \"a\" at 0 hz", "f() → \"a\" at 0.5 hz", "f() → \"a\" at -1 hz"] {
+            assert!(err(bad).contains("the rate of a timed piece is a positive whole number and `hz` or `khz`") || err(bad).contains("a timed result is every piece"), "{}: {}", bad, err(bad));
+        }
+        assert!(err("f() → \"a\" at 0.5 hz").contains("the rate of a timed piece is a positive whole number"));
+        assert!(err("f() → \"a\" at 2000 khz").contains("a rate of 2000000 hz has no step on the store's clock"));
+        assert!(err("f() → \"a\" at 1 hz from 2").contains("a timed result is every piece"));
+        assert!(err("f() → \"a\" at 1 hz from 2 hz").contains("a timed result is every piece"));
+        assert!(err("f() → \"a\" at 3 s, \"b\\nc\" at 1 hz").contains("the times of a timed result do not go back: 0 s after 3 s"));
+        assert!(err("f() → \"a\\nb\\nc\" at 1 hz, \"d\" at 1 s").contains("the times of a timed result do not go back: 1 s after 2 s"));
+        // a timed input is ruled and not built
+        let e = parse_case("f() with in \"k\" at 3.5 s → \"a\" at 0 s", "x.md", 8, &types).err().unwrap().to_string();
+        assert!(e.contains("a timed input, `in \"k\" at 3.5 s`, is ruled (question 53) and not built"), "{}", e);
+        // what a run prints: a run of three or more single lines a whole
+        // rate's period apart is folded, and every spelling parses back
+        let back = |pieces: Vec<(String, i64)>, spelt: &str| {
+            assert_eq!(spell_timed(&pieces), spelt);
+            assert_eq!(timed(&format!("f() → {}", spelt)).unwrap(), Expect::Timed(pieces));
+        };
+        let Expect::Timed(h) = timed(hello).unwrap() else { unreachable!() };
+        back(h, "\"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s");
+        back(vec![p("7\n", 3 * s), p("10\n", 3_500_000), p("9\n", 4_500_000), p("8", 5_500_000)], "\"7\\n\" at 3 s, \"10\\n9\\n8\" at 1 hz from 3.5 s");
+        back(vec![p("a\n", 0), p("b\n", 333_333), p("c\n", 666_666)], "\"a\\nb\\nc\\n\" at 3 hz");
+        // two are not a rhythm; a piece of two lines is not a line; an
+        // uneven third ends the run
+        back(vec![p("a\n", 0), p("b\n", s)], "\"a\\n\" at 0 s, \"b\\n\" at 1 s");
+        back(vec![p("a\n", 0), p("b\nb\n", s), p("c\n", 2 * s)], "\"a\\n\" at 0 s, \"b\\nb\\n\" at 1 s, \"c\\n\" at 2 s");
+        back(vec![p("a\n", 0), p("b\n", s), p("c\n", 2 * s), p("d\n", 2_500_000)], "\"a\\nb\\nc\\n\" at 1 hz, \"d\\n\" at 2.5 s");
+        // a line with no newline ends a run, and what follows is listed
+        back(vec![p("a\n", 0), p("b\n", s), p("c", 2 * s), p("d", 3 * s)], "\"a\\nb\\nc\" at 1 hz, \"d\" at 3 s");
+        // a spacing no whole rate has is listed: 1.5 s apart
+        back(vec![p("a\n", 0), p("b\n", 1_500_000), p("c\n", 3 * s)], "\"a\\n\" at 0 s, \"b\\n\" at 1.5 s, \"c\\n\" at 3 s");
     }
 
     /// composition order is creation time and a tie orders by name

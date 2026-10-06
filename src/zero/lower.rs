@@ -679,7 +679,7 @@ const OUT_BYTES: usize = 4096;
 const IN_BYTES: usize = 512;
 
 /// the clock of a stream without a rate: microsecond ticks
-const CLOCK_HZ: i64 = 1_000_000;
+const CLOCK_HZ: i64 = super::store::CLOCK_HZ;
 
 /// the copy maker's name for a storage word: `__copy_T` for a ring,
 /// `__copy_timed_T` for one that stamps, `__copy_queue_T` for a queue
@@ -5850,7 +5850,7 @@ impl Lowerer {
         let (p, c, t) = (b.tmp(), b.tmp(), b.tmp());
         b.line(&format!("{}: ptr = addr __clock", p));
         b.line(&format!("{}: i64 = load {}", c, p));
-        b.line(&format!("{}: i64 = add {}, {}", t, c, CLOCK_HZ / hz));
+        b.line(&format!("{}: i64 = add {}, {}", t, c, super::store::period(hz)));
         b.line(&format!("__wait({})", t));
     }
 

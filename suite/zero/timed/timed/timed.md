@@ -19,7 +19,8 @@ Parity hop 8 (questions 39 and 52, fm3 log 93): hello's countdown with `doubled`
 - An item in a stream with a rate has a length: the last number is pushed at 9 s and `count down` returns at 10 s, so `launch` writes `liftoff` at 10 s (question 52).
 - The readers do not wait: `doubled` and the edge run when the item is pushed, and `d$` has no rate of its own.
 - Before this was built the ten numbers were pushed in one go and the task took them all at once, so every piece was written at 0 s.
+- The cases give the numbers `at 1 hz`: the lines of the text, one a second from 0 s (question 53). The last piece of a result is written without its final newline, as a plain text result is, so `count down()`'s ends `2` and `launch()`'s ends `2\n` before `liftoff`.
 
 ## testing
->count down() → "20\n" at 0 s, "18\n" at 1 s, "16\n" at 2 s, "14\n" at 3 s, "12\n" at 4 s, "10\n" at 5 s, "8\n" at 6 s, "6\n" at 7 s, "4\n" at 8 s, "2" at 9 s
->launch() → "20\n" at 0 s, "18\n" at 1 s, "16\n" at 2 s, "14\n" at 3 s, "12\n" at 4 s, "10\n" at 5 s, "8\n" at 6 s, "6\n" at 7 s, "4\n" at 8 s, "2\n" at 9 s, "liftoff" at 10 s
+>count down() → "20\n18\n16\n14\n12\n10\n8\n6\n4\n2" at 1 hz
+>launch() → "20\n18\n16\n14\n12\n10\n8\n6\n4\n2\n" at 1 hz, "liftoff" at 10 s
