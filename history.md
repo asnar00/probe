@@ -4,6 +4,22 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the lexer keeps its positions in `index`, and a static lex stands beside it — `6fecd22` · 2026-10-06
+
+```
+        index n = loop (index i = 1, index m = -1) yields m
+            if (i >= count c$)
+                if (ended c$)
+                    m = i
+                break
+            if (kind of (peek c$ at (i)) == k)
+                continue (i + 1, -1)
+            m = i
+            break
+```
+
+`suite/zero/lex/lex/lex.zero:36-44`. The parity pass, hop 15, transformation 57 (fm3 log 123). A token's `start` and `n`, and the lexer's own `start`, `i` and the length it carries, are `index`: three lines of the store, and not one `conv` is left in the lowered `lex`. lex `two_arrivals` 616 → 601, a turn 127 → 122, 1.20 times `lex-mod.ssa`'s 500; hello 1 237 and static 1 197 unchanged. `suite/zero/lex-static` is the same feature under a product marking it static on, with its own expected file: 590 against the monolith's 468, 1.26 times, so both comparisons are measured every hop. A negative literal handed to `peek`, `advance` or `behind` is refused at compile time naming the line; `x$[-1]` is not. The unsigned check that would catch a computed negative index is not built: measured at 9 on lex and needing a comparison the IR lacks, it is fm3 question 64. Full run green (`scratchpad/chain54.log`): zero 633, `probe test` 1015, `cargo test` 129.
+
 ### zero: `index` is a type a program can write — `5bc7210` · 2026-10-06
 
 ```
