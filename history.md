@@ -4,6 +4,15 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a function's name is not a reading of a stream, and `in$` is not handed to what would write it — `9a4e7fc` · 2026-10-06
+
+```
+on (int s) = a part summed down from (int k)
+    s = summed down from (k)
+```
+
+`suite/zero/edges/edges/edges.zero:53-54`, with `>a part summed down from (100) → 5050`. The parity pass, hop 11, transformation 38 (fm3 log 106): two things hop 10 found and left. `stream_uses` in `src/zero/lower.rs` took any bare word of a phrase that matched a stream's name as a reading of it, so calling a function with `part` in its name gave `part$` a queue, silently, and a hundred items in one statement failed its check. A phrase that is a call of a store's function now mentions its arguments alone, by the lowering's own `find_methods`; on `9f06954` this case and `summed down from (100)` fail in every context. And question 35's gap is closed: `in$` handed to a function that pushes into or ends the stream it is given, itself or through another, as a call or a wiring, is refused where it is handed, naming the function (`input_handed`, over the scheduler's `Pushes`). No number moves: lex 856, hello 1 268, static 1 197. zero 577 → 580 runs native, 31 zero unit tests.
+
 ### stream: a block pushed into a queue reaches its slots without a view of the buffer — `9f06954` · 2026-10-06
 
 ```
