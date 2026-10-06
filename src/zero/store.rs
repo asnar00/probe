@@ -12,6 +12,7 @@ use super::syntax::{self, Feature};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+#[derive(Clone)]
 pub struct Store {
     pub path: PathBuf,
     /// the features in composition order: earliest origin first
@@ -99,6 +100,7 @@ impl Store {
     }
 }
 
+#[derive(Clone)]
 pub struct FeatureDoc {
     pub name: String,
     pub parent: Option<String>,
@@ -118,11 +120,13 @@ pub struct FeatureDoc {
     pub md_file: String,
 }
 
+#[derive(Clone)]
 pub struct Origin {
     pub when: String,
     pub text: String,
 }
 
+#[derive(Clone)]
 pub struct Case {
     pub line: usize,
     /// the line as written, for reporting

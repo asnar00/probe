@@ -9,6 +9,7 @@ pub mod lower;
 pub mod run;
 pub mod store;
 pub mod syntax;
+pub mod zeroic;
 
 use crate::{ssa, suite};
 use std::path::Path;

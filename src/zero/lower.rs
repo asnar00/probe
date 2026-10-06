@@ -1127,7 +1127,13 @@ impl<'a> Beat<'a> {
     fn edges_of(&self, n: &str) -> Vec<usize> {
         let mut out = Vec::new();
         for (edge, _) in self.l.bare_edges.get(n).map(|v| v.as_slice()).unwrap_or_default() {
-            out.extend(self.by_call.get(&(edge.clone(), 1)).into_iter().flatten().copied());
+            // an edge's function takes its item; a processor's, the
+            // item and what its wiring keeps (fm3 log 124)
+            if self.l.zprocs.contains_key(edge) {
+                out.extend((0..self.defs.len()).filter(|&d| &self.defs[d].key == edge));
+            } else {
+                out.extend(self.by_call.get(&(edge.clone(), 1)).into_iter().flatten().copied());
+            }
         }
         out
     }
@@ -2067,7 +2073,15 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new() };
+    // the processors read the new way leave the store before anything
+    // looks at it (fm3 log 124): their bodies are not tasks that walk,
+    // and every pass below reads a store's functions as written
+    let stripped = super::zeroic::strip(store)?;
+    let (store, processors) = match &stripped {
+        Some((s, ps)) => (s, ps.as_slice()),
+        None => (store, &[][..]),
+    };
+    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2093,6 +2107,13 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
                 l.declare(fd, &f.name, &f.code.file)?;
             }
         }
+    }
+    // ... but each is still declared, as the task its first line says
+    // it is, so that a wiring names it
+    for (fd, feature, file, p) in processors {
+        l.cur = feature.clone();
+        l.declare(fd, feature, file)?;
+        l.zeroic.insert(mangle(&fd.name), p.clone());
     }
     l.name_methods(&store.features.iter().map(|f| (f.name.clone(), f.code.file.clone())).collect())?;
     // a `<<` method over a `char$` is lowered twice (log 87): as it is
@@ -2305,7 +2326,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     // the text carries what the store reaches (log 70): every function
     // of the store's own features, the platform feature's that a case
     // names, and the runner's entries are roots
-    let mut roots: std::collections::HashSet<String> = l.funcs.iter().filter(|f| f.feature != "platform").map(|f| f.ir.clone()).collect();
+    let mut roots: std::collections::HashSet<String> = l.funcs.iter().filter(|f| f.feature != "platform" && !f.ir.starts_with("__z")).map(|f| f.ir.clone()).collect();
     for f in &store.features {
         roots.insert(format!("__set___enabled_{}", f.name));
         for c in &f.cases {
@@ -3177,6 +3198,44 @@ struct Lowerer {
     device_param: Option<String>,
     /// the device copies emitted, by the IR name of the stream copy
     device_fns: HashMap<String, String>,
+    /// the processors read the new way (fm3 question 75, log 124), by
+    /// their key: a wiring of one is not a task's node but the
+    /// functions `zeroic::write` gives
+    zeroic: HashMap<String, super::zeroic::Processor>,
+    /// ... and, for each wiring whose input has no storage, by the IR
+    /// name of its function of one item: what a push into the input
+    /// calls it with, and what it keeps
+    zprocs: HashMap<String, ZProc>,
+    /// the state of every such wiring, a field of the context each,
+    /// after the declared variables and before the nodes'
+    zfields: Vec<(String, Ty)>,
+    /// how many wirings of processors have been collected
+    zwired: usize,
+    /// while a push statement into a processor's input is lowered with
+    /// the wiring's state carried in the statement's own values: the
+    /// stream, the depth the statement stands at, and the state
+    zthread: Option<ZThread>,
+    /// a push was lowered where the carried state could not follow it:
+    /// the statement is refused, never miscompiled
+    zbroken: bool,
+}
+
+/// a wiring of a processor read the new way whose input has no
+/// storage: a push into the input is the call of `each`
+#[derive(Clone)]
+struct ZProc {
+    /// the context field that counts the items, where a line asks `position`
+    at: Option<String>,
+}
+
+/// the state of a wiring as a push statement holds it: the count of
+/// items so far, as a value and how many have been added to it since
+#[derive(Clone)]
+struct ZThread {
+    stream: String,
+    depth: usize,
+    each: String,
+    at: Option<(String, i64)>,
 }
 
 /// The word that fills a new stream with its items (`new_resident`),
@@ -3452,23 +3511,32 @@ impl Lowerer {
         (v, n)
     }
 
+    /// a string literal of at least one byte in `data`: its address,
+    /// and the name it has there
+    fn str_addr(&mut self, s: &str, b: &mut Body) -> (String, String) {
+        let p = b.tmp();
+        self.nstr += 1;
+        let name = format!("__s{}", self.nstr);
+        self.data.push(format!("data {} = \"{}\"", name, s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")));
+        b.line(&format!("{}: ptr = addr {}", p, name));
+        (p, name)
+    }
+
     /// a string literal's bytes where they lie: the address of its
     /// `data` and its length
     fn str_data(&mut self, s: &str, b: &mut Body) -> (String, String) {
+        if !s.is_empty() {
+            let (p, name) = self.str_addr(s, b);
+            let n = b.tmp();
+            b.line(&format!("{}: index = len {}", n, name));
+            return (p, n);
+        }
+        // `""` has no bytes to keep: the IR refuses an empty `data`, so
+        // it is `__nul` with a length of zero
         let p = b.tmp();
         let n = b.tmp();
-        if s.is_empty() {
-            // `""` has no bytes to keep: the IR refuses an empty
-            // `data`, so it is `__nul` with a length of zero
-            b.line(&format!("{}: ptr = addr __nul", p));
-            b.line(&format!("{}: index = const 0", n));
-        } else {
-            self.nstr += 1;
-            let name = format!("__s{}", self.nstr);
-            self.data.push(format!("data {} = \"{}\"", name, s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")));
-            b.line(&format!("{}: ptr = addr {}", p, name));
-            b.line(&format!("{}: index = len {}", n, name));
-        }
+        b.line(&format!("{}: ptr = addr __nul", p));
+        b.line(&format!("{}: index = const 0", n));
         (p, n)
     }
 
@@ -3888,6 +3956,9 @@ impl Lowerer {
         if info.results.is_empty() {
             return Err(lex::error(&file, line, format!("'{}' is a sink: it is wired at feature scope, `{}(...)`, and not run here", spoken(info), info.key)));
         }
+        if self.zeroic.contains_key(&info.key) {
+            return Err(lex::error(&file, line, format!("'{}' is a stream processor with no loop in it: it is wired at feature scope, `{} x$ = {}(...)`, and running one inside a function is not built", spoken(info), task_elem(info), info.key)));
+        }
         let Ty::Stream(want) = &info.results[0].1 else { unreachable!() };
         let Ty::Stream(have) = &out.ty else { unreachable!() };
         if want != have {
@@ -3970,6 +4041,13 @@ impl Lowerer {
             let Some((info, args, hz)) = self.task_call(e, None, file)? else {
                 return Err(lex::error(file, e.line, "a value pushed after a task call at feature scope: a chain's items come before its tasks"));
             };
+            if self.zeroic.contains_key(&info.key) {
+                if !matches!(v.init, Some(Init::Value(_))) {
+                    return Err(lex::error(file, e.line, format!("'{}' is a stream processor with no loop in it: it is wired alone, `{} {}$ = {}`; in a chain of pushes it is not built", spoken(&info), v.ty, v.name, phrase_text(e))));
+                }
+                self.collect_zeroic(v, e, &info, &args, hz, feature, file)?;
+                continue;
+            }
             if info.results.is_empty() {
                 return Err(lex::error(file, e.line, format!("'{}' is a sink: it fills no stream, so it is wired alone, `{}`", spoken(&info), phrase_text(e))));
             }
@@ -3992,6 +4070,72 @@ impl Lowerer {
             let text = format!("{} {}$ {} {}", v.ty, v.name, if matches!(v.init, Some(Init::Value(_))) { "=" } else { "<<" }, phrase_text(e));
             self.nodes.push(Node { info, out: Some(v.name.clone()), args, hz, feature: feature.to_string(), file: file.to_string(), text });
         }
+        Ok(())
+    }
+
+    /// A wiring of a processor read the new way (fm3 question 75, log
+    /// 124): `int d$ = doubled (x$)`. The front end writes its function
+    /// of one item, as it writes an edge's (`collect_edge`), into the
+    /// wiring's feature. Where the input has no storage a push into it
+    /// calls that function, an item at a time, and there is no node;
+    /// where it has, a sink in the walking form hands each unread item
+    /// over and is wired as any sink is, so the scheduler and the
+    /// queue serve it unchanged. What the wiring keeps is its own, a
+    /// field of the context each
+    fn collect_zeroic(&mut self, v: &super::syntax::VarDecl, e: &Expr, info: &FnInfo, args: &[Expr], hz: i64, feature: &str, file: &str) -> Result<(), Error> {
+        if hz > 0 {
+            return Err(lex::error(file, e.line, format!("'{}' is a stream processor with no loop in it: its items have their input's times, and wiring one at a rate is not built", spoken(info))));
+        }
+        self.reach(&spoken(info), &info.feature, file, e.line)?;
+        let (pname, pty) = &info.params[0];
+        let Ty::Stream(pe) = pty else { unreachable!() };
+        let a = &args[0];
+        let ExprKind::Seq(n) = &a.kind else {
+            return Err(lex::error(file, a.line, format!("'{}' reads '{}$' as a stream: wire a feature-scope stream to it", info.key, pname)));
+        };
+        match self.fvar(n).map(|f| f.ty.clone()) {
+            Some(Ty::Stream(ae)) if ae == *pe => {}
+            Some(Ty::Stream(ae)) => return Err(lex::error(file, a.line, format!("'{}' reads a stream of {}, '{}$' holds {}", info.key, pe.ir(), n, ae.ir()))),
+            Some(t) => return Err(lex::error(file, a.line, format!("'{}$' is a {}, not a stream", n, t.ir()))),
+            None => return Err(lex::error(file, a.line, format!("'{}$' is not a feature-scope stream", n))),
+        }
+        self.reach(&format!("{}$", n), &self.fvar(n).unwrap().feature.clone(), file, a.line)?;
+        let (want, have) = (info.results[0].1.clone(), self.fvar(&v.name).unwrap().ty.clone());
+        if want != have {
+            return Err(lex::error(file, e.line, format!("'{}' produces {} and '{}$' holds {}", info.key, zero_ty(want.elem().unwrap_or(&want)), v.name, zero_ty(have.elem().unwrap_or(&have)))));
+        }
+        self.zwired += 1;
+        let k = self.zwired;
+        let stored = !self.bare.contains(n);
+        let p = self.zeroic[&info.key].clone();
+        let w = super::zeroic::write(&p, k, &v.name, stored);
+        for (name, ty) in &w.state {
+            let t = self.ty(ty, false, file, v.line)?;
+            self.fvars.push(FVar { name: name.clone(), ty: t.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string() });
+            self.zfields.push((name.clone(), t));
+        }
+        let each = mangle(&w.each.name);
+        self.declare(&w.each, feature, file)?;
+        let i = self.funcs.len() - 1;
+        self.funcs[i].ir = each.clone();
+        self.funcs[i].plain = each.clone();
+        self.edges.push((w.each, feature.to_string(), file.to_string()));
+        let Some(walker) = w.walker else {
+            self.bare_edges.entry(n.clone()).or_default().push((each.clone(), feature.to_string()));
+            self.zprocs.insert(each, ZProc { at: w.state.iter().map(|(f, _)| f.clone()).find(|f| f.ends_with("_at")) });
+            return Ok(());
+        };
+        let name = mangle(&walker.name);
+        self.declare(&walker, feature, file)?;
+        let i = self.funcs.len() - 1;
+        self.funcs[i].ir = name.clone();
+        self.funcs[i].plain = name;
+        self.funcs[i].task = true;
+        let info = self.funcs[i].clone();
+        self.node_inputs.insert(n.clone());
+        let text = format!("{} {}$ = {}", v.ty, v.name, phrase_text(e));
+        self.nodes.push(Node { info, out: None, args: vec![a.clone()], hz: 0, feature: feature.to_string(), file: file.to_string(), text });
+        self.edges.push((walker, feature.to_string(), file.to_string()));
         Ok(())
     }
 
@@ -4075,12 +4219,13 @@ impl Lowerer {
             let is_var = |w: &str| bound.contains(w) || self.fvar(w).is_some();
             find_methods(&self.funcs, parts, &is_var, file, 0).ok().map(|(_, args)| args)
         };
-        let (named, wires, pushed) = stream_uses(&store.features, &|e, file| matches!(self.task_call(e, None, file), Ok(Some(_))), &call);
+        let zwire = |v: &super::syntax::VarDecl, file: &str| self.zwire(v, file);
+        let (named, wires, pushed) = stream_uses(&store.features, &|e, file| matches!(self.task_call(e, None, file), Ok(Some(_))), &call, &zwire);
         // the features the product leaves out are asked one thing: does
         // any of them read or wire a stream (question 54). Their tasks
         // are not declared, and a task call only ever made the target of
         // its push count as named, which is no reading
-        let (named_out, wires_out, _) = stream_uses(&store.left_out, &|_, _| false, &|_, _, _| None);
+        let (named_out, wires_out, _) = stream_uses(&store.left_out, &|_, _| false, &|_, _, _| None, &|_, _| None);
         let mut bare = Names::new();
         let mut rates: HashMap<String, i64> = HashMap::new();
         // the sources of the edges, then the streams that are pushed into
@@ -4096,7 +4241,10 @@ impl Lowerer {
                 continue;
             }
             let Some((feat, v)) = store.features.iter().find_map(|g| g.code.decls.iter().find_map(|d| match d { Decl::Var(v) if &v.name == s => Some((g, v)), _ => None })) else { continue };
-            if feat.name == "platform" || !v.seq || v.init.is_some() {
+            // nothing after its name; or, the output of a processor
+            // read the new way, which no reset fills (fm3 log 124,
+            // decision 10)
+            if feat.name == "platform" || !v.seq || (v.init.is_some() && self.zwire(v, &feat.code.file).is_none()) {
                 continue;
             }
             let Some(ty) = self.fvar(s).map(|f| f.ty.clone()) else { continue };
@@ -4104,12 +4252,20 @@ impl Lowerer {
                 continue;
             }
             if self.funcs.iter().any(|g| matches!(g.parts.as_slice(), [NamePart::Group, NamePart::Sym(op), NamePart::Group] if op == "<<") && g.params.first().map(|p| &p.1) == Some(&ty)) {
-                continue;
+                // a push by such a method hands the stream over as a
+                // value. Where every reader is a processor read the new
+                // way and every push into the stream by name is of
+                // string literals, no method is ever met, and the
+                // stream needs no queue for one (fm3 log 124, decision 6)
+                let processors = store.features.iter().all(|g| g.code.decls.iter().all(|d| !matches!(d, Decl::Edge { items, .. } if matches!(items.first(), Some(Expr { kind: ExprKind::Seq(n), .. }) if n == s))));
+                if !(wired && processors && literals_only(&store.features, s)) {
+                    continue;
+                }
             }
             // ... and where no feature of the store as it was read, the
             // ones the product leaves out included, reads or wires it,
             // that is almost certainly a mistyped name
-            if !wired && !named_out.contains(s) && !wires_out.iter().any(|(w, _)| w == s) {
+            if !wired && self.zwire(v, &feat.code.file).is_none() && !named_out.contains(s) && !wires_out.iter().any(|(w, _)| w == s) {
                 return Err(lex::error(&feat.code.file, v.line, format!("'{}$' is pushed into and nothing reads it or wires it, in any feature of the store, compiled in or left out: a mistyped name?", s)));
             }
             if let Some(r) = &v.rate {
@@ -4166,6 +4322,23 @@ impl Lowerer {
         }
         self.bare = bare;
         Ok(())
+    }
+
+    /// the input of a processor read the new way that this declaration
+    /// wires, `int d$ = doubled (x$)` (fm3 log 124)
+    fn zwire(&self, v: &super::syntax::VarDecl, file: &str) -> Option<String> {
+        let Some(Init::Value(e)) = &v.init else { return None };
+        if !v.seq {
+            return None;
+        }
+        let Ok(Some((info, args, _))) = self.task_call(e, None, file) else { return None };
+        if !self.zeroic.contains_key(&info.key) {
+            return None;
+        }
+        match args.first().map(|a| &a.kind) {
+            Some(ExprKind::Seq(n)) => Some(n.clone()),
+            _ => None,
+        }
     }
 
     /// is the name a stream with no storage, not shadowed here?
@@ -4423,7 +4596,9 @@ impl Lowerer {
                 }
                 // ... and so is a stream no word reads (question 50)
                 if self.bare.contains(&f.name) {
-                    if self.bare_edges.contains_key(&f.name) {
+                    if self.bare_edges.get(&f.name).is_some_and(|es| es.iter().any(|(e, _)| self.zprocs.contains_key(e))) {
+                        self.type_lines.push(format!(";   {}: no storage, no word reading it: a push into it calls, for each item, what is wired to it ({})", f.name, f.feature));
+                    } else if self.bare_edges.contains_key(&f.name) {
                         self.type_lines.push(format!(";   {}: no storage, no word reading it: a push into it calls its edges ({})", f.name, f.feature));
                     } else {
                         self.type_lines.push(format!(";   {}: no storage, nothing in the program reading it or wiring it ({})", f.name, f.feature));
@@ -4508,6 +4683,12 @@ impl Lowerer {
                     init_of.insert(v.name.clone(), val.text.clone());
                     inits.push(val.text);
                 }
+            }
+            // what the wirings of processors keep (fm3 log 124): the
+            // zero of each, nothing having arrived
+            for (_, ty) in self.zfields.clone() {
+                let z = self.zero_val(&ty, &mut b);
+                inits.push(z.text);
             }
             // a node's readers start where its inputs' rings start (a
             // reader is a value: a copy is its own position)
@@ -6196,12 +6377,28 @@ impl Lowerer {
                 // being switched at the next event and not in the
                 // middle of a statement
                 let bare = self.is_bare(n, b);
+                let mut gated = false;
                 if bare {
                     let gates = self.read_gates(n, b);
+                    // into the input of one processor (fm3 log 124):
+                    // its wiring's state is fetched once, carried
+                    // through the statement's items in the statement's
+                    // own values, and stored once after them
+                    if let Some(each) = self.z_carries(n, items, cond.as_ref(), &gates) {
+                        if let Some(Some(on)) = gates.first() {
+                            b.line(&format!("if {}", on));
+                            b.depth += 1;
+                            gated = true;
+                        }
+                        let zp = self.zprocs[&each].clone();
+                        let t = self.z_load(&zp, n, &each, b);
+                        self.zthread = Some(t);
+                    }
                     self.bare_gates = Some((n.clone(), gates));
                 }
                 self.loose_push = false;
                 self.sure_push = false;
+                self.zbroken = false;
                 self.push_site = Some((n.clone(), b.depth));
                 let mark = b.out.len();
                 let done = self.lower_pushes(n, &s, items, cond.as_ref(), b);
@@ -6209,7 +6406,16 @@ impl Lowerer {
                 if bare {
                     self.bare_gates = None;
                 }
+                if let Some(t) = self.zthread.take() {
+                    self.z_store(&t, b);
+                    if gated {
+                        b.depth -= 1;
+                    }
+                }
                 done?;
+                if std::mem::take(&mut self.zbroken) {
+                    return Err(lex::error(&file, *line, format!("this push into '{}$' has an item the front end cannot hand to the stream processor wired to it an item at a time: push it in a statement of its own", n)));
+                }
                 // a paced push has triggered after each item (log 93)
                 if self.paced(n, b).is_none() || self.loose_push {
                     // the nodes the statement wakes (fm3 log 103) are due
@@ -7345,15 +7551,35 @@ impl Lowerer {
                 _ => self.read_gates(name, b),
             };
             let edges = self.bare_edges.get(name).cloned().unwrap_or_default();
-            for ((edge, _), gate) in edges.iter().zip(&gates) {
-                match gate {
-                    Some(on) => {
+            if let Some(mut t) = self.zthread.take_if(|t| t.stream == name) {
+                // the statement carries the wiring's state (fm3 log
+                // 124): the item is the function's call, and nothing
+                // is fetched or stored round it. Deeper than the
+                // statement itself the carried values could not follow
+                if t.depth == b.depth {
+                    self.z_call(&mut t, &v.text, b);
+                } else {
+                    self.zbroken = true;
+                }
+                self.zthread = Some(t);
+            } else {
+                for ((edge, _), gate) in edges.iter().zip(&gates) {
+                    if let Some(on) = gate {
                         b.line(&format!("if {}", on));
                         b.depth += 1;
+                    }
+                    if let Some(zp) = self.zprocs.get(edge).cloned() {
+                        // a processor's function: its wiring's state
+                        // fetched, the call, the state stored
+                        let mut t = self.z_load(&zp, name, edge, b);
+                        self.z_call(&mut t, &v.text, b);
+                        self.z_store(&t, b);
+                    } else {
                         b.line(&format!("{}({})", edge, v.text));
+                    }
+                    if gate.is_some() {
                         b.depth -= 1;
                     }
-                    None => b.line(&format!("{}({})", edge, v.text)),
                 }
             }
             // at a rate, a step then passes (question 52): the item was
@@ -7442,6 +7668,18 @@ impl Lowerer {
                 }
                 self.lower_range(from, to, *inclusive, b, RangeSink::Into(name, s), e.line)?;
                 continue;
+            }
+            // a list written out, into a processor's input (fm3 log
+            // 124): its items handed over one by one, with no stream
+            // made to hold them first
+            if let ExprKind::List(list) = &e.kind {
+                if !(cond.is_some() && last) && self.zthread.as_ref().is_some_and(|t| t.stream == name && t.depth == b.depth) {
+                    for x in list {
+                        let v = self.lower_expr(x, Some(&elem), b, None)?;
+                        self.push_item(name, s, v, x.line, b)?;
+                    }
+                    continue;
+                }
             }
             // a string literal pushed into a stream of bytes: its bytes,
             // straight from `data`, with no ring for the literal (log 57)
@@ -7594,6 +7832,14 @@ impl Lowerer {
         if !text.is_empty() && self.push_site.as_ref().is_some_and(|(n, d)| n == name && *d == b.depth) {
             self.sure_push = true;
         }
+        // into a processor's input (fm3 log 124, decision 5): a loop of
+        // the function's calls over the bytes where they lie, its count
+        // the literal's length, written out so the cost tool can bound it
+        if !text.is_empty() && self.zthread.as_ref().is_some_and(|t| t.stream == name && t.depth == b.depth) {
+            let (p, _) = self.str_addr(text, b);
+            self.z_block(&p, true, &text.len().to_string(), Some(text.len() as i64), &elem, b);
+            return;
+        }
         // a literal too short for a chunked copy to pay lands in a
         // queue an item at a time from its `data`, with no view made
         // (fm3 log 109); only where `push_view` would give the block
@@ -7633,6 +7879,10 @@ impl Lowerer {
             b.line(&format!("{}({}, {})", word, s.text, view));
             return;
         }
+        if self.zthread.as_ref().is_some_and(|t| t.stream == name && t.depth == b.depth) {
+            self.z_block(view, false, n, None, elem, b);
+            return;
+        }
         let k = b.tmp();
         b.open_loop("", &format!("{}: index = 0", k), false);
         b.depth += 1;
@@ -7649,6 +7899,110 @@ impl Lowerer {
         b.line(&format!("{}: index = add {}, 1", k2, k));
         b.line(&format!("continue {}", k2));
         b.depth -= 1;
+    }
+
+    /// May a push statement into `name` carry the state of the one
+    /// processor wired to it in its own values (fm3 log 124)? Where
+    /// the stream's one reader is a processor's function, the
+    /// statement has no `while`, and no item is a range, whose loop
+    /// is not this code's to carry values round. A gate that may be
+    /// off goes round the whole statement, so not where a step of the
+    /// stream's rate must pass whether or not the feature is on
+    fn z_carries(&self, name: &str, items: &[Expr], cond: Option<&Expr>, gates: &[Option<String>]) -> Option<String> {
+        let [(each, _)] = self.bare_edges.get(name)?.as_slice() else { return None };
+        if !self.zprocs.contains_key(each) || cond.is_some() || items.iter().any(|e| matches!(e.kind, ExprKind::Range { .. })) {
+            return None;
+        }
+        if gates.first().is_some_and(|g| g.is_some()) && self.rates.contains_key(name) {
+            return None;
+        }
+        Some(each.clone())
+    }
+
+    /// a wiring's state fetched from the context
+    fn z_load(&mut self, zp: &ZProc, stream: &str, each: &str, b: &mut Body) -> ZThread {
+        let at = zp.at.as_ref().map(|f| (self.field_get(f, "index", None, b), 0));
+        ZThread { stream: stream.to_string(), depth: b.depth, each: each.to_string(), at }
+    }
+
+    /// ... and stored back, where it moved
+    fn z_store(&mut self, t: &ZThread, b: &mut Body) {
+        let zp = self.zprocs[&t.each].clone();
+        if let (Some(f), Some(_)) = (&zp.at, &t.at) {
+            let v = self.z_at(t, b);
+            self.field_put(f, &v, b);
+        }
+    }
+
+    /// the count of items so far, as a value
+    fn z_at(&mut self, t: &ZThread, b: &mut Body) -> String {
+        match &t.at {
+            Some((base, 0)) => base.clone(),
+            Some((base, k)) => {
+                let v = b.tmp();
+                b.line(&format!("{}: index = add {}, {}", v, base, k));
+                v
+            }
+            None => unreachable!(),
+        }
+    }
+
+    /// one item handed to a processor's function, the state moved on
+    fn z_call(&mut self, t: &mut ZThread, item: &str, b: &mut Body) {
+        let mut ops = vec![item.to_string()];
+        if t.at.is_some() {
+            ops.push(self.z_at(t, b));
+        }
+        b.line(&format!("{}({})", t.each, ops.join(", ")));
+        if let Some((_, k)) = &mut t.at {
+            *k += 1;
+        }
+    }
+
+    /// A block's items handed to a processor's function one at a time:
+    /// the loop the front end writes at a push (fm3 log 124, decision
+    /// 5). `from` is where the items lie, bytes at an address or a
+    /// view; `n` their count, a constant where `known`
+    fn z_block(&mut self, from: &str, bytes: bool, n: &str, known: Option<i64>, elem: &Ty, b: &mut Body) {
+        let mut t = self.zthread.take().unwrap();
+        let base = t.at.is_some().then(|| self.z_at(&t, b));
+        let k = b.tmp();
+        b.open_loop("", &format!("{}: index = 0", k), known.is_some());
+        b.depth += 1;
+        let done = b.tmp();
+        b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
+        b.line(&format!("if {}", done));
+        b.depth += 1;
+        b.line("break");
+        b.depth -= 1;
+        let x = b.tmp();
+        if bytes {
+            b.line(&format!("{}: {} = load {}, {}, 1", x, elem.ir(), from, k));
+        } else {
+            b.line(&format!("{}: {} = load {}, {}", x, elem.ir(), from, k));
+        }
+        let mut ops = vec![x];
+        if let Some(base) = &base {
+            let a = b.tmp();
+            b.line(&format!("{}: index = add {}, {}", a, base, k));
+            ops.push(a);
+        }
+        b.line(&format!("{}({})", t.each, ops.join(", ")));
+        let k2 = b.tmp();
+        b.line(&format!("{}: index = add {}, 1", k2, k));
+        b.line(&format!("continue {}", k2));
+        b.depth -= 1;
+        if let Some(base) = base {
+            t.at = Some(match known {
+                Some(c) => (base, c),
+                None => {
+                    let v = b.tmp();
+                    b.line(&format!("{}: index = add {}, {}", v, base, n));
+                    (v, 0)
+                }
+            });
+        }
+        self.zthread = Some(t);
     }
 
     /// Now reaches the next slot of a stream's beat (question 52 as
@@ -8595,7 +8949,7 @@ fn item_count(e: &Expr, bytes: bool) -> Option<i64> {
 /// half()` does not read `half$`
 type Called<'a> = &'a dyn Fn(&[Part], &Names, &str) -> Option<Vec<Expr>>;
 
-fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str) -> bool, call: Called) -> (Names, Vec<(String, String)>, Names) {
+fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str) -> bool, call: Called, zwire: &dyn Fn(&super::syntax::VarDecl, &str) -> Option<String>) -> (Names, Vec<(String, String)>, Names) {
     let none = Names::new();
     let (mut named, mut pushed) = (Names::new(), Names::new());
     let mut wires: Vec<(String, String)> = Vec::new();
@@ -8606,6 +8960,13 @@ fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str)
                     let mut bound: Names = fd.results.iter().map(|p| p.name.clone()).collect();
                     bound.extend(fd.params().map(|p| p.name.clone()));
                     mentions(&fd.body, &bound, &|e| task(e, &f.code.file), &|p, b| call(p, b, &f.code.file), &mut named, &mut pushed);
+                }
+                // a processor read the new way, wired: its input is
+                // wired into its output, as an edge's is, and the
+                // wiring is no reading of it (fm3 log 124)
+                Decl::Var(v) if zwire(v, &f.code.file).is_some() => {
+                    wires.push((zwire(v, &f.code.file).unwrap(), v.name.clone()));
+                    pushed.insert(v.name.clone());
                 }
                 Decl::Var(v) => mentions_init(v, &none, &|p, b| call(p, b, &f.code.file), &mut named),
                 Decl::Wire(e) => mentions_in(e, &none, &|p, b| call(p, b, &f.code.file), &mut named),
@@ -8625,6 +8986,24 @@ fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str)
         }
     }
     (named, wires, pushed)
+}
+
+/// is every push into the stream of this name, in any function of the
+/// store, a push of string literals and nothing else? A function that
+/// has bound the name itself is asked too, which errs toward no
+fn literals_only(features: &[super::store::FeatureDoc], s: &str) -> bool {
+    fn block(stmts: &[Stmt], s: &str) -> bool {
+        stmts.iter().all(|st| match st {
+            Stmt::Push { target: Expr { kind: ExprKind::Seq(n), .. }, items, cond, existing, .. } if n == s => !*existing && cond.is_none() && items.iter().all(|e| matches!(e.kind, ExprKind::Str(_))),
+            Stmt::If { then, els, .. } => block(then, s) && els.as_deref().is_none_or(|e| block(e, s)),
+            Stmt::Loop { body, .. } | Stmt::For { body, .. } => block(body, s),
+            _ => true,
+        })
+    }
+    features.iter().all(|f| f.code.decls.iter().all(|d| match d {
+        Decl::Fn(fd) => block(&fd.body, s),
+        _ => true,
+    }))
 }
 
 /// every name a block mentions other than as the target of a push

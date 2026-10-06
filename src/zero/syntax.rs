@@ -11,12 +11,14 @@
 use super::lex::{self, Error, Tok, Token};
 use std::collections::HashSet;
 
+#[derive(Clone)]
 pub struct Feature {
     pub name: String,
     pub file: String,
     pub decls: Vec<Decl>,
 }
 
+#[derive(Clone)]
 pub enum Decl {
     Fn(FnDecl),
     Type(TypeDecl),
@@ -30,6 +32,7 @@ pub enum Decl {
     Edge { target: Expr, items: Vec<Expr>, cond: Option<Expr>, line: usize },
 }
 
+#[derive(Clone)]
 pub struct FnDecl {
     pub line: usize,
     pub results: Vec<Param>,
@@ -65,17 +68,20 @@ pub struct Param {
     pub line: usize,
 }
 
+#[derive(Clone)]
 pub struct TypeDecl {
     pub line: usize,
     pub name: String,
     pub kind: TypeKind,
 }
 
+#[derive(Clone)]
 pub enum TypeKind {
     Enum(Vec<String>),
     Struct(Vec<Field>),
 }
 
+#[derive(Clone)]
 pub struct Field {
     pub ty: String,
     pub name: String,
@@ -84,6 +90,7 @@ pub struct Field {
     pub line: usize,
 }
 
+#[derive(Clone)]
 pub struct VarDecl {
     pub line: usize,
     /// the scope words in front: `static`, `device`, `group`
@@ -98,6 +105,7 @@ pub struct VarDecl {
     pub rate: Option<Expr>,
 }
 
+#[derive(Clone)]
 pub enum Init {
     Value(Expr),
     /// `Vec v(1, 2, 3)`, `Vec v(z = 3, x = 1)`
@@ -112,6 +120,7 @@ pub struct Arg {
     pub value: Expr,
 }
 
+#[derive(Clone)]
 pub enum Stmt {
     Var(VarDecl),
     /// `int q, int r = divide (a) by (b)`: several declared at once from one call
@@ -134,6 +143,7 @@ pub enum Stmt {
 
 /// where a loop's given values go: `int total = loop ...` declares,
 /// `total = loop ...` assigns
+#[derive(Clone)]
 pub enum LoopInto {
     Declare(Vec<Param>),
     Assign(Vec<Target>),

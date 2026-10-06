@@ -1,0 +1,109 @@
+int x$
+int d$ = doubled(x$)
+int y$
+int q$ = doubled(y$)
+int lit$ = [1, 2, 3]
+int dl$ = doubled(lit$)
+int ran$ = [1 through 5]
+int dr$ = doubled(ran$)
+int c$
+int once$ = doubled(c$)
+int twice$ = doubled(once$)
+int p$
+int w$ = placed(p$)
+int r$
+int v$ = placed(r$)
+char text$
+int cl$ = classes(text$)
+int typed$ = classes(in$)
+int s$
+int ds$ = doubled(s$)
+int old$
+int olds$ = doubled by walking(old$)
+int m$
+int t$ = trebled(m$)
+
+on (int d$) << doubled (int x$)
+    d$ << x$ * 2
+
+on (int d$) << doubled by walking (int x$)
+    loop
+        if (count x$ == 0)
+            break
+        d$ << peek x$ at (0) * 2
+        advance x$ by (1)
+
+on (int w$) << placed (int x$)
+    index at$ = position x$
+    w$ << x$ * 10 + at$
+
+on (int t$) << trebled (int x$)
+    int two$ = x$ * 2
+    t$ << two$ + x$
+
+on (int k) = class of (char c)
+    if (c <= 32)
+        k = 0
+    else if (c >= 97)
+        k = 1
+    else
+        k = 2
+
+on (int k$) << classes (char c$)
+    k$ << class of (c$)
+
+on (int a, int b) = one at a time()
+    x$ << 1
+    a = count d$
+    x$ << 2 << 3
+    b = count d$ * 100 + peek d$ at (0) * 10 + peek d$ at (2)
+
+on (int n) = as a block()
+    y$ << [4, 5, 6]
+    n = count q$ * 100 + peek q$ at (0) * 10 + peek q$ at (2)
+
+on (int n) = said()
+    x$ << 1 << 2 << 3
+    n = count d$ * 100 + peek d$ at (0) * 10 + peek d$ at (2)
+
+on (int n) = walked()
+    old$ << 1 << 2 << 3
+    n = count olds$ * 100 + peek olds$ at (0) * 10 + peek olds$ at (2)
+
+on (int n) = from a literal()
+    n = count dl$ * 100 + peek dl$ at (0) * 10 + peek dl$ at (2)
+
+on (int n) = from a range()
+    n = count dr$ * 100 + peek dr$ at (4)
+
+on (int n) = through two()
+    c$ << 1 << 2 << 3
+    n = count twice$ * 100 + peek twice$ at (0) * 10 + peek twice$ at (2)
+
+on (int a, int b) = wired twice()
+    p$ << 5 << 6
+    r$ << 7
+    p$ << 8
+    a = peek w$ at (1) * 100 + peek w$ at (2)
+    b = count v$ * 100 + peek v$ at (0)
+
+on (int n) = over text()
+    text$ << "ab 1"
+    text$ << "c"
+    n = count cl$ * 1000 + peek cl$ at (0) * 100 + peek cl$ at (2) * 10 + peek cl$ at (3)
+
+on (int n) = typed()
+    n = count typed$ * 100 + peek typed$ at (0) * 10 + peek typed$ at (1)
+
+on (int a, int b) = also read()
+    s$ << 1 << 2
+    a = count s$
+    b = count ds$ * 10 + peek ds$ at (1)
+
+on (int n) = many (int k)
+    y$ << [1 through k]
+    n = count q$ * 1000 + peek q$ at (k - 1)
+
+on (int n) = a line said()
+    m$ << 4 << 5
+    n = peek t$ at (0) * 100 + peek t$ at (1)

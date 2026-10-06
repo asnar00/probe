@@ -703,6 +703,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A stream processor with no loop in it (fm3 question 75 rule 1,
+    /// log 124): every line holds for every item. For each wiring the
+    /// front end writes a function of one item; where nothing else
+    /// reads the input it has no storage, a push into it being that
+    /// function's call and a literal a loop that says its count; where
+    /// something does, the input keeps its queue and a sink the front
+    /// end writes walks it. And what such a body may not hold is
+    /// refused with what to write (question 65)
+    #[test]
+    fn a_stream_processor_holds_for_every_item() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-zeroic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 8\n").unwrap();
+        let head = "int x$\nint d$ = doubled(x$)\nchar t$\nint c$ = codes(t$)\nint s$\nint e$ = doubled(s$)\n\non (int k$) << codes (char c$)\n    k$ << int(c$)\n\non (int n) = f()\n    x$ << 1 << 2\n    t$ << \"abcd\"\n    s$ << 3\n    n = count d$ + count c$ + count e$ + count s$\n\n";
+        let with = |body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}on (int d$) << doubled (int x$)\n{}\n", head, body)).unwrap();
+            emit(&dir)
+        };
+        let ir = with("    d$ << x$ * 2").unwrap();
+        // the function of one item, one a wiring
+        assert!(ir.contains("fn __z1_each(_x: int)\n") && ir.contains("fn __z2_each(_c: u8)\n") && ir.contains("fn __z3_each(_x: int)\n"), "{}", ir);
+        // `x$` and `t$` have no storage: no field, and the push is the call
+        let ctx = &ir[ir.find("type __ctx = struct").unwrap()..ir.find("data __ctx_mem").unwrap()];
+        assert!(!ctx.contains("    x: ") && !ctx.contains("    t: ") && ctx.contains("    s: int$\n"), "{}", ctx);
+        let f = &ir[ir.find("fn f() -> int").unwrap()..];
+        let f = &f[..f[1..].find("\nfn ").map_or(f.len(), |i| i + 1)];
+        assert_eq!(f.matches("__z1_each(").count(), 2, "{}", f);
+        // the literal is a loop that says four
+        assert!(f.contains(", 4\n") && f.contains(" = load ") && f.contains("__z2_each("), "{}", f);
+        // `s$` is read by `count s$`: it keeps its queue, and the sink
+        // the front end wrote walks it, woken where the push is
+        assert!(ir.contains("fn __z3(x: int$, __hz: i64) -> int$\n") && f.contains("= __z3("), "{}", ir);
+        for (body, said) in [
+            ("    if (x$ > 0)\n        d$ << x$", "h.zero:18: an `if` round a line of a stream processor: every line holds for every item, so the condition goes on the push, `d$ << item when (condition)`, or in the value, `if (c) then (a) else (b)`"),
+            ("    int k = x$ * 2\n    d$ << k", "h.zero:18: in a stream processor every line holds for every item, so each line says a stream: write `int k$ = ...`"),
+            ("    d$ << x$ while (_ < 5)", "h.zero:18: `while` on a push repeats it, which is a loop, and a stream processor has none: say the stream by a line of its own, or write `d$ << item when (condition)`"),
+            ("    e$ << x$", "h.zero:18: a stream processor pushes into its own output, 'd$'"),
+            ("    int k$ = k$ + x$\n    d$ << k$", "h.zero:18: 'k$' is said in terms of itself at the present item"),
+            ("    d$ << d$ + x$", "h.zero:18: 'd$' is the output: a stream processor pushes into it and does not read it"),
+        ] {
+            let err = with(body).expect_err(body);
+            assert!(err.ends_with(said), "{}: {}", body, err);
+        }
+        // run inside a function: not built, and said so
+        std::fs::write(dir.join("h/h.zero"), "on (int d$) << doubled (int x$)\n    d$ << x$ * 2\n\non (int n) = f()\n    int i$ = [1, 2, 3]\n    int d$ = doubled(i$)\n    n = count d$\n").unwrap();
+        let err = emit(&dir).expect_err("inside a function");
+        assert!(err.ends_with("h.zero:6: 'doubled' is a stream processor with no loop in it: it is wired at feature scope, `int x$ = doubled(...)`, and running one inside a function is not built"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `index` and `int` are both the product's, and on every path's
     /// own policy they are the same width, so a conversion between
     /// them left out or made the wrong way would show nowhere in the
