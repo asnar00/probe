@@ -4,6 +4,25 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### ssa: the IR has `index`, the width of a count and a position in memory — `3bf53e8` · 2026-10-06
+
+```
+fn iraw_back(k: i64) -> i64
+    p: ptr = fill_words()
+    mid: ptr = ptradd p, 16
+    one: index = conv k
+    i: index = sub one, 3
+    r: i64 = load mid, i, 8
+    ret r
+```
+```
+fn addresses(module: &Module, ty: Type) -> bool {
+    matches!(ty, Type::I64 | Type::U64) || ty == module.index
+}
+```
+
+`suite/index.ssa:162-168` and `src/ssa.rs:6654-6656`. The parity pass, hop 15, transformation 54 (fm3 log 120, question 73). Nothing in a program says how wide memory is: `index` is a signed integer the policy binds, 64 bits on the register machines and the GPU's path, 32 on wasm32, or `--index=16|32|64` and a product's `index:` line. It is not a tower name, so a function over it is a plain function and no template; the parser gives the policy's integer where it reads the name, and under 64 bits it and `i64` are one type, so old text stands. The verifier takes it as a `load`'s or `store`'s index and `ptradd`'s offset, and each emitter widens a narrow one: `sxtw` on arm64, nothing on riscv64, no `i32.wrap_i64` on wasm32, a sign-extension on the GPU. The instruction `index p, i` stands after `=`, the type after a colon; `ielem` has both on a line. `suite/index.ssa`, nineteen cases the same at every width; two tests, the suite at 16, 32 and 64 natively and the file on the other four paths at each. No store's IR changed: lex 616, hello 1 237, static 1 197. Full run green (`scratchpad/chain48.log`): `probe test` 1015, `cargo test` 127.
+
 ### stream: a queue's header is eight words again, its word at 16 where slot 0 is — `de38654` · 2026-10-06
 
 ```
