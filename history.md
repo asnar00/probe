@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream declared and named nowhere else has no storage — `9cac9ef` · 2026-10-06
+
+```
+int n$
+int beat$ at (2 hz)
+int spare$
+```
+
+`suite/zero/unwired/unwired/unwired.zero:1-3`. The parity pass, hop 10, transformation 32 (fm3 log 100; question 57, which ash ruled as recommended). `spare$` is declared and named by nothing: no push, no read, no wiring, no case. It kept a queue of 64 that nothing could fill, `_2: int$ = __queue_int(1000000, 64)` in `__zero_reset`, a field in `__ctx` and two accessors. `settle_bare` in `src/zero/lower.rs` now gives it no storage, the third class beside an edge's source and an unwired push's target, and does not refuse it, since a stream may be declared ahead of the feature that will use it; a `char` stream is included, nothing being able to pass it to a method. The reset now makes `in$` alone. No other store's IR changes; hello 1 268, static 1 197, lex 1 143. zero 567 runs native, 24 zero unit tests.
+
 ### zero: the clock of code — `e48a653` · 2026-10-06
 
 ```
