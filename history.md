@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a node asks how much its input holds once a run — `31874aa` · 2026-10-06
+
+```
+        _9: u8$ = lex(_8, _1, 0: i64)
+        __set___node2_c(_9)
+        free_queue(_9)
+        __set___node2_c_seen(_2)
+        __set___node2_fin(_5)
+```
+
+`suite/zero/lex.expected.ssa:290-294`. The parity pass, hop 10, transformation 34, chosen from a table (fm3 log 102): lex's case is 1 063 against 415, and the 648 between is the bookkeeping round the lexer's three runs (267), the lexer (180) and two block pushes (200), no candidate worth a tenth of it. A node read `received` and `ended` of its input to see whether it was due, and read both again after its task to store what it had seen. Under the static schedule no node can push into or end what it reads, which is what acyclic is computed from, so `emit_node` in `src/zero/lower.rs` stores the first reading, `_2` and `_5`. A node **229 → 221**; lex's `two_arrivals` **1 063 → 1 039** on 444 → 440 lines, 2.50× its oracle; `timed`'s `count down` 3 722 → 3 562; hello 1 268, static 1 197. zero 569 runs native.
+
 ### zero: a program never writes `in$` — `7f45a72` · 2026-10-06
 
 ```
