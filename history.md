@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: nothing in gives nothing out, and `empty` asks — `7e31bc8` · 2026-10-06
+
+```
+on (int o$) << capped (int x$)
+    o$ << x$
+    o$ << -1 when (empty x$)
+```
+
+`suite/zero/zeroic/zeroic/zeroic.zero:244-246`. The parity pass, hop 16, transformation 61 (fm3 log 127): question 75's fourth rule. The end of the input is one last tick, a function of its own for each wiring (`src/zero/zeroic.rs`). What is nothing on it is decided when the program is compiled: `empty` is true there and false for an item, so neither function branches on it, and a line or a push that still reads the item is left out. `end` of an input with no storage calls it once, under one bit that also fails a later push. The output ends after, where anything could tell. No existing store's text moved. `suite/zero/zeroic` 38 cases; zero suite 671/671; `cargo test zero` 43.
+
 ### zero: `when` on a push — `fe74ded` · 2026-10-06
 
 ```
