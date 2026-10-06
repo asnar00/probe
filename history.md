@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a list or a range of more than thirty-two items reads back right — `23cf526` · 2026-10-06
+
+```
+on (int s) = sum to (int n)
+    s = [0 through n] + _
+```
+```
+            Fill::Queue => format!("push_queue_open {}, {}", s, x),
+            Fill::Ring => format!("push {}, {}", s, x),
+            Fill::Timed(t) => format!("push {}, {}, {}", s, t, x),
+```
+
+`suite/zero/control/control/control.zero:19-20` and `src/zero/lower.rs:3182-3184`. The parity pass, hop 15, transformation 53 (fm3 log 119, question 62): a fault, found by agent 27. A list literal and a range make a new stream with their items present; where nothing in the store keeps history that stream is a queue, a plain run of slots, and its items were written by the ring's `push`, which stores each twice, half a buffer apart. From the thirty-third item the copies landed on each other and no check failed: `sum to (32)` gave 560 for 528, `sum to (100)` 7 550 for 5 050, a list of thirty-three literals 593 for 561, item 0 of a list of a hundred 51. `new_resident` now says what it made and the two fills take the queue's own push, in the open form, the stream being new. Nothing else applied a ring's word to a queue: searched on every all-queue store's emitted text. `control` gains seventeen cases, at 33, 64 and 100 items, fourteen of them wrong on the binary before. lex 616, hello 1 237, static 1 197, unchanged. `probe zero test` 608/608 native, `cargo test zero` 36.
+
 ### stream: a queue's header says where slot 0 is — `a6b1e19` · 2026-10-06
 
 ```
