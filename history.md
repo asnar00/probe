@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the lexer in six lines, and a count taken as a function runs — `b8b88b6` · 2026-10-06
+
+```
+on (token t$) << lex (char c$)
+    int k$ = if (empty c$) then (0) else (kind of (c$))
+    bool new$ = k$ == 3 or k$ != k$[-1]
+    index start$ = if (new$) then (position c$) else (start$[-1])
+    index n$ = if (new$) then (1) else (n$[-1] + 1)
+    t$ << token(k$[-1], start$[-1], n$[-1]) when (new$ and k$[-1] != 0)
+```
+
+`suite/zero/lex-zeroic/lex/lex.zero:23-28`. The parity pass, hop 16, transformation 62 (fm3 log 128). The lexer with no loop in it, all nine of `suite/zero/lex`'s cases unchanged, and a static twin. `probe cost` reads `two_arrivals` 829 and 822 against the walking lexer's 601 and 590 and the oracles' 500 and 468: its loops are bounded, so it alone is charged every character, each at its worst. `probe count` (`src/cost.rs`), new, takes the same count as the function runs: the six lines 582 and 575, the oracles 694 and 662, the walking lexer 943 and 932. The same algorithm by hand counts 501.
+
 ### zero: nothing in gives nothing out, and `empty` asks — `7e31bc8` · 2026-10-06
 
 ```
