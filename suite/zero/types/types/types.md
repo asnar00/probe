@@ -17,6 +17,7 @@ Plan item 3 of milestone 0: section 4 of zero.md — abstract and concrete numbe
 - `widened (x)` converts an `int32` to `int`; `low byte (x)` converts an `int` to `uint8`, which wraps.
 - `halved` divides a float and truncates; `flags` compares bools.
 - `greet (who)` prints a string it was given; `hello` calls it; `name` gives a string result and `named` prints it.
+- `said fifteen` and `said sixteen` push a string literal into `said$`, a `char` stream of the store's own, and write out what it holds. The two are the lengths either side of where the compiler changes how a literal lands (parity hop twelve, fm3 log 109): fewer than sixteen bytes go into a queue one at a time from where they lie, the library's `push_queue_few`, and sixteen or more as one block through `copy`, a chunk at a time. A program cannot tell which.
 - `ratio of (a) to (b)` gives a `float64` from two `int32`s: the result type drives the conversion, so the division is a float one; `ratio times ten` reads it through `int(...)`, since a case line compares integers.
 - `product of (a) and (b)` gives an `int64` from two `int32`s, multiplied at 64 bits, so `100000 * 100000` does not overflow.
 - `mixed sum` adds an `int32` to an `int64`; `mixed float` an `int16` to a `float32`, which holds it exactly, into a `float64`; `compared across widths` compares an `int16` with a `float32`.
@@ -63,6 +64,8 @@ Plan item 3 of milestone 0: section 4 of zero.md — abstract and concrete numbe
 >flags() → 0
 >hello() → "world"
 >named() → "zero"
+>said fifteen() → "fifteen letters"
+>said sixteen() → "sixteen letters!"
 
 ## hostile
 `Vec v(1, 2, 3, 4)` is refused: "Vec has 3 field(s), given 4". `t < yes` on a `Tristate` is refused: only `==` and `!=` apply. A second `+` on the same operand types, `(Vec a) + (Vec b)` again, is refused: "an operator is not redefined in this milestone"; on other types it is a second method (`*` here), and `a * 2` with both `(Vec) * (float)` and `(Vec) * (Vec)` declared takes the float one, a literal fitting a number. Conversions that narrow are refused naming the explicit form: `int32 y = big` with `big` an `int64` says "'y' is int32 but the value is int64: int32(...) narrows it, which is not implied"; `float32 x = i` with `i` an `int32` says "float32(...) is not implied: float64 holds both better", since `float32` holds only 24 bits of an `int32`; `float32 y = a + x` on an `int64` and a `float32` says the sum, made in `float64`, "narrows it, which is not implied", where `float64 y = a + x` is accepted with the note in the IR; `int32 y = x` with `x` an `int` says "int32(...) converts it; nothing widens it", an abstract type having no width in the source, and `a + x` on an `int` and an `int32` says "no number type computes both; convert one"; and `2.5 * a` where an `int32` is wanted is "a decimal where an int32 is wanted".

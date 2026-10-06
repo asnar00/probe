@@ -1118,8 +1118,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n").unwrap();
-        let fns = "int a$\nint64 w$\nuint16 u$\nchar c$\nuint8 b$\n\non (int n) = fa()\n    a$ << 1\n    n = count a$\n\non (int n) = fw()\n    w$ << 1\n    n = count w$\n\non (int n) = fu()\n    u$ << 1\n    n = count u$\n\non (int n) = fc()\n    c$ << \"hello\"\n    n = count c$\n\non (int n) = fb()\n    b$ << 1\n    n = count b$\n";
-        // each function's push, by the word it took: `fa` to `fb` in order
+        let fns = "int a$\nint64 w$\nuint16 u$\nchar c$\nuint8 b$\n\non (int n) = fa()\n    a$ << 1\n    n = count a$\n\non (int n) = fw()\n    w$ << 1\n    n = count w$\n\non (int n) = fu()\n    u$ << 1\n    n = count u$\n\non (int n) = fc()\n    c$ << \"sixteen letters!\"\n    n = count c$\n\non (int n) = fb()\n    b$ << 1\n    n = count b$\n";
+        // each function's push, by the word it took: `fa` to `fb` in order;
+        // `fc` pushes a block, sixteen bytes, a shorter literal being
+        // `push_queue_few`'s whatever the type (fm3 log 109)
         let words = |more: &str| -> Vec<bool> {
             std::fs::write(dir.join("h/h.zero"), format!("{}{}", fns, more)).unwrap();
             let s = store::read(&dir).unwrap();
@@ -1146,6 +1148,47 @@ mod tests {
         assert_eq!(words("\non (int n) = made()\n    uint16 l$ << 1\n    end l$\n    n = count l$\n"), [false, false, true, false, false]);
         // a `platform` body of the store's own may end anything
         assert_eq!(words("\non (int64 r) = (int64 a) twice\nplatform ir\n    r: i64 = add a, a\n    ret r\n\non (int64 n) = two()\n    n = (1) twice\n"), [true, true, true, true, true]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A string literal of fewer than sixteen bytes lands in a queue an
+    /// item at a time from its `data`, with no view and no `copy` (fm3
+    /// log 109); one of sixteen or more is the block it was, a chunk at
+    /// a time, since a long block must stay a chunked copy on the
+    /// machine. One byte is an item's push, as it was, and a literal
+    /// into the device, into a ring or into a rated stream is untouched
+    #[test]
+    fn a_short_literal_lands_an_item_at_a_time() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-few-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n").unwrap();
+        let body = |decls: &str, text: &str| -> String {
+            std::fs::write(dir.join("h/h.zero"), format!("{}\n\non (int n) = f()\n    c$ << \"{}\"\n    n = count c$\n", decls, text)).unwrap();
+            let s = store::read(&dir).unwrap();
+            let ir = lower::lower(&s).unwrap().ir;
+            ir.lines().skip_while(|l| !l.starts_with("fn f(")).skip(1).take_while(|l| l.starts_with(' ')).collect::<Vec<_>>().join("\n")
+        };
+        let few = "    _2: ptr = addr __s11\n    _3: i64 = len __s11\n    push_queue_few(_1, _2, _3)\n";
+        // two bytes and fifteen: the few-items word, and no view
+        for text in ["ab", "fifteen letters"] {
+            let b = body("char c$", text);
+            assert!(b.contains(few) && !b.contains("__str"), "{}: {}", text, b);
+        }
+        // sixteen and 480: the block, through the view
+        for text in ["sixteen letters!".to_string(), "x".repeat(480)] {
+            let b = body("char c$", &text);
+            assert!(b.contains("    _4: u8[] = __str(_2, _3)\n    push_queue_open(_1, _4)\n") && !b.contains("push_queue_few"), "{}: {}", text.len(), b);
+        }
+        // one byte is an item
+        let b = body("char c$", "a");
+        assert!(b.contains("    _2: u8 = const 97\n    push_queue_open(_1, _2)\n") && !b.contains("push_queue_few"), "{}", b);
+        // a ring, which a history word makes of every stream in the store, keeps its block push
+        let b = body("char c$\nint h$\n\non (int k) = g()\n    h$ << 1\n    k = latest h$", "fifteen letters");
+        assert!(!b.contains("push_queue") && b.contains("__str"), "{}", b);
+        // a stream with a rate takes it an item at a time, each at its time
+        let b = body("char c$ at (2 hz)", "ab");
+        assert!(!b.contains("push_queue_few"), "{}", b);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

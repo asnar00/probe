@@ -44,12 +44,6 @@ fn __in_ch(c: u8)
     push_queue(s, c)
     ret
 
-; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
-fn __str(p: ptr, n: i64) -> u8[]
-    q: ptr(u8) = cast p
-    v: u8[] = pack q, n, 1
-    ret v
-
 type token = struct
     kind: int
     start: int
@@ -316,67 +310,65 @@ fn arrive_first()
     _1: u8$ = __get_src()
     _2: ptr = addr __s11
     _3: i64 = len __s11
-    _4: u8[] = __str(_2, _3)
-    push_queue(_1, _4)
-    _5: ptr = addr __ctx_mem
-    _6: __ctx = load _5
-    _7: u8$ = get _6, __node2_c
-    _8: u1 = __on_lex()
-    if _8
-        _9: token$ = __get_u()
-        _10: u8$ = lex(_9, _7, 0: i64)
-        _11: __ctx = load _5
-        _12: __ctx = set _11, __node2_c, _10
-        store _12, _5
-        free_queue(_10)
+    push_queue_few(_1, _2, _3)
+    _4: ptr = addr __ctx_mem
+    _5: __ctx = load _4
+    _6: u8$ = get _5, __node2_c
+    _7: u1 = __on_lex()
+    if _7
+        _8: token$ = __get_u()
+        _9: u8$ = lex(_8, _6, 0: i64)
+        _10: __ctx = load _4
+        _11: __ctx = set _10, __node2_c, _9
+        store _11, _4
+        free_queue(_9)
     else
-        _13: i64 = received(_7)
-        _14: u8$ = set _7, pos, _13
-        _15: __ctx = load _5
-        _16: __ctx = set _15, __node2_c, _14
-        store _16, _5
-        free_queue(_14)
+        _12: i64 = received(_6)
+        _13: u8$ = set _6, pos, _12
+        _14: __ctx = load _4
+        _15: __ctx = set _14, __node2_c, _13
+        store _15, _4
+        free_queue(_13)
     ret
 fn arrive_again()
     _1: u8$ = __get_src()
     _2: ptr = addr __s12
     _3: i64 = len __s12
-    _4: u8[] = __str(_2, _3)
-    push_queue(_1, _4)
-    _5: ptr = addr __ctx_mem
-    _6: __ctx = load _5
-    _7: u8$ = get _6, __node2_c
-    _8: u1 = __on_lex()
-    if _8
-        _9: token$ = __get_u()
-        _10: u8$ = lex(_9, _7, 0: i64)
-        _11: __ctx = load _5
-        _12: __ctx = set _11, __node2_c, _10
-        store _12, _5
-        free_queue(_10)
+    push_queue_few(_1, _2, _3)
+    _4: ptr = addr __ctx_mem
+    _5: __ctx = load _4
+    _6: u8$ = get _5, __node2_c
+    _7: u1 = __on_lex()
+    if _7
+        _8: token$ = __get_u()
+        _9: u8$ = lex(_8, _6, 0: i64)
+        _10: __ctx = load _4
+        _11: __ctx = set _10, __node2_c, _9
+        store _11, _4
+        free_queue(_9)
     else
-        _13: i64 = received(_7)
-        _14: u8$ = set _7, pos, _13
-        _15: __ctx = load _5
-        _16: __ctx = set _15, __node2_c, _14
-        store _16, _5
-        free_queue(_14)
-    _17: u8$ = __get_src()
-    _18: u1 = ended(_17)
-    end(_17)
-    if _18
+        _12: i64 = received(_6)
+        _13: u8$ = set _6, pos, _12
+        _14: __ctx = load _4
+        _15: __ctx = set _14, __node2_c, _13
+        store _15, _4
+        free_queue(_13)
+    _16: u8$ = __get_src()
+    _17: u1 = ended(_16)
+    end(_16)
+    if _17
     else
-        _19: ptr = addr __ctx_mem
-        _20: __ctx = load _19
-        _21: u8$ = get _20, __node2_c
-        _22: u1 = __on_lex()
-        if _22
-            _23: token$ = __get_u()
-            _24: u8$ = lex(_23, _21, 0: i64)
-            _25: __ctx = load _19
-            _26: __ctx = set _25, __node2_c, _24
-            store _26, _19
-            free_queue(_24)
+        _18: ptr = addr __ctx_mem
+        _19: __ctx = load _18
+        _20: u8$ = get _19, __node2_c
+        _21: u1 = __on_lex()
+        if _21
+            _22: token$ = __get_u()
+            _23: u8$ = lex(_22, _20, 0: i64)
+            _24: __ctx = load _18
+            _25: __ctx = set _24, __node2_c, _23
+            store _25, _18
+            free_queue(_23)
     ret
 fn two_arrivals() -> (int, int)
     arrive_first()
@@ -433,48 +425,47 @@ fn a_word_at_the_end() -> (int, int)
     _1: u8$ = __get_src()
     _2: ptr = addr __s13
     _3: i64 = len __s13
-    _4: u8[] = __str(_2, _3)
-    push_queue(_1, _4)
-    _5: ptr = addr __ctx_mem
-    _6: __ctx = load _5
-    _7: u8$ = get _6, __node2_c
-    _8: u1 = __on_lex()
-    if _8
-        _9: token$ = __get_u()
-        _10: u8$ = lex(_9, _7, 0: i64)
-        _11: __ctx = load _5
-        _12: __ctx = set _11, __node2_c, _10
-        store _12, _5
-        free_queue(_10)
+    push_queue_few(_1, _2, _3)
+    _4: ptr = addr __ctx_mem
+    _5: __ctx = load _4
+    _6: u8$ = get _5, __node2_c
+    _7: u1 = __on_lex()
+    if _7
+        _8: token$ = __get_u()
+        _9: u8$ = lex(_8, _6, 0: i64)
+        _10: __ctx = load _4
+        _11: __ctx = set _10, __node2_c, _9
+        store _11, _4
+        free_queue(_9)
     else
-        _13: i64 = received(_7)
-        _14: u8$ = set _7, pos, _13
-        _15: __ctx = load _5
-        _16: __ctx = set _15, __node2_c, _14
-        store _16, _5
-        free_queue(_14)
-    _17: token$ = __get_u()
-    _18: i64 = count _17
-    a: int = conv _18
-    _19: u8$ = __get_src()
-    _20: u1 = ended(_19)
-    end(_19)
-    if _20
+        _12: i64 = received(_6)
+        _13: u8$ = set _6, pos, _12
+        _14: __ctx = load _4
+        _15: __ctx = set _14, __node2_c, _13
+        store _15, _4
+        free_queue(_13)
+    _16: token$ = __get_u()
+    _17: i64 = count _16
+    a: int = conv _17
+    _18: u8$ = __get_src()
+    _19: u1 = ended(_18)
+    end(_18)
+    if _19
     else
-        _21: ptr = addr __ctx_mem
-        _22: __ctx = load _21
-        _23: u8$ = get _22, __node2_c
-        _24: u1 = __on_lex()
-        if _24
-            _25: token$ = __get_u()
-            _26: u8$ = lex(_25, _23, 0: i64)
-            _27: __ctx = load _21
-            _28: __ctx = set _27, __node2_c, _26
-            store _28, _21
-            free_queue(_26)
-    _29: token$ = __get_u()
-    _30: i64 = count _29
-    b: int = conv _30
+        _20: ptr = addr __ctx_mem
+        _21: __ctx = load _20
+        _22: u8$ = get _21, __node2_c
+        _23: u1 = __on_lex()
+        if _23
+            _24: token$ = __get_u()
+            _25: u8$ = lex(_24, _22, 0: i64)
+            _26: __ctx = load _20
+            _27: __ctx = set _26, __node2_c, _25
+            store _27, _20
+            free_queue(_25)
+    _28: token$ = __get_u()
+    _29: i64 = count _28
+    b: int = conv _29
     ret a, b
 fn lexed() -> int
     _1: token$ = __get_t()

@@ -61,6 +61,16 @@ on (string s) = name()
 on named()
     print (name())
 
+char said$
+
+on said fifteen()
+    said$ << "fifteen letters"
+    out$ << said$
+
+on said sixteen()
+    said$ << "sixteen letters!"
+    out$ << said$
+
 on (Vec v) = (Vec a) * (Vec b)
     v = Vec(a.x * b.x, a.y * b.y, a.z * b.z)
 

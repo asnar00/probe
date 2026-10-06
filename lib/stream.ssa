@@ -327,6 +327,40 @@ fn push_queue(s: any$, block: any[])
     next: i64 = add pushed, n
     store next, r
     ret
+; ... and a few items straight from where they lie, `n` of them at
+; `src`, one at a time (fm3 log 109): what a block too short for a
+; chunked copy to pay is given, a string literal of a few bytes being
+; the case. The caller answers for there being `n` items of the
+; stream's type at `src`. The same two checks as a block, so the same
+; pushes fail, and the same items in the same slots
+fn push_queue_few(s: any$, src: ptr, n: i64)
+    r: ptr = get s, ring
+    e: i64 = load r, 56
+    still: u1 = cmp.eq e, 0
+    check still
+    pushed: i64 = load r
+    origin: i64 = load r, 8
+    slot: i64 = sub pushed, origin
+    cap: i64 = load r, 24
+    after: i64 = add slot, n
+    fits: u1 = cmp.le after, cap
+    check fits
+    vb: ptr = load r, 16
+    raw: ptr = ptradd vb, 16
+    q: ptr(any) = cast raw
+    d: ptr(any) = index q, slot
+    p: ptr(any) = cast src
+    loop(j: i64 = 0)
+        done: u1 = cmp.ge j, n
+        if done
+            break
+        x: any = load p, j
+        store x, d, j
+        j2: i64 = add j, 1
+        continue j2
+    next: i64 = add pushed, n
+    store next, r
+    ret
 ; the same two pushes for a queue that cannot have ended (fm3 log 108):
 ; `ended` is written by `end` alone, so where the compiler can see that
 ; no `end` in the program reaches a stream of this type, the test is

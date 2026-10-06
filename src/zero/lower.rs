@@ -674,6 +674,14 @@ fn __push(s: any$, block: any[])
 /// the front end's number until residency is computed (section 9, log
 /// 23); a reader more than half this behind fails the library's check
 const RING_ITEMS: usize = 64;
+/// a block of fewer items than this is moved an item at a time (fm3
+/// log 109): sixteen bytes are the smallest chunk the machines have,
+/// and under a chunk the library's `copy` moves every item in its item
+/// loop after setting up for chunks, 51 + 10 n operations on an arm64
+/// where a plain loop is 28 + 6 n; from sixteen up a chunk at a time
+/// wins, 63 against 124. The machine's count decides, not the cost
+/// tool's, which goes on preferring the plain loop at every length
+const FEW_ITEMS: usize = 16;
 /// the bytes the platform's `out$` holds (log 57): the compiler's number,
 /// where the print buffer's 4096 was, until a product says
 const OUT_BYTES: usize = 4096;
@@ -3080,6 +3088,15 @@ impl Lowerer {
     /// a view's items as a new stream, through the generated `__copy_T`
     /// a string literal's bytes as a view of `data`, and their count
     fn str_view(&mut self, s: &str, b: &mut Body) -> (String, String) {
+        let (p, n) = self.str_data(s, b);
+        let v = b.tmp();
+        b.line(&format!("{}: u8[] = __str({}, {})", v, p, n));
+        (v, n)
+    }
+
+    /// a string literal's bytes where they lie: the address of its
+    /// `data` and its length
+    fn str_data(&mut self, s: &str, b: &mut Body) -> (String, String) {
         let p = b.tmp();
         let n = b.tmp();
         if s.is_empty() {
@@ -3094,9 +3111,7 @@ impl Lowerer {
             b.line(&format!("{}: ptr = addr {}", p, name));
             b.line(&format!("{}: i64 = len {}", n, name));
         }
-        let v = b.tmp();
-        b.line(&format!("{}: u8[] = __str({}, {})", v, p, n));
-        (v, n)
+        (p, n)
     }
 
     fn copy_view(&mut self, elem: &Ty, view: &str, b: &mut Body, dst: Option<&str>) -> Val {
@@ -7116,15 +7131,32 @@ impl Lowerer {
         if !text.is_empty() && self.push_site.as_ref().is_some_and(|(n, d)| n == name && *d == b.depth) {
             self.sure_push = true;
         }
+        // a literal too short for a chunked copy to pay lands in a
+        // queue an item at a time from its `data`, with no view made
+        // (fm3 log 109); only where `push_view` would give the block
+        // to the queue's push whole
+        if !text.is_empty() && text.len() < FEW_ITEMS && self.takes_block(name, b) && self.is_queue(name, b) {
+            let (p, n) = self.str_data(text, b);
+            b.line(&format!("push_queue_few({}, {}, {})", s.text, p, n));
+            return;
+        }
         let (view, n) = self.str_view(text, b);
         self.push_view(name, s, &elem, &view, &n, b);
+    }
+
+    /// does a block pushed into this stream go to the stream's push
+    /// whole? Not into the device, which is given it to write; not into
+    /// a rated task's own output, a stream with no storage or a paced
+    /// one, which take it an item at a time
+    fn takes_block(&self, name: &str, b: &Body) -> bool {
+        let own = matches!(&b.kind, BodyKind::Task { out, .. } if out.as_deref() == Some(name));
+        !self.device(name, b) && !own && !self.is_bare(name, b) && self.paced(name, b).is_none()
     }
 
     /// the `n` items of a view pushed as one block (log 69) — one by one
     /// only into a rated task's own output, whose clock steps a period
     /// per item
     fn push_view(&mut self, name: &str, s: &Val, elem: &Ty, view: &str, n: &str, b: &mut Body) {
-        let own = matches!(&b.kind, BodyKind::Task { out, .. } if out.as_deref() == Some(name));
         if self.device(name, b) {
             b.line(&format!("__out_block({})", view));
             return;
@@ -7132,7 +7164,7 @@ impl Lowerer {
         // a stream with no storage takes a block an item at a time, each
         // through its edges (question 50)
         // ... and so does a paced one, each item at its time (log 93)
-        if !own && !self.is_bare(name, b) && self.paced(name, b).is_none() {
+        if self.takes_block(name, b) {
             let regular = if b.vars.contains_key(name) { self.regular_locals.contains(name) } else { self.regular.contains(name) };
             let word = if self.is_queue(name, b) { self.queue_push(s.ty.elem()) } else if regular { "push".to_string() } else { "__push".to_string() };
             b.line(&format!("{}({}, {})", word, s.text, view));
