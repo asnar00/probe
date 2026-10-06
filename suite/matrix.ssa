@@ -57,7 +57,7 @@ fn grid() -> (i32, i32)
     ramp(a)
     s: i32 = sum a
     x: i32 = load a, 1, 2
-    n: i64 = shape a, 1
+    n: index = shape a, 1
     n32: i32 = conv n
     y: i32 = mul x, n32
     e: i32 = sub y, 4
@@ -77,15 +77,15 @@ fn rows_cols() -> (i32, i32)
     ret s0, s1
 
 ; the transpose's shape, and its element (2, 1) — which is (1, 2) of the grid
-fn transposed() -> (i64, i32)
+fn transposed() -> (index, i32)
     p: ptr = addr m
     a: i32[,] = slice p, 3, 4
     ramp(a)
     t: i32[,] = transpose a
-    n0: i64 = shape t, 0
-    n1: i64 = shape t, 1
-    ns: i64 = add n0, n1
-    n5: i64 = sub ns, 2
+    n0: index = shape t, 0
+    n1: index = shape t, 1
+    ns: index = add n0, n1
+    n5: index = sub ns, 2
     x: i32 = load t, 2, 1
     y: i32 = sub x, 3
     ret n5, y

@@ -20,6 +20,13 @@
 ; end. On a platform without vector registers a chunk is one element
 ; and the first loop is the definition; with them the chunk loop is
 ; the vector instructions, checked against it by the other paths.
+;
+; A count, a stride, a subscript and a buffer's two header numbers are
+; `index`, as wide as the policy says memory is (fm3 log 121): what
+; `len`, `stride` and `shape` give, what `view`, `at` and a subscript
+; take, and every loop counter below. A view is still a struct of
+; words, eight bytes each, and a buffer's header two words: a word
+; that holds an index holds it in its low bytes.
 
 
 
@@ -27,7 +34,8 @@
 
 
 
-fn buffer_init(p: ptr, elem: i64, cap: i64)
+
+fn buffer_init(p: ptr, elem: index, cap: index)
     store elem, p
     store cap, p, 8
     ret
@@ -36,36 +44,36 @@ fn buffer_init(p: ptr, elem: i64, cap: i64)
 ; --- add ---
 
 fn add(c: number[], a: number[], b: number[])
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
-    n2: i64 = len b
+    n2: index = len b
     ok2: u1 = cmp.eq n, n2
     check ok2
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     pb: ptr(number) = ptr b
     vb: ptr(chunk(number)) = cast pb
-    stb: i64 = stride b
+    stb: index = stride b
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cb: u1 = cmp.eq stb, 1
     cc1: u1 = and cc, ca
     cc2: u1 = and cc1, cb
     contig: u1 = cast cc2
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
@@ -73,33 +81,33 @@ fn add(c: number[], a: number[], b: number[])
         y: chunk(number) = load vb, ci
         z: chunk(number) = add x, y
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
-        ixb: i64 = mul j, stb
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
+        ixb: index = mul j, stb
         xt: number = load pa, ixa
         yt: number = load pb, ixb
         zt: number = add xt, yt
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn add(c: number[,], a: number[,], b: number[,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    m2: i64 = shape b, 0
+    m2: index = shape b, 0
     ok2: u1 = cmp.eq n0, m2
     check ok2
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
@@ -107,19 +115,19 @@ fn add(c: number[,], a: number[,], b: number[,])
         ra: number[] = at a, i
         rb: number[] = at b, i
         add rc, ra, rb
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn add(c: number[,,], a: number[,,], b: number[,,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    m2: i64 = shape b, 0
+    m2: index = shape b, 0
     ok2: u1 = cmp.eq n0, m2
     check ok2
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
@@ -127,121 +135,121 @@ fn add(c: number[,,], a: number[,,], b: number[,,])
         ra: number[,] = at a, i
         rb: number[,] = at b, i
         add rc, ra, rb
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn add(c: number[], a: number[], s: number)
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cc1: u1 = and cc, ca
     contig: u1 = cast cc1
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
     ks: chunk(number) = splat s
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
         x: chunk(number) = load va, ci
         z: chunk(number) = add x, ks
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
         xt: number = load pa, ixa
         zt: number = add xt, s
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn add(c: number[,], a: number[,], s: number)
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[] = at c, i
         ra: number[] = at a, i
         add rc, ra, s
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn add(c: number[,,], a: number[,,], s: number)
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[,] = at c, i
         ra: number[,] = at a, i
         add rc, ra, s
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 ; --- sub ---
 
 fn sub(c: number[], a: number[], b: number[])
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
-    n2: i64 = len b
+    n2: index = len b
     ok2: u1 = cmp.eq n, n2
     check ok2
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     pb: ptr(number) = ptr b
     vb: ptr(chunk(number)) = cast pb
-    stb: i64 = stride b
+    stb: index = stride b
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cb: u1 = cmp.eq stb, 1
     cc1: u1 = and cc, ca
     cc2: u1 = and cc1, cb
     contig: u1 = cast cc2
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
@@ -249,33 +257,33 @@ fn sub(c: number[], a: number[], b: number[])
         y: chunk(number) = load vb, ci
         z: chunk(number) = sub x, y
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
-        ixb: i64 = mul j, stb
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
+        ixb: index = mul j, stb
         xt: number = load pa, ixa
         yt: number = load pb, ixb
         zt: number = sub xt, yt
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn sub(c: number[,], a: number[,], b: number[,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    m2: i64 = shape b, 0
+    m2: index = shape b, 0
     ok2: u1 = cmp.eq n0, m2
     check ok2
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
@@ -283,19 +291,19 @@ fn sub(c: number[,], a: number[,], b: number[,])
         ra: number[] = at a, i
         rb: number[] = at b, i
         sub rc, ra, rb
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn sub(c: number[,,], a: number[,,], b: number[,,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    m2: i64 = shape b, 0
+    m2: index = shape b, 0
     ok2: u1 = cmp.eq n0, m2
     check ok2
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
@@ -303,121 +311,121 @@ fn sub(c: number[,,], a: number[,,], b: number[,,])
         ra: number[,] = at a, i
         rb: number[,] = at b, i
         sub rc, ra, rb
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn sub(c: number[], a: number[], s: number)
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cc1: u1 = and cc, ca
     contig: u1 = cast cc1
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
     ks: chunk(number) = splat s
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
         x: chunk(number) = load va, ci
         z: chunk(number) = sub x, ks
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
         xt: number = load pa, ixa
         zt: number = sub xt, s
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn sub(c: number[,], a: number[,], s: number)
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[] = at c, i
         ra: number[] = at a, i
         sub rc, ra, s
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn sub(c: number[,,], a: number[,,], s: number)
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[,] = at c, i
         ra: number[,] = at a, i
         sub rc, ra, s
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 ; --- mul ---
 
 fn mul(c: number[], a: number[], b: number[])
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
-    n2: i64 = len b
+    n2: index = len b
     ok2: u1 = cmp.eq n, n2
     check ok2
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     pb: ptr(number) = ptr b
     vb: ptr(chunk(number)) = cast pb
-    stb: i64 = stride b
+    stb: index = stride b
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cb: u1 = cmp.eq stb, 1
     cc1: u1 = and cc, ca
     cc2: u1 = and cc1, cb
     contig: u1 = cast cc2
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
@@ -425,33 +433,33 @@ fn mul(c: number[], a: number[], b: number[])
         y: chunk(number) = load vb, ci
         z: chunk(number) = mul x, y
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
-        ixb: i64 = mul j, stb
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
+        ixb: index = mul j, stb
         xt: number = load pa, ixa
         yt: number = load pb, ixb
         zt: number = mul xt, yt
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn mul(c: number[,], a: number[,], b: number[,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    m2: i64 = shape b, 0
+    m2: index = shape b, 0
     ok2: u1 = cmp.eq n0, m2
     check ok2
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
@@ -459,19 +467,19 @@ fn mul(c: number[,], a: number[,], b: number[,])
         ra: number[] = at a, i
         rb: number[] = at b, i
         mul rc, ra, rb
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn mul(c: number[,,], a: number[,,], b: number[,,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    m2: i64 = shape b, 0
+    m2: index = shape b, 0
     ok2: u1 = cmp.eq n0, m2
     check ok2
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
@@ -479,121 +487,121 @@ fn mul(c: number[,,], a: number[,,], b: number[,,])
         ra: number[,] = at a, i
         rb: number[,] = at b, i
         mul rc, ra, rb
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn mul(c: number[], a: number[], s: number)
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cc1: u1 = and cc, ca
     contig: u1 = cast cc1
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
     ks: chunk(number) = splat s
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
         x: chunk(number) = load va, ci
         z: chunk(number) = mul x, ks
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
         xt: number = load pa, ixa
         zt: number = mul xt, s
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn mul(c: number[,], a: number[,], s: number)
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[] = at c, i
         ra: number[] = at a, i
         mul rc, ra, s
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn mul(c: number[,,], a: number[,,], s: number)
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[,] = at c, i
         ra: number[,] = at a, i
         mul rc, ra, s
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 ; --- div ---
 
 fn div(c: number[], a: number[], b: number[])
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
-    n2: i64 = len b
+    n2: index = len b
     ok2: u1 = cmp.eq n, n2
     check ok2
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     pb: ptr(number) = ptr b
     vb: ptr(chunk(number)) = cast pb
-    stb: i64 = stride b
+    stb: index = stride b
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cb: u1 = cmp.eq stb, 1
     cc1: u1 = and cc, ca
     cc2: u1 = and cc1, cb
     contig: u1 = cast cc2
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
@@ -601,33 +609,33 @@ fn div(c: number[], a: number[], b: number[])
         y: chunk(number) = load vb, ci
         z: chunk(number) = div x, y
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
-        ixb: i64 = mul j, stb
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
+        ixb: index = mul j, stb
         xt: number = load pa, ixa
         yt: number = load pb, ixb
         zt: number = div xt, yt
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn div(c: number[,], a: number[,], b: number[,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    m2: i64 = shape b, 0
+    m2: index = shape b, 0
     ok2: u1 = cmp.eq n0, m2
     check ok2
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
@@ -635,19 +643,19 @@ fn div(c: number[,], a: number[,], b: number[,])
         ra: number[] = at a, i
         rb: number[] = at b, i
         div rc, ra, rb
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn div(c: number[,,], a: number[,,], b: number[,,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    m2: i64 = shape b, 0
+    m2: index = shape b, 0
     ok2: u1 = cmp.eq n0, m2
     check ok2
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
@@ -655,121 +663,121 @@ fn div(c: number[,,], a: number[,,], b: number[,,])
         ra: number[,] = at a, i
         rb: number[,] = at b, i
         div rc, ra, rb
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn div(c: number[], a: number[], s: number)
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cc1: u1 = and cc, ca
     contig: u1 = cast cc1
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
     ks: chunk(number) = splat s
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
         x: chunk(number) = load va, ci
         z: chunk(number) = div x, ks
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
         xt: number = load pa, ixa
         zt: number = div xt, s
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn div(c: number[,], a: number[,], s: number)
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[] = at c, i
         ra: number[] = at a, i
         div rc, ra, s
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn div(c: number[,,], a: number[,,], s: number)
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[,] = at c, i
         ra: number[,] = at a, i
         div rc, ra, s
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 ; --- min ---
 
 fn min(c: number[], a: number[], b: number[])
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
-    n2: i64 = len b
+    n2: index = len b
     ok2: u1 = cmp.eq n, n2
     check ok2
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     pb: ptr(number) = ptr b
     vb: ptr(chunk(number)) = cast pb
-    stb: i64 = stride b
+    stb: index = stride b
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cb: u1 = cmp.eq stb, 1
     cc1: u1 = and cc, ca
     cc2: u1 = and cc1, cb
     contig: u1 = cast cc2
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
@@ -777,33 +785,33 @@ fn min(c: number[], a: number[], b: number[])
         y: chunk(number) = load vb, ci
         z: chunk(number) = min x, y
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
-        ixb: i64 = mul j, stb
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
+        ixb: index = mul j, stb
         xt: number = load pa, ixa
         yt: number = load pb, ixb
         zt: number = min xt, yt
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn min(c: number[,], a: number[,], b: number[,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    m2: i64 = shape b, 0
+    m2: index = shape b, 0
     ok2: u1 = cmp.eq n0, m2
     check ok2
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
@@ -811,19 +819,19 @@ fn min(c: number[,], a: number[,], b: number[,])
         ra: number[] = at a, i
         rb: number[] = at b, i
         min rc, ra, rb
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn min(c: number[,,], a: number[,,], b: number[,,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    m2: i64 = shape b, 0
+    m2: index = shape b, 0
     ok2: u1 = cmp.eq n0, m2
     check ok2
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
@@ -831,121 +839,121 @@ fn min(c: number[,,], a: number[,,], b: number[,,])
         ra: number[,] = at a, i
         rb: number[,] = at b, i
         min rc, ra, rb
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn min(c: number[], a: number[], s: number)
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cc1: u1 = and cc, ca
     contig: u1 = cast cc1
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
     ks: chunk(number) = splat s
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
         x: chunk(number) = load va, ci
         z: chunk(number) = min x, ks
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
         xt: number = load pa, ixa
         zt: number = min xt, s
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn min(c: number[,], a: number[,], s: number)
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[] = at c, i
         ra: number[] = at a, i
         min rc, ra, s
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn min(c: number[,,], a: number[,,], s: number)
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[,] = at c, i
         ra: number[,] = at a, i
         min rc, ra, s
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 ; --- max ---
 
 fn max(c: number[], a: number[], b: number[])
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
-    n2: i64 = len b
+    n2: index = len b
     ok2: u1 = cmp.eq n, n2
     check ok2
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     pb: ptr(number) = ptr b
     vb: ptr(chunk(number)) = cast pb
-    stb: i64 = stride b
+    stb: index = stride b
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cb: u1 = cmp.eq stb, 1
     cc1: u1 = and cc, ca
     cc2: u1 = and cc1, cb
     contig: u1 = cast cc2
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
@@ -953,33 +961,33 @@ fn max(c: number[], a: number[], b: number[])
         y: chunk(number) = load vb, ci
         z: chunk(number) = max x, y
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
-        ixb: i64 = mul j, stb
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
+        ixb: index = mul j, stb
         xt: number = load pa, ixa
         yt: number = load pb, ixb
         zt: number = max xt, yt
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn max(c: number[,], a: number[,], b: number[,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    m2: i64 = shape b, 0
+    m2: index = shape b, 0
     ok2: u1 = cmp.eq n0, m2
     check ok2
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
@@ -987,19 +995,19 @@ fn max(c: number[,], a: number[,], b: number[,])
         ra: number[] = at a, i
         rb: number[] = at b, i
         max rc, ra, rb
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn max(c: number[,,], a: number[,,], b: number[,,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    m2: i64 = shape b, 0
+    m2: index = shape b, 0
     ok2: u1 = cmp.eq n0, m2
     check ok2
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
@@ -1007,456 +1015,456 @@ fn max(c: number[,,], a: number[,,], b: number[,,])
         ra: number[,] = at a, i
         rb: number[,] = at b, i
         max rc, ra, rb
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn max(c: number[], a: number[], s: number)
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cc1: u1 = and cc, ca
     contig: u1 = cast cc1
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
     ks: chunk(number) = splat s
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
         x: chunk(number) = load va, ci
         z: chunk(number) = max x, ks
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
         xt: number = load pa, ixa
         zt: number = max xt, s
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn max(c: number[,], a: number[,], s: number)
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[] = at c, i
         ra: number[] = at a, i
         max rc, ra, s
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn max(c: number[,,], a: number[,,], s: number)
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[,] = at c, i
         ra: number[,] = at a, i
         max rc, ra, s
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 ; --- neg ---
 
 fn neg(c: number[], a: number[])
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cc1: u1 = and cc, ca
     contig: u1 = cast cc1
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
         x: chunk(number) = load va, ci
         z: chunk(number) = neg x
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
         xt: number = load pa, ixa
         zt: number = neg xt
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn neg(c: number[,], a: number[,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[] = at c, i
         ra: number[] = at a, i
         neg rc, ra
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn neg(c: number[,,], a: number[,,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[,] = at c, i
         ra: number[,] = at a, i
         neg rc, ra
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 ; --- abs ---
 
 fn abs(c: number[], a: number[])
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cc1: u1 = and cc, ca
     contig: u1 = cast cc1
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
         x: chunk(number) = load va, ci
         z: chunk(number) = abs x
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
         xt: number = load pa, ixa
         zt: number = abs xt
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn abs(c: number[,], a: number[,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[] = at c, i
         ra: number[] = at a, i
         abs rc, ra
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn abs(c: number[,,], a: number[,,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[,] = at c, i
         ra: number[,] = at a, i
         abs rc, ra
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 ; --- sqrt ---
 
 fn sqrt(c: scalar[], a: scalar[])
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
     pc: ptr(scalar) = ptr c
     vc: ptr(chunk(scalar)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(scalar) = ptr a
     va: ptr(chunk(scalar)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cc1: u1 = and cc, ca
     contig: u1 = cast cc1
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
-    k: i64 = lanes chunk(scalar)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit scalar, left
+    k: index = lanes chunk(scalar)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit scalar, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
         x: chunk(scalar) = load va, ci
         z: chunk(scalar) = sqrt x
         store z, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
         xt: scalar = load pa, ixa
         zt: scalar = sqrt xt
         store zt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn sqrt(c: scalar[,], a: scalar[,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: scalar[] = at c, i
         ra: scalar[] = at a, i
         sqrt rc, ra
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn sqrt(c: scalar[,,], a: scalar[,,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: scalar[,] = at c, i
         ra: scalar[,] = at a, i
         sqrt rc, ra
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 ; --- copy, fill ---
 
 fn copy(c: number[], a: number[])
-    n: i64 = len c
-    n1: i64 = len a
+    n: index = len c
+    n1: index = len a
     ok1: u1 = cmp.eq n, n1
     check ok1
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     cc: u1 = cmp.eq stc, 1
     ca: u1 = cmp.eq sta, 1
     cc1: u1 = and cc, ca
     contig: u1 = cast cc1
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
         x: chunk(number) = load va, ci
         store x, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
-        ixa: i64 = mul j, sta
+        ixc: index = mul j, stc
+        ixa: index = mul j, sta
         xt: number = load pa, ixa
         store xt, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn copy(c: number[,], a: number[,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[] = at c, i
         ra: number[] = at a, i
         copy rc, ra
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn copy(c: number[,,], a: number[,,])
-    n0: i64 = shape c, 0
-    m1: i64 = shape a, 0
+    n0: index = shape c, 0
+    m1: index = shape a, 0
     ok1: u1 = cmp.eq n0, m1
     check ok1
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[,] = at c, i
         ra: number[,] = at a, i
         copy rc, ra
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn fill(c: number[], s: number)
-    n: i64 = len c
+    n: index = len c
     pc: ptr(number) = ptr c
     vc: ptr(chunk(number)) = cast pc
-    stc: i64 = stride c
+    stc: index = stride c
     cc: u1 = cmp.eq stc, 1
     contig: u1 = cast cc
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
     ks: chunk(number) = splat s
-    k: i64 = lanes chunk(number)
-    stop: i64 = loop(i: i64 = 0, ci: i64 = 0)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index = loop(i: index = 0, ci: index = 0)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i
         store ks, vc, ci
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2
-    loop(j: i64 = stop)
+    loop(j: index = stop)
         done: u1 = cmp.ge j, n
         if done
             break
-        ixc: i64 = mul j, stc
+        ixc: index = mul j, stc
         store s, pc, ixc
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2
     ret
 
 fn fill(c: number[,], s: number)
-    n0: i64 = shape c, 0
-    loop(i: i64 = 0)
+    n0: index = shape c, 0
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[] = at c, i
         fill rc, s
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn fill(c: number[,,], s: number)
-    n0: i64 = shape c, 0
-    loop(i: i64 = 0)
+    n0: index = shape c, 0
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         rc: number[,] = at c, i
         fill rc, s
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
@@ -1465,345 +1473,345 @@ fn fill(c: number[,,], s: number)
 ; from the first element; a view of rank 2 or 3 row by row ---
 
 fn sum(a: number[]) -> number
-    n: i64 = len a
+    n: index = len a
     zero: chunk(number) = splat 0
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     ca: u1 = cmp.eq sta, 1
     contig: u1 = cast ca
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
-    k: i64 = lanes chunk(number)
-    stop: i64, total: chunk(number) = loop(i: i64 = 0, ci: i64 = 0, acc: chunk(number) = zero)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index, total: chunk(number) = loop(i: index = 0, ci: index = 0, acc: chunk(number) = zero)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i, acc
         x: chunk(number) = load va, ci
         acc2: chunk(number) = add acc, x
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2, acc2
     s0: number = sum total
-    s: number = loop(j: i64 = stop, t: number = s0)
+    s: number = loop(j: index = stop, t: number = s0)
         done: u1 = cmp.ge j, n
         if done
             break t
-        ixa: i64 = mul j, sta
+        ixa: index = mul j, sta
         xt: number = load pa, ixa
         t2: number = add t, xt
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2, t2
     ret s
 
 fn min(a: number[]) -> number
-    n: i64 = len a
+    n: index = len a
     some: u1 = cmp.gt n, 0
     check some
     first: number = load a, 0
     seed: chunk(number) = splat first
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     ca: u1 = cmp.eq sta, 1
     contig: u1 = cast ca
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
-    k: i64 = lanes chunk(number)
-    stop: i64, total: chunk(number) = loop(i: i64 = 0, ci: i64 = 0, acc: chunk(number) = seed)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index, total: chunk(number) = loop(i: index = 0, ci: index = 0, acc: chunk(number) = seed)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i, acc
         x: chunk(number) = load va, ci
         acc2: chunk(number) = min acc, x
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2, acc2
     s0: number = min total
-    s: number = loop(j: i64 = stop, t: number = s0)
+    s: number = loop(j: index = stop, t: number = s0)
         done: u1 = cmp.ge j, n
         if done
             break t
-        ixa: i64 = mul j, sta
+        ixa: index = mul j, sta
         xt: number = load pa, ixa
         t2: number = min t, xt
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2, t2
     ret s
 
 fn max(a: number[]) -> number
-    n: i64 = len a
+    n: index = len a
     some: u1 = cmp.gt n, 0
     check some
     first: number = load a, 0
     seed: chunk(number) = splat first
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     ca: u1 = cmp.eq sta, 1
     contig: u1 = cast ca
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
-    k: i64 = lanes chunk(number)
-    stop: i64, total: chunk(number) = loop(i: i64 = 0, ci: i64 = 0, acc: chunk(number) = seed)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index, total: chunk(number) = loop(i: index = 0, ci: index = 0, acc: chunk(number) = seed)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i, acc
         x: chunk(number) = load va, ci
         acc2: chunk(number) = max acc, x
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2, acc2
     s0: number = max total
-    s: number = loop(j: i64 = stop, t: number = s0)
+    s: number = loop(j: index = stop, t: number = s0)
         done: u1 = cmp.ge j, n
         if done
             break t
-        ixa: i64 = mul j, sta
+        ixa: index = mul j, sta
         xt: number = load pa, ixa
         t2: number = max t, xt
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2, t2
     ret s
 
 fn sum(a: number[,]) -> number
-    n0: i64 = shape a, 0
+    n0: index = shape a, 0
     some: u1 = cmp.gt n0, 0
     check some
     r0: number[] = at a, 0
     f: number = sum r0
-    s: number = loop(i: i64 = 1, acc: number = f)
+    s: number = loop(i: index = 1, acc: number = f)
         done: u1 = cmp.ge i, n0
         if done
             break acc
         ri: number[] = at a, i
         x: number = sum ri
         acc2: number = add acc, x
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2, acc2
     ret s
 
 fn sum(a: number[,,]) -> number
-    n0: i64 = shape a, 0
+    n0: index = shape a, 0
     some: u1 = cmp.gt n0, 0
     check some
     r0: number[,] = at a, 0
     f: number = sum r0
-    s: number = loop(i: i64 = 1, acc: number = f)
+    s: number = loop(i: index = 1, acc: number = f)
         done: u1 = cmp.ge i, n0
         if done
             break acc
         ri: number[,] = at a, i
         x: number = sum ri
         acc2: number = add acc, x
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2, acc2
     ret s
 
 fn min(a: number[,]) -> number
-    n0: i64 = shape a, 0
+    n0: index = shape a, 0
     some: u1 = cmp.gt n0, 0
     check some
     r0: number[] = at a, 0
     f: number = min r0
-    s: number = loop(i: i64 = 1, acc: number = f)
+    s: number = loop(i: index = 1, acc: number = f)
         done: u1 = cmp.ge i, n0
         if done
             break acc
         ri: number[] = at a, i
         x: number = min ri
         acc2: number = min acc, x
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2, acc2
     ret s
 
 fn min(a: number[,,]) -> number
-    n0: i64 = shape a, 0
+    n0: index = shape a, 0
     some: u1 = cmp.gt n0, 0
     check some
     r0: number[,] = at a, 0
     f: number = min r0
-    s: number = loop(i: i64 = 1, acc: number = f)
+    s: number = loop(i: index = 1, acc: number = f)
         done: u1 = cmp.ge i, n0
         if done
             break acc
         ri: number[,] = at a, i
         x: number = min ri
         acc2: number = min acc, x
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2, acc2
     ret s
 
 fn max(a: number[,]) -> number
-    n0: i64 = shape a, 0
+    n0: index = shape a, 0
     some: u1 = cmp.gt n0, 0
     check some
     r0: number[] = at a, 0
     f: number = max r0
-    s: number = loop(i: i64 = 1, acc: number = f)
+    s: number = loop(i: index = 1, acc: number = f)
         done: u1 = cmp.ge i, n0
         if done
             break acc
         ri: number[] = at a, i
         x: number = max ri
         acc2: number = max acc, x
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2, acc2
     ret s
 
 fn max(a: number[,,]) -> number
-    n0: i64 = shape a, 0
+    n0: index = shape a, 0
     some: u1 = cmp.gt n0, 0
     check some
     r0: number[,] = at a, 0
     f: number = max r0
-    s: number = loop(i: i64 = 1, acc: number = f)
+    s: number = loop(i: index = 1, acc: number = f)
         done: u1 = cmp.ge i, n0
         if done
             break acc
         ri: number[,] = at a, i
         x: number = max ri
         acc2: number = max acc, x
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2, acc2
     ret s
 
 ; --- reductions one rank down: one per row ---
 
 fn sum(c: number[], a: number[,])
-    n0: i64 = shape a, 0
-    nc: i64 = len c
+    n0: index = shape a, 0
+    nc: index = len c
     ok: u1 = cmp.eq n0, nc
     check ok
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         ri: number[] = at a, i
         x: number = sum ri
         store x, c, i
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn sum(c: number[,], a: number[,,])
-    n0: i64 = shape a, 0
-    nc: i64 = shape c, 0
+    n0: index = shape a, 0
+    nc: index = shape c, 0
     ok: u1 = cmp.eq n0, nc
     check ok
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         ri: number[,] = at a, i
         ci: number[] = at c, i
         sum ci, ri
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn min(c: number[], a: number[,])
-    n0: i64 = shape a, 0
-    nc: i64 = len c
+    n0: index = shape a, 0
+    nc: index = len c
     ok: u1 = cmp.eq n0, nc
     check ok
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         ri: number[] = at a, i
         x: number = min ri
         store x, c, i
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn min(c: number[,], a: number[,,])
-    n0: i64 = shape a, 0
-    nc: i64 = shape c, 0
+    n0: index = shape a, 0
+    nc: index = shape c, 0
     ok: u1 = cmp.eq n0, nc
     check ok
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         ri: number[,] = at a, i
         ci: number[] = at c, i
         min ci, ri
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn max(c: number[], a: number[,])
-    n0: i64 = shape a, 0
-    nc: i64 = len c
+    n0: index = shape a, 0
+    nc: index = len c
     ok: u1 = cmp.eq n0, nc
     check ok
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         ri: number[] = at a, i
         x: number = max ri
         store x, c, i
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 fn max(c: number[,], a: number[,,])
-    n0: i64 = shape a, 0
-    nc: i64 = shape c, 0
+    n0: index = shape a, 0
+    nc: index = shape c, 0
     ok: u1 = cmp.eq n0, nc
     check ok
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         ri: number[,] = at a, i
         ci: number[] = at c, i
         max ci, ri
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 ; --- dot: the sum of products of two rank-1 views, a chunk of partial
 ; products while both are contiguous, then one at a time ---
 fn dot(a: number[], b: number[]) -> number
-    n: i64 = len a
-    n1: i64 = len b
+    n: index = len a
+    n1: index = len b
     ok1: u1 = cmp.eq n, n1
     check ok1
     pa: ptr(number) = ptr a
     va: ptr(chunk(number)) = cast pa
-    sta: i64 = stride a
+    sta: index = stride a
     pb: ptr(number) = ptr b
     vb: ptr(chunk(number)) = cast pb
-    stb: i64 = stride b
+    stb: index = stride b
     ca: u1 = cmp.eq sta, 1
     cb: u1 = cmp.eq stb, 1
     cc1: u1 = and ca, cb
     contig: u1 = cast cc1
-    limit: i64 = if contig
+    limit: index = if contig
         yield n
     else
         yield 0
     zero: chunk(number) = splat 0
-    k: i64 = lanes chunk(number)
-    stop: i64, total: chunk(number) = loop(i: i64 = 0, ci: i64 = 0, acc: chunk(number) = zero)
-        left: i64 = sub limit, i
-        m: i64 = fit number, left
+    k: index = lanes chunk(number)
+    stop: index, total: chunk(number) = loop(i: index = 0, ci: index = 0, acc: chunk(number) = zero)
+        left: index = sub limit, i
+        m: index = fit number, left
         partial: u1 = cmp.lt m, k
         if partial
             break i, acc
@@ -1811,33 +1819,33 @@ fn dot(a: number[], b: number[]) -> number
         y: chunk(number) = load vb, ci
         p: chunk(number) = mul x, y
         acc2: chunk(number) = add acc, p
-        i2: i64 = add i, k
-        ci2: i64 = add ci, 1
+        i2: index = add i, k
+        ci2: index = add ci, 1
         continue i2, ci2, acc2
     s0: number = sum total
-    s: number = loop(j: i64 = stop, t: number = s0)
+    s: number = loop(j: index = stop, t: number = s0)
         done: u1 = cmp.ge j, n
         if done
             break t
-        ixa: i64 = mul j, sta
-        ixb: i64 = mul j, stb
+        ixa: index = mul j, sta
+        ixb: index = mul j, stb
         xt: number = load pa, ixa
         yt: number = load pb, ixb
         pt: number = mul xt, yt
         t2: number = add t, pt
-        j2: i64 = add j, 1
+        j2: index = add j, 1
         continue j2, t2
     ret s
 
 ; --- matmul c, a, b: c[i, j] is the dot of row i of a and column j of b
 ; (a row of b's transpose); shapes checked ---
 fn matmul(c: number[,], a: number[,], b: number[,])
-    n0: i64 = shape c, 0
-    n1: i64 = shape c, 1
-    m0: i64 = shape a, 0
-    m1: i64 = shape a, 1
-    k0: i64 = shape b, 0
-    k1: i64 = shape b, 1
+    n0: index = shape c, 0
+    n1: index = shape c, 1
+    m0: index = shape a, 0
+    m1: index = shape a, 1
+    k0: index = shape b, 0
+    k1: index = shape b, 1
     ok0: u1 = cmp.eq n0, m0
     check ok0
     ok1: u1 = cmp.eq n1, k1
@@ -1845,125 +1853,129 @@ fn matmul(c: number[,], a: number[,], b: number[,])
     ok2: u1 = cmp.eq m1, k0
     check ok2
     bt: number[,] = transpose b
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         ai: number[] = at a, i
         ci: number[] = at c, i
-        loop(j: i64 = 0)
+        loop(j: index = 0)
             done2: u1 = cmp.ge j, n1
             if done2
                 break
             bj: number[] = at bt, j
             d: number = dot ai, bj
             store d, ci, j
-            j2: i64 = add j, 1
+            j2: index = add j, 1
             continue j2
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 ; --- a row broadcast: `add c, a, r` with r a rank-1 view, added to every
 ; row (for a column, the transposes') ---
 fn add(c: number[,], a: number[,], r: number[])
-    n0: i64 = shape c, 0
-    m0: i64 = shape a, 0
+    n0: index = shape c, 0
+    m0: index = shape a, 0
     ok: u1 = cmp.eq n0, m0
     check ok
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         ci: number[] = at c, i
         ai: number[] = at a, i
         add ci, ai, r
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 fn sub(c: number[,], a: number[,], r: number[])
-    n0: i64 = shape c, 0
-    m0: i64 = shape a, 0
+    n0: index = shape c, 0
+    m0: index = shape a, 0
     ok: u1 = cmp.eq n0, m0
     check ok
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         ci: number[] = at c, i
         ai: number[] = at a, i
         sub ci, ai, r
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 fn mul(c: number[,], a: number[,], r: number[])
-    n0: i64 = shape c, 0
-    m0: i64 = shape a, 0
+    n0: index = shape c, 0
+    m0: index = shape a, 0
     ok: u1 = cmp.eq n0, m0
     check ok
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         ci: number[] = at c, i
         ai: number[] = at a, i
         mul ci, ai, r
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 fn div(c: number[,], a: number[,], r: number[])
-    n0: i64 = shape c, 0
-    m0: i64 = shape a, 0
+    n0: index = shape c, 0
+    m0: index = shape a, 0
     ok: u1 = cmp.eq n0, m0
     check ok
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         ci: number[] = at c, i
         ai: number[] = at a, i
         div ci, ai, r
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 fn min(c: number[,], a: number[,], r: number[])
-    n0: i64 = shape c, 0
-    m0: i64 = shape a, 0
+    n0: index = shape c, 0
+    m0: index = shape a, 0
     ok: u1 = cmp.eq n0, m0
     check ok
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         ci: number[] = at c, i
         ai: number[] = at a, i
         min ci, ai, r
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 fn max(c: number[,], a: number[,], r: number[])
-    n0: i64 = shape c, 0
-    m0: i64 = shape a, 0
+    n0: index = shape c, 0
+    m0: index = shape a, 0
     ok: u1 = cmp.eq n0, m0
     check ok
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, n0
         if done
             break
         ci: number[] = at c, i
         ai: number[] = at a, i
         max ci, ai, r
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     ret
 
 ; --- buffers from a heap (lib/heap.ssa): the header and the elements
-; in one region, given back by the header's own numbers ---
+; in one region, given back by the header's own numbers. The heap
+; still counts its bytes in `i64` (fm3 log 121), so these two do, and
+; hand the header's two numbers on as the `index` they are ---
 fn buffer_take(h: ptr, elem: i64, cap: i64) -> ptr
     bytes: i64 = mul elem, cap
     total: i64 = add bytes, 16
     p: ptr = heap_take(h, total)
-    buffer_init(p, elem, cap)
+    e: index = conv elem
+    c: index = conv cap
+    buffer_init(p, e, c)
     ret p
 fn buffer_give(h: ptr, p: ptr)
     elem: i64 = load p

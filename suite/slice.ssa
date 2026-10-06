@@ -50,7 +50,7 @@ fn views() -> (i32, i32)
     fill lo, 1
     fill hi, 2
     s: i32 = sum all
-    n: i64 = len hi
+    n: index = len hi
     n32: i32 = conv n
     t: i32 = mul s, n32
     m: i32 = sub t, 9
@@ -60,14 +60,14 @@ fn reduce() -> (i32, i32)
     p: ptr = addr ib
     a: i32[] = slice p
     ta: ptr(i32) = ptr a
-    loop(i: i64 = 0)
+    loop(i: index = 0)
         done: u1 = cmp.ge i, 8
         if done
             break
         i32v: i32 = conv i
         v: i32 = add i32v, 1
         store v, ta, i
-        i2: i64 = add i, 1
+        i2: index = add i, 1
         continue i2
     s: i32 = sum a
     lo: i32 = min a
@@ -100,7 +100,7 @@ fn outside() -> i32
     p: ptr = addr ia
     all: i32[] = slice p
     bad: i32[] = view all, 6, 4
-    n: i64 = len bad
+    n: index = len bad
     r: i32 = conv n
     ret r
 
@@ -108,7 +108,7 @@ fn outside() -> i32
 fn wrong_elem() -> i32
     p: ptr = addr ia
     a: i64[] = slice p
-    n: i64 = len a
+    n: index = len a
     r: i32 = conv n
     ret r
 

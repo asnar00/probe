@@ -2764,8 +2764,8 @@ impl Parser {
         let data = self.hidden(scope, data_ty, format!("{}_{}_data", aname, tag), |v| Inst::Get { dst: v, src: a, field: 0 });
         let mut dims = Vec::new();
         for k in 0..rank as u32 {
-            let n = self.hidden(scope, Type::I64, format!("{}_{}_n{}", aname, tag, k), |v| Inst::Get { dst: v, src: a, field: 1 + 2 * k });
-            let st = self.hidden(scope, Type::I64, format!("{}_{}_s{}", aname, tag, k), |v| Inst::Get { dst: v, src: a, field: 2 + 2 * k });
+            let n = self.hidden(scope, self.policy.index, format!("{}_{}_n{}", aname, tag, k), |v| Inst::Get { dst: v, src: a, field: 1 + 2 * k });
+            let st = self.hidden(scope, self.policy.index, format!("{}_{}_s{}", aname, tag, k), |v| Inst::Get { dst: v, src: a, field: 2 + 2 * k });
             dims.push((n, st));
         }
         (data, dims)
@@ -2776,33 +2776,37 @@ impl Parser {
     fn data_moved(&mut self, scope: &mut FuncScope, data: ValueId, elems: ValueId, elem: Type, tag: &str) -> Result<ValueId, ParseError> {
         let (size, _) = self.layout_of(elem).unwrap();
         let data_ty = scope.values[data.0 as usize].ty;
-        let sz = self.hidden(scope, Type::I64, format!("{}_size", tag), |v| Inst::IConst { dst: v, imm: size as i128 });
+        let sz = self.hidden(scope, self.policy.index, format!("{}_size", tag), |v| Inst::IConst { dst: v, imm: size as i128 });
         let bytes = self.hidden_mul(scope, format!("{}_bytes", tag), elems, sz)?;
         let raw0 = self.hidden(scope, Type::Ptr, format!("{}_raw0", tag), |v| Inst::Cast { op: CastOp::Cast, dst: v, src: data });
         let raw = self.hidden(scope, Type::Ptr, format!("{}_raw", tag), |v| Inst::PtrAdd { dst: v, base: raw0, off: bytes });
         Ok(self.hidden(scope, data_ty, format!("{}_at", tag), |v| Inst::Cast { op: CastOp::Cast, dst: v, src: raw }))
     }
 
-    /// `ptradd`'s offset: an i64 or the policy's `index` as it is, any
-    /// other integer converted to an i64
+    /// `ptradd`'s offset: the policy's `index` or an i64 as it is, any
+    /// other integer converted to an `index`
     fn offset_operand(&mut self, scope: &mut FuncScope) -> Result<ValueId, ParseError> {
-        let at = self.pos;
-        let v = self.parse_operand(scope, Some(Type::I64))?;
-        if scope.values[v.0 as usize].ty == self.policy.index {
+        let v = self.parse_operand(scope, Some(self.policy.index))?;
+        if scope.values[v.0 as usize].ty == Type::I64 {
             return Ok(v);
         }
-        self.pos = at;
-        self.index_operand(scope)
+        self.as_index(scope, v)
     }
 
-    /// an index or count: an i64, or any integer converted to one
+    /// an index or count: an `index`, the policy's integer for a place
+    /// in memory (fm3 log 121), or any integer converted to one
     fn index_operand(&mut self, scope: &mut FuncScope) -> Result<ValueId, ParseError> {
-        let v = self.parse_operand(scope, Some(Type::I64))?;
+        let v = self.parse_operand(scope, Some(self.policy.index))?;
+        self.as_index(scope, v)
+    }
+
+    fn as_index(&mut self, scope: &mut FuncScope, v: ValueId) -> Result<ValueId, ParseError> {
+        let ix = self.policy.index;
         match scope.values[v.0 as usize].ty {
-            Type::I64 => Ok(v),
+            t if t == ix => Ok(v),
             Type::Int { .. } => {
-                let name = format!("{}_i64", scope.values[v.0 as usize].name);
-                Ok(self.hidden(scope, Type::I64, name, |d| Inst::Cast { op: CastOp::Conv, dst: d, src: v }))
+                let name = format!("{}_i{}", scope.values[v.0 as usize].name, ix.int_bits().unwrap_or(64));
+                Ok(self.hidden(scope, ix, name, |d| Inst::Cast { op: CastOp::Conv, dst: d, src: v }))
             }
             t => Err(self.err(format!("an index is an integer, not {}", self.tyname_of(t)))),
         }
@@ -2810,7 +2814,7 @@ impl Parser {
 
     /// `check 0 <= i < n`, as hidden instructions
     fn check_index(&mut self, scope: &mut FuncScope, i: ValueId, n: ValueId, tag: &str) {
-        let zero = self.hidden(scope, Type::I64, format!("{}_zero", tag), |v| Inst::IConst { dst: v, imm: 0 });
+        let zero = self.hidden(scope, self.policy.index, format!("{}_zero", tag), |v| Inst::IConst { dst: v, imm: 0 });
         let ge = self.hidden(scope, Type::U1, format!("{}_ge", tag), |v| Inst::ICmp { cond: Cond::Ge, dst: v, lhs: i, rhs: zero });
         self.consts.push(Inst::Check { cond: ge });
         let lt = self.hidden(scope, Type::U1, format!("{}_lt", tag), |v| Inst::ICmp { cond: Cond::Lt, dst: v, lhs: i, rhs: n });
@@ -2826,7 +2830,7 @@ impl Parser {
             let term = self.hidden_mul(scope, format!("{}_t{}", tag, k), i, st)?;
             acc = Some(match acc {
                 None => term,
-                Some(a) => self.hidden(scope, Type::I64, format!("{}_o{}", tag, k), |v| Inst::Bin { op: BinOp::IAdd, dst: v, lhs: a, rhs: term }),
+                Some(a) => self.hidden(scope, self.policy.index, format!("{}_o{}", tag, k), |v| Inst::Bin { op: BinOp::IAdd, dst: v, lhs: a, rhs: term }),
             });
         }
         Ok(acc.unwrap())
@@ -2854,7 +2858,7 @@ impl Parser {
     /// a hidden i64 product, by the policy's multiply (an instruction, or
     /// the library's on a core without one)
     fn hidden_mul(&mut self, scope: &mut FuncScope, name: String, a: ValueId, b: ValueId) -> Result<ValueId, ParseError> {
-        let v = scope.temp(Type::I64, name);
+        let v = scope.temp(self.policy.index, name);
         let inst = self.mul_i64(v, a, b)?;
         self.consts.push(inst);
         Ok(v)
@@ -3943,7 +3947,7 @@ impl Parser {
                 let elem = self.policy.resolve(elem0);
                 let fields = vec![
                     ("ring".to_string(), Type::Ptr),
-                    ("pos".to_string(), Type::I64),
+                    ("pos".to_string(), self.policy.index),
                     ("rule".to_string(), Type::I64),
                     ("edge".to_string(), Type::I64),
                 ];
@@ -3977,8 +3981,8 @@ impl Parser {
                 let data_ty = self.instantiate(&TypeExpr::TPtr(inner.clone()), env, depth + 1)?;
                 let mut fields = vec![("data".to_string(), data_ty)];
                 for k in 0..*rank {
-                    fields.push((format!("n{}", k), Type::I64));
-                    fields.push((format!("s{}", k), Type::I64));
+                    fields.push((format!("n{}", k), self.policy.index));
+                    fields.push((format!("s{}", k), self.policy.index));
                 }
                 let name = format!("{}[{}]", self.tyname_of(elem), ",".repeat(*rank as usize - 1));
                 if let Some(i) = self.packs.iter().position(|p| p.aggregate && p.name == name && p.fields == fields) {
@@ -4781,7 +4785,7 @@ impl Parser {
         if self.policy.native_mul {
             Ok(Inst::Bin { op: BinOp::IMul, dst, lhs: a, rhs: b })
         } else {
-            let callee = self.dispatch("mul", &[Type::I64, Type::I64], Type::I64)?;
+            let callee = self.dispatch("mul", &[self.policy.index, self.policy.index], self.policy.index)?;
             Ok(Inst::Call { dsts: vec![dst], callee, args: vec![a, b] })
         }
     }
@@ -4823,7 +4827,7 @@ impl Parser {
             return Err(self.err(format!("{}: {} is {}, which takes one index at most", what, pname, self.tyname_of(pty))));
         }
         for &i in &idx {
-            if scope.values[i.0 as usize].ty != Type::I64 {
+            if scope.values[i.0 as usize].ty != self.policy.index {
                 return Err(self.err(format!("{}: an index is an i64, not {}", what, self.tyname_of(scope.values[i.0 as usize].ty))));
             }
         }
@@ -4833,11 +4837,11 @@ impl Parser {
         let mut stride: i64 = 1;
         for d in 1..idx.len() {
             stride *= dims[d - 1] as i64;
-            let st = self.make_literal(scope, &Lit::Int(stride), Type::I64).map_err(|m| self.err(m))?;
-            let term = scope.temp(Type::I64, format!("{}_i{}", pname, d));
+            let st = self.make_literal(scope, &Lit::Int(stride), self.policy.index).map_err(|m| self.err(m))?;
+            let term = scope.temp(self.policy.index, format!("{}_i{}", pname, d));
             let m = self.mul_i64(term, idx[d], st)?;
             self.consts.push(m);
-            let sum = scope.temp(Type::I64, format!("{}_k{}", pname, d));
+            let sum = scope.temp(self.policy.index, format!("{}_k{}", pname, d));
             self.consts.push(Inst::Bin { op: BinOp::IAdd, dst: sum, lhs: k.unwrap(), rhs: term });
             k = Some(sum);
         }
@@ -5135,12 +5139,12 @@ impl Parser {
                 let (ty, next) = self.type_at(self.pos, &env, 0)?;
                 self.pos = next;
                 self.expect(Tok::Comma)?;
-                let left = self.parse_operand(scope, Some(Type::I64))?;
+                let left = self.parse_operand(scope, Some(self.policy.index))?;
                 let t = self.policy.resolve(ty);
                 let k = self.chunk_lanes(t).ok_or_else(|| self.err(format!("a chunk cannot be of {}", self.tyname_of(t))))?;
                 let dname = scope.values[dst.0 as usize].name.clone();
-                let kv = self.hidden(scope, Type::I64, format!("{}_lanes", dname), |v| Inst::IConst { dst: v, imm: k as i128 });
-                let callee = self.dispatch("min", &[Type::I64, Type::I64], Type::I64)?;
+                let kv = self.hidden(scope, self.policy.index, format!("{}_lanes", dname), |v| Inst::IConst { dst: v, imm: k as i128 });
+                let callee = self.dispatch("min", &[self.policy.index, self.policy.index], self.policy.index)?;
                 Ok(Inst::Call { dsts: vec![dst], callee, args: vec![left, kv] })
             }
             // a slice of a buffer: its header checked (the element size is
@@ -5159,16 +5163,16 @@ impl Parser {
                 }
                 let (size, _) = self.layout_of(elem).unwrap();
                 let dname = scope.values[dst.0 as usize].name.clone();
-                let esz = self.hidden(scope, Type::I64, format!("{}_elem", dname), |v| Inst::Load { dst: v, addr: p, off: 0, index: None });
-                let want = self.hidden(scope, Type::I64, format!("{}_want", dname), |v| Inst::IConst { dst: v, imm: size as i128 });
+                let esz = self.hidden(scope, self.policy.index, format!("{}_elem", dname), |v| Inst::Load { dst: v, addr: p, off: 0, index: None });
+                let want = self.hidden(scope, self.policy.index, format!("{}_want", dname), |v| Inst::IConst { dst: v, imm: size as i128 });
                 let same = self.hidden(scope, Type::U1, format!("{}_same", dname), |v| Inst::ICmp { cond: Cond::Eq, dst: v, lhs: esz, rhs: want });
                 self.consts.push(Inst::Check { cond: same });
-                let cap = self.hidden(scope, Type::I64, format!("{}_cap", dname), |v| Inst::Load { dst: v, addr: p, off: 8, index: None });
-                let hdr = self.hidden(scope, Type::I64, format!("{}_hdr", dname), |v| Inst::IConst { dst: v, imm: 16 });
+                let cap = self.hidden(scope, self.policy.index, format!("{}_cap", dname), |v| Inst::Load { dst: v, addr: p, off: 8, index: None });
+                let hdr = self.hidden(scope, self.policy.index, format!("{}_hdr", dname), |v| Inst::IConst { dst: v, imm: 16 });
                 let raw = self.hidden(scope, Type::Ptr, format!("{}_raw", dname), |v| Inst::PtrAdd { dst: v, base: p, off: hdr });
                 let data_ty = self.field_type(dty, 0);
                 let data = self.hidden(scope, data_ty, format!("{}_data", dname), |v| Inst::Cast { op: CastOp::Cast, dst: v, src: raw });
-                let one = self.hidden(scope, Type::I64, format!("{}_one", dname), |v| Inst::IConst { dst: v, imm: 1 });
+                let one = self.hidden(scope, self.policy.index, format!("{}_one", dname), |v| Inst::IConst { dst: v, imm: 1 });
                 if counts.is_empty() {
                     return Ok(Inst::Pack { dst, args: vec![data, cap, one] });
                 }
@@ -5204,12 +5208,12 @@ impl Parser {
                 let dname = scope.values[dst.0 as usize].name.clone();
                 let (data0, dims) = self.view_words(scope, a, "view");
                 let (len0, st) = dims[0];
-                let zero = self.hidden(scope, Type::I64, format!("{}_zero", dname), |v| Inst::IConst { dst: v, imm: 0 });
+                let zero = self.hidden(scope, self.policy.index, format!("{}_zero", dname), |v| Inst::IConst { dst: v, imm: 0 });
                 let off_ok = self.hidden(scope, Type::U1, format!("{}_off_ok", dname), |v| Inst::ICmp { cond: Cond::Ge, dst: v, lhs: off, rhs: zero });
                 self.consts.push(Inst::Check { cond: off_ok });
                 let n_ok = self.hidden(scope, Type::U1, format!("{}_n_ok", dname), |v| Inst::ICmp { cond: Cond::Ge, dst: v, lhs: n, rhs: zero });
                 self.consts.push(Inst::Check { cond: n_ok });
-                let end = self.hidden(scope, Type::I64, format!("{}_end", dname), |v| Inst::Bin { op: BinOp::IAdd, dst: v, lhs: off, rhs: n });
+                let end = self.hidden(scope, self.policy.index, format!("{}_end", dname), |v| Inst::Bin { op: BinOp::IAdd, dst: v, lhs: off, rhs: n });
                 let fits = self.hidden(scope, Type::U1, format!("{}_fits", dname), |v| Inst::ICmp { cond: Cond::Le, dst: v, lhs: end, rhs: len0 });
                 self.consts.push(Inst::Check { cond: fits });
                 let elems = self.hidden_mul(scope, format!("{}_elems", dname), off, st)?;
@@ -5279,18 +5283,18 @@ impl Parser {
                 for k in 0..2 {
                     let (start, count) = (ops[2 * k], ops[2 * k + 1]);
                     let (n, st) = dims[k];
-                    let zero = self.hidden(scope, Type::I64, format!("{}_z{}", dname, k), |v| Inst::IConst { dst: v, imm: 0 });
+                    let zero = self.hidden(scope, self.policy.index, format!("{}_z{}", dname, k), |v| Inst::IConst { dst: v, imm: 0 });
                     let ge = self.hidden(scope, Type::U1, format!("{}_ge{}", dname, k), |v| Inst::ICmp { cond: Cond::Ge, dst: v, lhs: start, rhs: zero });
                     self.consts.push(Inst::Check { cond: ge });
                     let cge = self.hidden(scope, Type::U1, format!("{}_cge{}", dname, k), |v| Inst::ICmp { cond: Cond::Ge, dst: v, lhs: count, rhs: zero });
                     self.consts.push(Inst::Check { cond: cge });
-                    let end = self.hidden(scope, Type::I64, format!("{}_end{}", dname, k), |v| Inst::Bin { op: BinOp::IAdd, dst: v, lhs: start, rhs: count });
+                    let end = self.hidden(scope, self.policy.index, format!("{}_end{}", dname, k), |v| Inst::Bin { op: BinOp::IAdd, dst: v, lhs: start, rhs: count });
                     let fits = self.hidden(scope, Type::U1, format!("{}_fits{}", dname, k), |v| Inst::ICmp { cond: Cond::Le, dst: v, lhs: end, rhs: n });
                     self.consts.push(Inst::Check { cond: fits });
                     let term = self.hidden_mul(scope, format!("{}_term{}", dname, k), start, st)?;
                     elems = Some(match elems {
                         None => term,
-                        Some(e) => self.hidden(scope, Type::I64, format!("{}_off{}", dname, k), |v| Inst::Bin { op: BinOp::IAdd, dst: v, lhs: e, rhs: term }),
+                        Some(e) => self.hidden(scope, self.policy.index, format!("{}_off{}", dname, k), |v| Inst::Bin { op: BinOp::IAdd, dst: v, lhs: e, rhs: term }),
                     });
                 }
                 let data = self.data_moved(scope, data0, elems.unwrap(), elem, &dname)?;
@@ -5316,7 +5320,7 @@ impl Parser {
                 let dname = scope.values[dst.0 as usize].name.clone();
                 let (data, dims) = self.view_words(scope, a, "reshape");
                 let (len0, st) = dims[0];
-                let one = self.hidden(scope, Type::I64, format!("{}_one", dname), |v| Inst::IConst { dst: v, imm: 1 });
+                let one = self.hidden(scope, self.policy.index, format!("{}_one", dname), |v| Inst::IConst { dst: v, imm: 1 });
                 let contiguous = self.hidden(scope, Type::U1, format!("{}_contig", dname), |v| Inst::ICmp { cond: Cond::Eq, dst: v, lhs: st, rhs: one });
                 self.consts.push(Inst::Check { cond: contiguous });
                 let mut strides = vec![one; counts.len()];
@@ -5450,8 +5454,8 @@ impl Parser {
                 let Some((k, size)) = index else {
                     return Err(self.err("index takes at least one index".to_string()));
                 };
-                let sz = self.make_literal(scope, &Lit::Int(size as i64), Type::I64).map_err(|m| self.err(m))?;
-                let bytes = scope.temp(Type::I64, format!("{}_b", pname));
+                let sz = self.make_literal(scope, &Lit::Int(size as i64), self.policy.index).map_err(|m| self.err(m))?;
+                let bytes = scope.temp(self.policy.index, format!("{}_b", pname));
                 let m = self.mul_i64(bytes, k, sz)?;
                 self.consts.push(m);
                 let _ = pu;
