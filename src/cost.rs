@@ -69,6 +69,48 @@ pub fn ks(module: &Module, target: &str, platform: &Platform) -> Result<HashMap<
     Ok(out)
 }
 
+/// the count `probe count` keeps: one word, added to by every block
+pub const COUNTER: &str = "__dyn";
+
+/// What a run of a program costs, counted as it runs (fm3 log 128).
+/// `probe cost` charges a branch its worst arm and a loop it cannot
+/// bound one pass, so two programs whose loops it bounds differently
+/// are not compared by it. This puts the same count on the program
+/// itself: every block of every function adds, as it is entered, what
+/// the cost tool charges that block — one an instruction, jumps
+/// aside, a call one and its callee whatever the callee's own blocks
+/// add, a call of a plain number's arithmetic one — to the word
+/// `COUNTER`, which the module must declare. So a function with no
+/// branch and no loop counts exactly what `probe cost` says of it
+pub fn count_blocks(module: &mut Module, skip: &[&str]) {
+    let arithmetic: Vec<String> = module.funcs.iter().filter(|f| is_arithmetic(f)).map(|f| f.name.clone()).collect();
+    for f in module.funcs.iter_mut() {
+        if skip.contains(&f.name.as_str()) || arithmetic.contains(&f.name) {
+            continue;
+        }
+        for b in 0..f.blocks.len() {
+            let w = f.blocks[b].insts.iter().filter(|i| !matches!(i, Inst::Jmp { .. })).count() as i128;
+            if w == 0 {
+                continue;
+            }
+            let value = |f: &mut Function, tag: &str, ty: Type| {
+                f.values.push(crate::ssa::ValueData { name: format!("__dyn_{}{}", tag, b), ty, literal: None });
+                ValueId(f.values.len() as u32 - 1)
+            };
+            let word = Type::Int { signed: true, bits: 64 };
+            let (p, v, c, v2) = (value(f, "p", Type::Ptr), value(f, "v", word), value(f, "c", word), value(f, "w", word));
+            let add = vec![
+                Inst::Addr { dst: p, name: COUNTER.to_string() },
+                Inst::Load { dst: v, addr: p, off: 0, index: None },
+                Inst::IConst { dst: c, imm: w },
+                Inst::Bin { op: BinOp::IAdd, dst: v2, lhs: v, rhs: c },
+                Inst::Store { val: v2, addr: p, off: 0, index: None },
+            ];
+            f.blocks[b].insts.splice(0..0, add);
+        }
+    }
+}
+
 /// the IR instructions of a function, jumps aside
 fn ssa_count(f: &Function) -> usize {
     f.blocks.iter().flat_map(|b| b.insts.iter()).filter(|i| !matches!(i, Inst::Jmp { .. })).count()
@@ -857,6 +899,67 @@ mod tests {
         ssa::resolve_types(&mut m, &policy);
         crate::opt::optimize(&mut m, crate::opt::MAX_LEVEL);
         m
+    }
+
+    /// `probe count` puts the cost tool's own count on every block (fm3
+    /// log 128): a function with no branch counts, as it runs, what
+    /// `probe cost` says of it, and so does a loop the tool can bound
+    /// whose every pass is the same; where a branch's arms differ the
+    /// run counts the arm it took and the tool the dearer one
+    #[test]
+    fn a_run_counts_what_the_tool_counts() {
+        let src = "data __dyn: array(i64, 1)
+fn __dyn_zero()
+    p: ptr = addr __dyn
+    store 0: i64, p
+    ret
+fn __dyn_read() -> i64
+    p: ptr = addr __dyn
+    v: i64 = load p
+    ret v
+fn straight(a: i64) -> i64
+    b: i64 = add a, 1
+    c: i64 = mul b, b
+    ret c
+fn looped() -> i64
+    r: i64 = loop(i: i64 = 0, acc: i64 = 0)
+        done: u1 = cmp.ge i, 5
+        if done
+            break acc
+        acc2: i64 = add acc, i
+        i2: i64 = add i, 1
+        continue i2, acc2
+    ret r
+fn forked(a: i64) -> i64
+    small: u1 = cmp.lt a, 10
+    r: i64 = if small
+        yield a
+    else
+        b: i64 = mul a, a
+        c: i64 = add b, 1
+        yield c
+    ret r
+";
+        let mut m = module(src);
+        let tool: Vec<f64> = {
+            let mut c = super::Coster::new(&m, None, None, None);
+            ["straight", "looped", "forked"].iter().map(|f| c.report(f).unwrap().ssa).collect()
+        };
+        super::count_blocks(&mut m, &["__dyn_zero", "__dyn_read"]);
+        ssa::verify(&m).unwrap();
+        let enc = crate::emit::Encoder::load("targets/arm64.encodings.json").unwrap();
+        let compiled = crate::emit::compile(&m, &enc).unwrap();
+        let jit = crate::emit::jit::JitCode::new(&compiled).unwrap();
+        let ran = |f: &str, arg: &[i64]| -> i64 {
+            jit.call("__dyn_zero", &[]).unwrap();
+            jit.call(f, arg).unwrap();
+            jit.call("__dyn_read", &[]).unwrap()
+        };
+        assert_eq!(ran("straight", &[3]) as f64, tool[0]);
+        assert_eq!(ran("looped", &[]) as f64, tool[1]);
+        // the dear arm is what the tool charged; the cheap one is less
+        assert_eq!(ran("forked", &[20]) as f64, tool[2]);
+        assert!((ran("forked", &[3]) as f64) < tool[2]);
     }
 
     /// a loop stepping a parameter by a constant to a constant shows

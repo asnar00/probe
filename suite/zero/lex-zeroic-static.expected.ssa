@@ -1,0 +1,522 @@
+
+; the arena every sequence is carved from, emptied before every case
+data __heap: array(u8, 65536)
+data __arena: array(i64, 3)
+
+; the store's virtual clock (log 63): integer ticks on a clock of a
+; million a second, the bootstrap's step; zero at every case, moved on
+; a step by a push into a stream with a rate and by a rated task after
+; each of its pushes, and by nothing else; a push into a stream without
+; a rate is stamped with it. Exact time is the boundary's: `x$ at (t)`
+; and `position` convert once, in the library
+data __clock: array(i64, 1)
+
+; the output device (section 15, question 45, log 87): `out$` looks like
+; a stream, but a push into it writes a character to the place and
+; stores nothing, so these two are the platform's write — one character,
+; and a block of them. There is no capacity, because there is no
+; storage. Under the runner the place is the capture below, which
+; `__out_len` and `__out_byte` read back; a real platform's body per
+; kind of place — a UART store on the boards, a write to the console
+; under an OS, the browser's log — is a `platform <target>` block on
+; each of these, beside the `ir` body, and is milestone 1's
+data __out: array(u8, 65536)
+data __out_n: array(index, 1)
+
+; what the device was given, read back by the test runner: the capture
+; is the runner's, not the store's, and the runner is handed a machine
+; word whatever an `index` is
+fn __out_len() -> i64
+    q: ptr = addr __out_n
+    n: index = load q
+    w: i64 = conv n
+    ret w
+
+fn __out_byte(i: i64) -> u8
+    p: ptr = addr __out
+    b: u8 = load p, i, 1
+    ret b
+
+; the input device (section 15, log 62, question 45): a character
+; arriving, which under the runner is a case's `with in "text"`. Its
+; ring is the device's own lookahead, sized by the runner, which a
+; consumer wired to `in$` reads with `peek`, `advance` and `count`
+fn __in_ch(c: u8)
+    _this: ptr = addr __ctx_mem
+    k: __ctx = load _this
+    s: u8$ = get k, in
+    push_queue(s, c)
+    ret
+
+type token = struct
+    kind: int
+    start: index
+    n: index
+
+; the context: one field per feature-scope variable — name: scope, merge (feature)
+;   out: the output device, which stores nothing (platform)
+;   in: user, last (platform)
+;   t: user, last (lex)
+;   src: no storage, no word reading it: a push into it calls, for each item, what is wired to it (lex)
+;   u: user, last (lex)
+;   __zend_src: node, last (lex)
+;   __z1_at: node, last (lex)
+;   __z1_k_1: node, last (lex)
+;   __z1_n_1: node, last (lex)
+;   __z1_start_1: node, last (lex)
+;   __z2_at: node, last (lex)
+;   __z2_k_1: node, last (lex)
+;   __z2_n_1: node, last (lex)
+;   __z2_start_1: node, last (lex)
+;   __node1_c: node, last (lex)
+;   __node1_c_seen: node, last (lex)
+;   __node1_fin: node, last (lex)
+type __ctx = struct
+    in: u8$
+    t: token$
+    u: token$
+    __zend_src: u1
+    __z1_at: index
+    __z1_k_1: int
+    __z1_n_1: index
+    __z1_start_1: index
+    __z2_at: index
+    __z2_k_1: int
+    __z2_n_1: index
+    __z2_start_1: index
+    __node1_c: u8$
+    __node1_c_seen: index
+    __node1_fin: u1
+
+data __ctx_mem: array(__ctx, 1)
+data __s11 = "let x = 4"
+data __s12 = "2;\n"
+data __s13 = "let"
+
+; before every case: the arena emptied, the variables at their initial values
+fn __zero_reset()
+    a: ptr = addr __arena
+    h: ptr = addr __heap
+    arena_init(a, h, 65536)
+    k: ptr = addr __clock
+    store 0: i64, k
+    o: ptr = addr __out_n
+    store 0: index, o
+    _1: u8$ = __queue_u8(1000000, 512)
+    _2: token$ = __queue_token(1000000, 64)
+    _3: token$ = __queue_token(1000000, 64)
+    _4: __ctx = pack _1, _2, _3, 0, 0, 0, 0, 0, 0, 0, 0, 0, _1, 0, 0
+    p: ptr = addr __ctx_mem
+    store _4, p
+    ret
+
+; after the case's context is set: the nodes run
+fn __zero_start()
+    __run()
+    ret
+
+; node 1: token t$ = lex (in$) — run when an input has more than the node has seen, or has ended and the node has not run since
+fn __node1() -> u1
+    _this: ptr = addr __ctx_mem
+    _1: __ctx = load _this
+    fin: u1 = get _1, __node1_fin
+    notfin: u1 = xor fin, 1
+    _2: __ctx = load _this
+    _3: u8$ = get _2, __node1_c
+    _4: index = received(_3)
+    _5: __ctx = load _this
+    _6: index = get _5, __node1_c_seen
+    _7: u1 = cmp.gt _4, _6
+    _8: u1 = ended(_3)
+    _9: u1 = and _8, notfin
+    _10: u1 = or _7, _9
+    ran: u1 = if _10
+        _11: u8$ = __z1(_3, 0: i64)
+        _12: __ctx = load _this
+        _13: __ctx = set _12, __node1_c, _11
+        store _13, _this
+        free_queue(_11)
+        _14: __ctx = load _this
+        _15: __ctx = set _14, __node1_c_seen, _4
+        store _15, _this
+        _16: __ctx = load _this
+        _17: __ctx = set _16, __node1_fin, _8
+        store _17, _this
+        yield 1
+    else
+        yield 0
+    ret ran
+
+; the scheduler (log 25, 78): the node graph is acyclic, so one pass in producer-before-consumer order settles it — every node at the start, and after a push into a stream the nodes it reaches; no trigger can be met while a node runs, so there is no guard, and a trigger that reaches one node is that node's call (fm3 log 103)
+fn __run()
+    r1: u1 = __node1()
+    ret
+
+; feature platform (layer platform)
+
+; feature lex (layer runtime)
+fn kind_of(c: u8) -> int
+    _1: u1 = cmp.le c, 32
+    if _1
+        k: int = const 0
+        ret k
+    else
+        _2: u1 = cmp.gt c, 122
+        if _2
+            k_2: int = const 3
+            ret k_2
+        else
+            _3: u1 = cmp.ge c, 97
+            if _3
+                k_3: int = const 1
+                ret k_3
+            else
+                _4: u1 = cmp.gt c, 57
+                if _4
+                    k_4: int = const 3
+                    ret k_4
+                else
+                    _5: u1 = cmp.ge c, 48
+                    if _5
+                        k_5: int = const 2
+                        ret k_5
+                    else
+                        k_6: int = const 3
+                        ret k_6
+fn arrive_first()
+    _this: ptr = addr __ctx_mem
+    _1: __ctx = load _this
+    _2: u1 = get _1, __zend_src
+    _3: u1 = xor _2, 1
+    check _3
+    _4: __ctx = load _this
+    _5: index = get _4, __z2_at
+    _6: int = get _4, __z2_k_1
+    _7: index = get _4, __z2_n_1
+    _8: index = get _4, __z2_start_1
+    _9: ptr = addr __s11
+    _12: int, _14: index, _16: index = loop(_10: index = 0, _11: int = _6, _13: index = _7, _15: index = _8)
+        _17: u1 = cmp.ge _10, 9
+        if _17
+            break _11, _13, _15
+        _18: u8 = load _9, _10, 1
+        _19: index = add _5, _10
+        _20: int, _21: index, _22: index = __z2_each(_18, _19, _11, _13, _15)
+        _23: index = add _10, 1
+        continue _23, _20, _21, _22
+    _24: index = add _5, 9
+    _25: __ctx = load _this
+    _26: __ctx = set _25, __z2_at, _24
+    _27: __ctx = set _26, __z2_k_1, _12
+    _28: __ctx = set _27, __z2_n_1, _14
+    _29: __ctx = set _28, __z2_start_1, _16
+    store _29, _this
+    ret
+fn arrive_again()
+    _this: ptr = addr __ctx_mem
+    _1: __ctx = load _this
+    _2: u1 = get _1, __zend_src
+    _3: u1 = xor _2, 1
+    check _3
+    _4: __ctx = load _this
+    _5: index = get _4, __z2_at
+    _6: int = get _4, __z2_k_1
+    _7: index = get _4, __z2_n_1
+    _8: index = get _4, __z2_start_1
+    _9: ptr = addr __s12
+    _12: int, _14: index, _16: index = loop(_10: index = 0, _11: int = _6, _13: index = _7, _15: index = _8)
+        _17: u1 = cmp.ge _10, 3
+        if _17
+            break _11, _13, _15
+        _18: u8 = load _9, _10, 1
+        _19: index = add _5, _10
+        _20: int, _21: index, _22: index = __z2_each(_18, _19, _11, _13, _15)
+        _23: index = add _10, 1
+        continue _23, _20, _21, _22
+    _24: index = add _5, 3
+    _25: __ctx = load _this
+    _26: __ctx = set _25, __z2_at, _24
+    _27: __ctx = set _26, __z2_k_1, _12
+    _28: __ctx = set _27, __z2_n_1, _14
+    _29: __ctx = set _28, __z2_start_1, _16
+    store _29, _this
+    _30: __ctx = load _this
+    _31: u1 = get _30, __zend_src
+    if _31
+    else
+        _32: u1 = const 1
+        _33: __ctx = load _this
+        _34: __ctx = set _33, __zend_src, _32
+        store _34, _this
+        _35: __ctx = load _this
+        _36: index = get _35, __z2_at
+        _37: int = get _35, __z2_k_1
+        _38: index = get _35, __z2_n_1
+        _39: index = get _35, __z2_start_1
+        __z2_end(_36, _37, _38, _39)
+    ret
+fn two_arrivals() -> (int, int)
+    _this: ptr = addr __ctx_mem
+    arrive_first()
+    _1: __ctx = load _this
+    _2: token$ = get _1, u
+    _3: index = count _2
+    a: int = conv _3
+    arrive_again()
+    _6: index = count _2
+    b: int = conv _6
+    ret a, b
+fn number_start() -> int
+    _this: ptr = addr __ctx_mem
+    arrive_first()
+    arrive_again()
+    _1: __ctx = load _this
+    _2: token$ = get _1, u
+    x: token = peek_queue(_2, 3)
+    _3: index = get x, start
+    s: int = conv _3
+    ret s
+fn number_length() -> int
+    _this: ptr = addr __ctx_mem
+    arrive_first()
+    arrive_again()
+    _1: __ctx = load _this
+    _2: token$ = get _1, u
+    x: token = peek_queue(_2, 3)
+    _3: index = get x, n
+    n: int = conv _3
+    ret n
+fn kinds() -> (int, int)
+    _this: ptr = addr __ctx_mem
+    arrive_first()
+    arrive_again()
+    _1: __ctx = load _this
+    _2: token$ = get _1, u
+    x: token = peek_queue(_2, 0)
+    y: token = peek_queue(_2, 1)
+    a: int = get x, kind
+    b: int = get y, kind
+    ret a, b
+fn third_kind() -> int
+    _this: ptr = addr __ctx_mem
+    arrive_first()
+    arrive_again()
+    _1: __ctx = load _this
+    _2: token$ = get _1, u
+    x: token = peek_queue(_2, 2)
+    k: int = get x, kind
+    ret k
+fn kinds_tail() -> (int, int)
+    _this: ptr = addr __ctx_mem
+    arrive_first()
+    arrive_again()
+    _1: __ctx = load _this
+    _2: token$ = get _1, u
+    x: token = peek_queue(_2, 3)
+    y: token = peek_queue(_2, 4)
+    a: int = get x, kind
+    b: int = get y, kind
+    ret a, b
+fn a_word_at_the_end() -> (int, int)
+    _this: ptr = addr __ctx_mem
+    _1: __ctx = load _this
+    _2: u1 = get _1, __zend_src
+    _3: u1 = xor _2, 1
+    check _3
+    _4: __ctx = load _this
+    _5: index = get _4, __z2_at
+    _6: int = get _4, __z2_k_1
+    _7: index = get _4, __z2_n_1
+    _8: index = get _4, __z2_start_1
+    _9: ptr = addr __s13
+    _12: int, _14: index, _16: index = loop(_10: index = 0, _11: int = _6, _13: index = _7, _15: index = _8)
+        _17: u1 = cmp.ge _10, 3
+        if _17
+            break _11, _13, _15
+        _18: u8 = load _9, _10, 1
+        _19: index = add _5, _10
+        _20: int, _21: index, _22: index = __z2_each(_18, _19, _11, _13, _15)
+        _23: index = add _10, 1
+        continue _23, _20, _21, _22
+    _24: index = add _5, 3
+    _25: __ctx = load _this
+    _26: __ctx = set _25, __z2_at, _24
+    _27: __ctx = set _26, __z2_k_1, _12
+    _28: __ctx = set _27, __z2_n_1, _14
+    _29: __ctx = set _28, __z2_start_1, _16
+    store _29, _this
+    _30: __ctx = load _this
+    _31: token$ = get _30, u
+    _32: index = count _31
+    a: int = conv _32
+    _33: __ctx = load _this
+    _34: u1 = get _33, __zend_src
+    if _34
+    else
+        _35: u1 = const 1
+        _36: __ctx = load _this
+        _37: __ctx = set _36, __zend_src, _35
+        store _37, _this
+        _38: __ctx = load _this
+        _39: index = get _38, __z2_at
+        _40: int = get _38, __z2_k_1
+        _41: index = get _38, __z2_n_1
+        _42: index = get _38, __z2_start_1
+        __z2_end(_39, _40, _41, _42)
+    _45: index = count _31
+    b: int = conv _45
+    ret a, b
+fn lexed() -> int
+    _this: ptr = addr __ctx_mem
+    _1: __ctx = load _this
+    _2: token$ = get _1, t
+    _3: index = count _2
+    n: int = conv _3
+    ret n
+fn __z1_each(_c: u8, __at: index, __k_b1: int, __n_b1: index, __start_b1: index) -> (int, index, index)
+    _this: ptr = addr __ctx_mem
+    _k: int = kind_of(_c)
+    _1: u1 = cmp.eq _k, 3
+    _2: u1 = cmp.ne _k, __k_b1
+    _new: u1 = or _1, _2
+    _n: index = if _new
+        yield 1
+    else
+        _3: index = add __n_b1, 1
+        yield _3
+    _start: index = if _new
+        yield __at
+    else
+        yield __start_b1
+    _4: u1 = cmp.ne __k_b1, 0
+    _5: u1 = and _new, _4
+    if _5
+        _6: __ctx = load _this
+        _7: token$ = get _6, t
+        _8: token = pack __k_b1, __start_b1, __n_b1
+        push_queue_open(_7, _8)
+    ret _k, _n, _start
+fn __z1_end(__at: index, __k_b1: int, __n_b1: index, __start_b1: index)
+    _this: ptr = addr __ctx_mem
+    _k: int = const 0
+    _1: u1 = cmp.eq _k, 3
+    _2: u1 = cmp.ne _k, __k_b1
+    _new: u1 = or _1, _2
+    _3: u1 = cmp.ne __k_b1, 0
+    _4: u1 = and _new, _3
+    if _4
+        _5: __ctx = load _this
+        _6: token$ = get _5, t
+        _7: token = pack __k_b1, __start_b1, __n_b1
+        push_queue_open(_6, _7)
+    ret
+fn __z1(c: u8$, __hz: i64) -> u8$
+    _this: ptr = addr __ctx_mem
+    _1: u8[] = unread_queue(c)
+    _2: index = len _1
+    loop(_4: index = 0)
+        _5: u1 = cmp.ge _4, _2
+        if _5
+            break
+        __item: u8 = load _1, _4
+        _6: __ctx = load _this
+        _7: index = get _6, __z1_at
+        _8: __ctx = load _this
+        _9: int = get _8, __z1_k_1
+        _10: __ctx = load _this
+        _11: index = get _10, __z1_n_1
+        _12: __ctx = load _this
+        _13: index = get _12, __z1_start_1
+        __now_k: int, __now_n: index, __now_start: index = __z1_each(__item, _7, _9, _11, _13)
+        _14: __ctx = load _this
+        _15: __ctx = set _14, __z1_k_1, __now_k
+        store _15, _this
+        _16: __ctx = load _this
+        _17: __ctx = set _16, __z1_n_1, __now_n
+        store _17, _this
+        _18: __ctx = load _this
+        _19: __ctx = set _18, __z1_start_1, __now_start
+        store _19, _this
+        _20: __ctx = load _this
+        _21: index = get _20, __z1_at
+        _22: index = add _21, 1
+        _23: __ctx = load _this
+        _24: __ctx = set _23, __z1_at, _22
+        store _24, _this
+        _25: index = add _4, 1
+        continue _25
+    _26: index = count c
+    c_2: u8$ = advance(c, _26)
+    _27: u1 = ended(c_2)
+    if _27
+        _28: __ctx = load _this
+        _29: index = get _28, __z1_at
+        _30: __ctx = load _this
+        _31: int = get _30, __z1_k_1
+        _32: __ctx = load _this
+        _33: index = get _32, __z1_n_1
+        _34: __ctx = load _this
+        _35: index = get _34, __z1_start_1
+        __z1_end(_29, _31, _33, _35)
+    ret c_2
+fn __z2_each(_c: u8, __at: index, __k_b1: int, __n_b1: index, __start_b1: index) -> (int, index, index)
+    _this: ptr = addr __ctx_mem
+    _k: int = kind_of(_c)
+    _1: u1 = cmp.eq _k, 3
+    _2: u1 = cmp.ne _k, __k_b1
+    _new: u1 = or _1, _2
+    _n: index = if _new
+        yield 1
+    else
+        _3: index = add __n_b1, 1
+        yield _3
+    _start: index = if _new
+        yield __at
+    else
+        yield __start_b1
+    _4: u1 = cmp.ne __k_b1, 0
+    _5: u1 = and _new, _4
+    if _5
+        _6: __ctx = load _this
+        _7: token$ = get _6, u
+        _8: token = pack __k_b1, __start_b1, __n_b1
+        push_queue_open(_7, _8)
+    ret _k, _n, _start
+fn __z2_end(__at: index, __k_b1: int, __n_b1: index, __start_b1: index)
+    _this: ptr = addr __ctx_mem
+    _k: int = const 0
+    _1: u1 = cmp.eq _k, 3
+    _2: u1 = cmp.ne _k, __k_b1
+    _new: u1 = or _1, _2
+    _3: u1 = cmp.ne __k_b1, 0
+    _4: u1 = and _new, _3
+    if _4
+        _5: __ctx = load _this
+        _6: token$ = get _5, u
+        _7: token = pack __k_b1, __start_b1, __n_b1
+        push_queue_open(_6, _7)
+    ret
+
+; a stream's storage, carved from the arena: cap items (64 unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start
+fn __queue_token(hz: i64, cap: index) -> token$
+    a: ptr = addr __arena
+    r: ptr = arena_alloc(a, 64)
+    sz: index = sizeof token
+    bytes: index = mul sz, cap
+    total: index = add bytes, 16
+    vb: ptr = arena_alloc(a, total)
+    buffer_init(vb, sz, cap)
+    ring_queue(r, vb, hz, cap)
+    s: token$ = stream r
+    ret s
+fn __queue_u8(hz: i64, cap: index) -> u8$
+    a: ptr = addr __arena
+    r: ptr = arena_alloc(a, 64)
+    sz: index = sizeof u8
+    bytes: index = mul sz, cap
+    total: index = add bytes, 16
+    vb: ptr = arena_alloc(a, total)
+    buffer_init(vb, sz, cap)
+    ring_queue(r, vb, hz, cap)
+    s: u8$ = stream r
+    ret s

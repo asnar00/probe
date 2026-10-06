@@ -1,0 +1,84 @@
+type token =
+    int kind
+    index start, n
+
+token t$ = lex(in$)
+char src$
+token u$ = lex(src$)
+
+on (int k) = kind of (char c)
+    if (c <= 32)
+        k = 0
+    else if (c > 122)
+        k = 3
+    else if (c >= 97)
+        k = 1
+    else if (c > 57)
+        k = 3
+    else if (c >= 48)
+        k = 2
+    else
+        k = 3
+
+on (token t$) << lex (char c$)
+    int k$ = if (empty c$) then (0) else (kind of (c$))
+    bool new$ = k$ == 3 or k$ != k$[-1]
+    index start$ = if (new$) then (position c$) else (start$[-1])
+    index n$ = if (new$) then (1) else (n$[-1] + 1)
+    t$ << token(k$[-1], start$[-1], n$[-1]) when (new$ and k$[-1] != 0)
+
+on arrive first()
+    src$ << "let x = 4"
+
+on arrive again()
+    src$ << "2;\n"
+    end src$
+
+on (int a, int b) = two arrivals()
+    arrive first()
+    a = count u$
+    arrive again()
+    b = count u$
+
+on (int s) = number start()
+    arrive first()
+    arrive again()
+    token x = peek u$ at (3)
+    s = x.start
+
+on (int n) = number length()
+    arrive first()
+    arrive again()
+    token x = peek u$ at (3)
+    n = x.n
+
+on (int a, int b) = kinds()
+    arrive first()
+    arrive again()
+    token x = peek u$ at (0)
+    token y = peek u$ at (1)
+    a = x.kind
+    b = y.kind
+
+on (int k) = third kind()
+    arrive first()
+    arrive again()
+    token x = peek u$ at (2)
+    k = x.kind
+
+on (int a, int b) = kinds tail()
+    arrive first()
+    arrive again()
+    token x = peek u$ at (3)
+    token y = peek u$ at (4)
+    a = x.kind
+    b = y.kind
+
+on (int a, int b) = a word at the end()
+    src$ << "let"
+    a = count u$
+    end src$
+    b = count u$
+
+on (int n) = lexed()
+    n = count t$

@@ -169,6 +169,51 @@ fn main() -> ExitCode {
                 Err(e) => fail(&e),
             }
         }
+        // `probe count <file.ssa> <fn> [--after=f,g] [--only=f,g]`: what
+        // one call of the function costs as it runs, by the cost tool's
+        // own count put on every block (fm3 log 128); the functions
+        // after `--after=` are called first and not counted
+        Some("count") if args.len() >= 3 => {
+            let after: Vec<String> = args.iter().find_map(|a| a.strip_prefix("--after=")).map(|l| l.split(',').map(str::to_string).collect()).unwrap_or_default();
+            let result = (|| -> Result<i64, String> {
+                let src = std::fs::read_to_string(&args[1]).map_err(|e| format!("{}: {}", args[1], e))?;
+                let src = format!("data {c}: array(i64, 1)\nfn __dyn_zero()\n    p: ptr = addr {c}\n    store 0: i64, p\n    ret\nfn __dyn_read() -> i64\n    p: ptr = addr {c}\n    v: i64 = load p\n    ret v\n{}", src, c = cost::COUNTER);
+                let mut module = ssa::parse_with(&ssa::with_prelude(&src), &policy).map_err(|e| e.to_string())?;
+                ssa::resolve_types(&mut module, &policy);
+                ssa::verify(&module).map_err(|e| e.join("; "))?;
+                opt::optimize(&mut module, level);
+                // `--only=f,g` counts those functions' own blocks alone:
+                // where a run's count goes
+                let only: Option<Vec<String>> = args.iter().find_map(|a| a.strip_prefix("--only=")).map(|l| l.split(',').map(str::to_string).collect());
+                let mut skip: Vec<String> = vec!["__dyn_zero".into(), "__dyn_read".into()];
+                if let Some(only) = &only {
+                    skip.extend(module.funcs.iter().map(|f| f.name.clone()).filter(|n| !only.contains(n)));
+                }
+                cost::count_blocks(&mut module, &skip.iter().map(String::as_str).collect::<Vec<_>>());
+                ssa::verify(&module).map_err(|e| format!("after counting: {}", e.join("; ")))?;
+                let enc = emit::Encoder::load(ENCODINGS)?;
+                let compiled = emit::compile(&module, &enc)?;
+                let jit = emit::jit::JitCode::new(&compiled)?;
+                for f in &after {
+                    jit.call(f, &[])?;
+                }
+                jit.call("__dyn_zero", &[])?;
+                let rets = module.func(&args[2]).ok_or_else(|| format!("no function {} in {}", args[2], args[1]))?.rets.len();
+                if rets == 2 {
+                    jit.call2(&args[2], &[])?;
+                } else {
+                    jit.call(&args[2], &[])?;
+                }
+                jit.call("__dyn_read", &[])
+            })();
+            match result {
+                Ok(n) => {
+                    println!("{:<24} {:>10} ssa, counted as it ran", args[2], n);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(&e),
+            }
+        }
         Some("cost") if args.len() >= 2 => {
             let target = if args.iter().any(|a| a == "riscv") {
                 Some("riscv64")
@@ -380,6 +425,7 @@ fn main() -> ExitCode {
             eprintln!("       probe run <file.ssa> <function> [args...]");
             eprintln!("       probe tiers <file.ssa>");
             eprintln!("       probe cost <file.ssa> [fn...] [arm|riscv] [--assume=N]");
+            eprintln!("       probe count <file.ssa> <fn> [--after=f,g] [--only=f,g]   the same count, taken as the function runs");
             eprintln!("       probe live <file.ssa> <function> [args...]");
             eprintln!("       probe fuzz [count] [--seed=hex] [--slow]");
             eprintln!("       probe testfloat [f32|add|f16_to_i32...]");
