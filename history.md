@@ -4,6 +4,10 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### `probe count --blocks`: a row for each block of one function — `ebbf84f` · 2026-10-06
+
+The parity pass, hop 17, transformation 66 (fm3 log 132): nothing built but a way to see. `probe count <file> <case> --blocks=<fn>` gives each block of one function its weight, how many times the run entered it and what it counted, by counting that block alone (`count_blocks`, `src/cost.rs`). With it the six-line lexer's 575 and `lex-each-min.ssa`'s 504 were put side by side: 36 for a call and a return a character, 36 for three branches where a person writes one, 14 for a loop's count formed each pass, and the oracle's own reset, 16, that the store's count does not have. `cargo test` 137.
+
 ### `probe count --from`: one function as a case calls it — `590c7d3` · 2026-10-06
 
 The parity pass, hop 17, transformation 65 (fm3 log 131): a whole case is priced by the count from here on (fm3 question 68). hello's modular oracle switches its features on inside its case, so its `run` could not be counted alone: 40, with every switch off. `probe count <file> <case> --from=<fn>` reports what the function counted from its entry to its return, over every call the case made, as a difference of the counter added to a second word (`count_from`, `src/cost.rs`); `--where` gives a row a function. hello's `run` 1 077 against `hello-mod.ssa`'s 1 064, static's 1 037 against 1 025; by `probe cost` they are 1 237 against 1 286 and 1 197 against 1 247. `cargo test` 137.
