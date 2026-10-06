@@ -48,6 +48,8 @@
 ;! queue_few_full -> check
 ;! queue_few_ended -> check
 ;! queue_few_tokens -> 3, 20
+;! queue_slot_zero -> 9, 9
+;! queue_views -> 33, 93
 ;! struct_ring -> 3, 20
 ;! struct_frame -> 3, 4
 
@@ -79,7 +81,7 @@ data big: buffer(f32, 16)
 ; a byte queue's slots, a plain run: sixteen, of which the queue below
 ; takes eight, its capacity being its own number and not the buffer's
 data pvb: buffer(u8, 16)
-data prg: array(u64, 8)
+data prg: array(u64, 9)
 ; two rings of int for the struct of streams
 data ivb: buffer(int, 16)
 data itb: buffer(i64, 16)
@@ -361,6 +363,51 @@ fn queue_few_tokens() -> (i64, i64)
     x: tok = latest_queue(s)
     k: i64 = get x, start
     ret n, k
+
+; a queue's header says where slot 0 is (fm3 log 115): its ninth word,
+; at 64, is the address past the buffer's own header, put there once by
+; `ring_queue`, and every word that touches a slot loads it as it is.
+; The second item pushed, read through that word, and the same byte
+; seventeen past the buffer
+fn queue_slot_zero() -> (i64, i64)
+    s: u8$ = queue_ring()
+    push_queue(s, 7: u8)
+    push_queue(s, 9: u8)
+    r: ptr = addr prg
+    slots: ptr = load r, 64
+    x: u8 = load slots, 1
+    a: ptr = addr pvb
+    y: u8 = load a, 17
+    x1: i64 = conv x
+    y1: i64 = conv y
+    ret x1, y1
+; ... and the two views of what is unread reach their slots the same
+; way: two items pushed, read and freed, so the origin is 2; three more,
+; and the unread view is the three from slot 0, its first item and its
+; length as ten times the one and the other; then one more read and the
+; frame is the last two, their sum and the index of its first
+fn queue_views() -> (i64, i64)
+    s: u8$ = queue_ring()
+    push_queue(s, 1: u8)
+    push_queue(s, 2: u8)
+    s2: u8$ = advance(s, 2)
+    free_queue(s2)
+    push_queue(s2, 3: u8)
+    push_queue(s2, 4: u8)
+    push_queue(s2, 5: u8)
+    u: u8[] = unread_queue(s2)
+    a: u8 = load u, 0
+    n: i64 = len u
+    a1: i64 = conv a
+    a10: i64 = mul a1, 10
+    an: i64 = add a10, n
+    s3: u8$ = advance(s2, 1)
+    f: u8[], k0: i64, s4: u8$ = frame_queue(s3)
+    total: u8 = sum f
+    t1: i64 = conv total
+    t10: i64 = mul t1, 10
+    tk: i64 = add t10, k0
+    ret an, tk
 
 ; a frame holds everything since the reader last looked
 fn frames() -> (u8, i64)
@@ -806,7 +853,7 @@ type tok = struct
     kind: i64
     start: i64
     n: i64
-data tokr: array(i64, 8)
+data tokr: array(i64, 9)
 data tokvb: array(u8, 400)
 
 fn fresh_toks() -> tok$

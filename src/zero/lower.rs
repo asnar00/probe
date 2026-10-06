@@ -2234,7 +2234,9 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         // a ring's buffer is twice its resident count, each item stored
         // in both halves (log 65); a queue's is a plain run of slots
         let (line, slots) = if maker == "queue" { ("", "cap") } else { ("    slots: i64 = mul cap, 2\n", "slots") };
-        writeln!(l.out, "fn __{}_{}(hz: i64, cap: i64) -> {}$\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, 64)\n{}    sz: i64 = sizeof {}\n    bytes: i64 = mul sz, {}\n    total: i64 = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, {})\n{}    {}\n    s: {}$ = stream r\n    ret s", maker, t, t, line, t, slots, slots, ticks, init, t).unwrap();
+        // a queue's header is a word longer: where slot 0 is (fm3 log 115)
+        let header = if maker == "queue" { 72 } else { 64 };
+        writeln!(l.out, "fn __{}_{}(hz: i64, cap: i64) -> {}$\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, {})\n{}    sz: i64 = sizeof {}\n    bytes: i64 = mul sz, {}\n    total: i64 = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, {})\n{}    {}\n    s: {}$ = stream r\n    ret s", maker, t, t, header, line, t, slots, slots, ticks, init, t).unwrap();
     }
     if !l.copies.is_empty() {
         writeln!(l.out, "\n; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give; stamped once where something asks its time (log 73)").unwrap();
