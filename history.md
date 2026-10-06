@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### stream: a block pushed into a queue reaches its slots without a view of the buffer — `9f06954` · 2026-10-06
+
+```
+    check fits
+    vb: ptr = load r, 16
+    raw: ptr = ptradd vb, 16
+    q: ptr(any) = cast raw
+    p: ptr(any) = index q, slot
+    d: any[] = pack p, n, 1
+    copy d, block
+```
+
+`lib/stream.ssa:320-326`, in `push_queue(s, block)`. The parity pass, hop 11, transformation 37 (fm3 log 105). lex's two arrivals are block pushes, 77 + 10 n on the tool, and 26 of the 77 was `ring_values(r)` and `view vals, slot, n`: a view of the whole buffer, checked for what `fits` had proved two lines above. The block now reaches its slots as an item's push does, through the buffer's typed pointer, 8. Ended and room are still checked. `suite/stream.ssa` gains `queue_block_to_the_brim -> 79, 8` and `queue_block_full -> check`, the same on the old library. The log has what `copy` costs: 42 + 10 n, within 8 of an arm64 for these blocks, and over for one of sixteen bytes or more. lex's `two_arrivals` **892 → 856**, 2.06× its oracle; hello 1 268, static 1 197. Everything ran: zero 577 on four paths and 558 on air, `probe test` 986, 977, 986, 986, 953, `cargo test` 120.
+
 ### zero: a woken node's reader is read and written in place — `88332b6` · 2026-10-06
 
 ```
