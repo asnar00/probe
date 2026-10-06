@@ -4,6 +4,10 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### README.md: the six-line lexer, the meter and the count — `745b756` · 2026-10-06
+
+A doc follow-up to hop sixteen's seven landings (`3c78024` to `115f895`). The zero section of `README.md` quotes the lexer of `suite/zero/lex-zeroic`, six lines with no loop, says in three sentences what the front end makes of such a body, and lists the two commands the hop added: `probe zero meter`, the lines of each store that use a non-zeroic form, and `probe count`, the cost tool's count taken as a function runs.
+
 ### zero: `timed` with its task in one line, as a store beside it — `115f895` · 2026-10-06
 
 ```
