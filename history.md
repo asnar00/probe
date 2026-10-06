@@ -4,6 +4,25 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### arena: the arena counts in `index` — `02e9b15` · 2026-10-06
+
+```
+fn arena_alloc(a: ptr, n: index) -> ptr
+    base: ptr = load a
+    size: index = load a, 8
+    used: index = load a, 16
+    n15: index = add n, 15
+    rounded: index = and n15, -16
+    end: index = add used, rounded
+    fits: u1 = cmp.le end, size
+    check fits
+    store end, a, 16
+    p: ptr = ptradd base, used
+    ret p
+```
+
+`lib/arena.ssa:35-46`. The parity pass, hop 15, transformation 55, step (a) (fm3 log 121): the first library to count in `index`. A size, a count of bytes used, a mark and the bytes asked for are `index`; each keeps its word of eight bytes at 8 and 16, and where `index` is 32 bits the library reads and writes the word's low four. On a 64-bit path it is the code it was. On wasm32 the function above is all `i32`: `i32.load` for `i64.load`, `i32.add`, `i32.le_s`, and no `i32.wrap_i64` before the address. `suite/arena.ssa` holds a mark and a count in an `index`. Until the front end's own text says `index`, a zero store is built with a 64-bit one on every path. lex 616, hello 1 237, static 1 197, unchanged. Full run green (`scratchpad/chain49.log`): `probe test` 1015, `cargo test` 127.
+
 ### ssa: the IR has `index`, the width of a count and a position in memory — `3bf53e8` · 2026-10-06
 
 ```
