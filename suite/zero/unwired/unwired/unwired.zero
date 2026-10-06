@@ -1,5 +1,6 @@
 int n$
 int beat$ at (2 hz)
+int spare$
 
 on count down from (int k)
     n$ << [k through 1]

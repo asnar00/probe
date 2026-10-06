@@ -14,11 +14,13 @@ That is exactly what `edges` does with `shown` switched off at run time, and it 
 ## interface
 - `count down from (k)` pushes `k` down to 1 into `n$` and then writes `liftoff`.
 - `beats` pushes two items into `beat$`, a stream at `2 hz`, and then writes `end`.
+- `spare$` is a stream nothing uses.
 
 ## rules
 - With nobody wired to `n$`, a countdown from 80 writes `liftoff` alone, as one from 3 does. With a queue behind `n$` the sixty-fifth push failed a check.
 - A stream at a rate keeps its time whether or not anyone listens: `end` is written at 1 s, after two items of half a second each. With a queue behind `beat$` it was written at 0 s.
 - The compiler knows the difference between a stream whose reader is compiled out and a stream nobody ever reads. `shown` is not in the program, but it is in the store, and it wires both streams. Had no feature of the store read or wired `n$`, compiled in or left out, the store would be refused: "'n$' is pushed into and nothing reads it or wires it, in any feature of the store, compiled in or left out: a mistyped name?".
+- `int spare$` is declared and named nowhere else, by this feature or any other: nothing pushes into it, reads it or wires it. It has no storage either, no queue made at the reset and no field in the context, and the store is not refused for it, since a stream may be declared ahead of the feature that will use it (question 57, fm3 log 100). No case can show it, a case that named the stream being a reader of it; both cases below run in a store that has it.
 
 ## testing
 >count down from (80) → "liftoff"

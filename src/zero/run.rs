@@ -755,7 +755,8 @@ mod tests {
     /// `static off` it has no storage, a push into it being nothing but
     /// the step of its rate; where no feature of the store reads or
     /// wires it, compiled in or left out, the store is refused, naming
-    /// the stream
+    /// the stream; and a stream that is declared and named nowhere else
+    /// has no storage and is not refused (question 57, fm3 log 100)
     #[test]
     fn a_stream_nothing_reads_or_wires() {
         let dir = std::env::temp_dir().join(format!("probe-zero-unwired-{}", std::process::id()));
@@ -794,6 +795,16 @@ mod tests {
         std::fs::write(dir.join("base/base.md"), "# base\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n>count n$ → 0\n").unwrap();
         let ir = lowered("# p\n").unwrap();
         assert!(ir.contains("fn __queue_int(") && ir.contains("fn __get_n()"), "{}", ir);
+        // declared and named nowhere else, not even pushed into
+        // (question 57, fm3 log 100): no storage, a `char` stream
+        // included, and no refusal under either product
+        feature("base", "", 0, "int spare$\nchar note$\nint n$\n\non count()\n    n$ << 1\n");
+        feature("shown", "base", 1, "out$ << n$ << \"\\n\"\n");
+        for product in ["# p\n", "# p\n\nshown: static off\n"] {
+            let ir = lowered(product).unwrap();
+            assert!(ir.contains(";   spare: no storage, nothing in the program reading it or wiring it (base)\n") && ir.contains(";   note: no storage, nothing in the program reading it or wiring it (base)\n"), "{}", ir);
+            assert!(!ir.contains("spare: int$") && !ir.contains("note: u8$") && !ir.contains("__get_spare") && !ir.contains("__get_note") && !ir.contains("__queue_int"), "{}", ir);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -3396,7 +3396,9 @@ impl Lowerer {
     /// conditions (question 54, fm3 log 96), which is what a stream
     /// becomes when the feature that wires it is left out by the
     /// product; one that no feature of the store reads or wires at all
-    /// is refused
+    /// is refused. And a stream that is declared and named nowhere
+    /// else, not even pushed into, has no storage and is not refused
+    /// (question 57, fm3 log 100)
     fn settle_bare(&mut self, store: &Store) -> Result<(), Error> {
         let (named, wires, pushed) = stream_uses(&store.features, &|e, file| matches!(self.task_call(e, None, file), Ok(Some(_))));
         // the features the product leaves out are asked one thing: does
@@ -3439,6 +3441,25 @@ impl Lowerer {
                 rates.insert(s.clone(), self.rate_hz(r, &feat.code.file)?);
             }
             bare.insert(s.clone());
+        }
+        // ... and a stream the program names nowhere at all, not even as
+        // the target of a push (question 57, fm3 log 100): no storage
+        // either, and no refusal, since it may be declared ahead of the
+        // feature that will use it. Nothing can pass it to a method
+        for g in &store.features {
+            for d in &g.code.decls {
+                let Decl::Var(v) = d else { continue };
+                if g.name == "platform" || !v.seq || v.init.is_some() || named.contains(&v.name) || pushed.contains(&v.name) || wires.iter().any(|(s, t)| s == &v.name || t == &v.name) {
+                    continue;
+                }
+                if !self.fvar(&v.name).is_some_and(|f| matches!(f.ty, Ty::Stream(_))) {
+                    continue;
+                }
+                if let Some(r) = &v.rate {
+                    rates.insert(v.name.clone(), self.rate_hz(r, &g.code.file)?);
+                }
+                bare.insert(v.name.clone());
+            }
         }
         // a stream that reaches itself through bare edges keeps its queue
         loop {
@@ -3661,7 +3682,11 @@ impl Lowerer {
                 }
                 // ... and so is a stream no word reads (question 50)
                 if self.bare.contains(&f.name) {
-                    self.type_lines.push(format!(";   {}: no storage, no word reading it: a push into it calls its edges ({})", f.name, f.feature));
+                    if self.bare_edges.contains_key(&f.name) {
+                        self.type_lines.push(format!(";   {}: no storage, no word reading it: a push into it calls its edges ({})", f.name, f.feature));
+                    } else {
+                        self.type_lines.push(format!(";   {}: no storage, nothing in the program reading it or wiring it ({})", f.name, f.feature));
+                    }
                     continue;
                 }
                 self.type_lines.push(format!(";   {}: {}, {} ({})", f.name, f.scope, f.merge, f.feature));
