@@ -4,6 +4,21 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `index` is a type a program can write — `5bc7210` · 2026-10-06
+
+```
+on (index k) = first above (int limit)
+    int x$ = [10, 20, 30, 40]
+    k = loop (index i = 0) yields i
+        if (i >= count x$)
+            break
+        if (x$[i] > limit)
+            break
+        continue (i + 1)
+```
+
+`suite/zero/types/types/types.zero:188-195`, lowered by `src/zero/lower.rs` with no conversion in it. The parity pass, hop 15, transformation 56 (fm3 log 122). `index` is a builtin type of zero beside `int`. `count x$` and `position x$` give one, converted on the spot where an `int` place takes it, left alone where an operator does; `peek`, `advance`, `behind` and a subscript take one. `index` and `int` mix: an operator on the two computes in `int`, and either goes into a place of the other by an implied `conv`, as the words did inside themselves. No store changes; `types` gains `Span` and fifteen cases. lex 616, hello 1 237, static 1 197, unchanged; fourteen `conv`s leave five other stores and 42 of 649 functions cost less, a count compared with a literal no longer going through an `int`. A test runs `types` with `int` and `index` at different widths, which no path's own policy has. Full run green (`scratchpad/chain53.log`): zero 623, `cargo test` 128. (The entries for `1ffa005` and `eaa88f0` below said 592 and 1 365 functions; a script counted the cost tool's loop lines, and they are 266 and 649.)
+
 ### pool, heap: the pool and the heap count in `index` — `58bdb5e` · 2026-10-06
 
 ```
@@ -41,7 +56,7 @@ fn __queue_token(hz: i64, cap: index) -> token$
     ret s
 ```
 
-`suite/zero/lex.expected.ssa:448-458`, written by `src/zero/lower.rs`. The parity pass, hop 15, transformation 55, step (c) (fm3 log 121). Every count, length, capacity, position and byte size the front end writes is spelled `index` where it said `i64`; time stays `i64`, the rate above among it. A program's own integer handed to `peek`, `advance` or a subscript is converted to `index` (`as_index`). So a zero store is built at its path's own `index` again, and on wasm32 every count in a zero program is an `i32`: the zero suite passes 608/608 there. On a 64-bit path the nineteen stores' text differs by the spelling and two lines, and of 1 365 functions costed two moved by one: `__out_len`, the runner's, and `count doubled` in `platform`, which subscripts with an `int64`. `sink`'s IR body takes `count` as an `index`. lex 616, hello 1 237, static 1 197, unchanged. Full run green (`scratchpad/chain51.log`): `probe test` 1015, `cargo test` 127.
+`suite/zero/lex.expected.ssa:448-458`, written by `src/zero/lower.rs`. The parity pass, hop 15, transformation 55, step (c) (fm3 log 121). Every count, length, capacity, position and byte size the front end writes is spelled `index` where it said `i64`; time stays `i64`, the rate above among it. A program's own integer handed to `peek`, `advance` or a subscript is converted to `index` (`as_index`). So a zero store is built at its path's own `index` again, and on wasm32 every count in a zero program is an `i32`: the zero suite passes 608/608 there. On a 64-bit path the nineteen stores' text differs by the spelling and two lines, and of 649 functions costed two moved by one: `__out_len`, the runner's, and `count doubled` in `platform`, which subscripts with an `int64`. `sink`'s IR body takes `count` as an `index`. lex 616, hello 1 237, static 1 197, unchanged. Full run green (`scratchpad/chain51.log`): `probe test` 1015, `cargo test` 127.
 
 ### ssa, slice, stream: a view's words and a stream's position are `index` — `1ffa005` · 2026-10-06
 
@@ -58,7 +73,7 @@ fn tick_of(s: any$, k: index) -> i64
         yield tr
 ```
 
-`lib/stream.ssa:137-146`. The parity pass, hop 15, transformation 55, step (b) (fm3 log 121). The parser's two structures count in `index`: a view's count and stride, a stream's position, and all the arithmetic the parser writes for a subscript (`src/ssa.rs`); `lib/slice.ssa`, `lib/sample.ssa` and `lib/stream.ssa` follow. A place is not a time: ticks, rates, a step and `t0` stay `i64`, and where one becomes the other there is one `conv`, as above. Headers and views keep their eight-byte words; an index sits in a word's low bytes. On a 64-bit path nothing changed: lex 616, hello 1 237, static 1 197, and 592 functions of eight stores cost what they did. On wasm32 the suite's stream module has 59 `i32.wrap_i64` where it had 251 and is 1 724 bytes shorter. `suite/stream.ssa`, `slice.ssa` and `matrix.ssa` hold their lengths and counts in an `index`. The whole suite passes natively at 16, 32 and 64. Zero stores are still built at 64 until the front end's text changes. Full run green (`scratchpad/chain50.log`): `probe test` 1015, `cargo test` 127.
+`lib/stream.ssa:137-146`. The parity pass, hop 15, transformation 55, step (b) (fm3 log 121). The parser's two structures count in `index`: a view's count and stride, a stream's position, and all the arithmetic the parser writes for a subscript (`src/ssa.rs`); `lib/slice.ssa`, `lib/sample.ssa` and `lib/stream.ssa` follow. A place is not a time: ticks, rates, a step and `t0` stay `i64`, and where one becomes the other there is one `conv`, as above. Headers and views keep their eight-byte words; an index sits in a word's low bytes. On a 64-bit path nothing changed: lex 616, hello 1 237, static 1 197, and 266 functions of eight stores cost what they did. On wasm32 the suite's stream module has 59 `i32.wrap_i64` where it had 251 and is 1 724 bytes shorter. `suite/stream.ssa`, `slice.ssa` and `matrix.ssa` hold their lengths and counts in an `index`. The whole suite passes natively at 16, 32 and 64. Zero stores are still built at 64 until the front end's text changes. Full run green (`scratchpad/chain50.log`): `probe test` 1015, `cargo test` 127.
 
 ### arena: the arena counts in `index` — `02e9b15` · 2026-10-06
 
