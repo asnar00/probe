@@ -4,6 +4,15 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a block pushed into a stream processor has its lines in the loop — `f4ef5c9` · 2026-10-06
+
+```
+on arrive first()
+    src$ << "let x = 4"
+```
+
+`suite/zero/lex-zeroic/lex/lex.zero:30-31`. The parity pass, hop 17, transformation 68 (fm3 log 134). That push was a loop of nine calls of the lexer's function of one item. The loop holds the function's lines now, lowered in place by what lowers the function (`z_inline`, `src/zero/lower.rs`): no call, no return, the kept values the loop's own. A single item, a range and a stored input's sink still call. The six-line lexer's `two_arrivals`, counted as it ran: 542 → 506 against its oracle's 504, and 549 → 513 against 536, under it; the oracle counts its own reset. Lines 450 → 476. zero suite 698/698; `cargo test zero` 46.
+
 ### zero: a condition several lines turn on is branched on once — `16abfac` · 2026-10-06
 
 ```
