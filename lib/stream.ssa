@@ -258,13 +258,16 @@ fn push(s: any$, v: any)
 ; is nothing to wrap around — the slots are a plain run, and the
 ; header's spare word (8, free since log 86) holds `origin`, the index
 ; of the item in slot 0, while the ticks pointer (24), a queue having
-; no ticks, holds `cap`, how many slots there are. And a queue's header
-; is a word longer than a ring's, seventy-two bytes: its ninth word
-; (64) holds where slot 0 is, the address past the buffer's own header,
-; added once when the queue is made and loaded as a typed pointer by
-; every word below that touches a slot, where each loaded the buffer,
-; added sixteen and cast (fm3 log 115). The buffer's address stays at
-; 16, where the ring's words look for it. Item k is at slot
+; no ticks, holds `cap`, how many slots there are. And where a ring's
+; header keeps the address of its buffer (16), a queue's keeps where
+; slot 0 is, the address past the buffer's own header, added once when
+; the queue is made and loaded as a typed pointer by every word below
+; that touches a slot, where each loaded the buffer, added sixteen and
+; cast (fm3 log 115). A queue never reads its buffer's header, its
+; capacity being its own word, so nothing looks for the buffer there:
+; the ring's words that touch a slot are never applied to a queue (for
+; a while a new stream's fill was, and the word was kept apart in a
+; ninth, fm3 log 119). Item k is at slot
 ; `k - origin`, so every view of the unread items is one run with no
 ; seam to split and a block lands in one copy. When a reader has
 ; passed everything the front end calls `free_queue` and the origin
@@ -278,14 +281,13 @@ fn ring_queue(r: ptr, vb: ptr, hz: i64, cap: i64)
     check positive
     store 0: i64, r
     store 0: i64, r, 8
-    store vb, r, 16
+    slots: ptr = ptradd vb, 16
+    store slots, r, 16
     store cap, r, 24
     store hz, r, 32
     store 1: i64, r, 40
     store 0: i64, r, 48
     store 0: i64, r, 56
-    slots: ptr = ptradd vb, 16
-    store slots, r, 64
     ret
 ; the queue's producer: the ended check, a check that there is a slot
 ; — which is the queue's whole promise, and is why its readers need no
@@ -301,7 +303,7 @@ fn push_queue(s: any$, v: any)
     cap: i64 = load r, 24
     room: u1 = cmp.lt slot, cap
     check room
-    q: ptr(any) = load r, 64
+    q: ptr(any) = load r, 16
     store v, q, slot
     next: i64 = add pushed, 1
     store next, r
@@ -324,7 +326,7 @@ fn push_queue(s: any$, block: any[])
     after: i64 = add slot, n
     fits: u1 = cmp.le after, cap
     check fits
-    q: ptr(any) = load r, 64
+    q: ptr(any) = load r, 16
     p: ptr(any) = index q, slot
     d: any[] = pack p, n, 1
     copy d, block
@@ -349,7 +351,7 @@ fn push_queue_few(s: any$, src: ptr, n: i64)
     after: i64 = add slot, n
     fits: u1 = cmp.le after, cap
     check fits
-    q: ptr(any) = load r, 64
+    q: ptr(any) = load r, 16
     d: ptr(any) = index q, slot
     p: ptr(any) = cast src
     loop(j: i64 = 0)
@@ -375,7 +377,7 @@ fn push_queue_open(s: any$, v: any)
     cap: i64 = load r, 24
     room: u1 = cmp.lt slot, cap
     check room
-    q: ptr(any) = load r, 64
+    q: ptr(any) = load r, 16
     store v, q, slot
     next: i64 = add pushed, 1
     store next, r
@@ -390,7 +392,7 @@ fn push_queue_open(s: any$, block: any[])
     after: i64 = add slot, n
     fits: u1 = cmp.le after, cap
     check fits
-    q: ptr(any) = load r, 64
+    q: ptr(any) = load r, 16
     p: ptr(any) = index q, slot
     d: any[] = pack p, n, 1
     copy d, block
@@ -421,7 +423,7 @@ fn peek_queue(s: any$, i: i64) -> any
     check inside
     origin: i64 = load r, 8
     k: i64 = sub at, origin
-    q: ptr(any) = load r, 64
+    q: ptr(any) = load r, 16
     v: any = load q, k
     ret v
 fn latest_queue(s: any$) -> any
@@ -432,7 +434,7 @@ fn latest_queue(s: any$) -> any
     origin: i64 = load r, 8
     last: i64 = sub pushed, 1
     k: i64 = sub last, origin
-    q: ptr(any) = load r, 64
+    q: ptr(any) = load r, 16
     v: any = load q, k
     ret v
 fn unread_queue(s: any$) -> any[]
@@ -441,7 +443,7 @@ fn unread_queue(s: any$) -> any[]
     pos: i64 = get s, pos
     origin: i64 = load r, 8
     start: i64 = sub pos, origin
-    q: ptr(any) = load r, 64
+    q: ptr(any) = load r, 16
     p: ptr(any) = index q, start
     n: i64 = sub pushed, pos
     f: any[] = pack p, n, 1
@@ -452,7 +454,7 @@ fn frame_queue(s: any$) -> (any[], i64, any$)
     pos: i64 = get s, pos
     origin: i64 = load r, 8
     start: i64 = sub pos, origin
-    q: ptr(any) = load r, 64
+    q: ptr(any) = load r, 16
     p: ptr(any) = index q, start
     n: i64 = sub pushed, pos
     f: any[] = pack p, n, 1

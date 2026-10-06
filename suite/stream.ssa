@@ -81,7 +81,7 @@ data big: buffer(f32, 16)
 ; a byte queue's slots, a plain run: sixteen, of which the queue below
 ; takes eight, its capacity being its own number and not the buffer's
 data pvb: buffer(u8, 16)
-data prg: array(u64, 9)
+data prg: array(u64, 8)
 ; two rings of int for the struct of streams
 data ivb: buffer(int, 16)
 data itb: buffer(i64, 16)
@@ -364,17 +364,17 @@ fn queue_few_tokens() -> (i64, i64)
     k: i64 = get x, start
     ret n, k
 
-; a queue's header says where slot 0 is (fm3 log 115): its ninth word,
-; at 64, is the address past the buffer's own header, put there once by
-; `ring_queue`, and every word that touches a slot loads it as it is.
-; The second item pushed, read through that word, and the same byte
-; seventeen past the buffer
+; a queue's header says where slot 0 is (fm3 log 115, 119): its word
+; at 16, where a ring keeps its buffer's address, is the address past
+; the buffer's own header, put there once by `ring_queue`, and every
+; word that touches a slot loads it as it is. The second item pushed,
+; read through that word, and the same byte seventeen past the buffer
 fn queue_slot_zero() -> (i64, i64)
     s: u8$ = queue_ring()
     push_queue(s, 7: u8)
     push_queue(s, 9: u8)
     r: ptr = addr prg
-    slots: ptr = load r, 64
+    slots: ptr = load r, 16
     x: u8 = load slots, 1
     a: ptr = addr pvb
     y: u8 = load a, 17
@@ -853,7 +853,7 @@ type tok = struct
     kind: i64
     start: i64
     n: i64
-data tokr: array(i64, 9)
+data tokr: array(i64, 8)
 data tokvb: array(u8, 400)
 
 fn fresh_toks() -> tok$
