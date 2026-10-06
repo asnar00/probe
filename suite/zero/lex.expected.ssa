@@ -63,20 +63,32 @@ type token = struct
 ;   out: the output device, which stores nothing (platform)
 ;   in: user, last (platform)
 ;   t: user, last (lex)
+;   src: user, last (lex)
+;   u: user, last (lex)
 ;   __node1_c: node, last (lex)
 ;   __node1_c_seen: node, last (lex)
 ;   __node1_fin: node, last (lex)
+;   __node2_c: node, last (lex)
+;   __node2_c_seen: node, last (lex)
+;   __node2_fin: node, last (lex)
 type __ctx = struct
     __enabled_platform: u1
     __enabled_lex: u1
     in: u8$
     t: token$
+    src: u8$
+    u: token$
     __node1_c: u8$
     __node1_c_seen: i64
     __node1_fin: u1
+    __node2_c: u8$
+    __node2_c_seen: i64
+    __node2_fin: u1
 
 data __ctx_mem: array(__ctx, 1)
-data __s11 = "2;\n"
+data __s11 = "let x = 4"
+data __s12 = "2;\n"
+data __s13 = "let"
 
 ; before every case: the arena emptied, the variables at their initial values
 fn __zero_reset()
@@ -91,9 +103,11 @@ fn __zero_reset()
     store 0: i64, o
     _1: u8$ = __queue_u8(1000000, 512)
     _2: token$ = __queue_token(1000000, 64)
-    _3: __ctx = pack 1, 1, _1, _2, _1, 0, 0
+    _3: u8$ = __queue_u8(1000000, 64)
+    _4: token$ = __queue_token(1000000, 64)
+    _5: __ctx = pack 1, 1, _1, _2, _3, _4, _1, 0, 0, _3, 0, 0
     p: ptr = addr __ctx_mem
-    store _3, p
+    store _5, p
     ret
 
 ; after the case's context is set: the nodes run
@@ -131,6 +145,18 @@ fn __get_t() -> token$
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     v: token$ = get c, t
+    ret v
+
+fn __get_src() -> u8$
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: u8$ = get c, src
+    ret v
+
+fn __get_u() -> token$
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: token$ = get c, u
     ret v
 
 fn __get___node1_c() -> u8$
@@ -171,6 +197,45 @@ fn __set___node1_fin(v: u1)
     c2: __ctx = set c, __node1_fin, v
     store c2, p
     ret
+
+fn __get___node2_c() -> u8$
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: u8$ = get c, __node2_c
+    ret v
+
+fn __set___node2_c(v: u8$)
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    c2: __ctx = set c, __node2_c, v
+    store c2, p
+    ret
+
+fn __get___node2_c_seen() -> i64
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: i64 = get c, __node2_c_seen
+    ret v
+
+fn __set___node2_c_seen(v: i64)
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    c2: __ctx = set c, __node2_c_seen, v
+    store c2, p
+    ret
+
+fn __get___node2_fin() -> u1
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    v: u1 = get c, __node2_fin
+    ret v
+
+fn __set___node2_fin(v: u1)
+    p: ptr = addr __ctx_mem
+    c: __ctx = load p
+    c2: __ctx = set c, __node2_fin, v
+    store c2, p
+    ret
 fn __on_lex() -> u1
     own: u1 = __get___enabled_lex()
     ret own
@@ -209,6 +274,40 @@ fn __node1() -> u1
         yield 0
     ret ran
 
+; node 2: token u$ = lex (src$) — run when an input has more than the node has seen, or has ended and the node has not run since
+fn __node2() -> u1
+    fin: u1 = __get___node2_fin()
+    notfin: u1 = xor fin, 1
+    _1: u8$ = __get___node2_c()
+    _2: i64 = received(_1)
+    _3: i64 = __get___node2_c_seen()
+    _4: u1 = cmp.gt _2, _3
+    _5: u1 = ended(_1)
+    _6: u1 = and _5, notfin
+    _7: u1 = or _4, _6
+    on: u1 = __on_lex()
+    due: u1 = and _7, on
+    ran: u1 = if due
+        _8: token$ = __get_u()
+        _9: u8$ = lex(_8, _1, 0: i64)
+        __set___node2_c(_9)
+        free_queue(_9)
+        _10: i64 = received(_9)
+        __set___node2_c_seen(_10)
+        _11: u1 = ended(_9)
+        __set___node2_fin(_11)
+        yield 1
+    else
+        off: u1 = xor on, 1
+        _12: u1 = and _4, off
+        if _12
+            _13: u8$ = set _1, pos, _2
+            __set___node2_c(_13)
+            free_queue(_13)
+            __set___node2_c_seen(_2)
+        yield 0
+    ret ran
+
 ; the scheduler (log 25, 78): the node graph is acyclic, so one pass in producer-before-consumer order settles it — every node at the start, and after a push into a stream the nodes it reaches
 fn __run()
     p: ptr = addr __running
@@ -217,15 +316,16 @@ fn __run()
     if idle
         store 1: i64, p
         r1: u1 = __node1()
+        r2: u1 = __node2()
         store 0: i64, p
     ret
-fn __run_in()
+fn __run_src()
     p: ptr = addr __running
     busy: i64 = load p
     idle: u1 = cmp.eq busy, 0
     if idle
         store 1: i64, p
-        r1: u1 = __node1()
+        r2: u1 = __node2()
         store 0: i64, p
     ret
 
@@ -309,73 +409,98 @@ fn lex(t: token$, c: u8$, __hz: i64) -> u8$
         c_5: u8$ = advance(c_2, _20)
         continue c_5
     ret c_6
-fn arrive_again()
-    _1: u8$ = __get_in()
+fn arrive_first()
+    _1: u8$ = __get_src()
     _2: ptr = addr __s11
     _3: i64 = len __s11
     _4: u8[] = __str(_2, _3)
     push_queue(_1, _4)
-    __run_in()
-    _5: u8$ = __get_in()
+    __run_src()
+    ret
+fn arrive_again()
+    _1: u8$ = __get_src()
+    _2: ptr = addr __s12
+    _3: i64 = len __s12
+    _4: u8[] = __str(_2, _3)
+    push_queue(_1, _4)
+    __run_src()
+    _5: u8$ = __get_src()
     end(_5)
-    __run_in()
+    __run_src()
     ret
 fn two_arrivals() -> (int, int)
-    _1: token$ = __get_t()
+    arrive_first()
+    _1: token$ = __get_u()
     _2: i64 = count _1
     a: int = conv _2
     arrive_again()
-    _3: token$ = __get_t()
+    _3: token$ = __get_u()
     _4: i64 = count _3
     b: int = conv _4
     ret a, b
 fn number_start() -> int
+    arrive_first()
     arrive_again()
-    _1: token$ = __get_t()
+    _1: token$ = __get_u()
     x: token = peek_queue(_1, 3)
     s: int = get x, start
     ret s
 fn number_length() -> int
+    arrive_first()
     arrive_again()
-    _1: token$ = __get_t()
+    _1: token$ = __get_u()
     x: token = peek_queue(_1, 3)
     n: int = get x, n
     ret n
 fn kinds() -> (int, int)
+    arrive_first()
     arrive_again()
-    _1: token$ = __get_t()
+    _1: token$ = __get_u()
     x: token = peek_queue(_1, 0)
-    _2: token$ = __get_t()
+    _2: token$ = __get_u()
     y: token = peek_queue(_2, 1)
     a: int = get x, kind
     b: int = get y, kind
     ret a, b
 fn third_kind() -> int
+    arrive_first()
     arrive_again()
-    _1: token$ = __get_t()
+    _1: token$ = __get_u()
     x: token = peek_queue(_1, 2)
     k: int = get x, kind
     ret k
 fn kinds_tail() -> (int, int)
+    arrive_first()
     arrive_again()
-    _1: token$ = __get_t()
+    _1: token$ = __get_u()
     x: token = peek_queue(_1, 3)
-    _2: token$ = __get_t()
+    _2: token$ = __get_u()
     y: token = peek_queue(_2, 4)
     a: int = get x, kind
     b: int = get y, kind
     ret a, b
 fn a_word_at_the_end() -> (int, int)
+    _1: u8$ = __get_src()
+    _2: ptr = addr __s13
+    _3: i64 = len __s13
+    _4: u8[] = __str(_2, _3)
+    push_queue(_1, _4)
+    __run_src()
+    _5: token$ = __get_u()
+    _6: i64 = count _5
+    a: int = conv _6
+    _7: u8$ = __get_src()
+    end(_7)
+    __run_src()
+    _8: token$ = __get_u()
+    _9: i64 = count _8
+    b: int = conv _9
+    ret a, b
+fn lexed() -> int
     _1: token$ = __get_t()
     _2: i64 = count _1
-    a: int = conv _2
-    _3: u8$ = __get_in()
-    end(_3)
-    __run_in()
-    _4: token$ = __get_t()
-    _5: i64 = count _4
-    b: int = conv _5
-    ret a, b
+    n: int = conv _2
+    ret n
 
 ; a stream's storage, carved from the arena: cap items (64 unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start
 fn __queue_token(hz: i64, cap: i64) -> token$

@@ -2,6 +2,8 @@ type token =
     int kind, start, n
 
 token t$ = lex(in$)
+char src$
+token u$ = lex(src$)
 
 on (int k) = kind of (char c)
     if (c <= 32)
@@ -44,45 +46,58 @@ on (token t$) << lex (char c$)
         t$ << token(k, start, n)
         advance c$ by (n)
 
+on arrive first()
+    src$ << "let x = 4"
+
 on arrive again()
-    in$ << "2;\n"
-    end in$
+    src$ << "2;\n"
+    end src$
 
 on (int a, int b) = two arrivals()
-    a = count t$
+    arrive first()
+    a = count u$
     arrive again()
-    b = count t$
+    b = count u$
 
 on (int s) = number start()
+    arrive first()
     arrive again()
-    token x = peek t$ at (3)
+    token x = peek u$ at (3)
     s = x.start
 
 on (int n) = number length()
+    arrive first()
     arrive again()
-    token x = peek t$ at (3)
+    token x = peek u$ at (3)
     n = x.n
 
 on (int a, int b) = kinds()
+    arrive first()
     arrive again()
-    token x = peek t$ at (0)
-    token y = peek t$ at (1)
+    token x = peek u$ at (0)
+    token y = peek u$ at (1)
     a = x.kind
     b = y.kind
 
 on (int k) = third kind()
+    arrive first()
     arrive again()
-    token x = peek t$ at (2)
+    token x = peek u$ at (2)
     k = x.kind
 
 on (int a, int b) = kinds tail()
+    arrive first()
     arrive again()
-    token x = peek t$ at (3)
-    token y = peek t$ at (4)
+    token x = peek u$ at (3)
+    token y = peek u$ at (4)
     a = x.kind
     b = y.kind
 
 on (int a, int b) = a word at the end()
-    a = count t$
-    end in$
-    b = count t$
+    src$ << "let"
+    a = count u$
+    end src$
+    b = count u$
+
+on (int n) = lexed()
+    n = count t$

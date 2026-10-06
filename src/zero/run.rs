@@ -997,6 +997,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// a program never writes its input (question 35, fm3 log 101): a
+    /// push into `in$`, an edge into it and `end in$` are refused, naming
+    /// the device and saying where input comes from; reading it is what
+    /// it is for, and a local of the same name is the function's own
+    #[test]
+    fn a_program_never_writes_its_input() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-input-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n").unwrap();
+        let emit_with = |code: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), code).unwrap();
+            emit(&dir)
+        };
+        let refusal = "'in$' is the input device: a program reads it and never writes it or ends it. Input comes from the platform alone, which under the runner is a case's `with in \"text\"`; a program that makes its own arrivals pushes them into a stream of its own";
+        for (code, line) in [
+            ("on f()\n    in$ << \"2;\"\n", 2),
+            ("on f()\n    in$ << 65\n", 2),
+            ("on f()\n    end in$\n", 2),
+            ("char src$\nin$ << src$\n\non f()\n    src$ << \"a\"\n", 2),
+        ] {
+            let err = emit_with(code).expect_err("a program wrote its input");
+            assert!(err.contains(&format!("h.zero:{}: {}", line, refusal)), "{}", err);
+        }
+        // reading the device is what it is for; and a stream of the
+        // function's own that happens to be called `in` is not the device
+        let ir = emit_with("on (int n) = f()\n    n = count in$\n\non (int n) = g()\n    char in$ << \"ab\"\n    in$ << \"c\"\n    n = count in$\n").unwrap();
+        assert!(ir.contains("fn f() -> int\n    _1: u8$ = __get_in()\n"), "{}", ir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// a product's bound (log 41) reaches every loop of the function it
     /// names, marked as the product's, and `probe cost` counts it
     #[test]

@@ -327,6 +327,9 @@ pub struct FnInfo {
     pub platform: Option<Vec<String>>,
 }
 
+/// the refusal of a program that writes its input (question 35)
+const INPUT_REFUSED: &str = "'in$' is the input device: a program reads it and never writes it or ends it. Input comes from the platform alone, which under the runner is a case's `with in \"text\"`; a program that makes its own arrivals pushes them into a stream of its own";
+
 /// the kinds of place a platform body may name in this milestone
 const KINDS: [&str; 5] = ["ir", "arm64", "riscv64", "wasm32", "air"];
 
@@ -3515,6 +3518,9 @@ impl Lowerer {
         let Ty::Stream(telem) = &tf.ty else {
             return Err(lex::error(file, line, format!("'{}$' is a {}, not a stream", tname, tf.ty.ir())));
         };
+        if self.input_device(tname, None) {
+            return Err(lex::error(file, line, INPUT_REFUSED));
+        }
         let ExprKind::Seq(sname) = &items[0].kind else {
             return Err(lex::error(file, items[0].line, format!("a line at feature scope pushing into '{}$' is an edge, `{}$ << x$`, and its first item is a stream; items are pushed on the declaration, `{} {}$ << ...`", tname, tname, zero_ty(telem), tname)));
         };
@@ -5313,6 +5319,9 @@ impl Lowerer {
                 if *existing {
                     return self.existing_push(n, &items[0], b, *line).map(|_| false);
                 }
+                if self.input_device(n, Some(b)) {
+                    return Err(lex::error(&file, *line, INPUT_REFUSED));
+                }
                 if self.stream_var(n, b).is_none() {
                     return Err(match self.seq_or_fvar_ty(n, b) {
                         Some(t) => lex::error(&file, *line, format!("'{}$' is a {}, not a stream", n, t.ir())),
@@ -6374,6 +6383,16 @@ impl Lowerer {
         self.fvar(name).is_some_and(|v| v.feature == "platform" && matches!(v.ty, Ty::Stream(_)))
     }
 
+    /// Is the name the input device (zero.md section 15, question 35),
+    /// named by a program? `in$` is the mirror of `out$`: read and never
+    /// written. Input comes from the platform alone, so a program's push
+    /// into it, an edge into it and `end in$` are refused. The platform
+    /// feature's own code is not a program, and neither is the runner's
+    /// `__in_ch`; a local or a parameter named `in` is the function's own
+    fn input_device(&self, name: &str, b: Option<&Body>) -> bool {
+        name == "in" && self.cur != "platform" && !b.is_some_and(|b| b.vars.contains_key(name)) && self.fvar(name).is_some_and(|v| v.feature == "platform" && matches!(v.ty, Ty::Stream(_)))
+    }
+
     /// the same test on a feature-scope variable alone, for the context
     /// and the accessors, which are emitted before any body
     fn device_var(&self, f: &FVar) -> bool {
@@ -6921,6 +6940,9 @@ impl Lowerer {
                 Ok(Some(Val { text: out, ty: Ty::Bool, literal: false }))
             }
             ("end", false, []) => {
+                if self.input_device(&sname, Some(b)) {
+                    return Err(lex::error(&file, line, INPUT_REFUSED));
+                }
                 b.line(&format!("end({})", s.text));
                 self.trigger(&sname, b);
                 Ok(Some(none))
