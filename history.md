@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `count` asked once a turn — `2cf0ca7` · 2026-10-06
+
+```
+        _1: i64 = count c_2
+        _2: int = conv _1
+```
+```
+        n: int = loop(i: int = 1, m: int = -1)
+            _11: u1 = cmp.ge i, _2
+```
+
+`suite/zero/lex.expected.ssa:209-210` and `228-229`, in `lex`. The parity pass, hop 13, transformation 46 (fm3 log 112). The lexer asked how much was waiting at the top of a turn and again on every pass of its inner loop, of the same reader; `_9` and `_10`, the second `count` and its `conv`, are gone and the loop compares against `_2`. `settle_counts` in `src/zero/lower.rs` drops a second `count R` in the finished text where the first is a statement of a block the second is inside and no line between could push: between is the lines from one to the other and the whole body of any loop the second is in and the first is not, and a line is harmless by a list of what is allowed, so a push, an `end`, a store or a word nobody listed gives up. lex calls `kind of` between its two askings, so a function of the store counts as harmless where its emitted body and all it calls are only such lines. lex's own `two arrivals → 3, 5` gives 3, 3 on a build that takes every line for harmless, and `suite/zero/streams`' new `counted round a push() → 23` gives 22. lex `two_arrivals` 679 → 649, 1.56× `lex-min`, 1.45× `lex-mod`, a turn 146 → 136 against 90; hello 1 237, static 1 197. `probe zero test` 589/589, `cargo test zero` 35 on all five paths.
+
 ### zero: a woken node keeps its position, not a whole reader — `bfb1a7e` · 2026-10-06
 
 ```
