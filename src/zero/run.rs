@@ -1021,6 +1021,24 @@ mod tests {
             let err = emit_with(code).expect_err("a program wrote its input");
             assert!(err.contains(&format!("h.zero:{}: {}", line, refusal)), "{}", err);
         }
+        // ... and so is handing it to a function that pushes into the
+        // stream it is given, or ends it, itself or through another, in
+        // a body or as a wiring, a rate after it or not (fm3 log 106)
+        let fill = "on fill (char c$)\n    c$ << \"x\"\n\n";
+        for (code, line, to) in [
+            (format!("{}on f()\n    fill(in$)\n", fill), 5, "fill"),
+            (format!("{}on relay (char d$)\n    fill(d$)\n\non f()\n    relay(in$)\n", fill), 8, "relay"),
+            ("on close (char c$)\n    end c$\n\non f()\n    close(in$)\n".to_string(), 5, "close"),
+            ("on (int n$) << feeder (char c$)\n    c$ << \"x\"\n    n$ << 1\n\nint n$ = feeder(in$)\n".to_string(), 5, "feeder"),
+            ("on (int n$) << feeder (char c$)\n    c$ << \"x\"\n    n$ << 1\n\nint n$ = feeder(in$) at (2 hz)\n".to_string(), 5, "feeder"),
+        ] {
+            let err = emit_with(&code).expect_err("a program handed its input to what writes it");
+            assert!(err.contains(&format!("h.zero:{}: {}. Here it is given to '{}', which pushes into or ends the stream it is given", line, refusal, to)), "{}", err);
+        }
+        // a function that only reads what it is given takes the device,
+        // and one that pushes may be given a local called `in`
+        let ir = emit_with(&format!("{}on (int n) = size (char c$)\n    n = count c$\n\non (int n) = f()\n    n = size(in$)\n\non (int n) = g()\n    char in$ << \"ab\"\n    fill(in$)\n    n = count in$\n", fill)).unwrap();
+        assert!(ir.contains("fn f() -> int\n    _1: u8$ = __get_in()\n    n: int = size(_1)\n"), "{}", ir);
         // reading the device is what it is for; and a stream of the
         // function's own that happens to be called `in` is not the device
         let ir = emit_with("on (int n) = f()\n    n = count in$\n\non (int n) = g()\n    char in$ << \"ab\"\n    in$ << \"c\"\n    n = count in$\n").unwrap();

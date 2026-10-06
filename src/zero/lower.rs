@@ -747,6 +747,13 @@ struct Pushes<'a> {
     /// the keys being computed: a recursion meets them and assumes the worst
     active: std::collections::HashSet<String>,
     file: String,
+    /// how deep in other definitions' bodies the walk is: 0 in the
+    /// block it was asked about
+    depth: usize,
+    /// the first place, in the block asked about, where the input device
+    /// is handed to a function as a parameter that function pushes into
+    /// or ends: the line, and the function (question 35, fm3 log 106)
+    handed: Option<(usize, String)>,
 }
 
 type Names = std::collections::HashSet<String>;
@@ -763,6 +770,7 @@ impl<'a> Pushes<'a> {
             return (Names::new(), params);
         }
         self.active.insert(key.to_string());
+        self.depth += 1;
         let (mut out, mut own) = (Names::new(), Names::new());
         let defs = self.bodies.get(key).cloned().unwrap_or_default();
         for (params, body) in defs {
@@ -771,6 +779,7 @@ impl<'a> Pushes<'a> {
             self.of(body, &bound, &mut out, &mut mine);
             own.extend(mine.into_iter().filter(|n| params.contains(n)));
         }
+        self.depth -= 1;
         self.active.remove(key);
         self.known.insert(key.to_string(), (out.clone(), own.clone()));
         (out, own)
@@ -831,6 +840,14 @@ impl<'a> Pushes<'a> {
         }
     }
 
+    /// the input device handed, in the block asked about, to `key` as a
+    /// parameter it pushes into or ends
+    fn hand(&mut self, n: &str, key: &str, bound: &Names, line: usize) {
+        if self.depth == 0 && self.handed.is_none() && n == "in" && !bound.contains(n) && self.l.input_device(n, None) {
+            self.handed = Some((line, key.replace('_', " ")));
+        }
+    }
+
     fn pushed(&self, n: &str, bound: &Names, out: &mut Names, own: &mut Names) {
         if bound.contains(n) {
             own.insert(n.to_string());
@@ -877,6 +894,23 @@ impl<'a> Pushes<'a> {
                     }
                 }
                 let is_var = |w: &str| bound.contains(w) || self.l.fvar(w).is_some();
+                // a task call with its rate after it hands its streams on
+                // as the call alone does: asked only for the device
+                let unrated = match parts.as_slice() {
+                    [rest @ .., Part::Word(at), Part::Args(a)] if at == "at" && a.len() == 1 && matches!(&a[0].value.kind, ExprKind::Unit(..)) => Some(rest),
+                    _ => None,
+                };
+                if let Some(Ok((cands, args))) = unrated.map(|rest| find_methods(&self.l.funcs, rest, &is_var, &self.file, e.line)) {
+                    let cands: Vec<(String, Vec<String>)> = cands.iter().filter(|c| c.task).map(|c| (c.key.clone(), c.params.iter().map(|(n, _)| n.clone()).collect())).collect();
+                    for (key, params) in cands {
+                        let (_, pushed) = self.of_key(&key);
+                        for (i, pname) in params.iter().enumerate() {
+                            if let (true, Some(Expr { kind: ExprKind::Seq(n), .. })) = (pushed.contains(pname), args.get(i)) {
+                                self.hand(n, &key, bound, e.line);
+                            }
+                        }
+                    }
+                }
                 match find_methods(&self.l.funcs, parts, &is_var, &self.file, e.line) {
                     Ok((cands, args)) if !cands.is_empty() => {
                         let cands: Vec<(String, Vec<String>)> = cands.iter().map(|c| (c.key.clone(), c.params.iter().map(|(n, _)| n.clone()).collect())).collect();
@@ -886,6 +920,7 @@ impl<'a> Pushes<'a> {
                             for (i, pname) in params.iter().enumerate() {
                                 if pushed.contains(pname) {
                                     if let Some(Expr { kind: ExprKind::Seq(n), .. }) = args.get(i) {
+                                        self.hand(n, &key, bound, e.line);
                                         self.pushed(n, bound, out, own);
                                     }
                                 }
@@ -1858,7 +1893,7 @@ impl Lowerer {
         for (fd, _, _) in &self.edges {
             add(fd, &mut bodies);
         }
-        let mut walker = Pushes { l: self, bodies, known: HashMap::new(), active: Names::new(), file: store.product_file.clone() };
+        let mut walker = Pushes { l: self, bodies, known: HashMap::new(), active: Names::new(), file: store.product_file.clone(), depth: 0, handed: None };
         let n = nodes.len();
         let mut reads: Vec<Names> = Vec::new();
         let mut writes: Vec<Names> = Vec::new();
@@ -1948,6 +1983,52 @@ impl Lowerer {
             }
         }
         out
+    }
+}
+
+impl Lowerer {
+    /// A program never writes its input (question 35, fm3 log 101), and
+    /// that holds through a call (fm3 log 106): `in$` handed to a
+    /// function of the store as a parameter the function pushes into or
+    /// ends, by its name or by handing it on in turn, is refused where
+    /// it is handed, in a function's body, an initial value or a
+    /// wiring. "Pushes into" is the scheduler's own walk (`Pushes`, log
+    /// 78), which errs toward yes where a function can reach itself
+    fn input_handed(&self, store: &Store) -> Result<(), Error> {
+        let mut bodies: HashMap<String, Vec<(Vec<String>, &[Stmt])>> = HashMap::new();
+        for f in &store.features {
+            for d in &f.code.decls {
+                if let Decl::Fn(fd) = d {
+                    let mut params: Vec<String> = fd.results.iter().map(|p| p.name.clone()).collect();
+                    params.extend(fd.params().map(|p| p.name.clone()));
+                    bodies.entry(mangle(&fd.name)).or_default().push((params, fd.body.as_slice()));
+                }
+            }
+        }
+        let mut walker = Pushes { l: self, bodies, known: HashMap::new(), active: Names::new(), file: store.product_file.clone(), depth: 0, handed: None };
+        let none = Names::new();
+        for f in &store.features {
+            if f.name == "platform" {
+                continue;
+            }
+            for d in &f.code.decls {
+                let (mut out, mut own) = (Names::new(), Names::new());
+                match d {
+                    Decl::Fn(fd) => {
+                        let mut bound: Names = fd.results.iter().map(|p| p.name.clone()).collect();
+                        bound.extend(fd.params().map(|p| p.name.clone()));
+                        walker.of(&fd.body, &bound, &mut out, &mut own);
+                    }
+                    Decl::Var(v) => walker.init(v, &none, &mut out, &mut own),
+                    Decl::Wire(e) => walker.expr(e, &none, &mut out, &mut own),
+                    _ => {}
+                }
+                if let Some((line, to)) = walker.handed.take() {
+                    return Err(lex::error(&f.code.file, line, format!("{}. Here it is given to '{}', which pushes into or ends the stream it is given", INPUT_REFUSED, to)));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2101,6 +2182,8 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         }
         l.arrivals = counts;
     }
+    // the input device handed to what would write it (question 35)
+    l.input_handed(store)?;
     l.emit_context(store)?;
     // which pushes are on their stream's beat already (question 56):
     // settled once the nodes and the rates are, before any body
@@ -3563,12 +3646,16 @@ impl Lowerer {
     /// else, not even pushed into, has no storage and is not refused
     /// (question 57, fm3 log 100)
     fn settle_bare(&mut self, store: &Store) -> Result<(), Error> {
-        let (named, wires, pushed) = stream_uses(&store.features, &|e, file| matches!(self.task_call(e, None, file), Ok(Some(_))));
+        let call = |parts: &[Part], bound: &Names, file: &str| -> Option<Vec<Expr>> {
+            let is_var = |w: &str| bound.contains(w) || self.fvar(w).is_some();
+            find_methods(&self.funcs, parts, &is_var, file, 0).ok().map(|(_, args)| args)
+        };
+        let (named, wires, pushed) = stream_uses(&store.features, &|e, file| matches!(self.task_call(e, None, file), Ok(Some(_))), &call);
         // the features the product leaves out are asked one thing: does
         // any of them read or wire a stream (question 54). Their tasks
         // are not declared, and a task call only ever made the target of
         // its push count as named, which is no reading
-        let (named_out, wires_out, _) = stream_uses(&store.left_out, &|_, _| false);
+        let (named_out, wires_out, _) = stream_uses(&store.left_out, &|_, _| false, &|_, _, _| None);
         let mut bare = Names::new();
         let mut rates: HashMap<String, i64> = HashMap::new();
         // the sources of the edges, then the streams that are pushed into
@@ -7878,7 +7965,14 @@ fn item_count(e: &Expr, bytes: bool) -> Option<i64> {
 /// their cases' included; the edges they wire, source and target; and
 /// the names they push into, an edge's target among them. `task` says
 /// whether an expression in a file is a task call
-fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str) -> bool) -> (Names, Vec<(String, String)>, Names) {
+/// `call` is the lowering's own question of a phrase (`find_methods`,
+/// with the names the body has bound): the arguments, where the phrase
+/// is a call of a function of the store. Its words are then the
+/// function's name and no reading of anything (fm3 log 106): `after
+/// half()` does not read `half$`
+type Called<'a> = &'a dyn Fn(&[Part], &Names, &str) -> Option<Vec<Expr>>;
+
+fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str) -> bool, call: Called) -> (Names, Vec<(String, String)>, Names) {
     let none = Names::new();
     let (mut named, mut pushed) = (Names::new(), Names::new());
     let mut wires: Vec<(String, String)> = Vec::new();
@@ -7888,13 +7982,13 @@ fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str)
                 Decl::Fn(fd) => {
                     let mut bound: Names = fd.results.iter().map(|p| p.name.clone()).collect();
                     bound.extend(fd.params().map(|p| p.name.clone()));
-                    mentions(&fd.body, &bound, &|e| task(e, &f.code.file), &mut named, &mut pushed);
+                    mentions(&fd.body, &bound, &|e| task(e, &f.code.file), &|p, b| call(p, b, &f.code.file), &mut named, &mut pushed);
                 }
-                Decl::Var(v) => mentions_init(v, &none, &mut named),
-                Decl::Wire(e) => mentions_in(e, &none, &mut named),
+                Decl::Var(v) => mentions_init(v, &none, &|p, b| call(p, b, &f.code.file), &mut named),
+                Decl::Wire(e) => mentions_in(e, &none, &|p, b| call(p, b, &f.code.file), &mut named),
                 Decl::Edge { target, items, cond, .. } => {
-                    items.iter().skip(1).for_each(|e| mentions_in(e, &none, &mut named));
-                    cond.iter().for_each(|e| mentions_in(e, &none, &mut named));
+                    items.iter().skip(1).for_each(|e| mentions_in(e, &none, &|p, b| call(p, b, &f.code.file), &mut named));
+                    cond.iter().for_each(|e| mentions_in(e, &none, &|p, b| call(p, b, &f.code.file), &mut named));
                     if let (ExprKind::Seq(t), Some(Expr { kind: ExprKind::Seq(s), .. })) = (&target.kind, items.first()) {
                         wires.push((s.clone(), t.clone()));
                         pushed.insert(t.clone());
@@ -7904,7 +7998,7 @@ fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str)
             }
         }
         for c in &f.cases {
-            mentions_in(&c.call, &none, &mut named);
+            mentions_in(&c.call, &none, &|p, b| call(p, b, &f.md_file), &mut named);
         }
     }
     (named, wires, pushed)
@@ -7917,7 +8011,7 @@ fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str)
 /// pushed item is a task call, which fills the stream it is pushed into
 /// and so takes it as a value. `pushed` takes every name that is the
 /// target of a push (question 54)
-fn mentions(stmts: &[Stmt], bound: &Names, task: &dyn Fn(&Expr) -> bool, out: &mut Names, pushed: &mut Names) {
+fn mentions(stmts: &[Stmt], bound: &Names, task: &dyn Fn(&Expr) -> bool, call: &dyn Fn(&[Part], &Names) -> Option<Vec<Expr>>, out: &mut Names, pushed: &mut Names) {
     let mut bound = bound.clone();
     let named = |n: &String, bound: &Names, out: &mut Names| {
         if !bound.contains(n) {
@@ -7927,33 +8021,33 @@ fn mentions(stmts: &[Stmt], bound: &Names, task: &dyn Fn(&Expr) -> bool, out: &m
     for s in stmts {
         match s {
             Stmt::Var(v) => {
-                mentions_init(v, &bound, out);
+                mentions_init(v, &bound, call, out);
                 bound.insert(v.name.clone());
             }
             Stmt::Multi { vars, value, .. } => {
-                mentions_in(value, &bound, out);
+                mentions_in(value, &bound, call, out);
                 bound.extend(vars.iter().map(|p| p.name.clone()));
             }
             Stmt::Assign { targets, value, .. } => {
                 targets.iter().for_each(|t| named(&t.name, &bound, out));
-                mentions_in(value, &bound, out);
+                mentions_in(value, &bound, call, out);
             }
-            Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => mentions_in(value, &bound, out),
+            Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => mentions_in(value, &bound, call, out),
             Stmt::If { cond, then, els, .. } => {
-                mentions_in(cond, &bound, out);
-                mentions(then, &bound, task, out, pushed);
+                mentions_in(cond, &bound, call, out);
+                mentions(then, &bound, task, call, out, pushed);
                 if let Some(e) = els {
-                    mentions(e, &bound, task, out, pushed);
+                    mentions(e, &bound, task, call, out, pushed);
                 }
             }
             Stmt::Loop { vars, cond, body, into, .. } => {
                 let mut inner = bound.clone();
                 for v in vars {
-                    mentions_init(v, &inner, out);
+                    mentions_init(v, &inner, call, out);
                     inner.insert(v.name.clone());
                 }
-                cond.iter().for_each(|e| mentions_in(e, &inner, out));
-                mentions(body, &inner, task, out, pushed);
+                cond.iter().for_each(|e| mentions_in(e, &inner, call, out));
+                mentions(body, &inner, task, call, out, pushed);
                 match into {
                     Some(super::syntax::LoopInto::Declare(ps)) => bound.extend(ps.iter().map(|p| p.name.clone())),
                     Some(super::syntax::LoopInto::Assign(ts)) => ts.iter().for_each(|t| named(&t.name, &bound, out)),
@@ -7961,61 +8055,67 @@ fn mentions(stmts: &[Stmt], bound: &Names, task: &dyn Fn(&Expr) -> bool, out: &m
                 }
             }
             Stmt::For { var, seq, body, .. } => {
-                mentions_in(seq, &bound, out);
+                mentions_in(seq, &bound, call, out);
                 let mut inner = bound.clone();
                 inner.insert(var.clone());
-                mentions(body, &inner, task, out, pushed);
+                mentions(body, &inner, task, call, out, pushed);
             }
-            Stmt::Continue { values, .. } => values.iter().for_each(|e| mentions_in(e, &bound, out)),
+            Stmt::Continue { values, .. } => values.iter().for_each(|e| mentions_in(e, &bound, call, out)),
             Stmt::Break { .. } => {}
             Stmt::Push { target, items, cond, existing, .. } => {
-                items.iter().for_each(|e| mentions_in(e, &bound, out));
-                cond.iter().for_each(|e| mentions_in(e, &bound, out));
+                items.iter().for_each(|e| mentions_in(e, &bound, call, out));
+                cond.iter().for_each(|e| mentions_in(e, &bound, call, out));
                 match &target.kind {
                     ExprKind::Seq(n) if *existing || items.iter().any(|e| task(e)) => named(n, &bound, out),
                     ExprKind::Seq(n) => named(n, &bound, pushed),
-                    _ => mentions_in(target, &bound, out),
+                    _ => mentions_in(target, &bound, call, out),
                 }
             }
         }
     }
 }
 
-fn mentions_init(v: &super::syntax::VarDecl, bound: &Names, out: &mut Names) {
+fn mentions_init(v: &super::syntax::VarDecl, bound: &Names, call: &dyn Fn(&[Part], &Names) -> Option<Vec<Expr>>, out: &mut Names) {
     match &v.init {
-        Some(Init::Value(e)) => mentions_in(e, bound, out),
-        Some(Init::Construct(args)) => args.iter().for_each(|a| mentions_in(&a.value, bound, out)),
+        Some(Init::Value(e)) => mentions_in(e, bound, call, out),
+        Some(Init::Construct(args)) => args.iter().for_each(|a| mentions_in(&a.value, bound, call, out)),
         Some(Init::Pushes { items, cond }) => {
-            items.iter().for_each(|e| mentions_in(e, bound, out));
-            cond.iter().for_each(|e| mentions_in(e, bound, out));
+            items.iter().for_each(|e| mentions_in(e, bound, call, out));
+            cond.iter().for_each(|e| mentions_in(e, bound, call, out));
         }
         None => {}
     }
 }
 
-fn mentions_in(e: &Expr, bound: &Names, out: &mut Names) {
+fn mentions_in(e: &Expr, bound: &Names, call: &dyn Fn(&[Part], &Names) -> Option<Vec<Expr>>, out: &mut Names) {
     match &e.kind {
         ExprKind::Seq(n) | ExprKind::Name(n) => {
             if !bound.contains(n) {
                 out.insert(n.clone());
             }
         }
-        ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => mentions_in(x, bound, out),
-        ExprKind::List(items) => items.iter().for_each(|x| mentions_in(x, bound, out)),
+        ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => mentions_in(x, bound, call, out),
+        ExprKind::List(items) => items.iter().for_each(|x| mentions_in(x, bound, call, out)),
         ExprKind::Range { from: l, to: r, .. } | ExprKind::Bin(_, l, r) | ExprKind::Index(l, r) => {
-            mentions_in(l, bound, out);
-            mentions_in(r, bound, out);
+            mentions_in(l, bound, call, out);
+            mentions_in(r, bound, call, out);
         }
         ExprKind::IfElse(c, t, f) => {
-            mentions_in(c, bound, out);
-            mentions_in(t, bound, out);
-            mentions_in(f, bound, out);
+            mentions_in(c, bound, call, out);
+            mentions_in(t, bound, call, out);
+            mentions_in(f, bound, call, out);
         }
         ExprKind::Phrase(parts) | ExprKind::Existing(parts) => {
+            // a call of a function of the store mentions its arguments:
+            // its words are the function's name (fm3 log 106)
+            if let Some(args) = call(parts, bound) {
+                args.iter().for_each(|a| mentions_in(a, bound, call, out));
+                return;
+            }
             for p in parts {
                 match p {
-                    Part::Args(list) => list.iter().for_each(|a| mentions_in(&a.value, bound, out)),
-                    Part::Value(x) => mentions_in(x, bound, out),
+                    Part::Args(list) => list.iter().for_each(|a| mentions_in(&a.value, bound, call, out)),
+                    Part::Value(x) => mentions_in(x, bound, call, out),
                     // a word of a phrase may be a variable read bare
                     Part::Word(w) => {
                         if !bound.contains(w) {

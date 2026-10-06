@@ -46,6 +46,9 @@ on (int s) = summed down from (int k)
     part$ << [k through 1]
     s = sum
 
+on (int s) = a part summed down from (int k)
+    s = summed down from (k)
+
 on (int n) = fed (int k)
     loop (int i = 1) while (i <= k)
         raw$ << i
