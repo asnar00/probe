@@ -1,0 +1,17 @@
+int i$ at (1 hz)
+int d$ = doubled(i$)
+out$ << d$ << "\n"
+
+on (int d$) << doubled (int x$)
+    loop
+        if (count x$ == 0)
+            break
+        d$ << peek x$ at (0) * 2
+        advance x$ by (1)
+
+on count down()
+    i$ << [10 through 1]
+
+on launch()
+    count down()
+    out$ << "liftoff" << "\n"

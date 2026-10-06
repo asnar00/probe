@@ -1016,7 +1016,7 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
+    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -1721,6 +1721,10 @@ struct Lowerer {
     /// and each edge's gate, read once before the items (None where the
     /// edge's feature is static)
     bare_gates: Option<(String, Vec<Option<String>>)>,
+    /// while a push statement is lowered: an item went by a `<<` method
+    /// or a task call, which push inside themselves, so the statement
+    /// keeps its trailing trigger though the stream is paced (log 93)
+    loose_push: bool,
     /// the product's clock (log 77)
     clock: super::store::Clock,
     /// the scheduler is a static schedule (log 78): the node graph is
@@ -4021,7 +4025,10 @@ impl Lowerer {
         // an edge over a rated source takes each item at its tick (log
         // 77): the item's index is the reader's position plus the loop's
         let paced = match (&b.func, &seq.kind) {
-            (Some(f), ExprKind::Seq(src)) if self.edge_fns.get(&f.ir) == Some(src) && self.rated.contains(src) => Some(src.clone()),
+            // a source declared with a rate needs no wait here (log 93):
+            // its item was pushed at its time, and the edge runs in that
+            // push's trigger. A rated task's output is still waited for
+            (Some(f), ExprKind::Seq(src)) if self.edge_fns.get(&f.ir) == Some(src) && self.rated.contains(src) && !self.rates.contains_key(src) => Some(src.clone()),
             _ => None,
         };
         let pos = b.tmp();
@@ -4051,29 +4058,12 @@ impl Lowerer {
                 self.peek_at(&sv, &k, b, Some(var));
             }
         }
-        if let Some(src) = &paced {
+        if paced.is_some() {
             let abs = b.tmp();
             b.line(&format!("{}: i64 = add {}, {}", abs, pos, k));
-            let t = match self.rates.get(src) {
-                // a declared rate: item k at k / hz seconds
-                Some(&hz) => {
-                    let us = b.tmp();
-                    b.line(&format!("{}: i64 = mul {}, 1000000", us, abs));
-                    if hz == 1 {
-                        us
-                    } else {
-                        let t = b.tmp();
-                        b.line(&format!("{}: i64 = div {}, {}", t, us, hz));
-                        t
-                    }
-                }
-                // a rated task's output: its ticks are the store's clock's
-                None => {
-                    let t = b.tmp();
-                    b.line(&format!("{}: i64 = tick_of({}, {})", t, sv.text, abs));
-                    t
-                }
-            };
+            // a rated task's output: its ticks are the store's clock's
+            let t = b.tmp();
+            b.line(&format!("{}: i64 = tick_of({}, {})", t, sv.text, abs));
             b.line(&format!("__wait({})", t));
         }
         let terminated = self.lower_block(body, b)?;
@@ -4470,12 +4460,16 @@ impl Lowerer {
                     let gates = self.read_gates(n, b);
                     self.bare_gates = Some((n.clone(), gates));
                 }
+                self.loose_push = false;
                 let done = self.lower_pushes(n, &s, items, cond.as_ref(), b);
                 if bare {
                     self.bare_gates = None;
                 }
                 done?;
-                self.trigger(n, b);
+                // a paced push has triggered after each item (log 93)
+                if self.paced(n, b).is_none() || self.loose_push {
+                    self.trigger(n, b);
+                }
                 Ok(false)
             }
         }
@@ -5591,11 +5585,7 @@ impl Lowerer {
             // whether or not an edge was on. The rate is a literal, so
             // the period is worked out here
             if let Some(&hz) = self.rates.get(name) {
-                let (p, c, t) = (b.tmp(), b.tmp(), b.tmp());
-                b.line(&format!("{}: ptr = addr __clock", p));
-                b.line(&format!("{}: i64 = load {}", c, p));
-                b.line(&format!("{}: i64 = add {}, {}", t, c, CLOCK_HZ / hz));
-                b.line(&format!("__wait({})", t));
+                self.step(hz, b);
             }
             return;
         }
@@ -5609,6 +5599,12 @@ impl Lowerer {
             b.line(&format!("push({}, {})", s.text, v.text));
         } else {
             self.emit_push_only(s, v, b);
+        }
+        // into a stream with a rate, from a plain function (log 93):
+        // the nodes below take the item now, and then its step passes
+        if let Some(hz) = self.paced(name, b) {
+            self.trigger(name, b);
+            self.step(hz, b);
         }
         if let BodyKind::Task { out, hz } = &b.kind {
             // no wiring in the store has a rate: every `__hz` is 0 and
@@ -5652,6 +5648,7 @@ impl Lowerer {
                 if cond.is_some() && last {
                     return Err(lex::error(&file, e.line, "a task call is not repeated with `while`: the task's own chain says when it stops"));
                 }
+                self.loose_push = true;
                 self.run_task(&info, &args, hz, s, b, e.line)?;
                 continue;
             }
@@ -5751,6 +5748,7 @@ impl Lowerer {
                 v.ty = if is_concrete(p) { p.clone() } else if v.text.contains('.') { float_ty() } else { int_ty() };
             }
             let v = b.materialize(&v);
+            self.loose_push = true;
             match self.device_fns.get(&info.ir) {
                 // the device copy (log 87): `o$` is not a value there,
                 // so the call takes the item alone
@@ -5818,7 +5816,8 @@ impl Lowerer {
         }
         // a stream with no storage takes a block an item at a time, each
         // through its edges (question 50)
-        if !own && !self.is_bare(name, b) {
+        // ... and so does a paced one, each item at its time (log 93)
+        if !own && !self.is_bare(name, b) && self.paced(name, b).is_none() {
             let regular = if b.vars.contains_key(name) { self.regular_locals.contains(name) } else { self.regular.contains(name) };
             let word = if self.is_queue(name, b) { "push_queue" } else if regular { "push" } else { "__push" };
             b.line(&format!("{}({}, {})", word, s.text, view));
@@ -5840,6 +5839,28 @@ impl Lowerer {
         b.line(&format!("{}: i64 = add {}, 1", k2, k));
         b.line(&format!("continue {}", k2));
         b.depth -= 1;
+    }
+
+    /// a step of a rate passes (question 52, fm3 log 92): the clock read,
+    /// the period added, `__wait`. A declared rate is a literal, so the
+    /// period is worked out here, where `__sleep(hz)` divides at run time
+    fn step(&mut self, hz: i64, b: &mut Body) {
+        let (p, c, t) = (b.tmp(), b.tmp(), b.tmp());
+        b.line(&format!("{}: ptr = addr __clock", p));
+        b.line(&format!("{}: i64 = load {}", c, p));
+        b.line(&format!("{}: i64 = add {}, {}", t, c, CLOCK_HZ / hz));
+        b.line(&format!("__wait({})", t));
+    }
+
+    /// is a push into the name paced (question 39, 52, fm3 log 93)? A
+    /// plain function's push into a stored feature-scope stream declared
+    /// with a rate: each item is pushed, the nodes below run, and a step
+    /// passes, so every consumer acts on the item at its time
+    fn paced(&self, name: &str, b: &Body) -> Option<i64> {
+        if b.kind != BodyKind::Fn || b.vars.contains_key(name) || self.bare.contains(name) {
+            return None;
+        }
+        self.rates.get(name).copied()
     }
 
     /// the gates of the edges out of a stream with no storage, read now:
