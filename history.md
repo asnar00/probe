@@ -4,6 +4,23 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### ssa, slice, stream: a view's words and a stream's position are `index` — `1ffa005` · 2026-10-06
+
+```
+fn tick_of(s: any$, k: index) -> i64
+    r: ptr = get s, ring
+    step: i64 = load r, 40
+    regular: u1 = cmp.gt step, 0
+    t: i64 = if regular
+        t0: i64 = load r, 48
+        kt: i64 = conv k
+        d: i64 = mul kt, step
+        tr: i64 = add t0, d
+        yield tr
+```
+
+`lib/stream.ssa:137-146`. The parity pass, hop 15, transformation 55, step (b) (fm3 log 121). The parser's two structures count in `index`: a view's count and stride, a stream's position, and all the arithmetic the parser writes for a subscript (`src/ssa.rs`); `lib/slice.ssa`, `lib/sample.ssa` and `lib/stream.ssa` follow. A place is not a time: ticks, rates, a step and `t0` stay `i64`, and where one becomes the other there is one `conv`, as above. Headers and views keep their eight-byte words; an index sits in a word's low bytes. On a 64-bit path nothing changed: lex 616, hello 1 237, static 1 197, and 592 functions of eight stores cost what they did. On wasm32 the suite's stream module has 59 `i32.wrap_i64` where it had 251 and is 1 724 bytes shorter. `suite/stream.ssa`, `slice.ssa` and `matrix.ssa` hold their lengths and counts in an `index`. The whole suite passes natively at 16, 32 and 64. Zero stores are still built at 64 until the front end's text changes. Full run green (`scratchpad/chain50.log`): `probe test` 1015, `cargo test` 127.
+
 ### arena: the arena counts in `index` — `02e9b15` · 2026-10-06
 
 ```
