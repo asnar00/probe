@@ -4,6 +4,14 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a case asserts on time — `024f51e` · 2026-10-06
+
+```
+>run() → "10\n" at 0 s, "9\n" at 1 s, "8\n" at 2 s, "7\n" at 3 s, "6\n" at 4 s, "5\n" at 5 s, "4\n" at 6 s, "3\n" at 7 s, "2\n" at 8 s, "1\nhello world\ngoodbye" at 9 s
+```
+
+The parity pass, hop 8, transformation 24 (fm3 log 91, questions 52 and 53). ash ruled that time in a program is a label on an item and never a delay, so timed code is tested at once by checking stamps; until now no case could say when anything was written. A result may now be every piece of the output in order, each with its time (above, `suite/zero/hello/bye/bye.md`): a piece is everything written while the clock stood still, two pieces at one time are one, and the pieces joined are the whole output. The clock moves only in `__wait`, so the virtual clock's `__wait` in `src/zero/lower.rs` leaves a mark each time, the bytes written so far and the time reached; `suite::Call.times` has each of the five paths read the marks after the text, and `judge` in `src/zero/run.rs` cuts the text at them and prints a failure in the case's own spelling, so the line can be pasted back. A mark costs **12 SSA** a wait: hello's `run` **1 622 → 1 742**, static **1 560 → 1 680**; lex unchanged to the byte, a store that never waits keeping no marks. Green on all five paths, zero 536/536, `probe test` 984, `cargo test` 114.
+
 ### zero: a feature watches what is written, by redefining `<<` — `6525a2e` · 2026-09-10
 
 ```
