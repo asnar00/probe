@@ -36,6 +36,12 @@ pub struct Store {
     /// and its subtree are not among the features, but their marks are
     /// kept so a case naming one can be told why
     pub marks: HashMap<String, Mark>,
+    /// the features the product leaves out, `static off` and everything
+    /// under them, parsed and in composition order: the store as it was
+    /// read is `features` and these (question 54, fm3 log 96). Nothing
+    /// of them is lowered; the compiler asks them only whether a stream
+    /// the program pushes into is one that some feature would read
+    pub left_out: Vec<FeatureDoc>,
     /// the product's clock (log 77): `clock: real` or `clock: virtual`
     pub clock: Clock,
 }
@@ -296,7 +302,7 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     // a static-off feature leaves the store with everything under it
     // (log 71): a child under a parent that is never on could never be on
     let mut gone: Vec<String> = Vec::new();
-    let store = Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width, float_width, marks, clock };
+    let store = Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width, float_width, marks, left_out: Vec::new(), clock };
     for (name, mark) in &store.marks {
         if *mark == Mark::StaticOff {
             gone.extend(store.subtree(name));
@@ -308,7 +314,8 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
             store.marks.insert(name.clone(), Mark::StaticOff);
         }
     }
-    store.features.retain(|f| !gone.contains(&f.name));
+    let (left_out, features) = std::mem::take(&mut store.features).into_iter().partition(|f| gone.contains(&f.name));
+    (store.left_out, store.features) = (left_out, features);
     Ok(store)
 }
 

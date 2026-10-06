@@ -748,6 +748,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// a stream that is pushed into and that nothing reads or wires
+    /// (question 54, fm3 log 96): with the feature that wires it marked
+    /// `static off` it has no storage, a push into it being nothing but
+    /// the step of its rate; where no feature of the store reads or
+    /// wires it, compiled in or left out, the store is refused, naming
+    /// the stream
+    #[test]
+    fn a_stream_nothing_reads_or_wires() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-unwired-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let feature = |name: &str, parent: &str, minute: u32, code: &str| {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            let parent = if parent.is_empty() { String::new() } else { format!("parent: {}\n", parent) };
+            std::fs::write(dir.join(format!("{}/{}.md", name, name)), format!("# {}\n*x*\n\n{}layer: runtime\n\n> (suite) 2026-10-06T10:0{}:00\n\n## testing\n", name, parent, minute)).unwrap();
+            std::fs::write(dir.join(format!("{}/{}.zero", name, name)), code).unwrap();
+        };
+        let lowered = |product: &str| -> Result<String, String> {
+            std::fs::write(dir.join("product.md"), product).unwrap();
+            let s = store::read(&dir).map_err(|e| e.to_string())?;
+            Ok(lower::lower(&s).map_err(|e| e.to_string())?.ir)
+        };
+        feature("base", "", 0, "int n$\nint beat$ at (2 hz)\n\non count()\n    n$ << [3 through 1]\n    beat$ << 1\n");
+        feature("shown", "base", 1, "out$ << n$ << \"\\n\"\nout$ << beat$ << \"\\n\"\n");
+        // wired by a feature that is in the program: an edge each
+        let ir = lowered("# p\n").unwrap();
+        assert!(ir.contains("fn __edge1(__item: int)") && ir.contains("fn __edge2(__item: int)"), "{}", ir);
+        // wired by a feature the product leaves out: no edge, no queue,
+        // and the rated stream's step still passes
+        let ir = lowered("# p\n\nshown: static off\n").unwrap();
+        assert!(!ir.contains("__edge") && !ir.contains("__queue_int") && !ir.contains("__get_n"), "{}", ir);
+        assert!(ir.contains("    _7: i64 = add _6, 500000\n    __wait(_7)\n    ret\n"), "{}", ir);
+        // wired by no feature at all: refused, naming the stream
+        std::fs::write(dir.join("shown/shown.zero"), "out$ << beat$ << \"\\n\"\n").unwrap();
+        for product in ["# p\n", "# p\n\nshown: static off\n"] {
+            let err = lowered(product).expect_err("a stream nothing reads or wires");
+            assert!(err.contains("base.zero:1: 'n$' is pushed into and nothing reads it or wires it, in any feature of the store, compiled in or left out: a mistyped name?"), "{}", err);
+        }
+        // a case that names the stream reads it, and it is a queue again
+        std::fs::write(dir.join("base/base.md"), "# base\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n>count n$ → 0\n").unwrap();
+        let ir = lowered("# p\n").unwrap();
+        assert!(ir.contains("fn __queue_int(") && ir.contains("fn __get_n()"), "{}", ir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// the product's clock (log 77): real, and the store waits on the
     /// machine's counter through a `platform arm64` body; virtual, and
     /// the clock jumps; anything else refused

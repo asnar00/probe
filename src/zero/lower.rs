@@ -2585,39 +2585,30 @@ impl Lowerer {
     /// function's. Two more are left their queues: a stream whose type
     /// a `<<` method takes, since such a push passes the stream as a
     /// value; and one that reaches itself through bare edges, whose
-    /// functions would call each other for ever
+    /// functions would call each other for ever. A stream that is
+    /// pushed into and is the source of no edge is bare on the same
+    /// conditions (question 54, fm3 log 96), which is what a stream
+    /// becomes when the feature that wires it is left out by the
+    /// product; one that no feature of the store reads or wires at all
+    /// is refused
     fn settle_bare(&mut self, store: &Store) -> Result<(), Error> {
-        let none = Names::new();
-        let mut named = Names::new();
-        let mut wires: Vec<(String, String)> = Vec::new();
-        for f in &store.features {
-            for d in &f.code.decls {
-                match d {
-                    Decl::Fn(fd) => {
-                        let mut bound: Names = fd.results.iter().map(|p| p.name.clone()).collect();
-                        bound.extend(fd.params().map(|p| p.name.clone()));
-                        let task = |e: &Expr| matches!(self.task_call(e, None, &f.code.file), Ok(Some(_)));
-                        mentions(&fd.body, &bound, &task, &mut named);
-                    }
-                    Decl::Var(v) => mentions_init(v, &none, &mut named),
-                    Decl::Wire(e) => mentions_in(e, &none, &mut named),
-                    Decl::Edge { target, items, cond, .. } => {
-                        items.iter().skip(1).for_each(|e| mentions_in(e, &none, &mut named));
-                        cond.iter().for_each(|e| mentions_in(e, &none, &mut named));
-                        if let (ExprKind::Seq(t), Some(Expr { kind: ExprKind::Seq(s), .. })) = (&target.kind, items.first()) {
-                            wires.push((s.clone(), t.clone()));
-                        }
-                    }
-                    Decl::Type(_) => {}
-                }
-            }
-            for c in &f.cases {
-                mentions_in(&c.call, &none, &mut named);
-            }
-        }
+        let (named, wires, pushed) = stream_uses(&store.features, &|e, file| matches!(self.task_call(e, None, file), Ok(Some(_))));
+        // the features the product leaves out are asked one thing: does
+        // any of them read or wire a stream (question 54). Their tasks
+        // are not declared, and a task call only ever made the target of
+        // its push count as named, which is no reading
+        let (named_out, wires_out, _) = stream_uses(&store.left_out, &|_, _| false);
         let mut bare = Names::new();
         let mut rates: HashMap<String, i64> = HashMap::new();
-        for (s, _) in &wires {
+        // the sources of the edges, then the streams that are pushed into
+        // and neither read nor wired (question 54, fm3 log 96): such a
+        // stream has no storage either, a push into it being nothing but
+        // the step of its rate, so a feature marked `static off` and the
+        // same feature switched off are one program
+        let mut unwired: Vec<&String> = pushed.iter().filter(|s| !wires.iter().any(|(w, _)| &w == s)).collect();
+        unwired.sort();
+        let sources = wires.iter().map(|(s, _)| (s, true)).chain(unwired.into_iter().map(|s| (s, false)));
+        for (s, wired) in sources {
             if named.contains(s) || bare.contains(s) {
                 continue;
             }
@@ -2631,6 +2622,12 @@ impl Lowerer {
             }
             if self.funcs.iter().any(|g| matches!(g.parts.as_slice(), [NamePart::Group, NamePart::Sym(op), NamePart::Group] if op == "<<") && g.params.first().map(|p| &p.1) == Some(&ty)) {
                 continue;
+            }
+            // ... and where no feature of the store as it was read, the
+            // ones the product leaves out included, reads or wires it,
+            // that is almost certainly a mistyped name
+            if !wired && !named_out.contains(s) && !wires_out.iter().any(|(w, _)| w == s) {
+                return Err(lex::error(&feat.code.file, v.line, format!("'{}$' is pushed into and nothing reads it or wires it, in any feature of the store, compiled in or left out: a mistyped name?", s)));
             }
             if let Some(r) = &v.rate {
                 rates.insert(s.clone(), self.rate_hz(r, &feat.code.file)?);
@@ -6564,13 +6561,51 @@ fn item_count(e: &Expr, bytes: bool) -> Option<i64> {
     }
 }
 
+/// What a set of features says of the store's streams (question 50,
+/// 54): the names they mention other than as the target of a push,
+/// their cases' included; the edges they wire, source and target; and
+/// the names they push into, an edge's target among them. `task` says
+/// whether an expression in a file is a task call
+fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str) -> bool) -> (Names, Vec<(String, String)>, Names) {
+    let none = Names::new();
+    let (mut named, mut pushed) = (Names::new(), Names::new());
+    let mut wires: Vec<(String, String)> = Vec::new();
+    for f in features {
+        for d in &f.code.decls {
+            match d {
+                Decl::Fn(fd) => {
+                    let mut bound: Names = fd.results.iter().map(|p| p.name.clone()).collect();
+                    bound.extend(fd.params().map(|p| p.name.clone()));
+                    mentions(&fd.body, &bound, &|e| task(e, &f.code.file), &mut named, &mut pushed);
+                }
+                Decl::Var(v) => mentions_init(v, &none, &mut named),
+                Decl::Wire(e) => mentions_in(e, &none, &mut named),
+                Decl::Edge { target, items, cond, .. } => {
+                    items.iter().skip(1).for_each(|e| mentions_in(e, &none, &mut named));
+                    cond.iter().for_each(|e| mentions_in(e, &none, &mut named));
+                    if let (ExprKind::Seq(t), Some(Expr { kind: ExprKind::Seq(s), .. })) = (&target.kind, items.first()) {
+                        wires.push((s.clone(), t.clone()));
+                        pushed.insert(t.clone());
+                    }
+                }
+                Decl::Type(_) => {}
+            }
+        }
+        for c in &f.cases {
+            mentions_in(&c.call, &none, &mut named);
+        }
+    }
+    (named, wires, pushed)
+}
+
 /// every name a block mentions other than as the target of a push
 /// (question 50, fm3 log 92): a stream none of the store's text names
 /// so has no word applied to it and no storage. `bound` is the names the
 /// function has bound itself, which are its own; `task` says whether a
 /// pushed item is a task call, which fills the stream it is pushed into
-/// and so takes it as a value
-fn mentions(stmts: &[Stmt], bound: &Names, task: &dyn Fn(&Expr) -> bool, out: &mut Names) {
+/// and so takes it as a value. `pushed` takes every name that is the
+/// target of a push (question 54)
+fn mentions(stmts: &[Stmt], bound: &Names, task: &dyn Fn(&Expr) -> bool, out: &mut Names, pushed: &mut Names) {
     let mut bound = bound.clone();
     let named = |n: &String, bound: &Names, out: &mut Names| {
         if !bound.contains(n) {
@@ -6594,9 +6629,9 @@ fn mentions(stmts: &[Stmt], bound: &Names, task: &dyn Fn(&Expr) -> bool, out: &m
             Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => mentions_in(value, &bound, out),
             Stmt::If { cond, then, els, .. } => {
                 mentions_in(cond, &bound, out);
-                mentions(then, &bound, task, out);
+                mentions(then, &bound, task, out, pushed);
                 if let Some(e) = els {
-                    mentions(e, &bound, task, out);
+                    mentions(e, &bound, task, out, pushed);
                 }
             }
             Stmt::Loop { vars, cond, body, into, .. } => {
@@ -6606,7 +6641,7 @@ fn mentions(stmts: &[Stmt], bound: &Names, task: &dyn Fn(&Expr) -> bool, out: &m
                     inner.insert(v.name.clone());
                 }
                 cond.iter().for_each(|e| mentions_in(e, &inner, out));
-                mentions(body, &inner, task, out);
+                mentions(body, &inner, task, out, pushed);
                 match into {
                     Some(super::syntax::LoopInto::Declare(ps)) => bound.extend(ps.iter().map(|p| p.name.clone())),
                     Some(super::syntax::LoopInto::Assign(ts)) => ts.iter().for_each(|t| named(&t.name, &bound, out)),
@@ -6617,7 +6652,7 @@ fn mentions(stmts: &[Stmt], bound: &Names, task: &dyn Fn(&Expr) -> bool, out: &m
                 mentions_in(seq, &bound, out);
                 let mut inner = bound.clone();
                 inner.insert(var.clone());
-                mentions(body, &inner, task, out);
+                mentions(body, &inner, task, out, pushed);
             }
             Stmt::Continue { values, .. } => values.iter().for_each(|e| mentions_in(e, &bound, out)),
             Stmt::Break { .. } => {}
@@ -6626,7 +6661,7 @@ fn mentions(stmts: &[Stmt], bound: &Names, task: &dyn Fn(&Expr) -> bool, out: &m
                 cond.iter().for_each(|e| mentions_in(e, &bound, out));
                 match &target.kind {
                     ExprKind::Seq(n) if *existing || items.iter().any(|e| task(e)) => named(n, &bound, out),
-                    ExprKind::Seq(_) => {}
+                    ExprKind::Seq(n) => named(n, &bound, pushed),
                     _ => mentions_in(target, &bound, out),
                 }
             }
