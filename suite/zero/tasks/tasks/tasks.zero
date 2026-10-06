@@ -11,6 +11,9 @@ int right$
 right$ << left$ << 0
 int v$
 int r$ = runs(v$)
+int hop$
+int far$
+int landed$ = hopping(hop$)
 
 on (int i$) << count down from (int n)
     i$ << n << (i$ - 1) while (_ > 0)
@@ -39,6 +42,20 @@ on (int e$) << closer (int x$)
 on (int r$) << runs (int x$)
     r$ << count x$
     advance x$ by (count x$)
+
+on (int o$) << hopping (int s$)
+    loop
+        if (count s$ == 0)
+            break
+        o$ << peek s$ at (0)
+        advance s$ by (1)
+    s$ = far$
+
+on (int n) = hopped()
+    far$ << 7 << 8
+    hop$ << 1
+    hop$ << 2
+    n = count landed$ * 100 + peek landed$ at (1)
 
 on (int n) = sawtoothed()
     int i$ = sawtooth(5)

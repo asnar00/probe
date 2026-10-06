@@ -2046,7 +2046,7 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new() };
+    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2964,6 +2964,10 @@ struct Lowerer {
     /// pruned function's among them. A field outside it holds one
     /// value from the start of a case to its end
     written: std::collections::HashSet<String>,
+    /// the woken nodes that keep their position and not a whole reader
+    /// (fm3 log 111): those whose task gives back its parameter's own
+    /// ring and rules, `ring_kept`
+    placed: std::collections::HashSet<usize>,
     /// how many nodes read each feature-scope stream, counted before
     /// the nodes are emitted (question 48)
     node_reads: HashMap<String, usize>,
@@ -4113,6 +4117,18 @@ impl Lowerer {
                 self.rests.insert(s, rest);
             }
         }
+        // ... and of those, which keep a position alone (fm3 log 111)
+        for &k in &woken {
+            let info = &self.nodes[k].info;
+            let param = info.params[0].0.clone();
+            let mut defs = store.features.iter().flat_map(|f| f.code.decls.iter()).filter_map(|d| match d {
+                Decl::Fn(fd) if mangle(&fd.name) == info.key && fd.name == info.parts && fd.params().count() == info.params.len() => Some(fd),
+                _ => None,
+            }).peekable();
+            if defs.peek().is_some() && defs.all(|fd| fd.platform.is_empty() && self.ring_kept(&fd.body, &param)) {
+                self.placed.insert(k);
+            }
+        }
         let kept = self.nodes.len() - woken.len();
         // a store with no nodes for the scheduler to run has none to
         // guard (fm3 log 92), and neither has one where no trigger can
@@ -4141,7 +4157,8 @@ impl Lowerer {
             let mut fields = Vec::new();
             for (a, (pname, pty)) in node.args.iter().zip(&node.info.params) {
                 if let (ExprKind::Seq(_), Ty::Stream(_)) = (&a.kind, pty) {
-                    fields.push((format!("__node{}_{}", k + 1, pname), pty.clone()));
+                    let ty = if self.placed.contains(&k) { Ty::Num("i64".into()) } else { pty.clone() };
+                    fields.push((format!("__node{}_{}", k + 1, pname), ty));
                     // how many items the ring had when the node last ran
                     if !woken.contains(&k) {
                         fields.push((format!("__node{}_{}_seen", k + 1, pname), Ty::Num("i64".into())));
@@ -4268,7 +4285,13 @@ impl Lowerer {
             for (k, node) in self.nodes.iter().enumerate() {
                 for (a, (_, pty)) in node.args.iter().zip(&node.info.params) {
                     if let (ExprKind::Seq(n), Ty::Stream(_)) = (&a.kind, pty) {
-                        inits.push(init_of[n].clone());
+                        if self.placed.contains(&k) {
+                            let at = b.tmp();
+                            b.line(&format!("{}: i64 = get {}, pos", at, init_of[n]));
+                            inits.push(at);
+                        } else {
+                            inits.push(init_of[n].clone());
+                        }
                         if !woken.contains(&k) {
                             inits.push("0".into());
                         }
@@ -5967,7 +5990,7 @@ impl Lowerer {
                             return Err(lex::error(&file, *line, format!("'{}$' has a rate and nodes its pushers wake, and this statement pushes through a method or a task: the front end should not have chosen to wake them (fm3 log 103)", n)));
                         }
                         if self.sure_push {
-                            self.wake(n, true, b);
+                            self.wake(n, &s.text, true, b);
                         } else {
                             let before = b.tmp();
                             b.out.insert_str(mark, &format!("{}{}: i64 = received({})\n", "    ".repeat(b.depth + 1), before, s.text));
@@ -5976,7 +5999,7 @@ impl Lowerer {
                             b.line(&format!("{}: u1 = cmp.gt {}, {}", more, after, before));
                             b.line(&format!("if {}", more));
                             b.depth += 1;
-                            self.wake(n, true, b);
+                            self.wake(n, &s.text, true, b);
                             b.depth -= 1;
                         }
                     }
@@ -7132,7 +7155,7 @@ impl Lowerer {
         // into a stream with a rate, from a plain function (log 93):
         // the nodes below take the item now, and then its step passes
         if let Some(hz) = self.paced(name, b) {
-            self.wake(name, true, b);
+            self.wake(name, &s.text, true, b);
             self.trigger(name, b);
             self.step(hz, b);
         }
@@ -7477,6 +7500,73 @@ impl Lowerer {
         }
     }
 
+    /// Does a task give back its stream parameter's own ring and rules
+    /// (fm3 log 111)? Its IR result is the parameter moved on, and the
+    /// lowering makes a new version of a local stream from the one
+    /// before only through `advance` and `frame` (`rebind_stream`),
+    /// which move the position alone; every other way is an assignment,
+    /// a call's result, or a task run over it. So: the name stands in
+    /// the body only as the stream of one of the reading words, each
+    /// phrase exactly its shape, is bound by nothing, and no phrase is a
+    /// task's call over it. Whatever this does not recognise is a no
+    fn ring_kept(&self, stmts: &[Stmt], x: &str) -> bool {
+        let bound = |v: &super::syntax::VarDecl| v.name == x;
+        let init = |l: &Lowerer, v: &super::syntax::VarDecl| match &v.init {
+            Some(Init::Value(e)) => l.ring_kept_in(e, x),
+            Some(Init::Construct(args)) => args.iter().all(|a| l.ring_kept_in(&a.value, x)),
+            Some(Init::Pushes { items, cond }) => items.iter().chain(cond.iter()).all(|e| l.ring_kept_in(e, x)),
+            None => true,
+        };
+        stmts.iter().all(|s| match s {
+            Stmt::Var(v) => !bound(v) && init(self, v) && v.rate.as_ref().is_none_or(|e| self.ring_kept_in(e, x)),
+            Stmt::Multi { vars, value, .. } => vars.iter().all(|p| p.name != x) && self.ring_kept_in(value, x),
+            Stmt::Assign { targets, value, .. } => targets.iter().all(|t| t.name != x) && self.ring_kept_in(value, x),
+            Stmt::If { cond, then, els, .. } => self.ring_kept_in(cond, x) && self.ring_kept(then, x) && els.as_ref().is_none_or(|e| self.ring_kept(e, x)),
+            Stmt::Loop { vars, cond, body, yields, into, .. } => {
+                let given = match into {
+                    Some(super::syntax::LoopInto::Declare(ps)) => ps.iter().all(|p| p.name != x),
+                    Some(super::syntax::LoopInto::Assign(ts)) => ts.iter().all(|t| t.name != x),
+                    None => true,
+                };
+                given && yields.iter().all(|y| y != x) && vars.iter().all(|v| !bound(v) && init(self, v)) && cond.as_ref().is_none_or(|e| self.ring_kept_in(e, x)) && self.ring_kept(body, x)
+            }
+            Stmt::For { var, seq, body, .. } => var != x && self.ring_kept_in(seq, x) && self.ring_kept(body, x),
+            Stmt::Continue { values, .. } => values.iter().all(|e| self.ring_kept_in(e, x)),
+            Stmt::Break { .. } => true,
+            Stmt::Check { cond, .. } => self.ring_kept_in(cond, x),
+            Stmt::Push { target, items, cond, .. } => self.ring_kept_in(target, x) && items.iter().chain(cond.iter()).all(|e| self.ring_kept_in(e, x)),
+            Stmt::Expr { expr, .. } => self.ring_kept_in(expr, x),
+        })
+    }
+
+    fn ring_kept_in(&self, e: &Expr, x: &str) -> bool {
+        match &e.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Acc => true,
+            ExprKind::Name(n) | ExprKind::Seq(n) => n != x,
+            ExprKind::Unit(a, _) | ExprKind::Neg(a) | ExprKind::Field(a, _) => self.ring_kept_in(a, x),
+            ExprKind::List(items) => items.iter().all(|a| self.ring_kept_in(a, x)),
+            ExprKind::Range { from: a, to: c, .. } | ExprKind::Bin(_, a, c) | ExprKind::Index(a, c) => self.ring_kept_in(a, x) && self.ring_kept_in(c, x),
+            ExprKind::IfElse(a, c, d) => self.ring_kept_in(a, x) && self.ring_kept_in(c, x) && self.ring_kept_in(d, x),
+            ExprKind::Existing(_) => false,
+            ExprKind::Phrase(parts) => {
+                if self.task_streams(parts).iter().any(|n| n == x) {
+                    return false;
+                }
+                let it = |p: &Part| matches!(p, Part::Value(Expr { kind: ExprKind::Seq(n), .. }) if n == x);
+                let rest: &[Part] = match parts.as_slice() {
+                    [Part::Word(w), s] if it(s) && matches!(w.as_str(), "count" | "ended" | "position" | "latest" | "frame") => &[],
+                    [Part::Word(w), s, Part::Word(at), arg] if it(s) && ((w == "peek" && at == "at") || (w == "advance" && at == "by")) => std::slice::from_ref(arg),
+                    all => all,
+                };
+                rest.iter().all(|p| match p {
+                    Part::Word(w) => w != x,
+                    Part::Args(list) => list.iter().all(|a| self.ring_kept_in(&a.value, x)),
+                    Part::Value(v) => self.ring_kept_in(v, x),
+                })
+            }
+        }
+    }
+
     /// has the stream nodes its pushers wake, in this body?
     fn wakes_here(&self, name: &str, b: &Body) -> bool {
         b.kind == BodyKind::Fn && !b.vars.contains_key(name) && self.wakes.get(name).is_some_and(|w| !w.is_empty())
@@ -7491,7 +7581,7 @@ impl Lowerer {
     /// just ended, so the node is due. Where the feature is off, after
     /// a push, the drop (question 51): the reader moved past what has
     /// arrived; after an `end` nothing has arrived and there is none
-    fn wake(&mut self, name: &str, pushed: bool, b: &mut Body) {
+    fn wake(&mut self, name: &str, s: &str, pushed: bool, b: &mut Body) {
         if !self.wakes_here(name, b) {
             return;
         }
@@ -7504,8 +7594,20 @@ impl Lowerer {
             // write a load, a `set` and a store, which the IR dissolves
             // to the one field (log 67). The write loads again, the
             // task's call standing between
+            // ... and where the task gives back its parameter's own ring
+            // and rules the field is the reader's position alone, a
+            // word, `set` into the stream's value, which the push or
+            // the `end` before the wake has in hand (fm3 log 111)
             let field = format!("__node{}_{}", k + 1, pname);
-            let r = self.field_get(&field, &pty.ir(), None, b);
+            let placed = self.placed.contains(&k);
+            let r = if placed {
+                let at = self.field_get(&field, "i64", None, b);
+                let r = b.tmp();
+                b.line(&format!("{}: {} = set {}, pos, {}", r, pty.ir(), s, at));
+                r
+            } else {
+                self.field_get(&field, &pty.ir(), None, b)
+            };
             let gated = !self.statics.contains(&feature);
             if gated {
                 let on = self.gate(&feature, None, b);
@@ -7521,7 +7623,13 @@ impl Lowerer {
             ops.push("0: i64".into());
             let r2 = b.tmp();
             b.line(&format!("{}: {} = {}({})", r2, pty.ir(), ir, ops.join(", ")));
-            self.field_put(&field, &r2, b);
+            if placed {
+                let at = b.tmp();
+                b.line(&format!("{}: i64 = get {}, pos", at, r2));
+                self.field_put(&field, &at, b);
+            } else {
+                self.field_put(&field, &r2, b);
+            }
             if self.frees(name) {
                 b.line(&format!("free_queue({})", r2));
             }
@@ -7531,11 +7639,20 @@ impl Lowerer {
                     b.line("else");
                     b.depth += 1;
                     let p = self.pushed_of(&r, b);
-                    let r3 = b.tmp();
-                    b.line(&format!("{}: {} = set {}, pos, {}", r3, pty.ir(), r, p));
-                    self.field_put(&field, &r3, b);
-                    if self.frees(name) {
-                        b.line(&format!("free_queue({})", r3));
+                    if placed {
+                        self.field_put(&field, &p, b);
+                        if self.frees(name) {
+                            let r3 = b.tmp();
+                            b.line(&format!("{}: {} = set {}, pos, {}", r3, pty.ir(), r, p));
+                            b.line(&format!("free_queue({})", r3));
+                        }
+                    } else {
+                        let r3 = b.tmp();
+                        b.line(&format!("{}: {} = set {}, pos, {}", r3, pty.ir(), r, p));
+                        self.field_put(&field, &r3, b);
+                        if self.frees(name) {
+                            b.line(&format!("free_queue({})", r3));
+                        }
                     }
                     b.depth -= 1;
                 }
@@ -7684,7 +7801,7 @@ impl Lowerer {
                     b.line(&format!("if {}", was));
                     b.line("else");
                     b.depth += 1;
-                    self.wake(&sname, false, b);
+                    self.wake(&sname, &s.text, false, b);
                     b.depth -= 1;
                 } else {
                     b.line(&format!("end({})", s.text));

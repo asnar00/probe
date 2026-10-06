@@ -1070,18 +1070,41 @@ mod tests {
         // woken: the task is called in `fed`, after the push, and the
         // node keeps its reader and nothing else
         let ir = emit_with(wired, "");
-        assert!(ir.contains("fn fed() -> int\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: int$ = get _1, a\n    _3: int = const 1\n    push_queue_open(_2, _3)\n    _4: __ctx = load _this\n    _5: int$ = get _4, __node1_x\n    _6: __ctx = load _this\n    _7: u1 = get _6, __enabled_h\n    if _7\n        _8: __ctx = load _this\n        _9: int$ = get _8, d\n        _10: int$ = doubled(_9, _5, 0: i64)\n        _11: __ctx = load _this\n        _12: __ctx = set _11, __node1_x, _10\n        store _12, _this\n        free_queue(_10)\n    else\n        _13: i64 = received(_5)\n"), "{}", ir);
+        assert!(ir.contains("fn fed() -> int\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: int$ = get _1, a\n    _3: int = const 1\n    push_queue_open(_2, _3)\n    _4: __ctx = load _this\n    _5: i64 = get _4, __node1_x\n    _6: int$ = set _2, pos, _5\n    _7: __ctx = load _this\n    _8: u1 = get _7, __enabled_h\n    if _8\n        _9: __ctx = load _this\n        _10: int$ = get _9, d\n        _11: int$ = doubled(_10, _6, 0: i64)\n        _12: i64 = get _11, pos\n        _13: __ctx = load _this\n        _14: __ctx = set _13, __node1_x, _12\n        store _14, _this\n        free_queue(_11)\n    else\n        _15: i64 = received(_6)\n        _16: __ctx = load _this\n        _17: __ctx = set _16, __node1_x, _15\n        store _17, _this\n        _18: int$ = set _6, pos, _15\n        free_queue(_18)\n"), "{}", ir);
         // ... everything read and written in place at the context's one
         // address, with no accessor (fm3 log 104, 110)
         assert!(!ir.contains("__get_") && !ir.contains("__set___node1_x") && !ir.contains("__on_h"), "{}", ir);
+        // ... and the node keeps its position, a word, the rest of its
+        // reader being the stream's own value, which the push has in
+        // hand (fm3 log 111): `doubled` only reads and advances `x$`
+        assert!(ir.contains("\n    __node1_x: i64\n") && ir.contains("    _4: i64 = get _2, pos\n    _5: __ctx = pack 1, 1, _1, _2, _3, _4\n"), "{}", ir);
+        // a task that may give back a reader on another ring keeps its
+        // whole reader: one that assigns its parameter, declares the
+        // name again, loops over it, hands it to a function or runs a
+        // task over it, or reads it by a word the rule does not know
+        for (body, whole) in [
+            ("    loop\n        if (count x$ == 0)\n            break\n        d$ << peek x$ at (0)\n        advance x$ by (1)\n", false),
+            ("    d$ << count x$ << position x$\n    int f$ = frame x$\n    if (ended x$)\n        d$ << latest f$\n", false),
+            ("    advance x$ by (count x$)\n    x$ = far$\n", true),
+            ("    d$ << size(x$)\n    advance x$ by (count x$)\n", true),
+            ("    for (v in x$)\n        d$ << v\n", true),
+            ("    d$ << doubled(x$)\n", true),
+            ("    int h$ = x$ behind (1)\n    advance x$ by (count x$)\n", true),
+        ] {
+            std::fs::write(dir.join("h/h.zero"), format!("int a$\nint d$ = moved(a$)\nint far$\n\non (int n) = size (int s$)\n    n = count s$\n\n{}on (int d$) << moved (int x$)\n{}\n{}", task, body, fed)).unwrap();
+            let ir = lower::lower(&store::read(&dir).unwrap()).unwrap().ir;
+            assert!(!ir.contains("fn __node1("), "not woken: {}\n{}", body, ir);
+            assert_eq!(ir.contains("\n    __node1_x: int$\n"), whole, "{}\n{}", body, ir);
+            assert_eq!(ir.contains("\n    __node1_x: i64\n"), !whole, "{}\n{}", body, ir);
+        }
         for gone in ["fn __node1(", "__running", "__zero_start", "__run", "_seen", "_fin"] {
             assert!(!ir.contains(gone), "{}: {}", gone, ir);
         }
         // a statement that may push nothing wakes under whether anything
         // arrived, and an `end` under whether the stream had ended
         let ir = emit_with(wired, "\non some (int k)\n    a$ << [k to 1]\n\non close()\n    end a$\n");
-        assert!(ir.contains("    _2: int$ = get _1, a\n    _14: i64 = received(_2)\n") && ir.contains("    _15: i64 = received(_2)\n    _16: u1 = cmp.gt _15, _14\n    if _16\n        _17: __ctx = load _this\n        _18: int$ = get _17, __node1_x\n"), "{}", ir);
-        assert!(ir.contains("    _3: u1 = ended(_2)\n    end(_2)\n    if _3\n    else\n        _4: __ctx = load _this\n        _5: int$ = get _4, __node1_x\n"), "{}", ir);
+        assert!(ir.contains("    _2: int$ = get _1, a\n    _14: i64 = received(_2)\n") && ir.contains("    _15: i64 = received(_2)\n    _16: u1 = cmp.gt _15, _14\n    if _16\n        _17: __ctx = load _this\n        _18: i64 = get _17, __node1_x\n        _19: int$ = set _2, pos, _18\n"), "{}", ir);
+        assert!(ir.contains("    _3: u1 = ended(_2)\n    end(_2)\n    if _3\n    else\n        _4: __ctx = load _this\n        _5: i64 = get _4, __node1_x\n        _6: int$ = set _2, pos, _5\n"), "{}", ir);
         let node = |ir: &str| ir.contains("fn __node1() -> u1\n") && ir.contains("__node1_x_seen") && ir.contains("fn __zero_start()");
         // handed to a function, which may push into its parameter with
         // no trigger after
