@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream nothing reads or wires has no storage — `e42604f` · 2026-10-06
+
+```
+int n$
+int beat$ at (2 hz)
+
+on count down from (int k)
+    n$ << [k through 1]
+    out$ << "liftoff" << "\n"
+```
+
+`suite/zero/unwired/unwired/unwired.zero:1-6`, with `shown: static off` in its `product.md`. The parity pass, hop 9, transformation 28 (fm3 log 96, question 54). The feature that wires `n$` to the output is left out by the product, so nothing in the program reads or wires the stream; it still got a queue of 64 and `count down from (80)` failed a check, where the same feature switched off at run time writes `liftoff`. ash ruled the two are one program. `settle_bare` in `src/zero/lower.rs` now gives no storage to any stream that is only pushed into, a push being its items and, at a rate, a step. And the safeguard: `store::read` keeps the features a product leaves out (`Store.left_out`), and where no feature of the store, in or out, reads or wires such a stream the store is refused as a mistyped name. Against `6a07bff`'s binary the new store fails 1 of 2; now 2/2. No other store's IR changes by a byte: hello 1 268, static 1 197, lex 1 143. zero 553 → 555 runs native.
+
 ### zero: the mark, by position — `6a07bff` · 2026-10-06
 
 ```
