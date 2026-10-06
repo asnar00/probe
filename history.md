@@ -4,6 +4,10 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the meter, `probe zero meter` — `f866bfb` · 2026-10-06
+
+The parity pass, hop 16, transformation 63 (fm3 log 129). zero is in two parts, the zeroic and the non-zeroic, and removing the second is an aspiration, so the compiler now counts it. `probe zero meter <store>` lists every line that uses one of the nine non-zeroic forms `fm3/touchstones.md` keeps, with its file, line and form, and prints the rule that finds each; over a folder of stores it gives a row a store and the total (`src/zero/meter.rs`). It reads the tree and lowers nothing, so it refuses nothing. Over `suite/zero`: 158 of 1 755 lines in 23 stores; `lex` 17 of 91, `lex-zeroic` 6 of 71, its cases' `peek`s alone. A test pins two small stores, one wholly zeroic.
+
 ### zero: the lexer in six lines, and a count taken as a function runs — `b8b88b6` · 2026-10-06
 
 ```
