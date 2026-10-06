@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a task between a rated stream and the output keeps the rate — `2b1623d` · 2026-10-06
+
+```
+int i$ at (1 hz)
+int d$ = doubled(i$)
+out$ << d$ << "\n"
+
+on count down()
+    i$ << [10 through 1]
+```
+
+The parity pass, hop 8, transformation 26 (fm3 log 93, questions 39 and 52). ash ruled that whatever a consumer does with an item it does at that item's time, a task as much as an edge; with `doubled` between hello's stream and the output the ten numbers were all written at 0 s, the function pushing its whole statement before the scheduler ran. A plain function's push into a stored stream declared with a rate is now, per item, the push, the trigger `__run_i()` and a step of the rate (`emit_push` and `paced` in `src/zero/lower.rs`), and the edge's own wait is gone for such a stream. `suite/zero/timed` (above) is new, its cases `"20\n" at 0 s, "18\n" at 1 s` down to `"2\n" at 9 s` and `"liftoff" at 10 s`; both fail on the commit before with every piece at 0 s. hello **1 348** and static **1 277**, their IR byte for byte the same; the price where it applies is a scheduler entry an item, `timed`'s `count down` 603 → 3 802. A rated task wired at feature scope is not yet paced. Front end only: zero 553/553 native.
+
 ### zero: a stream no word reads has no storage — `efce63e` · 2026-10-06
 
 ```
