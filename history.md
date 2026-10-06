@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a push lands on the stream's beat — `f583089` · 2026-10-06
+
+```
+on turns()
+    beat$ << 1
+    quick$ << 2
+    beat$ << 3
+    out$ << "end" << "\n"
+```
+
+`suite/zero/edges/edges/edges.zero:20-24`, `beat$` at `2 hz` and `quick$` at `5 hz`. The parity pass, hop 9, transformation 30 (fm3 log 98; question 52 as ash refined it, the beat belongs to the stream). A stream with a rate has slots one period apart from 0 s, and an item pushed into it lands in the next slot at or after the pusher's now. Hop 8 pushed wherever now stood, so this wrote at 0 s, 500 ms and 700 ms; it now writes `1` at 0 s, `2` at 600 ms, `3` at 1 s and `end` at 1.5 s. After an item lands now is the next slot's start, so `align` in `src/zero/lower.rs` is emitted once a push statement, the clock rounded up to a multiple of the period by `add`, `rem`, `sub` and a `__wait`, 17 SSA, and not where the statement before pushed into the same stream. The period is `store::period`, the one a step adds. `suite/zero/timed`'s `late` is the stored shape. Against `69c1447`'s binary the four new runs fail. hello's `run` **1 268 → 1 285** on 255 → 261 lines against 1 246 (1.03×), one alignment; static **1 197 → 1 214** against 1 207 (1.01×); lex 1 143. zero 555 → 559 runs native, 23 zero unit tests.
+
 ### zero: the rate in a timed case — `69c1447` · 2026-10-06
 
 ```
