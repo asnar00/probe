@@ -4,6 +4,24 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the front end's text counts in `index` — `eaa88f0` · 2026-10-06
+
+```
+fn __queue_token(hz: i64, cap: index) -> token$
+    a: ptr = addr __arena
+    r: ptr = arena_alloc(a, 64)
+    sz: index = sizeof token
+    bytes: index = mul sz, cap
+    total: index = add bytes, 16
+    vb: ptr = arena_alloc(a, total)
+    buffer_init(vb, sz, cap)
+    ring_queue(r, vb, hz, cap)
+    s: token$ = stream r
+    ret s
+```
+
+`suite/zero/lex.expected.ssa:448-458`, written by `src/zero/lower.rs`. The parity pass, hop 15, transformation 55, step (c) (fm3 log 121). Every count, length, capacity, position and byte size the front end writes is spelled `index` where it said `i64`; time stays `i64`, the rate above among it. A program's own integer handed to `peek`, `advance` or a subscript is converted to `index` (`as_index`). So a zero store is built at its path's own `index` again, and on wasm32 every count in a zero program is an `i32`: the zero suite passes 608/608 there. On a 64-bit path the nineteen stores' text differs by the spelling and two lines, and of 1 365 functions costed two moved by one: `__out_len`, the runner's, and `count doubled` in `platform`, which subscripts with an `int64`. `sink`'s IR body takes `count` as an `index`. lex 616, hello 1 237, static 1 197, unchanged. Full run green (`scratchpad/chain51.log`): `probe test` 1015, `cargo test` 127.
+
 ### ssa, slice, stream: a view's words and a stream's position are `index` — `1ffa005` · 2026-10-06
 
 ```
