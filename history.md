@@ -4,6 +4,23 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the mark, by position — `6a07bff` · 2026-10-06
+
+```
+fn __wait(t: i64)
+    p: ptr = addr __clock
+    c: i64 = load p
+    m: i64 = max(c, t)
+    store m, p
+    q: ptr = addr __out_n
+    n: i64 = load q
+    a: ptr = addr __out_t
+    store m, a, n, 8
+    ret
+```
+
+`suite/zero/hello.expected.ssa:92-101`. The parity pass, hop 9, transformation 27 (fm3 log 95, question 55). A time mark was two words appended to a list with a count, 12 SSA a wait, and it was all hello had left over its oracle; ash: "a stamp needn't cost that much". Now the time is stored at the place in the output where it begins to apply: `data __out_t`, a word for each byte of the capture and one for its end, indexed by how many bytes have been written. A second wait before more is written overwrites the same word, and a zero says the clock did not move there. `__out_marks()` is gone; the runner reads `__out_mark(i)` for each byte it read and one more on every path (`src/suite.rs`, `src/driver.js`), `pieces` in `src/zero/run.rs` cuts where a word is not zero, and `__zero_reset` clears the table as far as the last case wrote, a loop declared `bound 65536`. Measured: **a mark is exactly 4**; `__wait` 17 → 9; hello's `run` **1 348 → 1 268** on 258 → 255 lines against `hello-mod.ssa`'s 1 246 (1.02×); static **1 277 → 1 197** on 181 → 178 against `hello-min.ssa`'s 1 207 (0.99×); lex 1 143, unchanged to the byte. All five paths (`scratchpad/chain30.log`): zero 553/553 native, wasm, riscv, arm-qemu, 534/534 and 19 skipped on air; `probe test` 984, 975, 984, 984, 952; `cargo test` 114 passed, 2 ignored, `zero_suite_native` having failed once under the chain's load and passed alone and in four whole runs after.
+
 ### zero: the stores' prose after "the beat belongs to the stream" — `4258d20` · 2026-10-06
 
 Prose only. While hop 8 ran, ash refined question 52 (fm3 `time.md`, "a stream has a beat"): a stream with a rate has a phase and a rate, an item pushed into it lands in its next slot, and the phase changes only on purpose. That replaces "a rate belongs to the activity that pushes", which `suite/zero/hello` and `static`'s `countdown.md` and `suite/zero/timed/timed/timed.md` repeated; they now say only what happens, a number written when it is pushed and then its second passing. What is built is unchanged and is not yet the beat: `step` in `src/zero/lower.rs` moves the clock on from the pusher's now and looks for no slot. Every store pushes each rated stream from one function starting at 0 s, so every case stands under the new ruling as written; fm3 log 94 has the program where the two differ and what landing on the beat would cost hello, 1 348 to about 1 600. zero 553/553 native.
