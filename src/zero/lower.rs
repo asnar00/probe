@@ -522,7 +522,8 @@ fn __out_mark(i: i64) -> i64
 ; ring is the device's own lookahead, sized by the runner, which a
 ; consumer wired to `in$` reads with `peek`, `advance` and `count`
 fn __in_ch(c: u8)
-    s: u8$ = __get_in()
+    k: __ctx = load _this
+    s: u8$ = get k, in
     __push(s, c)
     ret
 
@@ -673,6 +674,10 @@ fn __push(s: any$, block: any[])
 /// a ring's capacity, or the item count where it is larger (log 38):
 /// the front end's number until residency is computed (section 9, log
 /// 23); a reader more than half this behind fails the library's check
+/// the context's address in a function that touches the context (fm3
+/// log 110): the one name every load and store of state goes through
+const THIS: &str = "_this";
+
 const RING_ITEMS: usize = 64;
 /// a block of fewer items than this is moved an item at a time (fm3
 /// log 109): sixteen bytes are the smallest chunk the machines have,
@@ -2041,7 +2046,7 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new() };
+    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2274,6 +2279,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     // read, and may end anything
     let unread = store.features.iter().any(|f| f.name != "platform" && f.code.decls.iter().any(|d| matches!(d, Decl::Fn(fd) if !fd.platform.is_empty())));
     let ir = settle_pushes(ir, &l.queue_pushes, &l.ended, unread);
+    let ir = settle_context(&ir, &l.written, unread);
     // the text carries what the store reaches (log 70): every function
     // of the store's own features, the platform feature's that a case
     // names, and the runner's entries are roots
@@ -2323,6 +2329,133 @@ fn settle_pushes(mut ir: String, pushes: &std::collections::BTreeMap<String, Ty>
         ir = ir.replace(&format!("push_queue<{}>(", key), if reached { "push_queue(" } else { "push_queue_open(" });
     }
     ir
+}
+
+/// The context reached once (fm3 log 110), settled in the finished text
+/// because a write may be lowered after the read it matters to. Two
+/// things, a function at a time. A function that names `_this` gets the
+/// context's address as its first line, the one place it is formed. And
+/// a field nothing in the store writes is fetched once: where a read of
+/// it is already in hand in a block still open, above, a later read
+/// into a temporary is dropped and its name replaced by the earlier
+/// one. The open blocks are the text's indentation: a line less
+/// indented than a read closes the block that read was in. Nothing is
+/// asked about what lies between the two reads, there being no store to
+/// such a field in any function; `unread`, a `platform` body of the
+/// store's own, which may call a setter, reuses nothing
+fn settle_context(ir: &str, written: &std::collections::HashSet<String>, unread: bool) -> String {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let names = |line: &str, f: &mut dyn FnMut(&str) -> Option<String>| -> String {
+        let mut out = String::new();
+        let mut rest = line;
+        while !rest.is_empty() {
+            let n = rest.find(|c: char| !word(c)).unwrap_or(rest.len());
+            if n == 0 {
+                let c = rest.chars().next().unwrap();
+                out.push(c);
+                rest = &rest[c.len_utf8()..];
+            } else {
+                out.push_str(&f(&rest[..n]).unwrap_or_else(|| rest[..n].to_string()));
+                rest = &rest[n..];
+            }
+        }
+        out
+    };
+    let lines: Vec<&str> = ir.lines().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        out.push_str(lines[i]);
+        out.push('\n');
+        if !lines[i].starts_with("fn ") {
+            i += 1;
+            continue;
+        }
+        let start = i + 1;
+        let mut end = start;
+        while end < lines.len() && lines[end].starts_with(' ') {
+            end += 1;
+        }
+        let body = &lines[start..end];
+        i = end;
+        let mut uses = false;
+        let mut made = false;
+        for l in body {
+            names(l, &mut |w| {
+                uses |= w == THIS;
+                None
+            });
+            made |= l.trim_start().starts_with("_this:");
+        }
+        if !uses {
+            for l in body {
+                out.push_str(l);
+                out.push('\n');
+            }
+            continue;
+        }
+        // the loads of the context, by the name each defines: the line,
+        // and how many lines kept still use it
+        let mut loads: HashMap<String, (usize, usize)> = HashMap::new();
+        // the fields in hand: how far in the read stands, the field, its name
+        let mut held: Vec<(usize, String, String)> = Vec::new();
+        let mut renamed: HashMap<String, String> = HashMap::new();
+        let mut dropped = vec![false; body.len()];
+        for (k, l) in body.iter().enumerate() {
+            let t = l.trim_start();
+            let indent = l.len() - t.len();
+            held.retain(|(d, _, _)| *d <= indent);
+            if let Some(name) = t.strip_suffix(&format!(": __ctx = load {}", THIS)) {
+                loads.insert(name.to_string(), (k, 0));
+                continue;
+            }
+            let read = t.split_once(" = get ").and_then(|(def, rhs)| {
+                let (c, f) = rhs.split_once(", ")?;
+                let (name, _) = def.split_once(": ")?;
+                loads.contains_key(c).then(|| (name.to_string(), f.to_string()))
+            });
+            if let Some((name, f)) = read {
+                if !unread && !written.contains(&f) {
+                    let temporary = name.len() > 1 && name.starts_with('_') && name[1..].bytes().all(|c| c.is_ascii_digit());
+                    match held.iter().find(|(_, g, _)| *g == f) {
+                        Some((_, _, earlier)) if temporary => {
+                            renamed.insert(name, earlier.clone());
+                            dropped[k] = true;
+                            continue;
+                        }
+                        Some(_) => {}
+                        None => held.push((indent, f, name)),
+                    }
+                }
+            }
+            names(t, &mut |w| {
+                if let Some(u) = loads.get_mut(w) {
+                    u.1 += 1;
+                }
+                None
+            });
+        }
+        for (k, n) in loads.values() {
+            if *n == 0 {
+                dropped[*k] = true;
+            }
+        }
+        if !made {
+            writeln!(out, "    {}: ptr = addr __ctx_mem", THIS).unwrap();
+        }
+        for (k, l) in body.iter().enumerate() {
+            if dropped[k] {
+                continue;
+            }
+            if renamed.is_empty() {
+                out.push_str(l);
+            } else {
+                out.push_str(&names(l, &mut |w| renamed.get(w).cloned()));
+            }
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// in a chain, the name feature i's body is emitted under: `key__f`, or
@@ -2747,7 +2880,7 @@ struct Lowerer {
     /// the features, in composition order
     features: Vec<String>,
     /// each feature's parent (log 51): the effective state of a feature
-    /// is its own flag and every ancestor's, read by `__on_<feature>`
+    /// is its own flag and every ancestor's, read in line by `gate`
     parents: HashMap<String, Option<String>>,
     /// the features the product marks static on (log 71): no field, no
     /// switch, no gate, and a chain body under its link's name
@@ -2826,6 +2959,11 @@ struct Lowerer {
     /// stream of its type, which is known once every body is lowered
     ended: Vec<Ty>,
     queue_pushes: std::collections::BTreeMap<String, Ty>,
+    /// the fields of the context some function of the store writes (fm3
+    /// log 110): every store the lowering emitted, a trial's and a
+    /// pruned function's among them. A field outside it holds one
+    /// value from the start of a case to its end
+    written: std::collections::HashSet<String>,
     /// how many nodes read each feature-scope stream, counted before
     /// the nodes are emitted (question 48)
     node_reads: HashMap<String, usize>,
@@ -3549,7 +3687,7 @@ impl Lowerer {
             (BodyKind::Task { hz: h, .. }, 0) => h.clone(),
             _ => format!("{}: i64", hz),
         });
-        // the moved readers: a local's next version, a feature variable's setter
+        // the moved readers: a local's next version, a feature variable's field stored
         let mut defs = Vec::new();
         let mut sets = Vec::new();
         for (n, ty) in &moved {
@@ -3569,7 +3707,7 @@ impl Lowerer {
             b.line(&format!("{} = {}", defs.join(", "), call));
         }
         for (n, t) in sets {
-            b.line(&format!("__set_{}({})", n, t));
+            self.field_put(&n, &t, b);
         }
         Ok(())
     }
@@ -4164,9 +4302,11 @@ impl Lowerer {
             writeln!(self.out, "\nfn __set_{}(v: {})\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    c2: __ctx = set c, {}, v\n    store c2, p\n    ret", f.name, t, f.name).unwrap();
         }
         // a feature is on when its own flag and every ancestor's are
-        // (section 14, log 51): the gate reads this, and a switch writes
-        // one field, so a parent off and on again leaves its children as
-        // they were
+        // (section 14, log 51), and a switch writes one field, so a
+        // parent off and on again leaves its children as they were. A
+        // gate reads the flags in line (`gate`, fm3 log 110); these and
+        // the accessors above are for a `platform` body of the store's
+        // own, and the prune drops whichever nothing calls
         // ... a static feature is always on and reads nothing: a dynamic
         // feature under one reads its own flag and its nearest dynamic
         // ancestor's (log 71)
@@ -4292,7 +4432,7 @@ impl Lowerer {
                 let body = format!("{}({})", body_name(&info, i, &self.statics), args.join(", "));
                 let under = if i == 0 { None } else { Some(format!("{}({})", link_name(&info, i - 1, &self.statics), args.join(", "))) };
                 let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
-                b.line(&format!("on: u1 = __on_{}()", info.chain[i]));
+                self.gate(&info.chain[i].clone(), Some("on"), &mut b);
                 if rets.is_empty() {
                     b.line("if on");
                     b.depth += 1;
@@ -4354,7 +4494,7 @@ impl Lowerer {
                 let body = format!("{}({})", named_body(&dev, &dev, &info.chain, i, &self.statics), dargs.join(", "));
                 let under = if i == 0 { None } else { Some(format!("{}({})", named_link(&dev, &dev, &info.chain, i - 1, &self.statics), dargs.join(", "))) };
                 let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
-                b.line(&format!("on: u1 = __on_{}()", info.chain[i]));
+                self.gate(&info.chain[i].clone(), Some("on"), &mut b);
                 b.line("if on");
                 b.depth += 1;
                 b.line(&body);
@@ -4380,7 +4520,7 @@ impl Lowerer {
     /// finished when all its inputs have ended.
     fn emit_node(&mut self, k: usize, node: &Node) -> Result<(), Error> {
         let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: node.file.clone(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
-        b.line(&format!("fin: u1 = __get___node{}_fin()", k));
+        self.field_get(&format!("__node{}_fin", k), "u1", Some("fin"), &mut b);
         b.line("notfin: u1 = xor fin, 1");
         let mut readers = Vec::new();
         // per reader: what its stream has received, and whether that is
@@ -4391,12 +4531,10 @@ impl Lowerer {
         let mut pending: Option<String> = None;
         for (a, (pname, pty)) in node.args.iter().zip(&node.info.params) {
             let Ty::Stream(_) = pty else { continue };
-            let r = b.tmp();
-            b.line(&format!("{}: {} = __get___node{}_{}()", r, pty.ir(), k, pname));
+            let r = self.field_get(&format!("__node{}_{}", k, pname), &pty.ir(), None, &mut b);
             let first = r.clone();
             let pushed = self.pushed_of(&first, &mut b);
-            let seen = b.tmp();
-            b.line(&format!("{}: i64 = __get___node{}_{}_seen()", seen, k, pname));
+            let seen = self.field_get(&format!("__node{}_{}_seen", k, pname), "i64", None, &mut b);
             let some = b.tmp();
             b.line(&format!("{}: u1 = cmp.gt {}, {}", some, pushed, seen));
             let e = b.tmp();
@@ -4427,7 +4565,7 @@ impl Lowerer {
         let due = if self.statics.contains(&node.feature) {
             pending
         } else {
-            b.line(&format!("on: u1 = __on_{}()", node.feature));
+            self.gate(&node.feature, Some("on"), &mut b);
             b.line(&format!("due: u1 = and {}, on", pending));
             "due".to_string()
         };
@@ -4461,7 +4599,7 @@ impl Lowerer {
         let mut done: Option<String> = None;
         for (i, ((pname, _, _, sname), m)) in readers.iter().zip(&moved).enumerate() {
             let r2 = m.split(':').next().unwrap().to_string();
-            b.line(&format!("__set___node{}_{}({})", k, pname, r2));
+            self.field_put(&format!("__node{}_{}", k, pname), &r2, &mut b);
             // the queue's slots come back where this node is its one
             // reader (log 89, question 48)
             if sname.as_deref().is_some_and(|n| self.frees(n)) {
@@ -4482,7 +4620,7 @@ impl Lowerer {
                 b.line(&format!("{}: u1 = ended({})", e, r2));
                 (pushed, e)
             };
-            b.line(&format!("__set___node{}_{}_seen({})", k, pname, pushed));
+            self.field_put(&format!("__node{}_{}_seen", k, pname), &pushed, &mut b);
             done = Some(match done {
                 None => e,
                 Some(d) => {
@@ -4492,7 +4630,7 @@ impl Lowerer {
                 }
             });
         }
-        b.line(&format!("__set___node{}_fin({})", k, done.unwrap_or_else(|| "1".into())));
+        self.field_put(&format!("__node{}_fin", k), &done.unwrap_or_else(|| "1".into()), &mut b);
         b.line("yield 1");
         b.depth -= 1;
         b.line("else");
@@ -4510,11 +4648,11 @@ impl Lowerer {
                 b.depth += 1;
                 let r2 = b.tmp();
                 b.line(&format!("{}: {} = set {}, pos, {}", r2, ty.ir(), r, pushed));
-                b.line(&format!("__set___node{}_{}({})", k, pname, r2));
+                self.field_put(&format!("__node{}_{}", k, pname), &r2, &mut b);
                 if sname.as_deref().is_some_and(|n| self.frees(n)) {
                     b.line(&format!("free_queue({})", r2));
                 }
-                b.line(&format!("__set___node{}_{}_seen({})", k, pname, pushed));
+                self.field_put(&format!("__node{}_{}_seen", k, pname), pushed, &mut b);
                 b.depth -= 1;
             }
         }
@@ -4551,15 +4689,81 @@ impl Lowerer {
         Ok(b.materialize(&v).text)
     }
 
-    /// a feature's switch read (log 51): its effective state, own flag
-    /// and ancestors', through the generated `__on_<feature>`
-    fn read_on(&mut self, feature: &str, b: &mut Body, dst: Option<&str>) -> Val {
-        let out = name_for(dst, &Ty::Bool, b);
-        if self.statics.contains(feature) {
-            b.line(&format!("{}: u1 = const 1", out));
-        } else {
-            b.line(&format!("{}: u1 = __on_{}()", out, feature));
+    /// A field of the context read in place (fm3 log 110): the context
+    /// loaded at its address and the field taken, which the IR
+    /// dissolves to a load of the one field (log 67). `_this` is the
+    /// context's address, formed once a function by `settle_context`;
+    /// a zero name cannot begin with `_`, so no variable is called it
+    fn field_get(&mut self, field: &str, ty: &str, dst: Option<&str>, b: &mut Body) -> String {
+        let c = b.tmp();
+        let out = match dst {
+            Some(d) if b.vars.contains_key(d) => {
+                let t = b.vars[d].ty.clone();
+                b.define(d, t)
+            }
+            Some(d) => d.to_string(),
+            None => b.tmp(),
+        };
+        b.line(&format!("{}: __ctx = load {}", c, THIS));
+        b.line(&format!("{}: {} = get {}, {}", out, ty, c, field));
+        out
+    }
+
+    /// A field of the context written in place: a load, a `set` and a
+    /// store, dissolved to a store of the one field. Every store to the
+    /// context a function makes is written here, so `written` is every
+    /// field that changes while a case runs
+    fn field_put(&mut self, field: &str, v: &str, b: &mut Body) {
+        let (c1, c2) = (b.tmp(), b.tmp());
+        b.line(&format!("{}: __ctx = load {}", c1, THIS));
+        b.line(&format!("{}: __ctx = set {}, {}, {}", c2, c1, field, v));
+        b.line(&format!("store {}, {}", c2, THIS));
+        self.written.insert(field.to_string());
+    }
+
+    /// A feature's effective state read in line (log 51, 71, fm3 log
+    /// 110): its own switch and each dynamic ancestor's, one load of the
+    /// context, a `get` each and an `and` each after the first
+    fn gate(&mut self, feature: &str, dst: Option<&str>, b: &mut Body) -> String {
+        let mut chain = vec![feature.to_string()];
+        while let Some(p) = self.dynamic_ancestor(chain.last().unwrap()) {
+            chain.push(p);
         }
+        let c = b.tmp();
+        b.line(&format!("{}: __ctx = load {}", c, THIS));
+        let mut acc = String::new();
+        for (i, f) in chain.iter().enumerate() {
+            let last = i + 1 == chain.len();
+            let named = |b: &mut Body| match dst {
+                Some(d) if b.vars.contains_key(d) => {
+                    let t = b.vars[d].ty.clone();
+                    b.define(d, t)
+                }
+                Some(d) => d.to_string(),
+                None => b.tmp(),
+            };
+            let own = if last && i == 0 { named(b) } else { b.tmp() };
+            b.line(&format!("{}: u1 = get {}, __enabled_{}", own, c, f));
+            acc = if i == 0 {
+                own
+            } else {
+                let both = if last { named(b) } else { b.tmp() };
+                b.line(&format!("{}: u1 = and {}, {}", both, acc, own));
+                both
+            };
+        }
+        acc
+    }
+
+    /// a feature's switch read (log 51): its effective state, own flag
+    /// and ancestors', read in line by `gate`
+    fn read_on(&mut self, feature: &str, b: &mut Body, dst: Option<&str>) -> Val {
+        if self.statics.contains(feature) {
+            let out = name_for(dst, &Ty::Bool, b);
+            b.line(&format!("{}: u1 = const 1", out));
+            return Val { text: out, ty: Ty::Bool, literal: false };
+        }
+        let out = self.gate(feature, dst.filter(|d| b.vars.get(*d).map(|v| &v.ty) == Some(&Ty::Bool)), b);
         Val { text: out, ty: Ty::Bool, literal: false }
     }
 
@@ -4576,7 +4780,7 @@ impl Lowerer {
         None
     }
 
-    /// a feature variable read: a call to its getter
+    /// a feature variable read: its field of the context, in place (fm3 log 110)
     fn read_fvar(&mut self, name: &str, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
         let f = self.fvar(name).unwrap().clone();
         self.reach(name, &f.feature, &b.file, line)?;
@@ -4590,18 +4794,18 @@ impl Lowerer {
         if self.bare.contains(name) {
             return Ok(Val { text: "__bare".into(), ty: f.ty, literal: false });
         }
-        let out = name_for(dst, &f.ty, b);
-        b.line(&format!("{}: {} = __get_{}()", out, f.ty.ir(), name));
+        let dst = dst.filter(|d| b.vars.get(*d).map(|v| &v.ty) == Some(&f.ty));
+        let out = self.field_get(name, &f.ty.ir(), dst, b);
         Ok(Val { text: out, ty: f.ty, literal: false })
     }
 
-    /// a feature variable written: a call to its setter
+    /// a feature variable written: its field stored in place (fm3 log 110)
     fn write_fvar(&mut self, name: &str, v: Val, b: &mut Body, line: usize) -> Result<(), Error> {
         let f = self.fvar(name).unwrap().clone();
         self.reach(name, &f.feature, &b.file, line)?;
         let ty = f.ty;
         let v = self.coerce(v, &ty, &format!("'{}'", name), b, None, line)?;
-        b.line(&format!("__set_{}({})", name, v.text));
+        self.field_put(name, &v.text, b);
         Ok(())
     }
 
@@ -5512,7 +5716,7 @@ impl Lowerer {
                     return Err(lex::error(&file, *line, "a feature's `enabled` is assigned on its own"));
                 }
                 // a local is a new SSA version; a feature variable is a
-                // call to its setter, allowed anywhere; the assignment
+                // store of its field, allowed anywhere; the assignment
                 // that gives the last result ends the function, so it
                 // may stand anywhere too
                 let completes = self.completes(targets, b);
@@ -5863,7 +6067,7 @@ impl Lowerer {
                 .collect();
             b.line(&format!("{} = {}", defs.join(", "), call));
             for (n, tmp) in sets {
-                b.line(&format!("__set_{}({})", n, tmp));
+                self.field_put(&n, &tmp, b);
             }
             return Ok(());
         }
@@ -5897,7 +6101,7 @@ impl Lowerer {
             }
         }
         // a feature variable among the targets takes its result through
-        // a temporary and its setter; a narrower result widens through
+        // a temporary and a store of its field; a narrower result widens through
         // a temporary and a `conv` (log 37)
         let mut sets = Vec::new();
         let mut convs = Vec::new();
@@ -5931,7 +6135,7 @@ impl Lowerer {
             }
         }
         for (n, tmp) in sets {
-            b.line(&format!("__set_{}({})", n, tmp));
+            self.field_put(&n, &tmp, b);
         }
         Ok(())
     }
@@ -7244,8 +7448,7 @@ impl Lowerer {
             if self.statics.contains(feature) {
                 gates.push(None);
             } else {
-                let on = b.tmp();
-                b.line(&format!("{}: u1 = __on_{}()", on, feature));
+                let on = self.gate(feature, None, b);
                 gates.push(Some(on));
             }
         }
@@ -7302,34 +7505,23 @@ impl Lowerer {
             // to the one field (log 67). The write loads again, the
             // task's call standing between
             let field = format!("__node{}_{}", k + 1, pname);
-            let (p, c, r) = (b.tmp(), b.tmp(), b.tmp());
-            b.line(&format!("{}: ptr = addr __ctx_mem", p));
-            b.line(&format!("{}: __ctx = load {}", c, p));
-            b.line(&format!("{}: {} = get {}, {}", r, pty.ir(), c, field));
-            let put = |v: &str, b: &mut Body| {
-                let (c1, c2) = (b.tmp(), b.tmp());
-                b.line(&format!("{}: __ctx = load {}", c1, p));
-                b.line(&format!("{}: __ctx = set {}, {}, {}", c2, c1, field, v));
-                b.line(&format!("store {}, {}", c2, p));
-            };
+            let r = self.field_get(&field, &pty.ir(), None, b);
             let gated = !self.statics.contains(&feature);
             if gated {
-                let on = b.tmp();
-                b.line(&format!("{}: u1 = __on_{}()", on, feature));
+                let on = self.gate(&feature, None, b);
                 b.line(&format!("if {}", on));
                 b.depth += 1;
             }
             let mut ops = Vec::new();
             if let Some(o) = &out {
-                let t = b.tmp();
-                b.line(&format!("{}: {} = __get_{}()", t, self.fvar(o).unwrap().ty.ir(), o));
-                ops.push(t);
+                let ty = self.fvar(o).unwrap().ty.ir();
+                ops.push(self.field_get(o, &ty, None, b));
             }
             ops.push(r.clone());
             ops.push("0: i64".into());
             let r2 = b.tmp();
             b.line(&format!("{}: {} = {}({})", r2, pty.ir(), ir, ops.join(", ")));
-            put(&r2, b);
+            self.field_put(&field, &r2, b);
             if self.frees(name) {
                 b.line(&format!("free_queue({})", r2));
             }
@@ -7341,7 +7533,7 @@ impl Lowerer {
                     let p = self.pushed_of(&r, b);
                     let r3 = b.tmp();
                     b.line(&format!("{}: {} = set {}, pos, {}", r3, pty.ir(), r, p));
-                    put(&r3, b);
+                    self.field_put(&field, &r3, b);
                     if self.frees(name) {
                         b.line(&format!("free_queue({})", r3));
                     }
@@ -7352,7 +7544,7 @@ impl Lowerer {
     }
 
     /// a stream variable takes its moved reader: a new version of a
-    /// local, the setter of a feature variable
+    /// local, the field of a feature variable stored
     fn rebind_stream(&mut self, name: &str, s: &Val, moved: &dyn Fn(&mut Lowerer, &str, &mut Body), b: &mut Body, line: usize) -> Result<(), Error> {
         if b.vars.contains_key(name) {
             b.assignable(name, line)?;
@@ -7361,7 +7553,7 @@ impl Lowerer {
         } else {
             let t = b.tmp();
             moved(self, &t, b);
-            b.line(&format!("__set_{}({})", name, t));
+            self.field_put(name, &t, b);
         }
         Ok(())
     }

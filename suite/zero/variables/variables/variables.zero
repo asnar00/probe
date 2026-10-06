@@ -37,6 +37,12 @@ on (int n) = bumped (int k) times
         bump()
     n = count
 
+on (int n) = seen round a bump()
+    bump()
+    int a = count
+    bump()
+    n = a * 10 + count
+
 on (int n) = fresh count()
     n = count
 

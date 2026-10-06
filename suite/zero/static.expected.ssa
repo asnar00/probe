@@ -76,7 +76,9 @@ fn __out_mark(i: i64) -> i64
 ; ring is the device's own lookahead, sized by the runner, which a
 ; consumer wired to `in$` reads with `peek`, `advance` and `count`
 fn __in_ch(c: u8)
-    s: u8$ = __get_in()
+    _this: ptr = addr __ctx_mem
+    k: __ctx = load _this
+    s: u8$ = get k, in
     push_queue(s, c)
     ret
 
@@ -136,12 +138,6 @@ fn __zero_reset()
     p: ptr = addr __ctx_mem
     store _2, p
     ret
-
-fn __get_in() -> u8$
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u8$ = get c, in
-    ret v
 
 ; feature platform (layer platform)
 ; ... and the same over the output device, where a push is the platform's write (log 87)

@@ -116,6 +116,15 @@ on (int n) = logged and read()
     advance log$ by (1)
     n = peek log$ at (0)
 
+on skip one logged()
+    advance log$ by (1)
+
+on (int n) = counted round a skip()
+    log$ << 7 << 8
+    int a = count log$
+    skip one logged()
+    n = a * 10 + count log$
+
 on (int n) = blocked()
     uint8 b$ << "hi"
     n = count b$ * 1000 + int(peek b$ at (1))

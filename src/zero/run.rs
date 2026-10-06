@@ -662,7 +662,9 @@ mod tests {
         let sequence = Planned { text: String::new(), call: lower::Call { func: "switches".into(), args: vec![], nrets: 2, expect: store::Expect::Values(vec![0, 1]), context: vec![("more".into(), false), ("base".into(), false), ("base".into(), true)], input: vec![] }, feature: "most".into(), rank: 3, file: "most.md".into(), line: 1 };
         assert!(effective(&s, &["base".to_string()].into_iter().collect(), &sequence).is_none());
         assert_eq!(effective(&s, &["tool".to_string()].into_iter().collect(), &sequence).unwrap().iter().cloned().collect::<Vec<_>>(), ["more", "tool"]);
-        assert!(l.ir.contains("fn __on_more() -> u1\n    own: u1 = __get___enabled_more()\n    up: u1 = __on_base()\n    on: u1 = and own, up\n    ret on\n"), "{}", l.ir);
+        // a gate reads the feature's own switch and its dynamic ancestor's,
+        // in line at the context's address (fm3 log 110)
+        assert!(l.ir.contains("fn greet__before_most() -> int\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: u1 = get _1, __enabled_more\n    _3: u1 = get _1, __enabled_base\n    on: u1 = and _2, _3\n") && !l.ir.contains("__on_more") && !l.ir.contains("__get___enabled"), "{}", l.ir);
     }
 
     /// a bare literal between two concrete widths is emitted for the
@@ -780,7 +782,7 @@ mod tests {
         // wired by a feature the product leaves out: no edge, no queue,
         // and the rated stream's step still passes
         let ir = lowered("# p\n\nshown: static off\n").unwrap();
-        assert!(!ir.contains("__edge") && !ir.contains("__queue_int") && !ir.contains("__get_n"), "{}", ir);
+        assert!(!ir.contains("__edge") && !ir.contains("__queue_int") && !ir.contains("\n    n: int$\n"), "{}", ir);
         // ... with no alignment before it, `count` being called where
         // the clock is at 0 s and `n$` having nothing that moves it
         // (question 56, fm3 log 99)
@@ -794,7 +796,7 @@ mod tests {
         // a case that names the stream reads it, and it is a queue again
         std::fs::write(dir.join("base/base.md"), "# base\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n>count n$ → 0\n").unwrap();
         let ir = lowered("# p\n").unwrap();
-        assert!(ir.contains("fn __queue_int(") && ir.contains("fn __get_n()"), "{}", ir);
+        assert!(ir.contains("fn __queue_int(") && ir.contains("\n    n: int$\n"), "{}", ir);
         // declared and named nowhere else, not even pushed into
         // (question 57, fm3 log 100): no storage, a `char` stream
         // included, and no refusal under either product
@@ -894,14 +896,14 @@ mod tests {
         // `while` asked of its first values; entered on the beat, none
         let ir = lowered(&format!("{}on f (int k)\n    c$ << 0\n    loop (int i = 1) while (i <= k)\n        a$ << i\n        continue (i + 1)\n", head));
         let f = body(&ir, "f");
-        assert!(f.contains("    _6: int = const 1\n    _7: u1 = cmp.le _6, k\n    if _7\n        _8: ptr = addr __clock\n        _9: i64 = load _8\n        _10: i64 = add _9, 499999\n        _11: i64 = rem _10, 500000\n        _12: i64 = sub _10, _11\n        __wait(_12)\n    loop(i: int = 1)\n"), "{}", f);
+        assert!(f.contains("    _7: int = const 1\n    _8: u1 = cmp.le _7, k\n    if _8\n        _9: ptr = addr __clock\n        _10: i64 = load _9\n        _11: i64 = add _10, 499999\n        _12: i64 = rem _11, 500000\n        _13: i64 = sub _11, _12\n        __wait(_13)\n    loop(i: int = 1)\n"), "{}", f);
         assert_eq!(f.matches(" = rem ").count(), 1, "{}", f);
         let ir = lowered(&format!("{}on f (int k)\n    loop (int i = 1) while (i <= k)\n        a$ << i\n        continue (i + 1)\n", head));
         assert_eq!(rems(&ir, "f"), 0, "{}", ir);
         // ... with no `while` the first pass always runs, and there is no test
         let ir = lowered(&format!("{}on f (int k)\n    c$ << 0\n    loop (int i = 1)\n        a$ << i\n        if (i == k)\n            break\n        continue (i + 1)\n", head));
         let f = body(&ir, "f");
-        assert!(f.matches(" = rem ").count() == 1 && f.contains("\n    _9: i64 = rem _8, 500000\n    _10: i64 = sub _8, _9\n    __wait(_10)\n    loop(i: int = 1)\n"), "{}", f);
+        assert!(f.matches(" = rem ").count() == 1 && f.contains("\n    _10: i64 = rem _9, 500000\n    _11: i64 = sub _9, _10\n    __wait(_11)\n    loop(i: int = 1)\n"), "{}", f);
         // a statement before the push in the body, or a way round that
         // leaves the beat, and the push aligns on every pass as it did
         let ir = lowered(&format!("{}on f (int k)\n    c$ << 0\n    loop (int i = 1) while (i <= k)\n        out$ << \"x\"\n        a$ << i\n        continue (i + 1)\n", head));
@@ -946,12 +948,12 @@ mod tests {
         assert!(!fast.contains("__counter") && fast.contains("fn __wait(t: i64)\n    p: ptr = addr __clock\n    c: i64 = load p\n    m: i64 = max(c, t)\n"), "{}", fast);
         // the rated stream no word reads has no storage (fm3 log 92): the
         // push calls its edge, and then a step passes, half a second at 2 hz
-        assert!(fast.contains("        if _1\n            __edge1(_2)\n        _4: ptr = addr __clock\n        _5: i64 = load _4\n        _6: i64 = add _5, 500000\n        __wait(_6)\n"), "{}", fast);
+        assert!(fast.contains("        if _2\n            __edge1(_3)\n        _5: ptr = addr __clock\n        _6: i64 = load _5\n        _7: i64 = add _6, 500000\n        __wait(_7)\n"), "{}", fast);
         // ... and the statement's first item is on the stream's beat
         // with nothing rounded (fm3 log 98, 99): `run` is only ever
         // called by a case, at 0 s
-        assert!(fast.contains("fn run()\n    _1: u1 = __on_h()\n") && !fast.contains(", 499999\n"), "{}", fast);
-        assert!(fast.contains("fn __edge1(__item: int)\n") && !fast.contains("__run") && !fast.contains("__node") && !fast.contains("__get_i("), "{}", fast);
+        assert!(fast.contains("fn run()\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: u1 = get _1, __enabled_h\n") && !fast.contains(", 499999\n"), "{}", fast);
+        assert!(fast.contains("fn __edge1(__item: int)\n") && !fast.contains("__run") && !fast.contains("__node") && !fast.contains("\n    i: int$\n"), "{}", fast);
         assert_eq!(with("# p\n").unwrap(), fast);
         let err = with("# p\n\nclock: sidereal\n").expect_err("accepted a sidereal clock");
         assert!(err.contains("the product's clock is real or virtual, not 'sidereal'"), "{}", err);
@@ -982,7 +984,7 @@ mod tests {
         assert!(ir.contains("fn __out__int(x: int)\n") && !ir.contains("fn __out__ints("), "{}", ir);
         // a push into the device is the platform's write, not a ring
         // push: `out$` has no ring, so it has no field in the context
-        assert!(ir.contains("__out_ch(") && !ir.contains("__get_out()"), "{}", ir);
+        assert!(ir.contains("__out_ch(") && !ir.contains("\n    out: u8$\n"), "{}", ir);
         let refused = |code: &str| emit_with(code).expect_err("accepted");
         assert!(refused("on (int o$) << (int x)\n    o$ << 1\n\non f()\n    out$ << 1\n").contains("'int' pushed into 'int$' is the push itself, not a method"));
         assert!(refused("on (char o$) << (char c$)\n    o$ << \"?\"\n\non f()\n    out$ << 1\n").contains("'string' pushed into 'string' is the block push of section 9, not a method"));
@@ -1038,11 +1040,11 @@ mod tests {
         // a function that only reads what it is given takes the device,
         // and one that pushes may be given a local called `in`
         let ir = emit_with(&format!("{}on (int n) = size (char c$)\n    n = count c$\n\non (int n) = f()\n    n = size(in$)\n\non (int n) = g()\n    char in$ << \"ab\"\n    fill(in$)\n    n = count in$\n", fill)).unwrap();
-        assert!(ir.contains("fn f() -> int\n    _1: u8$ = __get_in()\n    n: int = size(_1)\n"), "{}", ir);
+        assert!(ir.contains("fn f() -> int\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: u8$ = get _1, in\n    n: int = size(_2)\n"), "{}", ir);
         // reading the device is what it is for; and a stream of the
         // function's own that happens to be called `in` is not the device
         let ir = emit_with("on (int n) = f()\n    n = count in$\n\non (int n) = g()\n    char in$ << \"ab\"\n    in$ << \"c\"\n    n = count in$\n").unwrap();
-        assert!(ir.contains("fn f() -> int\n    _1: u8$ = __get_in()\n"), "{}", ir);
+        assert!(ir.contains("fn f() -> int\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: u8$ = get _1, in\n"), "{}", ir);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1068,17 +1070,18 @@ mod tests {
         // woken: the task is called in `fed`, after the push, and the
         // node keeps its reader and nothing else
         let ir = emit_with(wired, "");
-        assert!(ir.contains("    push_queue_open(_1, _2)\n    _3: ptr = addr __ctx_mem\n    _4: __ctx = load _3\n    _5: int$ = get _4, __node1_x\n    _6: u1 = __on_h()\n    if _6\n        _7: int$ = __get_d()\n        _8: int$ = doubled(_7, _5, 0: i64)\n        _9: __ctx = load _3\n        _10: __ctx = set _9, __node1_x, _8\n        store _10, _3\n        free_queue(_8)\n    else\n        _11: i64 = received(_5)\n"), "{}", ir);
-        // ... its reader read and written in place, with no accessor (fm3 log 104)
-        assert!(!ir.contains("__get___node1_x") && !ir.contains("__set___node1_x"), "{}", ir);
+        assert!(ir.contains("fn fed() -> int\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: int$ = get _1, a\n    _3: int = const 1\n    push_queue_open(_2, _3)\n    _4: __ctx = load _this\n    _5: int$ = get _4, __node1_x\n    _6: __ctx = load _this\n    _7: u1 = get _6, __enabled_h\n    if _7\n        _8: __ctx = load _this\n        _9: int$ = get _8, d\n        _10: int$ = doubled(_9, _5, 0: i64)\n        _11: __ctx = load _this\n        _12: __ctx = set _11, __node1_x, _10\n        store _12, _this\n        free_queue(_10)\n    else\n        _13: i64 = received(_5)\n"), "{}", ir);
+        // ... everything read and written in place at the context's one
+        // address, with no accessor (fm3 log 104, 110)
+        assert!(!ir.contains("__get_") && !ir.contains("__set___node1_x") && !ir.contains("__on_h"), "{}", ir);
         for gone in ["fn __node1(", "__running", "__zero_start", "__run", "_seen", "_fin"] {
             assert!(!ir.contains(gone), "{}: {}", gone, ir);
         }
         // a statement that may push nothing wakes under whether anything
         // arrived, and an `end` under whether the stream had ended
         let ir = emit_with(wired, "\non some (int k)\n    a$ << [k to 1]\n\non close()\n    end a$\n");
-        assert!(ir.contains("    _1: int$ = __get_a()\n    _13: i64 = received(_1)\n") && ir.contains("    _14: i64 = received(_1)\n    _15: u1 = cmp.gt _14, _13\n    if _15\n        _16: ptr = addr __ctx_mem\n"), "{}", ir);
-        assert!(ir.contains("    _2: u1 = ended(_1)\n    end(_1)\n    if _2\n    else\n        _3: ptr = addr __ctx_mem\n"), "{}", ir);
+        assert!(ir.contains("    _2: int$ = get _1, a\n    _14: i64 = received(_2)\n") && ir.contains("    _15: i64 = received(_2)\n    _16: u1 = cmp.gt _15, _14\n    if _16\n        _17: __ctx = load _this\n        _18: int$ = get _17, __node1_x\n"), "{}", ir);
+        assert!(ir.contains("    _3: u1 = ended(_2)\n    end(_2)\n    if _3\n    else\n        _4: __ctx = load _this\n        _5: int$ = get _4, __node1_x\n"), "{}", ir);
         let node = |ir: &str| ir.contains("fn __node1() -> u1\n") && ir.contains("__node1_x_seen") && ir.contains("fn __zero_start()");
         // handed to a function, which may push into its parameter with
         // no trigger after
@@ -1169,7 +1172,7 @@ mod tests {
             let ir = lower::lower(&s).unwrap().ir;
             ir.lines().skip_while(|l| !l.starts_with("fn f(")).skip(1).take_while(|l| l.starts_with(' ')).collect::<Vec<_>>().join("\n")
         };
-        let few = "    _2: ptr = addr __s11\n    _3: i64 = len __s11\n    push_queue_few(_1, _2, _3)\n";
+        let few = "    _3: ptr = addr __s11\n    _4: i64 = len __s11\n    push_queue_few(_2, _3, _4)\n";
         // two bytes and fifteen: the few-items word, and no view
         for text in ["ab", "fifteen letters"] {
             let b = body("char c$", text);
@@ -1178,17 +1181,64 @@ mod tests {
         // sixteen and 480: the block, through the view
         for text in ["sixteen letters!".to_string(), "x".repeat(480)] {
             let b = body("char c$", &text);
-            assert!(b.contains("    _4: u8[] = __str(_2, _3)\n    push_queue_open(_1, _4)\n") && !b.contains("push_queue_few"), "{}: {}", text.len(), b);
+            assert!(b.contains("    _5: u8[] = __str(_3, _4)\n    push_queue_open(_2, _5)\n") && !b.contains("push_queue_few"), "{}: {}", text.len(), b);
         }
         // one byte is an item
         let b = body("char c$", "a");
-        assert!(b.contains("    _2: u8 = const 97\n    push_queue_open(_1, _2)\n") && !b.contains("push_queue_few"), "{}", b);
+        assert!(b.contains("    _3: u8 = const 97\n    push_queue_open(_2, _3)\n") && !b.contains("push_queue_few"), "{}", b);
         // a ring, which a history word makes of every stream in the store, keeps its block push
         let b = body("char c$\nint h$\n\non (int k) = g()\n    h$ << 1\n    k = latest h$", "fifteen letters");
         assert!(!b.contains("push_queue") && b.contains("__str"), "{}", b);
         // a stream with a rate takes it an item at a time, each at its time
         let b = body("char c$ at (2 hz)", "ab");
         assert!(!b.contains("push_queue_few"), "{}", b);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// a field of the context nothing in the store writes is fetched
+    /// once a function, and one that something writes is read wherever
+    /// it is named (fm3 log 110)
+    #[test]
+    fn a_field_nothing_writes_is_fetched_once() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n").unwrap();
+        let body = |code: &str, f: &str| -> String {
+            std::fs::write(dir.join("h/h.zero"), code).unwrap();
+            let s = store::read(&dir).unwrap();
+            let ir = lower::lower(&s).unwrap().ir;
+            ir.lines().skip_while(|l| !l.starts_with(&format!("fn {}(", f))).skip(1).take_while(|l| l.starts_with(' ')).collect::<Vec<_>>().join("\n")
+        };
+        let reads = |b: &str, field: &str| b.matches(&format!(", {}\n", field)).count() + b.ends_with(&format!(", {}", field)) as usize;
+        let head = "int kept = 3\nint moved = 0\n\non bump()\n    moved = moved + 1\n\non idle()\n    int z = 0\n\n";
+        // read, a call, read again: the unwritten one once, with the
+        // context's address formed once, first; the written one twice
+        let b = body(&format!("{}on (int n) = f()\n    int a = kept + moved\n    bump()\n    n = a + kept + moved\n", head), "f");
+        assert!(b.starts_with("    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: int = get _1, kept\n") && b.matches("addr __ctx_mem").count() == 1, "{}", b);
+        assert_eq!((reads(&b, "kept"), reads(&b, "moved")), (1, 2), "{}", b);
+        // ... the written one twice even with nothing between that writes it
+        let b = body(&format!("{}on (int n) = f()\n    int a = moved\n    idle()\n    n = a + moved\n", head), "f");
+        assert_eq!(reads(&b, "moved"), 2, "{}", b);
+        // a read in one arm is not in hand in the other, nor after them;
+        // one above them is in hand in both, and inside a loop
+        let b = body(&format!("{}on (int n) = f (int k)\n    if (k > 0)\n        n = kept\n    else\n        n = kept + 1\n", head), "f");
+        assert_eq!(reads(&b, "kept"), 2, "{}", b);
+        let b = body(&format!("{}on (int n) = f (int k)\n    int a = 0\n    if (k > 0)\n        a = kept\n    n = a + kept\n", head), "f");
+        assert_eq!(reads(&b, "kept"), 2, "{}", b);
+        let b = body(&format!("{}on (int n) = f (int k)\n    int a = kept\n    int s = loop (int i = 0, int t = 0) while (i < k) yields t\n        if (i > 2)\n            t = t + kept\n        else\n            t = t + kept + a\n        i = i + 1\n    n = s + kept\n", head), "f");
+        assert_eq!(reads(&b, "kept"), 1, "{}", b);
+        // a feature's switch is a field nothing writes
+        let b = body(&format!("{}on (bool b) = f()\n    bool a = enabled\n    bump()\n    b = a == enabled\n", head), "f");
+        assert_eq!(reads(&b, "__enabled_h"), 1, "{}", b);
+        // a stream's field is not written by a push into the stream, and
+        // is by a word that moves the feature's reader
+        let streams = "int q$\nint r$\n\non fill()\n    q$ << 1\n    r$ << 1\n\non skip()\n    advance r$ by (1)\n\n";
+        let b = body(&format!("{}on (int n) = f()\n    int a = count q$ + count r$\n    fill()\n    skip()\n    n = a + count q$ + count r$\n", streams), "f");
+        assert_eq!((reads(&b, "q"), reads(&b, "r")), (1, 2), "{}", b);
+        // a `platform` body of the store's own may call a setter: nothing is reused
+        let b = body(&format!("{}on (int64 r) = (int64 a) twice\nplatform ir\n    r: i64 = add a, a\n    ret r\n\non (int n) = f()\n    int a = kept\n    bump()\n    n = a + kept\n", head), "f");
+        assert_eq!(reads(&b, "kept"), 2, "{}", b);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

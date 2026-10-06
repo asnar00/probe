@@ -66,7 +66,9 @@ data __out_t: array(i64, 65537)
 ; ring is the device's own lookahead, sized by the runner, which a
 ; consumer wired to `in$` reads with `peek`, `advance` and `count`
 fn __in_ch(c: u8)
-    s: u8$ = __get_in()
+    _this: ptr = addr __ctx_mem
+    k: __ctx = load _this
+    s: u8$ = get k, in
     __push(s, c)
     ret
 
@@ -163,12 +165,6 @@ fn __set___enabled_platform(v: u1)
     store c2, p
     ret
 
-fn __get___enabled_clock() -> u1
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u1 = get c, __enabled_clock
-    ret v
-
 fn __set___enabled_clock(v: u1)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
@@ -176,52 +172,23 @@ fn __set___enabled_clock(v: u1)
     store c2, p
     ret
 
-fn __get_in() -> u8$
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u8$ = get c, in
-    ret v
-
-fn __get_t() -> int$
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: int$ = get c, t
-    ret v
-
-fn __set_t(v: int$)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, t, v
-    store c2, p
-    ret
-
-fn __get___node1_fin() -> u1
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u1 = get c, __node1_fin
-    ret v
-
-fn __set___node1_fin(v: u1)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node1_fin, v
-    store c2, p
-    ret
-fn __on_clock() -> u1
-    own: u1 = __get___enabled_clock()
-    ret own
-
 ; node 1: int t$ = ticks (5) at (4 hz) — run when an input has more than the node has seen, or has ended and the node has not run since
 fn __node1() -> u1
-    fin: u1 = __get___node1_fin()
+    _this: ptr = addr __ctx_mem
+    _1: __ctx = load _this
+    fin: u1 = get _1, __node1_fin
     notfin: u1 = xor fin, 1
-    on: u1 = __on_clock()
+    _2: __ctx = load _this
+    on: u1 = get _2, __enabled_clock
     due: u1 = and notfin, on
     ran: u1 = if due
-        _1: int$ = __get_t()
-        _2: int = const 5
-        ticks(_1, _2, 4: i64)
-        __set___node1_fin(1)
+        _3: __ctx = load _this
+        _4: int$ = get _3, t
+        _5: int = const 5
+        ticks(_4, _5, 4: i64)
+        _6: __ctx = load _this
+        _7: __ctx = set _6, __node1_fin, 1
+        store _7, _this
         yield 1
     else
         off: u1 = xor on, 1
@@ -252,21 +219,29 @@ fn ticks(t: int$, n: int, __hz: i64)
         continue
     ret
 fn value_at(m: int) -> int
-    _1: int$ = __get_t()
-    _2: i64 = conv m
-    _3: time = millis(_2)
-    v: int = sample _1, _3
+    _this: ptr = addr __ctx_mem
+    _1: __ctx = load _this
+    _2: int$ = get _1, t
+    _3: i64 = conv m
+    _4: time = millis(_3)
+    v: int = sample _2, _4
     ret v
 fn where_it_stands() -> (int, int)
-    _1: int$ = __get_t()
-    _2: int$ = advance(_1, 2)
-    __set_t(_2)
-    _3: int$ = __get_t()
-    _4: i64 = get _3, pos
-    i: int = conv _4
-    _5: int$ = __get_t()
-    _6: i64, _7: i64 = position(_5)
-    tick: int = conv _7
+    _this: ptr = addr __ctx_mem
+    _1: __ctx = load _this
+    _2: int$ = get _1, t
+    _3: int$ = advance(_2, 2)
+    _4: __ctx = load _this
+    _5: __ctx = set _4, t, _3
+    store _5, _this
+    _6: __ctx = load _this
+    _7: int$ = get _6, t
+    _8: i64 = get _7, pos
+    i: int = conv _8
+    _9: __ctx = load _this
+    _10: int$ = get _9, t
+    _11: i64, _12: i64 = position(_10)
+    tick: int = conv _12
     ret i, tick
 
 ; a stream's storage, carved from the arena: cap items (64 unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start

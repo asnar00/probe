@@ -76,7 +76,9 @@ fn __out_mark(i: i64) -> i64
 ; ring is the device's own lookahead, sized by the runner, which a
 ; consumer wired to `in$` reads with `peek`, `advance` and `count`
 fn __in_ch(c: u8)
-    s: u8$ = __get_in()
+    _this: ptr = addr __ctx_mem
+    k: __ctx = load _this
+    s: u8$ = get k, in
     push_queue(s, c)
     ret
 
@@ -152,24 +154,12 @@ fn __set___enabled_platform(v: u1)
     store c2, p
     ret
 
-fn __get___enabled_hello() -> u1
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u1 = get c, __enabled_hello
-    ret v
-
 fn __set___enabled_hello(v: u1)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __enabled_hello, v
     store c2, p
     ret
-
-fn __get___enabled_countdown() -> u1
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u1 = get c, __enabled_countdown
-    ret v
 
 fn __set___enabled_countdown(v: u1)
     p: ptr = addr __ctx_mem
@@ -178,37 +168,12 @@ fn __set___enabled_countdown(v: u1)
     store c2, p
     ret
 
-fn __get___enabled_bye() -> u1
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u1 = get c, __enabled_bye
-    ret v
-
 fn __set___enabled_bye(v: u1)
     p: ptr = addr __ctx_mem
     c: __ctx = load p
     c2: __ctx = set c, __enabled_bye, v
     store c2, p
     ret
-
-fn __get_in() -> u8$
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u8$ = get c, in
-    ret v
-fn __on_hello() -> u1
-    own: u1 = __get___enabled_hello()
-    ret own
-fn __on_countdown() -> u1
-    own: u1 = __get___enabled_countdown()
-    up: u1 = __on_hello()
-    on: u1 = and own, up
-    ret on
-fn __on_bye() -> u1
-    own: u1 = __get___enabled_bye()
-    up: u1 = __on_hello()
-    on: u1 = and own, up
-    ret on
 
 ; feature platform (layer platform)
 ; ... and the same over the output device, where a push is the platform's write (log 87)
@@ -264,20 +229,24 @@ fn run__countdown()
     run__before_countdown()
     ret
 fn count_down()
-    _1: u1 = __on_countdown()
-    loop(_2: int = 10)
-        _3: u1 = cmp.ge _2, 1
-        if _3
+    _this: ptr = addr __ctx_mem
+    _1: __ctx = load _this
+    _2: u1 = get _1, __enabled_countdown
+    _3: u1 = get _1, __enabled_hello
+    _4: u1 = and _2, _3
+    loop(_5: int = 10)
+        _6: u1 = cmp.ge _5, 1
+        if _6
         else
             break
-        if _1
-            __edge1(_2)
-        _4: ptr = addr __clock
-        _5: i64 = load _4
-        _6: i64 = add _5, 1000000
-        __wait(_6)
-        _7: int = sub _2, 1
-        continue _7
+        if _4
+            __edge1(_5)
+        _7: ptr = addr __clock
+        _8: i64 = load _7
+        _9: i64 = add _8, 1000000
+        __wait(_9)
+        _10: int = sub _5, 1
+        continue _10
     ret
 fn __edge1(__item: int)
     __out__int(__item)
@@ -301,21 +270,31 @@ fn goodbye()
 
 ; run: the chain bye, countdown, hello, newest outermost; a link whose feature is off falls through
 fn run()
-    on: u1 = __on_bye()
+    _this: ptr = addr __ctx_mem
+    _1: __ctx = load _this
+    _2: u1 = get _1, __enabled_bye
+    _3: u1 = get _1, __enabled_hello
+    on: u1 = and _2, _3
     if on
         run__bye()
     else
         run__before_bye()
     ret
 fn run__before_bye()
-    on: u1 = __on_countdown()
+    _this: ptr = addr __ctx_mem
+    _1: __ctx = load _this
+    _2: u1 = get _1, __enabled_countdown
+    _3: u1 = get _1, __enabled_hello
+    on: u1 = and _2, _3
     if on
         run__countdown()
     else
         run__before_countdown()
     ret
 fn run__before_countdown()
-    on: u1 = __on_hello()
+    _this: ptr = addr __ctx_mem
+    _1: __ctx = load _this
+    on: u1 = get _1, __enabled_hello
     if on
         run__hello()
     ret
