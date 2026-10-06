@@ -17,6 +17,7 @@ A wiring, `int d$ = doubled(x$)`, is a standing connection as it always was. Wha
 - `trebled (x$)` says a stream of its own, `int two$ = x$ * 2`, and pushes `two$ + x$`.
 - `class of (c)` classes a character, and `classes (c$)` pushes the class of each: a one-item function applied to the input's name is that function of the present item.
 - `one at a time`, `as a block`, `said`, `walked`, `from a literal`, `from a range`, `through two`, `wired twice`, `over text`, `typed`, `also read`, `many` and `a line said` are the cases.
+- `decades (x$)` pushes, for each run of items in one ten, the run's first item times a hundred and its length; `tens to (k)` is its case over a range (parity hop seventeen, fm3 log 133).
 
 ## rules
 - Every line holds for every item: `d$ << x$ * 2` pushes one item for each that arrives.
@@ -26,6 +27,7 @@ A wiring, `int d$ = doubled(x$)`, is a standing connection as it always was. Wha
 - `lit$` and `ran$` have their items on their declarations, `s$` is read by `count s$` in `also read`, `old$` is walked by a task, and `in$` is the input device: each keeps its storage, and its processor is run over what has arrived, by the scheduler, as a task is.
 - A processor wired twice has two of everything: `placed` on `p$` and on `r$` each count their own items, so `wired twice` gives the third item of `p$` place 2 and the first of `r$` place 0.
 - `text$` is a stream of `char` with no storage because every push into it is of a string literal; `text$ << "ab 1"` is four calls in a loop that says four.
+- Two lines that turn on one condition, `int n$ = if (new$) then (1) else (n$[-1] + 1)` and `int first$ = if (new$) then (x$) else (first$[-1])` in `decades`, and a push that goes out `when (new$ and n$[-1] > 0)`, are one branch on `new$` in the function the compiler writes: the cost of a decision does not depend on how many lines it was said in.
 
 ## testing
 >one at a time() → 1, 326
@@ -66,6 +68,8 @@ A wiring, `int d$ = doubled(x$)`, is a standing connection as it always was. Wha
 >a stored input ends() → 0, 19
 >pushed after its end() → check
 >an output ends() → 0, 1
+>tens to (100) → 1009010
+>tens to (25) → 201010
 
 ## hostile
 A processor's body that pushes into anything but its own output, declares a name without a `$`, puts an `if` round a line or a `while` on a push is refused, with what to write. `int d$ = doubled(i$)` inside a function is refused: a stream processor is wired at feature scope, and running one inside a function is not built. `y$` has no storage, so nothing limits what is pushed into it; `q$`, which `doubled` fills from it, is a queue read only after the statement, so `many (80)` fails the queue's check at the sixty-fifth item as a push of eighty into any stored stream does.

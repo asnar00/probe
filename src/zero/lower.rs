@@ -6291,6 +6291,14 @@ impl Lowerer {
                 self.lower_multi(value, &names, &tys, b, *line)?;
                 Ok(false)
             }
+            // a name the front end declares before a branch of its own
+            // that gives it a value in both arms (fm3 log 133): in
+            // scope, and no zero made for it
+            Stmt::Var(v) if v.scope.len() == 1 && v.scope[0] == super::zeroic::LATER => {
+                let ty = self.decl_ty(v, Some(&b.vars), &file)?;
+                b.declare(&v.name, ty);
+                Ok(false)
+            }
             Stmt::Var(v) => {
                 if !v.scope.is_empty() || v.merge.is_some() {
                     return Err(lex::error(&file, v.line, "a scope word or 'merge' belongs on a feature-scope variable"));

@@ -714,6 +714,122 @@ fn needed(lines: Vec<Stmt>, after: &[Stmt]) -> Vec<Stmt> {
     out
 }
 
+/// The scope word of a name the front end declares before a branch
+/// that gives it its value in both arms: it is in scope from there and
+/// has no value of its own, so no zero is made for it. No zero program
+/// can write the word
+pub const LATER: &str = "__later";
+
+/// the conditions joined by `and` in a condition: `a and b and c` is three
+fn conjuncts(e: &Expr, out: &mut Vec<Expr>) {
+    match &e.kind {
+        ExprKind::Bin(op, l, r) if op == "and" => {
+            conjuncts(l, out);
+            conjuncts(r, out);
+        }
+        _ => out.push(e.clone()),
+    }
+}
+
+/// Can working this out do nothing but give a value? Names, literals,
+/// comparisons and the arithmetic that cannot stop a machine. A call
+/// may push or fail a check, and a division by zero traps on wasm
+fn plain(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Name(_) => true,
+        ExprKind::Neg(x) | ExprKind::Field(x, _) => plain(x),
+        ExprKind::Bin(op, l, r) => !matches!(op.as_str(), "/" | "%") && plain(l) && plain(r),
+        _ => false,
+    }
+}
+
+/// The names a member of a function's body turns on: for a line said
+/// `if (c) then (a) else (b)`, `c` where it is a bare name; for a push
+/// that goes out `when (c and d)`, each bare name among the
+/// conditions joined, where the rest can do nothing but give a value
+/// (both sides of `and` are always worked out, fm3 question 66, so
+/// only such a rest may wait for the branch)
+fn turns_on(s: &Stmt) -> Vec<String> {
+    match s {
+        Stmt::Var(VarDecl { init: Some(Init::Value(Expr { kind: ExprKind::IfElse(c, _, _), .. })), .. }) => match &c.kind {
+            ExprKind::Name(n) => vec![n.clone()],
+            _ => Vec::new(),
+        },
+        Stmt::If { cond, when: true, els: None, .. } => {
+            let mut parts = Vec::new();
+            conjuncts(cond, &mut parts);
+            if !parts.iter().all(plain) {
+                return Vec::new();
+            }
+            parts.iter().filter_map(|p| if let ExprKind::Name(n) = &p.kind { Some(n.clone()) } else { None }).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A condition several lines turn on is branched on once (fm3 log
+/// 133). `lines` are a function's lines in their order and `pushes`
+/// what follows them. Members standing next to each other that turn
+/// on one name, two or more, are worked out under one `if` on it: a
+/// line's name is declared before the `if` and given its value in
+/// each arm, and a push is made in the arm where the name holds,
+/// under what is left of its condition. The order of the members is
+/// kept, and which arms are worked out is what it was
+fn grouped(lines: Vec<Stmt>, pushes: Vec<Stmt>) -> Vec<Stmt> {
+    let all: Vec<Stmt> = lines.into_iter().chain(pushes).collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < all.len() {
+        let mut names = turns_on(&all[i]);
+        let mut j = i + 1;
+        while j < all.len() {
+            let next = turns_on(&all[j]);
+            let both: Vec<String> = names.iter().filter(|n| next.contains(n)).cloned().collect();
+            if both.is_empty() {
+                break;
+            }
+            names = both;
+            j += 1;
+        }
+        if j - i < 2 {
+            out.push(all[i].clone());
+            i += 1;
+            continue;
+        }
+        let c = &names[0];
+        let at = match &all[i] {
+            Stmt::Var(v) => v.line,
+            Stmt::If { line, .. } => *line,
+            _ => unreachable!(),
+        };
+        let (mut then, mut els) = (Vec::new(), Vec::new());
+        for s in &all[i..j] {
+            match s {
+                Stmt::Var(v) => {
+                    let Some(Init::Value(Expr { kind: ExprKind::IfElse(_, a, b), .. })) = &v.init else { unreachable!() };
+                    out.push(Stmt::Var(VarDecl { init: None, scope: vec![LATER.to_string()], ..v.clone() }));
+                    then.push(assign(&v.name, (**a).clone(), v.line));
+                    els.push(assign(&v.name, (**b).clone(), v.line));
+                }
+                Stmt::If { cond, then: made, line, .. } => {
+                    let mut parts = Vec::new();
+                    conjuncts(cond, &mut parts);
+                    let k = parts.iter().position(|p| matches!(&p.kind, ExprKind::Name(n) if n == c)).unwrap();
+                    parts.remove(k);
+                    match parts.into_iter().reduce(|l, r| expr(ExprKind::Bin("and".into(), Box::new(l), Box::new(r)), *line)) {
+                        Some(rest) => then.push(Stmt::If { cond: rest, then: made.clone(), els: None, line: *line, when: true }),
+                        None => then.extend(made.iter().cloned()),
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        out.push(Stmt::If { cond: name(c, at), then, els: (!els.is_empty()).then_some(els), line: at, when: false });
+        i = j;
+    }
+    out
+}
+
 fn assign(to: &str, value: Expr, line: usize) -> Stmt {
     Stmt::Assign { targets: vec![Target { name: to.to_string(), seq: false, line, feature: None }], value, line }
 }
@@ -748,7 +864,7 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool) -> Wr
     for d in &p.said {
         lines.push(Stmt::Var(VarDecl { line: d.line, scope: Vec::new(), ty: d.ty.clone(), name: local(&d.name), seq: false, init: Some(Init::Value(p.each(&d.value))), merge: None, rate: None }));
     }
-    let mut body = Vec::new();
+    let mut made = Vec::new();
     let push = |item: Expr, when: Option<Expr>, line: usize| -> Option<Stmt> {
         let push = Stmt::Push { target: expr(ExprKind::Seq(out.to_string()), line), items: vec![item], cond: None, existing: false, line };
         match when.map(|c| c.kind) {
@@ -760,15 +876,17 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool) -> Wr
         }
     };
     for o in &p.outs {
-        body.extend(push(p.each(&o.item), o.when.as_ref().map(|c| p.each(c)), o.line));
+        made.extend(push(p.each(&o.item), o.when.as_ref().map(|c| p.each(c)), o.line));
     }
+    let mut given = Vec::new();
     for c in p.kept.iter().filter(|c| !c.input) {
-        body.push(assign(&result(&c.name), name(&local(&c.name), line), line));
+        given.push(assign(&result(&c.name), name(&local(&c.name), line), line));
     }
-    // a line that neither a push nor a kept value reads is not worked out
-    let mut lines = needed(lines, &body);
-    lines.extend(body);
-    let body = lines;
+    // a line that neither a push nor a kept value reads is not worked
+    // out; and a condition several of them turn on is branched on once
+    let after: Vec<Stmt> = made.iter().chain(&given).cloned().collect();
+    let mut body = grouped(needed(lines, &after), made);
+    body.extend(given);
     let each = FnDecl { line, results, name: vec![NamePart::Word(each_name.clone()), NamePart::Group], groups: vec![params.clone()], task: false, body, platform: Vec::new() };
     // the last tick (log 127): the lines that are something with the
     // input empty, in their order; the pushes whose item and condition
@@ -790,8 +908,7 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool) -> Wr
         }
     }
     // a line nothing at the end reads is not worked out there
-    let mut last = needed(last, &pushes);
-    last.extend(pushes);
+    let mut last = grouped(needed(last, &pushes), pushes);
     if ends {
         last.push(Stmt::Expr { expr: expr(ExprKind::Phrase(vec![Part::Word("end".into()), Part::Value(expr(ExprKind::Seq(out.to_string()), line))]), line), line });
     }

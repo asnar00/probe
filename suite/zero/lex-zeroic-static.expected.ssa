@@ -379,23 +379,19 @@ fn __z1_each(_c: u8, __at: index, __k_b1: int, __n_b1: index, __start_b1: index)
     _1: u1 = cmp.eq _k, 3
     _2: u1 = cmp.ne _k, __k_b1
     _new: u1 = or _1, _2
-    _n: index = if _new
-        yield 1
+    _n_3: index, _start: index = if _new
+        _n: index = const 1
+        _3: u1 = cmp.ne __k_b1, 0
+        if _3
+            _4: __ctx = load _this
+            _5: token$ = get _4, t
+            _6: token = pack __k_b1, __start_b1, __n_b1
+            push_queue_open(_5, _6)
+        yield _n, __at
     else
-        _3: index = add __n_b1, 1
-        yield _3
-    _start: index = if _new
-        yield __at
-    else
-        yield __start_b1
-    _4: u1 = cmp.ne __k_b1, 0
-    _5: u1 = and _new, _4
-    if _5
-        _6: __ctx = load _this
-        _7: token$ = get _6, t
-        _8: token = pack __k_b1, __start_b1, __n_b1
-        push_queue_open(_7, _8)
-    ret _k, _n, _start
+        _n_2: index = add __n_b1, 1
+        yield _n_2, __start_b1
+    ret _k, _n_3, _start
 fn __z1_end(__at: index, __k_b1: int, __n_b1: index, __start_b1: index)
     _this: ptr = addr __ctx_mem
     _k: int = const 0
@@ -465,23 +461,19 @@ fn __z2_each(_c: u8, __at: index, __k_b1: int, __n_b1: index, __start_b1: index)
     _1: u1 = cmp.eq _k, 3
     _2: u1 = cmp.ne _k, __k_b1
     _new: u1 = or _1, _2
-    _n: index = if _new
-        yield 1
+    _n_3: index, _start: index = if _new
+        _n: index = const 1
+        _3: u1 = cmp.ne __k_b1, 0
+        if _3
+            _4: __ctx = load _this
+            _5: token$ = get _4, u
+            _6: token = pack __k_b1, __start_b1, __n_b1
+            push_queue_open(_5, _6)
+        yield _n, __at
     else
-        _3: index = add __n_b1, 1
-        yield _3
-    _start: index = if _new
-        yield __at
-    else
-        yield __start_b1
-    _4: u1 = cmp.ne __k_b1, 0
-    _5: u1 = and _new, _4
-    if _5
-        _6: __ctx = load _this
-        _7: token$ = get _6, u
-        _8: token = pack __k_b1, __start_b1, __n_b1
-        push_queue_open(_7, _8)
-    ret _k, _n, _start
+        _n_2: index = add __n_b1, 1
+        yield _n_2, __start_b1
+    ret _k, _n_3, _start
 fn __z2_end(__at: index, __k_b1: int, __n_b1: index, __start_b1: index)
     _this: ptr = addr __ctx_mem
     _k: int = const 0

@@ -836,6 +836,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A condition several lines turn on is branched on once (fm3 log
+    /// 133): two lines said `if (new$) ...` and a push that goes out
+    /// `when (new$ and ...)` are one `if` in the function of one item,
+    /// each line's name a result of it and the push in the arm where
+    /// the condition holds. What is left of a push's condition waits
+    /// for the branch only where it can do nothing but give a value:
+    /// with a call or a division in it the push stays after the
+    /// branch, its whole condition worked out at every item, both
+    /// sides of `and` being always worked out (question 66)
+    #[test]
+    fn a_condition_is_branched_on_once() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-branched-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 2\n").unwrap();
+        let head = "int x$\nint d$ = runs(x$)\n\non (bool b) = big (int x)\n    b = x > 100\n\non (int n) = f()\n    x$ << 1 << 1 << 2\n    n = count d$\n\n";
+        let with = |body: &str| -> String {
+            std::fs::write(dir.join("h/h.zero"), format!("{}on (int d$) << runs (int x$)\n    bool new$ = x$ != x$[-1]\n    int n$ = if (new$) then (1) else (n$[-1] + 1)\n{}\n", head, body)).unwrap();
+            let ir = emit(&dir).unwrap();
+            let at = ir.find("fn __z1_each").unwrap();
+            let rest = &ir[at..];
+            rest[..rest.find("\nfn ").unwrap().min(rest.find("\n\n").unwrap_or(rest.len()))].to_string() + "\n"
+        };
+        // two lines and a push on one condition: one branch, no `and`
+        let f = with("    int first$ = if (new$) then (x$) else (first$[-1])\n    d$ << first$[-1] + n$[-1] when (new$ and n$[-1] > 0)");
+        assert!(f.contains("    _first: int, _n_3: int = if _new\n        _n: int = const 1\n        _1: u1 = cmp.gt __n_b1, 0\n        if _1\n"), "{}", f);
+        assert!(f.contains("        yield _x, _n\n    else\n        _n_2: int = add __n_b1, 1\n        yield __first_b1, _n_2\n    ret _first, _n_3\n"), "{}", f);
+        assert_eq!(f.matches("if ").count(), 2, "{}", f);
+        assert!(!f.contains(" and "), "{}", f);
+        // a push whose condition is the name alone is made in the arm
+        let f = with("    d$ << n$[-1] when (new$)");
+        assert!(f.contains("    _n_3: int = if _new\n        _n: int = const 1\n        _1: __ctx = load _this\n"), "{}", f);
+        assert_eq!(f.matches("if ").count(), 1, "{}", f);
+        // a call in what is left: the push stays after, its condition whole
+        let f = with("    d$ << n$[-1] when (new$ and big (x$))");
+        assert!(f.contains("    _n: int = if _new\n        yield 1\n    else\n"), "{}", f);
+        assert!(f.contains(": u1 = big(_x)\n    _3: u1 = and _new, _2\n    if _3\n"), "{}", f);
+        // ... and a division, which can stop a machine
+        let f = with("    d$ << n$[-1] when (new$ and 10 / x$ > 1)");
+        assert!(f.contains(": u1 = and _new, "), "{}", f);
+        // one push alone on a condition is as it was: `and`, one branch
+        std::fs::write(dir.join("h/h.zero"), format!("{}on (int d$) << runs (int x$)\n    bool new$ = x$ != x$[-1]\n    d$ << x$ when (new$ and x$ > 0)\n", head)).unwrap();
+        let ir = emit(&dir).unwrap();
+        assert!(ir.contains("    _new: u1 = cmp.ne _x, __x_b1\n    _1: u1 = cmp.gt _x, 0\n    _2: u1 = and _new, _1\n    if _2\n"), "{}", ir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Nothing in gives nothing out, and `empty` asks (fm3 question 75
     /// rule 4, log 127). The end of the input is one last tick, a
     /// function of its own in which every line that needs the item is

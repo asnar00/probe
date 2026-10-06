@@ -57,6 +57,8 @@ int st$ << 4 << 5
 int sts$ = totalled(st$)
 int lo$
 int louds$ = doubled(lo$)
+int dec$
+int decs$ = decades(dec$)
 
 on (int d$) << doubled (int x$)
     d$ << x$ * 2
@@ -288,3 +290,13 @@ on (int a, int b) = an output ends()
     a = if (ended louds$) then (1) else (0)
     end lo$
     b = if (ended louds$) then (1) else (0)
+
+on (int r$) << decades (int x$)
+    bool new$ = x$ / 10 != x$[-1] / 10
+    int n$ = if (new$) then (1) else (n$[-1] + 1)
+    int first$ = if (new$) then (x$) else (first$[-1])
+    r$ << first$[-1] * 100 + n$[-1] when (new$ and n$[-1] > 0)
+
+on (int n) = tens to (int k)
+    dec$ << [1 through k]
+    n = count decs$ * 100000 + peek decs$ at (count decs$ - 1)
