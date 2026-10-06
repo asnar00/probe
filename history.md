@@ -4,6 +4,27 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### pool, heap: the pool and the heap count in `index` — `58bdb5e` · 2026-10-06
+
+```
+fn pool_take(p: ptr) -> ptr
+    count: index = load p, 16
+    head: index = load p, 24
+    have: u1 = cmp.lt head, count
+    check have
+    q: ptr = pool_slot(p, head)
+    next: index = load q
+    store next, p, 24
+    out: index = load p, 32
+    out1: index = add out, 1
+    store out1, p, 32
+    f: ptr = pool_flag(p, head)
+    store 1: u8, f
+    ret q
+```
+
+`lib/pool.ssa:75-88`. The parity pass, hop 15, transformation 55, step (d), the last (fm3 log 121). The pool's slot size, count, slot numbers and free list, and the heap's sizes, levels, node numbers and bytes out, are `index`; a heap node's state and its seal count nothing and stay `i64`. Each number keeps its eight-byte word in the header. `lib/slice.ssa`'s `buffer_take` and `buffer_give` now count in `index` throughout, and the two conversions the step before left at the heap's door are gone. `suite/pool.ssa`, `suite/heap.ssa` and `matrix.ssa`'s `heap_buffers` hold their counts in one. `thread`, `fibre`, `core` and `gpu` count cores and stack bytes for the machine and are left. So every library that indexes a program's memory counts in `index`. lex 616, hello 1 237, static 1 197, unchanged; the suite passes natively at 16, 32 and 64. Full run green (`scratchpad/chain52.log`): `probe test` 1015, `cargo test` 127.
+
 ### zero: the front end's text counts in `index` — `eaa88f0` · 2026-10-06
 
 ```
