@@ -4,6 +4,15 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: every line of a stream processor holds for every item — `3c78024` · 2026-10-06
+
+```
+on (int d$) << doubled (int x$)
+    d$ << x$ * 2
+```
+
+`suite/zero/zeroic/zeroic/zeroic.zero:26-27`. The parity pass, hop 16, transformation 58 (fm3 log 124): question 75's first rule. A body with no loop and no reader's word on its input is read the new way, each line holding for each item as it arrives (`src/zero/zeroic.rs`). For each wiring the front end writes a function of one item in zero's own tree, as it writes an edge's. Where nothing else reads the input it has no storage: a push is the call, and a string literal a loop whose count the cost tool bounds. Where something does, a sink in the walking form is written and wired. Three items through `doubled` cost 116 against the walking form's 241. No existing store's text moved; lex 601 and 590, hello 1 237 unchanged. `suite/zero/zeroic`, 14 cases on all five paths.
+
 ### zero: the lexer keeps its positions in `index`, and a static lex stands beside it — `6fecd22` · 2026-10-06
 
 ```
