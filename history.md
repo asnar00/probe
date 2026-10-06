@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream looks back, `x$[-1]`, and `or` and `and` join two conditions — `8f697ac` · 2026-10-06
+
+```
+on (int s$) << summed (int x$)
+    int t$ = t$[-1] + x$
+    s$ << t$
+```
+
+`suite/zero/zeroic/zeroic/zeroic.zero:126-128`. The parity pass, hop 16, transformation 59 (fm3 log 125): question 75's second rule. `x$[-1]` is the item one before, zero before the start; a stream may be said from its own earlier items, never from itself now; an index forward is refused when compiled, and nothing is checked. What is kept is a field of the wiring for each earlier value read, fetched once a push statement, carried through its items and stored once. Lines shuffled give the same text. `or` and `and` are built (fm3 question 66), the parser told which words stand before `and` in a declared name. A running sum of three costs 183 with its reads. No existing store's text moved. `suite/zero/zeroic` 25 cases on all five paths.
+
 ### zero: every line of a stream processor holds for every item — `3c78024` · 2026-10-06
 
 ```
