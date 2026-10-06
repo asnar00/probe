@@ -3160,6 +3160,32 @@ struct Lowerer {
     device_fns: HashMap<String, String>,
 }
 
+/// The word that fills a new stream with its items (`new_resident`),
+/// which is the word of whatever the stream was made as. A queue's
+/// slots are a plain run and the ring's `push` stores each item twice,
+/// half a buffer apart, so a queue filled by it read back wrong from
+/// the thirty-third item on (fm3 question 62, log 119)
+enum Fill {
+    /// a queue: its own push, in the form that does not ask whether
+    /// the stream has ended, the stream having just been made
+    Queue,
+    /// a ring that keeps no ticks
+    Ring,
+    /// a ring that keeps a tick an item: all stamped with this one
+    Timed(String),
+}
+
+impl Fill {
+    /// one item pushed, as a statement, so a literal takes the item's type
+    fn push(&self, s: &str, x: &str) -> String {
+        match self {
+            Fill::Queue => format!("push_queue_open {}, {}", s, x),
+            Fill::Ring => format!("push {}, {}", s, x),
+            Fill::Timed(t) => format!("push {}, {}, {}", s, t, x),
+        }
+    }
+}
+
 /// where a range's values go (log 41): a new ring with them resident,
 /// or straight into an existing stream, pushed as a block
 #[derive(Clone, Copy)]
@@ -3369,8 +3395,8 @@ impl Lowerer {
     /// a new stream whose items are all present (log 38): a ring of at
     /// least `cap` items — the count, or `RING_ITEMS` when that is
     /// larger — in the arena, stamped once at the clock's now; the
-    /// caller pushes the items with `push s, t, x`
-    fn new_resident(&mut self, elem: &Ty, cap: &str, b: &mut Body, dst: Option<&str>) -> (Val, Option<String>) {
+    /// caller pushes each item with the word `Fill` gives
+    fn new_resident(&mut self, elem: &Ty, cap: &str, b: &mut Body, dst: Option<&str>) -> (Val, Fill) {
         let ty = Ty::Stream(Box::new(elem.clone()));
         let maker = self.flavour(dst, b);
         self.rings.insert((elem.ir(), maker.to_string()));
@@ -3386,12 +3412,16 @@ impl Lowerer {
         };
         let out = name_for(dst, &ty, b);
         b.line(&format!("{}: {} = __{}_{}({}, {})", out, ty.ir(), maker, elem.ir(), CLOCK_HZ, cap));
-        if maker != "stream" {
-            return (Val { text: out, ty, literal: false }, None);
-        }
-        let t = b.tmp();
-        b.line(&format!("{}: i64 = __now()", t));
-        (Val { text: out, ty, literal: false }, Some(t))
+        let fill = match maker {
+            "queue" => Fill::Queue,
+            "stream" => {
+                let t = b.tmp();
+                b.line(&format!("{}: i64 = __now()", t));
+                Fill::Timed(t)
+            }
+            _ => Fill::Ring,
+        };
+        (Val { text: out, ty, literal: false }, fill)
     }
 
     /// a view's items as a new stream, through the generated `__copy_T`
@@ -6789,10 +6819,7 @@ impl Lowerer {
         let (c, t) = self.new_resident(&e, &vals.len().to_string(), b, dst);
         for v in &vals {
             // a literal pushed after a stream takes the item's type
-            match &t {
-                Some(t) => b.line(&format!("push {}, {}, {}", c.text, t, v.text)),
-                None => b.line(&format!("push {}, {}", c.text, v.text)),
-            }
+            b.line(&t.push(&c.text, &v.text));
         }
         Ok(c)
     }
@@ -6828,7 +6855,7 @@ impl Lowerer {
             }
         }
         // where each value goes: a new ring, stamped once, or the stream
-        let target = |l: &mut Lowerer, count: &str, b: &mut Body| -> (Val, Option<Option<String>>) {
+        let target = |l: &mut Lowerer, count: &str, b: &mut Body| -> (Val, Option<Fill>) {
             match sink {
                 RangeSink::New(dst) => {
                     let (c, t) = l.new_resident(&ty, count, b, dst);
@@ -6837,9 +6864,8 @@ impl Lowerer {
                 RangeSink::Into(_, s) => (s.clone(), None),
             }
         };
-        let emit = |l: &mut Lowerer, c: &Val, t: &Option<Option<String>>, x: &str, b: &mut Body| match (t, sink) {
-            (Some(Some(t)), _) => b.line(&format!("push {}, {}, {}", c.text, t, x)),
-            (Some(None), _) => b.line(&format!("push {}, {}", c.text, x)),
+        let emit = |l: &mut Lowerer, c: &Val, t: &Option<Fill>, x: &str, b: &mut Body| match (t, sink) {
+            (Some(t), _) => b.line(&t.push(&c.text, x)),
             (None, RangeSink::Into(name, _)) => l.emit_push(name, c, &Val { text: x.to_string(), ty: ty.clone(), literal: false }, b),
             _ => unreachable!(),
         };

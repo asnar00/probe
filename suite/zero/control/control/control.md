@@ -14,6 +14,7 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 - `magnitude of (x)` keeps a temporary, assigns it again inside an `if` with no `else`, and assigns the result last: assigning the result would end the function, so a value that is tested or changed is a temporary until it is final.
 - `describe (x)` prints one of two strings.
 - `sum to (n)` is a range reduced, `[0 through n] + _`: no loop is written; `sum below (n)` is section 7's `[0 to n] + _`, the exclusive range, 0 to n - 1.
+- `thirty three counted`, `sixty four counted` and `a hundred counted` are the same reduction over a range whose bounds are literals, `[1 through 33] + _`; `thirty three listed`, `sixty four listed` and `a hundred listed` over a list of that many literals; `listed item (i)` and `counted item (i) of (n)` read one item by its index from a list of a hundred and from `[0 through n]`. A list or a range is a new stream with its items present, and these say that it reads back right at any length, in the order written: a store whose streams are all queues gave 560 for `sum to (32)` and 51 for `listed item (0)` until parity hop fifteen (fm3 question 62).
 - `gcd of (a) and (b)` yields `x` straight into the result, declares a variable inside the body and continues with it.
 - `power of two above (n)` has no `while`: it leaves by `break` inside an `if`, assigns its carried variable in the body, which the pass's end carries, and yields it into a declared `int q`.
 - `digits of (n)` breaks from an `if`, continues with computed values, and yields both carried variables into two declared names.
@@ -42,6 +43,23 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 >describe (2) → "not negative"
 >sum to (10) → 55
 >sum to (0) → 0
+>sum to (31) → 496
+>sum to (32) → 528
+>sum to (63) → 2016
+>sum to (99) → 4950
+>sum to (100) → 5050
+>thirty three counted() → 561
+>sixty four counted() → 2080
+>a hundred counted() → 5050
+>thirty three listed() → 561
+>sixty four listed() → 2080
+>a hundred listed() → 5050
+>listed item (0) → 1
+>listed item (32) → 33
+>listed item (99) → 100
+>counted item (0) of (99) → 0
+>counted item (40) of (99) → 40
+>counted item (99) of (99) → 99
 >sum below (5) → 10
 >sum below (0) → 0
 >gcd of (48) and (18) → 6
