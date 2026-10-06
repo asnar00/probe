@@ -4,6 +4,22 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a queue is freed by who reads it, not by how a parameter is spelled — `3c89f5b` · 2026-10-06
+
+```
+int x$
+soak(x$)
+
+on soak (int x$)
+    loop
+        if (count x$ == 0)
+            break
+        soaked = soaked + peek x$ at (0)
+        advance x$ by (1)
+```
+
+`suite/zero/edges/tallied/tallied.zero:20-28`, with `>soaked from (100) → 5050`: a hundred items, one a statement, through a queue of 64. The parity pass, hop 13, transformation 47 (fm3 log 113); not cost, a fault agent 24 found in hop eleven. A queue gives its slots back after its one node has run only where no function reads its items by name, and "by name" was any `x$` in any function's body, so this sink reading its own parameter counted as a second reader of the feature's `x$`: the queue never freed and the sixty-fifth push failed the library's check, where the same sink spelled `soak (int s$)` ran for ever. `time_words_in` in `src/zero/lower.rs` now leaves out a name that is one of the function's own stream parameters. A local of that name still marks the stream, and a function that hands `x$` on names it at the call. The case is `a failed check` on the binaries before and passes here; only `edges`' emitted text changed. lex 649, hello 1 237, static 1 197. `probe zero test` 591/591, `cargo test zero` 36 on all five paths.
+
 ### zero: `count` asked once a turn — `2cf0ca7` · 2026-10-06
 
 ```
