@@ -146,3 +146,67 @@ on (int n) = picked wide (bool c)
     float32 x = 1.5
     float64 y = if (c) then (a) else (x)
     n = int(y * 2)
+
+type Span =
+    index start, n = 0
+
+on (index p) = where it stands()
+    int x$ = [10, 20, 30, 40]
+    advance x$ by (2)
+    p = position x$
+
+on (int v) = peeked (index i)
+    int x$ = [10, 20, 30, 40]
+    v = peek x$ at (i)
+
+on (int v) = subscripted (index i)
+    int x$ = [10, 20, 30, 40]
+    v = x$[i]
+
+on (int v) = first after moving (index n)
+    int x$ = [10, 20, 30, 40]
+    advance x$ by (n)
+    v = x$[0]
+
+on (bool b) = more waiting than (index k)
+    int x$ = [10, 20, 30, 40]
+    index n = count x$
+    b = n > k
+
+on (index n) = last place()
+    int x$ = [10, 20, 30, 40]
+    n = count x$ - 1
+
+on (int v) = the last one()
+    int x$ = [10, 20, 30, 40]
+    v = peek x$ at (count x$ - 1)
+
+on (index e) = end of span()
+    Span s(3, 4)
+    e = s.start + s.n
+
+on (index k) = first above (int limit)
+    int x$ = [10, 20, 30, 40]
+    k = loop (index i = 0) yields i
+        if (i >= count x$)
+            break
+        if (x$[i] > limit)
+            break
+        continue (i + 1)
+
+on (index j) = one past (index i)
+    j = i + 1
+
+on (index j) = two past (index i)
+    j = one past (one past (i))
+
+on (int n) = as an int (index i)
+    int k = i
+    n = k * 2
+
+on (index i) = as an index (int n)
+    index k = n
+    i = k + 1
+
+on (int s) = mixed (index i) and (int n)
+    s = i + n

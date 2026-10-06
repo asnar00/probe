@@ -107,6 +107,9 @@ fn builtin_type(name: &str) -> Option<Ty> {
         "bool" => return Some(Ty::Bool),
         "string" => return Some(Ty::string()),
         "int" | "uint" | "float" | "number" | "scalar" | "fixed" | "unit" | "sunit" | "rational" | "decimal" | "time" => name.to_string(),
+        // a count, a position, a subscript (section 4, fm3 question 73):
+        // as wide as the product says memory is, and the IR's `index`
+        "index" => name.to_string(),
         "int8" => "i8".into(),
         "int16" => "i16".into(),
         "int32" => "i32".into(),
@@ -182,6 +185,12 @@ fn fits(arg: &Ty, param: &Ty) -> bool {
 fn wider(a: &Ty, b: &Ty) -> Option<Ty> {
     if let Some(t) = wider_exact(a, b) {
         return Some(t);
+    }
+    // an `index` and an `int` compute in `int` (fm3 log 122): which of
+    // the two holds more is the product's, and `int` is what a count
+    // was before a program could say `index`
+    if (is_index(a) && *b == int_ty()) || (is_index(b) && *a == int_ty()) {
+        return Some(int_ty());
     }
     let (Ty::Num(x), Ty::Num(y)) = (a, b) else {
         return None;
@@ -279,10 +288,20 @@ fn widens(from: &Ty, to: &Ty) -> bool {
     from != to && wider(from, to).as_ref() == Some(to)
 }
 
+/// is this zero's `index`, the type of a count and a position?
+fn is_index(t: &Ty) -> bool {
+    matches!(t, Ty::Num(n) if n == "index")
+}
+
 /// how an implied conversion loses bits, for the note in the IR: none
 /// where it is exact, else the rounding or the wrap
 fn loses(from: &Ty, to: &Ty) -> Option<String> {
     if wider_exact(from, to).as_ref() == Some(to) {
+        return None;
+    }
+    // between `int` and `index` the product decides, and no note is
+    // written, as none was when the stream words converted (fm3 log 122)
+    if (is_index(from) && *to == int_ty()) || (is_index(to) && *from == int_ty()) {
         return None;
     }
     Some(match to {
@@ -3547,12 +3566,25 @@ impl Lowerer {
         v
     }
 
-    /// how many items a stream has unread, as an int
-    fn count_of(&mut self, s: &Val, b: &mut Body, dst: Option<&str>) -> Val {
+    /// how many items a stream has unread: an `index`, or the `int` a
+    /// place that is not one asks for (`settled`)
+    fn count_of(&mut self, s: &Val, want: Option<&Ty>, b: &mut Body, dst: Option<&str>) -> Val {
         let first = s.text.clone();
-        let n = b.tmp();
+        let wanted = keeps_index(want);
+        let n = if wanted { name_for(dst, &index_ty(), b) } else { b.tmp() };
         b.line(&format!("{}: index = count {}", n, first));
-        let ty = Ty::Num("int".into());
+        self.settled(n, wanted, b, dst)
+    }
+
+    /// What a stream word that counts gives (fm3 log 122): the `index`
+    /// itself where the place that takes it is one, or asks nothing, an
+    /// operand of an operator; and the `int` it always was, converted
+    /// here, where the place is any other number
+    fn settled(&mut self, n: String, wanted: bool, b: &mut Body, dst: Option<&str>) -> Val {
+        if wanted {
+            return Val { text: n, ty: index_ty(), literal: false };
+        }
+        let ty = int_ty();
         let out = name_for(dst, &ty, b);
         b.line(&format!("{}: int = conv {}", out, n));
         Val { text: out, ty, literal: false }
@@ -5885,6 +5917,11 @@ impl Lowerer {
         if widens(&v.ty, ty) {
             return Ok(self.widen_to(&v, ty, b, dst));
         }
+        // an `int` where an `index` is kept: converted, as it always
+        // was where a stream word took it (fm3 log 122)
+        if is_index(ty) && v.ty == int_ty() {
+            return Ok(self.widen_to(&v, ty, b, dst));
+        }
         let how = match wider(&v.ty, ty) {
             Some(w) if w == v.ty => "narrows it, which is not implied".to_string(),
             Some(w) => format!("is not implied: {} holds both better", zero_ty(&w)),
@@ -7471,6 +7508,12 @@ impl Lowerer {
         let file = b.file.clone();
         let Ty::Stream(elem) = s.ty.clone() else { unreachable!() };
         let elem = *elem;
+        // an `index` pushed into a stream of anything else is the `int`
+        // it was before a program could say `index` (fm3 log 122): a
+        // count's digits into a stream of characters, a count into `int$`
+        if !v.literal && is_index(&v.ty) && !is_index(&elem) {
+            v = self.widen_to(&v, &int_ty(), b, None);
+        }
         if !v.literal && v.ty == elem {
             self.emit_push(name, s, &v, b);
             return Ok(());
@@ -7886,7 +7929,7 @@ impl Lowerer {
     /// `peek x$ at (i)`, `latest x$`, `count x$`, `advance x$ by (n)`,
     /// `frame x$`, `ended x$`, `end x$`, `x$ behind (k)`, `x$ at (t)`,
     /// `x$ from (t1) to (t2)` — or None when the phrase is not one
-    fn stream_word(&mut self, parts: &[Part], b: &mut Body, dst: Option<&str>, line: usize) -> Result<Option<Val>, Error> {
+    fn stream_word(&mut self, parts: &[Part], want: Option<&Ty>, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Option<Val>, Error> {
         let file = b.file.clone();
         let name_of = |p: &Part| -> Option<String> {
             match p {
@@ -7936,11 +7979,11 @@ impl Lowerer {
         };
         let none = Val { text: String::new(), ty: Ty::None, literal: false };
         match (w.as_str(), infix, rest) {
-            ("count", false, []) => Ok(Some(self.count_of(&s, b, dst))),
+            ("count", false, []) => Ok(Some(self.count_of(&s, want, b, dst))),
             ("latest", false, []) => Ok(Some(self.latest_of(&s, &ty, b, dst)?)),
             ("peek", false, [Part::Word(at), arg]) if at == "at" => {
                 let Some(a) = one_arg(arg) else { return Ok(None) };
-                let iv = self.lower_expr(&a, Some(&Ty::Num("int".into())), b, None)?;
+                let iv = self.lower_expr(&a, Some(&index_ty()), b, None)?;
                 if !matches!(iv.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, a.line, "'peek' takes an integer index"));
                 }
@@ -7949,7 +7992,7 @@ impl Lowerer {
             }
             ("advance", false, [Part::Word(by), arg]) if by == "by" => {
                 let Some(a) = one_arg(arg) else { return Ok(None) };
-                let nv = self.lower_expr(&a, Some(&Ty::Num("int".into())), b, None)?;
+                let nv = self.lower_expr(&a, Some(&index_ty()), b, None)?;
                 if !matches!(nv.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, a.line, "'advance' takes an integer count"));
                 }
@@ -8006,15 +8049,14 @@ impl Lowerer {
             // time word, so it never times the stream (log 85, question 42)
             ("position", false, []) => {
                 let first = s.text.clone();
-                let k = b.tmp();
+                let wanted = keeps_index(want);
+                let k = if wanted { name_for(dst, &index_ty(), b) } else { b.tmp() };
                 b.line(&format!("{}: index = get {}, pos", k, first));
-                let out = name_for(dst, &Ty::Num("int".into()), b);
-                b.line(&format!("{}: int = conv {}", out, k));
-                Ok(Some(Val { text: out, ty: Ty::Num("int".into()), literal: false }))
+                Ok(Some(self.settled(k, wanted, b, dst)))
             }
             ("behind", true, [arg]) => {
                 let Some(a) = one_arg(arg) else { return Ok(None) };
-                let kv = self.lower_expr(&a, Some(&Ty::Num("int".into())), b, None)?;
+                let kv = self.lower_expr(&a, Some(&index_ty()), b, None)?;
                 if !matches!(kv.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, a.line, "'behind' takes an integer count"));
                 }
@@ -8131,7 +8173,7 @@ impl Lowerer {
                 if sv.ty.elem().is_none() {
                     return Err(lex::error(&file, e.line, format!("an index into a {}, which has no items", sv.ty.ir())));
                 }
-                let iv = self.lower_expr(idx, Some(&Ty::Num("int".into())), b, None)?;
+                let iv = self.lower_expr(idx, Some(&index_ty()), b, None)?;
                 if !matches!(iv.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, idx.line, "an index is an integer"));
                 }
@@ -8343,7 +8385,7 @@ impl Lowerer {
                     }
                 }
                 // the stream words of section 9, on a stream
-                if let Some(v) = self.stream_word(parts, b, dst, e.line)? {
+                if let Some(v) = self.stream_word(parts, want, b, dst, e.line)? {
                     return Ok(v);
                 }
                 // a unit on a variable, `m ms` (log 33): the time it names,
@@ -8371,7 +8413,7 @@ impl Lowerer {
                         let start = b.out.len();
                         let sv = self.lower_expr(a, None, b, None)?;
                         if sv.ty.elem().is_some() {
-                            return Ok(self.count_of(&sv, b, dst));
+                            return Ok(self.count_of(&sv, want, b, dst));
                         }
                         b.out.truncate(start);
                     }
@@ -9017,6 +9059,17 @@ fn task_elem(info: &FnInfo) -> String {
 /// may a literal be assigned to a variable of this type? A number
 /// literal fits any number type, except that a decimal does not fit
 /// an integer
+/// zero's `index`
+fn index_ty() -> Ty {
+    Ty::Num("index".into())
+}
+
+/// does the place a counting word's value goes to keep it an `index`?
+/// One that is an `index`, or nothing asked
+fn keeps_index(want: Option<&Ty>) -> bool {
+    want.is_none_or(is_index)
+}
+
 fn fits_literal(v: &Val, ty: &Ty) -> bool {
     match (&v.ty, ty) {
         (Ty::Num(_), Ty::Num(t)) => !(v.text.contains('.') && is_integer(t)),
@@ -9028,5 +9081,5 @@ fn fits_literal(v: &Val, ty: &Ty) -> bool {
 
 /// an integer type, abstract or concrete, by its IR name
 fn is_integer(t: &str) -> bool {
-    t == "int" || t == "uint" || (t.len() > 1 && t.starts_with(['i', 'u']) && t[1..].parse::<u32>().is_ok())
+    t == "int" || t == "uint" || t == "index" || (t.len() > 1 && t.starts_with(['i', 'u']) && t[1..].parse::<u32>().is_ok())
 }

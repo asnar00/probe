@@ -671,6 +671,37 @@ mod tests {
         assert!(l.ir.contains("fn greet__before_most() -> int\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: u1 = get _1, __enabled_more\n    _3: u1 = get _1, __enabled_base\n    on: u1 = and _2, _3\n") && !l.ir.contains("__on_more") && !l.ir.contains("__get___enabled"), "{}", l.ir);
     }
 
+    /// `index` and `int` are both the product's, and on every path's
+    /// own policy they are the same width, so a conversion between
+    /// them left out or made the wrong way would show nowhere in the
+    /// suite. `suite/zero/types` has the cases where the two meet (fm3
+    /// log 122): they give the same answers with `int` the narrower,
+    /// with `index` the narrower, and with both narrow
+    #[test]
+    fn index_and_int_at_different_widths() {
+        fn copy(from: &Path, to: &Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for e in std::fs::read_dir(from).unwrap() {
+                let e = e.unwrap();
+                if e.path().is_dir() {
+                    copy(&e.path(), &to.join(e.file_name()));
+                } else {
+                    std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+                }
+            }
+        }
+        for (int, index) in [(32, 64), (64, 32), (32, 32)] {
+            let dir = std::env::temp_dir().join(format!("probe-zero-mixed-{}-{}-{}", std::process::id(), int, index));
+            let _ = std::fs::remove_dir_all(&dir);
+            copy(Path::new("suite/zero/types"), &dir.join("types"));
+            std::fs::write(dir.join("types/product.md"), format!("# product\n\nint: {}\nindex: {}\n", int, index)).unwrap();
+            let report = test(&dir, Backend::Native, 1).unwrap();
+            assert_eq!(report.failed, 0, "int {} index {}:\n{}", int, index, report.log);
+            assert!(report.passed >= 47, "int {} index {}: {} cases", int, index, report.passed);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     /// a bare literal between two concrete widths is emitted for the
     /// policy to choose (log 47, 52): the call is one text, `3: int` on
     /// the name, and `product.md`'s `int:` and `float:` lines set the

@@ -24,8 +24,10 @@ Plan item 3 of milestone 0: section 4 of zero.md — abstract and concrete numbe
 - `smaller of (a) and (b)` over `number` called with an `int16` and a `float32` binds `number` to `float32`, the wider, and converts the `int16`.
 - `widened on assignment` assigns an `int32` to an `int64`; `narrowed explicitly` assigns an `int64` to an `int32` through `int32(...)`, the explicit conversion narrowing.
 - `mixed wide` adds an `int64` to a `float64`: no float holds every `int64`, so the sum is computed in `float64`, the widest float (question 21). `rounding above fifty three bits` assigns 2^53 + 1 to a `float64` and reads it back: the conversion is implied and rounds, so the difference is -1; `compared above fifty three bits` compares that `int64` with 2^53 as a `float64` and finds them equal, since the comparison is made in `float64`. `smaller across wide types` binds `number` to `float64` for an `int64` and a `float64`; `picked wide` meets an `int64` and a `float32` in the arms of `if then else`, which join in `float64`.
+- `index` is the type of a count and a position, as wide as the product says memory is (section 4): `Span` keeps a start and a length in two of them. `where it stands` keeps `position x$` in an `index`; `peeked (i)`, `subscripted (i)` and `first after moving (n)` read with one, by `peek x$ at (i)`, by `x$[i]` and after `advance x$ by (n)`; `more waiting than (k)` compares a count with one; `last place` and `the last one` compute with a count, `count x$ - 1`, and stay in `index`; `first above (limit)` carries one round a loop, compares it with `count x$` and subscripts with it; `one past (i)` and `two past (i)` hand one to a function and take one back; `as an int (i)`, `as an index (n)` and `mixed (i) and (n)` are where an `index` meets an `int`.
 
 ## rules
+- An `index` and an `int` are both the product's, and neither is the wider. They mix: an operator on the two computes in `int`, and either goes into a place of the other, by a conversion that is implied, as it always was where `count`, `position`, `peek` and `advance` made it inside themselves. With a literal or another `index`, an `index` stays one, and no conversion is made: `count x$ == 0` compares the count as it is. With a concrete type it is refused naming the explicit form, `index(x)`, as an `int` is.
 - A struct's fields are concrete from its declaration: an `int` field is the target's width.
 - A field missing from a construction takes its declared default, or zero.
 - An enumeration compares with `==` and `!=` only; a case is named bare when the name is unique, or as `Type.case`.
@@ -62,10 +64,25 @@ Plan item 3 of milestone 0: section 4 of zero.md — abstract and concrete numbe
 >picked wide (true) → 18
 >picked wide (false) → 3
 >flags() → 0
+>where it stands() → 2
+>peeked (2) → 30
+>subscripted (3) → 40
+>first after moving (1) → 20
+>more waiting than (3) → 1
+>more waiting than (4) → 0
+>last place() → 3
+>the last one() → 40
+>end of span() → 7
+>first above (25) → 2
+>first above (99) → 4
+>two past (5) → 7
+>as an int (21) → 42
+>as an index (4) → 5
+>mixed (3) and (4) → 7
 >hello() → "world"
 >named() → "zero"
 >said fifteen() → "fifteen letters"
 >said sixteen() → "sixteen letters!"
 
 ## hostile
-`Vec v(1, 2, 3, 4)` is refused: "Vec has 3 field(s), given 4". `t < yes` on a `Tristate` is refused: only `==` and `!=` apply. A second `+` on the same operand types, `(Vec a) + (Vec b)` again, is refused: "an operator is not redefined in this milestone"; on other types it is a second method (`*` here), and `a * 2` with both `(Vec) * (float)` and `(Vec) * (Vec)` declared takes the float one, a literal fitting a number. Conversions that narrow are refused naming the explicit form: `int32 y = big` with `big` an `int64` says "'y' is int32 but the value is int64: int32(...) narrows it, which is not implied"; `float32 x = i` with `i` an `int32` says "float32(...) is not implied: float64 holds both better", since `float32` holds only 24 bits of an `int32`; `float32 y = a + x` on an `int64` and a `float32` says the sum, made in `float64`, "narrows it, which is not implied", where `float64 y = a + x` is accepted with the note in the IR; `int32 y = x` with `x` an `int` says "int32(...) converts it; nothing widens it", an abstract type having no width in the source, and `a + x` on an `int` and an `int32` says "no number type computes both; convert one"; and `2.5 * a` where an `int32` is wanted is "a decimal where an int32 is wanted".
+`index i = 1.5` is refused: "a decimal where an index is wanted". An `index` with a concrete type in an operator, `a + i` with `a` an `int32`, is refused as an `int` would be: "'+' on a int32 and a index: no number type computes both; convert one, index(x)". `Vec v(1, 2, 3, 4)` is refused: "Vec has 3 field(s), given 4". `t < yes` on a `Tristate` is refused: only `==` and `!=` apply. A second `+` on the same operand types, `(Vec a) + (Vec b)` again, is refused: "an operator is not redefined in this milestone"; on other types it is a second method (`*` here), and `a * 2` with both `(Vec) * (float)` and `(Vec) * (Vec)` declared takes the float one, a literal fitting a number. Conversions that narrow are refused naming the explicit form: `int32 y = big` with `big` an `int64` says "'y' is int32 but the value is int64: int32(...) narrows it, which is not implied"; `float32 x = i` with `i` an `int32` says "float32(...) is not implied: float64 holds both better", since `float32` holds only 24 bits of an `int32`; `float32 y = a + x` on an `int64` and a `float32` says the sum, made in `float64`, "narrows it, which is not implied", where `float64 y = a + x` is accepted with the note in the IR; `int32 y = x` with `x` an `int` says "int32(...) converts it; nothing widens it", an abstract type having no width in the source, and `a + x` on an `int` and an `int32` says "no number type computes both; convert one"; and `2.5 * a` where an `int32` is wanted is "a decimal where an int32 is wanted".

@@ -209,48 +209,48 @@ fn kind_of(c: u8) -> int
 fn lex(t: token$, c: u8$, __hz: i64) -> u8$
     c_6: u8$ = loop(c_2: u8$ = c)
         _1: index = count c_2
-        _2: int = conv _1
-        _3: u1 = cmp.eq _2, 0
-        if _3
+        _2: u1 = cmp.eq _1, 0
+        if _2
             break c_2
-        _4: u8 = peek_queue(c_2, 0)
-        k: int = kind_of(_4)
-        _5: index = get c_2, pos
-        start: int = conv _5
-        _6: u1 = cmp.eq k, 0
-        if _6
+        _3: u8 = peek_queue(c_2, 0)
+        k: int = kind_of(_3)
+        _4: index = get c_2, pos
+        start: int = conv _4
+        _5: u1 = cmp.eq k, 0
+        if _5
             c_3: u8$ = advance(c_2, 1)
             continue c_3
-        _7: u1 = cmp.eq k, 3
-        if _7
-            _8: token = pack 3, start, 1
-            push_queue_open(t, _8)
+        _6: u1 = cmp.eq k, 3
+        if _6
+            _7: token = pack 3, start, 1
+            push_queue_open(t, _7)
             c_4: u8$ = advance(c_2, 1)
             continue c_4
         n: int = loop(i: int = 1, m: int = -1)
-            _11: u1 = cmp.ge i, _2
-            if _11
-                _12: u1 = ended(c_2)
-                m_2: int = if _12
+            _9: int = conv _1
+            _10: u1 = cmp.ge i, _9
+            if _10
+                _11: u1 = ended(c_2)
+                m_2: int = if _11
                     yield i
                 else
                     yield m
                 break m_2
-            _13: index = conv i
-            _14: u8 = peek_queue(c_2, _13)
-            _15: int = kind_of(_14)
-            _16: u1 = cmp.eq _15, k
-            if _16
-                _17: int = add i, 1
-                continue _17, -1
+            _12: index = conv i
+            _13: u8 = peek_queue(c_2, _12)
+            _14: int = kind_of(_13)
+            _15: u1 = cmp.eq _14, k
+            if _15
+                _16: int = add i, 1
+                continue _16, -1
             break i
-        _18: u1 = cmp.lt n, 0
-        if _18
+        _17: u1 = cmp.lt n, 0
+        if _17
             break c_2
-        _19: token = pack k, start, n
-        push_queue_open(t, _19)
-        _20: index = conv n
-        c_5: u8$ = advance(c_2, _20)
+        _18: token = pack k, start, n
+        push_queue_open(t, _18)
+        _19: index = conv n
+        c_5: u8$ = advance(c_2, _19)
         continue c_5
     ret c_6
 fn arrive_first()

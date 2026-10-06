@@ -190,8 +190,8 @@ pub enum Part {
 }
 
 /// the types every store has
-pub const BUILTIN_TYPES: [&str; 33] = [
-    "bool", "int", "uint", "float", "number", "scalar", "fixed", "unit", "sunit", "rational", "decimal", "time", "string",
+pub const BUILTIN_TYPES: [&str; 34] = [
+    "bool", "int", "uint", "index", "float", "number", "scalar", "fixed", "unit", "sunit", "rational", "decimal", "time", "string",
     "int8", "int16", "int32", "int64", "int128", "uint8", "uint16", "uint32", "uint64", "uint128", "float16", "float32", "float64",
     "bfloat16", "int256", "uint256", "int1", "uint1", "char", "byte",
 ];
