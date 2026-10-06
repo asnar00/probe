@@ -4,6 +4,21 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a node that only plain functions wake is called where they push — `30d07b7` · 2026-10-06
+
+```
+    push_queue(_1, _4)
+    _5: u8$ = __get___node2_c()
+    _6: u1 = __on_lex()
+    if _6
+        _7: token$ = __get_u()
+        _8: u8$ = lex(_7, _5, 0: i64)
+        __set___node2_c(_8)
+        free_queue(_8)
+```
+
+`suite/zero/lex.expected.ssa:333-340`, in `arrive_first`. The parity pass, hop 11, transformation 35 (fm3 log 103). That push called `__run_src()`: the scheduler's guard, then a node that read `fin`, `received`, `seen` and `ended` to learn it was due, 82 round a lexer of 150. `Beat::woken` in `src/zero/lower.rs` proves `src$` is pushed into and ended only by plain functions nothing the scheduler runs can reach, so the push is the reason and nothing is asked: the task is called in line under its feature's gate, and the node keeps its reader alone. A statement that may push nothing wakes under `received` before and after; an `end` under whether the stream had ended. The guard is gone from every store but `platform`. `tasks`' `nothing pushed`, `ended twice` and `a batch` give what they gave on `31874aa`. lex's `two_arrivals` **1 039 → 907** on 440 → 418 lines, 2.19× its oracle; `timed`'s `count down` 3 562 → 3 102; hello 1 268, static 1 197. zero 569 → 577 runs native, 31 zero unit tests.
+
 ### zero: a node asks how much its input holds once a run — `31874aa` · 2026-10-06
 
 ```
