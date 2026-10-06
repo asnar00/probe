@@ -1050,15 +1050,17 @@ mod tests {
         // woken: the task is called in `fed`, after the push, and the
         // node keeps its reader and nothing else
         let ir = emit_with(wired, "");
-        assert!(ir.contains("    push_queue(_1, _2)\n    _3: int$ = __get___node1_x()\n    _4: u1 = __on_h()\n    if _4\n        _5: int$ = __get_d()\n        _6: int$ = doubled(_5, _3, 0: i64)\n        __set___node1_x(_6)\n        free_queue(_6)\n    else\n        _7: i64 = received(_3)\n"), "{}", ir);
+        assert!(ir.contains("    push_queue(_1, _2)\n    _3: ptr = addr __ctx_mem\n    _4: __ctx = load _3\n    _5: int$ = get _4, __node1_x\n    _6: u1 = __on_h()\n    if _6\n        _7: int$ = __get_d()\n        _8: int$ = doubled(_7, _5, 0: i64)\n        _9: __ctx = load _3\n        _10: __ctx = set _9, __node1_x, _8\n        store _10, _3\n        free_queue(_8)\n    else\n        _11: i64 = received(_5)\n"), "{}", ir);
+        // ... its reader read and written in place, with no accessor (fm3 log 104)
+        assert!(!ir.contains("__get___node1_x") && !ir.contains("__set___node1_x"), "{}", ir);
         for gone in ["fn __node1(", "__running", "__zero_start", "__run", "_seen", "_fin"] {
             assert!(!ir.contains(gone), "{}: {}", gone, ir);
         }
         // a statement that may push nothing wakes under whether anything
         // arrived, and an `end` under whether the stream had ended
         let ir = emit_with(wired, "\non some (int k)\n    a$ << [k to 1]\n\non close()\n    end a$\n");
-        assert!(ir.contains("    _1: int$ = __get_a()\n    _13: i64 = received(_1)\n") && ir.contains("    _14: i64 = received(_1)\n    _15: u1 = cmp.gt _14, _13\n    if _15\n        _16: int$ = __get___node1_x()\n"), "{}", ir);
-        assert!(ir.contains("    _2: u1 = ended(_1)\n    end(_1)\n    if _2\n    else\n        _3: int$ = __get___node1_x()\n"), "{}", ir);
+        assert!(ir.contains("    _1: int$ = __get_a()\n    _13: i64 = received(_1)\n") && ir.contains("    _14: i64 = received(_1)\n    _15: u1 = cmp.gt _14, _13\n    if _15\n        _16: ptr = addr __ctx_mem\n"), "{}", ir);
+        assert!(ir.contains("    _2: u1 = ended(_1)\n    end(_1)\n    if _2\n    else\n        _3: ptr = addr __ctx_mem\n"), "{}", ir);
         let node = |ir: &str| ir.contains("fn __node1() -> u1\n") && ir.contains("__node1_x_seen") && ir.contains("fn __zero_start()");
         // handed to a function, which may push into its parameter with
         // no trigger after

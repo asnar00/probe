@@ -7136,8 +7136,22 @@ impl Lowerer {
             let node = &self.nodes[k];
             let (pname, pty) = node.info.params[0].clone();
             let (ir, feature, out) = (node.info.ir.clone(), node.feature.clone(), node.out.clone());
-            let r = b.tmp();
-            b.line(&format!("{}: {} = __get___node{}_{}()", r, pty.ir(), k + 1, pname));
+            // the reader is read and written in place (fm3 log 104): the
+            // context's address once, the field loaded there, and each
+            // write a load, a `set` and a store, which the IR dissolves
+            // to the one field (log 67). The write loads again, the
+            // task's call standing between
+            let field = format!("__node{}_{}", k + 1, pname);
+            let (p, c, r) = (b.tmp(), b.tmp(), b.tmp());
+            b.line(&format!("{}: ptr = addr __ctx_mem", p));
+            b.line(&format!("{}: __ctx = load {}", c, p));
+            b.line(&format!("{}: {} = get {}, {}", r, pty.ir(), c, field));
+            let put = |v: &str, b: &mut Body| {
+                let (c1, c2) = (b.tmp(), b.tmp());
+                b.line(&format!("{}: __ctx = load {}", c1, p));
+                b.line(&format!("{}: __ctx = set {}, {}, {}", c2, c1, field, v));
+                b.line(&format!("store {}, {}", c2, p));
+            };
             let gated = !self.statics.contains(&feature);
             if gated {
                 let on = b.tmp();
@@ -7155,7 +7169,7 @@ impl Lowerer {
             ops.push("0: i64".into());
             let r2 = b.tmp();
             b.line(&format!("{}: {} = {}({})", r2, pty.ir(), ir, ops.join(", ")));
-            b.line(&format!("__set___node{}_{}({})", k + 1, pname, r2));
+            put(&r2, b);
             if self.frees(name) {
                 b.line(&format!("free_queue({})", r2));
             }
@@ -7167,7 +7181,7 @@ impl Lowerer {
                     let p = self.pushed_of(&r, b);
                     let r3 = b.tmp();
                     b.line(&format!("{}: {} = set {}, pos, {}", r3, pty.ir(), r, p));
-                    b.line(&format!("__set___node{}_{}({})", k + 1, pname, r3));
+                    put(&r3, b);
                     if self.frees(name) {
                         b.line(&format!("free_queue({})", r3));
                     }
