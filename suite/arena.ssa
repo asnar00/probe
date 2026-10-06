@@ -60,25 +60,25 @@ fn reset_reuses(buf: ptr) -> u1
     ret r
 
 ; a mark taken, allocations, a release: the count is back
-fn mark_release(buf: ptr) -> i64
+fn mark_release(buf: ptr) -> index
     a: ptr = scratch 24
     arena_init(a, buf, 80)
     arena_alloc(a, 48)
-    m: i64 = arena_mark(a)
+    m: index = arena_mark(a)
     arena_alloc(a, 16)
     arena_release(a, m)
-    u: i64 = arena_used(a)
+    u: index = arena_used(a)
     ret u
 
 ; exactly the declared size fits
-fn fills_exactly(buf: ptr) -> i64
+fn fills_exactly(buf: ptr) -> index
     a: ptr = scratch 24
     arena_init(a, buf, 80)
     arena_alloc(a, 16)
     arena_alloc(a, 16)
     arena_alloc(a, 16)
     arena_alloc(a, 16)
-    u: i64 = arena_used(a)
+    u: index = arena_used(a)
     ret u
 
 ; a check that holds is nothing

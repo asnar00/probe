@@ -23,9 +23,12 @@ pub fn emit(dir: &Path) -> Result<String, String> {
 /// path's, with `int`, `float` and `index` at the widths the store's
 /// `product.md` sets, if it does
 pub fn store_policy(s: &store::Store, policy: &ssa::Policy) -> ssa::Policy {
+    // until the front end's text says `index` for its counts (fm3 log
+    // 121, step (c)) a store is built with a 64-bit one on every path,
+    // an `i64` being an `index` only there
     let policy = &match s.index_width.and_then(|w| policy.with_index(w)) {
         Some(p) => p,
-        None => *policy,
+        None => policy.with_index(64).unwrap(),
     };
     let policy = match s.int_width {
         Some(32) => ssa::Policy { int: ssa::Type::I32, ..*policy },
