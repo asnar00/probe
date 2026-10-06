@@ -4,6 +4,10 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### README.md and the stores' notes: a block's loop has the lines in it — `566c854` · 2026-10-06
+
+A doc follow-up to hop seventeen's two landings on the front end (`16abfac`, `f4ef5c9`). `suite/zero/lex-zeroic/lex/lex.md`, its static twin and `suite/zero/zeroic/zeroic/zeroic.md` said a literal pushed into a stream processor's input is a loop of calls of its function; it is a loop with the processor's lines in it, what they keep carried round it. The zero section of `README.md` says so, says that lines turning on one condition are one branch, and lists the three things `probe count` learned in the hop: `--where`, `--blocks=` and `--from=`. No store's emitted text moves.
+
 ### zero: a block pushed into a stream processor has its lines in the loop — `f4ef5c9` · 2026-10-06
 
 ```
