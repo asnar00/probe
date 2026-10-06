@@ -3836,12 +3836,15 @@ impl Lowerer {
         }
         self.node_reads = counts;
         let nodes = std::mem::take(&mut self.nodes);
+        // the node graph (log 78): what each node reads, what it may push
+        // into, and an order with every producer before its consumers.
+        // Settled before the nodes are emitted, since a node of an
+        // acyclic graph asks less of its input (fm3 log 102)
+        let schedule = if nodes.is_empty() { None } else { self.schedule(store, &nodes) };
+        self.static_schedule = matches!(&schedule, Some((_, _, None)));
         for (k, node) in nodes.iter().enumerate() {
             self.emit_node(k + 1, node)?;
         }
-        // the node graph (log 78): what each node reads, what it may push
-        // into, and an order with every producer before its consumers
-        let schedule = if nodes.is_empty() { None } else { self.schedule(store, &nodes) };
         if let Some((order, writes, cycle)) = &schedule {
             if let Some(through) = cycle {
                 writeln!(self.out, "\n; the scheduler (log 25): passes over the nodes in declaration order until a pass runs nothing — the node graph has a cycle through {}$ (log 78)", through).unwrap();
@@ -4008,6 +4011,8 @@ impl Lowerer {
         // per reader: what its stream has received, and whether that is
         // more than the node has seen
         let mut behind: Vec<(String, String)> = Vec::new();
+        // ... and whether it had ended
+        let mut ends: Vec<String> = Vec::new();
         let mut pending: Option<String> = None;
         for (a, (pname, pty)) in node.args.iter().zip(&node.info.params) {
             let Ty::Stream(_) = pty else { continue };
@@ -4038,6 +4043,7 @@ impl Lowerer {
                 _ => None,
             };
             behind.push((pushed, some));
+            ends.push(e);
             readers.push((pname.clone(), r, pty.clone(), sname));
         }
         let pending = pending.unwrap_or_else(|| "notfin".into());
@@ -4078,7 +4084,7 @@ impl Lowerer {
             b.line(&format!("{} = {}", moved.join(", "), call));
         }
         let mut done: Option<String> = None;
-        for ((pname, _, _, sname), m) in readers.iter().zip(&moved) {
+        for (i, ((pname, _, _, sname), m)) in readers.iter().zip(&moved).enumerate() {
             let r2 = m.split(':').next().unwrap().to_string();
             b.line(&format!("__set___node{}_{}({})", k, pname, r2));
             // the queue's slots come back where this node is its one
@@ -4086,11 +4092,22 @@ impl Lowerer {
             if sname.as_deref().is_some_and(|n| self.frees(n)) {
                 b.line(&format!("free_queue({})", r2));
             }
-            let first = r2;
-            let pushed = self.pushed_of(&first, &mut b);
+            // what the node has now seen of its input. Where the graph
+            // is acyclic no node pushes into or ends what it reads, that
+            // being what acyclic is computed from (log 78), so the input
+            // holds after the run what it held before it and is asked
+            // once (fm3 log 102); and what arrives from outside while
+            // the task runs is then not counted as seen. A node of a
+            // cyclic graph may feed itself, and asks again
+            let (pushed, e) = if self.static_schedule {
+                (behind[i].0.clone(), ends[i].clone())
+            } else {
+                let pushed = self.pushed_of(&r2, &mut b);
+                let e = b.tmp();
+                b.line(&format!("{}: u1 = ended({})", e, r2));
+                (pushed, e)
+            };
             b.line(&format!("__set___node{}_{}_seen({})", k, pname, pushed));
-            let e = b.tmp();
-            b.line(&format!("{}: u1 = ended({})", e, first));
             done = Some(match done {
                 None => e,
                 Some(d) => {

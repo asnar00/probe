@@ -258,18 +258,16 @@ fn __node1() -> u1
         _9: u8$ = lex(_8, _1, 0: i64)
         __set___node1_c(_9)
         free_queue(_9)
-        _10: i64 = received(_9)
-        __set___node1_c_seen(_10)
-        _11: u1 = ended(_9)
-        __set___node1_fin(_11)
+        __set___node1_c_seen(_2)
+        __set___node1_fin(_5)
         yield 1
     else
         off: u1 = xor on, 1
-        _12: u1 = and _4, off
-        if _12
-            _13: u8$ = set _1, pos, _2
-            __set___node1_c(_13)
-            free_queue(_13)
+        _10: u1 = and _4, off
+        if _10
+            _11: u8$ = set _1, pos, _2
+            __set___node1_c(_11)
+            free_queue(_11)
             __set___node1_c_seen(_2)
         yield 0
     ret ran
@@ -292,18 +290,16 @@ fn __node2() -> u1
         _9: u8$ = lex(_8, _1, 0: i64)
         __set___node2_c(_9)
         free_queue(_9)
-        _10: i64 = received(_9)
-        __set___node2_c_seen(_10)
-        _11: u1 = ended(_9)
-        __set___node2_fin(_11)
+        __set___node2_c_seen(_2)
+        __set___node2_fin(_5)
         yield 1
     else
         off: u1 = xor on, 1
-        _12: u1 = and _4, off
-        if _12
-            _13: u8$ = set _1, pos, _2
-            __set___node2_c(_13)
-            free_queue(_13)
+        _10: u1 = and _4, off
+        if _10
+            _11: u8$ = set _1, pos, _2
+            __set___node2_c(_11)
+            free_queue(_11)
             __set___node2_c_seen(_2)
         yield 0
     ret ran
