@@ -2087,7 +2087,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zended: Names::new(), zloud: Names::new() };
+    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -3224,6 +3224,9 @@ struct Lowerer {
     /// a push was lowered where the carried state could not follow it:
     /// the statement is refused, never miscompiled
     zbroken: bool,
+    /// an error met while a processor's lines were lowered in line at
+    /// a push (fm3 log 134): the statement's to give
+    zerror: Option<Error>,
     /// the streams with no storage that some function of the store
     /// ends (fm3 log 127): each has one bit in the context, that it has
     /// ended, which `end` reads and sets and a push statement checks
@@ -3247,6 +3250,14 @@ struct ZProc {
     /// which the input's `end` calls; none where the processor has
     /// nothing to do at the end
     end: Option<String>,
+    /// the function of one item's lines without those that name its
+    /// results, the locals its results are, and the feature and file
+    /// they belong to: what stands in place of the call at the loop
+    /// the front end writes over a block (fm3 log 134)
+    body: std::rc::Rc<Vec<Stmt>>,
+    gives: Vec<String>,
+    feature: String,
+    file: String,
 }
 
 /// the state of a wiring as a push statement holds it: the count of
@@ -4136,7 +4147,7 @@ impl Lowerer {
         for c in &w.kept {
             kept.push((self.ty(&c.ty, false, file, v.line)?, c.fields.clone(), c.input));
         }
-        let zp = ZProc { at: w.at.clone(), kept, end: w.end.as_ref().map(|fd| mangle(&fd.name)) };
+        let zp = ZProc { at: w.at.clone(), kept, end: w.end.as_ref().map(|fd| mangle(&fd.name)), body: std::rc::Rc::new(w.inline.clone()), gives: w.gives.clone(), feature: feature.to_string(), file: file.to_string() };
         for (name, ty) in &w.state() {
             let t = self.ty(ty, false, file, v.line)?;
             self.fvars.push(FVar { name: name.clone(), ty: t.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string() });
@@ -6513,6 +6524,9 @@ impl Lowerer {
                     }
                 }
                 done?;
+                if let Some(e) = self.zerror.take() {
+                    return Err(e);
+                }
                 if std::mem::take(&mut self.zbroken) {
                     return Err(lex::error(&file, *line, format!("this push into '{}$' has an item the front end cannot hand to the stream processor wired to it an item at a time: push it in a statement of its own", n)));
                 }
@@ -8143,15 +8157,20 @@ impl Lowerer {
     /// kept, its line and the kept values as they stand after it: each
     /// kept stream moved back a place, the present value of a said
     /// stream the function's result, of the input the item
-    fn z_step(&mut self, zp: &ZProc, each: &str, item: &str, at: Option<&str>, kept: &[Vec<String>], b: &mut Body) -> Vec<Vec<String>> {
+    fn z_step(&mut self, zp: &ZProc, each: &str, item: &str, at: Option<&str>, kept: &[Vec<String>], in_line: bool, b: &mut Body) -> Vec<Vec<String>> {
         let mut ops = vec![item.to_string()];
         ops.extend(at.map(str::to_string));
         ops.extend(kept.iter().flatten().cloned());
+        // in line (fm3 log 134): the function's lines stand here, and
+        // what it would have given back is read from their locals
+        let mut given = if in_line { self.z_inline(zp, each, &ops, b).into_iter() } else { Vec::new().into_iter() };
         let mut defs = Vec::new();
         let mut next = Vec::new();
         for ((ty, _, input), vals) in zp.kept.iter().zip(kept) {
             let present = if *input {
                 item.to_string()
+            } else if in_line {
+                given.next().unwrap()
             } else {
                 let r = b.tmp();
                 defs.push(format!("{}: {}", r, ty.ir()));
@@ -8160,6 +8179,9 @@ impl Lowerer {
             let mut moved = vec![present];
             moved.extend(vals[..vals.len() - 1].iter().cloned());
             next.push(moved);
+        }
+        if in_line {
+            return next;
         }
         let call = format!("{}({})", each, ops.join(", "));
         if defs.is_empty() {
@@ -8170,11 +8192,48 @@ impl Lowerer {
         next
     }
 
+    /// The lines of a processor's function of one item lowered where
+    /// its call would stand (fm3 log 134), `ops` the values its
+    /// parameters take; the values of the locals its results are. The
+    /// lines are the wiring's feature's and see only the function's
+    /// own names; what the statement being lowered holds of its own
+    /// push is put aside and brought back, a push among the lines
+    /// being a statement of its own. An error is kept for the
+    /// statement to give
+    fn z_inline(&mut self, zp: &ZProc, each: &str, ops: &[String], b: &mut Body) -> Vec<String> {
+        let info = self.funcs.iter().find(|g| g.ir == each).unwrap().clone();
+        let depth = b.loops.len();
+        let scope: HashMap<String, Var> = info.params.iter().zip(ops).map(|((n, t), v)| (n.clone(), Var { ir: v.clone(), ty: t.clone(), set: true, loop_depth: depth })).collect();
+        let vars = std::mem::replace(&mut b.vars, scope);
+        let results = std::mem::take(&mut b.results);
+        let kind = std::mem::replace(&mut b.kind, BodyKind::Fn);
+        let file = std::mem::replace(&mut b.file, zp.file.clone());
+        let func = b.func.replace(info);
+        let below = b.below.take();
+        let cur = std::mem::replace(&mut self.cur, zp.feature.clone());
+        let held = (self.push_site.take(), self.bare_gates.take(), self.loose_push, self.sure_push, self.zbroken, self.after_push.take(), self.zthread.take(), self.push_read.take(), self.candidate.take());
+        let body = zp.body.clone();
+        let done = self.lower_block(&body, b);
+        let given: Vec<String> = zp.gives.iter().map(|n| b.vars.get(n).map(|v| v.ir.clone()).unwrap_or_default()).collect();
+        (self.push_site, self.bare_gates, self.loose_push, self.sure_push, self.zbroken, self.after_push, self.zthread, self.push_read, self.candidate) = held;
+        self.cur = cur;
+        b.below = below;
+        b.func = func;
+        b.file = file;
+        b.kind = kind;
+        b.results = results;
+        b.vars = vars;
+        if let Err(e) = done {
+            self.zerror.get_or_insert(e);
+        }
+        given
+    }
+
     /// one item handed to a processor's function, the state moved on
     fn z_call(&mut self, t: &mut ZThread, item: &str, b: &mut Body) {
         let zp = self.zprocs[&t.each].clone();
         let at = t.at.is_some().then(|| self.z_at(t, b));
-        t.kept = self.z_step(&zp, &t.each.clone(), item, at.as_deref(), &t.kept.clone(), b);
+        t.kept = self.z_step(&zp, &t.each.clone(), item, at.as_deref(), &t.kept.clone(), false, b);
         if let Some((_, k)) = &mut t.at {
             *k += 1;
         }
@@ -8225,7 +8284,7 @@ impl Lowerer {
             b.line(&format!("{}: index = add {}, {}", a, base, k));
             a
         });
-        let next = self.z_step(&zp, &t.each.clone(), &x, at.as_deref(), &carried, b);
+        let next = self.z_step(&zp, &t.each.clone(), &x, at.as_deref(), &carried, true, b);
         let k2 = b.tmp();
         b.line(&format!("{}: index = add {}, 1", k2, k));
         let mut again = vec![k2];

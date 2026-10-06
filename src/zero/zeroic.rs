@@ -661,6 +661,11 @@ pub struct Written {
     /// streams among those, in the same order: the wiring moves each
     /// one back a place and keeps it
     pub each: FnDecl,
+    /// ... and its body without the lines that name its results, and
+    /// the locals those results are: what the loop the front end
+    /// writes over a block has in place of the call (fm3 log 134)
+    pub inline: Vec<Stmt>,
+    pub gives: Vec<String>,
     /// The function of the last tick, the one on which the input is
     /// empty (question 75 rule 4): its parameters are the count and the
     /// kept values, and it gives nothing back. None where the
@@ -886,6 +891,8 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool) -> Wr
     // out; and a condition several of them turn on is branched on once
     let after: Vec<Stmt> = made.iter().chain(&given).cloned().collect();
     let mut body = grouped(needed(lines, &after), made);
+    let inline = body.clone();
+    let gives: Vec<String> = p.kept.iter().filter(|c| !c.input).map(|c| local(&c.name)).collect();
     body.extend(given);
     let each = FnDecl { line, results, name: vec![NamePart::Word(each_name.clone()), NamePart::Group], groups: vec![params.clone()], task: false, body, platform: Vec::new() };
     // the last tick (log 127): the lines that are something with the
@@ -960,5 +967,5 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool) -> Wr
         }
         FnDecl { line, results: Vec::new(), name: vec![NamePart::Word(format!("__z{}", k)), NamePart::Group], groups: vec![vec![param(&p.item_ty, x, true, line)]], task: false, body, platform: Vec::new() }
     });
-    Written { each, end, walker, at, kept }
+    Written { each, inline, gives, end, walker, at, kept }
 }

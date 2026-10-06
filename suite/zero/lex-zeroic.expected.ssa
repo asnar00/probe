@@ -236,16 +236,31 @@ fn arrive_first()
                 break _13, _15, _17
             _20: u8 = load _11, _12, 1
             _21: index = add _7, _12
-            _22: int, _23: index, _24: index = __z2_each(_20, _21, _13, _15, _17)
-            _25: index = add _12, 1
-            continue _25, _22, _23, _24
-        _26: index = add _7, 9
-        _27: __ctx = load _this
-        _28: __ctx = set _27, __z2_at, _26
-        _29: __ctx = set _28, __z2_k_1, _14
-        _30: __ctx = set _29, __z2_n_1, _16
-        _31: __ctx = set _30, __z2_start_1, _18
-        store _31, _this
+            _k: int = kind_of(_20)
+            _22: u1 = cmp.eq _k, 3
+            _23: u1 = cmp.ne _k, _13
+            _new: u1 = or _22, _23
+            _n_3: index, _start: index = if _new
+                _n: index = const 1
+                _24: u1 = cmp.ne _13, 0
+                if _24
+                    _25: __ctx = load _this
+                    _26: token$ = get _25, u
+                    _27: token = pack _13, _17, _15
+                    push_queue_open(_26, _27)
+                yield _n, _21
+            else
+                _n_2: index = add _15, 1
+                yield _n_2, _17
+            _28: index = add _12, 1
+            continue _28, _k, _n_3, _start
+        _29: index = add _7, 9
+        _30: __ctx = load _this
+        _31: __ctx = set _30, __z2_at, _29
+        _32: __ctx = set _31, __z2_k_1, _14
+        _33: __ctx = set _32, __z2_n_1, _16
+        _34: __ctx = set _33, __z2_start_1, _18
+        store _34, _this
     ret
 fn arrive_again()
     _this: ptr = addr __ctx_mem
@@ -268,31 +283,46 @@ fn arrive_again()
                 break _13, _15, _17
             _20: u8 = load _11, _12, 1
             _21: index = add _7, _12
-            _22: int, _23: index, _24: index = __z2_each(_20, _21, _13, _15, _17)
-            _25: index = add _12, 1
-            continue _25, _22, _23, _24
-        _26: index = add _7, 3
-        _27: __ctx = load _this
-        _28: __ctx = set _27, __z2_at, _26
-        _29: __ctx = set _28, __z2_k_1, _14
-        _30: __ctx = set _29, __z2_n_1, _16
-        _31: __ctx = set _30, __z2_start_1, _18
-        store _31, _this
-    _32: __ctx = load _this
-    _33: u1 = get _32, __zend_src
-    if _33
+            _k: int = kind_of(_20)
+            _22: u1 = cmp.eq _k, 3
+            _23: u1 = cmp.ne _k, _13
+            _new: u1 = or _22, _23
+            _n_3: index, _start: index = if _new
+                _n: index = const 1
+                _24: u1 = cmp.ne _13, 0
+                if _24
+                    _25: __ctx = load _this
+                    _26: token$ = get _25, u
+                    _27: token = pack _13, _17, _15
+                    push_queue_open(_26, _27)
+                yield _n, _21
+            else
+                _n_2: index = add _15, 1
+                yield _n_2, _17
+            _28: index = add _12, 1
+            continue _28, _k, _n_3, _start
+        _29: index = add _7, 3
+        _30: __ctx = load _this
+        _31: __ctx = set _30, __z2_at, _29
+        _32: __ctx = set _31, __z2_k_1, _14
+        _33: __ctx = set _32, __z2_n_1, _16
+        _34: __ctx = set _33, __z2_start_1, _18
+        store _34, _this
+    _35: __ctx = load _this
+    _36: u1 = get _35, __zend_src
+    if _36
     else
-        _34: u1 = const 1
-        _35: __ctx = load _this
-        _36: __ctx = set _35, __zend_src, _34
-        store _36, _this
+        _37: u1 = const 1
+        _38: __ctx = load _this
+        _39: __ctx = set _38, __zend_src, _37
+        store _39, _this
         if _5
-            _39: __ctx = load _this
-            _40: index = get _39, __z2_at
-            _41: int = get _39, __z2_k_1
-            _42: index = get _39, __z2_n_1
-            _43: index = get _39, __z2_start_1
-            __z2_end(_40, _41, _42, _43)
+            _42: __ctx = load _this
+            _43: index = get _42, __z2_at
+            _44: int = get _42, __z2_k_1
+            _45: index = get _42, __z2_n_1
+            _46: index = get _42, __z2_start_1
+            __z2_end(_43, _44, _45, _46)
     ret
 fn two_arrivals() -> (int, int)
     _this: ptr = addr __ctx_mem
@@ -377,37 +407,52 @@ fn a_word_at_the_end() -> (int, int)
                 break _13, _15, _17
             _20: u8 = load _11, _12, 1
             _21: index = add _7, _12
-            _22: int, _23: index, _24: index = __z2_each(_20, _21, _13, _15, _17)
-            _25: index = add _12, 1
-            continue _25, _22, _23, _24
-        _26: index = add _7, 3
-        _27: __ctx = load _this
-        _28: __ctx = set _27, __z2_at, _26
-        _29: __ctx = set _28, __z2_k_1, _14
-        _30: __ctx = set _29, __z2_n_1, _16
-        _31: __ctx = set _30, __z2_start_1, _18
-        store _31, _this
-    _32: __ctx = load _this
-    _33: token$ = get _32, u
-    _34: index = count _33
-    a: int = conv _34
+            _k: int = kind_of(_20)
+            _22: u1 = cmp.eq _k, 3
+            _23: u1 = cmp.ne _k, _13
+            _new: u1 = or _22, _23
+            _n_3: index, _start: index = if _new
+                _n: index = const 1
+                _24: u1 = cmp.ne _13, 0
+                if _24
+                    _25: __ctx = load _this
+                    _26: token$ = get _25, u
+                    _27: token = pack _13, _17, _15
+                    push_queue_open(_26, _27)
+                yield _n, _21
+            else
+                _n_2: index = add _15, 1
+                yield _n_2, _17
+            _28: index = add _12, 1
+            continue _28, _k, _n_3, _start
+        _29: index = add _7, 3
+        _30: __ctx = load _this
+        _31: __ctx = set _30, __z2_at, _29
+        _32: __ctx = set _31, __z2_k_1, _14
+        _33: __ctx = set _32, __z2_n_1, _16
+        _34: __ctx = set _33, __z2_start_1, _18
+        store _34, _this
     _35: __ctx = load _this
-    _36: u1 = get _35, __zend_src
-    if _36
+    _36: token$ = get _35, u
+    _37: index = count _36
+    a: int = conv _37
+    _38: __ctx = load _this
+    _39: u1 = get _38, __zend_src
+    if _39
     else
-        _37: u1 = const 1
-        _38: __ctx = load _this
-        _39: __ctx = set _38, __zend_src, _37
-        store _39, _this
+        _40: u1 = const 1
+        _41: __ctx = load _this
+        _42: __ctx = set _41, __zend_src, _40
+        store _42, _this
         if _5
-            _42: __ctx = load _this
-            _43: index = get _42, __z2_at
-            _44: int = get _42, __z2_k_1
-            _45: index = get _42, __z2_n_1
-            _46: index = get _42, __z2_start_1
-            __z2_end(_43, _44, _45, _46)
-    _49: index = count _33
-    b: int = conv _49
+            _45: __ctx = load _this
+            _46: index = get _45, __z2_at
+            _47: int = get _45, __z2_k_1
+            _48: index = get _45, __z2_n_1
+            _49: index = get _45, __z2_start_1
+            __z2_end(_46, _47, _48, _49)
+    _52: index = count _36
+    b: int = conv _52
     ret a, b
 fn lexed() -> int
     _this: ptr = addr __ctx_mem
@@ -498,25 +543,6 @@ fn __z1(c: u8$, __hz: i64) -> u8$
         _35: index = get _34, __z1_start_1
         __z1_end(_29, _31, _33, _35)
     ret c_2
-fn __z2_each(_c: u8, __at: index, __k_b1: int, __n_b1: index, __start_b1: index) -> (int, index, index)
-    _this: ptr = addr __ctx_mem
-    _k: int = kind_of(_c)
-    _1: u1 = cmp.eq _k, 3
-    _2: u1 = cmp.ne _k, __k_b1
-    _new: u1 = or _1, _2
-    _n_3: index, _start: index = if _new
-        _n: index = const 1
-        _3: u1 = cmp.ne __k_b1, 0
-        if _3
-            _4: __ctx = load _this
-            _5: token$ = get _4, u
-            _6: token = pack __k_b1, __start_b1, __n_b1
-            push_queue_open(_5, _6)
-        yield _n, __at
-    else
-        _n_2: index = add __n_b1, 1
-        yield _n_2, __start_b1
-    ret _k, _n_3, _start
 fn __z2_end(__at: index, __k_b1: int, __n_b1: index, __start_b1: index)
     _this: ptr = addr __ctx_mem
     _k: int = const 0

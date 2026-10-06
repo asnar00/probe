@@ -723,16 +723,18 @@ mod tests {
             emit(&dir)
         };
         let ir = with("    d$ << x$ * 2").unwrap();
-        // the function of one item, one a wiring
-        assert!(ir.contains("fn __z1_each(_x: int)\n") && ir.contains("fn __z2_each(_c: u8)\n") && ir.contains("fn __z3_each(_x: int)\n"), "{}", ir);
+        // the function of one item, one a wiring; the second is called
+        // by nothing, its lines standing in the literal's loop (fm3 log
+        // 134), and is not in the text
+        assert!(ir.contains("fn __z1_each(_x: int)\n") && !ir.contains("fn __z2_each(") && ir.contains("fn __z3_each(_x: int)\n"), "{}", ir);
         // `x$` and `t$` have no storage: no field, and the push is the call
         let ctx = &ir[ir.find("type __ctx = struct").unwrap()..ir.find("data __ctx_mem").unwrap()];
         assert!(!ctx.contains("    x: ") && !ctx.contains("    t: ") && ctx.contains("    s: int$\n"), "{}", ctx);
         let f = &ir[ir.find("fn f() -> int").unwrap()..];
         let f = &f[..f[1..].find("\nfn ").map_or(f.len(), |i| i + 1)];
         assert_eq!(f.matches("__z1_each(").count(), 2, "{}", f);
-        // the literal is a loop that says four
-        assert!(f.contains(", 4\n") && f.contains(" = load ") && f.contains("__z2_each("), "{}", f);
+        // the literal is a loop that says four, the processor's line in it
+        assert!(f.contains(", 4\n") && f.contains(" = load ") && !f.contains("__z2_each(") && f.contains(": int = conv "), "{}", f);
         // `s$` is read by `count s$`: it keeps its queue, and the sink
         // the front end wrote walks it, woken where the push is
         assert!(ir.contains("fn __z3(x: int$, __hz: i64) -> int$\n") && f.contains("= __z3("), "{}", ir);
@@ -880,6 +882,55 @@ mod tests {
         std::fs::write(dir.join("h/h.zero"), format!("{}on (int d$) << runs (int x$)\n    bool new$ = x$ != x$[-1]\n    d$ << x$ when (new$ and x$ > 0)\n", head)).unwrap();
         let ir = emit(&dir).unwrap();
         assert!(ir.contains("    _new: u1 = cmp.ne _x, __x_b1\n    _1: u1 = cmp.gt _x, 0\n    _2: u1 = and _new, _1\n    if _2\n"), "{}", ir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A block pushed into a stream processor's input has the
+    /// processor's lines in the loop the front end writes (fm3 log
+    /// 134): no call an item. A single item is the call still, and so
+    /// the function is written where one is pushed and not where every
+    /// push is a block. The lines see the processor's names and the
+    /// store's, never the pushing function's own: a local of the
+    /// pusher named as the processor's output is not what the lines
+    /// push into. And they are the wiring's feature's, so a pusher in
+    /// a lower layer hands a block to a processor wired above it, as
+    /// its call did
+    #[test]
+    fn a_block_has_the_lines_in_its_loop() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-inline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 3\n>g() → 1\n>h() → 5\n").unwrap();
+        let code = "char t$\nint d$ = runs(t$)\nint x$\nint e$ = twice(x$)\n\non (int d$) << runs (char c$)\n    int n$ = if (c$ == c$[-1]) then (n$[-1] + 1) else (1)\n    d$ << n$\n\non (int e$) << twice (int x$)\n    e$ << x$ * 2\n\non (int n) = f()\n    int d$ = [7, 8, 9]\n    t$ << \"aab\" << \"bc\"\n    n = count d$\n\non (int n) = g()\n    x$ << 4\n    n = count e$\n\non (int n) = h()\n    int k = f()\n    n = count d$\n";
+        std::fs::write(dir.join("h/h.zero"), code).unwrap();
+        let ir = emit(&dir).unwrap();
+        // every push into `t$` is a block: no function of one item for it
+        assert!(!ir.contains("__z1_each"), "{}", ir);
+        // ... and `x$` is pushed one item: the call, and the function
+        assert!(ir.contains("fn __z2_each(_x: int)\n") && ir.contains("    __z2_each("), "{}", ir);
+        let f = &ir[ir.find("fn f() -> int").unwrap()..];
+        let f = &f[..f[1..].find("\nfn ").map_or(f.len(), |i| i + 1)];
+        // two blocks, two loops, the lines in each, the second's names
+        // defined again; what is kept goes round each loop and from the
+        // first to the second with nothing stored between
+        assert_eq!(f.matches(" = loop(").count(), 2, "{}", f);
+        assert!(f.contains("        _n: int = if ") && f.contains("        _n_2: int = if "), "{}", f);
+        assert_eq!(f.matches("store ").count(), 1, "{}", f);
+        // the lines push into the store's `d$`, fetched from the
+        // context, and not into the function's own
+        assert_eq!(f.matches(": int$ = get ").count(), 2, "{}", f);
+        assert!(f.contains("    d: int$ = __queue_int(") && !f.contains("(d, _n"), "{}", f);
+        // a pusher below the wiring: the lines are the wiring's feature's
+        std::fs::write(dir.join("order.md"), "# order\nlowest first\n\n- platform\n- runtime\n- tools\n").unwrap();
+        std::fs::create_dir_all(dir.join("up")).unwrap();
+        std::fs::write(dir.join("up/up.md"), "# up\n*x*\n\nlayer: tools\n\n> (suite) 2026-09-08T11:00:00\n\n## testing\n>seen() → 3\n").unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 0\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "char t$\n\non (int n) = f()\n    t$ << \"abc\"\n    n = 0\n").unwrap();
+        std::fs::write(dir.join("up/up.zero"), "int d$ = codes(t$)\n\non (int k$) << codes (char c$)\n    k$ << int(c$)\n\non (int n) = seen()\n    f()\n    n = count d$\n").unwrap();
+        let ir = emit(&dir).unwrap();
+        let f = &ir[ir.find("fn f() -> int").unwrap()..];
+        let f = &f[..f[1..].find("\nfn ").map_or(f.len(), |i| i + 1)];
+        assert!(f.contains("        loop(") && f.contains(": int$ = get ") && f.contains(", __enabled_up\n") && !ir.contains("__z1_each"), "{}", ir);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
