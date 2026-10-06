@@ -116,6 +116,12 @@ on (int n) = logged and read()
     advance log$ by (1)
     n = peek log$ at (0)
 
+on (int n) = counted round a push()
+    int i$ << 1 << 2
+    int a = count i$
+    i$ << 3
+    n = a * 10 + count i$
+
 on skip one logged()
     advance log$ by (1)
 

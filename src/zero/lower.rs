@@ -2280,6 +2280,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     let unread = store.features.iter().any(|f| f.name != "platform" && f.code.decls.iter().any(|d| matches!(d, Decl::Fn(fd) if !fd.platform.is_empty())));
     let ir = settle_pushes(ir, &l.queue_pushes, &l.ended, unread);
     let ir = settle_context(&ir, &l.written, unread);
+    let ir = settle_counts(&ir);
     // the text carries what the store reaches (log 70): every function
     // of the store's own features, the platform feature's that a case
     // names, and the runner's entries are roots
@@ -2344,23 +2345,7 @@ fn settle_pushes(mut ir: String, pushes: &std::collections::BTreeMap<String, Ty>
 /// such a field in any function; `unread`, a `platform` body of the
 /// store's own, which may call a setter, reuses nothing
 fn settle_context(ir: &str, written: &std::collections::HashSet<String>, unread: bool) -> String {
-    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    let names = |line: &str, f: &mut dyn FnMut(&str) -> Option<String>| -> String {
-        let mut out = String::new();
-        let mut rest = line;
-        while !rest.is_empty() {
-            let n = rest.find(|c: char| !word(c)).unwrap_or(rest.len());
-            if n == 0 {
-                let c = rest.chars().next().unwrap();
-                out.push(c);
-                rest = &rest[c.len_utf8()..];
-            } else {
-                out.push_str(&f(&rest[..n]).unwrap_or_else(|| rest[..n].to_string()));
-                rest = &rest[n..];
-            }
-        }
-        out
-    };
+    let names = words;
     let lines: Vec<&str> = ir.lines().collect();
     let mut out = String::new();
     let mut i = 0;
@@ -2453,6 +2438,186 @@ fn settle_context(ir: &str, written: &std::collections::HashSet<String>, unread:
                 out.push_str(&names(l, &mut |w| renamed.get(w).cloned()));
             }
             out.push('\n');
+        }
+    }
+    out
+}
+
+/// `count` asked once (fm3 log 112), settled in the finished text. In
+/// one function, `X: i64 = count R` is dropped and `X` is the `Y` of an
+/// earlier `Y: i64 = count R` where: `R` is the same value; the first
+/// asking is a statement of a block the second is inside, so every way
+/// to the second passes the first; and no line between could push.
+/// Between is every line after the first and before the second, and,
+/// where the second stands in a loop the first does not, that loop's
+/// whole body, a pass coming round to the second without the first. A
+/// line is harmless by `quiet`: a list of what is allowed, so a word
+/// nobody thought of gives up. One kind of line is passed over, an `if`
+/// that is a statement of the first asking's own block, with no `else`,
+/// whose last line leaves the pass or the function: whoever enters it
+/// reaches the second asking again only through the first. The `conv`
+/// that follows the asking goes with it. A function of the store is
+/// harmless to call where its own body, and the body of all it calls,
+/// is quiet lines and nothing else, and it has no rule for a target
+fn settle_counts(ir: &str) -> String {
+    let lines: Vec<&str> = ir.lines().collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    // the functions: name, the body's lines, whether a target has a rule for it
+    let mut fns: Vec<(&str, usize, usize, bool)> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let Some(sig) = lines[i].strip_prefix("fn ") else {
+            i += 1;
+            continue;
+        };
+        let name = sig.split('(').next().unwrap_or("");
+        let mut end = i + 1;
+        while end < lines.len() && lines[end].starts_with(' ') {
+            end += 1;
+        }
+        fns.push((name, i + 1, end, lines.get(end).is_some_and(|l| l.starts_with("platform "))));
+        i = end;
+    }
+    // the functions that are harmless to call: the least set that holds
+    let mut still: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    loop {
+        let before = still.len();
+        for &(name, _, _, _) in &fns {
+            if !still.contains(name) && fns.iter().filter(|f| f.0 == name).all(|&(_, a, b, ruled)| !ruled && lines[a..b].iter().all(|l| quiet(l, &still))) {
+                still.insert(name);
+            }
+        }
+        if still.len() == before {
+            break;
+        }
+    }
+    let asking = |l: &str| -> Option<(String, String)> {
+        let (def, r) = l.trim_start().split_once(" = count ")?;
+        let x = def.strip_suffix(": i64")?;
+        (!r.contains(' ') && !x.contains(' ')).then(|| (x.to_string(), r.to_string()))
+    };
+    let conv = |l: &str| -> Option<(String, String, String)> {
+        let (def, v) = l.trim_start().split_once(" = conv ")?;
+        let (p, t) = def.split_once(": ")?;
+        Some((p.to_string(), t.to_string(), v.to_string()))
+    };
+    let temporary = |n: &str| n.len() > 1 && n.starts_with('_') && n[1..].bytes().all(|c| c.is_ascii_digit());
+    let mut dropped = vec![false; lines.len()];
+    let mut renamed: Vec<HashMap<String, String>> = Vec::new();
+    for &(_, a, b, _) in &fns {
+        let mut names: HashMap<String, String> = HashMap::new();
+        // the askings in blocks still open: the line, how far in, the reader, the count
+        let mut asked: Vec<(usize, usize, String, String)> = Vec::new();
+        for k in a..b {
+            let d = indent(lines[k]);
+            asked.retain(|q| q.1 <= d);
+            let Some((x, r)) = asking(lines[k]) else { continue };
+            let first = asked.iter().rev().find(|q| q.2 == r && {
+                // the outermost loop the second asking is in and the first is not
+                let lp = (q.0 + 1..k).find(|&m| head(lines[m]) == "loop" && indent(lines[m]) >= q.1 && (m + 1..=k).all(|n| indent(lines[n]) > indent(lines[m])));
+                let stop = lp.unwrap_or(k);
+                let mut clear = true;
+                let mut m = q.0 + 1;
+                while clear && m < stop {
+                    if indent(lines[m]) == q.1 && head(lines[m]) == "if" && lines[m].trim_start().starts_with("if ") {
+                        let e = (m + 1..b).find(|&n| indent(lines[n]) <= q.1).unwrap_or(b);
+                        let leaves = e - 1 > m && indent(lines[e - 1]) == q.1 + 4 && matches!(head(lines[e - 1]), "break" | "continue" | "ret");
+                        if leaves && e <= stop && lines.get(e).is_none_or(|l| l.trim() != "else") {
+                            m = e;
+                            continue;
+                        }
+                    }
+                    clear = quiet(lines[m], &still);
+                    m += 1;
+                }
+                if let Some(lp) = lp {
+                    let e = (lp + 1..b).find(|&n| indent(lines[n]) <= indent(lines[lp])).unwrap_or(b);
+                    clear = clear && lines[lp..e].iter().all(|l| quiet(l, &still));
+                }
+                clear
+            });
+            match first {
+                Some(q) if temporary(&x) => {
+                    dropped[k] = true;
+                    // ... and the conversion of the count with it
+                    if let (Some((p, t, v)), Some((p0, t0, v0))) = (lines.get(k + 1).filter(|_| k + 1 < b).and_then(|l| conv(l)), conv(lines[q.0 + 1])) {
+                        if v == x && v0 == q.3 && t == t0 && temporary(&p) && indent(lines[q.0 + 1]) == q.1 {
+                            dropped[k + 1] = true;
+                            names.insert(p, p0);
+                        }
+                    }
+                    names.insert(x, q.3.clone());
+                }
+                _ => asked.push((k, d, r, x)),
+            }
+        }
+        renamed.push(names);
+    }
+    let mut out = String::new();
+    let mut f = 0;
+    for (k, l) in lines.iter().enumerate() {
+        while f < fns.len() && k >= fns[f].2 {
+            f += 1;
+        }
+        if dropped[k] {
+            continue;
+        }
+        match fns.get(f) {
+            Some(&(_, a, _, _)) if k >= a && !renamed[f].is_empty() => out.push_str(&words(l, &mut |w| renamed[f].get(w).cloned())),
+            _ => out.push_str(l),
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// a line's operation: the first word after its definitions, or its first word
+fn head(line: &str) -> &str {
+    let t = line.trim_start();
+    let rhs = match t.split_once(" = ") {
+        Some((defs, r)) if defs.contains(": ") && !defs.contains('(') => r,
+        _ => t,
+    };
+    rhs.split(|c: char| c == ' ' || c == '(').next().unwrap_or("")
+}
+
+/// Could this line push into a stream, end one, or write memory? Not
+/// where its operation is on the list and every call on it is to a
+/// reading word of the library or a function of `still` (fm3 log 112)
+fn quiet(line: &str, still: &std::collections::HashSet<&str>) -> bool {
+    const PURE: [&str; 15] = ["const", "conv", "get", "set", "pack", "add", "sub", "mul", "and", "or", "xor", "load", "addr", "len", "count"];
+    const FLOW: [&str; 7] = ["if", "else", "loop", "break", "continue", "yield", "ret"];
+    const READS: [&str; 5] = ["peek_queue", "peek", "ended", "received", "advance"];
+    let h = head(line);
+    if !(PURE.contains(&h) || FLOW.contains(&h) || h.starts_with("cmp.") || READS.contains(&h) || still.contains(h)) {
+        return false;
+    }
+    let mut calls = true;
+    let bytes = line.as_bytes();
+    words(line, &mut |w| {
+        let after = w.as_ptr() as usize - line.as_ptr() as usize + w.len();
+        if bytes.get(after) == Some(&b'(') && !(w == "loop" || READS.contains(&w) || still.contains(w)) {
+            calls = false;
+        }
+        None
+    });
+    calls
+}
+
+/// a line with each of its words given to `f`, and replaced where `f` says
+fn words(line: &str, f: &mut dyn FnMut(&str) -> Option<String>) -> String {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::new();
+    let mut rest = line;
+    while !rest.is_empty() {
+        let n = rest.find(|c: char| !word(c)).unwrap_or(rest.len());
+        if n == 0 {
+            let c = rest.chars().next().unwrap();
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+        } else {
+            out.push_str(&f(&rest[..n]).unwrap_or_else(|| rest[..n].to_string()));
+            rest = &rest[n..];
         }
     }
     out

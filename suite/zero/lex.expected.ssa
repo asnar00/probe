@@ -226,9 +226,7 @@ fn lex(t: token$, c: u8$, __hz: i64) -> u8$
             c_4: u8$ = advance(c_2, 1)
             continue c_4
         n: int = loop(i: int = 1, m: int = -1)
-            _9: i64 = count c_2
-            _10: int = conv _9
-            _11: u1 = cmp.ge i, _10
+            _11: u1 = cmp.ge i, _2
             if _11
                 _12: u1 = ended(c_2)
                 m_2: int = if _12

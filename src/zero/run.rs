@@ -1265,6 +1265,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// a second `count` of the same reader value is the first's number
+    /// where nothing between could have pushed, and only there (fm3 log 112)
+    #[test]
+    fn count_is_asked_once_where_nothing_between_could_push() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-counts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n").unwrap();
+        let head = "int far$\n\non (int k) = quiet (int c)\n    k = c + 1\n\non (int k) = loud (int c)\n    far$ << c\n    k = c\n\non (int k) = relayed (int c)\n    k = loud (c)\n\non (int n) = sized()\n    n = count far$\n\n";
+        let counts = |f: &str| -> usize {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}", head, f)).unwrap();
+            let ir = lower::lower(&store::read(&dir).unwrap()).unwrap().ir;
+            let b: Vec<&str> = ir.lines().skip_while(|l| !l.starts_with("fn f(")).skip(1).take_while(|l| l.starts_with(' ')).collect();
+            assert!(b.iter().any(|l| l.contains(" = count ")), "{}", ir);
+            b.iter().filter(|l| l.contains(" = count ")).count()
+        };
+        let straight = |between: &str| format!("on (int n) = f()\n    int s$ << 1 << 2\n    int a = count s$\n{}    n = a + count s$\n", between);
+        // arithmetic, a read, and a call to a function that only computes
+        assert_eq!(counts(&straight("    int b = a * 2 + peek s$ at (0)\n    int c = quiet (b)\n")), 1);
+        // a push, an `end`, a function that pushes, one that calls one that does
+        assert_eq!(counts(&straight("    s$ << 3\n")), 2);
+        assert_eq!(counts(&straight("    far$ << 3\n")), 2);
+        assert_eq!(counts(&straight("    end s$\n")), 2);
+        assert_eq!(counts(&straight("    int b = loud (a)\n")), 2);
+        assert_eq!(counts(&straight("    int b = relayed (a)\n")), 2);
+        // a reader moved on is another value
+        assert_eq!(counts(&straight("    advance s$ by (1)\n")), 2);
+        // an arm of the first asking's own block that pushes and leaves is passed over ...
+        let turn = |arm: &str| format!("on (int n) = f (int k)\n    int s$ << 1 << 2\n    n = loop (int i = 0, int acc = 0) yields acc\n        if (i >= k)\n            break\n        int a = count s$\n        if (a > 5)\n{}        continue (i + 1, acc + a + count s$)\n", arm);
+        assert_eq!(counts(&turn("            s$ << 9\n            continue (i + 1, acc)\n")), 1);
+        // ... one that pushes and goes on is not, nor one nested deeper
+        assert_eq!(counts(&turn("            s$ << 9\n")), 2);
+        assert_eq!(counts(&turn("            if (a > 6)\n                s$ << 9\n                continue (i + 1, acc)\n")), 2);
+        // the second asking in a loop the first is not in: the loop's
+        // whole body is between, what follows the asking too
+        let inner = |after: &str| format!("on (int n) = f (int k)\n    int s$ << 1 << 2\n    int a = count s$\n    int t = loop (int i = 0, int acc = 0) yields acc\n        if (i >= k)\n            break\n        int c = count s$\n{}        continue (i + 1, acc + c)\n    n = a + t\n", after);
+        assert_eq!(counts(&inner("")), 1);
+        assert_eq!(counts(&inner("        int q = quiet (c)\n")), 1);
+        assert_eq!(counts(&inner("        s$ << 9\n")), 2);
+        // an asking in one arm is not in hand in the other
+        assert_eq!(counts("on (int n) = f (int k)\n    int s$ << 1 << 2\n    if (k > 0)\n        n = count s$\n    else\n        n = count s$ + 1\n"), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// a product's bound (log 41) reaches every loop of the function it
     /// names, marked as the product's, and `probe cost` counts it
     #[test]
