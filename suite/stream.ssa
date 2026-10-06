@@ -40,6 +40,10 @@
 ;! queue_full -> check
 ;! queue_freed -> 12, 8
 ;! queue_tokens -> 2, 20
+;! queue_open_pushes -> 27, 6
+;! queue_open_full -> check
+;! queue_open_block_full -> check
+;! queue_open_tokens -> 2, 20
 ;! struct_ring -> 3, 20
 ;! struct_frame -> 3, 4
 
@@ -216,6 +220,67 @@ fn queue_tokens() -> (i64, i64)
     push_queue(s, a)
     b: tok = pack 2, 20, 3
     push_queue(s, b)
+    n: i64 = count s
+    x: tok = peek_queue(s, 1)
+    k: i64 = get x, start
+    ret n, k
+; a queue that cannot have ended is pushed into without being asked
+; whether it has (fm3 log 108): the compiler takes `push_queue_open`
+; where no `end` in the program reaches a stream of the type. Two items
+; and then a block of four land as `push_queue`'s do: the second item
+; and the last, as ten times the one and the other, and the count
+fn queue_open_pushes() -> (i64, i64)
+    s: u8$ = queue_ring()
+    push_queue_open(s, 1: u8)
+    push_queue_open(s, 2: u8)
+    p: ptr = addr bblk
+    b: u8[] = slice p
+    fill b, 7
+    push_queue_open(s, b)
+    x: u8 = peek_queue(s, 1)
+    y: u8 = latest_queue(s)
+    x1: i64 = conv x
+    y1: i64 = conv y
+    x10: i64 = mul x1, 10
+    xy: i64 = add x10, y1
+    n: i64 = count s
+    ret xy, n
+; ... and the room check stands in both: a ninth item into eight slots
+; nothing has read, and a block of four after six items
+fn queue_open_full() -> u8
+    s: u8$ = queue_ring()
+    s2: u8$ = fill_queue(s, 1)
+    push_queue_open(s2, 9: u8)
+    x: u8 = latest_queue(s2)
+    ret x
+fn queue_open_block_full() -> u8
+    s: u8$ = queue_ring()
+    loop(k: i64 = 0)
+        done: u1 = cmp.ge k, 6
+        if done
+            break
+        v: u8 = conv k
+        push_queue_open(s, v)
+        k2: i64 = add k, 1
+        continue k2
+    p: ptr = addr bblk
+    b: u8[] = slice p
+    fill b, 7
+    push_queue_open(s, b)
+    x: u8 = latest_queue(s)
+    ret x
+; ... and a queue of structs takes the whole token the same way
+fn queue_open_tokens() -> (i64, i64)
+    r: ptr = addr tokr
+    sz: i64 = sizeof tok
+    vb: ptr = addr tokvb
+    buffer_init(vb, sz, 16)
+    ring_queue(r, vb, 1000000, 16)
+    s: tok$ = stream r
+    a: tok = pack 1, 10, 2
+    push_queue_open(s, a)
+    b: tok = pack 2, 20, 3
+    push_queue_open(s, b)
     n: i64 = count s
     x: tok = peek_queue(s, 1)
     k: i64 = get x, start

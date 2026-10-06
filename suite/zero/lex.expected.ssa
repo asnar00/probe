@@ -281,7 +281,7 @@ fn lex(t: token$, c: u8$, __hz: i64) -> u8$
         _7: u1 = cmp.eq k, 3
         if _7
             _8: token = pack 3, start, 1
-            push_queue(t, _8)
+            push_queue_open(t, _8)
             c_4: u8$ = advance(c_2, 1)
             continue c_4
         n: int = loop(i: int = 1, m: int = -1)
@@ -307,7 +307,7 @@ fn lex(t: token$, c: u8$, __hz: i64) -> u8$
         if _18
             break c_2
         _19: token = pack k, start, n
-        push_queue(t, _19)
+        push_queue_open(t, _19)
         _20: i64 = conv n
         c_5: u8$ = advance(c_2, _20)
         continue c_5

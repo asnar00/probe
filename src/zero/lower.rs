@@ -2033,7 +2033,7 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new() };
+    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2262,6 +2262,10 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         }
     }
     ir.push_str(&l.out);
+    // a `platform` body of the store's own is IR the front end does not
+    // read, and may end anything
+    let unread = store.features.iter().any(|f| f.name != "platform" && f.code.decls.iter().any(|d| matches!(d, Decl::Fn(fd) if !fd.platform.is_empty())));
+    let ir = settle_pushes(ir, &l.queue_pushes, &l.ended, unread);
     // the text carries what the store reaches (log 70): every function
     // of the store's own features, the platform feature's that a case
     // names, and the runner's entries are roots
@@ -2293,6 +2297,24 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     }
     let ir = pruned;
     Ok(Lowered { ir, funcs: l.funcs, features: l.features, marks: store.marks.clone() })
+}
+
+/// Each queue's push takes its word (fm3 log 108). `ended` is written
+/// by `end` alone, and a ring made for a type is only ever named by
+/// that type or by an abstract type it fits, the IR making the
+/// instance. So a push through a name of element type T can find its
+/// stream ended only where some `end` in the store has an operand of
+/// element type E with T fitting E, E fitting T, or the two one type in
+/// the IR, as `char` and `uint8` are; every other push is
+/// `push_queue_open`, which does not ask. `ended` holds every `end` the
+/// lowering wrote, a trial's and a pruned function's among them, so it
+/// errs toward the check, and `unread` keeps every check
+fn settle_pushes(mut ir: String, pushes: &std::collections::BTreeMap<String, Ty>, ended: &[Ty], unread: bool) -> String {
+    for (key, t) in pushes {
+        let reached = unread || ended.iter().any(|e| fits(t, e) || fits(e, t) || e.ir() == t.ir());
+        ir = ir.replace(&format!("push_queue<{}>(", key), if reached { "push_queue(" } else { "push_queue_open(" });
+    }
+    ir
 }
 
 /// in a chain, the name feature i's body is emitted under: `key__f`, or
@@ -2790,6 +2812,12 @@ struct Lowerer {
     /// pushes into it, None when some statement's count is unknown
     arrivals: HashMap<String, Option<i64>>,
     read_by_name: std::collections::HashSet<String>,
+    /// the element type of every `end`'s operand, as each is lowered,
+    /// and of every queue's push (fm3 log 108): a push asks whether
+    /// its stream has ended only where an `end` could have reached a
+    /// stream of its type, which is known once every body is lowered
+    ended: Vec<Ty>,
+    queue_pushes: std::collections::BTreeMap<String, Ty>,
     /// how many nodes read each feature-scope stream, counted before
     /// the nodes are emitted (question 48)
     node_reads: HashMap<String, usize>,
@@ -3132,6 +3160,17 @@ impl Lowerer {
             return false;
         }
         self.node_reads.get(sname) == Some(&1)
+    }
+
+    /// The word of a queue's push, written with the stream's element
+    /// type beside it and settled by `settle_pushes` when every body
+    /// has been lowered (fm3 log 108), since an `end` that reaches the
+    /// type may be lowered after the push. A stream whose type is not
+    /// in hand keeps the checked push
+    fn queue_push(&mut self, elem: Option<&Ty>) -> String {
+        let Some(e) = elem else { return "push_queue".to_string() };
+        self.queue_pushes.insert(e.mangled(), e.clone());
+        format!("push_queue<{}>", e.mangled())
     }
 
     /// Is a push into this name the queue's (log 89)? Its ring was
@@ -6237,7 +6276,8 @@ impl Lowerer {
                 let maker = self.flavour(dst, b);
                 let t = b.tmp();
                 if maker == "queue" {
-                    b.line(&format!("push_queue({}, {})", c, r.text));
+                    let word = self.queue_push(Some(&r.ty));
+                    b.line(&format!("{}({}, {})", word, c, r.text));
                 } else if maker == "regular" {
                     b.line(&format!("push {}, {}", c, r.text));
                 } else {
@@ -6857,7 +6897,8 @@ impl Lowerer {
             // a queue holds an item only until its reader has passed
             // it (log 89): the push checks that the slot is free
             let v = b.materialize(v);
-            b.line(&format!("push_queue({}, {})", s.text, v.text));
+            let word = self.queue_push(s.ty.elem());
+            b.line(&format!("{}({}, {})", word, s.text, v.text));
         } else if regular {
             let v = b.materialize(v);
             b.line(&format!("push({}, {})", s.text, v.text));
@@ -7093,7 +7134,7 @@ impl Lowerer {
         // ... and so does a paced one, each item at its time (log 93)
         if !own && !self.is_bare(name, b) && self.paced(name, b).is_none() {
             let regular = if b.vars.contains_key(name) { self.regular_locals.contains(name) } else { self.regular.contains(name) };
-            let word = if self.is_queue(name, b) { "push_queue" } else if regular { "push" } else { "__push" };
+            let word = if self.is_queue(name, b) { self.queue_push(s.ty.elem()) } else if regular { "push".to_string() } else { "__push".to_string() };
             b.line(&format!("{}({}, {})", word, s.text, view));
             return;
         }
@@ -7407,6 +7448,9 @@ impl Lowerer {
                 if self.input_device(&sname, Some(b)) {
                     return Err(lex::error(&file, line, INPUT_REFUSED));
                 }
+                // a push into a stream of this type must go on asking
+                // whether it has ended (fm3 log 108)
+                self.ended.push(elem.as_ref().clone());
                 // the nodes the stream's pushers wake run at its first
                 // `end` and not at a second, as `fin` had it (fm3 log 103)
                 if self.wakes_here(&sname, b) {

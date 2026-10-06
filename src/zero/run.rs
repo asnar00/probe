@@ -1068,7 +1068,7 @@ mod tests {
         // woken: the task is called in `fed`, after the push, and the
         // node keeps its reader and nothing else
         let ir = emit_with(wired, "");
-        assert!(ir.contains("    push_queue(_1, _2)\n    _3: ptr = addr __ctx_mem\n    _4: __ctx = load _3\n    _5: int$ = get _4, __node1_x\n    _6: u1 = __on_h()\n    if _6\n        _7: int$ = __get_d()\n        _8: int$ = doubled(_7, _5, 0: i64)\n        _9: __ctx = load _3\n        _10: __ctx = set _9, __node1_x, _8\n        store _10, _3\n        free_queue(_8)\n    else\n        _11: i64 = received(_5)\n"), "{}", ir);
+        assert!(ir.contains("    push_queue_open(_1, _2)\n    _3: ptr = addr __ctx_mem\n    _4: __ctx = load _3\n    _5: int$ = get _4, __node1_x\n    _6: u1 = __on_h()\n    if _6\n        _7: int$ = __get_d()\n        _8: int$ = doubled(_7, _5, 0: i64)\n        _9: __ctx = load _3\n        _10: __ctx = set _9, __node1_x, _8\n        store _10, _3\n        free_queue(_8)\n    else\n        _11: i64 = received(_5)\n"), "{}", ir);
         // ... its reader read and written in place, with no accessor (fm3 log 104)
         assert!(!ir.contains("__get___node1_x") && !ir.contains("__set___node1_x"), "{}", ir);
         for gone in ["fn __node1(", "__running", "__zero_start", "__run", "_seen", "_fin"] {
@@ -1100,6 +1100,52 @@ mod tests {
         // a `platform` body of the store's own is not read
         let ir = emit_with(wired, "\non (int64 r) = (int64 a) twice\nplatform ir\n    r: i64 = add a, a\n    ret r\n\non (int64 n) = two()\n    n = (1) twice\n");
         assert!(node(&ir) && ir.contains("data __running"), "{}", ir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A queue's push asks whether its stream has ended only where an
+    /// `end` in the store could have reached a stream of its type (fm3
+    /// log 108): `ended` is written by `end` alone, and a ring is named
+    /// only by its own element type or an abstract one above it. Every
+    /// push is the open one where nothing is ended; one `end` keeps the
+    /// check on the pushes of its type, of every type that fits it and
+    /// of every type it fits, and on a `char` for a `uint8`, the two
+    /// being one type in the IR; and a store with a `platform` body of
+    /// its own, which is IR the front end does not read, keeps them all
+    #[test]
+    fn a_push_asks_whether_its_stream_ended_only_where_it_could_have() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n").unwrap();
+        let fns = "int a$\nint64 w$\nuint16 u$\nchar c$\nuint8 b$\n\non (int n) = fa()\n    a$ << 1\n    n = count a$\n\non (int n) = fw()\n    w$ << 1\n    n = count w$\n\non (int n) = fu()\n    u$ << 1\n    n = count u$\n\non (int n) = fc()\n    c$ << \"hello\"\n    n = count c$\n\non (int n) = fb()\n    b$ << 1\n    n = count b$\n";
+        // each function's push, by the word it took: `fa` to `fb` in order
+        let words = |more: &str| -> Vec<bool> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}", fns, more)).unwrap();
+            let s = store::read(&dir).unwrap();
+            let ir = lower::lower(&s).unwrap().ir;
+            assert!(!ir.contains("push_queue<"), "{}", ir);
+            ["fa", "fw", "fu", "fc", "fb"].iter().map(|f| {
+                let body: String = ir.lines().skip_while(|l| !l.starts_with(&format!("fn {}(", f))).skip(1).take_while(|l| l.starts_with(' ')).collect::<Vec<_>>().join("\n");
+                assert!(body.contains("push_queue(") != body.contains("push_queue_open("), "{}: {}", f, body);
+                body.contains("push_queue(")
+            }).collect()
+        };
+        // nothing ends anything: no push asks
+        assert_eq!(words(""), [false, false, false, false, false]);
+        // an `int64` stream ended: its own pushes ask, and those of `int`, which it fits
+        assert_eq!(words("\non close()\n    end w$\n"), [true, true, false, false, false]);
+        // ended through a parameter over `int`: `int` and `int64`, which fits it
+        assert_eq!(words("\non shut (int x$)\n    end x$\n"), [true, true, false, false, false]);
+        // ... and over `number`: every stream of numbers, and not the `char`
+        assert_eq!(words("\non shut (number x$)\n    end x$\n"), [true, true, true, false, true]);
+        // a `char` and a `uint8` are one type in the IR
+        assert_eq!(words("\non close()\n    end c$\n"), [false, false, false, true, true]);
+        assert_eq!(words("\non close()\n    end b$\n"), [false, false, false, true, true]);
+        // a local stream ended counts by its type as any other does
+        assert_eq!(words("\non (int n) = made()\n    uint16 l$ << 1\n    end l$\n    n = count l$\n"), [false, false, true, false, false]);
+        // a `platform` body of the store's own may end anything
+        assert_eq!(words("\non (int64 r) = (int64 a) twice\nplatform ir\n    r: i64 = add a, a\n    ret r\n\non (int64 n) = two()\n    n = (1) twice\n"), [true, true, true, true, true]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

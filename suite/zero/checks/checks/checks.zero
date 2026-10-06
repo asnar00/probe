@@ -29,3 +29,26 @@ on (int n) = after printing()
     int k = 1
     check (k == 2)
     n = k
+
+uint8 late$
+int64 wide$
+uint16 steady$
+
+on shut (int x$)
+    end x$
+
+on (int n) = pushed after end()
+    late$ << 1
+    end late$
+    late$ << 2
+    n = count late$
+
+on (int n) = pushed after shut()
+    wide$ << 1
+    shut(wide$)
+    wide$ << 2
+    n = count wide$
+
+on (int n) = pushed steadily()
+    steady$ << 1 << 2
+    n = count steady$

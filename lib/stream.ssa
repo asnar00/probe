@@ -327,6 +327,44 @@ fn push_queue(s: any$, block: any[])
     next: i64 = add pushed, n
     store next, r
     ret
+; the same two pushes for a queue that cannot have ended (fm3 log 108):
+; `ended` is written by `end` alone, so where the compiler can see that
+; no `end` in the program reaches a stream of this type, the test is
+; dead and is not made. The room check stands, being the queue's promise
+fn push_queue_open(s: any$, v: any)
+    r: ptr = get s, ring
+    pushed: i64 = load r
+    origin: i64 = load r, 8
+    slot: i64 = sub pushed, origin
+    cap: i64 = load r, 24
+    room: u1 = cmp.lt slot, cap
+    check room
+    vb: ptr = load r, 16
+    raw: ptr = ptradd vb, 16
+    q: ptr(any) = cast raw
+    store v, q, slot
+    next: i64 = add pushed, 1
+    store next, r
+    ret
+fn push_queue_open(s: any$, block: any[])
+    r: ptr = get s, ring
+    n: i64 = len block
+    pushed: i64 = load r
+    origin: i64 = load r, 8
+    slot: i64 = sub pushed, origin
+    cap: i64 = load r, 24
+    after: i64 = add slot, n
+    fits: u1 = cmp.le after, cap
+    check fits
+    vb: ptr = load r, 16
+    raw: ptr = ptradd vb, 16
+    q: ptr(any) = cast raw
+    p: ptr(any) = index q, slot
+    d: any[] = pack p, n, 1
+    copy d, block
+    next: i64 = add pushed, n
+    store next, r
+    ret
 ; this reader has passed everything, so every slot comes back and the
 ; run starts again at the beginning. Only the front end calls it, and
 ; only where it can see that this reader is the queue's only one

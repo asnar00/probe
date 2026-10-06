@@ -14,11 +14,13 @@ Plan item 10 of milestone 0: section 14 of zero.md — `check (c)`, `→ check` 
 - `bounded (k)` maps `small (i)`, which checks its item, over a range and reduces, so the check runs once per item; `either (k)` checks inside one arm of an `if`.
 - `outside` fails the library's own check, an index past the end, which names no zero site.
 - `after printing` writes to `out$`, then fails: what was written comes before the site.
+- `pushed after end` pushes into `late$` after `end late$`, and `pushed after shut` into `wide$`, a stream of `int64`, after `shut`, a function over `int x$`, has ended it through its parameter: each fails the library's check in the push. `pushed steadily` pushes into `steady$`, a stream of a type no `end` in the store reaches.
 
 ## rules
 - `check` takes a bool; the check is a statement, and the code after it runs only when it held.
 - A failed check ends the case at once; on the GPU, which does not stop at a failed check, the case is skipped.
 - The site is the `.zero` file and line of the `check`, printed on a line of its own as `check at file:line`.
+- A push into a stream that has ended is a failed check. The compiler makes the test only where it could fail (parity hop twelve, fm3 log 108): `ended` is written by `end` alone, so a push through a name of element type T asks only where some `end` in the store has an operand whose element type T fits, or that fits T, or that is the same type underneath. `late$` and `wide$` are reached, `wide$` because an `int64` fits `shut`'s `int`; `steady$`, a `uint16`, is not, and its push is the library's `push_queue_open`, which checks for room and nothing else.
 
 ## testing
 >within (3) → 3
@@ -32,6 +34,9 @@ Plan item 10 of milestone 0: section 14 of zero.md — `check (c)`, `→ check` 
 >either (500) → check
 >outside() → check
 >after printing() → check
+>pushed after end() → check
+>pushed after shut() → check
+>pushed steadily() → 2
 
 ## hostile
 `check (k)` with `int k` is refused: "'check' takes a bool". `check` at feature scope is refused by the parser: a check is a statement. A `→ check` case whose call returns is reported "(no check failed; got ...)"; a case expecting a number whose call fails a check is reported "(a failed check at checks.zero:2)".
