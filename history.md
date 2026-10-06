@@ -4,6 +4,14 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the rate in a timed case — `69c1447` · 2026-10-06
+
+```
+>run() → "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\n" at 1 hz, "hello world\ngoodbye" at 10 s
+```
+
+`suite/zero/hello/bye/bye.md:24`. The parity pass, hop 9, transformation 29 (fm3 log 97, question 53, which ash ruled C). A piece of a timed result may be given `at` a rate in place of a time: it is then its lines, one a step, from 0 s or `from` a time, `"10\n9\n" at 1 hz from 3.5 s`. `parse_timed` in `src/zero/store.rs` expands it into the pieces the listed form gives, so nothing downstream changes, and a step is `store::period(hz)`, the one function `step` in `src/zero/lower.rs` now calls too, so a case and the program cannot differ by a rounding. What a failure prints is folded: a run of three or more single lines a whole rate's period apart is spelt in the rate form and parses back to itself, so `run "run()" --fast` on hello prints the line above, 82 characters where the listed form is 182. static's and `timed`'s cases follow; `edges`' `beats()` stays listed so both are run. A timed input, `with in "k" at 3.5 s`, is refused by name until restart. No IR changes: hello 1 268, static 1 197, lex 1 143. zero 555/555 native, 22 zero unit tests.
+
 ### zero: a stream nothing reads or wires has no storage — `e42604f` · 2026-10-06
 
 ```
