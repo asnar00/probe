@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a short string literal lands in a queue an item at a time — `21e2edc` · 2026-10-06
+
+```
+on said fifteen()
+    said$ << "fifteen letters"
+    out$ << said$
+```
+
+`suite/zero/types/types/types.zero:66-68`, with `>said fifteen() → "fifteen letters"` and, beside it, `>said sixteen() → "sixteen letters!"`, which still takes the block push. The parity pass, hop 12, transformation 41 (fm3 log 109), built and proven by agent 25, parked on `zero-t41` when the forked child's death appeared in a case its prompt did not name, and landed by the orchestrator once `3e89209` had dealt with that. A string literal of fewer than sixteen bytes pushed into a queue went through `__str`, a view and the general `copy`, 59 and 10 a byte, where the hand-written lexer's loop is 10 and 7 a byte. It is now `push_queue_few` in `lib/stream.ssa`: the ended and room checks, then a plain loop from the literal's `data` to the slots. Sixteen is the machine's number, where a chunk first fits, not the tool's; a block of 480 costs what it did, 4 859 through the same wrapper. lex `two_arrivals` 844 → 746, 1.80× `lex-min`, 1.67× `lex-mod`; hello 1 268, static 1 197. Five paths and `cargo test` 122 (`scratchpad/chain41.log`).
+
 ### suite: a forked child says for itself that its JIT pages are to be run — `3e89209` · 2026-10-06
 
 ```
