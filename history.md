@@ -4,6 +4,23 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a woken node keeps its position, not a whole reader — `bfb1a7e` · 2026-10-06
+
+```
+    _5: __ctx = load _this
+    _6: i64 = get _5, __node2_c
+    _7: u8$ = set _2, pos, _6
+```
+```
+        _12: u8$ = lex(_11, _7, 0: i64)
+        _13: i64 = get _12, pos
+        _14: __ctx = load _this
+        _15: __ctx = set _14, __node2_c, _13
+        store _15, _this
+```
+
+`suite/zero/lex.expected.ssa:263-265` and `271-275`, in `arrive_first`. The parity pass, hop 13, transformation 45's third part (fm3 log 111). A node its pushers wake kept its reader, a stream value of four words, loaded and stored every run, where only the position moves and the hand-written lexer keeps one number. The field is now that position, an `i64`: `set` into the stream's own value, `_2`, which the push has in hand, and taken out of what the task gives back. It is sound only where the task gives back its parameter's own ring, so `ring_kept` in `src/zero/lower.rs` reads every definition of the task first: the parameter named only as the stream of `count`, `ended`, `position`, `latest`, `frame`, `peek .. at` and `advance .. by`, bound by nothing, handed to no task. Anything else keeps the whole reader, as `suite/zero/tasks`' new `hopping (s$)` does, which ends `s$ = far$`: `hopped() → 307` before and after, 301 on a build that forgets the rule. lex `two_arrivals` 697 → 679, 1.64× `lex-min`, 1.52× `lex-mod`; hello 1 237, static 1 197. `probe zero test` 588/588, `cargo test zero` 34 on all five paths.
+
 ### zero: the context reached in place, and once — `48ea2f3` · 2026-10-06
 
 ```
