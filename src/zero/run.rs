@@ -23,12 +23,9 @@ pub fn emit(dir: &Path) -> Result<String, String> {
 /// path's, with `int`, `float` and `index` at the widths the store's
 /// `product.md` sets, if it does
 pub fn store_policy(s: &store::Store, policy: &ssa::Policy) -> ssa::Policy {
-    // until the front end's text says `index` for its counts (fm3 log
-    // 121, step (c)) a store is built with a 64-bit one on every path,
-    // an `i64` being an `index` only there
     let policy = &match s.index_width.and_then(|w| policy.with_index(w)) {
         Some(p) => p,
-        None => policy.with_index(64).unwrap(),
+        None => *policy,
     };
     let policy = match s.int_width {
         Some(32) => ssa::Policy { int: ssa::Type::I32, ..*policy },
@@ -1090,14 +1087,14 @@ mod tests {
         // woken: the task is called in `fed`, after the push, and the
         // node keeps its reader and nothing else
         let ir = emit_with(wired, "");
-        assert!(ir.contains("fn fed() -> int\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: int$ = get _1, a\n    _3: int = const 1\n    push_queue_open(_2, _3)\n    _4: __ctx = load _this\n    _5: i64 = get _4, __node1_x\n    _6: int$ = set _2, pos, _5\n    _7: __ctx = load _this\n    _8: u1 = get _7, __enabled_h\n    if _8\n        _9: __ctx = load _this\n        _10: int$ = get _9, d\n        _11: int$ = doubled(_10, _6, 0: i64)\n        _12: i64 = get _11, pos\n        _13: __ctx = load _this\n        _14: __ctx = set _13, __node1_x, _12\n        store _14, _this\n        free_queue(_11)\n    else\n        _15: i64 = received(_6)\n        _16: __ctx = load _this\n        _17: __ctx = set _16, __node1_x, _15\n        store _17, _this\n        _18: int$ = set _6, pos, _15\n        free_queue(_18)\n"), "{}", ir);
+        assert!(ir.contains("fn fed() -> int\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: int$ = get _1, a\n    _3: int = const 1\n    push_queue_open(_2, _3)\n    _4: __ctx = load _this\n    _5: index = get _4, __node1_x\n    _6: int$ = set _2, pos, _5\n    _7: __ctx = load _this\n    _8: u1 = get _7, __enabled_h\n    if _8\n        _9: __ctx = load _this\n        _10: int$ = get _9, d\n        _11: int$ = doubled(_10, _6, 0: i64)\n        _12: index = get _11, pos\n        _13: __ctx = load _this\n        _14: __ctx = set _13, __node1_x, _12\n        store _14, _this\n        free_queue(_11)\n    else\n        _15: index = received(_6)\n        _16: __ctx = load _this\n        _17: __ctx = set _16, __node1_x, _15\n        store _17, _this\n        _18: int$ = set _6, pos, _15\n        free_queue(_18)\n"), "{}", ir);
         // ... everything read and written in place at the context's one
         // address, with no accessor (fm3 log 104, 110)
         assert!(!ir.contains("__get_") && !ir.contains("__set___node1_x") && !ir.contains("__on_h"), "{}", ir);
         // ... and the node keeps its position, a word, the rest of its
         // reader being the stream's own value, which the push has in
         // hand (fm3 log 111): `doubled` only reads and advances `x$`
-        assert!(ir.contains("\n    __node1_x: i64\n") && ir.contains("    _4: i64 = get _2, pos\n    _5: __ctx = pack 1, 1, _1, _2, _3, _4\n"), "{}", ir);
+        assert!(ir.contains("\n    __node1_x: index\n") && ir.contains("    _4: index = get _2, pos\n    _5: __ctx = pack 1, 1, _1, _2, _3, _4\n"), "{}", ir);
         // a task that may give back a reader on another ring keeps its
         // whole reader: one that assigns its parameter, declares the
         // name again, loops over it, hands it to a function or runs a
@@ -1115,7 +1112,7 @@ mod tests {
             let ir = lower::lower(&store::read(&dir).unwrap()).unwrap().ir;
             assert!(!ir.contains("fn __node1("), "not woken: {}\n{}", body, ir);
             assert_eq!(ir.contains("\n    __node1_x: int$\n"), whole, "{}\n{}", body, ir);
-            assert_eq!(ir.contains("\n    __node1_x: i64\n"), !whole, "{}\n{}", body, ir);
+            assert_eq!(ir.contains("\n    __node1_x: index\n"), !whole, "{}\n{}", body, ir);
         }
         for gone in ["fn __node1(", "__running", "__zero_start", "__run", "_seen", "_fin"] {
             assert!(!ir.contains(gone), "{}: {}", gone, ir);
@@ -1123,8 +1120,8 @@ mod tests {
         // a statement that may push nothing wakes under whether anything
         // arrived, and an `end` under whether the stream had ended
         let ir = emit_with(wired, "\non some (int k)\n    a$ << [k to 1]\n\non close()\n    end a$\n");
-        assert!(ir.contains("    _2: int$ = get _1, a\n    _14: i64 = received(_2)\n") && ir.contains("    _15: i64 = received(_2)\n    _16: u1 = cmp.gt _15, _14\n    if _16\n        _17: __ctx = load _this\n        _18: i64 = get _17, __node1_x\n        _19: int$ = set _2, pos, _18\n"), "{}", ir);
-        assert!(ir.contains("    _3: u1 = ended(_2)\n    end(_2)\n    if _3\n    else\n        _4: __ctx = load _this\n        _5: i64 = get _4, __node1_x\n        _6: int$ = set _2, pos, _5\n"), "{}", ir);
+        assert!(ir.contains("    _2: int$ = get _1, a\n    _14: index = received(_2)\n") && ir.contains("    _15: index = received(_2)\n    _16: u1 = cmp.gt _15, _14\n    if _16\n        _17: __ctx = load _this\n        _18: index = get _17, __node1_x\n        _19: int$ = set _2, pos, _18\n"), "{}", ir);
+        assert!(ir.contains("    _3: u1 = ended(_2)\n    end(_2)\n    if _3\n    else\n        _4: __ctx = load _this\n        _5: index = get _4, __node1_x\n        _6: int$ = set _2, pos, _5\n"), "{}", ir);
         let node = |ir: &str| ir.contains("fn __node1() -> u1\n") && ir.contains("__node1_x_seen") && ir.contains("fn __zero_start()");
         // handed to a function, which may push into its parameter with
         // no trigger after
@@ -1215,7 +1212,7 @@ mod tests {
             let ir = lower::lower(&s).unwrap().ir;
             ir.lines().skip_while(|l| !l.starts_with("fn f(")).skip(1).take_while(|l| l.starts_with(' ')).collect::<Vec<_>>().join("\n")
         };
-        let few = "    _3: ptr = addr __s11\n    _4: i64 = len __s11\n    push_queue_few(_2, _3, _4)\n";
+        let few = "    _3: ptr = addr __s11\n    _4: index = len __s11\n    push_queue_few(_2, _3, _4)\n";
         // two bytes and fifteen: the few-items word, and no view
         for text in ["ab", "fifteen letters"] {
             let b = body("char c$", text);

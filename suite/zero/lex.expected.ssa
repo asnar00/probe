@@ -21,14 +21,16 @@ data __clock: array(i64, 1)
 ; under an OS, the browser's log — is a `platform <target>` block on
 ; each of these, beside the `ir` body, and is milestone 1's
 data __out: array(u8, 65536)
-data __out_n: array(i64, 1)
+data __out_n: array(index, 1)
 
 ; what the device was given, read back by the test runner: the capture
-; is the runner's, not the store's
+; is the runner's, not the store's, and the runner is handed a machine
+; word whatever an `index` is
 fn __out_len() -> i64
     q: ptr = addr __out_n
-    n: i64 = load q
-    ret n
+    n: index = load q
+    w: i64 = conv n
+    ret w
 
 fn __out_byte(i: i64) -> u8
     p: ptr = addr __out
@@ -71,9 +73,9 @@ type __ctx = struct
     src: u8$
     u: token$
     __node1_c: u8$
-    __node1_c_seen: i64
+    __node1_c_seen: index
     __node1_fin: u1
-    __node2_c: i64
+    __node2_c: index
 
 data __ctx_mem: array(__ctx, 1)
 data __s11 = "let x = 4"
@@ -88,12 +90,12 @@ fn __zero_reset()
     k: ptr = addr __clock
     store 0: i64, k
     o: ptr = addr __out_n
-    store 0: i64, o
+    store 0: index, o
     _1: u8$ = __queue_u8(1000000, 512)
     _2: token$ = __queue_token(1000000, 64)
     _3: u8$ = __queue_u8(1000000, 64)
     _4: token$ = __queue_token(1000000, 64)
-    _5: i64 = get _3, pos
+    _5: index = get _3, pos
     _6: __ctx = pack 1, 1, _1, _2, _3, _4, _1, 0, 0, _5
     p: ptr = addr __ctx_mem
     store _6, p
@@ -126,9 +128,9 @@ fn __node1() -> u1
     notfin: u1 = xor fin, 1
     _2: __ctx = load _this
     _3: u8$ = get _2, __node1_c
-    _4: i64 = received(_3)
+    _4: index = received(_3)
     _5: __ctx = load _this
-    _6: i64 = get _5, __node1_c_seen
+    _6: index = get _5, __node1_c_seen
     _7: u1 = cmp.gt _4, _6
     _8: u1 = ended(_3)
     _9: u1 = and _8, notfin
@@ -206,14 +208,14 @@ fn kind_of(c: u8) -> int
                         ret k_6
 fn lex(t: token$, c: u8$, __hz: i64) -> u8$
     c_6: u8$ = loop(c_2: u8$ = c)
-        _1: i64 = count c_2
+        _1: index = count c_2
         _2: int = conv _1
         _3: u1 = cmp.eq _2, 0
         if _3
             break c_2
         _4: u8 = peek_queue(c_2, 0)
         k: int = kind_of(_4)
-        _5: i64 = get c_2, pos
+        _5: index = get c_2, pos
         start: int = conv _5
         _6: u1 = cmp.eq k, 0
         if _6
@@ -234,7 +236,7 @@ fn lex(t: token$, c: u8$, __hz: i64) -> u8$
                 else
                     yield m
                 break m_2
-            _13: i64 = conv i
+            _13: index = conv i
             _14: u8 = peek_queue(c_2, _13)
             _15: int = kind_of(_14)
             _16: u1 = cmp.eq _15, k
@@ -247,7 +249,7 @@ fn lex(t: token$, c: u8$, __hz: i64) -> u8$
             break c_2
         _19: token = pack k, start, n
         push_queue_open(t, _19)
-        _20: i64 = conv n
+        _20: index = conv n
         c_5: u8$ = advance(c_2, _20)
         continue c_5
     ret c_6
@@ -256,10 +258,10 @@ fn arrive_first()
     _1: __ctx = load _this
     _2: u8$ = get _1, src
     _3: ptr = addr __s11
-    _4: i64 = len __s11
+    _4: index = len __s11
     push_queue_few(_2, _3, _4)
     _5: __ctx = load _this
-    _6: i64 = get _5, __node2_c
+    _6: index = get _5, __node2_c
     _7: u8$ = set _2, pos, _6
     _8: __ctx = load _this
     _9: u1 = get _8, __enabled_lex
@@ -267,13 +269,13 @@ fn arrive_first()
         _10: __ctx = load _this
         _11: token$ = get _10, u
         _12: u8$ = lex(_11, _7, 0: i64)
-        _13: i64 = get _12, pos
+        _13: index = get _12, pos
         _14: __ctx = load _this
         _15: __ctx = set _14, __node2_c, _13
         store _15, _this
         free_queue(_12)
     else
-        _16: i64 = received(_7)
+        _16: index = received(_7)
         _17: __ctx = load _this
         _18: __ctx = set _17, __node2_c, _16
         store _18, _this
@@ -285,10 +287,10 @@ fn arrive_again()
     _1: __ctx = load _this
     _2: u8$ = get _1, src
     _3: ptr = addr __s12
-    _4: i64 = len __s12
+    _4: index = len __s12
     push_queue_few(_2, _3, _4)
     _5: __ctx = load _this
-    _6: i64 = get _5, __node2_c
+    _6: index = get _5, __node2_c
     _7: u8$ = set _2, pos, _6
     _8: __ctx = load _this
     _9: u1 = get _8, __enabled_lex
@@ -296,13 +298,13 @@ fn arrive_again()
         _10: __ctx = load _this
         _11: token$ = get _10, u
         _12: u8$ = lex(_11, _7, 0: i64)
-        _13: i64 = get _12, pos
+        _13: index = get _12, pos
         _14: __ctx = load _this
         _15: __ctx = set _14, __node2_c, _13
         store _15, _this
         free_queue(_12)
     else
-        _16: i64 = received(_7)
+        _16: index = received(_7)
         _17: __ctx = load _this
         _18: __ctx = set _17, __node2_c, _16
         store _18, _this
@@ -313,13 +315,13 @@ fn arrive_again()
     if _22
     else
         _23: __ctx = load _this
-        _24: i64 = get _23, __node2_c
+        _24: index = get _23, __node2_c
         _25: u8$ = set _2, pos, _24
         if _9
             _28: __ctx = load _this
             _29: token$ = get _28, u
             _30: u8$ = lex(_29, _25, 0: i64)
-            _31: i64 = get _30, pos
+            _31: index = get _30, pos
             _32: __ctx = load _this
             _33: __ctx = set _32, __node2_c, _31
             store _33, _this
@@ -330,10 +332,10 @@ fn two_arrivals() -> (int, int)
     arrive_first()
     _1: __ctx = load _this
     _2: token$ = get _1, u
-    _3: i64 = count _2
+    _3: index = count _2
     a: int = conv _3
     arrive_again()
-    _6: i64 = count _2
+    _6: index = count _2
     b: int = conv _6
     ret a, b
 fn number_start() -> int
@@ -390,10 +392,10 @@ fn a_word_at_the_end() -> (int, int)
     _1: __ctx = load _this
     _2: u8$ = get _1, src
     _3: ptr = addr __s13
-    _4: i64 = len __s13
+    _4: index = len __s13
     push_queue_few(_2, _3, _4)
     _5: __ctx = load _this
-    _6: i64 = get _5, __node2_c
+    _6: index = get _5, __node2_c
     _7: u8$ = set _2, pos, _6
     _8: __ctx = load _this
     _9: u1 = get _8, __enabled_lex
@@ -401,13 +403,13 @@ fn a_word_at_the_end() -> (int, int)
         _10: __ctx = load _this
         _11: token$ = get _10, u
         _12: u8$ = lex(_11, _7, 0: i64)
-        _13: i64 = get _12, pos
+        _13: index = get _12, pos
         _14: __ctx = load _this
         _15: __ctx = set _14, __node2_c, _13
         store _15, _this
         free_queue(_12)
     else
-        _16: i64 = received(_7)
+        _16: index = received(_7)
         _17: __ctx = load _this
         _18: __ctx = set _17, __node2_c, _16
         store _18, _this
@@ -415,51 +417,51 @@ fn a_word_at_the_end() -> (int, int)
         free_queue(_19)
     _20: __ctx = load _this
     _21: token$ = get _20, u
-    _22: i64 = count _21
+    _22: index = count _21
     a: int = conv _22
     _25: u1 = ended(_2)
     end(_2)
     if _25
     else
         _26: __ctx = load _this
-        _27: i64 = get _26, __node2_c
+        _27: index = get _26, __node2_c
         _28: u8$ = set _2, pos, _27
         if _9
             _33: u8$ = lex(_21, _28, 0: i64)
-            _34: i64 = get _33, pos
+            _34: index = get _33, pos
             _35: __ctx = load _this
             _36: __ctx = set _35, __node2_c, _34
             store _36, _this
             free_queue(_33)
-    _39: i64 = count _21
+    _39: index = count _21
     b: int = conv _39
     ret a, b
 fn lexed() -> int
     _this: ptr = addr __ctx_mem
     _1: __ctx = load _this
     _2: token$ = get _1, t
-    _3: i64 = count _2
+    _3: index = count _2
     n: int = conv _3
     ret n
 
 ; a stream's storage, carved from the arena: cap items (64 unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start
-fn __queue_token(hz: i64, cap: i64) -> token$
+fn __queue_token(hz: i64, cap: index) -> token$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
-    sz: i64 = sizeof token
-    bytes: i64 = mul sz, cap
-    total: i64 = add bytes, 16
+    sz: index = sizeof token
+    bytes: index = mul sz, cap
+    total: index = add bytes, 16
     vb: ptr = arena_alloc(a, total)
     buffer_init(vb, sz, cap)
     ring_queue(r, vb, hz, cap)
     s: token$ = stream r
     ret s
-fn __queue_u8(hz: i64, cap: i64) -> u8$
+fn __queue_u8(hz: i64, cap: index) -> u8$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
-    sz: i64 = sizeof u8
-    bytes: i64 = mul sz, cap
-    total: i64 = add bytes, 16
+    sz: index = sizeof u8
+    bytes: index = mul sz, cap
+    total: index = add bytes, 16
     vb: ptr = arena_alloc(a, total)
     buffer_init(vb, sz, cap)
     ring_queue(r, vb, hz, cap)

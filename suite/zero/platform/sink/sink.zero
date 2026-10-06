@@ -3,9 +3,10 @@ char copy$
 
 on log (char c$)
 platform ir
-    n: i64 = count(c)
+    n: index = count(c)
     k: i64 = __get_logged()
-    k2: i64 = add k, n
+    w: i64 = conv n
+    k2: i64 = add k, w
     __set_logged(k2)
     c2: u8$ = advance(c, n)
     ret c2

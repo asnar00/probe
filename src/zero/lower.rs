@@ -467,36 +467,38 @@ fn __sleep(hz: i64)
 ; under an OS, the browser's log — is a `platform <target>` block on
 ; each of these, beside the `ir` body, and is milestone 1's
 data __out: array(u8, 65536)
-data __out_n: array(i64, 1)
+data __out_n: array(index, 1)
 
 fn __out_ch(c: u8)
     q: ptr = addr __out_n
-    n: i64 = load q
+    n: index = load q
     p: ptr = addr __out
     store c, p, n, 1
-    n2: i64 = add n, 1
+    n2: index = add n, 1
     store n2, q
     ret
 
 fn __out_block(v: u8[])
-    k: i64 = len v
+    k: index = len v
     q: ptr = addr __out_n
-    n: i64 = load q
+    n: index = load q
     p: ptr = addr __out
     r: ptr(u8) = cast p
     all: u8[] = pack r, 65536, 1
     d: u8[] = view all, n, k
     copy d, v
-    n2: i64 = add n, k
+    n2: index = add n, k
     store n2, q
     ret
 
 ; what the device was given, read back by the test runner: the capture
-; is the runner's, not the store's
+; is the runner's, not the store's, and the runner is handed a machine
+; word whatever an `index` is
 fn __out_len() -> i64
     q: ptr = addr __out_n
-    n: i64 = load q
-    ret n
+    n: index = load q
+    w: i64 = conv n
+    ret w
 
 fn __out_byte(i: i64) -> u8
     p: ptr = addr __out
@@ -528,7 +530,7 @@ fn __in_ch(c: u8)
     ret
 
 ; a string literal's bytes: a view of n bytes at p, which `__copy_u8` makes a stream
-fn __str(p: ptr, n: i64) -> u8[]
+fn __str(p: ptr, n: index) -> u8[]
     q: ptr(u8) = cast p
     v: u8[] = pack q, n, 1
     ret v
@@ -540,14 +542,14 @@ fn __str(p: ptr, n: i64) -> u8[]
 /// zeroed (fm3 log 95)
 const MARKS_RESET: [&str; 10] = [
     "mo: ptr = addr __out_n",
-    "mn: i64 = load mo",
+    "mn: index = load mo",
     "mt: ptr = addr __out_t",
-    "loop(mi: i64 = 0) bound 65536",
+    "loop(mi: index = 0) bound 65536",
     "    store 0: i64, mt, mi, 8",
     "    md: u1 = cmp.ge mi, mn",
     "    if md",
     "        break",
-    "    mi2: i64 = add mi, 1",
+    "    mi2: index = add mi, 1",
     "    continue mi2",
 ];
 
@@ -562,7 +564,7 @@ fn __wait(t: i64)
     m: i64 = max(c, t)
     store m, p
     q: ptr = addr __out_n
-    n: i64 = load q
+    n: index = load q
     a: ptr = addr __out_t
     store m, a, n, 8
     ret
@@ -2225,7 +2227,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         writeln!(l.out, "\n; a stream's storage, carved from the arena: cap items ({} unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start", RING_ITEMS).unwrap();
     }
     for (t, maker) in &l.rings {
-        let ticks = if maker == "stream" { "    tbytes: i64 = mul slots, 8\n    ttotal: i64 = add tbytes, 16\n    tb: ptr = arena_alloc(a, ttotal)\n    buffer_init(tb, 8, slots)\n".to_string() } else { String::new() };
+        let ticks = if maker == "stream" { "    tbytes: index = mul slots, 8\n    ttotal: index = add tbytes, 16\n    tb: ptr = arena_alloc(a, ttotal)\n    buffer_init(tb, 8, slots)\n".to_string() } else { String::new() };
         let init = match maker.as_str() {
             "queue" => "ring_queue(r, vb, hz, cap)",
             "regular" => "ring_regular(r, vb, hz, 1, 0)",
@@ -2233,8 +2235,8 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         };
         // a ring's buffer is twice its resident count, each item stored
         // in both halves (log 65); a queue's is a plain run of slots
-        let (line, slots) = if maker == "queue" { ("", "cap") } else { ("    slots: i64 = mul cap, 2\n", "slots") };
-        writeln!(l.out, "fn __{}_{}(hz: i64, cap: i64) -> {}$\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, 64)\n{}    sz: i64 = sizeof {}\n    bytes: i64 = mul sz, {}\n    total: i64 = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, {})\n{}    {}\n    s: {}$ = stream r\n    ret s", maker, t, t, line, t, slots, slots, ticks, init, t).unwrap();
+        let (line, slots) = if maker == "queue" { ("", "cap") } else { ("    slots: index = mul cap, 2\n", "slots") };
+        writeln!(l.out, "fn __{}_{}(hz: i64, cap: index) -> {}$\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, 64)\n{}    sz: index = sizeof {}\n    bytes: index = mul sz, {}\n    total: index = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, {})\n{}    {}\n    s: {}$ = stream r\n    ret s", maker, t, t, line, t, slots, slots, ticks, init, t).unwrap();
     }
     if !l.copies.is_empty() {
         writeln!(l.out, "\n; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give; stamped once where something asks its time (log 73)").unwrap();
@@ -2242,9 +2244,9 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     for (t, maker) in &l.copies {
         let push = if maker == "queue" { "push_queue(s, x)" } else { "push s, x" };
         if maker != "stream" {
-            writeln!(l.out, "fn __copy_{}{}(v: {}[]) -> {}$\n    n: i64 = len v\n    least: i64 = const {}\n    cap: i64 = max(n, least)\n    s: {}$ = __{}_{}({}, cap)\n    loop(i: i64 = 0)\n        done: u1 = cmp.ge i, n\n        if done\n            break\n        x: {} = load v, i\n        {}\n        i2: i64 = add i, 1\n        continue i2\n    ret s", copy_infix(maker), t, t, t, RING_ITEMS, t, maker, t, CLOCK_HZ, t, push).unwrap();
+            writeln!(l.out, "fn __copy_{}{}(v: {}[]) -> {}$\n    n: index = len v\n    least: index = const {}\n    cap: index = max(n, least)\n    s: {}$ = __{}_{}({}, cap)\n    loop(i: index = 0)\n        done: u1 = cmp.ge i, n\n        if done\n            break\n        x: {} = load v, i\n        {}\n        i2: index = add i, 1\n        continue i2\n    ret s", copy_infix(maker), t, t, t, RING_ITEMS, t, maker, t, CLOCK_HZ, t, push).unwrap();
         } else {
-            writeln!(l.out, "fn __copy_timed_{}(v: {}[]) -> {}$\n    n: i64 = len v\n    least: i64 = const {}\n    cap: i64 = max(n, least)\n    s: {}$ = __stream_{}({}, cap)\n    t: i64 = __now()\n    loop(i: i64 = 0)\n        done: u1 = cmp.ge i, n\n        if done\n            break\n        x: {} = load v, i\n        push s, t, x\n        i2: i64 = add i, 1\n        continue i2\n    ret s", t, t, t, RING_ITEMS, t, t, CLOCK_HZ, t).unwrap();
+            writeln!(l.out, "fn __copy_timed_{}(v: {}[]) -> {}$\n    n: index = len v\n    least: index = const {}\n    cap: index = max(n, least)\n    s: {}$ = __stream_{}({}, cap)\n    t: i64 = __now()\n    loop(i: index = 0)\n        done: u1 = cmp.ge i, n\n        if done\n            break\n        x: {} = load v, i\n        push s, t, x\n        i2: index = add i, 1\n        continue i2\n    ret s", t, t, t, RING_ITEMS, t, t, CLOCK_HZ, t).unwrap();
         }
     }
     let mut ir = String::new();
@@ -2444,8 +2446,8 @@ fn settle_context(ir: &str, written: &std::collections::HashSet<String>, unread:
 }
 
 /// `count` asked once (fm3 log 112), settled in the finished text. In
-/// one function, `X: i64 = count R` is dropped and `X` is the `Y` of an
-/// earlier `Y: i64 = count R` where: `R` is the same value; the first
+/// one function, `X: index = count R` is dropped and `X` is the `Y` of an
+/// earlier `Y: index = count R` where: `R` is the same value; the first
 /// asking is a statement of a block the second is inside, so every way
 /// to the second passes the first; and no line between could push.
 /// Between is every line after the first and before the second, and,
@@ -2493,7 +2495,7 @@ fn settle_counts(ir: &str) -> String {
     }
     let asking = |l: &str| -> Option<(String, String)> {
         let (def, r) = l.trim_start().split_once(" = count ")?;
-        let x = def.strip_suffix(": i64")?;
+        let x = def.strip_suffix(": index")?;
         (!r.contains(' ') && !x.contains(' ')).then(|| (x.to_string(), r.to_string()))
     };
     let conv = |l: &str| -> Option<(String, String, String)> {
@@ -3402,9 +3404,9 @@ impl Lowerer {
             Ok(n) => n.max(RING_ITEMS).to_string(),
             Err(_) => {
                 let least = b.tmp();
-                b.line(&format!("{}: i64 = const {}", least, RING_ITEMS));
+                b.line(&format!("{}: index = const {}", least, RING_ITEMS));
                 let m = b.tmp();
-                b.line(&format!("{}: i64 = max({}, {})", m, cap, least));
+                b.line(&format!("{}: index = max({}, {})", m, cap, least));
                 m
             }
         };
@@ -3440,13 +3442,13 @@ impl Lowerer {
             // `""` has no bytes to keep: the IR refuses an empty
             // `data`, so it is `__nul` with a length of zero
             b.line(&format!("{}: ptr = addr __nul", p));
-            b.line(&format!("{}: i64 = const 0", n));
+            b.line(&format!("{}: index = const 0", n));
         } else {
             self.nstr += 1;
             let name = format!("__s{}", self.nstr);
             self.data.push(format!("data {} = \"{}\"", name, s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")));
             b.line(&format!("{}: ptr = addr {}", p, name));
-            b.line(&format!("{}: i64 = len {}", n, name));
+            b.line(&format!("{}: index = len {}", n, name));
         }
         (p, n)
     }
@@ -3549,7 +3551,7 @@ impl Lowerer {
     fn count_of(&mut self, s: &Val, b: &mut Body, dst: Option<&str>) -> Val {
         let first = s.text.clone();
         let n = b.tmp();
-        b.line(&format!("{}: i64 = count {}", n, first));
+        b.line(&format!("{}: index = count {}", n, first));
         let ty = Ty::Num("int".into());
         let out = name_for(dst, &ty, b);
         b.line(&format!("{}: int = conv {}", out, n));
@@ -4339,7 +4341,7 @@ impl Lowerer {
             b.line(l);
         }
         b.line("o: ptr = addr __out_n");
-        b.line("store 0: i64, o");
+        b.line("store 0: index, o");
         // the real clock starts at the reset (log 77)
         if self.clock == super::store::Clock::Real {
             b.line("c0: i64 = __counter()");
@@ -4352,11 +4354,11 @@ impl Lowerer {
             let mut fields = Vec::new();
             for (a, (pname, pty)) in node.args.iter().zip(&node.info.params) {
                 if let (ExprKind::Seq(_), Ty::Stream(_)) = (&a.kind, pty) {
-                    let ty = if self.placed.contains(&k) { Ty::Num("i64".into()) } else { pty.clone() };
+                    let ty = if self.placed.contains(&k) { Ty::Num("index".into()) } else { pty.clone() };
                     fields.push((format!("__node{}_{}", k + 1, pname), ty));
                     // how many items the ring had when the node last ran
                     if !woken.contains(&k) {
-                        fields.push((format!("__node{}_{}_seen", k + 1, pname), Ty::Num("i64".into())));
+                        fields.push((format!("__node{}_{}_seen", k + 1, pname), Ty::Num("index".into())));
                     }
                 }
             }
@@ -4482,7 +4484,7 @@ impl Lowerer {
                     if let (ExprKind::Seq(n), Ty::Stream(_)) = (&a.kind, pty) {
                         if self.placed.contains(&k) {
                             let at = b.tmp();
-                            b.line(&format!("{}: i64 = get {}, pos", at, init_of[n]));
+                            b.line(&format!("{}: index = get {}, pos", at, init_of[n]));
                             inits.push(at);
                         } else {
                             inits.push(init_of[n].clone());
@@ -4752,7 +4754,7 @@ impl Lowerer {
             let r = self.field_get(&format!("__node{}_{}", k, pname), &pty.ir(), None, &mut b);
             let first = r.clone();
             let pushed = self.pushed_of(&first, &mut b);
-            let seen = self.field_get(&format!("__node{}_{}_seen", k, pname), "i64", None, &mut b);
+            let seen = self.field_get(&format!("__node{}_{}_seen", k, pname), "index", None, &mut b);
             let some = b.tmp();
             b.line(&format!("{}: u1 = cmp.gt {}, {}", some, pushed, seen));
             let e = b.tmp();
@@ -4888,7 +4890,7 @@ impl Lowerer {
     /// `position` computes a tick the test throws away)
     fn pushed_of(&mut self, reader: &str, b: &mut Body) -> String {
         let pushed = b.tmp();
-        b.line(&format!("{}: i64 = received({})", pushed, reader));
+        b.line(&format!("{}: index = received({})", pushed, reader));
         pushed
     }
 
@@ -5702,10 +5704,10 @@ impl Lowerer {
         let view = Some(self.unread_view(&sv, b));
         let n = b.tmp();
         match &view {
-            Some(v) => b.line(&format!("{}: i64 = len {}", n, v)),
+            Some(v) => b.line(&format!("{}: index = len {}", n, v)),
             None => {
                 let first = sv.text.clone();
-                b.line(&format!("{}: i64 = count {}", n, first));
+                b.line(&format!("{}: index = count {}", n, first));
             }
         }
         // an edge over a rated source takes each item at its tick (log
@@ -5719,12 +5721,12 @@ impl Lowerer {
         };
         let pos = b.tmp();
         if paced.is_some() {
-            b.line(&format!("{}: i64 = get {}, pos", pos, sv.text));
+            b.line(&format!("{}: index = get {}, pos", pos, sv.text));
         }
         let k = b.tmp();
         b.loops.push(LoopCtx { carried: Vec::new(), results: Vec::new(), explicit: 0, item: Some((k.clone(), "add", "1".into())), loaded: Some(var.to_string()), breaks: 1 });
         let depth = b.loops.len();
-        b.vars.insert(k.clone(), Var { ir: k.clone(), ty: Ty::Num("i64".into()), set: true, loop_depth: depth });
+        b.vars.insert(k.clone(), Var { ir: k.clone(), ty: Ty::Num("index".into()), set: true, loop_depth: depth });
         let before = b.vars.clone();
         let start = b.out.len();
         b.depth += 1;
@@ -5746,7 +5748,7 @@ impl Lowerer {
         }
         if paced.is_some() {
             let abs = b.tmp();
-            b.line(&format!("{}: i64 = add {}, {}", abs, pos, k));
+            b.line(&format!("{}: index = add {}, {}", abs, pos, k));
             // a rated task's output: its ticks are the store's clock's
             let t = b.tmp();
             b.line(&format!("{}: i64 = tick_of({}, {})", t, sv.text, abs));
@@ -5773,9 +5775,9 @@ impl Lowerer {
                 if let ExprKind::Seq(src) = &seq.kind {
                     b.line(&format!("; the most items one event pushes into {}$: {} (log 79)", src, n));
                 }
-                b.line(&format!("loop({}: i64 = 0) bound {}", k, n));
+                b.line(&format!("loop({}: index = 0) bound {}", k, n));
             }
-            None => b.open_loop("", &format!("{}: i64 = 0", k), false),
+            None => b.open_loop("", &format!("{}: index = 0", k), false),
         }
         b.out.push_str(&body_lines);
         Ok(())
@@ -6188,7 +6190,7 @@ impl Lowerer {
                             self.wake(n, &s.text, true, b);
                         } else {
                             let before = b.tmp();
-                            b.out.insert_str(mark, &format!("{}{}: i64 = received({})\n", "    ".repeat(b.depth + 1), before, s.text));
+                            b.out.insert_str(mark, &format!("{}{}: index = received({})\n", "    ".repeat(b.depth + 1), before, s.text));
                             let after = self.pushed_of(&s.text, b);
                             let more = b.tmp();
                             b.line(&format!("{}: u1 = cmp.gt {}, {}", more, after, before));
@@ -6648,14 +6650,14 @@ impl Lowerer {
             }
             let view = self.unread_view(&vals[i], b);
             let n = b.tmp();
-            b.line(&format!("{}: i64 = len {}", n, view));
+            b.line(&format!("{}: index = len {}", n, view));
             lens.push(n);
             vals[i].text = view;
         }
         let mut n = lens[0].clone();
         for l in &lens[1..] {
             let m = b.tmp();
-            b.line(&format!("{}: i64 = max({}, {})", m, n, l));
+            b.line(&format!("{}: index = max({}, {})", m, n, l));
             n = m;
         }
         let k = b.tmp();
@@ -6701,11 +6703,11 @@ impl Lowerer {
                     // a function with no result over a stream: one call per
                     // item and nothing made (log 40)
                     let k2 = b.tmp();
-                    b.line(&format!("{}: i64 = add {}, 1", k2, k));
+                    b.line(&format!("{}: index = add {}, 1", k2, k));
                     b.line(&format!("continue {}", k2));
                     b.depth -= 1;
                     let body = b.out.split_off(start);
-                    b.open_loop("", &format!("{}: i64 = 0", k), false);
+                    b.open_loop("", &format!("{}: index = 0", k), false);
                     b.out.push_str(&body);
                     return Ok(r);
                 }
@@ -6721,7 +6723,7 @@ impl Lowerer {
                     b.line(&format!("push {}, {}, {}", c, t, r.text));
                 }
                 let k2 = b.tmp();
-                b.line(&format!("{}: i64 = add {}, 1", k2, k));
+                b.line(&format!("{}: index = add {}, 1", k2, k));
                 b.line(&format!("continue {}", k2));
                 b.depth -= 1;
                 let body = b.out.split_off(start);
@@ -6733,14 +6735,14 @@ impl Lowerer {
                 let rty = Ty::Stream(Box::new(r.ty.clone()));
                 self.rings.insert((r.ty.ir(), maker.to_string()));
                 let least = b.tmp();
-                b.line(&format!("{}: i64 = const {}", least, RING_ITEMS));
+                b.line(&format!("{}: index = const {}", least, RING_ITEMS));
                 let cap = b.tmp();
-                b.line(&format!("{}: i64 = max({}, {})", cap, n, least));
+                b.line(&format!("{}: index = max({}, {})", cap, n, least));
                 b.line(&format!("{}: {} = __{}_{}({}, {})", c, rty.ir(), maker, r.ty.ir(), CLOCK_HZ, cap));
                 if maker == "stream" {
                     b.line(&format!("{}: i64 = __now()", t));
                 }
-                b.open_loop("", &format!("{}: i64 = 0", k), false);
+                b.open_loop("", &format!("{}: index = 0", k), false);
                 b.out.push_str(&body);
                 let _ = dst;
                 Ok(Val { text: c, ty: rty, literal: false })
@@ -6782,12 +6784,12 @@ impl Lowerer {
                     return Err(lex::error(&file, line, format!("the reduction gives a {} but its accumulator is a {}", r.ty.ir(), aty.ir())));
                 }
                 let k2 = b.tmp();
-                b.line(&format!("{}: i64 = add {}, 1", k2, k));
+                b.line(&format!("{}: index = add {}, 1", k2, k));
                 b.line(&format!("continue {}, {}", k2, r.text));
                 b.depth -= 1;
                 let body = b.out.split_off(start);
                 let out = name_for(dst, &aty, b);
-                b.open_loop(&format!("{}: {} = ", out, aty.ir()), &format!("{}: i64 = 1, {}: {} = {}", k, a, aty.ir(), seed), false);
+                b.open_loop(&format!("{}: {} = ", out, aty.ir()), &format!("{}: index = 1, {}: {} = {}", k, a, aty.ir(), seed), false);
                 b.out.push_str(&body);
                 Ok(Val { text: out, ty: aty, literal: false })
             }
@@ -6921,11 +6923,11 @@ impl Lowerer {
             span
         };
         let n = b.tmp();
-        b.line(&format!("{}: i64 = conv {}", n, count));
+        b.line(&format!("{}: index = conv {}", n, count));
         let (c, t) = target(self, &n, b);
         let k = b.tmp();
         let x = b.tmp();
-        b.open_loop("", &format!("{}: i64 = 0, {}: {} = {}", k, x, ty.ir(), fv.text), false);
+        b.open_loop("", &format!("{}: index = 0, {}: {} = {}", k, x, ty.ir(), fv.text), false);
         b.depth += 1;
         let done = b.tmp();
         b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
@@ -6935,7 +6937,7 @@ impl Lowerer {
         b.depth -= 1;
         emit(self, &c, &t, &x, b);
         let k2 = b.tmp();
-        b.line(&format!("{}: i64 = add {}, 1", k2, k));
+        b.line(&format!("{}: index = add {}, 1", k2, k));
         let x2 = b.tmp();
         b.line(&format!("{}: {} = add {}, {}", x2, ty.ir(), x, step));
         b.line(&format!("continue {}, {}", k2, x2));
@@ -7261,13 +7263,13 @@ impl Lowerer {
         b.vars.get(name).map(|v| v.ty.clone()).or_else(|| self.fvar(name).map(|f| f.ty.clone()))
     }
 
-    /// an int as the i64 the library takes
-    fn as_i64(&mut self, v: &Val, b: &mut Body) -> String {
-        if v.literal || v.ty == Ty::Num("i64".into()) {
+    /// an integer as the `index` the library counts in (fm3 log 121)
+    fn as_index(&mut self, v: &Val, b: &mut Body) -> String {
+        if v.literal || v.ty == Ty::Num("index".into()) {
             return v.text.clone();
         }
         let t = b.tmp();
-        b.line(&format!("{}: i64 = conv {}", t, v.text));
+        b.line(&format!("{}: index = conv {}", t, v.text));
         t
     }
 
@@ -7480,7 +7482,7 @@ impl Lowerer {
             }
             let view = self.unread_view(&v, b);
             let n = b.tmp();
-            b.line(&format!("{}: i64 = len {}", n, view));
+            b.line(&format!("{}: index = len {}", n, view));
             self.push_view(name, s, &elem, &view, &n, b);
             return Ok(());
         }
@@ -7589,7 +7591,7 @@ impl Lowerer {
             return;
         }
         let k = b.tmp();
-        b.open_loop("", &format!("{}: i64 = 0", k), false);
+        b.open_loop("", &format!("{}: index = 0", k), false);
         b.depth += 1;
         let done = b.tmp();
         b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
@@ -7601,7 +7603,7 @@ impl Lowerer {
         b.line(&format!("{}: {} = load {}, {}", x, elem.ir(), view, k));
         self.emit_push(name, s, &Val { text: x, ty: elem.clone(), literal: false }, b);
         let k2 = b.tmp();
-        b.line(&format!("{}: i64 = add {}, 1", k2, k));
+        b.line(&format!("{}: index = add {}, 1", k2, k));
         b.line(&format!("continue {}", k2));
         b.depth -= 1;
     }
@@ -7792,7 +7794,7 @@ impl Lowerer {
             let field = format!("__node{}_{}", k + 1, pname);
             let placed = self.placed.contains(&k);
             let r = if placed {
-                let at = self.field_get(&field, "i64", None, b);
+                let at = self.field_get(&field, "index", None, b);
                 let r = b.tmp();
                 b.line(&format!("{}: {} = set {}, pos, {}", r, pty.ir(), s, at));
                 r
@@ -7816,7 +7818,7 @@ impl Lowerer {
             b.line(&format!("{}: {} = {}({})", r2, pty.ir(), ir, ops.join(", ")));
             if placed {
                 let at = b.tmp();
-                b.line(&format!("{}: i64 = get {}, pos", at, r2));
+                b.line(&format!("{}: index = get {}, pos", at, r2));
                 self.field_put(&field, &at, b);
             } else {
                 self.field_put(&field, &r2, b);
@@ -7900,7 +7902,7 @@ impl Lowerer {
                     let sv = self.lower_expr(&Expr { kind: ExprKind::Name(n), line }, None, b, None)?;
                     let first = sv.text.clone();
                     let (k, t) = (b.tmp(), b.tmp());
-                    b.line(&format!("{}: i64, {}: i64 = position({})", k, t, first));
+                    b.line(&format!("{}: index, {}: i64 = position({})", k, t, first));
                     let out = name_for(dst, &Ty::Num("int".into()), b);
                     b.line(&format!("{}: int = conv {}", out, t));
                     return Ok(Some(Val { text: out, ty: Ty::Num("int".into()), literal: false }));
@@ -7942,7 +7944,7 @@ impl Lowerer {
                 if !matches!(iv.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, a.line, "'peek' takes an integer index"));
                 }
-                let i = self.as_i64(&iv, b);
+                let i = self.as_index(&iv, b);
                 Ok(Some(self.peek_at(&s, &i, b, dst)))
             }
             ("advance", false, [Part::Word(by), arg]) if by == "by" => {
@@ -7951,7 +7953,7 @@ impl Lowerer {
                 if !matches!(nv.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, a.line, "'advance' takes an integer count"));
                 }
-                let n = self.as_i64(&nv, b);
+                let n = self.as_index(&nv, b);
                 let sty = ty.clone();
                 let moved = |_: &mut Lowerer, out: &str, b: &mut Body| b.line(&format!("{}: {} = advance({}, {})", out, sty.ir(), s.text, n));
                 self.rebind_stream(&sname, &s, &moved, b, line)?;
@@ -7966,7 +7968,7 @@ impl Lowerer {
                 let ft = f.clone();
                 let eir = elem.ir();
                 let word = if self.all_queues { "frame_queue" } else { "frame" };
-                let moved = |_: &mut Lowerer, out: &str, b: &mut Body| b.line(&format!("{}: {}[], {}: i64, {}: {} = {}({})", ft, eir, k, out, sty.ir(), word, s.text));
+                let moved = |_: &mut Lowerer, out: &str, b: &mut Body| b.line(&format!("{}: {}[], {}: index, {}: {} = {}({})", ft, eir, k, out, sty.ir(), word, s.text));
                 self.rebind_stream(&sname, &s, &moved, b, line)?;
                 Ok(Some(self.copy_view(&elem, &f, b, dst)))
             }
@@ -8005,7 +8007,7 @@ impl Lowerer {
             ("position", false, []) => {
                 let first = s.text.clone();
                 let k = b.tmp();
-                b.line(&format!("{}: i64 = get {}, pos", k, first));
+                b.line(&format!("{}: index = get {}, pos", k, first));
                 let out = name_for(dst, &Ty::Num("int".into()), b);
                 b.line(&format!("{}: int = conv {}", out, k));
                 Ok(Some(Val { text: out, ty: Ty::Num("int".into()), literal: false }))
@@ -8016,7 +8018,7 @@ impl Lowerer {
                 if !matches!(kv.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, a.line, "'behind' takes an integer count"));
                 }
-                let k = self.as_i64(&kv, b);
+                let k = self.as_index(&kv, b);
                 let h = b.tmp();
                 b.line(&format!("{}: {}[] = behind {}, {}", h, elem.ir(), s.text, k));
                 Ok(Some(self.copy_view(&elem, &h, b, dst)))
@@ -8133,7 +8135,7 @@ impl Lowerer {
                 if !matches!(iv.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, idx.line, "an index is an integer"));
                 }
-                let i = self.as_i64(&iv, b);
+                let i = self.as_index(&iv, b);
                 Ok(self.peek_at(&sv, &i, b, dst))
             }
             ExprKind::Str(s) => {

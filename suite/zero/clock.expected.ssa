@@ -38,14 +38,16 @@ fn __sleep(hz: i64)
 ; under an OS, the browser's log — is a `platform <target>` block on
 ; each of these, beside the `ir` body, and is milestone 1's
 data __out: array(u8, 65536)
-data __out_n: array(i64, 1)
+data __out_n: array(index, 1)
 
 ; what the device was given, read back by the test runner: the capture
-; is the runner's, not the store's
+; is the runner's, not the store's, and the runner is handed a machine
+; word whatever an `index` is
 fn __out_len() -> i64
     q: ptr = addr __out_n
-    n: i64 = load q
-    ret n
+    n: index = load q
+    w: i64 = conv n
+    ret w
 
 fn __out_byte(i: i64) -> u8
     p: ptr = addr __out
@@ -81,7 +83,7 @@ fn __wait(t: i64)
     m: i64 = max(c, t)
     store m, p
     q: ptr = addr __out_n
-    n: i64 = load q
+    n: index = load q
     a: ptr = addr __out_t
     store m, a, n, 8
     ret
@@ -135,17 +137,17 @@ fn __zero_reset()
     k: ptr = addr __clock
     store 0: i64, k
     mo: ptr = addr __out_n
-    mn: i64 = load mo
+    mn: index = load mo
     mt: ptr = addr __out_t
-    loop(mi: i64 = 0) bound 65536
+    loop(mi: index = 0) bound 65536
         store 0: i64, mt, mi, 8
         md: u1 = cmp.ge mi, mn
         if md
             break
-        mi2: i64 = add mi, 1
+        mi2: index = add mi, 1
         continue mi2
     o: ptr = addr __out_n
-    store 0: i64, o
+    store 0: index, o
     _1: u8$ = __regular_u8(1000000, 512)
     _2: int$ = __stream_int(1000000, 64)
     _3: __ctx = pack 1, 1, _1, _2, 0
@@ -236,38 +238,38 @@ fn where_it_stands() -> (int, int)
     store _5, _this
     _6: __ctx = load _this
     _7: int$ = get _6, t
-    _8: i64 = get _7, pos
+    _8: index = get _7, pos
     i: int = conv _8
     _9: __ctx = load _this
     _10: int$ = get _9, t
-    _11: i64, _12: i64 = position(_10)
+    _11: index, _12: i64 = position(_10)
     tick: int = conv _12
     ret i, tick
 
 ; a stream's storage, carved from the arena: cap items (64 unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start
-fn __stream_int(hz: i64, cap: i64) -> int$
+fn __stream_int(hz: i64, cap: index) -> int$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
-    slots: i64 = mul cap, 2
-    sz: i64 = sizeof int
-    bytes: i64 = mul sz, slots
-    total: i64 = add bytes, 16
+    slots: index = mul cap, 2
+    sz: index = sizeof int
+    bytes: index = mul sz, slots
+    total: index = add bytes, 16
     vb: ptr = arena_alloc(a, total)
     buffer_init(vb, sz, slots)
-    tbytes: i64 = mul slots, 8
-    ttotal: i64 = add tbytes, 16
+    tbytes: index = mul slots, 8
+    ttotal: index = add tbytes, 16
     tb: ptr = arena_alloc(a, ttotal)
     buffer_init(tb, 8, slots)
     ring_init(r, vb, tb, hz)
     s: int$ = stream r
     ret s
-fn __regular_u8(hz: i64, cap: i64) -> u8$
+fn __regular_u8(hz: i64, cap: index) -> u8$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
-    slots: i64 = mul cap, 2
-    sz: i64 = sizeof u8
-    bytes: i64 = mul sz, slots
-    total: i64 = add bytes, 16
+    slots: index = mul cap, 2
+    sz: index = sizeof u8
+    bytes: index = mul sz, slots
+    total: index = add bytes, 16
     vb: ptr = arena_alloc(a, total)
     buffer_init(vb, sz, slots)
     ring_regular(r, vb, hz, 1, 0)
