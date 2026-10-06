@@ -836,6 +836,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Nothing in gives nothing out, and `empty` asks (fm3 question 75
+    /// rule 4, log 127). The end of the input is one last tick, a
+    /// function of its own in which every line that needs the item is
+    /// not there: `doubled` has none, so it pushes no stray zero, and a
+    /// line that asks `empty` is its one arm in the function of one
+    /// item and its other in the last, with no branch in either. `end`
+    /// of an input with no storage calls the last function once, under
+    /// one bit that also fails a push made after it. The output is
+    /// ended after the last tick's pushes where anything could tell
+    /// (question 67), and not otherwise
+    #[test]
+    fn the_end_is_one_last_tick() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-end-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 2\n").unwrap();
+        let head = "int x$\nint d$ = made(x$)\n\non (int n) = f()\n    x$ << 1 << 2\n    end x$\n    end x$\n    n = count d$\n\n";
+        let with = |body: &str, more: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}on (int d$) << made (int x$)\n{}\n{}", head, body, more)).unwrap();
+            emit(&dir)
+        };
+        // nothing to do at the end: no last function, and the `end` calls nothing
+        let ir = with("    d$ << x$ * 2", "").unwrap();
+        assert!(!ir.contains("__z1_end"), "{}", ir);
+        // the one bit: a push checks it, `end` reads and sets it, twice here
+        let f = &ir[ir.find("fn f() -> int").unwrap()..];
+        assert!(f.contains("    _2: u1 = get _1, __zend_x\n    _3: u1 = xor _2, 1\n    check _3\n"), "{}", f);
+        assert_eq!(f.matches(" = set ").count(), 2, "{}", f);
+        // a line that asks `empty`: one arm in each function, no branch
+        let ir = with("    int k$ = if (empty x$) then (7) else (x$ + k$[-1])\n    d$ << k$", "").unwrap();
+        assert!(ir.contains("fn __z1_each(_x: int, __k_b1: int) -> int\n    _this: ptr = addr __ctx_mem\n    _k: int = add _x, __k_b1\n"), "{}", ir);
+        assert!(ir.contains("fn __z1_end(__k_b1: int)\n    _this: ptr = addr __ctx_mem\n    _k: int = const 7\n    _1: __ctx = load _this\n    _2: int$ = get _1, d\n    push_queue_open(_2, _k)\n    ret\n"), "{}", ir);
+        // called under "it had not ended", with what is kept
+        assert!(ir.contains("    _15: u1 = get _14, __zend_x\n    if _15\n    else\n        _16: u1 = const 1\n        _17: __ctx = load _this\n        _18: __ctx = set _17, __zend_x, _16\n        store _18, _this\n        if _5\n            _21: __ctx = load _this\n            _22: int = get _21, __z1_k_1\n            __z1_end(_22)\n"), "{}", ir);
+        // a push of nothing does not happen: only the push that asks is in the last function
+        let ir = with("    d$ << x$\n    d$ << x$[-1] when (empty x$)", "").unwrap();
+        let end = &ir[ir.find("fn __z1_end(").unwrap()..];
+        let end = &end[..end[1..].find("\nfn ").map_or(end.len(), |i| i + 1)];
+        assert_eq!(end.matches("push_queue").count(), 1, "{}", end);
+        assert!(!end.contains(" end("), "{}", end);
+        // the output is ended where something asks whether it has
+        let ir = with("    d$ << x$\n    d$ << x$[-1] when (empty x$)", "\non (bool b) = done()\n    b = ended d$\n").unwrap();
+        let end = &ir[ir.find("fn __z1_end(").unwrap()..];
+        let end = &end[..end[1..].find("\nfn ").map_or(end.len(), |i| i + 1)];
+        assert!(end.contains("    end(_2)\n    ret\n"), "{}", end);
+        // `empty` in a body that walks: written both ways
+        let err = with("    loop\n        if (empty x$)\n            break\n        d$ << peek x$ at (0)\n        advance x$ by (1)", "").expect_err("both ways");
+        assert!(err.contains("h.zero:12: this body is written both ways: line 11 walks its input (a loop), and line 12 holds for every item (`empty x$`)"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `or` and `and` join two conditions (fm3 question 66): `and`
     /// tighter than `or`, both looser than a comparison, both sides
     /// worked out, one operation each. A declared name that has `and`

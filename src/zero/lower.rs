@@ -1129,8 +1129,8 @@ impl<'a> Beat<'a> {
         for (edge, _) in self.l.bare_edges.get(n).map(|v| v.as_slice()).unwrap_or_default() {
             // an edge's function takes its item; a processor's, the
             // item and what its wiring keeps (fm3 log 124)
-            if self.l.zprocs.contains_key(edge) {
-                out.extend((0..self.defs.len()).filter(|&d| &self.defs[d].key == edge));
+            if let Some(zp) = self.l.zprocs.get(edge) {
+                out.extend((0..self.defs.len()).filter(|&d| &self.defs[d].key == edge || Some(&self.defs[d].key) == zp.end.as_ref()));
             } else {
                 out.extend(self.by_call.get(&(edge.clone(), 1)).into_iter().flatten().copied());
             }
@@ -1314,7 +1314,8 @@ impl<'a> Beat<'a> {
             Ev::Op => work.extend(&syms),
             Ev::Call(ts) => work.extend(ts),
             Ev::Unknown => *all = true,
-            Ev::End(_) | Ev::Given(_) => {}
+            Ev::End(s) => work.extend(self.edges_of(s)),
+            Ev::Given(_) => {}
         };
         for ev in &inits {
             step(ev, &mut work, &mut all);
@@ -1377,7 +1378,8 @@ impl<'a> Beat<'a> {
         match ev {
             Ev::Push(n) => self.sym_moves || self.l.rates.contains_key(n) || self.edges_of(n).iter().any(|&t| self.moves[t]) || (self.l.node_inputs.contains(n) && self.nodes_move),
             Ev::Op => self.sym_moves,
-            Ev::End(n) => self.l.node_inputs.contains(n) && self.nodes_move,
+            // ... or, where the stream has no storage, its processors' last tick
+            Ev::End(n) => (self.l.node_inputs.contains(n) && self.nodes_move) || self.edges_of(n).iter().any(|&t| self.moves[t]),
             Ev::Unknown => true,
             Ev::Call(ts) => ts.iter().any(|&t| self.moves[t]),
             Ev::Given(_) => false,
@@ -1961,6 +1963,10 @@ impl Lowerer {
                 for s in &w {
                     for (edge, _) in self.bare_edges.get(s).map(|v| v.as_slice()).unwrap_or_default() {
                         more.extend(walker.of_key(edge).0);
+                        // ... and its `end`, a processor's last tick
+                        if let Some(end) = self.zprocs.get(edge).and_then(|zp| zp.end.clone()) {
+                            more.extend(walker.of_key(&end).0);
+                        }
                     }
                 }
                 let before = w.len();
@@ -2081,7 +2087,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false };
+    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zended: Names::new(), zloud: Names::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -3218,6 +3224,13 @@ struct Lowerer {
     /// a push was lowered where the carried state could not follow it:
     /// the statement is refused, never miscompiled
     zbroken: bool,
+    /// the streams with no storage that some function of the store
+    /// ends (fm3 log 127): each has one bit in the context, that it has
+    /// ended, which `end` reads and sets and a push statement checks
+    zended: Names,
+    /// the outputs of processors whose end something in the store
+    /// could tell (fm3 question 67): the last tick ends these
+    zloud: Names,
 }
 
 /// a wiring of a processor read the new way whose input has no
@@ -3230,6 +3243,10 @@ struct ZProc {
     /// line looks back at, its type, the fields of its earlier values,
     /// the nearest first, and whether it is the input itself
     kept: Vec<(Ty, Vec<String>, bool)>,
+    /// the function of the last tick (question 75 rule 4, fm3 log 127),
+    /// which the input's `end` calls; none where the processor has
+    /// nothing to do at the end
+    end: Option<String>,
 }
 
 /// the state of a wiring as a push statement holds it: the count of
@@ -4114,12 +4131,12 @@ impl Lowerer {
         let k = self.zwired;
         let stored = !self.bare.contains(n);
         let p = self.zeroic[&info.key].clone();
-        let w = super::zeroic::write(&p, k, &v.name, stored);
+        let w = super::zeroic::write(&p, k, &v.name, stored, self.zloud.contains(&v.name));
         let mut kept = Vec::new();
         for c in &w.kept {
             kept.push((self.ty(&c.ty, false, file, v.line)?, c.fields.clone(), c.input));
         }
-        let zp = ZProc { at: w.at.clone(), kept };
+        let zp = ZProc { at: w.at.clone(), kept, end: w.end.as_ref().map(|fd| mangle(&fd.name)) };
         for (name, ty) in &w.state() {
             let t = self.ty(ty, false, file, v.line)?;
             self.fvars.push(FVar { name: name.clone(), ty: t.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string() });
@@ -4131,6 +4148,14 @@ impl Lowerer {
         self.funcs[i].ir = each.clone();
         self.funcs[i].plain = each.clone();
         self.edges.push((w.each, feature.to_string(), file.to_string()));
+        if let Some(end) = w.end {
+            let name = mangle(&end.name);
+            self.declare(&end, feature, file)?;
+            let i = self.funcs.len() - 1;
+            self.funcs[i].ir = name.clone();
+            self.funcs[i].plain = name;
+            self.edges.push((end, feature.to_string(), file.to_string()));
+        }
         let Some(walker) = w.walker else {
             self.bare_edges.entry(n.clone()).or_default().push((each.clone(), feature.to_string()));
             self.zprocs.insert(each, zp);
@@ -4231,12 +4256,44 @@ impl Lowerer {
             find_methods(&self.funcs, parts, &is_var, file, 0).ok().map(|(_, args)| args)
         };
         let zwire = |v: &super::syntax::VarDecl, file: &str| self.zwire(v, file);
-        let (named, wires, pushed) = stream_uses(&store.features, &|e, file| matches!(self.task_call(e, None, file), Ok(Some(_))), &call, &zwire);
+        let (mut named, wires, pushed) = stream_uses(&store.features, &|e, file| matches!(self.task_call(e, None, file), Ok(Some(_))), &call, &zwire);
+        // `end x$` names `x$`, except where a processor read the new
+        // way is wired to it and no edge is (fm3 log 127): there the
+        // end is the processors' last tick, and the stream needs no
+        // storage for it
+        let zsources: Names = store.features.iter().flat_map(|f| f.code.decls.iter().filter_map(|d| match d {
+            Decl::Var(v) => self.zwire(v, &f.code.file),
+            _ => None,
+        })).collect();
+        let edged: Names = store.features.iter().flat_map(|f| f.code.decls.iter().filter_map(|d| match d {
+            Decl::Edge { items, .. } => match items.first().map(|e| &e.kind) {
+                Some(ExprKind::Seq(n)) => Some(n.clone()),
+                _ => None,
+            },
+            _ => None,
+        })).collect();
+        let ends: Names = named.iter().filter_map(|k| k.strip_prefix("\u{0}end ").map(str::to_string)).collect();
+        named.retain(|k| !k.starts_with('\u{0}'));
+        if !ends.is_empty() {
+            named.insert("end".into());
+        }
+        for n in &ends {
+            if !zsources.contains(n) || edged.contains(n) {
+                named.insert(n.clone());
+            }
+        }
+        // the outputs of processors that are only ever counted or read
+        // an item of (fm3 question 67), asked now, while the store's
+        // functions can still be looked up
+        let hushed: Names = wires.iter().filter(|(s, o)| zsources.contains(s) && quietly_read(&store.features, o, &call)).map(|(_, o)| o.clone()).collect();
         // the features the product leaves out are asked one thing: does
         // any of them read or wire a stream (question 54). Their tasks
         // are not declared, and a task call only ever made the target of
         // its push count as named, which is no reading
-        let (named_out, wires_out, _) = stream_uses(&store.left_out, &|_, _| false, &|_, _, _| None, &|_, _| None);
+        let (mut named_out, wires_out, _) = stream_uses(&store.left_out, &|_, _| false, &|_, _, _| None, &|_, _| None);
+        for n in named_out.clone().iter().filter_map(|k| k.strip_prefix("\u{0}end ")) {
+            named_out.insert(n.to_string());
+        }
         let mut bare = Names::new();
         let mut rates: HashMap<String, i64> = HashMap::new();
         // the sources of the edges, then the streams that are pushed into
@@ -4329,6 +4386,29 @@ impl Lowerer {
         for (s, hz) in rates {
             if bare.contains(&s) {
                 self.rates.insert(s, hz);
+            }
+        }
+        // a processor's input with no storage that some function ends:
+        // one bit, that it has ended (fm3 log 127)
+        // ... or that a processor's last tick ends, being its output,
+        // while a function also pushes into it by name
+        let outputs: Names = wires.iter().filter(|(s, _)| zsources.contains(s)).map(|(_, o)| o.clone()).collect();
+        let mut ended: Vec<&String> = zsources.iter().filter(|n| bare.contains(*n) && (ends.contains(*n) || (outputs.contains(*n) && pushed_by_name(&store.features, n)))).collect();
+        ended.sort();
+        for n in ended {
+            let field = format!("__zend_{}", n);
+            let feature = self.fvar(n).map(|f| f.feature.clone()).unwrap_or_default();
+            self.fvars.push(FVar { name: field.clone(), ty: Ty::Bool, scope: "node".into(), merge: "last".into(), feature });
+            self.zfields.push((field, Ty::Bool));
+            self.zended.insert(n.clone());
+        }
+        // ... and the outputs of processors whose end something could
+        // tell (fm3 question 67): one with no storage, whose own
+        // processors want their last tick; one anything names other
+        // than to count it or to read an item of it
+        for (_, o) in wires.iter().filter(|(s, _)| zsources.contains(s)) {
+            if bare.contains(o) || ends.contains(o) || !hushed.contains(o) {
+                self.zloud.insert(o.clone());
             }
         }
         self.bare = bare;
@@ -6390,6 +6470,7 @@ impl Lowerer {
                 let bare = self.is_bare(n, b);
                 let mut gated = false;
                 if bare {
+                    self.z_open(n, b);
                     let gates = self.read_gates(n, b);
                     // into the input of one processor (fm3 log 124):
                     // its wiring's state is fetched once, carried
@@ -7930,6 +8011,63 @@ impl Lowerer {
         Some(each.clone())
     }
 
+    /// `end x$` of a stream with no storage: the bit that says it has
+    /// ended read and set, and under "it had not" each wired
+    /// processor's last function called, in composition order, under
+    /// its feature's gate, with what the wiring keeps. Nothing is
+    /// stored back: nothing comes after the last tick
+    fn z_end(&mut self, name: &str, b: &mut Body) {
+        // the bit, where the stream has one: where it has none, the one
+        // thing that ends it is a processor's own last tick, which
+        // comes once
+        let bit = self.zended.contains(name);
+        if bit {
+            let field = format!("__zend_{}", name);
+            let was = self.field_get(&field, "u1", None, b);
+            b.line(&format!("if {}", was));
+            b.line("else");
+            b.depth += 1;
+            let one = b.tmp();
+            b.line(&format!("{}: u1 = const 1", one));
+            self.field_put(&field, &one, b);
+        }
+        let gates = self.read_gates(name, b);
+        let edges = self.bare_edges.get(name).cloned().unwrap_or_default();
+        for ((edge, _), gate) in edges.iter().zip(&gates) {
+            let Some(zp) = self.zprocs.get(edge).cloned() else { continue };
+            let Some(end) = &zp.end else { continue };
+            if let Some(on) = gate {
+                b.line(&format!("if {}", on));
+                b.depth += 1;
+            }
+            let t = self.z_load(&zp, name, edge, b);
+            let mut ops: Vec<String> = Vec::new();
+            if t.at.is_some() {
+                ops.push(self.z_at(&t, b));
+            }
+            ops.extend(t.kept.iter().flatten().cloned());
+            b.line(&format!("{}({})", end, ops.join(", ")));
+            if gate.is_some() {
+                b.depth -= 1;
+            }
+        }
+        if bit {
+            b.depth -= 1;
+        }
+    }
+
+    /// a push statement into a stream with no storage that something
+    /// ends: it must not have ended (fm3 log 127)
+    fn z_open(&mut self, name: &str, b: &mut Body) {
+        if !self.zended.contains(name) {
+            return;
+        }
+        let was = self.field_get(&format!("__zend_{}", name), "u1", None, b);
+        let open = b.tmp();
+        b.line(&format!("{}: u1 = xor {}, 1", open, was));
+        b.line(&format!("check {}", open));
+    }
+
     /// A wiring's state fetched from the context: one load of it, and
     /// a field for each thing kept
     fn z_load(&mut self, zp: &ZProc, stream: &str, each: &str, b: &mut Body) -> ZThread {
@@ -8475,6 +8613,13 @@ impl Lowerer {
             ("end", false, []) => {
                 if self.input_device(&sname, Some(b)) {
                     return Err(lex::error(&file, line, INPUT_REFUSED));
+                }
+                // a processor's input with no storage (fm3 log 127): its
+                // end is the last tick of each processor wired to it,
+                // once, a second `end` being nothing
+                if self.is_bare(&sname, b) {
+                    self.z_end(&sname, b);
+                    return Ok(Some(none));
                 }
                 // a push into a stream of this type must go on asking
                 // whether it has ended (fm3 log 108)
@@ -9098,6 +9243,100 @@ fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str)
     (named, wires, pushed)
 }
 
+/// Is every mention of the stream of this name, anywhere in the
+/// store, one that cannot tell whether the stream has ended: the
+/// operand of `count` or of `peek ... at`, or the base of an index?
+/// And is it the target of no push? Anything else, a wiring, a call
+/// it is handed to, `ended`, a bare read, is a no, as is a mention in
+/// a function that has bound the name itself, which errs toward no
+fn quietly_read(features: &[super::store::FeatureDoc], s: &str, call: Called) -> bool {
+    // a word of a call of one of the store's functions is the
+    // function's name, not a variable read bare (fm3 log 106)
+    fn words(parts: &[Part], s: &str, file: &str, call: Called) -> bool {
+        call(parts, &Names::new(), file).is_some() || parts.iter().all(|p| !matches!(p, Part::Word(w) if w == s))
+    }
+    fn quiet(e: &Expr, s: &str, file: &str, call: Called) -> bool {
+        let is = |x: &Expr| matches!(&x.kind, ExprKind::Seq(n) if n == s);
+        let part = |p: &Part| match p {
+            Part::Value(x) => is(x),
+            Part::Args(a) => a.len() == 1 && a[0].name.is_none() && is(&a[0].value),
+            Part::Word(_) => false,
+        };
+        match &e.kind {
+            ExprKind::Seq(n) | ExprKind::Name(n) => n != s,
+            ExprKind::Index(base, i) if is(base) => quiet(i, s, file, call),
+            ExprKind::Phrase(parts) => match parts.as_slice() {
+                [Part::Word(w), x] if w == "count" && part(x) => true,
+                [Part::Word(w), x, Part::Word(at), i] if w == "peek" && at == "at" && part(x) => match i {
+                    Part::Args(a) => a.iter().all(|a| quiet(&a.value, s, file, call)),
+                    Part::Value(v) => quiet(v, s, file, call),
+                    Part::Word(v) => v != s,
+                },
+                _ => words(parts, s, file, call) && parts.iter().all(|p| match p {
+                    Part::Args(a) => a.iter().all(|a| quiet(&a.value, s, file, call)),
+                    Part::Value(v) => quiet(v, s, file, call),
+                    Part::Word(_) => true,
+                }),
+            },
+            ExprKind::Existing(parts) => parts.iter().all(|p| match p {
+                Part::Args(a) => a.iter().all(|a| quiet(&a.value, s, file, call)),
+                Part::Value(v) => quiet(v, s, file, call),
+                Part::Word(_) => true,
+            }),
+            ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => quiet(x, s, file, call),
+            ExprKind::List(items) => items.iter().all(|x| quiet(x, s, file, call)),
+            ExprKind::Range { from: l, to: r, .. } | ExprKind::Bin(_, l, r) | ExprKind::Index(l, r) => quiet(l, s, file, call) && quiet(r, s, file, call),
+            ExprKind::IfElse(c, a, b) => quiet(c, s, file, call) && quiet(a, s, file, call) && quiet(b, s, file, call),
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Acc => true,
+        }
+    }
+    fn init(v: &super::syntax::VarDecl, s: &str, file: &str, call: Called) -> bool {
+        match &v.init {
+            Some(Init::Value(e)) => quiet(e, s, file, call),
+            Some(Init::Construct(args)) => args.iter().all(|a| quiet(&a.value, s, file, call)),
+            Some(Init::Pushes { items, cond }) => items.iter().chain(cond.iter()).all(|e| quiet(e, s, file, call)),
+            None => true,
+        }
+    }
+    fn block(stmts: &[Stmt], s: &str, file: &str, call: Called) -> bool {
+        stmts.iter().all(|st| match st {
+            Stmt::Var(v) => init(v, s, file, call),
+            Stmt::Multi { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => quiet(value, s, file, call),
+            Stmt::Assign { targets, value, .. } => targets.iter().all(|t| t.name != s) && quiet(value, s, file, call),
+            Stmt::If { cond, then, els, .. } => quiet(cond, s, file, call) && block(then, s, file, call) && els.as_deref().is_none_or(|e| block(e, s, file, call)),
+            Stmt::Loop { vars, cond, body, .. } => vars.iter().all(|v| init(v, s, file, call)) && cond.as_ref().is_none_or(|c| quiet(c, s, file, call)) && block(body, s, file, call),
+            Stmt::For { seq, body, .. } => quiet(seq, s, file, call) && block(body, s, file, call),
+            Stmt::Continue { values, .. } => values.iter().all(|e| quiet(e, s, file, call)),
+            Stmt::Break { .. } => true,
+            Stmt::Push { target, items, cond, .. } => quiet(target, s, file, call) && items.iter().chain(cond.iter()).all(|e| quiet(e, s, file, call)),
+        })
+    }
+    features.iter().all(|f| {
+        let file = f.code.file.as_str();
+        f.cases.iter().all(|c| quiet(&c.call, s, &f.md_file, call))
+            && f.code.decls.iter().all(|d| match d {
+                Decl::Fn(fd) => block(&fd.body, s, file, call),
+                Decl::Var(v) => v.name == s || init(v, s, file, call),
+                Decl::Wire(e) => quiet(e, s, file, call),
+                Decl::Edge { target, items, cond, .. } => quiet(target, s, file, call) && items.iter().chain(cond.iter()).all(|e| quiet(e, s, file, call)),
+                Decl::Type(_) => true,
+            })
+    })
+}
+
+/// does any function of the store push into the stream of this name?
+fn pushed_by_name(features: &[super::store::FeatureDoc], s: &str) -> bool {
+    fn block(stmts: &[Stmt], s: &str) -> bool {
+        stmts.iter().any(|st| match st {
+            Stmt::Push { target: Expr { kind: ExprKind::Seq(n), .. }, .. } => n == s,
+            Stmt::If { then, els, .. } => block(then, s) || els.as_deref().is_some_and(|e| block(e, s)),
+            Stmt::Loop { body, .. } | Stmt::For { body, .. } => block(body, s),
+            _ => false,
+        })
+    }
+    features.iter().any(|f| f.code.decls.iter().any(|d| matches!(d, Decl::Fn(fd) if block(&fd.body, s))))
+}
+
 /// is every push into the stream of this name, in any function of the
 /// store, a push of string literals and nothing else? A function that
 /// has bound the name itself is asked too, which errs toward no
@@ -9187,6 +9426,11 @@ fn mentions(stmts: &[Stmt], bound: &Names, task: &dyn Fn(&Expr) -> bool, call: &
     }
 }
 
+/// how `mentions_in` records `end x$`: under a name no stream has
+fn ended_key(n: &str) -> String {
+    format!("\u{0}end {}", n)
+}
+
 fn mentions_init(v: &super::syntax::VarDecl, bound: &Names, call: &dyn Fn(&[Part], &Names) -> Option<Vec<Expr>>, out: &mut Names) {
     match &v.init {
         Some(Init::Value(e)) => mentions_in(e, bound, call, out),
@@ -9218,6 +9462,15 @@ fn mentions_in(e: &Expr, bound: &Names, call: &dyn Fn(&[Part], &Names) -> Option
             mentions_in(f, bound, call, out);
         }
         ExprKind::Phrase(parts) | ExprKind::Existing(parts) => {
+            // `end x$` of a feature-scope stream: a naming of it, said
+            // apart, since it is none where the stream is the input
+            // of a processor read the new way (fm3 log 127)
+            if let [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(n), .. })] = parts.as_slice() {
+                if w == "end" && !bound.contains(n) {
+                    out.insert(ended_key(n));
+                    return;
+                }
+            }
             // a call of a function of the store mentions its arguments:
             // its words are the function's name (fm3 log 106)
             if let Some(args) = call(parts, bound) {

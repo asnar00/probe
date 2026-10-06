@@ -59,6 +59,13 @@ A wiring, `int d$ = doubled(x$)`, is a standing connection as it always was. Wha
 >every tenth to (60) → 6060
 >pushed above two (5) → 25
 >pushed above two (1) → 19
+>no stray zero() → 2, 24
+>closed() → 0, 199
+>a chain ends() → 0, 260
+>how many came() → 13
+>a stored input ends() → 0, 19
+>pushed after its end() → check
+>an output ends() → 0, 1
 
 ## hostile
 A processor's body that pushes into anything but its own output, declares a name without a `$`, puts an `if` round a line or a `while` on a push is refused, with what to write. `int d$ = doubled(i$)` inside a function is refused: a stream processor is wired at feature scope, and running one inside a function is not built. `y$` has no storage, so nothing limits what is pushed into it; `q$`, which `doubled` fills from it, is a queue read only after the statement, so `many (80)` fails the queue's check at the sixty-fifth item as a push of eighty into any stored stream does.

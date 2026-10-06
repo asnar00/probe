@@ -44,6 +44,19 @@ int cd$ = changes(ch$)
 int ev$
 int tens$ = tenths(ev$)
 int plain$
+int en$
+int den$ = doubled(en$)
+int cl2$
+int cls$ = closer(cl2$)
+int tin$
+int tot$ = totalled(tin$)
+int fin$ = capped(tot$)
+int cnt$
+int how$ = counted(cnt$)
+int st$ << 4 << 5
+int sts$ = totalled(st$)
+int lo$
+int louds$ = doubled(lo$)
 
 on (int d$) << doubled (int x$)
     d$ << x$ * 2
@@ -220,3 +233,58 @@ on (int n) = pushed above two (int k)
     plain$ << k when (k > 2)
     plain$ << 9
     n = count plain$ * 10 + peek plain$ at (0)
+
+on (int e$) << closer (int x$)
+    e$ << 99 when (empty x$)
+
+on (int t$) << totalled (int x$)
+    int sum$ = sum$[-1] + x$
+    t$ << sum$[-1] when (empty x$)
+
+on (int o$) << capped (int x$)
+    o$ << x$
+    o$ << -1 when (empty x$)
+
+on (int n$) << counted (int x$)
+    n$ << position x$ when (empty x$)
+
+on (int a, int b) = no stray zero()
+    en$ << 1 << 2
+    end en$
+    a = count den$
+    end en$
+    b = count den$ * 10 + peek den$ at (1)
+
+on (int a, int b) = closed()
+    cl2$ << 5
+    a = count cls$
+    end cl2$
+    end cl2$
+    b = count cls$ * 100 + peek cls$ at (0)
+
+on (int a, int b) = a chain ends()
+    tin$ << 1 << 2 << 3
+    a = count fin$
+    end tin$
+    b = count fin$ * 100 + peek fin$ at (0) * 10 + peek fin$ at (1) + 1
+
+on (int n) = how many came()
+    cnt$ << 7 << 7 << 7
+    end cnt$
+    n = count how$ * 10 + peek how$ at (0)
+
+on (int a, int b) = a stored input ends()
+    a = count sts$
+    end st$
+    b = count sts$ * 10 + peek sts$ at (0)
+
+on pushed after its end()
+    en$ << 1
+    end en$
+    en$ << 2
+
+on (int a, int b) = an output ends()
+    lo$ << 1
+    a = if (ended louds$) then (1) else (0)
+    end lo$
+    b = if (ended louds$) then (1) else (0)

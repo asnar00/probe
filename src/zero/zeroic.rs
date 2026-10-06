@@ -145,6 +145,17 @@ fn walk_stmts(stmts: &[Stmt], f: &mut dyn FnMut(&Expr) -> bool) {
     }
 }
 
+/// `empty x$`, or `ended x$`: the two a line may ask of its input's
+/// end (fm3 question 75 rule 4)
+fn asks_end(e: &Expr, x: &str) -> Option<&'static str> {
+    let ExprKind::Phrase(parts) = &e.kind else { return None };
+    match parts.as_slice() {
+        [Part::Word(w), s] if w == "empty" && names(s, x) => Some("empty"),
+        [Part::Word(w), s] if w == "ended" && names(s, x) => Some("ended"),
+        _ => None,
+    }
+}
+
 /// the reader's word a phrase applies to `x`, if it applies one
 fn reader_word(e: &Expr, x: &str) -> Option<String> {
     let ExprKind::Phrase(parts) = &e.kind else { return None };
@@ -167,10 +178,14 @@ fn pushes_into(stmts: &[Stmt], x: &str) -> Option<usize> {
 
 /// The first mark of the new reading in a block (fm3 question 65), by
 /// its line and how it is written: a look back at the input,
-/// `x$[-1]`. A body that has one and also walks is written both ways
+/// `x$[-1]`, or `empty x$`. A body that has one and also walks is
+/// written both ways
 fn new_mark(stmts: &[Stmt], x: &str) -> Option<(usize, String)> {
     let mut found = None;
     walk_stmts(stmts, &mut |e| {
+        if found.is_none() && asks_end(e, x) == Some("empty") {
+            found = Some((e.line, format!("`empty {}$`", x)));
+        }
         if found.is_none() {
             if let ExprKind::Index(base, idx) = &e.kind {
                 if let (true, ExprKind::Int(k)) = (is_seq(base, x), &idx.kind) {
@@ -376,6 +391,9 @@ pub fn read(fd: &FnDecl, file: &str, takers: &Takers) -> Result<Option<Processor
                 }
             }
             ExprKind::Phrase(parts) => {
+                if asks_end(e, x).is_some() {
+                    return false;
+                }
                 if let [Part::Word(w), s] = parts.as_slice() {
                     if w == "position" && names(s, x) {
                         position = true;
@@ -534,43 +552,95 @@ impl Processor {
     /// "of each item" is resolved (`fm3/forms.md` may yet spell it
     /// with square brackets at the call)
     fn each(&self, e: &Expr) -> Expr {
+        self.at(e, false)
+    }
+
+    /// ... and as the function of the last tick reads it, `last`: there
+    /// `empty x$` is true where in the function of one item it is false
+    /// (question 75 rule 4), and either way what it decides is decided
+    /// here, when the program is compiled: an `if` on it is the arm it
+    /// chooses, `or` and `and` with it are what they come to
+    fn at(&self, e: &Expr, last: bool) -> Expr {
         let line = e.line;
+        if asks_end(e, &self.input).is_some() {
+            return expr(ExprKind::Bool(last), line);
+        }
+        let kind = match &e.kind {
+            ExprKind::IfElse(c, a, b) => match self.at(c, last).kind {
+                ExprKind::Bool(true) => return self.at(a, last),
+                ExprKind::Bool(false) => return self.at(b, last),
+                c => ExprKind::IfElse(Box::new(expr(c, line)), Box::new(self.at(a, last)), Box::new(self.at(b, last))),
+            },
+            ExprKind::Bin(op, l, r) if op == "or" || op == "and" => {
+                let (l, r) = (self.at(l, last), self.at(r, last));
+                let absorbs = op == "or";
+                match (&l.kind, &r.kind) {
+                    (ExprKind::Bool(v), _) | (_, ExprKind::Bool(v)) if *v == absorbs => return expr(ExprKind::Bool(absorbs), line),
+                    (ExprKind::Bool(_), _) => return r,
+                    (_, ExprKind::Bool(_)) => return l,
+                    _ => ExprKind::Bin(op.clone(), Box::new(l), Box::new(r)),
+                }
+            }
+            k => return self.rest(k, line, last),
+        };
+        expr(kind, line)
+    }
+
+    fn rest(&self, k: &ExprKind, line: usize, last: bool) -> Expr {
+        let e = &expr(k.clone(), line);
         let kind = match &e.kind {
             ExprKind::Seq(n) if self.is_stream(n) => ExprKind::Name(local(n)),
-            ExprKind::Unit(x, u) => ExprKind::Unit(Box::new(self.each(x)), u.clone()),
-            ExprKind::Neg(x) => ExprKind::Neg(Box::new(self.each(x))),
-            ExprKind::Field(x, f) => ExprKind::Field(Box::new(self.each(x)), f.clone()),
-            ExprKind::List(items) => ExprKind::List(items.iter().map(|x| self.each(x)).collect()),
-            ExprKind::Range { from, to, inclusive } => ExprKind::Range { from: Box::new(self.each(from)), to: Box::new(self.each(to)), inclusive: *inclusive },
-            ExprKind::Bin(op, l, r) => ExprKind::Bin(op.clone(), Box::new(self.each(l)), Box::new(self.each(r))),
+            ExprKind::Unit(x, u) => ExprKind::Unit(Box::new(self.at(x, last)), u.clone()),
+            ExprKind::Neg(x) => ExprKind::Neg(Box::new(self.at(x, last))),
+            ExprKind::Field(x, f) => ExprKind::Field(Box::new(self.at(x, last)), f.clone()),
+            ExprKind::List(items) => ExprKind::List(items.iter().map(|x| self.at(x, last)).collect()),
+            ExprKind::Range { from, to, inclusive } => ExprKind::Range { from: Box::new(self.at(from, last)), to: Box::new(self.at(to, last)), inclusive: *inclusive },
+            ExprKind::Bin(op, l, r) => ExprKind::Bin(op.clone(), Box::new(self.at(l, last)), Box::new(self.at(r, last))),
             ExprKind::Index(l, r) => match (&l.kind, &r.kind) {
                 (ExprKind::Seq(n), ExprKind::Int(k)) if self.is_stream(n) && *k < 0 => ExprKind::Name(back(n, k.unsigned_abs() as usize)),
-                _ => ExprKind::Index(Box::new(self.each(l)), Box::new(self.each(r))),
+                _ => ExprKind::Index(Box::new(self.at(l, last)), Box::new(self.at(r, last))),
             },
-            ExprKind::IfElse(c, a, b) => ExprKind::IfElse(Box::new(self.each(c)), Box::new(self.each(a)), Box::new(self.each(b))),
+            ExprKind::IfElse(c, a, b) => ExprKind::IfElse(Box::new(self.at(c, last)), Box::new(self.at(a, last)), Box::new(self.at(b, last))),
             ExprKind::Phrase(parts) => {
                 if let [Part::Word(w), s] = parts.as_slice() {
                     if w == "position" && names(s, &self.input) {
                         return name(AT, line);
                     }
                 }
-                ExprKind::Phrase(self.parts(parts))
+                ExprKind::Phrase(self.parts(parts, last))
             }
-            ExprKind::Existing(parts) => ExprKind::Existing(self.parts(parts)),
+            ExprKind::Existing(parts) => ExprKind::Existing(self.parts(parts, last)),
             k => k.clone(),
         };
         expr(kind, line)
     }
 
-    fn parts(&self, parts: &[Part]) -> Vec<Part> {
+    fn parts(&self, parts: &[Part], last: bool) -> Vec<Part> {
         parts
             .iter()
             .map(|p| match p {
-                Part::Args(list) => Part::Args(list.iter().map(|a| Arg { name: a.name.clone(), value: self.each(&a.value) }).collect()),
-                Part::Value(x) => Part::Value(self.each(x)),
+                Part::Args(list) => Part::Args(list.iter().map(|a| Arg { name: a.name.clone(), value: self.at(&a.value, last) }).collect()),
+                Part::Value(x) => Part::Value(self.at(x, last)),
                 Part::Word(w) => Part::Word(w.clone()),
             })
             .collect()
+    }
+
+    /// Is a line's expression, as the last tick reads it, something? Not
+    /// where it still reads the present item of the input, or of a line
+    /// that is itself nothing there: nothing in gives nothing out.
+    /// `alive` is the lines that are something
+    fn something(&self, e: &Expr, alive: &[String]) -> bool {
+        let mut ok = true;
+        walk(e, &mut |x| {
+            if let ExprKind::Name(n) = &x.kind {
+                if *n == local(&self.input) || self.said.iter().any(|d| local(&d.name) == *n && !alive.contains(&d.name)) {
+                    ok = false;
+                }
+            }
+            true
+        });
+        ok
     }
 }
 
@@ -591,6 +661,11 @@ pub struct Written {
     /// streams among those, in the same order: the wiring moves each
     /// one back a place and keeps it
     pub each: FnDecl,
+    /// The function of the last tick, the one on which the input is
+    /// empty (question 75 rule 4): its parameters are the count and the
+    /// kept values, and it gives nothing back. None where the
+    /// processor has nothing to do at the end
+    pub end: Option<FnDecl>,
     /// where the input has storage: the sink that walks it
     pub walker: Option<FnDecl>,
     /// the field that counts the items
@@ -617,15 +692,39 @@ fn call(f: &str, args: Vec<Expr>, line: usize) -> Expr {
     expr(ExprKind::Phrase(vec![Part::Word(f.to_string()), Part::Args(args.into_iter().map(|value| Arg { name: None, value }).collect())]), line)
 }
 
+/// Of some lines, each a local of a function, those that what follows
+/// reads, or that a line kept reads: a line nothing reads is not
+/// worked out
+fn needed(lines: Vec<Stmt>, after: &[Stmt]) -> Vec<Stmt> {
+    let read = |n: &str, stmts: &[Stmt]| {
+        let mut found = false;
+        walk_stmts(stmts, &mut |e| {
+            found |= matches!(&e.kind, ExprKind::Name(m) if m == n);
+            true
+        });
+        found
+    };
+    let mut out: Vec<Stmt> = Vec::new();
+    for s in lines.into_iter().rev() {
+        let Stmt::Var(v) = &s else { unreachable!() };
+        if read(&v.name, after) || read(&v.name, &out) {
+            out.insert(0, s);
+        }
+    }
+    out
+}
+
 fn assign(to: &str, value: Expr, line: usize) -> Stmt {
     Stmt::Assign { targets: vec![Target { name: to.to_string(), seq: false, line, feature: None }], value, line }
 }
 
 /// The functions of wiring `k` of a processor, into the stream `out`.
-/// `stored` says the input has storage, so a sink walks it
-pub fn write(p: &Processor, k: usize, out: &str, stored: bool) -> Written {
+/// `stored` says the input has storage, so a sink walks it; `ends`,
+/// that the output is to end after the last tick's pushes
+pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool) -> Written {
     let line = p.line;
     let each_name = format!("__z{}_each", k);
+    let end_name = format!("__z{}_end", k);
     let at = p.position.then(|| format!("__z{}_at", k));
     let kept: Vec<WKept> = p.kept.iter().map(|c| WKept { ty: c.ty.clone(), fields: (1..=c.depth).map(|j| format!("__z{}_{}_{}", k, c.name, j)).collect(), input: c.input }).collect();
     let mut params = vec![param(&p.item_ty, &local(&p.input), false, line)];
@@ -645,21 +744,58 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool) -> Written {
     // pushes; then the present values handed back. A function ends
     // where its last result is given (section 6), so the results are
     // named last, each the line's own value under another name
-    let mut body = Vec::new();
+    let mut lines = Vec::new();
     for d in &p.said {
-        body.push(Stmt::Var(VarDecl { line: d.line, scope: Vec::new(), ty: d.ty.clone(), name: local(&d.name), seq: false, init: Some(Init::Value(p.each(&d.value))), merge: None, rate: None }));
+        lines.push(Stmt::Var(VarDecl { line: d.line, scope: Vec::new(), ty: d.ty.clone(), name: local(&d.name), seq: false, init: Some(Init::Value(p.each(&d.value))), merge: None, rate: None }));
     }
+    let mut body = Vec::new();
+    let push = |item: Expr, when: Option<Expr>, line: usize| -> Option<Stmt> {
+        let push = Stmt::Push { target: expr(ExprKind::Seq(out.to_string()), line), items: vec![item], cond: None, existing: false, line };
+        match when.map(|c| c.kind) {
+            // a condition settled when the program is compiled: the
+            // push is made, or is not there
+            Some(ExprKind::Bool(false)) => None,
+            Some(ExprKind::Bool(true)) | None => Some(push),
+            Some(c) => Some(Stmt::If { cond: expr(c, line), then: vec![push], els: None, line, when: true }),
+        }
+    };
     for o in &p.outs {
-        let push = Stmt::Push { target: expr(ExprKind::Seq(out.to_string()), o.line), items: vec![p.each(&o.item)], cond: None, existing: false, line: o.line };
-        body.push(match &o.when {
-            Some(c) => Stmt::If { cond: p.each(c), then: vec![push], els: None, line: o.line, when: true },
-            None => push,
-        });
+        body.extend(push(p.each(&o.item), o.when.as_ref().map(|c| p.each(c)), o.line));
     }
     for c in p.kept.iter().filter(|c| !c.input) {
         body.push(assign(&result(&c.name), name(&local(&c.name), line), line));
     }
-    let each = FnDecl { line, results, name: vec![NamePart::Word(each_name.clone()), NamePart::Group], groups: vec![params], task: false, body, platform: Vec::new() };
+    // a line that neither a push nor a kept value reads is not worked out
+    let mut lines = needed(lines, &body);
+    lines.extend(body);
+    let body = lines;
+    let each = FnDecl { line, results, name: vec![NamePart::Word(each_name.clone()), NamePart::Group], groups: vec![params.clone()], task: false, body, platform: Vec::new() };
+    // the last tick (log 127): the lines that are something with the
+    // input empty, in their order; the pushes whose item and condition
+    // are; and the output's own end after them
+    let mut last = Vec::new();
+    let mut alive: Vec<String> = Vec::new();
+    for d in &p.said {
+        let v = p.at(&d.value, true);
+        if p.something(&v, &alive) {
+            alive.push(d.name.clone());
+            last.push(Stmt::Var(VarDecl { line: d.line, scope: Vec::new(), ty: d.ty.clone(), name: local(&d.name), seq: false, init: Some(Init::Value(v)), merge: None, rate: None }));
+        }
+    }
+    let mut pushes = Vec::new();
+    for o in &p.outs {
+        let (item, when) = (p.at(&o.item, true), o.when.as_ref().map(|c| p.at(c, true)));
+        if p.something(&item, &alive) && when.as_ref().is_none_or(|c| p.something(c, &alive)) {
+            pushes.extend(push(item, when, o.line));
+        }
+    }
+    // a line nothing at the end reads is not worked out there
+    let mut last = needed(last, &pushes);
+    last.extend(pushes);
+    if ends {
+        last.push(Stmt::Expr { expr: expr(ExprKind::Phrase(vec![Part::Word("end".into()), Part::Value(expr(ExprKind::Seq(out.to_string()), line))]), line), line });
+    }
+    let end = (!last.is_empty()).then(|| FnDecl { line, results: Vec::new(), name: vec![NamePart::Word(end_name.clone()), NamePart::Group], groups: vec![params[1..].to_vec()], task: false, body: last, platform: Vec::new() });
     // the walking form (log 124, decision 7): each unread item handed
     // to the function with what the wiring keeps, each kept stream
     // moved back a place, the count moved on; and the reader moved
@@ -693,15 +829,19 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool) -> Written {
         }
         let count = expr(ExprKind::Phrase(vec![Part::Word("count".into()), Part::Value(seq(x))]), line);
         let advance = expr(ExprKind::Phrase(vec![Part::Word("advance".into()), Part::Value(seq(x)), Part::Word("by".into()), Part::Args(vec![Arg { name: None, value: count }])]), line);
-        FnDecl {
-            line,
-            results: Vec::new(),
-            name: vec![NamePart::Word(format!("__z{}", k)), NamePart::Group],
-            groups: vec![vec![param(&p.item_ty, x, true, line)]],
-            task: false,
-            body: vec![Stmt::For { var: "__item".into(), seq: seq(x), body: inner, line }, Stmt::Expr { expr: advance, line }],
-            platform: Vec::new(),
+        let mut body = vec![Stmt::For { var: "__item".into(), seq: seq(x), body: inner, line }, Stmt::Expr { expr: advance, line }];
+        // the last tick, once the input has ended and what it held has
+        // been handed over: the scheduler runs a node once more when
+        // its input ends, and once only
+        if end.is_some() {
+            let mut args: Vec<Expr> = at.iter().map(|f| name(f, line)).collect();
+            for c in &kept {
+                args.extend(c.fields.iter().map(|f| name(f, line)));
+            }
+            let ended = expr(ExprKind::Phrase(vec![Part::Word("ended".into()), Part::Value(seq(x))]), line);
+            body.push(Stmt::If { cond: ended, then: vec![Stmt::Expr { expr: call(&end_name, args, line), line }], els: None, line, when: false });
         }
+        FnDecl { line, results: Vec::new(), name: vec![NamePart::Word(format!("__z{}", k)), NamePart::Group], groups: vec![vec![param(&p.item_ty, x, true, line)]], task: false, body, platform: Vec::new() }
     });
-    Written { each, walker, at, kept }
+    Written { each, end, walker, at, kept }
 }
