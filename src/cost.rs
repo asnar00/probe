@@ -82,14 +82,21 @@ pub const COUNTER: &str = "__dyn";
 /// add, a call of a plain number's arithmetic one — to the word
 /// `COUNTER`, which the module must declare. So a function with no
 /// branch and no loop counts exactly what `probe cost` says of it
-pub fn count_blocks(module: &mut Module, skip: &[&str]) {
+///
+/// With `one`, a function and a block of it, that block's add alone:
+/// what one block counted over a run, which over its weight is how
+/// many times it was entered (`probe count --blocks=f`)
+pub fn count_blocks(module: &mut Module, skip: &[&str], one: Option<(&str, usize)>) {
     let arithmetic: Vec<String> = module.funcs.iter().filter(|f| is_arithmetic(f)).map(|f| f.name.clone()).collect();
     for f in module.funcs.iter_mut() {
         if skip.contains(&f.name.as_str()) || arithmetic.contains(&f.name) {
             continue;
         }
         for b in 0..f.blocks.len() {
-            let w = f.blocks[b].insts.iter().filter(|i| !matches!(i, Inst::Jmp { .. })).count() as i128;
+            if one.is_some_and(|(name, k)| name != f.name || k != b) {
+                continue;
+            }
+            let w = block_weight(&f.blocks[b]);
             if w == 0 {
                 continue;
             }
@@ -160,6 +167,11 @@ pub fn count_from(module: &mut Module, name: &str) -> Result<(), String> {
         f.blocks[b].insts.splice(at..at, read);
     }
     Ok(())
+}
+
+/// what the count adds as a block is entered: its instructions, jumps aside
+pub fn block_weight(b: &crate::ssa::Block) -> i128 {
+    b.insts.iter().filter(|i| !matches!(i, Inst::Jmp { .. })).count() as i128
 }
 
 /// the IR instructions of a function, jumps aside
@@ -996,7 +1008,7 @@ fn forked(a: i64) -> i64
             let mut c = super::Coster::new(&m, None, None, None);
             ["straight", "looped", "forked"].iter().map(|f| c.report(f).unwrap().ssa).collect()
         };
-        super::count_blocks(&mut m, &["__dyn_zero", "__dyn_read"]);
+        super::count_blocks(&mut m, &["__dyn_zero", "__dyn_read"], None);
         ssa::verify(&m).unwrap();
         let enc = crate::emit::Encoder::load("targets/arm64.encodings.json").unwrap();
         let compiled = crate::emit::compile(&m, &enc).unwrap();
@@ -1063,7 +1075,7 @@ fn case() -> i64
         let mut m = module(src);
         let tool = super::Coster::new(&m, None, None, None).report("work").unwrap().ssa;
         let skip = ["__dyn_zero", "__dyn_read", "__dyn_all"];
-        super::count_blocks(&mut m, &skip);
+        super::count_blocks(&mut m, &skip, None);
         super::count_from(&mut m, "work").unwrap();
         ssa::verify(&m).unwrap();
         assert!(super::count_from(&mut m, "nothing").is_err());

@@ -181,7 +181,7 @@ fn main() -> ExitCode {
             let from: Option<&str> = args.iter().find_map(|a| a.strip_prefix("--from="));
             // one run, counting the blocks of the functions `only` names,
             // or of all: the count, and the module's functions
-            let run = |only: Option<Vec<String>>| -> Result<(i64, Vec<String>), String> {
+            let run_one = |only: Option<Vec<String>>, one: Option<(&str, usize)>| -> Result<(i64, Vec<String>, Vec<(String, i128)>), String> {
                 let src = std::fs::read_to_string(&args[1]).map_err(|e| format!("{}: {}", args[1], e))?;
                 let read = if from.is_some() { cost::FROM } else { cost::COUNTER };
                 let src = format!("data {c}: array(i64, 1)\ndata {w}: array(i64, 1)\nfn __dyn_zero()\n    p: ptr = addr {c}\n    store 0: i64, p\n    q: ptr = addr {w}\n    store 0: i64, q\n    ret\nfn __dyn_read() -> i64\n    p: ptr = addr {r}\n    v: i64 = load p\n    ret v\n{}", src, c = cost::COUNTER, w = cost::FROM, r = read);
@@ -194,7 +194,17 @@ fn main() -> ExitCode {
                 if let Some(only) = &only {
                     skip.extend(module.funcs.iter().map(|f| f.name.clone()).filter(|n| !only.contains(n)));
                 }
-                cost::count_blocks(&mut module, &skip.iter().map(String::as_str).collect::<Vec<_>>());
+                // the blocks of the function `one` names, each with its
+                // weight, before anything is added to them
+                let blocks: Vec<(String, i128)> = one.and_then(|(f, _)| module.func(f)).map(|f| f.blocks.iter().map(|b| (b.name.clone(), cost::block_weight(b))).collect()).unwrap_or_default();
+                if let Some((f, 0)) = one {
+                    if std::env::var("PROBE_COUNT_SHOW").is_ok() {
+                        if let Some(func) = module.func(f) {
+                            eprintln!("{}", func);
+                        }
+                    }
+                }
+                cost::count_blocks(&mut module, &skip.iter().map(String::as_str).collect::<Vec<_>>(), one);
                 if let Some(f) = from {
                     cost::count_from(&mut module, f)?;
                 }
@@ -212,8 +222,31 @@ fn main() -> ExitCode {
                 } else {
                     jit.call(&args[2], &[])?;
                 }
-                Ok((jit.call("__dyn_read", &[])?, names))
+                Ok((jit.call("__dyn_read", &[])?, names, blocks))
             };
+            let run = |only: Option<Vec<String>>| -> Result<(i64, Vec<String>), String> { run_one(only, None).map(|(n, names, _)| (n, names)) };
+            // `--blocks=f`: a row for each block of `f`, its weight, how
+            // many times the run entered it, and what it counted
+            if let Some(f) = args.iter().find_map(|a| a.strip_prefix("--blocks=")) {
+                let rows = (|| -> Result<(), String> {
+                    let (_, _, blocks) = run_one(None, Some((f, usize::MAX)))?;
+                    if blocks.is_empty() {
+                        return Err(format!("no function {} in {}", f, args[1]));
+                    }
+                    let mut all = 0;
+                    for (k, (name, w)) in blocks.iter().enumerate() {
+                        let n = if *w == 0 { 0 } else { run_one(None, Some((f, k)))?.0 };
+                        all += n;
+                        println!("  {:<3} {:<16} weight {:>3}  entered {:>5}  counted {:>6}", k, name, w, if *w == 0 { 0 } else { n as i128 / *w }, n);
+                    }
+                    println!("{:<24} {:>10} ssa, its own blocks", f, all);
+                    Ok(())
+                })();
+                return match rows {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => fail(&e),
+                };
+            }
             // `--only=f,g` counts those functions' own blocks alone:
             // where a run's count goes; `--where` is that for every
             // function in turn, a row each that counted anything, the
