@@ -4,6 +4,21 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### stream: a queue's header says where slot 0 is — `a6b1e19` · 2026-10-06
+
+```
+    slots: ptr = ptradd vb, 16
+    store slots, r, 64
+```
+```
+    origin: i64 = load r, 8
+    k: i64 = sub at, origin
+    q: ptr(any) = load r, 64
+    v: any = load q, k
+```
+
+`lib/stream.ssa:287-288`, in `ring_queue`, and `422-425`, in `peek_queue`. The parity pass, hop 14, transformation 49 (fm3 log 115). Every queue word that touches a slot loaded the buffer's address from the ring's header, added sixteen to pass the buffer's own header and cast: 4 on the cost tool, and a queue never reads that header. A queue's header is now nine words, the ninth where slot 0 is, and the nine words load it as a typed pointer; no check is touched. It is a ninth word and not the word at 16 because a list literal and a range fill their new stream with the ring's own `push`, which reads the buffer through 16; that mixing reads back wrong from thirty-three items up (`sum to (32)` 560 for 528), which is fm3 question 62 and is left exactly as it was. The front end's `__queue_T` carves 72 bytes, the only change in any store's text. The peek the prompt asked for, told the turn's count and the header's fields, measured 15 at best and 3 after this, and is not built. `suite/stream.ssa` gains `queue_slot_zero` and `queue_views`. lex `two_arrivals` 649 → 616 (415 and 447 the oracles then, 468 and 500 now), a turn 136 → 127; hello 1 237, static 1 197. Full run green on five paths, `cargo test` 125.
+
 ### zero: a queue is freed by who reads it, not by how a parameter is spelled — `3c89f5b` · 2026-10-06
 
 ```
