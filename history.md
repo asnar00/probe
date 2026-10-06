@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a condition several lines turn on is branched on once — `16abfac` · 2026-10-06
+
+```
+on (int r$) << decades (int x$)
+    bool new$ = x$ / 10 != x$[-1] / 10
+    int n$ = if (new$) then (1) else (n$[-1] + 1)
+    int first$ = if (new$) then (x$) else (first$[-1])
+    r$ << first$[-1] * 100 + n$[-1] when (new$ and n$[-1] > 0)
+```
+
+`suite/zero/zeroic/zeroic/zeroic.zero:294-298`. The parity pass, hop 17, transformation 67 (fm3 log 133). Two lines and a push that turn on `new$` were three branches an item in the function the front end writes; they are one `if`, the lines' names its results and the push in the arm where it holds (`grouped`, `src/zero/zeroic.rs`). What is left of a push's condition waits for the branch only where it cannot fail. The six-line lexer's `two_arrivals`, counted as it ran: 575 → 542 against its oracle's 504, and 582 → 549 against 536. `tens to (100)` 3 085 → 2 615. zero suite 698/698; `cargo test zero` 45.
+
 ### `probe count --blocks`: a row for each block of one function — `ebbf84f` · 2026-10-06
 
 The parity pass, hop 17, transformation 66 (fm3 log 132): nothing built but a way to see. `probe count <file> <case> --blocks=<fn>` gives each block of one function its weight, how many times the run entered it and what it counted, by counting that block alone (`count_blocks`, `src/cost.rs`). With it the six-line lexer's 575 and `lex-each-min.ssa`'s 504 were put side by side: 36 for a call and a return a character, 36 for three branches where a person writes one, 14 for a loop's count formed each pass, and the oracle's own reset, 16, that the store's count does not have. `cargo test` 137.
