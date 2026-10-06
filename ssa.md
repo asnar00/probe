@@ -31,6 +31,7 @@ The input language of the lowest compiler stage. A module of functions; each fun
 | `ptr(T)`, `ptr(array(f32, 512, 512))` | a typed pointer: an address that knows what it points at (see *Typed pointers and arrays*) |
 | `array(T, W, H, ...)` | an array with a shape — a memory type, never a value: what a typed pointer points at, or a `data` item's type |
 | `i(expr)`, `u(expr)` | an integer whose width is an expression — inside type declarations |
+| `index` | a count, a position, a subscript, a byte offset: a signed integer whose width the policy gives, 16, 32 or 64 bits (see *Abstract numeric types*) |
 | `int`, `uint`, `float`, `fixed`, `unit`, `sunit`, `rational`, `scalar`, `number` | abstract numbers — a tower, `number` at the top; in a program resolved by the target's replacement policy, in a function's signature bound by the argument that arrives (see *Abstract numeric types*) |
 
 Any width works anywhere a value lives — registers, block parameters, calls, packs. Memory is the exception: only 8-, 16-, 32-, 64-bit types and whole words above that (128, 192, 256) can be loaded and stored.
@@ -516,6 +517,23 @@ fn sum(n: i64) -> i64
 **The tower, and templates.** The abstract names form a tower: `any` over everything; `number` over `int`, `uint` and `scalar`; `scalar` over the number libraries (`float`, `fixed`, `unit`, `sunit`, `rational`, `decimal`); each of those over its widths. `any` is for a container written over its element rather than over arithmetic — `lib/stream.ssa`'s ring, which may hold a struct — and is the least specific of all, so a definition over `number` wins wherever both apply. An abstract name is bound by the nearest thing that binds it: in a program's body, the policy; in a *function's signature*, the argument that arrives — so `fn min(a: number, b: number) -> number` (`lib/int.ssa`) is a template, instantiated as `min_i8`, `min_f32`, `min_fixed_16_16` at each call from the argument's type, and inside the body `number` *is* that type (`cmp.lt a, b` dispatches as it would on it). When several definitions of a name take the arguments, the most specific wins — one over `float` before one over `scalar` before one over `number` — which is how `lib/float.ssa` keeps its NaN-propagating `min` and `max` while every other number shares the one in `lib/int.ssa`, and how `lib/reduce.ssa`'s `sum(v: numberx4)` covers every lane type. A template that is the only definition of its name also has a default instance under that name, the policy's binding (`fn f(a: int)` in a program is still `f`, at the policy's width, for a directive or `probe run` to reach; a call with an `i8` makes `f_i8`).
 
 **Method sets.** A plain name defined more than once with different parameter types is one name with several methods: the first definition keeps the name, each later one is named inside by its parameter types as written (`width_of__i64`, `print__u8s`), and a call by the name resolves to the method whose parameter types are the arguments' once the policy has resolved both — so `width_of(3: int)` reaches `width_of(x: i32)` under a 32-bit policy and `width_of(x: i64)` under a 64-bit one, from one text. A literal argument to a set takes the parameter's type only where every method agrees on it; elsewhere it says its own, `3: int` being the policy's. A call no method takes is refused naming the methods' types, and a name defined twice with the same parameter types is refused. A definition over an abstract type is a template, not a method: it is instantiated by its arguments as above and does not join a set. The zero front end emits a name all of whose methods are concrete this way, so that the policy, not the front end, chooses a method by width.
+
+**`index`** is the type of a count, a position, a subscript and a byte offset: nothing in a program says how wide memory is, the policy does. It is a signed integer of 16, 32 or 64 bits — 64 on the register machines and on the GPU's path, 32 on wasm32 where an address is a 32-bit offset, or what `--index=16|32|64` or a product's `index:` line says. Unlike `int` it is not a name of the tower and does not range over types: the parser gives the policy's integer for the name as it reads it, so a function over `index` is a plain function at the policy's width and not a template, and from there on an `index` *is* that integer in every rule — its arithmetic, comparisons and `conv`s are an integer's, a generic over `number` given one takes the integer's instance, and under a 64-bit `index` it and `i64` are one type, so a program that still says `i64` where an index is wanted is taken unchanged. Where memory is addressed it stands where a 64-bit integer always could: the index of a `load` or a `store` and the offset of `ptradd` are `i64`, `u64` or the policy's `index`, and each emitter widens a narrow one itself — arm64 sign-extends it (`sxtw`), riscv64 holds every value canonical in 64 bits already, wasm32 leaves out the `i32.wrap_i64` it gives a 64-bit one, the GPU's path sign-extends to its 64-bit offset. The subscript of a typed pointer or a view may be one as it may be any integer. In memory an `index` is as wide as the policy made it, so, as for `int`, what stores one must be what loads it. The instruction of the same name (`index p, i`, the address of an element) stands after `=` where the type stands after a colon or inside another type, and `suite/index.ssa` has both on a line:
+
+```
+fn ielem(k: i64) -> i64
+    c: ptr(array(index, 4)) = addr cells
+    store 10: index, c, 0
+    store 20: index, c, 1
+    store 30: index, c, 2
+    i: index = conv k
+    e: ptr(index) = index c, i
+    v: index = load e
+    r: i64 = conv v
+    ret r
+```
+
+The file runs at each width on each path (`index_at_every_width_on_every_path`), and the whole suite at each on the native JIT.
 
 `float` is the same idea for the library's `float(E, M)`: a bare `float` is `float(E, M)` for the policy's E and M — `(11, 52)` on the register machines, `(8, 23)` on wasm32, or whatever `--float=f16|bf16|f32|f64|E,M` says — instantiated as the parser meets it (a parametric type's bare name is abstract when the policy has arguments for it). So `fn half(x: float) -> float` with `r: float = div x, 2.0` in its body is written once, dispatches to the library's `div(E, M)` for the chosen width, and lands on the platform's `fdiv` where there is one.
 

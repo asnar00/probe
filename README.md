@@ -75,7 +75,7 @@ c 142857 +3679
 - **Scratch**: `p: ptr = scratch 64` is memory that is the function's while it runs — its frame, or a shadow stack on wasm.
 - **Check**: `check c` is an assertion; one that fails is a breakpoint trap the kernel's `__trap` reports with the address (`os/check.ssa`). How a library says a capacity was exceeded.
 - **Function values**: `fn(i64, i64) -> i64` is a type — the signature — and `f: binary = addr add64` a value of it, taken with the same `addr` that reaches data. Calling it, `r: i64 = f(a, b)`, is spelled like any call and checked like one; the value goes anywhere a value goes, including memory. `adr`+`blr` on arm64, `auipc`+`jalr` on riscv64, a table and `call_indirect` on wasm.
-- **Abstract types resolved by policy**: `int`/`uint` take a width per target (`--int=i32|i64`); `float`, `fixed`, `unit`, `sunit` and `rational` resolve to the libraries' `float(E, M)`, `fixed(I, F)`, `unit(N)`, `sunit(N)`, `rational(N, D)` (`--float=`, `--fixed=`, `--unit=`, `--sunit=`, `--rational=`, `--round=` for the rounding mode); `scalar` is whichever family the policy names (`--scalar=`).
+- **Abstract types resolved by policy**: `int`/`uint` take a width per target (`--int=i32|i64`); `index`, the type of a count, a position and a byte offset, takes the width of the target's memory, 64 bits on the register machines and 32 on wasm32 (`--index=16|32|64`, `suite/index.ssa`); `float`, `fixed`, `unit`, `sunit` and `rational` resolve to the libraries' `float(E, M)`, `fixed(I, F)`, `unit(N)`, `sunit(N)`, `rational(N, D)` (`--float=`, `--fixed=`, `--unit=`, `--sunit=`, `--rational=`, `--round=` for the rounding mode); `scalar` is whichever family the policy names (`--scalar=`).
 
 
 
@@ -191,6 +191,7 @@ cargo run -- -O0 run examples/sum.ssa sum 100
 
 # the abstract 'int' type: pick its width on any command
 cargo run -- --int=i32 run suite/abstract.ssa agcd 1071 462   # -> 21
+cargo run -- --index=16 run suite/index.ssa iraw_back 1       # -> 100, a 16-bit index under nothing
 cargo run -- --int=i32 test wasm
 
 # narrow types, packs, parametric types

@@ -403,11 +403,21 @@ impl WEmit<'_> {
 
     /// push the address base + index * step (+ a negative off), and give
     /// the memarg offset: a non-negative off rides in the instruction
+    /// an index or an offset as the i32 an address is made of: a 64-bit
+    /// one wrapped, and the policy's `index` where that is 32 bits or
+    /// fewer as it is, an i32 already (fm3 log 120)
+    fn get_index(&mut self, i: ValueId) -> Result<(), String> {
+        self.get(i)?;
+        if self.repr(i).container() == 64 {
+            self.op("i32.wrap_i64", None)?;
+        }
+        Ok(())
+    }
+
     fn address(&mut self, base: ValueId, off: i64, index: Option<(ValueId, u32)>) -> Result<i64, String> {
         self.get(base)?;
         if let Some((i, step)) = index {
-            self.get(i)?;
-            self.op("i32.wrap_i64", None)?;
+            self.get_index(i)?;
             if step.is_power_of_two() && step > 1 {
                 self.op("i32.const {}", Some(step.trailing_zeros() as i64))?;
                 self.op("i32.shl", None)?;
@@ -1000,8 +1010,7 @@ fn compile_inst(e: &mut WEmit, inst: &Inst, block_pos: usize) -> Result<(), Stri
         }
         Inst::PtrAdd { dst, base, off } => {
             e.get(*base)?;
-            e.get(*off)?;
-            e.op("i32.wrap_i64", None)?;
+            e.get_index(*off)?;
             e.op("i32.add", None)?;
             e.set(*dst)
         }

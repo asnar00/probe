@@ -205,6 +205,19 @@ fn default_int(backend: Backend) -> ssa::Type {
     }
 }
 
+/// and for `index`, the width of a count and a position in memory (fm3
+/// question 73): 32 bits on wasm32, where an address is a 32-bit offset,
+/// and 64 on the register machines. The GPU's path takes 64 too: an
+/// address there is a 64-bit offset into the device's buffer as the
+/// emitter has it, and `int` is 64 beside it; 32 would suit a GPU and is
+/// a product's to say, not a default nobody has measured
+fn default_index(backend: Backend) -> u32 {
+    match backend {
+        Backend::Wasm => 32,
+        _ => 64,
+    }
+}
+
 /// and for the abstract 'float': f64 on the register machines, f32 on wasm32
 fn default_float(backend: Backend) -> (u32, u32) {
     match backend {
@@ -229,7 +242,8 @@ pub fn target_of(backend: Backend) -> &'static str {
 pub fn backend_policy(backend: Backend) -> Result<ssa::Policy, String> {
     let (fe, fm) = default_float(backend);
     let platform = crate::platform::Platform::load(target_of(backend))?;
-    Ok(platform.adjust(ssa::Policy::new(default_int(backend))?.with_float(fe, fm)))
+    let policy = ssa::Policy::new(default_int(backend))?.with_float(fe, fm).with_index(default_index(backend)).unwrap();
+    Ok(platform.adjust(policy))
 }
 
 pub fn run_dir_at(
@@ -2244,6 +2258,38 @@ pub(crate) mod tests {
             .expect("suite runs");
             assert_eq!(report.failed, 0, "with int={}:\n{}", int.name(), report.log);
         }
+    }
+
+    #[test]
+    fn regression_suite_every_index_policy() {
+        // `index` is the width of a count and a position in memory, the
+        // product's to say (fm3 question 73): a program runs the same at
+        // every width the policy can give it
+        for bits in crate::ssa::Policy::INDEX_BITS {
+            let report = super::run_dir_at("suite", super::Backend::Native, crate::opt::MAX_LEVEL, &|p| p.with_index(bits).unwrap())
+                .expect("suite runs");
+            assert_eq!(report.failed, 0, "with index={}:\n{}", bits, report.log);
+        }
+    }
+
+    /// `suite/index.ssa` alone, on each of the other four paths at each
+    /// width: where an address is made of a narrow index is every
+    /// emitter's own code, and the suite on a path runs at that path's
+    /// default width only
+    #[test]
+    fn index_at_every_width_on_every_path() {
+        let _turn = boot_turn(); // a machine at a time: the boot tests are timed
+        let dir = std::env::temp_dir().join(format!("probe-index-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy("suite/index.ssa", dir.join("index.ssa")).unwrap();
+        for backend in [super::Backend::Wasm, super::Backend::Riscv, super::Backend::ArmQemu, super::Backend::Air] {
+            for bits in crate::ssa::Policy::INDEX_BITS {
+                let report = super::run_dir_at(dir.to_str().unwrap(), backend, crate::opt::MAX_LEVEL, &|p| p.with_index(bits).unwrap()).expect("the file runs");
+                assert_eq!(report.failed, 0, "{} with index={}:\n{}", super::target_of(backend), bits, report.log);
+                assert!(report.passed >= 19, "{} with index={}: {} cases", super::target_of(backend), bits, report.passed);
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

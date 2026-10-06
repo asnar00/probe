@@ -1,0 +1,244 @@
+; `index` is the type of a count, a position, a subscript and a byte
+; offset: how wide it is, is the product's to say and never the
+; program's (fm3 question 73). The policy binds it to a signed integer
+; of 16, 32 or 64 bits — 64 on the register machines and the GPU, 32 on
+; wasm32, or `--index=16|32|64` and a product's `index:` line — and
+; from then on it is that integer: its arithmetic, its comparisons and
+; its conversions are an integer's, and where memory is addressed it
+; stands where an `i64` always could. It is no name of the tower: a
+; function over `index` is a plain function at the policy's width, not
+; a template its argument binds.
+;
+; Every case here gives the same answer at every width, so the values
+; stay small; where a case hands a number in or out it is an `i64`,
+; converted inside, but for `inext`, whose parameter and result are
+; `index` themselves and never negative.
+;
+; The IR also has an instruction called `index` (`suite/typed.ssa`'s
+; `element_ptr`). A type stands after a colon or inside another type,
+; an instruction after `=`, and `ielem` has both on one line.
+;! icount 10 -> 45
+;! ilit -> 19
+;! iconv 300 -> 301
+;! inext 5 -> 6
+;! isigned 3 -> 8
+;! ifield 4 -> 9
+;! imem 21 -> 42
+;! iraw 3 -> 13
+;! iraw_wide 2 -> 300
+;! iraw_odd 2 -> 32
+;! iraw_back 1 -> 100
+;! iraw_store 2 -> 52
+;! ioffset 3 -> 13
+;! ioffset_back 2 -> 11
+;! ityped 2 -> 30
+;! iview 3 -> 6
+;! imin 9 4 -> 4
+;! ielem 2 -> 30
+;! inamed 6 -> 11
+
+data bytes: array(u8, 8)
+data words: array(i64, 4)
+data triples: array(u8, 12)
+data cells: array(index, 4)
+data ibuf: buffer(i64, 4)
+
+fn fill_bytes() -> ptr
+    p: ptr = addr bytes
+    loop(k: i64 = 0)
+        done: u1 = cmp.ge k, 8
+        if done
+            break
+        v0: i64 = add k, 10
+        v: u8 = conv v0
+        store v, p, k, 1
+        k2: i64 = add k, 1
+        continue k2
+    ret p
+fn fill_words() -> ptr
+    p: ptr = addr words
+    store 100: i64, p
+    store 200: i64, p, 8
+    store 300: i64, p, 16
+    store 400: i64, p, 24
+    ret p
+
+; a counted loop: the count, the counter and the sum are all `index`
+fn icount(n: i64) -> i64
+    m: index = conv n
+    s: index = loop(i: index = 0, acc: index = 0)
+        done: u1 = cmp.ge i, m
+        if done
+            break acc
+        acc2: index = add acc, i
+        i2: index = add i, 1
+        continue i2, acc2
+    r: i64 = conv s
+    ret r
+
+; a literal takes the type: as a constant, as an operand, and said
+; outright as an argument
+fn ilit() -> i64
+    a: index = const 12
+    b: index = add a, 1
+    c: index = inext(5: index)
+    d: index = add b, c
+    r: i64 = conv d
+    ret r
+
+; converted to and from `int` and a concrete integer, whichever is the
+; wider under the policy in force
+fn iconv(n: i64) -> i64
+    i: index = conv n
+    j: int = conv i
+    k: int = add j, 1
+    back: index = conv k
+    r: i64 = conv back
+    ret r
+
+; a parameter and a result
+fn inext(i: index) -> index
+    r: index = add i, 1
+    ret r
+
+; it is signed: three less five is under nothing, and converts to -2
+fn isigned(n: i64) -> i64
+    a: index = conv n
+    b: index = sub a, 5
+    under: u1 = cmp.lt b, 0
+    check under
+    w: i64 = conv b
+    r: i64 = add w, 10
+    ret r
+
+; a struct's fields
+type span = struct(start: index, n: index)
+fn ifield(k: i64) -> i64
+    a: index = conv k
+    s: span = pack a, 5
+    s2: span = set s, n, 5
+    x: index = get s2, start
+    y: index = get s2, n
+    z: index = add x, y
+    r: i64 = conv z
+    ret r
+
+; in memory an `index` is as wide as the policy made it, so what stores
+; one loads it: through a typed pointer to an array of them
+fn imem(k: i64) -> i64
+    c: ptr(array(index, 4)) = addr cells
+    v: index = conv k
+    store v, c, 1
+    store v, c, 3
+    a: index = load c, 1
+    b: index = load c, 3
+    s: index = add a, b
+    r: i64 = conv s
+    ret r
+
+; the index of a load from an untyped pointer, by a step of one byte
+fn iraw(k: i64) -> i64
+    p: ptr = fill_bytes()
+    i: index = conv k
+    x: u8 = load p, i, 1
+    r: i64 = conv x
+    ret r
+; ... by a step of a word, which the machines shift
+fn iraw_wide(k: i64) -> i64
+    p: ptr = fill_words()
+    i: index = conv k
+    r: i64 = load p, i, 8
+    ret r
+; ... by a step that is no power of two, which they multiply
+fn iraw_odd(k: i64) -> i64
+    p: ptr = addr triples
+    store 32: u8, p, 6
+    i: index = conv k
+    x: u8 = load p, i, 3
+    r: i64 = conv x
+    ret r
+; ... and by an index under nothing, from the middle of the array: a
+; narrow index is sign-extended where the machine widens it
+fn iraw_back(k: i64) -> i64
+    p: ptr = fill_words()
+    mid: ptr = ptradd p, 16
+    one: index = conv k
+    i: index = sub one, 3
+    r: i64 = load mid, i, 8
+    ret r
+; the index of a store
+fn iraw_store(k: i64) -> i64
+    p: ptr = fill_bytes()
+    i: index = conv k
+    store 52: u8, p, i, 1
+    x: u8 = load p, 2
+    r: i64 = conv x
+    ret r
+
+; `ptradd`'s offset, forward and back
+fn ioffset(k: i64) -> i64
+    p: ptr = fill_bytes()
+    off: index = conv k
+    q: ptr = ptradd p, off
+    x: u8 = load q
+    r: i64 = conv x
+    ret r
+fn ioffset_back(k: i64) -> i64
+    p: ptr = fill_bytes()
+    q: ptr = ptradd p, 3
+    two: index = conv k
+    off: index = sub 0, two
+    q2: ptr = ptradd q, off
+    x: u8 = load q2
+    r: i64 = conv x
+    ret r
+
+; the subscript of a typed pointer
+fn ityped(k: i64) -> i64
+    p: ptr = addr words
+    a: ptr(array(i64, 4)) = cast p
+    store 10: i64, a, 0
+    store 20: i64, a, 1
+    store 30: i64, a, 2
+    store 40: i64, a, 3
+    i: index = conv k
+    r: i64 = load a, i
+    ret r
+
+; the subscript of a view
+fn iview(k: i64) -> i64
+    p: ptr = addr ibuf
+    v: i64[] = slice p
+    store 4: i64, v, 2
+    store 6: i64, v, 3
+    i: index = conv k
+    r: i64 = load v, i
+    ret r
+
+; a generic over `number` given two of them is the integer's instance
+fn imin(x: i64, y: i64) -> i64
+    a: index = conv x
+    b: index = conv y
+    m: index = min a, b
+    r: i64 = conv m
+    ret r
+
+; the instruction and the type on one line: the address of an element
+; of an array of `index`, subscripted by an `index`
+fn ielem(k: i64) -> i64
+    c: ptr(array(index, 4)) = addr cells
+    store 10: index, c, 0
+    store 20: index, c, 1
+    store 30: index, c, 2
+    i: index = conv k
+    e: ptr(index) = index c, i
+    v: index = load e
+    r: i64 = conv v
+    ret r
+
+; a value may be called `index` as any may, and be one
+fn inamed(k: i64) -> i64
+    i: index = conv k
+    index: index = add i, 5
+    r: i64 = conv index
+    ret r

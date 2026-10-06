@@ -1160,6 +1160,19 @@ impl FnEmit<'_> {
         Ok(9)
     }
 
+    /// an index or an offset in an x register, all 64 bits of it: a
+    /// 64-bit one where it lies; the policy's `index` when that is
+    /// narrower (fm3 log 120), which lives in a w register whose high
+    /// half says nothing, sign-extended into `scratch`
+    fn index_reg(&mut self, i: ValueId, scratch: i64) -> Result<i64, String> {
+        let ri = self.src_reg(i, scratch)?;
+        if self.repr(i).container() == 64 {
+            return Ok(ri);
+        }
+        self.emit("sxtw {x}, {w}", &[scratch, ri])?;
+        Ok(scratch)
+    }
+
     fn address(&mut self, base: ValueId, off: i64, index: Option<(ValueId, u32)>, size: u32, scratch: i64, scratch2: i64) -> Result<(i64, i64), String> {
         let rb = self.src_reg(base, scratch)?;
         let max = 4095 * size as i64;
@@ -1177,7 +1190,7 @@ impl FnEmit<'_> {
                 Ok((scratch, 0))
             }
             Some((i, step)) => {
-                let ri = self.src_reg(i, scratch2)?;
+                let ri = self.index_reg(i, scratch2)?;
                 if step.is_power_of_two() && step > 1 {
                     self.emit("lsl {x}, {x}, #{i 0..63}", &[scratch2, ri, step.trailing_zeros() as i64])?;
                     self.emit("add {x}, {x}, {x}", &[scratch, rb, scratch2])?;
@@ -1968,7 +1981,7 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
         }
         Inst::PtrAdd { dst, base, off } => {
             let rb = e.src_reg(*base, 9)?;
-            let ro = e.src_reg(*off, 10)?;
+            let ro = e.index_reg(*off, 10)?;
             let rd = e.dst_reg(*dst, 9);
             e.emit("add {x}, {x}, {x}", &[rd, rb, ro])?;
             e.finish(*dst, rd)

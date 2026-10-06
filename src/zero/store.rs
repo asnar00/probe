@@ -30,6 +30,10 @@ pub struct Store {
     pub int_width: Option<u32>,
     /// the product's `float` width (log 52): `float: 32` or `float: 64`
     pub float_width: Option<u32>,
+    /// the product's `index` width (fm3 question 73, log 120): `index:
+    /// 16`, `index: 32` or `index: 64`, how wide a count and a position
+    /// in memory are; None to take the path's
+    pub index_width: Option<u32>,
     /// the product's mark per feature (section 12, log 71): a
     /// `<feature>: static on`, `static off` or `dynamic` line in
     /// `product.md`; dynamic where there is none. A static-off feature
@@ -359,7 +363,7 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     let layers = read_order(dir)?;
     check_tree(&mut features, &layers)?;
     features.insert(0, builtin_platform(&types)?);
-    let (product, int_width, float_width, marks, clock, product_file) = read_product(dir)?;
+    let (product, [int_width, float_width, index_width], marks, clock, product_file) = read_product(dir)?;
     for (name, mark) in &marks {
         if !features.iter().any(|f| &f.name == name) {
             return Err(lex::error(&product_file, 0, format!("the product marks '{}', which is no feature of the store", name)));
@@ -371,7 +375,7 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     // a static-off feature leaves the store with everything under it
     // (log 71): a child under a parent that is never on could never be on
     let mut gone: Vec<String> = Vec::new();
-    let store = Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width, float_width, marks, left_out: Vec::new(), clock };
+    let store = Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width, float_width, index_width, marks, left_out: Vec::new(), clock };
     for (name, mark) in &store.marks {
         if *mark == Mark::StaticOff {
             gone.extend(store.subtree(name));
@@ -424,15 +428,18 @@ fn check_published(name: &str, zfile: &str, date: &str) -> Result<(), Error> {
 /// <function words>: N`, a trip count for every loop of that function
 /// the IR does not show the count of; `int: 32` or `int: 64`, the
 /// width of `int` (log 47), and `float: 32` or `float: 64`, the width
-/// of `float` (log 52), and `clock: real` or `clock: virtual` (log 77);
-/// every other line is prose
-fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, Option<u32>, Option<u32>, HashMap<String, Mark>, Clock, String), Error> {
+/// of `float` (log 52), `index: 16`, `index: 32` or `index: 64`, the
+/// width of `index` (fm3 log 120), and `clock: real` or `clock: virtual`
+/// (log 77); every other line is prose
+#[allow(clippy::type_complexity)]
+fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, [Option<u32>; 3], HashMap<String, Mark>, Clock, String), Error> {
     let path = dir.join("product.md");
     let file = path.display().to_string();
-    let Ok(text) = std::fs::read_to_string(&path) else { return Ok((Vec::new(), None, None, HashMap::new(), Clock::Virtual, file)) };
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok((Vec::new(), [None; 3], HashMap::new(), Clock::Virtual, file)) };
     let mut settings: Vec<(Vec<String>, i64)> = Vec::new();
     let mut int_width = None;
     let mut float_width = None;
+    let mut index_width = None;
     let mut marks: HashMap<String, Mark> = HashMap::new();
     let mut clock: Option<Clock> = None;
     for (i, line) in text.lines().enumerate() {
@@ -457,8 +464,10 @@ fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, Option<u32>, Opt
         }
         let width = |which: &str, rest: &str, slot: &mut Option<u32>| -> Result<(), Error> {
             let w = rest.trim();
-            if !matches!(w, "32" | "64") {
-                return Err(lex::error(&file, i + 1, format!("the product's {} width is 32 or 64, not '{}'", which, w)));
+            // `index` may be 16 too: a small machine's addresses
+            let (ok, widths) = if which == "index" { (matches!(w, "16" | "32" | "64"), "16, 32 or 64") } else { (matches!(w, "32" | "64"), "32 or 64") };
+            if !ok {
+                return Err(lex::error(&file, i + 1, format!("the product's {} width is {}, not '{}'", which, widths, w)));
             }
             if slot.is_some() {
                 return Err(lex::error(&file, i + 1, format!("the product's {} width is set twice", which)));
@@ -472,6 +481,10 @@ fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, Option<u32>, Opt
         }
         if let Some(w) = line.trim().strip_prefix("float:") {
             width("float", w, &mut float_width)?;
+            continue;
+        }
+        if let Some(w) = line.trim().strip_prefix("index:") {
+            width("index", w, &mut index_width)?;
             continue;
         }
         // the clock (log 77): the machine's, or the virtual one the suite moves
@@ -501,7 +514,7 @@ fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, Option<u32>, Opt
         }
         settings.push((words, n));
     }
-    Ok((settings, int_width, float_width, marks, clock.unwrap_or(Clock::Virtual), file))
+    Ok((settings, [int_width, float_width, index_width], marks, clock.unwrap_or(Clock::Virtual), file))
 }
 
 /// `order.md`: the store's layers, one `- name` per line, lowest first,

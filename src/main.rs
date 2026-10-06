@@ -33,6 +33,7 @@ fn main() -> ExitCode {
     let mut int_override: Option<ssa::Type> = None;
     let mut float_override: Option<(u32, u32)> = None;
     let mut fixed_override: Option<(u32, u32)> = None;
+    let mut index_override: Option<String> = None;
     let mut unit_override: Option<u32> = None;
     let mut sunit_override: Option<u32> = None;
     let mut rational_override: Option<(u32, u32)> = None;
@@ -44,6 +45,9 @@ fn main() -> ExitCode {
             false
         } else if let Some(t) = a.strip_prefix("--int=") {
             int_override = ssa::Type::from_name_pub(t);
+            false
+        } else if let Some(t) = a.strip_prefix("--index=") {
+            index_override = Some(t.to_string());
             false
         } else if let Some(t) = a.strip_prefix("--float=") {
             float_override = ssa::Policy::float_from_arg(t);
@@ -82,6 +86,12 @@ fn main() -> ExitCode {
         Ok(p) => p,
         Err(e) => return fail(&e),
     };
+    if let Some(w) = index_override {
+        policy = match w.parse::<u32>().ok().and_then(|b| policy.with_index(b)) {
+            Some(p) => p,
+            None => return fail(&format!("--index={}: the width of 'index' is 16, 32 or 64", w)),
+        };
+    }
     if let Some((e, m)) = float_override {
         policy = policy.with_float(e, m);
     }
@@ -379,6 +389,7 @@ fn main() -> ExitCode {
             eprintln!("       probe zero <store> emit | <store> run <case> | test [dir] [wasm]    the zero front end");
             eprintln!("       (-O<n> selects the optimization level on any command;");
             eprintln!("        --int=i32|i64 sets the abstract 'int' replacement policy,");
+            eprintln!("        --index=16|32|64 the width of 'index', a count or a position in memory,");
             eprintln!("        --float=f16|bf16|f32|f64|E,M the abstract 'float' one,");
             eprintln!("        --fixed=I,F the abstract 'fixed' one, --unit=N and --sunit=N the unit ones,");
             eprintln!("        --rational=N,D the rational one, --scalar=float|fixed|rational|unit|sunit");

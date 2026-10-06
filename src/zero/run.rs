@@ -19,10 +19,14 @@ pub fn emit(dir: &Path) -> Result<String, String> {
     Ok(l.ir)
 }
 
-/// the policy a store is built under (log 47, 52): the path's, with
-/// `int` and `float` at the widths the store's `product.md` sets, if
-/// it does
+/// the policy a store is built under (log 47, 52, fm3 log 120): the
+/// path's, with `int`, `float` and `index` at the widths the store's
+/// `product.md` sets, if it does
 pub fn store_policy(s: &store::Store, policy: &ssa::Policy) -> ssa::Policy {
+    let policy = &match s.index_width.and_then(|w| policy.with_index(w)) {
+        Some(p) => p,
+        None => *policy,
+    };
     let policy = match s.int_width {
         Some(32) => ssa::Policy { int: ssa::Type::I32, ..*policy },
         Some(64) => ssa::Policy { int: ssa::Type::I64, ..*policy },
@@ -703,6 +707,19 @@ mod tests {
         std::fs::write(dir.join("product.md"), "# product\n\nfloat: 16\n").unwrap();
         let err = match store::read(&dir) { Err(e) => e.to_string(), Ok(_) => panic!("accepted float: 16") };
         assert!(err.contains("the product's float width is 32 or 64, not '16'"), "{}", err);
+        // `index: 16|32|64` is the width of a count and a position in
+        // memory (fm3 log 120): the path's, 64 here, unless the product says
+        assert_eq!(native.index, ssa::Type::I64);
+        assert_eq!(suite::backend_policy(Backend::Wasm).unwrap().index, ssa::Type::I32);
+        for (line, want) in [("16", ssa::Type::int(true, 16)), ("32", ssa::Type::I32), ("64", ssa::Type::I64)] {
+            std::fs::write(dir.join("product.md"), format!("# product\n\nindex: {}\n", line)).unwrap();
+            let s = store::read(&dir).unwrap();
+            assert_eq!(s.index_width, line.parse().ok());
+            assert_eq!(store_policy(&s, &native).index, want);
+        }
+        std::fs::write(dir.join("product.md"), "# product\n\nindex: 8\n").unwrap();
+        let err = match store::read(&dir) { Err(e) => e.to_string(), Ok(_) => panic!("accepted index: 8") };
+        assert!(err.contains("the product's index width is 16, 32 or 64, not '8'"), "{}", err);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

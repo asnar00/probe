@@ -45,6 +45,12 @@ pub enum Type {
     /// replacement policy before verification (see `resolve_types`)
     AInt,
     AUInt,
+    /// `index`: a count, a position, a subscript or a byte offset, whose
+    /// width is the product's and never the program's (fm3 question 73).
+    /// The parser gives the policy's integer for the name as it reads
+    /// it (`instantiate`), so this stands only where a name is looked
+    /// up with no policy in hand
+    AIndex,
 }
 
 impl Type {
@@ -74,6 +80,7 @@ impl Type {
             Type::Array(i) => format!("array#{}", i),
             Type::AInt => "int".into(),
             Type::AUInt => "uint".into(),
+            Type::AIndex => "index".into(),
         }
     }
 
@@ -88,6 +95,7 @@ impl Type {
             "ptr" => return Some(Type::Ptr),
             "int" => return Some(Type::AInt),
             "uint" => return Some(Type::AUInt),
+            "index" => return Some(Type::AIndex),
             _ => {}
         }
         let (signed, rest) = match s.as_bytes().first()? {
@@ -128,7 +136,7 @@ impl Type {
     }
 
     pub fn is_abstract(self) -> bool {
-        matches!(self, Type::AInt | Type::AUInt)
+        matches!(self, Type::AInt | Type::AUInt | Type::AIndex)
     }
 
     /// width in bits, when it doesn't depend on the pack table
@@ -1044,7 +1052,7 @@ impl Function {
             Type::Pack(_) => Repr::U(self.width(ty).unwrap_or(64)),
             Type::Array(_) => unreachable!("arrays are memory types, never values"),
             Type::Struct(_) => unreachable!("structs are dissolved into fields before use"),
-            Type::AInt | Type::AUInt => unreachable!("abstract types are resolved before use"),
+            Type::AInt | Type::AUInt | Type::AIndex => unreachable!("abstract types are resolved before use"),
         }
     }
 
@@ -1181,7 +1189,7 @@ pub fn layout_data_parts(m: &Module) -> (Vec<u8>, Vec<u8>, std::collections::Has
     (ro, rw, ro_off, rw_off)
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Module {
     /// declarations as written (every instantiated pack lives in each
     /// function's shared `packs` table)
@@ -1199,6 +1207,9 @@ pub struct Module {
     /// the first line of the text that wrote a block with a brace: the
     /// brace form is still read, and `brace_warning` says so
     pub braced: Option<usize>,
+    /// what `index` is in this module, the policy's (fm3 question 73):
+    /// the verifier takes it where an address wants an index
+    pub index: Type,
 }
 
 impl Module {
@@ -1216,6 +1227,11 @@ impl Module {
 #[derive(Clone, Copy, Debug)]
 pub struct Policy {
     pub int: Type,
+    /// what `index` is: a signed integer of 16, 32 or 64 bits, the
+    /// width of a count, a position, a subscript and a byte offset on
+    /// this compilation (fm3 question 73). The path's default, or a
+    /// product's `index:` line; 64 unless something says otherwise
+    pub index: Type,
     /// (E, M) for a bare `float`
     pub float: (u32, u32),
     /// (I, F) for a bare `fixed`
@@ -1288,11 +1304,24 @@ impl Policy {
     pub fn new(int: Type) -> Result<Policy, String> {
         match int {
             // the float of the same class as the integer: f32 with i32, f64 with i64
-            Type::I32 => Ok(Policy { int, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16, rational: (16, 16), scalar: "float", round: 0, native_mul: true, native_div: true, vectors: Vectors::None, chunk_bits: 0 }),
-            Type::I64 => Ok(Policy { int, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32, rational: (32, 32), scalar: "float", round: 0, native_mul: true, native_div: true, vectors: Vectors::None, chunk_bits: 0 }),
+            Type::I32 => Ok(Policy { int, index: Type::I64, float: (8, 23), fixed: (16, 16), unit: 16, sunit: 16, rational: (16, 16), scalar: "float", round: 0, native_mul: true, native_div: true, vectors: Vectors::None, chunk_bits: 0 }),
+            Type::I64 => Ok(Policy { int, index: Type::I64, float: (11, 52), fixed: (32, 32), unit: 32, sunit: 32, rational: (32, 32), scalar: "float", round: 0, native_mul: true, native_div: true, vectors: Vectors::None, chunk_bits: 0 }),
             t => Err(format!("'int' cannot resolve to {}", t.name())),
         }
     }
+
+    /// `--index=16|32|64`, a product's `index:` line: the width of
+    /// `index`, which is signed
+    pub fn with_index(mut self, bits: u32) -> Option<Policy> {
+        if !Policy::INDEX_BITS.contains(&bits) {
+            return None;
+        }
+        self.index = Type::int(true, bits);
+        Some(self)
+    }
+
+    /// the widths `index` may be given
+    pub const INDEX_BITS: [u32; 3] = [16, 32, 64];
 
     /// `--round=even|zero|down|up|away` (or the number)
     pub fn with_round(mut self, arg: &str) -> Result<Policy, String> {
@@ -1382,6 +1411,7 @@ impl Policy {
         match ty {
             Type::AInt => self.int,
             Type::AUInt => Type::int(false, self.int.int_bits().unwrap()),
+            Type::AIndex => self.index,
             t => t,
         }
     }
@@ -2164,6 +2194,7 @@ pub fn parse_with(src: &str, policy: &Policy) -> Result<Module, ParseError> {
         int_mul64: mul64,
         platform,
         braced,
+        index: p.policy.index,
     };
     // values wider than a word: checked as written, then lowered to words
     // so that no backend ever sees one
@@ -2752,6 +2783,18 @@ impl Parser {
         Ok(self.hidden(scope, data_ty, format!("{}_at", tag), |v| Inst::Cast { op: CastOp::Cast, dst: v, src: raw }))
     }
 
+    /// `ptradd`'s offset: an i64 or the policy's `index` as it is, any
+    /// other integer converted to an i64
+    fn offset_operand(&mut self, scope: &mut FuncScope) -> Result<ValueId, ParseError> {
+        let at = self.pos;
+        let v = self.parse_operand(scope, Some(Type::I64))?;
+        if scope.values[v.0 as usize].ty == self.policy.index {
+            return Ok(v);
+        }
+        self.pos = at;
+        self.index_operand(scope)
+    }
+
     /// an index or count: an i64, or any integer converted to one
     fn index_operand(&mut self, scope: &mut FuncScope) -> Result<ValueId, ParseError> {
         let v = self.parse_operand(scope, Some(Type::I64))?;
@@ -3098,6 +3141,8 @@ impl Parser {
                 }
             }
             TypeExpr::Named { name, args } if args.is_empty() => match Type::from_name(name) {
+                // a generic's `index` parameter takes the policy's integer
+                Some(Type::AIndex) => self.policy.index == self.policy.resolve(ty),
                 Some(t) => t == ty,
                 None => matches!(ty, Type::Pack(i) if self.packs[i as usize].name == *name),
             },
@@ -3696,7 +3741,10 @@ impl Parser {
                         return Ok(*t);
                     }
                     if let Some(t) = Type::from_name(name) {
-                        return Ok(t);
+                        // `index` is the policy's integer from here on:
+                        // it does not range over types as `int` does,
+                        // so nothing waits to bind it
+                        return Ok(if t == Type::AIndex { self.policy.index } else { t });
                     }
                     // `scalar` is whichever family the policy says, itself
                     // bare, so that family's policy width applies
@@ -4080,6 +4128,7 @@ impl Parser {
             // an abstract integer in memory — a struct's field — is laid
             // out at the policy's width, the width it resolves to
             Type::AInt | Type::AUInt => self.layout_of(self.policy.int),
+            Type::AIndex => self.layout_of(self.policy.index),
             Type::Int { bits, .. } => {
                 let b = bits as u32;
                 let size = if b <= 8 { 1 } else if b <= 16 { 2 } else if b <= 32 { 4 } else { 8 * b.div_ceil(64) };
@@ -5490,7 +5539,7 @@ impl Parser {
             "ptradd" => {
                 let base = self.expect_value(scope)?;
                 self.expect(Tok::Comma)?;
-                let off = self.index_operand(scope)?;
+                let off = self.offset_operand(scope)?;
                 Ok(Inst::PtrAdd { dst, base, off })
             }
             "call" => Err(self.err("'call' is implied: write name(args)".to_string())),
@@ -6598,6 +6647,14 @@ impl Function {
 // ---------------------------------------------------------------------------
 // Verifier
 
+/// may a value of this type index memory: be a `load`'s or a `store`'s
+/// index, or `ptradd`'s offset? A 64-bit integer, as always, or the
+/// module's `index`, whatever width the policy gave it (fm3 question
+/// 73): each emitter widens a narrower one itself
+fn addresses(module: &Module, ty: Type) -> bool {
+    matches!(ty, Type::I64 | Type::U64) || ty == module.index
+}
+
 pub fn verify(module: &Module) -> Result<(), Vec<String>> {
     let mut errs = Vec::new();
     for func in &module.funcs {
@@ -6829,7 +6886,7 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                     Some(w) if w != 64 && w < 128 => (0..1i128 << w).contains(imm),
                     _ => true,
                 },
-                Type::AInt | Type::AUInt => unreachable!("rejected by rule 0"),
+                Type::AInt | Type::AUInt | Type::AIndex => unreachable!("rejected by rule 0"),
             };
             if !ok {
                 errs.push(ctx(format!(
@@ -7027,8 +7084,8 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 errs.push(ctx(format!("load address {} must be ptr", name(*addr))));
             }
             if let Some((i, _)) = index {
-                if !matches!(func.ty(*i), Type::I64 | Type::U64) {
-                    errs.push(ctx(format!("load index {} must be i64 or u64", name(*i))));
+                if !addresses(module, func.ty(*i)) {
+                    errs.push(ctx(format!("load index {} must be i64, u64 or the policy's index ({})", name(*i), module.index.name())));
                 }
             }
             if !is_memory(func.ty(*dst)) {
@@ -7043,8 +7100,8 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
                 errs.push(ctx(format!("store address {} must be ptr", name(*addr))));
             }
             if let Some((i, _)) = index {
-                if !matches!(func.ty(*i), Type::I64 | Type::U64) {
-                    errs.push(ctx(format!("store index {} must be i64 or u64", name(*i))));
+                if !addresses(module, func.ty(*i)) {
+                    errs.push(ctx(format!("store index {} must be i64, u64 or the policy's index ({})", name(*i), module.index.name())));
                 }
             }
             if !is_memory(func.ty(*val)) {
@@ -7073,11 +7130,12 @@ fn verify_inst(module: &Module, func: &Function, block: &Block, inst: &Inst, err
         Inst::PtrAdd { dst, base, off } => {
             if !func.ty(*dst).is_ptr()
                 || !func.ty(*base).is_ptr()
-                || !matches!(func.ty(*off), Type::I64 | Type::U64)
+                || !addresses(module, func.ty(*off))
             {
-                errs.push(ctx(
-                    "ptradd requires result: ptr, base: ptr, offset: i64 or u64".into()
-                ));
+                errs.push(ctx(format!(
+                    "ptradd requires result: ptr, base: ptr, offset: i64, u64 or the policy's index ({})",
+                    module.index.name()
+                )));
             }
         }
         Inst::Call { dsts, callee, args } => {

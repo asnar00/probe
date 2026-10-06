@@ -663,7 +663,7 @@ impl Cx<'_> {
                 }
                 None => unreachable!("structs are lowered before emission"),
             },
-            Type::Array(_) | Type::AInt | Type::AUInt => unreachable!("lowered before emission"),
+            Type::Array(_) | Type::AInt | Type::AUInt | Type::AIndex => unreachable!("lowered before emission"),
         }
     }
 
@@ -919,11 +919,23 @@ impl Cx<'_> {
     }
 
     /// the offset base + off + index * step
+    /// an index or an offset as the i64 an address is here: a 64-bit one
+    /// as it is, and the policy's `index` where that is narrower (fm3
+    /// log 120) sign-extended from its container
+    fn index_value(&mut self, fx: &mut Fx, i: ValueId) -> Result<usize, String> {
+        let v = self.value(fx, i)?;
+        if fx.f.repr(fx.f.ty(i)).container() == 64 {
+            return Ok(v);
+        }
+        let t = self.i64t;
+        Ok(fx.b.push(&self.m, B::Cast { op: CAST_SEXT, val: v, ty: t }))
+    }
+
     fn address(&mut self, fx: &mut Fx, addr: ValueId, off: i64, index: Option<(ValueId, u32)>) -> Result<usize, String> {
         let mut p = self.value(fx, addr)?;
         let mut total: Option<usize> = None;
         if let Some((i, step)) = index {
-            let iv = self.value(fx, i)?;
+            let iv = self.index_value(fx, i)?;
             let stepc = self.const_i64(step as i64);
             let scaled = fx.b.push(&self.m, B::Bin { op: OP_MUL, lhs: iv, rhs: stepc, flags: 0 });
             total = Some(scaled);
@@ -1114,7 +1126,7 @@ impl Cx<'_> {
                 fx.b.push(&self.m, B::Store { ptr: pt, val: v, align: 1 });
             }
             Inst::PtrAdd { dst, base, off } => {
-                let (p, o) = (self.value(fx, *base)?, self.value(fx, *off)?);
+                let (p, o) = (self.value(fx, *base)?, self.index_value(fx, *off)?);
                 let v = fx.b.push(&self.m, B::Bin { op: OP_ADD, lhs: p, rhs: o, flags: 0 });
                 fx.vals.insert(dst.0, v);
             }
