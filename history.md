@@ -4,6 +4,24 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the context reached in place, and once — `48ea2f3` · 2026-10-06
+
+```
+fn two_arrivals() -> (int, int)
+    _this: ptr = addr __ctx_mem
+    arrive_first()
+    _1: __ctx = load _this
+    _2: token$ = get _1, u
+    _3: i64 = count _2
+    a: int = conv _3
+    arrive_again()
+    _6: i64 = count _2
+    b: int = conv _6
+    ret a, b
+```
+
+`suite/zero/lex.expected.ssa:323-333`. The parity pass, hop 13, transformation 45 (fm3 log 110). Ash asked why state in the context should cost more than global data, and it need not: what cost was a call to `__get_u()` for every read and the same field fetched again. Now a function that touches the context forms its address once, its first line, and every read is a `load` there and a `get`, every write a `load`, `set` and `store`, which the IR dissolves to the one field; a gate reads its feature's switch and each dynamic ancestor's in line. And a field nothing in the store writes is fetched once a function: the second `count u$` above uses `_2`, across the call, because no function stores to `u` (a push changes the ring, not the field). `settle_context` in `src/zero/lower.rs` decides it in the finished text, from every store `field_put` recorded. `suite/zero/variables`' `seen round a bump() → 12` and `suite/zero/streams`' `counted round a skip() → 32` read a field something does write on both sides of the call; a build that reused them gives 11 and 33. lex `two_arrivals` 746 → 697, 1.68× `lex-min`, 1.56× `lex-mod`; hello 1 268 → 1 237; static 1 197. `probe zero test` 587/587, `cargo test zero` 34 on all five paths.
+
 ### zero: a short string literal lands in a queue an item at a time — `21e2edc` · 2026-10-06
 
 ```
