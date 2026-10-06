@@ -4,6 +4,10 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### `probe count --from`: one function as a case calls it — `590c7d3` · 2026-10-06
+
+The parity pass, hop 17, transformation 65 (fm3 log 131): a whole case is priced by the count from here on (fm3 question 68). hello's modular oracle switches its features on inside its case, so its `run` could not be counted alone: 40, with every switch off. `probe count <file> <case> --from=<fn>` reports what the function counted from its entry to its return, over every call the case made, as a difference of the counter added to a second word (`count_from`, `src/cost.rs`); `--where` gives a row a function. hello's `run` 1 077 against `hello-mod.ssa`'s 1 064, static's 1 037 against 1 025; by `probe cost` they are 1 237 against 1 286 and 1 197 against 1 247. `cargo test` 137.
+
 ### README.md: the six-line lexer, the meter and the count — `745b756` · 2026-10-06
 
 A doc follow-up to hop sixteen's seven landings (`3c78024` to `115f895`). The zero section of `README.md` quotes the lexer of `suite/zero/lex-zeroic`, six lines with no loop, says in three sentences what the front end makes of such a body, and lists the two commands the hop added: `probe zero meter`, the lines of each store that use a non-zeroic form, and `probe count`, the cost tool's count taken as a function runs.
