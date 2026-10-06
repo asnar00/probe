@@ -4,6 +4,15 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `timed` with its task in one line, as a store beside it — `115f895` · 2026-10-06
+
+```
+on (int d$) << doubled (int x$)
+    d$ << x$ * 2
+```
+
+`suite/zero/timed-zeroic/timed/timed.zero:7-8`. The parity pass, hop 16, transformation 64 (fm3 log 130): the smallest store the meter lists that the five rules can say, rewritten beside the first. Every other line and all five timed cases are `suite/zero/timed`'s, and nothing could not be said. With no word reading `i$` or `d$`, neither has storage: a push is the processor's function, then the edge's, then the rate's step. `count down` 965 against 2 440, the lowered text 276 lines against 406, the meter 0 of 22 against 3 of 26. 5 runs on all five paths; zero suite 696/696.
+
 ### zero: the meter, `probe zero meter` — `f866bfb` · 2026-10-06
 
 The parity pass, hop 16, transformation 63 (fm3 log 129). zero is in two parts, the zeroic and the non-zeroic, and removing the second is an aspiration, so the compiler now counts it. `probe zero meter <store>` lists every line that uses one of the nine non-zeroic forms `fm3/touchstones.md` keeps, with its file, line and form, and prints the rule that finds each; over a folder of stores it gives a row a store and the total (`src/zero/meter.rs`). It reads the tree and lowers nothing, so it refuses nothing. Over `suite/zero`: 158 of 1 755 lines in 23 stores; `lex` 17 of 91, `lex-zeroic` 6 of 71, its cases' `peek`s alone. A test pins two small stores, one wholly zeroic.
