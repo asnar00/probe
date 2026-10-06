@@ -1,0 +1,13 @@
+int kept = 0
+keep(raw$)
+
+on keep (int x$)
+    loop
+        if (count x$ == 0)
+            break
+        kept = kept + peek x$ at (0)
+        advance x$ by (1)
+
+on (int n) = fed (int k)
+    int pushed = existing fed (k)
+    n = kept

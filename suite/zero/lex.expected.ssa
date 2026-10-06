@@ -4,10 +4,11 @@ data __heap: array(u8, 65536)
 data __arena: array(i64, 3)
 
 ; the store's virtual clock (log 63): integer ticks on a clock of a
-; million a second, the bootstrap's step; zero at every case, moved by
-; a rated task sleeping between its pushes and by nothing else; a push
-; into a stream without a rate is stamped with it. Exact time is the
-; boundary's: `x$ at (t)` and `position` convert once, in the library
+; million a second, the bootstrap's step; zero at every case, moved on
+; a step by a push into a stream with a rate and by a rated task after
+; each of its pushes, and by nothing else; a push into a stream without
+; a rate is stamped with it. Exact time is the boundary's: `x$ at (t)`
+; and `position` convert once, in the library
 data __clock: array(i64, 1)
 ; the scheduler is running: a push from inside a task does not start it again
 data __running: array(i64, 1)
@@ -198,6 +199,13 @@ fn __node1() -> u1
         __set___node1_fin(_11)
         yield 1
     else
+        off: u1 = xor on, 1
+        _12: u1 = and _4, off
+        if _12
+            _13: u8$ = set _1, pos, _2
+            __set___node1_c(_13)
+            free_queue(_13)
+            __set___node1_c_seen(_2)
         yield 0
     ret ran
 

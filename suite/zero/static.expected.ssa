@@ -4,13 +4,12 @@ data __heap: array(u8, 65536)
 data __arena: array(i64, 3)
 
 ; the store's virtual clock (log 63): integer ticks on a clock of a
-; million a second, the bootstrap's step; zero at every case, moved by
-; a rated task sleeping between its pushes and by nothing else; a push
-; into a stream without a rate is stamped with it. Exact time is the
-; boundary's: `x$ at (t)` and `position` convert once, in the library
+; million a second, the bootstrap's step; zero at every case, moved on
+; a step by a push into a stream with a rate and by a rated task after
+; each of its pushes, and by nothing else; a push into a stream without
+; a rate is stamped with it. Exact time is the boundary's: `x$ at (t)`
+; and `position` convert once, in the library
 data __clock: array(i64, 1)
-; the scheduler is running: a push from inside a task does not start it again
-data __running: array(i64, 1)
 
 ; the output device (section 15, question 45, log 87): `out$` looks like
 ; a stream, but a push into it writes a character to the place and
@@ -114,16 +113,9 @@ fn __wait(t: i64)
 ; the context: one field per feature-scope variable — name: scope, merge (feature)
 ;   out: the output device, which stores nothing (platform)
 ;   in: user, last (platform)
-;   i: user, last (countdown)
-;   __node1_i: node, last (countdown)
-;   __node1_i_seen: node, last (countdown)
-;   __node1_fin: node, last (countdown)
+;   i: no storage, no word reading it: a push into it calls its edges (countdown)
 type __ctx = struct
     in: u8$
-    i: int$
-    __node1_i: int$
-    __node1_i_seen: i64
-    __node1_fin: u1
 
 data __ctx_mem: array(__ctx, 1)
 data __s11 = "hello world"
@@ -136,22 +128,14 @@ fn __zero_reset()
     arena_init(a, h, 65536)
     k: ptr = addr __clock
     store 0: i64, k
-    r: ptr = addr __running
-    store 0: i64, r
     o: ptr = addr __out_n
     store 0: i64, o
     mk: ptr = addr __out_mk_n
     store 0: i64, mk
     _1: u8$ = __queue_u8(1000000, 512)
-    _2: int$ = __queue_int(1, 64)
-    _3: __ctx = pack _1, _2, _2, 0, 0
+    _2: __ctx = pack _1
     p: ptr = addr __ctx_mem
-    store _3, p
-    ret
-
-; after the case's context is set: the nodes run
-fn __zero_start()
-    __run()
+    store _2, p
     ret
 
 fn __get_in() -> u8$
@@ -159,95 +143,6 @@ fn __get_in() -> u8$
     c: __ctx = load p
     v: u8$ = get c, in
     ret v
-
-fn __get_i() -> int$
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: int$ = get c, i
-    ret v
-
-fn __get___node1_i() -> int$
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: int$ = get c, __node1_i
-    ret v
-
-fn __set___node1_i(v: int$)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node1_i, v
-    store c2, p
-    ret
-
-fn __get___node1_i_seen() -> i64
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: i64 = get c, __node1_i_seen
-    ret v
-
-fn __set___node1_i_seen(v: i64)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node1_i_seen, v
-    store c2, p
-    ret
-
-fn __get___node1_fin() -> u1
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    v: u1 = get c, __node1_fin
-    ret v
-
-fn __set___node1_fin(v: u1)
-    p: ptr = addr __ctx_mem
-    c: __ctx = load p
-    c2: __ctx = set c, __node1_fin, v
-    store c2, p
-    ret
-
-; node 1: out$ << i$ << "\n" — run when an input has more than the node has seen, or has ended and the node has not run since
-fn __node1() -> u1
-    fin: u1 = __get___node1_fin()
-    notfin: u1 = xor fin, 1
-    _1: int$ = __get___node1_i()
-    _2: i64 = received(_1)
-    _3: i64 = __get___node1_i_seen()
-    _4: u1 = cmp.gt _2, _3
-    _5: u1 = ended(_1)
-    _6: u1 = and _5, notfin
-    _7: u1 = or _4, _6
-    ran: u1 = if _7
-        _8: int$ = __edge1(_1, 0: i64)
-        __set___node1_i(_8)
-        free_queue(_8)
-        _9: i64 = received(_8)
-        __set___node1_i_seen(_9)
-        _10: u1 = ended(_8)
-        __set___node1_fin(_10)
-        yield 1
-    else
-        yield 0
-    ret ran
-
-; the scheduler (log 25, 78): the node graph is acyclic, so one pass in producer-before-consumer order settles it — every node at the start, and after a push into a stream the nodes it reaches
-fn __run()
-    p: ptr = addr __running
-    busy: i64 = load p
-    idle: u1 = cmp.eq busy, 0
-    if idle
-        store 1: i64, p
-        r1: u1 = __node1()
-        store 0: i64, p
-    ret
-fn __run_i()
-    p: ptr = addr __running
-    busy: i64 = load p
-    idle: u1 = cmp.eq busy, 0
-    if idle
-        store 1: i64, p
-        r1: u1 = __node1()
-        store 0: i64, p
-    ret
 
 ; feature platform (layer platform)
 ; ... and the same over the output device, where a push is the platform's write (log 87)
@@ -303,40 +198,24 @@ fn run__countdown()
     run__hello()
     ret
 fn count_down()
-    _1: int$ = __get_i()
-    loop(_2: int = 10)
-        _3: u1 = cmp.ge _2, 1
-        if _3
+    loop(_1: int = 10)
+        _2: u1 = cmp.ge _1, 1
+        if _2
         else
             break
-        push_queue(_1, _2)
-        _4: int = sub _2, 1
-        continue _4
-    __run_i()
+        __edge1(_1)
+        _3: ptr = addr __clock
+        _4: i64 = load _3
+        _5: i64 = add _4, 1000000
+        __wait(_5)
+        _6: int = sub _1, 1
+        continue _6
     ret
-fn __edge1(i: int$, __hz: i64) -> int$
-    _1: int[] = unread_queue(i)
-    _2: i64 = len _1
-    _3: i64 = get i, pos
-    ; the most items one event pushes into i$: 10 (log 79)
-    loop(_4: i64 = 0) bound 10
-        _5: u1 = cmp.ge _4, _2
-        if _5
-            break
-        __item: int = load _1, _4
-        _6: i64 = add _3, _4
-        _7: i64 = mul _6, 1000000
-        __wait(_7)
-        __out__int(__item)
-        _8: u8 = const 10
-        __out_ch(_8)
-        _9: i64 = add _4, 1
-        continue _9
-    _10: i64 = count i
-    _11: int = conv _10
-    _12: i64 = conv _11
-    i_2: int$ = advance(i, _12)
-    ret i_2
+fn __edge1(__item: int)
+    __out__int(__item)
+    _1: u8 = const 10
+    __out_ch(_1)
+    ret
 
 ; feature bye (layer runtime)
 fn run()
@@ -353,17 +232,6 @@ fn goodbye()
     ret
 
 ; a stream's storage, carved from the arena: cap items (64 unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start
-fn __queue_int(hz: i64, cap: i64) -> int$
-    a: ptr = addr __arena
-    r: ptr = arena_alloc(a, 64)
-    sz: i64 = sizeof int
-    bytes: i64 = mul sz, cap
-    total: i64 = add bytes, 16
-    vb: ptr = arena_alloc(a, total)
-    buffer_init(vb, sz, cap)
-    ring_queue(r, vb, hz, cap)
-    s: int$ = stream r
-    ret s
 fn __queue_u8(hz: i64, cap: i64) -> u8$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)

@@ -1,0 +1,39 @@
+int n$
+int beat$ at (2 hz)
+int pair$
+int part$
+int heard$
+int raw$
+int sum = 0
+out$ << pair$ << " "
+out$ << pair$ << "\n"
+heard$ << part$
+tally(heard$)
+
+on count down from (int k)
+    n$ << [k through 1]
+    out$ << "liftoff" << "\n"
+
+on beats()
+    beat$ << 1 << 2
+    out$ << "end" << "\n"
+
+on twice()
+    pair$ << 1 << 2 << 3
+
+on tally (int x$)
+    loop
+        if (count x$ == 0)
+            break
+        sum = sum + peek x$ at (0)
+        advance x$ by (1)
+
+on (int s) = summed down from (int k)
+    part$ << [k through 1]
+    s = sum
+
+on (int n) = fed (int k)
+    loop (int i = 1) while (i <= k)
+        raw$ << i
+        continue (i + 1)
+    n = k

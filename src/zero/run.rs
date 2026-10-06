@@ -593,12 +593,12 @@ mod tests {
         assert!(s.subtree("hello").contains(&"bye".to_string()));
         assert!(runs.iter().all(|r| r.label != "with hello off"));
         let standing = |label: &str| -> Vec<String> { runs.iter().filter(|r| r.label == label).map(|r| cases[r.case].text.clone()).collect() };
-        assert_eq!(standing(""), ["hello() → \"hello world\"", "count down() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\"", "run() → \"10\\n\" at 0 s, \"9\\n\" at 1 s, \"8\\n\" at 2 s, \"7\\n\" at 3 s, \"6\\n\" at 4 s, \"5\\n\" at 5 s, \"4\\n\" at 6 s, \"3\\n\" at 7 s, \"2\\n\" at 8 s, \"1\\nhello world\\ngoodbye\" at 9 s", "run() with countdown off → \"hello world\\ngoodbye\""]);
+        assert_eq!(standing(""), ["hello() → \"hello world\"", "count down() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\"", "run() → \"10\\n\" at 0 s, \"9\\n\" at 1 s, \"8\\n\" at 2 s, \"7\\n\" at 3 s, \"6\\n\" at 4 s, \"5\\n\" at 5 s, \"4\\n\" at 6 s, \"3\\n\" at 7 s, \"2\\n\" at 8 s, \"1\\n\" at 9 s, \"hello world\\ngoodbye\" at 10 s", "run() with countdown off → \"hello world\\ngoodbye\""]);
         assert_eq!(standing("with bye off"), ["hello() → \"hello world\"", "count down() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\"", "run() → \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nhello world\""]);
         assert_eq!(standing("with countdown off"), ["hello() → \"hello world\""]);
         assert_eq!(over.len(), 5);
         assert!(over.iter().any(|o| o.text == "run() → \"hello world\" [with bye off]" && o.why == "replaced by countdown's cases for run()"), "{:?}", over.iter().map(|o| &o.text).collect::<Vec<_>>());
-        assert!(over.iter().any(|o| o.text == "run() → \"10\\n\" at 0 s, \"9\\n\" at 1 s, \"8\\n\" at 2 s, \"7\\n\" at 3 s, \"6\\n\" at 4 s, \"5\\n\" at 5 s, \"4\\n\" at 6 s, \"3\\n\" at 7 s, \"2\\n\" at 8 s, \"1\\nhello world\\ngoodbye\" at 9 s [with countdown off]" && o.why == "the line `run() with countdown off → \"hello world\\ngoodbye\"` stands there"), "{:?}", over.iter().map(|o| &o.why).collect::<Vec<_>>());
+        assert!(over.iter().any(|o| o.text == "run() → \"10\\n\" at 0 s, \"9\\n\" at 1 s, \"8\\n\" at 2 s, \"7\\n\" at 3 s, \"6\\n\" at 4 s, \"5\\n\" at 5 s, \"4\\n\" at 6 s, \"3\\n\" at 7 s, \"2\\n\" at 8 s, \"1\\n\" at 9 s, \"hello world\\ngoodbye\" at 10 s [with countdown off]" && o.why == "the line `run() with countdown off → \"hello world\\ngoodbye\"` stands there"), "{:?}", over.iter().map(|o| &o.why).collect::<Vec<_>>());
         // `>existing` (log 50): more's cases for `describe (int)` fall
         // through to functions', so `describe (3)` stands beside `describe (4)`
         let s = store::read(Path::new("suite/zero/functions")).unwrap();
@@ -759,8 +759,10 @@ mod tests {
         assert!(real.contains("c0: i64 = __counter()\n    q: ptr = addr __base\n    store c0, q\n"), "{}", real);
         let fast = with("# p\n\nclock: virtual\n").unwrap();
         assert!(!fast.contains("__counter") && fast.contains("fn __wait(t: i64)\n    p: ptr = addr __clock\n    c: i64 = load p\n    m: i64 = max(c, t)\n"), "{}", fast);
-        // the edge over the rated stream waits for each item's tick: k / 2 hz
-        assert!(fast.contains("_7: i64 = mul _6, 1000000\n        _8: i64 = div _7, 2\n        __wait(_8)\n"), "{}", fast);
+        // the rated stream no word reads has no storage (fm3 log 92): the
+        // push calls its edge, and then a step passes, half a second at 2 hz
+        assert!(fast.contains("        if _1\n            __edge1(_2)\n        _4: ptr = addr __clock\n        _5: i64 = load _4\n        _6: i64 = add _5, 500000\n        __wait(_6)\n"), "{}", fast);
+        assert!(fast.contains("fn __edge1(__item: int)\n") && !fast.contains("__run") && !fast.contains("__node") && !fast.contains("__get_i("), "{}", fast);
         assert_eq!(with("# p\n").unwrap(), fast);
         let err = with("# p\n\nclock: sidereal\n").expect_err("accepted a sidereal clock");
         assert!(err.contains("the product's clock is real or virtual, not 'sidereal'"), "{}", err);

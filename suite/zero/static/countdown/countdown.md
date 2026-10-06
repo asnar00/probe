@@ -8,17 +8,17 @@ layer: runtime
 Section 16's `feature Countdown extends Hello`: `count down()` then `existing run()`.
 
 ## overview
-Before hello says hello, `count down` writes 10 to 1, one to a line: a stream at one hertz, `int i$ at (1 hz)`, an edge from it into the output, `out$ << i$ << "\n"`, and the range `[10 through 1]` pushed into it, so the ten numbers sit one second apart on the stream's clock and each goes out as it arrives.
+Before hello says hello, `count down` writes 10 to 1, one to a line: a stream at one hertz, `int i$ at (1 hz)`, an edge from it into the output, `out$ << i$ << "\n"`, and the range `[10 through 1]` pushed into it, so each number goes out as it is pushed and then its second passes: ten numbers take ten seconds.
 
 ## interface
 - `run` counts down, then does what it did before.
 - `count down` pushes `[10 through 1]` into `i$`; the edge at feature scope does the writing.
 
 ## rules
-- A stream on the right of `<<` at feature scope is an edge (section 9, log 72): `out$ << i$ << "\n"` is a standing connection, a node the scheduler runs whenever `i$` has more than it has seen, moving each item into `out$` by the `<<` method for an `int` and pushing the rest of the chain, the newline, after each; `frame i$` is the one-shot read. Section 16 writes `print [10 through 1] at (1 hz)`; here the rate is on the stream's declaration and the printing is the edge.
-- Static on (log 71): `run` is bye's body calling `run__countdown`, this feature's, by name, with no gate; the edge's node has no gate either; there is no `with countdown off` context.
+- A stream on the right of `<<` at feature scope is an edge (section 9, log 72): `out$ << i$ << "\n"` is a standing connection, moving each item into `out$` by the `<<` method for an `int` and pushing the rest of the chain, the newline, after each. Nothing in the store reads `i$`, it is only pushed into and wired, so it has no storage (question 50, fm3 log 92): the edge is a function of one item, `__edge1(__item: int)`, and `count down`'s push calls it for each number, with no queue, no node and no scheduler between. A word that read `i$` anywhere, `count i$` or `frame i$`, would make it a queue again. Section 16 writes `print [10 through 1] at (1 hz)`; here the rate is on the stream's declaration and the printing is the edge.
+- Static on (log 71): `run` is bye's body calling `run__countdown`, this feature's, by name, with no gate; the edge's call has no gate either; there is no `with countdown off` context.
 - `run() → "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\nhello world"` overrides hello's `run() → "hello world"` and is itself overridden by bye's, which is the one that runs: every feature is on and static.
-- The count is in the code as the range's literal bounds, so `probe cost` on `run` counts the countdown's loop as ten passes without a bound anywhere: a bound is a product setting, never a word in feature code (question 19, log 41). The edge's own loop carries `bound 10`, the most items one push statement from a plain function pushes into `i$` — the range's ten, which `count down()` pushes as one statement before the scheduler runs (log 79); inside it each item is taken at its tick, `i$` being at 1 hz, so `probe zero suite/zero/static run "run()"` writes a number a second on the real clock (log 77).
+- The count is in the code as the range's literal bounds, so `probe cost` on `run` counts the countdown's loop as ten passes without a bound anywhere: a bound is a product setting, never a word in feature code (question 19, log 41). The stream is at `1 hz`, and a rate belongs to the pushing: each number is pushed at the function's now, which then moves on a second (question 52), so the last number is written at 9 s and `count down` returns at 10 s; `probe zero suite/zero/static run "run()"` writes a number a second on the real clock (log 77).
 
 ## testing
 >count down() → "10\n9\n8\n7\n6\n5\n4\n3\n2\n1"

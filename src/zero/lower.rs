@@ -428,10 +428,11 @@ data __heap: array(u8, 65536)
 data __arena: array(i64, 3)
 
 ; the store's virtual clock (log 63): integer ticks on a clock of a
-; million a second, the bootstrap's step; zero at every case, moved by
-; a rated task sleeping between its pushes and by nothing else; a push
-; into a stream without a rate is stamped with it. Exact time is the
-; boundary's: `x$ at (t)` and `position` convert once, in the library
+; million a second, the bootstrap's step; zero at every case, moved on
+; a step by a push into a stream with a rate and by a rated task after
+; each of its pushes, and by nothing else; a push into a stream without
+; a rate is stamped with it. Exact time is the boundary's: `x$ at (t)`
+; and `position` convert once, in the library
 data __clock: array(i64, 1)
 ; the scheduler is running: a push from inside a task does not start it again
 data __running: array(i64, 1)
@@ -942,6 +943,21 @@ impl Lowerer {
                     w.insert(s.clone());
                 }
             }
+            // a push into a stream with no storage is its edges' call
+            // (question 50): what they may push into is pushed too
+            loop {
+                let mut more = Names::new();
+                for s in &w {
+                    for (edge, _) in self.bare_edges.get(s).map(|v| v.as_slice()).unwrap_or_default() {
+                        more.extend(walker.of_key(edge).0);
+                    }
+                }
+                let before = w.len();
+                w.extend(more);
+                if w.len() == before {
+                    break;
+                }
+            }
             reads.push(r);
             writes.push(w);
         }
@@ -1000,7 +1016,7 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
+    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, clock: store.clock, static_schedule: false, arrivals: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -1108,6 +1124,9 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
             }
         }
     }
+    // which streams have no storage (question 50): settled before an
+    // edge is collected, since an edge out of one is not a node
+    l.settle_bare(store)?;
     for f in &store.features {
         l.cur = f.name.clone();
         for d in &f.code.decls {
@@ -1689,6 +1708,19 @@ struct Lowerer {
     rates: HashMap<String, i64>,
     /// the edge functions (log 72) by IR name, each with the stream it reads
     edge_fns: HashMap<String, String>,
+    /// the feature-scope streams with no storage (question 50, fm3 log
+    /// 92): only pushed into and wired by edges, no word anywhere in the
+    /// store reading them. A push into one is the call of each edge out
+    /// of it, and nothing is kept
+    bare: std::collections::HashSet<String>,
+    /// ... and the edges out of each, in composition order: the function
+    /// of one item the front end wrote, and the feature whose gate it is
+    /// called under
+    bare_edges: HashMap<String, Vec<(String, String)>>,
+    /// while a push statement into a bare stream is lowered: the stream,
+    /// and each edge's gate, read once before the items (None where the
+    /// edge's feature is static)
+    bare_gates: Option<(String, Vec<Option<String>>)>,
     /// the product's clock (log 77)
     clock: super::store::Clock,
     /// the scheduler is a static schedule (log 78): the node graph is
@@ -2535,6 +2567,106 @@ impl Lowerer {
         Ok(())
     }
 
+    /// Which feature-scope streams have no storage (question 50, fm3 log
+    /// 92). Storage depends on the words applied to a stream: a history
+    /// or a time word makes a ring, a reading word a queue, and a stream
+    /// no word reads has none. A stream is bare when it is the source of
+    /// an edge, is declared with nothing after its name but perhaps a
+    /// rate, is not the platform's, and nothing in the store names it
+    /// except as the target of a push: no function, declaration, wiring
+    /// or case, a name a function has bound itself being that
+    /// function's. Two more are left their queues: a stream whose type
+    /// a `<<` method takes, since such a push passes the stream as a
+    /// value; and one that reaches itself through bare edges, whose
+    /// functions would call each other for ever
+    fn settle_bare(&mut self, store: &Store) -> Result<(), Error> {
+        let none = Names::new();
+        let mut named = Names::new();
+        let mut wires: Vec<(String, String)> = Vec::new();
+        for f in &store.features {
+            for d in &f.code.decls {
+                match d {
+                    Decl::Fn(fd) => {
+                        let mut bound: Names = fd.results.iter().map(|p| p.name.clone()).collect();
+                        bound.extend(fd.params().map(|p| p.name.clone()));
+                        let task = |e: &Expr| matches!(self.task_call(e, None, &f.code.file), Ok(Some(_)));
+                        mentions(&fd.body, &bound, &task, &mut named);
+                    }
+                    Decl::Var(v) => mentions_init(v, &none, &mut named),
+                    Decl::Wire(e) => mentions_in(e, &none, &mut named),
+                    Decl::Edge { target, items, cond, .. } => {
+                        items.iter().skip(1).for_each(|e| mentions_in(e, &none, &mut named));
+                        cond.iter().for_each(|e| mentions_in(e, &none, &mut named));
+                        if let (ExprKind::Seq(t), Some(Expr { kind: ExprKind::Seq(s), .. })) = (&target.kind, items.first()) {
+                            wires.push((s.clone(), t.clone()));
+                        }
+                    }
+                    Decl::Type(_) => {}
+                }
+            }
+            for c in &f.cases {
+                mentions_in(&c.call, &none, &mut named);
+            }
+        }
+        let mut bare = Names::new();
+        let mut rates: HashMap<String, i64> = HashMap::new();
+        for (s, _) in &wires {
+            if named.contains(s) || bare.contains(s) {
+                continue;
+            }
+            let Some((feat, v)) = store.features.iter().find_map(|g| g.code.decls.iter().find_map(|d| match d { Decl::Var(v) if &v.name == s => Some((g, v)), _ => None })) else { continue };
+            if feat.name == "platform" || !v.seq || v.init.is_some() {
+                continue;
+            }
+            let Some(ty) = self.fvar(s).map(|f| f.ty.clone()) else { continue };
+            if !matches!(ty, Ty::Stream(_)) {
+                continue;
+            }
+            if self.funcs.iter().any(|g| matches!(g.parts.as_slice(), [NamePart::Group, NamePart::Sym(op), NamePart::Group] if op == "<<") && g.params.first().map(|p| &p.1) == Some(&ty)) {
+                continue;
+            }
+            if let Some(r) = &v.rate {
+                rates.insert(s.clone(), self.rate_hz(r, &feat.code.file)?);
+            }
+            bare.insert(s.clone());
+        }
+        // a stream that reaches itself through bare edges keeps its queue
+        loop {
+            let round = |from: &String| -> bool {
+                let mut seen = Names::new();
+                let mut work: Vec<&String> = wires.iter().filter(|(s, _)| s == from).map(|(_, t)| t).collect();
+                while let Some(t) = work.pop() {
+                    if t == from {
+                        return true;
+                    }
+                    if bare.contains(t) && seen.insert(t.clone()) {
+                        work.extend(wires.iter().filter(|(s, _)| s == t).map(|(_, t)| t));
+                    }
+                }
+                false
+            };
+            let looped: Vec<String> = bare.iter().filter(|s| round(s)).cloned().collect();
+            if looped.is_empty() {
+                break;
+            }
+            for s in looped {
+                bare.remove(&s);
+            }
+        }
+        for (s, hz) in rates {
+            if bare.contains(&s) {
+                self.rates.insert(s, hz);
+            }
+        }
+        self.bare = bare;
+        Ok(())
+    }
+
+    /// is the name a stream with no storage, not shadowed here?
+    fn is_bare(&self, name: &str, b: &Body) -> bool {
+        !b.vars.contains_key(name) && self.bare.contains(name)
+    }
+
     /// An edge (log 72, zero.md section 9): `out$ << i$ << "\n"` at
     /// feature scope wires `i$` into `out$`. It is a sink the front end
     /// writes for itself — a loop of `count`, `peek`, the pushes and
@@ -2571,6 +2703,30 @@ impl Lowerer {
         self.reach(&format!("{}$", sname), &sf.feature, file, items[0].line)?;
         let name = format!("__edge{}", self.edges.len() + 1);
         let seq = |n: &str| Expr { kind: ExprKind::Seq(n.to_string()), line };
+        // out of a stream with no storage (question 50, fm3 log 92) the
+        // edge is a function of one item, its body the chain with the
+        // item first, lowered as a plain function's push: a push into
+        // the stream calls it, and there is no node
+        if self.bare.contains(sname) {
+            let mut pushed = vec![Expr { kind: ExprKind::Name("__item".into()), line }];
+            pushed.extend(items[1..].iter().cloned());
+            let fd = FnDecl {
+                line,
+                results: Vec::new(),
+                name: vec![NamePart::Word(name.clone()), NamePart::Group],
+                groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, line }]],
+                task: false,
+                body: vec![Stmt::Push { target: seq(tname), items: pushed, cond: None, existing: false, line }],
+                platform: Vec::new(),
+            };
+            self.declare(&fd, feature, file)?;
+            let i = self.funcs.len() - 1;
+            self.funcs[i].ir = name.clone();
+            self.funcs[i].plain = name.clone();
+            self.bare_edges.entry(sname.clone()).or_default().push((name, feature.to_string()));
+            self.edges.push((fd, feature.to_string(), file.to_string()));
+            return Ok(());
+        }
         let phrase = |parts: Vec<Part>| Expr { kind: ExprKind::Phrase(parts), line };
         // `for __item in i$` with the pushes, then the reader moved past
         // what it read (log 75): one view and one advance move a batch
@@ -2638,8 +2794,11 @@ impl Lowerer {
         b.line("arena_init(a, h, 65536)");
         b.line("k: ptr = addr __clock");
         b.line("store 0: i64, k");
-        b.line("r: ptr = addr __running");
-        b.line("store 0: i64, r");
+        // a store with no nodes has no scheduler to guard (fm3 log 92)
+        if !self.nodes.is_empty() {
+            b.line("r: ptr = addr __running");
+            b.line("store 0: i64, r");
+        }
         b.line("o: ptr = addr __out_n");
         b.line("store 0: i64, o");
         // the marks of the last case go with its text (fm3 log 91); the
@@ -2688,6 +2847,11 @@ impl Lowerer {
                     self.type_lines.push(format!(";   {}: the output device, which stores nothing ({})", f.name, f.feature));
                     continue;
                 }
+                // ... and so is a stream no word reads (question 50)
+                if self.bare.contains(&f.name) {
+                    self.type_lines.push(format!(";   {}: no storage, no word reading it: a push into it calls its edges ({})", f.name, f.feature));
+                    continue;
+                }
                 self.type_lines.push(format!(";   {}: {}, {} ({})", f.name, f.scope, f.merge, f.feature));
                 fields.push(format!("{}: {}", f.name, f.ty.ir()));
             }
@@ -2702,7 +2866,7 @@ impl Lowerer {
                     let Decl::Var(v) = d else { continue };
                     b.file = feat.code.file.clone();
                     self.cur = feat.name.clone();
-                    if self.fvar(&v.name).is_some_and(|f| self.device_var(f)) {
+                    if self.fvar(&v.name).is_some_and(|f| self.device_var(f)) || self.bare.contains(&v.name) {
                         continue;
                     }
                     let ty = self.fvar(&v.name).unwrap().ty.clone();
@@ -2793,7 +2957,7 @@ impl Lowerer {
             writeln!(self.out, "\n; after the case's context is set: the nodes run\nfn __zero_start()\n    __run()\n    ret").unwrap();
         }
         for f in &self.fvars {
-            if self.device_var(f) {
+            if self.device_var(f) || self.bare.contains(&f.name) {
                 continue;
             }
             let t = f.ty.ir();
@@ -2998,6 +3162,9 @@ impl Lowerer {
         b.line(&format!("fin: u1 = __get___node{}_fin()", k));
         b.line("notfin: u1 = xor fin, 1");
         let mut readers = Vec::new();
+        // per reader: what its stream has received, and whether that is
+        // more than the node has seen
+        let mut behind: Vec<(String, String)> = Vec::new();
         let mut pending: Option<String> = None;
         for (a, (pname, pty)) in node.args.iter().zip(&node.info.params) {
             let Ty::Stream(_) = pty else { continue };
@@ -3027,6 +3194,7 @@ impl Lowerer {
                 ExprKind::Seq(n) => Some(n.clone()),
                 _ => None,
             };
+            behind.push((pushed, some));
             readers.push((pname.clone(), r, pty.clone(), sname));
         }
         let pending = pending.unwrap_or_else(|| "notfin".into());
@@ -3094,6 +3262,27 @@ impl Lowerer {
         b.depth -= 1;
         b.line("else");
         b.depth += 1;
+        // a consumer that is off holds nothing (question 51, fm3 log
+        // 92): what was pushed toward it while it was off is gone for
+        // it, its reader moved past everything, so it starts from now
+        // when it comes back on and its producer never fills its queue
+        if !self.statics.contains(&node.feature) {
+            b.line("off: u1 = xor on, 1");
+            for ((pname, r, ty, sname), (pushed, some)) in readers.iter().zip(&behind) {
+                let drop = b.tmp();
+                b.line(&format!("{}: u1 = and {}, off", drop, some));
+                b.line(&format!("if {}", drop));
+                b.depth += 1;
+                let r2 = b.tmp();
+                b.line(&format!("{}: {} = set {}, pos, {}", r2, ty.ir(), r, pushed));
+                b.line(&format!("__set___node{}_{}({})", k, pname, r2));
+                if sname.as_deref().is_some_and(|n| self.frees(n)) {
+                    b.line(&format!("free_queue({})", r2));
+                }
+                b.line(&format!("__set___node{}_{}_seen({})", k, pname, pushed));
+                b.depth -= 1;
+            }
+        }
         b.line("yield 0");
         b.depth -= 1;
         b.line("ret ran");
@@ -3160,6 +3349,11 @@ impl Lowerer {
         // push sites know it by name, and every other use is refused
         if self.device_var(&f) {
             return Ok(Val { text: "__device".into(), ty: f.ty, literal: false });
+        }
+        // ... and neither has a stream no word reads (question 50): only
+        // a push names it, and a push into it is its edges' call
+        if self.bare.contains(name) {
+            return Ok(Val { text: "__bare".into(), ty: f.ty, literal: false });
         }
         let out = name_for(dst, &f.ty, b);
         b.line(&format!("{}: {} = __get_{}()", out, f.ty.ir(), name));
@@ -4267,7 +4461,20 @@ impl Lowerer {
                     });
                 }
                 let s = self.lower_expr(&Expr { kind: ExprKind::Name(n.clone()), line: *line }, None, b, None)?;
-                self.lower_pushes(n, &s, items, cond.as_ref(), b)?;
+                // into a stream with no storage (question 50): each
+                // edge's gate is read once, before the items, a feature
+                // being switched at the next event and not in the
+                // middle of a statement
+                let bare = self.is_bare(n, b);
+                if bare {
+                    let gates = self.read_gates(n, b);
+                    self.bare_gates = Some((n.clone(), gates));
+                }
+                let done = self.lower_pushes(n, &s, items, cond.as_ref(), b);
+                if bare {
+                    self.bare_gates = None;
+                }
+                done?;
                 self.trigger(n, b);
                 Ok(false)
             }
@@ -5357,6 +5564,41 @@ impl Lowerer {
             b.line(&format!("__out_ch({})", v.text));
             return;
         }
+        if self.is_bare(name, b) {
+            // no storage (question 50, fm3 log 92): the item goes to
+            // each edge out of the stream, in composition order, where
+            // that edge's feature is on; an edge that is off drops it
+            // (question 51)
+            let v = b.materialize(v);
+            let gates = match &self.bare_gates {
+                Some((n, g)) if n == name => g.clone(),
+                _ => self.read_gates(name, b),
+            };
+            let edges = self.bare_edges.get(name).cloned().unwrap_or_default();
+            for ((edge, _), gate) in edges.iter().zip(&gates) {
+                match gate {
+                    Some(on) => {
+                        b.line(&format!("if {}", on));
+                        b.depth += 1;
+                        b.line(&format!("{}({})", edge, v.text));
+                        b.depth -= 1;
+                    }
+                    None => b.line(&format!("{}({})", edge, v.text)),
+                }
+            }
+            // at a rate, a step then passes (question 52): the item was
+            // pushed at now, and now moves on by the item's length,
+            // whether or not an edge was on. The rate is a literal, so
+            // the period is worked out here
+            if let Some(&hz) = self.rates.get(name) {
+                let (p, c, t) = (b.tmp(), b.tmp(), b.tmp());
+                b.line(&format!("{}: ptr = addr __clock", p));
+                b.line(&format!("{}: i64 = load {}", c, p));
+                b.line(&format!("{}: i64 = add {}, {}", t, c, CLOCK_HZ / hz));
+                b.line(&format!("__wait({})", t));
+            }
+            return;
+        }
         if self.is_queue(name, b) {
             // a queue holds an item only until its reader has passed
             // it (log 89): the push checks that the slot is free
@@ -5574,7 +5816,9 @@ impl Lowerer {
             b.line(&format!("__out_block({})", view));
             return;
         }
-        if !own {
+        // a stream with no storage takes a block an item at a time, each
+        // through its edges (question 50)
+        if !own && !self.is_bare(name, b) {
             let regular = if b.vars.contains_key(name) { self.regular_locals.contains(name) } else { self.regular.contains(name) };
             let word = if self.is_queue(name, b) { "push_queue" } else if regular { "push" } else { "__push" };
             b.line(&format!("{}({}, {})", word, s.text, view));
@@ -5596,6 +5840,24 @@ impl Lowerer {
         b.line(&format!("{}: i64 = add {}, 1", k2, k));
         b.line(&format!("continue {}", k2));
         b.depth -= 1;
+    }
+
+    /// the gates of the edges out of a stream with no storage, read now:
+    /// each edge's feature's effective state, or nothing where the
+    /// feature is static (log 71)
+    fn read_gates(&mut self, name: &str, b: &mut Body) -> Vec<Option<String>> {
+        let edges = self.bare_edges.get(name).cloned().unwrap_or_default();
+        let mut gates = Vec::new();
+        for (_, feature) in &edges {
+            if self.statics.contains(feature) {
+                gates.push(None);
+            } else {
+                let on = b.tmp();
+                b.line(&format!("{}: u1 = __on_{}()", on, feature));
+                gates.push(Some(on));
+            }
+        }
+        gates
     }
 
     /// after a push or an `end` from a plain function into a stream a
@@ -6273,6 +6535,124 @@ fn item_count(e: &Expr, bytes: bool) -> Option<i64> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// every name a block mentions other than as the target of a push
+/// (question 50, fm3 log 92): a stream none of the store's text names
+/// so has no word applied to it and no storage. `bound` is the names the
+/// function has bound itself, which are its own; `task` says whether a
+/// pushed item is a task call, which fills the stream it is pushed into
+/// and so takes it as a value
+fn mentions(stmts: &[Stmt], bound: &Names, task: &dyn Fn(&Expr) -> bool, out: &mut Names) {
+    let mut bound = bound.clone();
+    let named = |n: &String, bound: &Names, out: &mut Names| {
+        if !bound.contains(n) {
+            out.insert(n.clone());
+        }
+    };
+    for s in stmts {
+        match s {
+            Stmt::Var(v) => {
+                mentions_init(v, &bound, out);
+                bound.insert(v.name.clone());
+            }
+            Stmt::Multi { vars, value, .. } => {
+                mentions_in(value, &bound, out);
+                bound.extend(vars.iter().map(|p| p.name.clone()));
+            }
+            Stmt::Assign { targets, value, .. } => {
+                targets.iter().for_each(|t| named(&t.name, &bound, out));
+                mentions_in(value, &bound, out);
+            }
+            Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => mentions_in(value, &bound, out),
+            Stmt::If { cond, then, els, .. } => {
+                mentions_in(cond, &bound, out);
+                mentions(then, &bound, task, out);
+                if let Some(e) = els {
+                    mentions(e, &bound, task, out);
+                }
+            }
+            Stmt::Loop { vars, cond, body, into, .. } => {
+                let mut inner = bound.clone();
+                for v in vars {
+                    mentions_init(v, &inner, out);
+                    inner.insert(v.name.clone());
+                }
+                cond.iter().for_each(|e| mentions_in(e, &inner, out));
+                mentions(body, &inner, task, out);
+                match into {
+                    Some(super::syntax::LoopInto::Declare(ps)) => bound.extend(ps.iter().map(|p| p.name.clone())),
+                    Some(super::syntax::LoopInto::Assign(ts)) => ts.iter().for_each(|t| named(&t.name, &bound, out)),
+                    None => {}
+                }
+            }
+            Stmt::For { var, seq, body, .. } => {
+                mentions_in(seq, &bound, out);
+                let mut inner = bound.clone();
+                inner.insert(var.clone());
+                mentions(body, &inner, task, out);
+            }
+            Stmt::Continue { values, .. } => values.iter().for_each(|e| mentions_in(e, &bound, out)),
+            Stmt::Break { .. } => {}
+            Stmt::Push { target, items, cond, existing, .. } => {
+                items.iter().for_each(|e| mentions_in(e, &bound, out));
+                cond.iter().for_each(|e| mentions_in(e, &bound, out));
+                match &target.kind {
+                    ExprKind::Seq(n) if *existing || items.iter().any(|e| task(e)) => named(n, &bound, out),
+                    ExprKind::Seq(_) => {}
+                    _ => mentions_in(target, &bound, out),
+                }
+            }
+        }
+    }
+}
+
+fn mentions_init(v: &super::syntax::VarDecl, bound: &Names, out: &mut Names) {
+    match &v.init {
+        Some(Init::Value(e)) => mentions_in(e, bound, out),
+        Some(Init::Construct(args)) => args.iter().for_each(|a| mentions_in(&a.value, bound, out)),
+        Some(Init::Pushes { items, cond }) => {
+            items.iter().for_each(|e| mentions_in(e, bound, out));
+            cond.iter().for_each(|e| mentions_in(e, bound, out));
+        }
+        None => {}
+    }
+}
+
+fn mentions_in(e: &Expr, bound: &Names, out: &mut Names) {
+    match &e.kind {
+        ExprKind::Seq(n) | ExprKind::Name(n) => {
+            if !bound.contains(n) {
+                out.insert(n.clone());
+            }
+        }
+        ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => mentions_in(x, bound, out),
+        ExprKind::List(items) => items.iter().for_each(|x| mentions_in(x, bound, out)),
+        ExprKind::Range { from: l, to: r, .. } | ExprKind::Bin(_, l, r) | ExprKind::Index(l, r) => {
+            mentions_in(l, bound, out);
+            mentions_in(r, bound, out);
+        }
+        ExprKind::IfElse(c, t, f) => {
+            mentions_in(c, bound, out);
+            mentions_in(t, bound, out);
+            mentions_in(f, bound, out);
+        }
+        ExprKind::Phrase(parts) | ExprKind::Existing(parts) => {
+            for p in parts {
+                match p {
+                    Part::Args(list) => list.iter().for_each(|a| mentions_in(&a.value, bound, out)),
+                    Part::Value(x) => mentions_in(x, bound, out),
+                    // a word of a phrase may be a variable read bare
+                    Part::Word(w) => {
+                        if !bound.contains(w) {
+                            out.insert(w.clone());
+                        }
+                    }
+                }
+            }
+        }
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Acc => {}
     }
 }
 
