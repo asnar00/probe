@@ -4,6 +4,15 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `when` on a push — `fe74ded` · 2026-10-06
+
+```
+on (int c$) << changes (int x$)
+    c$ << x$ when (x$ != x$[-1])
+```
+
+`suite/zero/zeroic/zeroic/zeroic.zero:201-202`. The parity pass, hop 16, transformation 60 (fm3 log 126): question 75's third rule. `x$ << item when (condition)` pushes the item where the condition holds. It stands where `while` stands, and a push with both is refused. In a stream processor it holds for each item, and lowers to the push under a branch in the function of one item; in a plain function it is the `if` round the push. In the tree (`src/zero/syntax.rs`) it is an `if` marked as written with `when`, so every pass reads it as any `if`. No existing store's text moved. `suite/zero/zeroic` 31 cases on all five paths; zero suite 664/664; `cargo test zero` 42.
+
 ### zero: a stream looks back, `x$[-1]`, and `or` and `and` join two conditions — `8f697ac` · 2026-10-06
 
 ```
