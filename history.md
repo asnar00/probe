@@ -4,6 +4,34 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream no word reads has no storage — `efce63e` · 2026-10-06
+
+```
+fn count_down()
+    _1: u1 = __on_countdown()
+    loop(_2: int = 10)
+        _3: u1 = cmp.ge _2, 1
+        if _3
+        else
+            break
+        if _1
+            __edge1(_2)
+        _4: ptr = addr __clock
+        _5: i64 = load _4
+        _6: i64 = add _5, 1000000
+        __wait(_6)
+        _7: int = sub _2, 1
+        continue _7
+    ret
+fn __edge1(__item: int)
+    __out__int(__item)
+    _1: u8 = const 10
+    __out_ch(_1)
+    ret
+```
+
+The parity pass, hop 8, transformation 25 (fm3 log 92, questions 50, 51, 52). ash ruled that storage depends on the words applied to a stream: a history or time word makes a ring, a reading word a queue, and **a stream no word reads has none**. hello's `i$` is one, and above is `suite/zero/hello.expected.ssa`'s countdown now: `settle_bare` in `src/zero/lower.rs` finds the streams that are only pushed into and wired by edges, an edge out of one is a function of one item, and a push calls each edge under its feature's gate, read once a statement. No queue, no node, no scheduler. If the stream has a rate a step then passes, so ten numbers at `1 hz` take ten seconds and `hello world` is stamped 10 s. A consumer that is off holds nothing: a node whose feature is off moves its reader past what arrives. `suite/zero/edges` is new; 11 of its 15 runs fail on the commit before. hello's `run` **1 742 → 1 348** on 373 → 258 lines against its oracle's 1 246 (1 228 without the time marks the oracle does not record); static **1 680 → 1 277** against 1 207; lex unchanged at 1 143. Front end only: zero 551/551 native.
+
 ### zero: a case asserts on time — `024f51e` · 2026-10-06
 
 ```
