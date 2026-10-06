@@ -1,10 +1,11 @@
 # lex
-*the lexer as a task: `tokens = lex(chars)` from `lex-experiment.md`, in zero*
+*the lexer as a task, its feature static on: `suite/zero/lex` under a product that marks it so*
 
 layer: runtime
 
 > (suite) 2026-09-08T10:00:00
 Plan items 8 and 12 of milestone 0: the lexer written as a stream node in `fm3/examples/lex.ssa`, as a zero task with the four cases of `fm3/lex-experiment.md`. Third pass item 4 (rulings-3, log 62): the characters arrive in the platform's input stream `in$`, and the wiring is `token t$ = lex(in$)`. Parity hop ten (question 35, fm3 log 101): a program never writes its input, so the experiment's arrivals go into a stream of the store's own, `src$`, with the same task wired to it.
+ **This store is `suite/zero/lex` with a `product.md` beside its feature marking `platform` and `lex` `static on`** (parity hop fifteen, fm3 log 123), as `suite/zero/static` is `hello`: the same text and the same cases, lowered with no gate, no switch and no context field for the feature, so that the lexer is measured both ways every hop, this one against `fm3/examples/lex-min.ssa`, the monolith, and `suite/zero/lex` against `lex-mod.ssa`.
 
 ## overview
 Characters arrive over time in a `char` stream; tokens leave in a stream of `token`. `lex` reads the unread characters, pushes every complete token it can see, leaves a partial token — a word cut off by the end of what has arrived — unread, and stops. The scheduler runs it again when more arrives, from where it stood, so a token may span two arrivals and the node keeps no state of its own. When the characters end, the last word is complete, and `lex` runs once more to take it. A token is its kind (1 a word, 2 a number, 3 punctuation), the index of its first character, and its length. The start and the length are `index`, the type of a position and a count (section 4), and so are the lexer's own `start`, its inner `i` and the length it carries out of its inner loop: a position read from the stream, compared with `count c$` and handed to `peek` and `advance` is never converted (parity hop fifteen, fm3 log 123).

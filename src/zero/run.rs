@@ -671,6 +671,38 @@ mod tests {
         assert!(l.ir.contains("fn greet__before_most() -> int\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: u1 = get _1, __enabled_more\n    _3: u1 = get _1, __enabled_base\n    on: u1 = and _2, _3\n") && !l.ir.contains("__on_more") && !l.ir.contains("__get___enabled"), "{}", l.ir);
     }
 
+    /// A negative literal handed to a word that counts forward from a
+    /// reader is refused when the program is compiled, naming the line
+    /// (fm3 question 61, log 123): the case a person would write. Not
+    /// `x$[-1]`, which question 75 gives a meaning, and not a computed
+    /// index, which is the library's check to catch (question 64)
+    #[test]
+    fn a_negative_literal_index_is_refused() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-negative-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 6\n").unwrap();
+        let with = |line: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("on (int n) = f()\n    int x$ = [5, 6, 7]\n    advance x$ by (2)\n{}\n", line)).unwrap();
+            emit(&dir)
+        };
+        for (line, said) in [
+            ("    n = peek x$ at (-1)", "h.zero:4: 'peek' counts forward from the reader: -1 is behind it"),
+            ("    advance x$ by (-2)\n    n = 1", "h.zero:4: 'advance' moves the reader forward: -2 is behind it"),
+            ("    int b$ = x$ behind (-1)\n    n = 1", "h.zero:4: 'behind' takes how many items, a count: -1 is behind it"),
+        ] {
+            let err = with(line).expect_err(line);
+            assert!(err.ends_with(said), "{}: {}", line, err);
+        }
+        // a literal that is not negative, a subscript that is, and an
+        // index worked out to be negative all lower as they did
+        for line in ["    n = peek x$ at (0)", "    n = x$[-1]", "    index i = 0\n    n = peek x$ at (i - 1)"] {
+            let ir = with(line).unwrap_or_else(|e| panic!("{}: {}", line, e));
+            assert!(ir.contains("fn f() -> int\n"), "{}", ir);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `index` and `int` are both the product's, and on every path's
     /// own policy they are the same width, so a conversion between
     /// them left out or made the wrong way would show nowhere in the

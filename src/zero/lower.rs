@@ -7987,6 +7987,7 @@ impl Lowerer {
                 if !matches!(iv.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, a.line, "'peek' takes an integer index"));
                 }
+                behind_the_reader("peek", "counts forward from the reader", &iv, &file, a.line)?;
                 let i = self.as_index(&iv, b);
                 Ok(Some(self.peek_at(&s, &i, b, dst)))
             }
@@ -7996,6 +7997,7 @@ impl Lowerer {
                 if !matches!(nv.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, a.line, "'advance' takes an integer count"));
                 }
+                behind_the_reader("advance", "moves the reader forward", &nv, &file, a.line)?;
                 let n = self.as_index(&nv, b);
                 let sty = ty.clone();
                 let moved = |_: &mut Lowerer, out: &str, b: &mut Body| b.line(&format!("{}: {} = advance({}, {})", out, sty.ir(), s.text, n));
@@ -8060,6 +8062,7 @@ impl Lowerer {
                 if !matches!(kv.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, a.line, "'behind' takes an integer count"));
                 }
+                behind_the_reader("behind", "takes how many items, a count", &kv, &file, a.line)?;
                 let k = self.as_index(&kv, b);
                 let h = b.tmp();
                 b.line(&format!("{}: {}[] = behind {}, {}", h, elem.ir(), s.text, k));
@@ -9059,6 +9062,19 @@ fn task_elem(info: &FnInfo) -> String {
 /// may a literal be assigned to a variable of this type? A number
 /// literal fits any number type, except that a decimal does not fit
 /// an integer
+/// A negative literal handed to a word that counts forward from a
+/// reader is refused when the program is compiled (fm3 question 61,
+/// log 123): `peek x$ at (-1)` would read what lies before the reader,
+/// which is no item of the stream's. Only the literal: a computed
+/// index is the library's check to catch. And not `x$[-1]`, which
+/// question 75 gives a meaning of its own
+fn behind_the_reader(word: &str, what: &str, v: &Val, file: &str, line: usize) -> Result<(), Error> {
+    if v.literal && v.text.starts_with('-') {
+        return Err(lex::error(file, line, format!("'{}' {}: {} is behind it", word, what, v.text)));
+    }
+    Ok(())
+}
+
 /// zero's `index`
 fn index_ty() -> Ty {
     Ty::Num("index".into())
