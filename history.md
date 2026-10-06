@@ -4,6 +4,22 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a queue's push asks whether its stream has ended only where it could have — `65d3856` · 2026-10-06
+
+```
+on shut (int x$)
+    end x$
+```
+```
+on (int n) = pushed after shut()
+    wide$ << 1
+    shut(wide$)
+    wide$ << 2
+    n = count wide$
+```
+
+`suite/zero/checks/checks/checks.zero:37-38` and `46-50`, with `>pushed after shut() → check`: `wide$` is an `int64` stream. The parity pass, hop 12, transformation 40 (fm3 log 108). A queue's push loaded the ring's ended word and checked it, every time. `end` alone writes that word, and a ring is named only by its own element type or an abstract one above it, so a push through a type no `end` in the store reaches, by `fits` either way or by the IR's type, is `push_queue_open` in `lib/stream.ssa`: the room check and no other. The word is settled in the text once every body is lowered (`settle_pushes` in `src/zero/lower.rs`); a store with a `platform` body of its own keeps every check. lex `two_arrivals` 856 → 844, 2.03× `lex-min`, 1.89× `lex-mod`; hello 1 268, static 1 197. Five paths and `cargo test` 121.
+
 ### zero: a function's name is not a reading of a stream, and `in$` is not handed to what would write it — `9a4e7fc` · 2026-10-06
 
 ```
