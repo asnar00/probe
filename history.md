@@ -4,6 +4,10 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the stores' prose after "the beat belongs to the stream" — `4258d20` · 2026-10-06
+
+Prose only. While hop 8 ran, ash refined question 52 (fm3 `time.md`, "a stream has a beat"): a stream with a rate has a phase and a rate, an item pushed into it lands in its next slot, and the phase changes only on purpose. That replaces "a rate belongs to the activity that pushes", which `suite/zero/hello` and `static`'s `countdown.md` and `suite/zero/timed/timed/timed.md` repeated; they now say only what happens, a number written when it is pushed and then its second passing. What is built is unchanged and is not yet the beat: `step` in `src/zero/lower.rs` moves the clock on from the pusher's now and looks for no slot. Every store pushes each rated stream from one function starting at 0 s, so every case stands under the new ruling as written; fm3 log 94 has the program where the two differ and what landing on the beat would cost hello, 1 348 to about 1 600. zero 553/553 native.
+
 ### zero: a task between a rated stream and the output keeps the rate — `2b1623d` · 2026-10-06
 
 ```
