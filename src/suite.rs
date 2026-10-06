@@ -484,6 +484,8 @@ fn forked<F: FnOnce() -> Result<Got, String>>(f: F, jit: Option<&emit::jit::JitC
         fn _exit(code: i32) -> !;
         fn pipe(fds: *mut i32) -> i32;
         fn signal(sig: i32, handler: extern "C" fn(i32)) -> usize;
+        #[cfg(target_os = "macos")]
+        fn pthread_jit_write_protect_np(enabled: i32);
     }
     use std::io::{Read, Write};
     use std::os::unix::io::FromRawFd;
@@ -496,6 +498,18 @@ fn forked<F: FnOnce() -> Result<Got, String>>(f: F, jit: Option<&emit::jit::JitC
         return Err("fork failed".into());
     }
     if pid == 0 {
+        // the child says for itself that its JIT pages are to be run, not
+        // written. That switch is the thread's own, and a child forked
+        // from a thread that was interrupted while it was writing code
+        // can be left with it the wrong way round: under the whole of
+        // `cargo test` about one fork in several thousand then died of
+        // signal 10 at its first instruction, where a failed check is
+        // signal 5 (a standalone test of 12 000 forks: one to three
+        // without this line, none with it)
+        #[cfg(target_os = "macos")]
+        unsafe {
+            pthread_jit_write_protect_np(1)
+        };
         if let Some(j) = jit {
             use std::sync::atomic::Ordering;
             TRAP_JIT.store(j as *const emit::jit::JitCode as usize, Ordering::SeqCst);
