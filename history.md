@@ -4,6 +4,21 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### stream: a queue's header is eight words again, its word at 16 where slot 0 is — `de38654` · 2026-10-06
+
+```
+    slots: ptr = ptradd vb, 16
+    store slots, r, 16
+```
+```
+    origin: i64 = load r, 8
+    k: i64 = sub at, origin
+    q: ptr(any) = load r, 16
+    v: any = load q, k
+```
+
+`lib/stream.ssa:284-285`, in `ring_queue`, and `424-427`, in `peek_queue`. The parity pass, hop 15, transformation 53's second part (fm3 log 119). Hop fourteen kept the address of a queue's first slot in a ninth word of its header because one ring word was still applied to a queue, the ring's `push` filling a list's or a range's new stream, and it read the buffer through the word at 16. That fill is the queue's own since `23cf526`, so the slots' address goes where the buffer's was: a queue's header is 64 bytes like a ring's, the nine queue words load the word at 16, and the front end's `__queue_T` carves 64 with no literal of its own. No check touched and no number moved: lex 616, a turn 127, hello 1 237, static 1 197. Every store's text differs by `arena_alloc(a, 64)` for 72 and nothing else. `suite/stream.ssa`'s `queue_slot_zero` reads the word at 16 and gives `0, 9` on the library before. Full run green on five paths (`scratchpad/chain47.log`): zero 608, `probe test` 996, `cargo test` 125.
+
 ### zero: a list or a range of more than thirty-two items reads back right — `23cf526` · 2026-10-06
 
 ```
