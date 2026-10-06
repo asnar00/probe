@@ -57,20 +57,17 @@ fn __out_byte(i: i64) -> u8
     b: u8 = load p, i, 1
     ret b
 
-; when it was written (question 52, fm3 log 91): each time the virtual
-; clock moves, `__wait` records a mark, two words, the bytes the device
-; had been given and the time the clock reached. The runner reads them
-; after the text for a case that asserts on time
-data __out_mk: array(i64, 8192)
-data __out_mk_n: array(i64, 1)
-
-fn __out_marks() -> i64
-    q: ptr = addr __out_mk_n
-    n: i64 = load q
-    ret n
+; when it was written (question 55, fm3 log 95): each time the virtual
+; clock moves, `__wait` stores the time it reached at the place in the
+; output where it begins to apply, a word for each byte of the capture
+; and one for its end, indexed by how many bytes the device had been
+; given. A word that is zero says the clock did not move there. The
+; runner reads a word for each byte it read, and one more, for a case
+; that asserts on time
+data __out_t: array(i64, 65537)
 
 fn __out_mark(i: i64) -> i64
-    p: ptr = addr __out_mk
+    p: ptr = addr __out_t
     w: i64 = load p, i, 8
     ret w
 
@@ -91,7 +88,7 @@ fn __str(p: ptr, n: i64) -> u8[]
 
 
 ; the clock reaches t (log 77): the virtual clock jumps there, and marks
-; how much had been written when it did (fm3 log 91)
+; the place in the output where that time begins (fm3 log 95)
 fn __wait(t: i64)
     p: ptr = addr __clock
     c: i64 = load p
@@ -99,14 +96,8 @@ fn __wait(t: i64)
     store m, p
     q: ptr = addr __out_n
     n: i64 = load q
-    k: ptr = addr __out_mk_n
-    w: i64 = load k
-    a: ptr = addr __out_mk
-    store n, a, w, 8
-    w1: i64 = add w, 1
-    store m, a, w1, 8
-    w2: i64 = add w, 2
-    store w2, k
+    a: ptr = addr __out_t
+    store m, a, n, 8
     ret
 
 
@@ -128,10 +119,18 @@ fn __zero_reset()
     arena_init(a, h, 65536)
     k: ptr = addr __clock
     store 0: i64, k
+    mo: ptr = addr __out_n
+    mn: i64 = load mo
+    mt: ptr = addr __out_t
+    loop(mi: i64 = 0) bound 65536
+        store 0: i64, mt, mi, 8
+        md: u1 = cmp.ge mi, mn
+        if md
+            break
+        mi2: i64 = add mi, 1
+        continue mi2
     o: ptr = addr __out_n
     store 0: i64, o
-    mk: ptr = addr __out_mk_n
-    store 0: i64, mk
     _1: u8$ = __queue_u8(1000000, 512)
     _2: __ctx = pack _1
     p: ptr = addr __ctx_mem

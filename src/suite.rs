@@ -69,8 +69,9 @@ struct Case {
     /// the zero runner's cases: print the program's output buffer after
     /// the results, as a line of hex bytes (see `run_calls`)
     text_out: bool,
-    /// the zero runner's cases that assert on time (fm3 log 91): print
-    /// the program's marks after the text, as a line of hex words
+    /// the zero runner's cases that assert on time (fm3 log 91, 95):
+    /// print the program's marks after the text, as a line of hex words,
+    /// one for each byte of the text and one for its end
     times_out: bool,
     /// the zero runner's cases: calls made after `__zero_reset` and
     /// before `__zero_start`, which set the case's context (log 43)
@@ -792,8 +793,9 @@ pub struct Got {
     pub values: Vec<i64>,
     pub text: String,
     /// for a call that wants times: the words of the program's marks,
-    /// two a mark, the bytes written when the clock moved and the time
-    /// it reached
+    /// one for each byte of the text and one more for its end, the time
+    /// the clock moved to when that many bytes had been written, or
+    /// zero where it did not move (fm3 log 95)
     pub marks: Vec<i64>,
 }
 
@@ -856,7 +858,7 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
                     }
                     let mut marks = Vec::new();
                     if call.times {
-                        for i in 0..jit.call("__out_marks", &[])? {
+                        for i in 0..=jit.call("__out_len", &[])? {
                             marks.push(jit.call("__out_mark", &[i])?);
                         }
                     }
@@ -1176,17 +1178,18 @@ fn __ptext()
         ret
 ";
 
-/// the zero runner's marks (fm3 log 91), read back through the program's
-/// `__out_marks()` and `__out_mark(i)` and printed as one hex word each
-/// on a line of their own, after the text
+/// the zero runner's marks (fm3 log 91, 95), read back through the
+/// program's `__out_mark(i)`, a word for each byte of the text and one
+/// for its end, and printed as one hex word each on a line of their own,
+/// after the text
 const PMARKS: &str = r"
 fn __pmarks()
     entry:
-        n: i64 = __out_marks()
+        n: i64 = __out_len()
         i0: i64 = const 0
         jmp loop(i0)
     loop(i: i64):
-        done: u1 = cmp.ge i, n
+        done: u1 = cmp.gt i, n
         br done, exit, body
     body:
         m: i64 = __out_mark(i)

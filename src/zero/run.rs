@@ -517,13 +517,14 @@ fn judge(expect: &store::Expect, got: Result<suite::Got, String>) -> (bool, Stri
     }
 }
 
-/// What a call wrote, cut at its marks (fm3 log 91): a mark is the bytes
-/// written when the clock moved and the time it reached, so the text
-/// before the first mark was written at 0 and the text after a mark at
-/// that mark's time. A mark that added no bytes and one that repeats a
-/// time merge away, a stamp belonging to the characters (question 53);
-/// and the last piece loses one trailing newline, as a plain text result
-/// does
+/// What a call wrote, cut at its marks (fm3 log 91, 95): there is a word
+/// for each byte of the text and one for its end, and a word that is not
+/// zero is the time the clock moved to when that many bytes had been
+/// written. So the text before the first such word was written at 0 and
+/// the text from one on at its time. A word that repeats the time
+/// before it merges away, a stamp belonging to the characters (question
+/// 53); and the last piece loses one trailing newline, as a plain text
+/// result does
 fn pieces(got: &suite::Got) -> Vec<(String, i64)> {
     let bytes = got.text.as_bytes();
     let mut out: Vec<(String, i64)> = Vec::new();
@@ -533,11 +534,11 @@ fn pieces(got: &suite::Got) -> Vec<(String, i64)> {
             out.push((String::from_utf8_lossy(&bytes[from..to]).to_string(), t));
         }
     };
-    for mark in got.marks.chunks(2) {
-        let [n, t] = mark else { break };
-        let to = (*n).clamp(from as i64, bytes.len() as i64) as usize;
-        cut(from, to, now, &mut out);
-        (from, now) = (to, *t);
+    for (at, t) in got.marks.iter().enumerate().take(bytes.len() + 1) {
+        if *t != 0 {
+            cut(from, at, now, &mut out);
+            (from, now) = (at, *t);
+        }
     }
     cut(from, bytes.len(), now, &mut out);
     if let Some((last, _)) = out.last_mut() {
@@ -557,22 +558,31 @@ fn show(vals: &[i64]) -> String {
 mod tests {
     use super::*;
 
-    /// what a call wrote, cut at its marks (fm3 log 91): the text before
-    /// the first mark is at 0, a mark that added no bytes and one that
-    /// repeats a time merge away, and the last piece loses one newline
+    /// what a call wrote, cut at its marks (fm3 log 91, 95): the text
+    /// before the first word that is not zero is at 0, a word that
+    /// repeats a time merges away, and the last piece loses one newline
     #[test]
     fn the_text_is_cut_at_the_marks() {
-        let got = |text: &str, marks: &[i64]| pieces(&suite::Got { values: vec![], text: text.into(), marks: marks.to_vec() });
+        // a word for each byte and one for the end, zero but where given
+        let got = |text: &str, marks: &[(usize, i64)]| {
+            let mut words = vec![0i64; text.len() + 1];
+            for (at, t) in marks {
+                words[*at] = *t;
+            }
+            pieces(&suite::Got { values: vec![], text: text.into(), marks: words })
+        };
         let p = |t: &str, us: i64| (t.to_string(), us);
-        assert_eq!(got("10\n9\nhi\n", &[3, 1_000_000]), [p("10\n", 0), p("9\nhi", 1_000_000)]);
-        // the clock moved twice with nothing written between, then stood still
-        assert_eq!(got("ab", &[0, 500_000, 0, 2_000_000, 1, 2_000_000]), [p("ab", 2_000_000)]);
+        assert_eq!(got("10\n9\nhi\n", &[(3, 1_000_000)]), [p("10\n", 0), p("9\nhi", 1_000_000)]);
+        // the clock moved before anything was written, then stood still
+        assert_eq!(got("ab", &[(0, 2_000_000), (1, 2_000_000)]), [p("ab", 2_000_000)]);
         // nothing after the last mark, and a last piece that was only a newline
-        assert_eq!(got("a\n", &[2, 3_000_000]), [p("a", 0)]);
-        assert_eq!(got("a\n\n", &[2, 3_000_000]), [p("a\n", 0)]);
-        assert_eq!(got("", &[0, 1_000_000]), []);
+        assert_eq!(got("a\n", &[(2, 3_000_000)]), [p("a", 0)]);
+        assert_eq!(got("a\n\n", &[(2, 3_000_000)]), [p("a\n", 0)]);
+        assert_eq!(got("", &[(0, 1_000_000)]), []);
         assert_eq!(got("plain\n", &[]), [p("plain", 0)]);
-        assert_eq!(store::spell_timed(&got("10\n9\n", &[3, 1_000_000])), "\"10\\n\" at 0 s, \"9\" at 1 s");
+        assert_eq!(store::spell_timed(&got("10\n9\n", &[(3, 1_000_000)])), "\"10\\n\" at 0 s, \"9\" at 1 s");
+        // no marks read at all: the whole text at 0
+        assert_eq!(pieces(&suite::Got { values: vec![], text: "x".into(), marks: vec![] }), [p("x", 0)]);
     }
 
     /// the contexts a store's cases run in and the overrides among them

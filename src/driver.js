@@ -80,12 +80,13 @@ for (const c of spec.cases) {
   }
 }
 
-// when the text was written: the words of the program's marks, two a
-// mark, the bytes written when its clock moved and the time it reached
+// when the text was written: the words of the program's marks, one for
+// each byte of the text and one for its end, the time its clock moved to
+// when that many bytes had been written, or zero
 function readMarks(inst) {
-  const n = Number(inst.exports.__out_marks());
+  const n = Number(inst.exports.__out_len());
   const words = [];
-  for (let i = 0; i < n; i++) words.push(BigInt.asIntN(64, inst.exports.__out_mark(BigInt(i))).toString());
+  for (let i = 0; i <= n; i++) words.push(BigInt.asIntN(64, inst.exports.__out_mark(BigInt(i))).toString());
   return words;
 }
 
