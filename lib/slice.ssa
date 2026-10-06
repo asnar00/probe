@@ -1966,21 +1966,17 @@ fn max(c: number[,], a: number[,], r: number[])
     ret
 
 ; --- buffers from a heap (lib/heap.ssa): the header and the elements
-; in one region, given back by the header's own numbers. The heap
-; still counts its bytes in `i64` (fm3 log 121), so these two do, and
-; hand the header's two numbers on as the `index` they are ---
-fn buffer_take(h: ptr, elem: i64, cap: i64) -> ptr
-    bytes: i64 = mul elem, cap
-    total: i64 = add bytes, 16
+; in one region, given back by the header's own numbers ---
+fn buffer_take(h: ptr, elem: index, cap: index) -> ptr
+    bytes: index = mul elem, cap
+    total: index = add bytes, 16
     p: ptr = heap_take(h, total)
-    e: index = conv elem
-    c: index = conv cap
-    buffer_init(p, e, c)
+    buffer_init(p, elem, cap)
     ret p
 fn buffer_give(h: ptr, p: ptr)
-    elem: i64 = load p
-    cap: i64 = load p, 8
-    bytes: i64 = mul elem, cap
-    total: i64 = add bytes, 16
+    elem: index = load p
+    cap: index = load p, 8
+    bytes: index = mul elem, cap
+    total: index = add bytes, 16
     heap_give(h, p, total)
     ret

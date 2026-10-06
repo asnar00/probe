@@ -35,18 +35,18 @@ fn give_and_retake(mem: ptr) -> u1
     r: u1 = cmp.eq aa, ca
     ret r
 
-fn out_count(mem: ptr) -> i64
+fn out_count(mem: ptr) -> index
     p: ptr = scratch 40
     pool_init(p, mem, 200, 24, 4)
     a: ptr = pool_take(p)
     pool_take(p)
     pool_take(p)
     pool_give(p, a)
-    n: i64 = pool_out(p)
+    n: index = pool_out(p)
     ret n
 
 ; give back in a different order from taking; count is right
-fn any_order(mem: ptr) -> i64
+fn any_order(mem: ptr) -> index
     p: ptr = scratch 40
     pool_init(p, mem, 200, 24, 4)
     a: ptr = pool_take(p)
@@ -62,18 +62,18 @@ fn any_order(mem: ptr) -> i64
     fa: u64 = cast f
     ne: u1 = cmp.ne ea, fa
     check ne
-    n: i64 = pool_out(p)
+    n: index = pool_out(p)
     ret n
 
 ; exactly count slots can be out at once
-fn all_slots(mem: ptr) -> i64
+fn all_slots(mem: ptr) -> index
     p: ptr = scratch 40
     pool_init(p, mem, 200, 24, 4)
     pool_take(p)
     pool_take(p)
     pool_take(p)
     pool_take(p)
-    n: i64 = pool_out(p)
+    n: index = pool_out(p)
     ret n
 
 ; slots hold their own values

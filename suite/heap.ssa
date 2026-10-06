@@ -14,10 +14,10 @@
 ;! values_kept u8[0*8192] 5 6 -> 11
 ;! whole_heap u8[0*8192] -> 1
 
-fn heap_fits(mem: ptr) -> i64
+fn heap_fits(mem: ptr) -> index
     h: ptr = scratch 56
     heap_init(h, mem, 8192, 256)
-    s: i64 = heap_size(h)
+    s: index = heap_size(h)
     ret s
 
 ; two smallest blocks are one unit apart
@@ -33,11 +33,11 @@ fn take_two(mem: ptr) -> i64
     ret r
 
 ; a request rounds up to a power of two: 300 bytes take 512
-fn rounds_up(mem: ptr) -> i64
+fn rounds_up(mem: ptr) -> index
     h: ptr = scratch 56
     heap_init(h, mem, 8192, 256)
     heap_take(h, 300)
-    o: i64 = heap_out(h)
+    o: index = heap_out(h)
     ret o
 
 ; a 1 KB block sits at a 1 KB boundary of the heap
@@ -72,18 +72,18 @@ fn give_merges(mem: ptr) -> u1
     r: u1 = cmp.eq aa, bg
     ret r
 
-fn out_accounts(mem: ptr) -> i64
+fn out_accounts(mem: ptr) -> index
     h: ptr = scratch 56
     heap_init(h, mem, 8192, 256)
     a: ptr = heap_take(h, 256)
     heap_take(h, 512)
     heap_take(h, 256)
     heap_give(h, a, 256)
-    o: i64 = heap_out(h)
+    o: index = heap_out(h)
     ret o
 
 ; every unit can be out at once
-fn all_units(mem: ptr) -> i64
+fn all_units(mem: ptr) -> index
     h: ptr = scratch 56
     heap_init(h, mem, 8192, 256)
     loop(i: i64 = 0)
@@ -93,7 +93,7 @@ fn all_units(mem: ptr) -> i64
         heap_take(h, 256)
         i1: i64 = add i, 1
         continue i1
-    o: i64 = heap_out(h)
+    o: index = heap_out(h)
     ret o
 
 ; what was given back is what is taken next
@@ -131,7 +131,7 @@ fn whole_heap(mem: ptr) -> u1
     aa: u64 = cast a
     ba: u64 = cast b
     same: u1 = cmp.eq aa, ba
-    o: i64 = heap_out(h)
+    o: index = heap_out(h)
     full: u1 = cmp.eq o, 4096
     r: u1 = and same, full
     ret r
