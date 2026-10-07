@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `(n) times` on a push — `3604cef` · 2026-10-07
+
+```
+on up to (int k)
+    up$ << 0
+    up$ << up$ + 1 (k) times
+
+on called (int k)
+    up$ << twice (k) (3) times
+```
+
+`suite/zero/words/words/words.zero:18-20` and `:32-33`. fm3's question 79 gave a push two more words; this is the first, n pushes. The trap was in the parser: a call swallows the count, and `times` is a word of two function names in the suite. The rule is one sentence: a bracketed group directly before `times` is the count and never an argument, unless a declared name has `times` after the words so far (`count_ahead`, `src/zero/syntax.rs`), the way `and` and `or` are told. One line cannot be told and is refused with both spellings, `x$ << three (k) times` where `three (int k) times` is declared. The count is worked out once and covers a chain's last item, as `while` does; each push works its item out again. Into a cell five bumps count 51 as they run, the `for` they replace 66. At feature scope `first$ << src$ (3) times` stands for the first three, its count a hidden field of the context. A new store, `suite/zero/words`, 19 cases; no existing store's IR moved; zero 760/760 natively, `cargo test zero` 52; the six measured rows as they were; the meter 124 of 1 924.
+
 ### zero: what changes at feature scope is a stream — `8dd11b2` · 2026-10-07
 
 ```
