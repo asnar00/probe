@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the running sum — `fdd6404` · 2026-10-07
+
+```
+int x$
+int sum$
+```
+```
+sum$ << sum$ + x$ forever
+```
+
+`suite/zero/words/words/words.zero:21-22` and `:28`. fm3's question 80, ruled: on the right of its own standing push a stream's own name is a read of its latest and sets nothing off, and the other stream there paces the line. The parser keeps the pacing stream as the line's first item and the expression beside it (`Decl::Edge`'s `first`); the edge's function pushes the expression. What `sum$` is kept as does not show. Read only by its name it is a cell, a load, an add and a store, 7 an item counted where the same sum as a stream processor read by name is 26. Wired on and named nowhere else it has no storage and the line keeps its last item, 86 an item with the digits against the processor's 83. Wired and read both, a queue, its read guarded before the first item and the queue not freed under it: the first try printed 1, 66, 67, 68. Two other streams are refused (question 86); the clock's message says it is ruled. 38 cases in `words`; no existing store's IR moved; zero 777/777, `cargo test zero` 54; the six rows as they were; the meter 124 of 1 991.
+
 ### zero: `until` on a push — `0cd1bd7` · 2026-10-07
 
 ```
