@@ -1,0 +1,60 @@
+type word = hello | world
+int up$
+int seen$ << 0
+word said$ at (1 hz)
+int d$ << 0 << (d$ + 1 << d$ + 1) (2) times
+out$ << (up$ << "\n") forever
+out$ << (said$ << "\n") forever
+
+on (int n) << twice (int k)
+    n << k * 2
+
+on three lines()
+    out$ << ("hello" << "\n") (3) times
+
+on one line()
+    out$ << "hello" << "\n" (3) times
+    out$ << "."
+
+on seeded()
+    up$ << 0 << (up$ + 1 << up$ * 10) (2) times
+
+on pairs to six()
+    up$ << 0 << (up$ + 1 << up$ + 1) until (up$ == 6)
+
+on pairs to six by the item()
+    up$ << 0 << (up$ + 1 << up$ + 1) until (_ == 6)
+
+on pairs under six()
+    up$ << 0 << (up$ + 1 << up$ + 1) while (_ < 6)
+
+on (int n) << stepped()
+    seen$ << (seen$ + 1 << seen$ * 2) (3) times
+    n << seen$
+
+on (int n) << stepped past (int limit)
+    seen$ << (seen$ + 1 << seen$ * 2) until (_ > limit)
+    n << seen$
+
+on (int n) << stepped under (int limit)
+    seen$ << (seen$ + 1 << seen$ * 2) while (_ < limit)
+    n << seen$
+
+on maybe (int c)
+    up$ << 9 << (1 << 2) if (c > 0) (2) times
+    out$ << "done"
+
+on plain()
+    up$ << (1 << 2)
+
+on one bracketed()
+    up$ << (7) (3) times
+
+on a call (int k)
+    up$ << (k << twice (k)) (2) times
+
+on (int n) << declared()
+    n << count d$
+
+on greetings()
+    said$ << (hello << world) (3) times

@@ -37,7 +37,10 @@ pub enum Decl {
     /// question 80, log 149): the one stream it names other than the
     /// target paces the line and is kept as `items[0]`, and `first` is
     /// the expression with that stream's name read as the item
-    Edge { target: Expr, items: Vec<Expr>, first: Option<Expr>, cond: Option<Expr>, word: Repeat, only: Option<Expr>, forever: bool, line: usize },
+    /// `group` is how many of the line's last items its word applies
+    /// to (fm3 question 84, log 155): 1 with nothing bracketed, and
+    /// all of them in `out$ << (i$ << "\n") forever`
+    Edge { target: Expr, items: Vec<Expr>, group: usize, first: Option<Expr>, cond: Option<Expr>, word: Repeat, only: Option<Expr>, forever: bool, line: usize },
 }
 
 /// Which word a push's `cond` goes with (fm3 question 79, log 147):
@@ -134,8 +137,8 @@ pub enum Init {
     Value(Expr),
     /// `Vec v(1, 2, 3)`, `Vec v(z = 3, x = 1)`
     Construct(Vec<Arg>),
-    /// `int i$ << 1 << (i$ + 1) while (i$ < 5)`
-    Pushes { items: Vec<Expr>, cond: Option<Expr>, word: Repeat },
+    /// `int i$ << 1 << (i$ + 1) while (i$ < 5)`; `group` as on a push
+    Pushes { items: Vec<Expr>, group: usize, cond: Option<Expr>, word: Repeat },
 }
 
 #[derive(Clone, Debug)]
@@ -167,8 +170,13 @@ pub enum Stmt {
     /// this body in its chain, which is how a feature extends a `<<`
     /// method — the one shape `existing name(...)` cannot spell
     /// `forever` is the word on it (fm3 question 79), which only a
-    /// line at feature scope may take: kept so the refusal can say why
-    Push { target: Expr, items: Vec<Expr>, cond: Option<Expr>, word: Repeat, existing: bool, forever: bool, line: usize },
+    /// line at feature scope may take: kept so the refusal can say why.
+    /// A word applies to the last item of the chain, and brackets
+    /// round several items make them the one it applies to, `x$ <<
+    /// (a << b) (3) times` (fm3 question 84, log 155): the items stay
+    /// one flat list, and `group` is how many of its last the word
+    /// covers, 1 where nothing is bracketed
+    Push { target: Expr, items: Vec<Expr>, group: usize, cond: Option<Expr>, word: Repeat, existing: bool, forever: bool, line: usize },
     Expr { expr: Expr, line: usize },
 }
 
@@ -578,7 +586,7 @@ impl<'a> Parser<'a> {
             Some(Tok::Seq(_)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) => {
                 let line = self.line();
                 let target = self.parse_primary()?;
-                let items = self.parse_pushes()?;
+                let (items, group) = self.parse_pushes()?;
                 if items.is_empty() {
                     return Err(self.err("nothing to push: an edge is `out$ << i$`"));
                 }
@@ -612,7 +620,7 @@ impl<'a> Parser<'a> {
                     (Some(c), Repeat::Until, Some(ExprKind::Seq(s))) => Some(as_item(&c, s)),
                     (c, _, _) => c,
                 };
-                Ok(Decl::Edge { target, items, first, cond, word, only, forever, line })
+                Ok(Decl::Edge { target, items, group, first, cond, word, only, forever, line })
             }
             _ => Err(self.err(format!("expected 'on', 'type', a variable declaration or a wiring at the top of the feature, found {}", self.found()))),
         }
@@ -906,7 +914,7 @@ impl<'a> Parser<'a> {
         } else if self.at_sym("(") {
             Some(Init::Construct(self.parse_args()?))
         } else if self.at_sym("<<") {
-            let items = self.parse_pushes()?;
+            let (items, group) = self.parse_pushes()?;
             if self.at_word("forever") {
                 return Err(self.err(format!("`forever` on a declaration is not built: declare the stream and wire it on a line of its own, `{}$ << x$ forever`", name)));
             }
@@ -914,7 +922,7 @@ impl<'a> Parser<'a> {
                 return Err(self.err(format!("a declaration's items take no `if`: declare the stream, `{} {}$`, and push on a line of its own", ty, name)));
             }
             let PushWords { cond, word, .. } = self.push_words()?;
-            Some(Init::Pushes { items, cond, word })
+            Some(Init::Pushes { items, group, cond, word })
         } else {
             None
         };
@@ -924,16 +932,75 @@ impl<'a> Parser<'a> {
 
     /// `<< a << b`; a bare `<<` at the end of the line is refused by
     /// the lowering (log 38). The words after the items are
-    /// `push_words`'
-    fn parse_pushes(&mut self) -> Result<Vec<Expr>, Error> {
+    /// `push_words`'. A bracket with a `<<` directly inside it is a
+    /// group of items, the one item the push's word applies to (fm3
+    /// question 84, log 155): `x$ << (a << b) (3) times`. Its items
+    /// join the one list, and the number given back with the list is
+    /// how many of its last the word covers, 1 with nothing bracketed.
+    /// A group stands last in its chain
+    fn parse_pushes(&mut self) -> Result<(Vec<Expr>, usize), Error> {
         let mut items = Vec::new();
+        let mut group = 1;
         while self.eat_sym("<<") {
             if self.at(&Tok::Newline) {
                 break;
             }
-            items.push(self.parse_expr()?);
+            if !self.group_ahead() {
+                items.push(self.parse_expr()?);
+                continue;
+            }
+            self.pos += 1;
+            let before = items.len();
+            loop {
+                if self.group_ahead() {
+                    return Err(self.err("a group of items inside a group: one pair of brackets says it, `x$ << (a << b << c) (3) times`"));
+                }
+                items.push(self.parse_expr()?);
+                if !self.eat_sym("<<") {
+                    break;
+                }
+            }
+            self.expect_sym(")")?;
+            group = items.len() - before;
+            if self.at_sym("<<") {
+                return Err(self.err("brackets round several items of a push make them the one item its word applies to, and they stand last in the chain (fm3 question 84): `x$ << a << (b << c) (3) times`. Before the last item a group would be its items in order and nothing more: write them without the brackets"));
+            }
+            let follows = match self.peek() {
+                Some(Tok::Newline) | Some(Tok::Sym(")")) | Some(Tok::Sym(",")) | None => true,
+                Some(Tok::Word(w)) => matches!(w.as_str(), "if" | "while" | "until" | "forever" | "times" | "merge"),
+                Some(Tok::Sym("(")) => self.count_ahead(None),
+                _ => false,
+            };
+            if !follows {
+                return Err(self.err("brackets round several items of a push make them one item for the word that follows, `x$ << (a << b) (3) times`: a group is not a value, and what may follow it is `if`, `(n) times`, `while`, `until` or `forever`"));
+            }
         }
-        Ok(items)
+        Ok((items, group))
+    }
+
+    /// Is the bracket at the cursor a group of a push's items (fm3 log
+    /// 155)? It is where a `<<` stands inside it at its own depth, in
+    /// no deeper bracket: `<<` is no operator of an expression, so a
+    /// bracketed value never has one there
+    fn group_ahead(&self) -> bool {
+        let mut depth = 0;
+        let mut i = self.pos;
+        loop {
+            match self.toks.get(i).map(|t| &t.tok) {
+                Some(Tok::Sym("(")) | Some(Tok::Sym("[")) => depth += 1,
+                Some(Tok::Sym(")")) | Some(Tok::Sym("]")) => {
+                    depth -= 1;
+                    if depth <= 0 {
+                        return false;
+                    }
+                }
+                Some(Tok::Sym("<<")) if depth == 1 => return matches!(self.peek(), Some(Tok::Sym("("))),
+                Some(Tok::Newline) | None => return false,
+                _ if depth == 0 => return false,
+                _ => {}
+            }
+            i += 1;
+        }
     }
 
     /// The words after a push's items (fm3 question 79): `if (c)`, the
@@ -1259,7 +1326,7 @@ impl<'a> Parser<'a> {
             }
             Some(Tok::Seq(_)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) => {
                 let target = self.parse_primary()?;
-                let items = self.parse_pushes()?;
+                let (items, group) = self.parse_pushes()?;
                 if items.is_empty() {
                     return Err(self.err("nothing to push: `x$ << item`"));
                 }
@@ -1271,9 +1338,9 @@ impl<'a> Parser<'a> {
                 let PushWords { only, cond, word, forever } = self.push_words()?;
                 self.expect_newline()?;
                 if let Some(c) = only {
-                    return Ok(Stmt::If { cond: c, then: vec![Stmt::Push { target, items, cond, word, existing: false, forever, line }], els: None, line, on_push: true });
+                    return Ok(Stmt::If { cond: c, then: vec![Stmt::Push { target, items, group, cond, word, existing: false, forever, line }], els: None, line, on_push: true });
                 }
-                Ok(Stmt::Push { target, items, cond, word, existing: false, forever, line })
+                Ok(Stmt::Push { target, items, group, cond, word, existing: false, forever, line })
             }
             // `existing o$ << x` inside a `<<` method: the definition
             // below this one in the chain, which no `existing name(...)`
@@ -1281,7 +1348,7 @@ impl<'a> Parser<'a> {
             Some(Tok::Word(w)) if w == "existing" && matches!(self.peek_at(1), Some(Tok::Seq(_))) && matches!(self.peek_at(2), Some(Tok::Sym("<<"))) => {
                 self.pos += 1;
                 let target = self.parse_primary()?;
-                let items = self.parse_pushes()?;
+                let (items, _) = self.parse_pushes()?;
                 if self.at_word("while") {
                     return Err(self.err("`existing x$ << item` takes no `while`: it calls the definition below once"));
                 }
@@ -1289,7 +1356,7 @@ impl<'a> Parser<'a> {
                     return Err(self.err("`existing x$ << item` passes one item to the definition below"));
                 }
                 self.expect_newline()?;
-                Ok(Stmt::Push { target, items, cond: None, word: Repeat::While, existing: true, forever: false, line })
+                Ok(Stmt::Push { target, items, group: 1, cond: None, word: Repeat::While, existing: true, forever: false, line })
             }
             Some(Tok::Indent) => Err(self.err("an indented line with nothing to belong to")),
             _ => {

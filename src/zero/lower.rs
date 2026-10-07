@@ -2258,7 +2258,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
             match d {
                 Decl::Var(v) => l.collect_nodes(v, &f.name, &f.code.file)?,
                 Decl::Wire(e) => l.collect_wire(e, &f.name, &f.code.file)?,
-                Decl::Edge { target, items, first, cond, word, only, forever, line } => l.collect_edge(target, items, first.as_ref(), cond.as_ref(), *word, only.as_ref(), *forever, *line, &f.name, &f.code.file)?,
+                Decl::Edge { target, items, first, cond, word, only, forever, line, .. } => l.collect_edge(target, items, first.as_ref(), cond.as_ref(), *word, only.as_ref(), *forever, *line, &f.name, &f.code.file)?,
                 _ => {}
             }
         }
@@ -4686,8 +4686,10 @@ impl Lowerer {
     /// before it is stored. False, and the name noted, where an item is
     /// not one value of the stream's type: a block, a task, something a
     /// `<<` method takes. An item of a push is not a place where one
-    /// value is wanted, as it is not for a stream
-    fn push_cell(&mut self, name: &str, items: &[Expr], cond: Option<&Expr>, word: Repeat, b: &mut Body, line: usize) -> Result<bool, Error> {
+    /// value is wanted, as it is not for a stream. The word's loop is
+    /// round the last `group` items (fm3 log 155)
+    #[allow(clippy::too_many_arguments)]
+    fn push_cell(&mut self, name: &str, items: &[Expr], group: usize, cond: Option<&Expr>, word: Repeat, b: &mut Body, line: usize) -> Result<bool, Error> {
         let file = b.file.clone();
         let f = self.fvar(name).unwrap().clone();
         self.reach(&format!("{}$", name), &f.feature, &file, line)?;
@@ -4697,68 +4699,97 @@ impl Lowerer {
             Some(c) if word == Repeat::Times => Some(self.push_count(c, b)?),
             _ => None,
         };
-        for (i, e) in items.iter().enumerate() {
-            let looped = cond.filter(|_| i + 1 == items.len());
-            if matches!(e.kind, ExprKind::Range { .. } | ExprKind::List(_)) || self.task_call(e, Some(&b.vars), &file)?.is_some() {
-                self.uncell(name);
-                return Ok(false);
+        // one item worked out as one value of the cell's type, the
+        // stream's own name in it what `read` says; none where it is
+        // not such a value
+        let value = |l: &mut Lowerer, e: &Expr, read: PushRead, b: &mut Body| -> Result<Option<Val>, Error> {
+            if matches!(e.kind, ExprKind::Range { .. } | ExprKind::List(_)) || l.task_call(e, Some(&b.vars), &file)?.is_some() {
+                return Ok(None);
             }
-            let mut counter = None;
-            if looped.is_some() {
-                match &count {
-                    Some(n) => counter = Some(self.open_counted(n, b)),
-                    None => {
-                        b.open_loop("", "", false);
-                        b.depth += 1;
-                    }
-                }
-            }
-            self.push_read = Some((name.to_string(), PushRead::Cell));
-            let v = self.lower_expr(e, Some(&elem), b, None);
-            self.push_read = None;
+            l.push_read = Some((name.to_string(), read));
+            let v = l.lower_expr(e, Some(&elem), b, None);
+            l.push_read = None;
             let v = v?;
             let fitting = if v.literal { fits_literal(&v, &elem) } else { v.ty == elem || widens(&v.ty, &elem) || (is_index(&elem) && v.ty == int_ty()) };
             if !fitting {
-                if looped.is_some() {
-                    b.depth -= 1;
-                }
+                return Ok(None);
+            }
+            l.coerce(v, &elem, &format!("'{}$'", name), b, None, e.line).map(Some)
+        };
+        let once = match cond {
+            Some(_) => items.len().saturating_sub(group.max(1)),
+            None => items.len(),
+        };
+        for e in &items[..once] {
+            let Some(v) = value(self, e, PushRead::Cell, b)? else {
                 self.uncell(name);
                 return Ok(false);
-            }
-            let v = self.coerce(v, &elem, &format!("'{}$'", name), b, None, e.line)?;
-            let Some(c) = looped else {
-                self.field_put(name, &v.text, b);
-                continue;
             };
-            if let Some(k) = counter {
+            self.field_put(name, &v.text, b);
+        }
+        let Some(c) = cond else { return Ok(true) };
+        let grouped = &items[once..];
+        let counter = match &count {
+            Some(n) => Some(self.open_counted(n, b)),
+            None => {
+                b.open_loop("", "", false);
+                b.depth += 1;
+                None
+            }
+        };
+        // a `while` holds its candidates until the test is made, each
+        // reading the one before it; a count and an `until` store each
+        // item as it is worked out
+        let mut held: Vec<Val> = Vec::new();
+        for e in grouped {
+            let read = match held.last() {
+                Some(prev) => PushRead::Value(prev.clone()),
+                None => PushRead::Cell,
+            };
+            let Some(v) = value(self, e, read, b)? else {
+                b.depth -= 1;
+                self.uncell(name);
+                return Ok(false);
+            };
+            if counter.is_some() {
                 self.field_put(name, &v.text, b);
-                self.close_counted(&k, b);
                 continue;
             }
             let v = b.materialize(&v);
-            // `until`: the field stored, then the condition asked of
-            // the value stored, which the stream's name is too
             if word == Repeat::Until {
                 self.field_put(name, &v.text, b);
-                let cv = self.push_cond(name, PushRead::Value(v.clone()), &v, c, word, b)?;
-                b.line(&format!("if {}", cv.text));
-                b.depth += 1;
-                b.line("break");
-                b.depth -= 1;
-                b.line("continue");
-                b.depth -= 1;
-                continue;
+                held.clear();
             }
-            let cv = self.push_cond(name, PushRead::Cell, &v, c, word, b)?;
+            held.push(v);
+        }
+        if let Some(k) = counter {
+            self.close_counted(&k, b);
+            return Ok(true);
+        }
+        let v = held.last().unwrap().clone();
+        // `until`: the field stored, then the condition asked of
+        // the value stored, which the stream's name is too
+        if word == Repeat::Until {
+            let cv = self.push_cond(name, PushRead::Value(v.clone()), &v, c, word, b)?;
             b.line(&format!("if {}", cv.text));
-            b.line("else");
             b.depth += 1;
             b.line("break");
             b.depth -= 1;
-            self.field_put(name, &v.text, b);
             b.line("continue");
             b.depth -= 1;
+            return Ok(true);
         }
+        let cv = self.push_cond(name, PushRead::Cell, &v, c, word, b)?;
+        b.line(&format!("if {}", cv.text));
+        b.line("else");
+        b.depth += 1;
+        b.line("break");
+        b.depth -= 1;
+        for v in &held {
+            self.field_put(name, &v.text, b);
+        }
+        b.line("continue");
+        b.depth -= 1;
         Ok(true)
     }
 
@@ -4919,7 +4950,7 @@ impl Lowerer {
                 does.push(put(field, local()));
                 pushed = pushed.iter().map(|e| super::syntax::renamed(e, tname, field)).collect();
             }
-            does.push(Stmt::Push { target: seq(tname), items: pushed, cond: None, word: Repeat::While, existing: false, forever: false, line });
+            does.push(Stmt::Push { target: seq(tname), items: pushed, group: 1, cond: None, word: Repeat::While, existing: false, forever: false, line });
             match (only, &counted, &until) {
                 (Some(c), _, _) => vec![Stmt::If { cond: match &last { Some(field) => super::syntax::renamed(c, tname, field), None => c.clone() }, then: does, els: None, line, on_push: true }],
                 (None, Some((field, n)), _) => {
@@ -5277,7 +5308,7 @@ impl Lowerer {
                                 Some(Init::Value(e)) if !wired => {
                                     self.resident_init(v, &ty, e, &mut b)?
                                 }
-                                Some(Init::Pushes { items, cond, word }) => {
+                                Some(Init::Pushes { items, group, cond, word }) => {
                                     // `int b$ << a$`: a stream on the right and
                                     // no `forever`, refused as the line of its
                                     // own is (fm3 question 80)
@@ -5291,7 +5322,7 @@ impl Lowerer {
                                     // the items before the first task call
                                     // are pushed here; the calls are nodes
                                     let n = items.iter().position(|e| matches!(self.task_call(e, None, &b.file), Ok(Some(_)))).unwrap_or(items.len());
-                                    self.lower_pushes(&v.name, &s, &items[..n], cond.as_ref(), *word, &mut b)?;
+                                    self.lower_pushes(&v.name, &s, &items[..n], *group, cond.as_ref(), *word, &mut b)?;
                                     s
                                 }
                                 Some(Init::Construct(_)) => return Err(lex::error(&b.file, v.line, format!("'{}$' is a stream: it is filled with `<<`, or made from a list or a range", v.name))),
@@ -7001,10 +7032,10 @@ impl Lowerer {
                             self.assign(&v.name, s.clone(), b, v.line)?;
                             self.run_task(&info, &args, hz, &s, b, e.line)?;
                         }
-                        (Some(Init::Pushes { items, cond, word }), _) => {
+                        (Some(Init::Pushes { items, group, cond, word }), _) => {
                             let s = self.empty_stream(v, &ty, b, Some(&v.name))?;
                             self.assign(&v.name, s.clone(), b, v.line)?;
-                            self.lower_pushes(&v.name, &s, items, cond.as_ref(), *word, b)?;
+                            self.lower_pushes(&v.name, &s, items, *group, cond.as_ref(), *word, b)?;
                         }
                         (Some(Init::Construct(_)), _) => return Err(lex::error(&file, v.line, format!("'{}$' is a stream: it is filled with `<<`, or made from a list or a range", v.name))),
                         (None, _) => {
@@ -7143,7 +7174,7 @@ impl Lowerer {
                 b.depth -= 1;
                 Ok(false)
             }
-            Stmt::Push { target, items, cond, word, existing, forever, line } => {
+            Stmt::Push { target, items, group, cond, word, existing, forever, line } => {
                 let ExprKind::Seq(n) = &target.kind else {
                     return Err(lex::error(&file, *line, "`<<` pushes into a stream, named `x$`"));
                 };
@@ -7166,7 +7197,7 @@ impl Lowerer {
                 // into a cell (fm3 log 143): a store of its field for
                 // each item; where an item is not one value of its
                 // type the name is noted and lowered here as a stream
-                if self.is_cell(n, b) && self.push_cell(n, items, cond.as_ref(), *word, b, *line)? {
+                if self.is_cell(n, b) && self.push_cell(n, items, *group, cond.as_ref(), *word, b, *line)? {
                     return Ok(false);
                 }
                 // into a stream with a rate the statement's first item
@@ -7209,7 +7240,7 @@ impl Lowerer {
                 self.zbroken = false;
                 self.push_site = Some((n.clone(), b.depth));
                 let mark = b.out.len();
-                let done = self.lower_pushes(n, &s, items, cond.as_ref(), *word, b);
+                let done = self.lower_pushes(n, &s, items, *group, cond.as_ref(), *word, b);
                 self.push_site = None;
                 if bare {
                     self.bare_gates = None;
@@ -8463,8 +8494,12 @@ impl Lowerer {
     /// push for as long as the condition holds of the candidate, which
     /// it reads as `_` (log 23, 39), and `(n) times` repeats it n
     /// times, the count worked out once before the first push (fm3 log
-    /// 147). What each item does is `push_item`'s
-    fn lower_pushes(&mut self, name: &str, s: &Val, items: &[Expr], cond: Option<&Expr>, word: Repeat, b: &mut Body) -> Result<(), Error> {
+    /// 147). What each item does is `push_item`'s. The word applies to
+    /// the last `group` items, more than one where the text has them
+    /// in brackets (fm3 question 84, log 155): pushed in order each
+    /// time round, `_` the last of them
+    #[allow(clippy::too_many_arguments)]
+    fn lower_pushes(&mut self, name: &str, s: &Val, items: &[Expr], group: usize, cond: Option<&Expr>, word: Repeat, b: &mut Body) -> Result<(), Error> {
         let file = b.file.clone();
         let Ty::Stream(elem) = s.ty.clone() else { unreachable!() };
         let elem = *elem;
@@ -8480,15 +8515,17 @@ impl Lowerer {
             Some(c) if word == Repeat::Times => Some(self.push_count(c, b)?),
             _ => None,
         };
+        let once = match cond {
+            Some(_) => items.len().saturating_sub(group.max(1)),
+            None => items.len(),
+        };
         for (i, e) in items.iter().enumerate() {
-            let last = i + 1 == items.len();
-            let looped = cond.filter(|_| last);
             // a task call in the chain: the task runs into the stream now
             if let Some((info, args, hz)) = self.task_call(e, Some(&b.vars), &file)? {
                 if b.kind == BodyKind::Reset {
                     return Err(lex::error(&file, e.line, "a task call at feature scope before a pushed item: a chain's items come before its tasks"));
                 }
-                if looped.is_some() {
+                if i >= once {
                     return Err(lex::error(&file, e.line, match word {
                         Repeat::While => "a task call is not repeated with `while`: the task's own chain says when it stops",
                         _ => "a task call is not repeated: the task's own chain says when it stops",
@@ -8498,64 +8535,110 @@ impl Lowerer {
                 self.run_task(&info, &args, hz, s, b, e.line)?;
                 continue;
             }
-            let Some(c) = looped else {
+            if i < once {
                 self.push_once(name, s, e, &elem, b)?;
-                continue;
-            };
-            // `(n) times`: the item worked out and pushed each time
-            // round, whatever it is, a text and a range among them
-            if let Some(n) = &count {
-                let k = self.open_counted(n, b);
+            }
+        }
+        let Some(c) = cond else { return Ok(()) };
+        let grouped = &items[once..];
+        let Some((e, before)) = grouped.split_last() else { return Ok(()) };
+        // `(n) times`: the items worked out and pushed each time
+        // round, whatever they are, a text and a range among them
+        if let Some(n) = &count {
+            let k = self.open_counted(n, b);
+            for e in grouped {
                 self.push_once(name, s, e, &elem, b)?;
-                self.close_counted(&k, b);
-                continue;
             }
-            // `while` and `until` ask their condition of an item, which
-            // a block is not
-            let said = if word == Repeat::Until { "until" } else { "while" };
-            let block = || lex::error(&file, e.line, format!("a block is pushed once: `{}` repeats an item", said));
-            if matches!(e.kind, ExprKind::Range { .. }) || (matches!(e.kind, ExprKind::Str(_)) && elem.ir() == "u8") {
-                return Err(block());
-            }
+            self.close_counted(&k, b);
+            return Ok(());
+        }
+        // `while` and `until` ask their condition of an item, which
+        // a block is not
+        let said = if word == Repeat::Until { "until" } else { "while" };
+        let block = |e: &Expr| lex::error(&file, e.line, format!("a block is pushed once: `{}` repeats an item", said));
+        let is_block = |e: &Expr| matches!(e.kind, ExprKind::Range { .. }) || (matches!(e.kind, ExprKind::Str(_)) && elem.ir() == "u8");
+        if is_block(e) {
+            return Err(block(e));
+        }
+        let latest = PushRead::Latest(s.clone(), s.ty.clone());
+        // `until` (fm3 log 148): the item pushed, and then the
+        // condition asked of it, `_` and the stream's own name both
+        // the item just pushed; where it holds the loop leaves. The
+        // items of a group before its last are pushed as a chain's are
+        if word == Repeat::Until {
             b.open_loop("", "", false);
             b.depth += 1;
-            self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
+            for x in before {
+                self.push_once(name, s, x, &elem, b)?;
+            }
+            self.push_read = Some((name.to_string(), latest.clone()));
             let v = item(self, e, b);
             self.push_read = None;
             let v = b.materialize(&v?);
-            // `until` (fm3 log 148): the item pushed, and then the
-            // condition asked of it, `_` and the stream's own name both
-            // the item just pushed; where it holds the loop leaves
-            if word == Repeat::Until {
-                if v.ty == block_ty {
-                    return Err(block());
-                }
-                self.push_item(name, s, v.clone(), e.line, b)?;
-                let read = if v.ty == elem { PushRead::Value(v.clone()) } else { PushRead::Latest(s.clone(), s.ty.clone()) };
-                let cv = self.push_cond(name, read, &v, c, word, b)?;
-                b.line(&format!("if {}", cv.text));
-                b.depth += 1;
-                b.line("break");
-                b.depth -= 1;
-                b.line("continue");
-                b.depth -= 1;
-                continue;
-            }
-            // in the condition `_` is the candidate and the stream's
-            // name is still its latest item (log 39)
-            let cv = self.push_cond(name, PushRead::Latest(s.clone(), s.ty.clone()), &v, c, word, b)?;
             if v.ty == block_ty {
-                return Err(block());
+                return Err(block(e));
             }
+            self.push_item(name, s, v.clone(), e.line, b)?;
+            let read = if v.ty == elem { PushRead::Value(v.clone()) } else { latest };
+            let cv = self.push_cond(name, read, &v, c, word, b)?;
             b.line(&format!("if {}", cv.text));
-            b.line("else");
             b.depth += 1;
             b.line("break");
             b.depth -= 1;
-            self.push_item(name, s, v, e.line, b)?;
             b.line("continue");
             b.depth -= 1;
+            return Ok(());
         }
+        // `while`: the group is the candidate, whole. Its items are
+        // worked out in order and held, each reading the one before it
+        // by the stream's name; the condition is asked with `_` the
+        // last of them and the stream's name still its latest item
+        // (log 39), nothing of the group having gone out; where it
+        // holds they are pushed in order
+        if let Some(x) = before.iter().find(|x| is_block(x)) {
+            return Err(block(x));
+        }
+        b.open_loop("", "", false);
+        b.depth += 1;
+        let mut held: Vec<(Val, usize)> = Vec::new();
+        let mut read = latest.clone();
+        for (i, x) in grouped.iter().enumerate() {
+            self.push_read = Some((name.to_string(), read.clone()));
+            let v = item(self, x, b);
+            self.push_read = None;
+            let v = b.materialize(&v?);
+            if i + 1 < grouped.len() {
+                if v.ty == block_ty {
+                    return Err(block(x));
+                }
+                // an item that goes in through a `<<` method is not
+                // there to be read by the name until it is pushed
+                if v.ty != elem && grouped[i + 1..].iter().any(|y| mentions_seq(y, name)) {
+                    return Err(lex::error(&file, x.line, format!("in a group under `while` nothing is pushed until the test is made, and this item is not one {} of '{}$' but something written into it: the items after it cannot read '{}$' as it would then stand. Not built", zero_ty(&elem), name, name)));
+                }
+                if v.ty == elem {
+                    read = PushRead::Value(v.clone());
+                }
+            }
+            held.push((v, x.line));
+        }
+        let v = held.last().unwrap().0.clone();
+        // in the condition `_` is the candidate and the stream's
+        // name is still its latest item (log 39)
+        let cv = self.push_cond(name, latest, &v, c, word, b)?;
+        if v.ty == block_ty {
+            return Err(block(e));
+        }
+        b.line(&format!("if {}", cv.text));
+        b.line("else");
+        b.depth += 1;
+        b.line("break");
+        b.depth -= 1;
+        for (v, line) in held {
+            self.push_item(name, s, v, line, b)?;
+        }
+        b.line("continue");
+        b.depth -= 1;
         Ok(())
     }
 

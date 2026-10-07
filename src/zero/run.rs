@@ -1106,6 +1106,94 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Brackets widen a word (fm3 question 84, log 155): a word on a
+    /// push applies to the last item of its chain, and brackets round
+    /// several items make them the one it applies to. How a group is
+    /// told from a bracketed value, every line tried, the three loops
+    /// over a group, and each refusal with its message
+    #[test]
+    fn brackets_widen_a_word() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-brackets");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (3) → 1\n").unwrap();
+        let head = "int a$\nint b$\nint c$\nb$ << a$ forever\n";
+        let rest = "\non (int n) << twice (int k)\n    n << k * 2\n\non (int n) << three (int k) times\n    n << 3 * k\n\non (int t$) << count up to (int n)\n    t$ << [1 through n]\n\non (int n) << f (int k)\n    a$ << k\n    n << count b$ + count c$\n\non g (int k)\n    ";
+        let with = |lines: &str, body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}{}{}\n", head, lines, rest, body)).unwrap();
+            emit(&dir)
+        };
+        let g = |body: &str| -> String {
+            let ir = with("", body).unwrap_or_else(|e| panic!("{}: {}", body, e));
+            let at = ir.find("\nfn g(k: int)\n").unwrap_or_else(|| panic!("{}: no g", body));
+            let end = ir[at + 1..].find("\nfn ").map_or(ir.len(), |n| at + 1 + n);
+            ir[at + 1..end].to_string()
+        };
+        let looped = |n: &str, item: &str| format!("    loop(_3: int = 0)\n        _4: u1 = cmp.lt _3, {}\n        if _4\n        else\n            break\n{}", n, item);
+        // brackets round one item are ordinary grouping: the lines the
+        // item gives without them, a bracketed call among them
+        assert_eq!(g("b$ << (k) (3) times"), g("b$ << k (3) times"));
+        assert_eq!(g("b$ << (twice (k)) (3) times"), g("b$ << twice (k) (3) times"));
+        assert_eq!(g("b$ << (k + 1) while (_ < 3)"), g("b$ << k + 1 while (_ < 3)"));
+        // a group: its items pushed in order each time round. A call's
+        // bracket inside it is the call's argument, and a declared
+        // name keeps its `times` there as inside any bracket
+        assert!(g("b$ << (k << twice (k)) (3) times").contains(&looped("3", "        push_queue_open(_2, k)\n        _5: int = twice(k)\n        push_queue_open(_2, _5)\n        _6: int = add _3, 1\n        continue _6\n")));
+        assert!(g("b$ << (k << three (k) times) (2) times").contains(&looped("2", "        push_queue_open(_2, k)\n        _5: int = three_times(k)\n        push_queue_open(_2, _5)\n")));
+        // the items before a group are pushed once, and the count is
+        // still worked out before any of them
+        let ir = g("b$ << 7 << (k << twice (k)) (k) times");
+        let (check, first, lp) = (ir.find("cmp.ge k, 0").unwrap(), ir.find("push_queue_open").unwrap(), ir.find("loop(").unwrap());
+        assert!(check < first && first < lp && ir[lp..].matches("push_queue_open").count() == 2 && ir[..lp].matches("push_queue_open").count() == 1, "{}", ir);
+        // `while` over a group: both candidates worked out, the second
+        // reading the first, the test of the last, and then both pushed
+        assert!(g("b$ << k << (b$ + 1 << b$ + 1) while (_ < 6)").contains("    loop()\n        _3: int = latest_queue(_2)\n        _4: int = add _3, 1\n        _5: int = add _4, 1\n        _6: u1 = cmp.lt _5, 6\n        if _6\n        else\n            break\n        push_queue_open(_2, _4)\n        push_queue_open(_2, _5)\n        continue\n"));
+        // `until` over a group: both pushed, as a chain's items are,
+        // and then the test of the last, by `_` or by the stream's name
+        let until = g("b$ << k << (b$ + 1 << b$ + 1) until (b$ == 6)");
+        assert!(until.contains("    loop()\n        _3: int = latest_queue(_2)\n        _4: int = add _3, 1\n        push_queue_open(_2, _4)\n        _5: int = latest_queue(_2)\n        _6: int = add _5, 1\n        push_queue_open(_2, _6)\n        _7: u1 = cmp.eq _6, 6\n        if _7\n            break\n        continue\n"), "{}", until);
+        assert_eq!(until, g("b$ << k << (b$ + 1 << b$ + 1) until (_ == 6)"));
+        // with no word, and with `if`, a group is its items in order
+        assert_eq!(g("b$ << (k << 2)"), g("b$ << k << 2"));
+        assert_eq!(g("b$ << (k << 2) if (k > 0)"), g("b$ << k << 2 if (k > 0)"));
+        assert_eq!(g("b$ << 1 << (k << 2) if (k > 0) (2) times").matches("push_queue_open").count(), 3);
+        // on a declaration, as a word may be
+        assert!(g("int d$ << 0 << (d$ + 1 << d$ + 1) (4) times").contains("    loop(_2: int = 0)\n        _3: u1 = cmp.lt _2, 4\n"));
+        let ambiguous = "'... (k) times' at the end of a push reads two ways: a function whose name ends `(...) times`, called and pushed once, or what stands before the bracket pushed that many times. For the call put it in brackets, `x$ << (name (k) times)`; for the count put the item in brackets, `x$ << (item) (k) times`";
+        let last = "brackets round several items of a push make them the one item its word applies to, and they stand last in the chain (fm3 question 84): `x$ << a << (b << c) (3) times`. Before the last item a group would be its items in order and nothing more: write them without the brackets";
+        let value = "brackets round several items of a push make them one item for the word that follows, `x$ << (a << b) (3) times`: a group is not a value, and what may follow it is `if`, `(n) times`, `while`, `until` or `forever`";
+        for (body, said) in [
+            ("b$ << three (k) times", ambiguous.to_string()),
+            ("b$ << (k << 2) << 3 (3) times", last.to_string()),
+            ("b$ << (k << 2) << 3", last.to_string()),
+            ("b$ << (k << (2 << 3)) (3) times", "a group of items inside a group: one pair of brackets says it, `x$ << (a << b << c) (3) times`".to_string()),
+            ("b$ << (k << 2) + 1", value.to_string()),
+            ("b$ << (k << 2) (3)", value.to_string()),
+            ("b$ << (k << 2) times", "a push's count is the bracketed group before `times`, after the item: `x$ << item (n) times`".to_string()),
+            ("b$ << (k << count up to (3)) (2) times", "a task call is not repeated: the task's own chain says when it stops".to_string()),
+            ("b$ << (k << [1 through 3]) while (_ < 3)", "a block is pushed once: `while` repeats an item".to_string()),
+            ("b$ << ([1 through 3] << k) while (_ < 3)", "a block is pushed once: `while` repeats an item".to_string()),
+            ("b$ << (k << [1 through 3]) until (_ > 3)", "a block is pushed once: `until` repeats an item".to_string()),
+            ("b$ << (k << 2) forever", "`forever` in a function is a line that would set up a standing connection each time the function runs: not built. Wire it at feature scope, where it stands from the start".to_string()),
+        ] {
+            let err = with("", body).expect_err(body);
+            assert!(err.ends_with(&format!("h.zero:20: {}", said)), "{}: {}", body, err);
+        }
+        // a range before the last item of an `until` group is pushed
+        // as a chain pushes it
+        assert!(with("", "b$ << ([1 through 3] << k) until (_ > 3)").is_ok());
+        // a `while` group holds its items until the test: one that is
+        // written into the stream by a `<<` method cannot be read back
+        // by the name before it is there
+        std::fs::write(dir.join("h/h.zero"), "char c$\nout$ << c$ forever\n\non f (int k)\n    c$ << (k << c$) while (_ != 50)\n").unwrap();
+        let err = emit(&dir).expect_err("a method item");
+        assert!(err.ends_with("h.zero:5: in a group under `while` nothing is pushed until the test is made, and this item is not one char of 'c$' but something written into it: the items after it cannot read 'c$' as it would then stand. Not built"), "{}", err);
+        // into a cell: the candidates held, the test, and the stores
+        std::fs::write(dir.join("h/h.zero"), "int seen$ << 0\n\non (int n) << f (int k)\n    seen$ << (seen$ + 1 << seen$ * 2) while (_ < k)\n    n << seen$\n").unwrap();
+        let ir = emit(&dir).unwrap();
+        assert!(ir.contains("    loop()\n        _1: __ctx = load _this\n        _2: int = get _1, seen\n        _3: int = add _2, 1\n        _4: int = mul _3, 2\n        _5: u1 = cmp.lt _4, k\n        if _5\n        else\n            break\n        _6: __ctx = load _this\n        _7: __ctx = set _6, seen, _3\n        store _7, _this\n        _8: __ctx = load _this\n        _9: __ctx = set _8, seen, _4\n        store _9, _this\n        continue\n"), "{}", ir);
+    }
+
     /// The running sum (fm3 question 80's second half, log 149): on
     /// the right of its own standing push a stream's own name is a
     /// read of its latest item and sets nothing off; the one other
