@@ -36,12 +36,11 @@ on (token t$) << lex (char c$)
         index n = loop (index i = 1, index m = -1) yields m
             if (i >= count c$)
                 if (ended c$)
-                    m = i
+                    break (i)
                 break
             if (kind of (peek c$ at (i)) == k)
                 continue (i + 1, -1)
-            m = i
-            break
+            break (i)
         if (n < 0)
             break
         t$ << token(k, start, n)

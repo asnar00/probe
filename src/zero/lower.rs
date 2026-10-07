@@ -861,8 +861,7 @@ impl<'a> Pushes<'a> {
                     inner.insert(var.clone());
                     self.of(body, &inner, out, own);
                 }
-                Stmt::Continue { values, .. } => values.iter().for_each(|e| self.expr(e, &bound, out, own)),
-                Stmt::Break { .. } => {}
+                Stmt::Continue { values, .. } | Stmt::Break { values, .. } => values.iter().for_each(|e| self.expr(e, &bound, out, own)),
                 Stmt::Push { target, items, cond, .. } => {
                     if let ExprKind::Seq(n) = &target.kind {
                         self.pushed(n, &bound, out, own);
@@ -1516,8 +1515,7 @@ impl<'a> Beat<'a> {
                     inner.insert(var.clone(), false);
                     self.events(body, d, &inner, out);
                 }
-                Stmt::Continue { values, .. } => values.iter().for_each(|e| self.events_expr(e, d, &scope, out)),
-                Stmt::Break { .. } => {}
+                Stmt::Continue { values, .. } | Stmt::Break { values, .. } => values.iter().for_each(|e| self.events_expr(e, d, &scope, out)),
                 Stmt::Push { target, items, cond, .. } => {
                     out.push(match &target.kind {
                         ExprKind::Seq(n) => Ev::Push(n.clone()),
@@ -1695,7 +1693,10 @@ impl<'a> Beat<'a> {
                 inner.insert(var.clone(), false);
                 self.flow_loop(None, body, g, d, &inner, leaves, true).1
             }
-            Stmt::Break { .. } => {
+            Stmt::Break { values, .. } => {
+                for e in values {
+                    g = self.flow_expr(e, g, d, scope);
+                }
                 if let Some(l) = self.loops.last_mut() {
                     l.0 = Some(l.0.map_or(g, |b| gcd(b, g)));
                 }
@@ -3417,6 +3418,8 @@ struct LoopCtx {
     /// how many of them the header declares: `continue (...)` gives
     /// those, and a carried stream takes its current reader
     explicit: usize,
+    /// how many names the loop yields: `break (...)` gives those
+    yielded: usize,
     /// a `for`'s stepped variable: its name and the step (`add`/`sub`,
     /// the amount) — the item itself over a range, the index over a
     /// sequence
@@ -6175,7 +6178,7 @@ impl Lowerer {
         }
         // the carried variables are declared inside the loop
         let outer = b.vars.clone();
-        b.loops.push(LoopCtx { carried: carried.clone(), results: results.clone(), explicit: vars.len(), item: None, loaded: None, breaks: 0 });
+        b.loops.push(LoopCtx { carried: carried.clone(), results: results.clone(), explicit: vars.len(), yielded: yields.len(), item: None, loaded: None, breaks: 0 });
         let mut hdr = Vec::new();
         let inner = b.loops.len();
         for (n, ty, init) in &header {
@@ -6363,7 +6366,7 @@ impl Lowerer {
             b.depth -= 1;
             ("add", step, None)
         };
-        b.loops.push(LoopCtx { carried: Vec::new(), results: Vec::new(), explicit: 0, item: Some((var.to_string(), op, step.clone())), loaded: None, breaks: 1 });
+        b.loops.push(LoopCtx { carried: Vec::new(), results: Vec::new(), explicit: 0, yielded: 0, item: Some((var.to_string(), op, step.clone())), loaded: None, breaks: 1 });
         let x = b.define(var, ty.clone());
         let before = b.vars.clone();
         let start = b.out.len();
@@ -6446,7 +6449,7 @@ impl Lowerer {
             b.line(&format!("{}: index = get {}, pos", pos, sv.text));
         }
         let k = b.tmp();
-        b.loops.push(LoopCtx { carried: Vec::new(), results: Vec::new(), explicit: 0, item: Some((k.clone(), "add", "1".into())), loaded: Some(var.to_string()), breaks: 1 });
+        b.loops.push(LoopCtx { carried: Vec::new(), results: Vec::new(), explicit: 0, yielded: 0, item: Some((k.clone(), "add", "1".into())), loaded: Some(var.to_string()), breaks: 1 });
         let depth = b.loops.len();
         b.vars.insert(k.clone(), Var { ir: k.clone(), ty: Ty::Num("index".into()), set: true, loop_depth: depth });
         let before = b.vars.clone();
@@ -6670,6 +6673,11 @@ impl Lowerer {
                 let completes = self.completes(targets, b);
                 for t in targets {
                     if b.vars.contains_key(&t.name) {
+                        // a loop's own variables are given by `continue`
+                        // and never assigned (fm3 question 70, log 144)
+                        if b.loops.last().is_some_and(|l| l.carried[..l.explicit].contains(&t.name)) {
+                            return Err(lex::error(&file, t.line, format!("'{}' is the loop's own: it is not assigned in the loop's body. Give its next value with `continue (...)`, and the loop's result where it leaves with `break (...)`", t.name)));
+                        }
                         if !(completes && b.results.iter().any(|(n, _)| n == &t.name)) {
                             b.assignable(&t.name, t.line)?;
                         }
@@ -6801,14 +6809,37 @@ impl Lowerer {
                 self.lower_for(var, seq, body, b)?;
                 Ok(false)
             }
-            Stmt::Break { line } => {
+            Stmt::Break { values, line } => {
                 if b.loops.is_empty() {
                     return Err(lex::error(&file, *line, "'break' outside a loop"));
                 }
-                let ctx = b.loops.last_mut().unwrap();
-                ctx.breaks += 1;
+                let ctx = b.loops.last().unwrap();
                 let results = ctx.results.clone();
-                let vals = b.current(&results);
+                let mut vals = b.current(&results);
+                // `break (values)` (fm3 question 81): the loop's result
+                // given where it leaves, the names it yields taking
+                // these in `yields`' order; a stream the loop carries
+                // for its body leaves as it stands
+                if !values.is_empty() {
+                    if ctx.item.is_some() {
+                        return Err(lex::error(&file, *line, "a `for` gives nothing: 'break' takes no values here"));
+                    }
+                    let given = ctx.yielded;
+                    if values.len() != given {
+                        return Err(lex::error(&file, *line, match given {
+                            0 => "the loop yields nothing, and 'break' gives a value: name what comes out with `yields` at the end of the loop's first line".to_string(),
+                            _ => format!("the loop yields {} name(s), 'break' gives {}", given, values.len()),
+                        }));
+                    }
+                    for (k, e) in values.iter().enumerate() {
+                        let ty = b.vars[&results[k]].ty.clone();
+                        self.one = !matches!(ty, Ty::Stream(_));
+                        let v = self.lower_expr(e, Some(&ty), b, None)?;
+                        let v = self.coerce(v, &ty, &format!("'{}'", results[k]), b, None, e.line)?;
+                        vals[k] = v.text;
+                    }
+                }
+                b.loops.last_mut().unwrap().breaks += 1;
                 b.line(format!("break {}", vals.join(", ")).trim_end());
                 Ok(true)
             }
@@ -8859,8 +8890,7 @@ impl Lowerer {
                 given && yields.iter().all(|y| y != x) && vars.iter().all(|v| !bound(v) && init(self, v)) && cond.as_ref().is_none_or(|e| self.ring_kept_in(e, x)) && self.ring_kept(body, x)
             }
             Stmt::For { var, seq, body, .. } => var != x && self.ring_kept_in(seq, x) && self.ring_kept(body, x),
-            Stmt::Continue { values, .. } => values.iter().all(|e| self.ring_kept_in(e, x)),
-            Stmt::Break { .. } => true,
+            Stmt::Continue { values, .. } | Stmt::Break { values, .. } => values.iter().all(|e| self.ring_kept_in(e, x)),
             Stmt::Check { cond, .. } => self.ring_kept_in(cond, x),
             Stmt::Push { target, items, cond, .. } => self.ring_kept_in(target, x) && items.iter().chain(cond.iter()).all(|e| self.ring_kept_in(e, x)),
             Stmt::Expr { expr, .. } => self.ring_kept_in(expr, x),
@@ -9862,8 +9892,7 @@ fn quietly_read(features: &[super::store::FeatureDoc], s: &str, call: Called) ->
             Stmt::If { cond, then, els, .. } => quiet(cond, s, file, call) && block(then, s, file, call) && els.as_deref().is_none_or(|e| block(e, s, file, call)),
             Stmt::Loop { vars, cond, body, .. } => vars.iter().all(|v| init(v, s, file, call)) && cond.as_ref().is_none_or(|c| quiet(c, s, file, call)) && block(body, s, file, call),
             Stmt::For { seq, body, .. } => quiet(seq, s, file, call) && block(body, s, file, call),
-            Stmt::Continue { values, .. } => values.iter().all(|e| quiet(e, s, file, call)),
-            Stmt::Break { .. } => true,
+            Stmt::Continue { values, .. } | Stmt::Break { values, .. } => values.iter().all(|e| quiet(e, s, file, call)),
             Stmt::Push { target, items, cond, .. } => quiet(target, s, file, call) && items.iter().chain(cond.iter()).all(|e| quiet(e, s, file, call)),
         })
     }
@@ -9967,8 +9996,7 @@ fn mentions(stmts: &[Stmt], bound: &Names, task: &dyn Fn(&Expr) -> bool, call: &
                 inner.insert(var.clone());
                 mentions(body, &inner, task, call, out, pushed);
             }
-            Stmt::Continue { values, .. } => values.iter().for_each(|e| mentions_in(e, &bound, call, out)),
-            Stmt::Break { .. } => {}
+            Stmt::Continue { values, .. } | Stmt::Break { values, .. } => values.iter().for_each(|e| mentions_in(e, &bound, call, out)),
             Stmt::Push { target, items, cond, existing, .. } => {
                 items.iter().for_each(|e| mentions_in(e, &bound, call, out));
                 cond.iter().for_each(|e| mentions_in(e, &bound, call, out));
@@ -10084,12 +10112,11 @@ fn time_words(stmts: &[Stmt], params: &[String], w: &mut Words) {
                 time_words_in(seq, params, w);
                 time_words(body, params, w);
             }
-            Stmt::Continue { values, .. } => values.iter().for_each(|e| time_words_in(e, params, w)),
+            Stmt::Continue { values, .. } | Stmt::Break { values, .. } => values.iter().for_each(|e| time_words_in(e, params, w)),
             Stmt::Push { items, cond, .. } => {
                 items.iter().for_each(|e| time_words_in(e, params, w));
                 cond.iter().for_each(|e| time_words_in(e, params, w));
             }
-            Stmt::Break { .. } => {}
         }
     }
 }
@@ -10243,12 +10270,11 @@ fn moved_streams(stmts: &[Stmt], out: &mut Vec<String>, task: &dyn Fn(&[Part]) -
                 moved_in(seq, out, task);
                 moved_streams(body, out, task);
             }
-            Stmt::Continue { values, .. } => values.iter().for_each(|e| moved_in(e, out, task)),
+            Stmt::Continue { values, .. } | Stmt::Break { values, .. } => values.iter().for_each(|e| moved_in(e, out, task)),
             Stmt::Push { items, cond, .. } => {
                 items.iter().for_each(|e| moved_in(e, out, task));
                 cond.iter().for_each(|e| moved_in(e, out, task));
             }
-            Stmt::Break { .. } => {}
         }
     }
 }
@@ -10337,7 +10363,7 @@ fn stmt_line(s: &Stmt) -> usize {
     match s {
         Stmt::Var(v) => v.line,
         Stmt::Multi { line, .. } | Stmt::Assign { line, .. } | Stmt::If { line, .. } | Stmt::Loop { line, .. } | Stmt::For { line, .. } => *line,
-        Stmt::Continue { line, .. } | Stmt::Break { line } | Stmt::Check { line, .. } | Stmt::Push { line, .. } | Stmt::Expr { line, .. } => *line,
+        Stmt::Continue { line, .. } | Stmt::Break { line, .. } | Stmt::Check { line, .. } | Stmt::Push { line, .. } | Stmt::Expr { line, .. } => *line,
     }
 }
 

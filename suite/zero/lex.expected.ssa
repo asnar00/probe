@@ -243,11 +243,9 @@ fn lex(t: token$, c: u8$, __hz: i64) -> u8$
             _8: u1 = cmp.ge i, _1
             if _8
                 _9: u1 = ended(c_2)
-                m_2: index = if _9
-                    yield i
-                else
-                    yield m
-                break m_2
+                if _9
+                    break i
+                break m
             _10: u8 = peek_queue(c_2, i)
             _11: int = kind_of(_10)
             _12: u1 = cmp.eq _11, k

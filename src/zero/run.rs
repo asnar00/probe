@@ -1072,6 +1072,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A loop's variables are given by `continue` and never assigned
+    /// (fm3 question 70, log 144), and `break (values)` gives the names
+    /// the loop yields their values where it leaves (question 81): the
+    /// IR's own `break`, so a loop that left by assigning and then
+    /// `break` lowers to no more than it did
+    #[test]
+    fn a_loops_variables_are_given_by_continue() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-continue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (3) → 1\n").unwrap();
+        let with = |body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("on (int n) = f (int k)\n{}\n", body)).unwrap();
+            emit(&dir)
+        };
+        let ir = with("    n = loop (int i = 0, int m = -1) yields m\n        if (i > k)\n            break\n        if (i * i >= k)\n            break (i)\n        continue (i + 1, -1)").unwrap();
+        assert!(ir.contains("        if _1\n            break m\n") && ir.contains("        if _3\n            break i\n"), "{}", ir);
+        for (body, said) in [
+            ("    n = loop (int i = 0) while (i < k) yields i\n        i = i + 1", "h.zero:3: 'i' is the loop's own: it is not assigned in the loop's body. Give its next value with `continue (...)`, and the loop's result where it leaves with `break (...)`"),
+            ("    n = loop (int i = 0, int m = 0) yields m\n        break (i, m)", "h.zero:3: the loop yields 1 name(s), 'break' gives 2"),
+            ("    loop (int i = 0)\n        break (i)\n    n = 1", "h.zero:3: the loop yields nothing, and 'break' gives a value: name what comes out with `yields` at the end of the loop's first line"),
+            ("    for (i in [1 through k])\n        break (i)\n    n = 1", "h.zero:3: a `for` gives nothing: 'break' takes no values here"),
+        ] {
+            let err = with(body).expect_err(body);
+            assert!(err.ends_with(said), "{}: {}", body, err);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A condition several lines turn on is branched on once (fm3 log
     /// 133): two lines said `if (new$) ...` and a push that goes out
     /// `if (new$ and ...)` are one `if` in the function of one item,
@@ -1866,7 +1895,7 @@ mod tests {
         assert_eq!(reads(&b, "kept"), 2, "{}", b);
         let b = body(&format!("{}on (int n) = f (int k)\n    int a = 0\n    if (k > 0)\n        a = kept\n    n = a + kept\n", head), "f");
         assert_eq!(reads(&b, "kept"), 2, "{}", b);
-        let b = body(&format!("{}on (int n) = f (int k)\n    int a = kept\n    int s = loop (int i = 0, int t = 0) while (i < k) yields t\n        if (i > 2)\n            t = t + kept\n        else\n            t = t + kept + a\n        i = i + 1\n    n = s + kept\n", head), "f");
+        let b = body(&format!("{}on (int n) = f (int k)\n    int a = kept\n    int s = loop (int i = 0, int t = 0) while (i < k) yields t\n        continue (i + 1, if (i > 2) then (t + kept) else (t + kept + a))\n    n = s + kept\n", head), "f");
         assert_eq!(reads(&b, "kept"), 1, "{}", b);
         // a feature's switch is a field nothing writes
         let b = body(&format!("{}on (bool b) = f()\n    bool a = enabled\n    bump()\n    b = a == enabled\n", head), "f");

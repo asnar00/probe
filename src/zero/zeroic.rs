@@ -135,8 +135,7 @@ fn walk_stmts(stmts: &[Stmt], f: &mut dyn FnMut(&Expr) -> bool) {
                 walk(seq, f);
                 walk_stmts(body, f);
             }
-            Stmt::Continue { values, .. } => values.iter().for_each(|e| walk(e, f)),
-            Stmt::Break { .. } => {}
+            Stmt::Continue { values, .. } | Stmt::Break { values, .. } => values.iter().for_each(|e| walk(e, f)),
             Stmt::Push { target, items, cond, .. } => {
                 walk(target, f);
                 items.iter().chain(cond.iter()).for_each(|e| walk(e, f));
@@ -209,7 +208,7 @@ fn walks(stmts: &[Stmt]) -> Option<(usize, String)> {
             Stmt::For { line, .. } => return Some((*line, "a `for`".into())),
             Stmt::Assign { line, .. } => return Some((*line, "an assignment".into())),
             Stmt::Continue { line, .. } => return Some((*line, "`continue`".into())),
-            Stmt::Break { line } => return Some((*line, "`break`".into())),
+            Stmt::Break { line, .. } => return Some((*line, "`break`".into())),
             Stmt::If { then, els, .. } => {
                 if let Some(w) = walks(then).or_else(|| els.as_deref().and_then(walks)) {
                     return Some(w);

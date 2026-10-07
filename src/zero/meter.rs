@@ -226,8 +226,7 @@ impl Walk {
                     self.expr(seq, at, in_loop);
                     self.block(body, at, carried, true, given);
                 }
-                Stmt::Continue { values, .. } => values.iter().for_each(|e| self.expr(e, at, in_loop)),
-                Stmt::Break { .. } => {}
+                Stmt::Continue { values, .. } | Stmt::Break { values, .. } => values.iter().for_each(|e| self.expr(e, at, in_loop)),
                 Stmt::Push { target, items, cond, .. } => {
                     self.expr(target, at, in_loop);
                     items.iter().chain(cond.iter()).for_each(|e| self.expr(e, at, in_loop));
@@ -291,8 +290,7 @@ fn touches_a_stream(stmts: &[Stmt]) -> bool {
         Stmt::If { cond, then, els, .. } => expr_touches(cond) || touches_a_stream(then) || els.as_deref().is_some_and(touches_a_stream),
         Stmt::Loop { vars, cond, body, .. } => vars.iter().any(init) || cond.as_ref().is_some_and(expr_touches) || touches_a_stream(body),
         Stmt::For { seq, body, .. } => expr_touches(seq) || touches_a_stream(body),
-        Stmt::Continue { values, .. } => values.iter().any(expr_touches),
-        Stmt::Break { .. } => false,
+        Stmt::Continue { values, .. } | Stmt::Break { values, .. } => values.iter().any(expr_touches),
     })
 }
 

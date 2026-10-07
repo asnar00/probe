@@ -138,7 +138,9 @@ pub enum Stmt {
     Loop { vars: Vec<VarDecl>, cond: Option<Expr>, body: Vec<Stmt>, yields: Vec<String>, into: Option<LoopInto>, line: usize },
     For { var: String, seq: Expr, body: Vec<Stmt>, line: usize },
     Continue { values: Vec<Expr>, line: usize },
-    Break { line: usize },
+    /// `break`, or `break (values)`: the names the loop yields given
+    /// their values where it leaves (fm3 question 81)
+    Break { values: Vec<Expr>, line: usize },
     Check { cond: Expr, line: usize },
     /// `x$ << a << b while (c)`; `existing` on it calls the link below
     /// this body in its chain, which is how a feature extends a `<<`
@@ -901,8 +903,21 @@ impl<'a> Parser<'a> {
             }
             Some(Tok::Word(w)) if w == "break" => {
                 self.pos += 1;
+                // `break (values)` (fm3 question 81): the loop's result
+                // given where it leaves, as `continue (values)` gives
+                // the next pass its own
+                let mut values = Vec::new();
+                if self.eat_sym("(") {
+                    while !self.at_sym(")") {
+                        values.push(self.parse_expr()?);
+                        if !self.eat_sym(",") {
+                            break;
+                        }
+                    }
+                    self.expect_sym(")")?;
+                }
                 self.expect_newline()?;
-                Ok(Stmt::Break { line })
+                Ok(Stmt::Break { values, line })
             }
             Some(Tok::Word(w)) if w == "check" => {
                 self.pos += 1;

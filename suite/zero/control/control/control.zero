@@ -31,7 +31,7 @@ on (int p) = power of two above (int n)
     int q = loop (int q = 1) yields q
         if (q > n)
             break
-        q = q * 2
+        continue (q * 2)
     p = q
 
 on (int d) = digits of (int n)
@@ -45,11 +45,7 @@ on (int n) = collatz steps (int start)
     n = loop (int x = start, int steps = 0) yields steps
         if (x == 1)
             break
-        if (x % 2 == 0)
-            x = x / 2
-        else
-            x = 3 * x + 1
-        steps = steps + 1
+        continue (if (x % 2 == 0) then (x / 2) else (3 * x + 1), steps + 1)
 
 on (int r) = row (int i)
     r = [0 through i] + _

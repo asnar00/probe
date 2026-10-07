@@ -226,20 +226,20 @@ fn __out__int(x: int)
         if _6
         else
             break p
-        p_2: int = mul p, 10
-        continue p_2
-    loop(p_3: int = top)
-        _7: u1 = cmp.gt p_3, 0
-        if _7
+        _7: int = mul p, 10
+        continue _7
+    loop(p_2: int = top)
+        _8: u1 = cmp.gt p_2, 0
+        if _8
         else
             break
-        _8: int = div m, p_3
-        _9: int = rem _8, 10
-        _10: int = sub 48, _9
-        _11: u8 = conv _10
-        __out_ch(_11)
-        p_4: int = div p_3, 10
-        continue p_4
+        _9: int = div m, p_2
+        _10: int = rem _9, 10
+        _11: int = sub 48, _10
+        _12: u8 = conv _11
+        __out_ch(_12)
+        _13: int = div p_2, 10
+        continue _13
     ret
 
 ; feature hello (layer runtime)
