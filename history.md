@@ -4,6 +4,17 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `forever` decides whether a `<<` stands — `d0ac463` · 2026-10-07
+
+```
+out$ << pair$ << " " forever
+out$ << pair$ << "\n" forever
+heard$ << part$ forever
+out$ << level$ << "\n" if (level$ > 2) forever
+```
+
+`suite/zero/edges/edges/edges.zero:10-13`. fm3's question 79: a `<<` sends once each time its line runs, wherever it is written, and `forever` makes it stand. So a wiring line says the word, where until now it was wiring because of where it stood. It is the last word of its line; with `if (c)` before it the line is a standing filter, the edge's push under the condition (`collect_edge`, `src/zero/lower.rs`). The fifteen wiring lines of the suite say it and no store's emitted IR moves but the two that gain a case. Refused, each tested in `forever_decides`: the same line with no word, for now, the message giving both things it could mean; `forever` in a function, in a stream processor, on a declaration, with `while`, before `if`, and on a line of values; and a stream that feeds itself forever, with no rate because it would never end and at a rate because the clock needs a schedule ordered by time, which is not built. `suite/zero/timed`'s `ticks` is the clock that can be written, a function's `tick$ << 0 << (tick$ + 1) while (_ < 4)` at `1 hz`. zero 723/723 natively, `cargo test zero` 48; the six measured rows as they were; the meter 159 of 1 808.
+
 ### zero: `if` on a push, where `when` was — `b3e7d19` · 2026-10-07
 
 ```
