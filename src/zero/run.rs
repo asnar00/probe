@@ -998,10 +998,10 @@ mod tests {
             ("b$ << 1 forever\n", "", "h.zero:9: nothing on the right of 'b$ << 1' is a stream: `forever` makes a push happen again whenever what is on its right has something new, and a value never has".to_string()),
             ("b$ << 1\n", "", "h.zero:9: a push at feature scope happens once, when the store starts (fm3 question 79), and on a line of its own that is not built: a stream's first items go on its declaration, `int b$ << ...`, and a line that stands is wiring, `b$ << x$ forever`".to_string()),
             // a stream feeding itself: with no rate it never ends
-            ("b$ << b$ + 1 forever\n", "", "h.zero:9: a push into 'b$' that reads 'b$' and stands forever would never end: each item it pushes is something new on its own right, and 'b$' has no rate to pace it. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `int b$ at (1 hz)`".to_string()),
-            ("b$ << a$ << b$ forever\n", "", "h.zero:9: a push into 'b$' that reads 'b$' and stands forever would never end: each item it pushes is something new on its own right, and 'b$' has no rate to pace it. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `int b$ at (1 hz)`".to_string()),
+            ("b$ << b$ + 1 forever\n", "", "h.zero:9: a push into 'b$' that reads 'b$' and stands forever would never end: nothing else on its right paces it, and 'b$' has no rate to. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `int b$ at (1 hz)`".to_string()),
+            ("b$ << b$ forever\n", "", "h.zero:9: a push into 'b$' that reads 'b$' and stands forever would never end: nothing else on its right paces it, and 'b$' has no rate to. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `int b$ at (1 hz)`".to_string()),
             // ... and at a rate it is a clock, not built
-            ("b$ << a$ forever\ni$ << i$ + 1 forever\n", "", "h.zero:10: a stream that feeds itself forever at a rate is a clock, and is not built: it needs a schedule ordered by time, and a store's clock is still moved by the code that pushes. Until then a function's push says it with an end, `i$ << 0 << (i$ + 1) while (_ < 4)`".to_string()),
+            ("b$ << a$ forever\ni$ << i$ + 1 forever\n", "", "h.zero:10: a stream that feeds itself forever at a rate is a clock (fm3 question 80, ruled): with nothing else on its right the line is paced by its stream's rate, one more item of 'i$' each beat. It is not built: it needs a schedule ordered by time, and a store's clock is still moved by the code that pushes. Until then a function's push says it with an end, `i$ << 0 << (i$ + 1) while (_ < 4)`".to_string()),
             // in a function, and under `if` there
             ("b$ << a$ forever\n", "\non g()\n    b$ << a$ forever", "h.zero:16: `forever` in a function is a line that would set up a standing connection each time the function runs: not built. Wire it at feature scope, where it stands from the start".to_string()),
             ("b$ << a$ forever\n", "\non g (int k)\n    b$ << k if (k > 0) forever", "h.zero:16: `forever` in a function is a line that would set up a standing connection each time the function runs: not built. Wire it at feature scope, where it stands from the start".to_string()),
@@ -1016,6 +1016,61 @@ mod tests {
         // a function may not have the word in its name: it ends a phrase
         let err = with("b$ << a$ forever\n", "\non wait forever()\n    b$ << 1").expect_err("a name");
         assert!(err.ends_with("h.zero:15: 'forever' cannot be a word of a function's name: it ends a phrase wherever it stands, so no call of this name could be written"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The running sum (fm3 question 80's second half, log 149): on
+    /// the right of its own standing push a stream's own name is a
+    /// read of its latest item and sets nothing off; the one other
+    /// stream there paces the line. What the target is kept as, three
+    /// ways; and what is refused
+    #[test]
+    fn a_stream_sums_itself() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-sum-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (3) → 1\n").unwrap();
+        let head = "int x$\nint y$\nint sum$\nint i$ at (1 hz)\n";
+        let with = |lines: &str, f: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}\non (int n) = f (int k)\n    x$ << k\n    {}\n", head, lines, f)).unwrap();
+            emit(&dir)
+        };
+        // read only by its name: a cell, the edge's function a load, an
+        // add and a store of its field
+        let ir = with("sum$ << sum$ + x$ forever\n", "n = sum$").unwrap();
+        assert!(ir.contains("fn __edge1(__item: int)\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int = get _1, sum\n    _3: int = add _2, __item\n    _4: __ctx = load _this\n    _5: __ctx = set _4, sum, _3\n    store _5, _this\n    ret\n"), "{}", ir);
+        // wired on, and nothing else pushes into it or names it: the
+        // stream has no storage and the line keeps its last item
+        let ir = with("sum$ << sum$ + x$ forever\nout$ << sum$ << \"\\n\" forever\n", "n = k").unwrap();
+        assert!(ir.contains("    __last1: int\n") && !ir.contains("    sum: int"), "{}", ir);
+        assert!(ir.contains("fn __edge1(__item: int)\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int = get _1, __last1\n    __next: int = add _2, __item\n    _3: __ctx = load _this\n    _4: __ctx = set _3, __last1, __next\n    store _4, _this\n"), "{}", ir);
+        // wired on and read by its name as well: a queue, the read
+        // guarded for the time before anything is pushed, and the queue
+        // not given back under it
+        let ir = with("sum$ << sum$ + x$ forever\nout$ << sum$ << \"\\n\" forever\n", "n = sum$").unwrap();
+        assert!(ir.contains("    _3: index = received(_2)\n    _4: u1 = cmp.gt _3, 0\n    _5: int = if _4\n        _6: int = latest_queue(_2)\n        yield _6\n    else\n        yield 0\n    _7: int = add _5, __item\n"), "{}", ir);
+        assert!(!ir.contains("free_queue("), "{}", ir);
+        // its own name later in the chain, another stream pacing: each
+        // item, and then the latest, which is that item
+        with("sum$ << x$ << sum$ forever\n", "n = count sum$").unwrap();
+        // a sum of some; a standing map; and a sum under a count
+        let ir = with("sum$ << sum$ + x$ if (x$ % 2 == 0) forever\n", "n = sum$").unwrap();
+        assert!(ir.contains("    _1: int = rem __item, 2\n    _2: u1 = cmp.eq _1, 0\n    if _2\n        _3: __ctx = load _this\n        _4: int = get _3, sum\n        _5: int = add _4, __item\n"), "{}", ir);
+        let ir = with("sum$ << x$ * 2 forever\n", "n = sum$").unwrap();
+        assert!(ir.contains("    _1: int = mul __item, 2\n    _2: __ctx = load _this\n    _3: __ctx = set _2, sum, _1\n"), "{}", ir);
+        with("sum$ << sum$ + x$ (3) times\n", "n = sum$").unwrap();
+        for (lines, said) in [
+            // two other streams: which paces is not settled
+            ("sum$ << sum$ + x$ + y$ forever\n", "h.zero:5: 'sum$ << ...' reads 2 streams, 'x$' and 'y$', and which of them sets the line off is not settled (fm3 question 86): an item of either with the other's latest, or one of each together. Not built: say one stream by a line of its own first"),
+            // nothing else on its right: never ending, or a clock
+            ("y$ << x$ forever\nsum$ << sum$ + 1 forever\n", "h.zero:6: a push into 'sum$' that reads 'sum$' and stands forever would never end: nothing else on its right paces it, and 'sum$' has no rate to. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `int sum$ at (1 hz)`"),
+            ("sum$ << x$ forever\ni$ << i$ + 1 forever\n", "h.zero:6: a stream that feeds itself forever at a rate is a clock (fm3 question 80, ruled): with nothing else on its right the line is paced by its stream's rate, one more item of 'i$' each beat. It is not built: it needs a schedule ordered by time, and a store's clock is still moved by the code that pushes. Until then a function's push says it with an end, `i$ << 0 << (i$ + 1) while (_ < 4)`"),
+            // no word: as any line with a stream on its right
+            ("sum$ << sum$ + x$\n", "h.zero:5: a push at feature scope happens once, when the store starts (fm3 question 79), and on a line of its own that is not built: a stream's first items go on its declaration, `int sum$ << ...`, and a line that stands is wiring, `sum$ << x$ forever`"),
+        ] {
+            let err = with(lines, "n = sum$ + count y$").expect_err(lines);
+            assert!(err.ends_with(said), "{}: {}", lines, err);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -2108,7 +2108,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), zero_first: Names::new(), line_kept: Names::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2258,7 +2258,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
             match d {
                 Decl::Var(v) => l.collect_nodes(v, &f.name, &f.code.file)?,
                 Decl::Wire(e) => l.collect_wire(e, &f.name, &f.code.file)?,
-                Decl::Edge { target, items, cond, word, only, forever, line } => l.collect_edge(target, items, cond.as_ref(), *word, only.as_ref(), *forever, *line, &f.name, &f.code.file)?,
+                Decl::Edge { target, items, first, cond, word, only, forever, line } => l.collect_edge(target, items, first.as_ref(), cond.as_ref(), *word, only.as_ref(), *forever, *line, &f.name, &f.code.file)?,
                 _ => {}
             }
         }
@@ -3262,6 +3262,12 @@ struct Lowerer {
     /// the state of every such wiring, a field of the context each,
     /// after the declared variables and before the nodes'
     zfields: Vec<(String, Ty)>,
+    /// the edges' functions in which the target's own name is read on
+    /// its own standing line (fm3 log 149)
+    zero_first: Names,
+    /// the targets of such lines whose latest item the line itself
+    /// keeps, being the only thing that pushes into them
+    line_kept: Names,
     /// how many wirings of processors have been collected
     zwired: usize,
     /// while a push statement into a processor's input is lowered with
@@ -3394,6 +3400,9 @@ enum BodyKind {
 #[derive(Clone)]
 enum PushRead {
     Latest(Val, Ty),
+    /// ... or the zero of its type where nothing has been pushed yet:
+    /// the target's own name on a line that stands (fm3 log 149)
+    LatestOr(Val, Ty),
     /// ... of a cell, its field as it then stands (fm3 log 143)
     Cell,
     /// ... and at the reset, the first item before it
@@ -4359,6 +4368,29 @@ impl Lowerer {
             },
             _ => None,
         })).collect();
+        // A line that stands and reads its own target in its first
+        // item, `sum$ << sum$ + x$ forever` (fm3 log 149). Where the
+        // line is the only thing that pushes into the target and
+        // nothing else in the store names it, the target's latest item
+        // is the line's own last, which the line keeps: the target is
+        // then stored or not as if the line did not read it. Anywhere
+        // else the read is of the stream, which is named by it
+        let mut line_kept = Names::new();
+        for f in &store.features {
+            for d in &f.code.decls {
+                let Decl::Edge { target: Expr { kind: ExprKind::Seq(t), .. }, first: Some(first), .. } = d else { continue };
+                if !mentions_seq(first, t) {
+                    continue;
+                }
+                let lines = store.features.iter().flat_map(|g| g.code.decls.iter()).filter(|d| matches!(d, Decl::Edge { target: Expr { kind: ExprKind::Seq(n), .. }, .. } if n == t)).count();
+                let first_items = store.features.iter().flat_map(|g| g.code.decls.iter()).any(|d| matches!(d, Decl::Var(v) if &v.name == t && (v.init.is_some() || v.rate.is_some())));
+                if named.contains(t) || lines > 1 || first_items || pushed_by_name(&store.features, t) {
+                    named.insert(t.clone());
+                } else {
+                    line_kept.insert(t.clone());
+                }
+            }
+        }
         let ends: Names = named.iter().filter_map(|k| k.strip_prefix("\u{0}end ").map(str::to_string)).collect();
         named.retain(|k| !k.starts_with('\u{0}'));
         if !ends.is_empty() {
@@ -4499,6 +4531,7 @@ impl Lowerer {
             }
         }
         self.bare = bare;
+        self.line_kept = line_kept;
         Ok(())
     }
 
@@ -4598,7 +4631,10 @@ impl Lowerer {
                         named.extend(own);
                     }
                     Decl::Wire(e) => mentions_in(e, &none, &|p, b| call(p, b, file), &mut named),
-                    Decl::Edge { target, items, cond, only, .. } => std::iter::once(target).chain(items).chain(cond).chain(only).for_each(|e| mentions_in(e, &none, &|p, b| call(p, b, file), &mut named)),
+                    // (the target of a line that stands may be a cell:
+                    // the edge's function pushes into it by name, fm3
+                    // log 149)
+                    Decl::Edge { items, cond, only, .. } => items.iter().chain(cond).chain(only).for_each(|e| mentions_in(e, &none, &|p, b| call(p, b, file), &mut named)),
                     Decl::Fn(fd) => {
                         bound.extend(fd.results.iter().chain(fd.params()).map(|p| p.name.clone()));
                         binds(&fd.body, &mut bound);
@@ -4734,7 +4770,7 @@ impl Lowerer {
     /// dispatch a push in a function uses, and pushes the rest of the
     /// chain after each item (question 38)
     #[allow(clippy::too_many_arguments)]
-    fn collect_edge(&mut self, target: &Expr, items: &[Expr], cond: Option<&Expr>, word: Repeat, only: Option<&Expr>, forever: bool, line: usize, feature: &str, file: &str) -> Result<(), Error> {
+    fn collect_edge(&mut self, target: &Expr, items: &[Expr], first: Option<&Expr>, cond: Option<&Expr>, word: Repeat, only: Option<&Expr>, forever: bool, line: usize, feature: &str, file: &str) -> Result<(), Error> {
         let ExprKind::Seq(tname) = &target.kind else {
             return Err(lex::error(file, line, "`<<` pushes into a stream, named `x$`"));
         };
@@ -4747,18 +4783,26 @@ impl Lowerer {
         if self.input_device(tname, None) {
             return Err(lex::error(file, line, INPUT_REFUSED));
         }
-        let said = format!("{}$ << {}", tname, items.iter().map(phrase_text).collect::<Vec<_>>().join(" << "));
-        // a stream feeding itself for ever (fm3 question 79, log 141):
-        // each item it pushes is something new on its own right. With
-        // no rate nothing paces it; with one it is a clock, which the
-        // edge's machinery cannot give: an item's edges are called
-        // before the step that follows its push, so the item a self
-        // edge begot would be shown a beat early, a call inside a call
-        if forever && items.iter().chain(only).any(|e| mentions_seq(e, tname)) {
+        let said = format!("{}$ << {}", tname, first.into_iter().chain(items.iter().skip(first.is_some() as usize)).map(phrase_text).collect::<Vec<_>>().join(" << "));
+        // what paces a line that stands (fm3 question 80, log 149): the
+        // streams its first item names other than its own target, whose
+        // name there is a read of its latest and sets nothing off. One,
+        // and the line is that stream's edge (the parser has put it
+        // first). None, and nothing on the right can have anything new:
+        // with a rate the line is a clock, which the edge's machinery
+        // cannot give, an item's edges being called before the step
+        // that follows its push; with no rate it would never end
+        let mut pacers = Vec::new();
+        super::syntax::seqs_in(&items[0], &mut pacers);
+        pacers.retain(|n| n != tname);
+        if forever && pacers.is_empty() && mentions_seq(&items[0], tname) {
             return Err(lex::error(file, line, match self.rates.get(tname) {
-                None => format!("a push into '{}$' that reads '{}$' and stands forever would never end: each item it pushes is something new on its own right, and '{}$' has no rate to pace it. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `{} {}$ at (1 hz)`", tname, tname, tname, zero_ty(telem), tname),
-                Some(_) => format!("a stream that feeds itself forever at a rate is a clock, and is not built: it needs a schedule ordered by time, and a store's clock is still moved by the code that pushes. Until then a function's push says it with an end, `{}$ << 0 << ({}$ + 1) while (_ < 4)`", tname, tname),
+                None => format!("a push into '{}$' that reads '{}$' and stands forever would never end: nothing else on its right paces it, and '{}$' has no rate to. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `{} {}$ at (1 hz)`", tname, tname, tname, zero_ty(telem), tname),
+                Some(_) => format!("a stream that feeds itself forever at a rate is a clock (fm3 question 80, ruled): with nothing else on its right the line is paced by its stream's rate, one more item of '{}$' each beat. It is not built: it needs a schedule ordered by time, and a store's clock is still moved by the code that pushes. Until then a function's push says it with an end, `{}$ << 0 << ({}$ + 1) while (_ < 4)`", tname, tname, tname),
             }));
+        }
+        if (forever || cond.is_some()) && pacers.len() > 1 {
+            return Err(lex::error(file, line, format!("'{}' reads {} streams, {}, and which of them sets the line off is not settled (fm3 question 86): an item of either with the other's latest, or one of each together. Not built: say one stream by a line of its own first", said, pacers.len(), pacers.iter().map(|n| format!("'{}$'", n)).collect::<Vec<_>>().join(" and "))));
         }
         let ExprKind::Seq(sname) = &items[0].kind else {
             if forever {
@@ -4825,6 +4869,14 @@ impl Lowerer {
         self.reach(&format!("{}$", sname), &sf.feature, file, items[0].line)?;
         let name = format!("__edge{}", self.edges.len() + 1);
         let seq = |n: &str| Expr { kind: ExprKind::Seq(n.to_string()), line };
+        // the target read on its own line: before anything has been
+        // pushed into it, the zero of its type (fm3 log 149)
+        // ... and it is not to be freed under the read: a node gives a
+        // queue's slots back only where nothing reads it by name
+        if first.into_iter().chain(&items[1..]).any(|e| mentions_seq(e, tname)) {
+            self.zero_first.insert(name.clone());
+            self.read_by_name.insert(tname.clone());
+        }
         let keep = |l: &mut Lowerer, said: &str, ty: Ty| {
             let field = format!("__{}{}", said, l.edges.len() + 1);
             l.fvars.push(FVar { name: field.clone(), ty: ty.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string() });
@@ -4833,24 +4885,55 @@ impl Lowerer {
         };
         let counted = counted.map(|n| (keep(self, "times", int_ty()), n));
         let until = until.map(|c| (keep(self, "until", Ty::Bool), c));
+        // the line keeps its target's latest item itself (see
+        // `settle_bare`): a field of the context of the item's type,
+        // the zero of it at the reset, read where the line names its
+        // target, given the first item's value and pushed
+        let last = match first {
+            Some(_) if self.line_kept.contains(tname) => Some(keep(self, "last", telem.as_ref().clone())),
+            _ => None,
+        };
+        let first = first.map(|e| match &last {
+            Some(field) => super::syntax::renamed(e, tname, field),
+            None => e.clone(),
+        });
+        let first = first.as_ref();
         // a standing filter, `e$ << x$ if (x$ > 0) forever`: the push
         // under its condition, as `if` on a push is in a function; a
         // counted line, the push and its count's bump under "fewer
         // than n so far"
-        let under = |push: Stmt| {
+        let under = |pushed: Vec<Expr>| -> Vec<Stmt> {
             let kept = |field: &String| Expr { kind: ExprKind::Name(field.clone()), line };
             let bin = |op: &str, l: Expr, r: Expr| Expr { kind: ExprKind::Bin(op.to_string(), Box::new(l), Box::new(r)), line };
             let put = |field: &String, value: Expr| Stmt::Assign { targets: vec![super::syntax::Target { name: field.clone(), seq: false, line, feature: None }], value, line };
+            // where the line keeps its own last item: the field given
+            // the first item's value, and the field pushed
+            let mut pushed = pushed;
+            let mut does = Vec::new();
+            if let Some(field) = &last {
+                // (worked out into a local, so the push does not read
+                // the field back)
+                let local = || Expr { kind: ExprKind::Name("__next".into()), line };
+                let value = std::mem::replace(&mut pushed[0], local());
+                does.push(Stmt::Var(super::syntax::VarDecl { line, scope: Vec::new(), ty: zero_ty(telem), name: "__next".into(), seq: false, init: Some(Init::Value(value)), merge: None, rate: None }));
+                does.push(put(field, local()));
+                pushed = pushed.iter().map(|e| super::syntax::renamed(e, tname, field)).collect();
+            }
+            does.push(Stmt::Push { target: seq(tname), items: pushed, cond: None, word: Repeat::While, existing: false, forever: false, line });
             match (only, &counted, &until) {
-                (Some(c), _, _) => Stmt::If { cond: c.clone(), then: vec![push], els: None, line, on_push: true },
+                (Some(c), _, _) => vec![Stmt::If { cond: match &last { Some(field) => super::syntax::renamed(c, tname, field), None => c.clone() }, then: does, els: None, line, on_push: true }],
                 (None, Some((field, n)), _) => {
                     let int = |v: i64| Expr { kind: ExprKind::Int(v), line };
-                    Stmt::If { cond: bin("<", kept(field), int(*n)), then: vec![push, put(field, bin("+", kept(field), int(1)))], els: None, line, on_push: false }
+                    does.push(put(field, bin("+", kept(field), int(1))));
+                    vec![Stmt::If { cond: bin("<", kept(field), int(*n)), then: does, els: None, line, on_push: false }]
                 }
                 // "not ended yet", and after the push the bit is the
                 // condition, asked of the item that went out
-                (None, None, Some((field, c))) => Stmt::If { cond: bin("==", kept(field), Expr { kind: ExprKind::Bool(false), line }), then: vec![push, put(field, c.clone())], els: None, line, on_push: false },
-                (None, None, None) => push,
+                (None, None, Some((field, c))) => {
+                    does.push(put(field, c.clone()));
+                    vec![Stmt::If { cond: bin("==", kept(field), Expr { kind: ExprKind::Bool(false), line }), then: does, els: None, line, on_push: false }]
+                }
+                (None, None, None) => does,
             }
         };
         // out of a stream with no storage (question 50, fm3 log 92) the
@@ -4858,7 +4941,7 @@ impl Lowerer {
         // item first, lowered as a plain function's push: a push into
         // the stream calls it, and there is no node
         if self.bare.contains(sname) {
-            let mut pushed = vec![Expr { kind: ExprKind::Name("__item".into()), line }];
+            let mut pushed = vec![first.cloned().unwrap_or(Expr { kind: ExprKind::Name("__item".into()), line })];
             pushed.extend(items[1..].iter().cloned());
             let fd = FnDecl {
                 line,
@@ -4866,7 +4949,7 @@ impl Lowerer {
                 name: vec![NamePart::Word(name.clone()), NamePart::Group],
                 groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, line }]],
                 task: false,
-                body: vec![under(Stmt::Push { target: seq(tname), items: pushed, cond: None, word: Repeat::While, existing: false, forever: false, line })],
+                body: under(pushed),
                 platform: Vec::new(),
             };
             self.declare(&fd, feature, file)?;
@@ -4881,10 +4964,10 @@ impl Lowerer {
         // `for __item in i$` with the pushes, then the reader moved past
         // what it read (log 75): one view and one advance move a batch
         let count = phrase(vec![Part::Word("count".into()), Part::Value(seq(sname))]);
-        let mut pushed = vec![Expr { kind: ExprKind::Name("__item".into()), line }];
+        let mut pushed = vec![first.cloned().unwrap_or(Expr { kind: ExprKind::Name("__item".into()), line })];
         pushed.extend(items[1..].iter().cloned());
         let advance = phrase(vec![Part::Word("advance".into()), Part::Value(seq(sname)), Part::Word("by".into()), Part::Args(vec![Arg { name: None, value: count }])]);
-        let body = vec![under(Stmt::Push { target: seq(tname), items: pushed, cond: None, word: Repeat::While, existing: false, forever: false, line })];
+        let body = under(pushed);
         let fd = FnDecl {
             line,
             results: Vec::new(),
@@ -8490,7 +8573,8 @@ impl Lowerer {
                 return Ok(());
             }
         }
-        self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
+        let zero_first = b.func.as_ref().is_some_and(|f| self.zero_first.contains(&f.ir));
+        self.push_read = Some((name.to_string(), if zero_first { PushRead::LatestOr(s.clone(), s.ty.clone()) } else { PushRead::Latest(s.clone(), s.ty.clone()) }));
         let want = if matches!(e.kind, ExprKind::List(_)) { Some(elem) } else { None };
         let v = self.lower_expr(e, want, b, None);
         self.push_read = None;
@@ -9493,6 +9577,23 @@ impl Lowerer {
                     if &n == w {
                         return match read {
                             PushRead::Latest(s, ty) => self.latest_of(&s, &ty, b, dst),
+                            PushRead::LatestOr(s, ty) => {
+                                let Ty::Stream(elem) = &ty else { unreachable!() };
+                                let (n, some, out) = (b.tmp(), b.tmp(), b.tmp());
+                                b.line(&format!("{}: index = received({})", n, s.text));
+                                b.line(&format!("{}: u1 = cmp.gt {}, 0", some, n));
+                                b.line(&format!("{}: {} = if {}", out, elem.ir(), some));
+                                b.depth += 1;
+                                let v = self.latest_of(&s, &ty, b, None)?;
+                                b.line(&format!("yield {}", v.text));
+                                b.depth -= 1;
+                                b.line("else");
+                                b.depth += 1;
+                                let z = self.zero_val(elem, b);
+                                b.line(&format!("yield {}", z.text));
+                                b.depth -= 1;
+                                Ok(Val { text: out, ty: elem.as_ref().clone(), literal: false })
+                            }
                             PushRead::Cell => self.read_cell(w, b, dst, e.line),
                             PushRead::Value(v) => Ok(v),
                         };
@@ -10052,6 +10153,21 @@ fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str)
                 Decl::Var(v) => mentions_init(v, &none, &|p, b| call(p, b, &f.code.file), &mut named),
                 Decl::Wire(e) => mentions_in(e, &none, &|p, b| call(p, b, &f.code.file), &mut named),
                 Decl::Edge { target, items, cond, only, .. } => {
+                    // (what a line's first item reads of its own target
+                    // is `settle_bare`'s to weigh, fm3 log 149; a first
+                    // item that is no stream's bare name is a line
+                    // `collect_edge` will refuse, and what it names is
+                    // named, so that refusal is the one that is met)
+                    // (its own target apart, whose name there sets
+                    // nothing off)
+                    if let Some(e) = items.first().filter(|e| !matches!(e.kind, ExprKind::Seq(_))) {
+                        let mut own = Names::new();
+                        mentions_in(e, &none, &|p, b| call(p, b, &f.code.file), &mut own);
+                        if let ExprKind::Seq(t) = &target.kind {
+                            own.remove(t);
+                        }
+                        named.extend(own);
+                    }
                     items.iter().skip(1).for_each(|e| mentions_in(e, &none, &|p, b| call(p, b, &f.code.file), &mut named));
                     cond.iter().chain(only.iter()).for_each(|e| mentions_in(e, &none, &|p, b| call(p, b, &f.code.file), &mut named));
                     if let (ExprKind::Seq(t), Some(Expr { kind: ExprKind::Seq(s), .. })) = (&target.kind, items.first()) {
@@ -10143,7 +10259,7 @@ fn quietly_read(features: &[super::store::FeatureDoc], s: &str, call: Called) ->
                 Decl::Fn(fd) => block(&fd.body, s, file, call),
                 Decl::Var(v) => v.name == s || init(v, s, file, call),
                 Decl::Wire(e) => quiet(e, s, file, call),
-                Decl::Edge { target, items, cond, only, .. } => quiet(target, s, file, call) && items.iter().chain(cond.iter()).chain(only.iter()).all(|e| quiet(e, s, file, call)),
+                Decl::Edge { target, items, first, cond, only, .. } => quiet(target, s, file, call) && items.iter().chain(cond.iter()).chain(only.iter()).chain(first.iter()).all(|e| quiet(e, s, file, call)),
                 Decl::Type(_) => true,
             })
     })

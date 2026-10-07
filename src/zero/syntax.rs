@@ -32,7 +32,12 @@ pub enum Decl {
     /// (fm3 question 79): the line is kept without it so the lowering
     /// can say what it would mean. `only` is `if (c)` on it, a standing
     /// filter, with the source's own name already read as the item
-    Edge { target: Expr, items: Vec<Expr>, cond: Option<Expr>, word: Repeat, only: Option<Expr>, forever: bool, line: usize },
+    /// `first` is what is pushed for each item where the line's first
+    /// item was an expression, `sum$ << sum$ + x$ forever` (fm3
+    /// question 80, log 149): the one stream it names other than the
+    /// target paces the line and is kept as `items[0]`, and `first` is
+    /// the expression with that stream's name read as the item
+    Edge { target: Expr, items: Vec<Expr>, first: Option<Expr>, cond: Option<Expr>, word: Repeat, only: Option<Expr>, forever: bool, line: usize },
 }
 
 /// Which word a push's `cond` goes with (fm3 question 79, log 147):
@@ -299,23 +304,28 @@ pub fn declared_joins(src: &str) -> Vec<String> {
 /// name `__item`: the condition of a standing filter, `e$ << x$ if
 /// (x$ > 0) forever`, as the edge's function of one item reads it
 pub fn as_item(e: &Expr, stream: &str) -> Expr {
-    let f = |x: &Expr| Box::new(as_item(x, stream));
+    renamed(e, stream, "__item")
+}
+
+/// an expression with a stream's name read as the value of the name `to`
+pub fn renamed(e: &Expr, stream: &str, to: &str) -> Expr {
+    let f = |x: &Expr| Box::new(renamed(x, stream, to));
     let parts = |ps: &[Part]| -> Vec<Part> {
         ps.iter()
             .map(|p| match p {
-                Part::Args(list) => Part::Args(list.iter().map(|a| Arg { name: a.name.clone(), value: as_item(&a.value, stream) }).collect()),
-                Part::Value(x) => Part::Value(as_item(x, stream)),
+                Part::Args(list) => Part::Args(list.iter().map(|a| Arg { name: a.name.clone(), value: renamed(&a.value, stream, to) }).collect()),
+                Part::Value(x) => Part::Value(renamed(x, stream, to)),
                 Part::Word(w) => Part::Word(w.clone()),
             })
             .collect()
     };
     let kind = match &e.kind {
-        ExprKind::Seq(n) if n == stream => ExprKind::Name("__item".into()),
+        ExprKind::Seq(n) if n == stream => ExprKind::Name(to.into()),
         ExprKind::Unit(x, u) => ExprKind::Unit(f(x), u.clone()),
         ExprKind::Neg(x) => ExprKind::Neg(f(x)),
         ExprKind::Field(x, n) => ExprKind::Field(f(x), n.clone()),
-        ExprKind::List(items) => ExprKind::List(items.iter().map(|x| as_item(x, stream)).collect()),
-        ExprKind::Range { from, to, inclusive } => ExprKind::Range { from: f(from), to: f(to), inclusive: *inclusive },
+        ExprKind::List(items) => ExprKind::List(items.iter().map(|x| renamed(x, stream, to)).collect()),
+        ExprKind::Range { from, to: end, inclusive } => ExprKind::Range { from: f(from), to: f(end), inclusive: *inclusive },
         ExprKind::Bin(op, l, r) => ExprKind::Bin(op.clone(), f(l), f(r)),
         ExprKind::Index(l, r) => ExprKind::Index(f(l), f(r)),
         ExprKind::IfElse(c, a, b) => ExprKind::IfElse(f(c), f(a), f(b)),
@@ -324,6 +334,39 @@ pub fn as_item(e: &Expr, stream: &str) -> Expr {
         k => k.clone(),
     };
     Expr { kind, line: e.line }
+}
+
+/// the streams an expression names, each once, in the order met
+pub fn seqs_in(e: &Expr, out: &mut Vec<String>) {
+    let mut each = |x: &Expr| seqs_in(x, out);
+    match &e.kind {
+        ExprKind::Seq(n) => {
+            if !out.contains(n) {
+                out.push(n.clone());
+            }
+        }
+        ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => each(x),
+        ExprKind::List(items) => items.iter().for_each(each),
+        ExprKind::Range { from: l, to: r, .. } | ExprKind::Bin(_, l, r) | ExprKind::Index(l, r) => {
+            each(l);
+            each(r);
+        }
+        ExprKind::IfElse(c, a, b) => {
+            each(c);
+            each(a);
+            each(b);
+        }
+        ExprKind::Phrase(ps) | ExprKind::Existing(ps) => {
+            for p in ps {
+                match p {
+                    Part::Args(list) => list.iter().for_each(|a| each(&a.value)),
+                    Part::Value(x) => each(x),
+                    Part::Word(_) => {}
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// the words a phrase stops at unless a declared name has them there.
@@ -525,6 +568,22 @@ impl<'a> Parser<'a> {
                 }
                 let PushWords { only, cond, word, forever } = self.push_words()?;
                 self.expect_newline()?;
+                // a line that stands whose first item is an expression
+                // (fm3 question 80, log 149): the one stream it names
+                // other than its own target paces it, and stays the
+                // first item; the expression is kept beside it, that
+                // stream's name read as the item that has arrived
+                let mut items = items;
+                let mut first = None;
+                if (forever || matches!(word, Repeat::Times | Repeat::Until) && cond.is_some()) && !matches!(items[0].kind, ExprKind::Seq(_)) {
+                    let mut named = Vec::new();
+                    seqs_in(&items[0], &mut named);
+                    named.retain(|n| !matches!(&target.kind, ExprKind::Seq(t) if t == n));
+                    if let [x] = named.as_slice() {
+                        first = Some(as_item(&items[0], x));
+                        items[0] = Expr { kind: ExprKind::Seq(x.clone()), line: items[0].line };
+                    }
+                }
                 // in the condition of a standing filter the source's
                 // own name is the item that has arrived
                 let only = match (only, items.first().map(|e| &e.kind)) {
@@ -537,7 +596,7 @@ impl<'a> Parser<'a> {
                     (Some(c), Repeat::Until, Some(ExprKind::Seq(s))) => Some(as_item(&c, s)),
                     (c, _, _) => c,
                 };
-                Ok(Decl::Edge { target, items, cond, word, only, forever, line })
+                Ok(Decl::Edge { target, items, first, cond, word, only, forever, line })
             }
             _ => Err(self.err(format!("expected 'on', 'type', a variable declaration or a wiring at the top of the feature, found {}", self.found()))),
         }

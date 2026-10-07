@@ -309,7 +309,7 @@ on called (int k)
     up$ << twice (k) (3) times
 ```
 
-`suite/zero/words/words/words.zero:25-27` and `:39-40`. `(n) times` is n pushes, the count worked out once before the first and each push working its item out again, so `up to (4)` writes `0 1 2 3 4`; in a chain the count covers the last item, as `while` does. A bracketed group that stands directly before the word `times` is the count and never an argument, unless a declared function's name has `times` there, so `twice (k) (3) times` is `twice (k)` three times. At feature scope `first$ << src$ (3) times` is a line that stands for the first three items of `src$`, its count a number of the context kept for the line.
+`suite/zero/words/words/words.zero:42-44` and `:56-57`. `(n) times` is n pushes, the count worked out once before the first and each push working its item out again, so `up to (4)` writes `0 1 2 3 4`; in a chain the count covers the last item, as `while` does. A bracketed group that stands directly before the word `times` is the count and never an argument, unless a declared function's name has `times` there, so `twice (k) (3) times` is `twice (k)` three times. At feature scope `first$ << src$ (3) times` is a line that stands for the first three items of `src$`, its count a number of the context kept for the line.
 
 ```
 on counted to five()
@@ -319,7 +319,17 @@ on counted under five()
     up$ << 1 << (up$ + 1) while (_ < 5)
 ```
 
-`suite/zero/words/words/words.zero:82-86`. `until` pushes and then asks, so the item that makes its condition true goes out, `1 2 3 4 5`; `while` asks of the candidate before it pushes, `1 2 3 4`. In an `until`, `_` and the stream's own name are both the item just pushed. `if` goes with any one of the four words of how often and comes first; two of the four on one push are refused by name, and so is a push that can be seen never to end, `until (false)` and `while (true)`. `till$ << flow$ until (flow$ == 3)` at feature scope stands until the condition holds, a bit of the context kept for the line.
+`suite/zero/words/words/words.zero:99-103`. `until` pushes and then asks, so the item that makes its condition true goes out, `1 2 3 4 5`; `while` asks of the candidate before it pushes, `1 2 3 4`. In an `until`, `_` and the stream's own name are both the item just pushed. `if` goes with any one of the four words of how often and comes first; two of the four on one push are refused by name, and so is a push that can be seen never to end, `until (false)` and `while (true)`. `till$ << flow$ until (flow$ == 3)` at feature scope stands until the condition holds, a bit of the context kept for the line.
+
+```
+int x$
+int sum$
+```
+```
+sum$ << sum$ + x$ forever
+```
+
+`suite/zero/words/words/words.zero:21-22` and `:28`. A running sum, one item of `sum$` for each item of `x$` (fm3 question 80): on the right of its own standing push a stream's own name is a read of its latest item and sets nothing off, and the one other stream there paces the line. `sum$` is read only by its name, so it is a cell and the line's function is a load, an add and a store, 7 an item counted as it runs where the same sum as a stream processor read by name is 26. Wired on, `tot$ << tot$ + y$ forever` and `out$ << tot$ << "\n" forever`, the stream has no storage and the line keeps its last item itself, 86 an item with the number's digits where the processor's form is 83. Two other streams on the right are refused until what paces such a line is settled (question 86), and a line with nothing else on its right is a clock at a rate, ruled and not built, and never ending without one.
 
 ## Status
 

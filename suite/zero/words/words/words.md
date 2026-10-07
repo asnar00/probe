@@ -1,10 +1,10 @@
 # words
-*the words a push takes after its items: how often it happens*
+*the words a push takes after its items: how often it happens; and a stream that sums itself*
 
 layer: runtime
 
 > (suite) 2026-10-07T15:00:00
-fm3 question 79, log 147 and 148. Ash, 7 October 2026: "we could also add `until (cond)` and `(n) times`."
+fm3 questions 79 and 80, log 147 to 149. Ash, 7 October 2026: "we could also add `until (cond)` and `(n) times`."
 
 ## overview
 A `<<` sends once, each time its line runs. The words after its items say otherwise: `if (c)`, only where the condition holds; `(n) times`, n pushes; `while (c)`, for as long as it holds, tested before each push; `until (c)`, until it holds, tested after each push; `forever`, standing. `if` comes first and goes with any of the others; a push takes one of the others.
@@ -12,6 +12,8 @@ A `<<` sends once, each time its line runs. The words after its items say otherw
 `up$ << up$ + 1 (k) times` is k pushes, each working the item out again, so each reads the one before: after `up$ << 0`, four times gives `1 2 3 4`. The count is worked out once, before the first push. In a chain it covers the last item, as `while` does: `up$ << 0 << (up$ + 1) (4) times` is `0` and then four more.
 
 `up$ << 1 << (up$ + 1) until (up$ == 5)` pushes, then asks: the item that makes the condition true goes out, so it gives `1 2 3 4 5`, where `up$ << 1 << (up$ + 1) while (_ < 5)`, which asks before it pushes, gives `1 2 3 4`. In an `until`, `_` is the item just pushed and the stream's own name is its latest item, which is that item: the two spellings are one program.
+
+`sum$ << sum$ + x$ forever` is a running sum: one item of `sum$` for each item of `x$`, the sum so far. On the right of its own standing push a stream's own name is a read of its latest item and sets nothing off; the other stream there, `x$`, paces the line (Ash, 7 October 2026, question 80).
 
 ## interface
 - `hello thrice` pushes a text three times, `out$ << "hello\n" (3) times`.
@@ -29,6 +31,11 @@ A `<<` sends once, each time its line runs. The words after its items say otherw
 - `beats to three` is `beat$ << 0 << (beat$ + 1) until (beat$ == 3)` at `1 hz`.
 - `till$ << flow$ until (flow$ == 3)` at feature scope stands until an item of `flow$` is 3, which goes out; `flowed to three` pushes five. `open$ << flow$ until (ended key$)` stands until `key$` has ended, asked after each item that goes out: `flowed to the end of the key` pushes two items, ends `key$`, and pushes two more, and three are in `open$` (fm3 question 85).
 
+- `sums` pushes four items into `x$` and reads `sum$`, which started at zero, and `from$`, declared `int from$ << 100` and summed by `from$ << from$ + x$ forever`: 10 and 110. `summed to (k)` pushes a range: a hundred items, 5 050.
+- `evens$ << evens$ + x$ if (x$ % 2 == 0) forever` is a sum of some, and `twice$ << x$ * 2 forever` a line that stands with no name of its own on its right; `some and twice` reads both.
+- `tot$ << tot$ + y$ forever` is wired on, `out$ << tot$ << "\n" forever`: `running` pushes four and the output has each sum on a line.
+- `tally$` is summed, wired on and read by its name as well, in `tallied`.
+
 ## rules
 - A bracketed group that stands directly before the word `times` is the push's count and never an argument, unless a declared function's name has `times` after the words of the phrase so far. So `twice (k) (3) times` is `twice (k)` three times, and a function of two groups pushed n times is `f (a) (b) (n) times`.
 - The count is an integer, worked out once. Zero pushes nothing. A count worked out below zero is a failed check.
@@ -37,6 +44,8 @@ A `<<` sends once, each time its line runs. The words after its items say otherw
 - On a line that stands the count is kept for the line, a number of the context that starts at zero when the store does; after the count the line moves nothing. An `until` keeps a bit the same way, set by the condition after each item that goes out.
 - `until` always pushes once. Its condition is asked of an item, so a range or a text is not repeated by it, as by `while`.
 - A push that can be seen never to end is refused: `until (false)`, and `while (true)`.
+- A line that stands may have an expression for its first item. The streams it names other than its own target pace it, and it is built for one: the expression is worked out for each item of that stream, the stream's name in it the item that has arrived and the target's own name the target's latest item, which before anything is pushed is the zero of its type or the first item its declaration gave it.
+- What the target of such a line is kept as is the compiler's to work out, and does not show. `sum$`, read only by its name, is a cell: one number, a push a store, nothing that can fill, so a hundred items sum as four do. `tot$`, wired on and named nowhere else, has no storage, and the line keeps its last item itself. `tally$`, wired on and read by name, is a queue.
 
 ## testing
 >hello thrice() → "hello\nhello\nhello"
@@ -70,6 +79,11 @@ A `<<` sends once, each time its line runs. The words after its items say otherw
 >beats to three() → "0\n1\n2\n3" at 1 hz
 >flowed to three() → "1\n2\n3"
 >flowed to the end of the key() → 3
+>sums() → 10, 110
+>some and twice() → 6, 8
+>summed to (100) → 5050
+>running() → "1\n3\n6\n10"
+>tallied() → 6
 
 ## hostile
-`up$ << k times` is refused: "a push's count is the bracketed group before `times`, after the item: `x$ << item (n) times`". `up$ << 1 (-1) times` is refused: "a push cannot happen -1 times". `up$ << 1 (2) times if (k > 0)` is refused: "`if` comes first on a push, then how often: `x$ << item if (condition) (n) times`". `up$ << 1 (2) times while (_ < 3)` is refused: "a push takes `(n) times` or `while`, not both". `up$ << three (k) times`, where `three (int k) times` is declared, is refused: "'... (k) times' at the end of a push reads two ways: a function whose name ends `(...) times`, called and pushed once, or what stands before the bracket pushed that many times. For the call put it in brackets, `x$ << (name (k) times)`; for the count put the item in brackets, `x$ << (item) (k) times`". `up$ << 1 until (_ > 3) while (_ < 9)` is refused: "a push takes `until` or `while`, not both". `up$ << 1 until (_ > 3) if (k > 0)` is refused: "`if` comes first on a push, then how often: `x$ << item if (condition) until (...)`". `up$ << 1 until (false)` is refused: "this push would never end: its `until` can never hold"; `up$ << 1 while (true)`: "this push would never end: its `while` always holds". `out$ << src$ << "\n" (3) times` at feature scope is refused: "'out$ << src$ << "\n" (3) times' on a line that stands could be the first 3 items of 'src$', each with what follows it, or every item and what follows it 3 times: not built. For the first, put a stream between: `first$ << src$ (3) times` and `out$ << first$ << ... forever`" (fm3 question 84). `first$ << src$ (k) times` at feature scope is refused: "the count of a line that stands is a number written out, `first$ << src$ (3) times`: a count that is worked out is worked out once, and a line that stands from the start has no one moment for it. Not built".
+`up$ << k times` is refused: "a push's count is the bracketed group before `times`, after the item: `x$ << item (n) times`". `up$ << 1 (-1) times` is refused: "a push cannot happen -1 times". `up$ << 1 (2) times if (k > 0)` is refused: "`if` comes first on a push, then how often: `x$ << item if (condition) (n) times`". `up$ << 1 (2) times while (_ < 3)` is refused: "a push takes `(n) times` or `while`, not both". `up$ << three (k) times`, where `three (int k) times` is declared, is refused: "'... (k) times' at the end of a push reads two ways: a function whose name ends `(...) times`, called and pushed once, or what stands before the bracket pushed that many times. For the call put it in brackets, `x$ << (name (k) times)`; for the count put the item in brackets, `x$ << (item) (k) times`". `up$ << 1 until (_ > 3) while (_ < 9)` is refused: "a push takes `until` or `while`, not both". `up$ << 1 until (_ > 3) if (k > 0)` is refused: "`if` comes first on a push, then how often: `x$ << item if (condition) until (...)`". `up$ << 1 until (false)` is refused: "this push would never end: its `until` can never hold"; `up$ << 1 while (true)`: "this push would never end: its `while` always holds". `out$ << src$ << "\n" (3) times` at feature scope is refused: "'out$ << src$ << "\n" (3) times' on a line that stands could be the first 3 items of 'src$', each with what follows it, or every item and what follows it 3 times: not built. For the first, put a stream between: `first$ << src$ (3) times` and `out$ << first$ << ... forever`" (fm3 question 84). `z$ << z$ + x$ + y$ forever` is refused: "'z$ << ...' reads 2 streams, 'x$' and 'y$', and which of them sets the line off is not settled (fm3 question 86): an item of either with the other's latest, or one of each together. Not built: say one stream by a line of its own first". `sum$ << sum$ + 1 forever` is refused: "a push into 'sum$' that reads 'sum$' and stands forever would never end: nothing else on its right paces it, and 'sum$' has no rate to. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `int sum$ at (1 hz)`". `first$ << src$ (k) times` at feature scope is refused: "the count of a line that stands is a number written out, `first$ << src$ (3) times`: a count that is worked out is worked out once, and a line that stands from the start has no one moment for it. Not built".

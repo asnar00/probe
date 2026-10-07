@@ -18,6 +18,23 @@ int open$
 till$ << flow$ until (flow$ == 3)
 out$ << till$ << "\n" forever
 open$ << flow$ until (ended key$)
+int x$
+int sum$
+int from$ << 100
+int evens$
+int twice$
+int y$
+int tot$
+sum$ << sum$ + x$ forever
+from$ << from$ + x$ forever
+evens$ << evens$ + x$ if (x$ % 2 == 0) forever
+twice$ << x$ * 2 forever
+tot$ << tot$ + y$ forever
+out$ << tot$ << "\n" forever
+int w$
+int tally$
+tally$ << tally$ + w$ forever
+out$ << tally$ << " " forever
 
 on hello thrice()
     out$ << "hello\n" (3) times
@@ -115,3 +132,24 @@ on (int n) = flowed to the end of the key()
     end key$
     flow$ << 3 << 4
     n = count open$
+
+on (int a, int b) = sums()
+    x$ << 1 << 2 << 3 << 4
+    a = sum$
+    b = from$
+
+on (int c, int d) = some and twice()
+    x$ << 1 << 2 << 3 << 4
+    c = evens$
+    d = twice$
+
+on (int n) = summed to (int k)
+    x$ << [1 through k]
+    n = sum$
+
+on running()
+    y$ << [1 through 4]
+
+on (int n) = tallied()
+    w$ << 1 << 2 << 3
+    n = tally$
