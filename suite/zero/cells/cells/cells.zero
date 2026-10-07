@@ -1,0 +1,103 @@
+type token =
+    int kind, start, n
+
+type Mode = off | on | auto
+
+type Vec =
+    float x, y, z = 0
+
+int seen$ << 0
+int high$
+bool flag$
+Mode mode$ << auto
+Vec origin$ << Vec(1, 2, 3)
+int doubling$ << 1
+int both$ << 5
+token t$
+
+on bump()
+    seen$ << seen$ + 1
+
+on (int n) = bumped twice()
+    bump()
+    bump()
+    n = seen$
+
+on step (int i)
+    seen$ << seen$ + 1
+
+on (int n) = bumped (int k) times
+    step ([1 through k])
+    n = seen$
+
+on (int n) = counted up to (int k)
+    seen$ << (seen$ + 1) while (_ <= k)
+    n = seen$
+
+on (int n) = one more()
+    bump()
+    int x = seen$ + 1
+    n = x
+
+on (int n) = the latest()
+    bump()
+    n = latest seen$
+
+on (int n) = before any()
+    n = high$
+
+on (int n) = made()
+    bump()
+    bump()
+    t$ << token(3, seen$, 1)
+    n = (peek t$ at (0)).start
+
+on (int n) = past (int limit)
+    bump()
+    n = if (seen$ > limit) then (1) else (0)
+
+on (int n) = checked()
+    bump()
+    check (seen$ == 1)
+    n = seen$
+
+on (bool b) = raised()
+    flag$ << true
+    b = flag$
+
+on (bool b) = is auto()
+    b = mode$ == auto
+
+on (bool b) = switched on()
+    mode$ << on
+    b = mode$ == Mode.on
+
+on (int n) = origin sum()
+    n = int(origin$.x + origin$.y + origin$.z)
+
+on (int n) = moved origin()
+    origin$ << Vec(4, 5, 6)
+    n = int(origin$.x + origin$.z)
+
+on (int n) = twice (int x)
+    n = x * 2
+
+on (int n) = twice seen()
+    bump()
+    bump()
+    bump()
+    n = twice (seen$)
+
+on (int n) = summed to seen()
+    bump()
+    bump()
+    bump()
+    n = [1 through seen$] + _
+
+on (int n) = doubled past (int limit)
+    doubling$ << (doubling$ * 2) while (_ < limit)
+    n = doubling$
+
+on (int n) = counted()
+    both$ << both$ + 1
+    n = both$ * 10 + count both$

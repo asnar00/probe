@@ -1019,6 +1019,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A stream read only for its latest item is one word (fm3 question
+    /// 70, log 143): a cell, a field of the context of the item's type,
+    /// a push a store of it and a read a load, with no stream made. A
+    /// stream's name where one value is wanted is its latest item
+    /// (question 79), of a cell or of any other stream. And the same
+    /// stream with one more word applied to it, `count`, is the queue
+    /// it was: the words choose what is kept
+    #[test]
+    fn a_stream_read_for_its_latest_is_one_word() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-cell-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 2\n").unwrap();
+        let head = "int seen$ << 0\n\non bump()\n    seen$ << seen$ + 1\n\non (int n) = f()\n    bump()\n    int x = seen$ + 1\n    n = x\n";
+        let with = |more: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}\n", head, more)).unwrap();
+            emit(&dir)
+        };
+        let ir = with("").unwrap();
+        assert!(ir.contains("    seen: int\n"), "{}", ir);
+        assert!(!ir.contains("__queue_int") && !ir.contains("latest_queue") && !ir.contains("= latest "), "{}", ir);
+        assert!(ir.contains("fn bump()\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int = get _1, seen\n    _3: int = add _2, 1\n    _4: __ctx = load _this\n    _5: __ctx = set _4, seen, _3\n    store _5, _this\n    ret\n"), "{}", ir);
+        assert!(ir.contains("    bump()\n    _1: __ctx = load _this\n    _2: int = get _1, seen\n    x: int = add _2, 1\n"), "{}", ir);
+        // `latest` says the same, and so does a second context's first value
+        let said = with("\non (int n) = g()\n    n = latest seen$").unwrap();
+        assert!(said.contains("fn g() -> int\n    _this: ptr = context()\n    _1: __ctx = load _this\n    n: int = get _1, seen\n"), "{}", said);
+        // one more word, and it is a queue: the name still reads its latest
+        let counted = with("\non (int n) = g()\n    n = count seen$").unwrap();
+        assert!(counted.contains("    seen: int$\n") && counted.contains("__queue_int"), "{}", counted);
+        assert!(counted.contains("_3: int = latest_queue(_2)\n    x: int = add _3, 1\n"), "{}", counted);
+        // pushed whole, a once-line that hands over more than one item
+        // (question 79's fenced line): not a cell, and it lowers as it did
+        let whole = with("\non g()\n    out$ << seen$").unwrap();
+        assert!(whole.contains("    seen: int$\n"), "{}", whole);
+        // a function that takes the stream whole takes it, as it did
+        let taken = with("\non (int n) = total (int x$)\n    n = x$ + _\n\non (int n) = total (int x)\n    n = x\n\non (int n) = g()\n    n = total (seen$)").unwrap();
+        assert!(taken.contains("    seen: int$\n"), "{}", taken);
+        // ... and where every method takes one value, the name is one
+        let one = with("\non (int n) = twice (int x)\n    n = x * 2\n\non (int n) = g()\n    n = twice (seen$)").unwrap();
+        assert!(one.contains("    seen: int\n") && one.contains("    _2: int = get _1, seen\n    n: int = twice(_2)\n"), "{}", one);
+        // a local stream's name reads its latest where one value is wanted
+        let local = with("\non (int n) = g()\n    int i$ << 4 << 5\n    int y = i$ + 1\n    n = y").unwrap();
+        assert!(local.contains(" = latest_queue(i)\n    y: int = add "), "{}", local);
+        // a cell holds what a ring does not; used as a stream it is refused as it was
+        let flag = with("bool up$\n\non (bool b) = g()\n    up$ << true\n    b = up$").unwrap();
+        assert!(flag.contains("    up: u1\n"), "{}", flag);
+        let err = with("bool up$\n\non (int n) = g()\n    up$ << true\n    n = count up$").expect_err("a stream of bool");
+        assert!(err.ends_with("h.zero:10: a stream of bool: a stream holds numbers, enumerations or structs of those"), "{}", err);
+        let err = with("\non (int n) = g()\n    int y = out$\n    n = y").expect_err("the device");
+        assert!(err.ends_with("h.zero:12: 'out$' is the output device: it is written and never read, so it has no latest item"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A condition several lines turn on is branched on once (fm3 log
     /// 133): two lines said `if (new$) ...` and a push that goes out
     /// `if (new$ and ...)` are one `if` in the function of one item,
@@ -1773,7 +1826,8 @@ mod tests {
         let b = body("char c$", "a");
         assert!(b.contains("    _3: u8 = const 97\n    push_queue_open(_2, _3)\n") && !b.contains("push_queue_few"), "{}", b);
         // a ring, which a history word makes of every stream in the store, keeps its block push
-        let b = body("char c$\nint h$\n\non (int k) = g()\n    h$ << 1\n    k = latest h$", "fifteen letters");
+        // (the stream is counted too: read for its latest alone it is a cell, fm3 log 143, and keeps no history)
+        let b = body("char c$\nint h$\n\non (int k) = g()\n    h$ << 1\n    k = latest h$ + count h$", "fifteen letters");
         assert!(!b.contains("push_queue") && b.contains("__str"), "{}", b);
         // a stream with a rate takes it an item at a time, each at its time
         let b = body("char c$ at (2 hz)", "ab");

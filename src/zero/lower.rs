@@ -2079,6 +2079,26 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
+    // Which streams are cells is settled by lowering (fm3 log 143):
+    // whether a mention wants one value is a matter of types, which
+    // only the lowering knows. Every stream that could be a cell is
+    // lowered as one; a name met where a stream is wanted is noted,
+    // and the store is lowered again with those the streams they
+    // were. A cell and a stream give the same types wherever one value
+    // is wanted, so the second pass notes nothing new
+    let mut streams = Names::new();
+    loop {
+        let noted = std::rc::Rc::new(std::cell::RefCell::new(Names::new()));
+        let r = lower_pass(store, &streams, noted.clone());
+        let noted = noted.borrow();
+        if noted.is_subset(&streams) {
+            return r;
+        }
+        streams.extend(noted.iter().cloned());
+    }
+}
+
+fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::RefCell<Names>>) -> Result<Lowered, Error> {
     // the processors read the new way leave the store before anything
     // looks at it (fm3 log 124): their bodies are not tasks that walk,
     // and every pass below reads a store's functions as written
@@ -2087,13 +2107,22 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new() };
+    let mut l = Lowerer { cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
         l.parents.insert(f.name.clone(), f.parent.clone());
         if store.marks.get(&f.name) == Some(&Mark::StaticOn) {
             l.statics.insert(f.name.clone());
+        }
+    }
+    for f in store.features.iter().filter(|f| f.name != "platform") {
+        for d in &f.code.decls {
+            if let Decl::Var(v) = d {
+                if v.seq && v.rate.is_none() && matches!(&v.init, None | Some(Init::Pushes { cond: None, .. })) && !streams.contains(&v.name) {
+                    l.cell_decls.insert(v.name.clone());
+                }
+            }
         }
     }
     // types first, then every signature, then the variables (a wiring
@@ -2204,7 +2233,21 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     }
     // which streams have no storage (question 50): settled before an
     // edge is collected, since an edge out of one is not a node
+    // the cells (fm3 log 143): the candidates, settled once the store's
+    // functions and variables can be looked up and before any storage
+    // is chosen. `latest` of one is a load of its field and keeps no
+    // history, so it does not make the store's streams rings
+    l.cells = l.cell_candidates(store, streams);
+    l.kept.retain(|n| !l.cells.contains(n));
+    l.all_queues = !l.kept_all && !l.timed_all && l.kept.is_empty() && l.timed.is_empty();
     l.settle_bare(store)?;
+    l.cells.retain(|n| !l.bare.contains(n));
+    // a stream of what only a cell can hold, that is no cell: noted,
+    // and the next pass refuses it where it is declared
+    if let Some(n) = l.cell_only.iter().find(|n| !l.cells.contains(*n)).cloned() {
+        l.uncell(&n);
+        return Err(lex::error(&store.path.display().to_string(), 0, format!("'{}$' is not a cell", n)));
+    }
     for f in &store.features {
         l.cur = f.name.clone();
         for d in &f.code.decls {
@@ -3234,6 +3277,26 @@ struct Lowerer {
     /// the outputs of processors whose end something in the store
     /// could tell (fm3 question 67): the last tick ends these
     zloud: Names,
+    /// the cells (fm3 question 70, log 143): the feature-scope streams
+    /// of which one value is kept, the latest. A field of the context
+    /// of the item's type, a push a store of it and a read a load. A
+    /// stream is one where the store reads it only for its latest item
+    cells: Names,
+    /// ... which the lowering settles: a name here met where a stream
+    /// is wanted is noted, and the store lowered again with it a stream
+    uncelled: std::rc::Rc<std::cell::RefCell<Names>>,
+    /// the streams that may be cells by how they are declared, known
+    /// before any type is; and those of them whose item only a cell can
+    /// hold, a bool say, which the IR's ring does not
+    cell_decls: Names,
+    cell_only: Names,
+    /// one value is wanted of the expression about to be lowered (fm3
+    /// question 79): a stream's name there is its latest item.
+    /// `lower_expr` takes it as it enters, so it is said afresh for
+    /// each expression and never left standing
+    one: bool,
+    /// ... and of each argument of the call about to be chosen
+    arg_ones: Vec<bool>,
 }
 
 /// a wiring of a processor read the new way whose input has no
@@ -3324,6 +3387,10 @@ enum BodyKind {
 #[derive(Clone)]
 enum PushRead {
     Latest(Val, Ty),
+    /// ... of a cell, its field as it then stands (fm3 log 143)
+    Cell,
+    /// ... and at the reset, the first item before it
+    Value(Val),
 }
 
 /// a variable in a function's scope: its current IR value and type
@@ -4448,6 +4515,187 @@ impl Lowerer {
         !b.vars.contains_key(name) && self.bare.contains(name)
     }
 
+    /// The streams that could be cells (fm3 log 143), by how each is
+    /// declared and by who names it outside the functions: at feature
+    /// scope, with its `$`, no rate, nothing after its name or first
+    /// items with no `while` and no task among them, an item one value;
+    /// named by no wiring, edge, sink, declaration or case; and bound
+    /// again by no function, so that the name is one thing in the whole
+    /// store. What the functions do with it the lowering finds out
+    fn cell_candidates(&self, store: &Store, streams: &Names) -> Names {
+        let mut out = Names::new();
+        for f in store.features.iter().filter(|f| f.name != "platform") {
+            for d in &f.code.decls {
+                let Decl::Var(v) = d else { continue };
+                let plain = match &v.init {
+                    None => true,
+                    Some(Init::Pushes { items, cond: None }) => items.iter().all(|e| !matches!(self.task_call(e, None, &f.code.file), Ok(Some(_)) | Err(_))),
+                    _ => false,
+                };
+                let item = self.fvar(&v.name).is_some_and(|x| matches!(&x.ty, Ty::Stream(e) if !matches!(**e, Ty::Stream(_) | Ty::None)));
+                if v.seq && v.rate.is_none() && plain && item && !streams.contains(&v.name) {
+                    out.insert(v.name.clone());
+                }
+            }
+        }
+        if out.is_empty() {
+            return out;
+        }
+        let call = |parts: &[Part], bound: &Names, file: &str| -> Option<Vec<Expr>> {
+            let is_var = |w: &str| bound.contains(w) || self.fvar(w).is_some();
+            find_methods(&self.funcs, parts, &is_var, file, 0).ok().map(|(_, args)| args)
+        };
+        fn binds(stmts: &[Stmt], out: &mut Names) {
+            for s in stmts {
+                match s {
+                    Stmt::Var(v) => {
+                        out.insert(v.name.clone());
+                    }
+                    Stmt::Multi { vars, .. } => out.extend(vars.iter().map(|p| p.name.clone())),
+                    Stmt::If { then, els, .. } => {
+                        binds(then, out);
+                        if let Some(e) = els {
+                            binds(e, out);
+                        }
+                    }
+                    Stmt::Loop { vars, body, into, .. } => {
+                        out.extend(vars.iter().map(|v| v.name.clone()));
+                        if let Some(LoopInto::Declare(ps)) = into {
+                            out.extend(ps.iter().map(|p| p.name.clone()));
+                        }
+                        binds(body, out);
+                    }
+                    Stmt::For { var, body, .. } => {
+                        out.insert(var.clone());
+                        binds(body, out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let none = Names::new();
+        let mut named = Names::new();
+        for f in &store.features {
+            let file = f.code.file.as_str();
+            for d in &f.code.decls {
+                match d {
+                    Decl::Var(v) => {
+                        // its own first items may read it
+                        let mut own = Names::new();
+                        mentions_init(v, &none, &|p, b| call(p, b, file), &mut own);
+                        own.remove(&v.name);
+                        named.extend(own);
+                    }
+                    Decl::Wire(e) => mentions_in(e, &none, &|p, b| call(p, b, file), &mut named),
+                    Decl::Edge { target, items, cond, only, .. } => std::iter::once(target).chain(items).chain(cond).chain(only).for_each(|e| mentions_in(e, &none, &|p, b| call(p, b, file), &mut named)),
+                    Decl::Fn(fd) => {
+                        named.extend(fd.results.iter().chain(fd.params()).map(|p| p.name.clone()));
+                        binds(&fd.body, &mut named);
+                    }
+                    Decl::Type(_) => {}
+                }
+            }
+            for c in &f.cases {
+                mentions_in(&c.call, &none, &|p, b| call(p, b, &f.md_file), &mut named);
+            }
+        }
+        out.retain(|n| !named.contains(n));
+        out
+    }
+
+    /// is the name a cell, not shadowed here?
+    fn is_cell(&self, name: &str, b: &Body) -> bool {
+        !b.vars.contains_key(name) && self.cells.contains(name)
+    }
+
+    /// a cell met where a stream is wanted: it is a stream after all,
+    /// and the store is lowered again with it one (`lower`)
+    fn uncell(&mut self, name: &str) {
+        self.uncelled.borrow_mut().insert(name.to_string());
+    }
+
+    /// the type of a variable's field of the context: a cell's is its
+    /// item's, the one value kept
+    fn field_ty(&self, f: &FVar) -> Ty {
+        match &f.ty {
+            Ty::Stream(e) if self.cells.contains(&f.name) => e.as_ref().clone(),
+            t => t.clone(),
+        }
+    }
+
+    /// a cell read: its field of the context, the stream's latest item
+    fn read_cell(&mut self, name: &str, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        let f = self.fvar(name).unwrap().clone();
+        self.reach(&format!("{}$", name), &f.feature, &b.file, line)?;
+        let ty = self.field_ty(&f);
+        let dst = dst.filter(|d| b.vars.get(*d).map(|v| &v.ty) == Some(&ty));
+        let out = self.field_get(name, &ty.ir(), dst, b);
+        Ok(Val { text: out, ty, literal: false })
+    }
+
+    /// A push into a cell (fm3 log 143): each item worked out in order,
+    /// the stream's own name in it the field as it then stands, and
+    /// stored; `while` the loop it is for a stream, the candidate tested
+    /// before it is stored. False, and the name noted, where an item is
+    /// not one value of the stream's type: a block, a task, something a
+    /// `<<` method takes. An item of a push is not a place where one
+    /// value is wanted, as it is not for a stream
+    fn push_cell(&mut self, name: &str, items: &[Expr], cond: Option<&Expr>, b: &mut Body, line: usize) -> Result<bool, Error> {
+        let file = b.file.clone();
+        let f = self.fvar(name).unwrap().clone();
+        self.reach(&format!("{}$", name), &f.feature, &file, line)?;
+        let elem = self.field_ty(&f);
+        for (i, e) in items.iter().enumerate() {
+            let looped = cond.filter(|_| i + 1 == items.len());
+            if matches!(e.kind, ExprKind::Range { .. } | ExprKind::List(_)) || self.task_call(e, Some(&b.vars), &file)?.is_some() {
+                self.uncell(name);
+                return Ok(false);
+            }
+            if looped.is_some() {
+                b.open_loop("", "", false);
+                b.depth += 1;
+            }
+            self.push_read = Some((name.to_string(), PushRead::Cell));
+            let v = self.lower_expr(e, Some(&elem), b, None);
+            self.push_read = None;
+            let v = v?;
+            let fitting = if v.literal { fits_literal(&v, &elem) } else { v.ty == elem || widens(&v.ty, &elem) || (is_index(&elem) && v.ty == int_ty()) };
+            if !fitting {
+                if looped.is_some() {
+                    b.depth -= 1;
+                }
+                self.uncell(name);
+                return Ok(false);
+            }
+            let v = self.coerce(v, &elem, &format!("'{}$'", name), b, None, e.line)?;
+            let Some(c) = looped else {
+                self.field_put(name, &v.text, b);
+                continue;
+            };
+            let v = b.materialize(&v);
+            self.push_read = Some((name.to_string(), PushRead::Cell));
+            let outer = self.candidate.replace(v.clone());
+            self.one = true;
+            let cv = self.lower_expr(c, Some(&Ty::Bool), b, None);
+            self.candidate = outer;
+            self.push_read = None;
+            let cv = cv?;
+            if cv.ty != Ty::Bool {
+                return Err(lex::error(&file, c.line, "'while' takes a bool"));
+            }
+            let cv = b.materialize(&cv);
+            b.line(&format!("if {}", cv.text));
+            b.line("else");
+            b.depth += 1;
+            b.line("break");
+            b.depth -= 1;
+            self.field_put(name, &v.text, b);
+            b.line("continue");
+            b.depth -= 1;
+        }
+        Ok(true)
+    }
+
     /// An edge (log 72, zero.md section 9): `out$ << i$ << "\n"` at
     /// feature scope wires `i$` into `out$`. It is a sink the front end
     /// writes for itself — a loop of `count`, `peek`, the pushes and
@@ -4582,7 +4830,22 @@ impl Lowerer {
         if v.scope.len() > 1 {
             return Err(lex::error(file, v.line, "a variable has one scope word: static, device or group"));
         }
-        let ty = self.decl_ty(v, None, file)?;
+        let ty = match self.decl_ty(v, None, file) {
+            Ok(t) => t,
+            // a stream of what the IR's ring does not hold, a bool say,
+            // where it may be a cell (fm3 log 143): one value of
+            // anything a variable may be. If the lowering finds it
+            // used as a stream the store is lowered again and this is
+            // the refusal
+            Err(e) if v.seq && self.cell_decls.contains(&v.name) => match self.ty(&v.ty, false, file, v.line) {
+                Ok(t) => {
+                    self.cell_only.insert(v.name.clone());
+                    Ty::Stream(Box::new(t))
+                }
+                Err(_) => return Err(e),
+            },
+            Err(e) => return Err(e),
+        };
         self.fvars.push(FVar {
             name: v.name.clone(),
             ty,
@@ -4747,8 +5010,12 @@ impl Lowerer {
                     }
                     continue;
                 }
-                self.type_lines.push(format!(";   {}: {}, {} ({})", f.name, f.scope, f.merge, f.feature));
-                fields.push(format!("{}: {}", f.name, f.ty.ir()));
+                if self.cells.contains(&f.name) {
+                    self.type_lines.push(format!(";   {}: {}, {} ({}), a stream of which one value is kept, its latest", f.name, f.scope, f.merge, f.feature));
+                } else {
+                    self.type_lines.push(format!(";   {}: {}, {} ({})", f.name, f.scope, f.merge, f.feature));
+                }
+                fields.push(format!("{}: {}", f.name, self.field_ty(f).ir()));
             }
             self.type_lines.push(format!("type __ctx = struct\n    {}", fields.join("\n    ")));
             // memory for two contexts: the runner's, and a second, so
@@ -4771,6 +5038,34 @@ impl Lowerer {
                     }
                     let ty = self.fvar(&v.name).unwrap().ty.clone();
                     let val = match &v.init {
+                        // a cell (fm3 log 143): its first items worked
+                        // out in order, each reading the one before by
+                        // the stream's name, and the last its first
+                        // value; the zero of its type with none
+                        _ if self.cells.contains(&v.name) => {
+                            let Ty::Stream(elem) = &ty else { unreachable!() };
+                            let elem = elem.as_ref().clone();
+                            let items: &[Expr] = match &v.init {
+                                Some(Init::Pushes { items, .. }) => items,
+                                _ => &[],
+                            };
+                            let mut cur = if items.is_empty() || !matches!(elem, Ty::Struct(_)) { Some(self.zero_val(&elem, &mut b)) } else { None };
+                            for e in items {
+                                self.push_read = cur.clone().map(|c| (v.name.clone(), PushRead::Value(c)));
+                                let x = self.lower_expr(e, Some(&elem), &mut b, None);
+                                self.push_read = None;
+                                let x = x?;
+                                if !(x.ty == elem || (x.literal && fits_literal(&x, &elem))) {
+                                    self.uncell(&v.name);
+                                    break;
+                                }
+                                cur = Some(Val { ty: elem.clone(), ..x });
+                            }
+                            match cur {
+                                Some(c) => c,
+                                None => self.zero_val(&elem, &mut b),
+                            }
+                        }
                         _ if matches!(ty, Ty::Stream(_)) => {
                             let wired = matches!(&v.init, Some(Init::Value(e)) if matches!(self.task_call(e, None, &b.file), Ok(Some(_))));
                             // wired to a task at a rate: timed by the rate (log 73)
@@ -4906,7 +5201,7 @@ impl Lowerer {
             if self.device_var(f) || self.bare.contains(&f.name) {
                 continue;
             }
-            let t = f.ty.ir();
+            let t = self.field_ty(f).ir();
             writeln!(self.out, "\nfn __get_{}() -> {}\n    p: ptr = context()\n    c: __ctx = load p\n    v: {} = get c, {}\n    ret v", f.name, t, t, f.name).unwrap();
             // a switch's setter also works out the effective state of
             // its feature and of every dynamic feature under it, parents
@@ -5429,6 +5724,12 @@ impl Lowerer {
         if self.bare.contains(name) {
             return Ok(Val { text: "__bare".into(), ty: f.ty, literal: false });
         }
+        // a cell wanted as a stream is one after all (fm3 log 143):
+        // noted, and this pass goes on with a stream's type in hand
+        if self.cells.contains(name) {
+            self.uncell(name);
+            return Ok(Val { text: "__uncell".into(), ty: f.ty, literal: false });
+        }
         let dst = dst.filter(|d| b.vars.get(*d).map(|v| &v.ty) == Some(&f.ty));
         let out = self.field_get(name, &f.ty.ir(), dst, b);
         Ok(Val { text: out, ty: f.ty, literal: false })
@@ -5679,6 +5980,7 @@ impl Lowerer {
     /// True when both arms leave, so the `if` does
     fn lower_if(&mut self, cond: &Expr, then: &[Stmt], els: Option<&[Stmt]>, b: &mut Body) -> Result<bool, Error> {
         let file = b.file.clone();
+        self.one = true;
         let cv = self.lower_expr(cond, Some(&Ty::Bool), b, None)?;
         if cv.ty != Ty::Bool {
             return Err(lex::error(&file, cond.line, "'if' takes a bool"));
@@ -5779,6 +6081,7 @@ impl Lowerer {
             let init = match &v.init {
                 None => self.zero_val(&ty, b),
                 Some(Init::Value(e)) => {
+                    self.one = !matches!(ty, Ty::Stream(_));
                     let val = self.lower_expr(e, Some(&ty), b, None)?;
                     self.coerce(val, &ty, &format!("'{}'", v.name), b, None, e.line)?
                 }
@@ -5859,6 +6162,7 @@ impl Lowerer {
                         let v = b.materialize(init);
                         b.vars.insert(n.clone(), Var { ir: v.text, ty: ty.clone(), set: true, loop_depth: depth });
                     }
+                    self.one = true;
                     let cv = self.lower_expr(c, Some(&Ty::Bool), b, None)?;
                     let cv = b.materialize(&cv);
                     b.vars = outer;
@@ -5883,6 +6187,7 @@ impl Lowerer {
         let start = b.out.len();
         b.depth += 1;
         if let Some(c) = cond {
+            self.one = true;
             let cv = self.lower_expr(c, Some(&Ty::Bool), b, None)?;
             if cv.ty != Ty::Bool {
                 return Err(lex::error(&file, c.line, "'while' takes a bool"));
@@ -6007,7 +6312,9 @@ impl Lowerer {
                 return Err(lex::error(&file, e.line, "a range's bounds are integers"));
             }
         }
+        self.one = true;
         let mut fv = self.lower_expr(from, None, b, None)?;
+        self.one = true;
         let mut tv = self.lower_expr(to, if fv.literal { None } else { Some(&fv.ty) }, b, None)?;
         if fv.literal && !tv.literal {
             fv.ty = tv.ty.clone();
@@ -6246,6 +6553,7 @@ impl Lowerer {
             let given = if named { args.iter().find(|a| a.name.as_deref() == Some(fname)) } else { args.get(i) };
             let v = match given {
                 Some(a) => {
+                    self.one = !matches!(fty, Ty::Stream(_));
                     let v = self.lower_expr(&a.value, Some(fty), b, None)?;
                     self.coerce(v, fty, &format!("field '{}' of {}", fname, name), b, None, a.value.line)?
                 }
@@ -6373,11 +6681,13 @@ impl Lowerer {
                     let t = &targets[0];
                     if !b.vars.contains_key(&t.name) {
                         let ty = self.fvar(&t.name).unwrap().ty.clone();
+                        self.one = !matches!(ty, Ty::Stream(_));
                         let v = self.lower_expr(value, Some(&ty), b, None)?;
                         self.write_fvar(&t.name, v, b, *line)?;
                         return Ok(false);
                     }
                     let ty = b.vars[&t.name].ty.clone();
+                    self.one = !matches!(ty, Ty::Stream(_));
                     let v = self.lower_expr(value, Some(&ty), b, Some(&t.name))?;
                     self.assign(&t.name, v, b, *line)?;
                     return Ok(self.finish_if_done(b));
@@ -6459,6 +6769,7 @@ impl Lowerer {
                         self.assign(&v.name, z, b, v.line)?
                     }
                     Some(Init::Value(e)) => {
+                        self.one = true;
                         let val = self.lower_expr(e, Some(&ty), b, Some(&v.name))?;
                         self.assign(&v.name, val, b, v.line)?
                     }
@@ -6525,6 +6836,7 @@ impl Lowerer {
                 let mut vals = Vec::new();
                 for (e, n) in values.iter().zip(&carried) {
                     let ty = b.vars[n].ty.clone();
+                    self.one = !matches!(ty, Ty::Stream(_));
                     let v = self.lower_expr(e, Some(&ty), b, None)?;
                     let v = self.coerce(v, &ty, &format!("'{}'", n), b, None, e.line)?;
                     vals.push(v.text);
@@ -6538,6 +6850,7 @@ impl Lowerer {
                 // `check (c)` (section 14, log 29): the IR's trap when c
                 // does not hold, the site printed first so the runner
                 // can name it
+                self.one = true;
                 let cv = self.lower_expr(cond, Some(&Ty::Bool), b, None)?;
                 if cv.ty != Ty::Bool {
                     return Err(lex::error(&file, *line, "'check' takes a bool"));
@@ -6575,6 +6888,12 @@ impl Lowerer {
                         Some(t) => lex::error(&file, *line, format!("'{}$' is a {}, not a stream", n, t.ir())),
                         None => lex::error(&file, *line, format!("'{}$' is not declared", n)),
                     });
+                }
+                // into a cell (fm3 log 143): a store of its field for
+                // each item; where an item is not one value of its
+                // type the name is noted and lowered here as a stream
+                if self.is_cell(n, b) && self.push_cell(n, items, cond.as_ref(), b, *line)? {
+                    return Ok(false);
                 }
                 // into a stream with a rate the statement's first item
                 // lands on the stream's beat (question 52, fm3 log 98),
@@ -6826,6 +7145,17 @@ impl Lowerer {
     /// argument that is a sequence where the parameter is an item is
     /// marked lifted (a map), and `_` marks the accumulator (a reduce)
     fn lower_call_args(&mut self, info: &FnInfo, args: &[Expr], b: &mut Body) -> Result<(Vec<Val>, Vec<bool>, Option<(usize, Ty)>, Vec<Ty>, bool), Error> {
+        // which arguments one value is wanted of is this call's alone:
+        // taken while its arguments are lowered, and put back for the
+        // next method `choose` tries
+        let ones = std::mem::take(&mut self.arg_ones);
+        let r = self.lower_call_args_of(info, args, &ones, b);
+        self.arg_ones = ones;
+        r
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn lower_call_args_of(&mut self, info: &FnInfo, args: &[Expr], ones: &[bool], b: &mut Body) -> Result<(Vec<Val>, Vec<bool>, Option<(usize, Ty)>, Vec<Ty>, bool), Error> {
         let file = b.file.clone();
         // the round is this call's alone: a call inside an argument
         // chooses for itself
@@ -6848,6 +7178,7 @@ impl Lowerer {
                 lifted.push(false);
                 continue;
             }
+            self.one = ones.get(i).copied().unwrap_or(false);
             let mut v = self.lower_expr(a, Some(ty), b, None)?;
             if round != Round::Any {
                 // a literal, or a list of them, as its own type — or as
@@ -7297,7 +7628,9 @@ impl Lowerer {
                 return Err(lex::error(&file, e.line, "a range's bounds are integers"));
             }
         }
+        self.one = true;
         let mut fv = self.lower_expr(from, None, b, None)?;
+        self.one = true;
         let mut tv = self.lower_expr(to, if fv.literal { None } else { Some(&fv.ty) }, b, None)?;
         if fv.literal && !tv.literal {
             fv.ty = tv.ty.clone();
@@ -7922,6 +8255,7 @@ impl Lowerer {
                     // name is still its latest item (log 39)
                     self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
                     let outer = self.candidate.replace(v.clone());
+                    self.one = true;
                     let cv = self.lower_expr(c, Some(&Ty::Bool), b, None);
                     self.candidate = outer;
                     self.push_read = None;
@@ -8722,6 +9056,10 @@ impl Lowerer {
                 _ => None,
             }
         };
+        // `latest` of a cell is its field (fm3 log 143)
+        if w == "latest" && !infix && rest.is_empty() && self.is_cell(&sname, b) {
+            return Ok(Some(self.read_cell(&sname, b, dst, line)?));
+        }
         let ty = self.stream_var(&sname, b).unwrap();
         let Ty::Stream(elem) = ty.clone() else { unreachable!() };
         let s = self.lower_expr(&Expr { kind: ExprKind::Name(sname.clone()), line }, None, b, None)?;
@@ -8863,6 +9201,9 @@ impl Lowerer {
 
     fn lower_expr(&mut self, e: &Expr, want: Option<&Ty>, b: &mut Body, dst: Option<&str>) -> Result<Val, Error> {
         let file = b.file.clone();
+        // is one value wanted of this expression (fm3 question 79, log
+        // 143)? Said by whoever asked, for this expression alone
+        let one = std::mem::take(&mut self.one);
         match &e.kind {
             ExprKind::Int(v) => {
                 let ty = match want {
@@ -8886,9 +9227,29 @@ impl Lowerer {
                 // in a push chain the stream's own name is an item (log 23)
                 if let Some((n, read)) = self.push_read.clone() {
                     if &n == w {
-                        let PushRead::Latest(s, ty) = read;
-                        return self.latest_of(&s, &ty, b, dst);
+                        return match read {
+                            PushRead::Latest(s, ty) => self.latest_of(&s, &ty, b, dst),
+                            PushRead::Cell => self.read_cell(w, b, dst, e.line),
+                            PushRead::Value(v) => Ok(v),
+                        };
                     }
+                }
+                // a stream's name where one value is wanted is its
+                // latest item (fm3 question 79): a cell's field, or the
+                // library's `latest` of any other stream
+                if one {
+                    if self.is_cell(w, b) {
+                        return self.read_cell(w, b, dst, e.line);
+                    }
+                    if self.device(w, b) {
+                        return Err(lex::error(&file, e.line, format!("'{}$' is the output device: it is written and never read, so it has no latest item", w)));
+                    }
+                    let v = self.lower_expr(&Expr { kind: ExprKind::Name(w.clone()), line: e.line }, want, b, None)?;
+                    let ty = v.ty.clone();
+                    return match ty {
+                        Ty::Stream(_) => self.latest_of(&v, &ty, b, dst),
+                        _ => Err(lex::error(&file, e.line, format!("'{}$' is not a stream: '{}' is a {}", w, w, v.ty.ir()))),
+                    };
                 }
                 let v = self.lower_expr(&Expr { kind: ExprKind::Name(w.clone()), line: e.line }, want, b, dst)?;
                 if v.ty.elem().is_none() {
@@ -8914,6 +9275,7 @@ impl Lowerer {
                     _ => {
                         // a value with a unit: an integer, widened to the
                         // library's i64 (log 33)
+                        self.one = true;
                         let v = self.lower_expr(inner, None, b, None)?;
                         let integer = matches!(&v.ty, Ty::Num(t) if t == "int" || t == "uint" || (t.starts_with(['i', 'u']) && t[1..].parse::<u32>().is_ok()));
                         if !integer {
@@ -8941,6 +9303,7 @@ impl Lowerer {
                 if sv.ty.elem().is_none() {
                     return Err(lex::error(&file, e.line, format!("an index into a {}, which has no items", sv.ty.ir())));
                 }
+                self.one = true;
                 let iv = self.lower_expr(idx, Some(&index_ty()), b, None)?;
                 if !matches!(iv.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, idx.line, "an index is an integer"));
@@ -8984,6 +9347,7 @@ impl Lowerer {
                         }
                     }
                 }
+                self.one = true;
                 let v = self.lower_expr(base, None, b, None)?;
                 let Ty::Struct(name) = &v.ty else {
                     return Err(lex::error(&file, e.line, format!("'.{}' on a {}, which has no fields", field, v.ty.ir())));
@@ -8998,6 +9362,7 @@ impl Lowerer {
                 Ok(Val { text: out, ty: fty, literal: false })
             }
             ExprKind::Neg(x) => {
+                self.one = one;
                 let v = self.lower_expr(x, want, b, None)?;
                 if !matches!(v.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, e.line, "'-' takes a number"));
@@ -9010,7 +9375,9 @@ impl Lowerer {
             // `a or b`, `a and b` (fm3 question 66): two conditions
             // joined, both worked out, one operation
             ExprKind::Bin(op, l, r) if op == "and" || op == "or" => {
+                self.one = true;
                 let lv = self.lower_expr(l, Some(&Ty::Bool), b, None)?;
+                self.one = true;
                 let rv = self.lower_expr(r, Some(&Ty::Bool), b, None)?;
                 for (v, x) in [(&lv, l), (&rv, r)] {
                     if v.ty != Ty::Bool {
@@ -9037,9 +9404,13 @@ impl Lowerer {
                         _ => None,
                     }
                 };
+                // where one value is wanted of the whole, it is wanted
+                // of each operand
+                self.one = one;
                 let lv = self.lower_expr(l, operand_want, b, None)?;
                 // a struct on the left: the program's own operator
                 if let Ty::Struct(_) = &lv.ty {
+                    self.one = one;
                     let mut rv = self.lower_expr(r, None, b, None)?;
                     let Some(info) = self.find_operator(op, &lv.ty, &rv, &file, e.line)? else {
                         return Err(lex::error(&file, e.line, format!("no '{}' is defined on a {} and a {}", op, zero_ty(&lv.ty), zero_ty(&rv.ty))));
@@ -9054,6 +9425,7 @@ impl Lowerer {
                 }
                 let lt = lv.ty.clone();
                 let rv_want = if lv.literal { operand_want } else { Some(lt.elem().unwrap_or(&lt)) };
+                self.one = one;
                 let rv = self.lower_expr(r, rv_want, b, None)?;
                 if lv.ty.elem().is_some() || rv.ty.elem().is_some() {
                     return self.seq_bin(op, lv, rv, b, dst, e.line);
@@ -9061,6 +9433,7 @@ impl Lowerer {
                 self.emit_bin(op, lv, rv, want, b, dst, e.line)
             }
             ExprKind::IfElse(c, a, d) => {
+                self.one = true;
                 let cv = self.lower_expr(c, Some(&Ty::Bool), b, None)?;
                 if cv.ty != Ty::Bool {
                     return Err(lex::error(&file, c.line, "'if' takes a bool"));
@@ -9070,8 +9443,10 @@ impl Lowerer {
                 // yields the literal, which the join's parameter types
                 let start = b.out.len();
                 b.depth += 1;
+                self.one = one;
                 let mut av = self.lower_expr(a, want, b, None)?;
                 let mut a_lines = b.out.split_off(start);
+                self.one = one;
                 let mut dv = self.lower_expr(d, if av.literal { want } else { Some(&av.ty) }, b, None)?;
                 let mut d_lines = b.out.split_off(start);
                 let ty = match (av.literal, dv.literal) {
@@ -9134,6 +9509,7 @@ impl Lowerer {
                                 let [a] = args.as_slice() else {
                                     return Err(lex::error(&file, e.line, format!("a conversion is {}(x)", w)));
                                 };
+                                self.one = true;
                                 let v = self.lower_expr(&a.value, None, b, None)?;
                                 if !matches!(v.ty, Ty::Num(_) | Ty::Bool | Ty::Char) || v.ty == Ty::Bool && to == Ty::Bool {
                                     return Err(lex::error(&file, e.line, format!("{}(x) converts a number, not a {}", w, zero_ty(&v.ty))));
@@ -9207,8 +9583,17 @@ impl Lowerer {
                 if cands[0].task {
                     return Err(lex::error(&file, e.line, task_refusal(&cands[0], e)));
                 }
+                // where one value is wanted of the call, it is wanted of
+                // each argument whose parameter is one value in every
+                // method of the name; a `_` among them is a reduce, as
+                // it was (fm3 log 143)
+                if one && !(self.candidate.is_none() && args.iter().any(|a| matches!(a.kind, ExprKind::Acc))) {
+                    self.arg_ones = (0..args.len()).map(|i| cands.iter().all(|c| c.params.get(i).is_some_and(|p| !matches!(p.1, Ty::Stream(_))))).collect();
+                }
                 // the method the arguments choose (section 6, log 36)
-                let (info, (vals, lifted, acc, rtys, _)) = self.choose(&cands, &args, b, e.line)?;
+                let chosen = self.choose(&cands, &args, b, e.line);
+                self.arg_ones.clear();
+                let (info, (vals, lifted, acc, rtys, _)) = chosen?;
                 self.reach(&spoken(&info), &info.feature, &file, e.line)?;
                 if lifted.iter().any(|&l| l) || acc.is_some() {
                     if rtys.len() > 1 || (rtys.is_empty() && acc.is_some()) {
