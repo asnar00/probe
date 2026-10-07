@@ -56,6 +56,7 @@ for (const c of spec.cases) {
     // the zero runner: reset the program's state first, set the case's
     // context, start the nodes, and read the text output back after
     // (see suite.rs, run_calls)
+    if (c.reset && inst.exports.__zero_context) inst.exports.__zero_context(0);
     if (c.reset && inst.exports.__zero_reset) inst.exports.__zero_reset();
     for (const b of c.before || []) inst.exports[b.func](...b.args.map(argOf));
     if (c.reset && inst.exports.__zero_start) inst.exports.__zero_start();

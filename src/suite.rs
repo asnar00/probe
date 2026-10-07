@@ -855,6 +855,11 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
                     Some(r) if r.container() == 32 => opt::norm(*r, x as u32 as i64),
                     _ => x,
                 };
+                // the runner makes the store's first context the current
+                // one, and the reset works on it (fm3 log 137)
+                if module.func("__zero_context").is_some() {
+                    jit.call("__zero_context", &[0])?;
+                }
                 if module.func("__zero_reset").is_some() {
                     jit.call("__zero_reset", &[])?;
                 }
@@ -1376,6 +1381,9 @@ fn gen_driver(
             // the zero runner: the program's state is reset before every
             // call, the case's context set, and the nodes started, as the
             // JIT and node do (see `run_calls`, log 43)
+            if module.func("__zero_context").is_some() {
+                s.push_str("    __zero_context(0)\n");
+            }
             s.push_str("    __zero_reset()\n");
             for (bf, bargs) in &case.before {
                 let f = module.func(bf).ok_or_else(|| format!("no function {} for the context of '{}'", bf, case.text))?;

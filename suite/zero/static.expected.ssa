@@ -78,7 +78,7 @@ fn __out_mark(i: i64) -> i64
 ; ring is the device's own lookahead, sized by the runner, which a
 ; consumer wired to `in$` reads with `peek`, `advance` and `count`
 fn __in_ch(c: u8)
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     k: __ctx = load _this
     s: u8$ = get k, in
     push_queue(s, c)
@@ -112,11 +112,11 @@ fn __wait(t: i64)
 type __ctx = struct
     in: u8$
 
-data __ctx_mem: array(__ctx, 1)
+data __ctx_mem: array(__ctx, 2)
 data __s11 = "hello world"
 data __s12 = "goodbye"
 
-; before every case: the arena emptied, the variables at their initial values
+; before every case: the arena emptied, and the current context made new
 fn __zero_reset()
     a: ptr = addr __arena
     h: ptr = addr __heap
@@ -135,10 +135,24 @@ fn __zero_reset()
         continue mi2
     o: ptr = addr __out_n
     store 0: index, o
+    __zero_new()
+    ret
+
+; the current context at its first values, its streams made in the arena
+fn __zero_new()
     _1: u8$ = __queue_u8(1000000, 512)
     _2: __ctx = pack _1
-    p: ptr = addr __ctx_mem
+    p: ptr = context()
     store _2, p
+    ret
+
+; the runner's: the k-th of the store's contexts is the current one
+fn __zero_context(k: i32)
+    p: ptr(array(__ctx, 2)) = addr __ctx_mem
+    i: index = conv k
+    e: ptr(__ctx) = index p, i
+    c: ptr = cast e
+    context_set(c)
     ret
 
 ; feature platform (layer platform)

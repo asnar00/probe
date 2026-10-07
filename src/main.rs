@@ -212,6 +212,11 @@ fn main() -> ExitCode {
                 let enc = emit::Encoder::load(ENCODINGS)?;
                 let compiled = emit::compile(&module, &enc)?;
                 let jit = emit::jit::JitCode::new(&compiled)?;
+                // a zero store's first context is made the current one
+                // before anything runs, as its runner does (fm3 log 137)
+                if module.func("__zero_context").is_some() {
+                    jit.call("__zero_context", &[0])?;
+                }
                 for f in &after {
                     jit.call(f, &[])?;
                 }

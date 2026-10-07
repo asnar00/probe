@@ -2343,7 +2343,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
             }
         }
     }
-    for entry in ["__zero_reset", "__zero_start", "__out_len", "__out_byte", "__in_ch"] {
+    for entry in ["__zero_reset", "__zero_new", "__zero_context", "__zero_start", "__out_len", "__out_byte", "__in_ch"] {
         roots.insert(entry.to_string());
     }
     // a store with a case that asserts on time has the marks' reader
@@ -2474,7 +2474,7 @@ fn settle_context(ir: &str, written: &std::collections::HashSet<String>, unread:
             }
         }
         if !made {
-            writeln!(out, "    {}: ptr = addr __ctx_mem", THIS).unwrap();
+            writeln!(out, "    {}: ptr = context()", THIS).unwrap();
         }
         for (k, l) in body.iter().enumerate() {
             if dropped[k] {
@@ -4573,6 +4573,8 @@ impl Lowerer {
     /// scheduler with a function per node (log 25)
     fn emit_context(&mut self, store: &Store) -> Result<(), Error> {
         let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Reset, func: None, below: None, product_bound: None };
+        // where the reset's lines turn from the store's to the context's
+        let mut fresh: Option<usize> = None;
         b.line("a: ptr = addr __arena");
         b.line("h: ptr = addr __heap");
         b.line("arena_init(a, h, 65536)");
@@ -4711,7 +4713,11 @@ impl Lowerer {
                 fields.push(format!("{}: {}", f.name, f.ty.ir()));
             }
             self.type_lines.push(format!("type __ctx = struct\n    {}", fields.join("\n    ")));
-            self.data.push("data __ctx_mem: array(__ctx, 1)".into());
+            // memory for two contexts: the runner's, and a second, so
+            // that one store can be run in two (fm3 log 137); the code
+            // is the same for any number
+            self.data.push("data __ctx_mem: array(__ctx, 2)".into());
+            fresh = Some(b.out.len());
             // the initial values, in composition order: every feature on,
             // then the variables, then the nodes' state
             let mut inits: Vec<String> = self.features.iter().filter(|f| !self.statics.contains(*f)).map(|_| "1".to_string()).collect();
@@ -4815,13 +4821,33 @@ impl Lowerer {
             }
             let c = b.tmp();
             b.line(&format!("{}: __ctx = pack {}", c, inits.join(", ")));
-            b.line("p: ptr = addr __ctx_mem");
+            b.line("p: ptr = context()");
             b.line(&format!("store {}, p", c));
         }
         b.line("ret");
-        writeln!(self.out, "\n; before every case: the arena emptied, the variables at their initial values").unwrap();
-        writeln!(self.out, "fn __zero_reset()").unwrap();
-        self.out.push_str(&b.out);
+        // the reset is the store's and then the current context's (fm3
+        // log 137): `__zero_new` gives whichever context is current its
+        // first values and empties nothing, so a second context is made
+        // beside the first; `__zero_context` is the runner's, the k-th
+        // of the store's contexts made the current one
+        match fresh {
+            Some(at) => {
+                writeln!(self.out, "\n; before every case: the arena emptied, and the current context made new").unwrap();
+                writeln!(self.out, "fn __zero_reset()").unwrap();
+                self.out.push_str(&b.out[..at]);
+                self.out.push_str("    __zero_new()\n    ret\n");
+                writeln!(self.out, "\n; the current context at its first values, its streams made in the arena").unwrap();
+                writeln!(self.out, "fn __zero_new()").unwrap();
+                self.out.push_str(&b.out[at..]);
+                writeln!(self.out, "\n; the runner's: the k-th of the store's contexts is the current one").unwrap();
+                writeln!(self.out, "fn __zero_context(k: i32)\n    p: ptr(array(__ctx, 2)) = addr __ctx_mem\n    i: index = conv k\n    e: ptr(__ctx) = index p, i\n    c: ptr = cast e\n    context_set(c)\n    ret").unwrap();
+            }
+            None => {
+                writeln!(self.out, "\n; before every case: the arena emptied").unwrap();
+                writeln!(self.out, "fn __zero_reset()").unwrap();
+                self.out.push_str(&b.out);
+            }
+        }
         // the case's context is set between the reset and the start, so
         // a node of a feature that is off never runs (log 43)
         // ... a node its pushers wake has nothing to run on then (fm3 log 103)
@@ -4833,8 +4859,8 @@ impl Lowerer {
                 continue;
             }
             let t = f.ty.ir();
-            writeln!(self.out, "\nfn __get_{}() -> {}\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    v: {} = get c, {}\n    ret v", f.name, t, t, f.name).unwrap();
-            writeln!(self.out, "\nfn __set_{}(v: {})\n    p: ptr = addr __ctx_mem\n    c: __ctx = load p\n    c2: __ctx = set c, {}, v\n    store c2, p\n    ret", f.name, t, f.name).unwrap();
+            writeln!(self.out, "\nfn __get_{}() -> {}\n    p: ptr = context()\n    c: __ctx = load p\n    v: {} = get c, {}\n    ret v", f.name, t, t, f.name).unwrap();
+            writeln!(self.out, "\nfn __set_{}(v: {})\n    p: ptr = context()\n    c: __ctx = load p\n    c2: __ctx = set c, {}, v\n    store c2, p\n    ret", f.name, t, f.name).unwrap();
         }
         // a feature is on when its own flag and every ancestor's are
         // (section 14, log 51), and a switch writes one field, so a

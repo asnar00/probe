@@ -668,7 +668,7 @@ mod tests {
         assert_eq!(effective(&s, &["tool".to_string()].into_iter().collect(), &sequence).unwrap().iter().cloned().collect::<Vec<_>>(), ["more", "tool"]);
         // a gate reads the feature's own switch and its dynamic ancestor's,
         // in line at the context's address (fm3 log 110)
-        assert!(l.ir.contains("fn greet__before_most() -> int\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: u1 = get _1, __enabled_more\n    _3: u1 = get _1, __enabled_base\n    on: u1 = and _2, _3\n") && !l.ir.contains("__on_more") && !l.ir.contains("__get___enabled"), "{}", l.ir);
+        assert!(l.ir.contains("fn greet__before_most() -> int\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: u1 = get _1, __enabled_more\n    _3: u1 = get _1, __enabled_base\n    on: u1 = and _2, _3\n") && !l.ir.contains("__on_more") && !l.ir.contains("__get___enabled"), "{}", l.ir);
     }
 
     /// A negative literal handed to a word that counts forward from a
@@ -676,6 +676,81 @@ mod tests {
     /// (fm3 question 61, log 123): the case a person would write. Not
     /// `x$[-1]`, which question 75 gives a meaning, and not a computed
     /// index, which is the library's check to catch (question 64)
+    /// zero.md section 14, "swap the context and behaviour changes at
+    /// once", as a test (fm3 log 137): one store, two contexts made, a
+    /// case run in each by turns, each one's state its own. On the JIT,
+    /// by the runner's own entries: `__zero_context(k)` makes the k-th
+    /// context current, `__zero_reset` puts the store back and makes the
+    /// current context new, `__zero_new` makes a second beside it
+    #[test]
+    fn two_contexts_each_keep_their_own() {
+        let jit_of = |dir: &Path| -> crate::emit::jit::JitCode {
+            let s = store::read(dir).unwrap();
+            let policy = store_policy(&s, &ssa::Policy::new(ssa::Type::I64).unwrap());
+            let l = lower::lower(&s).unwrap();
+            let m = build(&l.ir, &policy, 1).unwrap();
+            let enc = crate::emit::Encoder::load("targets/arm64.encodings.json").unwrap();
+            crate::emit::jit::JitCode::new(&crate::emit::compile(&m, &enc).unwrap()).unwrap()
+        };
+        // hello: a feature switched off in one context and on in the other
+        let j = jit_of(Path::new("suite/zero/hello"));
+        let call = |f: &str, args: &[i64]| j.call(f, args).unwrap_or_else(|e| panic!("{}: {}", f, e));
+        let out = || -> String { (0..call("__out_len", &[])).map(|i| call("__out_byte", &[i]) as u8 as char).collect() };
+        let fresh = |k: i64| {
+            call("__zero_context", &[k]);
+            if k == 0 { call("__zero_reset", &[]) } else { call("__zero_new", &[]) };
+        };
+        fresh(0);
+        call("run", &[]);
+        let on = out();
+        fresh(0);
+        call("__set___enabled_countdown", &[0]);
+        call("run", &[]);
+        let off = out();
+        assert!(on.starts_with("10\n9\n") && on.ends_with(&off) && off.starts_with("hello world"), "{:?} {:?}", on, off);
+        fresh(0);
+        fresh(1);
+        call("__set___enabled_countdown", &[0]);
+        call("__zero_context", &[0]);
+        call("run", &[]);
+        call("__zero_context", &[1]);
+        call("run", &[]);
+        assert_eq!(out(), format!("{}{}", on, off));
+        // ... and the switch written in the second left the first as it was
+        call("__zero_context", &[0]);
+        call("run", &[]);
+        assert_eq!(out(), format!("{}{}{}", on, off, on));
+
+        // a stream processor's word in progress, a stream's own bit and
+        // a variable, each kept across the other context's turn
+        let dir = std::env::temp_dir().join(format!("probe-zero-two-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-07T10:00:00\n\n## testing\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "type token =\n    int kind\n    index start, n\n\nchar src$\ntoken u$ = lex(src$)\nint seen = 0\n\non (int k) = kind of (char c)\n    k = if (c <= 32) then (0) else (1)\n\non (token t$) << lex (char c$)\n    int k$ = if (empty c$) then (0) else (kind of (c$))\n    bool new$ = k$ == 3 or k$ != k$[-1]\n    index start$ = if (new$) then (position c$) else (start$[-1])\n    index n$ = if (new$) then (1) else (n$[-1] + 1)\n    t$ << token(k$[-1], start$[-1], n$[-1]) when (new$ and k$[-1] != 0)\n\non arrive first()\n    src$ << \"let x = 4\"\n    seen = seen + 1\n\non arrive again()\n    src$ << \"2;\\n\"\n    end src$\n\non bump()\n    seen = seen + 1\n\non (int n) = tokens()\n    n = count u$\n\non (int n) = last length()\n    token x = peek u$ at (3)\n    n = x.n\n\non (int n) = bumps()\n    n = seen\n").unwrap();
+        let j = jit_of(&dir);
+        let call = |k: i64, f: &str| -> i64 {
+            j.call("__zero_context", &[k]).unwrap();
+            j.call(f, &[]).unwrap_or_else(|e| panic!("{}: {}", f, e))
+        };
+        call(0, "__zero_reset");
+        call(1, "__zero_new");
+        call(0, "arrive_first");
+        call(1, "arrive_first");
+        call(1, "bump");
+        call(1, "bump");
+        assert_eq!((call(0, "tokens"), call(1, "tokens")), (3, 3));
+        // the first context's input goes on and ends: its `4` becomes
+        // `42;`, three long, and the second's word is still in progress
+        call(0, "arrive_again");
+        assert_eq!((call(0, "tokens"), call(0, "last_length"), call(1, "tokens")), (4, 3, 3));
+        // ... and the second's then ends too, its own bit being its own
+        call(1, "arrive_again");
+        assert_eq!((call(1, "tokens"), call(1, "last_length"), call(0, "tokens")), (4, 3, 4));
+        assert_eq!((call(0, "bumps"), call(1, "bumps")), (1, 3));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_negative_literal_index_is_refused() {
         let dir = std::env::temp_dir().join(format!("probe-zero-negative-{}", std::process::id()));
@@ -825,7 +900,7 @@ mod tests {
             emit(&dir)
         };
         let ir = with("on (int n) = f (int k)\n    x$ << k\n    p$ << k when (k > 2)\n    n = count d$ + count p$").unwrap();
-        assert!(ir.contains("fn __z1_each(_x: int)\n    _this: ptr = addr __ctx_mem\n    _1: u1 = cmp.gt _x, 0\n    if _1\n        _2: __ctx = load _this\n        _3: int$ = get _2, d\n        push_queue_open(_3, _x)\n    ret\n"), "{}", ir);
+        assert!(ir.contains("fn __z1_each(_x: int)\n    _this: ptr = context()\n    _1: u1 = cmp.gt _x, 0\n    if _1\n        _2: __ctx = load _this\n        _3: int$ = get _2, d\n        push_queue_open(_3, _x)\n    ret\n"), "{}", ir);
         assert!(ir.contains("    _3: u1 = cmp.gt k, 2\n    if _3\n        _4: __ctx = load _this\n        _5: int$ = get _4, p\n        push_queue_open(_5, k)\n"), "{}", ir);
         for (more, said) in [
             ("on f (int k)\n    p$ << k while (_ < 3) when (k > 2)", "h.zero:9: a push takes `while` or `when`, not both: `while` repeats the push, `when` says whether it happens"),
@@ -964,8 +1039,8 @@ mod tests {
         assert_eq!(f.matches(" = set ").count(), 2, "{}", f);
         // a line that asks `empty`: one arm in each function, no branch
         let ir = with("    int k$ = if (empty x$) then (7) else (x$ + k$[-1])\n    d$ << k$", "").unwrap();
-        assert!(ir.contains("fn __z1_each(_x: int, __k_b1: int) -> int\n    _this: ptr = addr __ctx_mem\n    _k: int = add _x, __k_b1\n"), "{}", ir);
-        assert!(ir.contains("fn __z1_end(__k_b1: int)\n    _this: ptr = addr __ctx_mem\n    _k: int = const 7\n    _1: __ctx = load _this\n    _2: int$ = get _1, d\n    push_queue_open(_2, _k)\n    ret\n"), "{}", ir);
+        assert!(ir.contains("fn __z1_each(_x: int, __k_b1: int) -> int\n    _this: ptr = context()\n    _k: int = add _x, __k_b1\n"), "{}", ir);
+        assert!(ir.contains("fn __z1_end(__k_b1: int)\n    _this: ptr = context()\n    _k: int = const 7\n    _1: __ctx = load _this\n    _2: int$ = get _1, d\n    push_queue_open(_2, _k)\n    ret\n"), "{}", ir);
         // called under "it had not ended", with what is kept
         assert!(ir.contains("    _15: u1 = get _14, __zend_x\n    if _15\n    else\n        _16: u1 = const 1\n        _17: __ctx = load _this\n        _18: __ctx = set _17, __zend_x, _16\n        store _18, _this\n        if _5\n            _21: __ctx = load _this\n            _22: int = get _21, __z1_k_1\n            __z1_end(_22)\n"), "{}", ir);
         // a push of nothing does not happen: only the push that asks is in the last function
@@ -1334,7 +1409,7 @@ mod tests {
         // ... and the statement's first item is on the stream's beat
         // with nothing rounded (fm3 log 98, 99): `run` is only ever
         // called by a case, at 0 s
-        assert!(fast.contains("fn run()\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: u1 = get _1, __enabled_h\n") && !fast.contains(", 499999\n"), "{}", fast);
+        assert!(fast.contains("fn run()\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: u1 = get _1, __enabled_h\n") && !fast.contains(", 499999\n"), "{}", fast);
         assert!(fast.contains("fn __edge1(__item: int)\n") && !fast.contains("__run") && !fast.contains("__node") && !fast.contains("\n    i: int$\n"), "{}", fast);
         assert_eq!(with("# p\n").unwrap(), fast);
         let err = with("# p\n\nclock: sidereal\n").expect_err("accepted a sidereal clock");
@@ -1422,11 +1497,11 @@ mod tests {
         // a function that only reads what it is given takes the device,
         // and one that pushes may be given a local called `in`
         let ir = emit_with(&format!("{}on (int n) = size (char c$)\n    n = count c$\n\non (int n) = f()\n    n = size(in$)\n\non (int n) = g()\n    char in$ << \"ab\"\n    fill(in$)\n    n = count in$\n", fill)).unwrap();
-        assert!(ir.contains("fn f() -> int\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: u8$ = get _1, in\n    n: int = size(_2)\n"), "{}", ir);
+        assert!(ir.contains("fn f() -> int\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: u8$ = get _1, in\n    n: int = size(_2)\n"), "{}", ir);
         // reading the device is what it is for; and a stream of the
         // function's own that happens to be called `in` is not the device
         let ir = emit_with("on (int n) = f()\n    n = count in$\n\non (int n) = g()\n    char in$ << \"ab\"\n    in$ << \"c\"\n    n = count in$\n").unwrap();
-        assert!(ir.contains("fn f() -> int\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: u8$ = get _1, in\n"), "{}", ir);
+        assert!(ir.contains("fn f() -> int\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: u8$ = get _1, in\n"), "{}", ir);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1452,7 +1527,7 @@ mod tests {
         // woken: the task is called in `fed`, after the push, and the
         // node keeps its reader and nothing else
         let ir = emit_with(wired, "");
-        assert!(ir.contains("fn fed() -> int\n    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: int$ = get _1, a\n    _3: int = const 1\n    push_queue_open(_2, _3)\n    _4: __ctx = load _this\n    _5: index = get _4, __node1_x\n    _6: int$ = set _2, pos, _5\n    _7: __ctx = load _this\n    _8: u1 = get _7, __enabled_h\n    if _8\n        _9: __ctx = load _this\n        _10: int$ = get _9, d\n        _11: int$ = doubled(_10, _6, 0: i64)\n        _12: index = get _11, pos\n        _13: __ctx = load _this\n        _14: __ctx = set _13, __node1_x, _12\n        store _14, _this\n        free_queue(_11)\n    else\n        _15: index = received(_6)\n        _16: __ctx = load _this\n        _17: __ctx = set _16, __node1_x, _15\n        store _17, _this\n        _18: int$ = set _6, pos, _15\n        free_queue(_18)\n"), "{}", ir);
+        assert!(ir.contains("fn fed() -> int\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int$ = get _1, a\n    _3: int = const 1\n    push_queue_open(_2, _3)\n    _4: __ctx = load _this\n    _5: index = get _4, __node1_x\n    _6: int$ = set _2, pos, _5\n    _7: __ctx = load _this\n    _8: u1 = get _7, __enabled_h\n    if _8\n        _9: __ctx = load _this\n        _10: int$ = get _9, d\n        _11: int$ = doubled(_10, _6, 0: i64)\n        _12: index = get _11, pos\n        _13: __ctx = load _this\n        _14: __ctx = set _13, __node1_x, _12\n        store _14, _this\n        free_queue(_11)\n    else\n        _15: index = received(_6)\n        _16: __ctx = load _this\n        _17: __ctx = set _16, __node1_x, _15\n        store _17, _this\n        _18: int$ = set _6, pos, _15\n        free_queue(_18)\n"), "{}", ir);
         // ... everything read and written in place at the context's one
         // address, with no accessor (fm3 log 104, 110)
         assert!(!ir.contains("__get_") && !ir.contains("__set___node1_x") && !ir.contains("__on_h"), "{}", ir);
@@ -1620,7 +1695,7 @@ mod tests {
         // read, a call, read again: the unwritten one once, with the
         // context's address formed once, first; the written one twice
         let b = body(&format!("{}on (int n) = f()\n    int a = kept + moved\n    bump()\n    n = a + kept + moved\n", head), "f");
-        assert!(b.starts_with("    _this: ptr = addr __ctx_mem\n    _1: __ctx = load _this\n    _2: int = get _1, kept\n") && b.matches("addr __ctx_mem").count() == 1, "{}", b);
+        assert!(b.starts_with("    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int = get _1, kept\n") && b.matches("= context()").count() == 1, "{}", b);
         assert_eq!((reads(&b, "kept"), reads(&b, "moved")), (1, 2), "{}", b);
         // ... the written one twice even with nothing between that writes it
         let b = body(&format!("{}on (int n) = f()\n    int a = moved\n    idle()\n    n = a + moved\n", head), "f");

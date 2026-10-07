@@ -68,7 +68,7 @@ data __out_t: array(i64, 65537)
 ; ring is the device's own lookahead, sized by the runner, which a
 ; consumer wired to `in$` reads with `peek`, `advance` and `count`
 fn __in_ch(c: u8)
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     k: __ctx = load _this
     s: u8$ = get k, in
     __push(s, c)
@@ -127,9 +127,9 @@ type __ctx = struct
     t: int$
     __node1_fin: u1
 
-data __ctx_mem: array(__ctx, 1)
+data __ctx_mem: array(__ctx, 2)
 
-; before every case: the arena emptied, the variables at their initial values
+; before every case: the arena emptied, and the current context made new
 fn __zero_reset()
     a: ptr = addr __arena
     h: ptr = addr __heap
@@ -148,11 +148,25 @@ fn __zero_reset()
         continue mi2
     o: ptr = addr __out_n
     store 0: index, o
+    __zero_new()
+    ret
+
+; the current context at its first values, its streams made in the arena
+fn __zero_new()
     _1: u8$ = __regular_u8(1000000, 512)
     _2: int$ = __stream_int(1000000, 64)
     _3: __ctx = pack 1, 1, _1, _2, 0
-    p: ptr = addr __ctx_mem
+    p: ptr = context()
     store _3, p
+    ret
+
+; the runner's: the k-th of the store's contexts is the current one
+fn __zero_context(k: i32)
+    p: ptr(array(__ctx, 2)) = addr __ctx_mem
+    i: index = conv k
+    e: ptr(__ctx) = index p, i
+    c: ptr = cast e
+    context_set(c)
     ret
 
 ; after the case's context is set: the nodes run
@@ -161,14 +175,14 @@ fn __zero_start()
     ret
 
 fn __set___enabled_platform(v: u1)
-    p: ptr = addr __ctx_mem
+    p: ptr = context()
     c: __ctx = load p
     c2: __ctx = set c, __enabled_platform, v
     store c2, p
     ret
 
 fn __set___enabled_clock(v: u1)
-    p: ptr = addr __ctx_mem
+    p: ptr = context()
     c: __ctx = load p
     c2: __ctx = set c, __enabled_clock, v
     store c2, p
@@ -176,7 +190,7 @@ fn __set___enabled_clock(v: u1)
 
 ; node 1: int t$ = ticks (5) at (4 hz) — run when an input has more than the node has seen, or has ended and the node has not run since
 fn __node1() -> u1
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     _1: __ctx = load _this
     fin: u1 = get _1, __node1_fin
     notfin: u1 = xor fin, 1
@@ -221,7 +235,7 @@ fn ticks(t: int$, n: int, __hz: i64)
         continue
     ret
 fn value_at(m: int) -> int
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     _1: __ctx = load _this
     _2: int$ = get _1, t
     _3: i64 = conv m
@@ -229,7 +243,7 @@ fn value_at(m: int) -> int
     v: int = sample _2, _4
     ret v
 fn where_it_stands() -> (int, int)
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     _1: __ctx = load _this
     _2: int$ = get _1, t
     _3: int$ = advance(_2, 2)

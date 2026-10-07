@@ -466,8 +466,9 @@ fn dce(func: &mut Function) {
 // Within a block, a store of the very value the same address and offset
 // gave to a load, with nothing having touched memory since, changes
 // nothing and goes; dce then drops the loads nothing reads. Only memory
-// reached through `addr` or `scratch` — the program's own data, never a
-// device register, where a write-back can mean something — and only
+// reached through `addr`, `scratch` or the current context's pointer —
+// the program's own data, never a device register, where a write-back
+// can mean something — and only
 // stores whose width is known. Any other store forgets what may alias
 // it: the same address's overlapping bytes, and every other address.
 
@@ -478,6 +479,13 @@ fn elide_stores(func: &mut Function) {
             for inst in &block.insts {
                 if let Inst::Addr { dst, .. } | Inst::Scratch { dst, .. } = inst {
                     own[dst.0 as usize] = true;
+                }
+                // the current context is the program's own state too
+                // (ssa.md, *The current context*): never a device
+                if let Inst::Call { dsts, callee, .. } = inst {
+                    if callee == crate::ssa::CONTEXT && dsts.len() == 1 {
+                        own[dsts[0].0 as usize] = true;
+                    }
                 }
             }
         }
@@ -507,6 +515,8 @@ fn elide_stores(func: &mut Function) {
                         None => known.clear(),
                     }
                 }
+                // reading the context's pointer touches no memory
+                Inst::Call { callee, .. } if callee == crate::ssa::CONTEXT => {}
                 Inst::Store { .. } | Inst::Call { .. } | Inst::CallInd { .. } => known.clear(),
                 _ => {}
             }

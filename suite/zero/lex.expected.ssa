@@ -42,7 +42,7 @@ fn __out_byte(i: i64) -> u8
 ; ring is the device's own lookahead, sized by the runner, which a
 ; consumer wired to `in$` reads with `peek`, `advance` and `count`
 fn __in_ch(c: u8)
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     k: __ctx = load _this
     s: u8$ = get k, in
     push_queue(s, c)
@@ -77,12 +77,12 @@ type __ctx = struct
     __node1_fin: u1
     __node2_c: index
 
-data __ctx_mem: array(__ctx, 1)
+data __ctx_mem: array(__ctx, 2)
 data __s11 = "let x = 4"
 data __s12 = "2;\n"
 data __s13 = "let"
 
-; before every case: the arena emptied, the variables at their initial values
+; before every case: the arena emptied, and the current context made new
 fn __zero_reset()
     a: ptr = addr __arena
     h: ptr = addr __heap
@@ -91,14 +91,28 @@ fn __zero_reset()
     store 0: i64, k
     o: ptr = addr __out_n
     store 0: index, o
+    __zero_new()
+    ret
+
+; the current context at its first values, its streams made in the arena
+fn __zero_new()
     _1: u8$ = __queue_u8(1000000, 512)
     _2: token$ = __queue_token(1000000, 64)
     _3: u8$ = __queue_u8(1000000, 64)
     _4: token$ = __queue_token(1000000, 64)
     _5: index = get _3, pos
     _6: __ctx = pack 1, 1, _1, _2, _3, _4, _1, 0, 0, _5
-    p: ptr = addr __ctx_mem
+    p: ptr = context()
     store _6, p
+    ret
+
+; the runner's: the k-th of the store's contexts is the current one
+fn __zero_context(k: i32)
+    p: ptr(array(__ctx, 2)) = addr __ctx_mem
+    i: index = conv k
+    e: ptr(__ctx) = index p, i
+    c: ptr = cast e
+    context_set(c)
     ret
 
 ; after the case's context is set: the nodes run
@@ -107,14 +121,14 @@ fn __zero_start()
     ret
 
 fn __set___enabled_platform(v: u1)
-    p: ptr = addr __ctx_mem
+    p: ptr = context()
     c: __ctx = load p
     c2: __ctx = set c, __enabled_platform, v
     store c2, p
     ret
 
 fn __set___enabled_lex(v: u1)
-    p: ptr = addr __ctx_mem
+    p: ptr = context()
     c: __ctx = load p
     c2: __ctx = set c, __enabled_lex, v
     store c2, p
@@ -122,7 +136,7 @@ fn __set___enabled_lex(v: u1)
 
 ; node 1: token t$ = lex (in$) — run when an input has more than the node has seen, or has ended and the node has not run since
 fn __node1() -> u1
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     _1: __ctx = load _this
     fin: u1 = get _1, __node1_fin
     notfin: u1 = xor fin, 1
@@ -250,7 +264,7 @@ fn lex(t: token$, c: u8$, __hz: i64) -> u8$
         continue c_5
     ret c_6
 fn arrive_first()
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     _1: __ctx = load _this
     _2: u8$ = get _1, src
     _3: ptr = addr __s11
@@ -279,7 +293,7 @@ fn arrive_first()
         free_queue(_19)
     ret
 fn arrive_again()
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     _1: __ctx = load _this
     _2: u8$ = get _1, src
     _3: ptr = addr __s12
@@ -324,7 +338,7 @@ fn arrive_again()
             free_queue(_30)
     ret
 fn two_arrivals() -> (int, int)
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     arrive_first()
     _1: __ctx = load _this
     _2: token$ = get _1, u
@@ -335,7 +349,7 @@ fn two_arrivals() -> (int, int)
     b: int = conv _6
     ret a, b
 fn number_start() -> int
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     arrive_first()
     arrive_again()
     _1: __ctx = load _this
@@ -345,7 +359,7 @@ fn number_start() -> int
     s: int = conv _3
     ret s
 fn number_length() -> int
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     arrive_first()
     arrive_again()
     _1: __ctx = load _this
@@ -355,7 +369,7 @@ fn number_length() -> int
     n: int = conv _3
     ret n
 fn kinds() -> (int, int)
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     arrive_first()
     arrive_again()
     _1: __ctx = load _this
@@ -366,7 +380,7 @@ fn kinds() -> (int, int)
     b: int = get y, kind
     ret a, b
 fn third_kind() -> int
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     arrive_first()
     arrive_again()
     _1: __ctx = load _this
@@ -375,7 +389,7 @@ fn third_kind() -> int
     k: int = get x, kind
     ret k
 fn kinds_tail() -> (int, int)
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     arrive_first()
     arrive_again()
     _1: __ctx = load _this
@@ -386,7 +400,7 @@ fn kinds_tail() -> (int, int)
     b: int = get y, kind
     ret a, b
 fn a_word_at_the_end() -> (int, int)
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     _1: __ctx = load _this
     _2: u8$ = get _1, src
     _3: ptr = addr __s13
@@ -435,7 +449,7 @@ fn a_word_at_the_end() -> (int, int)
     b: int = conv _39
     ret a, b
 fn lexed() -> int
-    _this: ptr = addr __ctx_mem
+    _this: ptr = context()
     _1: __ctx = load _this
     _2: token$ = get _1, t
     _3: index = count _2
