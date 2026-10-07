@@ -4,6 +4,23 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream read only for its latest item is one word — `0e19c65` · 2026-10-07
+
+```
+int seen$ << 0
+```
+```
+on bump()
+    seen$ << seen$ + 1
+
+on (int n) = bumped twice()
+    bump()
+    bump()
+    n = seen$
+```
+
+`suite/zero/cells/cells/cells.zero:9` and `:18-24`. fm3's questions 70 and 79: nothing that changes is assigned; it is a stream, its value its latest item and a write a push. A feature-scope stream the store reads only for its latest item is a **cell**, one field of the context of the item's type: a push is a store of the field and a read a load, with no ring, no capacity and nothing made in the arena. And a stream's name where one value is wanted, `n = seen$`, `int x = seen$ + 1`, `t$ << token(3, seen$, 1)`, a condition, an argument of a function of one value, is its latest item; that is every place the compiler refused the name before, so no program that compiled changes and no store's emitted IR moved. Which streams are cells is settled by lowering, since whether one value is wanted is a matter of types: each candidate is lowered as a cell, a name met where a stream is wanted is noted, and the store is lowered once more with those as streams (`lower`, `cell_candidates`, `push_cell`, `src/zero/lower.rs`). `bump` is the four lines an assigned variable's was, 5 on the tool for both; the lexer of fm3 question 74's prototype with its state in two such streams is 691 on the tool and 1 005 as counted, what it is with assigned variables, where it was 2 074 and 2 858. `counted up to (10000)` pushes ten thousand times, where a queue of 64 fails its check at the sixty-fifth. zero 742/742 natively, `cargo test zero` 49; the six measured rows as they were; the meter 159 of 1 887.
+
 ### zero: `forever` decides whether a `<<` stands — `d0ac463` · 2026-10-07
 
 ```
