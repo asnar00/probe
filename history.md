@@ -4,6 +4,17 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the suite says it, 358 functions declared with `<<` — `35876e6` · 2026-10-07
+
+```
+on (int r) << first positive of (int a) and (int b)
+    if (a > 0)
+        r << a
+    r << b
+```
+
+`suite/zero/functions/functions/functions.zero:31-34`. Every function of the suite whose results have no `$` is respelled, first line and body: 358 first lines and 418 body lines in 37 files, all by `scratchpad/respell.py`, none by hand. No store's emitted IR moved by a line: the script ran first on a copy, every store of the copy emitting what the tree's did (34 stores, 0 differ); then on the tree a store at a time, the last binary on the committed suite against this one on the tree after each of 26 stores, nothing named, the suite green each time. One function is left, `on (int r$) = squares to (int k)`, a task's first line once it says `<<` (fm3 question 87). `skeleton` is a published feature: respelled, and published again as of the day (question 89). The Rust tests' zero text says it too, 113 first lines and 128 body lines by the same script. The full run: zero 809/809 on four paths and 786 with 23 skipped on the GPU's, `probe test` 1022, 1013, 1022, 1022, 985, `cargo test` 149. The six rows as they were; the meter 128 of 2 072.
+
 ### zero: a function may be declared with `<<` and give its result by pushing it — `fa90584` · 2026-10-07
 
 ```
