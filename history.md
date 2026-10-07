@@ -4,6 +4,21 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a loop's variables are given by `continue`, its result by `break` — `4e975fe` · 2026-10-07
+
+```
+        index n = loop (index i = 1, index m = -1) yields m
+            if (i >= count c$)
+                if (ended c$)
+                    break (i)
+                break
+            if (kind of (peek c$ at (i)) == k)
+                continue (i + 1, -1)
+            break (i)
+```
+
+`suite/zero/lex/lex/lex.zero:36-43`. fm3's question 70 has no exception for a loop: its variables are not assigned in its body, the next pass's values being `continue (...)`, and an assignment to one is refused when the program is compiled. A loop that found its answer partway used to assign the name it yields and then `break`; `break (values)` (fm3 question 81, provisional) gives the yielded names their values where the loop leaves, the mirror of `continue (values)` and the IR's own `break`. The nine lines the meter listed are rewritten, in `control`, `streams`, `lex` and `lex-static`, and the seven loops of the platform's `<<` methods with them. 960 functions of 32 stores costed before and after (`scratchpad/costdiff2.py`): none moved; the lexer's text is two lines shorter, a `break` in an arm where a value-yielding `if` fed one. zero 742/742 natively, `cargo test zero` 50; the six measured rows as they were; the meter 159 of 1 887 → 150 of 1 882.
+
 ### zero: a stream read only for its latest item is one word — `0e19c65` · 2026-10-07
 
 ```
