@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `until` on a push — `0cd1bd7` · 2026-10-07
+
+```
+on counted to five()
+    up$ << 1 << (up$ + 1) until (up$ == 5)
+
+on counted under five()
+    up$ << 1 << (up$ + 1) while (_ < 5)
+```
+
+`suite/zero/words/words/words.zero:82-86`. The second of the two words fm3's question 79 added. `until` pushes and then asks, so the item that makes its condition true goes out, `1 2 3 4 5`; `while` asks of the candidate first, `1 2 3 4`. In an `until`, `_` and the stream's own name are both the item just pushed, and the two spellings lower to the same lines. `if` now goes with any one of `(n) times`, `while`, `until` and `forever` and comes first; two of the four are refused by name; `until (false)` and `while (true)` are refused as never ending. At feature scope `till$ << flow$ until (flow$ == 3)` stands until it holds, a bit of the context kept for the line; with `until (ended key$)` the first item after the end still goes out (fm3 question 85). A count or an `until` with more than one item on a standing line is refused, which the last landing read one way (question 84). 31 cases in `words`; no existing store's IR moved; zero 772/772, `cargo test zero` 53; the six rows as they were; the meter 124 of 1 958.
+
 ### zero: `(n) times` on a push — `3604cef` · 2026-10-07
 
 ```
