@@ -4,6 +4,15 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `forever` applies to the last item, wiring of several items says so with brackets — `b42aecb` · 2026-10-07
+
+```
+int i$ at (1 hz)
+out$ << (i$ << "\n") forever
+```
+
+`suite/zero/hello/countdown/countdown.zero:1-2`. The second half of fm3's question 84, Ash: "Yes." `forever` covers the last item of its chain as the other words do, so hello's wiring line is written with brackets: every number, each with a newline. Twenty-three standing lines in nine files gained them by a script, and no store's emitted IR moved by a line, the last binary on the old text against itself on the new, then against this one. Without the brackets the line is `i$` once and then a newline for ever, which nothing paces: refused when the program is compiled, the message saying what the line meant before the ruling and showing the program's own line bracketed. A count and an `until` on a line that stands cover a bracketed chain, `out$ << (greet$ << "\n") (3) times`, three lines of hello a second apart. The full run: zero 813/813 on four paths, 790 and 23 skipped on the GPU's, `probe test` 1022, 1013, 1022, 1022, 985, `cargo test` 151. The six rows as they were; the meter 126 of 2 087.
+
 ### zero: brackets widen a word, a group of a push's items is one item for its word — `cd429a8` · 2026-10-07
 
 ```
