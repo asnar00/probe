@@ -4,6 +4,22 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: what changes at feature scope is a stream — `8dd11b2` · 2026-10-07
+
+```
+int written$ << 0
+
+on (char o$) << (int x)
+    written$ << written$ + 1
+    existing o$ << x
+
+on (int n) = counted()
+    out$ << 1 << 2 << 3
+    n = written$
+```
+
+`suite/zero/platform/watch/watch.zero:1-9`. fm3's question 70: no variable is ever modified. A name declared with a value keeps it, and what changes is a stream, pushed once each time its line runs and read by its name. The nineteen feature-scope variables the suite assigned, in nine files, are streams now, every scope word, a struct, an enumeration, a bool and a string among them; each is a cell, so every rewritten function costs what it cost, 446 functions on the tool and 178 counted as they ran with none moved (`scratchpad/costdiff2.py`, `countdiff2.py`). An assignment to a feature-scope name is refused with the declaration and the push to write (`not_assigned`, `src/zero/lower.rs`), and so is one to a parameter. A string that changes is a stream only a cell can hold, its bare name its latest item wherever it stands, `out$ << name$` (fm3 question 83, provisional). Of the meter's other three assigning lines: a local written twice is an `if` expression; a result given on two paths is not a modification and the meter learns so; and `tasks`' `s$ = far$`, a task pointing its parameter elsewhere, goes with its case (question 82, provisional). zero 741/741 natively, `cargo test zero` 51; the six measured rows as they were; the meter 150 of 1 882 → 124 of 1 869, "a name assigned again" 22 → 0.
+
 ### zero: a loop's variables are given by `continue`, its result by `break` — `4e975fe` · 2026-10-07
 
 ```
