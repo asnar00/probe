@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: brackets widen a word, a group of a push's items is one item for its word — `cd429a8` · 2026-10-07
+
+```
+on three lines()
+    out$ << ("hello" << "\n") (3) times
+
+on one line()
+    out$ << "hello" << "\n" (3) times
+    out$ << "."
+```
+
+`suite/zero/brackets/brackets/brackets.zero:12-17`. A word on a push applies to the last item of its chain, and brackets round several items make them the one it applies to (fm3 question 84, Ash, 7 October): three lines of hello, where the second function writes hello and three newlines. The parser tells a group from a bracketed value by a `<<` directly inside the bracket, which never compiled before, so `(a)`, `(i$ + 1)` and `(twice (k))` are the values they were. The tree keeps one flat list of items and a number, how many of its last the word covers; `lower_pushes` and `push_cell` are its two readers. `(n) times` pushes the group n times; `until` pushes it and then asks, `_` its last item; `while` works the group out whole, asks, and pushes all of it or none. A group stands last in its chain and is refused before another item. No existing store's emitted IR moved. The zero suite 811/811 natively and on wasm, `cargo test zero` 56; the six rows as they were; the meter 126 of 2 079.
+
 ### zero: the old form is refused, one way to declare a function — `4e804a6` · 2026-10-07
 
 ```

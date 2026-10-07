@@ -333,6 +333,21 @@ sum$ << sum$ + x$ forever
 
 `suite/zero/words/words/words.zero:21-22` and `:28`. A running sum, one item of `sum$` for each item of `x$` (fm3 question 80): on the right of its own standing push a stream's own name is a read of its latest item and sets nothing off, and the one other stream there paces the line. `sum$` is read only by its name, so it is a cell and the line's function is a load, an add and a store, 7 an item counted as it runs where the same sum as a stream processor read by name is 26. Wired on, `tot$ << tot$ + y$ forever` and `out$ << tot$ << "\n" forever`, the stream has no storage and the line keeps its last item itself, 86 an item with the number's digits where the processor's form is 83. Two other streams on the right are refused until what paces such a line is settled (question 86), and a line with nothing else on its right is a clock at a rate, ruled and not built, and never ending without one.
 
+```
+on three lines()
+    out$ << ("hello" << "\n") (3) times
+
+on one line()
+    out$ << "hello" << "\n" (3) times
+    out$ << "."
+```
+```
+on pairs under six()
+    up$ << 0 << (up$ + 1 << up$ + 1) while (_ < 6)
+```
+
+`suite/zero/brackets/brackets/brackets.zero:12-17` and `:28-29`. A word on a push applies to the last item of its chain, and brackets round several items joined by `<<` make them the one item it applies to (fm3 question 84): three lines of hello, where the line without the brackets is hello and three newlines. The bracketed items are pushed in order each time the word has them pushed. Under `until` the group is pushed and then the condition asked, `_` its last item; under `while` the group is the candidate, whole, its items worked out and held, the condition asked with `_` the last of them, and all pushed where it holds and none where it fails, so the pair 5, 6 fails as a pair and `pairs under six` writes `0 1 2 3 4`. A bracket is a group where a `<<` stands directly inside it, which no bracketed value has; brackets round one item are ordinary grouping. A group stands last in its chain.
+
 ## Status
 
 What is here:
