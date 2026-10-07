@@ -21,7 +21,7 @@ pub const FORMS: [(&str, &str); 9] = [
     ("a loop's variable assigned in its body", "an assignment to a name the header of an enclosing `loop` declares"),
     ("a task that walks its input", "in a declaration with `<<`, `peek`, `advance` or `count` applied to one of its `$` parameters"),
     ("an index or a `peek` forward of now", "`peek x$ at (e)` where `e` is not the literal 0, and `x$[e]` on a task's own input where `e` is not a negative literal"),
-    ("`if` round a push in a stream processor", "in a declaration with `<<`, an `if` statement with a push anywhere under it; `when` on the push is the zeroic form"),
+    ("an `if` statement with a push under it, in a stream processor", "in a declaration with `<<`, a line that begins `if` with a push anywhere in its block; the zeroic form is the condition on the push's own line, `x$ << item if (c)`"),
     ("`ended` asked inside a loop", "`ended x$` on a line inside a `loop` or a `for`"),
     ("a loop that only computes", "a `loop` no line of which pushes into a stream, ends one, or applies a stream word to one; a call in it may push, unseen"),
     ("`for` over a sequence", "every `for`"),
@@ -185,9 +185,9 @@ impl Walk {
                         self.assigned(&t.name, *line, at, carried, given);
                     }
                 }
-                Stmt::If { cond, then, els, line, when } => {
+                Stmt::If { cond, then, els, line, on_push } => {
                     self.expr(cond, at, in_loop);
-                    if at.task && !*when && (pushes(then) || els.as_deref().is_some_and(pushes)) {
+                    if at.task && !*on_push && (pushes(then) || els.as_deref().is_some_and(pushes)) {
                         self.note(at, *line, 4);
                     }
                     // what either arm gives is given after the `if`
@@ -396,13 +396,13 @@ mod tests {
 
     /// The meter's count is pinned for two small stores that do the
     /// same thing (fm3 log 129). The one written with no loop, a look
-    /// back and `when` uses no form on the list: 0 of its 7 lines. The
+    /// back and `if` on its push uses no form on the list: 0 of its 7 lines. The
     /// one that walks uses six of them on 8 of its 18 lines, a line
     /// that uses two counted once and listed under both. And it
     /// refuses nothing: a store the compiler would refuse is metered
     #[test]
     fn the_meter_counts_non_zeroic_lines() {
-        let zeroic = store_of("z", "int x$\nint d$ = rising(x$)\n\non (int d$) << rising (int x$)\n    d$ << x$ when (x$ > x$[-1])\n\non (int n) = f()\n    x$ << 1 << 3 << 2\n    n = count d$\n");
+        let zeroic = store_of("z", "int x$\nint d$ = rising(x$)\n\non (int d$) << rising (int x$)\n    d$ << x$ if (x$ > x$[-1])\n\non (int n) = f()\n    x$ << 1 << 3 << 2\n    n = count d$\n");
         let m = metered(&zeroic).unwrap();
         assert_eq!((m.count(), m.lines), (0, 7), "{:?}", m.found);
         let walking = store_of("w", "int x$\nint d$ = rising(x$)\nint last = 0\n\non (int d$) << rising (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        int v = peek x$ at (0)\n        if (v > last)\n            d$ << v\n        last = v\n        advance x$ by (1)\n\non (int n) = f()\n    x$ << 1 << 3 << 2\n    int f$ = [4, 5]\n    for (v in f$)\n        n = n + f$[1]\n    n = peek d$ at (1)\n");

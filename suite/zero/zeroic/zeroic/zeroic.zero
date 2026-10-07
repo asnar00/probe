@@ -211,13 +211,13 @@ on (int n) = two conditions()
     n = peek rh$ at (0) * 100000 + peek rh$ at (1) * 10000 + peek rh$ at (2) * 1000 + peek rh$ at (3) * 100 + peek rh$ at (4) * 10 + peek rh$ at (5)
 
 on (int e$) << positive (int x$)
-    e$ << x$ when (x$ > 0)
+    e$ << x$ if (x$ > 0)
 
 on (int c$) << changes (int x$)
-    c$ << x$ when (x$ != x$[-1])
+    c$ << x$ if (x$ != x$[-1])
 
 on (int t$) << tenths (int x$)
-    t$ << x$ when (x$ % 10 == 0)
+    t$ << x$ if (x$ % 10 == 0)
 
 on (int n) = filtered()
     fi$ << 3 << -1 << 0 << 7
@@ -232,23 +232,23 @@ on (int n) = every tenth to (int k)
     n = count tens$ * 1000 + peek tens$ at (count tens$ - 1)
 
 on (int n) = pushed above two (int k)
-    plain$ << k when (k > 2)
+    plain$ << k if (k > 2)
     plain$ << 9
     n = count plain$ * 10 + peek plain$ at (0)
 
 on (int e$) << closer (int x$)
-    e$ << 99 when (empty x$)
+    e$ << 99 if (empty x$)
 
 on (int t$) << totalled (int x$)
     int sum$ = sum$[-1] + x$
-    t$ << sum$[-1] when (empty x$)
+    t$ << sum$[-1] if (empty x$)
 
 on (int o$) << capped (int x$)
     o$ << x$
-    o$ << -1 when (empty x$)
+    o$ << -1 if (empty x$)
 
 on (int n$) << counted (int x$)
-    n$ << position x$ when (empty x$)
+    n$ << position x$ if (empty x$)
 
 on (int a, int b) = no stray zero()
     en$ << 1 << 2
@@ -295,7 +295,7 @@ on (int r$) << decades (int x$)
     bool new$ = x$ / 10 != x$[-1] / 10
     int n$ = if (new$) then (1) else (n$[-1] + 1)
     int first$ = if (new$) then (x$) else (first$[-1])
-    r$ << first$[-1] * 100 + n$[-1] when (new$ and n$[-1] > 0)
+    r$ << first$[-1] * 100 + n$[-1] if (new$ and n$[-1] > 0)
 
 on (int n) = tens to (int k)
     dec$ << [1 through k]

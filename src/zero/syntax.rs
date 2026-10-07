@@ -126,9 +126,10 @@ pub enum Stmt {
     /// `int q, int r = divide (a) by (b)`: several declared at once from one call
     Multi { vars: Vec<Param>, value: Expr, line: usize },
     Assign { targets: Vec<Target>, value: Expr, line: usize },
-    /// `when` says the `if` was written as `x$ << item when (c)` (fm3
-    /// question 75 rule 3, log 126): the push under its condition
-    If { cond: Expr, then: Vec<Stmt>, els: Option<Vec<Stmt>>, line: usize, when: bool },
+    /// `on_push` says the `if` was written on a push's own line,
+    /// `x$ << item if (c)` (fm3 question 75 rule 3, respelled from
+    /// `when` by question 79): the push under its condition
+    If { cond: Expr, then: Vec<Stmt>, els: Option<Vec<Stmt>>, line: usize, on_push: bool },
     /// `loop (vars) while (c) yields x, y` (log 40, 48): `yields` names the
     /// carried variables that leave, into declared or existing names
     Loop { vars: Vec<VarDecl>, cond: Option<Expr>, body: Vec<Stmt>, yields: Vec<String>, into: Option<LoopInto>, line: usize },
@@ -263,7 +264,7 @@ pub fn declared_joins(src: &str) -> Vec<String> {
                 Tok::Sym("(") => depth += 1,
                 Tok::Sym(")") => depth -= 1,
                 Tok::Word(w) if depth == 0 => {
-                    if w == "and" || w == "or" {
+                    if JOINERS.contains(&w.as_str()) {
                         out.push(join_key(w, &words));
                     }
                     words.push(w.clone());
@@ -274,6 +275,18 @@ pub fn declared_joins(src: &str) -> Vec<String> {
     }
     out
 }
+
+/// the words a phrase stops at unless a declared name has them there
+const JOINERS: [&str; 3] = ["and", "or", "when"];
+
+/// the words that end a phrase wherever they stand: a statement's own.
+/// `if` is one since fm3 question 79, the word a push takes after its
+/// items, `x$ << item if (c)`
+const ENDS_PHRASE: [&str; 6] = ["then", "else", "while", "if", "merge", "in"];
+
+const WHILE_OR_IF: &str = "a push takes `while` or `if`, not both: `while` repeats the push, `if` says whether it happens";
+
+const NO_WHEN: &str = "`when` is not a word of zero: a push made where a condition holds is `x$ << item if (condition)`";
 
 fn join_key(w: &str, before: &[String]) -> String {
     format!("\u{0}{} {}", w, before.join(" "))
@@ -401,6 +414,9 @@ impl<'a> Parser<'a> {
     fn expect_newline(&mut self) -> Result<(), Error> {
         if self.eat(&Tok::Newline) {
             Ok(())
+        } else if self.at_word("when") {
+            // the word a push took before fm3 question 79
+            Err(self.err(NO_WHEN))
         } else {
             Err(self.err(format!("expected the end of the line, found {}", self.found())))
         }
@@ -445,8 +461,8 @@ impl<'a> Parser<'a> {
                 if items.is_empty() {
                     return Err(self.err("nothing to push: an edge is `out$ << i$`"));
                 }
-                if self.at_word("when") {
-                    return Err(self.err("`when` on an edge is not built: an edge moves every item, and a stream processor of one line says which, `on (T t$) << some (T x$)` with `t$ << x$ when (condition)`"));
+                if self.at_word("if") {
+                    return Err(self.err("`if` on an edge is not built: an edge moves every item, and a stream processor of one line says which, `on (T t$) << some (T x$)` with `t$ << x$ if (condition)`"));
                 }
                 self.expect_newline()?;
                 Ok(Decl::Edge { target, items, cond, line })
@@ -503,6 +519,11 @@ impl<'a> Parser<'a> {
         }
         while !self.at(&Tok::Newline) {
             match self.peek().cloned() {
+                // a word that ends a phrase wherever it stands would
+                // end every call of this name at itself (fm3 log 126)
+                Some(Tok::Word(w)) if ENDS_PHRASE.contains(&w.as_str()) => {
+                    return Err(self.err(format!("'{}' cannot be a word of a function's name: it ends a phrase wherever it stands, so no call of this name could be written", w)));
+                }
                 Some(Tok::Word(w)) => {
                     self.pos += 1;
                     name.push(NamePart::Word(w));
@@ -771,7 +792,7 @@ impl<'a> Parser<'a> {
                 } else {
                     None
                 };
-                Ok(Stmt::If { cond, then, els, line, when: false })
+                Ok(Stmt::If { cond, then, els, line, on_push: false })
             }
             Some(Tok::Word(w)) if w == "loop" => {
                 self.pos += 1;
@@ -890,18 +911,24 @@ impl<'a> Parser<'a> {
                 if items.is_empty() {
                     return Err(self.err("nothing to push: `x$ << item`"));
                 }
-                // `x$ << item when (c)`: the push where the condition
-                // holds (fm3 question 75 rule 3)
-                if self.eat_word("when") {
+                // `x$ << item if (c)`: the push where the condition
+                // holds (fm3 question 75 rule 3; `when` until question
+                // 79). An `if` here stands where a value has ended, so
+                // it is the push's word; one that begins an item is the
+                // expression, and `parse_primary` has taken it
+                if self.eat_word("if") {
                     if cond.is_some() {
-                        return Err(self.err("a push takes `while` or `when`, not both: `while` repeats the push, `when` says whether it happens"));
+                        return Err(self.err(WHILE_OR_IF));
                     }
                     let c = self.parse_expr()?;
                     if self.at_word("while") {
-                        return Err(self.err("a push takes `while` or `when`, not both: `while` repeats the push, `when` says whether it happens"));
+                        return Err(self.err(WHILE_OR_IF));
+                    }
+                    if self.at_word("then") {
+                        return Err(self.err("an `if` after a push's items says whether the push happens, and takes no `then`: the value that is one thing or another is written first, `x$ << if (c) then (a) else (b)`"));
                     }
                     self.expect_newline()?;
-                    return Ok(Stmt::If { cond: c, then: vec![Stmt::Push { target, items, cond: None, existing: false, line }], els: None, line, when: true });
+                    return Ok(Stmt::If { cond: c, then: vec![Stmt::Push { target, items, cond: None, existing: false, line }], els: None, line, on_push: true });
                 }
                 self.expect_newline()?;
                 Ok(Stmt::Push { target, items, cond, existing: false, line })
@@ -1038,8 +1065,11 @@ impl<'a> Parser<'a> {
     }
 
     /// does a word end a phrase as `and` or `or` between two conditions?
+    /// `when` ends one the same way, so that a push written with it is
+    /// met by its refusal and not read as a call that does not exist;
+    /// it is a word of a name where a declared name has it (question 79)
     fn joiner(&self, w: &str, before: &[String]) -> bool {
-        (w == "and" || w == "or") && !self.joins(w, before)
+        JOINERS.contains(&w) && !self.joins(w, before)
     }
 
     fn parse_compare(&mut self) -> Result<Expr, Error> {
@@ -1226,7 +1256,7 @@ impl<'a> Parser<'a> {
     /// a word that ends a phrase: a statement's own word, or a range's
     /// `to` and `through` inside `[ ]`
     fn ends_phrase(&self, w: &str) -> bool {
-        matches!(w, "then" | "else" | "while" | "when" | "merge" | "in") || (self.ranges > 0 && matches!(w, "through" | "to")) || (self.header > 0 && w == "yields")
+        ENDS_PHRASE.contains(&w) || (self.ranges > 0 && matches!(w, "through" | "to")) || (self.header > 0 && w == "yields")
     }
 
     /// the parts of a phrase: words, bracketed argument groups, and bare

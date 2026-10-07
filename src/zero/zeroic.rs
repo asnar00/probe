@@ -22,7 +22,7 @@ pub struct Said {
 }
 
 /// a push into the processor's own output, and the condition it
-/// goes out under, `t$ << item when (c)`
+/// goes out under, `t$ << item if (c)`
 #[derive(Clone)]
 pub struct Out {
     pub item: Expr,
@@ -275,7 +275,7 @@ fn pushed(s: &Stmt, when: Option<&Expr>, out: &str, file: &str, outs: &mut Vec<O
         return Err(lex::error(file, *line, format!("a stream processor pushes into its own output, '{}$'", out)));
     }
     if cond.is_some() {
-        return Err(lex::error(file, *line, format!("`while` on a push repeats it, which is a loop, and a stream processor has none: say the stream by a line of its own, or write `{}$ << item when (condition)`", out)));
+        return Err(lex::error(file, *line, format!("`while` on a push repeats it, which is a loop, and a stream processor has none: say the stream by a line of its own, or write `{}$ << item if (condition)`", out)));
     }
     for e in items {
         outs.push(Out { item: e.clone(), when: when.cloned(), line: *line });
@@ -353,12 +353,12 @@ pub fn read(fd: &FnDecl, file: &str, takers: &Takers) -> Result<Option<Processor
             }
             Stmt::Var(v) => return Err(lex::error(file, v.line, format!("in a stream processor every line holds for every item, so each line says a stream: write `{} {}$ = ...`", v.ty, v.name))),
             Stmt::Push { .. } => pushed(s, None, out, file, &mut p.outs)?,
-            Stmt::If { cond, then, when: true, .. } => {
+            Stmt::If { cond, then, on_push: true, .. } => {
                 for t in then {
                     pushed(t, Some(cond), out, file, &mut p.outs)?;
                 }
             }
-            Stmt::If { line, .. } => return Err(lex::error(file, *line, format!("an `if` round a line of a stream processor: every line holds for every item, so the condition goes on the push, `{}$ << item when (condition)`, or in the value, `if (c) then (a) else (b)`", out))),
+            Stmt::If { line, .. } => return Err(lex::error(file, *line, format!("an `if` round a line of a stream processor: every line holds for every item, so the condition goes on the push, `{}$ << item if (condition)`, or in the value, `if (c) then (a) else (b)`", out))),
             Stmt::Multi { line, .. } => return Err(lex::error(file, *line, "in a stream processor each line says one stream: `int k$ = ...`")),
             Stmt::Expr { line, .. } | Stmt::Check { line, .. } => return Err(lex::error(file, *line, format!("a line of a stream processor says a stream, `int k$ = ...`, or pushes into its output, `{}$ << item`", out))),
             Stmt::Assign { .. } | Stmt::Loop { .. } | Stmt::For { .. } | Stmt::Continue { .. } | Stmt::Break { .. } => unreachable!(),
@@ -750,7 +750,7 @@ fn plain(e: &Expr) -> bool {
 
 /// The names a member of a function's body turns on: for a line said
 /// `if (c) then (a) else (b)`, `c` where it is a bare name; for a push
-/// that goes out `when (c and d)`, each bare name among the
+/// that goes out `if (c and d)`, each bare name among the
 /// conditions joined, where the rest can do nothing but give a value
 /// (both sides of `and` are always worked out, fm3 question 66, so
 /// only such a rest may wait for the branch)
@@ -760,7 +760,7 @@ fn turns_on(s: &Stmt) -> Vec<String> {
             ExprKind::Name(n) => vec![n.clone()],
             _ => Vec::new(),
         },
-        Stmt::If { cond, when: true, els: None, .. } => {
+        Stmt::If { cond, on_push: true, els: None, .. } => {
             let mut parts = Vec::new();
             conjuncts(cond, &mut parts);
             if !parts.iter().all(plain) {
@@ -822,14 +822,14 @@ fn grouped(lines: Vec<Stmt>, pushes: Vec<Stmt>) -> Vec<Stmt> {
                     let k = parts.iter().position(|p| matches!(&p.kind, ExprKind::Name(n) if n == c)).unwrap();
                     parts.remove(k);
                     match parts.into_iter().reduce(|l, r| expr(ExprKind::Bin("and".into(), Box::new(l), Box::new(r)), *line)) {
-                        Some(rest) => then.push(Stmt::If { cond: rest, then: made.clone(), els: None, line: *line, when: true }),
+                        Some(rest) => then.push(Stmt::If { cond: rest, then: made.clone(), els: None, line: *line, on_push: true }),
                         None => then.extend(made.iter().cloned()),
                     }
                 }
                 _ => unreachable!(),
             }
         }
-        out.push(Stmt::If { cond: name(c, at), then, els: (!els.is_empty()).then_some(els), line: at, when: false });
+        out.push(Stmt::If { cond: name(c, at), then, els: (!els.is_empty()).then_some(els), line: at, on_push: false });
         i = j;
     }
     out
@@ -877,7 +877,7 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool) -> Wr
             // push is made, or is not there
             Some(ExprKind::Bool(false)) => None,
             Some(ExprKind::Bool(true)) | None => Some(push),
-            Some(c) => Some(Stmt::If { cond: expr(c, line), then: vec![push], els: None, line, when: true }),
+            Some(c) => Some(Stmt::If { cond: expr(c, line), then: vec![push], els: None, line, on_push: true }),
         }
     };
     for o in &p.outs {
@@ -963,7 +963,7 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool) -> Wr
                 args.extend(c.fields.iter().map(|f| name(f, line)));
             }
             let ended = expr(ExprKind::Phrase(vec![Part::Word("ended".into()), Part::Value(seq(x))]), line);
-            body.push(Stmt::If { cond: ended, then: vec![Stmt::Expr { expr: call(&end_name, args, line), line }], els: None, line, when: false });
+            body.push(Stmt::If { cond: ended, then: vec![Stmt::Expr { expr: call(&end_name, args, line), line }], els: None, line, on_push: false });
         }
         FnDecl { line, results: Vec::new(), name: vec![NamePart::Word(format!("__z{}", k)), NamePart::Group], groups: vec![vec![param(&p.item_ty, x, true, line)]], task: false, body, platform: Vec::new() }
     });

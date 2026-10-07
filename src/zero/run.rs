@@ -750,7 +750,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-07T10:00:00\n\n## testing\n").unwrap();
-        std::fs::write(dir.join("h/h.zero"), "type token =\n    int kind\n    index start, n\n\nchar src$\ntoken u$ = lex(src$)\nint seen = 0\n\non (int k) = kind of (char c)\n    k = if (c <= 32) then (0) else (1)\n\non (token t$) << lex (char c$)\n    int k$ = if (empty c$) then (0) else (kind of (c$))\n    bool new$ = k$ == 3 or k$ != k$[-1]\n    index start$ = if (new$) then (position c$) else (start$[-1])\n    index n$ = if (new$) then (1) else (n$[-1] + 1)\n    t$ << token(k$[-1], start$[-1], n$[-1]) when (new$ and k$[-1] != 0)\n\non arrive first()\n    src$ << \"let x = 4\"\n    seen = seen + 1\n\non arrive again()\n    src$ << \"2;\\n\"\n    end src$\n\non bump()\n    seen = seen + 1\n\non (int n) = tokens()\n    n = count u$\n\non (int n) = last length()\n    token x = peek u$ at (3)\n    n = x.n\n\non (int n) = bumps()\n    n = seen\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "type token =\n    int kind\n    index start, n\n\nchar src$\ntoken u$ = lex(src$)\nint seen = 0\n\non (int k) = kind of (char c)\n    k = if (c <= 32) then (0) else (1)\n\non (token t$) << lex (char c$)\n    int k$ = if (empty c$) then (0) else (kind of (c$))\n    bool new$ = k$ == 3 or k$ != k$[-1]\n    index start$ = if (new$) then (position c$) else (start$[-1])\n    index n$ = if (new$) then (1) else (n$[-1] + 1)\n    t$ << token(k$[-1], start$[-1], n$[-1]) if (new$ and k$[-1] != 0)\n\non arrive first()\n    src$ << \"let x = 4\"\n    seen = seen + 1\n\non arrive again()\n    src$ << \"2;\\n\"\n    end src$\n\non bump()\n    seen = seen + 1\n\non (int n) = tokens()\n    n = count u$\n\non (int n) = last length()\n    token x = peek u$ at (3)\n    n = x.n\n\non (int n) = bumps()\n    n = seen\n").unwrap();
         let j = jit_of(&dir);
         let call = |k: i64, f: &str| -> i64 {
             j.call("__zero_context", &[k]).unwrap();
@@ -837,9 +837,9 @@ mod tests {
         // the front end wrote walks it, woken where the push is
         assert!(ir.contains("fn __z3(x: int$, __hz: i64) -> int$\n") && f.contains("= __z3("), "{}", ir);
         for (body, said) in [
-            ("    if (x$ > 0)\n        d$ << x$", "h.zero:18: an `if` round a line of a stream processor: every line holds for every item, so the condition goes on the push, `d$ << item when (condition)`, or in the value, `if (c) then (a) else (b)`"),
+            ("    if (x$ > 0)\n        d$ << x$", "h.zero:18: an `if` round a line of a stream processor: every line holds for every item, so the condition goes on the push, `d$ << item if (condition)`, or in the value, `if (c) then (a) else (b)`"),
             ("    int k = x$ * 2\n    d$ << k", "h.zero:18: in a stream processor every line holds for every item, so each line says a stream: write `int k$ = ...`"),
-            ("    d$ << x$ while (_ < 5)", "h.zero:18: `while` on a push repeats it, which is a loop, and a stream processor has none: say the stream by a line of its own, or write `d$ << item when (condition)`"),
+            ("    d$ << x$ while (_ < 5)", "h.zero:18: `while` on a push repeats it, which is a loop, and a stream processor has none: say the stream by a line of its own, or write `d$ << item if (condition)`"),
             ("    e$ << x$", "h.zero:18: a stream processor pushes into its own output, 'd$'"),
             ("    d$ << d$ + x$", "h.zero:18: 'd$' is the output: a stream processor pushes into it and does not read it"),
         ] {
@@ -906,39 +906,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `when` on a push (fm3 question 75 rule 3, log 126): the item goes
+    /// `if` on a push (fm3 question 75 rule 3, log 126; `when` until question 79): the item goes
     /// out where the condition holds. In a stream processor it is the
     /// push under a branch in the function of one item; in a plain
     /// function it is the `if` round the push. A push with `while` and
-    /// `when` both is refused, and so is `when` on an edge
+    /// `if` both is refused, and so is `if` on an edge
     #[test]
     fn a_push_goes_out_when_its_condition_holds() {
         let dir = std::env::temp_dir().join(format!("probe-zero-when-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (3) → 1\n").unwrap();
-        let head = "int x$\nint d$ = kept(x$)\nint p$\n\non (int d$) << kept (int x$)\n    d$ << x$ when (x$ > 0)\n\n";
+        let head = "int x$\nint d$ = kept(x$)\nint p$\n\non (int d$) << kept (int x$)\n    d$ << x$ if (x$ > 0)\n\n";
         let with = |more: &str| -> Result<String, String> {
             std::fs::write(dir.join("h/h.zero"), format!("{}{}\n", head, more)).unwrap();
             emit(&dir)
         };
-        let ir = with("on (int n) = f (int k)\n    x$ << k\n    p$ << k when (k > 2)\n    n = count d$ + count p$").unwrap();
+        let ir = with("on (int n) = f (int k)\n    x$ << k\n    p$ << k if (k > 2)\n    n = count d$ + count p$").unwrap();
         assert!(ir.contains("fn __z1_each(_x: int)\n    _this: ptr = context()\n    _1: u1 = cmp.gt _x, 0\n    if _1\n        _2: __ctx = load _this\n        _3: int$ = get _2, d\n        push_queue_open(_3, _x)\n    ret\n"), "{}", ir);
         assert!(ir.contains("    _3: u1 = cmp.gt k, 2\n    if _3\n        _4: __ctx = load _this\n        _5: int$ = get _4, p\n        push_queue_open(_5, k)\n"), "{}", ir);
         for (more, said) in [
-            ("on f (int k)\n    p$ << k while (_ < 3) when (k > 2)", "h.zero:9: a push takes `while` or `when`, not both: `while` repeats the push, `when` says whether it happens"),
-            ("on f (int k)\n    p$ << k when (k > 2) while (_ < 3)", "h.zero:9: a push takes `while` or `when`, not both: `while` repeats the push, `when` says whether it happens"),
-            ("int q$\nq$ << p$ when (p$ > 0)", "h.zero:9: `when` on an edge is not built: an edge moves every item, and a stream processor of one line says which, `on (T t$) << some (T x$)` with `t$ << x$ when (condition)`"),
+            ("on f (int k)\n    p$ << k while (_ < 3) if (k > 2)", "h.zero:9: a push takes `while` or `if`, not both: `while` repeats the push, `if` says whether it happens"),
+            ("on f (int k)\n    p$ << k if (k > 2) while (_ < 3)", "h.zero:9: a push takes `while` or `if`, not both: `while` repeats the push, `if` says whether it happens"),
+            ("int q$\nq$ << p$ if (p$ > 0)", "h.zero:9: `if` on an edge is not built: an edge moves every item, and a stream processor of one line says which, `on (T t$) << some (T x$)` with `t$ << x$ if (condition)`"),
+            // the word a push took before question 79, after each kind of item
+            ("on f (int k)\n    p$ << k when (k > 2)", "h.zero:9: `when` is not a word of zero: a push made where a condition holds is `x$ << item if (condition)`"),
+            ("on f (int k)\n    p$ << x$ when (k > 2)", "h.zero:9: `when` is not a word of zero: a push made where a condition holds is `x$ << item if (condition)`"),
+            ("on f (int k)\n    p$ << (k + 1) when (k > 2)", "h.zero:9: `when` is not a word of zero: a push made where a condition holds is `x$ << item if (condition)`"),
+            ("on f (int k)\n    p$ << twice (k) when (k > 2)\n\non (int n) = twice (int k)\n    n = k * 2", "h.zero:9: `when` is not a word of zero: a push made where a condition holds is `x$ << item if (condition)`"),
+            // the push's `if` takes no `then`
+            ("on f (int k)\n    p$ << k if (k > 2) then (1) else (2)", "h.zero:9: an `if` after a push's items says whether the push happens, and takes no `then`: the value that is one thing or another is written first, `x$ << if (c) then (a) else (b)`"),
+            // a name with a word that ends every phrase (log 126)
+            ("on (int n) = one if (int k)\n    n = k", "h.zero:8: 'if' cannot be a word of a function's name: it ends a phrase wherever it stands, so no call of this name could be written"),
+            ("on (int n) = lines in any order()\n    n = 1", "h.zero:8: 'in' cannot be a word of a function's name: it ends a phrase wherever it stands, so no call of this name could be written"),
         ] {
             let err = with(more).expect_err(more);
             assert!(err.ends_with(said), "{}: {}", more, err);
         }
+        // the three `if`s, told by where the word stands (fm3 log 140):
+        // the first of a line is the statement, one where a value is
+        // wanted is the expression, one where a value has ended is the
+        // push's. `p$ << if (c) then (a) else (b) if (d)` is both
+        let both = with("on (int n) = f (int k)\n    p$ << if (k > 5) then (10) else (20) if (k > 2)\n    p$ << if (k > 5) then (10) else k + 1 if (k > 2)\n    if (k > 0)\n        p$ << 1 << if (k > 5) then (2) else (3)\n    n = count p$").unwrap();
+        let at = both.find("fn f(k: int) -> int").unwrap();
+        let f = &both[at..at + both[at..].find("\n\n").unwrap()];
+        // each of the first two lines: the condition, a branch, and
+        // under it the value's own branch and one push
+        assert_eq!(f.matches("cmp.gt k, 2\n").count(), 2, "{}", f);
+        assert_eq!(f.matches("cmp.gt k, 5\n").count(), 3, "{}", f);
+        assert_eq!(f.matches("push_queue_open(").count(), 4, "{}", f);
+        // `when` is a word of a name where a name is declared with it,
+        // and of nothing else: the call and the push's `if` on one line
+        let named = with("on (int n) = pushed when (int k)\n    n = k + 1\n\non (int n) = f (int k)\n    p$ << pushed when (k) if (k > 2)\n    n = pushed when (k) + count p$").unwrap();
+        assert_eq!(named.matches(": int = pushed_when(k)\n").count(), 2, "{}", named);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A condition several lines turn on is branched on once (fm3 log
     /// 133): two lines said `if (new$) ...` and a push that goes out
-    /// `when (new$ and ...)` are one `if` in the function of one item,
+    /// `if (new$ and ...)` are one `if` in the function of one item,
     /// each line's name a result of it and the push in the arm where
     /// the condition holds. What is left of a push's condition waits
     /// for the branch only where it can do nothing but give a value:
@@ -960,24 +986,24 @@ mod tests {
             rest[..rest.find("\nfn ").unwrap().min(rest.find("\n\n").unwrap_or(rest.len()))].to_string() + "\n"
         };
         // two lines and a push on one condition: one branch, no `and`
-        let f = with("    int first$ = if (new$) then (x$) else (first$[-1])\n    d$ << first$[-1] + n$[-1] when (new$ and n$[-1] > 0)");
+        let f = with("    int first$ = if (new$) then (x$) else (first$[-1])\n    d$ << first$[-1] + n$[-1] if (new$ and n$[-1] > 0)");
         assert!(f.contains("    _first: int, _n_3: int = if _new\n        _n: int = const 1\n        _1: u1 = cmp.gt __n_b1, 0\n        if _1\n"), "{}", f);
         assert!(f.contains("        yield _x, _n\n    else\n        _n_2: int = add __n_b1, 1\n        yield __first_b1, _n_2\n    ret _first, _n_3\n"), "{}", f);
         assert_eq!(f.matches("if ").count(), 2, "{}", f);
         assert!(!f.contains(" and "), "{}", f);
         // a push whose condition is the name alone is made in the arm
-        let f = with("    d$ << n$[-1] when (new$)");
+        let f = with("    d$ << n$[-1] if (new$)");
         assert!(f.contains("    _n_3: int = if _new\n        _n: int = const 1\n        _1: __ctx = load _this\n"), "{}", f);
         assert_eq!(f.matches("if ").count(), 1, "{}", f);
         // a call in what is left: the push stays after, its condition whole
-        let f = with("    d$ << n$[-1] when (new$ and big (x$))");
+        let f = with("    d$ << n$[-1] if (new$ and big (x$))");
         assert!(f.contains("    _n: int = if _new\n        yield 1\n    else\n"), "{}", f);
         assert!(f.contains(": u1 = big(_x)\n    _3: u1 = and _new, _2\n    if _3\n"), "{}", f);
         // ... and a division, which can stop a machine
-        let f = with("    d$ << n$[-1] when (new$ and 10 / x$ > 1)");
+        let f = with("    d$ << n$[-1] if (new$ and 10 / x$ > 1)");
         assert!(f.contains(": u1 = and _new, "), "{}", f);
         // one push alone on a condition is as it was: `and`, one branch
-        std::fs::write(dir.join("h/h.zero"), format!("{}on (int d$) << runs (int x$)\n    bool new$ = x$ != x$[-1]\n    d$ << x$ when (new$ and x$ > 0)\n", head)).unwrap();
+        std::fs::write(dir.join("h/h.zero"), format!("{}on (int d$) << runs (int x$)\n    bool new$ = x$ != x$[-1]\n    d$ << x$ if (new$ and x$ > 0)\n", head)).unwrap();
         let ir = emit(&dir).unwrap();
         assert!(ir.contains("    _new: u1 = cmp.ne _x, __x_b1\n    _1: u1 = cmp.gt _x, 0\n    _2: u1 = and _new, _1\n    if _2\n"), "{}", ir);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1067,13 +1093,13 @@ mod tests {
         // called under "it had not ended", with what is kept
         assert!(ir.contains("    _15: u1 = get _14, __zend_x\n    if _15\n    else\n        _16: u1 = const 1\n        _17: __ctx = load _this\n        _18: __ctx = set _17, __zend_x, _16\n        store _18, _this\n        if _5\n            _21: __ctx = load _this\n            _22: int = get _21, __z1_k_1\n            __z1_end(_22)\n"), "{}", ir);
         // a push of nothing does not happen: only the push that asks is in the last function
-        let ir = with("    d$ << x$\n    d$ << x$[-1] when (empty x$)", "").unwrap();
+        let ir = with("    d$ << x$\n    d$ << x$[-1] if (empty x$)", "").unwrap();
         let end = &ir[ir.find("fn __z1_end(").unwrap()..];
         let end = &end[..end[1..].find("\nfn ").map_or(end.len(), |i| i + 1)];
         assert_eq!(end.matches("push_queue").count(), 1, "{}", end);
         assert!(!end.contains(" end("), "{}", end);
         // the output is ended where something asks whether it has
-        let ir = with("    d$ << x$\n    d$ << x$[-1] when (empty x$)", "\non (bool b) = done()\n    b = ended d$\n").unwrap();
+        let ir = with("    d$ << x$\n    d$ << x$[-1] if (empty x$)", "\non (bool b) = done()\n    b = ended d$\n").unwrap();
         let end = &ir[ir.find("fn __z1_end(").unwrap()..];
         let end = &end[..end[1..].find("\nfn ").map_or(end.len(), |i| i + 1)];
         assert!(end.contains("    end(_2)\n    ret\n"), "{}", end);

@@ -25,7 +25,7 @@ on (token t$) << lex (char c$)
     bool new$ = k$ == 3 or k$ != k$[-1]
     index start$ = if (new$) then (position c$) else (start$[-1])
     index n$ = if (new$) then (1) else (n$[-1] + 1)
-    t$ << token(k$[-1], start$[-1], n$[-1]) when (new$ and k$[-1] != 0)
+    t$ << token(k$[-1], start$[-1], n$[-1]) if (new$ and k$[-1] != 0)
 
 on arrive first()
     src$ << "let x = 4"
