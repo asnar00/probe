@@ -1019,6 +1019,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Every function is declared with `<<` and gives its result by
+    /// pushing it (fm3 question 77 (a), log 151): the same function
+    /// written with `=` lowers to the same lines; a result with no `$`
+    /// makes a plain function of a `<<` declaration; and what is one
+    /// value is pushed once, a name that is no result not at all
+    #[test]
+    fn a_function_gives_its_result_by_pushing_it() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-pushed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n").unwrap();
+        let with = |text: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}\n", text)).unwrap();
+            emit(&dir)
+        };
+        // each shape the new way and the old: one text
+        let pairs = [
+            ("on (int d) << double (int x)\n    d << x * 2", "on (int d) = double (int x)\n    d = x * 2"),
+            ("on (int s) << sign of (int x)\n    if (x < 0)\n        s << -1\n    else if (x > 0)\n        s << 1", "on (int s) = sign of (int x)\n    if (x < 0)\n        s = -1\n    else if (x > 0)\n        s = 1"),
+            ("on (int r) << first (int a) or (int b)\n    if (a > 0)\n        r << a\n    r << b", "on (int r) = first (int a) or (int b)\n    if (a > 0)\n        r = a\n    r = b"),
+            ("on (int r) << first (int a) or (int b)\n    r << a if (a > 0)\n    r << b", "on (int r) = first (int a) or (int b)\n    if (a > 0)\n        r = a\n    r = b"),
+            ("on (int p) << above (int n)\n    loop (int q = 1)\n        if (q > n)\n            p << q\n        continue (q * 2)", "on (int p) = above (int n)\n    loop (int q = 1)\n        if (q > n)\n            p = q\n        continue (q * 2)"),
+            ("on (int g) << gcd of (int a) with (int b)\n    g << loop (int x = a, int y = b) while (y != 0) yields x\n        continue (y, x % y)", "on (int g) = gcd of (int a) with (int b)\n    g = loop (int x = a, int y = b) while (y != 0) yields x\n        continue (y, x % y)"),
+            ("on (int q, int r) << divide (int a) by (int b)\n    r << a % b\n    q << a / b\n\non (int q, int r) << both()\n    q, r << divide (17) by (5)", "on (int q, int r) = divide (int a) by (int b)\n    r = a % b\n    q = a / b\n\non (int q, int r) = both()\n    q, r = divide (17) by (5)"),
+            ("on (int n) << sum of (int x$)\n    n << x$ + _", "on (int n) = sum of (int x$)\n    n = x$ + _"),
+            // either first line over either body, for this landing
+            ("on (int d) << double (int x)\n    d = x * 2", "on (int d) = double (int x)\n    d << x * 2"),
+        ];
+        for (new, old) in pairs {
+            let (a, b) = (with(new).unwrap_or_else(|e| panic!("{}: {}", new, e)), with(old).unwrap_or_else(|e| panic!("{}: {}", old, e)));
+            assert_eq!(a, b, "{}", new);
+        }
+        let ir = with(pairs[0].0).unwrap();
+        assert!(ir.contains("fn double(x: int) -> int\n    d: int = mul x, 2\n    ret d\n"), "{}", ir);
+        // a result nothing pushed is the zero of its type, and the push
+        // of the last result ends the function (fm3 question 88)
+        let ir = with(pairs[2].0).unwrap();
+        assert!(ir.contains("    if _1\n        ret a\n    ret b\n"), "{}", ir);
+        let ir = with(pairs[1].0).unwrap();
+        assert!(ir.contains("    ret 0\n") || ir.contains("yield 0"), "{}", ir);
+        // a `$` on the result is still a task; a function that gives a
+        // sequence whole keeps `=` (fm3 question 87)
+        let ir = with("on (int i$) << count up to (int n)\n    i$ << 1 << (i$ + 1) while (_ <= n)\n\non (int r$) = squares to (int k)\n    r$ = [1 through k] * [1 through k]").unwrap();
+        assert!(ir.contains("fn count_up_to(i: int$, n: int, __hz: i64)") && ir.contains("fn squares_to(k: int) -> int$"), "{}", ir);
+        let f = |body: &str| format!("int port = 8\n\non (int y) << f (int x)\n{}", body);
+        let two = |body: &str| format!("on (int q, int r) << f (int x)\n{}", body);
+        for (text, message) in [
+            (f("    y << x << 2"), "h.zero:4: 'y' is one value, given once: this line pushes it twice. What takes more than one item is a stream, `y$`"),
+            (f("    y << x (3) times"), "h.zero:4: `(n) times` on the push of 'y' would give it more than once, and 'y' is one value, given once: what takes more than one item is a stream, `y$`"),
+            (f("    y << x while (_ < 3)"), "h.zero:4: `while` on the push of 'y' would give it more than once"),
+            (f("    y << x until (y > 3)"), "h.zero:4: `until` on the push of 'y' would give it more than once"),
+            (f("    y << x forever"), "h.zero:4: `forever` on the push of 'y' would make it stand and give it again and again, and 'y' is one value, given once: what takes more than one item is a stream, `y$`"),
+            (f("    y << x if (x > 0) then (1)"), "h.zero:4: an `if` after a pushed value says whether the push happens, and takes no `then`"),
+            (f("    int half = x / 2\n    half << 1\n    y << half"), "h.zero:5: 'half' is not pushed into: `=` says what a name is, where it is declared, `int half = ...`, and it keeps that value. What `<<` sends into is a stream, `half$`, or a result of the function"),
+            (f("    x << 1\n    y << x"), "h.zero:4: 'x' is a parameter: it is what the function was handed, and is not pushed into"),
+            (f("    port << 1\n    y << x"), "h.zero:4: 'port' is a variable, and a variable keeps the value it was declared with (fm3 question 70): what changes is a stream. Declare it `int port$ << 8` and push its next value, `port$ << 1`"),
+            (f("    z << 1\n    y << x"), "h.zero:4: 'z' is not declared: a function's result is named on its first line, `on (int z) << ...`, and a stream is `z$`"),
+            (f("    loop (int i = 0)\n        i << 1\n        y << i"), "h.zero:5: 'i' is the loop's own: it is not pushed into. Give its next value with `continue (...)`"),
+            (f("    for (i in [1 through 3])\n        i << 1\n    y << x"), "h.zero:5: 'i' is the item of the `for`: it steps by itself and is not pushed into"),
+            (f("    int s$ = [1, 2]\n    s << 3\n    y << x"), "h.zero:5: 's' is written without its `$`: the stream is `s$`, and a push into it is `s$ << ...`"),
+            (f("    y << x\n    y << 2"), "h.zero:5: this never runs: the function ended when its result was pushed on line 4"),
+            (two("    q << x\n    q << 2\n    r << 1"), "h.zero:3: 'q' is pushed twice on this path: a function gives each of its results once"),
+            (two("    if (x > 0)\n        q << x\n    q << 2\n    r << 1"), "h.zero:4: 'q' is pushed twice on this path: a function gives each of its results once"),
+            ("on (int y, int z$) << f (int x)\n    y << x".to_string(), "h.zero:1: a task produces one stream"),
+        ] {
+            let err = with(&text).err().unwrap_or_else(|| panic!("{} compiled", text));
+            assert!(err.contains(message), "{}: {}", text, err);
+        }
+        // the old words, where the old form is written
+        let err = with("on (int y) = f (int x)\n    y = x\n    y = 2").unwrap_err();
+        assert!(err.contains("h.zero:3: this never runs: the function ended when its result was assigned on line 2"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The running sum (fm3 question 80's second half, log 149): on
     /// the right of its own standing push a stream's own name is a
     /// read of its latest item and sets nothing off; the one other

@@ -4905,7 +4905,7 @@ impl Lowerer {
         let under = |pushed: Vec<Expr>| -> Vec<Stmt> {
             let kept = |field: &String| Expr { kind: ExprKind::Name(field.clone()), line };
             let bin = |op: &str, l: Expr, r: Expr| Expr { kind: ExprKind::Bin(op.to_string(), Box::new(l), Box::new(r)), line };
-            let put = |field: &String, value: Expr| Stmt::Assign { targets: vec![super::syntax::Target { name: field.clone(), seq: false, line, feature: None }], value, line };
+            let put = |field: &String, value: Expr| Stmt::Assign { targets: vec![super::syntax::Target { name: field.clone(), seq: false, line, feature: None, pushed: false }], value, line };
             // where the line keeps its own last item: the field given
             // the first item's value, and the field pushed
             let mut pushed = pushed;
@@ -6138,7 +6138,7 @@ impl Lowerer {
             terminated = self.lower_stmt(s, b)?;
             if terminated && i + 1 < stmts.len() {
                 let why = match s {
-                    Stmt::Assign { line, .. } => format!("the function ended when its result was assigned on line {}", line),
+                    Stmt::Assign { line, targets, .. } => format!("the function ended when its result was {} on line {}", if targets.iter().any(|t| t.pushed) { "pushed" } else { "assigned" }, line),
                     _ => "the statement before it leaves the block".to_string(),
                 };
                 return Err(lex::error(&b.file, stmt_line(&stmts[i + 1]), format!("this never runs: {}", why)));
@@ -6161,6 +6161,42 @@ impl Lowerer {
         let vals = b.current(&names);
         b.line(&format!("ret {}", vals.join(", ")));
         true
+    }
+
+    /// Names written `y << value` are results of this function, each
+    /// given once on a path (fm3 question 77, log 151). `=` says what
+    /// a name is, so a local, a parameter and a feature-scope variable
+    /// are not pushed into, and each refusal says what the name is
+    fn given_by_push(&self, targets: &[super::syntax::Target], value: Option<&Expr>, b: &Body) -> Result<(), Error> {
+        for t in targets.iter().filter(|t| t.pushed) {
+            let file = &b.file;
+            let Some(v) = b.vars.get(&t.name) else {
+                return Err(match self.fvar(&t.name) {
+                    Some(_) => self.not_assigned(&t.name, value.filter(|_| targets.len() == 1), file, t.line),
+                    None => lex::error(file, t.line, format!("'{}' is not declared: a function's result is named on its first line, `on (int {}) << ...`, and a stream is `{}$`", t.name, t.name, t.name)),
+                });
+            };
+            if b.func.as_ref().is_some_and(|f| f.params.iter().any(|p| p.0 == t.name)) {
+                return Err(lex::error(file, t.line, format!("'{}' is a parameter: it is what the function was handed, and is not pushed into", t.name)));
+            }
+            if b.kind == BodyKind::Fn && b.results.iter().any(|(n, _)| n == &t.name) {
+                if v.set {
+                    return Err(lex::error(file, t.line, format!("'{}' is pushed twice on this path: a function gives each of its results once", t.name)));
+                }
+                continue;
+            }
+            if matches!(v.ty, Ty::Stream(_)) {
+                return Err(lex::error(file, t.line, format!("'{}' is written without its `$`: the stream is `{}$`, and a push into it is `{}$ << ...`", t.name, t.name, t.name)));
+            }
+            if b.loops.iter().any(|l| l.item.as_ref().map(|(i, _, _)| i.as_str()) == Some(t.name.as_str()) || l.loaded.as_deref() == Some(t.name.as_str())) {
+                return Err(lex::error(file, t.line, format!("'{}' is the item of the `for`: it steps by itself and is not pushed into", t.name)));
+            }
+            if b.loops.iter().any(|l| l.carried[..l.explicit].contains(&t.name)) {
+                return Err(lex::error(file, t.line, format!("'{}' is the loop's own: it is not pushed into. Give its next value with `continue (...)`, and the loop's result where it leaves with `break (...)`", t.name)));
+            }
+            return Err(lex::error(file, t.line, format!("'{}' is not pushed into: `=` says what a name is, where it is declared, `{} {} = ...`, and it keeps that value. What `<<` sends into is a stream, `{}$`, or a result of the function", t.name, zero_ty(&v.ty), t.name, t.name)));
+        }
+        Ok(())
     }
 
     /// would assigning these targets give the function its last result?
@@ -6306,6 +6342,9 @@ impl Lowerer {
             if yields[..i].contains(g) {
                 return Err(lex::error(&file, line, format!("'{}' is yielded twice", g)));
             }
+        }
+        if let Some(LoopInto::Assign(ts)) = into {
+            self.given_by_push(ts, None, b)?;
         }
         let targets = match into {
             Some(LoopInto::Declare(ps)) => ps.len(),
@@ -6861,6 +6900,7 @@ impl Lowerer {
                 if targets.iter().any(|t| t.feature.is_some()) {
                     return Err(lex::error(&file, *line, "a feature's `enabled` is assigned on its own"));
                 }
+                self.given_by_push(targets, Some(value), b)?;
                 // a local is a new SSA version; a feature variable is a
                 // store of its field, allowed anywhere; the assignment
                 // that gives the last result ends the function, so it

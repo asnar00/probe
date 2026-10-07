@@ -843,7 +843,7 @@ fn grouped(lines: Vec<Stmt>, pushes: Vec<Stmt>) -> Vec<Stmt> {
 }
 
 fn assign(to: &str, value: Expr, line: usize) -> Stmt {
-    Stmt::Assign { targets: vec![Target { name: to.to_string(), seq: false, line, feature: None }], value, line }
+    Stmt::Assign { targets: vec![Target { name: to.to_string(), seq: false, line, feature: None, pushed: false }], value, line }
 }
 
 /// The functions of wiring `k` of a processor, into the stream `out`.

@@ -60,7 +60,11 @@ pub struct FnDecl {
     pub name: Vec<NamePart>,
     /// the parameter groups, in the order their `Group` parts appear
     pub groups: Vec<Vec<Param>>,
-    /// declared with `<<`: a task producing its result over time
+    /// declared with `<<` and a `$` on its result: a task producing its
+    /// result over time, or a stream processor. Every function is
+    /// declared with `<<` (fm3 question 77), and one whose results
+    /// have no `$` is a plain function, which gives each by pushing it
+    /// once (log 151)
     pub task: bool,
     pub body: Vec<Stmt>,
     /// `platform <kind> [<kind>...]` bodies: the kinds and the lines
@@ -183,6 +187,11 @@ pub struct Target {
     pub line: usize,
     /// `countdown.enabled = false`: a feature's implicit variable (log 28)
     pub feature: Option<String>,
+    /// written `y << value`: a function's result given by pushing it
+    /// (fm3 question 77, log 151). The statement is the giving of a
+    /// result an assignment was, and lowers as one; the mark is for
+    /// the refusals, a name that is no result not being pushed into
+    pub pushed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -642,7 +651,10 @@ impl<'a> Parser<'a> {
                     name.push(NamePart::Group);
                     name.push(NamePart::Sym("<<".into()));
                 } else {
-                    task = true;
+                    // the names' own marks say which (fm3 log 151):
+                    // a `$` on a result is a stream produced over
+                    // time, and no `$` a value given once
+                    task = results.iter().any(|r| r.seq);
                 }
             } else {
                 self.expect_sym("=")?;
@@ -1141,6 +1153,50 @@ impl<'a> Parser<'a> {
                 self.expect_newline()?;
                 Ok(Stmt::Var(v))
             }
+            // `y << value`, `q, r << call`, `n << loop (...)`: a
+            // function's results given by pushing them (fm3 question
+            // 77, log 151). Whether each name is a result is the
+            // lowering's to say; one line gives each once
+            Some(Tok::Word(_)) if self.gives_ahead() => {
+                let mut targets = Vec::new();
+                loop {
+                    let tline = self.line();
+                    let name = self.expect_word()?;
+                    targets.push(Target { name, seq: false, line: tline, feature: None, pushed: true });
+                    if !self.eat_sym(",") {
+                        break;
+                    }
+                }
+                self.expect_sym("<<")?;
+                if self.eat_word("loop") {
+                    return self.parse_loop(Some(LoopInto::Assign(targets)), line);
+                }
+                let said = targets.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ");
+                let one = if targets.len() == 1 { format!("'{}' is one value", said) } else { format!("'{}' are one value each", said) };
+                let stream = format!("`{}$`", targets[0].name);
+                let value = self.parse_expr()?;
+                if self.at_sym("<<") {
+                    return Err(self.err(format!("{}, given once: this line pushes it twice. What takes more than one item is a stream, {}", one, stream)));
+                }
+                let mut only = None;
+                if self.eat_word("if") {
+                    only = Some(self.parse_expr()?);
+                    if self.at_word("then") {
+                        return Err(self.err("an `if` after a pushed value says whether the push happens, and takes no `then`: the value that is one thing or another is written first, `y << if (c) then (a) else (b)`"));
+                    }
+                }
+                let often = if self.at_word("times") { Some("`(n) times`") } else { self.repeat_ahead() };
+                if let Some(w) = often {
+                    let does = if w == "`forever`" { "make it stand and give it again and again" } else { "give it more than once" };
+                    return Err(self.err(format!("{} on the push of '{}' would {}, and {}, given once: what takes more than one item is a stream, {}", w, said, does, one, stream)));
+                }
+                self.expect_newline()?;
+                let give = Stmt::Assign { targets, value, line };
+                return Ok(match only {
+                    Some(cond) => Stmt::If { cond, then: vec![give], els: None, line, on_push: true },
+                    None => give,
+                });
+            }
             Some(Tok::Word(_)) | Some(Tok::Seq(_)) if self.assignment_ahead() => {
                 let mut targets = Vec::new();
                 loop {
@@ -1151,7 +1207,7 @@ impl<'a> Parser<'a> {
                         feature = Some(name);
                         name = self.expect_word()?;
                     }
-                    targets.push(Target { name, seq, line: tline, feature });
+                    targets.push(Target { name, seq, line: tline, feature, pushed: false });
                     if !self.eat_sym(",") {
                         break;
                     }
@@ -1254,6 +1310,22 @@ impl<'a> Parser<'a> {
             match self.toks.get(i + 2).map(|t| &t.tok) {
                 Some(Tok::Sym("=")) => return matches!(self.toks.get(i + 3).map(|t| &t.tok), Some(Tok::Word(w)) if w == "loop"),
                 Some(Tok::Sym(",")) => i += 3,
+                _ => return false,
+            }
+        }
+    }
+
+    /// `y << ...` or `q, r << ...` ahead on this line: names with no
+    /// `$`, then the push
+    fn gives_ahead(&self) -> bool {
+        let mut i = self.pos;
+        loop {
+            if !matches!(self.toks.get(i).map(|t| &t.tok), Some(Tok::Word(_))) {
+                return false;
+            }
+            match self.toks.get(i + 1).map(|t| &t.tok) {
+                Some(Tok::Sym("<<")) => return true,
+                Some(Tok::Sym(",")) => i += 2,
                 _ => return false,
             }
         }
