@@ -4,6 +4,14 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `if` on a push, where `when` was — `b3e7d19` · 2026-10-07
+
+```
+    t$ << token(k$[-1], start$[-1], n$[-1]) if (new$ and k$[-1] != 0)
+```
+
+`suite/zero/lex-zeroic/lex/lex.zero:28`. fm3's question 79: `when` reads as waiting, `if` as a test made now, so a push made only where a condition holds is `x$ << item if (condition)`. The tree and the lowering are what they were, and no store's emitted IR moves: 31 stores, the old binary on the old text against the new on the new. The parser (`src/zero/syntax.rs`) tells the three `if`s by where the word stands: first on a line, the statement; where a value is wanted, the expression `if (c) then (a) else (b)`; after a push's last item, the push's. `p$ << if (k > 5) then (10) else (20) if (k > 2)` is both. `when` is no word of the language: a line with one is refused saying to write `if`, and it may be a word of a function's name again, as `and` and `or` may. A name declared with a word that ends every phrase, `if` or `in`, is refused where it is declared. The meter's row is reworded so the statement cannot be taken for the word; 159 of 1 800. Eleven lines of the suite respelled. zero 719/719 natively, `cargo test zero` 47; the six measured rows as they were.
+
 ### zero: a gate is one load and one branch at any depth — `90733b9` · 2026-10-07
 
 fm3's question 72. A feature is on when its own switch and every ancestor's are, and a gate used to work that out each time it was read, a load a level and an `and` between. The context now holds the answer for each feature under another, a field `__on_<feature>`, and every gate is one field loaded and one branch however deep. It is worked out again only in a switch's setter, for the feature and everything under it, parents before children; a feature's own switch is written by nothing else, so a parent off and on again leaves its children as they were. The runner now makes a case line's switches in order, a call for each `off` and each `on`, where it used to set what the line came to. `suite/zero/nested` is a chain three deep with ten case lines that switch each level by turns; a setter made to stop at its own feature fails nine of them. hello's `run` as counted 1 073 to 1 064, level with its hand-written oracle's 1 064, and 1 233 to 1 224 on `probe cost`; the lexers and static do not move. What rose is the setters themselves and the reset, the runner's and outside every count. zero 719 runs on four paths and 697 on the GPU's; `probe test` 1022; `cargo test` 141.
