@@ -78,72 +78,72 @@ on (int t$) << trebled (int x$)
     int two$ = x$ * 2
     t$ << two$ + x$
 
-on (int k) = class of (char c)
+on (int k) << class of (char c)
     if (c <= 32)
-        k = 0
+        k << 0
     else if (c >= 97)
-        k = 1
+        k << 1
     else
-        k = 2
+        k << 2
 
 on (int k$) << classes (char c$)
     k$ << class of (c$)
 
-on (int a, int b) = one at a time()
+on (int a, int b) << one at a time()
     x$ << 1
-    a = count d$
+    a << count d$
     x$ << 2 << 3
-    b = count d$ * 100 + peek d$ at (0) * 10 + peek d$ at (2)
+    b << count d$ * 100 + peek d$ at (0) * 10 + peek d$ at (2)
 
-on (int n) = as a block()
+on (int n) << as a block()
     y$ << [4, 5, 6]
-    n = count q$ * 100 + peek q$ at (0) * 10 + peek q$ at (2)
+    n << count q$ * 100 + peek q$ at (0) * 10 + peek q$ at (2)
 
-on (int n) = said()
+on (int n) << said()
     x$ << 1 << 2 << 3
-    n = count d$ * 100 + peek d$ at (0) * 10 + peek d$ at (2)
+    n << count d$ * 100 + peek d$ at (0) * 10 + peek d$ at (2)
 
-on (int n) = walked()
+on (int n) << walked()
     old$ << 1 << 2 << 3
-    n = count olds$ * 100 + peek olds$ at (0) * 10 + peek olds$ at (2)
+    n << count olds$ * 100 + peek olds$ at (0) * 10 + peek olds$ at (2)
 
-on (int n) = from a literal()
-    n = count dl$ * 100 + peek dl$ at (0) * 10 + peek dl$ at (2)
+on (int n) << from a literal()
+    n << count dl$ * 100 + peek dl$ at (0) * 10 + peek dl$ at (2)
 
-on (int n) = from a range()
-    n = count dr$ * 100 + peek dr$ at (4)
+on (int n) << from a range()
+    n << count dr$ * 100 + peek dr$ at (4)
 
-on (int n) = through two()
+on (int n) << through two()
     c$ << 1 << 2 << 3
-    n = count twice$ * 100 + peek twice$ at (0) * 10 + peek twice$ at (2)
+    n << count twice$ * 100 + peek twice$ at (0) * 10 + peek twice$ at (2)
 
-on (int a, int b) = wired twice()
+on (int a, int b) << wired twice()
     p$ << 5 << 6
     r$ << 7
     p$ << 8
-    a = peek w$ at (1) * 100 + peek w$ at (2)
-    b = count v$ * 100 + peek v$ at (0)
+    a << peek w$ at (1) * 100 + peek w$ at (2)
+    b << count v$ * 100 + peek v$ at (0)
 
-on (int n) = over text()
+on (int n) << over text()
     text$ << "ab 1"
     text$ << "c"
-    n = count cl$ * 1000 + peek cl$ at (0) * 100 + peek cl$ at (2) * 10 + peek cl$ at (3)
+    n << count cl$ * 1000 + peek cl$ at (0) * 100 + peek cl$ at (2) * 10 + peek cl$ at (3)
 
-on (int n) = typed()
-    n = count typed$ * 100 + peek typed$ at (0) * 10 + peek typed$ at (1)
+on (int n) << typed()
+    n << count typed$ * 100 + peek typed$ at (0) * 10 + peek typed$ at (1)
 
-on (int a, int b) = also read()
+on (int a, int b) << also read()
     s$ << 1 << 2
-    a = count s$
-    b = count ds$ * 10 + peek ds$ at (1)
+    a << count s$
+    b << count ds$ * 10 + peek ds$ at (1)
 
-on (int n) = many (int k)
+on (int n) << many (int k)
     y$ << [1 through k]
-    n = count q$ * 1000 + peek q$ at (k - 1)
+    n << count q$ * 1000 + peek q$ at (k - 1)
 
-on (int n) = a line said()
+on (int n) << a line said()
     m$ << 4 << 5
-    n = peek t$ at (0) * 100 + peek t$ at (1)
+    n << peek t$ at (0) * 100 + peek t$ at (1)
 
 on (int s$) << summed (int x$)
     int t$ = t$[-1] + x$
@@ -170,45 +170,45 @@ on (int r$) << risen (int x$)
     bool up$ = x$ > x$[-1] and x$[-1] > 0 or x$ == 100
     r$ << if (up$) then (1) else (0)
 
-on (bool b) = between (int lo) and (int hi) holds (int x)
-    b = x >= lo and x <= hi
+on (bool b) << between (int lo) and (int hi) holds (int x)
+    b << x >= lo and x <= hi
 
-on (int n) = joined (int x)
+on (int n) << joined (int x)
     bool inside = between (1) and (9) holds (x)
     bool odd = x % 2 == 1
-    n = if (inside and odd or x == 100) then (1) else (0)
+    n << if (inside and odd or x == 100) then (1) else (0)
 
-on (int m, int k) = a running sum()
+on (int m, int k) << a running sum()
     a$ << 1 << 2 << 3
     b$ << 10
     a$ << 4
-    m = count sa$ * 1000 + peek sa$ at (2) * 100 + peek sa$ at (3)
-    k = peek sb$ at (0)
+    m << count sa$ * 1000 + peek sa$ at (2) * 100 + peek sa$ at (3)
+    k << peek sb$ at (0)
 
-on (int n) = summed from a literal()
-    n = peek sl$ at (0) * 100 + peek sl$ at (1) * 10 + peek sl$ at (2)
+on (int n) << summed from a literal()
+    n << peek sl$ at (0) * 100 + peek sl$ at (1) * 10 + peek sl$ at (2)
 
-on (int n) = a difference()
+on (int n) << a difference()
     e$ << 5 << 8
     e$ << 6
-    n = peek de$ at (0) * 100 + peek de$ at (1) * 10 + peek de$ at (2) + 2
+    n << peek de$ at (0) * 100 + peek de$ at (1) * 10 + peek de$ at (2) + 2
 
-on (int n) = two back()
+on (int n) << two back()
     f$ << 1 << 0 << 0 << 0 << 0
-    n = peek ff$ at (2) * 100 + peek ff$ at (3) * 10 + peek ff$ at (4)
+    n << peek ff$ at (2) * 100 + peek ff$ at (3) * 10 + peek ff$ at (4)
 
-on (int n) = lines shuffled()
+on (int n) << lines shuffled()
     g$ << 1 << 1
-    n = peek sg$ at (0) * 100 + peek sg$ at (1)
+    n << peek sg$ at (0) * 100 + peek sg$ at (1)
 
-on (int n) = kept through a block()
+on (int n) << kept through a block()
     word$ << "aab"
     word$ << "bb"
-    n = peek rw$ at (0) * 10000 + peek rw$ at (1) * 1000 + peek rw$ at (2) * 100 + peek rw$ at (3) * 10 + peek rw$ at (4)
+    n << peek rw$ at (0) * 10000 + peek rw$ at (1) * 1000 + peek rw$ at (2) * 100 + peek rw$ at (3) * 10 + peek rw$ at (4)
 
-on (int n) = two conditions()
+on (int n) << two conditions()
     h$ << 3 << 5 << 4 << 100 << 0 << 7
-    n = peek rh$ at (0) * 100000 + peek rh$ at (1) * 10000 + peek rh$ at (2) * 1000 + peek rh$ at (3) * 100 + peek rh$ at (4) * 10 + peek rh$ at (5)
+    n << peek rh$ at (0) * 100000 + peek rh$ at (1) * 10000 + peek rh$ at (2) * 1000 + peek rh$ at (3) * 100 + peek rh$ at (4) * 10 + peek rh$ at (5)
 
 on (int e$) << positive (int x$)
     e$ << x$ if (x$ > 0)
@@ -219,22 +219,22 @@ on (int c$) << changes (int x$)
 on (int t$) << tenths (int x$)
     t$ << x$ if (x$ % 10 == 0)
 
-on (int n) = filtered()
+on (int n) << filtered()
     fi$ << 3 << -1 << 0 << 7
-    n = count pos$ * 100 + peek pos$ at (0) * 10 + peek pos$ at (1)
+    n << count pos$ * 100 + peek pos$ at (0) * 10 + peek pos$ at (1)
 
-on (int n) = changed()
+on (int n) << changed()
     ch$ << 1 << 1 << 2 << 2 << 2 << 1
-    n = count cd$ * 1000 + peek cd$ at (0) * 100 + peek cd$ at (1) * 10 + peek cd$ at (2)
+    n << count cd$ * 1000 + peek cd$ at (0) * 100 + peek cd$ at (1) * 10 + peek cd$ at (2)
 
-on (int n) = every tenth to (int k)
+on (int n) << every tenth to (int k)
     ev$ << [1 through k]
-    n = count tens$ * 1000 + peek tens$ at (count tens$ - 1)
+    n << count tens$ * 1000 + peek tens$ at (count tens$ - 1)
 
-on (int n) = pushed above two (int k)
+on (int n) << pushed above two (int k)
     plain$ << k if (k > 2)
     plain$ << 9
-    n = count plain$ * 10 + peek plain$ at (0)
+    n << count plain$ * 10 + peek plain$ at (0)
 
 on (int e$) << closer (int x$)
     e$ << 99 if (empty x$)
@@ -250,46 +250,46 @@ on (int o$) << capped (int x$)
 on (int n$) << counted (int x$)
     n$ << position x$ if (empty x$)
 
-on (int a, int b) = no stray zero()
+on (int a, int b) << no stray zero()
     en$ << 1 << 2
     end en$
-    a = count den$
+    a << count den$
     end en$
-    b = count den$ * 10 + peek den$ at (1)
+    b << count den$ * 10 + peek den$ at (1)
 
-on (int a, int b) = closed()
+on (int a, int b) << closed()
     cl2$ << 5
-    a = count cls$
+    a << count cls$
     end cl2$
     end cl2$
-    b = count cls$ * 100 + peek cls$ at (0)
+    b << count cls$ * 100 + peek cls$ at (0)
 
-on (int a, int b) = a chain ends()
+on (int a, int b) << a chain ends()
     tin$ << 1 << 2 << 3
-    a = count fin$
+    a << count fin$
     end tin$
-    b = count fin$ * 100 + peek fin$ at (0) * 10 + peek fin$ at (1) + 1
+    b << count fin$ * 100 + peek fin$ at (0) * 10 + peek fin$ at (1) + 1
 
-on (int n) = how many came()
+on (int n) << how many came()
     cnt$ << 7 << 7 << 7
     end cnt$
-    n = count how$ * 10 + peek how$ at (0)
+    n << count how$ * 10 + peek how$ at (0)
 
-on (int a, int b) = a stored input ends()
-    a = count sts$
+on (int a, int b) << a stored input ends()
+    a << count sts$
     end st$
-    b = count sts$ * 10 + peek sts$ at (0)
+    b << count sts$ * 10 + peek sts$ at (0)
 
 on pushed after its end()
     en$ << 1
     end en$
     en$ << 2
 
-on (int a, int b) = an output ends()
+on (int a, int b) << an output ends()
     lo$ << 1
-    a = if (ended louds$) then (1) else (0)
+    a << if (ended louds$) then (1) else (0)
     end lo$
-    b = if (ended louds$) then (1) else (0)
+    b << if (ended louds$) then (1) else (0)
 
 on (int r$) << decades (int x$)
     bool new$ = x$ / 10 != x$[-1] / 10
@@ -297,6 +297,6 @@ on (int r$) << decades (int x$)
     int first$ = if (new$) then (x$) else (first$[-1])
     r$ << first$[-1] * 100 + n$[-1] if (new$ and n$[-1] > 0)
 
-on (int n) = tens to (int k)
+on (int n) << tens to (int k)
     dec$ << [1 through k]
-    n = count decs$ * 100000 + peek decs$ at (count decs$ - 1)
+    n << count decs$ * 100000 + peek decs$ at (count decs$ - 1)

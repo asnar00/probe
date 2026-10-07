@@ -1,2 +1,2 @@
-on (int n) = reach()
-    n = 1
+on (int n) << reach()
+    n << 1

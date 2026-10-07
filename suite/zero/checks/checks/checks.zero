@@ -1,34 +1,34 @@
-on (int n) = within (int k)
+on (int n) << within (int k)
     check (k < 5)
-    n = k
+    n << k
 
-on (int s) = guarded sum (int k)
+on (int s) << guarded sum (int k)
     check (k >= 0)
-    s = [0 through k] + _
+    s << [0 through k] + _
 
-on (int v) = small (int i)
+on (int v) << small (int i)
     check (i < 4)
-    v = i
+    v << i
 
-on (int n) = bounded (int k)
-    n = small ([1 to k + 1]) + _
+on (int n) << bounded (int k)
+    n << small ([1 to k + 1]) + _
 
-on (int n) = either (int k)
+on (int n) << either (int k)
     if (k > 10)
         check (k < 100)
-        n = 2
+        n << 2
     else
-        n = 1
+        n << 1
 
-on (int n) = outside()
+on (int n) << outside()
     int i$ = [1, 2]
-    n = i$[5]
+    n << i$[5]
 
-on (int n) = after printing()
+on (int n) << after printing()
     out$ << "so far" << "\n"
     int k = 1
     check (k == 2)
-    n = k
+    n << k
 
 uint8 late$
 int64 wide$
@@ -37,18 +37,18 @@ uint16 steady$
 on shut (int x$)
     end x$
 
-on (int n) = pushed after end()
+on (int n) << pushed after end()
     late$ << 1
     end late$
     late$ << 2
-    n = count late$
+    n << count late$
 
-on (int n) = pushed after shut()
+on (int n) << pushed after shut()
     wide$ << 1
     shut(wide$)
     wide$ << 2
-    n = count wide$
+    n << count wide$
 
-on (int n) = pushed steadily()
+on (int n) << pushed steadily()
     steady$ << 1 << 2
-    n = count steady$
+    n << count steady$

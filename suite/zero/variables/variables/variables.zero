@@ -14,71 +14,71 @@ Mode mode$ << auto
 string name$ << "zero"
 bool flag$
 
-on (int n) = the size()
-    n = size$
+on (int n) << the size()
+    n << size$
 
 on set size (int s)
     size$ << s
 
-on (int n) = grown()
+on (int n) << grown()
     set size (50)
-    n = size$
+    n << size$
 
 on bump()
     count$ << count$ + 1
 
-on (int n) = bumped twice()
+on (int n) << bumped twice()
     bump()
     bump()
-    n = count$
+    n << count$
 
-on (int n) = bumped (int k) times
+on (int n) << bumped (int k) times
     for (i in [1 through k])
         bump()
-    n = count$
+    n << count$
 
-on (int n) = seen round a bump()
+on (int n) << seen round a bump()
     bump()
     int a = count$
     bump()
-    n = a * 10 + count$
+    n << a * 10 + count$
 
-on (int n) = fresh count()
-    n = count$
+on (int n) << fresh count()
+    n << count$
 
-on (int n) = port number()
-    n = port
+on (int n) << port number()
+    n << port
 
-on (int q) = quota left after (int used)
+on (int q) << quota left after (int used)
     quota$ << quota$ - used
-    q = quota$
+    q << quota$
 
-on (int n) = opened once()
+on (int n) << opened once()
     opened$ << opened$ + 1
-    n = opened$
+    n << opened$
 
-on (int n) = no tool open()
+on (int n) << no tool open()
     string tool = open_tool$
-    n = count tool
+    n << count tool
 
-on (int n) = tool opened()
+on (int n) << tool opened()
     open_tool$ << "edit"
     string tool = open_tool$
-    n = count tool
+    n << count tool
 
-on (int n) = origin sum()
-    n = int(origin$.x + origin$.y + origin$.z)
+on (int n) << origin sum()
+    n << int(origin$.x + origin$.y + origin$.z)
 
-on (int n) = moved origin()
+on (int n) << moved origin()
     origin$ << Vec(4, 5, 6)
-    n = int(origin$.x)
+    n << int(origin$.x)
 
-on (bool b) = is auto()
-    b = mode$ == auto
+on (bool b) << is auto()
+    b << mode$ == auto
 
-on (bool b) = switched on()
+on (bool b) << switched on()
     mode$ << on
-    b = mode$ == Mode.on
+    b << mode$ == Mode.on
 
 on named()
     out$ << name$ << "\n"
@@ -87,34 +87,34 @@ on renamed()
     name$ << "one"
     out$ << name$ << "\n"
 
-on (bool b) = flagged()
+on (bool b) << flagged()
     flag$ << true
-    b = flag$
+    b << flag$
 
-on (int n) = shadowed by (int size)
-    n = size
+on (int n) << shadowed by (int size)
+    n << size
 
-on (int n) = shadowed locally()
+on (int n) << shadowed locally()
     int count = 5
-    n = count
+    n << count
 
-on (int n) = locals()
+on (int n) << locals()
     int i = 1
     int j
     Vec v
     Vec w(1, 2, 3)
     Vec u(z = 3, x = 1)
-    n = i + j + int(v.x + w.z + u.x)
+    n << i + j + int(v.x + w.z + u.x)
 
 on both()
     int a, int b = two()
     size$ << a
     quota$ << b
 
-on (int a, int b) = two()
-    a = 7
-    b = 9
+on (int a, int b) << two()
+    a << 7
+    b << 9
 
-on (int n) = assigned both()
+on (int n) << assigned both()
     both()
-    n = size$ + quota$
+    n << size$ + quota$

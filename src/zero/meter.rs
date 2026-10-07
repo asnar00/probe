@@ -405,10 +405,10 @@ mod tests {
     /// refuses nothing: a store the compiler would refuse is metered
     #[test]
     fn the_meter_counts_non_zeroic_lines() {
-        let zeroic = store_of("z", "int x$\nint d$ = rising(x$)\n\non (int d$) << rising (int x$)\n    d$ << x$ if (x$ > x$[-1])\n\non (int n) = f()\n    x$ << 1 << 3 << 2\n    n = count d$\n");
+        let zeroic = store_of("z", "int x$\nint d$ = rising(x$)\n\non (int d$) << rising (int x$)\n    d$ << x$ if (x$ > x$[-1])\n\non (int n) << f()\n    x$ << 1 << 3 << 2\n    n << count d$\n");
         let m = metered(&zeroic).unwrap();
         assert_eq!((m.count(), m.lines), (0, 7), "{:?}", m.found);
-        let walking = store_of("w", "int x$\nint d$ = rising(x$)\nint last = 0\n\non (int d$) << rising (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        int v = peek x$ at (0)\n        if (v > last)\n            d$ << v\n        last = v\n        advance x$ by (1)\n\non (int n) = f()\n    x$ << 1 << 3 << 2\n    int f$ = [4, 5]\n    for (v in f$)\n        n = n + f$[1]\n    n = peek d$ at (1)\n");
+        let walking = store_of("w", "int x$\nint d$ = rising(x$)\nint last = 0\n\non (int d$) << rising (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        int v = peek x$ at (0)\n        if (v > last)\n            d$ << v\n        last = v\n        advance x$ by (1)\n\non (int n) << f()\n    x$ << 1 << 3 << 2\n    int f$ = [4, 5]\n    for (v in f$)\n        n << n + f$[1]\n    n << peek d$ at (1)\n");
         let m = metered(&walking).unwrap();
         let forms: Vec<(usize, usize)> = m.found.iter().map(|f| (f.line, f.form)).collect();
         // 7 `count`, 9 `peek`, 13 `advance`: walking; 10: `if` round a

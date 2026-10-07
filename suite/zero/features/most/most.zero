@@ -1,36 +1,36 @@
-on (int n) = greet()
-    n = existing greet() * 100
+on (int n) << greet()
+    n << existing greet() * 100
 
-on (int n) = count (int k)
+on (int n) << count (int k)
     if (k > 5)
-        n = existing count (k) + existing count (k)
+        n << existing count (k) + existing count (k)
     else
-        n = k
+        n << k
 
-on (int n) = describe()
-    n = 20
+on (int n) << describe()
+    n << 20
 
-on (int n) = greeted()
-    n = greet()
+on (int n) << greeted()
+    n << greet()
 
-on (int n) = counted (int k)
-    n = count (k)
+on (int n) << counted (int k)
+    n << count (k)
 
-on (int n) = described()
-    n = describe()
+on (int n) << described()
+    n << describe()
 
-on (int a, int b) = visited twice()
+on (int a, int b) << visited twice()
     visit()
     visit()
-    a = seen by more()
-    b = visited()
+    a << seen by more()
+    b << visited()
 
-on (bool b) = switch of more()
-    b = more.enabled
+on (bool b) << switch of more()
+    b << more.enabled
 
-on (bool b) = own switch()
-    b = enabled
+on (bool b) << own switch()
+    b << enabled
 
-on (bool a, bool b) = switches()
-    a = more.enabled
-    b = enabled
+on (bool a, bool b) << switches()
+    a << more.enabled
+    b << enabled

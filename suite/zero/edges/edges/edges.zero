@@ -47,15 +47,15 @@ on tally (int x$)
         sum$ << sum$ + peek x$ at (0)
         advance x$ by (1)
 
-on (int s) = summed down from (int k)
+on (int s) << summed down from (int k)
     part$ << [k through 1]
-    s = sum$
+    s << sum$
 
-on (int s) = a part summed down from (int k)
-    s = summed down from (k)
+on (int s) << a part summed down from (int k)
+    s << summed down from (k)
 
-on (int n) = fed (int k)
+on (int n) << fed (int k)
     loop (int i = 1) while (i <= k)
         raw$ << i
         continue (i + 1)
-    n = k
+    n << k

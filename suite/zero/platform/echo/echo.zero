@@ -1,5 +1,5 @@
 on echo()
     out$ << (frame in$)
 
-on (int n) = bytes waiting()
-    n = count in$
+on (int n) << bytes waiting()
+    n << count in$

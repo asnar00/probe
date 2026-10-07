@@ -7,11 +7,11 @@ on describe (int x)
 on describe (int x$)
     out$ << "ints" << "\n"
 
-on (int n) = times described()
+on (int n) << times described()
     describe (1)
     describe (2)
     describe (2.5)
-    n = noted$
+    n << noted$
 
 on describe some()
     describe ([1, 2])

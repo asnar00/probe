@@ -616,8 +616,9 @@ impl<'a> Parser<'a> {
         self.expect_word()?; // on
         let mut results = Vec::new();
         let mut task = false;
-        // `on (results) = name` or `on (results) << name`, or `on name`
-        // with no results — told apart by what follows the first group
+        // `on (results) << name`, or the form before fm3 question 77,
+        // `on (results) = name`, or `on name` with no results — told
+        // apart by what follows the first group
         let has_results = self.at_sym("(") && {
             let mut depth = 0;
             let mut i = self.pos;
@@ -1648,13 +1649,13 @@ mod tests {
 
     fn types() -> HashSet<String> {
         let mut t: HashSet<String> = ["Vec".to_string()].into_iter().collect();
-        t.extend(declared_joins("on (number n) = smaller of (number a) and (number b)\n"));
+        t.extend(declared_joins("on (number n) << smaller of (number a) and (number b)\n"));
         t
     }
 
     #[test]
     fn a_function_with_results_and_groups() {
-        let src = "on (number n) = smaller of (number a) and (number b)\n    n = if (a < b) then (a) else (b)\n";
+        let src = "on (number n) << smaller of (number a) and (number b)\n    n << if (a < b) then (a) else (b)\n";
         let f = parse_feature("t", src, "t.zero", &types()).unwrap();
         let Decl::Fn(f) = &f.decls[0] else { panic!() };
         assert_eq!(f.results.len(), 1);

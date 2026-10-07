@@ -251,9 +251,11 @@ Toolchain expectations (macOS/arm64 host): `llvm-mc` (brew llvm), `wabt` (wat2wa
 `probe zero` is the front end for **zero**, the feature-modular language defined in the fm3 project (`fm3/zero.md`); milestone 0 of that project built it here, in `src/zero/`, on the `zero` branch. It reads a *store* — a folder of feature folders, each `name/name.md` (the prose: `parent:`, `layer:`, origins with timestamps, and `## testing` cases) and `name/name.zero` (the code, with no comments: a `#` is an error naming its line) — lowers it to this IR as text, and runs the cases through the same drivers as the suite. The IR is the meaning; the front end adds none of its own, and the emitted text is what a person reads when a lowering surprises them. `suite/zero/skeleton`:
 
 ```
-on (int a) = answer()
-    a = 42
+on (int n) << answer()
+    n << 42
 ```
+
+`suite/zero/skeleton/skeleton/skeleton.zero:1-2`. There is one way to declare (fm3 question 77): every function is `on (results) << name (parameters)` and gives its result by pushing it, once; `=` is left for saying what a name is, `int half = x / 2`. A result with no `$` makes a plain function, one with a `$` a task or a stream processor, which produce a stream over time. `suite/zero/pushed` is the store for the form.
 
 ```sh
 cargo run -- zero suite/zero/hello emit            # the store's IR, as text
@@ -290,10 +292,10 @@ int seen$ << 0
 on bump()
     seen$ << seen$ + 1
 
-on (int n) = bumped twice()
+on (int n) << bumped twice()
     bump()
     bump()
-    n = seen$
+    n << seen$
 ```
 
 `suite/zero/cells/cells/cells.zero:9` and `:18-24`. A `<<` sends once, each time its line runs, and a stream's name where one value is wanted is its latest item. A stream the store reads only so is a **cell**: one field of the context of the item's type, a push a store of it and a read a load, with no ring and nothing that can fill; `bump` lowers to the four lines an assigned variable did. Apply one more word to the stream, `count seen$`, and it is the queue it would have been, the name reading the same.

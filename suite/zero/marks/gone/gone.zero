@@ -1,2 +1,2 @@
-on (int b) = bonus()
-    b = 5
+on (int b) << bonus()
+    b << 5

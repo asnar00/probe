@@ -3922,7 +3922,7 @@ impl Lowerer {
             // arithmetic on structs, so it is a function named by the
             // opcode and its first operand's type (log 9)
             if f.name.len() != 3 || !matches!(f.name.as_slice(), [NamePart::Group, NamePart::Sym(_), NamePart::Group]) || params.len() != 2 {
-                return Err(lex::error(file, f.line, "an operator is `on (T r) = (T a) op (U b)`"));
+                return Err(lex::error(file, f.line, "an operator is `on (T r) << (T a) op (U b)`"));
             }
             if !matches!(params[0].1, Ty::Struct(_)) {
                 return Err(lex::error(file, f.line, "an operator's first operand is a declared struct type; numbers have the IR's operators"));

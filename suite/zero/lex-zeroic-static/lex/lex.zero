@@ -6,19 +6,19 @@ token t$ = lex(in$)
 char src$
 token u$ = lex(src$)
 
-on (int k) = kind of (char c)
+on (int k) << kind of (char c)
     if (c <= 32)
-        k = 0
+        k << 0
     else if (c > 122)
-        k = 3
+        k << 3
     else if (c >= 97)
-        k = 1
+        k << 1
     else if (c > 57)
-        k = 3
+        k << 3
     else if (c >= 48)
-        k = 2
+        k << 2
     else
-        k = 3
+        k << 3
 
 on (token t$) << lex (char c$)
     int k$ = if (empty c$) then (0) else (kind of (c$))
@@ -34,51 +34,51 @@ on arrive again()
     src$ << "2;\n"
     end src$
 
-on (int a, int b) = two arrivals()
+on (int a, int b) << two arrivals()
     arrive first()
-    a = count u$
+    a << count u$
     arrive again()
-    b = count u$
+    b << count u$
 
-on (int s) = number start()
-    arrive first()
-    arrive again()
-    token x = peek u$ at (3)
-    s = x.start
-
-on (int n) = number length()
+on (int s) << number start()
     arrive first()
     arrive again()
     token x = peek u$ at (3)
-    n = x.n
+    s << x.start
 
-on (int a, int b) = kinds()
+on (int n) << number length()
+    arrive first()
+    arrive again()
+    token x = peek u$ at (3)
+    n << x.n
+
+on (int a, int b) << kinds()
     arrive first()
     arrive again()
     token x = peek u$ at (0)
     token y = peek u$ at (1)
-    a = x.kind
-    b = y.kind
+    a << x.kind
+    b << y.kind
 
-on (int k) = third kind()
+on (int k) << third kind()
     arrive first()
     arrive again()
     token x = peek u$ at (2)
-    k = x.kind
+    k << x.kind
 
-on (int a, int b) = kinds tail()
+on (int a, int b) << kinds tail()
     arrive first()
     arrive again()
     token x = peek u$ at (3)
     token y = peek u$ at (4)
-    a = x.kind
-    b = y.kind
+    a << x.kind
+    b << y.kind
 
-on (int a, int b) = a word at the end()
+on (int a, int b) << a word at the end()
     src$ << "let"
-    a = count u$
+    a << count u$
     end src$
-    b = count u$
+    b << count u$
 
-on (int n) = lexed()
-    n = count t$
+on (int n) << lexed()
+    n << count t$

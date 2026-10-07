@@ -31,4 +31,4 @@ A platform function has no zero body. Each `platform <kind>` line gives it a bod
 >count doubled (3) → 3, 6
 
 ## hostile
-`on (int64 r) = (int64 a) plus (int64 b)` with a zero body and a platform body is refused: "a platform function has no zero body". `platform arm46` is refused naming the five kinds. `on (int r) = f (int a)` with `platform arm64` is refused: "'a' is int in a platform rule: a rule takes the machine's types". A `#` in a platform body is refused like any other. A rule line naming an instruction the target has no template for fails when that target compiles the store, in the IR's own words.
+`on (int64 r) << (int64 a) plus (int64 b)` with a zero body and a platform body is refused: "a platform function has no zero body". `platform arm46` is refused naming the five kinds. `on (int r) << f (int a)` with `platform arm64` is refused: "'a' is int in a platform rule: a rule takes the machine's types". A `#` in a platform body is refused like any other. A rule line naming an instruction the target has no template for fails when that target compiles the store, in the IR's own words.

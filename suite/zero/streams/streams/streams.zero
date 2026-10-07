@@ -4,168 +4,168 @@ type token =
 int log$ << 100
 int seen$ << 0
 
-on (int n) = pushed()
+on (int n) << pushed()
     int i$ << 1 << 2 << 3
-    n = count i$
+    n << count i$
 
-on (int n) = chained()
+on (int n) << chained()
     int i$ << 1 << (i$ + 1) << (i$ * 10)
-    n = latest i$
+    n << latest i$
 
-on (int n) = repeated()
+on (int n) << repeated()
     int i$ << 1 << (i$ + 1) while (_ < 5)
-    n = count i$ * 10 + latest i$
+    n << count i$ * 10 + latest i$
 
-on (int n) = latest tested()
+on (int n) << latest tested()
     int i$ << 1 << (i$ + 1) while (i$ < 5)
-    n = count i$ * 10 + latest i$
+    n << count i$ * 10 + latest i$
 
-on (int n) = counted down from (int k)
+on (int n) << counted down from (int k)
     int i$ << k << (i$ - 1) while (_ > 0)
-    n = count i$ * 100 + latest i$
+    n << count i$ * 100 + latest i$
 
-on (int n) = peeked()
+on (int n) << peeked()
     int i$ << 5 << 6 << 7
-    n = peek i$ at (1)
+    n << peek i$ at (1)
 
-on (int n) = advanced()
+on (int n) << advanced()
     int i$ << 5 << 6 << 7
     advance i$ by (2)
-    n = peek i$ at (0) * 10 + count i$
+    n << peek i$ at (0) * 10 + count i$
 
-on (int n) = framed()
+on (int n) << framed()
     int i$ << 1 << 2 << 3
     int f$ = frame i$
     int g$ = frame i$
-    n = count f$ * 10 + count g$ + (f$ + _)
+    n << count f$ * 10 + count g$ + (f$ + _)
 
-on (int n) = walked()
+on (int n) << walked()
     int i$ << 1 << 2 << 3 << 4
-    n = loop (int acc = 0) while (count i$ > 0) yields acc
+    n << loop (int acc = 0) while (count i$ > 0) yields acc
         int x = peek i$ at (0)
         advance i$ by (1)
         continue (acc + x)
 
-on (int n) = history()
+on (int n) << history()
     int i$ << 1 << 2 << 3 << 4
     advance i$ by (3)
     int h$ = i$ behind (2)
-    n = h$[0] * 10 + h$[1]
+    n << h$[0] * 10 + h$[1]
 
-on (int n) = positioned()
+on (int n) << positioned()
     int x$ at (1000 hz) << 1 << 2 << 3
     advance x$ by (2)
     int k = position x$
     int t = time of x$
-    n = k * 10 + t
+    n << k * 10 + t
 
-on (int n) = position unread()
+on (int n) << position unread()
     int i$ << 1 << 2
     advance i$ by (2)
     int k = position i$
     int t = time of i$
-    n = k * 10 + t
+    n << k * 10 + t
 
-on (bool b) = still open()
+on (bool b) << still open()
     int i$ << 1
-    b = ended i$
+    b << ended i$
 
-on (bool b) = now closed()
+on (bool b) << now closed()
     int i$ << 1
     end i$
-    b = ended i$
+    b << ended i$
 
-on (int n) = pushed after end()
+on (int n) << pushed after end()
     int i$ << 1
     end i$
     i$ << 2
-    n = count i$
+    n << count i$
 
-on (int n) = sampled()
+on (int n) << sampled()
     float32 x$ at (1 khz) << 10.0 << 20.0 << 30.0 << 40.0
     float32 v = x$ at (1600 us)
-    n = int(v)
+    n << int(v)
 
-on (int n) = windowed()
+on (int n) << windowed()
     int x$ at (1000 hz) << 1 << 2 << 3 << 4 << 5
     int w$ = x$ from (2 ms) to (4 ms)
-    n = count w$ * 10 + w$[0]
+    n << count w$ * 10 + w$[0]
 
-on (int n) = tokens()
+on (int n) << tokens()
     token t$ << token(1, 0, 3) << token(3, 4, 1)
     token x = peek t$ at (1)
-    n = x.kind * 100 + x.start * 10 + x.n
+    n << x.kind * 100 + x.start * 10 + x.n
 
-on (int n) = tokens moved()
+on (int n) << tokens moved()
     token t$ << token(1, 0, 3) << token(2, 5, 2)
     advance t$ by (1)
     token x = latest t$
-    n = count t$ * 1000 + x.kind * 100 + x.start * 10 + x.n
+    n << count t$ * 1000 + x.kind * 100 + x.start * 10 + x.n
 
-on (int n) = tokens framed()
+on (int n) << tokens framed()
     token t$ << token(1, 0, 3) << token(2, 5, 2) << token(3, 9, 1)
     token f$ = frame t$
     token y = peek f$ at (2)
-    n = count f$ * 1000 + y.kind * 100 + y.start * 10 + y.n
+    n << count f$ * 1000 + y.kind * 100 + y.start * 10 + y.n
 
-on (int n) = logged()
+on (int n) << logged()
     log$ << 200 << 300
-    n = count log$ * 1000 + latest log$
+    n << count log$ * 1000 + latest log$
 
-on (int n) = logged and read()
+on (int n) << logged and read()
     log$ << 7
     advance log$ by (1)
-    n = peek log$ at (0)
+    n << peek log$ at (0)
 
-on (int n) = counted round a push()
+on (int n) << counted round a push()
     int i$ << 1 << 2
     int a = count i$
     i$ << 3
-    n = a * 10 + count i$
+    n << a * 10 + count i$
 
 on skip one logged()
     advance log$ by (1)
 
-on (int n) = counted round a skip()
+on (int n) << counted round a skip()
     log$ << 7 << 8
     int a = count log$
     skip one logged()
-    n = a * 10 + count log$
+    n << a * 10 + count log$
 
-on (int n) = blocked()
+on (int n) << blocked()
     uint8 b$ << "hi"
-    n = count b$ * 1000 + int(peek b$ at (1))
+    n << count b$ * 1000 + int(peek b$ at (1))
 
-on (int n) = blocked regular()
+on (int n) << blocked regular()
     int r$ at (1 khz) << [1, 2, 3]
-    n = count r$ * 10 + latest r$
+    n << count r$ * 10 + latest r$
 
-on (int n) = indexed()
+on (int n) << indexed()
     int i$ << 5 << 6 << 7
-    n = i$[1] * 10 + i$[2]
+    n << i$[1] * 10 + i$[2]
 
-on (int n) = summed()
+on (int n) << summed()
     int i$ << 1 << 2 << 3
-    n = i$ + _
+    n << i$ + _
 
-on (int n) = mapped()
+on (int n) << mapped()
     int i$ << 1 << 2 << 3
     int j$ = i$ * 2
-    n = j$ + _
+    n << j$ + _
 
-on (int n) = walked over()
+on (int n) << walked over()
     int i$ << 1 << 2 << 3
     for (x in i$)
         seen$ << seen$ + x
-    n = seen$
+    n << seen$
 
-on (int n) = unread only()
+on (int n) << unread only()
     int i$ << 1 << 2 << 3 << 4
     advance i$ by (2)
-    n = (i$ + _) * 10 + count i$
+    n << (i$ + _) * 10 + count i$
 
-on (int n) = framed pushed()
+on (int n) << framed pushed()
     int i$ << 1 << 2
     int f$ = frame i$
     f$ << 9
-    n = count f$ * 10 + latest f$
+    n << count f$ * 10 + latest f$

@@ -1,12 +1,12 @@
-on (int s) = sign of (int x)
+on (int s) << sign of (int x)
     if (x < 0)
-        s = -1
+        s << -1
     else if (x > 0)
-        s = 1
+        s << 1
 
-on (int a) = magnitude of (int x)
+on (int a) << magnitude of (int x)
     int m = if (x < 0) then (-x) else (x)
-    a = m
+    a << m
 
 on describe (int x)
     if (x < 0)
@@ -14,49 +14,49 @@ on describe (int x)
     else
         out$ << "not negative" << "\n"
 
-on (int s) = sum to (int n)
-    s = [0 through n] + _
+on (int s) << sum to (int n)
+    s << [0 through n] + _
 
-on (int s) = sum below (int n)
-    s = [0 to n] + _
+on (int s) << sum below (int n)
+    s << [0 to n] + _
 
-on (int g) = gcd of (int a) and (int b)
-    g = loop (int x = a, int y = b) while (y != 0) yields x
+on (int g) << gcd of (int a) and (int b)
+    g << loop (int x = a, int y = b) while (y != 0) yields x
         int r = x % y
         continue (y, r)
 
-on (int p) = power of two above (int n)
+on (int p) << power of two above (int n)
     int q = loop (int q = 1) yields q
         if (q > n)
             break
         continue (q * 2)
-    p = q
+    p << q
 
-on (int d) = digits of (int n)
+on (int d) << digits of (int n)
     int x, int count = loop (int x = n, int count = 1) yields x, count
         if (x < 10)
             break
         continue (x / 10, count + 1)
-    d = count
+    d << count
 
-on (int n) = collatz steps (int start)
-    n = loop (int x = start, int steps = 0) yields steps
+on (int n) << collatz steps (int start)
+    n << loop (int x = start, int steps = 0) yields steps
         if (x == 1)
             break
         continue (if (x % 2 == 0) then (x / 2) else (3 * x + 1), steps + 1)
 
-on (int r) = row (int i)
-    r = [0 through i] + _
+on (int r) << row (int i)
+    r << [0 through i] + _
 
-on (int t) = triangle (int n)
-    t = row ([1 to n + 1]) + _
+on (int t) << triangle (int n)
+    t << row ([1 to n + 1]) + _
 
-on (int n) = two counters()
+on (int n) << two counters()
     int a = loop (int i = 0) while (i < 3) yields i
         continue (i + 1)
     int b = loop (int i = 0) while (i < 5) yields i
         continue (i + 1)
-    n = a * 10 + b
+    n << a * 10 + b
 
 on ticks ()
     for (i in [1 through 3])
@@ -81,31 +81,31 @@ on step (int i)
 on steps from (int a) to (int b)
     step ([a through b])
 
-on (int d) = gives twice (int x)
-    d = x * 2
+on (int d) << gives twice (int x)
+    d << x * 2
 
-on (int s) = thirty three counted()
-    s = [1 through 33] + _
+on (int s) << thirty three counted()
+    s << [1 through 33] + _
 
-on (int s) = sixty four counted()
-    s = [1 through 64] + _
+on (int s) << sixty four counted()
+    s << [1 through 64] + _
 
-on (int s) = a hundred counted()
-    s = [1 through 100] + _
+on (int s) << a hundred counted()
+    s << [1 through 100] + _
 
-on (int s) = thirty three listed()
-    s = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33] + _
+on (int s) << thirty three listed()
+    s << [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33] + _
 
-on (int s) = sixty four listed()
-    s = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64] + _
+on (int s) << sixty four listed()
+    s << [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64] + _
 
-on (int s) = a hundred listed()
-    s = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100] + _
+on (int s) << a hundred listed()
+    s << [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100] + _
 
-on (int v) = listed item (int i)
+on (int v) << listed item (int i)
     int x$ = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100]
-    v = x$[i]
+    v << x$[i]
 
-on (int v) = counted item (int i) of (int n)
+on (int v) << counted item (int i) of (int n)
     int x$ = [0 through n]
-    v = x$[i]
+    v << x$[i]

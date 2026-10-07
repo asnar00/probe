@@ -30,4 +30,4 @@ Rulings pass item 2 (question 18): with `existing`, a redefinition with the same
 >describe (4) → "int"
 
 ## hostile
-`on (bool b) = describe (int x)` in this feature is refused: "'describe (int)' redefines feature functions's with different results: a redefinition keeps the signature".
+`on (bool b) << describe (int x)` in this feature is refused: "'describe (int)' redefines feature functions's with different results: a redefinition keeps the signature".

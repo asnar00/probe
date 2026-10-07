@@ -876,14 +876,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("probe-zero-published-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let head = |published: &str| format!("# f\n*x*\n\nlayer: runtime\n{}\n> (suite) 2026-09-08T10:00:00\n\n## testing\n", published);
-        write(&dir, "b", &head(""), "on (int n) = b()\n    n = 2\n");
-        write(&dir, "a", &head("published: 2026-09-05\n"), "on (int n) = a()\n    n = 1\n");
+        write(&dir, "b", &head(""), "on (int n) << b()\n    n << 2\n");
+        write(&dir, "a", &head("published: 2026-09-05\n"), "on (int n) << a()\n    n << 1\n");
         // one timestamp: a before b by name, and nothing refused
         let s = read(&dir).unwrap();
         assert_eq!(s.features.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["platform", "a", "b"]);
         assert_eq!(s.features[1].published.as_deref(), Some("2026-09-05"));
         // a date that is not one
-        write(&dir, "c", &head("published: soon\n"), "on (int n) = c()\n    n = 3\n");
+        write(&dir, "c", &head("published: soon\n"), "on (int n) << c()\n    n << 3\n");
         assert!(refused(&dir).contains("`published:` takes a date"));
         std::fs::remove_dir_all(dir.join("c")).unwrap();
         // in a repository: not committed, then committed before the date
@@ -893,16 +893,16 @@ mod tests {
         git(&dir, "2026-09-01T10:00:00", &["commit", "-q", "-m", "a and b"]);
         assert!(read(&dir).is_ok());
         // an edit after publication: uncommitted, then committed after the date
-        write(&dir, "a", &head("published: 2026-09-05\n"), "on (int n) = a()\n    n = 11\n");
+        write(&dir, "a", &head("published: 2026-09-05\n"), "on (int n) << a()\n    n << 11\n");
         assert!(refused(&dir).contains("feature a was published on 2026-09-05 and its code has uncommitted changes"));
         git(&dir, "2026-09-08T10:00:00", &["commit", "-q", "-a", "-m", "a changed"]);
         let err = refused(&dir);
         assert!(err.contains("feature a was published on 2026-09-05 and its code changed on 2026-09-08T10:00:00") && err.contains("a published feature is immutable"), "{}", err);
         // the date moved to the day of the change is the human's override, accepted
-        write(&dir, "a", &head("published: 2026-09-08\n"), "on (int n) = a()\n    n = 11\n");
+        write(&dir, "a", &head("published: 2026-09-08\n"), "on (int n) << a()\n    n << 11\n");
         assert!(read(&dir).is_ok());
         // the prose may change: only the code is immutable
-        write(&dir, "a", &head("published: 2026-09-08\n\nprose changed\n"), "on (int n) = a()\n    n = 11\n");
+        write(&dir, "a", &head("published: 2026-09-08\n\nprose changed\n"), "on (int n) << a()\n    n << 11\n");
         assert!(read(&dir).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }

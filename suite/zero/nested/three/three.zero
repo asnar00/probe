@@ -1,2 +1,2 @@
-on (int n) = reach()
-    n = existing reach() + 1000
+on (int n) << reach()
+    n << existing reach() + 1000
