@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a function may be declared with `<<` and give its result by pushing it — `fa90584` · 2026-10-07
+
+```
+on (int d) << double (int x)
+    d << x * 2
+
+on (int d) = double (int x) as it was
+    d = x * 2
+```
+
+`suite/zero/pushed/pushed/pushed.zero:1-5`. fm3's question 77 (a), ruled: one way to declare, and `=` left for saying what a name is. This landing accepts the new form beside the old. With `<<` on everything, the mark on the result tells a function from a task: no `$`, a value given once; a `$`, a stream produced over time. `y << value` is kept in the tree as the giving of a result an assignment was (`Target::pushed`), so it lowers to the same lines: fourteen pairs in the store, each the same IR but for the name (`scratchpad/pairs.py`). One function cannot be told, `on (int r$) = squares to (int k)`, a task's first line once it says `<<`; it keeps `=` until arrays have their mark (question 87). A result nothing pushed is zero and the last push ends the function, as before (question 88). Refused: a result pushed twice, or with `(n) times`, `while`, `until`, `forever`; a push into a local, a parameter, a variable. No existing store's IR moved; zero 809/809, `cargo test zero` 55; the six rows as they were; the meter 128 of 2 072, the new store's loops.
+
 ### zero: the running sum — `fdd6404` · 2026-10-07
 
 ```
