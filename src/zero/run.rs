@@ -926,8 +926,8 @@ mod tests {
         assert!(ir.contains("fn __z1_each(_x: int)\n    _this: ptr = context()\n    _1: u1 = cmp.gt _x, 0\n    if _1\n        _2: __ctx = load _this\n        _3: int$ = get _2, d\n        push_queue_open(_3, _x)\n    ret\n"), "{}", ir);
         assert!(ir.contains("    _3: u1 = cmp.gt k, 2\n    if _3\n        _4: __ctx = load _this\n        _5: int$ = get _4, p\n        push_queue_open(_5, k)\n"), "{}", ir);
         for (more, said) in [
-            ("on f (int k)\n    p$ << k while (_ < 3) if (k > 2)", "h.zero:9: a push takes `while` or `if`, not both: `while` repeats the push, `if` says whether it happens"),
-            ("on f (int k)\n    p$ << k if (k > 2) while (_ < 3)", "h.zero:9: a push takes `while` or `if`, not both: `while` repeats the push, `if` says whether it happens"),
+            // `if` goes with `while` since fm3 log 148, and comes first
+            ("on f (int k)\n    p$ << k while (_ < 3) if (k > 2)", "h.zero:9: `if` comes first on a push, then how often: `x$ << item if (condition) while (...)`"),
             // the word a push took before question 79, after each kind of item
             ("on f (int k)\n    p$ << k when (k > 2)", "h.zero:9: `when` is not a word of zero: a push made where a condition holds is `x$ << item if (condition)`"),
             ("on f (int k)\n    p$ << x$ when (k > 2)", "h.zero:9: `when` is not a word of zero: a push made where a condition holds is `x$ << item if (condition)`"),
@@ -1016,6 +1016,87 @@ mod tests {
         // a function may not have the word in its name: it ends a phrase
         let err = with("b$ << a$ forever\n", "\non wait forever()\n    b$ << 1").expect_err("a name");
         assert!(err.ends_with("h.zero:15: 'forever' cannot be a word of a function's name: it ends a phrase wherever it stands, so no call of this name could be written"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `until` on a push (fm3 question 79, log 148): the test made
+    /// after each push, `_` and the stream's own name both the item
+    /// just pushed; `if` with any one of the four words of how often
+    /// and no two of the four; a push that can be seen never to end
+    /// refused; and a line that stands until its condition holds
+    #[test]
+    fn a_push_goes_on_until() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-until-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (3) → 1\n").unwrap();
+        let head = "int a$\nint b$\nint c$\nint seen$ << 0\nb$ << a$ forever\n";
+        let rest = "\non (int n) = f (int k)\n    a$ << k\n    n = count b$ + count c$ + seen$\n\non g (int k)\n    ";
+        let with = |lines: &str, body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}{}{}\n", head, lines, rest, body)).unwrap();
+            emit(&dir)
+        };
+        let g = |body: &str| -> String {
+            let ir = with("", body).unwrap_or_else(|e| panic!("{}: {}", body, e));
+            let at = ir.find("\nfn g(k: int)\n").unwrap_or_else(|| panic!("{}: no g", body));
+            let end = ir[at + 1..].find("\nfn ").map_or(ir.len(), |n| at + 1 + n);
+            ir[at + 1..end].to_string()
+        };
+        // the push, then the test, of the value in hand: the name and
+        // `_` are one program
+        let by_name = g("b$ << 1 << (b$ + 1) until (b$ == 5)");
+        assert!(by_name.contains("    loop()\n        _4: int = latest_queue(_2)\n        _5: int = add _4, 1\n        push_queue_open(_2, _5)\n        _6: u1 = cmp.eq _5, 5\n        if _6\n            break\n        continue\n"), "{}", by_name);
+        assert_eq!(by_name, g("b$ << 1 << (b$ + 1) until (_ == 5)"));
+        // `while` beside it: the test, then the push
+        assert!(g("b$ << 1 << (b$ + 1) while (_ < 5)").contains("        _6: u1 = cmp.lt _5, 5\n        if _6\n        else\n            break\n        push_queue_open(_2, _5)\n        continue\n"));
+        // into a cell: the field stored, then the test
+        assert!(g("seen$ << seen$ * 2 until (seen$ > k)").contains("        _3: int = mul _2, 2\n        _4: __ctx = load _this\n        _5: __ctx = set _4, seen, _3\n        store _5, _this\n        _6: u1 = cmp.gt _3, k\n        if _6\n            break\n        continue\n"));
+        // `if` with each word of how often, tested once and first
+        for body in ["b$ << k if (k > 0) until (_ > 3)", "b$ << k if (k > 0) while (_ < 0)", "b$ << k if (k > 0) (2) times"] {
+            let ir = g(body);
+            assert!(ir.contains("    _1: u1 = cmp.gt k, 0\n    if _1\n") && ir.contains("        loop("), "{}: {}", body, ir);
+        }
+        // a line that stands until its condition holds: a bit of the
+        // context, the push under "not yet", the bit set after it
+        let ir = with("c$ << a$ until (a$ == 3)\n", "c$ << 1").unwrap();
+        assert!(ir.contains("    __until2: u1\n") && ir.contains("    _2: u1 = get _1, __until2\n    _3: u1 = cmp.eq _2, 0\n    if _3\n") && ir.contains(": u1 = cmp.eq __item, 3\n"), "{}", ir);
+        let two = |a: &str, b: &str| format!("h.zero:12: a push takes {} or {}, not both", a, b);
+        for (lines, body, said) in [
+            ("", "b$ << k until (_ > 3) while (_ < 9)", two("`until`", "`while`")),
+            ("", "b$ << k while (_ < 9) until (_ > 3)", two("`while`", "`until`")),
+            ("", "b$ << k until (_ > 3) (2) times", two("`until`", "`(n) times`")),
+            ("", "b$ << k (2) times until (_ > 3)", two("`(n) times`", "`until`")),
+            ("", "b$ << k until (_ > 3) forever", two("`until`", "`forever`")),
+            ("", "b$ << k forever until (_ > 3)", two("`forever`", "`until`")),
+            ("", "b$ << k until (_ > 3) until (_ > 4)", "h.zero:12: a push takes one `until`".to_string()),
+            ("", "b$ << k until (_ > 3) if (k > 0)", "h.zero:12: `if` comes first on a push, then how often: `x$ << item if (condition) until (...)`".to_string()),
+            // a push that can be seen never to end, each word
+            ("", "b$ << 1 until (false)", "h.zero:12: this push would never end: its `until` can never hold".to_string()),
+            ("", "b$ << 1 while (true)", "h.zero:12: this push would never end: its `while` always holds".to_string()),
+            ("", "seen$ << 1 until (false)", "h.zero:12: this push would never end: its `until` can never hold".to_string()),
+            ("", "seen$ << 1 while (true)", "h.zero:12: this push would never end: its `while` always holds".to_string()),
+            // a block is not asked a condition
+            ("", "b$ << [1 through 3] until (_ > 3)", "h.zero:12: a block is pushed once: `until` repeats an item".to_string()),
+            // on a line that stands: with `if`, and with more than one
+            // item, for `until` and for a count
+            ("c$ << a$ if (a$ > 0) until (a$ == 3)\n", "c$ << 1", "h.zero:6: `if` with `until` on a line that stands is not built: 'c$ << a$ if (...) until (...)' could ask its `until` of every item, or only of those that pass".to_string()),
+            ("c$ << a$ << 0 until (a$ == 3)\n", "c$ << 1", "h.zero:6: 'c$ << a$ << 0 until (...)' on a line that stands could end the whole line, or repeat its last item: not built. Put a stream between: `first$ << a$ until (...)` and `c$ << first$ << ... forever`".to_string()),
+            ("c$ << a$ << 0 (3) times\n", "c$ << 1", "h.zero:6: 'c$ << a$ << 0 (3) times' on a line that stands could be the first 3 items of 'a$', each with what follows it, or every item and what follows it 3 times: not built. For the first, put a stream between: `first$ << a$ (3) times` and `c$ << first$ << ... forever`".to_string()),
+            ("c$ << a$ until (a$ == 3) forever\n", "c$ << 1", "h.zero:6: a push takes `until` or `forever`, not both".to_string()),
+        ] {
+            let err = with(lines, body).expect_err(body);
+            assert!(err.ends_with(&said), "{}{}: {}", lines, body, err);
+        }
+        // `until (true)` is one push and `while (false)` none: both end
+        assert!(g("b$ << 9 until (true)").contains("push_queue_open(_2, _3)"));
+        with("", "b$ << 9 while (false)").unwrap();
+        // a function may not have the word in its name: it ends a phrase
+        let err = with("", "b$ << 1\n\non wait until ready()\n    b$ << 1").expect_err("a name");
+        assert!(err.ends_with("h.zero:14: 'until' cannot be a word of a function's name: it ends a phrase wherever it stands, so no call of this name could be written"), "{}", err);
+        // in a stream processor, which has no loop
+        std::fs::write(dir.join("h/h.zero"), "int a$\nint d$ = dd(a$)\n\non (int d$) << dd (int x$)\n    d$ << x$ until (_ > 3)\n\non (int n) = f (int k)\n    a$ << k\n    n = count d$\n").unwrap();
+        let err = emit(&dir).expect_err("a processor");
+        assert!(err.ends_with("h.zero:5: `until` on a push repeats it, which is a loop, and a stream processor has none: say the stream by a line of its own, or write `d$ << item if (condition)`"), "{}", err);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

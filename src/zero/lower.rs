@@ -4700,17 +4700,20 @@ impl Lowerer {
                 continue;
             }
             let v = b.materialize(&v);
-            self.push_read = Some((name.to_string(), PushRead::Cell));
-            let outer = self.candidate.replace(v.clone());
-            self.one = true;
-            let cv = self.lower_expr(c, Some(&Ty::Bool), b, None);
-            self.candidate = outer;
-            self.push_read = None;
-            let cv = cv?;
-            if cv.ty != Ty::Bool {
-                return Err(lex::error(&file, c.line, "'while' takes a bool"));
+            // `until`: the field stored, then the condition asked of
+            // the value stored, which the stream's name is too
+            if word == Repeat::Until {
+                self.field_put(name, &v.text, b);
+                let cv = self.push_cond(name, PushRead::Value(v.clone()), &v, c, word, b)?;
+                b.line(&format!("if {}", cv.text));
+                b.depth += 1;
+                b.line("break");
+                b.depth -= 1;
+                b.line("continue");
+                b.depth -= 1;
+                continue;
             }
-            let cv = b.materialize(&cv);
+            let cv = self.push_cond(name, PushRead::Cell, &v, c, word, b)?;
             b.line(&format!("if {}", cv.text));
             b.line("else");
             b.depth += 1;
@@ -4784,13 +4787,32 @@ impl Lowerer {
             if only.is_some() {
                 return Err(lex::error(file, line, format!("`if` with a count on a line that stands is not built: '{} if (...) ({}) times' could be the first {} that pass, or those of the first {} that pass", said, n, n, n)));
             }
+            // the count where `forever` would stand, over the whole
+            // line, or over the last item as in a function (fm3
+            // question 84): the same text is not to mean two things
+            if items.len() > 1 {
+                return Err(lex::error(file, line, format!("'{} ({}) times' on a line that stands could be the first {} items of '{}$', each with what follows it, or every item and what follows it {} times: not built. For the first, put a stream between: `first$ << {}$ ({}) times` and `{}$ << first$ << ... forever`", said, n, n, sname, n, sname, n, tname)));
+            }
             counted = Some(n);
+        }
+        // `first$ << src$ until (src$ == 3)`: the line stands until the
+        // condition holds, tested after each push (fm3 log 148), the
+        // source's own name in it the item that has arrived
+        let mut until = None;
+        if let (Some(c), Repeat::Until) = (cond, word) {
+            if only.is_some() {
+                return Err(lex::error(file, line, format!("`if` with `until` on a line that stands is not built: '{} if (...) until (...)' could ask its `until` of every item, or only of those that pass", said)));
+            }
+            if items.len() > 1 {
+                return Err(lex::error(file, line, format!("'{} until (...)' on a line that stands could end the whole line, or repeat its last item: not built. Put a stream between: `first$ << {}$ until (...)` and `{}$ << first$ << ... forever`", said, sname, tname)));
+            }
+            until = Some(c.clone());
         }
         // with no `forever` the line is one push, when the store starts,
         // of what the stream holds then (question 79). Refused for this
         // hop (question 80): every such line there is was written as
         // wiring, and a silent change of what it does is the worst outcome
-        if !forever && counted.is_none() {
+        if !forever && counted.is_none() && until.is_none() {
             return Err(lex::error(file, line, once_or_wiring(&said, sname, tname)));
         }
         let Some(sf) = self.fvar(sname).cloned() else {
@@ -4803,26 +4825,33 @@ impl Lowerer {
         self.reach(&format!("{}$", sname), &sf.feature, file, items[0].line)?;
         let name = format!("__edge{}", self.edges.len() + 1);
         let seq = |n: &str| Expr { kind: ExprKind::Seq(n.to_string()), line };
-        let counted = counted.map(|n| {
-            let field = format!("__times{}", self.edges.len() + 1);
-            self.fvars.push(FVar { name: field.clone(), ty: int_ty(), scope: "node".into(), merge: "last".into(), feature: feature.to_string() });
-            self.zfields.push((field.clone(), int_ty()));
-            (field, n)
-        });
+        let keep = |l: &mut Lowerer, said: &str, ty: Ty| {
+            let field = format!("__{}{}", said, l.edges.len() + 1);
+            l.fvars.push(FVar { name: field.clone(), ty: ty.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string() });
+            l.zfields.push((field.clone(), ty));
+            field
+        };
+        let counted = counted.map(|n| (keep(self, "times", int_ty()), n));
+        let until = until.map(|c| (keep(self, "until", Ty::Bool), c));
         // a standing filter, `e$ << x$ if (x$ > 0) forever`: the push
         // under its condition, as `if` on a push is in a function; a
         // counted line, the push and its count's bump under "fewer
         // than n so far"
-        let under = |push: Stmt| match (only, &counted) {
-            (Some(c), _) => Stmt::If { cond: c.clone(), then: vec![push], els: None, line, on_push: true },
-            (None, Some((field, n))) => {
-                let so_far = || Expr { kind: ExprKind::Name(field.clone()), line };
-                let int = |v: i64| Expr { kind: ExprKind::Int(v), line };
-                let bin = |op: &str, l: Expr, r: Expr| Expr { kind: ExprKind::Bin(op.to_string(), Box::new(l), Box::new(r)), line };
-                let bump = Stmt::Assign { targets: vec![super::syntax::Target { name: field.clone(), seq: false, line, feature: None }], value: bin("+", so_far(), int(1)), line };
-                Stmt::If { cond: bin("<", so_far(), int(*n)), then: vec![push, bump], els: None, line, on_push: false }
+        let under = |push: Stmt| {
+            let kept = |field: &String| Expr { kind: ExprKind::Name(field.clone()), line };
+            let bin = |op: &str, l: Expr, r: Expr| Expr { kind: ExprKind::Bin(op.to_string(), Box::new(l), Box::new(r)), line };
+            let put = |field: &String, value: Expr| Stmt::Assign { targets: vec![super::syntax::Target { name: field.clone(), seq: false, line, feature: None }], value, line };
+            match (only, &counted, &until) {
+                (Some(c), _, _) => Stmt::If { cond: c.clone(), then: vec![push], els: None, line, on_push: true },
+                (None, Some((field, n)), _) => {
+                    let int = |v: i64| Expr { kind: ExprKind::Int(v), line };
+                    Stmt::If { cond: bin("<", kept(field), int(*n)), then: vec![push, put(field, bin("+", kept(field), int(1)))], els: None, line, on_push: false }
+                }
+                // "not ended yet", and after the push the bit is the
+                // condition, asked of the item that went out
+                (None, None, Some((field, c))) => Stmt::If { cond: bin("==", kept(field), Expr { kind: ExprKind::Bool(false), line }), then: vec![push, put(field, c.clone())], els: None, line, on_push: false },
+                (None, None, None) => push,
             }
-            (None, None) => push,
         };
         // out of a stream with no storage (question 50, fm3 log 92) the
         // edge is a function of one item, its body the chain with the
@@ -8358,9 +8387,12 @@ impl Lowerer {
                 self.close_counted(&k, b);
                 continue;
             }
-            // `while` tests a candidate, which a block is not
+            // `while` and `until` ask their condition of an item, which
+            // a block is not
+            let said = if word == Repeat::Until { "until" } else { "while" };
+            let block = || lex::error(&file, e.line, format!("a block is pushed once: `{}` repeats an item", said));
             if matches!(e.kind, ExprKind::Range { .. }) || (matches!(e.kind, ExprKind::Str(_)) && elem.ir() == "u8") {
-                return Err(lex::error(&file, e.line, "a block is pushed once: `while` repeats an item"));
+                return Err(block());
             }
             b.open_loop("", "", false);
             b.depth += 1;
@@ -8368,21 +8400,29 @@ impl Lowerer {
             let v = item(self, e, b);
             self.push_read = None;
             let v = b.materialize(&v?);
+            // `until` (fm3 log 148): the item pushed, and then the
+            // condition asked of it, `_` and the stream's own name both
+            // the item just pushed; where it holds the loop leaves
+            if word == Repeat::Until {
+                if v.ty == block_ty {
+                    return Err(block());
+                }
+                self.push_item(name, s, v.clone(), e.line, b)?;
+                let read = if v.ty == elem { PushRead::Value(v.clone()) } else { PushRead::Latest(s.clone(), s.ty.clone()) };
+                let cv = self.push_cond(name, read, &v, c, word, b)?;
+                b.line(&format!("if {}", cv.text));
+                b.depth += 1;
+                b.line("break");
+                b.depth -= 1;
+                b.line("continue");
+                b.depth -= 1;
+                continue;
+            }
             // in the condition `_` is the candidate and the stream's
             // name is still its latest item (log 39)
-            self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
-            let outer = self.candidate.replace(v.clone());
-            self.one = true;
-            let cv = self.lower_expr(c, Some(&Ty::Bool), b, None);
-            self.candidate = outer;
-            self.push_read = None;
-            let cv = cv?;
-            if cv.ty != Ty::Bool {
-                return Err(lex::error(&file, c.line, "'while' takes a bool"));
-            }
-            let cv = b.materialize(&cv);
+            let cv = self.push_cond(name, PushRead::Latest(s.clone(), s.ty.clone()), &v, c, word, b)?;
             if v.ty == block_ty {
-                return Err(lex::error(&file, e.line, "a block is pushed once: `while` repeats an item"));
+                return Err(block());
             }
             b.line(&format!("if {}", cv.text));
             b.line("else");
@@ -8394,6 +8434,31 @@ impl Lowerer {
             b.depth -= 1;
         }
         Ok(())
+    }
+
+    /// The condition of a push's `while` or `until`, lowered: `_` the
+    /// value in hand, the stream's own name what `read` says. A
+    /// condition that is a literal the loop could never leave by is
+    /// refused: the push would never end (fm3 log 148)
+    fn push_cond(&mut self, name: &str, read: PushRead, v: &Val, c: &Expr, word: Repeat, b: &mut Body) -> Result<Val, Error> {
+        let said = if word == Repeat::Until { "until" } else { "while" };
+        self.push_read = Some((name.to_string(), read));
+        let outer = self.candidate.replace(v.clone());
+        self.one = true;
+        let cv = self.lower_expr(c, Some(&Ty::Bool), b, None);
+        self.candidate = outer;
+        self.push_read = None;
+        let cv = cv?;
+        if cv.ty != Ty::Bool {
+            return Err(lex::error(&b.file, c.line, format!("'{}' takes a bool", said)));
+        }
+        if cv.literal {
+            let holds = matches!(cv.text.as_str(), "1" | "true");
+            if holds != (word == Repeat::Until) {
+                return Err(lex::error(&b.file, c.line, format!("this push would never end: its `{}` {}", said, if holds { "always holds" } else { "can never hold" })));
+            }
+        }
+        Ok(b.materialize(&cv))
     }
 
     /// one item of a push, pushed once: a range's values straight in, a

@@ -11,6 +11,13 @@ first$ << src$ (3) times
 out$ << first$ << "\n" forever
 some$ << kept$ (2) times
 out$ << some$ << "\n" forever
+int flow$
+int till$
+int key$
+int open$
+till$ << flow$ until (flow$ == 3)
+out$ << till$ << "\n" forever
+open$ << flow$ until (ended key$)
 
 on hello thrice()
     out$ << "hello\n" (3) times
@@ -71,3 +78,40 @@ on first three()
 on first two()
     kept$ << [5 through 9]
     out$ << count kept$
+
+on counted to five()
+    up$ << 1 << (up$ + 1) until (up$ == 5)
+
+on counted under five()
+    up$ << 1 << (up$ + 1) while (_ < 5)
+
+on counted to five by the item()
+    up$ << 1 << (up$ + 1) until (_ == 5)
+
+on once()
+    up$ << 9 until (true)
+
+on (int n) = doubled past (int limit)
+    seen$ << 1
+    seen$ << seen$ * 2 until (seen$ > limit)
+    n = seen$
+
+on maybe to three (int c)
+    up$ << 1 << (up$ + 1) if (c > 0) until (up$ == 3)
+    out$ << "done"
+
+on maybe under three (int c)
+    up$ << 1 << (up$ + 1) if (c > 0) while (_ < 3)
+    out$ << "done"
+
+on beats to three()
+    beat$ << 0 << (beat$ + 1) until (beat$ == 3)
+
+on flowed to three()
+    flow$ << [1 through 5]
+
+on (int n) = flowed to the end of the key()
+    flow$ << 1 << 2
+    end key$
+    flow$ << 3 << 4
+    n = count open$

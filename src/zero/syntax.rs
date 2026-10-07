@@ -333,10 +333,8 @@ const JOINERS: [&str; 4] = ["and", "or", "when", "times"];
 
 /// the words that end a phrase wherever they stand: a statement's own.
 /// `if` is one since fm3 question 79, the word a push takes after its
-/// items, `x$ << item if (c)`
-const ENDS_PHRASE: [&str; 7] = ["then", "else", "while", "if", "forever", "merge", "in"];
-
-const WHILE_OR_IF: &str = "a push takes `while` or `if`, not both: `while` repeats the push, `if` says whether it happens";
+/// items, `x$ << item if (c)`, and `until` since log 148
+const ENDS_PHRASE: [&str; 8] = ["then", "else", "while", "until", "if", "forever", "merge", "in"];
 
 const COUNT_FORM: &str = "a push's count is the bracketed group before `times`, after the item: `x$ << item (n) times`";
 
@@ -532,6 +530,12 @@ impl<'a> Parser<'a> {
                 let only = match (only, items.first().map(|e| &e.kind)) {
                     (Some(c), Some(ExprKind::Seq(s))) => Some(as_item(&c, s)),
                     (c, _) => c,
+                };
+                // ... and so it is in the `until` of a line that
+                // stands, asked after the item has gone out (log 148)
+                let cond = match (cond, word, items.first().map(|e| &e.kind)) {
+                    (Some(c), Repeat::Until, Some(ExprKind::Seq(s))) => Some(as_item(&c, s)),
+                    (c, _, _) => c,
                 };
                 Ok(Decl::Edge { target, items, cond, word, only, forever, line })
             }
@@ -833,8 +837,9 @@ impl<'a> Parser<'a> {
 
     /// The words after a push's items (fm3 question 79): `if (c)`, the
     /// push made where the condition holds, and then one of `(n)
-    /// times`, `while (c)` and `forever`, how often. `if` comes first;
-    /// two of the others on one push are refused, each pair by name
+    /// times`, `while (c)`, `until (c)` and `forever`, how often. `if`
+    /// comes first and goes with any of them; two of the four on one
+    /// push are refused, each pair by name
     fn push_words(&mut self) -> Result<PushWords, Error> {
         // a `times` with no bracket before it, the item's own included
         if self.at_word("times") {
@@ -870,6 +875,10 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 cond = Some(self.parse_expr()?);
             }
+            Some("`until`") => {
+                self.pos += 1;
+                (cond, word) = (Some(self.parse_expr()?), Repeat::Until);
+            }
             Some(_) => {
                 self.pos += 1;
                 forever = true;
@@ -889,14 +898,11 @@ impl<'a> Parser<'a> {
             }
             if self.at_word("if") {
                 return Err(self.err(match a {
-                    "`forever`" => "`forever` is the last word of its line: `x$ << item if (condition) forever`",
-                    "`while`" => WHILE_OR_IF,
-                    _ => "`if` comes first on a push, then how often: `x$ << item if (condition) (n) times`",
+                    "`forever`" => "`forever` is the last word of its line: `x$ << item if (condition) forever`".to_string(),
+                    "`(n) times`" => "`if` comes first on a push, then how often: `x$ << item if (condition) (n) times`".to_string(),
+                    _ => format!("`if` comes first on a push, then how often: `x$ << item if (condition) {} (...)`", a.trim_matches('`')),
                 }));
             }
-        }
-        if only.is_some() && word == Repeat::While && cond.is_some() {
-            return Err(self.err(WHILE_OR_IF));
         }
         Ok(PushWords { only, cond, word, forever })
     }
@@ -906,6 +912,7 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(Tok::Sym("(")) if self.count_ahead(None) => Some("`(n) times`"),
             Some(Tok::Word(w)) if w == "while" => Some("`while`"),
+            Some(Tok::Word(w)) if w == "until" => Some("`until`"),
             Some(Tok::Word(w)) if w == "forever" => Some("`forever`"),
             _ => None,
         }

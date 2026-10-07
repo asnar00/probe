@@ -298,7 +298,7 @@ on (int n) = bumped twice()
 
 `suite/zero/cells/cells/cells.zero:9` and `:18-24`. A `<<` sends once, each time its line runs, and a stream's name where one value is wanted is its latest item. A stream the store reads only so is a **cell**: one field of the context of the item's type, a push a store of it and a read a load, with no ring and nothing that can fill; `bump` lowers to the four lines an assigned variable did. Apply one more word to the stream, `count seen$`, and it is the queue it would have been, the name reading the same.
 
-The words after a push's items say how often it happens (fm3 question 79; `suite/zero/words`): `if (c)` first, only where the condition holds, and then one of `(n) times`, `while (c)` and `forever`.
+The words after a push's items say how often it happens (fm3 question 79; `suite/zero/words`): `if (c)` first, only where the condition holds, and then one of `(n) times`, `while (c)`, `until (c)` and `forever`.
 
 ```
 on up to (int k)
@@ -309,7 +309,17 @@ on called (int k)
     up$ << twice (k) (3) times
 ```
 
-`suite/zero/words/words/words.zero:18-20` and `:32-33`. `(n) times` is n pushes, the count worked out once before the first and each push working its item out again, so `up to (4)` writes `0 1 2 3 4`; in a chain the count covers the last item, as `while` does. A bracketed group that stands directly before the word `times` is the count and never an argument, unless a declared function's name has `times` there, so `twice (k) (3) times` is `twice (k)` three times. At feature scope `first$ << src$ (3) times` is a line that stands for the first three items of `src$`, its count a number of the context kept for the line.
+`suite/zero/words/words/words.zero:25-27` and `:39-40`. `(n) times` is n pushes, the count worked out once before the first and each push working its item out again, so `up to (4)` writes `0 1 2 3 4`; in a chain the count covers the last item, as `while` does. A bracketed group that stands directly before the word `times` is the count and never an argument, unless a declared function's name has `times` there, so `twice (k) (3) times` is `twice (k)` three times. At feature scope `first$ << src$ (3) times` is a line that stands for the first three items of `src$`, its count a number of the context kept for the line.
+
+```
+on counted to five()
+    up$ << 1 << (up$ + 1) until (up$ == 5)
+
+on counted under five()
+    up$ << 1 << (up$ + 1) while (_ < 5)
+```
+
+`suite/zero/words/words/words.zero:82-86`. `until` pushes and then asks, so the item that makes its condition true goes out, `1 2 3 4 5`; `while` asks of the candidate before it pushes, `1 2 3 4`. In an `until`, `_` and the stream's own name are both the item just pushed. `if` goes with any one of the four words of how often and comes first; two of the four on one push are refused by name, and so is a push that can be seen never to end, `until (false)` and `while (true)`. `till$ << flow$ until (flow$ == 3)` at feature scope stands until the condition holds, a bit of the context kept for the line.
 
 ## Status
 
