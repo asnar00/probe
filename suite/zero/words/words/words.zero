@@ -5,18 +5,18 @@ int src$
 int first$
 int kept$
 int some$
-out$ << up$ << "\n" forever
-out$ << beat$ << "\n" forever
+out$ << (up$ << "\n") forever
+out$ << (beat$ << "\n") forever
 first$ << src$ (3) times
-out$ << first$ << "\n" forever
+out$ << (first$ << "\n") forever
 some$ << kept$ (2) times
-out$ << some$ << "\n" forever
+out$ << (some$ << "\n") forever
 int flow$
 int till$
 int key$
 int open$
 till$ << flow$ until (flow$ == 3)
-out$ << till$ << "\n" forever
+out$ << (till$ << "\n") forever
 open$ << flow$ until (ended key$)
 int x$
 int sum$
@@ -30,11 +30,11 @@ from$ << from$ + x$ forever
 evens$ << evens$ + x$ if (x$ % 2 == 0) forever
 twice$ << x$ * 2 forever
 tot$ << tot$ + y$ forever
-out$ << tot$ << "\n" forever
+out$ << (tot$ << "\n") forever
 int w$
 int tally$
 tally$ << tally$ + w$ forever
-out$ << tally$ << " " forever
+out$ << (tally$ << " ") forever
 
 on hello thrice()
     out$ << "hello\n" (3) times

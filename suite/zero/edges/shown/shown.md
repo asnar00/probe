@@ -8,7 +8,7 @@ layer: runtime
 Parity hop 8 (question 51, fm3 log 92): a producer in one feature and its edge in another.
 
 ## overview
-`out$ << n$ << "\n" forever` wires the stream `edges` counts down into, `out$ << beat$ << "\n" forever` the one it beats into, and `out$ << quick$ << "\n" forever` the faster one `turns` pushes into. The producer does not know: it pushes, and the push calls this feature's edges where this feature is on.
+`out$ << (n$ << "\n") forever` wires the stream `edges` counts down into, `out$ << (beat$ << "\n") forever` the one it beats into, and `out$ << (quick$ << "\n") forever` the faster one `turns` pushes into. The producer does not know: it pushes, and the push calls this feature's edges where this feature is on.
 
 ## interface
 - The three edges, and nothing else.

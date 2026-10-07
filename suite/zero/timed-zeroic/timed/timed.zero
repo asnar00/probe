@@ -1,8 +1,8 @@
 int i$ at (1 hz)
 int half$ at (2 hz)
 int d$ = doubled(i$)
-out$ << d$ << "\n" forever
-out$ << half$ << "\n" forever
+out$ << (d$ << "\n") forever
+out$ << (half$ << "\n") forever
 
 on (int d$) << doubled (int x$)
     d$ << x$ * 2

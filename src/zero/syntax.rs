@@ -26,7 +26,7 @@ pub enum Decl {
     /// a bare phrase at feature scope, `write(out$)`: a sink wired to
     /// the streams it reads, with no stream to fill (log 57)
     Wire(Expr),
-    /// `out$ << i$ << "\n" forever` at feature scope: an edge (log 72),
+    /// `out$ << (i$ << "\n") forever` at feature scope: an edge (log 72),
     /// a standing connection the scheduler moves items along, the rest
     /// of the chain pushed after each. `forever` is what makes it stand
     /// (fm3 question 79): the line is kept without it so the lowering
@@ -39,8 +39,11 @@ pub enum Decl {
     /// the expression with that stream's name read as the item
     /// `group` is how many of the line's last items its word applies
     /// to (fm3 question 84, log 155): 1 with nothing bracketed, and
-    /// all of them in `out$ << (i$ << "\n") forever`
-    Edge { target: Expr, items: Vec<Expr>, group: usize, first: Option<Expr>, cond: Option<Expr>, word: Repeat, only: Option<Expr>, forever: bool, line: usize },
+    /// all of them in `out$ << (i$ << "\n") forever`. Where the word
+    /// has several items and no brackets, `shown` is the line as its
+    /// text would be with brackets round them all, for the refusal to
+    /// show (log 156)
+    Edge { target: Expr, items: Vec<Expr>, group: usize, shown: Option<String>, first: Option<Expr>, cond: Option<Expr>, word: Repeat, only: Option<Expr>, forever: bool, line: usize },
 }
 
 /// Which word a push's `cond` goes with (fm3 question 79, log 147):
@@ -585,11 +588,13 @@ impl<'a> Parser<'a> {
             // `out$ << i$`: an edge (log 72)
             Some(Tok::Seq(_)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) => {
                 let line = self.line();
+                let began = self.pos;
                 let target = self.parse_primary()?;
                 let (items, group) = self.parse_pushes()?;
                 if items.is_empty() {
                     return Err(self.err("nothing to push: an edge is `out$ << i$`"));
                 }
+                let shown = if group == 1 && items.len() > 1 { self.bracketed(line, self.pos - began) } else { None };
                 let PushWords { only, cond, word, forever } = self.push_words()?;
                 self.expect_newline()?;
                 // a line that stands whose first item is an expression
@@ -620,7 +625,7 @@ impl<'a> Parser<'a> {
                     (Some(c), Repeat::Until, Some(ExprKind::Seq(s))) => Some(as_item(&c, s)),
                     (c, _, _) => c,
                 };
-                Ok(Decl::Edge { target, items, group, first, cond, word, only, forever, line })
+                Ok(Decl::Edge { target, items, group, shown, first, cond, word, only, forever, line })
             }
             _ => Err(self.err(format!("expected 'on', 'type', a variable declaration or a wiring at the top of the feature, found {}", self.found()))),
         }
@@ -758,6 +763,22 @@ impl<'a> Parser<'a> {
             Some(l) if l.contains(from) => l.trim().replacen(from, to, 1),
             _ => or.to_string(),
         }
+    }
+
+    /// A line at feature scope as its text would be with brackets
+    /// round all its items, `out$ << (i$ << "\n") forever` (fm3
+    /// question 84, log 156): the items are the line's first `k`
+    /// tokens less the target and its `<<`, found in the source's own
+    /// text as the longest start of it that is `k` tokens. None where
+    /// the text is not to hand
+    fn bracketed(&self, line: usize, k: usize) -> Option<String> {
+        let text = line.checked_sub(1).and_then(|i| self.lines.get(i))?.trim_end();
+        let open = text.find("<<")? + 2;
+        let cut = (open..=text.len()).rev().filter(|&c| text.is_char_boundary(c)).find(|&c| {
+            let mut toks = Vec::new();
+            lex::lex_line(&text[..c], line, self.file, &mut toks).is_ok() && toks.len() == k
+        })?;
+        Some(format!("{} ({}) {}", &text[..open], text[open..cut].trim(), text[cut..].trim_start()).trim_end().to_string())
     }
 
     /// is the bracketed group at the cursor the last thing on the line?

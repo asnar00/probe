@@ -984,7 +984,7 @@ mod tests {
         // the wiring line and the standing filter: the edge's function
         // of one item, the filter's push under its condition, the
         // source's own name in the condition the item
-        let ir = with("b$ << a$ forever\nb$ << i$ << 0 if (i$ > 2) forever\n", "").unwrap();
+        let ir = with("b$ << a$ forever\nb$ << (i$ << 0) if (i$ > 2) forever\n", "").unwrap();
         assert!(ir.contains("fn __edge3(__item: int)\n    _this: ptr = context()\n    _1: u1 = cmp.gt __item, 2\n    if _1\n        _2: __ctx = load _this\n        _3: int$ = get _2, b\n        push_queue_open(_3, __item)\n"), "{}", ir);
         let once = "has a stream on its right and no `forever`. If it is wiring, everything that arrives in 'a$' going on into 'b$', write `b$ << a$ forever`. If it is one push when the store starts, of what 'a$' holds then, that is what the line says (fm3 question 79) and it is not built: push it from a function";
         for (lines, body, said) in [
@@ -1194,6 +1194,72 @@ mod tests {
         assert!(ir.contains("    loop()\n        _1: __ctx = load _this\n        _2: int = get _1, seen\n        _3: int = add _2, 1\n        _4: int = mul _3, 2\n        _5: u1 = cmp.lt _4, k\n        if _5\n        else\n            break\n        _6: __ctx = load _this\n        _7: __ctx = set _6, seen, _3\n        store _7, _this\n        _8: __ctx = load _this\n        _9: __ctx = set _8, seen, _4\n        store _9, _this\n        continue\n"), "{}", ir);
     }
 
+    /// `forever` applies to the last item of its chain, as the other
+    /// words do (fm3 question 84's second half, log 156): a wiring
+    /// line of more than one item is written with brackets and is the
+    /// edge it was; without them it is refused, showing itself with
+    /// them; a count and an `until` over a bracketed chain stand
+    #[test]
+    fn forever_applies_to_the_last_item() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-last-item");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (3) → 1\n").unwrap();
+        let head = "int a$\nint b$\nint c$\nb$ << a$ forever\n";
+        let rest = "\non (int n) << f (int k)\n    a$ << k\n    c$ << k\n    n << count b$\n";
+        let with = |lines: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}{}", head, lines, rest)).unwrap();
+            emit(&dir)
+        };
+        let edge = |ir: &str| -> String {
+            let at = ir.find("\nfn __edge2(").unwrap_or_else(|| panic!("no second edge: {}", ir));
+            let end = ir[at + 1..].find("\nfn ").map_or(ir.len(), |n| at + 1 + n);
+            ir[at + 1..end].to_string()
+        };
+        // the bracketed chain is the edge: the item and what follows it
+        let wired = edge(&with("out$ << (c$ << \"\\n\") forever\n").unwrap());
+        assert!(wired.starts_with("fn __edge2(__item: int)\n    __out__int(__item)\n    _1: u8 = const 10\n    __out_ch(_1)\n    ret\n"), "{}", wired);
+        // with `if`, the standing filter, the `if` of the whole push
+        let filtered = edge(&with("out$ << (c$ << \"\\n\") if (c$ > 2) forever\n").unwrap());
+        assert!(filtered.contains("    _1: u1 = cmp.gt __item, 2\n    if _1\n        __out__int(__item)\n        _2: u8 = const 10\n        __out_ch(_2)\n    ret"), "{}", filtered);
+        // a count and an `until` over the bracketed chain: the whole
+        // chain under the kept count, and under the kept bit
+        let counted = with("out$ << (c$ << \"\\n\") (3) times\n").unwrap();
+        assert!(counted.contains("    __times2: int\n") && edge(&counted).contains("    _2: int = get _1, __times2\n    _3: u1 = cmp.lt _2, 3\n    if _3\n        __out__int(__item)\n        _4: u8 = const 10\n        __out_ch(_4)\n"), "{}", edge(&counted));
+        let until = with("out$ << (c$ << \"\\n\") until (c$ == 3)\n").unwrap();
+        assert!(edge(&until).contains("    _2: u1 = get _1, __until2\n    _3: u1 = cmp.eq _2, 0\n    if _3\n        __out__int(__item)\n        _4: u8 = const 10\n        __out_ch(_4)\n        _5: u1 = cmp.eq __item, 3\n"), "{}", edge(&until));
+        // a line of one item is as it was, bracketed or not
+        assert_eq!(with("out$ << c$ forever\n").unwrap(), with("out$ << (c$) forever\n").unwrap());
+        let then = "Until 7 October 2026 the word covered the whole push, every item of 'c$' and what follows it; to say that, put the items in brackets";
+        let once = "is pushed once, when the line begins to stand, which is when the store starts, and a push then is not built (fm3 question 80)";
+        for (lines, said) in [
+            // the line every wiring line was until the ruling
+            ("out$ << c$ << \"\\n\" forever\n", format!("h.zero:5: 'out$ << c$ << \"\\n\" forever': `forever` applies to the last item of its chain (fm3 question 84), so this is `c$` once and then `\"\\n\"` for ever, and nothing paces that: it would never end. {}: `out$ << (c$ << \"\\n\") forever`", then)),
+            // its `if` and its spacing shown as written
+            ("out$ << c$ << \" \" << \"\\n\"  if (c$ > 2) forever\n", format!("h.zero:5: 'out$ << c$ << \" \" << \"\\n\" if (...) forever': `forever` applies to the last item of its chain (fm3 question 84), so this is `c$ << \" \"` once and then `\"\\n\"` for ever, and nothing paces that: it would never end. {}: `out$ << (c$ << \" \" << \"\\n\") if (c$ > 2) forever`", then)),
+            // a last item that is the line's own target paces nothing
+            ("b$ << c$ << b$ forever\n", format!("h.zero:5: 'b$ << c$ << b$ forever': `forever` applies to the last item of its chain (fm3 question 84), so this is `c$` once and then `b$` for ever, and nothing paces that: it would never end. {}: `b$ << (c$ << b$) forever`", then)),
+            // a group that is not the whole line
+            ("out$ << c$ << (\" \" << \"\\n\") forever\n", format!("h.zero:5: 'out$ << c$ << (\" \" << \"\\n\") forever': `forever` applies to the last item of its chain (fm3 question 84), so this is `c$` once and then `\" \" << \"\\n\"` for ever, and nothing paces that: it would never end. {}: `out$ << (c$ << \" \" << \"\\n\") forever`", then)),
+            // the last item stands and something is written before it
+            ("out$ << \"values: \" << c$ forever\n", format!("h.zero:5: 'out$ << \"values: \" << c$ forever': `forever` applies to the last item of its chain (fm3 question 84), `c$`; what is written before it, `\"values: \"`, {}", once)),
+            ("b$ << 0 << c$ (3) times\n", format!("h.zero:5: 'b$ << 0 << c$ (3) times': `(3) times` applies to the last item of its chain (fm3 question 84), `c$`; what is written before it, `0`, {}", once)),
+            // a group whose first item names no stream
+            ("out$ << (\"values: \" << c$) forever\n", "h.zero:5: a line that stands is paced by the stream its first item names, and the first of 'out$ << (\"values: \" << c$)' names none; 'c$' comes after it. Not built".to_string()),
+            ("out$ << c$ forever\nb$ << (1 << 2) forever\n", "h.zero:6: nothing on the right of 'b$ << 1 << 2' is a stream: `forever` makes a push happen again whenever what is on its right has something new, and a value never has".to_string()),
+            // a count and an `until` without the brackets
+            ("out$ << c$ << \"\\n\" (3) times\n", "h.zero:5: 'out$ << c$ << \"\\n\" (3) times': `(3) times` applies to the last item of its chain (fm3 question 84), so this is `c$` once and then `\"\\n\"` 3 times, when the store starts, and a push then is not built (fm3 question 80). For the first 3 items of 'c$', each with what follows it, put the items in brackets: `out$ << (c$ << \"\\n\") (3) times`".to_string()),
+            ("out$ << c$ << \"\\n\" until (c$ == 3)\n", "h.zero:5: 'out$ << c$ << \"\\n\" until (...)': `until` applies to the last item of its chain (fm3 question 84), so this is `c$` once and then `\"\\n\"` until the condition holds, when the store starts, and a push then is not built (fm3 question 80). For a line that stands until then, each item of 'c$' with what follows it, put the items in brackets: `out$ << (c$ << \"\\n\") until (c$ == 3)`".to_string()),
+            // no word at all: the advice has the brackets
+            ("out$ << c$ << \"\\n\"\n", "h.zero:5: 'out$ << c$ << \"\\n\"' has a stream on its right and no `forever`. If it is wiring, everything that arrives in 'c$' going on into 'out$', write `out$ << (c$ << \"\\n\") forever`. If it is one push when the store starts, of what 'c$' holds then, that is what the line says (fm3 question 79) and it is not built: push it from a function".to_string()),
+            // `if` with a count or an `until`, still not built
+            ("out$ << (c$ << \"\\n\") if (c$ > 2) (3) times\n", "h.zero:5: `if` with a count on a line that stands is not built: 'out$ << (c$ << \"\\n\") if (...) (3) times' could be the first 3 that pass, or those of the first 3 that pass".to_string()),
+        ] {
+            let err = with(lines).expect_err(lines);
+            assert!(err.ends_with(&said), "{}: {}", lines, err);
+        }
+    }
+
     /// The running sum (fm3 question 80's second half, log 149): on
     /// the right of its own standing push a stream's own name is a
     /// read of its latest item and sets nothing off; the one other
@@ -1216,18 +1282,18 @@ mod tests {
         assert!(ir.contains("fn __edge1(__item: int)\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int = get _1, sum\n    _3: int = add _2, __item\n    _4: __ctx = load _this\n    _5: __ctx = set _4, sum, _3\n    store _5, _this\n    ret\n"), "{}", ir);
         // wired on, and nothing else pushes into it or names it: the
         // stream has no storage and the line keeps its last item
-        let ir = with("sum$ << sum$ + x$ forever\nout$ << sum$ << \"\\n\" forever\n", "n << k").unwrap();
+        let ir = with("sum$ << sum$ + x$ forever\nout$ << (sum$ << \"\\n\") forever\n", "n << k").unwrap();
         assert!(ir.contains("    __last1: int\n") && !ir.contains("    sum: int"), "{}", ir);
         assert!(ir.contains("fn __edge1(__item: int)\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int = get _1, __last1\n    __next: int = add _2, __item\n    _3: __ctx = load _this\n    _4: __ctx = set _3, __last1, __next\n    store _4, _this\n"), "{}", ir);
         // wired on and read by its name as well: a queue, the read
         // guarded for the time before anything is pushed, and the queue
         // not given back under it
-        let ir = with("sum$ << sum$ + x$ forever\nout$ << sum$ << \"\\n\" forever\n", "n << sum$").unwrap();
+        let ir = with("sum$ << sum$ + x$ forever\nout$ << (sum$ << \"\\n\") forever\n", "n << sum$").unwrap();
         assert!(ir.contains("    _3: index = received(_2)\n    _4: u1 = cmp.gt _3, 0\n    _5: int = if _4\n        _6: int = latest_queue(_2)\n        yield _6\n    else\n        yield 0\n    _7: int = add _5, __item\n"), "{}", ir);
         assert!(!ir.contains("free_queue("), "{}", ir);
         // its own name later in the chain, another stream pacing: each
         // item, and then the latest, which is that item
-        with("sum$ << x$ << sum$ forever\n", "n << count sum$").unwrap();
+        with("sum$ << (x$ << sum$) forever\n", "n << count sum$").unwrap();
         // a sum of some; a standing map; and a sum under a count
         let ir = with("sum$ << sum$ + x$ if (x$ % 2 == 0) forever\n", "n << sum$").unwrap();
         assert!(ir.contains("    _1: int = rem __item, 2\n    _2: u1 = cmp.eq _1, 0\n    if _2\n        _3: __ctx = load _this\n        _4: int = get _3, sum\n        _5: int = add _4, __item\n"), "{}", ir);
@@ -1308,10 +1374,11 @@ mod tests {
             // a block is not asked a condition
             ("", "b$ << [1 through 3] until (_ > 3)", "h.zero:12: a block is pushed once: `until` repeats an item".to_string()),
             // on a line that stands: with `if`, and with more than one
-            // item, for `until` and for a count
+            // item and no brackets, for `until` and for a count (fm3
+            // question 84, log 156)
             ("c$ << a$ if (a$ > 0) until (a$ == 3)\n", "c$ << 1", "h.zero:6: `if` with `until` on a line that stands is not built: 'c$ << a$ if (...) until (...)' could ask its `until` of every item, or only of those that pass".to_string()),
-            ("c$ << a$ << 0 until (a$ == 3)\n", "c$ << 1", "h.zero:6: 'c$ << a$ << 0 until (...)' on a line that stands could end the whole line, or repeat its last item: not built. Put a stream between: `first$ << a$ until (...)` and `c$ << first$ << ... forever`".to_string()),
-            ("c$ << a$ << 0 (3) times\n", "c$ << 1", "h.zero:6: 'c$ << a$ << 0 (3) times' on a line that stands could be the first 3 items of 'a$', each with what follows it, or every item and what follows it 3 times: not built. For the first, put a stream between: `first$ << a$ (3) times` and `c$ << first$ << ... forever`".to_string()),
+            ("c$ << a$ << 0 until (a$ == 3)\n", "c$ << 1", "h.zero:6: 'c$ << a$ << 0 until (...)': `until` applies to the last item of its chain (fm3 question 84), so this is `a$` once and then `0` until the condition holds, when the store starts, and a push then is not built (fm3 question 80). For a line that stands until then, each item of 'a$' with what follows it, put the items in brackets: `c$ << (a$ << 0) until (a$ == 3)`".to_string()),
+            ("c$ << a$ << 0 (3) times\n", "c$ << 1", "h.zero:6: 'c$ << a$ << 0 (3) times': `(3) times` applies to the last item of its chain (fm3 question 84), so this is `a$` once and then `0` 3 times, when the store starts, and a push then is not built (fm3 question 80). For the first 3 items of 'a$', each with what follows it, put the items in brackets: `c$ << (a$ << 0) (3) times`".to_string()),
             ("c$ << a$ until (a$ == 3) forever\n", "c$ << 1", "h.zero:6: a push takes `until` or `forever`, not both".to_string()),
         ] {
             let err = with(lines, body).expect_err(body);
@@ -1851,7 +1918,7 @@ mod tests {
             Ok(lower::lower(&s).map_err(|e| e.to_string())?.ir)
         };
         feature("base", "", 0, "int n$\nint beat$ at (2 hz)\n\non count()\n    n$ << [3 through 1]\n    beat$ << 1\n");
-        feature("shown", "base", 1, "out$ << n$ << \"\\n\" forever\nout$ << beat$ << \"\\n\" forever\n");
+        feature("shown", "base", 1, "out$ << (n$ << \"\\n\") forever\nout$ << (beat$ << \"\\n\") forever\n");
         // wired by a feature that is in the program: an edge each
         let ir = lowered("# p\n").unwrap();
         assert!(ir.contains("fn __edge1(__item: int)") && ir.contains("fn __edge2(__item: int)"), "{}", ir);
@@ -1864,7 +1931,7 @@ mod tests {
         // (question 56, fm3 log 99)
         assert!(ir.contains("    _7: i64 = add _6, 500000\n    __wait(_7)\n    ret\n") && !ir.contains(" = rem "), "{}", ir);
         // wired by no feature at all: refused, naming the stream
-        std::fs::write(dir.join("shown/shown.zero"), "out$ << beat$ << \"\\n\" forever\n").unwrap();
+        std::fs::write(dir.join("shown/shown.zero"), "out$ << (beat$ << \"\\n\") forever\n").unwrap();
         for product in ["# p\n", "# p\n\nshown: static off\n"] {
             let err = lowered(product).expect_err("a stream nothing reads or wires");
             assert!(err.contains("base.zero:1: 'n$' is pushed into and nothing reads it or wires it, in any feature of the store, compiled in or left out: a mistyped name?"), "{}", err);
@@ -1877,7 +1944,7 @@ mod tests {
         // (question 57, fm3 log 100): no storage, a `char` stream
         // included, and no refusal under either product
         feature("base", "", 0, "int spare$\nchar note$\nint n$\n\non count()\n    n$ << 1\n");
-        feature("shown", "base", 1, "out$ << n$ << \"\\n\" forever\n");
+        feature("shown", "base", 1, "out$ << (n$ << \"\\n\") forever\n");
         for product in ["# p\n", "# p\n\nshown: static off\n"] {
             let ir = lowered(product).unwrap();
             assert!(ir.contains(";   spare: no storage, nothing in the program reading it or wiring it (base)\n") && ir.contains(";   note: no storage, nothing in the program reading it or wiring it (base)\n"), "{}", ir);
@@ -1905,7 +1972,7 @@ mod tests {
         let body = |ir: &str, f: &str| -> String { ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
         // `f` is called by `g` after a push into a stream at `7 hz`, so
         // nothing is known of the clock where `f` begins (fm3 log 99)
-        let head = "int a$ at (3 hz)\nint b$ at (5 hz)\nint c$ at (7 hz)\nout$ << a$ << \"\\n\" forever\nout$ << b$ << \"\\n\" forever\nout$ << c$ << \"\\n\" forever\n\non g()\n    c$ << 0\n    f()\n\n";
+        let head = "int a$ at (3 hz)\nint b$ at (5 hz)\nint c$ at (7 hz)\nout$ << (a$ << \"\\n\") forever\nout$ << (b$ << \"\\n\") forever\nout$ << (c$ << \"\\n\") forever\n\non g()\n    c$ << 0\n    f()\n\n";
         // one statement of three items: one alignment, three steps, the
         // slot a whole number of the period a step adds
         let ir = lowered(&format!("{}on f()\n    a$ << 1 << 2 << 3\n", head));
@@ -1924,7 +1991,7 @@ mod tests {
         let f = body(&lowered(&format!("{}on f()\n    a$ << 1\n    out$ << \"x\"\n    a$ << 2\n", head)), "f");
         assert_eq!(f.matches(" = rem ").count(), 1, "{}", f);
         // a stream with no rate has no beat
-        let f = body(&lowered("int c$\nout$ << c$ << \"\\n\" forever\n\non f()\n    c$ << 1\n"), "f");
+        let f = body(&lowered("int c$\nout$ << (c$ << \"\\n\") forever\n\non f()\n    c$ << 1\n"), "f");
         assert!(!f.contains(" = rem ") && !f.contains("__wait"), "{}", f);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1948,7 +2015,7 @@ mod tests {
         };
         let body = |ir: &str, f: &str| -> String { ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
         let rems = |ir: &str, f: &str| body(ir, f).matches(" = rem ").count();
-        let head = "int a$ at (2 hz)\nint b$ at (1 hz)\nint c$ at (5 hz)\nout$ << a$ << \"\\n\" forever\nout$ << b$ << \"\\n\" forever\nout$ << c$ << \"\\n\" forever\n\n";
+        let head = "int a$ at (2 hz)\nint b$ at (1 hz)\nint c$ at (5 hz)\nout$ << (a$ << \"\\n\") forever\nout$ << (b$ << \"\\n\") forever\nout$ << (c$ << \"\\n\") forever\n\n";
         // called only where a case starts, at 0 s: nothing is aligned,
         // and a push at `1 hz` leaves a multiple of the `2 hz` period
         let ir = lowered(&format!("{}on f()\n    b$ << 1\n    out$ << \"x\"\n    a$ << 2\n", head));
@@ -1989,7 +2056,7 @@ mod tests {
         let f = body(&ir, "f");
         assert!(f.matches(" = rem ").count() == 2 && f.find("loop(").unwrap() < f.find(" = rem ").unwrap(), "{}", f);
         // an edge that can move the clock: the statement leaves nothing known
-        let ir = lowered("int a$ at (2 hz)\nint b$ at (5 hz)\nb$ << a$ forever\nout$ << b$ << \"\\n\" forever\n\non f()\n    a$ << 1\n    a$ << 2\n    out$ << \"x\"\n    a$ << 3\n");
+        let ir = lowered("int a$ at (2 hz)\nint b$ at (5 hz)\nb$ << a$ forever\nout$ << (b$ << \"\\n\") forever\n\non f()\n    a$ << 1\n    a$ << 2\n    out$ << \"x\"\n    a$ << 3\n");
         assert_eq!(rems(&ir, "f"), 1, "{}", ir);
         // a function that can reach itself leaves nothing known
         let ir = lowered(&format!("{}on f (int k)\n    a$ << k\n    if (k > 0)\n        f (k - 1)\n\non g()\n    f (2)\n    a$ << 9\n", head));
@@ -2010,7 +2077,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-10T10:00:00\n\n## testing\n>run() → \"1\\n2\"\n").unwrap();
-        std::fs::write(dir.join("h/h.zero"), "int i$ at (2 hz)\nout$ << i$ << \"\\n\" forever\n\non run()\n    i$ << [1 through 2]\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "int i$ at (2 hz)\nout$ << (i$ << \"\\n\") forever\n\non run()\n    i$ << [1 through 2]\n").unwrap();
         let with = |product: &str| -> Result<String, String> {
             std::fs::write(dir.join("product.md"), product).unwrap();
             let s = store::read(&dir).map_err(|e| e.to_string())?;

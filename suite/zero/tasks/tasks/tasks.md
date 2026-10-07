@@ -18,7 +18,7 @@ A task is a function that produces a stream over time: it is declared with `<<` 
 - `rated`, `sampled at a rate`, `composed at a rate` wire a task at `1 hz` and read the clock through `time of x$` and `x$ at (t)`; `position x$` beside them is the index alone and asks no time.
 - `fed a literal` passes a stream made from a list to a task; `run now moves the reader`, `run now inside a loop` pass a local stream to a task, which moves it.
 - `runs (x$)` pushes how many items it found unread each time it is run, and takes them; `r$` is wired to `v$`, so `r$` holds one item a run of the node. `a batch`, `nothing pushed (k)` and `ended twice` read it.
-- `right$ << left$ << 0 forever` is an edge (section 9, log 72; `forever` makes it stand, fm3 question 79): `left$` wired into `right$`, each item moved as it arrives and a `0` pushed after each; `edged` pushes into `left$` and reads `right$`.
+- `right$ << (left$ << 0) forever` is an edge (section 9, log 72; `forever` makes it stand, fm3 question 79): `left$` wired into `right$`, each item moved as it arrives and a `0` pushed after each; `edged` pushes into `left$` and reads `right$`.
 
 ## rules
 - `product.md` beside this folder bounds `count down from` and `count up to` at 5 for `probe cost`, the largest their wirings ask: the emitted IR carries `; product setting: bound count down from: 5` and `loop() bound 5` on each chain, and the code says no number (log 41).

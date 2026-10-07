@@ -1,2 +1,2 @@
-out$ << n$ << "\n" forever
-out$ << beat$ << "\n" forever
+out$ << (n$ << "\n") forever
+out$ << (beat$ << "\n") forever

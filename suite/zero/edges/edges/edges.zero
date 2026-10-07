@@ -7,10 +7,10 @@ int heard$
 int raw$
 int level$
 int sum$ << 0
-out$ << pair$ << " " forever
-out$ << pair$ << "\n" forever
+out$ << (pair$ << " ") forever
+out$ << (pair$ << "\n") forever
 heard$ << part$ forever
-out$ << level$ << "\n" if (level$ > 2) forever
+out$ << (level$ << "\n") if (level$ > 2) forever
 tally(heard$)
 
 on count down from (int k)

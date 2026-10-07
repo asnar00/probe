@@ -4,7 +4,7 @@
 layer: runtime
 
 > (suite) 2026-10-07T18:00:00
-fm3 question 84, log 155. Ash, 7 October 2026: "I'd say that the loop constructs should apply to the last expression in the chain by default - we can always use brackets to indicate otherwise."
+fm3 question 84, log 155 and 156. Ash, 7 October 2026: "I'd say that the loop constructs should apply to the last expression in the chain by default - we can always use brackets to indicate otherwise." And asked whether `forever` follows the same rule: "Yes."
 
 ## overview
 A push may have several items, `x$ << a << b`, and a word after them says how often: `(n) times`, `while (c)`, `until (c)`, `forever`. The word applies to the last item of the chain. `out$ << "hello" << "\n" (3) times` is hello and then three newlines.
@@ -12,6 +12,8 @@ A push may have several items, `x$ << a << b`, and a word after them says how of
 Brackets round several items joined by `<<` make them the one item the word applies to: `out$ << ("hello" << "\n") (3) times` is three lines of hello. The bracketed items are pushed in order each time the word has them pushed, each reading the one before it by the stream's name as in any chain, so `up$ << 0 << (up$ + 1 << up$ * 10) (2) times` is `0`, then `1 10`, then `11 110`.
 
 Brackets round one item are ordinary grouping and change nothing: `up$ << (7) (3) times` is `up$ << 7 (3) times`.
+
+`forever` follows the same rule, so a wiring line of more than one item says it with brackets: `out$ << (up$ << "\n") forever` is every item of `up$`, each with a newline after it. Without them it would be `up$` once and then a newline for ever, which nothing paces, and is refused. A count and an `until` on a line that stands are the same: `out$ << (greet$ << "\n") (3) times` is the first three, a line each.
 
 ## interface
 - `three lines` is `out$ << ("hello" << "\n") (3) times`; `one line` the same without the brackets, and then a full stop to show where the newlines went.
@@ -24,6 +26,8 @@ Brackets round one item are ordinary grouping and change nothing: `up$ << (7) (3
 - `a call (k)` has a call in a group, `up$ << (k << twice (k)) (2) times`: the call's bracket is its argument.
 - `d$` is declared with a group, `int d$ << 0 << (d$ + 1 << d$ + 1) (2) times`: five first items, which `declared` counts.
 - `greetings` pushes a group three times into `said$`, a stream at `1 hz` wired to the output a line an item: six lines, a second apart.
+- `out$ << (greet$ << "\n") (3) times` at feature scope stands for the first three items of `greet$`, each with its newline; `five greetings` pushes five into `greet$`, a stream at `1 hz`, and the output is three lines of hello, a second apart.
+- `out$ << (flow$ << "\n") until (flow$ == 3)` stands until an item of `flow$` is 3, which goes out with its newline; `flowed` pushes five.
 
 ## rules
 - A bracket where an item begins is a group of items where a `<<` stands inside it at its own depth. `<<` is no operator of an expression, so a bracketed value never has one there: `(a)`, `(up$ + 1)` and `(twice (k))` are values.
@@ -32,6 +36,7 @@ Brackets round one item are ordinary grouping and change nothing: `up$ << (7) (3
 - `until (c)` over a group: the group pushed, then the condition asked. `_` is the group's last item, and the stream's own name its latest item, which is that item.
 - `while (c)` over a group: the items worked out in order and held, the condition asked with `_` the last of them, and all of them pushed where it holds, none where it fails. The stream's own name in the condition is its latest item, nothing of the group having gone out.
 - `if (c)` comes first, as on any push, and is of the whole push.
+- On a line that stands the word covers what it covers in a function: the last item, or the bracketed group. Where it covers the whole line the line is wiring, each item of the stream its first item names moved with what follows it. Where items stand before what the word covers they would be pushed once, when the store starts, which is not built: the line is refused, and where it was written before the rule the message shows it with its brackets.
 
 ## testing
 >three lines() → "hello\nhello\nhello"
@@ -50,6 +55,8 @@ Brackets round one item are ordinary grouping and change nothing: `up$ << (7) (3
 >a call (5) → "5\n10\n5\n10"
 >declared() → 5
 >greetings() → "hello\nworld\nhello\nworld\nhello\nworld" at 1 hz
+>five greetings() → "hello\nhello\nhello" at 1 hz
+>flowed() → "1\n2\n3"
 
 ## hostile
-`up$ << (1 << 2) << 3 (3) times` is refused: "brackets round several items of a push make them the one item its word applies to, and they stand last in the chain (fm3 question 84): `x$ << a << (b << c) (3) times`. Before the last item a group would be its items in order and nothing more: write them without the brackets". `up$ << (1 << (2 << 3)) (3) times` is refused: "a group of items inside a group: one pair of brackets says it, `x$ << (a << b << c) (3) times`". `up$ << (1 << 2) + 1` is refused: "brackets round several items of a push make them one item for the word that follows, `x$ << (a << b) (3) times`: a group is not a value, and what may follow it is `if`, `(n) times`, `while`, `until` or `forever`".
+`up$ << (1 << 2) << 3 (3) times` is refused: "brackets round several items of a push make them the one item its word applies to, and they stand last in the chain (fm3 question 84): `x$ << a << (b << c) (3) times`. Before the last item a group would be its items in order and nothing more: write them without the brackets". `up$ << (1 << (2 << 3)) (3) times` is refused: "a group of items inside a group: one pair of brackets says it, `x$ << (a << b << c) (3) times`". `up$ << (1 << 2) + 1` is refused: "brackets round several items of a push make them one item for the word that follows, `x$ << (a << b) (3) times`: a group is not a value, and what may follow it is `if`, `(n) times`, `while`, `until` or `forever`". `out$ << up$ << "\n" forever` at feature scope is refused: "'out$ << up$ << "\n" forever': `forever` applies to the last item of its chain (fm3 question 84), so this is `up$` once and then `"\n"` for ever, and nothing paces that: it would never end. Until 7 October 2026 the word covered the whole push, every item of 'up$' and what follows it; to say that, put the items in brackets: `out$ << (up$ << "\n") forever`". `out$ << greet$ << "\n" (3) times` is refused: "'out$ << greet$ << "\n" (3) times': `(3) times` applies to the last item of its chain (fm3 question 84), so this is `greet$` once and then `"\n"` 3 times, when the store starts, and a push then is not built (fm3 question 80). For the first 3 items of 'greet$', each with what follows it, put the items in brackets: `out$ << (greet$ << "\n") (3) times`". `out$ << "values: " << up$ forever` is refused: "'out$ << "values: " << up$ forever': `forever` applies to the last item of its chain (fm3 question 84), `up$`; what is written before it, `"values: "`, is pushed once, when the line begins to stand, which is when the store starts, and a push then is not built (fm3 question 80)".

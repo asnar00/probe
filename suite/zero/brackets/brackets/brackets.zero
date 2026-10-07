@@ -5,6 +5,10 @@ word said$ at (1 hz)
 int d$ << 0 << (d$ + 1 << d$ + 1) (2) times
 out$ << (up$ << "\n") forever
 out$ << (said$ << "\n") forever
+word greet$ at (1 hz)
+int flow$
+out$ << (greet$ << "\n") (3) times
+out$ << (flow$ << "\n") until (flow$ == 3)
 
 on (int n) << twice (int k)
     n << k * 2
@@ -58,3 +62,9 @@ on (int n) << declared()
 
 on greetings()
     said$ << (hello << world) (3) times
+
+on five greetings()
+    greet$ << hello (5) times
+
+on flowed()
+    flow$ << [1 through 5]

@@ -8,7 +8,7 @@ layer: runtime
 Parity hop 9 (question 54, fm3 log 96): the feature that holds the edges, marked `static off`.
 
 ## overview
-`out$ << n$ << "\n" forever` wires the stream `unwired` counts down into, and `out$ << beat$ << "\n" forever` the one it beats into. `product.md` marks this feature `static off`, so neither edge is in the program and the cases below do not run; they are what the store would do with the feature in, and `suite/zero/edges` is where they are run.
+`out$ << (n$ << "\n") forever` wires the stream `unwired` counts down into, and `out$ << (beat$ << "\n") forever` the one it beats into. `product.md` marks this feature `static off`, so neither edge is in the program and the cases below do not run; they are what the store would do with the feature in, and `suite/zero/edges` is where they are run.
 
 ## interface
 - The two edges, and nothing else.

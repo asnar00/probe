@@ -7,7 +7,7 @@ layer: runtime
 Parity hop sixteen, transformation 64 (fm3 log 130): `suite/zero/timed` with its task written the zeroic way, in one line, and every other line and every case as it is there.
 
 ## overview
-`int i$ at (1 hz)` is a stream at one hertz. `int d$ = doubled(i$)` wires a stream processor to it, and `out$ << d$ << "\n" forever` wires what it makes into the output. `doubled` is one line, `d$ << x$ * 2`: twice each item, for every item that arrives. `count down` pushes `[10 through 1]` into `i$`; each number is pushed and then its second passes, so `20` is written at 0 s, `18` at 1 s, and on to `2` at 9 s. The rate survives the processor, as in `suite/zero/timed` it survives the task.
+`int i$ at (1 hz)` is a stream at one hertz. `int d$ = doubled(i$)` wires a stream processor to it, and `out$ << (d$ << "\n") forever` wires what it makes into the output. `doubled` is one line, `d$ << x$ * 2`: twice each item, for every item that arrives. `count down` pushes `[10 through 1]` into `i$`; each number is pushed and then its second passes, so `20` is written at 0 s, `18` at 1 s, and on to `2` at 9 s. The rate survives the processor, as in `suite/zero/timed` it survives the task.
 
 ## interface
 - `doubled (x$)` pushes twice each item of its input.

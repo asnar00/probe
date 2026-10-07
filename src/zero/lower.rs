@@ -2258,7 +2258,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
             match d {
                 Decl::Var(v) => l.collect_nodes(v, &f.name, &f.code.file)?,
                 Decl::Wire(e) => l.collect_wire(e, &f.name, &f.code.file)?,
-                Decl::Edge { target, items, first, cond, word, only, forever, line, .. } => l.collect_edge(target, items, first.as_ref(), cond.as_ref(), *word, only.as_ref(), *forever, *line, &f.name, &f.code.file)?,
+                Decl::Edge { target, items, group, shown, first, cond, word, only, forever, line } => l.collect_edge(target, items, (*group, shown.as_deref()), first.as_ref(), cond.as_ref(), *word, only.as_ref(), *forever, *line, &f.name, &f.code.file)?,
                 _ => {}
             }
         }
@@ -4793,15 +4793,15 @@ impl Lowerer {
         Ok(true)
     }
 
-    /// An edge (log 72, zero.md section 9): `out$ << i$ << "\n"` at
-    /// feature scope wires `i$` into `out$`. It is a sink the front end
+    /// An edge (log 72, zero.md section 9): `out$ << (i$ << "\n")
+    /// forever` at feature scope wires `i$` into `out$`. It is a sink the front end
     /// writes for itself — a loop of `count`, `peek`, the pushes and
     /// `advance`, the lexer's shape — wired as `write(out$)` is (log
     /// 57), so the scheduler moves each item as it arrives, by the
     /// dispatch a push in a function uses, and pushes the rest of the
     /// chain after each item (question 38)
     #[allow(clippy::too_many_arguments)]
-    fn collect_edge(&mut self, target: &Expr, items: &[Expr], first: Option<&Expr>, cond: Option<&Expr>, word: Repeat, only: Option<&Expr>, forever: bool, line: usize, feature: &str, file: &str) -> Result<(), Error> {
+    fn collect_edge(&mut self, target: &Expr, items: &[Expr], (group, shown): (usize, Option<&str>), first: Option<&Expr>, cond: Option<&Expr>, word: Repeat, only: Option<&Expr>, forever: bool, line: usize, feature: &str, file: &str) -> Result<(), Error> {
         let ExprKind::Seq(tname) = &target.kind else {
             return Err(lex::error(file, line, "`<<` pushes into a stream, named `x$`"));
         };
@@ -4814,7 +4814,56 @@ impl Lowerer {
         if self.input_device(tname, None) {
             return Err(lex::error(file, line, INPUT_REFUSED));
         }
-        let said = format!("{}$ << {}", tname, first.into_iter().chain(items.iter().skip(first.is_some() as usize)).map(phrase_text).collect::<Vec<_>>().join(" << "));
+        let texts: Vec<String> = first.into_iter().chain(items.iter().skip(first.is_some() as usize)).map(phrase_text).collect();
+        let said = format!("{}$ << {}", tname, texts.join(" << "));
+        // A word on a push applies to the last item of its chain, and
+        // to a bracketed group where the last item is one (fm3
+        // question 84, log 156). `covers` is how many of the line's
+        // items the word applies to; `wired` the line as it is written
+        // for the word to cover them all
+        let covers = group.clamp(1, items.len());
+        let wired = match items.len() {
+            1 => said.clone(),
+            _ => format!("{}$ << ({})", tname, texts.join(" << ")),
+        };
+        if covers < items.len() && (forever || matches!(word, Repeat::Times | Repeat::Until) && cond.is_some()) {
+            let (before, covered) = texts.split_at(items.len() - covers);
+            let (before, covered) = (before.join(" << "), covered.join(" << "));
+            let names = |es: &[Expr]| {
+                let mut named = Vec::new();
+                es.iter().for_each(|e| super::syntax::seqs_in(e, &mut named));
+                named.retain(|n| n != tname);
+                named
+            };
+            let (led, stands) = (names(&items[..items.len() - covers]), names(&items[items.len() - covers..]));
+            let iffed = if only.is_some() { " if (...)" } else { "" };
+            let (often, worded) = match (cond, word) {
+                (Some(c), Repeat::Times) => (format!("({}) times", phrase_text(c)), format!("`({}) times`", phrase_text(c))),
+                (Some(_), Repeat::Until) => ("until (...)".to_string(), "`until`".to_string()),
+                _ => ("forever".to_string(), "`forever`".to_string()),
+            };
+            let written = match covers {
+                1 => format!("{}{} {}", said, iffed, often),
+                _ => format!("{}$ << {} << ({}){} {}", tname, before, covered, iffed, often),
+            };
+            let shown = shown.map(|s| s.to_string()).unwrap_or_else(|| format!("{}{} {}", wired, iffed, often));
+            // the last item stands and the items before it would be
+            // pushed once, when the line begins to stand: the push at
+            // the start that question 80 leaves refused
+            if !stands.is_empty() {
+                return Err(lex::error(file, line, format!("'{}': {} applies to the last item of its chain (fm3 question 84), `{}`; what is written before it, `{}`, is pushed once, when the line begins to stand, which is when the store starts, and a push then is not built (fm3 question 80)", written, worded, covered, before)));
+            }
+            // every such line there is was written when the word
+            // covered the whole push: the message says what it meant
+            // then, and shows the line as it is written to say so now
+            if let Some(src) = led.first() {
+                return Err(lex::error(file, line, match (cond, word) {
+                    (Some(c), Repeat::Times) => format!("'{}': {} applies to the last item of its chain (fm3 question 84), so this is `{}` once and then `{}` {} times, when the store starts, and a push then is not built (fm3 question 80). For the first {} items of '{}$', each with what follows it, put the items in brackets: `{}`", written, worded, before, covered, phrase_text(c), phrase_text(c), src, shown),
+                    (Some(_), Repeat::Until) => format!("'{}': {} applies to the last item of its chain (fm3 question 84), so this is `{}` once and then `{}` until the condition holds, when the store starts, and a push then is not built (fm3 question 80). For a line that stands until then, each item of '{}$' with what follows it, put the items in brackets: `{}`", written, worded, before, covered, src, shown),
+                    _ => format!("'{}': {} applies to the last item of its chain (fm3 question 84), so this is `{}` once and then `{}` for ever, and nothing paces that: it would never end. Until 7 October 2026 the word covered the whole push, every item of '{}$' and what follows it; to say that, put the items in brackets: `{}`", written, worded, before, covered, src, shown),
+                }));
+            }
+        }
         // what paces a line that stands (fm3 question 80, log 149): the
         // streams its first item names other than its own target, whose
         // name there is a read of its latest and sets nothing off. One,
@@ -4836,6 +4885,14 @@ impl Lowerer {
             return Err(lex::error(file, line, format!("'{}' reads {} streams, {}, and which of them sets the line off is not settled (fm3 question 86): an item of either with the other's latest, or one of each together. Not built: say one stream by a line of its own first", said, pacers.len(), pacers.iter().map(|n| format!("'{}$'", n)).collect::<Vec<_>>().join(" and "))));
         }
         let ExprKind::Seq(sname) = &items[0].kind else {
+            // (a group whose first item names no stream and a later
+            // one does: a line is paced by what its first item names)
+            let mut later = Vec::new();
+            items[1..].iter().for_each(|e| super::syntax::seqs_in(e, &mut later));
+            later.retain(|n| n != tname);
+            if let (true, Some(x)) = (forever && pacers.is_empty(), later.first()) {
+                return Err(lex::error(file, items[0].line, format!("a line that stands is paced by the stream its first item names, and the first of '{}' names none; '{}$' comes after it. Not built", wired, x)));
+            }
             if forever {
                 return Err(lex::error(file, items[0].line, format!("nothing on the right of '{}' is a stream: `forever` makes a push happen again whenever what is on its right has something new, and a value never has", said)));
             }
@@ -4860,13 +4917,7 @@ impl Lowerer {
                 return Err(lex::error(file, c.line, format!("a push cannot happen {} times", n)));
             }
             if only.is_some() {
-                return Err(lex::error(file, line, format!("`if` with a count on a line that stands is not built: '{} if (...) ({}) times' could be the first {} that pass, or those of the first {} that pass", said, n, n, n)));
-            }
-            // the count where `forever` would stand, over the whole
-            // line, or over the last item as in a function (fm3
-            // question 84): the same text is not to mean two things
-            if items.len() > 1 {
-                return Err(lex::error(file, line, format!("'{} ({}) times' on a line that stands could be the first {} items of '{}$', each with what follows it, or every item and what follows it {} times: not built. For the first, put a stream between: `first$ << {}$ ({}) times` and `{}$ << first$ << ... forever`", said, n, n, sname, n, sname, n, tname)));
+                return Err(lex::error(file, line, format!("`if` with a count on a line that stands is not built: '{} if (...) ({}) times' could be the first {} that pass, or those of the first {} that pass", wired, n, n, n)));
             }
             counted = Some(n);
         }
@@ -4876,10 +4927,7 @@ impl Lowerer {
         let mut until = None;
         if let (Some(c), Repeat::Until) = (cond, word) {
             if only.is_some() {
-                return Err(lex::error(file, line, format!("`if` with `until` on a line that stands is not built: '{} if (...) until (...)' could ask its `until` of every item, or only of those that pass", said)));
-            }
-            if items.len() > 1 {
-                return Err(lex::error(file, line, format!("'{} until (...)' on a line that stands could end the whole line, or repeat its last item: not built. Put a stream between: `first$ << {}$ until (...)` and `{}$ << first$ << ... forever`", said, sname, tname)));
+                return Err(lex::error(file, line, format!("`if` with `until` on a line that stands is not built: '{} if (...) until (...)' could ask its `until` of every item, or only of those that pass", wired)));
             }
             until = Some(c.clone());
         }
@@ -4888,7 +4936,7 @@ impl Lowerer {
         // hop (question 80): every such line there is was written as
         // wiring, and a silent change of what it does is the worst outcome
         if !forever && counted.is_none() && until.is_none() {
-            return Err(lex::error(file, line, once_or_wiring(&said, sname, tname)));
+            return Err(lex::error(file, line, once_or_wiring(&said, sname, tname, &wired)));
         }
         let Some(sf) = self.fvar(sname).cloned() else {
             return Err(lex::error(file, items[0].line, format!("'{}$' is not a feature-scope stream: an edge reads one", sname)));
@@ -5314,8 +5362,10 @@ impl Lowerer {
                                     // own is (fm3 question 80)
                                     if let Some(Expr { kind: ExprKind::Seq(a), .. }) = items.first() {
                                         if a != &v.name && matches!(self.fvar(a).map(|f| &f.ty), Some(Ty::Stream(_))) {
-                                            let said = format!("{}$ << {}", v.name, items.iter().map(phrase_text).collect::<Vec<_>>().join(" << "));
-                                            return Err(lex::error(&b.file, v.line, format!("{}; here, declare the stream, `{} {}$`, and wire it on a line of its own", once_or_wiring(&said, a, &v.name), v.ty, v.name)));
+                                            let texts = items.iter().map(phrase_text).collect::<Vec<_>>().join(" << ");
+                                            let said = format!("{}$ << {}", v.name, texts);
+                                            let wired = if items.len() > 1 { format!("{}$ << ({})", v.name, texts) } else { said.clone() };
+                                            return Err(lex::error(&b.file, v.line, format!("{}; here, declare the stream, `{} {}$`, and wire it on a line of its own", once_or_wiring(&said, a, &v.name, &wired), v.ty, v.name)));
                                         }
                                     }
                                     let s = self.empty_stream(v, &ty, &mut b, None)?;
@@ -10833,9 +10883,11 @@ fn mentions_seq(e: &Expr, name: &str) -> bool {
 
 /// The refusal of a feature-scope `<<` with a stream on its right and
 /// no `forever` (fm3 questions 79 and 80): both things it could be
-/// meant as, and what to write for each
-fn once_or_wiring(said: &str, source: &str, target: &str) -> String {
-    format!("'{}' has a stream on its right and no `forever`. If it is wiring, everything that arrives in '{}$' going on into '{}$', write `{} forever`. If it is one push when the store starts, of what '{}$' holds then, that is what the line says (fm3 question 79) and it is not built: push it from a function", said, source, target, said, source)
+/// meant as, and what to write for each. `wired` is the line as
+/// wiring is written, its items in brackets where it has several
+/// (question 84)
+fn once_or_wiring(said: &str, source: &str, target: &str, wired: &str) -> String {
+    format!("'{}' has a stream on its right and no `forever`. If it is wiring, everything that arrives in '{}$' going on into '{}$', write `{} forever`. If it is one push when the store starts, of what '{}$' holds then, that is what the line says (fm3 question 79) and it is not built: push it from a function", said, source, target, wired, source)
 }
 
 fn stmt_line(s: &Stmt) -> usize {
