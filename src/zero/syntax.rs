@@ -414,11 +414,18 @@ pub struct Parser<'a> {
     ranges: usize,
     /// inside a loop's header line, where `yields` ends a phrase
     header: usize,
+    /// the source's lines, for a refusal that shows the line as it is
+    /// to be written; none for a case line
+    lines: Vec<&'a str>,
+    /// the results, those with no `$`, of the function whose body is
+    /// being read: each is given by pushing it, and `y = value` on
+    /// one is refused (fm3 question 77, log 153)
+    results: Vec<String>,
 }
 
-pub fn parse_feature(name: &str, src: &str, file: &str, types: &HashSet<String>) -> Result<Feature, Error> {
+pub fn parse_feature<'a>(name: &str, src: &'a str, file: &'a str, types: &'a HashSet<String>) -> Result<Feature, Error> {
     let toks = lex::lex(src, file)?;
-    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0 };
+    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: src.lines().collect(), results: Vec::new() };
     let mut decls = Vec::new();
     while !p.at_end() {
         decls.push(p.parse_decl()?);
@@ -431,7 +438,7 @@ pub fn parse_call(text: &str, file: &str, line: usize, types: &HashSet<String>) 
     let mut toks = Vec::new();
     lex::lex_line(text, line, file, &mut toks)?;
     toks.push(Token { tok: Tok::Newline, line });
-    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0 };
+    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: Vec::new(), results: Vec::new() };
     let e = p.parse_expr()?;
     if !p.at(&Tok::Newline) {
         return Err(p.err("the call has something after it"));
@@ -616,6 +623,7 @@ impl<'a> Parser<'a> {
         self.expect_word()?; // on
         let mut results = Vec::new();
         let mut task = false;
+        let mut old = false;
         // `on (results) << name`, or the form before fm3 question 77,
         // `on (results) = name`, or `on name` with no results — told
         // apart by what follows the first group
@@ -658,7 +666,16 @@ impl<'a> Parser<'a> {
                     task = results.iter().any(|r| r.seq);
                 }
             } else {
+                // the form before fm3 question 77 is refused (log 153),
+                // but where a result has a `$`: a function that gives
+                // a sequence whole is a task's first line once it says
+                // `<<`, and keeps `=`, body and all, until an array
+                // has its mark (fm3 question 87)
+                if !results.iter().any(|r| r.seq) {
+                    return Err(self.err(format!("a function is declared with `<<` and gives its result by pushing it; `=` says what a name is (fm3 question 77). Write `{}`", self.respelt(line, ") = ", ") << ", "on (results) << name (parameters)"))));
+                }
                 self.expect_sym("=")?;
+                old = true;
             }
         }
         while !self.at(&Tok::Newline) {
@@ -690,7 +707,10 @@ impl<'a> Parser<'a> {
             return Err(self.err("a function's name needs a word or a symbol"));
         }
         self.expect_newline()?;
-        let body = if self.at(&Tok::Indent) { self.parse_block()? } else { Vec::new() };
+        self.results = if old { Vec::new() } else { results.iter().filter(|r| !r.seq).map(|r| r.name.clone()).collect() };
+        let body = if self.at(&Tok::Indent) { self.parse_block() } else { Ok(Vec::new()) };
+        self.results.clear();
+        let body = body?;
         let mut platform = Vec::new();
         while self.at_word("platform") {
             self.pos += 1;
@@ -721,6 +741,15 @@ impl<'a> Parser<'a> {
             platform.push((kinds, lines));
         }
         Ok(FnDecl { line, results, name, groups, task, body, platform })
+    }
+
+    /// a line of the source with its `=` written `<<`, for a refusal to
+    /// show; `or` where the source is not to hand
+    fn respelt(&self, line: usize, from: &str, to: &str, or: &str) -> String {
+        match line.checked_sub(1).and_then(|i| self.lines.get(i)) {
+            Some(l) if l.contains(from) => l.trim().replacen(from, to, 1),
+            _ => or.to_string(),
+        }
     }
 
     /// is the bracketed group at the cursor the last thing on the line?
@@ -1212,6 +1241,12 @@ impl<'a> Parser<'a> {
                     if !self.eat_sym(",") {
                         break;
                     }
+                }
+                // a result is given by pushing it (fm3 question 77,
+                // log 153): no local or parameter may have a result's
+                // name, so the name says it
+                if let Some(t) = targets.iter().find(|t| t.feature.is_none() && !t.seq && self.results.contains(&t.name)) {
+                    return Err(self.err(format!("'{}' is a result, and a result is given by pushing it; `=` says what a name is (fm3 question 77). Write `{}`", t.name, self.respelt(line, " = ", " << ", &format!("{} << ...", t.name)))));
                 }
                 self.expect_sym("=")?;
                 // `total = loop (...) ... yields acc`: a loop's results assigned

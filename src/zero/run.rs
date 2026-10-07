@@ -1020,10 +1020,13 @@ mod tests {
     }
 
     /// Every function is declared with `<<` and gives its result by
-    /// pushing it (fm3 question 77 (a), log 151): the same function
-    /// written with `=` lowers to the same lines; a result with no `$`
-    /// makes a plain function of a `<<` declaration; and what is one
-    /// value is pushed once, a name that is no result not at all
+    /// pushing it (fm3 question 77 (a), log 151 to 153): a result with
+    /// no `$` makes a plain function of a `<<` declaration; what is
+    /// one value is pushed once, a name that is no result not at all;
+    /// and the form before, `=` on the first line or on a result, is
+    /// refused with the line to write. (While both stood, each of
+    /// these texts written the old way emitted the same IR, asserted
+    /// here at probe `fa90584`)
     #[test]
     fn a_function_gives_its_result_by_pushing_it() {
         let dir = std::env::temp_dir().join(format!("probe-zero-pushed-{}", std::process::id()));
@@ -1034,7 +1037,7 @@ mod tests {
             std::fs::write(dir.join("h/h.zero"), format!("{}\n", text)).unwrap();
             emit(&dir)
         };
-        // each shape the new way and the old: one text
+        // each shape the new way, and the old, which is refused
         let pairs = [
             ("on (int d) << double (int x)\n    d << x * 2", "on (int d) = double (int x)\n    d = x * 2"),
             ("on (int s) << sign of (int x)\n    if (x < 0)\n        s << -1\n    else if (x > 0)\n        s << 1", "on (int s) = sign of (int x)\n    if (x < 0)\n        s = -1\n    else if (x > 0)\n        s = 1"),
@@ -1044,13 +1047,26 @@ mod tests {
             ("on (int g) << gcd of (int a) with (int b)\n    g << loop (int x = a, int y = b) while (y != 0) yields x\n        continue (y, x % y)", "on (int g) = gcd of (int a) with (int b)\n    g = loop (int x = a, int y = b) while (y != 0) yields x\n        continue (y, x % y)"),
             ("on (int q, int r) << divide (int a) by (int b)\n    r << a % b\n    q << a / b\n\non (int q, int r) << both()\n    q, r << divide (17) by (5)", "on (int q, int r) = divide (int a) by (int b)\n    r = a % b\n    q = a / b\n\non (int q, int r) = both()\n    q, r = divide (17) by (5)"),
             ("on (int n) << sum of (int x$)\n    n << x$ + _", "on (int n) = sum of (int x$)\n    n = x$ + _"),
-            // either first line over either body, for this landing
-            ("on (int d) << double (int x)\n    d = x * 2", "on (int d) = double (int x)\n    d << x * 2"),
         ];
         for (new, old) in pairs {
-            let (a, b) = (with(new).unwrap_or_else(|e| panic!("{}: {}", new, e)), with(old).unwrap_or_else(|e| panic!("{}: {}", old, e)));
-            assert_eq!(a, b, "{}", new);
+            with(new).unwrap_or_else(|e| panic!("{}: {}", new, e));
+            let err = with(old).err().unwrap_or_else(|| panic!("{} compiled", old));
+            assert!(err.contains("h.zero:1: a function is declared with `<<` and gives its result by pushing it; `=` says what a name is (fm3 question 77). Write `on ("), "{}: {}", old, err);
         }
+        // the two refusals whole, each with the program's own line as
+        // it is to be written; either old half is refused by itself
+        let err = with("on (int d) = double (int x)\n    d << x * 2").unwrap_err();
+        assert!(err.ends_with("h.zero:1: a function is declared with `<<` and gives its result by pushing it; `=` says what a name is (fm3 question 77). Write `on (int d) << double (int x)`"), "{}", err);
+        let err = with("on (int d) << double (int x)\n    d = x * 2").unwrap_err();
+        assert!(err.ends_with("h.zero:2: 'd' is a result, and a result is given by pushing it; `=` says what a name is (fm3 question 77). Write `d << x * 2`"), "{}", err);
+        let err = with("on (int n) << f (int k)\n    n = loop (int i = 0) while (i < k) yields i\n        continue (i + 1)").unwrap_err();
+        assert!(err.contains("h.zero:2: 'n' is a result, and a result is given by pushing it; `=` says what a name is (fm3 question 77). Write `n << loop (int i = 0) while (i < k) yields i`"), "{}", err);
+        let err = with("on (int q, int r) << f (int k)\n    int a = k\n    q, r = g (a)").unwrap_err();
+        assert!(err.contains("h.zero:3: 'q' is a result, and a result is given by pushing it; `=` says what a name is (fm3 question 77). Write `q, r << g (a)`"), "{}", err);
+        // `=` still says what a name is, and a local declared before
+        // may be given by a loop
+        let ir = with("on (int n) << f (int k)\n    int half = k / 2\n    int t = 0\n    t = loop (int i = 0) while (i < half) yields i\n        continue (i + 1)\n    n << t").unwrap();
+        assert!(ir.contains("    half: int = div k, 2\n"), "{}", ir);
         let ir = with(pairs[0].0).unwrap();
         assert!(ir.contains("fn double(x: int) -> int\n    d: int = mul x, 2\n    ret d\n"), "{}", ir);
         // a result nothing pushed is the zero of its type, and the push
@@ -1087,9 +1103,6 @@ mod tests {
             let err = with(&text).err().unwrap_or_else(|| panic!("{} compiled", text));
             assert!(err.contains(message), "{}: {}", text, err);
         }
-        // the old words, where the old form is written
-        let err = with("on (int y) = f (int x)\n    y = x\n    y = 2").unwrap_err();
-        assert!(err.contains("h.zero:3: this never runs: the function ended when its result was assigned on line 2"), "{}", err);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1111,28 +1124,28 @@ mod tests {
         };
         // read only by its name: a cell, the edge's function a load, an
         // add and a store of its field
-        let ir = with("sum$ << sum$ + x$ forever\n", "n = sum$").unwrap();
+        let ir = with("sum$ << sum$ + x$ forever\n", "n << sum$").unwrap();
         assert!(ir.contains("fn __edge1(__item: int)\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int = get _1, sum\n    _3: int = add _2, __item\n    _4: __ctx = load _this\n    _5: __ctx = set _4, sum, _3\n    store _5, _this\n    ret\n"), "{}", ir);
         // wired on, and nothing else pushes into it or names it: the
         // stream has no storage and the line keeps its last item
-        let ir = with("sum$ << sum$ + x$ forever\nout$ << sum$ << \"\\n\" forever\n", "n = k").unwrap();
+        let ir = with("sum$ << sum$ + x$ forever\nout$ << sum$ << \"\\n\" forever\n", "n << k").unwrap();
         assert!(ir.contains("    __last1: int\n") && !ir.contains("    sum: int"), "{}", ir);
         assert!(ir.contains("fn __edge1(__item: int)\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int = get _1, __last1\n    __next: int = add _2, __item\n    _3: __ctx = load _this\n    _4: __ctx = set _3, __last1, __next\n    store _4, _this\n"), "{}", ir);
         // wired on and read by its name as well: a queue, the read
         // guarded for the time before anything is pushed, and the queue
         // not given back under it
-        let ir = with("sum$ << sum$ + x$ forever\nout$ << sum$ << \"\\n\" forever\n", "n = sum$").unwrap();
+        let ir = with("sum$ << sum$ + x$ forever\nout$ << sum$ << \"\\n\" forever\n", "n << sum$").unwrap();
         assert!(ir.contains("    _3: index = received(_2)\n    _4: u1 = cmp.gt _3, 0\n    _5: int = if _4\n        _6: int = latest_queue(_2)\n        yield _6\n    else\n        yield 0\n    _7: int = add _5, __item\n"), "{}", ir);
         assert!(!ir.contains("free_queue("), "{}", ir);
         // its own name later in the chain, another stream pacing: each
         // item, and then the latest, which is that item
-        with("sum$ << x$ << sum$ forever\n", "n = count sum$").unwrap();
+        with("sum$ << x$ << sum$ forever\n", "n << count sum$").unwrap();
         // a sum of some; a standing map; and a sum under a count
-        let ir = with("sum$ << sum$ + x$ if (x$ % 2 == 0) forever\n", "n = sum$").unwrap();
+        let ir = with("sum$ << sum$ + x$ if (x$ % 2 == 0) forever\n", "n << sum$").unwrap();
         assert!(ir.contains("    _1: int = rem __item, 2\n    _2: u1 = cmp.eq _1, 0\n    if _2\n        _3: __ctx = load _this\n        _4: int = get _3, sum\n        _5: int = add _4, __item\n"), "{}", ir);
-        let ir = with("sum$ << x$ * 2 forever\n", "n = sum$").unwrap();
+        let ir = with("sum$ << x$ * 2 forever\n", "n << sum$").unwrap();
         assert!(ir.contains("    _1: int = mul __item, 2\n    _2: __ctx = load _this\n    _3: __ctx = set _2, sum, _1\n"), "{}", ir);
-        with("sum$ << sum$ + x$ (3) times\n", "n = sum$").unwrap();
+        with("sum$ << sum$ + x$ (3) times\n", "n << sum$").unwrap();
         for (lines, said) in [
             // two other streams: which paces is not settled
             ("sum$ << sum$ + x$ + y$ forever\n", "h.zero:5: 'sum$ << ...' reads 2 streams, 'x$' and 'y$', and which of them sets the line off is not settled (fm3 question 86): an item of either with the other's latest, or one of each together. Not built: say one stream by a line of its own first"),
@@ -1142,7 +1155,7 @@ mod tests {
             // no word: as any line with a stream on its right
             ("sum$ << sum$ + x$\n", "h.zero:5: a push at feature scope happens once, when the store starts (fm3 question 79), and on a line of its own that is not built: a stream's first items go on its declaration, `int sum$ << ...`, and a line that stands is wiring, `sum$ << x$ forever`"),
         ] {
-            let err = with(lines, "n = sum$ + count y$").expect_err(lines);
+            let err = with(lines, "n << sum$ + count y$").expect_err(lines);
             assert!(err.ends_with(said), "{}: {}", lines, err);
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -2281,7 +2294,7 @@ mod tests {
             assert!(b.iter().any(|l| l.contains(" = count ")), "{}", ir);
             b.iter().filter(|l| l.contains(" = count ")).count()
         };
-        let straight = |between: &str| format!("on (int n) << f()\n    int s$ << 1 << 2\n    int a = count s$\n{}    n = a + count s$\n", between);
+        let straight = |between: &str| format!("on (int n) << f()\n    int s$ << 1 << 2\n    int a = count s$\n{}    n << a + count s$\n", between);
         // arithmetic, a read, and a call to a function that only computes
         assert_eq!(counts(&straight("    int b = a * 2 + peek s$ at (0)\n    int c = quiet (b)\n")), 1);
         // a push, an `end`, a function that pushes, one that calls one that does

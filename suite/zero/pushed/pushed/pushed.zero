@@ -1,20 +1,11 @@
 on (int d) << double (int x)
     d << x * 2
 
-on (int d) = double (int x) as it was
-    d = x * 2
-
 on (bool yes) << (int a) is under (int b)
     yes << a < b
 
-on (bool yes) = (int a) was under (int b)
-    yes = a < b
-
 on (int n) << smaller of (int a) and (int b)
     n << if (a < b) then (a) else (b)
-
-on (int n) = smaller of (int a) and (int b) as it was
-    n = if (a < b) then (a) else (b)
 
 on (int s) << sign of (int x)
     if (x < 0)
@@ -22,21 +13,10 @@ on (int s) << sign of (int x)
     else if (x > 0)
         s << 1
 
-on (int s) = sign of (int x) as it was
-    if (x < 0)
-        s = -1
-    else if (x > 0)
-        s = 1
-
 on (int r) << first positive of (int a) and (int b)
     if (a > 0)
         r << a
     r << b
-
-on (int r) = first positive of (int a) and (int b) as it was
-    if (a > 0)
-        r = a
-    r = b
 
 on (int r) << first positive of (int a) and (int b) on one line
     r << a if (a > 0)
@@ -48,61 +28,31 @@ on (int p) << power of two above (int n)
             p << q
         continue (q * 2)
 
-on (int p) = power of two above (int n) as it was
-    loop (int q = 1)
-        if (q > n)
-            p = q
-        continue (q * 2)
-
 on (int g) << gcd of (int a) and (int b)
     g << loop (int x = a, int y = b) while (y != 0) yields x
-        continue (y, x % y)
-
-on (int g) = gcd of (int a) and (int b) as it was
-    g = loop (int x = a, int y = b) while (y != 0) yields x
         continue (y, x % y)
 
 on (int q, int r) << divide (int a) by (int b)
     q << a / b
     r << a - q * b
 
-on (int q, int r) = divide (int a) by (int b) as it was
-    q = a / b
-    r = a - q * b
-
 on (int hi, int lo) << ordered (int a) and (int b)
     lo << if (a < b) then (a) else (b)
     hi << a + b - lo
 
-on (int hi, int lo) = ordered (int a) and (int b) as it was
-    lo = if (a < b) then (a) else (b)
-    hi = a + b - lo
-
 on (int q, int r) << both of (int a) by (int b)
     q, r << divide (a) by (b)
-
-on (int q, int r) = both of (int a) by (int b) as it was
-    q, r = divide (a) by (b)
 
 on (int n) << sum of (int x$)
     n << x$ + _
 
-on (int n) = sum of (int x$) as it was
-    n = x$ + _
-
 on (int n) << summed()
     n << sum of ([1, 2, 3, 4])
-
-on (int n) = summed as it was()
-    n = sum of ([1, 2, 3, 4]) as it was
 
 int seen$ << 5
 
 on (int n) << read()
     n << seen$
-
-on (int n) = read as it was()
-    n = seen$
 
 on (int n) << halved (int x)
     int half = x / 2

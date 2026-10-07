@@ -7,7 +7,7 @@ layer: runtime
 fm3 question 77 (a), log 151. Ash, 7 October 2026: "all functions are now defined using on (result) << blah(), right? So there's only one colour of function?" A `<<` sends once each time its line runs (question 79), and a function runs when it is called, so a function's push of its result is its answer. `=` is left for saying what a name is.
 
 ## overview
-`on (int d) << double (int x)` with `d << x * 2` is a function. It is the same function as `on (int d) = double (int x)` with `d = x * 2`, and lowers to the same lines: this store writes each shape of function the new way and, beside it, its like the old way, named `... as it was`, and every pair gives the same results by the same IR.
+`on (int d) << double (int x)` with `d << x * 2` is a function. There is one way to declare: the form before, `on (int d) = double (int x)` with `d = x * 2`, is refused when the program is compiled, each line with the line to write in its place. The new form lowers to the lines the old one did: when both stood, this store had each shape written both ways and every pair gave the same IR (fm3 log 151), and the whole suite was respelled without one store's IR moving (log 152).
 
 What tells a function from a task or a stream processor, now that all three say `<<`, is the mark on the result: a result with no `$` is a value, pushed once, and a result with a `$` is a stream, produced over time.
 
@@ -27,37 +27,27 @@ What tells a function from a task or a stream processor, now that all three say 
 - A result nothing pushed when the body ends is the zero of its type.
 - `=` says what a name is: a local is declared with `=` and is not pushed into.
 - One value is pushed once: `y << a << b`, and `(n) times`, `while`, `until` and `forever` on the push of a result, are refused; so is a second push of a result on a path that has pushed it.
+- A function that gives a sequence whole, `on (int r$) = squares to (int k)` in the `sequences` store, keeps `=`: with `<<` it would be a task's first line, and it waits for an array to have its mark (fm3 question 87).
 
 ## testing
 >double (21) → 42
->double (21) as it was → 42
 >(3) is under (4) → 1
->(3) was under (4) → 1
 >smaller of (9) and (4) → 4
->smaller of (9) and (4) as it was → 4
 >sign of (-5) → -1
 >sign of (0) → 0
 >sign of (7) → 1
->sign of (-5) as it was → -1
->sign of (0) as it was → 0
 >first positive of (3) and (5) → 3
 >first positive of (-3) and (5) → 5
->first positive of (3) and (5) as it was → 3
->first positive of (-3) and (5) as it was → 5
 >first positive of (3) and (5) on one line → 3
 >first positive of (-3) and (5) on one line → 5
 >power of two above (5) → 8
->power of two above (5) as it was → 8
 >gcd of (12) and (18) → 6
->gcd of (12) and (18) as it was → 6
 >divide (17) by (5) → 3, 2
->divide (17) by (5) as it was → 3, 2
 >ordered (5) and (2) → 5, 2
->ordered (5) and (2) as it was → 5, 2
 >both of (17) by (5) → 3, 2
->both of (17) by (5) as it was → 3, 2
 >summed() → 10
->summed as it was() → 10
 >read() → 5
->read as it was() → 5
 >halved (9) → 4
+
+## hostile
+`on (int d) = double (int x)` is refused: "a function is declared with `<<` and gives its result by pushing it; `=` says what a name is (fm3 question 77). Write `on (int d) << double (int x)`". `d = x * 2` in its body is refused: "'d' is a result, and a result is given by pushing it; `=` says what a name is (fm3 question 77). Write `d << x * 2`". `half << 1` where `half` is a local is refused: "'half' is not pushed into: `=` says what a name is, where it is declared, `int half = ...`, and it keeps that value. What `<<` sends into is a stream, `half$`, or a result of the function". `d << x << 2` is refused: "'d' is one value, given once: this line pushes it twice. What takes more than one item is a stream, `d$`". With two results, a second `q << 2` before the other is pushed is refused: "'q' is pushed twice on this path: a function gives each of its results once".
