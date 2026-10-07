@@ -928,7 +928,6 @@ mod tests {
         for (more, said) in [
             ("on f (int k)\n    p$ << k while (_ < 3) if (k > 2)", "h.zero:9: a push takes `while` or `if`, not both: `while` repeats the push, `if` says whether it happens"),
             ("on f (int k)\n    p$ << k if (k > 2) while (_ < 3)", "h.zero:9: a push takes `while` or `if`, not both: `while` repeats the push, `if` says whether it happens"),
-            ("int q$\nq$ << p$ if (p$ > 0)", "h.zero:9: `if` on an edge is not built: an edge moves every item, and a stream processor of one line says which, `on (T t$) << some (T x$)` with `t$ << x$ if (condition)`"),
             // the word a push took before question 79, after each kind of item
             ("on f (int k)\n    p$ << k when (k > 2)", "h.zero:9: `when` is not a word of zero: a push made where a condition holds is `x$ << item if (condition)`"),
             ("on f (int k)\n    p$ << x$ when (k > 2)", "h.zero:9: `when` is not a word of zero: a push made where a condition holds is `x$ << item if (condition)`"),
@@ -959,6 +958,64 @@ mod tests {
         // and of nothing else: the call and the push's `if` on one line
         let named = with("on (int n) = pushed when (int k)\n    n = k + 1\n\non (int n) = f (int k)\n    p$ << pushed when (k) if (k > 2)\n    n = pushed when (k) + count p$").unwrap();
         assert_eq!(named.matches(": int = pushed_when(k)\n").count(), 2, "{}", named);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `forever` decides (fm3 question 79, log 141). A `<<` sends once
+    /// each time its line runs, and the word makes it stand: a wiring
+    /// line says it and is the edge it was, with `if` before the word
+    /// a filter. Without the word a feature-scope `<<` with a stream
+    /// on its right is refused, saying both things it could be; and
+    /// the word is refused in a function, in a stream processor, on a
+    /// declaration, with `while`, before `if`, on a line of values,
+    /// and on a stream that feeds itself, at a rate and with none
+    #[test]
+    fn forever_decides() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-forever-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (3) → 1\n").unwrap();
+        let head = "int a$\nint b$\nint i$ at (1 hz)\nint d$ = dd(a$)\n\non (int d$) << dd (int x$)\n    d$ << x$\n\n";
+        let f = "\non (int n) = f (int k)\n    a$ << k\n    n = count b$ + count d$\n";
+        let with = |lines: &str, body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}{}{}\n", head, lines, f, body)).unwrap();
+            emit(&dir)
+        };
+        // the wiring line and the standing filter: the edge's function
+        // of one item, the filter's push under its condition, the
+        // source's own name in the condition the item
+        let ir = with("b$ << a$ forever\nb$ << i$ << 0 if (i$ > 2) forever\n", "").unwrap();
+        assert!(ir.contains("fn __edge3(__item: int)\n    _this: ptr = context()\n    _1: u1 = cmp.gt __item, 2\n    if _1\n        _2: __ctx = load _this\n        _3: int$ = get _2, b\n        push_queue_open(_3, __item)\n"), "{}", ir);
+        let once = "has a stream on its right and no `forever`. If it is wiring, everything that arrives in 'a$' going on into 'b$', write `b$ << a$ forever`. If it is one push when the store starts, of what 'a$' holds then, that is what the line says (fm3 question 79) and it is not built: push it from a function";
+        for (lines, body, said) in [
+            ("b$ << a$\n", "", format!("h.zero:9: 'b$ << a$' {}", once)),
+            ("int c$ << a$\n", "", format!("h.zero:9: 'c$ << a$' {}; here, declare the stream, `int c$`, and wire it on a line of its own", once.replace("into 'b$'", "into 'c$'").replace("`b$ << a$ forever`", "`c$ << a$ forever`"))),
+            ("int c$ << a$ forever\n", "", "h.zero:9: `forever` on a declaration is not built: declare the stream and wire it on a line of its own, `c$ << x$ forever`".to_string()),
+            ("b$ << a$ forever if (a$ > 0)\n", "", "h.zero:9: `forever` is the last word of its line: `x$ << item if (condition) forever`".to_string()),
+            ("b$ << a$ while (_ > 0) forever\n", "", "h.zero:9: a push takes `while` or `forever`, not both: `while` is `forever` with an end".to_string()),
+            ("b$ << a$ forever while (_ > 0)\n", "", "h.zero:9: a push takes `while` or `forever`, not both: `while` is `forever` with an end".to_string()),
+            ("b$ << a$ while (_ > 0)\n", "", "h.zero:9: a line at feature scope that stands until its `while` fails is not built: wiring moves every item its stream receives, `x$ << y$ forever`".to_string()),
+            ("b$ << 1 forever\n", "", "h.zero:9: nothing on the right of 'b$ << 1' is a stream: `forever` makes a push happen again whenever what is on its right has something new, and a value never has".to_string()),
+            ("b$ << 1\n", "", "h.zero:9: a push at feature scope happens once, when the store starts (fm3 question 79), and on a line of its own that is not built: a stream's first items go on its declaration, `int b$ << ...`, and a line that stands is wiring, `b$ << x$ forever`".to_string()),
+            // a stream feeding itself: with no rate it never ends
+            ("b$ << b$ + 1 forever\n", "", "h.zero:9: a push into 'b$' that reads 'b$' and stands forever would never end: each item it pushes is something new on its own right, and 'b$' has no rate to pace it. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `int b$ at (1 hz)`".to_string()),
+            ("b$ << a$ << b$ forever\n", "", "h.zero:9: a push into 'b$' that reads 'b$' and stands forever would never end: each item it pushes is something new on its own right, and 'b$' has no rate to pace it. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `int b$ at (1 hz)`".to_string()),
+            // ... and at a rate it is a clock, not built
+            ("b$ << a$ forever\ni$ << i$ + 1 forever\n", "", "h.zero:10: a stream that feeds itself forever at a rate is a clock, and is not built: it needs a schedule ordered by time, and a store's clock is still moved by the code that pushes. Until then a function's push says it with an end, `i$ << 0 << (i$ + 1) while (_ < 4)`".to_string()),
+            // in a function, and under `if` there
+            ("b$ << a$ forever\n", "\non g()\n    b$ << a$ forever", "h.zero:16: `forever` in a function is a line that would set up a standing connection each time the function runs: not built. Wire it at feature scope, where it stands from the start".to_string()),
+            ("b$ << a$ forever\n", "\non g (int k)\n    b$ << k if (k > 0) forever", "h.zero:16: `forever` in a function is a line that would set up a standing connection each time the function runs: not built. Wire it at feature scope, where it stands from the start".to_string()),
+        ] {
+            let err = with(lines, body).expect_err(lines);
+            assert!(err.ends_with(&said), "{}{}: {}", lines, body, err);
+        }
+        // in a stream processor, which is wired and so stands already
+        std::fs::write(dir.join("h/h.zero"), format!("{}b$ << a$ forever\n{}", head.replace("    d$ << x$\n", "    d$ << x$ forever\n"), f)).unwrap();
+        let err = emit(&dir).expect_err("a processor");
+        assert!(err.ends_with("h.zero:7: a stream processor's lines hold for every item already, because the processor is wired: its pushes take no `forever`"), "{}", err);
+        // a function may not have the word in its name: it ends a phrase
+        let err = with("b$ << a$ forever\n", "\non wait forever()\n    b$ << 1").expect_err("a name");
+        assert!(err.ends_with("h.zero:15: 'forever' cannot be a word of a function's name: it ends a phrase wherever it stands, so no call of this name could be written"), "{}", err);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1281,7 +1338,7 @@ mod tests {
             Ok(lower::lower(&s).map_err(|e| e.to_string())?.ir)
         };
         feature("base", "", 0, "int n$\nint beat$ at (2 hz)\n\non count()\n    n$ << [3 through 1]\n    beat$ << 1\n");
-        feature("shown", "base", 1, "out$ << n$ << \"\\n\"\nout$ << beat$ << \"\\n\"\n");
+        feature("shown", "base", 1, "out$ << n$ << \"\\n\" forever\nout$ << beat$ << \"\\n\" forever\n");
         // wired by a feature that is in the program: an edge each
         let ir = lowered("# p\n").unwrap();
         assert!(ir.contains("fn __edge1(__item: int)") && ir.contains("fn __edge2(__item: int)"), "{}", ir);
@@ -1294,7 +1351,7 @@ mod tests {
         // (question 56, fm3 log 99)
         assert!(ir.contains("    _7: i64 = add _6, 500000\n    __wait(_7)\n    ret\n") && !ir.contains(" = rem "), "{}", ir);
         // wired by no feature at all: refused, naming the stream
-        std::fs::write(dir.join("shown/shown.zero"), "out$ << beat$ << \"\\n\"\n").unwrap();
+        std::fs::write(dir.join("shown/shown.zero"), "out$ << beat$ << \"\\n\" forever\n").unwrap();
         for product in ["# p\n", "# p\n\nshown: static off\n"] {
             let err = lowered(product).expect_err("a stream nothing reads or wires");
             assert!(err.contains("base.zero:1: 'n$' is pushed into and nothing reads it or wires it, in any feature of the store, compiled in or left out: a mistyped name?"), "{}", err);
@@ -1307,7 +1364,7 @@ mod tests {
         // (question 57, fm3 log 100): no storage, a `char` stream
         // included, and no refusal under either product
         feature("base", "", 0, "int spare$\nchar note$\nint n$\n\non count()\n    n$ << 1\n");
-        feature("shown", "base", 1, "out$ << n$ << \"\\n\"\n");
+        feature("shown", "base", 1, "out$ << n$ << \"\\n\" forever\n");
         for product in ["# p\n", "# p\n\nshown: static off\n"] {
             let ir = lowered(product).unwrap();
             assert!(ir.contains(";   spare: no storage, nothing in the program reading it or wiring it (base)\n") && ir.contains(";   note: no storage, nothing in the program reading it or wiring it (base)\n"), "{}", ir);
@@ -1335,7 +1392,7 @@ mod tests {
         let body = |ir: &str, f: &str| -> String { ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
         // `f` is called by `g` after a push into a stream at `7 hz`, so
         // nothing is known of the clock where `f` begins (fm3 log 99)
-        let head = "int a$ at (3 hz)\nint b$ at (5 hz)\nint c$ at (7 hz)\nout$ << a$ << \"\\n\"\nout$ << b$ << \"\\n\"\nout$ << c$ << \"\\n\"\n\non g()\n    c$ << 0\n    f()\n\n";
+        let head = "int a$ at (3 hz)\nint b$ at (5 hz)\nint c$ at (7 hz)\nout$ << a$ << \"\\n\" forever\nout$ << b$ << \"\\n\" forever\nout$ << c$ << \"\\n\" forever\n\non g()\n    c$ << 0\n    f()\n\n";
         // one statement of three items: one alignment, three steps, the
         // slot a whole number of the period a step adds
         let ir = lowered(&format!("{}on f()\n    a$ << 1 << 2 << 3\n", head));
@@ -1354,7 +1411,7 @@ mod tests {
         let f = body(&lowered(&format!("{}on f()\n    a$ << 1\n    out$ << \"x\"\n    a$ << 2\n", head)), "f");
         assert_eq!(f.matches(" = rem ").count(), 1, "{}", f);
         // a stream with no rate has no beat
-        let f = body(&lowered("int c$\nout$ << c$ << \"\\n\"\n\non f()\n    c$ << 1\n"), "f");
+        let f = body(&lowered("int c$\nout$ << c$ << \"\\n\" forever\n\non f()\n    c$ << 1\n"), "f");
         assert!(!f.contains(" = rem ") && !f.contains("__wait"), "{}", f);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1378,7 +1435,7 @@ mod tests {
         };
         let body = |ir: &str, f: &str| -> String { ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
         let rems = |ir: &str, f: &str| body(ir, f).matches(" = rem ").count();
-        let head = "int a$ at (2 hz)\nint b$ at (1 hz)\nint c$ at (5 hz)\nout$ << a$ << \"\\n\"\nout$ << b$ << \"\\n\"\nout$ << c$ << \"\\n\"\n\n";
+        let head = "int a$ at (2 hz)\nint b$ at (1 hz)\nint c$ at (5 hz)\nout$ << a$ << \"\\n\" forever\nout$ << b$ << \"\\n\" forever\nout$ << c$ << \"\\n\" forever\n\n";
         // called only where a case starts, at 0 s: nothing is aligned,
         // and a push at `1 hz` leaves a multiple of the `2 hz` period
         let ir = lowered(&format!("{}on f()\n    b$ << 1\n    out$ << \"x\"\n    a$ << 2\n", head));
@@ -1419,7 +1476,7 @@ mod tests {
         let f = body(&ir, "f");
         assert!(f.matches(" = rem ").count() == 2 && f.find("loop(").unwrap() < f.find(" = rem ").unwrap(), "{}", f);
         // an edge that can move the clock: the statement leaves nothing known
-        let ir = lowered("int a$ at (2 hz)\nint b$ at (5 hz)\nb$ << a$\nout$ << b$ << \"\\n\"\n\non f()\n    a$ << 1\n    a$ << 2\n    out$ << \"x\"\n    a$ << 3\n");
+        let ir = lowered("int a$ at (2 hz)\nint b$ at (5 hz)\nb$ << a$ forever\nout$ << b$ << \"\\n\" forever\n\non f()\n    a$ << 1\n    a$ << 2\n    out$ << \"x\"\n    a$ << 3\n");
         assert_eq!(rems(&ir, "f"), 1, "{}", ir);
         // a function that can reach itself leaves nothing known
         let ir = lowered(&format!("{}on f (int k)\n    a$ << k\n    if (k > 0)\n        f (k - 1)\n\non g()\n    f (2)\n    a$ << 9\n", head));
@@ -1440,7 +1497,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-10T10:00:00\n\n## testing\n>run() → \"1\\n2\"\n").unwrap();
-        std::fs::write(dir.join("h/h.zero"), "int i$ at (2 hz)\nout$ << i$ << \"\\n\"\n\non run()\n    i$ << [1 through 2]\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "int i$ at (2 hz)\nout$ << i$ << \"\\n\" forever\n\non run()\n    i$ << [1 through 2]\n").unwrap();
         let with = |product: &str| -> Result<String, String> {
             std::fs::write(dir.join("product.md"), product).unwrap();
             let s = store::read(&dir).map_err(|e| e.to_string())?;

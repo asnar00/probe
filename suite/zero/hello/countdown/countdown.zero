@@ -1,5 +1,5 @@
 int i$ at (1 hz)
-out$ << i$ << "\n"
+out$ << i$ << "\n" forever
 
 on run()
     count down()

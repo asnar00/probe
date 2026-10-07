@@ -1,8 +1,10 @@
 int i$ at (1 hz)
 int half$ at (2 hz)
+int tick$ at (1 hz)
 int d$ = doubled(i$)
-out$ << d$ << "\n"
-out$ << half$ << "\n"
+out$ << d$ << "\n" forever
+out$ << half$ << "\n" forever
+out$ << tick$ << "\n" forever
 
 on (int d$) << doubled (int x$)
     loop
@@ -30,3 +32,6 @@ on later()
     half$ << 0
     one()
     out$ << "done" << "\n"
+
+on ticks()
+    tick$ << 0 << (tick$ + 1) while (_ < 4)

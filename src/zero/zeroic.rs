@@ -78,7 +78,7 @@ fn names(p: &Part, x: &str) -> bool {
 
 /// every expression of an expression, itself first; the visitor says
 /// whether to go on inside it
-fn walk(e: &Expr, f: &mut dyn FnMut(&Expr) -> bool) {
+pub(super) fn walk(e: &Expr, f: &mut dyn FnMut(&Expr) -> bool) {
     if !f(e) {
         return;
     }
@@ -267,9 +267,12 @@ fn handed_on(e: &Expr, x: &str, takers: &Takers) -> Option<String> {
 
 /// a push statement of a processor's body, taken as its outputs
 fn pushed(s: &Stmt, when: Option<&Expr>, out: &str, file: &str, outs: &mut Vec<Out>) -> Result<(), Error> {
-    let Stmt::Push { target, items, cond, existing, line } = s else { unreachable!() };
+    let Stmt::Push { target, items, cond, existing, forever, line } = s else { unreachable!() };
     if *existing {
         return Err(lex::error(file, *line, "`existing` belongs in a `<<` method, not in a stream processor"));
+    }
+    if *forever {
+        return Err(lex::error(file, *line, "a stream processor's lines hold for every item already, because the processor is wired: its pushes take no `forever`"));
     }
     if !is_seq(target, out) {
         return Err(lex::error(file, *line, format!("a stream processor pushes into its own output, '{}$'", out)));
@@ -871,7 +874,7 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool) -> Wr
     }
     let mut made = Vec::new();
     let push = |item: Expr, when: Option<Expr>, line: usize| -> Option<Stmt> {
-        let push = Stmt::Push { target: expr(ExprKind::Seq(out.to_string()), line), items: vec![item], cond: None, existing: false, line };
+        let push = Stmt::Push { target: expr(ExprKind::Seq(out.to_string()), line), items: vec![item], cond: None, existing: false, forever: false, line };
         match when.map(|c| c.kind) {
             // a condition settled when the program is compiled: the
             // push is made, or is not there

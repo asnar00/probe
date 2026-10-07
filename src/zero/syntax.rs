@@ -26,10 +26,13 @@ pub enum Decl {
     /// a bare phrase at feature scope, `write(out$)`: a sink wired to
     /// the streams it reads, with no stream to fill (log 57)
     Wire(Expr),
-    /// `out$ << i$ << "\n"` at feature scope: an edge (log 72), a
-    /// standing connection the scheduler moves items along, the rest
-    /// of the chain pushed after each
-    Edge { target: Expr, items: Vec<Expr>, cond: Option<Expr>, line: usize },
+    /// `out$ << i$ << "\n" forever` at feature scope: an edge (log 72),
+    /// a standing connection the scheduler moves items along, the rest
+    /// of the chain pushed after each. `forever` is what makes it stand
+    /// (fm3 question 79): the line is kept without it so the lowering
+    /// can say what it would mean. `only` is `if (c)` on it, a standing
+    /// filter, with the source's own name already read as the item
+    Edge { target: Expr, items: Vec<Expr>, cond: Option<Expr>, only: Option<Expr>, forever: bool, line: usize },
 }
 
 #[derive(Clone)]
@@ -140,7 +143,9 @@ pub enum Stmt {
     /// `x$ << a << b while (c)`; `existing` on it calls the link below
     /// this body in its chain, which is how a feature extends a `<<`
     /// method — the one shape `existing name(...)` cannot spell
-    Push { target: Expr, items: Vec<Expr>, cond: Option<Expr>, existing: bool, line: usize },
+    /// `forever` is the word on it (fm3 question 79), which only a
+    /// line at feature scope may take: kept so the refusal can say why
+    Push { target: Expr, items: Vec<Expr>, cond: Option<Expr>, existing: bool, forever: bool, line: usize },
     Expr { expr: Expr, line: usize },
 }
 
@@ -276,13 +281,44 @@ pub fn declared_joins(src: &str) -> Vec<String> {
     out
 }
 
+/// An expression with a stream's own name read as one item of it, the
+/// name `__item`: the condition of a standing filter, `e$ << x$ if
+/// (x$ > 0) forever`, as the edge's function of one item reads it
+pub fn as_item(e: &Expr, stream: &str) -> Expr {
+    let f = |x: &Expr| Box::new(as_item(x, stream));
+    let parts = |ps: &[Part]| -> Vec<Part> {
+        ps.iter()
+            .map(|p| match p {
+                Part::Args(list) => Part::Args(list.iter().map(|a| Arg { name: a.name.clone(), value: as_item(&a.value, stream) }).collect()),
+                Part::Value(x) => Part::Value(as_item(x, stream)),
+                Part::Word(w) => Part::Word(w.clone()),
+            })
+            .collect()
+    };
+    let kind = match &e.kind {
+        ExprKind::Seq(n) if n == stream => ExprKind::Name("__item".into()),
+        ExprKind::Unit(x, u) => ExprKind::Unit(f(x), u.clone()),
+        ExprKind::Neg(x) => ExprKind::Neg(f(x)),
+        ExprKind::Field(x, n) => ExprKind::Field(f(x), n.clone()),
+        ExprKind::List(items) => ExprKind::List(items.iter().map(|x| as_item(x, stream)).collect()),
+        ExprKind::Range { from, to, inclusive } => ExprKind::Range { from: f(from), to: f(to), inclusive: *inclusive },
+        ExprKind::Bin(op, l, r) => ExprKind::Bin(op.clone(), f(l), f(r)),
+        ExprKind::Index(l, r) => ExprKind::Index(f(l), f(r)),
+        ExprKind::IfElse(c, a, b) => ExprKind::IfElse(f(c), f(a), f(b)),
+        ExprKind::Phrase(ps) => ExprKind::Phrase(parts(ps)),
+        ExprKind::Existing(ps) => ExprKind::Existing(parts(ps)),
+        k => k.clone(),
+    };
+    Expr { kind, line: e.line }
+}
+
 /// the words a phrase stops at unless a declared name has them there
 const JOINERS: [&str; 3] = ["and", "or", "when"];
 
 /// the words that end a phrase wherever they stand: a statement's own.
 /// `if` is one since fm3 question 79, the word a push takes after its
 /// items, `x$ << item if (c)`
-const ENDS_PHRASE: [&str; 6] = ["then", "else", "while", "if", "merge", "in"];
+const ENDS_PHRASE: [&str; 7] = ["then", "else", "while", "if", "forever", "merge", "in"];
 
 const WHILE_OR_IF: &str = "a push takes `while` or `if`, not both: `while` repeats the push, `if` says whether it happens";
 
@@ -461,11 +497,15 @@ impl<'a> Parser<'a> {
                 if items.is_empty() {
                     return Err(self.err("nothing to push: an edge is `out$ << i$`"));
                 }
-                if self.at_word("if") {
-                    return Err(self.err("`if` on an edge is not built: an edge moves every item, and a stream processor of one line says which, `on (T t$) << some (T x$)` with `t$ << x$ if (condition)`"));
-                }
+                let (only, forever) = self.push_words(cond.is_some())?;
                 self.expect_newline()?;
-                Ok(Decl::Edge { target, items, cond, line })
+                // in the condition of a standing filter the source's
+                // own name is the item that has arrived
+                let only = match (only, items.first().map(|e| &e.kind)) {
+                    (Some(c), Some(ExprKind::Seq(s))) => Some(as_item(&c, s)),
+                    (c, _) => c,
+                };
+                Ok(Decl::Edge { target, items, cond, only, forever, line })
             }
             _ => Err(self.err(format!("expected 'on', 'type', a variable declaration or a wiring at the top of the feature, found {}", self.found()))),
         }
@@ -734,6 +774,9 @@ impl<'a> Parser<'a> {
             Some(Init::Construct(self.parse_args()?))
         } else if self.at_sym("<<") {
             let (items, cond) = self.parse_pushes()?;
+            if self.at_word("forever") {
+                return Err(self.err(format!("`forever` on a declaration is not built: declare the stream and wire it on a line of its own, `{}$ << x$ forever`", name)));
+            }
             Some(Init::Pushes { items, cond })
         } else {
             None
@@ -755,6 +798,36 @@ impl<'a> Parser<'a> {
         }
         let cond = if self.eat_word("while") { Some(self.parse_expr()?) } else { None };
         Ok((items, cond))
+    }
+
+    /// The words after a push's items and its `while`: `if (c)`, the
+    /// push made where the condition holds, and then `forever`, the
+    /// whole line standing (fm3 question 79). `if` first and `forever`
+    /// last; `while` with either is refused
+    fn push_words(&mut self, repeated: bool) -> Result<(Option<Expr>, bool), Error> {
+        let mut only = None;
+        if self.eat_word("if") {
+            if repeated {
+                return Err(self.err(WHILE_OR_IF));
+            }
+            only = Some(self.parse_expr()?);
+            if self.at_word("while") {
+                return Err(self.err(WHILE_OR_IF));
+            }
+            if self.at_word("then") {
+                return Err(self.err("an `if` after a push's items says whether the push happens, and takes no `then`: the value that is one thing or another is written first, `x$ << if (c) then (a) else (b)`"));
+            }
+        }
+        let forever = self.eat_word("forever");
+        if forever {
+            if repeated || self.at_word("while") {
+                return Err(self.err("a push takes `while` or `forever`, not both: `while` is `forever` with an end"));
+            }
+            if self.at_word("if") {
+                return Err(self.err("`forever` is the last word of its line: `x$ << item if (condition) forever`"));
+            }
+        }
+        Ok((only, forever))
     }
 
     // --- statements ---
@@ -916,22 +989,12 @@ impl<'a> Parser<'a> {
                 // 79). An `if` here stands where a value has ended, so
                 // it is the push's word; one that begins an item is the
                 // expression, and `parse_primary` has taken it
-                if self.eat_word("if") {
-                    if cond.is_some() {
-                        return Err(self.err(WHILE_OR_IF));
-                    }
-                    let c = self.parse_expr()?;
-                    if self.at_word("while") {
-                        return Err(self.err(WHILE_OR_IF));
-                    }
-                    if self.at_word("then") {
-                        return Err(self.err("an `if` after a push's items says whether the push happens, and takes no `then`: the value that is one thing or another is written first, `x$ << if (c) then (a) else (b)`"));
-                    }
-                    self.expect_newline()?;
-                    return Ok(Stmt::If { cond: c, then: vec![Stmt::Push { target, items, cond: None, existing: false, line }], els: None, line, on_push: true });
-                }
+                let (only, forever) = self.push_words(cond.is_some())?;
                 self.expect_newline()?;
-                Ok(Stmt::Push { target, items, cond, existing: false, line })
+                if let Some(c) = only {
+                    return Ok(Stmt::If { cond: c, then: vec![Stmt::Push { target, items, cond: None, existing: false, forever, line }], els: None, line, on_push: true });
+                }
+                Ok(Stmt::Push { target, items, cond, existing: false, forever, line })
             }
             // `existing o$ << x` inside a `<<` method: the definition
             // below this one in the chain, which no `existing name(...)`
@@ -947,7 +1010,7 @@ impl<'a> Parser<'a> {
                     return Err(self.err("`existing x$ << item` passes one item to the definition below"));
                 }
                 self.expect_newline()?;
-                Ok(Stmt::Push { target, items, cond, existing: true, line })
+                Ok(Stmt::Push { target, items, cond, existing: true, forever: false, line })
             }
             Some(Tok::Indent) => Err(self.err("an indented line with nothing to belong to")),
             _ => {

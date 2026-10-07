@@ -8,7 +8,7 @@ int size = 4
 int z$ = count down from (size)
 int left$
 int right$
-right$ << left$ << 0
+right$ << left$ << 0 forever
 int v$
 int r$ = runs(v$)
 int hop$

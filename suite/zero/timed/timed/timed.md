@@ -7,13 +7,14 @@ layer: runtime
 Parity hop 8 (questions 39 and 52, fm3 log 93): hello's countdown with `doubled`, the task from `suite/zero/tasks`, between the stream and the output.
 
 ## overview
-`int i$ at (1 hz)` is a stream at one hertz. `int d$ = doubled(i$)` wires a task to it, and `out$ << d$ << "\n"` wires what the task makes into the output. `count down` pushes `[10 through 1]` into `i$`. Each number is pushed and then its second passes; whatever a consumer does with an item it does at that item's time, so `doubled` doubles the 10 at 0 s and the edge writes `20` at 0 s, the 9 is pushed at 1 s and `18` is written at 1 s, and so on. The rate survives the task.
+`int i$ at (1 hz)` is a stream at one hertz. `int d$ = doubled(i$)` wires a task to it, and `out$ << d$ << "\n" forever` wires what the task makes into the output. `count down` pushes `[10 through 1]` into `i$`. Each number is pushed and then its second passes; whatever a consumer does with an item it does at that item's time, so `doubled` doubles the 10 at 0 s and the edge writes `20` at 0 s, the 9 is pushed at 1 s and `18` is written at 1 s, and so on. The rate survives the task.
 
 ## interface
 - `doubled (x$)` reads a stream and pushes each item doubled.
 - `count down` pushes ten numbers into `i$`.
 - `launch` counts down and then writes `liftoff`.
 - `late` pushes one item into `half$`, a stream at `2 hz` wired straight to the output, then one into `i$`, then writes `done`.
+- `ticks` is a clock that ends: `tick$ << 0 << (tick$ + 1) while (_ < 4)` into a stream at `1 hz` wired straight to the output.
 - `one` pushes one item into `i$`; `later` pushes one into `half$`, calls `one`, and writes `done`.
 
 ## rules
@@ -23,6 +24,7 @@ Parity hop 8 (questions 39 and 52, fm3 log 93): hello's countdown with `doubled`
 - Before this was built the ten numbers were pushed in one go and the task took them all at once, so every piece was written at 0 s.
 - An item lands on its stream's beat (question 52, fm3 log 98): `i$` has a slot every second from 0 s. `late` writes `0` at 0 s through `half$`, which takes half a second, so it pushes `4` into `i$` at 0.5 s; the item lands in `i$`'s next slot, at 1 s, where `doubled` and the edge write `8`; the slot ends at 2 s, and `done` is written then. Before the beat was built `8` was written at 500 ms and `done` at 1.5 s.
 - The compiler knows what the clock is a whole multiple of at each point in a function (question 56, fm3 log 99), and a push that is on its stream's beat by that is not checked: `count down` is only ever called where the clock is a multiple of a second, so it rounds nothing. `one` is called by a case at 0 s, where its `6` is written at once, and by `later` after the push into `half$` has left the clock at 0.5 s; one of its callers is off the beat, so `one` still finds `i$`'s next slot, and `later` writes `6` at 1 s and `done` at 2 s. A compiler that looked only at the case's call would write it at 500 ms.
+- A stream said by a rule from its own last item, at a rate, counts time (fm3 question 79, log 141): `ticks` pushes `0` and then one more than the stream's latest for as long as the candidate is under 4, each item lasting its second, so `0`, `1`, `2` and `3` are written at 0 s, 1 s, 2 s and 3 s. It is a function's line and it ends by its `while`. The line that stands, `tick$ << tick$ + 1 forever`, is a clock with no end, and is refused as not built: it needs a schedule ordered by time.
 - The cases give the numbers `at 1 hz`: the lines of the text, one a second from 0 s (question 53). The last piece of a result is written without its final newline, as a plain text result is, so `count down()`'s ends `2` and `launch()`'s ends `2\n` before `liftoff`.
 
 ## testing
@@ -31,3 +33,4 @@ Parity hop 8 (questions 39 and 52, fm3 log 93): hello's countdown with `doubled`
 >late() → "0\n" at 0 s, "8\n" at 1 s, "done" at 2 s
 >one() → "6" at 0 s
 >later() → "0\n" at 0 s, "6\n" at 1 s, "done" at 2 s
+>ticks() → "0\n1\n2\n3" at 1 hz

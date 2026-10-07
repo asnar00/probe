@@ -5,10 +5,12 @@ int pair$
 int part$
 int heard$
 int raw$
+int level$
 int sum = 0
-out$ << pair$ << " "
-out$ << pair$ << "\n"
-heard$ << part$
+out$ << pair$ << " " forever
+out$ << pair$ << "\n" forever
+heard$ << part$ forever
+out$ << level$ << "\n" if (level$ > 2) forever
 tally(heard$)
 
 on count down from (int k)
@@ -34,6 +36,9 @@ on drum (int k)
 
 on twice()
     pair$ << 1 << 2 << 3
+
+on levels()
+    level$ << 1 << 5 << 2 << 7
 
 on tally (int x$)
     loop

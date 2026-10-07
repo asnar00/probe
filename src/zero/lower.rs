@@ -2211,7 +2211,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
             match d {
                 Decl::Var(v) => l.collect_nodes(v, &f.name, &f.code.file)?,
                 Decl::Wire(e) => l.collect_wire(e, &f.name, &f.code.file)?,
-                Decl::Edge { target, items, cond, line } => l.collect_edge(target, items, cond.as_ref(), *line, &f.name, &f.code.file)?,
+                Decl::Edge { target, items, cond, only, forever, line } => l.collect_edge(target, items, cond.as_ref(), only.as_ref(), *forever, *line, &f.name, &f.code.file)?,
                 _ => {}
             }
         }
@@ -4455,7 +4455,8 @@ impl Lowerer {
     /// 57), so the scheduler moves each item as it arrives, by the
     /// dispatch a push in a function uses, and pushes the rest of the
     /// chain after each item (question 38)
-    fn collect_edge(&mut self, target: &Expr, items: &[Expr], cond: Option<&Expr>, line: usize, feature: &str, file: &str) -> Result<(), Error> {
+    #[allow(clippy::too_many_arguments)]
+    fn collect_edge(&mut self, target: &Expr, items: &[Expr], cond: Option<&Expr>, only: Option<&Expr>, forever: bool, line: usize, feature: &str, file: &str) -> Result<(), Error> {
         let ExprKind::Seq(tname) = &target.kind else {
             return Err(lex::error(file, line, "`<<` pushes into a stream, named `x$`"));
         };
@@ -4468,14 +4469,37 @@ impl Lowerer {
         if self.input_device(tname, None) {
             return Err(lex::error(file, line, INPUT_REFUSED));
         }
+        let said = format!("{}$ << {}", tname, items.iter().map(phrase_text).collect::<Vec<_>>().join(" << "));
+        // a stream feeding itself for ever (fm3 question 79, log 141):
+        // each item it pushes is something new on its own right. With
+        // no rate nothing paces it; with one it is a clock, which the
+        // edge's machinery cannot give: an item's edges are called
+        // before the step that follows its push, so the item a self
+        // edge begot would be shown a beat early, a call inside a call
+        if forever && items.iter().chain(only).any(|e| mentions_seq(e, tname)) {
+            return Err(lex::error(file, line, match self.rates.get(tname) {
+                None => format!("a push into '{}$' that reads '{}$' and stands forever would never end: each item it pushes is something new on its own right, and '{}$' has no rate to pace it. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `{} {}$ at (1 hz)`", tname, tname, tname, zero_ty(telem), tname),
+                Some(_) => format!("a stream that feeds itself forever at a rate is a clock, and is not built: it needs a schedule ordered by time, and a store's clock is still moved by the code that pushes. Until then a function's push says it with an end, `{}$ << 0 << ({}$ + 1) while (_ < 4)`", tname, tname),
+            }));
+        }
         let ExprKind::Seq(sname) = &items[0].kind else {
-            return Err(lex::error(file, items[0].line, format!("a line at feature scope pushing into '{}$' is an edge, `{}$ << x$`, and its first item is a stream; items are pushed on the declaration, `{} {}$ << ...`", tname, tname, zero_ty(telem), tname)));
+            if forever {
+                return Err(lex::error(file, items[0].line, format!("nothing on the right of '{}' is a stream: `forever` makes a push happen again whenever what is on its right has something new, and a value never has", said)));
+            }
+            return Err(lex::error(file, items[0].line, format!("a push at feature scope happens once, when the store starts (fm3 question 79), and on a line of its own that is not built: a stream's first items go on its declaration, `{} {}$ << ...`, and a line that stands is wiring, `{}$ << x$ forever`", zero_ty(telem), tname, tname)));
         };
         if cond.is_some() {
-            return Err(lex::error(file, line, "an edge has no `while`: it moves every item its stream receives"));
+            return Err(lex::error(file, line, "a line at feature scope that stands until its `while` fails is not built: wiring moves every item its stream receives, `x$ << y$ forever`"));
         }
         if sname == tname {
             return Err(lex::error(file, line, format!("'{}$' would feed itself", tname)));
+        }
+        // with no `forever` the line is one push, when the store starts,
+        // of what the stream holds then (question 79). Refused for this
+        // hop (question 80): every such line there is was written as
+        // wiring, and a silent change of what it does is the worst outcome
+        if !forever {
+            return Err(lex::error(file, line, once_or_wiring(&said, sname, tname)));
         }
         let Some(sf) = self.fvar(sname).cloned() else {
             return Err(lex::error(file, items[0].line, format!("'{}$' is not a feature-scope stream: an edge reads one", sname)));
@@ -4487,6 +4511,12 @@ impl Lowerer {
         self.reach(&format!("{}$", sname), &sf.feature, file, items[0].line)?;
         let name = format!("__edge{}", self.edges.len() + 1);
         let seq = |n: &str| Expr { kind: ExprKind::Seq(n.to_string()), line };
+        // a standing filter, `e$ << x$ if (x$ > 0) forever`: the push
+        // under its condition, as `if` on a push is in a function
+        let under = |push: Stmt| match only {
+            Some(c) => Stmt::If { cond: c.clone(), then: vec![push], els: None, line, on_push: true },
+            None => push,
+        };
         // out of a stream with no storage (question 50, fm3 log 92) the
         // edge is a function of one item, its body the chain with the
         // item first, lowered as a plain function's push: a push into
@@ -4500,7 +4530,7 @@ impl Lowerer {
                 name: vec![NamePart::Word(name.clone()), NamePart::Group],
                 groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, line }]],
                 task: false,
-                body: vec![Stmt::Push { target: seq(tname), items: pushed, cond: None, existing: false, line }],
+                body: vec![under(Stmt::Push { target: seq(tname), items: pushed, cond: None, existing: false, forever: false, line })],
                 platform: Vec::new(),
             };
             self.declare(&fd, feature, file)?;
@@ -4518,7 +4548,7 @@ impl Lowerer {
         let mut pushed = vec![Expr { kind: ExprKind::Name("__item".into()), line }];
         pushed.extend(items[1..].iter().cloned());
         let advance = phrase(vec![Part::Word("advance".into()), Part::Value(seq(sname)), Part::Word("by".into()), Part::Args(vec![Arg { name: None, value: count }])]);
-        let body = vec![Stmt::Push { target: seq(tname), items: pushed, cond: None, existing: false, line }];
+        let body = vec![under(Stmt::Push { target: seq(tname), items: pushed, cond: None, existing: false, forever: false, line })];
         let fd = FnDecl {
             line,
             results: Vec::new(),
@@ -4536,8 +4566,7 @@ impl Lowerer {
         self.edge_fns.insert(name, sname.clone());
         let info = self.funcs[i].clone();
         self.node_inputs.insert(sname.clone());
-        let text = format!("{}$ << {}", tname, items.iter().map(phrase_text).collect::<Vec<_>>().join(" << "));
-        self.nodes.push(Node { info, out: None, args: vec![items[0].clone()], hz: 0, feature: feature.to_string(), file: file.to_string(), text });
+        self.nodes.push(Node { info, out: None, args: vec![items[0].clone()], hz: 0, feature: feature.to_string(), file: file.to_string(), text: said });
         self.edges.push((fd, feature.to_string(), file.to_string()));
         Ok(())
     }
@@ -4758,6 +4787,15 @@ impl Lowerer {
                                     self.resident_init(v, &ty, e, &mut b)?
                                 }
                                 Some(Init::Pushes { items, cond }) => {
+                                    // `int b$ << a$`: a stream on the right and
+                                    // no `forever`, refused as the line of its
+                                    // own is (fm3 question 80)
+                                    if let Some(Expr { kind: ExprKind::Seq(a), .. }) = items.first() {
+                                        if a != &v.name && matches!(self.fvar(a).map(|f| &f.ty), Some(Ty::Stream(_))) {
+                                            let said = format!("{}$ << {}", v.name, items.iter().map(phrase_text).collect::<Vec<_>>().join(" << "));
+                                            return Err(lex::error(&b.file, v.line, format!("{}; here, declare the stream, `{} {}$`, and wire it on a line of its own", once_or_wiring(&said, a, &v.name), v.ty, v.name)));
+                                        }
+                                    }
                                     let s = self.empty_stream(v, &ty, &mut b, None)?;
                                     // the items before the first task call
                                     // are pushed here; the calls are nodes
@@ -6518,10 +6556,14 @@ impl Lowerer {
                 b.depth -= 1;
                 Ok(false)
             }
-            Stmt::Push { target, items, cond, existing, line } => {
+            Stmt::Push { target, items, cond, existing, forever, line } => {
                 let ExprKind::Seq(n) = &target.kind else {
                     return Err(lex::error(&file, *line, "`<<` pushes into a stream, named `x$`"));
                 };
+                // `forever` in a function (fm3 question 79, log 141)
+                if *forever {
+                    return Err(lex::error(&file, *line, "`forever` in a function is a line that would set up a standing connection each time the function runs: not built. Wire it at feature scope, where it stands from the start"));
+                }
                 if *existing {
                     return self.existing_push(n, &items[0], b, *line).map(|_| false);
                 }
@@ -9354,9 +9396,9 @@ fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str)
                 }
                 Decl::Var(v) => mentions_init(v, &none, &|p, b| call(p, b, &f.code.file), &mut named),
                 Decl::Wire(e) => mentions_in(e, &none, &|p, b| call(p, b, &f.code.file), &mut named),
-                Decl::Edge { target, items, cond, .. } => {
+                Decl::Edge { target, items, cond, only, .. } => {
                     items.iter().skip(1).for_each(|e| mentions_in(e, &none, &|p, b| call(p, b, &f.code.file), &mut named));
-                    cond.iter().for_each(|e| mentions_in(e, &none, &|p, b| call(p, b, &f.code.file), &mut named));
+                    cond.iter().chain(only.iter()).for_each(|e| mentions_in(e, &none, &|p, b| call(p, b, &f.code.file), &mut named));
                     if let (ExprKind::Seq(t), Some(Expr { kind: ExprKind::Seq(s), .. })) = (&target.kind, items.first()) {
                         wires.push((s.clone(), t.clone()));
                         pushed.insert(t.clone());
@@ -9447,7 +9489,7 @@ fn quietly_read(features: &[super::store::FeatureDoc], s: &str, call: Called) ->
                 Decl::Fn(fd) => block(&fd.body, s, file, call),
                 Decl::Var(v) => v.name == s || init(v, s, file, call),
                 Decl::Wire(e) => quiet(e, s, file, call),
-                Decl::Edge { target, items, cond, .. } => quiet(target, s, file, call) && items.iter().chain(cond.iter()).all(|e| quiet(e, s, file, call)),
+                Decl::Edge { target, items, cond, only, .. } => quiet(target, s, file, call) && items.iter().chain(cond.iter()).chain(only.iter()).all(|e| quiet(e, s, file, call)),
                 Decl::Type(_) => true,
             })
     })
@@ -9887,6 +9929,23 @@ fn phrase_text(e: &Expr) -> String {
         }
     }
     expr(e)
+}
+
+/// does an expression name the stream anywhere in it?
+fn mentions_seq(e: &Expr, name: &str) -> bool {
+    let mut found = false;
+    super::zeroic::walk(e, &mut |x| {
+        found |= matches!(&x.kind, ExprKind::Seq(n) if n == name);
+        true
+    });
+    found
+}
+
+/// The refusal of a feature-scope `<<` with a stream on its right and
+/// no `forever` (fm3 questions 79 and 80): both things it could be
+/// meant as, and what to write for each
+fn once_or_wiring(said: &str, source: &str, target: &str) -> String {
+    format!("'{}' has a stream on its right and no `forever`. If it is wiring, everything that arrives in '{}$' going on into '{}$', write `{} forever`. If it is one push when the store starts, of what '{}$' holds then, that is what the line says (fm3 question 79) and it is not built: push it from a function", said, source, target, said, source)
 }
 
 fn stmt_line(s: &Stmt) -> usize {
