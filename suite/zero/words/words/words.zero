@@ -1,0 +1,73 @@
+int up$
+int seen$ << 0
+int beat$ at (1 hz)
+int src$
+int first$
+int kept$
+int some$
+out$ << up$ << "\n" forever
+out$ << beat$ << "\n" forever
+first$ << src$ (3) times
+out$ << first$ << "\n" forever
+some$ << kept$ (2) times
+out$ << some$ << "\n" forever
+
+on hello thrice()
+    out$ << "hello\n" (3) times
+
+on up to (int k)
+    up$ << 0
+    up$ << up$ + 1 (k) times
+
+on chained()
+    up$ << 0 << (up$ + 1) (4) times
+
+on none()
+    up$ << 7 (0) times
+    out$ << "none"
+
+on (int n) = twice (int k)
+    n = k * 2
+
+on called (int k)
+    up$ << twice (k) (3) times
+
+on summed (int a)
+    up$ << a + twice (a) (2) times
+
+on bracketed (int a)
+    up$ << (a) (3) times
+
+on maybe (int c)
+    up$ << 5 if (c > 0) (2) times
+    out$ << "done"
+
+on (int n) = three (int k) times
+    n = 3 * k
+
+on bump (int k) times
+    seen$ << seen$ + 1 (k) times
+
+on (int n) = bumped by (int k)
+    bump (k) times
+    n = seen$
+
+on the name()
+    up$ << (three (4) times)
+
+on the name twice()
+    up$ << three (4) times (2) times
+
+on a range()
+    up$ << [1 through 2] (2) times
+
+on beats()
+    beat$ << 0
+    beat$ << beat$ + 1 (3) times
+
+on first three()
+    src$ << [1 through 5]
+
+on first two()
+    kept$ << [5 through 9]
+    out$ << count kept$

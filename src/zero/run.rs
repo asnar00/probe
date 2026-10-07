@@ -1019,6 +1019,87 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `(n) times` on a push (fm3 question 79, log 147): the bracket
+    /// before the word is the count and never an argument, unless a
+    /// declared name has the word there; every line tried, and each
+    /// refusal with its message
+    #[test]
+    fn a_push_takes_a_count() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-times-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (3) → 1\n").unwrap();
+        let head = "int a$\nint b$\nint c$\nb$ << a$ forever\n";
+        let rest = "\non (int n) = twice (int k)\n    n = k * 2\n\non (int n) = three (int k) times\n    n = 3 * k\n\non (int n) = f (int k)\n    a$ << k\n    n = count b$ + count c$\n\non g (int k)\n    ";
+        let with = |lines: &str, body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}{}{}\n", head, lines, rest, body)).unwrap();
+            emit(&dir)
+        };
+        let g = |body: &str| -> String {
+            let ir = with("", body).unwrap_or_else(|e| panic!("{}: {}", body, e));
+            let at = ir.find("\nfn g(k: int)\n").unwrap_or_else(|| panic!("{}: no g", body));
+            let end = ir[at + 1..].find("\nfn ").map_or(ir.len(), |n| at + 1 + n);
+            ir[at + 1..end].to_string()
+        };
+        let looped = |n: &str, item: &str| format!("    loop(_3: int = 0)\n        _4: u1 = cmp.lt _3, {}\n        if _4\n        else\n            break\n{}", n, item);
+        // a call does not swallow the count, alone or at the right of
+        // an operator; a bracketed item keeps its bracket
+        assert!(g("b$ << twice (k) (3) times").contains(&looped("3", "        _5: int = twice(k)\n        push_queue_open(_2, _5)\n        _6: int = add _3, 1\n        continue _6\n")));
+        assert!(g("b$ << k + twice (k) (3) times").contains(&looped("3", "        _5: int = twice(k)\n        _6: int = add k, _5\n        push_queue_open(_2, _6)\n")));
+        assert!(g("b$ << (k) (3) times").contains(&looped("3", "        push_queue_open(_2, k)\n")));
+        // a declared name keeps its word: as a statement, as an item in
+        // brackets, and before a count of its own
+        assert!(g("three (k) times").contains("    _1: int = three_times(k)\n    ret"));
+        assert!(g("b$ << (three (k) times)").contains("    _3: int = three_times(k)\n    push_queue_open(_2, _3)\n"));
+        assert!(g("b$ << three (k) times (2) times").contains(&looped("2", "        _5: int = three_times(k)\n        push_queue_open(_2, _5)\n")));
+        // the count is worked out once, before the first push, and a
+        // count that is worked out is checked; a chain's count covers
+        // its last item; `if` is tested once, before the count
+        let ir = g("b$ << 7 << twice (k) (k) times");
+        let (check, first, lp) = (ir.find("cmp.ge k, 0").unwrap(), ir.find("push_queue_open").unwrap(), ir.find("loop(").unwrap());
+        assert!(check < first && first < lp && ir[lp..].contains("cmp.lt _10, k"), "{}", ir);
+        let ir = g("b$ << k if (k > 0) (2) times");
+        assert!(ir.contains("    _1: u1 = cmp.gt k, 0\n    if _1\n") && ir.contains("        loop(_4: int = 0)\n            _5: u1 = cmp.lt _4, 2\n"), "{}", ir);
+        // on a declaration, as `while` may be
+        assert!(g("int d$ << 0 << (d$ + 1) (4) times").contains("    loop(_2: int = 0)\n        _3: u1 = cmp.lt _2, 4\n"));
+        // a line that stands for its first three: the count a field of
+        // the context, the push and the bump under "fewer so far"
+        let ir = with("c$ << a$ (3) times\n", "c$ << 1").unwrap();
+        assert!(ir.contains("    __times2: int\n") && ir.contains("    _2: int = get _1, __times2\n    _3: u1 = cmp.lt _2, 3\n    if _3\n"), "{}", ir);
+        let ambiguous = "'... (k) times' at the end of a push reads two ways: a function whose name ends `(...) times`, called and pushed once, or what stands before the bracket pushed that many times. For the call put it in brackets, `x$ << (name (k) times)`; for the count put the item in brackets, `x$ << (item) (k) times`";
+        let form = "a push's count is the bracketed group before `times`, after the item: `x$ << item (n) times`";
+        for (lines, body, said) in [
+            ("", "b$ << three (k) times", format!("h.zero:17: {}", ambiguous)),
+            ("", "b$ << three (k) times if (k > 0)", format!("h.zero:17: {}", ambiguous)),
+            ("", "b$ << k times", format!("h.zero:17: {}", form)),
+            ("", "b$ << (3) times", format!("h.zero:17: {}", form)),
+            ("", "b$ << k (k, 2) times", format!("h.zero:17: {}", form)),
+            ("", "int x = k (3) times", "h.zero:17: `times` is a word a push takes, `x$ << item (n) times`".to_string()),
+            ("", "b$ << k (-1) times", "h.zero:17: a push cannot happen -1 times".to_string()),
+            ("", "b$ << k (1.5) times", "h.zero:17: a decimal where an int is wanted".to_string()),
+            ("", "b$ << k (2) times if (k > 0)", "h.zero:17: `if` comes first on a push, then how often: `x$ << item if (condition) (n) times`".to_string()),
+            ("", "b$ << k (2) times while (_ < 3)", "h.zero:17: a push takes `(n) times` or `while`, not both".to_string()),
+            ("", "b$ << k while (_ < 3) (2) times", "h.zero:17: a push takes `while` or `(n) times`, not both".to_string()),
+            ("", "b$ << k (2) times forever", "h.zero:17: a push takes `(n) times` or `forever`, not both".to_string()),
+            ("", "b$ << k forever (2) times", "h.zero:17: a push takes `forever` or `(n) times`, not both".to_string()),
+            ("", "b$ << k (2) times (3) times", "h.zero:17: a push takes one `(n) times`".to_string()),
+            // on a line that stands: a count worked out, a count below
+            // zero, a count with `if`, a count with `forever`
+            ("int n = 3\nc$ << a$ (n) times\n", "c$ << 1", "h.zero:6: the count of a line that stands is a number written out, `c$ << a$ (3) times`: a count that is worked out is worked out once, and a line that stands from the start has no one moment for it. Not built".to_string()),
+            ("c$ << a$ (-2) times\n", "c$ << 1", "h.zero:5: a push cannot happen -2 times".to_string()),
+            ("c$ << a$ if (a$ > 0) (3) times\n", "c$ << 1", "h.zero:5: `if` with a count on a line that stands is not built: 'c$ << a$ if (...) (3) times' could be the first 3 that pass, or those of the first 3 that pass".to_string()),
+            ("c$ << a$ (3) times forever\n", "c$ << 1", "h.zero:5: a push takes `(n) times` or `forever`, not both".to_string()),
+        ] {
+            let err = with(lines, body).expect_err(body);
+            assert!(err.ends_with(&said), "{}{}: {}", lines, body, err);
+        }
+        // in a stream processor, which has no loop
+        std::fs::write(dir.join("h/h.zero"), "int a$\nint d$ = dd(a$)\n\non (int d$) << dd (int x$)\n    d$ << x$ (2) times\n\non (int n) = f (int k)\n    a$ << k\n    n = count d$\n").unwrap();
+        let err = emit(&dir).expect_err("a processor");
+        assert!(err.ends_with("h.zero:5: `(n) times` on a push repeats it, which is a loop, and a stream processor has none: say the stream by a line of its own, or write `d$ << item if (condition)`"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A stream read only for its latest item is one word (fm3 question
     /// 70, log 143): a cell, a field of the context of the item's type,
     /// a push a store of it and a read a load, with no stream made. A

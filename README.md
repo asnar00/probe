@@ -298,6 +298,19 @@ on (int n) = bumped twice()
 
 `suite/zero/cells/cells/cells.zero:9` and `:18-24`. A `<<` sends once, each time its line runs, and a stream's name where one value is wanted is its latest item. A stream the store reads only so is a **cell**: one field of the context of the item's type, a push a store of it and a read a load, with no ring and nothing that can fill; `bump` lowers to the four lines an assigned variable did. Apply one more word to the stream, `count seen$`, and it is the queue it would have been, the name reading the same.
 
+The words after a push's items say how often it happens (fm3 question 79; `suite/zero/words`): `if (c)` first, only where the condition holds, and then one of `(n) times`, `while (c)` and `forever`.
+
+```
+on up to (int k)
+    up$ << 0
+    up$ << up$ + 1 (k) times
+
+on called (int k)
+    up$ << twice (k) (3) times
+```
+
+`suite/zero/words/words/words.zero:18-20` and `:32-33`. `(n) times` is n pushes, the count worked out once before the first and each push working its item out again, so `up to (4)` writes `0 1 2 3 4`; in a chain the count covers the last item, as `while` does. A bracketed group that stands directly before the word `times` is the count and never an argument, unless a declared function's name has `times` there, so `twice (k) (3) times` is `twice (k)` three times. At feature scope `first$ << src$ (3) times` is a line that stands for the first three items of `src$`, its count a number of the context kept for the line.
+
 ## Status
 
 What is here:

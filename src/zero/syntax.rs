@@ -32,7 +32,19 @@ pub enum Decl {
     /// (fm3 question 79): the line is kept without it so the lowering
     /// can say what it would mean. `only` is `if (c)` on it, a standing
     /// filter, with the source's own name already read as the item
-    Edge { target: Expr, items: Vec<Expr>, cond: Option<Expr>, only: Option<Expr>, forever: bool, line: usize },
+    Edge { target: Expr, items: Vec<Expr>, cond: Option<Expr>, word: Repeat, only: Option<Expr>, forever: bool, line: usize },
+}
+
+/// Which word a push's `cond` goes with (fm3 question 79, log 147):
+/// `while (c)`, tested before each push of the last item; `(n) times`,
+/// a count worked out once; `until (c)`, tested after each push. One
+/// field holds the expression for all three, so a pass that only asks
+/// what a push mentions reads it as it read a `while`
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Repeat {
+    While,
+    Times,
+    Until,
 }
 
 #[derive(Clone)]
@@ -114,7 +126,7 @@ pub enum Init {
     /// `Vec v(1, 2, 3)`, `Vec v(z = 3, x = 1)`
     Construct(Vec<Arg>),
     /// `int i$ << 1 << (i$ + 1) while (i$ < 5)`
-    Pushes { items: Vec<Expr>, cond: Option<Expr> },
+    Pushes { items: Vec<Expr>, cond: Option<Expr>, word: Repeat },
 }
 
 #[derive(Clone, Debug)]
@@ -147,7 +159,7 @@ pub enum Stmt {
     /// method — the one shape `existing name(...)` cannot spell
     /// `forever` is the word on it (fm3 question 79), which only a
     /// line at feature scope may take: kept so the refusal can say why
-    Push { target: Expr, items: Vec<Expr>, cond: Option<Expr>, existing: bool, forever: bool, line: usize },
+    Push { target: Expr, items: Vec<Expr>, cond: Option<Expr>, word: Repeat, existing: bool, forever: bool, line: usize },
     Expr { expr: Expr, line: usize },
 }
 
@@ -314,8 +326,10 @@ pub fn as_item(e: &Expr, stream: &str) -> Expr {
     Expr { kind, line: e.line }
 }
 
-/// the words a phrase stops at unless a declared name has them there
-const JOINERS: [&str; 3] = ["and", "or", "when"];
+/// the words a phrase stops at unless a declared name has them there.
+/// `times` is one since fm3 log 147: a push's count, `x$ << item (n)
+/// times`, and a word of a name only where a declared name has it
+const JOINERS: [&str; 4] = ["and", "or", "when", "times"];
 
 /// the words that end a phrase wherever they stand: a statement's own.
 /// `if` is one since fm3 question 79, the word a push takes after its
@@ -324,10 +338,20 @@ const ENDS_PHRASE: [&str; 7] = ["then", "else", "while", "if", "forever", "merge
 
 const WHILE_OR_IF: &str = "a push takes `while` or `if`, not both: `while` repeats the push, `if` says whether it happens";
 
+const COUNT_FORM: &str = "a push's count is the bracketed group before `times`, after the item: `x$ << item (n) times`";
+
 const NO_WHEN: &str = "`when` is not a word of zero: a push made where a condition holds is `x$ << item if (condition)`";
 
 fn join_key(w: &str, before: &[String]) -> String {
     format!("\u{0}{} {}", w, before.join(" "))
+}
+
+/// the words after a push's items: `if (c)`, and how often
+struct PushWords {
+    only: Option<Expr>,
+    cond: Option<Expr>,
+    word: Repeat,
+    forever: bool,
 }
 
 pub struct Parser<'a> {
@@ -455,6 +479,8 @@ impl<'a> Parser<'a> {
         } else if self.at_word("when") {
             // the word a push took before fm3 question 79
             Err(self.err(NO_WHEN))
+        } else if self.at_word("times") || self.count_ahead(None) {
+            Err(self.err("`times` is a word a push takes, `x$ << item (n) times`"))
         } else {
             Err(self.err(format!("expected the end of the line, found {}", self.found())))
         }
@@ -495,11 +521,11 @@ impl<'a> Parser<'a> {
             Some(Tok::Seq(_)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) => {
                 let line = self.line();
                 let target = self.parse_primary()?;
-                let (items, cond) = self.parse_pushes()?;
+                let items = self.parse_pushes()?;
                 if items.is_empty() {
                     return Err(self.err("nothing to push: an edge is `out$ << i$`"));
                 }
-                let (only, forever) = self.push_words(cond.is_some())?;
+                let PushWords { only, cond, word, forever } = self.push_words()?;
                 self.expect_newline()?;
                 // in the condition of a standing filter the source's
                 // own name is the item that has arrived
@@ -507,7 +533,7 @@ impl<'a> Parser<'a> {
                     (Some(c), Some(ExprKind::Seq(s))) => Some(as_item(&c, s)),
                     (c, _) => c,
                 };
-                Ok(Decl::Edge { target, items, cond, only, forever, line })
+                Ok(Decl::Edge { target, items, cond, word, only, forever, line })
             }
             _ => Err(self.err(format!("expected 'on', 'type', a variable declaration or a wiring at the top of the feature, found {}", self.found()))),
         }
@@ -775,11 +801,15 @@ impl<'a> Parser<'a> {
         } else if self.at_sym("(") {
             Some(Init::Construct(self.parse_args()?))
         } else if self.at_sym("<<") {
-            let (items, cond) = self.parse_pushes()?;
+            let items = self.parse_pushes()?;
             if self.at_word("forever") {
                 return Err(self.err(format!("`forever` on a declaration is not built: declare the stream and wire it on a line of its own, `{}$ << x$ forever`", name)));
             }
-            Some(Init::Pushes { items, cond })
+            if self.at_word("if") {
+                return Err(self.err(format!("a declaration's items take no `if`: declare the stream, `{} {}$`, and push on a line of its own", ty, name)));
+            }
+            let PushWords { cond, word, .. } = self.push_words()?;
+            Some(Init::Pushes { items, cond, word })
         } else {
             None
         };
@@ -787,10 +817,10 @@ impl<'a> Parser<'a> {
         Ok(VarDecl { line, scope, ty, name, seq, init, merge, rate })
     }
 
-    /// `<< a << b [while (c)]`; a bare `<<` at the end of the line is
-    /// refused by the lowering (log 38). A trip count is never written
-    /// here: a bound is a product setting (log 41)
-    fn parse_pushes(&mut self) -> Result<(Vec<Expr>, Option<Expr>), Error> {
+    /// `<< a << b`; a bare `<<` at the end of the line is refused by
+    /// the lowering (log 38). The words after the items are
+    /// `push_words`'
+    fn parse_pushes(&mut self) -> Result<Vec<Expr>, Error> {
         let mut items = Vec::new();
         while self.eat_sym("<<") {
             if self.at(&Tok::Newline) {
@@ -798,38 +828,114 @@ impl<'a> Parser<'a> {
             }
             items.push(self.parse_expr()?);
         }
-        let cond = if self.eat_word("while") { Some(self.parse_expr()?) } else { None };
-        Ok((items, cond))
+        Ok(items)
     }
 
-    /// The words after a push's items and its `while`: `if (c)`, the
-    /// push made where the condition holds, and then `forever`, the
-    /// whole line standing (fm3 question 79). `if` first and `forever`
-    /// last; `while` with either is refused
-    fn push_words(&mut self, repeated: bool) -> Result<(Option<Expr>, bool), Error> {
+    /// The words after a push's items (fm3 question 79): `if (c)`, the
+    /// push made where the condition holds, and then one of `(n)
+    /// times`, `while (c)` and `forever`, how often. `if` comes first;
+    /// two of the others on one push are refused, each pair by name
+    fn push_words(&mut self) -> Result<PushWords, Error> {
+        // a `times` with no bracket before it, the item's own included
+        if self.at_word("times") {
+            return Err(self.err(COUNT_FORM));
+        }
+        // the item ended, outside any bracket of its own, in a group
+        // and a declared name's `times`, and no count follows: the call
+        // pushed once, or what stands before the group pushed that
+        // often (fm3 log 147)
+        let ended = |k: usize| self.pos.checked_sub(k).and_then(|i| self.toks.get(i)).map(|t| &t.tok);
+        if matches!(ended(1), Some(Tok::Word(w)) if w == "times") && matches!(ended(2), Some(Tok::Sym(")"))) && !self.count_ahead(None) {
+            return Err(self.err("'... (k) times' at the end of a push reads two ways: a function whose name ends `(...) times`, called and pushed once, or what stands before the bracket pushed that many times. For the call put it in brackets, `x$ << (name (k) times)`; for the count put the item in brackets, `x$ << (item) (k) times`"));
+        }
         let mut only = None;
         if self.eat_word("if") {
-            if repeated {
-                return Err(self.err(WHILE_OR_IF));
-            }
             only = Some(self.parse_expr()?);
-            if self.at_word("while") {
-                return Err(self.err(WHILE_OR_IF));
-            }
             if self.at_word("then") {
                 return Err(self.err("an `if` after a push's items says whether the push happens, and takes no `then`: the value that is one thing or another is written first, `x$ << if (c) then (a) else (b)`"));
             }
         }
-        let forever = self.eat_word("forever");
-        if forever {
-            if repeated || self.at_word("while") {
-                return Err(self.err("a push takes `while` or `forever`, not both: `while` is `forever` with an end"));
+        let (mut cond, mut word, mut forever) = (None, Repeat::While, false);
+        let first = self.repeat_ahead();
+        match first {
+            Some("`(n) times`") => {
+                let args = self.parse_args()?;
+                let [Arg { name: None, value }] = args.as_slice() else {
+                    return Err(self.err(COUNT_FORM));
+                };
+                self.pos += 1;
+                (cond, word) = (Some(value.clone()), Repeat::Times);
+            }
+            Some("`while`") => {
+                self.pos += 1;
+                cond = Some(self.parse_expr()?);
+            }
+            Some(_) => {
+                self.pos += 1;
+                forever = true;
+            }
+            None => {}
+        }
+        if let Some(a) = first {
+            if self.at_word("times") {
+                return Err(self.err(COUNT_FORM));
+            }
+            if let Some(b) = self.repeat_ahead() {
+                return Err(self.err(match (a, b) {
+                    ("`while`", "`forever`") | ("`forever`", "`while`") => "a push takes `while` or `forever`, not both: `while` is `forever` with an end".to_string(),
+                    _ if a == b => format!("a push takes one {}", a),
+                    _ => format!("a push takes {} or {}, not both", a, b),
+                }));
             }
             if self.at_word("if") {
-                return Err(self.err("`forever` is the last word of its line: `x$ << item if (condition) forever`"));
+                return Err(self.err(match a {
+                    "`forever`" => "`forever` is the last word of its line: `x$ << item if (condition) forever`",
+                    "`while`" => WHILE_OR_IF,
+                    _ => "`if` comes first on a push, then how often: `x$ << item if (condition) (n) times`",
+                }));
             }
         }
-        Ok((only, forever))
+        if only.is_some() && word == Repeat::While && cond.is_some() {
+            return Err(self.err(WHILE_OR_IF));
+        }
+        Ok(PushWords { only, cond, word, forever })
+    }
+
+    /// which of a push's words of how often stands at the cursor
+    fn repeat_ahead(&self) -> Option<&'static str> {
+        match self.peek() {
+            Some(Tok::Sym("(")) if self.count_ahead(None) => Some("`(n) times`"),
+            Some(Tok::Word(w)) if w == "while" => Some("`while`"),
+            Some(Tok::Word(w)) if w == "forever" => Some("`forever`"),
+            _ => None,
+        }
+    }
+
+    /// Is the bracketed group at the cursor a push's count (fm3 log
+    /// 147)? It is where the word after its `)` is `times`, unless a
+    /// declared name has `times` after the words `before` of the
+    /// phrase the group would belong to
+    fn count_ahead(&self, before: Option<&[String]>) -> bool {
+        let mut depth = 0;
+        let mut i = self.pos;
+        loop {
+            match self.toks.get(i).map(|t| &t.tok) {
+                Some(Tok::Sym("(")) => depth += 1,
+                Some(Tok::Sym(")")) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(self.toks.get(i + 1).map(|t| &t.tok), Some(Tok::Word(w)) if w == "times") && !before.is_some_and(|b| self.joins("times", b));
+                    }
+                    if depth < 0 {
+                        return false;
+                    }
+                }
+                Some(Tok::Newline) | None => return false,
+                _ if depth == 0 => return false,
+                _ => {}
+            }
+            i += 1;
+        }
     }
 
     // --- statements ---
@@ -995,7 +1101,7 @@ impl<'a> Parser<'a> {
             }
             Some(Tok::Seq(_)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) => {
                 let target = self.parse_primary()?;
-                let (items, cond) = self.parse_pushes()?;
+                let items = self.parse_pushes()?;
                 if items.is_empty() {
                     return Err(self.err("nothing to push: `x$ << item`"));
                 }
@@ -1004,12 +1110,12 @@ impl<'a> Parser<'a> {
                 // 79). An `if` here stands where a value has ended, so
                 // it is the push's word; one that begins an item is the
                 // expression, and `parse_primary` has taken it
-                let (only, forever) = self.push_words(cond.is_some())?;
+                let PushWords { only, cond, word, forever } = self.push_words()?;
                 self.expect_newline()?;
                 if let Some(c) = only {
-                    return Ok(Stmt::If { cond: c, then: vec![Stmt::Push { target, items, cond: None, existing: false, forever, line }], els: None, line, on_push: true });
+                    return Ok(Stmt::If { cond: c, then: vec![Stmt::Push { target, items, cond, word, existing: false, forever, line }], els: None, line, on_push: true });
                 }
-                Ok(Stmt::Push { target, items, cond, existing: false, forever, line })
+                Ok(Stmt::Push { target, items, cond, word, existing: false, forever, line })
             }
             // `existing o$ << x` inside a `<<` method: the definition
             // below this one in the chain, which no `existing name(...)`
@@ -1017,15 +1123,15 @@ impl<'a> Parser<'a> {
             Some(Tok::Word(w)) if w == "existing" && matches!(self.peek_at(1), Some(Tok::Seq(_))) && matches!(self.peek_at(2), Some(Tok::Sym("<<"))) => {
                 self.pos += 1;
                 let target = self.parse_primary()?;
-                let (items, cond) = self.parse_pushes()?;
-                if cond.is_some() {
+                let items = self.parse_pushes()?;
+                if self.at_word("while") {
                     return Err(self.err("`existing x$ << item` takes no `while`: it calls the definition below once"));
                 }
                 if items.len() != 1 {
                     return Err(self.err("`existing x$ << item` passes one item to the definition below"));
                 }
                 self.expect_newline()?;
-                Ok(Stmt::Push { target, items, cond, existing: true, forever: false, line })
+                Ok(Stmt::Push { target, items, cond: None, word: Repeat::While, existing: true, forever: false, line })
             }
             Some(Tok::Indent) => Err(self.err("an indented line with nothing to belong to")),
             _ => {
@@ -1352,7 +1458,10 @@ impl<'a> Parser<'a> {
                     words.push(w.clone());
                     parts.push(Part::Word(w));
                 }
-                Some(Tok::Sym("(")) => parts.push(Part::Args(self.parse_args()?)),
+                // a bracket before `times` is a push's count, not this
+                // phrase's argument, unless a declared name has the
+                // word here (fm3 log 147)
+                Some(Tok::Sym("(")) if !self.count_ahead(Some(&words)) => parts.push(Part::Args(self.parse_args()?)),
                 Some(Tok::Seq(w)) => {
                     // a bare sequence argument, not the start of a phrase
                     let line = self.line();

@@ -18,7 +18,7 @@
 
 use super::lex::{self, Error};
 use super::store::{Case, Expect, Mark, Store};
-use super::syntax::{Arg, Decl, Expr, ExprKind, FnDecl, Init, LoopInto, NamePart, Part, Stmt, TypeKind};
+use super::syntax::{Arg, Decl, Expr, ExprKind, FnDecl, Init, LoopInto, NamePart, Part, Repeat, Stmt, TypeKind};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -893,7 +893,7 @@ impl<'a> Pushes<'a> {
         match &v.init {
             Some(Init::Value(e)) => self.expr(e, bound, out, own),
             Some(Init::Construct(args)) => args.iter().for_each(|a| self.expr(&a.value, bound, out, own)),
-            Some(Init::Pushes { items, cond }) => {
+            Some(Init::Pushes { items, cond, .. }) => {
                 items.iter().for_each(|e| self.expr(e, bound, out, own));
                 cond.iter().for_each(|e| self.expr(e, bound, out, own));
             }
@@ -1291,7 +1291,7 @@ impl<'a> Beat<'a> {
                 match &v.init {
                     Some(Init::Value(e)) if !wired(e) => self.events_expr(e, None, &Scope::new(), &mut inits),
                     Some(Init::Construct(args)) => args.iter().for_each(|a| self.events_expr(&a.value, None, &Scope::new(), &mut inits)),
-                    Some(Init::Pushes { items, cond }) => {
+                    Some(Init::Pushes { items, cond, .. }) => {
                         inits.push(Ev::Op);
                         items.iter().chain(cond.iter()).filter(|e| !wired(e)).for_each(|e| self.events_expr(e, None, &Scope::new(), &mut inits));
                     }
@@ -1538,7 +1538,7 @@ impl<'a> Beat<'a> {
         match &v.init {
             Some(Init::Value(e)) => self.events_expr(e, d, scope, out),
             Some(Init::Construct(args)) => args.iter().for_each(|a| self.events_expr(&a.value, d, scope, out)),
-            Some(Init::Pushes { items, cond }) => {
+            Some(Init::Pushes { items, cond, .. }) => {
                 out.push(Ev::Op);
                 items.iter().chain(cond.iter()).for_each(|e| self.events_expr(e, d, scope, out));
             }
@@ -1758,7 +1758,7 @@ impl<'a> Beat<'a> {
                 }
                 g
             }
-            Some(Init::Pushes { items, cond }) => self.flow_again(&items.iter().chain(cond.iter()).collect::<Vec<_>>(), g, d, scope),
+            Some(Init::Pushes { items, cond, .. }) => self.flow_again(&items.iter().chain(cond.iter()).collect::<Vec<_>>(), g, d, scope),
             None => g,
         }
     }
@@ -2258,7 +2258,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
             match d {
                 Decl::Var(v) => l.collect_nodes(v, &f.name, &f.code.file)?,
                 Decl::Wire(e) => l.collect_wire(e, &f.name, &f.code.file)?,
-                Decl::Edge { target, items, cond, only, forever, line } => l.collect_edge(target, items, cond.as_ref(), only.as_ref(), *forever, *line, &f.name, &f.code.file)?,
+                Decl::Edge { target, items, cond, word, only, forever, line } => l.collect_edge(target, items, cond.as_ref(), *word, only.as_ref(), *forever, *line, &f.name, &f.code.file)?,
                 _ => {}
             }
         }
@@ -2278,7 +2278,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
                         arrivals(&fd.body, &bound, &bytes, &mut counts);
                     }
                     Decl::Var(v) => {
-                        if let Some(Init::Pushes { items, cond }) = &v.init {
+                        if let Some(Init::Pushes { items, cond, .. }) = &v.init {
                             if let Some(b) = bytes(&v.name) {
                                 arrival(&v.name, items, cond.as_ref(), b, &mut counts);
                             }
@@ -4539,7 +4539,7 @@ impl Lowerer {
                 let Decl::Var(v) = d else { continue };
                 let plain = match &v.init {
                     None => true,
-                    Some(Init::Pushes { items, cond: None }) => items.iter().all(|e| !matches!(self.task_call(e, None, &f.code.file), Ok(Some(_)) | Err(_))),
+                    Some(Init::Pushes { items, cond: None, .. }) => items.iter().all(|e| !matches!(self.task_call(e, None, &f.code.file), Ok(Some(_)) | Err(_))),
                     _ => false,
                 };
                 let item = self.fvar(&v.name).is_some_and(|x| matches!(&x.ty, Ty::Stream(e) if **e == Ty::string() || !matches!(**e, Ty::Stream(_) | Ty::None)));
@@ -4651,20 +4651,31 @@ impl Lowerer {
     /// not one value of the stream's type: a block, a task, something a
     /// `<<` method takes. An item of a push is not a place where one
     /// value is wanted, as it is not for a stream
-    fn push_cell(&mut self, name: &str, items: &[Expr], cond: Option<&Expr>, b: &mut Body, line: usize) -> Result<bool, Error> {
+    fn push_cell(&mut self, name: &str, items: &[Expr], cond: Option<&Expr>, word: Repeat, b: &mut Body, line: usize) -> Result<bool, Error> {
         let file = b.file.clone();
         let f = self.fvar(name).unwrap().clone();
         self.reach(&format!("{}$", name), &f.feature, &file, line)?;
         let elem = self.field_ty(&f);
+        // `(n) times`: the count, once, before the first item
+        let count = match cond {
+            Some(c) if word == Repeat::Times => Some(self.push_count(c, b)?),
+            _ => None,
+        };
         for (i, e) in items.iter().enumerate() {
             let looped = cond.filter(|_| i + 1 == items.len());
             if matches!(e.kind, ExprKind::Range { .. } | ExprKind::List(_)) || self.task_call(e, Some(&b.vars), &file)?.is_some() {
                 self.uncell(name);
                 return Ok(false);
             }
+            let mut counter = None;
             if looped.is_some() {
-                b.open_loop("", "", false);
-                b.depth += 1;
+                match &count {
+                    Some(n) => counter = Some(self.open_counted(n, b)),
+                    None => {
+                        b.open_loop("", "", false);
+                        b.depth += 1;
+                    }
+                }
             }
             self.push_read = Some((name.to_string(), PushRead::Cell));
             let v = self.lower_expr(e, Some(&elem), b, None);
@@ -4683,6 +4694,11 @@ impl Lowerer {
                 self.field_put(name, &v.text, b);
                 continue;
             };
+            if let Some(k) = counter {
+                self.field_put(name, &v.text, b);
+                self.close_counted(&k, b);
+                continue;
+            }
             let v = b.materialize(&v);
             self.push_read = Some((name.to_string(), PushRead::Cell));
             let outer = self.candidate.replace(v.clone());
@@ -4715,7 +4731,7 @@ impl Lowerer {
     /// dispatch a push in a function uses, and pushes the rest of the
     /// chain after each item (question 38)
     #[allow(clippy::too_many_arguments)]
-    fn collect_edge(&mut self, target: &Expr, items: &[Expr], cond: Option<&Expr>, only: Option<&Expr>, forever: bool, line: usize, feature: &str, file: &str) -> Result<(), Error> {
+    fn collect_edge(&mut self, target: &Expr, items: &[Expr], cond: Option<&Expr>, word: Repeat, only: Option<&Expr>, forever: bool, line: usize, feature: &str, file: &str) -> Result<(), Error> {
         let ExprKind::Seq(tname) = &target.kind else {
             return Err(lex::error(file, line, "`<<` pushes into a stream, named `x$`"));
         };
@@ -4747,17 +4763,34 @@ impl Lowerer {
             }
             return Err(lex::error(file, items[0].line, format!("a push at feature scope happens once, when the store starts (fm3 question 79), and on a line of its own that is not built: a stream's first items go on its declaration, `{} {}$ << ...`, and a line that stands is wiring, `{}$ << x$ forever`", zero_ty(telem), tname, tname)));
         };
-        if cond.is_some() {
+        if cond.is_some() && word == Repeat::While {
             return Err(lex::error(file, line, "a line at feature scope that stands until its `while` fails is not built: wiring moves every item its stream receives, `x$ << y$ forever`"));
         }
         if sname == tname {
             return Err(lex::error(file, line, format!("'{}$' would feed itself", tname)));
         }
+        // `out$ << i$ (3) times`: the first three (fm3 question 79, log
+        // 147). The line stands by its count, which is kept for it: a
+        // field of the context, zero at the reset, as what a
+        // processor's wiring keeps is
+        let mut counted = None;
+        if let (Some(c), Repeat::Times) = (cond, word) {
+            let ExprKind::Int(n) = c.kind else {
+                return Err(lex::error(file, c.line, format!("the count of a line that stands is a number written out, `{} (3) times`: a count that is worked out is worked out once, and a line that stands from the start has no one moment for it. Not built", said)));
+            };
+            if n < 0 {
+                return Err(lex::error(file, c.line, format!("a push cannot happen {} times", n)));
+            }
+            if only.is_some() {
+                return Err(lex::error(file, line, format!("`if` with a count on a line that stands is not built: '{} if (...) ({}) times' could be the first {} that pass, or those of the first {} that pass", said, n, n, n)));
+            }
+            counted = Some(n);
+        }
         // with no `forever` the line is one push, when the store starts,
         // of what the stream holds then (question 79). Refused for this
         // hop (question 80): every such line there is was written as
         // wiring, and a silent change of what it does is the worst outcome
-        if !forever {
+        if !forever && counted.is_none() {
             return Err(lex::error(file, line, once_or_wiring(&said, sname, tname)));
         }
         let Some(sf) = self.fvar(sname).cloned() else {
@@ -4770,11 +4803,26 @@ impl Lowerer {
         self.reach(&format!("{}$", sname), &sf.feature, file, items[0].line)?;
         let name = format!("__edge{}", self.edges.len() + 1);
         let seq = |n: &str| Expr { kind: ExprKind::Seq(n.to_string()), line };
+        let counted = counted.map(|n| {
+            let field = format!("__times{}", self.edges.len() + 1);
+            self.fvars.push(FVar { name: field.clone(), ty: int_ty(), scope: "node".into(), merge: "last".into(), feature: feature.to_string() });
+            self.zfields.push((field.clone(), int_ty()));
+            (field, n)
+        });
         // a standing filter, `e$ << x$ if (x$ > 0) forever`: the push
-        // under its condition, as `if` on a push is in a function
-        let under = |push: Stmt| match only {
-            Some(c) => Stmt::If { cond: c.clone(), then: vec![push], els: None, line, on_push: true },
-            None => push,
+        // under its condition, as `if` on a push is in a function; a
+        // counted line, the push and its count's bump under "fewer
+        // than n so far"
+        let under = |push: Stmt| match (only, &counted) {
+            (Some(c), _) => Stmt::If { cond: c.clone(), then: vec![push], els: None, line, on_push: true },
+            (None, Some((field, n))) => {
+                let so_far = || Expr { kind: ExprKind::Name(field.clone()), line };
+                let int = |v: i64| Expr { kind: ExprKind::Int(v), line };
+                let bin = |op: &str, l: Expr, r: Expr| Expr { kind: ExprKind::Bin(op.to_string(), Box::new(l), Box::new(r)), line };
+                let bump = Stmt::Assign { targets: vec![super::syntax::Target { name: field.clone(), seq: false, line, feature: None }], value: bin("+", so_far(), int(1)), line };
+                Stmt::If { cond: bin("<", so_far(), int(*n)), then: vec![push, bump], els: None, line, on_push: false }
+            }
+            (None, None) => push,
         };
         // out of a stream with no storage (question 50, fm3 log 92) the
         // edge is a function of one item, its body the chain with the
@@ -4789,7 +4837,7 @@ impl Lowerer {
                 name: vec![NamePart::Word(name.clone()), NamePart::Group],
                 groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, line }]],
                 task: false,
-                body: vec![under(Stmt::Push { target: seq(tname), items: pushed, cond: None, existing: false, forever: false, line })],
+                body: vec![under(Stmt::Push { target: seq(tname), items: pushed, cond: None, word: Repeat::While, existing: false, forever: false, line })],
                 platform: Vec::new(),
             };
             self.declare(&fd, feature, file)?;
@@ -4807,7 +4855,7 @@ impl Lowerer {
         let mut pushed = vec![Expr { kind: ExprKind::Name("__item".into()), line }];
         pushed.extend(items[1..].iter().cloned());
         let advance = phrase(vec![Part::Word("advance".into()), Part::Value(seq(sname)), Part::Word("by".into()), Part::Args(vec![Arg { name: None, value: count }])]);
-        let body = vec![under(Stmt::Push { target: seq(tname), items: pushed, cond: None, existing: false, forever: false, line })];
+        let body = vec![under(Stmt::Push { target: seq(tname), items: pushed, cond: None, word: Repeat::While, existing: false, forever: false, line })];
         let fd = FnDecl {
             line,
             results: Vec::new(),
@@ -5117,7 +5165,7 @@ impl Lowerer {
                                 Some(Init::Value(e)) if !wired => {
                                     self.resident_init(v, &ty, e, &mut b)?
                                 }
-                                Some(Init::Pushes { items, cond }) => {
+                                Some(Init::Pushes { items, cond, word }) => {
                                     // `int b$ << a$`: a stream on the right and
                                     // no `forever`, refused as the line of its
                                     // own is (fm3 question 80)
@@ -5131,7 +5179,7 @@ impl Lowerer {
                                     // the items before the first task call
                                     // are pushed here; the calls are nodes
                                     let n = items.iter().position(|e| matches!(self.task_call(e, None, &b.file), Ok(Some(_)))).unwrap_or(items.len());
-                                    self.lower_pushes(&v.name, &s, &items[..n], cond.as_ref(), &mut b)?;
+                                    self.lower_pushes(&v.name, &s, &items[..n], cond.as_ref(), *word, &mut b)?;
                                     s
                                 }
                                 Some(Init::Construct(_)) => return Err(lex::error(&b.file, v.line, format!("'{}$' is a stream: it is filled with `<<`, or made from a list or a range", v.name))),
@@ -6801,10 +6849,10 @@ impl Lowerer {
                             self.assign(&v.name, s.clone(), b, v.line)?;
                             self.run_task(&info, &args, hz, &s, b, e.line)?;
                         }
-                        (Some(Init::Pushes { items, cond }), _) => {
+                        (Some(Init::Pushes { items, cond, word }), _) => {
                             let s = self.empty_stream(v, &ty, b, Some(&v.name))?;
                             self.assign(&v.name, s.clone(), b, v.line)?;
-                            self.lower_pushes(&v.name, &s, items, cond.as_ref(), b)?;
+                            self.lower_pushes(&v.name, &s, items, cond.as_ref(), *word, b)?;
                         }
                         (Some(Init::Construct(_)), _) => return Err(lex::error(&file, v.line, format!("'{}$' is a stream: it is filled with `<<`, or made from a list or a range", v.name))),
                         (None, _) => {
@@ -6943,7 +6991,7 @@ impl Lowerer {
                 b.depth -= 1;
                 Ok(false)
             }
-            Stmt::Push { target, items, cond, existing, forever, line } => {
+            Stmt::Push { target, items, cond, word, existing, forever, line } => {
                 let ExprKind::Seq(n) = &target.kind else {
                     return Err(lex::error(&file, *line, "`<<` pushes into a stream, named `x$`"));
                 };
@@ -6966,7 +7014,7 @@ impl Lowerer {
                 // into a cell (fm3 log 143): a store of its field for
                 // each item; where an item is not one value of its
                 // type the name is noted and lowered here as a stream
-                if self.is_cell(n, b) && self.push_cell(n, items, cond.as_ref(), b, *line)? {
+                if self.is_cell(n, b) && self.push_cell(n, items, cond.as_ref(), *word, b, *line)? {
                     return Ok(false);
                 }
                 // into a stream with a rate the statement's first item
@@ -7009,7 +7057,7 @@ impl Lowerer {
                 self.zbroken = false;
                 self.push_site = Some((n.clone(), b.depth));
                 let mark = b.out.len();
-                let done = self.lower_pushes(n, &s, items, cond.as_ref(), b);
+                let done = self.lower_pushes(n, &s, items, cond.as_ref(), *word, b);
                 self.push_site = None;
                 if bare {
                     self.bare_gates = None;
@@ -8261,8 +8309,10 @@ impl Lowerer {
     /// `x$ << a << b while (c)`: a push per item, the stream's name on
     /// the right reading as its latest item; `while` repeats the last
     /// push for as long as the condition holds of the candidate, which
-    /// it reads as `_` (log 23, 39). What each item does is `push_item`'s
-    fn lower_pushes(&mut self, name: &str, s: &Val, items: &[Expr], cond: Option<&Expr>, b: &mut Body) -> Result<(), Error> {
+    /// it reads as `_` (log 23, 39), and `(n) times` repeats it n
+    /// times, the count worked out once before the first push (fm3 log
+    /// 147). What each item does is `push_item`'s
+    fn lower_pushes(&mut self, name: &str, s: &Val, items: &[Expr], cond: Option<&Expr>, word: Repeat, b: &mut Body) -> Result<(), Error> {
         let file = b.file.clone();
         let Ty::Stream(elem) = s.ty.clone() else { unreachable!() };
         let elem = *elem;
@@ -8274,93 +8324,167 @@ impl Lowerer {
             let want = if matches!(e.kind, ExprKind::List(_)) { Some(&elem) } else { None };
             l.lower_expr(e, want, b, None)
         };
+        let count = match cond {
+            Some(c) if word == Repeat::Times => Some(self.push_count(c, b)?),
+            _ => None,
+        };
         for (i, e) in items.iter().enumerate() {
             let last = i + 1 == items.len();
+            let looped = cond.filter(|_| last);
             // a task call in the chain: the task runs into the stream now
             if let Some((info, args, hz)) = self.task_call(e, Some(&b.vars), &file)? {
                 if b.kind == BodyKind::Reset {
                     return Err(lex::error(&file, e.line, "a task call at feature scope before a pushed item: a chain's items come before its tasks"));
                 }
-                if cond.is_some() && last {
-                    return Err(lex::error(&file, e.line, "a task call is not repeated with `while`: the task's own chain says when it stops"));
+                if looped.is_some() {
+                    return Err(lex::error(&file, e.line, match word {
+                        Repeat::While => "a task call is not repeated with `while`: the task's own chain says when it stops",
+                        _ => "a task call is not repeated: the task's own chain says when it stops",
+                    }));
                 }
                 self.loose_push = true;
                 self.run_task(&info, &args, hz, s, b, e.line)?;
                 continue;
             }
-            // a range pushed as a block: its values, straight in (log 41)
-            if let ExprKind::Range { from, to, inclusive } = &e.kind {
-                if cond.is_some() && last {
-                    return Err(lex::error(&file, e.line, "a block is pushed once: `while` repeats an item"));
-                }
-                self.lower_range(from, to, *inclusive, b, RangeSink::Into(name, s), e.line)?;
+            let Some(c) = looped else {
+                self.push_once(name, s, e, &elem, b)?;
+                continue;
+            };
+            // `(n) times`: the item worked out and pushed each time
+            // round, whatever it is, a text and a range among them
+            if let Some(n) = &count {
+                let k = self.open_counted(n, b);
+                self.push_once(name, s, e, &elem, b)?;
+                self.close_counted(&k, b);
                 continue;
             }
-            // a list written out, into a processor's input (fm3 log
-            // 124): its items handed over one by one, with no stream
-            // made to hold them first
-            if let ExprKind::List(list) = &e.kind {
-                if !(cond.is_some() && last) && self.zthread.as_ref().is_some_and(|t| t.stream == name && t.depth == b.depth) {
-                    for x in list {
-                        let v = self.lower_expr(x, Some(&elem), b, None)?;
-                        self.push_item(name, s, v, x.line, b)?;
-                    }
-                    continue;
-                }
+            // `while` tests a candidate, which a block is not
+            if matches!(e.kind, ExprKind::Range { .. }) || (matches!(e.kind, ExprKind::Str(_)) && elem.ir() == "u8") {
+                return Err(lex::error(&file, e.line, "a block is pushed once: `while` repeats an item"));
             }
-            // a string literal pushed into a stream of bytes: its bytes,
-            // straight from `data`, with no ring for the literal (log 57)
-            if let ExprKind::Str(text) = &e.kind {
-                if elem.ir() == "u8" {
-                    if cond.is_some() && last {
-                        return Err(lex::error(&file, e.line, "a block is pushed once: `while` repeats an item"));
-                    }
-                    self.push_text(name, s, text, b);
-                    continue;
-                }
+            b.open_loop("", "", false);
+            b.depth += 1;
+            self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
+            let v = item(self, e, b);
+            self.push_read = None;
+            let v = b.materialize(&v?);
+            // in the condition `_` is the candidate and the stream's
+            // name is still its latest item (log 39)
+            self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
+            let outer = self.candidate.replace(v.clone());
+            self.one = true;
+            let cv = self.lower_expr(c, Some(&Ty::Bool), b, None);
+            self.candidate = outer;
+            self.push_read = None;
+            let cv = cv?;
+            if cv.ty != Ty::Bool {
+                return Err(lex::error(&file, c.line, "'while' takes a bool"));
             }
-            match cond {
-                Some(c) if last => {
-                    b.open_loop("", "", false);
-                    b.depth += 1;
-                    self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
-                    let v = item(self, e, b);
-                    self.push_read = None;
-                    let v = b.materialize(&v?);
-                    // in the condition `_` is the candidate and the stream's
-                    // name is still its latest item (log 39)
-                    self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
-                    let outer = self.candidate.replace(v.clone());
-                    self.one = true;
-                    let cv = self.lower_expr(c, Some(&Ty::Bool), b, None);
-                    self.candidate = outer;
-                    self.push_read = None;
-                    let cv = cv?;
-                    if cv.ty != Ty::Bool {
-                        return Err(lex::error(&file, c.line, "'while' takes a bool"));
-                    }
-                    let cv = b.materialize(&cv);
-                    if v.ty == block_ty {
-                        return Err(lex::error(&file, e.line, "a block is pushed once: `while` repeats an item"));
-                    }
-                    b.line(&format!("if {}", cv.text));
-                    b.line("else");
-                    b.depth += 1;
-                    b.line("break");
-                    b.depth -= 1;
-                    self.push_item(name, s, v, e.line, b)?;
-                    b.line("continue");
-                    b.depth -= 1;
-                }
-                _ => {
-                    self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
-                    let v = item(self, e, b);
-                    self.push_read = None;
-                    self.push_item(name, s, v?, e.line, b)?;
-                }
+            let cv = b.materialize(&cv);
+            if v.ty == block_ty {
+                return Err(lex::error(&file, e.line, "a block is pushed once: `while` repeats an item"));
             }
+            b.line(&format!("if {}", cv.text));
+            b.line("else");
+            b.depth += 1;
+            b.line("break");
+            b.depth -= 1;
+            self.push_item(name, s, v, e.line, b)?;
+            b.line("continue");
+            b.depth -= 1;
         }
         Ok(())
+    }
+
+    /// one item of a push, pushed once: a range's values straight in, a
+    /// list into a processor's input an item at a time, a text's bytes
+    /// from `data`, and anything else by `push_item`
+    fn push_once(&mut self, name: &str, s: &Val, e: &Expr, elem: &Ty, b: &mut Body) -> Result<(), Error> {
+        // a range pushed as a block: its values, straight in (log 41)
+        if let ExprKind::Range { from, to, inclusive } = &e.kind {
+            self.lower_range(from, to, *inclusive, b, RangeSink::Into(name, s), e.line)?;
+            return Ok(());
+        }
+        // a list written out, into a processor's input (fm3 log
+        // 124): its items handed over one by one, with no stream
+        // made to hold them first
+        if let ExprKind::List(list) = &e.kind {
+            if self.zthread.as_ref().is_some_and(|t| t.stream == name && t.depth == b.depth) {
+                for x in list {
+                    let v = self.lower_expr(x, Some(elem), b, None)?;
+                    self.push_item(name, s, v, x.line, b)?;
+                }
+                return Ok(());
+            }
+        }
+        // a string literal pushed into a stream of bytes: its bytes,
+        // straight from `data`, with no ring for the literal (log 57)
+        if let ExprKind::Str(text) = &e.kind {
+            if elem.ir() == "u8" {
+                self.push_text(name, s, text, b);
+                return Ok(());
+            }
+        }
+        self.push_read = Some((name.to_string(), PushRead::Latest(s.clone(), s.ty.clone())));
+        let want = if matches!(e.kind, ExprKind::List(_)) { Some(elem) } else { None };
+        let v = self.lower_expr(e, want, b, None);
+        self.push_read = None;
+        self.push_item(name, s, v?, e.line, b)
+    }
+
+    /// A push's count, `(n) times` (fm3 log 147): an integer, worked
+    /// out once. A literal below zero is refused; a count worked out
+    /// fails a check where it is below zero
+    fn push_count(&mut self, c: &Expr, b: &mut Body) -> Result<Val, Error> {
+        let file = b.file.clone();
+        self.one = true;
+        let v = self.lower_expr(c, Some(&int_ty()), b, None)?;
+        if v.literal {
+            let n = v.text.parse::<i64>().map_err(|_| lex::error(&file, c.line, format!("a push's count is a whole number, and this is {}", v.text)))?;
+            if n < 0 {
+                return Err(lex::error(&file, c.line, format!("a push cannot happen {} times", n)));
+            }
+            return Ok(Val { ty: int_ty(), ..v });
+        }
+        let v = if is_index(&v.ty) { self.widen_to(&v, &int_ty(), b, None) } else { self.coerce(v, &int_ty(), "a push's count", b, None, c.line)? };
+        let ok = b.tmp();
+        b.line(&format!("{}: u1 = cmp.ge {}, 0", ok, v.text));
+        b.line(&format!("if {}", ok));
+        b.line("else");
+        b.depth += 1;
+        let base = file.rsplit('/').next().unwrap_or(&file).to_string();
+        let site = Expr { kind: ExprKind::Str(format!("check at {}:{}", base, c.line)), line: c.line };
+        let sv = self.lower_expr(&site, None, b, None)?;
+        b.line(&format!("print({})", sv.text));
+        let z = b.tmp();
+        b.line(&format!("{}: u1 = const 0", z));
+        b.line(&format!("check {}", z));
+        b.depth -= 1;
+        Ok(v)
+    }
+
+    /// the loop of a counted push opened, its counter from 0 tested
+    /// against the count: with a literal count, the plain counted loop
+    /// `probe cost` reads. The counter's name is given back
+    fn open_counted(&mut self, n: &Val, b: &mut Body) -> String {
+        let k = b.tmp();
+        b.open_loop("", &format!("{}: {} = 0", k, int_ty().ir()), n.literal);
+        b.depth += 1;
+        let more = b.tmp();
+        b.line(&format!("{}: u1 = cmp.lt {}, {}", more, k, n.text));
+        b.line(&format!("if {}", more));
+        b.line("else");
+        b.depth += 1;
+        b.line("break");
+        b.depth -= 1;
+        k
+    }
+
+    fn close_counted(&mut self, k: &str, b: &mut Body) {
+        let k2 = b.tmp();
+        b.line(&format!("{}: {} = add {}, 1", k2, int_ty().ir(), k));
+        b.line(&format!("continue {}", k2));
+        b.depth -= 1;
     }
 
     /// One item into a stream, by dispatch (section 15, log 59). A value
@@ -8918,7 +9042,7 @@ impl Lowerer {
         let init = |l: &Lowerer, v: &super::syntax::VarDecl| match &v.init {
             Some(Init::Value(e)) => l.ring_kept_in(e, x),
             Some(Init::Construct(args)) => args.iter().all(|a| l.ring_kept_in(&a.value, x)),
-            Some(Init::Pushes { items, cond }) => items.iter().chain(cond.iter()).all(|e| l.ring_kept_in(e, x)),
+            Some(Init::Pushes { items, cond, .. }) => items.iter().chain(cond.iter()).all(|e| l.ring_kept_in(e, x)),
             None => true,
         };
         stmts.iter().all(|s| match s {
@@ -9931,7 +10055,7 @@ fn quietly_read(features: &[super::store::FeatureDoc], s: &str, call: Called) ->
         match &v.init {
             Some(Init::Value(e)) => quiet(e, s, file, call),
             Some(Init::Construct(args)) => args.iter().all(|a| quiet(&a.value, s, file, call)),
-            Some(Init::Pushes { items, cond }) => items.iter().chain(cond.iter()).all(|e| quiet(e, s, file, call)),
+            Some(Init::Pushes { items, cond, .. }) => items.iter().chain(cond.iter()).all(|e| quiet(e, s, file, call)),
             None => true,
         }
     }
@@ -10070,7 +10194,7 @@ fn mentions_init(v: &super::syntax::VarDecl, bound: &Names, call: &dyn Fn(&[Part
     match &v.init {
         Some(Init::Value(e)) => mentions_in(e, bound, call, out),
         Some(Init::Construct(args)) => args.iter().for_each(|a| mentions_in(&a.value, bound, call, out)),
-        Some(Init::Pushes { items, cond }) => {
+        Some(Init::Pushes { items, cond, .. }) => {
             items.iter().for_each(|e| mentions_in(e, bound, call, out));
             cond.iter().for_each(|e| mentions_in(e, bound, call, out));
         }
@@ -10192,7 +10316,7 @@ fn time_words_init(v: &super::syntax::VarDecl, params: &[String], w: &mut Words)
     match &v.init {
         Some(Init::Value(e)) => time_words_in(e, params, w),
         Some(Init::Construct(args)) => args.iter().for_each(|a| time_words_in(&a.value, params, w)),
-        Some(Init::Pushes { items, cond }) => {
+        Some(Init::Pushes { items, cond, .. }) => {
             items.iter().for_each(|e| time_words_in(e, params, w));
             cond.iter().for_each(|e| time_words_in(e, params, w));
         }

@@ -10,7 +10,7 @@
 
 use super::lex::{self, Error};
 use super::store::Store;
-use super::syntax::{Arg, Decl, Expr, ExprKind, FnDecl, Init, NamePart, Param, Part, Stmt, Target, VarDecl};
+use super::syntax::{Arg, Decl, Expr, ExprKind, FnDecl, Init, NamePart, Param, Part, Repeat, Stmt, Target, VarDecl};
 
 /// a line that says a stream: `int k$ = kind of (c$)`
 #[derive(Clone)]
@@ -112,7 +112,7 @@ fn walk_stmts(stmts: &[Stmt], f: &mut dyn FnMut(&Expr) -> bool) {
     let init = |v: &VarDecl, f: &mut dyn FnMut(&Expr) -> bool| match &v.init {
         Some(Init::Value(e)) => walk(e, f),
         Some(Init::Construct(args)) => args.iter().for_each(|a| walk(&a.value, f)),
-        Some(Init::Pushes { items, cond }) => items.iter().chain(cond.iter()).for_each(|e| walk(e, f)),
+        Some(Init::Pushes { items, cond, .. }) => items.iter().chain(cond.iter()).for_each(|e| walk(e, f)),
         None => {}
     };
     for s in stmts {
@@ -266,7 +266,7 @@ fn handed_on(e: &Expr, x: &str, takers: &Takers) -> Option<String> {
 
 /// a push statement of a processor's body, taken as its outputs
 fn pushed(s: &Stmt, when: Option<&Expr>, out: &str, file: &str, outs: &mut Vec<Out>) -> Result<(), Error> {
-    let Stmt::Push { target, items, cond, existing, forever, line } = s else { unreachable!() };
+    let Stmt::Push { target, items, cond, word, existing, forever, line } = s else { unreachable!() };
     if *existing {
         return Err(lex::error(file, *line, "`existing` belongs in a `<<` method, not in a stream processor"));
     }
@@ -277,7 +277,12 @@ fn pushed(s: &Stmt, when: Option<&Expr>, out: &str, file: &str, outs: &mut Vec<O
         return Err(lex::error(file, *line, format!("a stream processor pushes into its own output, '{}$'", out)));
     }
     if cond.is_some() {
-        return Err(lex::error(file, *line, format!("`while` on a push repeats it, which is a loop, and a stream processor has none: say the stream by a line of its own, or write `{}$ << item if (condition)`", out)));
+        let said = match word {
+            Repeat::While => "`while`",
+            Repeat::Times => "`(n) times`",
+            Repeat::Until => "`until`",
+        };
+        return Err(lex::error(file, *line, format!("{} on a push repeats it, which is a loop, and a stream processor has none: say the stream by a line of its own, or write `{}$ << item if (condition)`", said, out)));
     }
     for e in items {
         outs.push(Out { item: e.clone(), when: when.cloned(), line: *line });
@@ -873,7 +878,7 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool) -> Wr
     }
     let mut made = Vec::new();
     let push = |item: Expr, when: Option<Expr>, line: usize| -> Option<Stmt> {
-        let push = Stmt::Push { target: expr(ExprKind::Seq(out.to_string()), line), items: vec![item], cond: None, existing: false, forever: false, line };
+        let push = Stmt::Push { target: expr(ExprKind::Seq(out.to_string()), line), items: vec![item], cond: None, word: Repeat::While, existing: false, forever: false, line };
         match when.map(|c| c.kind) {
             // a condition settled when the program is compiled: the
             // push is made, or is not there

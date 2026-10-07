@@ -156,7 +156,7 @@ impl Walk {
         match &v.init {
             Some(Init::Value(e)) => self.expr(e, at, in_loop),
             Some(Init::Construct(args)) => args.iter().for_each(|a| self.expr(&a.value, at, in_loop)),
-            Some(Init::Pushes { items, cond }) => items.iter().chain(cond.iter()).for_each(|e| self.expr(e, at, in_loop)),
+            Some(Init::Pushes { items, cond, .. }) => items.iter().chain(cond.iter()).for_each(|e| self.expr(e, at, in_loop)),
             None => {}
         }
     }
