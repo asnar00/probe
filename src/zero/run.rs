@@ -125,8 +125,15 @@ fn effective(s: &store::Store, x: &BTreeSet<String>, p: &Planned) -> Option<BTre
 /// switched off, its own `enabled` field set to 0 and no other
 /// (everything is on after the reset, log 43); then the case's input,
 /// a byte per call into `in$` (log 62), before the program starts
-fn setters(off: &BTreeSet<String>, input: &[u8]) -> Vec<(String, Vec<i64>)> {
-    let mut calls: Vec<(String, Vec<i64>)> = off.iter().map(|f| (format!("__set___enabled_{}", f), vec![0])).collect();
+///
+/// ... and, from fm3 log 138, the switches are made as the line says
+/// them, in order: the runner's own context first, then each `off` and
+/// each `on` of the case's line, a setter's call each. A feature's
+/// effective state is worked out where a switch is written, so a line
+/// that switches a parent off and on again runs the code that must
+/// leave its children as they were
+fn setters(switches: &[(String, bool)], input: &[u8]) -> Vec<(String, Vec<i64>)> {
+    let mut calls: Vec<(String, Vec<i64>)> = switches.iter().map(|(f, on)| (format!("__set___enabled_{}", f), vec![*on as i64])).collect();
     calls.extend(input.iter().map(|&c| ("__in_ch".to_string(), vec![c as i64])));
     calls
 }
@@ -144,6 +151,9 @@ struct Over {
 struct Run {
     case: usize,
     off: BTreeSet<String>,
+    /// the switches that make it, in order: the runner's context, then
+    /// the case's own line
+    switches: Vec<(String, bool)>,
     label: String,
 }
 
@@ -208,7 +218,8 @@ fn plan(s: &store::Store, cases: &[Planned]) -> Result<(Vec<Run>, Vec<Over>), St
                 continue;
             }
             if seen.insert((i, off.clone())) {
-                runs.push(Run { case: i, off, label: label.clone() });
+                let switches = x.iter().map(|f| (f.clone(), false)).chain(p.call.context.iter().cloned()).collect();
+                runs.push(Run { case: i, off, switches, label: label.clone() });
             }
         }
     }
@@ -338,7 +349,6 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bo
     if let Some(why) = out_of_reach(&module, &l.funcs, kind).get(&call.func) {
         return Err(format!("{} is out of reach here: {}", text.split('→').next().unwrap_or("").trim(), skip_note(&l.funcs, why, kind)));
     }
-    let off = effective(&s, &BTreeSet::new(), &p).unwrap_or_default();
     // the real clock leaves no marks (fm3 log 91): the times were
     // watched; on the virtual one a timed case is shown with them
     let timed = fast && matches!(call.expect, store::Expect::Timed(_));
@@ -347,7 +357,7 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bo
         println!("{}", text.split('→').next().unwrap_or("").trim());
         let _ = std::io::stdout().flush();
     }
-    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: call.expect == store::Expect::Check, text: true, before: setters(&off, &call.input), live: true, times: timed };
+    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: call.expect == store::Expect::Check, text: true, before: setters(&call.context, &call.input), live: true, times: timed };
     let got = suite::run_calls(&module, &l.ir, Backend::Native, &[sc], "zero-run", level)?.remove(0)?;
     let vals: Vec<String> = got.values.iter().map(|v| v.to_string()).collect();
     let mut out = String::new();
@@ -441,7 +451,7 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                     checks: c.expect == store::Expect::Check,
                     // every case reads the text back: a failed check names its site there
                     text: true,
-                    before: setters(&r.off, &c.input),
+                    before: setters(&r.switches, &c.input),
                     live: false,
                     times: matches!(c.expect, store::Expect::Timed(_)),
                 }
@@ -660,15 +670,28 @@ mod tests {
         let off = effective(&s, &BTreeSet::new(), base_off).unwrap();
         assert_eq!(off.iter().cloned().collect::<Vec<_>>(), ["base"]);
         assert_eq!(s.closure(&off).iter().cloned().collect::<Vec<_>>(), ["base", "more", "most", "tool"]);
-        assert_eq!(setters(&off, b"hi"), [("__set___enabled_base".to_string(), vec![0]), ("__in_ch".to_string(), vec![104]), ("__in_ch".to_string(), vec![105])]);
+        assert_eq!(setters(&base_off.call.context, b"hi"), [("__set___enabled_base".to_string(), vec![0]), ("__in_ch".to_string(), vec![104]), ("__in_ch".to_string(), vec![105])]);
+        // a line's switches are made in order, an `on` a call too
+        assert_eq!(setters(&[("more".to_string(), false), ("base".to_string(), false), ("base".to_string(), true)], b""), [("__set___enabled_more".to_string(), vec![0]), ("__set___enabled_base".to_string(), vec![0]), ("__set___enabled_base".to_string(), vec![1])]);
         // a case does not stand where its feature is effectively off; a
         // line is a sequence of switches, `on` restoring a flag
         let sequence = Planned { text: String::new(), call: lower::Call { func: "switches".into(), args: vec![], nrets: 2, expect: store::Expect::Values(vec![0, 1]), context: vec![("more".into(), false), ("base".into(), false), ("base".into(), true)], input: vec![] }, feature: "most".into(), rank: 3, file: "most.md".into(), line: 1 };
         assert!(effective(&s, &["base".to_string()].into_iter().collect(), &sequence).is_none());
         assert_eq!(effective(&s, &["tool".to_string()].into_iter().collect(), &sequence).unwrap().iter().cloned().collect::<Vec<_>>(), ["more", "tool"]);
-        // a gate reads the feature's own switch and its dynamic ancestor's,
-        // in line at the context's address (fm3 log 110)
-        assert!(l.ir.contains("fn greet__before_most() -> int\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: u1 = get _1, __enabled_more\n    _3: u1 = get _1, __enabled_base\n    on: u1 = and _2, _3\n") && !l.ir.contains("__on_more") && !l.ir.contains("__get___enabled"), "{}", l.ir);
+        // a gate reads one field, the feature's effective state, in line
+        // through the context (fm3 log 110, 138): `more` is under `base`,
+        // so it is `__on_more`, which the setters of `more` and of
+        // `base` work out, and no gate has an `and` in it
+        assert!(l.ir.contains("fn greet__before_most() -> int\n    _this: ptr = context()\n    _1: __ctx = load _this\n    on: u1 = get _1, __on_more\n    _2: int = if on\n") && !l.ir.contains("__get___enabled"), "{}", l.ir);
+        assert!(l.ir.contains("fn __set___enabled_more(v: u1)\n    p: ptr = context()\n    c: __ctx = load p\n    c0: __ctx = set c, __enabled_more, v\n    up: u1 = get c, __enabled_base\n    on: u1 = and v, up\n    c1: __ctx = set c0, __on_more, on\n    store c1, p\n    ret\n"), "{}", l.ir);
+        assert!(l.ir.contains("fn __set___enabled_base(v: u1)\n    p: ptr = context()\n    c: __ctx = load p\n    c0: __ctx = set c, __enabled_base, v\n    own1: u1 = get c, __enabled_more\n    on1: u1 = and own1, v\n    c1: __ctx = set c0, __on_more, on1\n"), "{}", l.ir);
+        // three deep: the innermost's gate is still one field, and the
+        // root's setter works out each level from the one above it
+        let n = emit(Path::new("suite/zero/nested")).unwrap();
+        assert!(n.contains("fn reach() -> int\n    _this: ptr = context()\n    _1: __ctx = load _this\n    on: u1 = get _1, __on_three\n"), "{}", n);
+        assert!(n.contains("    own1: u1 = get c, __enabled_one\n    on1: u1 = and own1, v\n") && n.contains("    own3: u1 = get c, __enabled_two\n    on3: u1 = and own3, on1\n") && n.contains("    own4: u1 = get c, __enabled_three\n    on4: u1 = and own4, on3\n"), "{}", n);
+        let gates: Vec<&str> = n.lines().filter(|l| l.contains("= and ")).collect();
+        assert!(n.split("\nfn ").filter(|f| !f.starts_with("__set___enabled_")).all(|f| !f.contains(" = and ")), "{:?}", gates);
     }
 
     /// A negative literal handed to a word that counts forward from a

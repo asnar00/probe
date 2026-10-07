@@ -110,6 +110,8 @@ fn __wait(t: i64)
 ;   __enabled_hello: user, last (hello)
 ;   __enabled_countdown: user, last (countdown)
 ;   __enabled_bye: user, last (bye)
+;   __on_countdown: user, last (countdown)
+;   __on_bye: user, last (bye)
 ;   out: the output device, which stores nothing (platform)
 ;   in: user, last (platform)
 ;   i: no storage, no word reading it: a push into it calls its edges (countdown)
@@ -118,6 +120,8 @@ type __ctx = struct
     __enabled_hello: u1
     __enabled_countdown: u1
     __enabled_bye: u1
+    __on_countdown: u1
+    __on_bye: u1
     in: u8$
 
 data __ctx_mem: array(__ctx, 2)
@@ -149,7 +153,7 @@ fn __zero_reset()
 ; the current context at its first values, its streams made in the arena
 fn __zero_new()
     _1: u8$ = __queue_u8(1000000, 512)
-    _2: __ctx = pack 1, 1, 1, 1, _1
+    _2: __ctx = pack 1, 1, 1, 1, 1, 1, _1
     p: ptr = context()
     store _2, p
     ret
@@ -173,22 +177,34 @@ fn __set___enabled_platform(v: u1)
 fn __set___enabled_hello(v: u1)
     p: ptr = context()
     c: __ctx = load p
-    c2: __ctx = set c, __enabled_hello, v
+    c0: __ctx = set c, __enabled_hello, v
+    own1: u1 = get c, __enabled_countdown
+    on1: u1 = and own1, v
+    c1: __ctx = set c0, __on_countdown, on1
+    own2: u1 = get c, __enabled_bye
+    on2: u1 = and own2, v
+    c2: __ctx = set c1, __on_bye, on2
     store c2, p
     ret
 
 fn __set___enabled_countdown(v: u1)
     p: ptr = context()
     c: __ctx = load p
-    c2: __ctx = set c, __enabled_countdown, v
-    store c2, p
+    c0: __ctx = set c, __enabled_countdown, v
+    up: u1 = get c, __enabled_hello
+    on: u1 = and v, up
+    c1: __ctx = set c0, __on_countdown, on
+    store c1, p
     ret
 
 fn __set___enabled_bye(v: u1)
     p: ptr = context()
     c: __ctx = load p
-    c2: __ctx = set c, __enabled_bye, v
-    store c2, p
+    c0: __ctx = set c, __enabled_bye, v
+    up: u1 = get c, __enabled_hello
+    on: u1 = and v, up
+    c1: __ctx = set c0, __on_bye, on
+    store c1, p
     ret
 
 ; feature platform (layer platform)
@@ -247,22 +263,20 @@ fn run__countdown()
 fn count_down()
     _this: ptr = context()
     _1: __ctx = load _this
-    _2: u1 = get _1, __enabled_countdown
-    _3: u1 = get _1, __enabled_hello
-    _4: u1 = and _2, _3
-    loop(_5: int = 10)
-        _6: u1 = cmp.ge _5, 1
-        if _6
+    _2: u1 = get _1, __on_countdown
+    loop(_3: int = 10)
+        _4: u1 = cmp.ge _3, 1
+        if _4
         else
             break
-        if _4
-            __edge1(_5)
-        _7: ptr = addr __clock
-        _8: i64 = load _7
-        _9: i64 = add _8, 1000000
-        __wait(_9)
-        _10: int = sub _5, 1
-        continue _10
+        if _2
+            __edge1(_3)
+        _5: ptr = addr __clock
+        _6: i64 = load _5
+        _7: i64 = add _6, 1000000
+        __wait(_7)
+        _8: int = sub _3, 1
+        continue _8
     ret
 fn __edge1(__item: int)
     __out__int(__item)
@@ -288,9 +302,7 @@ fn goodbye()
 fn run()
     _this: ptr = context()
     _1: __ctx = load _this
-    _2: u1 = get _1, __enabled_bye
-    _3: u1 = get _1, __enabled_hello
-    on: u1 = and _2, _3
+    on: u1 = get _1, __on_bye
     if on
         run__bye()
     else
@@ -299,9 +311,7 @@ fn run()
 fn run__before_bye()
     _this: ptr = context()
     _1: __ctx = load _this
-    _2: u1 = get _1, __enabled_countdown
-    _3: u1 = get _1, __enabled_hello
-    on: u1 = and _2, _3
+    on: u1 = get _1, __on_countdown
     if on
         run__countdown()
     else

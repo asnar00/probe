@@ -4688,6 +4688,15 @@ impl Lowerer {
             self.fvars.insert(at, FVar { name: format!("__enabled_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone() });
             at += 1;
         }
+        // ... and, after the switches, the effective state of each one
+        // that has a dynamic ancestor: its own switch and every
+        // ancestor's, worked out where a switch is written, so a gate
+        // is one field at any depth (fm3 question 72, log 138)
+        let nested: Vec<String> = self.features.iter().filter(|f| !self.statics.contains(*f) && self.dynamic_ancestor(f).is_some()).cloned().collect();
+        for f in &nested {
+            self.fvars.insert(at, FVar { name: format!("__on_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone() });
+            at += 1;
+        }
         if !self.fvars.is_empty() {
             let mut fields = Vec::new();
             self.type_lines.push(String::new());
@@ -4721,6 +4730,7 @@ impl Lowerer {
             // the initial values, in composition order: every feature on,
             // then the variables, then the nodes' state
             let mut inits: Vec<String> = self.features.iter().filter(|f| !self.statics.contains(*f)).map(|_| "1".to_string()).collect();
+            inits.extend(nested.iter().map(|_| "1".to_string()));
             let mut init_of: HashMap<String, String> = HashMap::new();
             for feat in &store.features {
                 for d in &feat.code.decls {
@@ -4860,6 +4870,45 @@ impl Lowerer {
             }
             let t = f.ty.ir();
             writeln!(self.out, "\nfn __get_{}() -> {}\n    p: ptr = context()\n    c: __ctx = load p\n    v: {} = get c, {}\n    ret v", f.name, t, t, f.name).unwrap();
+            // a switch's setter also works out the effective state of
+            // its feature and of every dynamic feature under it, parents
+            // before children: the one place it changes (fm3 log 138)
+            if let Some(g) = f.name.strip_prefix("__enabled_").filter(|g| self.features.iter().any(|x| x == g)) {
+                let state = |x: &str| if nested.iter().any(|n| n == x) { format!("__on_{}", x) } else { format!("__enabled_{}", x) };
+                let mut body = format!("    p: ptr = context()\n    c: __ctx = load p\n    c0: __ctx = set c, __enabled_{}, v\n", g);
+                // each feature's effective state as a value in hand
+                let mut have: Vec<(String, String)> = Vec::new();
+                let mut k = 0;
+                let mut ctx = "c0".to_string();
+                if let Some(up) = self.dynamic_ancestor(g) {
+                    body.push_str(&format!("    up: u1 = get c, {}\n    on: u1 = and v, up\n    c1: __ctx = set c0, __on_{}, on\n", state(&up), g));
+                    have.push((g.to_string(), "on".into()));
+                    ctx = "c1".into();
+                    k = 1;
+                } else {
+                    have.push((g.to_string(), "v".into()));
+                }
+                loop {
+                    let next: Vec<String> = nested.iter().filter(|d| !have.iter().any(|(h, _)| h == *d) && self.dynamic_ancestor(d).is_some_and(|a| have.iter().any(|(h, _)| *h == a))).cloned().collect();
+                    if next.is_empty() {
+                        break;
+                    }
+                    for d in next {
+                        let up = self.dynamic_ancestor(&d).unwrap();
+                        let upv = have.iter().find(|(h, _)| *h == up).unwrap().1.clone();
+                        k += 1;
+                        body.push_str(&format!("    own{k}: u1 = get c, __enabled_{d}\n    on{k}: u1 = and own{k}, {upv}\n    c{k}: __ctx = set {ctx}, __on_{d}, on{k}\n", k = k, d = d, upv = upv, ctx = ctx));
+                        ctx = format!("c{}", k);
+                        have.push((d, format!("on{}", k)));
+                    }
+                }
+                // a switch with nothing over it and nothing under it is
+                // the plain setter below
+                if ctx != "c0" {
+                    writeln!(self.out, "\nfn __set_{}(v: {})\n{}    store {}, p\n    ret", f.name, t, body, ctx).unwrap();
+                    continue;
+                }
+            }
             writeln!(self.out, "\nfn __set_{}(v: {})\n    p: ptr = context()\n    c: __ctx = load p\n    c2: __ctx = set c, {}, v\n    store c2, p\n    ret", f.name, t, f.name).unwrap();
         }
         // a feature is on when its own flag and every ancestor's are
@@ -4879,7 +4928,7 @@ impl Lowerer {
                 continue;
             }
             match self.dynamic_ancestor(f) {
-                Some(p) => writeln!(self.out, "fn __on_{}() -> u1\n    own: u1 = __get___enabled_{}()\n    up: u1 = __on_{}()\n    on: u1 = and own, up\n    ret on", f, f, p).unwrap(),
+                Some(_) => writeln!(self.out, "fn __on_{}() -> u1\n    on: u1 = __get___on_{}()\n    ret on", f, f).unwrap(),
                 None => writeln!(self.out, "fn __on_{}() -> u1\n    own: u1 = __get___enabled_{}()\n    ret own", f, f).unwrap(),
             }
         }
@@ -5282,38 +5331,25 @@ impl Lowerer {
         self.written.insert(field.to_string());
     }
 
-    /// A feature's effective state read in line (log 51, 71, fm3 log
-    /// 110): its own switch and each dynamic ancestor's, one load of the
-    /// context, a `get` each and an `and` each after the first
+    /// A feature's effective state read in line: one field of the
+    /// context, one load, at any depth (fm3 question 72, log 138). A
+    /// feature under a dynamic ancestor has the field `__on_<feature>`,
+    /// its own switch and every ancestor's, worked out where a switch
+    /// is written; one with none reads its own switch, which is the same
     fn gate(&mut self, feature: &str, dst: Option<&str>, b: &mut Body) -> String {
-        let mut chain = vec![feature.to_string()];
-        while let Some(p) = self.dynamic_ancestor(chain.last().unwrap()) {
-            chain.push(p);
-        }
+        let field = if self.dynamic_ancestor(feature).is_some() { format!("__on_{}", feature) } else { format!("__enabled_{}", feature) };
         let c = b.tmp();
         b.line(&format!("{}: __ctx = load {}", c, THIS));
-        let mut acc = String::new();
-        for (i, f) in chain.iter().enumerate() {
-            let last = i + 1 == chain.len();
-            let named = |b: &mut Body| match dst {
-                Some(d) if b.vars.contains_key(d) => {
-                    let t = b.vars[d].ty.clone();
-                    b.define(d, t)
-                }
-                Some(d) => d.to_string(),
-                None => b.tmp(),
-            };
-            let own = if last && i == 0 { named(b) } else { b.tmp() };
-            b.line(&format!("{}: u1 = get {}, __enabled_{}", own, c, f));
-            acc = if i == 0 {
-                own
-            } else {
-                let both = if last { named(b) } else { b.tmp() };
-                b.line(&format!("{}: u1 = and {}, {}", both, acc, own));
-                both
-            };
-        }
-        acc
+        let on = match dst {
+            Some(d) if b.vars.contains_key(d) => {
+                let t = b.vars[d].ty.clone();
+                b.define(d, t)
+            }
+            Some(d) => d.to_string(),
+            None => b.tmp(),
+        };
+        b.line(&format!("{}: u1 = get {}, {}", on, c, field));
+        on
     }
 
     /// a feature's switch read (log 51): its effective state, own flag
