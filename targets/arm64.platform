@@ -1169,6 +1169,17 @@ ext thread
 thread_key() -> ptr
     mrs r, tpidrro_el0
 
+; the current context (lib/context.ssa, fm3 question 71): x28, the last
+; of the callee-saved registers, which the allocator does not hand out
+; in a module that names the context. `fibre_switch` and a task
+; switch's frame save and load it with the rest, so a fibre and a task
+; carry their own.
+ext context
+context() -> ptr
+    mov r, x28
+context_set(c: ptr) -> ()
+    mov x28, c
+
 ; cores: a secondary core is off until PSCI CPU_ON (hvc: x0 the call,
 ; x1 the target core, x2 where it starts, x3 a word it starts with)
 ; and starts with the MMU off and no stack. `core_boot` is where: x0

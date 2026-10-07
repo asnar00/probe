@@ -120,7 +120,14 @@ fn successors(inst: &Inst) -> Vec<usize> {
 /// own linear scan over its own pool (a value's class is fixed by its
 /// type, so coalesced values always share one). Spill slots are one
 /// space for all classes.
-pub fn allocate_classes(func: &Function, class_of: &[usize], pools: &[&[i64]]) -> Alloc {
+///
+/// Some values' places may be fixed by the caller: `fixed` pairs a value
+/// with a register outside every pool that holds it already and for as
+/// long as the function runs (the current context's, ssa.md). Such a
+/// value takes no register of a pool and no slot, is never merged with
+/// a block's parameter, and is not among the registers the function saves.
+pub fn allocate_fixed(func: &Function, class_of: &[usize], pools: &[&[i64]], fixed: &[(ValueId, i64)]) -> Alloc {
+    let fixed_reg = |i: usize| fixed.iter().find(|(v, _)| v.0 as usize == i).map(|&(_, r)| r);
     let n = func.values.len();
     let nb = func.blocks.len();
 
@@ -250,6 +257,9 @@ pub fn allocate_classes(func: &Function, class_of: &[usize], pools: &[&[i64]]) -
                 _ => {}
             }
             for (p, a) in edges {
+                if fixed_reg(p.0 as usize).is_some() || fixed_reg(a.0 as usize).is_some() {
+                    continue;
+                }
                 let (rp, ra) = (find(&mut uf, p.0 as usize), find(&mut uf, a.0 as usize));
                 if rp == ra {
                     continue;
@@ -321,7 +331,7 @@ pub fn allocate_classes(func: &Function, class_of: &[usize], pools: &[&[i64]]) -
     let mut loc = vec![Loc::Slot(usize::MAX); n];
     for (class, pool) in pools.iter().enumerate() {
     let mut order: Vec<usize> = (0..n)
-        .filter(|&i| find(&mut uf, i) == i && start[i] != u32::MAX && class_of[i] == class)
+        .filter(|&i| find(&mut uf, i) == i && start[i] != u32::MAX && class_of[i] == class && fixed_reg(i).is_none())
         .collect();
     order.sort_by_key(|&i| start[i]);
     let mut free: Vec<i64> = pool.to_vec();
@@ -364,7 +374,7 @@ pub fn allocate_classes(func: &Function, class_of: &[usize], pools: &[&[i64]]) -
     // order, take a slot whose last occupant has ended, else a new one
     let mut root_slot: Vec<Option<usize>> = vec![None; n];
     let mut nslots = 0;
-    let mut spilled: Vec<usize> = (0..n).filter(|&i| find(&mut uf, i) == i && matches!(loc[i], Loc::Slot(_))).collect();
+    let mut spilled: Vec<usize> = (0..n).filter(|&i| find(&mut uf, i) == i && matches!(loc[i], Loc::Slot(_)) && fixed_reg(i).is_none()).collect();
     spilled.sort_by_key(|&i| start[i]);
     let mut free: Vec<(u32, usize)> = Vec::new(); // (end of last occupant, slot)
     for i in spilled {
@@ -380,15 +390,19 @@ pub fn allocate_classes(func: &Function, class_of: &[usize], pools: &[&[i64]]) -
     }
     for i in 0..n {
         let r = find(&mut uf, i);
-        loc[i] = match loc[r] {
-            Loc::Reg(reg) => Loc::Reg(reg),
-            Loc::Slot(_) => Loc::Slot(root_slot[r].unwrap()),
+        loc[i] = match (fixed_reg(i), loc[r]) {
+            (Some(reg), _) => Loc::Reg(reg),
+            (None, Loc::Reg(reg)) => Loc::Reg(reg),
+            (None, Loc::Slot(_)) => Loc::Slot(root_slot[r].unwrap()),
         };
     }
 
     // ---- collect used registers ----
     let mut used_by_class: Vec<Vec<i64>> = vec![Vec::new(); pools.len()];
     for i in 0..n {
+        if fixed_reg(i).is_some() {
+            continue;
+        }
         if let Loc::Reg(r) = loc[i] {
             let used = &mut used_by_class[class_of[i]];
             if !used.contains(&r) {

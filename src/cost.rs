@@ -89,7 +89,7 @@ pub const COUNTER: &str = "__dyn";
 pub fn count_blocks(module: &mut Module, skip: &[&str], one: Option<(&str, usize)>) {
     let arithmetic: Vec<String> = module.funcs.iter().filter(|f| is_arithmetic(f)).map(|f| f.name.clone()).collect();
     for f in module.funcs.iter_mut() {
-        if skip.contains(&f.name.as_str()) || arithmetic.contains(&f.name) {
+        if skip.contains(&f.name.as_str()) || arithmetic.contains(&f.name) || f.name == crate::ssa::CONTEXT || f.name == crate::ssa::CONTEXT_SET {
             continue;
         }
         for b in 0..f.blocks.len() {
@@ -171,12 +171,21 @@ pub fn count_from(module: &mut Module, name: &str) -> Result<(), String> {
 
 /// what the count adds as a block is entered: its instructions, jumps aside
 pub fn block_weight(b: &crate::ssa::Block) -> i128 {
-    b.insts.iter().filter(|i| !matches!(i, Inst::Jmp { .. })).count() as i128
+    b.insts.iter().filter(|i| !free(i)).count() as i128
+}
+
+/// what costs nothing: a jump, and a read of the current context's
+/// pointer, which is a register where a machine has one and not an
+/// operation (fm3 question 71, ssa.md *The current context*). Setting
+/// it is one, the call's own, and neither is descended: the library's
+/// bodies are the meaning and not the price
+fn free(i: &Inst) -> bool {
+    matches!(i, Inst::Jmp { .. }) || matches!(i, Inst::Call { callee, .. } if callee == crate::ssa::CONTEXT)
 }
 
 /// the IR instructions of a function, jumps aside
 fn ssa_count(f: &Function) -> usize {
-    f.blocks.iter().flat_map(|b| b.insts.iter()).filter(|i| !matches!(i, Inst::Jmp { .. })).count()
+    f.blocks.iter().flat_map(|b| b.insts.iter()).filter(|i| !free(i)).count()
 }
 
 /// the operations the IR counts as one on any number, whichever
@@ -656,6 +665,12 @@ impl<'a> Coster<'a> {
                         }
                     }
                     Inst::Check { cond } => facts.refine(&mut e, *cond, true),
+                    Inst::Call { callee, .. } if callee == crate::ssa::CONTEXT => continue,
+                    Inst::Call { callee, .. } if callee == crate::ssa::CONTEXT_SET => {
+                        ssa += 1.0;
+                        hw += k;
+                        continue;
+                    }
                     Inst::Call { dsts, callee, args: cargs } => {
                         let callee = callee.clone();
                         let g = self.module.funcs.iter().find(|g| g.name == callee);

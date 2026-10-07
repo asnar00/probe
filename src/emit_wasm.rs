@@ -256,10 +256,13 @@ pub fn compile_with(module: &Module, enc: &WEncoder, platform: &Platform) -> Res
     p.extend(uleb(pages));
     section(&mut out, 5, p);
 
-    // one global: the shadow stack pointer, mutable i32
-    let mut p = vec![0x01, 0x7F, 0x01, 0x41];
+    // two globals, each a mutable i32: the shadow stack pointer, and
+    // the current context's pointer (targets/wasm32.platform, `ext
+    // context`), nothing until a program sets it
+    let mut p = vec![0x02, 0x7F, 0x01, 0x41];
     p.extend(sleb(SHADOW_STACK_TOP));
     p.push(0x0b);
+    p.extend([0x7F, 0x01, 0x41, 0x00, 0x0b]);
     section(&mut out, 6, p);
 
     let mut p = uleb(module.funcs.len() as u64 + 1);

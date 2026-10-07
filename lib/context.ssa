@@ -1,0 +1,23 @@
+; lib/context.ssa: the current context (fm3 question 71). `context()` is
+; a pointer to it and `context_set(p)` makes `p` the current one; a
+; function is never handed it. What it points at is the program's
+; business: a struct of state, read and written by `load` and `store`
+; through the pointer. The bodies here are the meaning, one word of
+; the program's data. A platform that keeps the pointer in a register
+; says so by a rule (`ext context`: x28 on arm64, s11 on riscv64, a
+; global on wasm32), and there a read of it is no instruction where
+; nothing could have changed it (ssa.md, *The current context*). Under
+; the JIT the word below is also where the context waits between two
+; calls from the host, whose register it is outside them.
+
+data __context: array(u64, 1)
+
+fn context() -> ptr
+    h: ptr = addr __context
+    c: ptr = load h
+    ret c
+
+fn context_set(c: ptr)
+    h: ptr = addr __context
+    store c, h
+    ret

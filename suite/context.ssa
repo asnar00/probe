@@ -1,0 +1,174 @@
+; suite/context.ssa: the current context (lib/context.ssa; ssa.md, *The
+; current context*). `context()` is its pointer and `context_set(p)`
+; makes `p` the current one; no function here is handed it. On arm64
+; it is x28, on riscv64 s11, on wasm32 a global, on the GPU's path the
+; library's word.
+
+;! fields 5 -> 12
+;! by_turns -> 3, 30
+;! three_deep 7 -> 107
+;! two_fibres -> 3, 3001
+;! across_platform 9 -> 9, 1
+;! swapped_under -> 2, 10
+;! handed 3 -> 15
+
+data one: array(i64, 4)
+data two: array(i64, 4)
+data three: array(i64, 4)
+data __cstacks: array(u8, 8192)
+
+; a field read and written through the context, by a function that is
+; given only a number
+fn bump(n: i64) -> i64
+    c: ptr = context()
+    v: i64 = load c
+    w: i64 = add v, n
+    store w, c
+    ret w
+
+fn fields(n: i64) -> i64
+    a: ptr = addr one
+    store 2: i64, a
+    context_set(a)
+    x: i64 = bump(n)
+    y: i64 = bump(n)
+    ret y
+
+; two contexts set by turns, each keeping its own
+fn by_turns() -> (i64, i64)
+    a: ptr = addr one
+    b: ptr = addr two
+    store 0: i64, a
+    store 0: i64, b
+    context_set(a)
+    r1: i64 = bump(1)
+    context_set(b)
+    r2: i64 = bump(10)
+    context_set(a)
+    r3: i64 = bump(2)
+    context_set(b)
+    r4: i64 = bump(20)
+    x: i64 = load a
+    y: i64 = load b
+    ret x, y
+
+; a chain three deep that never passes it
+fn deep3(n: i64) -> i64
+    c: ptr = context()
+    v: i64 = load c, 8
+    r: i64 = add v, n
+    ret r
+fn deep2(n: i64) -> i64
+    r: i64 = deep3(n)
+    ret r
+fn deep1(n: i64) -> i64
+    r: i64 = deep2(n)
+    ret r
+fn three_deep(n: i64) -> i64
+    a: ptr = addr one
+    store 100: i64, a, 8
+    context_set(a)
+    r: i64 = deep1(n)
+    ret r
+
+; two fibres in two contexts, interleaved: each sets its own, bumps it
+; and yields three times, and finds its own again after every yield.
+; A body puts back the context it found before it ends: where there is
+; one stack (wasm, the GPU's path) the bodies run one after another in
+; their caller's context, and a fresh fibre's is nothing
+fn turn(k: i64)
+    was: ptr = context()
+    a: ptr = addr one
+    b: ptr = addr two
+    first: u1 = cmp.eq k, 0
+    mine: ptr = if first
+        yield a
+    else
+        yield b
+    by: i64 = if first
+        yield 1
+    else
+        yield 1000
+    context_set(mine)
+    loop(i: i64 = 0)
+        done: u1 = cmp.ge i, 3
+        if done
+            break
+        r: i64 = bump(by)
+        fibre_yield()
+        i1: i64 = add i, 1
+        continue i1
+    context_set(was)
+    ret
+
+; (the second number is the second context's count and one more where
+; the caller's own context is there again after the run)
+fn two_fibres() -> (i64, i64)
+    a: ptr = addr one
+    b: ptr = addr two
+    c: ptr = addr three
+    store 0: i64, a
+    store 0: i64, b
+    context_set(c)
+    s: ptr = addr __cstacks
+    f: fn(i64) = addr turn
+    fibres_run(2, s, 4096, f)
+    now: ptr = context()
+    same: u1 = cmp.eq now, c
+    x: i64 = load a
+    y: i64 = load b
+    one_more: i64 = conv same
+    y1: i64 = add y, one_more
+    ret x, y1
+
+; a context set, calls out to the platform made (the thread's key, a
+; yield with no fibres running), the context still there
+fn across_platform(n: i64) -> (i64, u1)
+    a: ptr = addr one
+    store n, a
+    context_set(a)
+    t: ptr = thread()
+    fibre_yield()
+    c: ptr = context()
+    same: u1 = cmp.eq c, a
+    v: i64 = load c
+    ret v, same
+
+; a value read from `context()` is the pointer as it was when read: a
+; function that reads it and then calls one that sets another still
+; holds the first, and reads the second by asking again
+fn to_two()
+    b: ptr = addr two
+    context_set(b)
+    ret
+fn swapped_under() -> (i64, i64)
+    a: ptr = addr one
+    b: ptr = addr two
+    store 2: i64, a
+    store 10: i64, b
+    context_set(a)
+    c: ptr = context()
+    to_two()
+    old: i64 = load c
+    d: ptr = context()
+    new: i64 = load d
+    ret old, new
+
+; the pointer carried round a loop as a block's parameter
+fn walk(n: i64) -> i64
+    c: ptr = context()
+    s: i64 = loop(i: i64 = 0, p: ptr = c, acc: i64 = 0)
+        done: u1 = cmp.ge i, n
+        if done
+            break acc
+        v: i64 = load p
+        acc1: i64 = add acc, v
+        i1: i64 = add i, 1
+        continue i1, p, acc1
+    ret s
+fn handed(n: i64) -> i64
+    a: ptr = addr one
+    store 5: i64, a
+    context_set(a)
+    r: i64 = walk(n)
+    ret r

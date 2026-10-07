@@ -29,6 +29,10 @@ use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, Type, Value
 /// pool for the allocator: callee-saved s2..s11 (x18..x27) — values placed
 /// here survive calls by construction
 const REG_POOL: &[i64] = &[18, 19, 20, 21, 22, 23, 24, 25, 26, 27];
+/// the current context's register (targets/riscv64.platform, `ext
+/// context`): s11, the pool's last, and not the pool's in a module that
+/// names the context
+pub const CONTEXT_REG: i64 = 27;
 
 const ZERO: i64 = 0; // x0
 const RA: i64 = 1;
@@ -981,7 +985,11 @@ fn compile_function(
         return Err(format!("a vector ({}) the platform has no register class for", func.tyname(func.values[i].ty)));
     }
     let class_idx: Vec<usize> = classes.iter().map(|c| match c.as_deref() { None => 0, Some("v") => 2, Some(_) => 1 }).collect();
-    let alloc = regalloc::allocate_classes(func, &class_idx, &[REG_POOL, F_POOL, V_POOL]);
+    // see emit.rs: the context's register out of the pool where the
+    // module names it, and the value itself where the function is settled
+    let pool = if natives.context.is_some() { &REG_POOL[..REG_POOL.len() - 1] } else { REG_POOL };
+    let fixed: Vec<(ValueId, i64)> = natives.context.as_ref().map_or(Vec::new(), |u| crate::ssa::context_values(func, u).into_iter().map(|v| (v, CONTEXT_REG)).collect());
+    let alloc = regalloc::allocate_fixed(func, &class_idx, &[pool, F_POOL, V_POOL], &fixed);
     // the callee-saved area: ra, the integer and float registers at 8
     // each, then the vector registers at 16 each, 16-aligned
     let nv = alloc.used_by_class[2].len();
@@ -1547,6 +1555,10 @@ fn compile_inst(e: &mut RvEmit, inst: &Inst) -> Result<(), String> {
             let rd = e.dst_reg(*dst, T0);
             e.emit("add {r}, {r}, {r}", &[rd, rb, ro])?;
             e.finish(*dst, rd)
+        }
+        Inst::Call { dsts, callee, .. } if callee == crate::ssa::CONTEXT && dsts.first().is_some_and(|d| e.alloc.loc[d.0 as usize] == Loc::Reg(CONTEXT_REG)) => {
+            // the context read where nothing can change it: no instruction
+            Ok(())
         }
         Inst::Call { dsts, callee, args } if e.natives.get(callee).is_some_and(|n| n.inline) && !args.iter().any(|&a| e.is_v(a)) => {
             // the platform has this one: the rule's sequence instead of

@@ -76,3 +76,11 @@ ext fibres
 const fibre_lr = 0
 const fibre_sp = 8
 const fibre_stacks = 0
+
+; the current context (lib/context.ssa): global 1, beside the shadow
+; stack's global 0
+ext context
+context() -> ptr
+    global.get 1
+context_set(c: ptr) -> ()
+    global.set 1

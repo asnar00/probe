@@ -488,7 +488,7 @@ pub fn compile(module: &Module, enc: &Encoder) -> Result<Compiled, String> {
 /// from Rust can pass integer words (see `ssa::jit_wrappers`)
 pub fn compile_with(module: &Module, enc: &Encoder, platform: &Platform) -> Result<Compiled, String> {
     let natives = platform.natives(module);
-    let wrappers = crate::ssa::jit_wrappers(&module.funcs, &|f, t| natives.class_of(f, t).is_some());
+    let wrappers = crate::ssa::jit_wrappers(&module.funcs, &|f, t| natives.class_of(f, t).is_some(), natives.context.is_some());
     if wrappers.is_empty() {
         return compile_image(module, enc, platform, 0);
     }
@@ -1306,6 +1306,10 @@ pub fn scratch_layout(func: &Function, base: i64) -> (HashMap<ValueId, i64>, i64
 /// pool for the allocator: callee-saved x19..x28 — values placed here
 /// survive calls by construction, so call sites need no spill logic
 const REG_POOL: &[i64] = &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
+/// the current context's register (targets/arm64.platform, `ext
+/// context`): the pool's last, and not the pool's in a module that
+/// names the context
+pub const CONTEXT_REG: i64 = 28;
 /// the float file's pool: v8..v15, whose low 64 bits are callee-saved
 const F_POOL: &[i64] = &[8, 9, 10, 11, 12, 13, 14, 15];
 /// the v registers a rule's vector temporaries are: v20..v23, never
@@ -1432,7 +1436,12 @@ fn compile_function(
         return Err(format!("a vector ({}) the platform has no register class for", func.tyname(func.values[i].ty)));
     }
     let class_idx: Vec<usize> = classes.iter().map(|c| c.is_some() as usize).collect();
-    let alloc = crate::regalloc::allocate_classes(func, &class_idx, &[REG_POOL, F_POOL]);
+    // in a module that names the context its register is not handed
+    // out, and where the function is settled the value `context()`
+    // gives is that register (ssa::context_values)
+    let pool = if natives.context.is_some() { &REG_POOL[..REG_POOL.len() - 1] } else { REG_POOL };
+    let fixed: Vec<(ValueId, i64)> = natives.context.as_ref().map_or(Vec::new(), |u| crate::ssa::context_values(func, u).into_iter().map(|v| (v, CONTEXT_REG)).collect());
+    let alloc = crate::regalloc::allocate_fixed(func, &class_idx, &[pool, F_POOL], &fixed);
     // the callee-saved area: the integer registers in pairs, then the
     // float registers whole, 16 bytes each
     let saved_end = fp_save_base(alloc.used_regs.len()) + 16 * alloc.used_by_class[1].len() as i64;
@@ -1986,6 +1995,11 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
             e.emit("add {x}, {x}, {x}", &[rd, rb, ro])?;
             e.finish(*dst, rd)
         }
+        Inst::Call { dsts, callee, .. } if callee == crate::ssa::CONTEXT && dsts.first().is_some_and(|d| e.alloc.loc[d.0 as usize] == crate::regalloc::Loc::Reg(CONTEXT_REG)) => {
+            // the context read where nothing can change it: the value is
+            // the register, and there is nothing to emit
+            Ok(())
+        }
         Inst::Call { dsts, callee, args } if e.natives.get(callee).is_some_and(|n| n.inline) && !args.iter().any(|&a| e.is_v(a)) => {
             // the platform has this one: the rule's sequence instead of
             // the call, each operand in its own file
@@ -2295,6 +2309,52 @@ mod tests {
         } else {
             x0
         }
+    }
+
+    /// the current context (ssa.md): in a function where nothing can
+    /// change it, `context()` emits nothing and a field is one load
+    /// from x28; where something can, the value is moved out of the
+    /// register; and a module that does not name the context keeps no
+    /// register for it
+    #[test]
+    fn the_context_is_a_register_and_a_read_is_no_instruction() {
+        let src = crate::ssa::with_prelude("
+fn settled() -> i64
+    c: ptr = context()
+    v: i64 = load c, 8
+    ret v
+fn swap(p: ptr)
+    context_set(p)
+    ret
+fn unsettled(p: ptr) -> i64
+    c: ptr = context()
+    swap(p)
+    v: i64 = load c, 8
+    ret v
+");
+        let module = crate::ssa::parse(&src).expect("parse");
+        crate::ssa::verify(&module).expect("verify");
+        let enc = Encoder::load("targets/arm64.encodings.json").expect("encodings");
+        let platform = Platform::arm64();
+        let unsettled = platform.natives(&module).context.expect("the module names the context");
+        assert!(unsettled.contains("swap") && unsettled.contains("unsettled") && !unsettled.contains("settled"));
+        let c = compile_image(&module, &enc, &platform, 0).expect("compile");
+        let words = |name: &str| -> Vec<u32> {
+            let at = c.funcs[name];
+            let end = c.funcs.values().copied().filter(|&o| o > at).min().unwrap_or(c.code.len());
+            (at..end).step_by(4).map(|i| u32::from_le_bytes(c.code[i..i + 4].try_into().unwrap())).collect()
+        };
+        // mov xN, x28 is orr xN, xzr, x28; ldr xN, [x28, #8]
+        let moved = |ws: &[u32]| ws.iter().any(|w| w & 0xffff_ffe0 == 0xaa1c_03e0);
+        let loaded = |ws: &[u32]| ws.iter().any(|w| w & 0xffff_ffe0 == 0xf940_0780);
+        let s = words("settled");
+        assert!(!moved(&s) && loaded(&s), "settled: {:08x?}", s);
+        let u = words("unsettled");
+        assert!(moved(&u) && !loaded(&u), "unsettled: {:08x?}", u);
+
+        let plain = crate::ssa::with_prelude("fn f(a: i64) -> i64\n    ret a\n");
+        let m = crate::ssa::parse(&plain).expect("parse");
+        assert!(platform.natives(&m).context.is_none());
     }
 
     #[test]

@@ -909,14 +909,21 @@ pub struct Function {
 /// integer of its width, casts, calls `f`, and casts its classed results
 /// back — so `jit.call` need know nothing about the convention. A
 /// vector at that boundary gets no wrapper (a caller passes its lanes).
-pub fn jit_wrappers(funcs: &[Function], classed: &dyn Fn(&Function, Type) -> bool) -> Vec<Function> {
+///
+/// With `context`, the module names the current context (lib/context.ssa)
+/// and every function gets a wrapper: the context's register is the
+/// host's outside a call from it, so the wrapper keeps the host's
+/// value, loads the context from the library's word, calls, stores it
+/// back and puts the host's value back — in the IR's own two
+/// operations, the kept value in a register the wrapper's prologue saves.
+pub fn jit_wrappers(funcs: &[Function], classed: &dyn Fn(&Function, Type) -> bool, context: bool) -> Vec<Function> {
     let mut out = Vec::new();
     for f in funcs {
         if f.name.starts_with("__w_") {
             continue;
         }
         let ptys: Vec<Type> = f.params.iter().map(|&p| f.ty(p)).collect();
-        let needs = ptys.iter().chain(&f.rets).any(|&t| classed(f, t));
+        let needs = context || ptys.iter().chain(&f.rets).any(|&t| classed(f, t));
         if !needs || ptys.iter().chain(&f.rets).any(|&t| f.vector(t).is_some()) {
             continue;
         }
@@ -962,7 +969,23 @@ pub fn jit_wrappers(funcs: &[Function], classed: &dyn Fn(&Function, Type) -> boo
                 rets.push((d, None));
             }
         }
+        let mut leave = Vec::new();
+        if context {
+            let mut val = |name: &str| {
+                w.values.push(ValueData { name: name.into(), ty: Type::Ptr, literal: None });
+                ValueId(w.values.len() as u32 - 1)
+            };
+            let (host, home, mine, after) = (val("host"), val("home"), val("mine"), val("after"));
+            insts.push(Inst::Call { dsts: vec![host], callee: CONTEXT.into(), args: Vec::new() });
+            insts.push(Inst::Addr { dst: home, name: CONTEXT_HOME.into() });
+            insts.push(Inst::Load { dst: mine, addr: home, off: 0, index: None });
+            insts.push(Inst::Call { dsts: Vec::new(), callee: CONTEXT_SET.into(), args: vec![mine] });
+            leave.push(Inst::Call { dsts: vec![after], callee: CONTEXT.into(), args: Vec::new() });
+            leave.push(Inst::Store { val: after, addr: home, off: 0, index: None });
+            leave.push(Inst::Call { dsts: Vec::new(), callee: CONTEXT_SET.into(), args: vec![host] });
+        }
         insts.push(Inst::Call { dsts, callee: f.name.clone(), args });
+        insts.extend(leave);
         let mut vals = Vec::new();
         for (d, b) in rets {
             match b {
@@ -978,6 +1001,80 @@ pub fn jit_wrappers(funcs: &[Function], classed: &dyn Fn(&Function, Type) -> boo
         out.push(w);
     }
     out
+}
+
+/// the current context's two operations and the word their library
+/// keeps it in (lib/context.ssa)
+pub const CONTEXT: &str = "context";
+pub const CONTEXT_SET: &str = "context_set";
+pub const CONTEXT_HOME: &str = "__context";
+
+/// what a module does with the current context: whether it names it at
+/// all, and which of its functions could find it changed under them
+pub struct ContextUse {
+    /// some function other than the library's own two calls one of them:
+    /// only then does a machine keep a register for it
+    pub named: bool,
+    /// the functions in which the context may change while they run:
+    /// one that calls `context_set`, calls through a function value,
+    /// calls a name the module has not got, or calls such a function.
+    /// In every other function the value `context()` gives is the
+    /// register itself for as long as the function runs
+    pub unsettled: std::collections::HashSet<String>,
+}
+
+pub fn context_use(funcs: &[Function]) -> ContextUse {
+    let calls = |f: &Function, name: &str| f.blocks.iter().flat_map(|b| &b.insts).any(|i| matches!(i, Inst::Call { callee, .. } if callee == name));
+    let own = |f: &Function| f.name == CONTEXT || f.name == CONTEXT_SET;
+    let named = funcs.iter().any(|f| !own(f) && (calls(f, CONTEXT) || calls(f, CONTEXT_SET)));
+    let mut unsettled = std::collections::HashSet::new();
+    if !named {
+        return ContextUse { named, unsettled };
+    }
+    let known: std::collections::HashSet<&str> = funcs.iter().map(|f| f.name.as_str()).collect();
+    unsettled.insert(CONTEXT_SET.to_string());
+    loop {
+        let before = unsettled.len();
+        for f in funcs {
+            if unsettled.contains(&f.name) || f.name == CONTEXT {
+                continue;
+            }
+            let moved = f.blocks.iter().flat_map(|b| &b.insts).any(|i| match i {
+                Inst::CallInd { .. } => true,
+                Inst::Call { callee, .. } => unsettled.contains(callee) || !known.contains(callee.as_str()),
+                _ => false,
+            });
+            if moved {
+                unsettled.insert(f.name.clone());
+            }
+        }
+        if unsettled.len() == before {
+            break;
+        }
+    }
+    ContextUse { named, unsettled }
+}
+
+/// the values of `func` that are the context's register itself: what
+/// `context()` gives in a settled function, unless the value is handed
+/// to a block as its parameter (the allocator merges those, and a
+/// fixed place is not merged)
+pub fn context_values(func: &Function, unsettled: &std::collections::HashSet<String>) -> Vec<ValueId> {
+    if unsettled.contains(&func.name) {
+        return Vec::new();
+    }
+    let mut handed = std::collections::HashSet::new();
+    for i in func.blocks.iter().flat_map(|b| &b.insts) {
+        match i {
+            Inst::Jmp { args, .. } => handed.extend(args.iter().copied()),
+            Inst::Br { then_args, else_args, .. } => handed.extend(then_args.iter().chain(else_args).copied()),
+            _ => {}
+        }
+    }
+    func.blocks.iter().flat_map(|b| &b.insts).filter_map(|i| match i {
+        Inst::Call { dsts, callee, .. } if callee == CONTEXT && dsts.len() == 1 && !handed.contains(&dsts[0]) => Some(dsts[0]),
+        _ => None,
+    }).collect()
 }
 
 impl Function {

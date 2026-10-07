@@ -241,7 +241,12 @@ impl Arena {
     pub fn sync(&mut self, funcs: &[Function], level: usize) -> Result<Vec<Installed>, String> {
         // with a wrapper for every function a caller from Rust could not
         // reach otherwise (floats cross a call in float registers)
-        let wrappers = crate::ssa::jit_wrappers(funcs, &|f, t| self.natives.class_of(f, t).is_some());
+        // the incremental arena keeps no register for the current context
+        // and has no host's side for it (ssa.md, *The current context*)
+        if crate::ssa::context_use(funcs).named {
+            return Err("this module names the current context (`context()`), which the incremental arena does not keep: run it with `probe run` or the suite".into());
+        }
+        let wrappers = crate::ssa::jit_wrappers(funcs, &|f, t| self.natives.class_of(f, t).is_some(), false);
         let all: Vec<&Function> = funcs.iter().chain(&wrappers).collect();
         let names: Vec<&str> = all.iter().map(|f| f.name.as_str()).collect();
         self.ensure_trampolines(&names)?;

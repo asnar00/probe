@@ -155,11 +155,16 @@ pub struct Natives {
     pub classes: HashMap<String, String>,
     /// the platform's constants: a board's addresses
     pub consts: HashMap<String, i64>,
+    /// the module names the current context and the platform keeps it
+    /// in a register: the functions in which it may change while they
+    /// run (`ssa::context_use`). None where the module does not name
+    /// it, and the register is then the allocator's like any other
+    pub context: Option<std::collections::HashSet<String>>,
 }
 
 impl Natives {
     pub fn none() -> Natives {
-        Natives { rules: HashMap::new(), vector_rules: HashMap::new(), generics: HashMap::new(), classes: HashMap::new(), consts: HashMap::new() }
+        Natives { rules: HashMap::new(), vector_rules: HashMap::new(), generics: HashMap::new(), classes: HashMap::new(), consts: HashMap::new(), context: None }
     }
     pub fn get(&self, callee: &str) -> Option<&Native> {
         self.rules.get(callee)
@@ -527,7 +532,10 @@ impl Platform {
                 break;
             }
         }
-        Natives { rules, vector_rules, generics, classes, consts }
+        // a register is kept for the context only where the module names
+        // it and this platform has the rule that says which
+        let context = rules.contains_key(crate::ssa::CONTEXT).then(|| crate::ssa::context_use(&m.funcs)).filter(|u| u.named).map(|u| u.unsettled);
+        Natives { rules, vector_rules, generics, classes, consts, context }
     }
 }
 
@@ -834,9 +842,9 @@ mod tests {
         // switch, an integer rule, stays)
         assert!(!im.natives(&m).rules.keys().any(|k| k.starts_with("add")) && im.natives(&m).classes.is_empty());
         // virt (the board's constants), traps, time, M, F, D, V, fibres,
-        // thread, cores; rv64i keeps all but M, F, D, V
-        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 10);
-        assert_eq!(i.extensions().iter().filter(|(_, present)| *present).count(), 6);
+        // thread, context, cores; rv64i keeps all but M, F, D, V
+        assert_eq!(full.extensions().iter().filter(|(_, present)| *present).count(), 11);
+        assert_eq!(i.extensions().iter().filter(|(_, present)| *present).count(), 7);
         assert_eq!(i.natives(&m).consts.get("uart"), Some(&0x10000000));
         let nofp = Platform::load_named("arm64-nofp").unwrap();
         assert!(nofp.natives(&m).classes.is_empty());
