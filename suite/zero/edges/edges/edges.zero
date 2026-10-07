@@ -6,7 +6,7 @@ int part$
 int heard$
 int raw$
 int level$
-int sum = 0
+int sum$ << 0
 out$ << pair$ << " " forever
 out$ << pair$ << "\n" forever
 heard$ << part$ forever
@@ -44,12 +44,12 @@ on tally (int x$)
     loop
         if (count x$ == 0)
             break
-        sum = sum + peek x$ at (0)
+        sum$ << sum$ + peek x$ at (0)
         advance x$ by (1)
 
 on (int s) = summed down from (int k)
     part$ << [k through 1]
-    s = sum
+    s = sum$
 
 on (int s) = a part summed down from (int k)
     s = summed down from (k)

@@ -7,12 +7,12 @@ layer: runtime
 Plan item 9 of milestone 0: section 12 of zero.md — the store composed in provenance order, redefinition with `existing`, the implicit `enabled` per feature gating each link, a feature switched off at the next event with its state kept, `parent` and `layer` checked.
 
 ## overview
-`base` is the root: `greet`, `count (k)` and `describe` are the functions later features redefine, `base only` is one they leave alone, and `visits` counts calls of `visit`.
+`base` is the root: `greet`, `count (k)` and `describe` are the functions later features redefine, `base only` is one they leave alone, and `visits$` counts calls of `visit`.
 
 ## interface
 - `greet` gives 1; `count (k)` gives k; `describe` gives 10.
 - `base only` gives 7 whatever else is on.
-- `visit` adds one to `visits`; `visited` reads it.
+- `visit` pushes one more into `visits$`; `visited` reads it by its name.
 
 ## rules
 - A function defined once is called directly and is not gated.

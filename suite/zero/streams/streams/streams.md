@@ -19,7 +19,7 @@ A stream is a value over time. `T x$` declares an empty one; `<<` pushes its fir
 - `tokens`, `tokens moved` and `tokens framed` push and read a stream of the struct `token`, which is one ring whose item is the struct (question 43, log 88).
 - `logged` and `logged and read` push into and read the feature-scope stream `log$`. `counted round a push` counts a stream of its own, pushes into it and counts again, 2 and then 3: a second `count` of the same reader is the first's number only where nothing between could have pushed (fm3 log 112). `counted round a skip` counts `log$`, calls `skip one logged`, which advances the feature's reader, and counts again in the same function: 3 and then 2, so the second count is of the reader as the call left it (fm3 log 110).
 - `blocked` and `blocked regular` push a block, `x$ << block$`: a string into a stream of bytes, a list into a regular stream.
-- `indexed`, `summed`, `mapped`, `walked over`, `unread only` and `framed pushed` use the sequence words on a pushed stream: an index, `+ _`, `* 2`, a `for` adding into the feature variable `seen`, a reduction after `advance`, and a push into a frame.
+- `indexed`, `summed`, `mapped`, `walked over`, `unread only` and `framed pushed` use the sequence words on a pushed stream: an index, `+ _`, `* 2`, a `for` pushing each sum into the feature's stream `seen$`, a reduction after `advance`, and a push into a frame.
 
 ## rules
 - Every `$` name is a stream: a bare declaration is empty, `<<` pushes, `at (n hz)` sets a rate, and `=` gives it the items of a list, a range, a string or another stream's result. `frame`, `behind` and `from ... to` give new streams holding copies of the items, stamped at the clock's now where the copy is timed.

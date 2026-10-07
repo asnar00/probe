@@ -1,7 +1,7 @@
-int noted = 0
+int noted$ << 0
 
 on describe (int x)
-    noted = noted + 1
+    noted$ << noted$ + 1
     existing describe (x)
 
 on describe (int x$)
@@ -11,7 +11,7 @@ on (int n) = times described()
     describe (1)
     describe (2)
     describe (2.5)
-    n = noted
+    n = noted$
 
 on describe some()
     describe ([1, 2])

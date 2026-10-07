@@ -196,6 +196,11 @@ impl Walk {
                     if let Some(e) = els {
                         self.block(e, at, carried, in_loop, &mut b);
                     }
+                    // ... but an arm that gives the function's last
+                    // result has ended it (fm3 question 2, log 145), and
+                    // gives nothing to what follows the `if`
+                    let ends = |g: &[String]| !at.results.is_empty() && at.results.iter().all(|r| g.contains(r));
+                    let (a, b) = (if ends(&a) { Vec::new() } else { a }, if els.is_some() && ends(&b) { Vec::new() } else { b });
                     for n in a.into_iter().chain(b) {
                         if !given.contains(&n) {
                             given.push(n);

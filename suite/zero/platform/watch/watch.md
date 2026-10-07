@@ -17,7 +17,7 @@ Question 46 (Ash, 10 September 2026): a device is written and never read, and a 
 ## rules
 - A redefinition of a `<<` method applies wherever the item is pushed, into the device or into a stream: the platform's method is lowered twice (log 87) and both copies go through the chain of features, so a store that watches integers sees every one.
 - `existing o$ << x` calls the definition below this one in the chain — the platform's own, which divides out the digits and writes them.
-- With this feature off its link is not taken, so `written` stays 0 and the digits are written by the definition below.
+- With this feature off its link is not taken, so `written$` stays 0 and the digits are written by the definition below.
 
 ## testing
 >counted() → 3

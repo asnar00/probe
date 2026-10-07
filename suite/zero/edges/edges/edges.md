@@ -16,7 +16,7 @@ Parity hop 8 (questions 50 and 51, fm3 log 92): a stream no word reads has no st
 - `beats` pushes two items into `beat$`, a stream at `2 hz`, and then writes `end`.
 - `turns` pushes by turns into `beat$` and into `quick$`, a stream at `5 hz`, and then writes `end`.
 - `drum (k)` pushes one item into `quick$` and then 1 to `k` into `beat$`, a pass of a loop each, and then writes `end`.
-- `summed down from (k)` pushes `k` down to 1 into `part$`; the edge `heard$ << part$ forever` carries each into `heard$`, a stream the sink `tally` is wired to, which adds each to `sum`.
+- `summed down from (k)` pushes `k` down to 1 into `part$`; the edge `heard$ << part$ forever` carries each into `heard$`, a stream the sink `tally` is wired to, which adds each to `sum$`, a stream read only for its latest item (fm3 question 70).
 - `levels` pushes four numbers into `level$`, which a standing filter, `out$ << level$ << "\n" if (level$ > 2) forever`, carries into the output where they are over two.
 - `fed (k)` pushes 1 to `k` into `raw$`, a statement each, and gives `k`; `raw$` is read by the feature `tallied`'s sink.
 - `a part summed down from (k)` calls `summed down from (k)`: a function whose name has the word `part` in it, which is the name of a stream and no reading of it.

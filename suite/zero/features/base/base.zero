@@ -1,4 +1,4 @@
-int visits = 0
+int visits$ << 0
 
 on (int n) = greet()
     n = 1
@@ -13,7 +13,7 @@ on (int n) = base only()
     n = 7
 
 on visit()
-    visits = visits + 1
+    visits$ << visits$ + 1
 
 on (int n) = visited()
-    n = visits
+    n = visits$

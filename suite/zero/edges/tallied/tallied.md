@@ -11,10 +11,10 @@ Parity hop 8 (question 51, fm3 log 92): a consumer that is off holds nothing.
 `keep(raw$)` wires a sink to `raw$`, the stream `edges`' `fed` pushes into. `raw$` is read with `count`, `peek` and `advance`, so it is a queue, and `keep` is a node the scheduler runs after each push.
 
 ## interface
-- `keep (x$)` adds every item to `kept`.
-- `fed (k)` does what it did before, then gives `kept`.
-- `kept from (k)` pushes the numbers from `k` down to 2 in one statement, a range that may hold nothing, and gives `kept`.
-- `soak (x$)` adds every item to `soaked`, and is wired to a stream that is also called `x$`; `soaked from (k)` pushes 1 to `k` into it, one a statement, and gives `soaked`.
+- `keep (x$)` adds every item to `kept$`.
+- `fed (k)` does what it did before, then gives `kept$`.
+- `kept from (k)` pushes the numbers from `k` down to 2 in one statement, a range that may hold nothing, and gives `kept$`.
+- `soak (x$)` adds every item to `soaked$`, and is wired to a stream that is also called `x$`; `soaked from (k)` pushes 1 to `k` into it, one a statement, and gives `soaked$`.
 
 ## rules
 - With this feature on, `fed (80)` gives the sum of 1 to 80, 3 240: the sink runs after each statement's push and the queue's slot comes back.

@@ -750,7 +750,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-07T10:00:00\n\n## testing\n").unwrap();
-        std::fs::write(dir.join("h/h.zero"), "type token =\n    int kind\n    index start, n\n\nchar src$\ntoken u$ = lex(src$)\nint seen = 0\n\non (int k) = kind of (char c)\n    k = if (c <= 32) then (0) else (1)\n\non (token t$) << lex (char c$)\n    int k$ = if (empty c$) then (0) else (kind of (c$))\n    bool new$ = k$ == 3 or k$ != k$[-1]\n    index start$ = if (new$) then (position c$) else (start$[-1])\n    index n$ = if (new$) then (1) else (n$[-1] + 1)\n    t$ << token(k$[-1], start$[-1], n$[-1]) if (new$ and k$[-1] != 0)\n\non arrive first()\n    src$ << \"let x = 4\"\n    seen = seen + 1\n\non arrive again()\n    src$ << \"2;\\n\"\n    end src$\n\non bump()\n    seen = seen + 1\n\non (int n) = tokens()\n    n = count u$\n\non (int n) = last length()\n    token x = peek u$ at (3)\n    n = x.n\n\non (int n) = bumps()\n    n = seen\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "type token =\n    int kind\n    index start, n\n\nchar src$\ntoken u$ = lex(src$)\nint seen$ << 0\n\non (int k) = kind of (char c)\n    k = if (c <= 32) then (0) else (1)\n\non (token t$) << lex (char c$)\n    int k$ = if (empty c$) then (0) else (kind of (c$))\n    bool new$ = k$ == 3 or k$ != k$[-1]\n    index start$ = if (new$) then (position c$) else (start$[-1])\n    index n$ = if (new$) then (1) else (n$[-1] + 1)\n    t$ << token(k$[-1], start$[-1], n$[-1]) if (new$ and k$[-1] != 0)\n\non arrive first()\n    src$ << \"let x = 4\"\n    seen$ << seen$ + 1\n\non arrive again()\n    src$ << \"2;\\n\"\n    end src$\n\non bump()\n    seen$ << seen$ + 1\n\non (int n) = tokens()\n    n = count u$\n\non (int n) = last length()\n    token x = peek u$ at (3)\n    n = x.n\n\non (int n) = bumps()\n    n = seen$\n").unwrap();
         let j = jit_of(&dir);
         let call = |k: i64, f: &str| -> i64 {
             j.call("__zero_context", &[k]).unwrap();
@@ -1069,6 +1069,45 @@ mod tests {
         assert!(err.ends_with("h.zero:10: a stream of bool: a stream holds numbers, enumerations or structs of those"), "{}", err);
         let err = with("\non (int n) = g()\n    int y = out$\n    n = y").expect_err("the device");
         assert!(err.ends_with("h.zero:12: 'out$' is the output device: it is written and never read, so it has no latest item"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What changes at feature scope is a stream (fm3 question 70, log
+    /// 145): an assignment to a feature-scope name is refused, with the
+    /// declaration to write and the push; so is one to a parameter. A
+    /// string that changes is a stream only a cell can hold, its bare
+    /// name its latest item wherever it stands (question 83), and a
+    /// word that wants it as a stream is refused as a stream of strings
+    /// always was
+    #[test]
+    fn what_changes_at_feature_scope_is_a_stream() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (3) → 1\n").unwrap();
+        let head = "type Vec =\n    float x, y = 0\n\ngroup int quota = 100 merge sum\nVec origin(1, 2)\nint size\nstring name$ << \"zero\"\n\non (int a, int b) = two()\n    a = 1\n    b = 2\n\n";
+        let with = |body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}on (int n) = f (int k)\n{}\n", head, body)).unwrap();
+            emit(&dir)
+        };
+        let how = "is a variable, and a variable keeps the value it was declared with (fm3 question 70): what changes is a stream. Declare it";
+        for (body, said) in [
+            ("    quota = k\n    n = quota", format!("h.zero:14: 'quota' {} `group int quota$ << 100 merge sum` and push its next value, `quota$ << k`; its name, `quota$`, is then its latest item wherever one value is wanted", how)),
+            ("    origin = Vec(3, 4)\n    n = k", format!("h.zero:14: 'origin' {} `Vec origin$ << Vec(1, 2)` and push its next value, `origin$ << Vec (3, 4)`; its name, `origin$`, is then its latest item wherever one value is wanted", how)),
+            ("    size = size + k\n    n = size", format!("h.zero:14: 'size' {} `int size$` and push its next value, `size$ << ...`; its name, `size$`, is then its latest item wherever one value is wanted", how)),
+            ("    size, quota = two()\n    n = size", format!("h.zero:14: 'size' {} `int size$` and push its next value, `size$ << ...`; its name, `size$`, is then its latest item wherever one value is wanted", how)),
+            ("    size = loop (int i = 0) while (i < k) yields i\n        continue (i + 1)\n    n = size", format!("h.zero:14: 'size' {} `int size$` and push its next value, `size$ << ...`; its name, `size$`, is then its latest item wherever one value is wanted", how)),
+            ("    name$ = \"one\"\n    n = k", "h.zero:14: 'name$' is a stream: it is pushed into, `name$ << \"one\"`, not assigned".to_string()),
+            ("    k = k + 1\n    n = k", "h.zero:14: 'k' is a parameter: it is what the function was handed, and is not assigned".to_string()),
+            ("    n = count name$", "h.zero:7: a stream of string: a stream holds numbers, enumerations or structs of those".to_string()),
+        ] {
+            let err = with(body).expect_err(body);
+            assert!(err.ends_with(&said), "{}: {}", body, err);
+        }
+        // the string pushed and written: the field a string variable
+        // had, and its name in a push its value now
+        let ir = with("    name$ << \"one\"\n    out$ << name$ << \"\\n\"\n    string s = name$\n    n = count s").unwrap();
+        assert!(ir.contains("    name: u8$\n") && ir.contains(" = set ") && ir.contains(", name, "), "{}", ir);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1730,7 +1769,6 @@ mod tests {
         for (body, whole) in [
             ("    loop\n        if (count x$ == 0)\n            break\n        d$ << peek x$ at (0)\n        advance x$ by (1)\n", false),
             ("    d$ << count x$ << position x$\n    int f$ = frame x$\n    if (ended x$)\n        d$ << latest f$\n", false),
-            ("    advance x$ by (count x$)\n    x$ = far$\n", true),
             ("    d$ << size(x$)\n    advance x$ by (count x$)\n", true),
             ("    for (v in x$)\n        d$ << v\n", true),
             ("    d$ << doubled(x$)\n", true),
@@ -1880,14 +1918,14 @@ mod tests {
             ir.lines().skip_while(|l| !l.starts_with(&format!("fn {}(", f))).skip(1).take_while(|l| l.starts_with(' ')).collect::<Vec<_>>().join("\n")
         };
         let reads = |b: &str, field: &str| b.matches(&format!(", {}\n", field)).count() + b.ends_with(&format!(", {}", field)) as usize;
-        let head = "int kept = 3\nint moved = 0\n\non bump()\n    moved = moved + 1\n\non idle()\n    int z = 0\n\n";
+        let head = "int kept = 3\nint moved$ << 0\n\non bump()\n    moved$ << moved$ + 1\n\non idle()\n    int z = 0\n\n";
         // read, a call, read again: the unwritten one once, with the
         // context's address formed once, first; the written one twice
-        let b = body(&format!("{}on (int n) = f()\n    int a = kept + moved\n    bump()\n    n = a + kept + moved\n", head), "f");
+        let b = body(&format!("{}on (int n) = f()\n    int a = kept + moved$\n    bump()\n    n = a + kept + moved$\n", head), "f");
         assert!(b.starts_with("    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int = get _1, kept\n") && b.matches("= context()").count() == 1, "{}", b);
         assert_eq!((reads(&b, "kept"), reads(&b, "moved")), (1, 2), "{}", b);
         // ... the written one twice even with nothing between that writes it
-        let b = body(&format!("{}on (int n) = f()\n    int a = moved\n    idle()\n    n = a + moved\n", head), "f");
+        let b = body(&format!("{}on (int n) = f()\n    int a = moved$\n    idle()\n    n = a + moved$\n", head), "f");
         assert_eq!(reads(&b, "moved"), 2, "{}", b);
         // a read in one arm is not in hand in the other, nor after them;
         // one above them is in hand in both, and inside a loop
@@ -1921,7 +1959,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-06T10:00:00\n\n## testing\n").unwrap();
         let frees = |param: &str, more: &str| -> bool {
-            let code = format!("int total = 0\nint x$\nsoak(x$)\n\non soak (int {p}$)\n    loop\n        if (count {p}$ == 0)\n            break\n        total = total + peek {p}$ at (0)\n        advance {p}$ by (1)\n\non feed()\n    x$ << 1\n{more}", p = param, more = more);
+            let code = format!("int total$ << 0\nint x$\nsoak(x$)\n\non soak (int {p}$)\n    loop\n        if (count {p}$ == 0)\n            break\n        total$ << total$ + peek {p}$ at (0)\n        advance {p}$ by (1)\n\non feed()\n    x$ << 1\n{more}", p = param, more = more);
             std::fs::write(dir.join("h/h.zero"), code).unwrap();
             lower::lower(&store::read(&dir).unwrap()).unwrap().ir.contains("free_queue(")
         };

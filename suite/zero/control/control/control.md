@@ -11,7 +11,7 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 
 ## interface
 - `sign of (x)` is -1, 1 or 0: an `else if` whose arms each assign the result and so end the function there, and a result left alone on the third path is its zero.
-- `magnitude of (x)` keeps a temporary, assigns it again inside an `if` with no `else`, and assigns the result last: assigning the result would end the function, so a value that is tested or changed is a temporary until it is final.
+- `magnitude of (x)` keeps a temporary that is one thing or another, `int m = if (x < 0) then (-x) else (x)`, and assigns the result last: assigning the result would end the function, so a value that is tested is a temporary until it is final.
 - `describe (x)` prints one of two strings.
 - `sum to (n)` is a range reduced, `[0 through n] + _`: no loop is written; `sum below (n)` is section 7's `[0 to n] + _`, the exclusive range, 0 to n - 1.
 - `thirty three counted`, `sixty four counted` and `a hundred counted` are the same reduction over a range whose bounds are literals, `[1 through 33] + _`; `thirty three listed`, `sixty four listed` and `a hundred listed` over a list of that many literals; `listed item (i)` and `counted item (i) of (n)` read one item by its index from a list of a hundred and from `[0 through n]`. A list or a range is a new stream with its items present, and these say that it reads back right at any length, in the order written: a store whose streams are all queues gave 560 for `sum to (32)` and 51 for `listed item (0)` until parity hop fifteen (fm3 question 62).

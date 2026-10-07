@@ -14,7 +14,7 @@ A name ending in `$` is a stream. It is a sequence when its items are all presen
 - `summed` and `product` reduce with `+` and `*`; `smallest` and `smallest of none` reduce with the feature's own `smaller of`, the second over an empty sequence.
 - `mapped` adds one to every item; `zipped` adds two sequences of different lengths, the shorter reading as zero past its end.
 - `mapped call` applies `doubled (x)` to a list; `zipped call` applies `scaled (a) by (b)` pairwise.
-- `iterated` walks a sequence with `for`, adding into the feature variable `total`.
+- `iterated` walks a sequence with `for`, pushing each sum into the feature's stream `total$`, read for its latest item (fm3 question 70).
 - `sum of (x$)` takes a sequence parameter; `passed` calls it with a list. `squares to (k)` gives a sequence result, which `squared` indexes.
 - `letters` and `first byte` treat a string as the sequence of bytes it is; `marks total` reduces a feature-scope sequence; `halves` reduces floats.
 - `pushed into`, `read ahead`, `framed sum` and `bytes pushed` use the stream words on sequences: a push after a list, `advance` before an index, `frame` of a range, a push onto a string.

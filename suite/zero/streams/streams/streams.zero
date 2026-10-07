@@ -2,7 +2,7 @@ type token =
     int kind, start, n
 
 int log$ << 100
-int seen = 0
+int seen$ << 0
 
 on (int n) = pushed()
     int i$ << 1 << 2 << 3
@@ -156,8 +156,8 @@ on (int n) = mapped()
 on (int n) = walked over()
     int i$ << 1 << 2 << 3
     for (x in i$)
-        seen = seen + x
-    n = seen
+        seen$ << seen$ + x
+    n = seen$
 
 on (int n) = unread only()
     int i$ << 1 << 2 << 3 << 4

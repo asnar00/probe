@@ -2108,7 +2108,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2238,8 +2238,11 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     // functions and variables can be looked up and before any storage
     // is chosen. `latest` of one is a load of its field and keeps no
     // history, so it does not make the store's streams rings
-    l.cells = l.cell_candidates(store, streams);
-    l.kept.retain(|n| !l.cells.contains(n));
+    let (cells, rebound) = l.cell_candidates(store, streams);
+    l.cells = cells;
+    // (a history word on a local stream of a cell's name is the
+    // local's, and the words are read by name alone: its mark stays)
+    l.kept.retain(|n| !l.cells.contains(n) || rebound.contains(n));
     l.all_queues = !l.kept_all && !l.timed_all && l.kept.is_empty() && l.timed.is_empty();
     l.settle_bare(store)?;
     l.cells.retain(|n| !l.bare.contains(n));
@@ -3291,6 +3294,9 @@ struct Lowerer {
     /// hold, a bool say, which the IR's ring does not
     cell_decls: Names,
     cell_only: Names,
+    /// each feature-scope variable's declaration respelled as a stream,
+    /// for the refusal of an assignment to it (fm3 log 145)
+    fvar_said: HashMap<String, String>,
     /// one value is wanted of the expression about to be lowered (fm3
     /// question 79): a stream's name there is its latest item.
     /// `lower_expr` takes it as it enters, so it is said afresh for
@@ -4522,10 +4528,11 @@ impl Lowerer {
     /// declared and by who names it outside the functions: at feature
     /// scope, with its `$`, no rate, nothing after its name or first
     /// items with no `while` and no task among them, an item one value;
-    /// named by no wiring, edge, sink, declaration or case; and bound
-    /// again by no function, so that the name is one thing in the whole
-    /// store. What the functions do with it the lowering finds out
-    fn cell_candidates(&self, store: &Store, streams: &Names) -> Names {
+    /// named by no wiring, edge, sink, declaration or case. What the
+    /// functions do with it the lowering finds out. With them, the
+    /// names some function binds for itself, a parameter or a local,
+    /// which hide a feature's stream of the same name there
+    fn cell_candidates(&self, store: &Store, streams: &Names) -> (Names, Names) {
         let mut out = Names::new();
         for f in store.features.iter().filter(|f| f.name != "platform") {
             for d in &f.code.decls {
@@ -4535,14 +4542,15 @@ impl Lowerer {
                     Some(Init::Pushes { items, cond: None }) => items.iter().all(|e| !matches!(self.task_call(e, None, &f.code.file), Ok(Some(_)) | Err(_))),
                     _ => false,
                 };
-                let item = self.fvar(&v.name).is_some_and(|x| matches!(&x.ty, Ty::Stream(e) if !matches!(**e, Ty::Stream(_) | Ty::None)));
+                let item = self.fvar(&v.name).is_some_and(|x| matches!(&x.ty, Ty::Stream(e) if **e == Ty::string() || !matches!(**e, Ty::Stream(_) | Ty::None)));
                 if v.seq && v.rate.is_none() && plain && item && !streams.contains(&v.name) {
                     out.insert(v.name.clone());
                 }
             }
         }
+        let mut bound = Names::new();
         if out.is_empty() {
-            return out;
+            return (out, bound);
         }
         let call = |parts: &[Part], bound: &Names, file: &str| -> Option<Vec<Expr>> {
             let is_var = |w: &str| bound.contains(w) || self.fvar(w).is_some();
@@ -4592,8 +4600,8 @@ impl Lowerer {
                     Decl::Wire(e) => mentions_in(e, &none, &|p, b| call(p, b, file), &mut named),
                     Decl::Edge { target, items, cond, only, .. } => std::iter::once(target).chain(items).chain(cond).chain(only).for_each(|e| mentions_in(e, &none, &|p, b| call(p, b, file), &mut named)),
                     Decl::Fn(fd) => {
-                        named.extend(fd.results.iter().chain(fd.params()).map(|p| p.name.clone()));
-                        binds(&fd.body, &mut named);
+                        bound.extend(fd.results.iter().chain(fd.params()).map(|p| p.name.clone()));
+                        binds(&fd.body, &mut bound);
                     }
                     Decl::Type(_) => {}
                 }
@@ -4603,7 +4611,7 @@ impl Lowerer {
             }
         }
         out.retain(|n| !named.contains(n));
-        out
+        (out, bound)
     }
 
     /// is the name a cell, not shadowed here?
@@ -4849,6 +4857,16 @@ impl Lowerer {
             },
             Err(e) => return Err(e),
         };
+        if !v.seq {
+            let first = match &v.init {
+                Some(Init::Value(e)) => format!(" << {}", phrase_text(e)),
+                Some(Init::Construct(args)) => format!(" << {}({})", v.ty, args.iter().map(|a| phrase_text(&a.value)).collect::<Vec<_>>().join(", ")),
+                _ => String::new(),
+            };
+            let scope: String = v.scope.iter().map(|w| format!("{} ", w)).collect();
+            let merge = v.merge.as_ref().map(|m| format!(" merge {}", m)).unwrap_or_default();
+            self.fvar_said.insert(v.name.clone(), format!("{}{} {}${}{}", scope, v.ty, v.name, first, merge));
+        }
         self.fvars.push(FVar {
             name: v.name.clone(),
             ty,
@@ -4861,6 +4879,21 @@ impl Lowerer {
 
     fn fvar(&self, name: &str) -> Option<&FVar> {
         self.fvars.iter().find(|f| f.name == name)
+    }
+
+    /// Nothing at feature scope is assigned (fm3 question 70, log 145):
+    /// a variable keeps the value it was declared with, and what
+    /// changes is a stream. The refusal shows the declaration respelled
+    /// and the push, with the assignment's own value where that is plain
+    fn not_assigned(&self, name: &str, value: Option<&Expr>, file: &str, line: usize) -> Error {
+        let pushed = match value {
+            Some(v) if matches!(v.kind, ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Name(_) | ExprKind::Phrase(_)) => phrase_text(v),
+            _ => "...".to_string(),
+        };
+        lex::error(file, line, match self.fvar_said.get(name) {
+            Some(said) => format!("'{}' is a variable, and a variable keeps the value it was declared with (fm3 question 70): what changes is a stream. Declare it `{}` and push its next value, `{}$ << {}`; its name, `{}$`, is then its latest item wherever one value is wanted", name, said, name, pushed, name),
+            None => format!("'{}$' is a stream: it is pushed into, `{}$ << {}`, not assigned", name, name, pushed),
+        })
     }
 
     /// the context struct, its storage, its accessors, `__zero_reset`,
@@ -5052,7 +5085,7 @@ impl Lowerer {
                                 Some(Init::Pushes { items, .. }) => items,
                                 _ => &[],
                             };
-                            let mut cur = if items.is_empty() || !matches!(elem, Ty::Struct(_)) { Some(self.zero_val(&elem, &mut b)) } else { None };
+                            let mut cur = if items.is_empty() || !matches!(elem, Ty::Struct(_) | Ty::Stream(_)) { Some(self.zero_val(&elem, &mut b)) } else { None };
                             for e in items {
                                 self.push_read = cur.clone().map(|c| (v.name.clone(), PushRead::Value(c)));
                                 let x = self.lower_expr(e, Some(&elem), &mut b, None);
@@ -6251,6 +6284,8 @@ impl Lowerer {
                         }
                     } else if self.fvar(&t.name).is_none() {
                         return Err(lex::error(&file, t.line, format!("'{}' is not declared: a variable is its type then its name", t.name)));
+                    } else {
+                        return Err(self.not_assigned(&t.name, None, &file, t.line));
                     }
                     (t.name.clone(), t.line, false)
                 }
@@ -6675,6 +6710,9 @@ impl Lowerer {
                     if b.vars.contains_key(&t.name) {
                         // a loop's own variables are given by `continue`
                         // and never assigned (fm3 question 70, log 144)
+                        if b.func.as_ref().is_some_and(|f| f.params.iter().any(|p| p.0 == t.name)) {
+                            return Err(lex::error(&file, t.line, format!("'{}{}' is a parameter: it is what the function was handed, and is not assigned", t.name, if t.seq { "$" } else { "" })));
+                        }
                         if b.loops.last().is_some_and(|l| l.carried[..l.explicit].contains(&t.name)) {
                             return Err(lex::error(&file, t.line, format!("'{}' is the loop's own: it is not assigned in the loop's body. Give its next value with `continue (...)`, and the loop's result where it leaves with `break (...)`", t.name)));
                         }
@@ -6683,6 +6721,11 @@ impl Lowerer {
                         }
                     } else if self.fvar(&t.name).is_none() {
                         return Err(lex::error(&file, t.line, format!("'{}' is not declared: a variable is its type then its name", t.name)));
+                    } else if !t.name.starts_with("__") {
+                        // (a name that begins `__` is the front end's
+                        // own, what a wiring keeps, stored by the
+                        // function it wrote for a stored input)
+                        return Err(self.not_assigned(&t.name, Some(value).filter(|_| targets.len() == 1), &file, t.line));
                     }
                 }
                 if targets.len() == 1 {
@@ -7986,6 +8029,8 @@ impl Lowerer {
         if v.rate.is_some() {
             return Err(lex::error(&b.file, v.line, format!("a rate goes on an empty stream, `{} {}$ at (n hz)`, which `<<` then fills", v.ty, v.name)));
         }
+        // a name declared without `$`, a string, takes one value
+        self.one = !v.seq;
         let val = self.lower_expr(e, Some(ty), b, Some(&v.name))?;
         if val.ty != *ty {
             return Err(lex::error(&b.file, e.line, format!("'{}$' is {} but the value is a {}", v.name, zero_ty(ty), zero_ty(&val.ty))));
@@ -9263,6 +9308,12 @@ impl Lowerer {
                             PushRead::Value(v) => Ok(v),
                         };
                     }
+                }
+                // a stream that only a cell can hold, a string say, has
+                // no other reading: its bare name is its latest item
+                // wherever it stands (fm3 question 83)
+                if self.is_cell(w, b) && self.cell_only.contains(w) {
+                    return self.read_cell(w, b, dst, e.line);
                 }
                 // a stream's name where one value is wanted is its
                 // latest item (fm3 question 79): a cell's field, or the

@@ -1,22 +1,22 @@
-int kept = 0
+int kept$ << 0
 keep(raw$)
 
 on keep (int x$)
     loop
         if (count x$ == 0)
             break
-        kept = kept + peek x$ at (0)
+        kept$ << kept$ + peek x$ at (0)
         advance x$ by (1)
 
 on (int n) = fed (int k)
     int pushed = existing fed (k)
-    n = kept
+    n = kept$
 
 on (int n) = kept from (int k)
     raw$ << [k to 1]
-    n = kept
+    n = kept$
 
-int soaked = 0
+int soaked$ << 0
 int x$
 soak(x$)
 
@@ -24,11 +24,11 @@ on soak (int x$)
     loop
         if (count x$ == 0)
             break
-        soaked = soaked + peek x$ at (0)
+        soaked$ << soaked$ + peek x$ at (0)
         advance x$ by (1)
 
 on (int n) = soaked from (int k)
     loop (int i = 1) while (i <= k)
         x$ << i
         continue (i + 1)
-    n = soaked
+    n = soaked$

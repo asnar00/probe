@@ -18,7 +18,6 @@ A task is a function that produces a stream over time: it is declared with `<<` 
 - `rated`, `sampled at a rate`, `composed at a rate` wire a task at `1 hz` and read the clock through `time of x$` and `x$ at (t)`; `position x$` beside them is the index alone and asks no time.
 - `fed a literal` passes a stream made from a list to a task; `run now moves the reader`, `run now inside a loop` pass a local stream to a task, which moves it.
 - `runs (x$)` pushes how many items it found unread each time it is run, and takes them; `r$` is wired to `v$`, so `r$` holds one item a run of the node. `a batch`, `nothing pushed (k)` and `ended twice` read it.
-- `hopping (s$)` copies what is unread and then points its parameter at another stream, `s$ = far$`; `landed$` is wired to `hop$`. What the bootstrap does with that today is pinned by `hopped() → 307`: the node's reader is what the task gives back, so the second run reads `far$`, 7 and 8, and not `hop$`'s second item. A woken node whose task only reads and advances its parameter keeps its position alone and takes the rest of its reader from the stream (parity hop 13, fm3 log 111); this task is one that must keep its whole reader, and the case fails a build that forgets it. Question 70 has no variable modified, so the assignment may not stay in the language.
 - `right$ << left$ << 0 forever` is an edge (section 9, log 72; `forever` makes it stand, fm3 question 79): `left$` wired into `right$`, each item moved as it arrives and a `0` pushed after each; `edged` pushes into `left$` and reads `right$`.
 
 ## rules
@@ -54,7 +53,6 @@ A task is a function that produces a stream over time: it is declared with `<<` 
 >nothing pushed (1) → 0
 >nothing pushed (3) → 1
 >ended twice() → 20
->hopped() → 307
 
 ## hostile
 `int n = count up to (3)` is refused: "'count up to' is a task: it is wired into a stream, `int x$ = count up to (3)`". `x$ << count up to (3) while (x$ < 9)` is refused: "a task call is not repeated with `while`: the task's own chain says when it stops". `int c$ = count up to (3) at (2 ms)` is refused: "a rate is `at (n hz)` or `at (n khz)`, n positive". `on (int a$, int b$) << two()` is refused: "a task produces one stream: `on (T x$) << name (...)`". `on (int n) << f()` is refused: "a task's result is the stream it produces: `on (int n$) << ...`". `int d$ << doubled(x$) << 5` at feature scope is refused: "a value pushed after a task call at feature scope: a chain's items come before its tasks". `right$ << left$ while (_ > 0)` at feature scope is refused: "a line at feature scope that stands until its `while` fails is not built: wiring moves every item its stream receives, `x$ << y$ forever`". `int x$ <<` with nothing after it is refused: "a bare `int x$` declares an empty stream: drop the `<<`". A node whose task never takes what its input has would run once per arrival and no more; a task whose own loop never stops is what would hang, and the runner's timeout is what stops it.

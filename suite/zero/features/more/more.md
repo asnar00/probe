@@ -8,13 +8,13 @@ layer: runtime
 Plan item 9: a redefinition that calls `existing` first runs after the earlier definition; one that calls it last runs before.
 
 ## overview
-`more` redefines `greet` to add 10 to what came before, `count (k)` to double it, and `visit` to note the visit in `seen` before passing it on.
+`more` redefines `greet` to add 10 to what came before, `count (k)` to double it, and `visit` to note the visit in `seen$` before passing it on.
 
 ## interface
 - `greet` gives base's 1 plus 10.
 - `count (k)` gives twice base's k.
-- `visit` adds one to `seen`, then to `visits`.
-- `seen by more` reads `seen`.
+- `visit` pushes one more into `seen$`, then into `visits$`.
+- `seen by more` reads `seen$`.
 
 ## rules
 - `existing greet()` inside `greet` calls the definition before this feature's.

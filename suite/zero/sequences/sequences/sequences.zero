@@ -1,5 +1,5 @@
 int marks$ = [3, 4]
-int total = 0
+int total$ << 0
 
 on (int n) = how many()
     int i$ = [1, 2, 3, 4]
@@ -74,8 +74,8 @@ on (int m) = smallest of none()
 on (int n) = iterated()
     int i$ = [1, 2, 3, 4]
     for (x in i$)
-        total = total + x
-    n = total
+        total$ << total$ + x
+    n = total$
 
 on (int n) = sum of (int x$)
     n = x$ + _
