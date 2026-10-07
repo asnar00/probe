@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the old form is refused, one way to declare a function — `4e804a6` · 2026-10-07
+
+```
+on (int d) << double (int x)
+    d << x * 2
+```
+```
+on (int r$) = squares to (int k)
+    r$ = [1 through k] * [1 through k]
+```
+
+`suite/zero/pushed/pushed/pushed.zero:1-2` and `suite/zero/sequences/sequences/sequences.zero:86-87`. The first is the one way; written `on (int d) = double (int x)` it is refused, "a function is declared with `<<` and gives its result by pushing it; `=` says what a name is (fm3 question 77). Write `on (int d) << double (int x)`", and `d = x * 2` in its body the same way, each message showing the program's own line respelled. Both refusals are the parser's, which knows a function's results while it reads the body and has the text to show. The second is the one function that keeps `=`: a `$` on its result, a sequence given whole, and with `<<` a task's first line; it waits for arrays to have their mark (fm3 question 87). `pushed` loses its thirteen old halves and fourteen cases. Every store emits what it did from the last binary. The full run: zero 795/795 on four paths, 772 and 23 skipped on the GPU's, `probe test` 1022, 1013, 1022, 1022, 985, `cargo test` 149. The six rows as they were; the meter 126 of 2 035.
+
 ### zero: the suite says it, 358 functions declared with `<<` — `35876e6` · 2026-10-07
 
 ```

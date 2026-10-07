@@ -255,7 +255,7 @@ on (int n) << answer()
     n << 42
 ```
 
-`suite/zero/skeleton/skeleton/skeleton.zero:1-2`. There is one way to declare (fm3 question 77): every function is `on (results) << name (parameters)` and gives its result by pushing it, once; `=` is left for saying what a name is, `int half = x / 2`. A result with no `$` makes a plain function, one with a `$` a task or a stream processor, which produce a stream over time. `suite/zero/pushed` is the store for the form.
+`suite/zero/skeleton/skeleton/skeleton.zero:1-2`. There is one way to declare (fm3 question 77): every function is `on (results) << name (parameters)` and gives its result by pushing it, once; `=` is left for saying what a name is, `int half = x / 2`. A result with no `$` makes a plain function, one with a `$` a task or a stream processor, which produce a stream over time. The form before, `on (int n) = answer()` and `n = 42`, is refused when the program is compiled, each line with the line to write in its place. `suite/zero/pushed` is the store for the form.
 
 ```sh
 cargo run -- zero suite/zero/hello emit            # the store's IR, as text
