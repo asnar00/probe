@@ -10,7 +10,7 @@ Plan item 11 of milestone 0: `print` written as a platform function with an `ir`
 Every store composes the compiler's `platform` feature first, in the lowest layer. It declares the output device `char out$` and the input device `char in$` (third pass, log 57; question 45, log 87: `out$` looks like a stream, but a push into it is the platform's write and stores nothing), and two `print`s, both zero functions: `print (string s)` is `out$ << s << "\n"` and `print (int x[])` is `out$ << x[] << "\n"`, the digits and the spaces being the `<<` method for an array of ints (third pass, log 59; see `format`); `probe zero <store> emit` shows them under `; feature platform`. The two share their words and differ in their parameter's type: a call takes the one whose parameter fits its argument, and the IR names the second by its types, `print__ints`. A program may write `out$ << "hello"` itself; `print` stays as the library word.
 
 ## interface
-- `greet` prints a string; `count to three` prints a sequence of ints on one line.
+- `greet` prints a string; `count to three` prints an array of ints on one line, `[print] (i[])`: the `print` over an array takes it whole, and a function that does is called with its name in square brackets (fm3 question 77).
 
 ## rules
 - A store folder named `platform` is refused: the name is the compiler's.

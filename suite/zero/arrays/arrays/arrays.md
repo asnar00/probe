@@ -11,7 +11,7 @@ An array's items are all there, and it never changes. A stream's arrive, and it 
 
 The whole of an array is its name with empty brackets, `a[]`: `count a[]`, `a[] + _`, `for (x in a[])`, `out$ << a[]`. One item is the name with a place in the brackets, `a[2]`. A list written out, a range and a text are arrays, and so is what `frame x$` gives: everything that has arrived in a stream and not been read, all there.
 
-A function says what it takes and gives by the same marks: `on (int n) << total of (int x[])` takes an array, and `on (int r[]) << squares to (int k)` gives one, by pushing it once, `r[] << [1 through k] * [1 through k]`, as any function gives its result. The mark on the result is what tells it from a task, whose result is a stream, `on (int i$) << count up to (int n)`.
+A function says what it takes and gives by the same marks: `on (int n) << total of (int x[])` takes an array, whole, and is called with its name in square brackets, `[total of] (a[])` (fm3 question 77, log 165), and `on (int r[]) << squares to (int k)` gives one, by pushing it once, `r[] << [1 through k] * [1 through k]`, as any function gives its result. The mark on the result is what tells it from a task, whose result is a stream, `on (int i$) << count up to (int n)`.
 
 ## what this store shows
 Sixteen forms, a function each: an array from a list, from a range, from a text; one item by its place; `count`; a reduce; a map; a zip of two; `for`; a function of one item applied to each; a function that takes an array, handed a name and a list written out; a function that gives one, and its caller; what `frame` makes of a stream; an array pushed whole into the output; and an array at feature scope.
@@ -32,7 +32,8 @@ Refused: one value or a stream on either side, `a[] [==] 2`, `a[] [==] x$` (the 
 - An array's form on a stream: an item by its place, `x$[2]`, `for (v in x$)`, a reduce, `x$ + _`. The array of what has arrived is `frame x$`. A look back, `x$[-1]`, is a stream's; `a[-1]` is refused.
 - An array where one value is wanted, `int v = a[]`, `if (a[] > 0)`: an array has no latest item.
 - The same through a call: `int v = doubled (a[])`, `doubled` taking one item. Applied to each it gives an array, `int v[] = doubled (a[])`; for one, `doubled (a[1])`.
-- A stream handed to a function declared over an array, `total of (x$)`: the array of what has arrived is `frame x$`. And an array handed to a function or a task declared over a stream: what begins with those items is a stream, `int s$ << a[]`.
+- A function declared over an array called plainly, `total of (a[])`: the message shows the line with its brackets. And a function of one item called in them, `[doubled] (a[])`: it is applied to each plainly, `doubled (a[])`.
+- A stream handed to a function declared over an array, `[total of] (x$)`: the array of what has arrived is `frame x$`. And an array handed to a function or a task declared over a stream: what begins with those items is a stream, `int s$ << a[]`.
 - A look back in a plain function or a task that walks, `x$[-1]`: only a stream processor has a present item to look back from.
 - `count` is asked of both: an array's length, and how much of a stream is waiting.
 - `int[] a`: the mark is on the name, `int a[]`.

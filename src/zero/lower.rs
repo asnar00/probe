@@ -934,7 +934,7 @@ impl<'a> Pushes<'a> {
                     match p {
                         Part::Args(list) => list.iter().for_each(|a| self.expr(&a.value, bound, out, own)),
                         Part::Value(x) => self.expr(x, bound, out, own),
-                        Part::Word(_) => {}
+                        Part::Word(_) | Part::Whole => {}
                     }
                 }
                 let is_var = |w: &str| bound.contains(w) || self.l.fvar(w).is_some();
@@ -1414,7 +1414,7 @@ impl<'a> Beat<'a> {
                         Part::Args(list) => args.extend(list.iter().map(|a| a.value.clone())),
                         Part::Value(x) => args.push(x.clone()),
                         Part::Word(w) if is_var(w) => args.push(Expr { kind: ExprKind::Name(w.clone()), line: e.line }),
-                        Part::Word(_) => {}
+                        Part::Word(_) | Part::Whole => {}
                     }
                 }
                 let below = self.by_call.get(&(def.key.clone(), def.arity)).into_iter().flatten().copied().filter(|&t| self.defs[t].at < def.at).collect();
@@ -1584,7 +1584,7 @@ impl<'a> Beat<'a> {
                     match p {
                         Part::Args(list) => list.iter().for_each(|a| self.events_expr(&a.value, d, scope, out)),
                         Part::Value(x) => self.events_expr(x, d, scope, out),
-                        Part::Word(_) => {}
+                        Part::Word(_) | Part::Whole => {}
                     }
                 }
                 // a stream among the arguments is handed to what is
@@ -1607,7 +1607,7 @@ impl<'a> Beat<'a> {
                                 Part::Args(list) => list.iter().for_each(|a| given(&a.value, out)),
                                 Part::Value(x) => given(x, out),
                                 Part::Word(w) if !scope.contains_key(w) => out.push(Ev::Given(w.clone())),
-                                Part::Word(_) => {}
+                                Part::Word(_) | Part::Whole => {}
                             }
                         }
                     }
@@ -1845,7 +1845,7 @@ impl<'a> Beat<'a> {
                             }
                         }
                         Part::Value(x) => g = self.flow_expr(x, g, d, scope),
-                        Part::Word(_) => {}
+                        Part::Word(_) | Part::Whole => {}
                     }
                 }
                 match self.callee(e, Some(d), scope) {
@@ -2980,6 +2980,8 @@ fn find_methods<'a>(funcs: &'a [FnInfo], parts: &[Part], is_var: &dyn Fn(&str) -
                     name.push(NamePart::Group);
                     args.push(e.clone());
                 }
+                // (the mark of a bracketed call is no part of the name)
+                Part::Whole => {}
             }
         }
         Ok((name, args))
@@ -9628,6 +9630,7 @@ impl Lowerer {
                     Part::Word(w) => w != x,
                     Part::Args(list) => list.iter().all(|a| self.ring_kept_in(&a.value, x)),
                     Part::Value(v) => self.ring_kept_in(v, x),
+                    Part::Whole => true,
                 })
             }
         }
@@ -9934,6 +9937,124 @@ impl Lowerer {
                 Ok(Some(self.copy_view(&elem, &w, b, dst)))
             }
             _ => Ok(None),
+        }
+    }
+
+    /// A call of a declared function, its phrase's words and arguments
+    /// in `parts` (section 6). `whole` says the name was written in
+    /// square brackets, `[sum of] (a[])`: the function takes an array
+    /// whole (fm3 question 77, log 165). A bracketed call chooses
+    /// among the methods of the name declared over an array, a plain
+    /// call among those that are not, and each is refused where the
+    /// name has none of its kind
+    #[allow(clippy::too_many_arguments)]
+    fn lower_call(&mut self, parts: &[Part], whole: bool, one: bool, now: bool, e: &Expr, b: &mut Body, dst: Option<&str>) -> Result<Val, Error> {
+        let file = b.file.clone();
+        let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
+        let (cands, args) = find_methods(&self.funcs, parts, &is_var, &file, e.line)?;
+        let cands: Vec<FnInfo> = cands.into_iter().cloned().collect();
+        if cands[0].task {
+            return Err(lex::error(&file, e.line, task_refusal(&cands[0], e)));
+        }
+        // which methods the call may mean, by its brackets (log 165).
+        // A name the front end made, and one that begins with a
+        // group, which has nowhere to put them, are called plainly
+        let over = |c: &FnInfo| c.marks.contains(&NameMark::Array);
+        let said = spoken(&cands[0]);
+        let unmarked = cands[0].key.starts_with("__") || !matches!(cands[0].parts.first(), Some(NamePart::Word(_)));
+        let mut bracketed: Option<String> = None;
+        let cands: Vec<FnInfo> = if whole {
+            let taking: Vec<FnInfo> = cands.iter().filter(|c| over(c)).cloned().collect();
+            if taking.is_empty() {
+                return Err(lex::error(&file, e.line, format!("`[{}]`: '{}' takes one item, and a function of one item is applied to each item of an array plainly, `{} (a[])` (fm3 question 77). The brackets are for a function declared over an array, `(int x[])`", said, said, said)));
+            }
+            taking
+        } else if unmarked || !cands.iter().any(over) {
+            cands
+        } else {
+            // the refusal a plain call of the array's method is owed,
+            // with the program's own line written as it should be
+            let taking = cands.iter().find(|c| over(c)).unwrap();
+            let k = taking.marks.iter().position(|m| *m == NameMark::Array).unwrap();
+            let (pname, pty) = &taking.params[k];
+            let shown = source_line(&file, e.line);
+            // the brackets stand round the name's words up to its
+            // first group (question 99)
+            let lead: Vec<&str> = taking.parts.iter().map_while(|p| if let NamePart::Word(w) = p { Some(w.as_str()) } else { None }).collect();
+            let lead = lead.join(" ");
+            let write = match shown.as_deref().and_then(|l| bracket_call(l, &lead)) {
+                Some(l) => format!("write `{}`", l),
+                None => format!("write `[{}] (...)`", lead),
+            };
+            let line = shown.map(|l| format!("`{}`: ", l)).unwrap_or_default();
+            bracketed = Some(format!("{}'{}' takes an array whole, `{} {}[]`, and is called with its name in square brackets (fm3 question 77): {}", line, said, zero_ty(pty.elem().unwrap_or(pty)), pname, write));
+            let plain: Vec<FnInfo> = cands.iter().filter(|c| !over(c)).cloned().collect();
+            if plain.is_empty() {
+                return Err(lex::error(&file, e.line, bracketed.unwrap()));
+            }
+            plain
+        };
+        // where one value is wanted of the call, it is wanted of
+        // each argument whose parameter is one value in every
+        // method of the name; a `_` among them is a reduce, as
+        // it was (fm3 log 143)
+        if (one || now) && !(self.candidate.is_none() && args.iter().any(|a| matches!(a.kind, ExprKind::Acc))) {
+            let plain: Vec<bool> = (0..args.len()).map(|i| cands.iter().all(|c| c.params.get(i).is_some_and(|p| !matches!(p.1, Ty::Stream(_))))).collect();
+            // (in a line that happens once the same arguments
+            // are read as now, log 163)
+            if one {
+                self.arg_ones = plain;
+            } else {
+                self.arg_nows = plain;
+            }
+        }
+        // the method the arguments choose (section 6, log 36)
+        let chosen = self.choose(&cands, &args, b, e.line);
+        self.arg_ones.clear();
+        self.arg_nows.clear();
+        // no method of one item takes these, and the name has one
+        // over an array: the call wanted its brackets
+        let (info, (vals, lifted, acc, rtys, _)) = match (chosen, bracketed) {
+            (Ok(c), _) => c,
+            (Err(_), Some(said)) => return Err(lex::error(&file, e.line, said)),
+            (Err(err), None) => return Err(err),
+        };
+        self.reach(&spoken(&info), &info.feature, &file, e.line)?;
+        if lifted.iter().any(|&l| l) || acc.is_some() {
+            if rtys.len() > 1 || (rtys.is_empty() && acc.is_some()) {
+                return Err(lex::error(&file, e.line, format!("'{}' over a stream: the function gives one result{}", info.key, if acc.is_some() { " to fold" } else { ", or none" })));
+            }
+            if acc.is_some() && !lifted.iter().any(|&l| l) {
+                return Err(lex::error(&file, e.line, "'_' goes with a stream among the arguments"));
+            }
+            let ir = info.ir.clone();
+            let rty = rtys.first().cloned().unwrap_or(Ty::None);
+            let f = move |_: &mut Lowerer, ev: &[Val], b: &mut Body| -> Result<Val, Error> {
+                let ops: Vec<String> = ev.iter().map(|v| v.text.clone()).collect();
+                if rty == Ty::None {
+                    b.line(&format!("{}({})", ir, ops.join(", ")));
+                    return Ok(Val { text: String::new(), ty: Ty::None, literal: false });
+                }
+                let name = b.tmp();
+                b.line(&format!("{}: {} = {}({})", name, rty.ir(), ir, ops.join(", ")));
+                Ok(Val { text: name, ty: rty.clone(), literal: false })
+            };
+            return self.lift(vals, lifted, acc, b, dst, e.line, &f);
+        }
+        let ops: Vec<String> = vals.into_iter().map(|v| v.text).collect();
+        let call = format!("{}({})", info.ir, ops.join(", "));
+        match rtys.len() {
+            0 => {
+                b.line(&call);
+                Ok(Val { text: String::new(), ty: Ty::None, literal: false })
+            }
+            1 => {
+                let ty = rtys[0].clone();
+                let name = name_for(dst, &ty, b);
+                b.line(&format!("{}: {} = {}", name, ty.ir(), call));
+                Ok(Val { text: name, ty, literal: false })
+            }
+            _ => Err(lex::error(&file, e.line, format!("'{}' gives several results; take them with `a, b = ...`", info.key))),
         }
     }
 
@@ -10262,6 +10383,19 @@ impl Lowerer {
                 b.depth -= 1;
                 Ok(Val { text: name, ty, literal: false })
             }
+            // `[sum of] (a[])` (fm3 question 77, log 165): a call with
+            // its name in square brackets, of a function declared
+            // over an array. The words of the language are no such
+            // function and are written plainly
+            ExprKind::Phrase(parts) if matches!(parts.first(), Some(Part::Whole)) => {
+                let rest = &parts[1..];
+                let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
+                if find_methods(&self.funcs, rest, &is_var, &file, e.line).is_err() {
+                    let words: Vec<&str> = rest.iter().filter_map(|p| if let Part::Word(w) = p { Some(w.as_str()) } else { None }).collect();
+                    return Err(lex::error(&file, e.line, format!("`[{}]`: no function of this name is declared over an array. The words of the language, `count`, `frame` and the rest, are written plainly; whether they take brackets is not ruled (fm3 question 77)", words.join(" "))));
+                }
+                self.lower_call(rest, true, one, now, e, b, dst)
+            }
             ExprKind::Phrase(parts) => {
                 // a lone word: a variable, the feature's `enabled`, or an
                 // enumeration's case
@@ -10357,68 +10491,7 @@ impl Lowerer {
                         b.out.truncate(start);
                     }
                 }
-                let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
-                let (cands, args) = find_methods(&self.funcs, parts, &is_var, &file, e.line)?;
-                let cands: Vec<FnInfo> = cands.into_iter().cloned().collect();
-                if cands[0].task {
-                    return Err(lex::error(&file, e.line, task_refusal(&cands[0], e)));
-                }
-                // where one value is wanted of the call, it is wanted of
-                // each argument whose parameter is one value in every
-                // method of the name; a `_` among them is a reduce, as
-                // it was (fm3 log 143)
-                if (one || now) && !(self.candidate.is_none() && args.iter().any(|a| matches!(a.kind, ExprKind::Acc))) {
-                    let plain: Vec<bool> = (0..args.len()).map(|i| cands.iter().all(|c| c.params.get(i).is_some_and(|p| !matches!(p.1, Ty::Stream(_))))).collect();
-                    // (in a line that happens once the same arguments
-                    // are read as now, log 163)
-                    if one {
-                        self.arg_ones = plain;
-                    } else {
-                        self.arg_nows = plain;
-                    }
-                }
-                // the method the arguments choose (section 6, log 36)
-                let chosen = self.choose(&cands, &args, b, e.line);
-                self.arg_ones.clear();
-                self.arg_nows.clear();
-                let (info, (vals, lifted, acc, rtys, _)) = chosen?;
-                self.reach(&spoken(&info), &info.feature, &file, e.line)?;
-                if lifted.iter().any(|&l| l) || acc.is_some() {
-                    if rtys.len() > 1 || (rtys.is_empty() && acc.is_some()) {
-                        return Err(lex::error(&file, e.line, format!("'{}' over a stream: the function gives one result{}", info.key, if acc.is_some() { " to fold" } else { ", or none" })));
-                    }
-                    if acc.is_some() && !lifted.iter().any(|&l| l) {
-                        return Err(lex::error(&file, e.line, "'_' goes with a stream among the arguments"));
-                    }
-                    let ir = info.ir.clone();
-                    let rty = rtys.first().cloned().unwrap_or(Ty::None);
-                    let f = move |_: &mut Lowerer, ev: &[Val], b: &mut Body| -> Result<Val, Error> {
-                        let ops: Vec<String> = ev.iter().map(|v| v.text.clone()).collect();
-                        if rty == Ty::None {
-                            b.line(&format!("{}({})", ir, ops.join(", ")));
-                            return Ok(Val { text: String::new(), ty: Ty::None, literal: false });
-                        }
-                        let name = b.tmp();
-                        b.line(&format!("{}: {} = {}({})", name, rty.ir(), ir, ops.join(", ")));
-                        Ok(Val { text: name, ty: rty.clone(), literal: false })
-                    };
-                    return self.lift(vals, lifted, acc, b, dst, e.line, &f);
-                }
-                let ops: Vec<String> = vals.into_iter().map(|v| v.text).collect();
-                let call = format!("{}({})", info.ir, ops.join(", "));
-                match rtys.len() {
-                    0 => {
-                        b.line(&call);
-                        Ok(Val { text: String::new(), ty: Ty::None, literal: false })
-                    }
-                    1 => {
-                        let ty = rtys[0].clone();
-                        let name = name_for(dst, &ty, b);
-                        b.line(&format!("{}: {} = {}", name, ty.ir(), call));
-                        Ok(Val { text: name, ty, literal: false })
-                    }
-                    _ => Err(lex::error(&file, e.line, format!("'{}' gives several results; take them with `a, b = ...`", info.key))),
-                }
+                self.lower_call(parts, false, one, now, e, b, dst)
             }
             ExprKind::Existing(parts) => {
                 let (call, rtys) = self.existing_call(parts, b, e.line)?;
@@ -10456,6 +10529,29 @@ fn each_not_one(info: &FnInfo, a: &Expr, file: &str) -> String {
         _ => "an array".to_string(),
     };
     format!("{}'{}' takes one item, so given {} it is applied to each and gives an array, and one value is wanted here (fm3 questions 90 and 92). {}; for one, hand it one item", line, spoken(info), arg, whole)
+}
+
+/// a line with each plain call of `words` written with its brackets,
+/// `sum of (` as `[sum of] (`; none where the line has no such call
+fn bracket_call(line: &str, words: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = line;
+    let mut changed = false;
+    while let Some(i) = rest.find(words) {
+        let before = rest[..i].chars().last();
+        let after = rest[i + words.len()..].chars().next();
+        let plain = !before.is_some_and(|c| c == '[' || c.is_alphanumeric() || c == '_') && matches!(after, Some(' ') | Some('('));
+        out.push_str(&rest[..i]);
+        if plain {
+            out.push_str(&format!("[{}]", words));
+            changed = true;
+        } else {
+            out.push_str(words);
+        }
+        rest = &rest[i + words.len()..];
+    }
+    out.push_str(rest);
+    changed.then_some(out)
 }
 
 /// a line of a file as written, trimmed, for a refusal to show
@@ -10643,7 +10739,7 @@ fn quietly_read(features: &[super::store::FeatureDoc], s: &str, call: Called) ->
         let part = |p: &Part| match p {
             Part::Value(x) => is(x),
             Part::Args(a) => a.len() == 1 && a[0].name.is_none() && is(&a[0].value),
-            Part::Word(_) => false,
+            Part::Word(_) | Part::Whole => false,
         };
         match &e.kind {
             ExprKind::Seq(n) | ExprKind::Arr(n) | ExprKind::Name(n) => n != s,
@@ -10654,17 +10750,18 @@ fn quietly_read(features: &[super::store::FeatureDoc], s: &str, call: Called) ->
                     Part::Args(a) => a.iter().all(|a| quiet(&a.value, s, file, call)),
                     Part::Value(v) => quiet(v, s, file, call),
                     Part::Word(v) => v != s,
+                    Part::Whole => true,
                 },
                 _ => words(parts, s, file, call) && parts.iter().all(|p| match p {
                     Part::Args(a) => a.iter().all(|a| quiet(&a.value, s, file, call)),
                     Part::Value(v) => quiet(v, s, file, call),
-                    Part::Word(_) => true,
+                    Part::Word(_) | Part::Whole => true,
                 }),
             },
             ExprKind::Existing(parts) => parts.iter().all(|p| match p {
                 Part::Args(a) => a.iter().all(|a| quiet(&a.value, s, file, call)),
                 Part::Value(v) => quiet(v, s, file, call),
-                Part::Word(_) => true,
+                Part::Word(_) | Part::Whole => true,
             }),
             ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => quiet(x, s, file, call),
             ExprKind::List(items) => items.iter().all(|x| quiet(x, s, file, call)),
@@ -10862,6 +10959,7 @@ fn mentions_in(e: &Expr, bound: &Names, call: &dyn Fn(&[Part], &Names) -> Option
                 match p {
                     Part::Args(list) => list.iter().for_each(|a| mentions_in(&a.value, bound, call, out)),
                     Part::Value(x) => mentions_in(x, bound, call, out),
+                    Part::Whole => {}
                     // a word of a phrase may be a variable read bare
                     Part::Word(w) => {
                         if !bound.contains(w) {
@@ -11023,7 +11121,7 @@ fn time_words_in(e: &Expr, params: &[String], w: &mut Words) {
                             time_words_in(x, params, w)
                         }
                     }
-                    Part::Word(_) => {}
+                    Part::Word(_) | Part::Whole => {}
                 }
             }
         }
@@ -11092,7 +11190,7 @@ fn moved_in(e: &Expr, out: &mut Vec<String>, task: &dyn Fn(&[Part]) -> Vec<Strin
             match p {
                 Part::Args(list) => list.iter().for_each(|a| moved_in(&a.value, out, task)),
                 Part::Value(e) => moved_in(e, out, task),
-                Part::Word(_) => {}
+                Part::Word(_) | Part::Whole => {}
             }
         }
     };
@@ -11130,6 +11228,7 @@ fn phrase_text(e: &Expr) -> String {
                     Part::Word(w) => w.clone(),
                     Part::Args(a) => format!("({})", a.iter().map(|a| expr(&a.value)).collect::<Vec<_>>().join(", ")),
                     Part::Value(v) => expr(v),
+                    Part::Whole => "[]".to_string(),
                 })
                 .collect::<Vec<_>>()
                 .join(" "),

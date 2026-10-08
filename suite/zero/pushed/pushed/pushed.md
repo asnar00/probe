@@ -18,7 +18,7 @@ What tells a function from a task or a stream processor, now that all three say 
 - `power of two above (n)` pushes inside a loop that has no `break`: the push is the loop's only way out.
 - `gcd of (a) and (b)` is given what a loop yields, `g << loop (...) ... yields x`.
 - `divide (a) by (b)` pushes two results, the second reading the first; `ordered (a) and (b)` pushes them in the other order from the one its first line names them in; `both of (a) by (b)` takes two from one call, `q, r << divide (a) by (b)`.
-- `sum of (x[])` takes an array and pushes one value; `read` pushes a stream's latest item, `n << seen$`.
+- `sum of (x[])` takes an array and pushes one value, and is called `[sum of] ([1, 2, 3, 4])`; `read` pushes a stream's latest item, `n << seen$`.
 - `halved (x)` says a local with `=`, `int half = x / 2`, and pushes its result.
 
 ## rules

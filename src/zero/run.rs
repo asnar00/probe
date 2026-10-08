@@ -1154,6 +1154,55 @@ mod tests {
         refused("    out$ << (a[] == b[])\n    n << 1", "`==` between arrays is applied to each pair and gives a bool for each, and an array of bool is not built (fm3 question 77). Whether the two arrays are the same, one bool, is `[==]`");
     }
 
+    /// A function that takes an array whole is called in square
+    /// brackets (fm3 question 77, log 165): `[sum of] (a[])`. The
+    /// plain call is refused showing the line with them, the bracketed
+    /// call of a function of one item is refused, and a name with a
+    /// method of each kind is told which by the call
+    #[test]
+    fn a_function_over_an_array_is_called_in_brackets() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-whole-calls");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 1\n").unwrap();
+        let head = "on (int n) << sum of (int x[])\n    n << x[] + _\n\non (int d) << doubled (int x)\n    d << x * 2\n\non (int r[]) << scale (int x[]) by (int k)\n    r[] << x[] * k\n\non (int n) << (int a[]) joined to (int b[])\n    n << count a[] + count b[]\n\non describe (int x)\n    out$ << \"one \"\n\non describe (int x[])\n    out$ << \"many \"\n\n";
+        let f = |body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}on (int n) << f()\n    int a[] = [1, 2, 3]\n{}\n", head, body)).unwrap();
+            emit(&dir)
+        };
+        let refused = |body: &str, what: &str| {
+            let e = f(body).err().unwrap_or_else(|| panic!("not refused: {}", body));
+            assert!(e.contains(what), "{}: {}", body, e);
+        };
+        // the call, with a name, a list, a bare array and a frame; the
+        // brackets round the words up to the first group
+        for line in ["n << [sum of] (a[])", "n << [sum of] ([4, 5]) + [sum of] ([1 through 3])", "n << [sum of] a[]", "int x$ << 1\n    n << [sum of] (frame x$)", "int s[] = [scale] (a[]) by (2)\n    n << count s[]"] {
+            let ir = f(&format!("    {}", line)).unwrap_or_else(|e| panic!("{}: {}", line, e));
+            assert!(ir.contains("sum_of(") || ir.contains("scale_by("), "{}: {}", line, ir);
+        }
+        // the plain call is refused, the line shown with its brackets
+        refused("    n << sum of (a[])", "h.zero:21: `n << sum of (a[])`: 'sum of' takes an array whole, `int x[]`, and is called with its name in square brackets (fm3 question 77): write `n << [sum of] (a[])`");
+        refused("    n << sum of (a[]) * 10 + sum of ([4, 5])", "write `n << [sum of] (a[]) * 10 + [sum of] ([4, 5])`");
+        refused("    n << [sum of] (a[]) + sum of ([4, 5])", "write `n << [sum of] (a[]) + [sum of] ([4, 5])`");
+        refused("    int s[] = scale (a[]) by (2)\n    n << count s[]", "`int s[] = scale (a[]) by (2)`: 'scale by' takes an array whole, `int x[]`, and is called with its name in square brackets (fm3 question 77): write `int s[] = [scale] (a[]) by (2)`");
+        // the bracketed call of a function of one item
+        refused("    int d[] = [doubled] (a[])\n    n << count d[]", "h.zero:21: `[doubled]`: 'doubled' takes one item, and a function of one item is applied to each item of an array plainly, `doubled (a[])` (fm3 question 77). The brackets are for a function declared over an array, `(int x[])`");
+        assert!(f("    int d[] = doubled (a[])\n    n << count d[]").is_ok());
+        // a word of the language is no function
+        refused("    n << [count] (a[])", "`[count]`: no function of this name is declared over an array. The words of the language, `count`, `frame` and the rest, are written plainly; whether they take brackets is not ruled (fm3 question 77)");
+        // a name with a method of each kind: the call says which
+        let both = f("    describe (a[])\n    n << 1").unwrap();
+        assert!(both.contains("        describe(_") && !both.contains("    describe__ints(a)\n"), "{}", both);
+        let whole = f("    [describe] (a[])\n    n << 1").unwrap();
+        assert!(whole.contains("    describe__ints(a)\n") && !whole.contains("        describe(_"), "{}", whole);
+        // a name that begins with a group has nowhere to put them
+        assert!(f("    n << (a[]) joined to ([1, 2])").is_ok());
+        // a list written out is still a list: a push's count, a phrase's argument
+        assert!(f("    int up$\n    int k = 4\n    up$ << [k] (3) times\n    n << count up$").is_ok());
+        // a stream is still not an array, brackets or none
+        refused("    int x$ << 1\n    n << [sum of] (x$)", "'sum of' takes an array here, `int x[]`, and 'x$' is a stream");
+    }
+
     /// The lowering knows which kind a name is (fm3 questions 90 and
     /// 79, log 162): the three crossings that wanted a call resolved
     /// are refused, each beside the line that stands
@@ -1173,9 +1222,9 @@ mod tests {
             assert!(e.contains(what), "{}: {}", body, e);
         };
         // a stream handed to a function declared over an array
-        refused("    int s$ << 1 << 2\n    n << sum of (s$)", "h.zero:19: 'sum of' takes an array here, `int x[]`, and 's$' is a stream, its items still arriving (fm3 question 90). The array of what has arrived is `frame s$`: hand it that");
-        assert!(f("    int s$ << 1 << 2\n    n << sum of (frame s$)").is_ok());
-        assert!(f("    int a[] = [1, 2]\n    n << sum of (a[]) + sum of ([3, 4]) + sum of (a[] * 2)").is_ok());
+        refused("    int s$ << 1 << 2\n    n << [sum of] (s$)", "h.zero:19: 'sum of' takes an array here, `int x[]`, and 's$' is a stream, its items still arriving (fm3 question 90). The array of what has arrived is `frame s$`: hand it that");
+        assert!(f("    int s$ << 1 << 2\n    n << [sum of] (frame s$)").is_ok());
+        assert!(f("    int a[] = [1, 2]\n    n << [sum of] (a[]) + [sum of] ([3, 4]) + [sum of] (a[] * 2)").is_ok());
         // an array handed to a function declared over a stream, and to a task
         refused("    int a[] = [1, 2]\n    shut (a[])\n    n << 1", "h.zero:19: 'shut' takes a stream here, `int x$`, and this is an array, all there (fm3 question 90). What begins with these items is a stream: `int s$ << ...`, the array pushed into it, and then `s$` handed over");
         refused("    shut ([1, 2])\n    n << 1", "'shut' takes a stream here, `int x$`, and this is an array");

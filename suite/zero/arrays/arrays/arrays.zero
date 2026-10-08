@@ -51,7 +51,7 @@ on (int n) << total of (int x[])
 
 on (int n) << handed()
     int a[] = [1, 2, 3]
-    n << total of (a[]) * 10 + total of ([4, 5])
+    n << [total of] (a[]) * 10 + [total of] ([4, 5])
 
 on (int r[]) << squares to (int k)
     r[] << [1 through k] * [1 through k]

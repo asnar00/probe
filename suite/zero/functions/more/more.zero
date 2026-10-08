@@ -14,4 +14,4 @@ on (int n) << times described()
     n << noted$
 
 on describe some()
-    describe ([1, 2])
+    [describe] ([1, 2])

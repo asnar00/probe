@@ -72,7 +72,7 @@ fn names(p: &Part, x: &str) -> bool {
     match p {
         Part::Value(e) => is_seq(e, x),
         Part::Args(a) => a.len() == 1 && a[0].name.is_none() && is_seq(&a[0].value, x),
-        Part::Word(_) => false,
+        Part::Word(_) | Part::Whole => false,
     }
 }
 
@@ -99,7 +99,7 @@ pub(super) fn walk(e: &Expr, f: &mut dyn FnMut(&Expr) -> bool) {
                 match p {
                     Part::Args(list) => list.iter().for_each(|a| walk(&a.value, f)),
                     Part::Value(x) => walk(x, f),
-                    Part::Word(_) => {}
+                    Part::Word(_) | Part::Whole => {}
                 }
             }
         }
@@ -258,6 +258,7 @@ fn handed_on(e: &Expr, x: &str, takers: &Takers) -> Option<String> {
             Part::Word(w) => words.push(w.as_str()),
             Part::Args(list) => args.extend(list.iter().map(|a| is_seq(&a.value, x))),
             Part::Value(v) => args.push(is_seq(v, x)),
+            Part::Whole => {}
         }
     }
     let k = words.join("_");
@@ -629,6 +630,7 @@ impl Processor {
                 Part::Args(list) => Part::Args(list.iter().map(|a| Arg { name: a.name.clone(), value: self.at(&a.value, last) }).collect()),
                 Part::Value(x) => Part::Value(self.at(x, last)),
                 Part::Word(w) => Part::Word(w.clone()),
+                Part::Whole => Part::Whole,
             })
             .collect()
     }

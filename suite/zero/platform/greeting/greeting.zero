@@ -3,4 +3,4 @@ on greet()
 
 on count to three()
     int i[] = [1 through 3]
-    print i[]
+    [print] (i[])

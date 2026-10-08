@@ -81,7 +81,7 @@ on (int n) << sum of (int x[])
     n << x[] + _
 
 on (int n) << passed()
-    n << sum of ([1, 2, 3])
+    n << [sum of] ([1, 2, 3])
 
 on (int r[]) << squares to (int k)
     r[] << [1 through k] * [1 through k]

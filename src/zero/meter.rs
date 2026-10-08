@@ -133,7 +133,7 @@ impl Walk {
                     match p {
                         Part::Args(list) => list.iter().for_each(|a| self.expr(&a.value, at, in_loop)),
                         Part::Value(x) => self.expr(x, at, in_loop),
-                        Part::Word(_) => {}
+                        Part::Word(_) | Part::Whole => {}
                     }
                 }
             }
@@ -268,7 +268,7 @@ fn expr_touches(e: &Expr) -> bool {
             word || parts.iter().any(|p| match p {
                 Part::Args(list) => list.iter().any(|a| expr_touches(&a.value)),
                 Part::Value(x) => expr_touches(x),
-                Part::Word(_) => false,
+                Part::Word(_) | Part::Whole => false,
             })
         }
         ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => expr_touches(x),

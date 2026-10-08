@@ -47,7 +47,7 @@ on (int n) << sum of (int x[])
     n << x[] + _
 
 on (int n) << summed()
-    n << sum of ([1, 2, 3, 4])
+    n << [sum of] ([1, 2, 3, 4])
 
 int seen$ << 5
 

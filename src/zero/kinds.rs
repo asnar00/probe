@@ -461,14 +461,14 @@ impl Walk {
                     match &mut parts[at] {
                         Part::Value(e) => e.kind = ExprKind::Seq(n),
                         Part::Args(a) => a[0].value.kind = ExprKind::Seq(n),
-                        Part::Word(_) => {}
+                        Part::Word(_) | Part::Whole => {}
                     }
                 }
                 for p in &mut parts[rest..] {
                     match p {
                         Part::Args(a) => self.args(a, "one value", "the value"),
                         Part::Value(x) => self.expr(x, "one value", "the value"),
-                        Part::Word(_) => {}
+                        Part::Word(_) | Part::Whole => {}
                     }
                 }
                 return;
@@ -478,7 +478,7 @@ impl Walk {
         let acc = parts.iter().any(|p| match p {
             Part::Args(a) => a.iter().any(|a| matches!(a.value.kind, ExprKind::Acc)),
             Part::Value(x) => matches!(x.kind, ExprKind::Acc),
-            Part::Word(_) => false,
+            Part::Word(_) | Part::Whole => false,
         });
         let task = self.is_task(&words);
         let form = if task {
@@ -495,7 +495,7 @@ impl Walk {
             match p {
                 Part::Args(a) => self.args(a, wants, &form),
                 Part::Value(x) => self.expr(x, wants, &form),
-                Part::Word(_) => {}
+                Part::Word(_) | Part::Whole => {}
             }
         }
     }

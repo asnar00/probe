@@ -255,6 +255,10 @@ pub enum Part {
     Args(Vec<Arg>),
     /// a bare argument: a literal, a sequence name, a list
     Value(Expr),
+    /// first in a phrase: the call was written with its name in square
+    /// brackets, `[sum of] (a[])`, the function taking an array whole
+    /// (fm3 question 77, log 165). It is no word and no argument
+    Whole,
 }
 
 /// the types every store has
@@ -347,6 +351,7 @@ pub fn renamed(e: &Expr, stream: &str, to: &str) -> Expr {
                 Part::Args(list) => Part::Args(list.iter().map(|a| Arg { name: a.name.clone(), value: renamed(&a.value, stream, to) }).collect()),
                 Part::Value(x) => Part::Value(renamed(x, stream, to)),
                 Part::Word(w) => Part::Word(w.clone()),
+                Part::Whole => Part::Whole,
             })
             .collect()
     };
@@ -392,7 +397,7 @@ pub fn seqs_in(e: &Expr, out: &mut Vec<String>) {
                 match p {
                     Part::Args(list) => list.iter().for_each(|a| each(&a.value)),
                     Part::Value(x) => each(x),
-                    Part::Word(_) => {}
+                    Part::Word(_) | Part::Whole => {}
                 }
             }
         }
@@ -448,11 +453,14 @@ pub struct Parser<'a> {
     arr_results: Vec<String>,
     /// was the name `expect_name` last read written `a[]`?
     arr: bool,
+    /// the value about to be read is a bare argument of a phrase, where
+    /// a `[` begins a list and never a bracketed call
+    bare: bool,
 }
 
 pub fn parse_feature<'a>(name: &str, src: &'a str, file: &'a str, types: &'a HashSet<String>) -> Result<Feature, Error> {
     let toks = lex::lex(src, file)?;
-    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: src.lines().collect(), results: Vec::new(), arr_results: Vec::new(), arr: false };
+    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: src.lines().collect(), results: Vec::new(), arr_results: Vec::new(), arr: false, bare: false };
     let mut decls = Vec::new();
     while !p.at_end() {
         decls.push(p.parse_decl()?);
@@ -465,7 +473,7 @@ pub fn parse_call(text: &str, file: &str, line: usize, types: &HashSet<String>) 
     let mut toks = Vec::new();
     lex::lex_line(text, line, file, &mut toks)?;
     toks.push(Token { tok: Tok::Newline, line });
-    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: Vec::new(), results: Vec::new(), arr_results: Vec::new(), arr: false };
+    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: Vec::new(), results: Vec::new(), arr_results: Vec::new(), arr: false, bare: false };
     let e = p.parse_expr()?;
     if !p.at(&Tok::Newline) {
         return Err(p.err("the call has something after it"));
@@ -1161,8 +1169,13 @@ impl<'a> Parser<'a> {
     /// declared name has `times` after the words `before` of the
     /// phrase the group would belong to
     fn count_ahead(&self, before: Option<&[String]>) -> bool {
+        self.count_from(self.pos, before)
+    }
+
+    /// ... asked of the bracket at token `from`
+    fn count_from(&self, from: usize, before: Option<&[String]>) -> bool {
         let mut depth = 0;
-        let mut i = self.pos;
+        let mut i = from;
         loop {
             match self.toks.get(i).map(|t| &t.tok) {
                 Some(Tok::Sym("(")) => depth += 1,
@@ -1760,6 +1773,20 @@ impl<'a> Parser<'a> {
                 return Ok(e);
             }
             Tok::Sym("[") => {
+                // `[sum of] (a[])`: a call with its name in square
+                // brackets (fm3 question 77, log 165), where the
+                // bracket stands first in a value and not as an
+                // argument of a phrase
+                let bare = std::mem::take(&mut self.bare);
+                if let (false, Some(close)) = (bare, self.whole_call_ahead()) {
+                    let mut parts = vec![Part::Whole];
+                    while self.pos < close {
+                        parts.push(Part::Word(self.expect_word()?));
+                    }
+                    self.pos = close + 1;
+                    parts.extend(self.parse_parts()?);
+                    return Ok(Expr { kind: ExprKind::Phrase(parts), line });
+                }
                 let mut items = Vec::new();
                 if !self.at_sym("]") {
                     self.ranges += 1;
@@ -1809,6 +1836,32 @@ impl<'a> Parser<'a> {
         Ok(Expr { kind, line })
     }
 
+    /// After a `[`: words and nothing else, `]`, and then a group or
+    /// an array's name: a bracketed call's name, and where its `]`
+    /// is. A list of one item written with words alone has no group
+    /// after it but a push's count, `x$ << [k] (3) times`, and a
+    /// range has its `through` or `to` (fm3 log 165)
+    fn whole_call_ahead(&self) -> Option<usize> {
+        let tok = |i: usize| self.toks.get(i).map(|t| &t.tok);
+        let mut i = self.pos;
+        while let Some(Tok::Word(w)) = tok(i) {
+            if matches!(w.as_str(), "through" | "to" | "true" | "false" | "if" | "existing") {
+                return None;
+            }
+            i += 1;
+        }
+        if i == self.pos || !matches!(tok(i), Some(Tok::Sym("]"))) {
+            return None;
+        }
+        match tok(i + 1) {
+            Some(Tok::Arr(_)) => Some(i),
+            Some(Tok::Sym("(")) => {
+                (!self.count_from(i + 1, None)).then_some(i)
+            }
+            _ => None,
+        }
+    }
+
     /// a word that ends a phrase: a statement's own word, or a range's
     /// `to` and `through` inside `[ ]`
     fn ends_phrase(&self, w: &str) -> bool {
@@ -1849,7 +1902,11 @@ impl<'a> Parser<'a> {
                 // (a bracketed operator is no argument: `[==]`, log 164)
                 Some(Tok::Sym("[")) if self.whole_op().is_some() => break,
                 Some(Tok::Int(_)) | Some(Tok::Float(_)) | Some(Tok::Str(_)) | Some(Tok::Sym("[")) | Some(Tok::Sym("_")) | Some(Tok::At(_)) => {
-                    let e = self.parse_postfix()?;
+                    // (a bracket here is a list, this phrase's argument)
+                    self.bare = true;
+                    let e = self.parse_postfix();
+                    self.bare = false;
+                    let e = e?;
                     parts.push(Part::Value(e));
                 }
                 _ => break,
