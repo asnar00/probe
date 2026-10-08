@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: in a push that happens once, a stream's name is its value now — `023a1c5` · 2026-10-08
+
+```
+on pushed on()
+    seen$ << 1 << 2 << 3
+    out$ << seen$
+```
+
+`suite/zero/now/now/now.zero:19-21`. It writes `3`, where it wrote `1 2 3`: fm3's question 79. `src/zero/lower.rs` gains `now`, said of each item of a push in a function: a stream's name is its latest item, an array's the array. `total$ << total$ + other$` is one sum of two latest items, both streams one word each, 4 as counted where it was 209. Before its first item a name reads as zero. A line with `forever` and a stream processor are unchanged. The IR of three stores moved: `types`, its two lines now `out$ << frame said$`; one function each of `cells` and `words`, by the zero, 6 more. The suite 841/841 natively, `cargo test zero` 60, the meter 130 of 2 224.
+
 ### zero: the lowering knows which kind a name is, and three crossings of the two kinds are refused — `6d57dcd` · 2026-10-08
 
 ```
