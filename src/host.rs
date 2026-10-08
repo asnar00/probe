@@ -10,6 +10,7 @@
 //! `suite.rs` names them from here. Nothing in this file reads but
 //! `Platform::load`, which goes through `vfs`.
 
+use crate::zero::lower::Site;
 use crate::{emit_wasm, ssa};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -142,6 +143,20 @@ pub const CHECKED: &str = "a failed check";
 /// what a call that ended in a failed check gives back
 pub fn checked() -> &'static str {
     CHECKED
+}
+
+/// `a failed check at #<site>,<a>,<b>` as the table reads it: what a
+/// stop in the diagnostic build of a zero store says (fm3 log 199), its
+/// site a row of `Lowered.sites` counted from 1, turned into the file,
+/// the line and what was being asked. Here beside `CHECKED` so that a
+/// host that runs the module itself, the page, reads it as the runner
+/// does. None where the text names no site or the table has no such row
+pub fn site_said(sites: &[Site], said: &str) -> Option<String> {
+    let words: Vec<i64> = said.strip_prefix(checked())?.trim().strip_prefix("at #")?.split(',').map(|w| u64::from_str_radix(w.trim(), 16).map(|v| v as i64)).collect::<Result<_, _>>().ok()?;
+    let [n, a, b] = words.as_slice() else { return None };
+    let site = sites.get((*n as usize).checked_sub(1)?)?;
+    let what = site.what.replace("{a}", &a.to_string()).replace("{b}", &b.to_string());
+    Some(format!("{} at {}:{}{}", checked(), site.file, site.line, if what.is_empty() { String::new() } else { format!(": {}", what) }))
 }
 
 /// an integer argument list as the wasm driver (`driver.js`) reads it,

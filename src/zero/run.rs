@@ -6,6 +6,7 @@
 //! suite's own machinery (`suite::run_calls`).
 
 use super::{lower, store};
+use crate::host::site_said;
 use crate::suite::{self, Backend, Report};
 use crate::{opt, ssa};
 use std::collections::{BTreeSet, HashSet};
@@ -632,15 +633,6 @@ fn traced(dir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, call
     let again = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: true, text: true, before: call.before.clone(), live: false, times: false };
     let said = suite::run_calls(&module, &l.ir, backend, &[again], &format!("{}-sites", name), level).ok()?.remove(0).err()?;
     site_said(&l.sites, &said)
-}
-
-/// `a failed check at #<site>,<a>,<b>` as the table reads it
-fn site_said(sites: &[lower::Site], said: &str) -> Option<String> {
-    let words: Vec<i64> = said.strip_prefix(suite::checked())?.trim().strip_prefix("at #")?.split(',').map(|w| u64::from_str_radix(w.trim(), 16).map(|v| v as i64)).collect::<Result<_, _>>().ok()?;
-    let [n, a, b] = words.as_slice() else { return None };
-    let site = sites.get((*n as usize).checked_sub(1)?)?;
-    let what = site.what.replace("{a}", &a.to_string()).replace("{b}", &b.to_string());
-    Some(format!("{} at {}:{}{}", suite::checked(), site.file, site.line, if what.is_empty() { String::new() } else { format!(": {}", what) }))
 }
 
 /// did the call give what the case expects? A text result is compared
