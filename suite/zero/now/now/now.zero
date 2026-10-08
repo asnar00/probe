@@ -1,0 +1,89 @@
+int seen$
+int flow$
+int total$ << 0
+int other$ << 0
+int kept$ << 0
+int late$ << 0
+int a$
+int x$
+int both$
+int up$
+int d$
+int from$
+out$ << (flow$ << "\n") forever
+out$ << (up$ << "\n") forever
+
+on (int d) << doubled (int x)
+    d << x * 2
+
+on pushed on()
+    seen$ << 1 << 2 << 3
+    out$ << seen$
+
+on each as it comes()
+    flow$ << 1 << 2 << 3
+
+on (int n) << kept from two()
+    other$ << 5
+    total$ << total$ + other$
+    other$ << 7
+    total$ << total$ + other$
+    n << total$
+
+on (int n) << kept with a local()
+    late$ << 5
+    int o = late$
+    kept$ << kept$ + o
+    late$ << 7
+    int p = late$
+    kept$ << kept$ + p
+    n << kept$
+
+on (int n) << one doubled()
+    a$ << 1 << 2 << 3
+    x$ << a$ * 2
+    n << count x$ * 100 + x$
+
+on (int n) << a local pushed on()
+    int s$ << 1 << 2 << 3
+    int t$
+    t$ << s$
+    n << count t$ * 100 + t$
+
+on before the first()
+    int s$
+    out$ << s$
+
+on (int n) << none yet()
+    n << both$ * 10 + count both$
+
+on all of an array()
+    int a[] = [1, 2, 3]
+    out$ << a[]
+
+on (int n) << each with the latest()
+    int a[] = [1, 2, 3]
+    other$ << 10
+    int s$
+    s$ << a[] + other$
+    int f[] = frame s$
+    n << count f[] * 100 + (f[] + _)
+
+on (int n) << doubled now()
+    seen$ << 4 << 5
+    d$ << doubled (seen$)
+    n << count d$ * 100 + d$
+
+on three of the latest()
+    seen$ << 7 << 8
+    up$ << seen$ (3) times
+
+on (int n) << by the word()
+    seen$ << 1 << 2 << 3
+    from$ << latest seen$
+    n << from$
+
+on (int n) << first items()
+    seen$ << 6 << 9
+    int s$ << seen$ << 1
+    n << count s$ * 100 + peek s$ at (0)

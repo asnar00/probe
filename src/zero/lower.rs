@@ -351,6 +351,10 @@ pub struct FnInfo {
     pub gives: Vec<NameMark>,
 }
 
+/// is a stream's name read where one value is wanted the zero of its
+/// type before the first item, as under `now` (fm3 log 163, decision 6)?
+const ZERO_FIRST: bool = true;
+
 /// the refusal of a program that writes its input (question 35)
 const INPUT_REFUSED: &str = "'in$' is the input device: a program reads it and never writes it or ends it. Input comes from the platform alone, which under the runner is a case's `with in \"text\"`; a program that makes its own arrivals pushes them into a stream of its own";
 
@@ -2115,7 +2119,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), zero_first: Names::new(), line_kept: Names::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), zero_first: Names::new(), line_kept: Names::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -3317,6 +3321,14 @@ struct Lowerer {
     one: bool,
     /// ... and of each argument of the call about to be chosen
     arg_ones: Vec<bool>,
+    /// the expression about to be lowered stands in a line that
+    /// happens once (fm3 question 79, log 163): an item of a push in a
+    /// function. A stream's name there is its value now, its latest
+    /// item, and an array's name is the array, whole, which is where
+    /// it parts from `one`. Taken as `lower_expr` enters, as `one` is
+    now: bool,
+    /// ... and of each argument of the call about to be chosen
+    arg_nows: Vec<bool>,
 }
 
 /// a wiring of a processor read the new way whose input has no
@@ -4734,6 +4746,7 @@ impl Lowerer {
                 return Ok(None);
             }
             l.push_read = Some((name.to_string(), read));
+            l.now = l.once_line(b);
             let v = l.lower_expr(e, Some(&elem), b, None);
             l.push_read = None;
             let v = v?;
@@ -7542,13 +7555,15 @@ impl Lowerer {
         // taken while its arguments are lowered, and put back for the
         // next method `choose` tries
         let ones = std::mem::take(&mut self.arg_ones);
-        let r = self.lower_call_args_of(info, args, &ones, b);
+        let nows = std::mem::take(&mut self.arg_nows);
+        let r = self.lower_call_args_of(info, args, &ones, &nows, b);
         self.arg_ones = ones;
+        self.arg_nows = nows;
         r
     }
 
     #[allow(clippy::type_complexity)]
-    fn lower_call_args_of(&mut self, info: &FnInfo, args: &[Expr], ones: &[bool], b: &mut Body) -> Result<(Vec<Val>, Vec<bool>, Option<(usize, Ty)>, Vec<Ty>, bool), Error> {
+    fn lower_call_args_of(&mut self, info: &FnInfo, args: &[Expr], ones: &[bool], nows: &[bool], b: &mut Body) -> Result<(Vec<Val>, Vec<bool>, Option<(usize, Ty)>, Vec<Ty>, bool), Error> {
         let file = b.file.clone();
         // the round is this call's alone: a call inside an argument
         // chooses for itself
@@ -7582,6 +7597,7 @@ impl Lowerer {
                 }
             }
             let wanted_one = self.one;
+            self.now = nows.get(i).copied().unwrap_or(false);
             let mut v = self.lower_expr(a, Some(ty), b, None)?;
             if wanted_one && v.ty.items().is_some() && !matches!(ty, Ty::Stream(_)) {
                 return Err(lex::error(&file, a.line, each_not_one(info, a, &file)));
@@ -8527,6 +8543,40 @@ impl Lowerer {
         Ok(Val { text: out, ty: elem.as_ref().clone(), literal: false })
     }
 
+    /// the most recent item of a stream, or the zero of its type where
+    /// nothing has been pushed (fm3 log 149, 163): what a cell reads
+    /// before its first item, said of a stream that is kept another way
+    fn latest_or_zero(&mut self, s: &Val, ty: &Ty, b: &mut Body, dst: Option<&str>) -> Result<Val, Error> {
+        let Ty::Stream(elem) = ty else { unreachable!() };
+        let (n, some) = (b.tmp(), b.tmp());
+        let out = match dst {
+            Some(_) => name_for(dst, elem, b),
+            None => b.tmp(),
+        };
+        b.line(&format!("{}: index = received({})", n, s.text));
+        b.line(&format!("{}: u1 = cmp.gt {}, 0", some, n));
+        b.line(&format!("{}: {} = if {}", out, elem.ir(), some));
+        b.depth += 1;
+        let v = self.latest_of(s, ty, b, None)?;
+        b.line(&format!("yield {}", v.text));
+        b.depth -= 1;
+        b.line("else");
+        b.depth += 1;
+        let z = self.zero_val(elem, b);
+        b.line(&format!("yield {}", z.text));
+        b.depth -= 1;
+        Ok(Val { text: out, ty: elem.as_ref().clone(), literal: false })
+    }
+
+    /// does a push in this body happen once, each time its line runs
+    /// (fm3 question 79, log 163)? In a function the program declared,
+    /// a task that walks among them. The functions the front end
+    /// writes, for a line that stands and for a stream processor, are
+    /// named `__...`, and in them a name is what it was
+    fn once_line(&self, b: &Body) -> bool {
+        matches!(b.kind, BodyKind::Fn | BodyKind::Task { .. }) && b.func.as_ref().is_some_and(|f| !f.ir.starts_with("__") && !f.key.starts_with("__"))
+    }
+
     /// one push, through `__push` (log 38): a tick from the virtual
     /// clock unless the ring is regular; a struct pushed field by field;
     /// a task's own output sleeps to its next tick after (log 25)
@@ -8650,6 +8700,7 @@ impl Lowerer {
         // the context fixes, since its items have none of their own
         let item = |l: &mut Lowerer, e: &Expr, b: &mut Body| -> Result<Val, Error> {
             let want = if matches!(e.kind, ExprKind::List(_)) { Some(&elem) } else { None };
+            l.now = l.once_line(b);
             l.lower_expr(e, want, b, None)
         };
         let count = match cond {
@@ -8840,6 +8891,8 @@ impl Lowerer {
         let zero_first = b.func.as_ref().is_some_and(|f| self.zero_first.contains(&f.ir));
         self.push_read = Some((name.to_string(), if zero_first { PushRead::LatestOr(s.clone(), s.ty.clone()) } else { PushRead::Latest(s.clone(), s.ty.clone()) }));
         let want = if matches!(e.kind, ExprKind::List(_)) { Some(elem) } else { None };
+        // an item of a push that happens once (fm3 question 79, log 163)
+        self.now = self.once_line(b);
         let v = self.lower_expr(e, want, b, None);
         self.push_read = None;
         self.push_item(name, s, v?, e.line, b)
@@ -9816,6 +9869,8 @@ impl Lowerer {
         // is one value wanted of this expression (fm3 question 79, log
         // 143)? Said by whoever asked, for this expression alone
         let one = std::mem::take(&mut self.one);
+        // ... or does it stand in a line that happens once (log 163)?
+        let now = std::mem::take(&mut self.now);
         match &e.kind {
             // an array's name is written as the `Seq` it lowers as
             // before the lowering is handed the tree (fm3 log 159)
@@ -9842,25 +9897,14 @@ impl Lowerer {
                 // in a push chain the stream's own name is an item (log 23)
                 if let Some((n, read)) = self.push_read.clone() {
                     if &n == w {
+                        // (`out$ << out$` lowered to a read of a device
+                        // that has no value: found in hop twenty-five)
+                        if self.device(w, b) {
+                            return Err(lex::error(&file, e.line, format!("'{}$' is the output device: it is written and never read, so it has no latest item", w)));
+                        }
                         return match read {
                             PushRead::Latest(s, ty) => self.latest_of(&s, &ty, b, dst),
-                            PushRead::LatestOr(s, ty) => {
-                                let Ty::Stream(elem) = &ty else { unreachable!() };
-                                let (n, some, out) = (b.tmp(), b.tmp(), b.tmp());
-                                b.line(&format!("{}: index = received({})", n, s.text));
-                                b.line(&format!("{}: u1 = cmp.gt {}, 0", some, n));
-                                b.line(&format!("{}: {} = if {}", out, elem.ir(), some));
-                                b.depth += 1;
-                                let v = self.latest_of(&s, &ty, b, None)?;
-                                b.line(&format!("yield {}", v.text));
-                                b.depth -= 1;
-                                b.line("else");
-                                b.depth += 1;
-                                let z = self.zero_val(elem, b);
-                                b.line(&format!("yield {}", z.text));
-                                b.depth -= 1;
-                                Ok(Val { text: out, ty: elem.as_ref().clone(), literal: false })
-                            }
+                            PushRead::LatestOr(s, ty) => self.latest_or_zero(&s, &ty, b, None),
                             PushRead::Cell => self.read_cell(w, b, dst, e.line),
                             PushRead::Value(v) => Ok(v),
                         };
@@ -9875,13 +9919,15 @@ impl Lowerer {
                 // a stream's name where one value is wanted is its
                 // latest item (fm3 question 79): a cell's field, or the
                 // library's `latest` of any other stream
-                if one {
-                    // an array has no latest item (fm3 question 96):
-                    // the walk refuses the forms it can see, and this
-                    // is any it could not (log 162)
-                    if self.arr_name(w, b) {
-                        return Err(lex::error(&file, e.line, format!("'{}[]' is an array, and one value is wanted here: an array has no latest item, as a stream has (fm3 question 90). Its last item is `{}[count {}[] - 1]`, one item `{}[k]`, and its sum `{}[] + _`", w, w, w, w, w)));
-                    }
+                // an array has no latest item (fm3 question 96): the
+                // walk refuses the forms it can see, and this is any
+                // it could not (log 162)
+                if one && self.arr_name(w, b) {
+                    return Err(lex::error(&file, e.line, format!("'{}[]' is an array, and one value is wanted here: an array has no latest item, as a stream has (fm3 question 90). Its last item is `{}[count {}[] - 1]`, one item `{}[k]`, and its sum `{}[] + _`", w, w, w, w, w)));
+                }
+                // ... and in a line that happens once (log 163), where
+                // an array's name is the array, whole
+                if one || (now && !self.arr_name(w, b)) {
                     if self.is_cell(w, b) {
                         return self.read_cell(w, b, dst, e.line);
                     }
@@ -9891,6 +9937,9 @@ impl Lowerer {
                     let v = self.lower_expr(&Expr { kind: ExprKind::Name(w.clone()), line: e.line }, want, b, None)?;
                     let ty = v.ty.clone();
                     return match ty {
+                        // before its first item, the zero of its type,
+                        // as a cell reads (fm3 question 75, log 163)
+                        Ty::Stream(_) if now || ZERO_FIRST => self.latest_or_zero(&v, &ty, b, dst),
                         Ty::Stream(_) => self.latest_of(&v, &ty, b, dst),
                         _ => Err(lex::error(&file, e.line, format!("'{}$' is not a stream: '{}' is a {}", w, w, v.ty.ir()))),
                     };
@@ -10007,6 +10056,7 @@ impl Lowerer {
             }
             ExprKind::Neg(x) => {
                 self.one = one;
+                self.now = now;
                 let v = self.lower_expr(x, want, b, None)?;
                 if !matches!(v.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, e.line, "'-' takes a number"));
@@ -10051,10 +10101,12 @@ impl Lowerer {
                 // where one value is wanted of the whole, it is wanted
                 // of each operand
                 self.one = one;
+                self.now = now;
                 let lv = self.lower_expr(l, operand_want, b, None)?;
                 // a struct on the left: the program's own operator
                 if let Ty::Struct(_) = &lv.ty {
                     self.one = one;
+                    self.now = now;
                     let mut rv = self.lower_expr(r, None, b, None)?;
                     let Some(info) = self.find_operator(op, &lv.ty, &rv, &file, e.line)? else {
                         return Err(lex::error(&file, e.line, format!("no '{}' is defined on a {} and a {}", op, zero_ty(&lv.ty), zero_ty(&rv.ty))));
@@ -10070,6 +10122,7 @@ impl Lowerer {
                 let lt = lv.ty.clone();
                 let rv_want = if lv.literal { operand_want } else { Some(lt.elem().unwrap_or(&lt)) };
                 self.one = one;
+                self.now = now;
                 let rv = self.lower_expr(r, rv_want, b, None)?;
                 if lv.ty.elem().is_some() || rv.ty.elem().is_some() {
                     return self.seq_bin(op, lv, rv, b, dst, e.line);
@@ -10088,9 +10141,11 @@ impl Lowerer {
                 let start = b.out.len();
                 b.depth += 1;
                 self.one = one;
+                self.now = now;
                 let mut av = self.lower_expr(a, want, b, None)?;
                 let mut a_lines = b.out.split_off(start);
                 self.one = one;
+                self.now = now;
                 let mut dv = self.lower_expr(d, if av.literal { want } else { Some(&av.ty) }, b, None)?;
                 let mut d_lines = b.out.split_off(start);
                 let ty = match (av.literal, dv.literal) {
@@ -10231,12 +10286,20 @@ impl Lowerer {
                 // each argument whose parameter is one value in every
                 // method of the name; a `_` among them is a reduce, as
                 // it was (fm3 log 143)
-                if one && !(self.candidate.is_none() && args.iter().any(|a| matches!(a.kind, ExprKind::Acc))) {
-                    self.arg_ones = (0..args.len()).map(|i| cands.iter().all(|c| c.params.get(i).is_some_and(|p| !matches!(p.1, Ty::Stream(_))))).collect();
+                if (one || now) && !(self.candidate.is_none() && args.iter().any(|a| matches!(a.kind, ExprKind::Acc))) {
+                    let plain: Vec<bool> = (0..args.len()).map(|i| cands.iter().all(|c| c.params.get(i).is_some_and(|p| !matches!(p.1, Ty::Stream(_))))).collect();
+                    // (in a line that happens once the same arguments
+                    // are read as now, log 163)
+                    if one {
+                        self.arg_ones = plain;
+                    } else {
+                        self.arg_nows = plain;
+                    }
                 }
                 // the method the arguments choose (section 6, log 36)
                 let chosen = self.choose(&cands, &args, b, e.line);
                 self.arg_ones.clear();
+                self.arg_nows.clear();
                 let (info, (vals, lifted, acc, rtys, _)) = chosen?;
                 self.reach(&spoken(&info), &info.feature, &file, e.line)?;
                 if lifted.iter().any(|&l| l) || acc.is_some() {

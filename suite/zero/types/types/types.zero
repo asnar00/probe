@@ -65,11 +65,11 @@ char said$
 
 on said fifteen()
     said$ << "fifteen letters"
-    out$ << said$
+    out$ << frame said$
 
 on said sixteen()
     said$ << "sixteen letters!"
-    out$ << said$
+    out$ << frame said$
 
 on (Vec v) << (Vec a) * (Vec b)
     v << Vec(a.x * b.x, a.y * b.y, a.z * b.z)

@@ -1660,11 +1660,19 @@ mod tests {
         // one more word, and it is a queue: the name still reads its latest
         let counted = with("\non (int n) << g()\n    n << count seen$").unwrap();
         assert!(counted.contains("    seen: int$\n") && counted.contains("__queue_int"), "{}", counted);
-        assert!(counted.contains("_3: int = latest_queue(_2)\n    x: int = add _3, 1\n"), "{}", counted);
-        // pushed whole, a once-line that hands over more than one item
-        // (question 79's fenced line): not a cell, and it lowers as it did
+        // (before its first item the zero, as the cell reads, fm3 log 163)
+        assert!(counted.contains("_3: index = received(_2)\n    _4: u1 = cmp.gt _3, 0\n    _5: int = if _4\n        _6: int = latest_queue(_2)\n        yield _6\n    else\n        yield 0\n    x: int = add _5, 1\n"), "{}", counted);
+        // an item of a push that happens once is its value now (fm3
+        // question 79, log 163): the line that pushed everything
+        // unread reads the cell, and the stream is one still
         let whole = with("\non g()\n    out$ << seen$").unwrap();
-        assert!(whole.contains("    seen: int$\n"), "{}", whole);
+        assert!(whole.contains("    seen: int\n") && whole.contains("fn g()\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int = get _1, seen\n    __out__int(_2)\n"), "{}", whole);
+        // ... through an operator with another stream, both cells
+        let two = with("int other$ << 0\n\non g()\n    seen$ << seen$ + other$").unwrap();
+        assert!(two.contains("    other: int\n") && two.contains("fn g()\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int = get _1, seen\n    _3: __ctx = load _this\n    _4: int = get _3, other\n    _5: int = add _2, _4\n"), "{}", two);
+        // ... and an array there is the array, whole
+        let arr = with("\non g()\n    int a[] = [1, 2]\n    out$ << a[] * 2").unwrap();
+        assert!(arr.contains("fn g()") && arr.contains("__out__ints("), "{}", arr);
         // a function that takes the stream whole takes it, as it did
         let taken = with("\non (int n) << total (int x$)\n    n << count x$\n\non (int n) << total (int x)\n    n << x\n\non (int n) << g()\n    n << total (seen$)").unwrap();
         assert!(taken.contains("    seen: int$\n"), "{}", taken);
@@ -1673,7 +1681,7 @@ mod tests {
         assert!(one.contains("    seen: int\n") && one.contains("    _2: int = get _1, seen\n    n: int = twice(_2)\n"), "{}", one);
         // a local stream's name reads its latest where one value is wanted
         let local = with("\non (int n) << g()\n    int i$ << 4 << 5\n    int y = i$ + 1\n    n << y").unwrap();
-        assert!(local.contains(" = latest_queue(i)\n    y: int = add "), "{}", local);
+        assert!(local.contains(" = latest_queue(i)\n") && local.contains("    y: int = add "), "{}", local);
         // a cell holds what a ring does not; used as a stream it is refused as it was
         let flag = with("bool up$\n\non (bool b) << g()\n    up$ << true\n    b << up$").unwrap();
         assert!(flag.contains("    up: u1\n"), "{}", flag);
@@ -2286,7 +2294,11 @@ mod tests {
         assert!(refused("on (char o$) << (char c$)\n    o$ << \"?\"\n\non f()\n    out$ << 1\n").contains("'string' pushed into 'string' is the block push of section 9, not a method"));
         assert!(refused("on (char o$) = (char o$) << (int x)\n    o$ << \"?\"\n\non f()\n    out$ << 1\n").contains("`=` says what a name is"));
         assert!(refused("on f()\n    int i$ << 1\n    i$ << 2.5\n").contains("'i$' holds int but the item is float"));
-        assert!(refused("type token =\n    int kind, start, n\n\non f()\n    token t$ << token(1, 2, 3)\n    out$ << t$\n").contains("'out$' holds char but the item is token$: no `<<` method takes it"));
+        // a stream's name in a push that happens once is its latest
+        // item (fm3 question 79, log 163): a token, written as its fields
+        let latest = emit_with("type token =\n    int kind, start, n\n\non f()\n    token t$ << token(1, 2, 3)\n    out$ << t$\n").unwrap();
+        assert!(latest.contains("latest_queue(t)") && latest.contains("get _4, kind"), "{}", latest);
+        assert!(refused("type token =\n    int kind, start, n\n\non f()\n    token t$ << token(1, 2, 3)\n    token g[] = frame t$\n    out$ << g[]\n").contains("'out$' holds char but the item is token$: no `<<` method takes it"));
         // a char is a character, not a small number (question 44)
         assert!(refused("on f()\n    char c = char(65)\n    out$ << (c + 1)\n").contains("'+' on a char: a char is compared, not computed with; convert it, `int(c)`"));
         // a `uint8` stream takes the byte itself, since no method takes one

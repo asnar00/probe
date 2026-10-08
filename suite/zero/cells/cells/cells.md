@@ -22,7 +22,7 @@ Every stream here but `both$` and `t$` is read for its latest item and nothing e
 
 ## rules
 - A stream's name is its latest item wherever one value is wanted: a declaration without `$`, the push of a result, a condition, a `check`, an index, the bounds of a range, the base of `.field`, a conversion, a field of a struct being built, both sides of an operator there, and an argument of a function whose parameter is one value.
-- An item of a push is not such a place: `out$ << x$` pushes what is unread in `x$`, as it did, and a stream pushed whole is not a cell.
+- An item of a push in a function is read the same way, the line happening once: `out$ << x$` pushes the latest item of `x$`, and `total$ << total$ + other$` reads both for their latest, so both are cells (`suite/zero/now`, fm3 question 79, log 163). An array's name there is the array, whole.
 - Before anything is pushed, the latest item is the zero of the type.
 - What a stream keeps is the compiler's to work out, and may not show: a cell and a queue read the same.
 
