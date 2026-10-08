@@ -4,6 +4,15 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: an array is `int a[]`, the mark part of the name and the lines what they were — `95b2558` · 2026-10-08
+
+```
+on (int r[]) << squares to (int k)
+    r[] << [1 through k] * [1 through k]
+```
+
+`suite/zero/arrays/arrays/arrays.zero:106-107`. fm3's question 90, Ash: "int i[] for an array, int i$ for a stream. The [] and $ suffix travel with the variable name." The lexer reads `a[]` as one token, an array's name whole, and `a[2]` as that name asked for an item. `src/zero/kinds.rs` holds every name to the mark it was declared with, `a$` for a declared `a[]` refused naming the declaration's line, and then writes each array's name as the lowering always read a sequence, so an array lowers to the same lines. The function above is plain, told from a task by its result's mark. Sixteen forms are written both ways in the new store and a test asserts each pair emits the same text. No existing store's IR moved; zero 841/841 natively; the six rows as they were.
+
 ### zero: `probe zero names`, every name with a `$` and each form it is used in — `d28071e` · 2026-10-08
 
 ```
