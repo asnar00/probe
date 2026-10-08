@@ -205,11 +205,8 @@ impl Walk {
                         self.block(e, at, carried, in_loop, &mut b);
                     }
                     self.under -= !*on_push as usize;
-                    // ... but an arm that gives the function's last
-                    // result has ended it (fm3 question 2, log 145), and
-                    // gives nothing to what follows the `if`
-                    let ends = |g: &[String]| !at.results.is_empty() && at.results.iter().all(|r| g.contains(r));
-                    let (a, b) = (if ends(&a) { Vec::new() } else { a }, if els.is_some() && ends(&b) { Vec::new() } else { b });
+                    // (a push of the last result does not end the
+                    // function: fm3 question 88, log 171)
                     for n in a.into_iter().chain(b) {
                         if !given.contains(&n) {
                             given.push(n);
@@ -420,33 +417,34 @@ mod tests {
         let zeroic = store_of("z", "int x$\nint d$ = rising(x$)\n\non (int d$) << rising (int x$)\n    d$ << x$ if (x$ > x$[-1])\n\non (int n) << f()\n    x$ << 1 << 3 << 2\n    n << count d$\n");
         let m = metered(&zeroic).unwrap();
         assert_eq!((m.count(), m.lines), (0, 7), "{:?}", m.found);
-        let walking = store_of("w", "int x$\nint d$ = rising(x$)\nint last = 0\n\non (int d$) << rising (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        int v = peek x$ at (0)\n        if (v > last)\n            d$ << v\n        last = v\n        advance x$ by (1)\n\non (int n) << f()\n    x$ << 1 << 3 << 2\n    int f[] = [4, 5]\n    for (v in f[])\n        n << n + f[1]\n    n << peek d$ at (1)\n");
+        let walking = store_of("w", "int x$\nint d$ = rising(x$)\nint last = 0\n\non (int d$) << rising (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        int v = peek x$ at (0)\n        if (v > last)\n            d$ << v\n        last = v\n        advance x$ by (1)\n\non (int n) << f()\n    x$ << 1 << 3 << 2\n    int f[] = [4, 5]\n    for (v in f[])\n        out$ << f[1]\n    n << peek d$ at (1)\n");
         let m = metered(&walking).unwrap();
         let forms: Vec<(usize, usize)> = m.found.iter().map(|f| (f.line, f.form)).collect();
         // 7 `count`, 9 `peek`, 13 `advance`: walking; 10: `if` round a
         // push; 12: a feature-scope name assigned; 18: a `for`; 19: an
-        // index, the result's first giving being how a function gives
-        // it, and a result pushed inside a `for`, not at the top level
-        // of its body; 20: the result given again, and a `peek`
-        // forward of now
-        assert_eq!(forms, vec![(7, 2), (9, 2), (10, 4), (12, 0), (13, 2), (18, 7), (19, 8), (19, 9), (20, 0), (20, 3)], "{:?}", m.found);
+        // index; 20: a `peek` forward of now, the result's giving
+        // being how a function gives it
+        assert_eq!(forms, vec![(7, 2), (9, 2), (10, 4), (12, 0), (13, 2), (18, 7), (19, 8), (20, 3)], "{:?}", m.found);
         assert_eq!((m.count(), m.lines), (8, 18));
         // a body written both ways, which the compiler refuses, is metered
         let refused = store_of("r", "int x$\nint d$ = rising(x$)\n\non (int d$) << rising (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        d$ << x$[-1]\n        advance x$ by (1)\n");
         assert!(super::super::lower::lower(&store::read(&refused).unwrap()).is_err());
         assert_eq!(metered(&refused).unwrap().count(), 2);
         // a result pushed under an `if` statement (fm3 question 88,
-        // log 170): each such line, in either arm and in a loop; the
-        // condition on the push's own line, with `else`, is the zeroic
-        // form and is not counted
-        let under = store_of("u", "on (int s) << sign of (int x)\n    if (x < 0)\n        s << -1\n    else if (x > 0)\n        s << 1\n\non (int s) << sign as a table (int x)\n    s << -1 if (x < 0)\n         else 1 if (x > 0)\n         else 0\n\non (int p) << above (int n)\n    loop (int q = 1)\n        if (q > n)\n            p << q\n        continue (q * 2)\n");
-        let m = metered(&under).unwrap();
-        let forms: Vec<(usize, usize)> = m.found.iter().map(|f| (f.line, f.form)).collect();
-        assert_eq!(forms, vec![(3, 9), (5, 9), (13, 6), (15, 9)], "{:?}", m.found);
-        let text = report(&under).unwrap();
-        assert!(text.contains("  h/h.zero:3  a result pushed under an `if` statement\n") && text.contains("     3  a result pushed under an `if` statement: the push of a function's result, `r << v`, on a line under an `if` statement, or inside a `loop` or a `for`: anywhere but the top level of the body; the zeroic form is one push at the top level with its condition on it, `r << a if (c) else b` (fm3 question 88)\n"), "{}", text);
+        // log 170) was a row while the suite had such lines, 39 of
+        // them. From log 171 the form is refused where a store is
+        // read, so a store that has it is not metered and the row
+        // counts nothing: it stays in the table at nothing, the form
+        // named. The condition on the push's own line is the zeroic
+        // form and no row
+        let under = store_of("u", "on (int s) << sign of (int x)\n    if (x < 0)\n        s << -1\n    else if (x > 0)\n        s << 1\n");
+        let e = metered(&under).err().unwrap();
+        assert!(e.contains("h.zero:3: 's' is a result, and a result is pushed once, at the top level of its function, with its condition on the push (fm3 question 88): this push stands under the `if` on line 2. Write `s << -1 if (x < 0)`"), "{}", e);
+        std::fs::write(under.join("h/h.zero"), "on (int s) << sign of (int x)\n    s << -1 if (x < 0)\n         else 1 if (x > 0)\n         else 0\n").unwrap();
+        assert_eq!(metered(&under).unwrap().count(), 0);
+        assert_eq!(FORMS[9].0, "a result pushed under an `if` statement");
         let text = report(&walking).unwrap();
-        assert!(text.contains(": 8 of 18 lines of zero use a non-zeroic form\n") && text.contains("  h/h.zero:20  a name assigned again\n  h/h.zero:20  a `peek` forward of now\n"), "{}", text);
+        assert!(text.contains(": 8 of 18 lines of zero use a non-zeroic form\n") && text.contains("  h/h.zero:19  an index into an array that may be too short\n  h/h.zero:20  a `peek` forward of now\n"), "{}", text);
         for d in [zeroic, walking, refused, under] {
             let _ = std::fs::remove_dir_all(&d);
         }

@@ -2119,7 +2119,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), zero_first: Names::new(), line_kept: Names::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -3300,6 +3300,11 @@ struct Lowerer {
     /// the outputs of processors whose end something in the store
     /// could tell (fm3 question 67): the last tick ends these
     zloud: Names,
+    /// is the statement being lowered the last thing its function
+    /// does: the last statement of the body, or of an arm of an `if`
+    /// that is? A result's push writes the `ret` only there (fm3
+    /// question 88, log 171); anywhere else the function goes on
+    tail: bool,
     /// the cells (fm3 question 70, log 143): the feature-scope streams
     /// of which one value is kept, the latest. A field of the context
     /// of the item's type, a push a store of it and a read a load. A
@@ -6142,13 +6147,24 @@ impl Lowerer {
         if let Some(kinds) = &info.platform {
             return self.lower_platform(f, &info, kinds, &sig_params, &results, &mut b);
         }
-        let terminated = self.lower_block(&f.body, &mut b)?;
-        // the results' current values; one never assigned is its type's
-        // zero. A body that ends in a loop with no way out never returns
+        self.tail = true;
+        let terminated = self.lower_block(&f.body, &mut b);
+        self.tail = false;
+        let terminated = terminated?;
+        // the results' current values. A body that ends in a loop with
+        // no way out never returns. A result nothing pushed is refused
+        // (fm3 question 88, log 171): every path gives every result,
+        // the parser having refused a push under an `if` statement and
+        // one with `if` and no `else`. A task's results are its stream
+        // parameters, which it moves on and does not push
         if !terminated {
             let mut rets = Vec::new();
             for (n, t) in &b.results.clone() {
                 let v = b.vars[n].clone();
+                if !v.set && b.kind == BodyKind::Fn {
+                    let mark = if matches!(t, Ty::Stream(_)) { "[]" } else { "" };
+                    return Err(lex::error(file, f.line, format!("'{}{}' is a result of '{}' and nothing pushes it: a function gives each of its results once, at the top level of its body, `{}{} << value` (fm3 question 88)", n, mark, spoken(&info), n, mark)));
+                }
                 if !v.set {
                     rets.push(self.zero_val(t, &mut b).text);
                 } else {
@@ -6264,28 +6280,34 @@ impl Lowerer {
     /// than by the IR with an IR line (log 14).
     fn lower_block(&mut self, stmts: &[Stmt], b: &mut Body) -> Result<bool, Error> {
         let mut terminated = false;
+        // the block's last statement is the last thing the function
+        // does where the block itself is (fm3 log 171)
+        let last = self.tail;
         for (i, s) in stmts.iter().enumerate() {
             self.after_push = match i.checked_sub(1).map(|k| &stmts[k]) {
                 Some(Stmt::Push { target: Expr { kind: ExprKind::Seq(n), .. }, existing: false, .. }) => Some(n.clone()),
                 _ => None,
             };
-            terminated = self.lower_stmt(s, b)?;
+            self.tail = last && i + 1 == stmts.len();
+            let lowered = self.lower_stmt(s, b);
+            self.tail = last;
+            terminated = lowered?;
             if terminated && i + 1 < stmts.len() {
-                let why = match s {
-                    Stmt::Assign { line, targets, .. } => format!("the function ended when its result was {} on line {}", if targets.iter().any(|t| t.pushed) { "pushed" } else { "assigned" }, line),
-                    _ => "the statement before it leaves the block".to_string(),
-                };
-                return Err(lex::error(&b.file, stmt_line(&stmts[i + 1]), format!("this never runs: {}", why)));
+                return Err(lex::error(&b.file, stmt_line(&stmts[i + 1]), "this never runs: the statement before it leaves the block"));
             }
         }
         Ok(terminated)
     }
 
-    /// After an assignment in a function's body: when every result now
-    /// has a value, the function ends here with `ret` (section 6). A
-    /// task's body pushes its result and never ends this way
+    /// After a result is given in a function's body: when every result
+    /// now has a value and this is the last thing the function does,
+    /// it ends here with `ret`. Anywhere else the push gives the
+    /// result its value and the function goes on, the `ret` at the
+    /// body's end (fm3 question 88, log 171: the push of the last
+    /// result does not end the function). A task's body pushes its
+    /// result and never ends this way
     fn finish_if_done(&mut self, b: &mut Body) -> bool {
-        if b.kind != BodyKind::Fn || b.results.is_empty() {
+        if b.kind != BodyKind::Fn || b.results.is_empty() || !self.tail {
             return false;
         }
         if !b.results.iter().all(|(n, _)| b.vars.get(n).map_or(false, |v| v.set)) {
@@ -6315,7 +6337,7 @@ impl Lowerer {
             }
             if b.kind == BodyKind::Fn && b.results.iter().any(|(n, _)| n == &t.name) {
                 if v.set {
-                    return Err(lex::error(file, t.line, format!("'{}' is pushed twice on this path: a function gives each of its results once", t.name)));
+                    return Err(lex::error(file, t.line, format!("'{}' is pushed twice: a function gives each of its results once, at the top level of its body (fm3 question 88)", t.name)));
                 }
                 continue;
             }
@@ -6570,7 +6592,10 @@ impl Lowerer {
             b.depth -= 1;
             b.loops.last_mut().unwrap().breaks += 1;
         }
-        let terminated = self.lower_block(body, b)?;
+        let was_tail = std::mem::replace(&mut self.tail, false);
+        let terminated = self.lower_block(body, b);
+        self.tail = was_tail;
+        let terminated = terminated?;
         if !terminated {
             let vals = b.current(&carried);
             b.line(format!("continue {}", vals.join(", ")).trim_end());
@@ -6768,7 +6793,10 @@ impl Lowerer {
             b.line("break");
             b.depth -= 1;
         }
-        let terminated = self.lower_block(body, b)?;
+        let outer = std::mem::replace(&mut self.tail, false);
+        let terminated = self.lower_block(body, b);
+        self.tail = outer;
+        let terminated = terminated?;
         if !terminated {
             self.step_for(b);
         }
@@ -6848,7 +6876,10 @@ impl Lowerer {
             b.line(&format!("{}: i64 = tick_of({}, {})", t, sv.text, abs));
             b.line(&format!("__wait({})", t));
         }
-        let terminated = self.lower_block(body, b)?;
+        let outer = std::mem::replace(&mut self.tail, false);
+        let terminated = self.lower_block(body, b);
+        self.tail = outer;
+        let terminated = terminated?;
         if !terminated {
             self.step_for(b);
         }

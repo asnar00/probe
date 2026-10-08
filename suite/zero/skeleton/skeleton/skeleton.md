@@ -16,7 +16,7 @@ A feature is a folder with prose and code. `answer` gives the number 42; `hi` pr
 
 ## rules
 - A `.zero` file may not contain `#`; the build refuses it and names the line.
-- A result nothing pushed is its type's zero.
+- A result is pushed once, at the top of the body, as `n << 42` is; a result nothing pushes is refused (fm3 question 88; until hop twenty-six it was its type's zero).
 - This feature is published, so `skeleton.zero` is immutable: the build refuses a change to it committed after 2026-10-07, or uncommitted, wherever the store is a repository (structure.md's lifecycle, log 49). It was first published on 2026-09-09 and is published again as of 2026-10-07, the day every function came to be declared with `<<` and its two lines were respelled, their meaning and their IR unchanged (fm3 question 89).
 
 ## testing

@@ -1065,10 +1065,10 @@ mod tests {
         // each shape the new way, and the old, which is refused
         let pairs = [
             ("on (int d) << double (int x)\n    d << x * 2", "on (int d) = double (int x)\n    d = x * 2"),
-            ("on (int s) << sign of (int x)\n    if (x < 0)\n        s << -1\n    else if (x > 0)\n        s << 1", "on (int s) = sign of (int x)\n    if (x < 0)\n        s = -1\n    else if (x > 0)\n        s = 1"),
-            ("on (int r) << first (int a) or (int b)\n    if (a > 0)\n        r << a\n    r << b", "on (int r) = first (int a) or (int b)\n    if (a > 0)\n        r = a\n    r = b"),
-            ("on (int r) << first (int a) or (int b)\n    r << a if (a > 0)\n    r << b", "on (int r) = first (int a) or (int b)\n    if (a > 0)\n        r = a\n    r = b"),
-            ("on (int p) << above (int n)\n    loop (int q = 1)\n        if (q > n)\n            p << q\n        continue (q * 2)", "on (int p) = above (int n)\n    loop (int q = 1)\n        if (q > n)\n            p = q\n        continue (q * 2)"),
+            ("on (int s) << sign of (int x)\n    s << -1 if (x < 0)\n         else 1 if (x > 0)\n         else 0", "on (int s) = sign of (int x)\n    if (x < 0)\n        s = -1\n    else if (x > 0)\n        s = 1"),
+            ("on (int r) << first (int a) or (int b)\n    r << a if (a > 0)\n         else b", "on (int r) = first (int a) or (int b)\n    if (a > 0)\n        r = a\n    r = b"),
+            ("on (int r) << first (int a) or (int b)\n    r << a if (a > 0) else b", "on (int r) = first (int a) or (int b)\n    if (a > 0)\n        r = a\n    r = b"),
+            ("on (int p) << above (int n)\n    p << loop (int q = 1) yields q\n        if (q > n)\n            break\n        continue (q * 2)", "on (int p) = above (int n)\n    loop (int q = 1)\n        if (q > n)\n            p = q\n        continue (q * 2)"),
             ("on (int g) << gcd of (int a) with (int b)\n    g << loop (int x = a, int y = b) while (y != 0) yields x\n        continue (y, x % y)", "on (int g) = gcd of (int a) with (int b)\n    g = loop (int x = a, int y = b) while (y != 0) yields x\n        continue (y, x % y)"),
             ("on (int q, int r) << divide (int a) by (int b)\n    r << a % b\n    q << a / b\n\non (int q, int r) << both()\n    q, r << divide (17) by (5)", "on (int q, int r) = divide (int a) by (int b)\n    r = a % b\n    q = a / b\n\non (int q, int r) = both()\n    q, r = divide (17) by (5)"),
             ("on (int n) << sum of (int x[])\n    n << x[] + _", "on (int n) = sum of (int x[])\n    n = x[] + _"),
@@ -1094,12 +1094,12 @@ mod tests {
         assert!(ir.contains("    half: int = div k, 2\n"), "{}", ir);
         let ir = with(pairs[0].0).unwrap();
         assert!(ir.contains("fn double(x: int) -> int\n    d: int = mul x, 2\n    ret d\n"), "{}", ir);
-        // a result nothing pushed is the zero of its type, and the push
-        // of the last result ends the function (fm3 question 88)
+        // a push with its condition is the last thing these do, and
+        // each arm ends the function where it stands
         let ir = with(pairs[2].0).unwrap();
-        assert!(ir.contains("    if _1\n        ret a\n    ret b\n"), "{}", ir);
+        assert!(ir.contains("    if _1\n        ret a\n    else\n        ret b\n"), "{}", ir);
         let ir = with(pairs[1].0).unwrap();
-        assert!(ir.contains("    ret 0\n") || ir.contains("yield 0"), "{}", ir);
+        assert!(ir.contains("            s_3: int = const 0\n            ret s_3\n"), "{}", ir);
         // a `$` on the result is still a task; a function that gives an
         // array says so on its result and is a plain function (fm3
         // questions 87 and 90, log 159)
@@ -1118,12 +1118,12 @@ mod tests {
             (f("    x << 1\n    y << x"), "h.zero:4: 'x' is a parameter: it is what the function was handed, and is not pushed into"),
             (f("    port << 1\n    y << x"), "h.zero:4: 'port' is a variable, and a variable keeps the value it was declared with (fm3 question 70): what changes is a stream. Declare it `int port$ << 8` and push its next value, `port$ << 1`"),
             (f("    z << 1\n    y << x"), "h.zero:4: 'z' is not declared: a function's result is named on its first line, `on (int z) << ...`, and a stream is `z$`"),
-            (f("    loop (int i = 0)\n        i << 1\n        y << i"), "h.zero:5: 'i' is the loop's own: it is not pushed into. Give its next value with `continue (...)`"),
+            (f("    loop (int i = 0)\n        i << 1\n        break\n    y << x"), "h.zero:5: 'i' is the loop's own: it is not pushed into. Give its next value with `continue (...)`"),
             (f("    for (i in [1 through 3])\n        i << 1\n    y << x"), "h.zero:5: 'i' is the item of the `for`: it steps by itself and is not pushed into"),
             (f("    int s$ << 1 << 2\n    s << 3\n    y << x"), "h.zero:5: 's' is written without its `$`: the stream is `s$`, and a push into it is `s$ << ...`"),
-            (f("    y << x\n    y << 2"), "h.zero:5: this never runs: the function ended when its result was pushed on line 4"),
-            (two("    q << x\n    q << 2\n    r << 1"), "h.zero:3: 'q' is pushed twice on this path: a function gives each of its results once"),
-            (two("    if (x > 0)\n        q << x\n    q << 2\n    r << 1"), "h.zero:4: 'q' is pushed twice on this path: a function gives each of its results once"),
+            (f("    y << x\n    y << 2"), "h.zero:5: 'y' is pushed twice: a function gives each of its results once, at the top level of its body (fm3 question 88)"),
+            (two("    q << x\n    q << 2\n    r << 1"), "h.zero:3: 'q' is pushed twice: a function gives each of its results once, at the top level of its body (fm3 question 88)"),
+            (two("    q << x if (x > 0) else 0\n    q << 2\n    r << 1"), "h.zero:3: 'q' is pushed twice: a function gives each of its results once"),
             ("on (int y, int z$) << f (int x)\n    y << x".to_string(), "h.zero:1: a task produces one stream"),
         ] {
             let err = with(&text).err().unwrap_or_else(|| panic!("{} compiled", text));
@@ -1173,8 +1173,8 @@ mod tests {
         refused("    n << if (a[] [<] b[]) then (1) else (0)", "h.zero:5: `[<]` is not ruled as to what it means on two arrays (fm3 question 77): `[==]` and `[!=]` are built, are the two the same. Applied to each pair an operator is written plainly, `a[] < b[]`");
         refused("    int c[] = a[] [+] b[]\n    n << count c[]", "`[+]` is not ruled as to what it means on two arrays");
         // the plain comparison where one bool is wanted says what to write
-        refused("    if (a[] == b[])\n        n << 1", "h.zero:5: `if (a[] == b[])`: `==` is applied to each pair of items and gives a bool for each, and one is wanted here (fm3 question 77). Whether the two arrays are the same is `[==]`: write `if (a[] [==] b[])`");
-        refused("    if (a[] != [1, 2])\n        n << 1", "Whether the two arrays differ is `[!=]`: write `if (a[] [!=] [1, 2])`");
+        refused("    if (a[] == b[])\n        out$ << 1\n    n << 1", "h.zero:5: `if (a[] == b[])`: `==` is applied to each pair of items and gives a bool for each, and one is wanted here (fm3 question 77). Whether the two arrays are the same is `[==]`: write `if (a[] [==] b[])`");
+        refused("    if (a[] != [1, 2])\n        out$ << 1\n    n << 1", "Whether the two arrays differ is `[!=]`: write `if (a[] [!=] [1, 2])`");
         // ... and where an array is wanted its answer is an array of bool
         refused("    out$ << (a[] == b[])\n    n << 1", "`==` between arrays is applied to each pair and gives a bool for each, and an array of bool is not built (fm3 question 77). Whether the two arrays are the same, one bool, is `[==]`");
     }
@@ -1204,9 +1204,10 @@ mod tests {
         let table = emitted("on (int k) << f (int c)\n    k << 0 if (c <= 32)\n         else 3 if (c > 122)\n         else 1 if (c >= 97)\n         else 3\n").unwrap();
         assert_eq!(emitted("on (int k) << f (int c)\n    k << 0 if (c <= 32) else 3 if (c > 122) else 1 if (c >= 97) else 3\n").unwrap(), table);
         assert_eq!(emitted("on (int k) << f (int c)\n    k << 0 if (c <= 32) else 3 if (c > 122)\n      else 1 if (c >= 97) else 3\n").unwrap(), table);
-        // ... and the text of the `if` statements it is written in place of
-        let ladder = emitted("on (int k) << f (int c)\n    if (c <= 32)\n        k << 0\n    else if (c > 122)\n        k << 3\n    else if (c >= 97)\n        k << 1\n    else\n        k << 3\n").unwrap();
-        assert_eq!(ladder, table);
+        // ... which was the text of the `if` statements it is written
+        // in place of while those stood (fm3 log 169): a result's push
+        // under one is refused (log 171, `a_result_is_pushed_once`)
+        assert!(table.contains("    if _1\n        k: int = const 0\n        ret k\n    else\n        _2: u1 = cmp.gt c, 122\n        if _2\n            k_2: int = const 3\n            ret k_2\n"), "{}", table);
         // into a stream: one or the other, the `if` covering the whole
         // push before it (question 91)
         let either = emitted("on f (int c)\n    out$ << 1 << 2 if (c > 0)\n         else 3 if (c < 0)\n         else 4\n    out$ << 5\n").unwrap();
@@ -1224,7 +1225,7 @@ mod tests {
         refused("on (int k) << f (int c)\n    k << 0\n        else 1\n", "h.zero:3: this `else` continues nothing");
         refused("on (int k) << f (int c)\n    k << 0 else 1\n", "h.zero:2: `else` on a push follows its `if`: `x << a if (condition) else b`, the value `a` where the condition holds and `b` where it does not");
         refused("on (int k) << f (int c)\n    k << 0 if (c > 0)\n        else 1\n        else 2\n", "h.zero:4: the `else` before this one has no `if`, so it takes everything that is left and nothing is left for this one: each case but the last is `else value if (condition)`");
-        refused("on (int k) << f (int c)\n    k << 0 if (c > 0)\n        else 1 if (c < 0)\n        int z = 3\n", "h.zero:4: a push that goes on over indented lines has a case on each, and each begins `else`: `else value if (condition)`, and last `else value`. A line that is not one of its cases stands at the push's own depth");
+        refused("on f (int c)\n    out$ << 0 if (c > 0)\n        else 1 if (c < 0)\n        int z = 3\n", "h.zero:4: a push that goes on over indented lines has a case on each, and each begins `else`: `else value if (condition)`, and last `else value`. A line that is not one of its cases stands at the push's own depth");
         refused("on (int k) << f (int c)\n    k << 0 if (c > 0) else\n", "h.zero:2: an `else` on a push is followed by its value on the same line, `else b` or `else b if (d)`");
         refused("on (int k) << f (int c)\n    k << 0 if (c > 0) else 1 << 2\n", "h.zero:2: 'k' is one value, given once: this line pushes it twice");
         refused("on (int k) << f (int c)\n    k << 0 if (c > 0) else 1 (3) times\n", "h.zero:2: `(n) times` on the push of 'k' would give it more than once");
@@ -1236,6 +1237,66 @@ mod tests {
         refused("on f (int c)\n    int s$\n    s$ << 1 if (c > 0) else s$ + 1 until (s$ > 3)\n", &format!("h.zero:3: `until` on a push with `else` {}", two));
         refused("on f (int c)\n    int s$\n    s$ << 1 if (c > 0) else s$ + 1 while (_ < 3)\n", &format!("h.zero:3: `while` on a push with `else` {}", two));
         refused("int x$\nout$ << x$ if (x$ > 0) else 0 forever\n\non f (int c)\n    x$ << c\n", "h.zero:2: `else` on a `<<` at feature scope is not built");
+    }
+
+    /// A result is pushed once, at the top level of its function's
+    /// body, with its condition on the push (fm3 question 88, log 171).
+    /// Under an `if` statement or in a loop the push is refused, the
+    /// message showing the line to write; so is a push with `if` and
+    /// no `else`, a result pushed twice, and a result nothing pushes.
+    /// And the push of the last result does not end the function: the
+    /// lines after it run
+    #[test]
+    fn a_result_is_pushed_once() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-pushed-once");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (1) → 1\n").unwrap();
+        let emitted = |code: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), code).unwrap();
+            emit(&dir)
+        };
+        let refused = |code: &str, what: &str| {
+            let e = emitted(code).err().unwrap_or_else(|| panic!("not refused: {}", code));
+            assert!(e.ends_with(what), "{}: {}", code, e);
+        };
+        let head = "is a result, and a result is pushed once, at the top level of its function, with its condition on the push (fm3 question 88)";
+        // under an `if` statement: the program's own push with its `if`
+        refused("on (int s) << f (int x)\n    if (x < 0)\n        s << -1\n    else if (x > 0)\n        s << 1\n", &format!("h.zero:3: 's' {}: this push stands under the `if` on line 2. Write `s << -1 if (x < 0)`, and each other case on a line under it, `else value if (condition)`, the last `else value`", head));
+        // in a later arm, and under two: the shape
+        refused("on (int s) << f (int x)\n    if (x < 0)\n        out$ << \"neg\"\n    else\n        s << 1\n", &format!("h.zero:5: 's' {}: this push stands under the `if` on line 2. Write one push with its cases, `s << a if (c)` and under it `else b if (d)`, the last `else e`", head));
+        refused("on (int s) << f (int x)\n    if (x < 0)\n        if (x < -5)\n            s << 1\n", &format!("h.zero:4: 's' {}: this push stands under the `if` on line 3. Write one push with its cases, `s << a if (c)` and under it `else b if (d)`, the last `else e`", head));
+        // in a loop, and in a `for`
+        let looped = "and a push does not leave a loop. Give the loop's result where it leaves, `break (value)`, and push what the loop yields, once: `p << loop (...) yields name`";
+        refused("on (int p) << f (int n)\n    loop (int q = 1)\n        if (q > n)\n            p << q\n        continue (q * 2)\n", &format!("h.zero:4: 'p' {}: this push stands inside the loop on line 2, {}", head, looped));
+        refused("on (int p) << f (int n)\n    int a[] = [1, 2]\n    for (v in a[])\n        p << v\n", &format!("h.zero:4: 'p' {}: this push stands inside the loop on line 3, {}", head, looped));
+        // an array that is a result
+        refused("on (int r[]) << f (int a)\n    if (a > 0)\n        r[] << [1, 2]\n", &format!("h.zero:3: 'r[]' {}: this push stands under the `if` on line 2. Give it once, at the top level of the body, `r[] << value`: a condition on the push of an array is not built", head));
+        // `if` and no `else`: every path gives every result
+        refused("on (int r) << f (int a)\n    r << a if (a > 0)\n", "h.zero:2: 'r' has no value where the condition fails: a result's push says every case, so that every path gives every result (fm3 question 88). Add the last one: `r << a if (a > 0) else ...`");
+        refused("on (int r) << f (int a)\n    r << a if (a > 0)\n         else 0 - a if (a < 0)\n", "h.zero:3: 'r' has no value where every condition fails: a result's push says every case, so that every path gives every result (fm3 question 88). Add a last case, `else value`");
+        // twice at the top level, and never
+        refused("on (int r) << f (int a)\n    r << a if (a > 0) else 0\n    r << 7\n", "h.zero:3: 'r' is pushed twice: a function gives each of its results once, at the top level of its body (fm3 question 88)");
+        refused("on (int r) << f (int a)\n    int b = a + 1\n", "h.zero:1: 'r' is a result of 'f' and nothing pushes it: a function gives each of its results once, at the top level of its body, `r << value` (fm3 question 88)");
+        refused("on (int q, int r) << f (int a)\n    q << a\n", "h.zero:1: 'r' is a result of 'f' and nothing pushes it: a function gives each of its results once, at the top level of its body, `r << value` (fm3 question 88)");
+        refused("on (int r[]) << f (int a)\n    int b = a\n", "h.zero:1: 'r[]' is a result of 'f' and nothing pushes it: a function gives each of its results once, at the top level of its body, `r[] << value` (fm3 question 88)");
+        // a push into a stream under an `if` statement is as it was
+        emitted("on (int n) << f (int x)\n    if (x < 0)\n        out$ << \"neg\"\n    n << x\n").unwrap();
+        // the push of the last result does not end the function: the
+        // line after it runs, and the `ret` is at the body's end
+        let ir = emitted("on (int r) << f (int a)\n    r << a * 2\n    out$ << \"after\"\n").unwrap();
+        let at = ir.find("fn f(").unwrap();
+        let f = &ir[at..at + ir[at..].find("\n\n").unwrap()];
+        assert!(f.starts_with("fn f(a: int) -> int\n    r: int = mul a, 2\n") && f.ends_with("    __out_block(_3)\n    ret r"), "{}", f);
+        // ... and with a condition the value is carried to it
+        let ir = emitted("on (int r) << f (int a)\n    r << a if (a > 0) else 0 - a\n    out$ << \"after\"\n").unwrap();
+        let at = ir.find("fn f(").unwrap();
+        let f = &ir[at..at + ir[at..].find("\n\n").unwrap()];
+        assert!(f.contains("    r_2: int = if _1\n        yield a\n    else\n        r: int = sub 0, a\n        yield r\n") && f.ends_with("    ret r_2"), "{}", f);
+        // where the push is the last thing the function does, each arm
+        // ends it, as it did
+        let ir = emitted("on (int r) << f (int a)\n    r << a if (a > 0) else 0 - a\n").unwrap();
+        assert!(ir.contains("    if _1\n        ret a\n    else\n        r: int = sub 0, a\n        ret r\n"), "{}", ir);
     }
 
     /// A function that takes an array whole is called in square
@@ -1385,7 +1446,7 @@ mod tests {
         let one = "'a[]' is an array, and one value is wanted here: an array has no latest item, as a stream has (fm3 question 90). Its last item is `a[count a[] - 1]`, one item `a[k]`, and its sum `a[] + _`";
         refused(&arr("    int v = a[]\n    n << v"), one);
         refused(&arr("    n << a[] + 1"), one);
-        refused(&arr("    if (a[] > 0)\n        n << 1"), one);
+        refused(&arr("    if (a[] > 0)\n        out$ << 1\n    n << 1"), one);
         assert!(f(&arr("    int b[] = a[] + 1\n    n << a[count a[] - 1] + (b[] + _)")).is_ok());
     }
 
@@ -2743,7 +2804,7 @@ mod tests {
         assert_eq!(reads(&b, "moved"), 2, "{}", b);
         // a read in one arm is not in hand in the other, nor after them;
         // one above them is in hand in both, and inside a loop
-        let b = body(&format!("{}on (int n) << f (int k)\n    if (k > 0)\n        n << kept\n    else\n        n << kept + 1\n", head), "f");
+        let b = body(&format!("{}on (int n) << f (int k)\n    n << kept if (k > 0)\n         else kept + 1\n", head), "f");
         assert_eq!(reads(&b, "kept"), 2, "{}", b);
         let b = body(&format!("{}on (int n) << f (int k)\n    int a = 0\n    if (k > 0)\n        a = kept\n    n << a + kept\n", head), "f");
         assert_eq!(reads(&b, "kept"), 2, "{}", b);
@@ -2828,7 +2889,7 @@ mod tests {
         assert_eq!(counts(&inner("        int q = quiet (c)\n")), 1);
         assert_eq!(counts(&inner("        s$ << 9\n")), 2);
         // an asking in one arm is not in hand in the other
-        assert_eq!(counts("on (int n) << f (int k)\n    int s$ << 1 << 2\n    if (k > 0)\n        n << count s$\n    else\n        n << count s$ + 1\n"), 2);
+        assert_eq!(counts("on (int n) << f (int k)\n    int s$ << 1 << 2\n    n << count s$ if (k > 0)\n         else count s$ + 1\n"), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -7,7 +7,7 @@ layer: runtime
 Plan item 2 of milestone 0: section 6 of zero.md — `on (results) << name (params)`, named results, several results, multiword names with bracketed parameter groups mangled per section 3, operators as functions, `if then else` as an expression, calls, arithmetic over the abstract tower.
 
 ## overview
-A function is declared with `on`, its results first, then its name with the parameters in brackets anywhere among the words. `smaller of (a) and (b)` is one function; its IR name is `smaller_of_and`. A function is declared with `<<` and gives its result by pushing it, `d << x * 2` (fm3 question 77; `suite/zero/pushed` is the store for the form). Pushing the result ends the function; with several results, pushing the last of them does. A value that must be tested before it is final is a temporary, said with `=`.
+A function is declared with `on`, its results first, then its name with the parameters in brackets anywhere among the words. `smaller of (a) and (b)` is one function; its IR name is `smaller_of_and`. A function is declared with `<<` and gives its result by pushing it, `d << x * 2` (fm3 question 77; `suite/zero/pushed` is the store for the form). A result is pushed once, at the top level of the body, with its condition on the push where it has one, `r << a if (a > 0) else b` (fm3 question 88). A value that must be tested before it is final is a temporary, said with `=`.
 
 ## interface
 - `smaller of (a) and (b)` gives the smaller of two numbers, written over `number` so it runs at every width.
@@ -28,7 +28,7 @@ A function is declared with `on`, its results first, then its name with the para
 
 ## rules
 - Two operands of an operator have one type, or one of them is a literal.
-- Pushing the result ends the function, wherever the push stands: inside an `if`, inside a loop. With several results, the function ends when the last of them is pushed; until then it goes on and may read the ones pushed. A result nothing pushed when the body ends is its type's zero. (Both are as they were when a result was assigned, and are fm3 question 88.)
+- A result is pushed once, at the top level of the function's body: not under an `if` statement and not in a loop, each of which is refused showing what to write. A condition goes on the push, and a push with `if` has its `else`, so every path gives every result; a result nothing pushes is refused. Pushing a result does not end the function: the lines after it run, and with several results a later one may read an earlier (fm3 question 88, ruled 8 October 2026; until hop twenty-six the push of the last result ended the function and a result nothing pushed was its type's zero).
 - To test a result, say a temporary, test it, then push the result (`magnitude of` in the `control` store).
 - A name is a set of methods. A call picks the method by the types of all its arguments: among the methods that take them, the one whose every parameter type fits the others' — `int32` before `int` before `number` — and a call with no such method is ambiguous and refused. A literal is its own type first, `int` or `float`, and fits any number type only when no method takes that. A method that takes an argument as it is beats one the call would map over a sequence. A method with the same parameter types is a redefinition (the `more` feature); with other types, a new method.
 - A `number` parameter takes any number; the result comes back as the argument's type.

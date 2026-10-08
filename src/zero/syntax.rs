@@ -472,6 +472,11 @@ pub struct Parser<'a> {
     /// ... and its results that are arrays, `on (int r[]) << ...`:
     /// `r[] << value` gives one, as `y << value` gives a plain one
     arr_results: Vec<String>,
+    /// the `if` statements and the loops the statement being read
+    /// stands under, outermost first: is it a loop, its line, and for
+    /// an `if` whether the statement is in its first arm. A result is
+    /// pushed under none of them (fm3 question 88, log 171)
+    nest: Vec<(bool, usize, bool)>,
     /// was the name `expect_name` last read written `a[]`?
     arr: bool,
     /// the value about to be read is a bare argument of a phrase, where
@@ -481,7 +486,7 @@ pub struct Parser<'a> {
 
 pub fn parse_feature<'a>(name: &str, src: &'a str, file: &'a str, types: &'a HashSet<String>) -> Result<Feature, Error> {
     let toks = lex::lex(src, file)?;
-    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: src.lines().collect(), results: Vec::new(), arr_results: Vec::new(), arr: false, bare: false };
+    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: src.lines().collect(), results: Vec::new(), arr_results: Vec::new(), nest: Vec::new(), arr: false, bare: false };
     let mut decls = Vec::new();
     while !p.at_end() {
         decls.push(p.parse_decl()?);
@@ -494,7 +499,7 @@ pub fn parse_call(text: &str, file: &str, line: usize, types: &HashSet<String>) 
     let mut toks = Vec::new();
     lex::lex_line(text, line, file, &mut toks)?;
     toks.push(Token { tok: Tok::Newline, line });
-    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: Vec::new(), results: Vec::new(), arr_results: Vec::new(), arr: false, bare: false };
+    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: Vec::new(), results: Vec::new(), arr_results: Vec::new(), nest: Vec::new(), arr: false, bare: false };
     let e = p.parse_expr()?;
     if !p.at(&Tok::Newline) {
         return Err(p.err("the call has something after it"));
@@ -783,6 +788,7 @@ impl<'a> Parser<'a> {
         self.expect_newline()?;
         self.results = results.iter().filter(|r| !r.seq).map(|r| r.name.clone()).collect();
         self.arr_results = if task { Vec::new() } else { results.iter().filter(|r| r.arr).map(|r| r.name.clone()).collect() };
+        self.nest.clear();
         let body = if self.at(&Tok::Indent) { self.parse_block() } else { Ok(Vec::new()) };
         self.results.clear();
         self.arr_results.clear();
@@ -1220,6 +1226,27 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Why the push of the result `name`, on `line`, may not stand
+    /// where it does (fm3 question 88, log 171): under an `if`
+    /// statement, where the message shows the push with that `if` on
+    /// it, or inside a loop. None at the top level of the body
+    fn not_top(&self, name: &str, line: usize) -> Option<String> {
+        let head = format!("'{}' is a result, and a result is pushed once, at the top level of its function, with its condition on the push (fm3 question 88)", name);
+        if let Some((_, at, _)) = self.nest.iter().find(|n| n.0) {
+            return Some(format!("{}: this push stands inside the loop on line {}, and a push does not leave a loop. Give the loop's result where it leaves, `break (value)`, and push what the loop yields, once: `{} << loop (...) yields name`", head, at, name));
+        }
+        let (_, at, first) = *self.nest.last()?;
+        let text = |l: usize| l.checked_sub(1).and_then(|i| self.lines.get(i)).map(|t| t.trim().to_string());
+        let shown = match (self.nest.len(), first, text(line), text(at)) {
+            // (an array that is a result is given whole, and `if` on
+            // its push is not built: no line to show)
+            _ if name.ends_with("[]") => format!("Give it once, at the top level of the body, `{} << value`: a condition on the push of an array is not built", name),
+            (1, true, Some(push), Some(cond)) if cond.starts_with("if ") => format!("Write `{} {}`, and each other case on a line under it, `else value if (condition)`, the last `else value`", push, cond),
+            _ => format!("Write one push with its cases, `{} << a if (c)` and under it `else b if (d)`, the last `else e`", name),
+        };
+        Some(format!("{}: this push stands under the `if` on line {}. {}", head, at, shown))
+    }
+
     /// Does the push being read go on with an `else` (fm3 question 88,
     /// log 169)? On its own line, or on the next where that line is
     /// indented under the push and begins with the word: the lexer has
@@ -1245,8 +1272,10 @@ impl<'a> Parser<'a> {
     /// is the `if` statement with a push in each arm that the line
     /// replaces, so it lowers to that statement's lines and every pass
     /// reads it as one; `on_push` says how it was written. `twice` is
-    /// said of a second `<<` after an `else`, and `often` of a loop word
-    fn push_else(&mut self, cond: Expr, first: Stmt, line: usize, arm: &dyn Fn(Expr, usize) -> Stmt, twice: &str, often: &dyn Fn(&Self) -> Option<String>) -> Result<Stmt, Error> {
+    /// said of a second `<<` after an `else`, and `often` of a loop
+    /// word; `every` is the result the push gives, where it gives one,
+    /// which must then end in a bare `else` (log 171)
+    fn push_else(&mut self, cond: Expr, first: Stmt, line: usize, arm: &dyn Fn(Expr, usize) -> Stmt, twice: &str, often: &dyn Fn(&Self) -> Option<String>, every: Option<&str>) -> Result<Stmt, Error> {
         let mut arms: Vec<(Option<Expr>, Stmt, usize)> = vec![(Some(cond), first, line)];
         let mut under = false;
         while self.else_ahead(under) {
@@ -1277,6 +1306,22 @@ impl<'a> Parser<'a> {
                 return Err(self.err(msg));
             }
             arms.push((c, arm(value, at), at));
+        }
+        // a result's push says every case: a table that ends in an
+        // `if` has no value where every condition fails
+        // (an `else` on the next line at the push's own depth is a
+        // case written where it continues nothing, and is told so)
+        let stray = !under && matches!(self.peek_at(1), Some(Tok::Word(w)) if w == "else");
+        if let (Some(r), Some((Some(_), _, _)), false) = (every, arms.last(), stray) {
+            if matches!(self.peek(), Some(Tok::Newline) | None) {
+                let how = match (arms.len(), self.lines.get(line.wrapping_sub(1))) {
+                    (1, Some(l)) => format!("Add the last one: `{} else ...`", l.trim()),
+                    (1, None) => format!("Add the last one: `{} << a if (c) else b`", r),
+                    _ => "Add a last case, `else value`".to_string(),
+                };
+                let fails = if arms.len() == 1 { "the condition fails" } else { "every condition fails" };
+                return Err(self.err(format!("'{}' has no value where {}: a result's push says every case, so that every path gives every result (fm3 question 88). {}", r, fails, how)));
+            }
         }
         self.expect_newline()?;
         if under && !self.eat(&Tok::Dedent) {
@@ -1317,7 +1362,9 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 let cond = self.parse_expr()?;
                 self.expect_newline()?;
+                self.nest.push((false, line, true));
                 let then = self.parse_block()?;
+                self.nest.last_mut().unwrap().2 = false;
                 let els = if self.eat_word("else") {
                     if self.at_word("if") {
                         Some(vec![self.parse_stmt()?])
@@ -1328,6 +1375,7 @@ impl<'a> Parser<'a> {
                 } else {
                     None
                 };
+                self.nest.pop();
                 Ok(Stmt::If { cond, then, els, line, on_push: false })
             }
             Some(Tok::Word(w)) if w == "loop" => {
@@ -1344,7 +1392,9 @@ impl<'a> Parser<'a> {
                 let seq = self.parse_expr()?;
                 self.expect_sym(")")?;
                 self.expect_newline()?;
+                self.nest.push((true, line, false));
                 let body = self.parse_block()?;
+                self.nest.pop();
                 Ok(Stmt::For { var, seq, body, line })
             }
             Some(Tok::Word(w)) if w == "continue" => {
@@ -1444,6 +1494,13 @@ impl<'a> Parser<'a> {
                         break;
                     }
                 }
+                // a result is pushed once, at the top level of its
+                // function's body (fm3 question 88, log 171)
+                if let Some(t) = targets.iter().find(|t| self.results.contains(&t.name)) {
+                    if let Some(why) = self.not_top(&t.name, line) {
+                        return Err(self.err(why));
+                    }
+                }
                 self.expect_sym("<<")?;
                 if self.eat_word("loop") {
                     return self.parse_loop(Some(LoopInto::Assign(targets)), line);
@@ -1481,12 +1538,16 @@ impl<'a> Parser<'a> {
                 // `r << a if (c) else b`, and a table, a case a line
                 // (fm3 question 88, log 169)
                 let twice = format!("{}, given once: this line pushes it twice. What takes more than one item is a stream, {}", one, stream);
-                return self.push_else(cond, give, line, &|value, l| Stmt::Assign { targets: targets.iter().map(|t| Target { line: l, ..t.clone() }).collect(), value, line: l }, &twice, &|p| often(p).map(more));
+                let every = targets.iter().find(|t| self.results.contains(&t.name)).map(|t| t.name.clone());
+                return self.push_else(cond, give, line, &|value, l| Stmt::Assign { targets: targets.iter().map(|t| Target { line: l, ..t.clone() }).collect(), value, line: l }, &twice, &|p| often(p).map(more), every.as_deref());
             }
             // `r[] << value` where `r[]` is a result of this function:
             // the array given, once, as `y << value` gives a plain
             // result (fm3 question 87, log 159)
             Some(Tok::Arr(w)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) && self.arr_results.contains(&w) => {
+                if let Some(why) = self.not_top(&format!("{}[]", w), line) {
+                    return Err(self.err(why));
+                }
                 self.pos += 2;
                 let value = self.parse_expr()?;
                 if self.at_sym("<<") {
@@ -1557,7 +1618,7 @@ impl<'a> Parser<'a> {
                     }
                     let first = Stmt::Push { target: target.clone(), items, group, cond: None, word: Repeat::While, existing: false, forever: false, line };
                     let one = "after `else` a push takes one item, `x$ << a if (c) else b`: for several where the condition fails, write the push on two lines, each with its own `if`";
-                    return self.push_else(c, first, line, &|value, l| Stmt::Push { target: target.clone(), items: vec![value], group: 1, cond: None, word: Repeat::While, existing: false, forever: false, line: l }, one, &|p| if p.at_word("times") { Some(else_and_word("`(n) times`")) } else { p.repeat_ahead().map(else_and_word) });
+                    return self.push_else(c, first, line, &|value, l| Stmt::Push { target: target.clone(), items: vec![value], group: 1, cond: None, word: Repeat::While, existing: false, forever: false, line: l }, one, &|p| if p.at_word("times") { Some(else_and_word("`(n) times`")) } else { p.repeat_ahead().map(else_and_word) }, None);
                 }
                 self.expect_newline()?;
                 if let Some(c) = only {
@@ -1627,7 +1688,9 @@ impl<'a> Parser<'a> {
         }
         self.header -= 1;
         self.expect_newline()?;
+        self.nest.push((true, line, false));
         let body = self.parse_block()?;
+        self.nest.pop();
         Ok(Stmt::Loop { vars, cond, body, yields, into, line })
     }
 

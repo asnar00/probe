@@ -87,3 +87,17 @@ on (int e$) << capped (int x$)
 
 on levels()
     level$ << 3 << 12 << 9
+
+on (int n) << noted (int x)
+    n << x * 2
+    out$ << "noted "
+
+on say noted (int x)
+    out$ << noted (x)
+
+on (int n) << size of (int x)
+    n << x if (x > 0) else 0 - x
+    out$ << "sized "
+
+on say size of (int x)
+    out$ << size of (x)
