@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the old form refused, a result pushed once at the top level — `105aba6` · 2026-10-08
+
+```
+on (int n) << size of (int x)
+    n << x if (x > 0) else 0 - x
+    out$ << "sized "
+```
+
+`suite/zero/pushed/pushed/pushed.zero:98-100`. fm3's question 88, its third landing. The parser (`not_top`, `src/zero/syntax.rs`) refuses a result's push under an `if` statement, showing the program's own push with its `if` on it, one inside a loop, and one with `if` and no `else`; the lowering refuses a result pushed twice and one nothing pushes. And the push no longer ends the function: `Lowerer.tail` in `src/zero/lower.rs` writes the `ret` at a push only where it is the last thing the function does, so the line above's third line runs. No store's IR moved; the six rows unmoved; the meter 130 of 2 252. The full run: zero 867/867 on four paths, 843 and 24 skipped on the GPU's, `probe test` 1022, 1013, 1022, 1022, 985, `cargo test` 160.
+
 ### zero: the suite says it, a result pushed once with its condition — `940417e` + `f0fd9d3` · 2026-10-08
 
 ```
