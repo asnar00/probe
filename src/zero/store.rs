@@ -55,6 +55,13 @@ pub struct Store {
     /// 91, 167). False as a store is read; a host sets it, as it sets
     /// `clock`, before the store is lowered
     pub times: bool,
+    /// the diagnostic build (fm3 log 199, question 115): each statement
+    /// first stores its site, a row of `Lowered.sites`, and each checked
+    /// read or push the numbers it is about to use, and the platform's
+    /// two words that read the output back say the site after the text.
+    /// A runner lowers a store so only to run a case again that failed a
+    /// check, to say which line. False as a store is read
+    pub sites: bool,
 }
 
 /// how a product builds a feature (section 12): switchable at run time,
@@ -164,6 +171,9 @@ pub enum Expect {
     /// whole output
     Timed(Vec<(String, i64)>),
     Check,
+    /// `→ check at <file>:<line>`: the check that fails is on that
+    /// line of the zero text (fm3 log 199)
+    CheckAt(String),
 }
 
 /// the store's clock (log 63): a million steps a second, the bootstrap's
@@ -395,7 +405,7 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     // a static-off feature leaves the store with everything under it
     // (log 71): a child under a parent that is never on could never be on
     let mut gone: Vec<String> = Vec::new();
-    let store = Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width, float_width, index_width, marks, left_out: Vec::new(), clock, times: false };
+    let store = Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width, float_width, index_width, marks, left_out: Vec::new(), clock, times: false, sites: false };
     for (name, mark) in &store.marks {
         if *mark == Mark::StaticOff {
             gone.extend(store.subtree(name));
@@ -777,6 +787,12 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
     let expect = expect.trim();
     let expect = if expect == "check" {
         Expect::Check
+    } else if let Some(site) = expect.strip_prefix("check at ") {
+        let site = site.trim();
+        match site.rsplit_once(':') {
+            Some((f, l)) if !f.is_empty() && !f.contains(' ') && l.parse::<usize>().is_ok() => Expect::CheckAt(site.to_string()),
+            _ => return Err(lex::error(file, line, "a case that says where a check fails is `→ check at <file>:<line>`, the file's own name and the line of its text, `→ check at checks.zero:23`")),
+        }
     } else if expect.starts_with('"') {
         let mut toks = Vec::new();
         lex::lex_line(expect, line, file, &mut toks)?;

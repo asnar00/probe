@@ -400,6 +400,18 @@ struct FVar {
     arr: bool,
 }
 
+/// where a statement of the program is, and what it was asking when a
+/// check failed there (fm3 log 199): the file's own name, the line of
+/// its text, and the reason in zero's words with the program's names,
+/// `{a}` and `{b}` standing for the two numbers the diagnostic build
+/// stored; empty where only the line is known
+#[derive(Clone, Debug, PartialEq)]
+pub struct Site {
+    pub file: String,
+    pub line: usize,
+    pub what: String,
+}
+
 pub struct Lowered {
     pub ir: String,
     pub funcs: Vec<FnInfo>,
@@ -413,6 +425,10 @@ pub struct Lowered {
     /// is one for every product, so they are checked where the width is
     /// known, `resolve_case`
     pub wide: Vec<WideLiteral>,
+    /// the diagnostic build's table (fm3 log 199): a site is a row, and
+    /// the number a statement stores is its place here, from 1. Empty
+    /// unless the store was lowered with `sites`
+    pub sites: Vec<Site>,
 }
 
 /// a literal an abstract type holds under some products and not others
@@ -639,6 +655,118 @@ const MARKS_RESET: [&str; 10] = [
     "    mi2: index = add mi, 1",
     "    continue mi2",
 ];
+
+/// the two words a runner reads the output back with, as the prelude
+/// has them ...
+const READ_BACK: &str = "fn __out_len() -> i64
+    q: ptr = addr __out_n
+    n: index = load q
+    w: i64 = conv n
+    ret w
+
+fn __out_byte(i: i64) -> u8
+    p: ptr = addr __out
+    b: u8 = load p, i, 1
+    ret b
+";
+
+/// ... and as the diagnostic build has them (fm3 log 199, question 115).
+/// `__site_at` stores the site a statement is at, and `__site_at3` two numbers
+/// with it. Where a site is stored the output read back is the text and
+/// then one line more, `check at #<site>,<a>,<b>`, each word sixteen
+/// hexadecimal digits: sixty-two bytes. Every path's host reads these
+/// two words after a stop and looks for a line that begins `check at`,
+/// so the site comes back on every path with nothing changed in any
+const SITED_READ_BACK: &str = "data __site: array(i64, 3)
+data __site_tag = \"check at #\"
+
+fn __site_at(n: i64)
+    p: ptr = addr __site
+    store n, p
+    ret
+
+fn __site_at3(n: i64, a: i64, b: i64)
+    p: ptr = addr __site
+    store n, p
+    store a, p, 8
+    store b, p, 16
+    ret
+
+fn __site_now() -> i64
+    p: ptr = addr __site
+    n: i64 = load p
+    ret n
+
+fn __out_len() -> i64
+    q: ptr = addr __out_n
+    n: index = load q
+    w: i64 = conv n
+    s: ptr = addr __site
+    k: i64 = load s
+    none: u1 = cmp.eq k, 0
+    r: i64 = if none
+        yield w
+    else
+        e: i64 = add w, 62
+        yield e
+    ret r
+
+fn __out_byte(i: i64) -> u8
+    q: ptr = addr __out_n
+    n: index = load q
+    w: i64 = conv n
+    inside: u1 = cmp.lt i, w
+    b: u8 = if inside
+        p: ptr = addr __out
+        c: u8 = load p, i, 1
+        yield c
+    else
+        nl: u8 = const 10
+        j: i64 = sub i, w
+        tagged: u1 = cmp.lt j, 11
+        d: u8 = if tagged
+            first: u1 = cmp.eq j, 0
+            g: u8 = if first
+                yield nl
+            else
+                t: ptr = addr __site_tag
+                j1: i64 = sub j, 1
+                c2: u8 = load t, j1, 1
+                yield c2
+            yield g
+        else
+            k: i64 = sub j, 11
+            wi: i64 = div k, 17
+            pos: i64 = rem k, 17
+            sep: u1 = cmp.eq pos, 16
+            e: u8 = if sep
+                last: u1 = cmp.eq wi, 2
+                f: u8 = if last
+                    yield nl
+                else
+                    comma: u8 = const 44
+                    yield comma
+                yield f
+            else
+                s: ptr = addr __site
+                v: i64 = load s, wi, 8
+                sh0: i64 = mul pos, 4
+                sh: i64 = sub 60, sh0
+                x: i64 = shr v, sh
+                nib: i64 = and x, 15
+                small: u1 = cmp.lt nib, 10
+                ch: i64 = if small
+                    a: i64 = add nib, 48
+                    yield a
+                else
+                    a2: i64 = add nib, 87
+                    yield a2
+                c3: u8 = conv ch
+                yield c3
+            yield e
+        yield d
+    ret b
+";
 
 /// the clock reaches a time (log 77): on the virtual clock it jumps
 /// there, the suite running as fast as it can
@@ -2197,7 +2325,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2471,7 +2599,9 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     let mut ir = String::new();
     writeln!(ir, "; lowered from the zero store {}", store.path.display()).unwrap();
     // the platform's push of an arriving byte is a system stream's too
-    ir.push_str(&if l.all_queues || l.queues.contains("in") { PRELUDE.replace("__push(s, c)", "push_queue(s, c)") } else { PRELUDE.to_string() });
+    let prelude = if l.all_queues || l.queues.contains("in") { PRELUDE.replace("__push(s, c)", "push_queue(s, c)") } else { PRELUDE.to_string() };
+    // the diagnostic build reads the site back after the text (fm3 log 199)
+    ir.push_str(&if l.sited { prelude.replacen(READ_BACK, SITED_READ_BACK, 1) } else { prelude });
     // the one function that differs per clock (log 77)
     ir.push_str(if store.clock == super::store::Clock::Real { REAL_CLOCK } else { VIRTUAL_CLOCK });
     ir.push_str(if l.rings.iter().any(|(_, m)| m == "stream") {
@@ -2503,6 +2633,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     let ir = settle_context(&ir, &l.written, unread);
     let ir = settle_counts(&ir);
     let ir = settle_clock(&ir);
+    let ir = if l.sited { settle_sites(&ir) } else { ir };
     // the text carries what the store reaches (log 70): every function
     // of the store's own features, the platform feature's that a case
     // names, and the runner's entries are roots
@@ -2533,7 +2664,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         pruned = prune(&ir.replacen(&reset, "", 1), &roots);
     }
     let ir = pruned;
-    Ok(Lowered { ir, funcs: l.funcs, features: l.features, marks: store.marks.clone(), wide: l.wide })
+    Ok(Lowered { ir, funcs: l.funcs, features: l.features, marks: store.marks.clone(), wide: l.wide, sites: l.sites })
 }
 
 /// Each queue's push takes its word (fm3 log 108). `ended` is written
@@ -2717,6 +2848,49 @@ fn settle_context(ir: &str, written: &std::collections::HashSet<String>, unread:
             } else {
                 out.push_str(&names(l, &mut |w| renamed.get(w).cloned()));
             }
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// In the diagnostic build (fm3 log 199), a function that stores a site
+/// puts back the one it found: it reads the site as its first line and
+/// stores it again before each `ret`, so that after a call the place
+/// kept is the caller's statement again, and what stops later in that
+/// statement is told there and not at the callee's last line
+fn settle_sites(ir: &str) -> String {
+    let lines: Vec<&str> = ir.lines().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        out.push_str(lines[i]);
+        out.push('\n');
+        if !lines[i].starts_with("fn ") {
+            i += 1;
+            continue;
+        }
+        let start = i + 1;
+        let mut end = start;
+        while end < lines.len() && lines[end].starts_with(' ') {
+            end += 1;
+        }
+        let body = &lines[start..end];
+        i = end;
+        let stores = body.iter().any(|l| {
+            let t = l.trim_start();
+            t.starts_with("__site_at(") || t.starts_with("__site_at3(")
+        });
+        if stores {
+            out.push_str("    __site_was: i64 = __site_now()\n");
+        }
+        for l in body {
+            let t = l.trim_start();
+            if stores && (t == "ret" || t.starts_with("ret ")) {
+                out.push_str(&" ".repeat(l.len() - t.len()));
+                out.push_str("__site_at(__site_was)\n");
+            }
+            out.push_str(l);
             out.push('\n');
         }
     }
@@ -3567,6 +3741,11 @@ struct Lowerer {
     /// the links whose gate stands at the top of the body they gate,
     /// one function where there were two (fm3 log 197)
     folded: Names,
+    /// the diagnostic build (fm3 log 199): the table of sites, and the
+    /// line of the statement being lowered
+    sited: bool,
+    sites: Vec<Site>,
+    site_line: usize,
     inlining: Vec<String>,
     /// the file each processor read the new way is written in, for
     /// its lines lowered where a function hands it an array (fm3 log 189)
@@ -4159,6 +4338,11 @@ impl Lowerer {
     /// the i-th unread item of a stream: `x$[i]`, `peek x$ at (i)`
     fn peek_at(&mut self, s: &Val, i: &str, b: &mut Body, dst: Option<&str>) -> Val {
         let elem = s.ty.elem().unwrap().clone();
+        if self.sited {
+            let held = b.tmp();
+            b.line(&format!("{}: index = count {}", held, s.text));
+            self.at("item {a} of {b}", &[i, &held], b);
+        }
         let out = name_for(dst, &elem, b);
         if self.all_queues {
             // a queue's reader needs no residency check: the push has
@@ -6020,6 +6204,10 @@ impl Lowerer {
         b.line("arena_init(a, h, 65536)");
         b.line("k: ptr = addr __clock");
         b.line("store 0: i64, k");
+        if self.sited {
+            b.line("sp: ptr = addr __site");
+            b.line("store 0: i64, sp");
+        }
         // the node graph (log 78): what each node reads, what it may push
         // into, and an order with every producer before its consumers.
         // Settled before the context, since a node of an acyclic graph
@@ -7200,7 +7388,11 @@ impl Lowerer {
                 _ => None,
             };
             self.tail = last && i + 1 == stmts.len();
+            // the diagnostic build keeps its place (fm3 log 199)
+            let outer = std::mem::replace(&mut self.site_line, stmt_line(s));
+            self.at("", &[], b);
             let lowered = self.lower_stmt(s, b);
+            self.site_line = outer;
             self.tail = last;
             terminated = lowered?;
             if terminated && i + 1 < stmts.len() {
@@ -7208,6 +7400,44 @@ impl Lowerer {
             }
         }
         Ok(terminated)
+    }
+
+    /// In the diagnostic build (fm3 log 199, question 115), the site
+    /// stored before what may stop: the statement being lowered, what
+    /// it is about to ask in zero's words, and up to two numbers handed
+    /// over as values. A row of the table is made once. Nothing is
+    /// written in the build a program runs from
+    fn at(&mut self, what: &str, ops: &[&str], b: &mut Body) {
+        // (the platform's own lines are not the program's: what stops
+        // inside one is told at the statement that called it)
+        if !self.sited || self.site_line == 0 || self.cur == "platform" {
+            return;
+        }
+        let file = b.file.rsplit('/').next().unwrap_or(&b.file).to_string();
+        let row = Site { file, line: self.site_line, what: what.to_string() };
+        let n = match self.sites.iter().position(|s| *s == row) {
+            Some(i) => i + 1,
+            None => {
+                self.sites.push(row);
+                self.sites.len()
+            }
+        };
+        if ops.is_empty() {
+            b.line(&format!("__site_at({})", n));
+            return;
+        }
+        let mut words = Vec::new();
+        for v in ops {
+            if v.parse::<i64>().is_ok() {
+                words.push(v.to_string());
+            } else {
+                let w = b.tmp();
+                b.line(&format!("{}: i64 = conv {}", w, v));
+                words.push(w);
+            }
+        }
+        words.resize(2, "0".to_string());
+        b.line(&format!("__site_at3({}, {})", n, words.join(", ")));
     }
 
     /// After a result is given in a function's body: when every result
@@ -10368,6 +10598,21 @@ impl Lowerer {
             // a queue holds an item only until its reader has passed
             // it (log 89): the push checks that the slot is free
             let v = b.materialize(v);
+            if self.sited {
+                // the library's push refuses a stream that has ended
+                // and one that is full: the diagnostic build asks which
+                let (was, held) = (b.tmp(), b.tmp());
+                b.line(&format!("{}: u1 = ended({})", was, s.text));
+                b.line(&format!("if {}", was));
+                b.depth += 1;
+                self.at(&format!("a push into `{}$`, which has ended", name), &[], b);
+                b.depth -= 1;
+                b.line("else");
+                b.depth += 1;
+                b.line(&format!("{}: index = count {}", held, s.text));
+                self.at(&format!("the stream `{}$` is full: {{a}} items pushed and nothing has read them", name), &[&held], b);
+                b.depth -= 1;
+            }
             let word = self.queue_push(s.ty.elem());
             b.line(&format!("{}({}, {})", word, s.text, v.text));
         } else if regular {
@@ -10704,6 +10949,7 @@ impl Lowerer {
         // library's of an index out of range is (fm3 log 186): a site
         // printed first brought `print` and a text's copy into a store
         // that prints nothing, on an arm no count that is right takes
+        self.at("a count of {a} times", &[&v.text], b);
         let ok = b.tmp();
         b.line(&format!("{}: u1 = cmp.ge {}, 0", ok, v.text));
         b.line(&format!("check {}", ok));
@@ -10972,6 +11218,7 @@ impl Lowerer {
         if !self.zended.contains(name) {
             return;
         }
+        self.at(&format!("a push into `{}$`, which has ended", name), &[], b);
         let was = self.field_get(&format!("__zend_{}", name), "u1", None, b);
         let open = b.tmp();
         b.line(&format!("{}: u1 = xor {}, 1", open, was));

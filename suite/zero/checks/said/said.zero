@@ -1,0 +1,13 @@
+int kept$
+
+on (int n) << kept up (int k)
+    kept$ << 1 (k) times
+    n << peek kept$ at (0) + count kept$ - 1
+
+on (int n) << counted (int k)
+    int s$
+    s$ << 1 (k) times
+    n << count s$
+
+on (int n) << looked()
+    n << outside()

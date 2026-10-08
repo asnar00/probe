@@ -19,6 +19,21 @@ pub fn emit(dir: &Path) -> Result<String, String> {
     Ok(l.ir)
 }
 
+/// the diagnostic build of a store (fm3 log 199): the text a failed
+/// case is run again from, and after it the table of sites, a row a
+/// comment, `; site <n>: <file>:<line>[: <what>]`
+pub fn emit_sites(dir: &Path) -> Result<String, String> {
+    let mut s = store::read(dir).map_err(|e| e.to_string())?;
+    s.sites = true;
+    let l = lower::lower(&s).map_err(|e| e.to_string())?;
+    let mut ir = l.ir;
+    ir.push_str("\n; the sites (fm3 log 199): what `__site_at` stores, and where it is\n");
+    for (i, site) in l.sites.iter().enumerate() {
+        ir.push_str(&format!("; site {}: {}:{}{}\n", i + 1, site.file, site.line, if site.what.is_empty() { String::new() } else { format!(": {}", site.what) }));
+    }
+    Ok(ir)
+}
+
 /// the policy a store is built under (log 47, 52, fm3 log 120): the
 /// path's, with `int`, `float` and `index` at the widths the store's
 /// `product.md` sets, if it does
@@ -123,7 +138,7 @@ fn held(s: &store::Store, cases: &[&Planned], module: &ssa::Module, l: &lower::L
                 func: p.call.func.clone(),
                 args: p.call.args.clone(),
                 nrets: p.call.nrets,
-                checks: p.call.expect == store::Expect::Check,
+                checks: checks(&p.call.expect),
                 text: true,
                 before: setters(&p.call.context, &p.call.input),
                 live: false,
@@ -429,8 +444,13 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bo
         println!("{}", text.split('→').next().unwrap_or("").trim());
         let _ = std::io::stdout().flush();
     }
-    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: call.expect == store::Expect::Check, text: true, before: setters(&call.context, &call.input), live: true, times: timed };
-    let got = suite::run_calls(&module, &l.ir, Backend::Native, &[sc], "zero-run", level)?.remove(0)?;
+    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: checks(&call.expect), text: true, before: setters(&call.context, &call.input), live: true, times: timed };
+    // a check that fails is traced to its line by the diagnostic build
+    // (fm3 log 199): a person is looking
+    let got = match suite::run_calls(&module, &l.ir, Backend::Native, std::slice::from_ref(&sc), "zero-run", level)?.remove(0) {
+        Err(e) if untraced(&e) => return Err(traced(dir, policy, Backend::Native, level, &sc, "zero-run").unwrap_or(e)),
+        g => g?,
+    };
     let vals: Vec<String> = got.values.iter().map(|v| v.to_string()).collect();
     let mut out = String::new();
     if !got.text.is_empty() && !got.text.ends_with('\n') {
@@ -466,6 +486,11 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
             let mut s = store::read(sdir).map_err(|e| e.to_string())?;
             // the suite keeps the virtual clock whatever the product says (log 77)
             s.clock = store::Clock::Virtual;
+            // a check of the diagnostic build itself (fm3 log 199): with
+            // PROBE_ZERO_SITES set every case is run from it, and gives
+            // what it gives from the program (the expected-IR checks
+            // aside, the text being another)
+            s.sites = std::env::var("PROBE_ZERO_SITES").is_ok();
             let policy = store_policy(&s, &policy);
             let l = lower::lower(&s).map_err(|e| e.to_string())?;
             let cases = calls_of(&s, &l, &policy)?;
@@ -521,7 +546,7 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                     func: c.func.clone(),
                     args: c.args.clone(),
                     nrets: c.nrets,
-                    checks: c.expect == store::Expect::Check,
+                    checks: checks(&c.expect),
                     // every case reads the text back: a failed check names its site there
                     text: true,
                     before: setters(&r.switches, &c.input),
@@ -541,8 +566,19 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                 continue;
             }
         };
-        for (r, got) in runs.iter().zip(got) {
+        for ((r, got), sc) in runs.iter().zip(got).zip(&scalls) {
             let text = labelled(&cases[r.case].text, &r.label);
+            // a check that failed and named no line is traced to it by
+            // the diagnostic build, where the case did not expect one
+            // or says which line it expects (fm3 log 199); a case that
+            // says `→ check` and no more is run once, as it was
+            let got = match got {
+                Err(e) if untraced(&e) && cases[r.case].call.expect != store::Expect::Check => Err(traced(sdir, &policy, backend, level, sc, &name).unwrap_or(e)),
+                // (the suite run from the diagnostic build itself,
+                // PROBE_ZERO_SITES: the site is already in hand)
+                Err(e) if !lowered.sites.is_empty() => Err(site_said(&lowered.sites, &e).unwrap_or(e)),
+                g => g,
+            };
             // a case a path cannot run (air: a failed check, recursion)
             // is skipped, as the suite skips its own
             if let Some(why) = got.as_ref().err().and_then(|e| e.strip_prefix("skip: ")) {
@@ -567,6 +603,46 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
     Ok(report)
 }
 
+/// does the case expect a failed check?
+fn checks(expect: &store::Expect) -> bool {
+    matches!(expect, store::Expect::Check | store::Expect::CheckAt(_))
+}
+
+/// a stop that named no line: a failed check and nothing more, or a
+/// trap the machine's own (wasm's remainder by zero)
+fn untraced(e: &str) -> bool {
+    e == suite::checked() || e.starts_with("trap:")
+}
+
+/// The case that stopped, run again from the diagnostic build of the
+/// same store (fm3 log 199, question 115): each statement there stores
+/// its site before it runs, and the two words that read the output
+/// back say it after the text, `check at #<site>,<a>,<b>`, which every
+/// path's runner already looks for. What comes back is the line and
+/// what was being asked, in the program's own names. The second run is
+/// on the virtual clock. None where it did not stop again, or a path
+/// could not say
+fn traced(dir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, call: &suite::Call, name: &str) -> Option<String> {
+    let mut s = store::read(dir).ok()?;
+    s.clock = store::Clock::Virtual;
+    s.sites = true;
+    let policy = store_policy(&s, policy);
+    let l = lower::lower(&s).ok()?;
+    let module = build(&l.ir, &policy, level).ok()?;
+    let again = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: true, text: true, before: call.before.clone(), live: false, times: false };
+    let said = suite::run_calls(&module, &l.ir, backend, &[again], &format!("{}-sites", name), level).ok()?.remove(0).err()?;
+    site_said(&l.sites, &said)
+}
+
+/// `a failed check at #<site>,<a>,<b>` as the table reads it
+fn site_said(sites: &[lower::Site], said: &str) -> Option<String> {
+    let words: Vec<i64> = said.strip_prefix(suite::checked())?.trim().strip_prefix("at #")?.split(',').map(|w| u64::from_str_radix(w.trim(), 16).map(|v| v as i64)).collect::<Result<_, _>>().ok()?;
+    let [n, a, b] = words.as_slice() else { return None };
+    let site = sites.get((*n as usize).checked_sub(1)?)?;
+    let what = site.what.replace("{a}", &a.to_string()).replace("{b}", &b.to_string());
+    Some(format!("{} at {}:{}{}", suite::checked(), site.file, site.line, if what.is_empty() { String::new() } else { format!(": {}", what) }))
+}
+
 /// did the call give what the case expects? A text result is compared
 /// with one trailing newline removed, so `>hi() → "hi"` matches one
 /// `print "hi"`
@@ -574,7 +650,14 @@ fn judge(expect: &store::Expect, got: Result<suite::Got, String>) -> (bool, Stri
     match (expect, got) {
         (store::Expect::Check, Err(e)) if e.starts_with(suite::checked()) || e.starts_with("trap:") => (true, e.strip_prefix(suite::checked()).map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| format!("({})", s)).unwrap_or_default()),
         (store::Expect::Check, Err(e)) => (false, format!("({})", e)),
-        (store::Expect::Check, Ok(g)) => (false, format!("(no check failed; got {})", show(&g.values))),
+        (store::Expect::Check | store::Expect::CheckAt(_), Ok(g)) => (false, format!("(no check failed; got {})", show(&g.values))),
+        // the check that fails is on the line the case says: what is
+        // reported begins with it
+        (store::Expect::CheckAt(site), Err(e)) => {
+            let said = e.strip_prefix(suite::checked()).map(|s| s.trim()).unwrap_or("");
+            let ok = said.strip_prefix("at ").is_some_and(|r| r == site || r.starts_with(&format!("{}:", site)));
+            (ok, format!("({})", if ok { said } else { e.as_str() }))
+        }
         (_, Err(e)) => (false, format!("({})", e)),
         (store::Expect::Values(want), Ok(g)) => {
             if &g.values == want {
@@ -950,6 +1033,68 @@ mod tests {
         std::fs::write(dir.join("h/h.zero"), "on (int d$) << doubled (int x$)\n    d$ << x$ * 2\n\non (int n) << f()\n    int i$ << [1, 2, 3]\n    int d$ = doubled(i$)\n    n << count d$\n").unwrap();
         let err = emit(&dir).expect_err("inside a function");
         assert!(err.ends_with("h.zero:6: 'doubled' is a stream processor with no loop in it: its lines hold for every item it is handed. At feature scope it is wired, `int y$ = doubled (i$)`; inside a function a line happens once, and what it is handed is an array, `doubled (frame i$)` the array of what has arrived (fm3 question 113). A wiring made by a function is not built"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed check names its line (fm3 log 199, question 115): the
+    /// program as it is compiled has nothing in it that says where it
+    /// is; the diagnostic build of the same store stores a site before
+    /// each statement and the numbers before a checked read or push,
+    /// and its two words that read the output back say the site after
+    /// the text; the table reads it back in the program's own names
+    #[test]
+    fn a_failed_check_names_its_line() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-sites-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>far (9) → check at h.zero:5\n>far (1) → 2\n>held (70) → check\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "int kept$\n\non (int n) << far (int i)\n    int a[] = [1, 2, 3, 4]\n    n << a[i]\n\non (int n) << held (int k)\n    kept$ << 1 (k) times\n    n << peek kept$ at (0)\n").unwrap();
+        let mut s = store::read(&dir).unwrap();
+        // the case's form
+        let expects: Vec<store::Expect> = s.features.iter().flat_map(|f| f.cases.iter().map(|c| c.expect.clone())).collect();
+        assert_eq!(expects, [store::Expect::CheckAt("h.zero:5".into()), store::Expect::Values(vec![2]), store::Expect::Check]);
+        // the program: no site, no word of the diagnostic build, no table
+        let plain = lower::lower(&s).unwrap();
+        assert!(!plain.ir.contains("__site") && plain.sites.is_empty(), "{}", plain.ir);
+        // the diagnostic build: every statement stores its site first,
+        // an item asked by its place hands over the place and how many
+        // there are, and a push says whether the stream had ended
+        s.sites = true;
+        let l = lower::lower(&s).unwrap();
+        let body = |f: &str| -> String { l.ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
+        let far = body("far");
+        assert!(far.contains("    __site_at(1)\n") && far.contains(": index = count ") && far.contains("    __site_at3(3, "), "{}", far);
+        let held = body("held");
+        assert!(held.contains(": u1 = ended(") && held.contains("        __site_at(") && held.contains("        __site_at3("), "{}", held);
+        // a function that stores a site puts back the one it found, so
+        // that after a call the place kept is the caller's statement
+        assert!(held.starts_with("k: int) -> int\n    __site_was: i64 = __site_now()\n") && held.contains("    __site_at(__site_was)\n    ret "), "{}", held);
+        // and the platform's own lines are in no row of the table
+        assert!(l.sites.iter().all(|x| x.file == "h.zero"), "{:?}", l.sites);
+        assert!(l.ir.contains("fn __out_len() -> i64\n") && l.ir.contains("        e: i64 = add w, 62\n") && l.ir.contains("data __site_tag = \"check at #\""), "{}", l.ir);
+        assert_eq!(l.sites[0], lower::Site { file: "h.zero".into(), line: 4, what: String::new() });
+        assert_eq!(l.sites[2], lower::Site { file: "h.zero".into(), line: 5, what: "item {a} of {b}".into() });
+        assert!(l.sites.iter().any(|x| x.line == 8 && x.what == "the stream `kept$` is full: {a} items pushed and nothing has read them") && l.sites.iter().any(|x| x.line == 8 && x.what == "a push into `kept$`, which has ended"), "{:?}", l.sites);
+        // what comes back is read from the table: three words in
+        // hexadecimal, the second and third the numbers handed over,
+        // a negative one among them
+        assert_eq!(site_said(&l.sites, "a failed check at #0000000000000003,0000000000000009,0000000000000004").as_deref(), Some("a failed check at h.zero:5: item 9 of 4"));
+        assert_eq!(site_said(&l.sites, "a failed check at #0000000000000003,fffffffffffffffe,0000000000000004").as_deref(), Some("a failed check at h.zero:5: item -2 of 4"));
+        assert_eq!(site_said(&l.sites, "a failed check at #0000000000000001,0000000000000000,0000000000000000").as_deref(), Some("a failed check at h.zero:4"));
+        assert_eq!(site_said(&l.sites, "a failed check at h.zero:5"), None);
+        assert_eq!(site_said(&l.sites, "a failed check at #00000000000000ff,0,0"), None);
+        // a case that says the line holds where what is reported begins
+        // with it, and is told the right line where it does not
+        let at = store::Expect::CheckAt("h.zero:5".into());
+        assert_eq!(judge(&at, Err("a failed check at h.zero:5: item 9 of 4".into())), (true, "(at h.zero:5: item 9 of 4)".to_string()));
+        assert_eq!(judge(&at, Err("a failed check at h.zero:5".into())).0, true);
+        assert_eq!(judge(&at, Err("a failed check at h.zero:50".into())), (false, "(a failed check at h.zero:50)".to_string()));
+        assert_eq!(judge(&at, Err("a failed check".into())).0, false);
+        assert_eq!(judge(&store::Expect::Check, Err("a failed check at h.zero:5: item 9 of 4".into())).0, true);
+        // and the form refused where it names no line
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>far (9) → check at 5\n").unwrap();
+        let err = store::read(&dir).err().expect("a case with no file").to_string();
+        assert!(err.contains("`→ check at <file>:<line>`"), "{}", err);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

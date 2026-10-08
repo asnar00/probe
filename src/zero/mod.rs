@@ -77,6 +77,18 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        // `emit sites`: the diagnostic build's text, and its table of
+        // sites as comments after it (fm3 log 199)
+        Some(store) if args.get(1).map(String::as_str) == Some("emit") && args.get(2).map(String::as_str) == Some("sites") => match run::emit_sites(Path::new(store)) {
+            Ok(ir) => {
+                print!("{}", ir);
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+                ExitCode::FAILURE
+            }
+        },
         Some(store) if args.get(1).map(String::as_str) == Some("emit") => match run::emit(Path::new(store)) {
             Ok(ir) => {
                 print!("{}", ir);
