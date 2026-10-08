@@ -792,8 +792,14 @@ impl Module {
 
 /// function-local values (arguments, instructions) are numbered in a
 /// space of their own while a body is built — constants may still be
-/// added — and placed after the constants when the module is written
+/// added — and placed after the constants when the module is written.
+/// The base is only ever taken away again, so its size reaches no
+/// output; it is smaller where a word is 32 bits and `1 << 40` is not a
+/// number, the compiler built for `wasm32`
+#[cfg(target_pointer_width = "64")]
 pub const LOCAL: usize = 1 << 40;
+#[cfg(not(target_pointer_width = "64"))]
+pub const LOCAL: usize = 1 << 30;
 
 /// builds a function body with value ids handed out in order
 pub struct FnBuilder {

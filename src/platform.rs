@@ -255,7 +255,7 @@ impl Platform {
     /// `targets/<name>.platform`, by name (a target's or a variant's)
     pub fn load_named(name: &str) -> Result<Platform, String> {
         let path = format!("targets/{}.platform", name);
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {}", path, e))?;
+        let text = crate::vfs::read_to_string(&path).map_err(|e| format!("{}: {}", path, e))?;
         let mut p = Platform::parse(&text).map_err(|e| format!("{}: {}", path, e))?;
         p.name = name.to_string();
         if p.target.is_empty() {

@@ -2405,8 +2405,8 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         roots.insert(entry.to_string());
     }
     // a store with a case that asserts on time has the marks' reader
-    // (fm3 log 91, 95)
-    if store.features.iter().any(|f| f.cases.iter().any(|c| matches!(c.expect, Expect::Timed(_)))) {
+    // (fm3 log 91, 95), and so does one whose host asks for the times
+    if store.times || store.features.iter().any(|f| f.cases.iter().any(|c| matches!(c.expect, Expect::Timed(_)))) {
         roots.insert("__out_mark".to_string());
     }
     let mut pruned = prune(&ir, &roots);
@@ -10556,7 +10556,7 @@ fn bracket_call(line: &str, words: &str) -> Option<String> {
 
 /// a line of a file as written, trimmed, for a refusal to show
 fn source_line(file: &str, line: usize) -> Option<String> {
-    let text = std::fs::read_to_string(file).ok()?;
+    let text = crate::vfs::read_to_string(file).ok()?;
     text.lines().nth(line.checked_sub(1)?).map(|l| l.trim().to_string())
 }
 

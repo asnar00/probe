@@ -366,6 +366,18 @@ out$ << (greet$ << "\n") (3) times
 
 `suite/zero/brackets/brackets/brackets.zero:6-10`. `forever` follows the same rule, so a wiring line of more than one item is written with brackets: every item of `up$`, each with a newline after it. Without them the line would be `up$` once and then a newline for ever, which nothing paces; it is refused when the program is compiled, and since every such line was written when the word covered the whole push the message shows the program's own line with the brackets. A count and an `until` on a line that stands cover the bracketed chain the same way: the first three items of `greet$`, a line each, three lines of hello a second apart at `1 hz`. Where items stand before what the word covers, `out$ << "values: " << i$ forever`, they would be pushed once when the store starts, which is not built.
 
+### The front end in a page
+
+Everything on the way from a store's text to an emitted wasm module builds for `wasm32-unknown-unknown`, so the compiler can run where there is no disk and no process: in a web page. Three things make that so. `src/vfs.rs` is where the compiler reads from: a store's folders (`zero/store.rs`), a refusal's own line (`zero/kinds.rs`, `zero/lower.rs`), the IR's libraries (`ssa::with_prelude`), the wasm encodings (`emit_wasm::WEncoder::load`) and a platform file (`platform::Platform::load_named`) all read through it. With nothing mounted each read is `std::fs`'s and probe is as it was; from a host's first `vfs::mount(path, text)` every read on that thread is of what was mounted and of nothing else. `src/host.rs` holds what a host that compiles and does not run wants of the suite's runner: the policy a path compiles under (`backend_policy(Backend::Wasm)`), and how a call is described to the wasm driver, `wasm_args`, `wasm_rets` and `wasm_cases`, which is the spec `src/driver.js` reads. And a host that wants the time of everything a program writes sets `Store.times` before lowering, which keeps the marks' reader `__out_mark` as a case that asserts on time does.
+
+A host is a crate of its own, a `cdylib`, that names probe's files by `#[path]`: `aggregate`, `emit`, `emit_wasm`, `host`, `opt`, `platform`, `regalloc`, `ssa`, `structure`, `vfs`, `wide`, `wlearn`, and `zero`'s `kinds`, `lex`, `lower`, `run`, `store`, `syntax` and `zeroic`; it carries the texts of `lib/*.ssa`, `targets/wasm32.encodings.json` and `targets/wasm32.platform` and mounts them. `zero/run.rs` holds the runner beside what makes a module, so the host supplies one function in a module named `suite`, `run_calls`, that refuses. The zero playground (zero.nøøb.org) is such a crate, and from this tree as it is, with no patch, it builds with
+
+```
+cargo build --release --target wasm32-unknown-unknown
+```
+
+run in the host crate's folder. The module it emits for a store is, byte for byte, what `probe zero test <store> wasm` writes (checked on the playground's eighteen examples when this landed; `history.md`).
+
 ## Status
 
 What is here:

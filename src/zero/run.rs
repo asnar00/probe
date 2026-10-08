@@ -132,7 +132,7 @@ fn effective(s: &store::Store, x: &BTreeSet<String>, p: &Planned) -> Option<BTre
 /// effective state is worked out where a switch is written, so a line
 /// that switches a parent off and on again runs the code that must
 /// leave its children as they were
-fn setters(switches: &[(String, bool)], input: &[u8]) -> Vec<(String, Vec<i64>)> {
+pub fn setters(switches: &[(String, bool)], input: &[u8]) -> Vec<(String, Vec<i64>)> {
     let mut calls: Vec<(String, Vec<i64>)> = switches.iter().map(|(f, on)| (format!("__set___enabled_{}", f), vec![*on as i64])).collect();
     calls.extend(input.iter().map(|&c| ("__in_ch".to_string(), vec![c as i64])));
     calls
@@ -599,6 +599,31 @@ mod tests {
         assert_eq!(store::spell_timed(&got("10\n9\n8\n", &[(3, 1_000_000), (5, 2_000_000)])), "\"10\\n9\\n8\" at 1 hz");
         // no marks read at all: the whole text at 0
         assert_eq!(pieces(&suite::Got { values: vec![], text: "x".into(), marks: vec![] }), [p("x", 0)]);
+    }
+
+    /// a host that wants the times of what any program writes asks the
+    /// store for its marks (fm3 log 167): `__out_mark` is kept as it is
+    /// for a store with a case that asserts on time, and nothing else of
+    /// the lowered text is different but what keeping it keeps
+    #[test]
+    fn a_host_asks_a_store_for_its_marks() {
+        let mut s = store::read(Path::new("suite/zero/hello")).unwrap();
+        let timed = lower::lower(&s).unwrap().ir;
+        assert!(timed.contains("\nfn __out_mark("), "hello has a case that asserts on time");
+        s.times = true;
+        assert_eq!(lower::lower(&s).unwrap().ir, timed);
+        let mut s = store::read(Path::new("suite/zero/skeleton")).unwrap();
+        assert!(!s.times);
+        let plain = lower::lower(&s).unwrap().ir;
+        assert!(!plain.contains("\nfn __out_mark("));
+        s.times = true;
+        let asked = lower::lower(&s).unwrap().ir;
+        assert!(asked.contains("\nfn __out_mark(") && asked.contains("data __out_t:"));
+        let wasm = suite::backend_policy(Backend::Wasm).unwrap();
+        let module = build(&asked, &store_policy(&s, &wasm), opt::MAX_LEVEL).unwrap();
+        // and the driver's spec for a call that reads them, from `host`
+        let call = suite::Call { func: "answer".into(), args: vec![], nrets: 1, checks: false, text: true, before: vec![], live: false, times: true };
+        assert_eq!(crate::host::wasm_cases(&module, &[call]).unwrap(), "{\"cases\":[{\"func\":\"answer\",\"reset\":true,\"text\":true,\"times\":true,\"before\":[],\"args\":[],\"rets\":[\"i32\"]}]}");
     }
 
     /// the contexts a store's cases run in and the overrides among them

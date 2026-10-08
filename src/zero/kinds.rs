@@ -139,7 +139,7 @@ impl Walk {
 
     /// a line of the file being walked, as written, for a refusal to show
     fn source(&self, line: usize) -> Option<String> {
-        let text = std::fs::read_to_string(&self.file).ok()?;
+        let text = crate::vfs::read_to_string(&self.file).ok()?;
         text.lines().nth(line.checked_sub(1)?).map(|l| l.trim().to_string())
     }
 

@@ -8,6 +8,7 @@ mod emit_wasm;
 mod cost;
 mod footprint;
 mod fuzz;
+mod host;
 mod indent;
 mod scorecard;
 mod structure;
@@ -21,6 +22,7 @@ mod regalloc;
 mod ssa;
 mod suite;
 mod target;
+mod vfs;
 mod wlearn;
 mod zero;
 

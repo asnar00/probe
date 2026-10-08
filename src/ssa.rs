@@ -2115,13 +2115,13 @@ fn lex_int_text(s: &str) -> Result<i64, String> {
 /// so its types and generics are always available (and appended, not
 /// prepended, so the program's own line numbers hold)
 pub fn with_prelude(src: &str) -> String {
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir("lib")
-        .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "ssa")).collect())
+    let mut files: Vec<std::path::PathBuf> = crate::vfs::read_dir("lib")
+        .map(|d| d.into_iter().filter(|p| p.extension().is_some_and(|x| x == "ssa")).collect())
         .unwrap_or_default();
     files.sort();
     let mut out = String::from(src);
     for f in files {
-        if let Ok(t) = std::fs::read_to_string(&f) {
+        if let Ok(t) = crate::vfs::read_to_string(&f) {
             out.push('\n');
             out.push_str(&t);
         }

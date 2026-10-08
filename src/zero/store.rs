@@ -49,6 +49,12 @@ pub struct Store {
     pub left_out: Vec<FeatureDoc>,
     /// the product's clock (log 77): `clock: real` or `clock: virtual`
     pub clock: Clock,
+    /// a host wants the times of what the program writes, whatever its
+    /// cases ask: the lowering keeps the marks' reader, `__out_mark`,
+    /// as it does for a store with a case that asserts on time (fm3 log
+    /// 91, 167). False as a store is read; a host sets it, as it sets
+    /// `clock`, before the store is lowered
+    pub times: bool,
 }
 
 /// how a product builds a feature (section 12): switchable at run time,
@@ -326,10 +332,10 @@ fn builtin_platform(types: &HashSet<String>) -> Result<FeatureDoc, Error> {
 /// Read a store: every folder with a `.md` and a `.zero` of its own name.
 pub fn read(dir: &Path) -> Result<Store, Error> {
     let sdir = dir.display().to_string();
-    let mut folders: Vec<PathBuf> = std::fs::read_dir(dir)
+    let mut folders: Vec<PathBuf> = crate::vfs::read_dir(dir)
         .map_err(|e| lex::error(&sdir, 0, format!("{}", e)))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.is_dir() && !p.file_name().unwrap().to_string_lossy().starts_with('.'))
+        .into_iter()
+        .filter(|p| crate::vfs::is_dir(p) && !p.file_name().unwrap().to_string_lossy().starts_with('.'))
         .collect();
     folders.sort();
     if folders.is_empty() {
@@ -347,8 +353,8 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
         let md = f.join(format!("{}.md", name));
         let zfile = zero.display().to_string();
         let mfile = md.display().to_string();
-        let code = std::fs::read_to_string(&zero).map_err(|e| lex::error(&zfile, 0, format!("{}", e)))?;
-        let prose = std::fs::read_to_string(&md).map_err(|e| lex::error(&mfile, 0, format!("{}", e)))?;
+        let code = crate::vfs::read_to_string(&zero).map_err(|e| lex::error(&zfile, 0, format!("{}", e)))?;
+        let prose = crate::vfs::read_to_string(&md).map_err(|e| lex::error(&mfile, 0, format!("{}", e)))?;
         types.extend(syntax::declared_types(&code));
         // ... and the words before `and` and `or` in a function's name
         // (fm3 question 66), which the parser tells from the operator by
@@ -382,7 +388,7 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     // a static-off feature leaves the store with everything under it
     // (log 71): a child under a parent that is never on could never be on
     let mut gone: Vec<String> = Vec::new();
-    let store = Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width, float_width, index_width, marks, left_out: Vec::new(), clock };
+    let store = Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width, float_width, index_width, marks, left_out: Vec::new(), clock, times: false };
     for (name, mark) in &store.marks {
         if *mark == Mark::StaticOff {
             gone.extend(store.subtree(name));
@@ -445,7 +451,7 @@ fn check_published(name: &str, zfile: &str, date: &str) -> Result<(), Error> {
 fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, [Option<u32>; 3], HashMap<String, Mark>, Clock, String), Error> {
     let path = dir.join("product.md");
     let file = path.display().to_string();
-    let Ok(text) = std::fs::read_to_string(&path) else { return Ok((Vec::new(), [None; 3], HashMap::new(), Clock::Virtual, file)) };
+    let Ok(text) = crate::vfs::read_to_string(&path) else { return Ok((Vec::new(), [None; 3], HashMap::new(), Clock::Virtual, file)) };
     let mut settings: Vec<(Vec<String>, i64)> = Vec::new();
     let mut int_width = None;
     let mut float_width = None;
@@ -530,11 +536,11 @@ fn read_product(dir: &Path) -> Result<(Vec<(Vec<String>, i64)>, [Option<u32>; 3]
 /// `order.md`: the store's layers, one `- name` per line, lowest first,
 /// after a line that says so (log 42)
 fn read_order(dir: &Path) -> Result<Vec<String>, Error> {
-    if dir.join("layers.md").exists() {
+    if crate::vfs::exists(dir.join("layers.md")) {
         return Err(lex::error(&dir.join("layers.md").display().to_string(), 0, "the layer file is order.md now: `# order`, a line saying `lowest first`, then one `- name` per line"));
     }
     let path = dir.join("order.md");
-    let Ok(text) = std::fs::read_to_string(&path) else { return Ok(Vec::new()) };
+    let Ok(text) = crate::vfs::read_to_string(&path) else { return Ok(Vec::new()) };
     let file = path.display().to_string();
     let mut layers = Vec::new();
     let mut said = false;

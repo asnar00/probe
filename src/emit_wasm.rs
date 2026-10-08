@@ -42,7 +42,7 @@ pub struct WEncoder {
 
 impl WEncoder {
     pub fn load(path: &str) -> Result<WEncoder, String> {
-        let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
+        let src = crate::vfs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
         // reuse the tiny JSON reader from emit.rs via a local parse
         let root = crate::emit::parse_json_pub(&src)?;
         let end_s = root
