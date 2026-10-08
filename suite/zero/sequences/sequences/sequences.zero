@@ -73,8 +73,7 @@ on (int m) << smallest of none()
 
 on (int n) << iterated()
     int i[] = [1, 2, 3, 4]
-    for (x in i[])
-        total$ << total$ + x
+    total$ << total$ + (i[] + _)
     n << total$
 
 on (int n) << sum of (int x[])

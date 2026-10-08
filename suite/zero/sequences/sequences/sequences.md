@@ -14,7 +14,7 @@ A name ending in `[]` is an array (fm3 question 90): its items are all there, an
 - `summed` and `product` reduce with `+` and `*`; `smallest` and `smallest of none` reduce with the feature's own `smaller of`, the second over an empty array, `int i[] = []`.
 - `mapped` adds one to every item; `zipped` adds two sequences of different lengths, the shorter reading as zero past its end.
 - `mapped call` applies `doubled (x)` to a list; `zipped call` applies `scaled (a) by (b)` pairwise.
-- `iterated` walks a sequence with `for`, pushing each sum into the feature's stream `total$`, read for its latest item (fm3 question 70).
+- `iterated` adds an array's items into the feature's stream `total$` by a reduce pushed once, `total$ << total$ + (i[] + _)`, and reads it for its latest item (fm3 question 70). Until fm3 log 184 it was a `for` pushing each sum; `for (x in a[])` has its case in `suite/zero/arrays`, `walked`.
 - `sum of (x[])` takes an array; `passed` calls it with a list, `[sum of] ([1, 2, 3])`, the name in square brackets because the function takes an array whole (fm3 question 77). `squares to (k)` gives an array, `on (int r[]) << squares to (int k)`, which `squared` indexes.
 - `letters` and `first byte` treat a string as the sequence of bytes it is; `marks total` reduces a feature-scope sequence; `halves` reduces floats.
 - `pushed into`, `read ahead`, `framed sum` and `bytes pushed` give a stream an array as its first items and use the stream's words on it: a push after a list, `advance` and then `peek`, `frame` of a range into an array, a push after a text.

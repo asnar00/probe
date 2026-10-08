@@ -21,7 +21,8 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 - `collatz steps (start)` gives both carried variables their next values in one `continue`, the first an `if (c) then (a) else (b)`, and yields `steps` into the result.
 - `triangle (n)` maps `row (i)`, itself a reduction, over `[1 to n + 1]` and reduces: two loops in the IR, none written.
 - `two counters` declares `int i` in two loops of one function.
-- `ticks`, `blast off`, `halves` run a `for` over a literal range up, down, and exclusive; `steps from (a) to (b)` maps `step`, a function with no result, over a range whose bounds are decided at run time.
+- **Four of the loops said as streams** (fm3 log 184), each beside its loop with the same cases: `power of two above (n) said`, `int q$ << 1 << (q$ * 2) while (q$ <= n)`, the answer its last item; `digits said of (n)` and `collatz steps said (start)`, whose answer is how many items the stream holds; `two counters said`. Each is a stream said by a rule from its own last item, the sketch's own form, and each is 9 to 20 times dearer as counted than its loop: the stream is a queue of sixty-four where a loop carries a value. So the loops stay until a stream read only for its latest item inside a function is kept as one value. `gcd of (a) and (b)` has no such twin: a push works its item out before `while` tests, so its rule, a remainder by what the test says is not zero, is worked out once with a zero, which one machine of the five refuses (fm3 question 111).
+- `ticks` writes a line three times by a push with a count, `out$ << ("tick" << "\n") (3) times`. `blast off` and `halves` run a `for` over a literal range down and exclusive, the second leaving a pass early with `continue`; `blast off each` and `halves each` beside them say the same by a function of one item applied to the range, `count off ([3 through 1])`, its push taking `if` and `else`, and are dearer by half as counted, the range being made an array first; `steps from (a) to (b)` maps `step`, a function with no result, over a range whose bounds are decided at run time.
 
 ## rules
 - A `loop`'s carried variables are exactly those in its header; `continue` gives them in that order, and a bare `continue`, or a body that ends, continues with their current values.
@@ -67,16 +68,26 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 >power of two above (10) → 16
 >power of two above (16) → 32
 >power of two above (0) → 1
+>power of two above (10) said → 16
+>power of two above (16) said → 32
+>power of two above (0) said → 1
 >digits of (12345) → 5
 >digits of (7) → 1
+>digits said of (12345) → 5
+>digits said of (7) → 1
 >collatz steps (6) → 8
 >collatz steps (1) → 0
+>collatz steps said (6) → 8
+>collatz steps said (1) → 0
 >triangle (3) → 10
 >triangle (0) → 0
 >two counters() → 35
+>two counters said() → 35
 >ticks() → "tick\ntick\ntick"
 >blast off() → "more\nmore\none"
+>blast off each() → "more\nmore\none"
 >halves() → "odd\nodd"
+>halves each() → "odd\nodd"
 >steps from (1) to (3) → "step\nstep\nstep"
 >steps from (3) to (1) → "step\nstep\nstep"
 >steps from (2) to (2) → "step"

@@ -33,8 +33,7 @@ on (int n) << bumped twice()
     n << count$
 
 on (int n) << bumped (int k) times
-    for (i in [1 through k])
-        bump()
+    count$ << count$ + 1 (k) times
     n << count$
 
 on (int n) << seen round a bump()

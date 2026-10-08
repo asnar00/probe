@@ -44,6 +44,23 @@ on (int n) << collatz steps (int start)
             break
         continue (if (x % 2 == 0) then (x / 2) else (3 * x + 1), steps + 1)
 
+on (int p) << power of two above (int n) said
+    int q$ << 1 << (q$ * 2) while (q$ <= n)
+    p << q$
+
+on (int d) << digits said of (int n)
+    int x$ << n << (x$ / 10) while (x$ >= 10)
+    d << count x$
+
+on (int n) << collatz steps said (int start)
+    int x$ << start << (if (x$ % 2 == 0) then (x$ / 2) else (3 * x$ + 1)) while (x$ != 1)
+    n << count x$ - 1
+
+on (int n) << two counters said()
+    int a$ << 0 << (a$ + 1) while (a$ < 3)
+    int b$ << 0 << (b$ + 1) while (b$ < 5)
+    n << a$ * 10 + b$
+
 on (int r) << row (int i)
     r << [0 through i] + _
 
@@ -58,8 +75,7 @@ on (int n) << two counters()
     n << a * 10 + b
 
 on ticks ()
-    for (i in [1 through 3])
-        out$ << "tick" << "\n"
+    out$ << ("tick" << "\n") (3) times
 
 on blast off ()
     for (i in [3 through 1])
@@ -73,6 +89,19 @@ on halves ()
         if (i % 2 == 0)
             continue
         out$ << "odd" << "\n"
+
+on count off (int i)
+    out$ << "one" if (i == 1) else "more"
+    out$ << "\n"
+
+on blast off each ()
+    count off ([3 through 1])
+
+on odd one (int i)
+    out$ << ("odd" << "\n") if (i % 2 != 0)
+
+on halves each ()
+    odd one ([0 to 4])
 
 on step (int i)
     out$ << "step" << "\n"

@@ -159,8 +159,7 @@ on (int n) << mapped()
 on (int n) << walked over()
     int i$ << 1 << 2 << 3
     int a[] = frame i$
-    for (x in a[])
-        seen$ << seen$ + x
+    seen$ << seen$ + (a[] + _)
     n << seen$
 
 on (int n) << unread only()

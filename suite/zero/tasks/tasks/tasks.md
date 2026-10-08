@@ -11,7 +11,7 @@ A task is a function that produces a stream over time: it is declared with `<<` 
 
 ## interface
 - `count down from (n)`, `count up to (n)` and `sawtooth (n)` are section 10's tasks; `sawtooth` composes the other two into its own stream.
-- `doubled (x$)` reads a stream and pushes each item doubled; `closer (x$)` reads everything and pushes 99 once the input has ended.
+- `doubled (x$)` reads a stream and pushes each item doubled; `closer (x$)` reads everything and pushes 99 once the input has ended, the condition on the push's own line, `e$ << 99 if (ended x$)` (fm3 log 184; an `if` statement over the push until then).
 - `d$`, `e$` and `q$` are wired at feature scope to `x$` and `y$`, empty streams the cases push into; `w$` chains two tasks; `z$` is wired with a feature variable as its argument.
 - `sawtoothed`, `counted down`, `counted up` run tasks now, into a local stream.
 - `wired at feature scope`, `wired from a variable`, `fed twice`, `carried between runs`, `closed`, `closed once` read the nodes' streams.

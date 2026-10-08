@@ -33,8 +33,7 @@ on (int e$) << closer (int x$)
         if (count x$ == 0)
             break
         advance x$ by (1)
-    if (ended x$)
-        e$ << 99
+    e$ << 99 if (ended x$)
 
 on (int r$) << runs (int x$)
     r$ << count x$
