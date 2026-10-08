@@ -1238,7 +1238,9 @@ mod tests {
         // between two arrays
         let own = "on (bool b) << (odd x) == (odd y)\n    b << x.v % 2 == y.v % 2\n\n";
         let ir = f(own, "    odd xs[] = [odd(1), odd(4)]\n    n << odd(1) == odd(3) and xs[] [==] [odd(3), odd(6)]").unwrap();
-        assert_eq!(ir.matches(": u1 = eq_odd(").count(), 2, "{}", ir);
+        // (the list written out is compared an item at a time, a call
+        // an item, fm3 log 183)
+        assert_eq!(ir.matches(": u1 = eq_odd(").count(), 3, "{}", ir);
         // a list of structures is an array of them, and two are
         // compared whole, each pair a field at a time
         let ir = f("", "    pair ps[] = [pair(1, 2), pair(3, 4)]\n    n << ps[] [==] [p, q]").unwrap();
@@ -1250,6 +1252,75 @@ mod tests {
         refused("    n << p < q", "no '<' is defined on a pair and a pair");
         refused("    pair ps[] = [p]\n    odd os[] = [odd(1)]\n    n << ps[] [==] os[]", "`[==]` compares two arrays of one type of item: these hold pair and odd");
         refused("    pair ps[] = [p, odd(1)]\n    n << true", "the items are pair, this one is a odd");
+    }
+
+    /// An array compared with a list, with nothing copied (fm3 log
+    /// 183): a list written out as one side is no array, its length a
+    /// number in the text and its items compared where they stand, in
+    /// a block that runs once and leaves at the first that differs; a
+    /// frame is read where the stream's items lie, as one side or as
+    /// an array that is nothing else, wherever nothing can push into
+    /// the stream before its items are read, and copied wherever
+    /// something might
+    #[test]
+    fn an_array_is_compared_with_a_list_where_each_stands() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-whole-in-place");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 1\n").unwrap();
+        let f = |more: &str, body: &str| -> String {
+            std::fs::write(dir.join("h/h.zero"), format!("type pair =\n    int a, b\n\nint y$\n\non (int n) << bump()\n    y$ << 9\n    n << count y$\n\n{}on (bool n) << f()\n    int x$ << 1 << 2\n{}\n", more, body)).unwrap();
+            let ir = emit(&dir).unwrap();
+            let at = ir.find("\nfn f() -> u1\n").unwrap();
+            ir[at + 1..at + 1 + ir[at + 1..].find("\nfn ").unwrap()].to_string()
+        };
+        // the list is no array and the frame no copy: the length once,
+        // then each item against its value, leaving at the first
+        let ir = f("", "    n << frame x$ [==] [1, 2]");
+        assert!(ir.contains("    _3: int[], _4: index, x_2: int$ = frame_queue(x)\n    _5: index = len _3\n    _6: u1 = cmp.eq _5, 2\n    n: u1 = if _6\n        _7: u1 = loop()\n            _8: int = load _3, 0\n            _9: u1 = cmp.ne _8, 1\n            if _9\n                break 0\n            _10: int = load _3, 1\n            _11: u1 = cmp.ne _10, 2\n            if _11\n                break 0\n            break 1\n        yield _7\n    else\n        yield 0\n    ret n"), "{}", ir);
+        // an empty list is the length alone
+        let ir = f("", "    n << frame x$ [==] []");
+        assert!(ir.contains("    _5: index = len _3\n    n: u1 = cmp.eq _5, 0\n    ret n"), "{}", ir);
+        // an item that is not a constant is worked out before anything
+        // is compared, in the order written
+        let ir = f("", "    int k = 1\n    n << frame x$ [!=] [k, k + 1]");
+        assert!(ir.contains(": int = add k, 1\n") && ir.find("add k, 1").unwrap() < ir.find("loop()").unwrap() && ir.contains("    n: u1 = cmp.eq "), "{}", ir);
+        // a structure's construction is compared against its own
+        // arguments: a `get` of the side in memory, and no `pack`
+        let ir = f("", "    pair p$ << pair(1, 2)\n    n << frame p$ [==] [pair(1, 2)]");
+        assert_eq!(ir.matches(" = pack ").count(), 1, "{}", ir);
+        assert!(ir.contains(": int = get _") && ir.contains(", a\n") && ir.contains(": u1 = cmp.eq ") && ir.contains("            else\n                break 0\n") && !ir.contains("__copy_"), "{}", ir);
+        // an array that is nothing but a frame is the same view
+        let ir = f("", "    int g[] = frame x$\n    n << g[] [==] [1, 2]");
+        assert!(!ir.contains("__copy_") && ir.contains(" = load _3, 0\n"), "{}", ir);
+        let ir = f("", "    int g[] = frame x$\n    bool same = g[] [==] [1, 2]\n    n << same and g[] [!=] [2, 1]");
+        assert!(!ir.contains("__copy_"), "{}", ir);
+        // ... and an array it is, with its copy, where it is used any
+        // other way, where something is pushed before its last use,
+        // and where a function is called there
+        for body in [
+            "    int g[] = frame x$\n    n << g[] [==] [1, 2] and count g[] == 2",
+            "    int g[] = frame x$\n    x$ << 3\n    n << g[] [==] [1, 2]",
+            "    int g[] = frame x$\n    int k = bump()\n    n << g[] [==] [1, 2]",
+            "    int g[] = frame x$\n    n << g[] [==] [1, bump()]",
+            "    int g[] = frame y$\n    if (count y$ == 0)\n        y$ << 3\n    n << g[] [==] [1, 2]",
+        ] {
+            let ir = f("", body);
+            assert!(ir.contains("= __copy_queue_int("), "{}: {}", body, ir);
+        }
+        // `frame x$` on the left is lowered before the right: copied
+        // where the right calls a function, and not on the right
+        let ir = f("", "    n << frame y$ [==] [1, bump()]");
+        assert!(ir.contains("= __copy_queue_int("), "{}", ir);
+        let ir = f("", "    n << [1, bump()] [==] frame y$");
+        assert!(!ir.contains("__copy_") && ir.find("bump()").unwrap() < ir.find("frame_queue(").unwrap(), "{}", ir);
+        // the program's own `==` is a call for each item: the copy stays
+        let own = "on (bool b) << (pair x) == (pair y)\n    b << x.a == y.a\n\n";
+        let ir = f(own, "    pair p$ << pair(1, 2)\n    n << frame p$ [==] [pair(1, 5)]");
+        assert!(ir.contains("= __copy_queue_pair(") && ir.contains(": u1 = eq_pair("), "{}", ir);
+        // two frames are two views
+        let ir = f("", "    n << frame x$ [==] frame y$");
+        assert!(!ir.contains("__copy_") && ir.matches("frame_queue(").count() == 2, "{}", ir);
     }
 
     /// `[==]` and `[!=]` (fm3 question 77, log 164): two arrays compared

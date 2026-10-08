@@ -175,3 +175,11 @@ on (int n) << framed pushed()
     int f$ << frame i$
     f$ << 9
     n << count f$ * 10 + latest f$
+
+on (bool same) << framed before a ring wraps()
+    int x$ << 4 << 5
+    int got[] = frame x$
+    x$ << [1 through 70]
+    advance x$ by (70)
+    int back[] = x$ behind (1)
+    same << got[] [==] [4, 5] and back[] [==] [70]

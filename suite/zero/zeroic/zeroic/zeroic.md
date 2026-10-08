@@ -16,7 +16,7 @@ A wiring, `int d$ = doubled(x$)`, is a standing connection as it always was. Wha
 - `placed (x$)` pushes ten times each item and which item it is: `position x$` is the item's place, counted from 0, an `index`.
 - `trebled (x$)` says a stream of its own, `int two$ = x$ * 2`, and pushes `two$ + x$`.
 - `class of (c)` classes a character, and `classes (c$)` pushes the class of each: a one-item function applied to the input's name is that function of the present item.
-- `one at a time`, `as a block`, `said`, `walked`, `from a literal`, `from a range`, `through two`, `wired twice`, `over text`, `typed`, `also read`, `many` and `a line said` are the cases.
+- `one at a time`, `as a block`, `said`, `walked`, `from a literal`, `from a range`, `through two`, `wired twice`, `over text`, `typed`, `also read`, `many` and `a line said` are the cases. Each says what its stream holds as one array compared with a list written out, `b << frame d$ [==] [2, 4, 6]`, where until fm3 log 183 it looked at a count and an item or two with `peek`; a count taken while the stream is still arriving stays beside it, `a << count d$` in `one at a time`. `many`, `every tenth to` and `tens to` still `peek` at the last of many items by a place worked out, and have a case beside them, `many whole`, `every tenth whole`, `tens whole`, that compares the whole with an array worked out, `[1 through k] * 2`, which costs three times as much, both arrays being made. `pushed above two whole` is beside `pushed above two`, which says what the stream holds for both of its arguments where one list cannot.
 - `decades (x$)` pushes, for each run of items in one ten, the run's first item times a hundred and its length; `tens to (k)` is its case over a range (parity hop seventeen, fm3 log 133).
 
 ## rules
@@ -30,78 +30,52 @@ A wiring, `int d$ = doubled(x$)`, is a standing connection as it always was. Wha
 - Two lines that turn on one condition, `int n$ = if (new$) then (1) else (n$[-1] + 1)` and `int first$ = if (new$) then (x$) else (first$[-1])` in `decades`, and a push that goes out `if (new$ and n$[-1] > 0)`, are one branch on `new$` in the function the compiler writes: the cost of a decision does not depend on how many lines it was said in.
 
 ## testing
->one at a time() → 1, 326
->as a block() → 392
->said() → 326
->walked() → 326
->from a literal() → 326
->from a range() → 510
->through two() → 352
->wired twice() → 6182, 170
->over text() → 5102
->typed() with in "a1" → 212
->also read() → 2, 24
+>one at a time() → 1, 1
+>as a block() → 1
+>said() → 1
+>walked() → 1
+>from a literal() → 1
+>from a range() → 1
+>through two() → 1
+>wired twice() → 1, 1
+>over text() → 1
+>typed() with in "a1" → 1
+>also read() → 2, 1
 >many (60) → 60120
 >many (3) → 3006
->a line said() → 1215
->a running sum() → 4610, 10
->summed from a literal() → 136
->a difference() → 530
->two back() → 235
->lines shuffled() → 309
->kept through a block() → 1012
->two conditions() → 10100
+>a line said() → 1
+>a running sum() → 1, 1
+>summed from a literal() → 1
+>a difference() → 1
+>two back() → 1
+>lines shuffled() → 1
+>kept through a block() → 1
+>two conditions() → 1
 >joined (5) → 1
 >joined (4) → 0
 >joined (100) → 1
 >joined (11) → 0
->filtered() → 237
->changed() → 3121
+>filtered() → 1
+>changed() → 1
 >every tenth to (100) → 10100
 >every tenth to (60) → 6060
 >pushed above two (5) → 25
 >pushed above two (1) → 19
->no stray zero() → 2, 24
->closed() → 0, 199
->a chain ends() → 0, 260
->how many came() → 13
->a stored input ends() → 0, 19
+>no stray zero() → 2, 1
+>closed() → 0, 1
+>a chain ends() → 0, 1
+>how many came() → 1
+>a stored input ends() → 0, 1
 >pushed after its end() → check
 >an output ends() → 0, 1
 >tens to (100) → 1009010
 >tens to (25) → 201010
->one at a time whole() → 1
->as a block whole() → 1
->said whole() → 1
->walked whole() → 1
->from a literal whole() → 1
->from a range whole() → 1
->through two whole() → 1
->wired twice whole() → 1, 1
->over text whole() → 1
->typed whole() with in "a1" → 1
->also read whole() → 1
 >many whole (60) → 1
 >many whole (3) → 1
->a line said whole() → 1
->a running sum whole() → 1, 1
->summed from a literal whole() → 1
->a difference whole() → 1
->two back whole() → 1
->lines shuffled whole() → 1
->kept through a block whole() → 1
->two conditions whole() → 1
->filtered whole() → 1
->changed whole() → 1
 >every tenth whole (100) → 1
 >every tenth whole (60) → 1
 >pushed above two whole (5) → 1
 >pushed above two whole (1) → 0
->no stray zero whole() → 1
->closed whole() → 1
->a chain ends whole() → 1
->how many came whole() → 1
->a stored input ends whole() → 1
 >tens whole() → 1
 
 ## hostile

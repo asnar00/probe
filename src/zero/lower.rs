@@ -2175,7 +2175,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -3304,6 +3304,16 @@ struct Lowerer {
     /// branch to every push in the cost model
     regular: std::collections::HashSet<String>,
     regular_locals: std::collections::HashSet<String>,
+    /// the arrays of the function being lowered that are nothing but a
+    /// frame (fm3 log 183): each is read where its stream's items lie,
+    /// no array made, every use of it a side of `[==]` or `[!=]`; and
+    /// the view each was given, by its name
+    frame_only: Names,
+    views: HashMap<String, String>,
+    /// `whole_same` and such an array's declaration ask the next
+    /// `frame` for its view and no copy, and are told it was given
+    view_wanted: bool,
+    view_given: bool,
     /// the feature whose code is being lowered
     cur: String,
     /// every feature's layer height (log 28)
@@ -3657,6 +3667,13 @@ struct Val {
     text: String,
     ty: Ty,
     literal: bool,
+}
+
+/// an item of a list written out as one side of `[==]` (fm3 log 183):
+/// one value, or a structure's construction as its field values
+enum Listed {
+    One(Val),
+    Fields(String, Vec<Val>),
 }
 
 /// one function body being lowered
@@ -6427,6 +6444,8 @@ impl Lowerer {
     fn lower_fn(&mut self, f: &FnDecl, feature: &str, file: &str) -> Result<(), Error> {
         let key = mangle(&f.name);
         self.regular_locals.clear();
+        self.views.clear();
+        self.frame_only = self.frame_only_arrays(&f.body);
         // methods (log 36): the one declared for these parameter types
         let mut tys = Vec::new();
         for p in f.params() {
@@ -6540,6 +6559,8 @@ impl Lowerer {
     fn lower_device_fn(&mut self, f: &FnDecl, info: &FnInfo, feature: &str, file: &str) -> Result<(), Error> {
         let Some(dev) = self.device_fns.get(&info.ir).cloned() else { return Ok(()) };
         self.regular_locals.clear();
+        self.views.clear();
+        self.frame_only.clear();
         let (sname, sty) = info.params[0].clone();
         // a redefinition applies to both copies (log 90): the device
         // copies chain under the device name, so `existing` inside one
@@ -7286,6 +7307,17 @@ impl Lowerer {
     /// a struct from its arguments, by position or by name, the rest
     /// from the fields' defaults: `Vec(1, 2, 3)`, `Vec v(z = 3)`, `Vec v`
     fn construct(&mut self, name: &str, args: &[Arg], b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        let ops = self.construct_fields(name, args, b, line)?;
+        let ty = Ty::Struct(name.to_string());
+        let out = name_for(dst, &ty, b);
+        b.line(&format!("{}: {} = pack {}", out, name, ops.iter().map(|v| v.text.as_str()).collect::<Vec<_>>().join(", ")));
+        Ok(Val { text: out, ty, literal: false })
+    }
+
+    /// a construction's field values, in the order declared, and no
+    /// `pack`: what `construct` packs, and what a list written out is
+    /// compared against a field at a time (fm3 log 183)
+    fn construct_fields(&mut self, name: &str, args: &[Arg], b: &mut Body, line: usize) -> Result<Vec<Val>, Error> {
         let file = b.file.clone();
         let Some(TypeInfo::Struct(fields)) = self.types.get(name).cloned() else {
             return Err(lex::error(&file, line, format!("'{}' is not a struct", name)));
@@ -7316,12 +7348,9 @@ impl Lowerer {
                     None => self.zero_val(fty, b),
                 },
             };
-            ops.push(v.text);
+            ops.push(v);
         }
-        let ty = Ty::Struct(name.to_string());
-        let out = name_for(dst, &ty, b);
-        b.line(&format!("{}: {} = pack {}", out, name, ops.join(", ")));
-        Ok(Val { text: out, ty, literal: false })
+        Ok(ops)
     }
 
     /// A whole-number literal is held to the type it is given to (fm3
@@ -7550,8 +7579,17 @@ impl Lowerer {
                     };
                     match (&v.init, task) {
                         (Some(Init::Value(e)), None) => {
-                            let s = self.resident_init(v, &ty, e, b)?;
-                            self.assign(&v.name, s, b, v.line)?;
+                            // an array that is nothing but a frame (fm3
+                            // log 183): the view kept, and no array
+                            self.view_wanted = self.frame_only.contains(&v.name) && b.depth == 0;
+                            let s = self.resident_init(v, &ty, e, b);
+                            self.view_wanted = false;
+                            let s = s?;
+                            if std::mem::take(&mut self.view_given) {
+                                self.views.insert(v.name.clone(), s.text);
+                            } else {
+                                self.assign(&v.name, s, b, v.line)?;
+                            }
                         }
                         (Some(Init::Value(e)), Some((info, args, hz))) => {
                             if hz > 0 {
@@ -8743,30 +8781,33 @@ impl Lowerer {
     /// the two arrays the same, one bool. The same length, and the
     /// same items in the same order: a loop over the items that leaves
     /// at the first pair that differs, entered only where the lengths
-    /// agree. Nothing is made in the arena
+    /// agree. Nothing is made in the arena; a list written out as one
+    /// side is compared where its values stand, and a frame where the
+    /// stream's items lie (fm3 log 183)
     fn whole_same(&mut self, op: &str, l: &Expr, r: &Expr, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
         let file = b.file.clone();
-        let lv = self.lower_expr(l, None, b, None)?;
-        let rv = self.lower_expr(r, if lv.ty.elem().is_some() { Some(&lv.ty) } else { None }, b, None)?;
-        for (x, v) in [(l, &lv), (r, &rv)] {
-            let what = match (self.kind(x, v, b), &x.kind) {
-                (Kind::Array, _) => continue,
-                (Kind::Stream, ExprKind::Seq(n)) => format!("'{}$' is a stream, its items still arriving: the array of what has arrived is `frame {}$`", n, n),
-                (Kind::Stream, _) => "this side is a stream, its items still arriving".to_string(),
-                (Kind::One, _) => "this side is one value".to_string(),
-            };
-            return Err(lex::error(&file, x.line, format!("`{}` asks whether two arrays are the same, and {} (fm3 question 77): both sides are arrays, `a[] {} b[]`. One item is compared plainly, `a[k] == v`", op, what, op)));
+        let listed = |e: &Expr| matches!(e.kind, ExprKind::List(_));
+        if listed(l) != listed(r) {
+            return self.whole_same_listed(op, l, r, b, dst, line);
         }
+        // the left is lowered first, so a frame there is read in place
+        // only where lowering the right can push nothing
+        let calm = self.quiet(r, b);
+        let (lv, lview) = self.whole_side(l, None, calm, b)?;
+        let (rv, rview) = self.whole_side(r, if lv.ty.elem().is_some() { Some(&lv.ty) } else { None }, true, b)?;
+        self.whole_kinds(op, &[(l, &lv), (r, &rv)], b)?;
         if lv.ty != rv.ty {
             return Err(lex::error(&file, line, format!("`{}` compares two arrays of one type of item: these hold {} and {}", op, zero_ty(lv.ty.elem().unwrap()), zero_ty(rv.ty.elem().unwrap()))));
         }
-        // (an array of structures: each pair by `struct_same`, fm3 log 181)
-        let elem = match (lv.ty.items(), lv.ty.elem()) {
-            (Some(e), _) => e.clone(),
-            (None, Some(e @ Ty::Struct(_))) => e.clone(),
-            _ => return Err(lex::error(&file, line, format!("`{}` on arrays of {} is not built: the items compared are numbers, enumerations, characters or structures of those", op, zero_ty(lv.ty.elem().unwrap())))),
+        let elem = self.whole_elem(op, &lv.ty, &file, line)?;
+        let va = match lview {
+            Some(v) => v,
+            None => self.unread_view(&lv, b),
         };
-        let (va, vb) = (self.unread_view(&lv, b), self.unread_view(&rv, b));
+        let vb = match rview {
+            Some(v) => v,
+            None => self.unread_view(&rv, b),
+        };
         let (na, nb, same) = (b.tmp(), b.tmp(), b.tmp());
         b.line(&format!("{}: index = len {}", na, va));
         b.line(&format!("{}: index = len {}", nb, vb));
@@ -8823,6 +8864,322 @@ impl Lowerer {
         let not = name_for(dst, &Ty::Bool, b);
         b.line(&format!("{}: u1 = cmp.eq {}, 0", not, out));
         Ok(Val { text: not, ty: Ty::Bool, literal: false })
+    }
+
+    /// both sides of `[==]` are arrays, or the line is refused saying
+    /// which side is not and what it is
+    fn whole_kinds(&self, op: &str, sides: &[(&Expr, &Val)], b: &Body) -> Result<(), Error> {
+        for (x, v) in sides {
+            let what = match (self.kind(x, v, b), &x.kind) {
+                (Kind::Array, _) => continue,
+                (Kind::Stream, ExprKind::Seq(n)) => format!("'{}$' is a stream, its items still arriving: the array of what has arrived is `frame {}$`", n, n),
+                (Kind::Stream, _) => "this side is a stream, its items still arriving".to_string(),
+                (Kind::One, _) => "this side is one value".to_string(),
+            };
+            return Err(lex::error(&b.file, x.line, format!("`{}` asks whether two arrays are the same, and {} (fm3 question 77): both sides are arrays, `a[] {} b[]`. One item is compared plainly, `a[k] == v`", op, what, op)));
+        }
+        Ok(())
+    }
+
+    /// the type of item `[==]` compares: a number, an enumeration, a
+    /// character, or a structure of those (fm3 log 181)
+    fn whole_elem(&self, op: &str, ty: &Ty, file: &str, line: usize) -> Result<Ty, Error> {
+        match (ty.items(), ty.elem()) {
+            (Some(e), _) => Ok(e.clone()),
+            (None, Some(e @ Ty::Struct(_))) => Ok(e.clone()),
+            _ => Err(lex::error(file, line, format!("`{}` on arrays of {} is not built: the items compared are numbers, enumerations, characters or structures of those", op, zero_ty(ty.elem().unwrap())))),
+        }
+    }
+
+    /// One side of `[==]` lowered, and the view of its items where it
+    /// is read in place (fm3 log 183): an array that is nothing but a
+    /// frame, by the view its declaration kept; and `frame x$` written
+    /// here, where `in_place` says nothing can push into the stream
+    /// before its items are read. Any other side is the array it was
+    fn whole_side(&mut self, x: &Expr, want: Option<&Ty>, in_place: bool, b: &mut Body) -> Result<(Val, Option<String>), Error> {
+        if let ExprKind::Seq(n) = &x.kind {
+            if let (Some(view), Some(var)) = (self.views.get(n), b.vars.get(n)) {
+                return Ok((Val { text: view.clone(), ty: var.ty.clone(), literal: false }, Some(view.clone())));
+            }
+        }
+        self.view_wanted = in_place && is_frame(x) && !self.declares("==");
+        let v = self.lower_expr(x, want, b, None);
+        self.view_wanted = false;
+        let v = v?;
+        let view = if std::mem::take(&mut self.view_given) { Some(v.text.clone()) } else { None };
+        Ok((v, view))
+    }
+
+    /// does the store declare this operator for itself, on any type?
+    fn declares(&self, op: &str) -> bool {
+        self.funcs.iter().any(|f| matches!(f.parts.as_slice(), [NamePart::Group, NamePart::Sym(s), NamePart::Group] if s == op))
+    }
+
+    /// An array compared with a list written out (fm3 log 183). The
+    /// list is no array: its items are lowered in the order written,
+    /// each to a value; its length is in the text, so the other side's
+    /// is compared with that number, once; and the items are compared
+    /// each against the value where it stands, leaving at the first
+    /// that differs, in a block that runs once. An item that is a
+    /// structure's construction is compared a field at a time against
+    /// its own arguments, with no `pack`
+    fn whole_same_listed(&mut self, op: &str, l: &Expr, r: &Expr, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        let file = b.file.clone();
+        let list_left = matches!(l.kind, ExprKind::List(_));
+        let (list, other) = if list_left { (l, r) } else { (r, l) };
+        let ExprKind::List(items) = &list.kind else { unreachable!() };
+        // the left side first, as written
+        let mut vals: Vec<Listed> = Vec::new();
+        if list_left {
+            vals = self.listed_items(items, None, b)?;
+        }
+        let calm = list_left || items.iter().all(|it| self.quiet(it, b));
+        let (ov, oview) = self.whole_side(other, None, calm, b)?;
+        self.whole_kinds(op, &[(other, &ov)], b)?;
+        let elem = self.whole_elem(op, &ov.ty, &file, line)?;
+        if !list_left {
+            vals = self.listed_items(items, Some(&elem), b)?;
+        }
+        for (it, v) in items.iter().zip(&vals) {
+            let fits = match v {
+                Listed::One(v) => v.ty == elem || (v.literal && fits_literal(v, &elem)),
+                Listed::Fields(name, _) => Ty::Struct(name.clone()) == elem,
+            };
+            if !fits {
+                let is = match v {
+                    Listed::One(v) => v.ty.ir(),
+                    Listed::Fields(name, _) => name.clone(),
+                };
+                return Err(lex::error(&file, it.line, format!("the items are {}, this one is a {}", elem.ir(), is)));
+            }
+        }
+        let view = match oview {
+            Some(v) => v,
+            None => self.unread_view(&ov, b),
+        };
+        let (n, same) = (b.tmp(), b.tmp());
+        b.line(&format!("{}: index = len {}", n, view));
+        let wants_not = op == "[!=]";
+        let out = if wants_not { b.tmp() } else { name_for(dst, &Ty::Bool, b) };
+        if vals.is_empty() {
+            b.line(&format!("{}: u1 = cmp.eq {}, 0", out, n));
+        } else {
+            b.line(&format!("{}: u1 = cmp.eq {}, {}", same, n, vals.len()));
+            b.line(&format!("{}: u1 = if {}", out, same));
+            b.depth += 1;
+            let all = b.tmp();
+            b.open_loop(&format!("{}: u1 = ", all), "", true);
+            b.depth += 1;
+            for (k, v) in vals.iter().enumerate() {
+                let x = b.tmp();
+                b.line(&format!("{}: {} = load {}, {}", x, elem.ir(), view, k));
+                // a structure's answer is "the same": left under its
+                // `else`, with no invert; a number's is "differs"
+                let (test, same) = match v {
+                    Listed::One(v) if matches!(elem, Ty::Struct(_)) => {
+                        let same = match self.find_operator("==", &elem, v, &file, line)? {
+                            Some(info) if info.results.first().map(|r| &r.1) == Some(&Ty::Bool) => {
+                                let t = b.tmp();
+                                b.line(&format!("{}: u1 = {}({}, {})", t, info.ir, x, v.text));
+                                t
+                            }
+                            _ => self.struct_same(op, &elem, &x, &v.text, b, &file, line)?,
+                        };
+                        (same, true)
+                    }
+                    Listed::One(v) => {
+                        // a literal of another type than the items', a
+                        // whole number among decimals, is made one
+                        let v = if v.literal && v.ty != elem { b.materialize(&Val { text: v.text.clone(), ty: elem.clone(), literal: true }) } else { v.clone() };
+                        let ne = b.tmp();
+                        b.line(&format!("{}: u1 = cmp.ne {}, {}", ne, x, v.text));
+                        (ne, false)
+                    }
+                    Listed::Fields(_, fields) => (self.struct_same_fields(op, &elem, &x, fields, b, &file, line)?, true),
+                };
+                b.line(&format!("if {}", test));
+                if same {
+                    b.line("else");
+                }
+                b.depth += 1;
+                b.line("break 0");
+                b.depth -= 1;
+            }
+            b.line("break 1");
+            b.depth -= 1;
+            b.line(&format!("yield {}", all));
+            b.depth -= 1;
+            b.line("else");
+            b.depth += 1;
+            b.line("yield 0");
+            b.depth -= 1;
+        }
+        if !wants_not {
+            return Ok(Val { text: out, ty: Ty::Bool, literal: false });
+        }
+        let not = name_for(dst, &Ty::Bool, b);
+        b.line(&format!("{}: u1 = cmp.eq {}, 0", not, out));
+        Ok(Val { text: not, ty: Ty::Bool, literal: false })
+    }
+
+    /// The items of a list written out as one side of `[==]`, each a
+    /// value in the order written (fm3 log 183). A construction of a
+    /// structure the program declares no `==` on is its field values
+    /// and no `pack`; anything else is one value
+    fn listed_items(&mut self, items: &[Expr], elem: Option<&Ty>, b: &mut Body) -> Result<Vec<Listed>, Error> {
+        let own = self.declares("==");
+        let mut vals = Vec::new();
+        for it in items {
+            if let ExprKind::Phrase(parts) = &it.kind {
+                if let [Part::Word(w), Part::Args(args)] = parts.as_slice() {
+                    if !own && matches!(self.types.get(w), Some(TypeInfo::Struct(_))) && !b.vars.contains_key(w) {
+                        vals.push(Listed::Fields(w.clone(), self.construct_fields(w, args, b, it.line)?));
+                        continue;
+                    }
+                }
+            }
+            self.one = true;
+            vals.push(Listed::One(self.lower_expr(it, elem, b, None)?));
+        }
+        Ok(vals)
+    }
+
+    /// A structure in memory compared with one whose field values are
+    /// in hand (fm3 log 183): a `get` of the one side only, a field at
+    /// a time in the order declared, joined by `and`. A field that is
+    /// itself a structure is compared as two are, its value packed by
+    /// its own construction. The `u1` that says they are the same
+    #[allow(clippy::too_many_arguments)]
+    fn struct_same_fields(&mut self, op: &str, ty: &Ty, x: &str, vals: &[Val], b: &mut Body, file: &str, line: usize) -> Result<String, Error> {
+        let Ty::Struct(name) = ty else { unreachable!() };
+        let Some(TypeInfo::Struct(fields)) = self.types.get(name).cloned() else { unreachable!() };
+        let mut all: Option<String> = None;
+        for ((f, fty, _), v) in fields.iter().zip(vals) {
+            if !matches!(fty, Ty::Bool | Ty::Num(_) | Ty::Char | Ty::Enum(_) | Ty::Struct(_)) {
+                // the refusal is `struct_same`'s, said once
+                return self.struct_same(op, ty, x, x, b, file, line);
+            }
+            let p = b.tmp();
+            b.line(&format!("{}: {} = get {}, {}", p, fty.ir(), x, f));
+            let same = match fty {
+                Ty::Struct(_) => self.struct_same(op, fty, &p, &v.text, b, file, line)?,
+                _ => {
+                    let t = b.tmp();
+                    b.line(&format!("{}: u1 = cmp.eq {}, {}", t, p, v.text));
+                    t
+                }
+            };
+            all = Some(match all {
+                None => same,
+                Some(so_far) => {
+                    let t = b.tmp();
+                    b.line(&format!("{}: u1 = and {}, {}", t, so_far, same));
+                    t
+                }
+            });
+        }
+        Ok(all.unwrap_or_else(|| {
+            let t = b.tmp();
+            b.line(&format!("{}: u1 = const 1", t));
+            t
+        }))
+    }
+
+    /// Can lowering this expression push into no stream (fm3 log 183)?
+    /// Yes where it is made only of literals, names, lists, ranges,
+    /// fields, indices, `if then else`, the words that read a stream,
+    /// a structure's construction or a conversion, and operators the
+    /// store declares none of for itself. A call of any function of
+    /// the store may push, and is not quiet
+    fn quiet(&self, e: &Expr, b: &Body) -> bool {
+        let mut quiet = true;
+        super::zeroic::walk(e, &mut |x| {
+            quiet &= match &x.kind {
+                ExprKind::Existing(_) => false,
+                ExprKind::Bin(op, ..) => {
+                    // `!=` and the bracketed two are said by the program's `==` where it has one
+                    let plain = op.trim_matches(['[', ']']);
+                    !self.declares(plain) && !(matches!(plain, "==" | "!=") && (self.declares("==") || self.declares("!=")))
+                }
+                ExprKind::Phrase(parts) => match parts.as_slice() {
+                    // a lone word is a name, unless the store has a
+                    // function of that one word, which it would call
+                    [Part::Word(w)] => b.vars.contains_key(w) || !self.funcs.iter().any(|f| matches!(f.parts.as_slice(), [NamePart::Word(x)] if x == w)),
+                    [Part::Word(w), Part::Args(_)] => (self.types.contains_key(w) || builtin_type(w).is_some()) && !b.vars.contains_key(w),
+                    [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(_), .. })] => matches!(w.as_str(), "count" | "latest" | "frame" | "ended" | "position"),
+                    _ => false,
+                },
+                _ => true,
+            };
+            quiet
+        });
+        quiet
+    }
+
+    /// The arrays of a function's body that are nothing but a frame
+    /// (fm3 log 183): declared at its top level as `T a[] = frame x$`,
+    /// every mention of the name a side of `[==]` or `[!=]`, and every
+    /// statement after the declaration, to the last that mentions it,
+    /// one that can push into no stream. Such an array is read where
+    /// the stream's items lie; any other keeps its copy
+    fn frame_only_arrays(&self, body: &[Stmt]) -> Names {
+        let mut out = Names::new();
+        // no variable is in scope here: a name that is a local reads
+        // as a call to `quiet`, which then says no, the safe way
+        let none = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Fn, func: None, below: None, product_bound: None };
+        for (i, s) in body.iter().enumerate() {
+            let Stmt::Var(v) = s else { continue };
+            let framed = matches!(&v.init, Some(Init::Value(e)) if is_frame(e));
+            if !v.arr || !framed || v.rate.is_some() {
+                continue;
+            }
+            // every mention, and those that are a side of the operator
+            let (mut all, mut sides) = (0, 0);
+            let mut last = i;
+            for (j, t) in body.iter().enumerate() {
+                let before = all;
+                walk_stmt(t, &mut |x| {
+                    match &x.kind {
+                        ExprKind::Seq(n) | ExprKind::Name(n) | ExprKind::Arr(n) if *n == v.name => all += 1,
+                        ExprKind::Phrase(parts) if matches!(parts.as_slice(), [Part::Word(w)] if *w == v.name) => all += 1,
+                        ExprKind::Bin(op, l, r) if matches!(op.as_str(), "[==]" | "[!=]") => {
+                            sides += [l, r].iter().filter(|e| matches!(&e.kind, ExprKind::Seq(n) if *n == v.name)).count();
+                        }
+                        _ => {}
+                    }
+                    true
+                });
+                if all > before {
+                    last = j;
+                }
+            }
+            let named_again = body.iter().any(|t| declares_name(t, &v.name, s));
+            if all != sides || named_again {
+                continue;
+            }
+            if body[i + 1..=last].iter().all(|t| self.quiet_stmt(t, &none)) {
+                out.insert(v.name.clone());
+            }
+        }
+        out
+    }
+
+    /// a statement that can push into no stream: a result given, a
+    /// local declared, a `check`, an `if` statement of such, each over
+    /// quiet expressions
+    fn quiet_stmt(&self, s: &Stmt, b: &Body) -> bool {
+        match s {
+            Stmt::Var(v) => match &v.init {
+                None => true,
+                Some(Init::Value(e)) => self.quiet(e, b),
+                Some(Init::Construct(args)) => args.iter().all(|a| self.quiet(&a.value, b)),
+                Some(Init::Pushes { .. }) => false,
+            },
+            Stmt::Assign { targets, value, .. } => targets.iter().all(|t| t.pushed && !t.seq && t.feature.is_none()) && self.quiet(value, b),
+            Stmt::Check { cond, .. } => self.quiet(cond, b),
+            Stmt::If { cond, then, els, on_push, .. } => !on_push && self.quiet(cond, b) && then.iter().chain(els.iter().flatten()).all(|t| self.quiet_stmt(t, b)),
+            _ => false,
+        }
     }
 
     /// `x$ + _`, `_ * x$`: a reduction by an operator; `+` is the
@@ -10381,6 +10738,13 @@ impl Lowerer {
                 let word = if self.all_queues { "frame_queue" } else { "frame" };
                 let moved = |_: &mut Lowerer, out: &str, b: &mut Body| b.line(&format!("{}: {}[], {}: index, {}: {} = {}({})", ft, eir, k, out, sty.ir(), word, s.text));
                 self.rebind_stream(&sname, &s, &moved, b, line)?;
+                // asked for where the items lie (fm3 log 183): the view
+                // itself, under the stream's type, for `whole_same` and
+                // an array that is nothing but a frame to read in place
+                if std::mem::take(&mut self.view_wanted) {
+                    self.view_given = true;
+                    return Ok(Some(Val { text: f, ty: ty.clone(), literal: false }));
+                }
                 Ok(Some(self.copy_view(&elem, &f, b, dst)))
             }
             ("ended", false, []) => {
@@ -11932,4 +12296,70 @@ fn fits_literal(v: &Val, ty: &Ty) -> bool {
 /// an integer type, abstract or concrete, by its IR name
 fn is_integer(t: &str) -> bool {
     t == "int" || t == "uint" || t == "index" || (t.len() > 1 && t.starts_with(['i', 'u']) && t[1..].parse::<u32>().is_ok())
+}
+
+/// `frame x$`, written as it stands
+fn is_frame(e: &Expr) -> bool {
+    matches!(&e.kind, ExprKind::Phrase(parts) if matches!(parts.as_slice(), [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(_), .. })] if w == "frame"))
+}
+
+/// every expression of one statement, and of the statements under it
+fn walk_stmt(s: &Stmt, f: &mut dyn FnMut(&Expr) -> bool) {
+    let init = |v: &super::syntax::VarDecl, f: &mut dyn FnMut(&Expr) -> bool| match &v.init {
+        Some(Init::Value(e)) => super::zeroic::walk(e, f),
+        Some(Init::Construct(args)) => args.iter().for_each(|a| super::zeroic::walk(&a.value, f)),
+        Some(Init::Pushes { items, cond, .. }) => items.iter().chain(cond.iter()).for_each(|e| super::zeroic::walk(e, f)),
+        None => {}
+    };
+    match s {
+        Stmt::Var(v) => {
+            init(v, f);
+            v.rate.iter().for_each(|e| super::zeroic::walk(e, f));
+        }
+        Stmt::Multi { value, .. } | Stmt::Assign { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => super::zeroic::walk(value, f),
+        Stmt::If { cond, then, els, .. } => {
+            super::zeroic::walk(cond, f);
+            then.iter().chain(els.iter().flatten()).for_each(|t| walk_stmt(t, f));
+        }
+        Stmt::Loop { vars, cond, body, .. } => {
+            vars.iter().for_each(|v| init(v, f));
+            cond.iter().for_each(|e| super::zeroic::walk(e, f));
+            body.iter().for_each(|t| walk_stmt(t, f));
+        }
+        Stmt::For { seq, body, .. } => {
+            super::zeroic::walk(seq, f);
+            body.iter().for_each(|t| walk_stmt(t, f));
+        }
+        Stmt::Continue { values, .. } | Stmt::Break { values, .. } => values.iter().for_each(|e| super::zeroic::walk(e, f)),
+        Stmt::Push { target, items, cond, .. } => {
+            super::zeroic::walk(target, f);
+            items.iter().chain(cond.iter()).for_each(|e| super::zeroic::walk(e, f));
+        }
+    }
+}
+
+/// does a statement, or one under it, declare or give a value to this
+/// name, other than the declaration `but` itself?
+fn declares_name(s: &Stmt, name: &str, but: &Stmt) -> bool {
+    if std::ptr::eq(s, but) {
+        return false;
+    }
+    match s {
+        Stmt::Var(v) => v.name == name,
+        Stmt::Multi { vars, .. } => vars.iter().any(|p| p.name == name),
+        Stmt::Assign { targets, .. } => targets.iter().any(|t| t.name == name),
+        Stmt::If { then, els, .. } => then.iter().chain(els.iter().flatten()).any(|t| declares_name(t, name, but)),
+        Stmt::Loop { vars, body, yields, into, .. } => {
+            vars.iter().any(|v| v.name == name)
+                || yields.iter().any(|y| y == name)
+                || match into {
+                    Some(LoopInto::Declare(ps)) => ps.iter().any(|p| p.name == name),
+                    Some(LoopInto::Assign(ts)) => ts.iter().any(|t| t.name == name),
+                    None => false,
+                }
+                || body.iter().any(|t| declares_name(t, name, but))
+        }
+        Stmt::For { var, body, .. } => var == name || body.iter().any(|t| declares_name(t, name, but)),
+        _ => false,
+    }
 }

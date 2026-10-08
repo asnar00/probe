@@ -148,3 +148,35 @@ on (bool a, bool b) << points differing()
 on (bool same) << points that arrived()
     point x$ << point(4, 5) << point(6, 7)
     same << frame x$ [==] [point(4, 5), point(6, 7)]
+
+on (bool a, bool b) << framed twice()
+    int x$ << 4 << 5 << 6
+    a << frame x$ [==] [4, 5, 6]
+    b << frame x$ [==] [4, 5, 6]
+
+on (bool same) << listed first()
+    int x$ << 4 << 5 << 6
+    same << [4, 5, 6] [==] frame x$
+
+on (bool same) << worked out (int k)
+    int x$ << 2 << 4 << 6
+    same << frame x$ [==] [k - 1, k + 1, k * 2]
+
+on (bool a, bool b) << nothing arrived()
+    int x$
+    a << frame x$ [==] []
+    x$ << 1
+    b << frame x$ [==] []
+
+on (bool a, bool b) << a frame named()
+    point x$ << point(4, 5) << point(6, 7)
+    point got[] = frame x$
+    a << got[] [==] [point(4, 5), point(6, 7)]
+    b << got[] [!=] [point(4, 5), point(6, 8)]
+
+on (bool a, bool b) << framed before a push()
+    int x$ << 4 << 5
+    int got[] = frame x$
+    x$ << 6 << 7
+    a << got[] [==] [4, 5]
+    b << frame x$ [==] [6, 7]

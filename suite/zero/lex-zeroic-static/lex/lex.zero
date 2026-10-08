@@ -36,40 +36,6 @@ on (int a, int b) << two arrivals()
     arrive again()
     b << count u$
 
-on (int s) << number start()
-    arrive first()
-    arrive again()
-    token x = peek u$ at (3)
-    s << x.start
-
-on (int n) << number length()
-    arrive first()
-    arrive again()
-    token x = peek u$ at (3)
-    n << x.n
-
-on (kind a, kind b) << kinds()
-    arrive first()
-    arrive again()
-    token x = peek u$ at (0)
-    token y = peek u$ at (1)
-    a << x.kind
-    b << y.kind
-
-on (kind k) << third kind()
-    arrive first()
-    arrive again()
-    token x = peek u$ at (2)
-    k << x.kind
-
-on (kind a, kind b) << kinds tail()
-    arrive first()
-    arrive again()
-    token x = peek u$ at (3)
-    token y = peek u$ at (4)
-    a << x.kind
-    b << y.kind
-
 on (bool same) << lexed right()
     arrive first()
     arrive again()

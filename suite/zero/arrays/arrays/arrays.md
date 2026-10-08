@@ -21,6 +21,8 @@ Sixteen forms, a function each: an array from a list, from a range, from a text;
 ## two arrays compared as wholes
 An operation applied to each item of an array is written plainly, and an operation on the array as a whole is written in square brackets (fm3 question 77, log 164). `a[] + b[]` adds each pair. `a[] [==] b[]` is one `bool`: the two arrays have the same length and the same items in the same order; `a[] [!=] b[]` is its opposite. Both sides are arrays, a name, a list or a range written out, a `frame`; a `string` stands as its characters, so `s [==] cs[]` compares a text with an array of them. It is read where `==` is read and binds as `==` does. `the same`, `differing by an item`, `differing by length`, `two empty`, `not the same`, `a text and its letters`, `compared for a condition` and `what arrived` are its cases.
 
+**Nothing is copied to compare** (fm3 log 183). A list written out as one side, `frame x$ [==] [4, 5, 6]`, is no array: its length is in the text, so the other side's is compared with that number once, and the items are compared each against the value where it stands, leaving at the first that differs. An item that is not a constant, `[k - 1, k + 1, k * 2]` in `worked out`, is worked out before anything is compared, in the order written. And `frame x$` as one side is read where the stream's items lie, with no array made of them; so is an array that is nothing but a frame, `point got[] = frame x$` in `a frame named`, where every use of it is a side of `[==]` or `[!=]`. That is done only where nothing can push into the stream between the frame and the last read of its items: `framed before a push` pushes in between, so its `got[]` is the copy it always was. `frame` moves the reader whether or not anything is copied: `framed twice` frames one stream twice and sees everything and then nothing, and `nothing arrived` compares with an empty list. `listed first` writes the list on the left.
+
 Refused: one value or a stream on either side, `a[] [==] 2`, `a[] [==] x$` (the array of what has arrived is `frame x$`); two arrays of different types of item; arrays of structs. `[<]`, `[+]` and the other bracketed operators are refused as not ruled. And `if (a[] == b[])`, a bool for each pair where one is wanted, is refused showing the line with `[==]`; where an array is wanted, a plain comparison's answer would be an array of `bool`, which is not built.
 
 ## what is refused
@@ -42,7 +44,7 @@ Refused: one value or a stream on either side, `a[] [==] 2`, `a[] [==] x$` (the 
 - `on (int r[]) = squares to (int k)`: a function gives its result by pushing it, an array as any other.
 
 ## what is not here
-An operation on an array as a whole written in square brackets, `a[] [==] b[]`, `[sort] (a[])` (fm3 question 77): ruled, and the next piece of work. In this store every operator and every function on an array means what it meant on a sequence given whole: an operator and a function of one item are applied to each, and a function declared over an array is handed it.
+`[sort] (a[])` and the other operations on an array as a whole but `[==]` and `[!=]` (fm3 question 77): ruled, and not built. A comparison applied to each item, `a[] == b[]`, whose answer is an array of `bool`: not built.
 
 ## testing
 >listed() → 4
@@ -74,3 +76,10 @@ An operation on an array as a whole written in square brackets, `a[] [==] b[]`, 
 >points the same() → 1, 0
 >points differing() → 0, 0
 >points that arrived() → 1
+>framed twice() → 1, 0
+>listed first() → 1
+>worked out (3) → 1
+>worked out (4) → 0
+>nothing arrived() → 1, 0
+>a frame named() → 1, 1
+>framed before a push() → 1, 1

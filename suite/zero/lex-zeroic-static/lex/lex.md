@@ -14,10 +14,10 @@ A token is its kind (`word`, `number`, or `mark` for punctuation), the index of 
 It is wired twice, as the walking lexer is. `token u$ = lex(src$)` is the lexer on `char src$`, a stream of the store's own that the program pushes the two arrivals into and ends. Nothing reads `src$` but the lexer, and every push into it is of a string literal, so it has no storage: `src$ << "let x = 4"` is a loop the compiler writes that says nine, with the lexer's lines in it and what they keep carried round it (parity hop seventeen, fm3 log 134), and `end src$` is its last tick. `token t$ = lex(in$)` is the same lexer on the input device, which the platform fills before the program starts and which has storage, so there the compiler writes the walk itself.
 
 ## interface
-- `kind of (c)` classes a character: `space`, `word` for a letter, `number` for a digit, `mark` for punctuation. A case reads a `kind` as its place in the type, 0 to 3, so `kinds() → 1, 1` is two words.
+- `kind of (c)` classes a character: `space`, `word` for a letter, `number` for a digit, `mark` for punctuation. In a list written out a `kind` is its name, `token(word, 0, 3)`.
 - `lex (c$)` is the stream processor; `t$ = lex(in$)` wires it to the input device and `u$ = lex(src$)` to the store's own stream.
 - `arrive first` pushes the first arrival, `"let x = 4"`, into `src$`; `arrive again` pushes the second, `"2;\n"`, and ends the stream.
-- `two arrivals`, `number start`, `number length`, `kinds`, `third kind`, `kinds tail`, `a word at the end` and `lexed` are the cases of `suite/zero/lex`, each as it is there.
+- `two arrivals`, `a word at the end` and `lexed` are the cases of `suite/zero/lex`, each as it is there. `lexed right` says what the lexer gave as one array, `got[] [==] [token(word, 0, 3), token(word, 4, 1), token(mark, 6, 1), token(number, 8, 2), token(mark, 10, 1)]`: the whole of what that store's `number start`, `number length`, `kinds`, `third kind` and `kinds tail` each `peek` at a part of, which stood here beside it until the comparison cost what they did (fm3 log 183). `token got[] = frame u$` is read where the stream's tokens lie, and the list is compared a field at a time against its own numbers: nothing is copied.
 
 ## rules
 - A token goes out when the character after it arrives, or the input ends: after the first arrival three tokens have left and `4` is in progress; after the second, `42` (start 8, length 2) and `;` follow, and the newline is a space.
@@ -27,11 +27,6 @@ It is wired twice, as the walking lexer is. `token u$ = lex(src$)` is the lexer 
 
 ## testing
 >two arrivals() → 3, 5
->number start() → 8
->number length() → 2
->kinds() → 1, 1
->third kind() → 3
->kinds tail() → 2, 3
 >lexed right() → 1
 >a word at the end() → 0, 1
 >lexed() with in "let x = 4" → 3
