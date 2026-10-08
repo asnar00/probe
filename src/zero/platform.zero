@@ -45,6 +45,31 @@ on (char o$) << (float x)
             o$ << char(48 + (digits / p) % 10)
             continue (p / 10)
 
+on (char o$) << (time x)
+    time m = if (x < 0 s) then (0 s - x) else (x)
+    int64 n = (int64(m * 2000000000) + 1) / 2
+    if (x < 0 s)
+        if (n > 0)
+            o$ << char(45)
+    int64 unit = if (n == 0) then (1000000000) else (if (n >= 1000000000) then (1000000000) else (if (n >= 1000000) then (1000000) else (if (n >= 1000) then (1000) else (1))))
+    o$ << n / unit
+    int64 rest = n % unit
+    if (rest != 0)
+        o$ << char(46)
+        int64 scale, int64 digits = loop (int64 scale = unit, int64 digits = rest) while (digits % 10 == 0) yields scale, digits
+            continue (scale / 10, digits / 10)
+        loop (int64 p = scale / 10) while (p > 0)
+            o$ << char(48 + (digits / p) % 10)
+            continue (p / 10)
+    o$ << char(32)
+    if (unit == 1000000)
+        o$ << char(109)
+    else if (unit == 1000)
+        o$ << char(117)
+    else if (unit == 1)
+        o$ << char(110)
+    o$ << char(115)
+
 on (char o$) << (bool b)
     if (b)
         o$ << "true"

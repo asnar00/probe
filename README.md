@@ -277,6 +277,14 @@ cargo run -- count suite/zero/lex-zeroic.expected.ssa two_arrivals --after=__zer
 cargo run -- zero meter suite/zero                 # the lines of each store that use a non-zeroic form, and the total
 ```
 
+A whole-number literal is held to the type it is given to (fm3 log 173): `uint8 low = 300` is refused naming its line and that a `uint8` holds 0 to 255, and a literal given to an abstract `int` is refused under the products whose `int` cannot hold it, the width reaching the front end where a case is resolved. A conversion is a type applied to a value, `float(n)`, `int(x)`, `uint8(300)`, and none is refused. A `time` is written out as the language reads it, to the nanosecond, in the largest unit in which it is at least 1; with `time t = 250 ms` this writes `250 ms`, `2.5 s`, `10 s`, `333.333333 ms` and `-250 ms`:
+
+```
+    out$ << t << "\n" << t * 10 << "\n" << t * 40 << "\n" << 1 s / 3 << "\n" << 0 s - t
+```
+
+`suite/zero/types/types/types.zero:226`. The method is the platform's own text, `on (char o$) << (time x)` in `src/zero/platform.zero`, written with character codes and no string, since a string there renumbers every store's data.
+
 A stream processor may be written with no loop in it, each line holding for every item that arrives (fm3 question 75; `src/zero/zeroic.rs`, `suite/zero/zeroic`). This is the lexer of `suite/zero/lex-zeroic`, whole:
 
 ```

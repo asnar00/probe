@@ -48,10 +48,30 @@ pub fn int_bits(policy: &ssa::Policy) -> u32 {
     }
 }
 
+/// The IR's refusal of a literal its type cannot hold, in zero's words
+/// (fm3 log 173). The front end holds a literal to its type where it
+/// is given one and names the line; this is for one that reached the
+/// IR unchecked, so that no programmer is shown `iconst`. It names the
+/// function, which is all the IR knows
+fn unheld(e: &str) -> Option<String> {
+    let (head, rest) = e.split_once(": iconst ")?;
+    let (n, ty) = rest.split_once(" does not fit in type ")?;
+    let ty = ty.trim();
+    let bits: u32 = ty.get(1..)?.parse().ok()?;
+    let (name, range) = match &ty[..1] {
+        "u" => (format!("uint{}", bits), format!("0 to {}", (1u128 << bits) - 1)),
+        "i" => (format!("int{}", bits), format!("-{} to {}", 1u128 << (bits - 1), (1u128 << (bits - 1)) - 1)),
+        _ => return None,
+    };
+    // `line 0: f: entry`: the function is the word before the block's
+    let func = head.split(": ").nth(1).unwrap_or("?");
+    Some(format!("in '{}': {} does not fit {} {}, which holds {}. (The compiler should have named the line: a literal reached the IR unchecked.)", func, n, if name.starts_with('i') { "an" } else { "a" }, name, range))
+}
+
 /// the lowered store as a module under a policy: parsed, resolved,
 /// verified, optimized, verified again
 pub fn build(ir: &str, policy: &ssa::Policy, level: usize) -> Result<ssa::Module, String> {
-    let mut module = ssa::parse_with(&ssa::with_prelude(ir), policy).map_err(|e| format!("the lowered IR did not parse: {}", e))?;
+    let mut module = ssa::parse_with(&ssa::with_prelude(ir), policy).map_err(|e| unheld(&e.to_string()).unwrap_or_else(|| format!("the lowered IR did not parse: {}", e)))?;
     ssa::resolve_types(&mut module, policy);
     ssa::verify(&module).map_err(|errs| format!("the lowered IR did not verify: {}", errs.join("; ")))?;
     opt::optimize(&mut module, level);
@@ -2891,6 +2911,118 @@ mod tests {
         // an asking in one arm is not in hand in the other
         assert_eq!(counts("on (int n) << f (int k)\n    int s$ << 1 << 2\n    n << count s$ if (k > 0)\n         else count s$ + 1\n"), 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A conversion between an abstract whole number and a library
+    /// number, a float or a time, in a function whose first line names
+    /// no abstract type (fm3 log 173): the lowered IR did not parse,
+    /// "no 'conv' takes (int) giving f64", the IR's `conv` not asking
+    /// the policy how wide a body's `int` is. The sixteen pairs that
+    /// broke, in both forms, under two products
+    #[test]
+    fn a_conversion_takes_an_abstract_int() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-conv-abstract");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>run() → \"true\"\n").unwrap();
+        let lit = |t: &str| if t == "time" { "55 s" } else { "55" };
+        let wasm = suite::backend_policy(Backend::Wasm).unwrap();
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let mut tried = 0;
+        for whole in ["int", "uint"] {
+            for other in ["float", "float32", "float64", "time"] {
+                for (f, t) in [(whole, other), (other, whole)] {
+                    let same = if t == "time" { "b == 55 s" } else { "b == 55" };
+                    let a = format!("on run()\n    {} a = {}\n    {} b = {}(a)\n    out$ << ({})\n", f, lit(f), t, t, same);
+                    let b = format!("on ({} b) << turned ({} a)\n    b << {}(a)\n\non run()\n    {} a = {}\n    {} b = turned (a)\n    out$ << ({})\n", t, f, t, f, lit(f), t, same);
+                    for code in [a, b] {
+                        std::fs::write(dir.join("h/h.zero"), &code).unwrap();
+                        for product in ["int: 32\nfloat: 32\n", "int: 64\nfloat: 64\n"] {
+                            std::fs::write(dir.join("product.md"), format!("# product\n\n{}", product)).unwrap();
+                            let s = store::read(&dir).unwrap();
+                            let l = lower::lower(&s).unwrap();
+                            for policy in [&wasm, &native] {
+                                if let Err(e) = build(&l.ir, &store_policy(&s, policy), 1) {
+                                    panic!("{} under {}: {}", code, product, e);
+                                }
+                                tried += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(tried, 128);
+    }
+
+    /// A literal is held to the type it is given to (fm3 log 173): the
+    /// IR said "iconst 300 does not fit in type u8", or took the
+    /// literal and wrapped it. Each place a literal is given a type,
+    /// the abstract `int` under two products, a time written as a
+    /// decimal, and the words for one that reaches the IR unchecked
+    #[test]
+    fn a_literal_is_held_to_its_type() {
+        let dir = std::env::temp_dir().join("probe-zero-literal-held");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>run() → \"?\"\n").unwrap();
+        let write = |code: &str, product: &str| {
+            std::fs::write(dir.join("h/h.zero"), code).unwrap();
+            std::fs::write(dir.join("product.md"), format!("# product\n\n{}", product)).unwrap();
+        };
+        // lowered, its case resolved under the store's product
+        let checked = |code: &str, product: &str| -> Result<String, String> {
+            write(code, product);
+            let s = store::read(&dir).map_err(|e| e.to_string())?;
+            let l = lower::lower(&s).map_err(|e| e.to_string())?;
+            let policy = store_policy(&s, &suite::backend_policy(Backend::Native).unwrap());
+            calls_of(&s, &l, &policy)?;
+            build(&l.ir, &policy, 1)?;
+            Ok(l.ir)
+        };
+        let refused = |code: &str, product: &str, what: &str| {
+            let e = checked(code, product).err().unwrap_or_else(|| panic!("not refused: {}", code));
+            assert!(e.ends_with(what), "{}: {}", code, e);
+        };
+        let u8s = "300 does not fit a uint8, which holds 0 to 255. The written conversion, `uint8(300)`, keeps the low 8 bits";
+        // a declaration, an operator, a comparison
+        refused("on run()\n    uint8 low = 300\n    out$ << low\n", "", &format!("h.zero:2: {}", u8s));
+        refused("on run()\n    uint8 low = 3\n    uint8 b = low + 300\n    out$ << b\n", "", &format!("h.zero:3: {}", u8s));
+        refused("on run()\n    uint8 low = 3\n    out$ << (low == 300)\n", "", &format!("h.zero:3: {}", u8s));
+        // a field's default, a construction, a feature-scope stream and variable
+        refused("type P =\n    uint8 a = 300\n\non run()\n    P p\n    out$ << p.a\n", "", &format!("h.zero:2: {}", u8s));
+        refused("type P =\n    uint8 a = 0\n\non run()\n    P p(300)\n    out$ << p.a\n", "", &format!("h.zero:5: {}", u8s));
+        refused("uint8 n$ << 300\n\non run()\n    out$ << n$\n", "", &format!("h.zero:1: {}", u8s));
+        refused("uint8 n = 300\n\non run()\n    out$ << n\n", "", &format!("h.zero:1: {}", u8s));
+        // an argument, a result, a list's item, an arm, a push
+        refused("on (uint8 r) << f (uint8 x)\n    r << x\n\non run()\n    out$ << f (300)\n", "", &format!("h.zero:5: {}", u8s));
+        refused("on (uint8 r) << f ()\n    r << 300\n\non run()\n    out$ << f ()\n", "", &format!("h.zero:2: {}", u8s));
+        refused("on run()\n    uint8 x[] = [1, 300]\n    out$ << x[1]\n", "", &format!("h.zero:2: {}", u8s));
+        refused("on run()\n    uint8 a = 100\n    uint8 b = if (a > 0) then (300) else (a)\n    out$ << b\n", "", &format!("h.zero:3: {}", u8s));
+        refused("on run()\n    uint8 x$ << 1\n    x$ << 300\n    out$ << x$\n", "", &format!("h.zero:3: {}", u8s));
+        // below a signed type, below zero in an unsigned one, a char
+        refused("on run()\n    int8 low = -129\n    out$ << low\n", "", "h.zero:2: -129 does not fit an int8, which holds -128 to 127. The written conversion, `int8(-129)`, keeps the low 8 bits");
+        refused("on run()\n    uint8 low = -1\n    out$ << low\n", "", "h.zero:2: -1 does not fit a uint8, which holds 0 to 255. The written conversion, `uint8(-1)`, keeps the low 8 bits");
+        refused("on run()\n    char c = 300\n    out$ << c\n", "", "h.zero:2: 300 does not fit a char, which holds 0 to 255. The written conversion, `char(300)`, keeps the low 8 bits");
+        // the ends of each range fit, and the written conversion wraps
+        checked("on run()\n    uint8 a = 255\n    int8 b = -128\n    int8 c = 127\n    uint8 d = uint8(300)\n    uint64 e = 18446744073709551615\n    out$ << a << b << c << d << e\n", "").unwrap();
+        // an abstract type's range is the product's
+        let wide = "3000000000 does not fit an int here: this product's int is 32 bits and holds -2147483648 to 2147483647. How wide an int is belongs to the product, `int: 64` in its product.md; a type that says its width, `int64`, holds it on every product";
+        let big = "on run()\n    int big = 3000000000\n    out$ << big\n";
+        refused(big, "int: 32\n", &format!("h.zero:2: {}", wide));
+        checked(big, "int: 64\n").unwrap();
+        refused("on run()\n    out$ << 3000000000\n", "int: 32\n", &format!("h.zero:2: {}", wide));
+        refused("on run()\n    int a = 5\n    out$ << a + 3000000000\n", "int: 32\n", &format!("h.zero:3: {}", wide));
+        // ... and a concrete type beside it takes the literal under any
+        checked("on run()\n    int64 a = 3000000000\n    out$ << a + 3000000000\n", "int: 32\n").unwrap();
+        refused("on run()\n    uint low = -1\n    out$ << low\n", "int: 32\n", "h.zero:2: -1 does not fit a uint here: this product's uint is 32 bits and holds 0 to 4294967295. How wide a uint is belongs to the product, `int: 64` in its product.md; a type that says its width, `uint64`, holds it on every product");
+        // a time written as a decimal is the whole number of a finer unit
+        let ir = checked("on run()\n    out$ << 2.5 s << 0.25 s << 1.000001 ms\n", "").unwrap();
+        assert!(ir.contains(": time = millis(2500)\n") && ir.contains(": time = millis(250)\n") && ir.contains(": time = nanos(1000001)\n"), "{}", ir);
+        refused("on run()\n    out$ << 1.5 ns\n", "", "h.zero:2: a time is written to the nanosecond: `1.5 ns` is finer");
+        // one that reaches the IR unchecked is still said in zero's words
+        assert_eq!(unheld("line 0: run: entry: iconst 300 does not fit in type u8").unwrap(), "in 'run': 300 does not fit a uint8, which holds 0 to 255. (The compiler should have named the line: a literal reached the IR unchecked.)");
+        assert_eq!(unheld("line 0: f: b1: iconst -129 does not fit in type i8").unwrap(), "in 'f': -129 does not fit an int8, which holds -128 to 127. (The compiler should have named the line: a literal reached the IR unchecked.)");
+        assert!(unheld("line 3: unknown opcode 'x'").is_none());
     }
 
     /// a product's bound (log 41) reaches every loop of the function it

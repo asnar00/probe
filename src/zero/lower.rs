@@ -408,6 +408,62 @@ pub struct Lowered {
     /// the product's mark per feature (log 71), the static-off ones
     /// included though they are not among the features
     pub marks: HashMap<String, Mark>,
+    /// the whole-number literals given to an abstract `int` or `uint`
+    /// that a product of 32 bits could not hold (fm3 log 173): the text
+    /// is one for every product, so they are checked where the width is
+    /// known, `resolve_case`
+    pub wide: Vec<WideLiteral>,
+}
+
+/// a literal an abstract type holds under some products and not others
+#[derive(Clone, Debug)]
+pub struct WideLiteral {
+    pub file: String,
+    pub line: usize,
+    pub value: i128,
+    /// `int` or `uint`
+    pub ty: String,
+}
+
+/// the range of whole numbers a type holds whatever the product: a
+/// concrete width's, a `char`'s; none for an abstract type
+fn whole_range(ty: &Ty) -> Option<(i128, i128)> {
+    match ty {
+        Ty::Char => Some((0, 255)),
+        Ty::Num(n) if n.len() > 1 => {
+            let w: u32 = n[1..].parse().ok()?;
+            match &n[..1] {
+                "i" if w <= 64 => Some((-(1i128 << (w - 1)), (1i128 << (w - 1)) - 1)),
+                // not `uint64`: the tree keeps a literal in 64 signed
+                // bits, so one written past 2^63 and a negative one
+                // are the same number here and neither can be refused
+                "u" if w < 64 => Some((0, (1i128 << w) - 1)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// are the store's wide literals held by an `int` of this many bits
+/// (fm3 log 173)? Refused naming the literal's own line, the product's
+/// width and the range
+pub fn literals_fit(lowered: &Lowered, int_bits: u32) -> Result<(), Error> {
+    for w in &lowered.wide {
+        let (lo, hi) = if w.ty == "uint" { (0, (1i128 << int_bits) - 1) } else { (-(1i128 << (int_bits - 1)), (1i128 << (int_bits - 1)) - 1) };
+        // at 64 bits a `uint`'s literal past 2^63 reads as a negative
+        // number, the tree keeping 64 signed bits: it cannot be told
+        // from one, and is let through as the IR lets it
+        if w.ty == "uint" && int_bits >= 64 {
+            continue;
+        }
+        if w.value < lo || w.value > hi {
+            let a = if w.ty == "uint" { "a uint" } else { "an int" };
+            let wider = if w.ty == "uint" { "uint64" } else { "int64" };
+            return Err(lex::error(&w.file, w.line, format!("{} does not fit {} here: this product's {} is {} bits and holds {} to {}. How wide {} is belongs to the product, `int: 64` in its product.md; a type that says its width, `{}`, holds it on every product", w.value, a, w.ty, int_bits, lo, hi, a, wider)));
+        }
+    }
+    Ok(())
 }
 
 /// The rounds of dispatch on a literal (log 36, 47, 52): first as its
@@ -2119,7 +2175,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), wide: Vec::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2417,7 +2473,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         pruned = prune(&ir.replacen(&reset, "", 1), &roots);
     }
     let ir = pruned;
-    Ok(Lowered { ir, funcs: l.funcs, features: l.features, marks: store.marks.clone() })
+    Ok(Lowered { ir, funcs: l.funcs, features: l.features, marks: store.marks.clone(), wide: l.wide })
 }
 
 /// Each queue's push takes its word (fm3 log 108). `ended` is written
@@ -2886,6 +2942,9 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str, int_bits: u32) -
     let ExprKind::Phrase(parts) = &case.call.kind else {
         return Err(lex::error(file, case.line, "a case calls a function"));
     };
+    // this is where the front end is told how wide the product's `int`
+    // is, so it is where a literal given to an `int` is held to it
+    literals_fit(lowered, int_bits)?;
     let (cands, args) = find_methods(&lowered.funcs, parts, &|_| false, file, case.line)?;
     let cands: Vec<FnInfo> = cands.into_iter().cloned().collect();
     // a case's arguments are literals: a method takes them when each is
@@ -3084,6 +3143,8 @@ fn zero_ty(t: &Ty) -> String {
 }
 
 struct Lowerer {
+    /// literals an abstract type may not hold under every product
+    wide: Vec<WideLiteral>,
     funcs: Vec<FnInfo>,
     types: HashMap<String, TypeInfo>,
     /// the `type` lines, in declaration order
@@ -3852,6 +3913,9 @@ impl Lowerer {
                     let ty = self.ty(&f.ty, f.seq, file, f.line)?;
                     if out.iter().any(|(n, _, _)| n == &f.name) {
                         return Err(lex::error(file, f.line, format!("field '{}' is named twice", f.name)));
+                    }
+                    if let Some(Expr { kind: ExprKind::Int(v), line }) = &f.default {
+                        self.holds(&Val { text: v.to_string(), ty: ty.clone(), literal: true }, &ty, file, *line)?;
                     }
                     let default = match &f.default {
                         None => None,
@@ -6973,6 +7037,43 @@ impl Lowerer {
         Ok(Val { text: out, ty, literal: false })
     }
 
+    /// A whole-number literal is held to the type it is given to (fm3
+    /// log 173): refused in zero's words where a concrete type, a `char`
+    /// or an unsigned type cannot hold it, and kept for `resolve_case`
+    /// where an abstract `int` or `uint` holds it under some products
+    /// and not others. The IR takes any literal that fits the width
+    /// signed or unsigned, so `uint8 x = -1` and, at 32 bits,
+    /// `int x = 3000000000` passed it and wrapped
+    fn holds(&mut self, v: &Val, ty: &Ty, file: &str, line: usize) -> Result<(), Error> {
+        if !v.literal {
+            return Ok(());
+        }
+        let Ok(n) = v.text.parse::<i128>() else {
+            return Ok(());
+        };
+        if let Some((lo, hi)) = whole_range(ty) {
+            if n < lo || n > hi {
+                let bits = match ty {
+                    Ty::Num(t) => t[1..].to_string(),
+                    _ => "8".to_string(),
+                };
+                let a = zero_ty(ty);
+                let an = if a.starts_with('i') { "an" } else { "a" };
+                return Err(lex::error(file, line, format!("{} does not fit {} {}, which holds {} to {}. The written conversion, `{}({})`, keeps the low {} bits", n, an, a, lo, hi, a, n, bits)));
+            }
+            return Ok(());
+        }
+        match ty {
+            Ty::Num(t) if (t == "int" && (n < i32::MIN as i128 || n > i32::MAX as i128)) || (t == "uint" && (n < 0 || n > u32::MAX as i128)) => {
+                if !self.wide.iter().any(|w| w.file == file && w.line == line && w.value == n) {
+                    self.wide.push(WideLiteral { file: file.to_string(), line, value: n, ty: t.clone() });
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// a value converted to a wider number type (log 37): the IR's
     /// `conv`, under `dst`'s next version when it is that type; a
     /// conversion that can lose bits carries a note above it (log 46),
@@ -7004,6 +7105,8 @@ impl Lowerer {
         }
         if v.literal {
             if fits_literal(&v, ty) {
+                let file = b.file.clone();
+                self.holds(&v, ty, &file, line)?;
                 return Ok(Val { text: v.text, ty: ty.clone(), literal: true });
             }
             return Err(lex::error(&b.file, line, format!("{} is {} but the value is a decimal", what, zero_ty(ty))));
@@ -7034,6 +7137,8 @@ impl Lowerer {
             if !fits_literal(&v, &var.ty) {
                 return Err(lex::error(&b.file, line, format!("'{}' is {} but the value is {}", name, var.ty.ir(), v.ty.ir())));
             }
+            let file = b.file.clone();
+            self.holds(&v, &var.ty, &file, line)?;
             let ir = b.define(name, var.ty.clone());
             b.line(&format!("{}: {} = const {}", ir, var.ty.ir(), v.text));
             return Ok(());
@@ -8227,12 +8332,14 @@ impl Lowerer {
             if !fits_literal(&lv, &rv.ty) {
                 return Err(lex::error(&file, line, format!("'{}' on a decimal and a {}", op, zero_ty(&rv.ty))));
             }
+            self.holds(&lv, &rv.ty, &file, line)?;
             lv.ty = rv.ty.clone();
         }
         if rv.literal && !lv.literal {
             if !fits_literal(&rv, &lv.ty) {
                 return Err(lex::error(&file, line, format!("'{}' on a {} and a decimal", op, zero_ty(&lv.ty))));
             }
+            self.holds(&rv, &lv.ty, &file, line)?;
             rv.ty = lv.ty.clone();
         }
         if lv.literal && rv.literal {
@@ -9100,6 +9207,7 @@ impl Lowerer {
             if v.literal {
                 let p = &info.params[1].1;
                 v.ty = if is_concrete(p) { p.clone() } else if v.text.contains('.') { float_ty() } else { int_ty() };
+                self.holds(&v, &v.ty.clone(), &file, line)?;
             }
             let v = b.materialize(&v);
             self.loose_push = true;
@@ -9112,6 +9220,8 @@ impl Lowerer {
             return Ok(());
         }
         if v.literal && fits_literal(&v, &elem) {
+            let file = b.file.clone();
+            self.holds(&v, &elem, &file, line)?;
             v.ty = elem.clone();
             self.emit_push(name, s, &v, b);
             return Ok(());
@@ -10109,7 +10219,12 @@ impl Lowerer {
                     Some(Ty::Bool) => return Err(lex::error(&file, e.line, "a number where a bool is wanted")),
                     _ => Ty::Num("int".into()),
                 };
-                Ok(Val { text: v.to_string(), ty, literal: true })
+                let v = Val { text: v.to_string(), ty, literal: true };
+                // held to the type the place wants, where it has one
+                if want.is_some() {
+                    self.holds(&v, &v.ty.clone(), &file, e.line)?;
+                }
+                Ok(v)
             }
             ExprKind::Float(s) => {
                 let ty = match want {
@@ -10192,7 +10307,16 @@ impl Lowerer {
                 let ty = Ty::Num("time".into());
                 let n = match inner.kind {
                     ExprKind::Int(n) => n.to_string(),
-                    ExprKind::Float(_) => return Err(lex::error(&file, e.line, "a time is a whole number of s, ms, us or ns")),
+                    // a decimal (fm3 log 173, question 103): what the
+                    // language writes for a time it reads, `2.5 s`. It
+                    // is the whole number of the finest unit its digits
+                    // reach, `2500 ms` to the IR, down to a nanosecond
+                    ExprKind::Float(ref s) => {
+                        let (f, n) = decimal_time(s, u).map_err(|m| lex::error(&file, e.line, m))?;
+                        let out = name_for(dst, &ty, b);
+                        b.line(&format!("{}: time = {}({})", out, f, n));
+                        return Ok(Val { text: out, ty, literal: false });
+                    }
                     _ => {
                         // a value with a unit: an integer, widened to the
                         // library's i64 (log 33)
@@ -11346,6 +11470,32 @@ fn behind_the_reader(word: &str, what: &str, v: &Val, file: &str, line: usize) -
         return Err(lex::error(file, line, format!("'{}' {}: {} is behind it", word, what, v.text)));
     }
     Ok(())
+}
+
+/// A time literal written as a decimal, `2.5 s` (fm3 log 173): the
+/// library's function for the finest unit the digits reach and the
+/// whole number of that unit, `millis` and 2500. Refused where the
+/// digits go past a nanosecond, or the number is not plain digits
+fn decimal_time(text: &str, unit: &str) -> Result<(&'static str, String), String> {
+    const UNITS: [(&str, &str); 4] = [("s", "seconds"), ("ms", "millis"), ("us", "micros"), ("ns", "nanos")];
+    let at = UNITS.iter().position(|(u, _)| *u == unit).unwrap();
+    let (neg, body) = match text.strip_prefix('-') {
+        Some(b) => (true, b),
+        None => (false, text),
+    };
+    let (whole, frac) = body.split_once('.').unwrap_or((body, ""));
+    if !whole.bytes().all(|c| c.is_ascii_digit()) || !frac.bytes().all(|c| c.is_ascii_digit()) {
+        return Err(format!("a time is written in plain digits, `2.5 s`: `{} {}` is not", text, unit));
+    }
+    let frac = frac.trim_end_matches('0');
+    let steps = frac.len().div_ceil(3);
+    if at + steps >= UNITS.len() {
+        return Err(format!("a time is written to the nanosecond: `{} {}` is finer", text, unit));
+    }
+    let digits = format!("{}{:0<width$}", whole, frac, width = steps * 3);
+    let digits = digits.trim_start_matches('0');
+    let n = if digits.is_empty() { "0".to_string() } else { format!("{}{}", if neg { "-" } else { "" }, digits) };
+    Ok((UNITS[at + steps].1, n))
 }
 
 /// zero's `index`

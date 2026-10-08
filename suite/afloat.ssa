@@ -13,6 +13,8 @@
 ;! bigger 3 -5 -> 3
 ;! bigger -3 -5 -> -3
 ;! halve_twice 12 -> 3
+;! inner_int 7 -> 10
+;! inner_time 7 -> 3
 
 ; sqrt(a*a + b*b)
 fn hyp(a: i32, b: i32) -> i32
@@ -74,3 +76,23 @@ fn halve_twice(x: i32) -> i32
     r: i32 = conv y
     ret r
 
+; a body's abstract int converted to a library number and back, in a
+; function whose own first line names no abstract type: the function is
+; no template, so its `int` is abstract until the module is resolved,
+; and `conv` asks the policy for its width as `add` does (fm3 log 173)
+fn inner_int(x: i32) -> i32
+    n: int = conv x
+    m: int = div n, 2
+    f: float = conv m
+    g: float = mul f, 3.5
+    k: int = conv g
+    r: i32 = conv k
+    ret r
+; and to the IR's time, a rational: 7 s halved is 3.5 s, 3 whole
+fn inner_time(x: i32) -> i32
+    n: int = conv x
+    t: time = conv n
+    h: time = div t, 2
+    k: int = conv h
+    r: i32 = conv k
+    ret r

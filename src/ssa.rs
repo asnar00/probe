@@ -5203,7 +5203,11 @@ impl Parser {
                 // a conversion touching a pack is the library's: conv from
                 // float(E, M) to i(W), from u(W) to float(E, M), ...
                 if op == "conv" && (ts.is_pack() || td.is_pack()) {
-                    let callee = self.dispatch(op, &[ts], td)?;
+                    // an abstract `int` on either side converts at the
+                    // policy's width, as it computes at it in `add`: a
+                    // body's `int` is abstract until the module is
+                    // resolved, and the library's `conv` is over `i(W)`
+                    let callee = self.dispatch(op, &[self.policy.resolve(ts)], self.policy.resolve(td))?;
                     return Ok(Inst::Call {
                         dsts: vec![dst],
                         callee,

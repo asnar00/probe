@@ -210,3 +210,22 @@ on (index i) << as an index (int n)
 
 on (int s) << mixed (index i) and (int n)
     s << i + n
+
+on added to a decimal()
+    int whole = 7 / 2
+    float exact = 7.0 / 2.0
+    out$ << float(whole) + exact
+
+on cut to a whole()
+    float exact = 7.0 / 2.0
+    int whole = int(exact)
+    out$ << whole
+
+on times written()
+    time t = 250 ms
+    out$ << t << "\n" << t * 10 << "\n" << t * 40 << "\n" << 1 s / 3 << "\n" << 0 s - t
+
+on whole seconds()
+    time t = 2.5 s
+    int n = int(t)
+    out$ << n << " of " << t
