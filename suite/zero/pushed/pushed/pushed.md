@@ -18,7 +18,7 @@ What tells a function from a task or a stream processor, now that all three say 
 - `power of two above (n)` pushes inside a loop that has no `break`: the push is the loop's only way out.
 - `gcd of (a) and (b)` is given what a loop yields, `g << loop (...) ... yields x`.
 - `divide (a) by (b)` pushes two results, the second reading the first; `ordered (a) and (b)` pushes them in the other order from the one its first line names them in; `both of (a) by (b)` takes two from one call, `q, r << divide (a) by (b)`.
-- `sum of (x$)` takes a sequence and pushes one value; `read` pushes a stream's latest item, `n << seen$`.
+- `sum of (x[])` takes an array and pushes one value; `read` pushes a stream's latest item, `n << seen$`.
 - `halved (x)` says a local with `=`, `int half = x / 2`, and pushes its result.
 
 ## rules
@@ -27,7 +27,7 @@ What tells a function from a task or a stream processor, now that all three say 
 - A result nothing pushed when the body ends is the zero of its type.
 - `=` says what a name is: a local is declared with `=` and is not pushed into.
 - One value is pushed once: `y << a << b`, and `(n) times`, `while`, `until` and `forever` on the push of a result, are refused; so is a second push of a result on a path that has pushed it.
-- A function that gives a sequence whole, `on (int r$) = squares to (int k)` in the `sequences` store, keeps `=`: with `<<` it would be a task's first line, and it waits for an array to have its mark (fm3 question 87).
+- A function that gives an array is declared the same way, its result with an array's mark: `on (int r[]) << squares to (int k)` in the `sequences` store, giving it by `r[] << [1 through k] * [1 through k]`, once. The mark is what tells it from a task, whose result is a stream, `i$` (fm3 questions 87 and 90).
 
 ## testing
 >double (21) → 42

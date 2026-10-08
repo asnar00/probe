@@ -257,6 +257,14 @@ on (int n) << answer()
 
 `suite/zero/skeleton/skeleton/skeleton.zero:1-2`. There is one way to declare (fm3 question 77): every function is `on (results) << name (parameters)` and gives its result by pushing it, once; `=` is left for saying what a name is, `int half = x / 2`. A result with no `$` makes a plain function, one with a `$` a task or a stream processor, which produce a stream over time. The form before, `on (int n) = answer()` and `n = 42`, is refused when the program is compiled, each line with the line to write in its place. `suite/zero/pushed` is the store for the form.
 
+```
+on (int n) << how many()
+    int i[] = [1, 2, 3, 4]
+    n << count i[]
+```
+
+`suite/zero/sequences/sequences/sequences.zero:4-6`. An array and a stream are two kinds, and the text shows which a name is (fm3 question 90): `int i[]` is an array, whose items are all there, and `int seen$` a stream, whose items arrive. The mark is part of the name wherever it is written, `i[]` for the whole of it and `i[2]` for one item, and a name declared one way and written the other is refused naming its declaration. A function that gives an array says so on its result, `on (int r[]) << squares to (int k)`. `suite/zero/arrays` is the store for the form, and `probe zero names <store>` prints every marked name of a store, how it is declared and each form it is used in.
+
 ```sh
 cargo run -- zero suite/zero/hello emit            # the store's IR, as text
 cargo run -- zero suite/zero/hello run "run()"     # one ## testing case, natively, on the real clock: the case line, the output as it lands, then → what it gave

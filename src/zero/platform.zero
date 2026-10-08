@@ -51,22 +51,22 @@ on (char o$) << (bool b)
     else
         o$ << "false"
 
-on (char o$) << (int x$)
-    loop (int i = 0) while (i < count x$)
+on (char o$) << (int x[])
+    loop (int i = 0) while (i < count x[])
         if (i > 0)
             o$ << " "
-        o$ << x$[i]
+        o$ << x[i]
         continue (i + 1)
 
-on (char o$) << (float x$)
-    loop (int i = 0) while (i < count x$)
+on (char o$) << (float x[])
+    loop (int i = 0) while (i < count x[])
         if (i > 0)
             o$ << " "
-        o$ << x$[i]
+        o$ << x[i]
         continue (i + 1)
 
 on print (string s)
     out$ << s << "\n"
 
-on print (int x$)
-    out$ << x$ << "\n"
+on print (int x[])
+    out$ << x[] << "\n"

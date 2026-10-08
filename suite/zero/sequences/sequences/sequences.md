@@ -15,7 +15,7 @@ A name ending in `$` is a stream. It is a sequence when its items are all presen
 - `mapped` adds one to every item; `zipped` adds two sequences of different lengths, the shorter reading as zero past its end.
 - `mapped call` applies `doubled (x)` to a list; `zipped call` applies `scaled (a) by (b)` pairwise.
 - `iterated` walks a sequence with `for`, pushing each sum into the feature's stream `total$`, read for its latest item (fm3 question 70).
-- `sum of (x$)` takes a sequence parameter; `passed` calls it with a list. `squares to (k)` gives a sequence result, which `squared` indexes.
+- `sum of (x[])` takes an array; `passed` calls it with a list. `squares to (k)` gives an array, `on (int r[]) << squares to (int k)`, which `squared` indexes.
 - `letters` and `first byte` treat a string as the sequence of bytes it is; `marks total` reduces a feature-scope sequence; `halves` reduces floats.
 - `pushed into`, `read ahead`, `framed sum` and `bytes pushed` use the stream words on sequences: a push after a list, `advance` before an index, `frame` of a range, a push onto a string.
 
@@ -57,4 +57,4 @@ A name ending in `$` is a stream. It is a sequence when its items are all presen
 >bytes pushed() → 333
 
 ## hostile
-`i$[4]` on four items is a failed check from the IR. `_` with no sequence in the call is refused: "'_' goes with a stream among the arguments". `x = 1` on a `for`'s item is refused. `Vec v$ = [Vec(1, 2, 3)]` is refused: "a list of Vec: only numbers and enumerations in this milestone". `int i$ at (1 khz) = [1, 2]` is refused: "a rate goes on an empty stream, `int i$ at (n hz)`, which `<<` then fills". More than 64K bytes of sequences in one case is a failed check in `arena_alloc`.
+`i[4]` on four items is a failed check from the IR. `_` with no sequence in the call is refused: "'_' goes with a stream among the arguments". `x = 1` on a `for`'s item is refused. `Vec v$ = [Vec(1, 2, 3)]` is refused: "a list of Vec: only numbers and enumerations in this milestone". `int i$ at (1 khz) = [1, 2]` is refused: "a rate goes on an empty stream, `int i$ at (n hz)`, which `<<` then fills". More than 64K bytes of sequences in one case is a failed check in `arena_alloc`.

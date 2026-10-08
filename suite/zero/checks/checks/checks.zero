@@ -21,8 +21,8 @@ on (int n) << either (int k)
         n << 1
 
 on (int n) << outside()
-    int i$ = [1, 2]
-    n << i$[5]
+    int i[] = [1, 2]
+    n << i[5]
 
 on (int n) << after printing()
     out$ << "so far" << "\n"

@@ -43,8 +43,8 @@ on (int hi, int lo) << ordered (int a) and (int b)
 on (int q, int r) << both of (int a) by (int b)
     q, r << divide (a) by (b)
 
-on (int n) << sum of (int x$)
-    n << x$ + _
+on (int n) << sum of (int x[])
+    n << x[] + _
 
 on (int n) << summed()
     n << sum of ([1, 2, 3, 4])

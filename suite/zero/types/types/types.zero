@@ -160,8 +160,8 @@ on (int v) << peeked (index i)
     v << peek x$ at (i)
 
 on (int v) << subscripted (index i)
-    int x$ = [10, 20, 30, 40]
-    v << x$[i]
+    int x[] = [10, 20, 30, 40]
+    v << x[i]
 
 on (int v) << first after moving (index n)
     int x$ = [10, 20, 30, 40]
@@ -169,13 +169,13 @@ on (int v) << first after moving (index n)
     v << x$[0]
 
 on (bool b) << more waiting than (index k)
-    int x$ = [10, 20, 30, 40]
-    index n = count x$
+    int x[] = [10, 20, 30, 40]
+    index n = count x[]
     b << n > k
 
 on (index n) << last place()
-    int x$ = [10, 20, 30, 40]
-    n << count x$ - 1
+    int x[] = [10, 20, 30, 40]
+    n << count x[] - 1
 
 on (int v) << the last one()
     int x$ = [10, 20, 30, 40]
@@ -186,11 +186,11 @@ on (index e) << end of span()
     e << s.start + s.n
 
 on (index k) << first above (int limit)
-    int x$ = [10, 20, 30, 40]
+    int x[] = [10, 20, 30, 40]
     k << loop (index i = 0) yields i
-        if (i >= count x$)
+        if (i >= count x[])
             break
-        if (x$[i] > limit)
+        if (x[i] > limit)
             break
         continue (i + 1)
 

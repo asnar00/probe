@@ -20,8 +20,8 @@ on an int64()
     out$ << big
 
 on ints()
-    int i$ = [1 through 3]
-    out$ << i$
+    int i[] = [1 through 3]
+    out$ << i[]
 
 on a frame()
     int i$ << 5 << 6 << 7
@@ -31,8 +31,8 @@ on a float()
     out$ << 2.5
 
 on floats()
-    float32 f$ = [1.5, 3.0, 0.25]
-    out$ << f$
+    float32 f[] = [1.5, 3.0, 0.25]
+    out$ << f[]
 
 on a third()
     float32 t = 1.0 / 3.0

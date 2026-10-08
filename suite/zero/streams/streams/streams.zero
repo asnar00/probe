@@ -35,9 +35,9 @@ on (int n) << advanced()
 
 on (int n) << framed()
     int i$ << 1 << 2 << 3
-    int f$ = frame i$
-    int g$ = frame i$
-    n << count f$ * 10 + count g$ + (f$ + _)
+    int f[] = frame i$
+    int g[] = frame i$
+    n << count f[] * 10 + count g[] + (f[] + _)
 
 on (int n) << walked()
     int i$ << 1 << 2 << 3 << 4
@@ -49,8 +49,8 @@ on (int n) << walked()
 on (int n) << history()
     int i$ << 1 << 2 << 3 << 4
     advance i$ by (3)
-    int h$ = i$ behind (2)
-    n << h$[0] * 10 + h$[1]
+    int h[] = i$ behind (2)
+    n << h[0] * 10 + h[1]
 
 on (int n) << positioned()
     int x$ at (1000 hz) << 1 << 2 << 3
@@ -88,8 +88,8 @@ on (int n) << sampled()
 
 on (int n) << windowed()
     int x$ at (1000 hz) << 1 << 2 << 3 << 4 << 5
-    int w$ = x$ from (2 ms) to (4 ms)
-    n << count w$ * 10 + w$[0]
+    int w[] = x$ from (2 ms) to (4 ms)
+    n << count w[] * 10 + w[0]
 
 on (int n) << tokens()
     token t$ << token(1, 0, 3) << token(3, 4, 1)
