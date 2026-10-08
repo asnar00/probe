@@ -4,6 +4,15 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `probe zero names`, every name with a `$` and each form it is used in — `d28071e` · 2026-10-08
+
+```
+int lit$ = [1, 2, 3]
+int dl$ = doubled(lit$)
+```
+
+`suite/zero/zeroic/zeroic/zeroic.zero:5-6`. fm3's question 90 rules that a stream, `int i$`, and an array, `int a[]`, are two kinds, and before the suite can say so every name in it has to be sorted. `src/zero/kinds.rs` is one walk over a parsed store that scopes a name as the lowering does, and `probe zero names <store>` prints each name declared with a `$`: where, how, and every use with the form it stands in. The list above is given whole and then handed to a processor, so it cannot be told: one of 21 such names in 363, with 47 arrays and 295 streams. Of the 335 names sorted from the text at hop twenty, 331 are sorted the same. Nothing is lowered or refused.
+
 ### zero: `forever` applies to the last item, wiring of several items says so with brackets — `b42aecb` · 2026-10-07
 
 ```
