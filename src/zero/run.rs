@@ -1179,6 +1179,65 @@ mod tests {
         refused("    out$ << (a[] == b[])\n    n << 1", "`==` between arrays is applied to each pair and gives a bool for each, and an array of bool is not built (fm3 question 77). Whether the two arrays are the same, one bool, is `[==]`");
     }
 
+    /// `else` on a push (fm3 question 88, log 169): `x << a if (c) else
+    /// b`, read from the left, a case a line on lines that begin `else`
+    /// indented under the push. It is the `if` statement with a push in
+    /// each arm in the tree, so it lowers to that statement's lines,
+    /// for a result and for a stream; in a stream processor it is one
+    /// item; and a loop word with it is refused, both readings said
+    #[test]
+    fn a_push_takes_else() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-push-else");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (1) → 1\n").unwrap();
+        let emitted = |code: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), code).unwrap();
+            emit(&dir)
+        };
+        let refused = |code: &str, what: &str| {
+            let e = emitted(code).err().unwrap_or_else(|| panic!("not refused: {}", code));
+            assert!(e.contains(what), "{}: {}", code, e);
+        };
+        // a table, a case a line, on the line and under it, and the
+        // same on one line: one text
+        let table = emitted("on (int k) << f (int c)\n    k << 0 if (c <= 32)\n         else 3 if (c > 122)\n         else 1 if (c >= 97)\n         else 3\n").unwrap();
+        assert_eq!(emitted("on (int k) << f (int c)\n    k << 0 if (c <= 32) else 3 if (c > 122) else 1 if (c >= 97) else 3\n").unwrap(), table);
+        assert_eq!(emitted("on (int k) << f (int c)\n    k << 0 if (c <= 32) else 3 if (c > 122)\n      else 1 if (c >= 97) else 3\n").unwrap(), table);
+        // ... and the text of the `if` statements it is written in place of
+        let ladder = emitted("on (int k) << f (int c)\n    if (c <= 32)\n        k << 0\n    else if (c > 122)\n        k << 3\n    else if (c >= 97)\n        k << 1\n    else\n        k << 3\n").unwrap();
+        assert_eq!(ladder, table);
+        // into a stream: one or the other, the `if` covering the whole
+        // push before it (question 91)
+        let either = emitted("on f (int c)\n    out$ << 1 << 2 if (c > 0)\n         else 3 if (c < 0)\n         else 4\n    out$ << 5\n").unwrap();
+        assert!(either.contains("    if _1\n") && either.contains("        __out__int(_3)\n    else\n        _4: u1 = cmp.lt c, 0\n        if _4\n") && either.contains("        else\n            _6: int = const 4\n            __out__int(_6)\n    _7: int = const 5\n"), "{}", either);
+        // in a stream processor: one item, each arm worked out where
+        // it is chosen; with no last `else`, pushed where a case holds
+        let head = "int x$\nint e$ = picked(x$)\n\non (int n) << f (int c)\n    x$ << c\n    n << count e$\n\n";
+        let p = emitted(&format!("{}on (int e$) << picked (int x$)\n    e$ << 9 if (x$ > 9) else x$\n", head)).unwrap();
+        assert!(p.contains("    _3: u1 = cmp.gt _x, 9\n    _4: int = if _3\n        yield 9\n    else\n        yield _x\n    push_queue_open(_2, _4)\n"), "{}", p);
+        let p = emitted(&format!("{}on (int e$) << picked (int x$)\n    e$ << 9 if (x$ > 9)\n          else 0 if (x$ < 0)\n", head)).unwrap();
+        assert!(p.contains("    _3: u1 = if _1\n        yield 1\n    else\n        _2: u1 = cmp.lt _x, 0\n        yield _2\n    if _3\n"), "{}", p);
+        refused(&format!("{}on (int e$) << picked (int x$)\n    e$ << x$ << 1 if (x$ > 2) else 0\n", head), "h.zero:9: in a stream processor a push with `else` takes one item in each arm, `e$ << a if (c) else b`");
+        // what is refused of the lines
+        refused("on (int k) << f (int c)\n    k << 0 if (c > 0)\n    else 1\n", "h.zero:3: this `else` continues nothing: an `else` stands after the block of an `if` statement, at the `if`'s own depth, or goes on a push that has an `if`, on the push's line or on a line indented under it, `x << a if (c)` and then `else b`");
+        refused("on (int k) << f (int c)\n    k << 0\n        else 1\n", "h.zero:3: this `else` continues nothing");
+        refused("on (int k) << f (int c)\n    k << 0 else 1\n", "h.zero:2: `else` on a push follows its `if`: `x << a if (condition) else b`, the value `a` where the condition holds and `b` where it does not");
+        refused("on (int k) << f (int c)\n    k << 0 if (c > 0)\n        else 1\n        else 2\n", "h.zero:4: the `else` before this one has no `if`, so it takes everything that is left and nothing is left for this one: each case but the last is `else value if (condition)`");
+        refused("on (int k) << f (int c)\n    k << 0 if (c > 0)\n        else 1 if (c < 0)\n        int z = 3\n", "h.zero:4: a push that goes on over indented lines has a case on each, and each begins `else`: `else value if (condition)`, and last `else value`. A line that is not one of its cases stands at the push's own depth");
+        refused("on (int k) << f (int c)\n    k << 0 if (c > 0) else\n", "h.zero:2: an `else` on a push is followed by its value on the same line, `else b` or `else b if (d)`");
+        refused("on (int k) << f (int c)\n    k << 0 if (c > 0) else 1 << 2\n", "h.zero:2: 'k' is one value, given once: this line pushes it twice");
+        refused("on (int k) << f (int c)\n    k << 0 if (c > 0) else 1 (3) times\n", "h.zero:2: `(n) times` on the push of 'k' would give it more than once");
+        refused("on f (int c)\n    out$ << 1 if (c > 0) else 2 << 3\n", "h.zero:2: after `else` a push takes one item, `x$ << a if (c) else b`: for several where the condition fails, write the push on two lines, each with its own `if`");
+        // a loop word and `else`: questions 84 and 91 pull apart
+        let two = "reads two ways (fm3 questions 84, 91 and 102): the item after `else` pushed that often and the first item once, or whichever is chosen pushed that often. For the first write two pushes on two lines, each with its own `if`; for the second choose the value first, `x$ << if (c) then (a) else (b)` and then the word";
+        refused("on f (int c)\n    out$ << 1 if (c > 0) else 2 (3) times\n", &format!("h.zero:2: `(n) times` on a push with `else` {}", two));
+        refused("on f (int c)\n    out$ << 1 if (c > 0) (3) times else 2\n", &format!("h.zero:2: `(n) times` on a push with `else` {}", two));
+        refused("on f (int c)\n    int s$\n    s$ << 1 if (c > 0) else s$ + 1 until (s$ > 3)\n", &format!("h.zero:3: `until` on a push with `else` {}", two));
+        refused("on f (int c)\n    int s$\n    s$ << 1 if (c > 0) else s$ + 1 while (_ < 3)\n", &format!("h.zero:3: `while` on a push with `else` {}", two));
+        refused("int x$\nout$ << x$ if (x$ > 0) else 0 forever\n\non f (int c)\n    x$ << c\n", "h.zero:2: `else` on a `<<` at feature scope is not built");
+    }
+
     /// A function that takes an array whole is called in square
     /// brackets (fm3 question 77, log 165): `[sum of] (a[])`. The
     /// plain call is refused showing the line with them, the bracketed

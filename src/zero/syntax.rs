@@ -417,6 +417,27 @@ const ENDS_PHRASE: [&str; 8] = ["then", "else", "while", "until", "if", "forever
 
 const COUNT_FORM: &str = "a push's count is the bracketed group before `times`, after the item: `x$ << item (n) times`";
 
+/// an `else` on a push with no `if` before it
+const ELSE_FORM: &str = "`else` on a push follows its `if`: `x << a if (condition) else b`, the value `a` where the condition holds and `b` where it does not";
+
+/// an `else` that begins a line and continues nothing
+const ELSE_NOTHING: &str = "this `else` continues nothing: an `else` stands after the block of an `if` statement, at the `if`'s own depth, or goes on a push that has an `if`, on the push's line or on a line indented under it, `x << a if (c)` and then `else b`";
+
+/// the word of a push's `cond`, as a refusal says it
+fn word_said(word: Repeat) -> &'static str {
+    match word {
+        Repeat::While => "`while`",
+        Repeat::Times => "`(n) times`",
+        Repeat::Until => "`until`",
+    }
+}
+
+/// a loop word on a push that has an `else`: the two rulings that say
+/// what a word covers give the line two meanings (fm3 question 102)
+fn else_and_word(w: &str) -> String {
+    format!("{} on a push with `else` reads two ways (fm3 questions 84, 91 and 102): the item after `else` pushed that often and the first item once, or whichever is chosen pushed that often. For the first write two pushes on two lines, each with its own `if`; for the second choose the value first, `x$ << if (c) then (a) else (b)` and then the word", w)
+}
+
 const NO_WHEN: &str = "`when` is not a word of zero: a push made where a condition holds is `x$ << item if (condition)`";
 
 fn join_key(w: &str, before: &[String]) -> String {
@@ -634,6 +655,9 @@ impl<'a> Parser<'a> {
                 }
                 let shown = if group == 1 && items.len() > 1 { self.bracketed(line, self.pos - began) } else { None };
                 let PushWords { only, cond, word, forever } = self.push_words()?;
+                if self.else_ahead(false) {
+                    return Err(self.err("`else` on a `<<` at feature scope is not built: a line here stands, with a loop word, and what a word covers on a push with `else` is not ruled (fm3 question 102). Choose the value first, `x$ << if (c) then (a) else (b)`"));
+                }
                 self.expect_newline()?;
                 // a line that stands whose first item is an expression
                 // (fm3 question 80, log 149): the one stream it names
@@ -1196,6 +1220,78 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Does the push being read go on with an `else` (fm3 question 88,
+    /// log 169)? On its own line, or on the next where that line is
+    /// indented under the push and begins with the word: the lexer has
+    /// given such a line an `Indent`, which no statement begins with.
+    /// `under` says the push is already being read on such lines, so
+    /// the next case is a line at the same depth
+    fn else_ahead(&self, under: bool) -> bool {
+        let word = |k: usize| matches!(self.peek_at(k), Some(Tok::Word(w)) if w == "else");
+        if word(0) {
+            return true;
+        }
+        if !matches!(self.peek(), Some(Tok::Newline)) {
+            return false;
+        }
+        if under { word(1) } else { matches!(self.peek_at(1), Some(Tok::Indent)) && word(2) }
+    }
+
+    /// The rest of a push after its first `if (c)`: `else b`, `else b
+    /// if (d) else e`, read from the left, each case on the push's
+    /// line or on a line of its own that begins `else`, indented under
+    /// the push (fm3 question 88, log 169). `first` is the push of the
+    /// first value and `arm` makes the push of a later one. The tree
+    /// is the `if` statement with a push in each arm that the line
+    /// replaces, so it lowers to that statement's lines and every pass
+    /// reads it as one; `on_push` says how it was written. `twice` is
+    /// said of a second `<<` after an `else`, and `often` of a loop word
+    fn push_else(&mut self, cond: Expr, first: Stmt, line: usize, arm: &dyn Fn(Expr, usize) -> Stmt, twice: &str, often: &dyn Fn(&Self) -> Option<String>) -> Result<Stmt, Error> {
+        let mut arms: Vec<(Option<Expr>, Stmt, usize)> = vec![(Some(cond), first, line)];
+        let mut under = false;
+        while self.else_ahead(under) {
+            if !self.at_word("else") {
+                self.pos += if under { 1 } else { 2 };
+                under = true;
+            }
+            if arms.last().is_some_and(|a| a.0.is_none()) {
+                return Err(self.err("the `else` before this one has no `if`, so it takes everything that is left and nothing is left for this one: each case but the last is `else value if (condition)`"));
+            }
+            let at = self.line();
+            self.pos += 1;
+            if self.at(&Tok::Newline) {
+                return Err(self.err("an `else` on a push is followed by its value on the same line, `else b` or `else b if (d)`"));
+            }
+            let value = self.parse_expr()?;
+            if self.at_sym("<<") {
+                return Err(self.err(twice));
+            }
+            let mut c = None;
+            if self.eat_word("if") {
+                c = Some(self.parse_expr()?);
+                if self.at_word("then") {
+                    return Err(self.err("an `if` after a pushed value says where that value is the one pushed, and takes no `then`: `x << a if (c) else b`"));
+                }
+            }
+            if let Some(msg) = often(self) {
+                return Err(self.err(msg));
+            }
+            arms.push((c, arm(value, at), at));
+        }
+        self.expect_newline()?;
+        if under && !self.eat(&Tok::Dedent) {
+            return Err(self.err("a push that goes on over indented lines has a case on each, and each begins `else`: `else value if (condition)`, and last `else value`. A line that is not one of its cases stands at the push's own depth"));
+        }
+        let mut rest: Option<Stmt> = None;
+        for (c, s, l) in arms.into_iter().rev() {
+            rest = Some(match c {
+                Some(cond) => Stmt::If { cond, then: vec![s], els: rest.map(|r| vec![r]), line: l, on_push: true },
+                None => s,
+            });
+        }
+        Ok(rest.unwrap())
+    }
+
     // --- statements ---
 
     fn parse_block(&mut self) -> Result<Vec<Stmt>, Error> {
@@ -1366,17 +1462,26 @@ impl<'a> Parser<'a> {
                         return Err(self.err("an `if` after a pushed value says whether the push happens, and takes no `then`: the value that is one thing or another is written first, `y << if (c) then (a) else (b)`"));
                     }
                 }
-                let often = if self.at_word("times") { Some("`(n) times`") } else { self.repeat_ahead() };
-                if let Some(w) = often {
+                let often = |p: &Self| if p.at_word("times") { Some("`(n) times`") } else { p.repeat_ahead() };
+                let more = |w: &str| {
                     let does = if w == "`forever`" { "make it stand and give it again and again" } else { "give it more than once" };
-                    return Err(self.err(format!("{} on the push of '{}' would {}, and {}, given once: what takes more than one item is a stream, {}", w, said, does, one, stream)));
+                    format!("{} on the push of '{}' would {}, and {}, given once: what takes more than one item is a stream, {}", w, said, does, one, stream)
+                };
+                if let Some(w) = often(self) {
+                    return Err(self.err(more(w)));
                 }
-                self.expect_newline()?;
-                let give = Stmt::Assign { targets, value, line };
-                return Ok(match only {
-                    Some(cond) => Stmt::If { cond, then: vec![give], els: None, line, on_push: true },
-                    None => give,
-                });
+                let give = Stmt::Assign { targets: targets.clone(), value, line };
+                let Some(cond) = only else {
+                    if self.at_word("else") {
+                        return Err(self.err(ELSE_FORM));
+                    }
+                    self.expect_newline()?;
+                    return Ok(give);
+                };
+                // `r << a if (c) else b`, and a table, a case a line
+                // (fm3 question 88, log 169)
+                let twice = format!("{}, given once: this line pushes it twice. What takes more than one item is a stream, {}", one, stream);
+                return self.push_else(cond, give, line, &|value, l| Stmt::Assign { targets: targets.iter().map(|t| Target { line: l, ..t.clone() }).collect(), value, line: l }, &twice, &|p| often(p).map(more));
             }
             // `r[] << value` where `r[]` is a result of this function:
             // the array given, once, as `y << value` gives a plain
@@ -1439,6 +1544,21 @@ impl<'a> Parser<'a> {
                 // it is the push's word; one that begins an item is the
                 // expression, and `parse_primary` has taken it
                 let PushWords { only, cond, word, forever } = self.push_words()?;
+                // `x$ << a if (c) else b`: one or the other (fm3
+                // question 88, log 169), on the line or on lines that
+                // begin `else` indented under it
+                if self.else_ahead(false) {
+                    let Some(c) = only else {
+                        return Err(self.err(ELSE_FORM));
+                    };
+                    let said = if forever { Some("`forever`") } else { cond.as_ref().map(|_| word_said(word)) };
+                    if let Some(w) = said {
+                        return Err(self.err(else_and_word(w)));
+                    }
+                    let first = Stmt::Push { target: target.clone(), items, group, cond: None, word: Repeat::While, existing: false, forever: false, line };
+                    let one = "after `else` a push takes one item, `x$ << a if (c) else b`: for several where the condition fails, write the push on two lines, each with its own `if`";
+                    return self.push_else(c, first, line, &|value, l| Stmt::Push { target: target.clone(), items: vec![value], group: 1, cond: None, word: Repeat::While, existing: false, forever: false, line: l }, one, &|p| if p.at_word("times") { Some(else_and_word("`(n) times`")) } else { p.repeat_ahead().map(else_and_word) });
+                }
                 self.expect_newline()?;
                 if let Some(c) = only {
                     return Ok(Stmt::If { cond: c, then: vec![Stmt::Push { target, items, group, cond, word, existing: false, forever, line }], els: None, line, on_push: true });
@@ -1461,7 +1581,12 @@ impl<'a> Parser<'a> {
                 self.expect_newline()?;
                 Ok(Stmt::Push { target, items, group: 1, cond: None, word: Repeat::While, existing: true, forever: false, line })
             }
+            Some(Tok::Indent) if matches!(self.peek_at(1), Some(Tok::Word(w)) if w == "else") => {
+                self.pos += 1;
+                Err(self.err(ELSE_NOTHING))
+            }
             Some(Tok::Indent) => Err(self.err("an indented line with nothing to belong to")),
+            Some(Tok::Word(w)) if w == "else" => Err(self.err(ELSE_NOTHING)),
             _ => {
                 let expr = self.parse_expr()?;
                 self.expect_newline()?;

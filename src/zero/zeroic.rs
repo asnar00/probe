@@ -291,6 +291,33 @@ fn pushed(s: &Stmt, when: Option<&Expr>, out: &str, file: &str, outs: &mut Vec<O
     Ok(())
 }
 
+/// A processor's push with `else`, `t$ << a if (c) else b`, as one
+/// item and where it goes out (fm3 log 169): the item is `if (c) then
+/// (a) else (b)`, nested for a longer table, each arm worked out only
+/// where it is chosen; and where the table does not end in a bare
+/// `else` the push is made where one of its conditions holds, the
+/// later ones asked only where the earlier fail
+fn chosen(s: &Stmt, out: &str, file: &str) -> Result<(Expr, Option<Expr>), Error> {
+    match s {
+        Stmt::If { cond, then, els, line, .. } => {
+            let (a, _) = chosen(&then[0], out, file)?;
+            let Some(rest) = els else { return Ok((a, Some(cond.clone()))) };
+            let (b, when) = chosen(&rest[0], out, file)?;
+            let either = |x: Expr, y: Expr| expr(ExprKind::IfElse(Box::new(cond.clone()), Box::new(x), Box::new(y)), *line);
+            Ok((either(a, b), when.map(|d| either(expr(ExprKind::Bool(true), *line), d))))
+        }
+        _ => {
+            let mut one = Vec::new();
+            pushed(s, None, out, file, &mut one)?;
+            let [o] = one.as_slice() else {
+                let Stmt::Push { line, .. } = s else { unreachable!() };
+                return Err(lex::error(file, *line, format!("in a stream processor a push with `else` takes one item in each arm, `{}$ << a if (c) else b`: for several items where the condition holds, write the pushes on lines of their own, each with its `if`", out)));
+            };
+            Ok((o.item.clone(), None))
+        }
+    }
+}
+
 /// How a declaration's body is read (fm3 question 65). `None` is the
 /// reading every task had: it is run over what has arrived, and walks
 /// it. A declaration with `<<` and one stream parameter and nothing
@@ -361,10 +388,16 @@ pub fn read(fd: &FnDecl, file: &str, takers: &Takers) -> Result<Option<Processor
             }
             Stmt::Var(v) => return Err(lex::error(file, v.line, format!("in a stream processor every line holds for every item, so each line says a stream: write `{} {}$ = ...`", v.ty, v.name))),
             Stmt::Push { .. } => pushed(s, None, out, file, &mut p.outs)?,
-            Stmt::If { cond, then, on_push: true, .. } => {
+            Stmt::If { cond, then, els: None, on_push: true, .. } => {
                 for t in then {
                     pushed(t, Some(cond), out, file, &mut p.outs)?;
                 }
+            }
+            // a push with `else` (fm3 question 88, log 169): one item
+            // for each arriving item, one or the other
+            Stmt::If { on_push: true, line, .. } => {
+                let (item, when) = chosen(s, out, file)?;
+                p.outs.push(Out { item, when, line: *line });
             }
             Stmt::If { line, .. } => return Err(lex::error(file, *line, format!("an `if` round a line of a stream processor: every line holds for every item, so the condition goes on the push, `{}$ << item if (condition)`, or in the value, `if (c) then (a) else (b)`", out))),
             Stmt::Multi { line, .. } => return Err(lex::error(file, *line, "in a stream processor each line says one stream: `int k$ = ...`")),

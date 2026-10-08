@@ -57,3 +57,36 @@ on (int n) << read()
 on (int n) << halved (int x)
     int half = x / 2
     n << half
+
+on (int n) << larger of (int a) and (int b)
+    n << a if (a > b) else b
+
+on (int k) << class of (int c)
+    k << 0 if (c <= 32)
+         else 3 if (c > 122)
+         else 1 if (c >= 97)
+         else 3 if (c > 57)
+         else 2 if (c >= 48)
+         else 3
+
+on (int n) << into a hundred (int x)
+    check (x != 0)
+    n << 100 / x
+
+on (int n) << guarded (int x)
+    n << 0 if (x == 0) else into a hundred (x)
+
+on say how many (int x)
+    out$ << "none" if (x == 0)
+         else "one" if (x == 1)
+         else "many"
+
+int level$
+int capped$ = capped (level$)
+out$ << (capped$ << " ") forever
+
+on (int e$) << capped (int x$)
+    e$ << 9 if (x$ > 9) else x$
+
+on levels()
+    level$ << 3 << 12 << 9
