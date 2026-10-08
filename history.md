@@ -4,6 +4,17 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `$` means a stream, each word held to its kind and the 21 names used both ways rewritten — `6246a2b` · 2026-10-08
+
+```
+on (int n) << indexed()
+    int i$ << 5 << 6 << 7
+    int a[] = frame i$
+    n << a[1] * 10 + a[2]
+```
+
+`suite/zero/streams/streams/streams.zero:143-146`. The last part of fm3's question 90. `int i$ = [1, 2, 3]` is refused, the message showing the line as an array and as a stream that begins with those items. `src/zero/kinds.rs` holds each word to its kind: `peek`, `advance` and `latest` are a stream's, an item by its place, `for` and a reduce an array's, `count` both; an array is never pushed into and has no latest item. Twenty-one names were used both ways, and each case keeps its number: the one above asked a stream for `i$[1]` and now makes the array first. The IR of five stores moves for those cases; none of the six rows is in them. The full run: zero 827/827 on four paths, 804 and 23 skipped on the GPU's, `probe test` 1022, 1013, 1022, 1022, 985, `cargo test` 153. The meter 130 of 2 150.
+
 ### zero: the suite says it, 47 names respelled as arrays and no store's IR moved — `ec9c6df` · 2026-10-08
 
 ```
