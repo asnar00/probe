@@ -264,6 +264,7 @@ fn count_down()
     _this: ptr = context()
     _1: __ctx = load _this
     _2: u1 = get _1, __on_countdown
+    _5: ptr = addr __clock
     loop(_3: int = 10)
         _4: u1 = cmp.ge _3, 1
         if _4
@@ -271,7 +272,6 @@ fn count_down()
             break
         if _2
             __edge1(_3)
-        _5: ptr = addr __clock
         _6: i64 = load _5
         _7: i64 = add _6, 1000000
         __wait(_7)

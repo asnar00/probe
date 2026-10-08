@@ -2480,6 +2480,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     let ir = settle_pushes(ir, &l.queue_pushes, &l.ended, unread);
     let ir = settle_context(&ir, &l.written, unread);
     let ir = settle_counts(&ir);
+    let ir = settle_clock(&ir);
     // the text carries what the store reaches (log 70): every function
     // of the store's own features, the platform feature's that a case
     // names, and the runner's entries are roots
@@ -2693,6 +2694,90 @@ fn settle_context(ir: &str, written: &std::collections::HashSet<String>, unread:
                 out.push_str(l);
             } else {
                 out.push_str(&names(l, &mut |w| renamed.get(w).cloned()));
+            }
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// The store's clock reached once (fm3 log 193), settled in the finished
+/// text a function at a time. The clock is the store's own word, not a
+/// context's (fm3 question 107, open), so reaching it is forming its
+/// address, and a push into a stream with a rate formed it at every
+/// step. Two things. A later `addr __clock` reached only through an
+/// earlier one, the earlier standing in a block still open above it,
+/// is the earlier one. And one formed inside a loop is formed before
+/// the outermost loop it stands in, once however many passes there
+/// are. The open blocks are the text's indentation, as in
+/// `settle_context`. A loop of no passes pays for one address it did
+/// not form before; every other path pays the same or less
+fn settle_clock(ir: &str) -> String {
+    const FORM: &str = ": ptr = addr __clock";
+    if !ir.contains(FORM) {
+        return ir.to_string();
+    }
+    let lines: Vec<&str> = ir.lines().collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let is_loop = |l: &str| {
+        let t = l.trim_start();
+        t.starts_with("loop(") || t.contains(" = loop(")
+    };
+    let mut out = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        out.push_str(lines[i]);
+        out.push('\n');
+        if !lines[i].starts_with("fn ") {
+            i += 1;
+            continue;
+        }
+        let start = i + 1;
+        let mut end = start;
+        while end < lines.len() && lines[end].starts_with(' ') {
+            end += 1;
+        }
+        let body = &lines[start..end];
+        i = end;
+        // the addresses in hand, by how far in each stands, and the
+        // loops still open, by the line each begins at
+        let mut held: Vec<(usize, String)> = Vec::new();
+        let mut loops: Vec<(usize, usize)> = Vec::new();
+        let mut renamed: HashMap<String, String> = HashMap::new();
+        let mut dropped = vec![false; body.len()];
+        // the lines moved to stand before a loop: the loop's line, the text
+        let mut moved: Vec<(usize, String)> = Vec::new();
+        for (k, l) in body.iter().enumerate() {
+            let d = indent(l);
+            held.retain(|(h, _)| *h <= d);
+            loops.retain(|(h, _)| *h < d);
+            if is_loop(l) {
+                loops.push((d, k));
+            }
+            let Some(name) = l.trim_start().strip_suffix(FORM) else { continue };
+            if let Some((_, earlier)) = held.last() {
+                renamed.insert(name.to_string(), earlier.clone());
+                dropped[k] = true;
+            } else if let Some(&(h, at)) = loops.first() {
+                moved.push((at, format!("{}{}{}", " ".repeat(h), name, FORM)));
+                dropped[k] = true;
+                held.push((h, name.to_string()));
+            } else {
+                held.push((d, name.to_string()));
+            }
+        }
+        for (k, l) in body.iter().enumerate() {
+            for (_, text) in moved.iter().filter(|(at, _)| *at == k) {
+                out.push_str(text);
+                out.push('\n');
+            }
+            if dropped[k] {
+                continue;
+            }
+            if renamed.is_empty() {
+                out.push_str(l);
+            } else {
+                out.push_str(&words(l, &mut |w| renamed.get(w).cloned()));
             }
             out.push('\n');
         }

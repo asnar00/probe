@@ -209,13 +209,13 @@ fn run__countdown()
     run__hello()
     ret
 fn count_down()
+    _3: ptr = addr __clock
     loop(_1: int = 10)
         _2: u1 = cmp.ge _1, 1
         if _2
         else
             break
         __edge1(_1)
-        _3: ptr = addr __clock
         _4: i64 = load _3
         _5: i64 = add _4, 1000000
         __wait(_5)

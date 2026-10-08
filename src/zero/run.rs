@@ -2970,7 +2970,7 @@ mod tests {
         // `while` asked of its first values; entered on the beat, none
         let ir = lowered(&format!("{}on f (int k)\n    c$ << 0\n    loop (int i = 1) while (i <= k)\n        a$ << i\n        continue (i + 1)\n", head));
         let f = body(&ir, "f");
-        assert!(f.contains("    _7: int = const 1\n    _8: u1 = cmp.le _7, k\n    if _8\n        _9: ptr = addr __clock\n        _10: i64 = load _9\n        _11: i64 = add _10, 499999\n        _12: i64 = rem _11, 500000\n        _13: i64 = sub _11, _12\n        __wait(_13)\n    loop(i: int = 1)\n"), "{}", f);
+        assert!(f.contains("    _7: int = const 1\n    _8: u1 = cmp.le _7, k\n    if _8\n        _10: i64 = load _4\n        _11: i64 = add _10, 499999\n        _12: i64 = rem _11, 500000\n        _13: i64 = sub _11, _12\n        __wait(_13)\n    loop(i: int = 1)\n"), "{}", f);
         assert_eq!(f.matches(" = rem ").count(), 1, "{}", f);
         let ir = lowered(&format!("{}on f (int k)\n    loop (int i = 1) while (i <= k)\n        a$ << i\n        continue (i + 1)\n", head));
         assert_eq!(rems(&ir, "f"), 0, "{}", ir);
@@ -3022,7 +3022,15 @@ mod tests {
         assert!(!fast.contains("__counter") && fast.contains("fn __wait(t: i64)\n    p: ptr = addr __clock\n    c: i64 = load p\n    m: i64 = max(c, t)\n"), "{}", fast);
         // the rated stream no word reads has no storage (fm3 log 92): the
         // push calls its edge, and then a step passes, half a second at 2 hz
-        assert!(fast.contains("        if _2\n            __edge1(_3)\n        _5: ptr = addr __clock\n        _6: i64 = load _5\n        _7: i64 = add _6, 500000\n        __wait(_7)\n"), "{}", fast);
+        // and the clock's address is formed once, before the loop
+        // (fm3 log 193)
+        assert!(fast.contains("        if _2\n            __edge1(_3)\n        _6: i64 = load _5\n        _7: i64 = add _6, 500000\n        __wait(_7)\n") && fast.contains("    _5: ptr = addr __clock\n    loop(_3: int = 1)\n"), "{}", fast);
+        // a second address reached only through the first is the first
+        std::fs::write(dir.join("h/h.zero"), "int i$ at (2 hz)\nout$ << (i$ << \"\\n\") forever\n\non run()\n    i$ << 1\n    i$ << 2\n").unwrap();
+        let twice = with("# p\n\nclock: virtual\n").unwrap();
+        let run = twice.split("\nfn run()\n").nth(1).and_then(|r| r.split("\nfn ").next()).unwrap_or("");
+        assert!(run.matches("addr __clock").count() == 1 && run.matches("__wait(").count() == 2, "{}", twice);
+        std::fs::write(dir.join("h/h.zero"), "int i$ at (2 hz)\nout$ << (i$ << \"\\n\") forever\n\non run()\n    i$ << [1 through 2]\n").unwrap();
         // ... and the statement's first item is on the stream's beat
         // with nothing rounded (fm3 log 98, 99): `run` is only ever
         // called by a case, at 0 s
