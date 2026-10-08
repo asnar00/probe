@@ -2232,7 +2232,7 @@ mod tests {
         // with a rate it keeps its latest and its step
         std::fs::write(dir.join("h/h.zero"), head.replacen("int up$\n", "int up$ at (1 hz)\n", 1)).unwrap();
         let rated = emit(&dir).unwrap();
-        assert!(rated.contains("    up: int\n") && !rated.contains("__queue_int") && rated.contains("__wait("), "{}", rated);
+        assert!(rated.contains("    up: int\n") && !rated.contains("__queue_int") && rated.contains("__step("), "{}", rated);
         // the input of a processor, read by name
         std::fs::write(dir.join("h/h.zero"), "int x$\nint d$ = doubled (x$)\nint sum$\nsum$ << sum$ + d$ forever\n\non (int d$) << doubled (int x$)\n    d$ << x$ * 2\n\non (int n) << f()\n    x$ << 1 << 2\n    n << x$ + sum$ - 5\n").unwrap();
         let fed = emit(&dir).unwrap();
@@ -2860,7 +2860,7 @@ mod tests {
         // ... with no alignment before it, `count` being called where
         // the clock is at 0 s and `n$` having nothing that moves it
         // (question 56, fm3 log 99)
-        assert!(ir.contains("    _7: i64 = add _6, 500000\n    __wait(_7)\n    ret\n") && !ir.contains(" = rem "), "{}", ir);
+        assert!(ir.contains("    __step(500000)\n    ret\n") && !ir.contains(" = rem "), "{}", ir);
         // wired by no feature at all: refused, naming the stream
         std::fs::write(dir.join("shown/shown.zero"), "out$ << (beat$ << \"\\n\") forever\n").unwrap();
         for product in ["# p\n", "# p\n\nshown: static off\n"] {
@@ -2909,13 +2909,22 @@ mod tests {
         let ir = lowered(&format!("{}on f()\n    a$ << 1 << 2 << 3\n", head));
         let f = body(&ir, "f");
         assert!(f.contains("    _3: i64 = add _2, 333332\n    _4: i64 = rem _3, 333333\n    _5: i64 = sub _3, _4\n    __wait(_5)\n"), "{}", f);
-        assert_eq!((f.matches(" = rem ").count(), f.matches(", 333333\n").count()), (1, 4), "{}", f);
+        assert_eq!((f.matches(" = rem ").count(), f.matches("    __step(333333)\n").count()), (1, 3), "{}", f);
+        // the clock's address is formed once (fm3 log 193): a second
+        // alignment reached only through the first uses the first's,
+        // and one inside a loop is formed before the loop
+        let ir = lowered(&format!("{}on f()\n    a$ << 1\n    b$ << 2\n    a$ << 3\n", head));
+        let f = body(&ir, "f");
+        assert_eq!((f.matches(" = rem ").count(), f.matches("addr __clock").count()), (3, 1), "{}", f);
+        let ir = lowered(&format!("{}on f()\n    loop (int i = 1) while (i <= 3)\n        a$ << i\n        b$ << i\n        continue (i + 1)\n", head));
+        let f = body(&ir, "f");
+        assert!(f.matches("addr __clock").count() == 1 && f.contains(": ptr = addr __clock\n    loop(i: int = 1)\n"), "{}", f);
         // the statement before pushed into the same stream: on the beat already
         let f = body(&lowered(&format!("{}on f()\n    a$ << 1\n    a$ << 2\n    a$ << 3\n", head)), "f");
         assert_eq!(f.matches(" = rem ").count(), 1, "{}", f);
         // by turns into two streams: each statement finds its own stream's slot
         let f = body(&lowered(&format!("{}on f()\n    a$ << 1\n    b$ << 2\n    a$ << 3\n", head)), "f");
-        assert_eq!((f.matches(" = rem ").count(), f.matches("rem _3, 333333").count(), f.matches(", 200000\n").count()), (3, 1, 2), "{}", f);
+        assert_eq!((f.matches(" = rem ").count(), f.matches("rem _3, 333333").count(), f.matches(", 200000\n").count() + f.matches("    __step(200000)\n").count()), (3, 1, 2), "{}", f);
         // a write to the device between two pushes moves no clock
         // (question 56, fm3 log 99), so the second is still on the beat;
         // a push into another stream between them does
@@ -2970,14 +2979,14 @@ mod tests {
         // `while` asked of its first values; entered on the beat, none
         let ir = lowered(&format!("{}on f (int k)\n    c$ << 0\n    loop (int i = 1) while (i <= k)\n        a$ << i\n        continue (i + 1)\n", head));
         let f = body(&ir, "f");
-        assert!(f.contains("    _7: int = const 1\n    _8: u1 = cmp.le _7, k\n    if _8\n        _10: i64 = load _4\n        _11: i64 = add _10, 499999\n        _12: i64 = rem _11, 500000\n        _13: i64 = sub _11, _12\n        __wait(_13)\n    loop(i: int = 1)\n"), "{}", f);
+        assert!(f.contains("    _4: int = const 1\n    _5: u1 = cmp.le _4, k\n    if _5\n        _6: ptr = addr __clock\n        _7: i64 = load _6\n        _8: i64 = add _7, 499999\n        _9: i64 = rem _8, 500000\n        _10: i64 = sub _8, _9\n        __wait(_10)\n    loop(i: int = 1)\n"), "{}", f);
         assert_eq!(f.matches(" = rem ").count(), 1, "{}", f);
         let ir = lowered(&format!("{}on f (int k)\n    loop (int i = 1) while (i <= k)\n        a$ << i\n        continue (i + 1)\n", head));
         assert_eq!(rems(&ir, "f"), 0, "{}", ir);
         // ... with no `while` the first pass always runs, and there is no test
         let ir = lowered(&format!("{}on f (int k)\n    c$ << 0\n    loop (int i = 1)\n        a$ << i\n        if (i == k)\n            break\n        continue (i + 1)\n", head));
         let f = body(&ir, "f");
-        assert!(f.matches(" = rem ").count() == 1 && f.contains("\n    _10: i64 = rem _9, 500000\n    _11: i64 = sub _9, _10\n    __wait(_11)\n    loop(i: int = 1)\n"), "{}", f);
+        assert!(f.matches(" = rem ").count() == 1 && f.contains("\n    _7: i64 = rem _6, 500000\n    _8: i64 = sub _6, _7\n    __wait(_8)\n    loop(i: int = 1)\n"), "{}", f);
         // a statement before the push in the body, or a way round that
         // leaves the beat, and the push aligns on every pass as it did
         let ir = lowered(&format!("{}on f (int k)\n    c$ << 0\n    loop (int i = 1) while (i <= k)\n        out$ << \"x\"\n        a$ << i\n        continue (i + 1)\n", head));
@@ -3019,18 +3028,11 @@ mod tests {
         assert!(real.contains("fn __wait(t: i64)\n    loop()\n        r: i64 = __real_now()\n"), "{}", real);
         assert!(real.contains("c0: i64 = __counter()\n    q: ptr = addr __base\n    store c0, q\n"), "{}", real);
         let fast = with("# p\n\nclock: virtual\n").unwrap();
-        assert!(!fast.contains("__counter") && fast.contains("fn __wait(t: i64)\n    p: ptr = addr __clock\n    c: i64 = load p\n    m: i64 = max(c, t)\n"), "{}", fast);
+        assert!(!fast.contains("__counter") && fast.contains("fn __step(d: i64)\n    p: ptr = addr __clock\n    c: i64 = load p\n    m: i64 = add c, d\n") && !fast.contains("fn __wait(") && real.contains("fn __step(d: i64)\n    p: ptr = addr __clock\n    c: i64 = load p\n    t: i64 = add c, d\n    __wait(t)\n"), "{}", fast);
         // the rated stream no word reads has no storage (fm3 log 92): the
         // push calls its edge, and then a step passes, half a second at 2 hz
-        // and the clock's address is formed once, before the loop
-        // (fm3 log 193)
-        assert!(fast.contains("        if _2\n            __edge1(_3)\n        _6: i64 = load _5\n        _7: i64 = add _6, 500000\n        __wait(_7)\n") && fast.contains("    _5: ptr = addr __clock\n    loop(_3: int = 1)\n"), "{}", fast);
-        // a second address reached only through the first is the first
-        std::fs::write(dir.join("h/h.zero"), "int i$ at (2 hz)\nout$ << (i$ << \"\\n\") forever\n\non run()\n    i$ << 1\n    i$ << 2\n").unwrap();
-        let twice = with("# p\n\nclock: virtual\n").unwrap();
-        let run = twice.split("\nfn run()\n").nth(1).and_then(|r| r.split("\nfn ").next()).unwrap_or("");
-        assert!(run.matches("addr __clock").count() == 1 && run.matches("__wait(").count() == 2, "{}", twice);
-        std::fs::write(dir.join("h/h.zero"), "int i$ at (2 hz)\nout$ << (i$ << \"\\n\") forever\n\non run()\n    i$ << [1 through 2]\n").unwrap();
+        // ... one word of the platform's (fm3 log 194)
+        assert!(fast.contains("        if _2\n            __edge1(_3)\n        __step(500000)\n") && !fast.contains("    __wait("), "{}", fast);
         // ... and the statement's first item is on the stream's beat
         // with nothing rounded (fm3 log 98, 99): `run` is only ever
         // called by a case, at 0 s

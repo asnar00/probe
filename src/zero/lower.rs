@@ -654,6 +654,19 @@ fn __wait(t: i64)
     a: ptr = addr __out_t
     store m, a, n, 8
     ret
+
+; a step of a rate passes (fm3 log 194): the clock moved on by d of its
+; own steps, which can only be later, and the place marked
+fn __step(d: i64)
+    p: ptr = addr __clock
+    c: i64 = load p
+    m: i64 = add c, d
+    store m, p
+    q: ptr = addr __out_n
+    n: index = load q
+    a: ptr = addr __out_t
+    store m, a, n, 8
+    ret
 "#;
 
 /// ... and on the real clock it waits on the machine's counter: the
@@ -705,6 +718,14 @@ fn __wait(t: i64)
     c: i64 = load p
     m: i64 = max(c, t)
     store m, p
+    ret
+
+; a step of a rate passes (fm3 log 194): the time it ends is waited for
+fn __step(d: i64)
+    p: ptr = addr __clock
+    c: i64 = load p
+    t: i64 = add c, d
+    __wait(t)
     ret
 "#;
 
@@ -2506,7 +2527,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     let mut pruned = prune(&ir, &roots);
     // ... and a store where nothing waits and no case reads a mark
     // keeps no marks, so its reset does not clear them
-    if !pruned.contains("\nfn __wait(") && !pruned.contains("\nfn __out_mark(") {
+    if !pruned.contains("\nfn __wait(") && !pruned.contains("\nfn __step(") && !pruned.contains("\nfn __out_mark(") {
         let reset: String = MARKS_RESET.iter().map(|l| format!("    {}\n", l)).collect();
         pruned = prune(&ir.replacen(&reset, "", 1), &roots);
     }
@@ -11425,15 +11446,12 @@ impl Lowerer {
         b.line(&format!("__wait({})", t));
     }
 
-    /// a step of a rate passes (question 52, fm3 log 92): the clock read,
-    /// the period added, `__wait`. A declared rate is a literal, so the
-    /// period is worked out here, where `__sleep(hz)` divides at run time
+    /// a step of a rate passes (question 52, fm3 log 92, 194): the
+    /// platform's `__step`, the clock moved on by the period. A declared
+    /// rate is a literal, so the period is worked out here, where
+    /// `__sleep(hz)` divides at run time
     fn step(&mut self, hz: i64, b: &mut Body) {
-        let (p, c, t) = (b.tmp(), b.tmp(), b.tmp());
-        b.line(&format!("{}: ptr = addr __clock", p));
-        b.line(&format!("{}: i64 = load {}", c, p));
-        b.line(&format!("{}: i64 = add {}, {}", t, c, super::store::period(hz)));
-        b.line(&format!("__wait({})", t));
+        b.line(&format!("__step({})", super::store::period(hz)));
     }
 
     /// is a push into the name paced (question 39, 52, fm3 log 93)? A

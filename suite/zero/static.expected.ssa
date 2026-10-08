@@ -90,13 +90,12 @@ fn __str(p: ptr, n: index) -> u8[]
     v: u8[] = pack q, n, 1
     ret v
 
-
-; the clock reaches t (log 77): the virtual clock jumps there, and marks
-; the place in the output where that time begins (fm3 log 95)
-fn __wait(t: i64)
+; a step of a rate passes (fm3 log 194): the clock moved on by d of its
+; own steps, which can only be later, and the place marked
+fn __step(d: i64)
     p: ptr = addr __clock
     c: i64 = load p
-    m: i64 = max(c, t)
+    m: i64 = add c, d
     store m, p
     q: ptr = addr __out_n
     n: index = load q
@@ -209,18 +208,15 @@ fn run__countdown()
     run__hello()
     ret
 fn count_down()
-    _3: ptr = addr __clock
     loop(_1: int = 10)
         _2: u1 = cmp.ge _1, 1
         if _2
         else
             break
         __edge1(_1)
-        _4: i64 = load _3
-        _5: i64 = add _4, 1000000
-        __wait(_5)
-        _6: int = sub _1, 1
-        continue _6
+        __step(1000000)
+        _3: int = sub _1, 1
+        continue _3
     ret
 fn __edge1(__item: int)
     __out__int(__item)
