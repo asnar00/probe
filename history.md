@@ -4,6 +4,15 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a text written to the device is one copy to where its count says — `9df76ef` · 2026-10-08
+
+```
+on hello()
+    out$ << "hello world" << "\n"
+```
+
+`suite/zero/hello/hello/hello.zero:4-5`. The text goes out through `__out_block`, in the prelude of `src/zero/lower.rs`, which made a view of the runner's whole capture and then of the part to fill, checked three ways, before the copy. It now indexes the capture's address by the count and keeps the one check that can fail, that the text fits. hello's `run` 1 014 to 994 as counted and static's 987 to 967, twenty each as measured beforehand; static is 3 over its oracle. Seventeen stores moved, each by this function alone. Zero 929/929 natively and on wasm; `cargo test zero` 76.
+
 ### zero: an edge's lines stand in the loop that pushes a range into its stream — `9a8dc11` · 2026-10-08
 
 ```
