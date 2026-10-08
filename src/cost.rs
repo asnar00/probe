@@ -118,6 +118,18 @@ pub fn count_blocks(module: &mut Module, skip: &[&str], one: Option<(&str, usize
     }
 }
 
+/// `probe count <file> <fn> [args...]` calls the function with the
+/// integers after its name, and with as many as it takes: called with
+/// fewer, a parameter is whatever its register held, and a loop that
+/// runs its argument's times ran until it was killed (fm3 log 183)
+pub fn takes(module: &Module, name: &str, given: usize) -> Result<(), String> {
+    let f = module.func(name).ok_or_else(|| format!("no function {} to count", name))?;
+    if f.params.len() != given {
+        return Err(format!("{} takes {} argument(s) and {} given: write them after its name, `probe count <file> {} <integers>`", name, f.params.len(), if given == 0 { "none is".to_string() } else { format!("{} are", given) }, name));
+    }
+    Ok(())
+}
+
 /// the word `count_from` adds a function's own share into
 pub const FROM: &str = "__dyn_from";
 
@@ -1038,6 +1050,32 @@ fn forked(a: i64) -> i64
         // the dear arm is what the tool charged; the cheap one is less
         assert_eq!(ran("forked", &[20]) as f64, tool[2]);
         assert!((ran("forked", &[3]) as f64) < tool[2]);
+    }
+
+    /// `probe count` calls a function with as many integers as it
+    /// takes (fm3 log 183): given none, a function of one read its
+    /// register as it stood, and a loop that ran its argument's times
+    /// did not come back
+    #[test]
+    fn a_count_is_given_the_arguments_the_function_takes() {
+        let src = "fn none() -> i64
+    ret 1
+fn times(n: i64) -> i64
+    r: i64 = loop(i: i64 = 0)
+        done: u1 = cmp.ge i, n
+        if done
+            break i
+        i2: i64 = add i, 1
+        continue i2
+    ret r
+";
+        let policy = Policy::new(Type::Int { signed: true, bits: 64 }).unwrap();
+        let module = ssa::parse_with(src, &policy).unwrap();
+        assert!(super::takes(&module, "none", 0).is_ok());
+        assert!(super::takes(&module, "times", 1).is_ok());
+        assert_eq!(super::takes(&module, "times", 0).unwrap_err(), "times takes 1 argument(s) and none is given: write them after its name, `probe count <file> times <integers>`");
+        assert_eq!(super::takes(&module, "none", 2).unwrap_err(), "none takes 0 argument(s) and 2 are given: write them after its name, `probe count <file> none <integers>`");
+        assert!(super::takes(&module, "absent", 0).is_err());
     }
 
     /// `probe count --from=f` (fm3 log 131): a function counted as a

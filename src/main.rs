@@ -181,6 +181,13 @@ fn main() -> ExitCode {
             // return, over every call of it the run made (fm3 log 131):
             // one function as a case calls it
             let from: Option<&str> = args.iter().find_map(|a| a.strip_prefix("--from="));
+            // the integers after the function's name are its arguments, as
+            // `probe run` takes them: called with none, a function of one
+            // read whatever its register held (fm3 log 183)
+            let fargs: Vec<i64> = match args[3..].iter().filter(|a| !a.starts_with("--")).map(|a| parse_arg(a)).collect() {
+                Ok(v) => v,
+                Err(_) => return fail("function arguments must be integers"),
+            };
             // one run, counting the blocks of the functions `only` names,
             // or of all: the count, and the module's functions
             let run_one = |only: Option<Vec<String>>, one: Option<(&str, usize)>| -> Result<(i64, Vec<String>, Vec<(String, i128)>), String> {
@@ -224,10 +231,11 @@ fn main() -> ExitCode {
                 }
                 jit.call("__dyn_zero", &[])?;
                 let rets = module.func(&args[2]).ok_or_else(|| format!("no function {} in {}", args[2], args[1]))?.rets.len();
+                cost::takes(&module, &args[2], fargs.len())?;
                 if rets == 2 {
-                    jit.call2(&args[2], &[])?;
+                    jit.call2(&args[2], &fargs)?;
                 } else {
-                    jit.call(&args[2], &[])?;
+                    jit.call(&args[2], &fargs)?;
                 }
                 Ok((jit.call("__dyn_read", &[])?, names, blocks))
             };
