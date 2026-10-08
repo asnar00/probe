@@ -16,7 +16,7 @@ use std::path::Path;
 
 /// the non-zeroic forms, in the table's order: what each is called in
 /// a listing, and the rule that finds it in the text
-pub const FORMS: [(&str, &str); 9] = [
+pub const FORMS: [(&str, &str); 10] = [
     ("a name assigned again", "an assignment to a feature-scope variable, a local, a parameter, or a result already given"),
     ("a loop's variable assigned in its body", "an assignment to a name the header of an enclosing `loop` declares"),
     ("a task that walks its input", "in a declaration with `<<`, `peek`, `advance` or `count` applied to one of its `$` parameters"),
@@ -26,6 +26,7 @@ pub const FORMS: [(&str, &str); 9] = [
     ("a loop that only computes", "a `loop` no line of which pushes into a stream, ends one, or applies a stream word to one; a call in it may push, unseen"),
     ("`for` over an array", "every `for`: what it walks is an array, a `for` over a stream being refused"),
     ("an index into an array that may be too short", "`a[e]`, an item of an array by its place, wherever it stands; a look back at a stream, `x$[-1]`, in a stream processor with no loop is not one"),
+    ("a result pushed under an `if` statement", "the push of a function's result, `r << v`, on a line under an `if` statement, or inside a `loop` or a `for`: anywhere but the top level of the body; the zeroic form is one push at the top level with its condition on it, `r << a if (c) else b` (fm3 question 88)"),
 ];
 
 /// a line that uses a form: the file, the line, which form
@@ -66,6 +67,9 @@ struct At<'a> {
 
 struct Walk {
     found: BTreeSet<Found>,
+    /// how many `if` statements the line being walked stands under; an
+    /// `if` on a push's own line is not one
+    under: usize,
 }
 
 fn seq_of(p: &Part) -> Option<&str> {
@@ -181,6 +185,9 @@ impl Walk {
                 Stmt::Multi { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => self.expr(value, at, in_loop),
                 Stmt::Assign { targets, value, line } => {
                     self.expr(value, at, in_loop);
+                    if (self.under > 0 || in_loop) && targets.iter().any(|t| t.pushed && at.results.iter().any(|r| r == &t.name)) {
+                        self.note(at, *line, 9);
+                    }
                     for t in targets {
                         self.assigned(&t.name, *line, at, carried, given);
                     }
@@ -192,10 +199,12 @@ impl Walk {
                     }
                     // what either arm gives is given after the `if`
                     let (mut a, mut b) = (given.clone(), given.clone());
+                    self.under += !*on_push as usize;
                     self.block(then, at, carried, in_loop, &mut a);
                     if let Some(e) = els {
                         self.block(e, at, carried, in_loop, &mut b);
                     }
+                    self.under -= !*on_push as usize;
                     // ... but an arm that gives the function's last
                     // result has ended it (fm3 question 2, log 145), and
                     // gives nothing to what follows the `if`
@@ -221,6 +230,9 @@ impl Walk {
                     }
                     self.block(body, at, &inner, true, given);
                     if let Some(LoopInto::Assign(ts)) = into {
+                        if (self.under > 0 || in_loop) && ts.iter().any(|t| t.pushed && at.results.iter().any(|r| r == &t.name)) {
+                            self.note(at, *line, 9);
+                        }
                         for t in ts {
                             self.assigned(&t.name, *line, at, carried, given);
                         }
@@ -302,7 +314,7 @@ fn touches_a_stream(stmts: &[Stmt]) -> bool {
 /// a store read and metered: every feature but the compiler's own
 pub fn of_store(s: &Store, name: &str) -> Metered {
     let takers = zeroic::takers(s);
-    let mut w = Walk { found: BTreeSet::new() };
+    let mut w = Walk { found: BTreeSet::new(), under: 0 };
     let mut lines = 0;
     for f in s.features.iter().chain(&s.left_out).filter(|f| f.name != "platform") {
         lines += std::fs::read_to_string(&f.code.file).map(|t| t.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
@@ -366,7 +378,7 @@ pub fn report(dir: &Path) -> Result<String, String> {
     }
     writeln!(out, "{:<22} {:>10} {:>8}", "store", "non-zeroic", "lines").unwrap();
     let (mut total, mut all) = (0, 0);
-    let mut by_form = [0usize; 9];
+    let mut by_form = [0usize; FORMS.len()];
     for sdir in &stores {
         let m = metered(sdir)?;
         writeln!(out, "{:<22} {:>10} {:>8}", m.name, m.count(), m.lines).unwrap();
@@ -414,16 +426,28 @@ mod tests {
         // 7 `count`, 9 `peek`, 13 `advance`: walking; 10: `if` round a
         // push; 12: a feature-scope name assigned; 18: a `for`; 19: an
         // index, the result's first giving being how a function gives
-        // it; 20: the result given again, and a `peek` forward of now
-        assert_eq!(forms, vec![(7, 2), (9, 2), (10, 4), (12, 0), (13, 2), (18, 7), (19, 8), (20, 0), (20, 3)], "{:?}", m.found);
+        // it, and a result pushed inside a `for`, not at the top level
+        // of its body; 20: the result given again, and a `peek`
+        // forward of now
+        assert_eq!(forms, vec![(7, 2), (9, 2), (10, 4), (12, 0), (13, 2), (18, 7), (19, 8), (19, 9), (20, 0), (20, 3)], "{:?}", m.found);
         assert_eq!((m.count(), m.lines), (8, 18));
         // a body written both ways, which the compiler refuses, is metered
         let refused = store_of("r", "int x$\nint d$ = rising(x$)\n\non (int d$) << rising (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        d$ << x$[-1]\n        advance x$ by (1)\n");
         assert!(super::super::lower::lower(&store::read(&refused).unwrap()).is_err());
         assert_eq!(metered(&refused).unwrap().count(), 2);
+        // a result pushed under an `if` statement (fm3 question 88,
+        // log 170): each such line, in either arm and in a loop; the
+        // condition on the push's own line, with `else`, is the zeroic
+        // form and is not counted
+        let under = store_of("u", "on (int s) << sign of (int x)\n    if (x < 0)\n        s << -1\n    else if (x > 0)\n        s << 1\n\non (int s) << sign as a table (int x)\n    s << -1 if (x < 0)\n         else 1 if (x > 0)\n         else 0\n\non (int p) << above (int n)\n    loop (int q = 1)\n        if (q > n)\n            p << q\n        continue (q * 2)\n");
+        let m = metered(&under).unwrap();
+        let forms: Vec<(usize, usize)> = m.found.iter().map(|f| (f.line, f.form)).collect();
+        assert_eq!(forms, vec![(3, 9), (5, 9), (13, 6), (15, 9)], "{:?}", m.found);
+        let text = report(&under).unwrap();
+        assert!(text.contains("  h/h.zero:3  a result pushed under an `if` statement\n") && text.contains("     3  a result pushed under an `if` statement: the push of a function's result, `r << v`, on a line under an `if` statement, or inside a `loop` or a `for`: anywhere but the top level of the body; the zeroic form is one push at the top level with its condition on it, `r << a if (c) else b` (fm3 question 88)\n"), "{}", text);
         let text = report(&walking).unwrap();
         assert!(text.contains(": 8 of 18 lines of zero use a non-zeroic form\n") && text.contains("  h/h.zero:20  a name assigned again\n  h/h.zero:20  a `peek` forward of now\n"), "{}", text);
-        for d in [zeroic, walking, refused] {
+        for d in [zeroic, walking, refused, under] {
             let _ = std::fs::remove_dir_all(&d);
         }
     }
