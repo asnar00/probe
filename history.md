@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `else` on a push, and the table — `51b40d2` · 2026-10-08
+
+```
+on (int k) << class of (int c)
+    k << 0 if (c <= 32)
+         else 3 if (c > 122)
+         else 1 if (c >= 97)
+         else 3 if (c > 57)
+         else 2 if (c >= 48)
+         else 3
+```
+
+`suite/zero/pushed/pushed/pushed.zero:64-70`. fm3's question 88, its first landing: a condition goes on the push, `x << a if (c) else b`, read from the left, a case a line where the lines begin `else` indented under the push. `push_else` in `src/zero/syntax.rs` builds the `if` statement with a push in each arm that the line replaces, so the lowering is untouched and the lexer's stores emit the same 555 lines with `kind of` as a table. Into a stream it pushes one or the other; in a stream processor it is one item (`chosen`, `src/zero/zeroic.rs`); with a loop word it is refused, two rulings pulling apart. Zero 864/864 natively and on wasm; the six rows unmoved.
+
 ### zero: the six-line lexer's kinds are names — `293c88b` · 2026-10-08
 
 ```
