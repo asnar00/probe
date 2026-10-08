@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream processor handed an array inside a function gives an array — `f411d1f` · 2026-10-08
+
+```
+on (int d$) << doubled (int x$)
+    d$ << x$ * 2
+
+on (int e$) << closer (int x$)
+    e$ << 99 if (empty x$)
+```
+
+`suite/zero/tasks/tasks/tasks.zero:24-28`. Two walking tasks said as lines that hold for every item, in place; their inputs then have no storage, `fed twice` 464 to 158 as counted. Three cases ran `doubled` inside a function, which was refused. Now `int d$ << doubled ([1, 2, 3])` (line 95): `z_apply` in `src/zero/lower.rs` lowers the lines in line at a loop over the array, kept values the loop's own, the last tick after the last item, pushing straight into the function's stream. `fed a literal` 744 to 179. `runs` stays walking. The meter 83 to 78; only `tasks` moved. Zero 927/927 natively and on wasm; `cargo test zero` 75.
+
 ### zero: a range used once is never made — `90c014b` · 2026-10-08
 
 ```
