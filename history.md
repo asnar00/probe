@@ -4,6 +4,15 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the clock's address is formed once a loop — `564f23b` · 2026-10-08
+
+```
+on count down()
+    i$ << [10 through 1]
+```
+
+`suite/zero/hello/countdown/countdown.zero:8-9`, with `int i$ at (1 hz)` above it. Each of the ten numbers is followed by a step of the clock, and the clock is the store's own word, so each step formed its address. `settle_clock` in `src/zero/lower.rs` settles the finished text a function at a time: a later `addr __clock` reached only through an earlier one is the earlier one, and one inside a loop is formed before the outermost loop it stands in. hello's `run` 1 064 to 1 055 as counted, static's 1 037 to 1 028, nine each as expected; the same nine on the tool. Eight stores with a rate moved, every case of each the same or less. It holds whichever way fm3 question 107 goes. Zero 929/929 natively; `cargo test zero` 76.
+
 ### zero: a small function applied to a range is written in line at the loop — `6f7bde7` · 2026-10-08
 
 ```
