@@ -79,12 +79,9 @@ on (int t$) << trebled (int x$)
     t$ << two$ + x$
 
 on (int k) << class of (char c)
-    if (c <= 32)
-        k << 0
-    else if (c >= 97)
-        k << 1
-    else
-        k << 2
+    k << 0 if (c <= 32)
+         else 1 if (c >= 97)
+         else 2
 
 on (int k$) << classes (char c$)
     k$ << class of (c$)

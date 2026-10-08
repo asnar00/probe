@@ -10,7 +10,7 @@ Plan item 4 of milestone 0: section 7 of zero.md — `if`/`else`, `loop ... whil
 An `if` statement runs one of two blocks; a variable it assigns has, after it, the value from whichever arm ran. A `loop` names the variables it carries and their starting values; `while` is tested at the top of every pass, `continue` gives the next values, `break` leaves, and `yields` names the carried variables that come out, into a declared or an existing name: `int total = loop (int i = 0, int acc = 0) while (i < n) yields acc`. The carried variables are the loop's own, gone after it. A `for` runs its body once per value of a range. A repetition that a sequence form can say — a sum over a range, a function mapped over one — is written that way, and the compiler makes the loop.
 
 ## interface
-- `sign of (x)` is -1, 1 or 0: an `else if` whose arms each push the result and so end the function there, and a result left alone on the third path is its zero.
+- `sign of (x)` is -1, 1 or 0: one push with its condition on it, written as a table, a case a line, and saying all three (fm3 question 88). Until hop twenty-six it was an `if` and an `else if` statement with a push under each and nothing pushed for 0.
 - `magnitude of (x)` keeps a temporary that is one thing or another, `int m = if (x < 0) then (-x) else (x)`, and pushes the result last: pushing the result would end the function, so a value that is tested is a temporary until it is final.
 - `describe (x)` prints one of two strings.
 - `sum to (n)` is a range reduced, `[0 through n] + _`: no loop is written; `sum below (n)` is section 7's `[0 to n] + _`, the exclusive range, 0 to n - 1.

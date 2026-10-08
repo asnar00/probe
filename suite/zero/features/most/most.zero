@@ -2,10 +2,8 @@ on (int n) << greet()
     n << existing greet() * 100
 
 on (int n) << count (int k)
-    if (k > 5)
-        n << existing count (k) + existing count (k)
-    else
-        n << k
+    n << existing count (k) + existing count (k) if (k > 5)
+         else k
 
 on (int n) << describe()
     n << 20

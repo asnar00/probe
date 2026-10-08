@@ -9,18 +9,12 @@ char src$
 token u$ = lex(src$)
 
 on (kind k) << kind of (char c)
-    if (c <= 32)
-        k << space
-    else if (c > 122)
-        k << mark
-    else if (c >= 97)
-        k << word
-    else if (c > 57)
-        k << mark
-    else if (c >= 48)
-        k << number
-    else
-        k << mark
+    k << space if (c <= 32)
+         else mark if (c > 122)
+         else word if (c >= 97)
+         else mark if (c > 57)
+         else number if (c >= 48)
+         else mark
 
 on (token t$) << lex (char c$)
     kind k$ = if (empty c$) then (space) else (kind of (c$))

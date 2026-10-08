@@ -15,9 +15,9 @@ A condition goes on the push (fm3 question 88, log 169): `n << a if (a > b) else
 
 ## interface
 - `double (x)` pushes its result at the top of its body; `(a) is under (b)` pushes a `bool`, and `smaller of (a) and (b)` a value that is one thing or another.
-- `sign of (x)` pushes under an `if` and an `else if`, and nothing for 0: a result nothing pushed is the zero of its type.
-- `first positive of (a) and (b)` pushes under an `if` with no `else`, and the function ends there; the push after the `if` is the other path. `... on one line` says the same with `if` on the push, `r << a if (a > 0)`.
-- `power of two above (n)` pushes inside a loop that has no `break`: the push is the loop's only way out.
+- `sign of (x)` is a table of three cases, a line each, and says all three: -1, 1, and 0 for 0.
+- `first positive of (a) and (b)` pushes one value or the other, its `else` on a line of its own under the push. `... on one line` says the same on one, `r << a if (a > 0) else b`.
+- `power of two above (n)` leaves its loop with `break (q)`, which gives the loop's result where it leaves, and that is pushed once, at the top of the body: `p << loop (int q = 1, int found = 0) yields found`.
 - `gcd of (a) and (b)` is given what a loop yields, `g << loop (...) ... yields x`.
 - `divide (a) by (b)` pushes two results, the second reading the first; `ordered (a) and (b)` pushes them in the other order from the one its first line names them in; `both of (a) by (b)` takes two from one call, `q, r << divide (a) by (b)`.
 - `sum of (x[])` takes an array and pushes one value, and is called `[sum of] ([1, 2, 3, 4])`; `read` pushes a stream's latest item, `n << seen$`.

@@ -29,18 +29,16 @@ on (int32 y) << narrow (int32 x)
     y << smaller of (x) and (big)
 
 on (int r) << first positive of (int a) and (int b)
-    if (a > 0)
-        r << a
-    r << b
+    r << a if (a > 0) else b
 
 on (int lo, int hi) << ordered (int a) and (int b)
     lo << if (a < b) then (a) else (b)
     hi << a + b - lo
 
 on (int p) << power of two above (int n)
-    loop (int q = 1)
+    p << loop (int q = 1) yields q
         if (q > n)
-            p << q
+            break
         continue (q * 2)
 
 on describe (int x)

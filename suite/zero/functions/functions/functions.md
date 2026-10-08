@@ -18,9 +18,9 @@ A function is declared with `on`, its results first, then its name with the para
 - `(a) is less than (b)` is a comparison giving a `bool`.
 - `clamp (x) between (lo) and (hi)` nests two `if then else` expressions.
 - `narrow (x)` calls `smaller of` with `int32` arguments, so the template is instantiated at 32 bits.
-- `first positive of (a) and (b)` pushes its result inside an `if` with no `else`: the function ends there, and the push after the `if` is the other path.
+- `first positive of (a) and (b)` pushes one value or the other, `r << a if (a > 0) else b`: the condition is on the push (fm3 question 88).
 - `ordered (a) and (b)` has two results: after `lo` is pushed the function goes on, and reads `lo`, until `hi` is pushed.
-- `power of two above (n)` pushes its result inside a `loop` that has no `break`: the push is the loop's only way out.
+- `power of two above (n)` is given what a loop yields, `p << loop (int q = 1) yields q`: the loop leaves by `break` inside an `if`, and its variable is the result, pushed once.
 - `describe (x)` is one name with four methods, over `int`, `float`, `bool` and `string`; a call picks by its argument; `describe a word` and `describe a decimal` call the string and float ones, since a case line's arguments are integers.
 - `kind of (x)` has methods over `number`, `int` and `int32`, each giving an `int32` (a result declared `int` would be bound by the argument, as `smaller of` shows); the most specific that takes the argument wins: `kind at thirty two bits`, `kind at sixty four bits` and `kind of a float` call it with an `int32`, an `int64` and a `float32`, and `kind of a decimal` with `2.5`, a `float` first.
 - `area of (w) by (h)` and `area of (side)` are two methods with different bracket groups: different names, not a dispatch.

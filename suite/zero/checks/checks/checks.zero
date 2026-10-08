@@ -16,9 +16,7 @@ on (int n) << bounded (int k)
 on (int n) << either (int k)
     if (k > 10)
         check (k < 100)
-        n << 2
-    else
-        n << 1
+    n << 2 if (k > 10) else 1
 
 on (int n) << outside()
     int i[] = [1, 2]
