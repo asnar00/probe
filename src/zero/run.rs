@@ -3025,6 +3025,63 @@ mod tests {
         assert!(unheld("line 3: unknown opcode 'x'").is_none());
     }
 
+    /// `until (an event)` ends a line that stands at the event (fm3
+    /// question 85, log 174). A condition that names the stream being
+    /// moved or the line's target is about the item and is asked after
+    /// the push, as it was; one that names another stream is watched:
+    /// a stream's end sets the line's bit where the stream is ended, a
+    /// stream's value is asked by a second function of the line on
+    /// that stream, and the moving function asks nothing after its push
+    #[test]
+    fn a_line_stands_until_an_event() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-until-event");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>run() → \"?\"\n").unwrap();
+        let head = "int a$\nint b$\nint c$\nint o$\nout$ << (o$ << \" \") forever\n";
+        let emitted = |line: &str, body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}\n\non run()\n{}", head, line, body)).unwrap();
+            emit(&dir)
+        };
+        let func = |ir: &str, name: &str| -> String {
+            let at = ir.find(&format!("fn {}(", name)).unwrap_or_else(|| panic!("no {} in {}", name, ir));
+            ir[at..].lines().take_while(|l| !l.is_empty()).skip(1).take_while(|l| l.starts_with(' ')).collect::<Vec<_>>().join("\n")
+        };
+        // a stream's value: the watching function on `b$`, a function
+        // of one item, `b$` having no storage; the moving one the push
+        // under the bit, with nothing stored after it
+        let ir = emitted("o$ << a$ until (b$ == 1)", "    a$ << 1\n    b$ << 1\n    a$ << 2\n").unwrap();
+        let watch = func(&ir, "__watch2");
+        assert!(watch.contains("cmp.eq __item, 1") && watch.contains("set _2, __until2, 1"), "{}", watch);
+        let moves = func(&ir, "__edge2");
+        assert!(moves.contains("get _1, __until2") && !moves.contains("set "), "{}", moves);
+        let run = func(&ir, "run");
+        assert!(run.contains("__edge2(") && run.contains("__watch2(") && !ir.contains("b: int$"), "{}", run);
+        // a stream's end: the bit set where the stream is ended, and no
+        // second function
+        let ir = emitted("o$ << a$ until (ended b$)", "    a$ << 1\n    end b$\n    a$ << 2\n").unwrap();
+        assert!(!ir.contains("fn __watch"), "{}", ir);
+        let run = func(&ir, "run");
+        assert!(run.contains("set _7, __until2, _6\n") && run.contains("    end(_5)\n"), "{}", run);
+        assert!(!func(&ir, "__edge2").contains("ended("), "{}", ir);
+        // about the item: the source's name, the target's, and both
+        // with another stream beside: asked after the push, as it was
+        for (cond, body) in [("a$ == 2", "    a$ << 1\n"), ("a$ > b$", "    b$ << 5\n    a$ << 1\n")] {
+            let ir = emitted(&format!("o$ << a$ until ({})", cond), body).unwrap();
+            assert!(!ir.contains("fn __watch") && func(&ir, "__edge2").contains("__until2, "), "{}: {}", cond, ir);
+        }
+        // what an event's condition may not read
+        let refused = |line: &str, what: &str| {
+            let e = emitted(line, "    a$ << 1\n").err().unwrap_or_else(|| panic!("not refused: {}", line));
+            assert!(e.ends_with(what), "{}: {}", line, e);
+        };
+        let not = "h.zero:6: a line that stands until an event ends when the event comes to hold (fm3 question 85), and this one is not built: ";
+        refused("o$ << a$ until (empty b$)", &format!("{}`empty x$` is a stream processor's word, true on its one tick after the last. A line that stands ends with `until (ended x$)`", not));
+        refused("o$ << a$ until (ended b$ or ended c$)", &format!("{}`ended` inside a larger condition, or of two streams. The condition may be `ended x$` alone", not));
+        refused("o$ << a$ until (count b$ > 2)", &format!("{}`count` asked of the stream the condition reads. An event's condition is `ended x$`, or reads one stream by its name, its value now: `until (stop$ == 1)`", not));
+        refused("o$ << a$ until (b$ == c$)", &format!("{}its condition reads 2 streams, 'b$' and 'c$', and an event's condition reads one", not));
+    }
+
     /// a product's bound (log 41) reaches every loop of the function it
     /// names, marked as the product's, and `probe cost` counts it
     #[test]

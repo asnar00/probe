@@ -19,7 +19,7 @@
 use super::lex::{self, Error};
 use super::kinds::Mark as NameMark;
 use super::store::{Case, Expect, Mark, Store};
-use super::syntax::{Arg, Decl, Expr, ExprKind, FnDecl, Init, LoopInto, NamePart, Part, Repeat, Stmt, TypeKind};
+use super::syntax::{Arg, Decl, Expr, ExprKind, FnDecl, Init, LoopInto, NamePart, Part, Repeat, Stmt, TypeKind, Watch};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -2175,7 +2175,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), wide: Vec::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), wide: Vec::new(), end_bits: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2325,7 +2325,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
             match d {
                 Decl::Var(v) => l.collect_nodes(v, &f.name, &f.code.file)?,
                 Decl::Wire(e) => l.collect_wire(e, &f.name, &f.code.file)?,
-                Decl::Edge { target, items, group, shown, first, cond, word, only, forever, line } => l.collect_edge(target, items, (*group, shown.as_deref()), first.as_ref(), cond.as_ref(), *word, only.as_ref(), *forever, *line, &f.name, &f.code.file)?,
+                Decl::Edge { target, items, group, shown, first, cond, word, only, forever, watch, line } => l.collect_edge(target, items, (*group, shown.as_deref()), first.as_ref(), cond.as_ref(), *word, only.as_ref(), *forever, watch.as_ref(), *line, &f.name, &f.code.file)?,
                 _ => {}
             }
         }
@@ -3145,6 +3145,9 @@ fn zero_ty(t: &Ty) -> String {
 struct Lowerer {
     /// literals an abstract type may not hold under every product
     wide: Vec<WideLiteral>,
+    /// the bits of the lines that stand until a stream ends, by the
+    /// stream (fm3 log 174)
+    end_bits: HashMap<String, Vec<String>>,
     funcs: Vec<FnInfo>,
     types: HashMap<String, TypeInfo>,
     /// the `type` lines, in declaration order
@@ -4474,13 +4477,19 @@ impl Lowerer {
             Decl::Var(v) => self.zwire(v, &f.code.file),
             _ => None,
         })).collect();
-        let edged: Names = store.features.iter().flat_map(|f| f.code.decls.iter().filter_map(|d| match d {
+        let mut edged: Names = store.features.iter().flat_map(|f| f.code.decls.iter().filter_map(|d| match d {
             Decl::Edge { items, .. } => match items.first().map(|e| &e.kind) {
                 Some(ExprKind::Seq(n)) => Some(n.clone()),
                 _ => None,
             },
             _ => None,
         })).collect();
+        // ... and the stream a line's event reads, which its second
+        // function is the edge of (fm3 log 174)
+        edged.extend(store.features.iter().flat_map(|f| f.code.decls.iter().filter_map(|d| match d {
+            Decl::Edge { watch: Some(Watch::Value(n)), .. } => Some(n.clone()),
+            _ => None,
+        })));
         // A line that stands and reads its own target in its first
         // item, `sum$ << sum$ + x$ forever` (fm3 log 149). Where the
         // line is the only thing that pushes into the target and
@@ -4557,7 +4566,7 @@ impl Lowerer {
                 // way and every push into the stream by name is of
                 // string literals, no method is ever met, and the
                 // stream needs no queue for one (fm3 log 124, decision 6)
-                let processors = store.features.iter().all(|g| g.code.decls.iter().all(|d| !matches!(d, Decl::Edge { items, .. } if matches!(items.first(), Some(Expr { kind: ExprKind::Seq(n), .. }) if n == s))));
+                let processors = store.features.iter().all(|g| g.code.decls.iter().all(|d| !matches!(d, Decl::Edge { items, .. } if matches!(items.first(), Some(Expr { kind: ExprKind::Seq(n), .. }) if n == s)) && !matches!(d, Decl::Edge { watch: Some(Watch::Value(n)), .. } if n == s)));
                 if !(wired && processors && literals_only(&store.features, s)) {
                     continue;
                 }
@@ -4747,7 +4756,14 @@ impl Lowerer {
                     // (the target of a line that stands may be a cell:
                     // the edge's function pushes into it by name, fm3
                     // log 149)
-                    Decl::Edge { items, cond, only, .. } => items.iter().chain(cond).chain(only).for_each(|e| mentions_in(e, &none, &|p, b| call(p, b, file), &mut named)),
+                    Decl::Edge { items, cond, only, watch, .. } => {
+                        items.iter().chain(cond).chain(only).for_each(|e| mentions_in(e, &none, &|p, b| call(p, b, file), &mut named));
+                        // the stream a line's event reads is the source
+                        // of its second function, and no cell
+                        if let Some(Watch::Value(n)) = watch {
+                            named.insert(n.clone());
+                        }
+                    }
                     Decl::Fn(fd) => {
                         bound.extend(fd.results.iter().chain(fd.params()).map(|p| p.name.clone()));
                         binds(&fd.body, &mut bound);
@@ -4915,7 +4931,7 @@ impl Lowerer {
     /// dispatch a push in a function uses, and pushes the rest of the
     /// chain after each item (question 38)
     #[allow(clippy::too_many_arguments)]
-    fn collect_edge(&mut self, target: &Expr, items: &[Expr], (group, shown): (usize, Option<&str>), first: Option<&Expr>, cond: Option<&Expr>, word: Repeat, only: Option<&Expr>, forever: bool, line: usize, feature: &str, file: &str) -> Result<(), Error> {
+    fn collect_edge(&mut self, target: &Expr, items: &[Expr], (group, shown): (usize, Option<&str>), first: Option<&Expr>, cond: Option<&Expr>, word: Repeat, only: Option<&Expr>, forever: bool, watch: Option<&Watch>, line: usize, feature: &str, file: &str) -> Result<(), Error> {
         let ExprKind::Seq(tname) = &target.kind else {
             return Err(lex::error(file, line, "`<<` pushes into a stream, named `x$`"));
         };
@@ -5091,6 +5107,21 @@ impl Lowerer {
             None => e.clone(),
         });
         let first = first.as_ref();
+        // an event ends the line (fm3 question 85, log 174): where it
+        // is a stream's end, the bit is set where the stream is ended;
+        // where it is a stream's value, by a second function of the
+        // line, on that stream, made before the one that moves so that
+        // the scheduler runs it first
+        match (watch, &until) {
+            (Some(Watch::Ended(k)), Some((field, _))) => {
+                if self.fvar(k).is_none_or(|f| !matches!(f.ty, Ty::Stream(_))) {
+                    return Err(lex::error(file, line, format!("'{}$' is not a feature-scope stream: a line that stands ends at the end of one", k)));
+                }
+                self.end_bits.entry(k.clone()).or_default().push(field.clone());
+            }
+            (Some(Watch::Value(k)), Some((field, c))) => self.watcher(k, field, c, &said, line, feature, file)?,
+            _ => {}
+        }
         // a standing filter, `e$ << x$ if (x$ > 0) forever`: the push
         // under its condition, as `if` on a push is in a function; a
         // counted line, the push and its count's bump under "fewer
@@ -5123,7 +5154,11 @@ impl Lowerer {
                 // "not ended yet", and after the push the bit is the
                 // condition, asked of the item that went out
                 (None, None, Some((field, c))) => {
-                    does.push(put(field, c.clone()));
+                    // (an event's bit is set by what watches it, and
+                    // nothing is asked after the push, fm3 log 174)
+                    if watch.is_none() {
+                        does.push(put(field, c.clone()));
+                    }
                     vec![Stmt::If { cond: bin("==", kept(field), Expr { kind: ExprKind::Bool(false), line }), then: does, els: None, line, on_push: false }]
                 }
                 (None, None, None) => does,
@@ -5179,6 +5214,68 @@ impl Lowerer {
         let info = self.funcs[i].clone();
         self.node_inputs.insert(sname.clone());
         self.nodes.push(Node { info, out: None, args: vec![items[0].clone()], hz: 0, feature: feature.to_string(), file: file.to_string(), text: said });
+        self.edges.push((fd, feature.to_string(), file.to_string()));
+        Ok(())
+    }
+
+    /// The second function of a line that stands until an event (fm3
+    /// question 85, log 174): for each item of the stream the event's
+    /// condition reads, the condition asked with that item, and the
+    /// line's bit set where it holds. Made as the line's own function
+    /// is: a function of one item out of a stream with no storage, a
+    /// node out of one that is stored
+    #[allow(clippy::too_many_arguments)]
+    fn watcher(&mut self, sname: &str, field: &str, cond: &Expr, said: &str, line: usize, feature: &str, file: &str) -> Result<(), Error> {
+        let Some(sf) = self.fvar(sname).cloned() else {
+            return Err(lex::error(file, line, format!("'{}$' is not a feature-scope stream: an event's condition reads one", sname)));
+        };
+        let Ty::Stream(selem) = &sf.ty else {
+            return Err(lex::error(file, line, format!("'{}$' is a {}, not a stream", sname, sf.ty.ir())));
+        };
+        self.reach(&format!("{}$", sname), &sf.feature, file, line)?;
+        let name = format!("__watch{}", self.edges.len() + 1);
+        let set = Stmt::Assign { targets: vec![super::syntax::Target { name: field.to_string(), seq: false, arr: false, line, feature: None, pushed: false }], value: Expr { kind: ExprKind::Bool(true), line }, line };
+        let body = vec![Stmt::If { cond: cond.clone(), then: vec![set], els: None, line, on_push: false }];
+        let seq = Expr { kind: ExprKind::Seq(sname.to_string()), line };
+        if self.bare.contains(sname) {
+            let fd = FnDecl {
+                line,
+                results: Vec::new(),
+                name: vec![NamePart::Word(name.clone()), NamePart::Group],
+                groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, arr: false, line }]],
+                task: false,
+                body,
+                platform: Vec::new(),
+            };
+            self.declare(&fd, feature, file)?;
+            let i = self.funcs.len() - 1;
+            self.funcs[i].ir = name.clone();
+            self.funcs[i].plain = name.clone();
+            self.bare_edges.entry(sname.to_string()).or_default().push((name, feature.to_string()));
+            self.edges.push((fd, feature.to_string(), file.to_string()));
+            return Ok(());
+        }
+        let phrase = |parts: Vec<Part>| Expr { kind: ExprKind::Phrase(parts), line };
+        let count = phrase(vec![Part::Word("count".into()), Part::Value(seq.clone())]);
+        let advance = phrase(vec![Part::Word("advance".into()), Part::Value(seq.clone()), Part::Word("by".into()), Part::Args(vec![Arg { name: None, value: count }])]);
+        let fd = FnDecl {
+            line,
+            results: Vec::new(),
+            name: vec![NamePart::Word(name.clone()), NamePart::Group],
+            groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: sname.to_string(), seq: true, arr: false, line }]],
+            task: false,
+            body: vec![Stmt::For { var: "__item".into(), seq: seq.clone(), body, line }, Stmt::Expr { expr: advance, line }],
+            platform: Vec::new(),
+        };
+        self.declare(&fd, feature, file)?;
+        let i = self.funcs.len() - 1;
+        self.funcs[i].ir = name.clone();
+        self.funcs[i].plain = name.clone();
+        self.funcs[i].task = true;
+        self.edge_fns.insert(name, sname.to_string());
+        let info = self.funcs[i].clone();
+        self.node_inputs.insert(sname.to_string());
+        self.nodes.push(Node { info, out: None, args: vec![seq], hz: 0, feature: feature.to_string(), file: file.to_string(), text: format!("{} until (...), its event", said) });
         self.edges.push((fd, feature.to_string(), file.to_string()));
         Ok(())
     }
@@ -10011,6 +10108,13 @@ impl Lowerer {
                 // a processor's input with no storage (fm3 log 127): its
                 // end is the last tick of each processor wired to it,
                 // once, a second `end` being nothing
+                // the lines that stand until this stream ends have
+                // ended (fm3 question 85, log 174): each one's bit
+                for field in self.end_bits.get(&sname).cloned().unwrap_or_default() {
+                    let one = b.tmp();
+                    b.line(&format!("{}: u1 = const 1", one));
+                    self.field_put(&field, &one, b);
+                }
                 if self.is_bare(&sname, b) {
                     self.z_end(&sname, b);
                     return Ok(Some(none));
@@ -10847,7 +10951,7 @@ fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str)
                 }
                 Decl::Var(v) => mentions_init(v, &none, &|p, b| call(p, b, &f.code.file), &mut named),
                 Decl::Wire(e) => mentions_in(e, &none, &|p, b| call(p, b, &f.code.file), &mut named),
-                Decl::Edge { target, items, cond, only, .. } => {
+                Decl::Edge { target, items, cond, only, watch, .. } => {
                     // (what a line's first item reads of its own target
                     // is `settle_bare`'s to weigh, fm3 log 149; a first
                     // item that is no stream's bare name is a line
@@ -10868,6 +10972,12 @@ fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str)
                     if let (ExprKind::Seq(t), Some(Expr { kind: ExprKind::Seq(s), .. })) = (&target.kind, items.first()) {
                         wires.push((s.clone(), t.clone()));
                         pushed.insert(t.clone());
+                        // the stream a line's event reads is wired to
+                        // the line too, by its second function, and
+                        // that is no reading of it (fm3 log 174)
+                        if let Some(Watch::Value(k)) = watch {
+                            wires.push((k.clone(), t.clone()));
+                        }
                     }
                 }
                 Decl::Type(_) => {}

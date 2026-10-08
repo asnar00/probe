@@ -35,6 +35,16 @@ int w$
 int tally$
 tally$ << tally$ + w$ forever
 out$ << (tally$ << " ") forever
+int tick$ at (1 hz)
+int hold$
+int held$
+held$ << tick$ until (ended hold$)
+out$ << (held$ << "\n") forever
+int tock$ at (1 hz)
+int stop$
+int stopped$
+stopped$ << tock$ until (stop$ == 1)
+out$ << (stopped$ << "\n") forever
 
 on hello thrice()
     out$ << "hello\n" (3) times
@@ -153,3 +163,17 @@ on running()
 on (int n) << tallied()
     w$ << 1 << 2 << 3
     n << tally$
+
+on passed till the hold ends()
+    tick$ << 0 << 1 << 2
+    end hold$
+    tick$ << 3
+
+on passed till the stop()
+    tock$ << 0 << 1
+    stop$ << 0
+    tock$ << 2
+    stop$ << 1
+    tock$ << 3
+    stop$ << 0
+    tock$ << 4

@@ -43,7 +43,84 @@ pub enum Decl {
     /// has several items and no brackets, `shown` is the line as its
     /// text would be with brackets round them all, for the refusal to
     /// show (log 156)
-    Edge { target: Expr, items: Vec<Expr>, group: usize, shown: Option<String>, first: Option<Expr>, cond: Option<Expr>, word: Repeat, only: Option<Expr>, forever: bool, line: usize },
+    ///
+    /// `watch` is what ends the line where its `until` is an event
+    /// (fm3 question 85, log 174): a condition that names neither the
+    /// stream being moved, nor the line's target, nor `_`
+    Edge { target: Expr, items: Vec<Expr>, group: usize, shown: Option<String>, first: Option<Expr>, cond: Option<Expr>, word: Repeat, only: Option<Expr>, forever: bool, watch: Option<Watch>, line: usize },
+}
+
+/// The event that ends a line that stands, `out$ << i$ until (...)`
+/// (fm3 question 85, log 174)
+#[derive(Clone, Debug, PartialEq)]
+pub enum Watch {
+    /// `until (ended key$)`: the line ends where the stream is ended
+    Ended(String),
+    /// `until (stop$ == 1)`: the condition is asked of each item of the
+    /// stream it reads, the stream's name in it that item, and the
+    /// line ends when it comes to hold
+    Value(String),
+}
+
+/// does an expression say `_`, the item just pushed?
+fn says_acc(e: &Expr) -> bool {
+    let any = |x: &Expr| says_acc(x);
+    match &e.kind {
+        ExprKind::Acc => true,
+        ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => any(x),
+        ExprKind::List(items) => items.iter().any(any),
+        ExprKind::Range { from: l, to: r, .. } | ExprKind::Bin(_, l, r) | ExprKind::Index(l, r) => any(l) || any(r),
+        ExprKind::IfElse(c, a, b) => any(c) || any(a) || any(b),
+        ExprKind::Phrase(ps) | ExprKind::Existing(ps) => ps.iter().any(|p| match p {
+            Part::Args(list) => list.iter().any(|a| any(&a.value)),
+            Part::Value(x) => any(x),
+            Part::Word(_) | Part::Whole => false,
+        }),
+        _ => false,
+    }
+}
+
+/// the first word of the language an expression applies to a stream,
+/// `ended` in `ended key$`, wherever it stands in it
+fn stream_word(e: &Expr) -> Option<String> {
+    const WORDS: [&str; 11] = ["ended", "empty", "count", "peek", "position", "latest", "frame", "end", "advance", "behind", "time"];
+    let mut found = None;
+    let mut each = |x: &Expr| {
+        if found.is_none() {
+            found = stream_word(x);
+        }
+    };
+    match &e.kind {
+        ExprKind::Unit(x, _) | ExprKind::Neg(x) | ExprKind::Field(x, _) => each(x),
+        ExprKind::List(items) => items.iter().for_each(each),
+        ExprKind::Range { from: l, to: r, .. } | ExprKind::Bin(_, l, r) | ExprKind::Index(l, r) => {
+            each(l);
+            each(r);
+        }
+        ExprKind::IfElse(c, a, b) => {
+            each(c);
+            each(a);
+            each(b);
+        }
+        ExprKind::Phrase(ps) | ExprKind::Existing(ps) => {
+            let mut named = Vec::new();
+            seqs_in(e, &mut named);
+            if let (Some(Part::Word(w)), false) = (ps.first(), named.is_empty()) {
+                if WORDS.contains(&w.as_str()) {
+                    return Some(w.clone());
+                }
+            }
+            for p in ps {
+                match p {
+                    Part::Args(list) => list.iter().for_each(|a| each(&a.value)),
+                    Part::Value(x) => each(x),
+                    Part::Word(_) | Part::Whole => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    found
 }
 
 /// Which word a push's `cond` goes with (fm3 question 79, log 147):
@@ -688,11 +765,43 @@ impl<'a> Parser<'a> {
                 };
                 // ... and so it is in the `until` of a line that
                 // stands, asked after the item has gone out (log 148)
-                let cond = match (cond, word, items.first().map(|e| &e.kind)) {
-                    (Some(c), Repeat::Until, Some(ExprKind::Seq(s))) => Some(as_item(&c, s)),
-                    (c, _, _) => c,
+                // An `until` that names neither the stream being moved,
+                // nor the line's target, nor `_`, is an event (fm3
+                // question 85, log 174): the line ends when it comes
+                // to hold, and what the condition reads is watched
+                let mut watch = None;
+                if let (Some(c), Repeat::Until, Some(ExprKind::Seq(s))) = (&cond, word, items.first().map(|e| &e.kind)) {
+                    let mut named = Vec::new();
+                    seqs_in(c, &mut named);
+                    let about_item = says_acc(c) || named.iter().any(|n| n == s || matches!(&target.kind, ExprKind::Seq(t) if t == n));
+                    if !about_item && !named.is_empty() {
+                        let refuse = |why: String| lex::error(self.file, line, format!("a line that stands until an event ends when the event comes to hold (fm3 question 85), and this one is not built: {}", why));
+                        let ended = |c: &Expr| match &c.kind {
+                            ExprKind::Phrase(ps) => match ps.as_slice() {
+                                [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(k), .. })] if w == "ended" => Some(k.clone()),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        let asked = stream_word(c);
+                        watch = Some(match (ended(c), asked.as_deref(), named.as_slice()) {
+                            (Some(k), _, _) => Watch::Ended(k),
+                            (None, Some("empty"), _) => return Err(refuse("`empty x$` is a stream processor's word, true on its one tick after the last. A line that stands ends with `until (ended x$)`".into())),
+                            (None, Some("ended"), _) => return Err(refuse("`ended` inside a larger condition, or of two streams. The condition may be `ended x$` alone".into())),
+                            (None, Some(w), _) => return Err(refuse(format!("`{}` asked of the stream the condition reads. An event's condition is `ended x$`, or reads one stream by its name, its value now: `until (stop$ == 1)`", w))),
+                            (None, None, [k]) => Watch::Value(k.clone()),
+                            (None, None, more) => return Err(refuse(format!("its condition reads {} streams, {}, and an event's condition reads one", more.len(), more.iter().map(|n| format!("'{}$'", n)).collect::<Vec<_>>().join(" and ")))),
+                        });
+                    }
+                }
+                let cond = match (cond, word, items.first().map(|e| &e.kind), &watch) {
+                    // the stream an event's condition reads is, in it,
+                    // the item of that stream that has arrived
+                    (Some(c), Repeat::Until, _, Some(Watch::Value(k))) => Some(as_item(&c, k)),
+                    (Some(c), Repeat::Until, Some(ExprKind::Seq(s)), None) => Some(as_item(&c, s)),
+                    (c, _, _, _) => c,
                 };
-                Ok(Decl::Edge { target, items, group, shown, first, cond, word, only, forever, line })
+                Ok(Decl::Edge { target, items, group, shown, first, cond, word, only, forever, watch, line })
             }
             _ => Err(self.err(format!("expected 'on', 'type', a variable declaration or a wiring at the top of the feature, found {}", self.found()))),
         }
