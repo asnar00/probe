@@ -4,6 +4,7 @@
 //! of probe by the runner (`run.rs`). zero.md in the fm3 project is the
 //! language definition; the front end adds no semantics of its own.
 
+pub mod kinds;
 pub mod lex;
 pub mod lower;
 pub mod meter;
@@ -24,6 +25,7 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         eprintln!("       probe zero <store> run <case>    run one ## testing case natively, on the real clock");
         eprintln!("                            [--fast|-t]  ... as fast as it can, on the virtual clock");
         eprintln!("       probe zero meter <store|dir>     the lines that use a non-zeroic form: a store's, listed, or a row a store");
+        eprintln!("       probe zero names <store>         every name with a `$` or `[]`: how it is declared, and each use");
         eprintln!("       probe zero test [dir] [path]     run every store under dir (suite/zero)");
         eprintln!("                                        on a path: wasm, riscv, arm-qemu, air (native by default)");
         ExitCode::FAILURE
@@ -54,6 +56,18 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         // `probe zero meter <store|dir>` (fm3 log 129): what is not
         // yet zeroic, counted and listed; nothing is lowered or refused
         Some("meter") if args.len() == 2 => match meter::report(Path::new(&args[1])) {
+            Ok(text) => {
+                print!("{}", text);
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+                ExitCode::FAILURE
+            }
+        },
+        // `probe zero names <store>` (fm3 log 158): every name declared
+        // with a mark, how, and each form it is used in
+        Some("names") if args.len() == 2 => match kinds::report(Path::new(&args[1])) {
             Ok(text) => {
                 print!("{}", text);
                 ExitCode::SUCCESS
