@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the suite says it, 47 names respelled as arrays and no store's IR moved — `ec9c6df` · 2026-10-08
+
+```
+on (int n) << zipped()
+    int i[] = [1, 2, 3, 4]
+    int j[] = [4, 5, 6]
+    int k[] = i[] + j[]
+    n << count k[] * 100 + k[3] * 10 + (k[] + _) - 25
+```
+
+`suite/zero/sequences/sequences/sequences.zero:41-45`. The second half of fm3's question 90. Every name the compiler's own print sorts as an array is written `a[]`: 90 lines in 12 files by a script that takes each name's declaration and uses from `probe zero names`, so a stream of the same spelling a few lines down is left alone. The platform's `print (int x[])` and its two block methods with them. No store's emitted IR moved, on a copy first, then a store at a time against the last binary, then after the rebuild. The 21 names used both ways wait for the next landing. The full run: zero 841/841 on four paths, 818 and 23 skipped on the GPU's, `probe test` 1022, 1013, 1022, 1022, 985, `cargo test` 153. The six rows as they were.
+
 ### zero: an array is `int a[]`, the mark part of the name and the lines what they were — `95b2558` · 2026-10-08
 
 ```
