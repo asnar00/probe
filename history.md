@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: three faults a visitor can reach, a conversion, a time written out, a literal held — `ad54175` · 2026-10-08
+
+```
+on times written()
+    time t = 250 ms
+    out$ << t << "\n" << t * 10 << "\n" << t * 40 << "\n" << 1 s / 3 << "\n" << 0 s - t
+```
+
+`suite/zero/types/types/types.zero:224-226`, which writes `250 ms`, `2.5 s`, `10 s`, `333.333333 ms`, `-250 ms`. From the playground's report (fm3 log 173). `float(n)` of an abstract `int` broke the lowered IR in any function whose first line did not name `int`: the IR's `conv` to a library number never asked the policy how wide a body's `int` is. One line of `src/ssa.rs`; 1 792 of 1 920 conversions compiled before, all now. A `time` gets a `<<` method in `src/zero/platform.zero`, and a literal may be a decimal. And `Lowerer.holds` refuses `uint8 low = 300` with the type's range, an abstract `int`'s literal under the products that cannot hold it. No store's IR moved; the six rows unmoved. The full run: zero 871/871 on four paths, 847 and 24 skipped on the GPU's, `probe test` 1024, 1015, 1024, 1024, 987, `cargo test` 162.
+
 ### zero: the old form refused, a result pushed once at the top level — `105aba6` · 2026-10-08
 
 ```
