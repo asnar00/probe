@@ -20,11 +20,15 @@ Every stream here but `both$` and `t$` is read for its latest item and nothing e
 - `doubled past (limit)` pushes with `while`: each item is worked out from the one before and stored while it passes.
 - `counted` reads `both$` by its name and counts it too.
 
+- **In a function** (fm3 log 186) a stream declared there and read only for its latest item is one value of the function, kept in no queue and no field: where its push has a word, it is what the loop that push lowers to carries. `local up to (k)` is `int i$ << 0 << (i$ + 1) while (_ <= k)`, ten thousand items where a queue fails at its sixty-fifth; `local doubled past (k)` is the same with `until` and `local doubled (k)` with `(k) times`, a count below zero failing a check. `local chosen (k)` pushes into it under an `if`, and `local before any` reads one nothing has been pushed into. `local struct (k)` keeps a structure as its fields, apart, `token t$ << token(1, 0, 0) << token(t$.kind + 1, t$.start + t$.kind, t$.n * 2 + 1) (k) times`, and makes the structure once, where it is read whole, `token last = t$`; `local by the candidate (k)` asks `_.kind` of the candidate. `local shown` writes its value now, `out$ << i$`.
+- `local and counted (k)`, `local pushed round a loop (k)` and `local handed on` are the same stream used as a stream, counted, pushed into inside a loop that began after it, and handed to a function that takes a stream: each is the queue it was, and reads the same.
+
 ## rules
 - A stream's name is its latest item wherever one value is wanted: a declaration without `$`, the push of a result, a condition, a `check`, an index, the bounds of a range, the base of `.field`, a conversion, a field of a struct being built, both sides of an operator there, and an argument of a function whose parameter is one value.
 - An item of a push in a function is read the same way, the line happening once: `out$ << x$` pushes the latest item of `x$`, and `total$ << total$ + other$` reads both for their latest, so both are cells (`suite/zero/now`, fm3 question 79, log 163). An array's name there is the array, whole.
 - Before anything is pushed, the latest item is the zero of the type.
 - What a stream keeps is the compiler's to work out, and may not show: a cell and a queue read the same.
+- A stream declared in a function is one value where the function's every mention of it is the target of a push of single values, `latest`, or its name where one value is wanted. `count`, `peek`, `advance`, `frame`, `behind`, `end` and `ended`, a time, a block pushed into it, a task or a function handed it, and a push into it inside a loop that began after it was declared, make it the stream it was.
 
 ## testing
 >bumped twice() → 2
@@ -46,6 +50,20 @@ Every stream here but `both$` and `t$` is read for its latest item and nothing e
 >summed to seen() → 6
 >doubled past (100) → 64
 >counted() → 62
+>local up to (10000) → 10000
+>local doubled past (100) → 128
+>local doubled (10) → 1024
+>local doubled (0) → 1
+>local doubled (-1) → check
+>local chosen (1) → 22
+>local chosen (0) → 2
+>local before any() → 1
+>local struct (3) → 467
+>local by the candidate (5) → 54
+>local and counted (3) → 403
+>local pushed round a loop (4) → 6
+>local handed on() → 3
+>local shown() → "7"
 
 ## hostile
 `int x = out$`: "'out$' is the output device: it is written and never read, so it has no latest item".

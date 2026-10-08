@@ -1,3 +1,9 @@
+type pair =
+    int x, y
+
+type tally =
+    int x, n
+
 on (int s) << sign of (int x)
     s << -1 if (x < 0)
          else 1 if (x > 0)
@@ -20,33 +26,20 @@ on (int s) << sum below (int n)
     s << [0 to n] + _
 
 on (int g) << gcd of (int a) and (int b)
-    g << loop (int x = a, int y = b) while (y != 0) yields x
-        int r = x % y
-        continue (y, r)
+    pair p$ << pair(a, b) << pair(p$.y, p$.x % p$.y) while (p$.y != 0)
+    g << p$.x
 
 on (int p) << power of two above (int n)
-    int q = loop (int q = 1) yields q
-        if (q > n)
-            break
-        continue (q * 2)
-    p << q
-
-on (int d) << digits of (int n)
-    int x, int count = loop (int x = n, int count = 1) yields x, count
-        if (x < 10)
-            break
-        continue (x / 10, count + 1)
-    d << count
-
-on (int n) << collatz steps (int start)
-    n << loop (int x = start, int steps = 0) yields steps
-        if (x == 1)
-            break
-        continue (if (x % 2 == 0) then (x / 2) else (3 * x + 1), steps + 1)
-
-on (int p) << power of two above (int n) said
     int q$ << 1 << (q$ * 2) while (q$ <= n)
     p << q$
+
+on (int d) << digits of (int n)
+    tally t$ << tally(n, 1) << tally(t$.x / 10, t$.n + 1) while (t$.x >= 10)
+    d << t$.n
+
+on (int n) << collatz steps (int start)
+    tally t$ << tally(start, 0) << tally(if (t$.x % 2 == 0) then (t$.x / 2) else (3 * t$.x + 1), t$.n + 1) while (t$.x != 1)
+    n << t$.n
 
 on (int d) << digits said of (int n)
     int x$ << n << (x$ / 10) while (x$ >= 10)
@@ -56,11 +49,6 @@ on (int n) << collatz steps said (int start)
     int x$ << start << (if (x$ % 2 == 0) then (x$ / 2) else (3 * x$ + 1)) while (x$ != 1)
     n << count x$ - 1
 
-on (int n) << two counters said()
-    int a$ << 0 << (a$ + 1) while (a$ < 3)
-    int b$ << 0 << (b$ + 1) while (b$ < 5)
-    n << a$ * 10 + b$
-
 on (int r) << row (int i)
     r << [0 through i] + _
 
@@ -68,11 +56,9 @@ on (int t) << triangle (int n)
     t << row ([1 to n + 1]) + _
 
 on (int n) << two counters()
-    int a = loop (int i = 0) while (i < 3) yields i
-        continue (i + 1)
-    int b = loop (int i = 0) while (i < 5) yields i
-        continue (i + 1)
-    n << a * 10 + b
+    int a$ << 0 << (a$ + 1) while (a$ < 3)
+    int b$ << 0 << (b$ + 1) while (b$ < 5)
+    n << a$ * 10 + b$
 
 on ticks ()
     out$ << ("tick" << "\n") (3) times

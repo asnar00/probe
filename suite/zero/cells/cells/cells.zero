@@ -101,3 +101,57 @@ on (int n) << doubled past (int limit)
 on (int n) << counted()
     both$ << both$ + 1
     n << both$ * 10 + count both$
+
+on (int n) << local up to (int k)
+    int i$ << 0 << (i$ + 1) while (_ <= k)
+    n << i$
+
+on (int n) << local doubled past (int k)
+    int i$ << 1 << (i$ * 2) until (i$ >= k)
+    n << i$
+
+on (int n) << local doubled (int k)
+    int i$ << 1 << (i$ * 2) (k) times
+    n << i$
+
+on (int n) << local chosen (int k)
+    int i$ << 1
+    i$ << i$ + 10 if (k > 0)
+    i$ << i$ * 2
+    n << latest i$
+
+on (int n) << local before any()
+    int i$
+    n << i$ + 1
+
+on (int n) << local struct (int k)
+    token t$ << token(1, 0, 0) << token(t$.kind + 1, t$.start + t$.kind, t$.n * 2 + 1) (k) times
+    token last = t$
+    n << last.kind * 100 + last.start * 10 + last.n
+
+on (int n) << local by the candidate (int k)
+    token t$ << token(1, 0, 0) << token(t$.kind + 1, t$.kind, 0) while (_.kind <= k)
+    n << t$.kind * 10 + t$.start
+
+on (int n) << local and counted (int k)
+    int i$ << 0 << (i$ + 1) while (_ <= k)
+    n << count i$ * 100 + i$
+
+on (int n) << local pushed round a loop (int k)
+    int i$ << 0
+    loop (int j = 0) while (j < k)
+        i$ << i$ + j
+        continue (j + 1)
+    n << i$
+
+on (int n) << how many of (int x$)
+    n << count x$
+
+on (int n) << local handed on()
+    int i$ << 4 << 5 << 6
+    n << how many of (i$)
+
+on local shown()
+    int i$ << 3
+    i$ << i$ + 4
+    out$ << i$

@@ -7,7 +7,7 @@ layer: runtime
 fm3 questions 79 and 80, log 147 to 149. Ash, 7 October 2026: "we could also add `until (cond)` and `(n) times`."
 
 ## overview
-A `<<` sends once, each time its line runs. The words after its items say otherwise: `if (c)`, only where the condition holds; `(n) times`, n pushes; `while (c)`, for as long as it holds, tested before each push; `until (c)`, until it holds, tested after each push; `forever`, standing. `if` comes first and goes with any of the others; a push takes one of the others.
+A `<<` sends once, each time its line runs. The words after its items say otherwise: `if (c)`, only where the condition holds; `(n) times`, n pushes; `while (c)`, for as long as it holds, tested before each push, and before the item is worked out where the condition does not read `_` (fm3 question 111); `until (c)`, until it holds, tested after each push; `forever`, standing. `if` comes first and goes with any of the others; a push takes one of the others.
 
 `up$ << up$ + 1 (k) times` is k pushes, each working the item out again, so each reads the one before: after `up$ << 0`, four times gives `1 2 3 4`. The count is worked out once, before the first push. In a chain it covers the last item, as `while` does: `up$ << 0 << (up$ + 1) (4) times` is `0` and then four more.
 
@@ -41,7 +41,7 @@ A `<<` sends once, each time its line runs. The words after its items say otherw
 
 ## rules
 - A bracketed group that stands directly before the word `times` is the push's count and never an argument, unless a declared function's name has `times` after the words of the phrase so far. So `twice (k) (3) times` is `twice (k)` three times, and a function of two groups pushed n times is `f (a) (b) (n) times`.
-- The count is an integer, worked out once. Zero pushes nothing. A count worked out below zero is a failed check.
+- The count is an integer, worked out once. Zero pushes nothing. A count worked out below zero is a failed check, the IR's `check` and no more, as the library's refusal of an index out of range is: until fm3 log 186 it wrote its site first, which brought `print` into every store that says `(k) times`.
 - Any item may be repeated but a task call: a text and a range are, where `while`, which tests a candidate, refuses a block.
 - On a stream with a rate each push lands on the stream's beat and lasts its period.
 - On a line that stands the count is kept for the line, a number of the context that starts at zero when the store does; after the count the line moves nothing. An `until` keeps a bit the same way, set by the condition after each item that goes out.

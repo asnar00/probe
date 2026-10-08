@@ -2175,7 +2175,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2260,7 +2260,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         for d in &f.code.decls {
             if let Decl::Fn(fd) = d {
                 let params: Vec<String> = fd.params().filter(|p| p.seq).map(|p| p.name.clone()).collect();
-                let mut w = Words { timed: std::mem::take(&mut l.timed), timed_all: l.timed_all, kept: std::mem::take(&mut l.kept), kept_all: l.kept_all, read: std::mem::take(&mut l.read_by_name) };
+                let mut w = Words { timed: std::mem::take(&mut l.timed), timed_all: l.timed_all, kept: std::mem::take(&mut l.kept), kept_all: l.kept_all, read: std::mem::take(&mut l.read_by_name), locals: std::collections::HashSet::new() };
                 time_words(&fd.body, &params, &mut w);
                 l.timed = w.timed;
                 l.timed_all = w.timed_all;
@@ -3487,6 +3487,13 @@ struct Lowerer {
     /// ... which the lowering settles: a name here met where a stream
     /// is wanted is noted, and the store lowered again with it a stream
     uncelled: std::rc::Rc<std::cell::RefCell<Names>>,
+    /// the local streams the passes before this one met wanted as
+    /// streams (fm3 log 186), each `<function> <name>`: every other
+    /// local stream that could be one value is lowered as one
+    lstreams: Names,
+    /// the local cells of the function being lowered, for the net
+    /// under them: `<function> <name>` each
+    lcells_live: Names,
     /// the streams that may be cells by how they are declared, known
     /// before any type is; and those of them whose item only a cell can
     /// hold, a bool say, which the IR's ring does not
@@ -3735,14 +3742,23 @@ impl Body {
     /// first time, `name_2`, `name_3` after
     fn define(&mut self, name: &str, ty: Ty) -> String {
         let depth = self.loops.len();
-        let n = self.defs.entry(name.to_string()).or_insert(0);
-        *n += 1;
-        let ir = if *n == 1 { name.to_string() } else { format!("{}_{}", name, n) };
+        let ir = self.fresh(name);
         let v = self.vars.entry(name.to_string()).or_insert(Var { ir: String::new(), ty: ty.clone(), set: false, loop_depth: depth, arr: false });
         v.ty = ty;
         v.set = true;
         v.ir = ir.clone();
         ir
+    }
+
+    /// a new IR name for `name` and nothing declared: the name itself
+    /// the first time, `name_2` after. A hidden name, what a local
+    /// cell keeps (fm3 log 186), ends in `$`, which no name a program
+    /// writes holds and no IR name may: its IR names are the stream's
+    fn fresh(&mut self, name: &str) -> String {
+        let base = name.strip_suffix('$').unwrap_or(name);
+        let n = self.defs.entry(base.to_string()).or_insert(0);
+        *n += 1;
+        if *n == 1 { base.to_string() } else { format!("{}_{}", base, n) }
     }
 
     /// the current IR values of some variables, in order
@@ -5041,6 +5057,18 @@ impl Lowerer {
                 None
             }
         };
+        // a `while` that does not read `_` is tested first (fm3
+        // question 111, log 186)
+        let first = counter.is_none() && word != Repeat::Until && !reads_candidate(c);
+        if first {
+            let none = Val { text: "0".into(), ty: elem.clone(), literal: true };
+            let cv = self.push_cond(name, PushRead::Cell, &none, c, word, b)?;
+            b.line(&format!("if {}", cv.text));
+            b.line("else");
+            b.depth += 1;
+            b.line("break");
+            b.depth -= 1;
+        }
         // a `while` holds its candidates until the test is made, each
         // reading the one before it; a count and an `until` store each
         // item as it is worked out
@@ -5083,18 +5111,284 @@ impl Lowerer {
             b.depth -= 1;
             return Ok(true);
         }
-        let cv = self.push_cond(name, PushRead::Cell, &v, c, word, b)?;
-        b.line(&format!("if {}", cv.text));
-        b.line("else");
-        b.depth += 1;
-        b.line("break");
-        b.depth -= 1;
+        if !first {
+            let cv = self.push_cond(name, PushRead::Cell, &v, c, word, b)?;
+            b.line(&format!("if {}", cv.text));
+            b.line("else");
+            b.depth += 1;
+            b.line("break");
+            b.depth -= 1;
+        }
         for v in &held {
             self.field_put(name, &v.text, b);
         }
         b.line("continue");
         b.depth -= 1;
         Ok(true)
+    }
+
+    /// Is the name a local cell here (fm3 log 186)? A stream declared
+    /// in a function and read only for its latest item is one value of
+    /// the function: the name stands in scope as a stream whose IR
+    /// value is a word no IR has, and the value is kept beside it
+    fn is_lcell(&self, name: &str, b: &Body) -> bool {
+        b.vars.get(name).is_some_and(|v| v.ir.starts_with(LCELL))
+    }
+
+    /// may this declaration be a local cell? A stream of single values
+    /// with no rate, in a function the program wrote, that no pass
+    /// before this one met wanted as a stream
+    fn lcell_ok(&self, v: &super::syntax::VarDecl, ty: &Ty, b: &Body) -> bool {
+        let Ty::Stream(elem) = ty else { return false };
+        let Some(f) = &b.func else { return false };
+        v.seq && !v.arr && v.rate.is_none()
+            && matches!(&v.init, None | Some(Init::Pushes { .. }))
+            && matches!(elem.as_ref(), Ty::Num(_) | Ty::Bool | Ty::Enum(_) | Ty::Struct(_))
+            && b.kind == BodyKind::Fn && self.once_line(b)
+            && !self.lstreams.contains(&format!("{} {}", f.ir, v.name))
+    }
+
+    /// a local cell met where a stream is wanted: it is a stream after
+    /// all, and the store is lowered again with it one (`lower`)
+    fn lcell_note(&mut self, name: &str, b: &Body) {
+        if let Some(f) = &b.func {
+            self.uncelled.borrow_mut().insert(format!("{} {}", f.ir, name));
+        }
+    }
+
+    /// ... and what this pass says of the line, which nobody reads: the
+    /// pass's result is dropped for the next one's (`lower`)
+    fn lcell_again(&mut self, name: &str, b: &Body, line: usize) -> Error {
+        self.lcell_note(name, b);
+        lex::error(&b.file, line, format!("'{}$' is lowered again as a stream", name))
+    }
+
+    /// what a local cell keeps: one hidden variable, or one a field of
+    /// a structure, in the order declared; each with its type
+    fn lcell_keys(&self, name: &str, b: &Body) -> Vec<(String, Ty, Option<String>)> {
+        let Ty::Stream(elem) = &b.vars[name].ty else { unreachable!() };
+        match elem.as_ref() {
+            Ty::Struct(sn) => {
+                let Some(TypeInfo::Struct(fields)) = self.types.get(sn) else { unreachable!() };
+                fields.iter().map(|(f, t, _)| (format!("{}_{}$", name, f), t.clone(), Some(f.clone()))).collect()
+            }
+            t => vec![(format!("{}$", name), t.clone(), None)],
+        }
+    }
+
+    /// a local cell declared: the name a stream in scope, and what it
+    /// keeps with no value yet
+    fn lcell_declare(&mut self, name: &str, ty: &Ty, b: &mut Body) {
+        let depth = b.loops.len();
+        b.vars.insert(name.to_string(), Var { ir: format!("{}{}", LCELL, name), ty: ty.clone(), set: true, loop_depth: depth, arr: false });
+        for (k, t, _) in self.lcell_keys(name, b) {
+            b.vars.insert(k, Var { ir: String::new(), ty: t, set: false, loop_depth: depth, arr: false });
+        }
+        if let Some(f) = &b.func {
+            self.lcells_live.insert(format!("{} {}", f.ir, name));
+        }
+    }
+
+    /// the values a local cell holds now, a field each: before its
+    /// first item the zero of its type, as a cell reads
+    fn lcell_now(&mut self, name: &str, b: &mut Body) -> Vec<Val> {
+        let mut out = Vec::new();
+        for (k, t, _) in self.lcell_keys(name, b) {
+            let v = b.vars[&k].clone();
+            out.push(if v.set { lcell_val(&v.ir, &t) } else { self.zero_val(&t, b) });
+        }
+        out
+    }
+
+    fn lcell_set(&mut self, name: &str, vals: &[Val], b: &mut Body) {
+        for ((k, _, _), v) in self.lcell_keys(name, b).iter().zip(vals) {
+            let var = b.vars.get_mut(k).unwrap();
+            var.ir = v.text.clone();
+            var.set = true;
+        }
+    }
+
+    /// a local cell read whole: its value, a structure made of its
+    /// fields here, the one place it is made
+    fn lcell_read(&mut self, name: &str, b: &mut Body, dst: Option<&str>) -> Val {
+        let Ty::Stream(elem) = b.vars[name].ty.clone() else { unreachable!() };
+        let vals = self.lcell_now(name, b);
+        match elem.as_ref() {
+            Ty::Struct(sn) => {
+                let out = name_for(dst.filter(|d| b.vars.get(*d).map(|v| &v.ty) == Some(elem.as_ref())), &elem, b);
+                b.line(&format!("{}: {} = pack {}", out, sn, vals.iter().map(|v| v.text.as_str()).collect::<Vec<_>>().join(", ")));
+                Val { text: out, ty: *elem, literal: false }
+            }
+            _ => vals.into_iter().next().unwrap(),
+        }
+    }
+
+    /// one item of a push into a local cell, as the values it keeps: a
+    /// construction of its structure is its arguments, with no `pack`;
+    /// anything else one value, and a `get` a field of a structure.
+    /// None where the item is not one value of the stream's type
+    fn lcell_item(&mut self, name: &str, e: &Expr, b: &mut Body) -> Result<Option<Vec<Val>>, Error> {
+        let file = b.file.clone();
+        let Ty::Stream(elem) = b.vars[name].ty.clone() else { unreachable!() };
+        let elem = *elem;
+        if matches!(e.kind, ExprKind::Range { .. } | ExprKind::List(_)) || self.task_call(e, Some(&b.vars), &file)?.is_some() {
+            return Ok(None);
+        }
+        if let (Ty::Struct(sn), ExprKind::Phrase(parts)) = (&elem, &e.kind) {
+            if let [Part::Word(w), Part::Args(args)] = parts.as_slice() {
+                if w == sn && !b.vars.contains_key(w) {
+                    return self.construct_fields(sn, args, b, e.line).map(Some);
+                }
+            }
+        }
+        self.now = self.once_line(b);
+        let v = self.lower_expr(e, Some(&elem), b, None)?;
+        let fitting = if v.literal { fits_literal(&v, &elem) } else { v.ty == elem || widens(&v.ty, &elem) || (is_index(&elem) && v.ty == int_ty()) };
+        if !fitting {
+            return Ok(None);
+        }
+        let v = self.coerce(v, &elem, &format!("'{}$'", name), b, None, e.line)?;
+        let keys = self.lcell_keys(name, b);
+        if !matches!(elem, Ty::Struct(_)) {
+            return Ok(Some(vec![v]));
+        }
+        let mut out = Vec::new();
+        for (_, t, f) in keys {
+            let x = b.tmp();
+            b.line(&format!("{}: {} = get {}, {}", x, t.ir(), v.text, f.unwrap()));
+            out.push(Val { text: x, ty: t, literal: false });
+        }
+        Ok(Some(out))
+    }
+
+    /// A push into a local cell (fm3 log 186). With no word, each item
+    /// worked out in order and the value moved on. With one, the loop
+    /// the push lowers to for any stream, what the cell keeps the
+    /// loop's own parameters and what it leaves with the loop's
+    /// results: the lines of the `loop` a person would write. False
+    /// where it cannot be one value: an item that is no single value,
+    /// or a push inside a loop that began after the declaration
+    #[allow(clippy::too_many_arguments)]
+    fn push_lcell(&mut self, name: &str, items: &[Expr], group: usize, cond: Option<&Expr>, word: Repeat, b: &mut Body) -> Result<bool, Error> {
+        let keys = self.lcell_keys(name, b);
+        if keys.iter().any(|(k, _, _)| b.vars[k].loop_depth != b.loops.len()) {
+            return Ok(false);
+        }
+        let Ty::Stream(elem) = b.vars[name].ty.clone() else { unreachable!() };
+        let count = match cond {
+            Some(c) if word == Repeat::Times => Some(self.push_count(c, b)?),
+            _ => None,
+        };
+        let once = match cond {
+            Some(_) => items.len().saturating_sub(group.max(1)),
+            None => items.len(),
+        };
+        for e in &items[..once] {
+            let Some(vals) = self.lcell_item(name, e, b)? else { return Ok(false) };
+            self.lcell_set(name, &vals, b);
+        }
+        let Some(c) = cond else { return Ok(true) };
+        let grouped = &items[once..];
+        if grouped.is_empty() {
+            return Ok(true);
+        }
+        // the loop: what is kept its parameters, from what it holds now
+        let inits = self.lcell_now(name, b);
+        let params: Vec<Val> = keys.iter().map(|(k, t, _)| Val { text: b.define(k, t.clone()), ty: t.clone(), literal: false }).collect();
+        let results: Vec<String> = keys.iter().map(|(k, _, _)| b.fresh(k)).collect();
+        let prefix = format!("{} = ", results.iter().zip(&keys).map(|(r, (_, t, _))| format!("{}: {}", r, t.ir())).collect::<Vec<_>>().join(", "));
+        let mut hdr: Vec<String> = params.iter().zip(&inits).map(|(p, i)| format!("{}: {} = {}", p.text, p.ty.ir(), i.text)).collect();
+        let counter = count.as_ref().map(|_| b.tmp());
+        if let Some(k) = &counter {
+            hdr.insert(0, format!("{}: {} = 0", k, int_ty().ir()));
+        }
+        b.open_loop(&prefix, &hdr.join(", "), count.as_ref().is_some_and(|n| n.literal));
+        b.depth += 1;
+        let texts = |vs: &[Val]| vs.iter().map(|v| v.text.as_str()).collect::<Vec<_>>().join(", ");
+        let leave = |b: &mut Body, vs: &[Val], on_else: bool| {
+            if on_else {
+                b.line("else");
+            }
+            b.depth += 1;
+            b.line(&format!("break {}", texts(vs)));
+            b.depth -= 1;
+        };
+        // `_` asked of a structure is the one place a candidate is made
+        let asked = reads_candidate(c);
+        let candidate = |l: &mut Lowerer, vs: &[Val], b: &mut Body| -> Val {
+            match elem.as_ref() {
+                Ty::Struct(sn) if asked => {
+                    let out = b.tmp();
+                    b.line(&format!("{}: {} = pack {}", out, sn, texts(vs)));
+                    let _ = l;
+                    Val { text: out, ty: elem.as_ref().clone(), literal: false }
+                }
+                _ => vs[0].clone(),
+            }
+        };
+        let own = PushRead::Value(params[0].clone());
+        let done;
+        let mut last = params.clone();
+        let work = |l: &mut Lowerer, b: &mut Body, last: &mut Vec<Val>| -> Result<bool, Error> {
+            for e in grouped {
+                let Some(vals) = l.lcell_item(name, e, b)? else { return Ok(false) };
+                l.lcell_set(name, &vals, b);
+                *last = vals;
+            }
+            Ok(true)
+        };
+        match (word, &count) {
+            // `(n) times`: the counted loop, the value beside the counter
+            (_, Some(n)) => {
+                let k = counter.clone().unwrap();
+                let more = b.tmp();
+                b.line(&format!("{}: u1 = cmp.lt {}, {}", more, k, n.text));
+                b.line(&format!("if {}", more));
+                leave(b, &params, true);
+                done = work(self, b, &mut last)?;
+                let k2 = b.tmp();
+                b.line(&format!("{}: {} = add {}, 1", k2, int_ty().ir(), k));
+                b.line(&format!("continue {}, {}", k2, texts(&last)));
+            }
+            // `until`: the item, then the test of it, which the
+            // stream's own name is too; it goes out where it holds
+            (Repeat::Until, _) => {
+                done = work(self, b, &mut last)?;
+                if done {
+                    let cand = candidate(self, &last, b);
+                    let cv = self.push_cond(name, own, &cand, c, word, b)?;
+                    b.line(&format!("if {}", cv.text));
+                    leave(b, &last, false);
+                    b.line(&format!("continue {}", texts(&last)));
+                }
+            }
+            // `while` that does not read `_` (fm3 question 111): the
+            // test first, the item worked out only where it holds
+            _ if !asked => {
+                let cv = self.push_cond(name, own, &params[0], c, word, b)?;
+                b.line(&format!("if {}", cv.text));
+                leave(b, &params, true);
+                done = work(self, b, &mut last)?;
+                b.line(&format!("continue {}", texts(&last)));
+            }
+            // `while` that reads it: the candidate worked out, the
+            // stream's name still its latest item in the test
+            _ => {
+                done = work(self, b, &mut last)?;
+                if done {
+                    self.lcell_set(name, &params, b);
+                    let cand = candidate(self, &last, b);
+                    let cv = self.push_cond(name, own, &cand, c, word, b)?;
+                    b.line(&format!("if {}", cv.text));
+                    leave(b, &params, true);
+                    b.line(&format!("continue {}", texts(&last)));
+                }
+            }
+        }
+        b.depth -= 1;
+        let results: Vec<Val> = results.into_iter().zip(&keys).map(|(r, (_, t, _))| Val { text: r, ty: t.clone(), literal: false }).collect();
+        self.lcell_set(name, &results, b);
+        Ok(done)
     }
 
     /// An edge (log 72, zero.md section 9): `out$ << (i$ << "\n")
@@ -6442,6 +6736,31 @@ impl Lowerer {
     }
 
     fn lower_fn(&mut self, f: &FnDecl, feature: &str, file: &str) -> Result<(), Error> {
+        // the net under a function's local cells (fm3 log 186): where
+        // the function is refused, or its text holds the word that
+        // stands for one's stream, each is noted a stream and the
+        // store lowered again, so what the reader is told is said of
+        // the program as written
+        self.lcells_live.clear();
+        let (start, noted) = (self.out.len(), self.uncelled.borrow().len());
+        let r = self.lower_fn_body(f, feature, file);
+        // (one whose word is in the text, by itself; and where the
+        // function is refused with none noted on the way, all of them)
+        let text = &self.out[start..];
+        let held = |name: &str| -> bool {
+            let word = format!("{}{}", LCELL, name);
+            text.match_indices(&word).any(|(i, _)| !text[i + word.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+        };
+        let live = std::mem::take(&mut self.lcells_live);
+        let mut found: Names = live.iter().filter(|k| k.rsplit(' ').next().is_some_and(held)).cloned().collect();
+        if r.is_err() && found.is_empty() && self.uncelled.borrow().len() == noted {
+            found = live;
+        }
+        self.uncelled.borrow_mut().extend(found);
+        r
+    }
+
+    fn lower_fn_body(&mut self, f: &FnDecl, feature: &str, file: &str) -> Result<(), Error> {
         let key = mangle(&f.name);
         self.regular_locals.clear();
         self.views.clear();
@@ -7567,6 +7886,18 @@ impl Lowerer {
                     return Err(lex::error(&file, v.line, format!("'{}' is already declared", v.name)));
                 }
                 let ty = self.decl_ty(v, Some(&b.vars), &file)?;
+                // a stream the function reads only for its latest item
+                // is one value (fm3 log 186): no queue is made, and
+                // its first items are worked out as a push's are
+                if self.lcell_ok(v, &ty, b) {
+                    self.lcell_declare(&v.name, &ty, b);
+                    if let Some(Init::Pushes { items, group, cond, word }) = &v.init {
+                        if !self.push_lcell(&v.name, items, *group, cond.as_ref(), *word, b)? {
+                            return Err(self.lcell_again(&v.name, b, v.line));
+                        }
+                    }
+                    return Ok(false);
+                }
                 b.declare(&v.name, ty.clone());
                 b.vars.get_mut(&v.name).unwrap().arr = v.arr;
                 if let Ty::Stream(_) = &ty {
@@ -7760,6 +8091,13 @@ impl Lowerer {
                         Some(t) => lex::error(&file, *line, format!("'{}$' is a {}, not a stream", n, t.ir())),
                         None => lex::error(&file, *line, format!("'{}$' is not declared", n)),
                     });
+                }
+                // into a local cell (fm3 log 186): the value moved on
+                if self.is_lcell(n, b) {
+                    if self.push_lcell(n, items, *group, cond.as_ref(), *word, b)? {
+                        return Ok(false);
+                    }
+                    return Err(self.lcell_again(n, b, *line));
                 }
                 // into a cell (fm3 log 143): a store of its field for
                 // each item; where an item is not one value of its
@@ -9731,6 +10069,21 @@ impl Lowerer {
         }
         b.open_loop("", "", false);
         b.depth += 1;
+        // a condition that does not read `_` is tested first, and the
+        // group worked out only where it holds (fm3 question 111, log
+        // 186): a rule defined only while its condition holds, a
+        // remainder by what the test says is not zero, is never worked
+        // out where it does not
+        let first = !reads_candidate(c);
+        if first {
+            let none = Val { text: "0".into(), ty: elem.clone(), literal: true };
+            let cv = self.push_cond(name, latest.clone(), &none, c, word, b)?;
+            b.line(&format!("if {}", cv.text));
+            b.line("else");
+            b.depth += 1;
+            b.line("break");
+            b.depth -= 1;
+        }
         let mut held: Vec<(Val, usize)> = Vec::new();
         let mut read = latest.clone();
         for (i, x) in grouped.iter().enumerate() {
@@ -9756,15 +10109,20 @@ impl Lowerer {
         let v = held.last().unwrap().0.clone();
         // in the condition `_` is the candidate and the stream's
         // name is still its latest item (log 39)
-        let cv = self.push_cond(name, latest, &v, c, word, b)?;
+        if !first {
+            let cv = self.push_cond(name, latest, &v, c, word, b)?;
+            if v.ty == block_ty {
+                return Err(block(e));
+            }
+            b.line(&format!("if {}", cv.text));
+            b.line("else");
+            b.depth += 1;
+            b.line("break");
+            b.depth -= 1;
+        }
         if v.ty == block_ty {
             return Err(block(e));
         }
-        b.line(&format!("if {}", cv.text));
-        b.line("else");
-        b.depth += 1;
-        b.line("break");
-        b.depth -= 1;
         for (v, line) in held {
             self.push_item(name, s, v, line, b)?;
         }
@@ -9853,19 +10211,13 @@ impl Lowerer {
             return Ok(Val { ty: int_ty(), ..v });
         }
         let v = if is_index(&v.ty) { self.widen_to(&v, &int_ty(), b, None) } else { self.coerce(v, &int_ty(), "a push's count", b, None, c.line)? };
+        // the refusal is the IR's `check` and no more, as the
+        // library's of an index out of range is (fm3 log 186): a site
+        // printed first brought `print` and a text's copy into a store
+        // that prints nothing, on an arm no count that is right takes
         let ok = b.tmp();
         b.line(&format!("{}: u1 = cmp.ge {}, 0", ok, v.text));
-        b.line(&format!("if {}", ok));
-        b.line("else");
-        b.depth += 1;
-        let base = file.rsplit('/').next().unwrap_or(&file).to_string();
-        let site = Expr { kind: ExprKind::Str(format!("check at {}:{}", base, c.line)), line: c.line };
-        let sv = self.lower_expr(&site, None, b, None)?;
-        b.line(&format!("print({})", sv.text));
-        let z = b.tmp();
-        b.line(&format!("{}: u1 = const 0", z));
-        b.line(&format!("check {}", z));
-        b.depth -= 1;
+        b.line(&format!("check {}", ok));
         Ok(v)
     }
 
@@ -10665,6 +11017,10 @@ impl Lowerer {
                 _ => None,
             }
         };
+        // `latest` of a local cell is the value it keeps (fm3 log 186)
+        if w == "latest" && !infix && rest.is_empty() && self.is_lcell(&sname, b) {
+            return Ok(Some(self.lcell_read(&sname, b, dst)));
+        }
         // `latest` of a cell is its field (fm3 log 143)
         if w == "latest" && !infix && rest.is_empty() && self.is_cell(&sname, b) {
             return Ok(Some(self.read_cell(&sname, b, dst, line)?));
@@ -10993,6 +11349,13 @@ impl Lowerer {
             }
             ExprKind::Bool(v) => Ok(Val { text: (*v as i64).to_string(), ty: Ty::Bool, literal: true }),
             ExprKind::Seq(w) => {
+                // a local cell's name where one value is wanted, its
+                // own push and a line that happens once among them, is
+                // the value it keeps (fm3 log 186); anywhere else it is
+                // wanted as a stream, and the `Name` below notes it
+                if self.is_lcell(w, b) && (one || now || self.push_read.as_ref().is_some_and(|(n, _)| n == w)) {
+                    return Ok(self.lcell_read(w, b, dst));
+                }
                 // in a push chain the stream's own name is an item (log 23)
                 if let Some((n, read)) = self.push_read.clone() {
                     if &n == w {
@@ -11126,6 +11489,14 @@ impl Lowerer {
                 Ok(self.copy_view(&elem, &v, b, dst))
             }
             ExprKind::Name(n) => match b.vars.get(n) {
+                // a local cell wanted as a stream is one after all
+                // (fm3 log 186): noted, and this pass goes on with a
+                // stream's type in hand
+                Some(v) if v.ir.starts_with(LCELL) => {
+                    let v = Val { text: v.ir.clone(), ty: v.ty.clone(), literal: false };
+                    self.lcell_note(n, b);
+                    Ok(v)
+                }
                 Some(v) if v.set => Ok(Val { text: v.ir.clone(), ty: v.ty.clone(), literal: false }),
                 Some(_) => Err(lex::error(&file, e.line, format!("'{}' is read before it is assigned", n))),
                 None if self.fvar(n).is_some() => self.read_fvar(n, b, dst, e.line),
@@ -11145,6 +11516,15 @@ impl Lowerer {
                                 return Err(lex::error(&file, e.line, format!("{} has no case '{}'", w, field)));
                             };
                             return Ok(Val { text: i.to_string(), ty: Ty::Enum(w.clone()), literal: true });
+                        }
+                    }
+                }
+                // a field of a local cell of a structure is the value
+                // kept for it: no structure, no `get` (fm3 log 186)
+                if let ExprKind::Seq(n) = &base.kind {
+                    if self.is_lcell(n, b) {
+                        if let Some(i) = self.lcell_keys(n, b).iter().position(|(_, _, f)| f.as_deref() == Some(field.as_str())) {
+                            return Ok(self.lcell_now(n, b).swap_remove(i));
                         }
                     }
                 }
@@ -11915,12 +12295,19 @@ struct Words {
     kept: std::collections::HashSet<String>,
     kept_all: bool,
     read: std::collections::HashSet<String>,
+    /// the streams the function being read declares in its body
+    locals: std::collections::HashSet<String>,
 }
 
 fn time_words(stmts: &[Stmt], params: &[String], w: &mut Words) {
     for s in stmts {
         match s {
-            Stmt::Var(v) => time_words_init(v, params, w),
+            Stmt::Var(v) => {
+                if v.seq && !v.arr {
+                    w.locals.insert(v.name.clone());
+                }
+                time_words_init(v, params, w)
+            }
             Stmt::Multi { value, .. } | Stmt::Assign { value, .. } | Stmt::Expr { expr: value, .. } | Stmt::Check { cond: value, .. } => time_words_in(value, params, w),
             Stmt::If { cond, then, els, .. } => {
                 time_words_in(cond, params, w);
@@ -12041,6 +12428,12 @@ fn time_words_in(e: &Expr, params: &[String], w: &mut Words) {
                 [Part::Value(Expr { kind: ExprKind::Seq(n), .. }), Part::Word(at), a] if at == "at" && !is_rate(a) => mark(n, true),
                 [Part::Value(Expr { kind: ExprKind::Seq(n), .. }), Part::Word(from), _, Part::Word(to), _] if from == "from" && to == "to" => mark(n, true),
                 [Part::Word(time), Part::Word(of), Part::Value(Expr { kind: ExprKind::Seq(n), .. })] if time == "time" && of == "of" => mark(n, true),
+                // (`latest` of a stream the function itself declares
+                // is what its name reads there, which keeps nothing:
+                // one value where the function reads it for nothing
+                // else, fm3 log 186, and the queue's own word where
+                // it is stored, nothing giving back a function's slots)
+                [Part::Word(latest), Part::Value(Expr { kind: ExprKind::Seq(n), .. })] if latest == "latest" && w.locals.contains(n) && !params.contains(n) => {}
                 [Part::Word(latest), Part::Value(Expr { kind: ExprKind::Seq(n), .. })] if latest == "latest" => mark(n, false),
                 [Part::Value(Expr { kind: ExprKind::Seq(n), .. }), Part::Word(behind), _] if behind == "behind" => mark(n, false),
                 _ => {}
@@ -12172,6 +12565,30 @@ fn phrase_text(e: &Expr) -> String {
 }
 
 /// does an expression name the stream anywhere in it?
+/// the word that stands for a local cell's stream in the lowering
+/// (fm3 log 186): no IR has it, so a function's text that holds it has
+/// used the cell as a stream somewhere the lowering did not expect,
+/// and the store is lowered again with it one
+const LCELL: &str = "__lcell_";
+
+/// a value a local cell keeps, read back from its text: a literal
+/// where the text is one, as a loop's header and a `break` take
+fn lcell_val(text: &str, ty: &Ty) -> Val {
+    Val { text: text.to_string(), ty: ty.clone(), literal: text.starts_with(|c: char| c.is_ascii_digit() || c == '-') }
+}
+
+/// does a push's condition read `_`, the candidate (fm3 question 111)?
+/// Asked of the text: any `_` in it, a reduction's among them, which
+/// errs toward working the item out first, as every push did
+fn reads_candidate(c: &Expr) -> bool {
+    let mut found = false;
+    super::zeroic::walk(c, &mut |x| {
+        found |= matches!(&x.kind, ExprKind::Acc);
+        true
+    });
+    found
+}
+
 fn mentions_seq(e: &Expr, name: &str) -> bool {
     let mut found = false;
     super::zeroic::walk(e, &mut |x| {

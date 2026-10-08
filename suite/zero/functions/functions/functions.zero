@@ -36,10 +36,8 @@ on (int lo, int hi) << ordered (int a) and (int b)
     hi << a + b - lo
 
 on (int p) << power of two above (int n)
-    p << loop (int q = 1) yields q
-        if (q > n)
-            break
-        continue (q * 2)
+    int q$ << 1 << (q$ * 2) while (q$ <= n)
+    p << q$
 
 on describe (int x)
     out$ << "int" << "\n"

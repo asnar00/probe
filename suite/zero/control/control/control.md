@@ -1,5 +1,5 @@
 # control
-*control flow: `if` and `else` as statements, `loop` with its own carried variables giving a result, `while`, `continue`, `break`, `for` over a range, and the sequence forms that replace most loops*
+*control flow: `if` and `else` as statements, a stream said by a rule from its own last item where a loop was, `for` over a range, and the sequence forms that replace most loops*
 
 layer: runtime
 
@@ -7,7 +7,7 @@ layer: runtime
 Plan item 4 of milestone 0: section 7 of zero.md — `if`/`else`, `loop ... while ... continue`, `break`, `bound N`, `for` over a sequence; `probe cost` counting a bounded loop in the lowered IR. Rulings pass item 6 (question 4): a loop's carried variables are its own and a word at the end of the header names what leaves; a sum, a triangle and a walk over a range are written as sequence forms, and a loop stays only where nothing else says it. Second rulings pass item 3 (question 23): the word is `yields`, and `gives` is an ordinary name word.
 
 ## overview
-An `if` statement runs one of two blocks; a variable it assigns has, after it, the value from whichever arm ran. A `loop` names the variables it carries and their starting values; `while` is tested at the top of every pass, `continue` gives the next values, `break` leaves, and `yields` names the carried variables that come out, into a declared or an existing name: `int total = loop (int i = 0, int acc = 0) while (i < n) yields acc`. The carried variables are the loop's own, gone after it. A `for` runs its body once per value of a range. A repetition that a sequence form can say — a sum over a range, a function mapped over one — is written that way, and the compiler makes the loop.
+An `if` statement runs one of two blocks; a variable it assigns has, after it, the value from whichever arm ran. A repetition that only computes is a stream said by a rule from its own last item: `int q$ << 1 << (q$ * 2) while (q$ <= n)` is 1 and then the last item doubled for as long as the test holds, and the answer is its last item, `p << q$`. Nothing is kept of such a stream but that item: the compiler carries it round the loop the push lowers to, which is the loop a person would write, `loop (int q = 1) yields q`, line for line (fm3 log 186). Until hop thirty-one each of these was that `loop`, with its carried variables, `while`, `continue`, `break` and `yields`; `loop` is still the language's, and `suite/zero/pushed` has two that give a function's result, `suite/zero/streams`' `walked` one that moves a stream, and the walking lexer of `suite/zero/lex` two. A `for` runs its body once per value of a range. A repetition that a sequence form can say, a sum over a range, a function mapped over one, is written that way, and the compiler makes the loop.
 
 ## interface
 - `sign of (x)` is -1, 1 or 0: one push with its condition on it, written as a table, a case a line, and saying all three (fm3 question 88). Until hop twenty-six it was an `if` and an `else if` statement with a push under each and nothing pushed for 0.
@@ -15,19 +15,18 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 - `describe (x)` prints one of two strings.
 - `sum to (n)` is a range reduced, `[0 through n] + _`: no loop is written; `sum below (n)` is section 7's `[0 to n] + _`, the exclusive range, 0 to n - 1.
 - `thirty three counted`, `sixty four counted` and `a hundred counted` are the same reduction over a range whose bounds are literals, `[1 through 33] + _`; `thirty three listed`, `sixty four listed` and `a hundred listed` over a list of that many literals; `listed item (i)` and `counted item (i) of (n)` read one item by its index from a list of a hundred and from `[0 through n]`. A list or a range is a new stream with its items present, and these say that it reads back right at any length, in the order written: a store whose streams are all queues gave 560 for `sum to (32)` and 51 for `listed item (0)` until parity hop fifteen (fm3 question 62).
-- `gcd of (a) and (b)` yields `x` straight into the result, declares a variable inside the body and continues with it.
-- `power of two above (n)` has no `while`: it leaves by `break` inside an `if`, gives its carried variable's next value with `continue (q * 2)`, and yields it into a declared `int q`.
-- `digits of (n)` breaks from an `if`, continues with computed values, and yields both carried variables into two declared names.
-- `collatz steps (start)` gives both carried variables their next values in one `continue`, the first an `if (c) then (a) else (b)`, and yields `steps` into the result.
+- `gcd of (a) and (b)` is Euclid's rule said of a stream of a structure, `pair p$ << pair(a, b) << pair(p$.y, p$.x % p$.y) while (p$.y != 0)`, the answer `p$.x`. The two values move together as a loop's `continue (y, r)` moved them, and no `pair` is ever made: the compiler keeps the two fields apart and carries them round the loop. The test is made before the rule is worked out, the condition not reading `_` (fm3 question 111), so the remainder is never taken by a `p$.y` that is 0; worked out first, as every push was until hop thirty-one, it was a remainder by zero on the last pass, which wasm refuses.
+- `power of two above (n)` is `int q$ << 1 << (q$ * 2) while (q$ <= n)`: 20 as counted for `(10)`, what the loop it replaced cost, where the same line was 308 while a stream in a function was a queue of sixty-four.
+- `digits of (n)` and `collatz steps (start)` carry a count beside the value, as a structure: `tally t$ << tally(n, 1) << tally(t$.x / 10, t$.n + 1) while (t$.x >= 10)`, the answer `t$.n`. `collatz steps (27)` is 111 steps.
+- `digits said of (n)` and `collatz steps said (start)` beside them say the same with `count`, `int x$ << n << (x$ / 10) while (x$ >= 10)` and `d << count x$`, which reads better and is dearer: a stream that is counted is still a queue of sixty-four, 283 as counted against 33 for `(12345)` and 613 against 105 for `(6)`, and `collatz steps said (27)` fails the queue's check at its sixty-fifth item (fm3 question 112).
 - `triangle (n)` maps `row (i)`, itself a reduction, over `[1 to n + 1]` and reduces: two loops in the IR, none written.
-- `two counters` declares `int i` in two loops of one function.
-- **Four of the loops said as streams** (fm3 log 184), each beside its loop with the same cases: `power of two above (n) said`, `int q$ << 1 << (q$ * 2) while (q$ <= n)`, the answer its last item; `digits said of (n)` and `collatz steps said (start)`, whose answer is how many items the stream holds; `two counters said`. Each is a stream said by a rule from its own last item, the sketch's own form, and each is 9 to 20 times dearer as counted than its loop: the stream is a queue of sixty-four where a loop carries a value. So the loops stay until a stream read only for its latest item inside a function is kept as one value. `gcd of (a) and (b)` has no such twin: a push works its item out before `while` tests, so its rule, a remainder by what the test says is not zero, is worked out once with a zero, which one machine of the five refuses (fm3 question 111).
+- `two counters` says two such streams in one function, `int a$ << 0 << (a$ + 1) while (a$ < 3)`, and reads both.
 - `ticks` writes a line three times by a push with a count, `out$ << ("tick" << "\n") (3) times`. `blast off` and `halves` run a `for` over a literal range down and exclusive, the second leaving a pass early with `continue`; `blast off each` and `halves each` beside them say the same by a function of one item applied to the range, `count off ([3 through 1])`, its push taking `if` and `else`, and are dearer by half as counted, the range being made an array first; `steps from (a) to (b)` maps `step`, a function with no result, over a range whose bounds are decided at run time.
 
 ## rules
-- A `loop`'s carried variables are exactly those in its header; `continue` gives them in that order, and a bare `continue`, or a body that ends, continues with their current values.
-- A variable declared outside a loop is not assigned inside it: carry it in the header. A `for`'s item is not assigned. A loop's own variables are not assigned in its body either (fm3 question 70): `continue (...)` gives the next pass its values, and `break (...)` may give the names the loop yields theirs where it leaves (question 81).
-- After a loop its carried variables are gone; `yields` names the ones that come out, as many as the names on the left of `= loop`, and every `break` (the `while` test's included) yields their values then. A loop that never leaves yields nothing. `yields` is a reserved word only inside a loop's header; `gives twice` is a function named with the word the first pass used.
+- A stream said by a rule: its first items, then the rule in brackets and `while`, `until` or `(n) times`. In the rule the stream's own name is its latest item. A `while` whose condition reads `_`, the item about to be pushed, works the item out and then tests it; one whose condition does not is tested first, and the rule is worked out only where it holds.
+- A stream declared in a function and read only for its latest item keeps that item and nothing else (`suite/zero/cells` has every case of it). `count` of it keeps a queue.
+- A `loop`'s carried variables are exactly those in its header; `continue` gives them in that order, and a bare `continue`, or a body that ends, continues with their current values. A loop's own variables are not assigned in its body (fm3 question 70), and a variable declared outside a loop is not assigned inside it. A `for`'s item is not assigned.
 - `[1 through n]` counts down when n < 1, so a sum from 1 to n is `[0 through n] + _` and rows 1 to n are `[1 to n + 1]`.
 - A statement after `break` or `continue` is refused: it would never run.
 - `[a through b]` includes b and `[a to b]` stops before it; with a > b the range counts down.
@@ -68,21 +67,18 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 >power of two above (10) → 16
 >power of two above (16) → 32
 >power of two above (0) → 1
->power of two above (10) said → 16
->power of two above (16) said → 32
->power of two above (0) said → 1
 >digits of (12345) → 5
 >digits of (7) → 1
 >digits said of (12345) → 5
 >digits said of (7) → 1
 >collatz steps (6) → 8
 >collatz steps (1) → 0
+>collatz steps (27) → 111
 >collatz steps said (6) → 8
 >collatz steps said (1) → 0
 >triangle (3) → 10
 >triangle (0) → 0
 >two counters() → 35
->two counters said() → 35
 >ticks() → "tick\ntick\ntick"
 >blast off() → "more\nmore\none"
 >blast off each() → "more\nmore\none"
