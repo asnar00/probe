@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the meter's four smallest rows, a line at a time — `15dddf0` · 2026-10-08
+
+```
+on (int p) << power of two above (int n) said
+    int q$ << 1 << (q$ * 2) while (q$ <= n)
+    p << q$
+```
+
+`suite/zero/control/control/control.zero:47-49`. Each line on the meter's four smallest rows was written in its zeroic form and counted beside what it was. Five were rewritten in place, the count the same or better: `closer`'s `if` on its push, `bumped (k) times` and `ticks` as a push with a count, two `for`s as a reduce. Six kept their form with the zeroic one beside them, because it is dearer: a function applied to a range makes the range an array, and a stream said by a rule in a function is a queue of sixty-four where a loop carries a value, 308 against 20. `gcd` as a stream traps on wasm: a push works its item out before `while` tests. The meter 95 to 90. No Rust; four stores moved; the six rows unmoved. Zero 910/910 natively and on wasm.
+
 ### zero: an array compared with a list, with nothing copied — `5abf199` · 2026-10-08
 
 ```
