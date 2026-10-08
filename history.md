@@ -4,6 +4,21 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### probe takes the zero playground's patch: where the compiler reads from, and what a host wants of the runner — `0345261` · 2026-10-08
+
+```
+/// `std::fs::read_to_string`, or the mounted text
+pub fn read_to_string(path: impl AsRef<Path>) -> io::Result<String> {
+    let path = path.as_ref();
+    MOUNTED.with(|m| match m.borrow().as_ref() {
+        Some(map) => map.get(&key(path)).cloned().ok_or_else(|| missing(path)),
+        None => std::fs::read_to_string(path),
+    })
+}
+```
+
+`src/vfs.rs:49-56`. The zero playground runs this front end in a page, built for wasm32, and kept a patch; probe has it now. Every read on the way from a store's text to a module goes through `src/vfs.rs`: the disk, or texts a host mounted. Two reads the patch lacked are routed too, so a refusal shows its line in the page. `src/host.rs` takes the policy a path compiles under and the wasm driver's call spec out of `src/suite.rs`; `Store.times` keeps `__out_mark` for a host; `LOCAL` in `src/bitcode.rs` fits a 32-bit word. No store's IR moved. The playground's crate builds from this tree unpatched, `cargo build --release --target wasm32-unknown-unknown`, and its 18 examples emit the bytes `probe zero test <store> wasm` writes. The full run: zero 849/849 on four paths, 826 and 23 skipped on the GPU's, `probe test` 1022, 1013, 1022, 1022, 985, `cargo test` 158.
+
 ### zero: a function that takes an array whole is called in square brackets — `1da3eef` · 2026-10-08
 
 ```
