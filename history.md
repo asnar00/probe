@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a function that takes an array whole is called in square brackets — `1da3eef` · 2026-10-08
+
+```
+on (int n) << sum of (int x[])
+    n << x[] + _
+
+on (int n) << passed()
+    n << [sum of] ([1, 2, 3])
+```
+
+`suite/zero/sequences/sequences/sequences.zero:80-84`. The other half of fm3's question 77. The brackets stand round the name's words up to its first group; `src/zero/syntax.rs` reads `[`, words, `]` and then a group as a call, kept as its phrase with `Part::Whole` first. `lower_call` in `src/zero/lower.rs` has a bracketed call choose among the methods over an array and a plain call among the rest: `sum of (a[])` is refused showing the line with its brackets, `[doubled] (a[])` as applied to each plainly. `describe` has both kinds, and the call now says which. Six calls rewritten; no store's IR moved. The full run: zero 849/849 on four paths, 826 and 23 skipped on the GPU's, `probe test` 1022, 1013, 1022, 1022, 985, `cargo test` 156.
+
 ### zero: `[==]` and `[!=]`, two arrays compared as wholes — `642cd1d` · 2026-10-08
 
 ```
