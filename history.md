@@ -4,6 +4,14 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a later item of a standing line is its stream's value now — `cd71053` · 2026-10-08
+
+```
+out$ << (lead$ << " " << beside$ << "\n") forever
+```
+
+`suite/zero/words/words/words.zero:60`. fm3's question 106: `beside$` there was everything the stream held, each time, read by a reader that never moved, so it filled at sixty-five items. `once_line` in `src/zero/lower.rs` now counts a line's function as a line that happens once, so the name is its latest item, a cell: `labelled()` prints `1 0`, `2 4`, `3 5`. Three more shapes keep one word where they kept a queue: a stream wired on and read by name with a first item on its declaration (handed on in `__zero_start`), one that is ended (a bit, `__zend_`), and a stream processor's output read only by name. Seven cases, five failing before. `words` alone moved; the six rows unmoved. Zero 886/886 natively and on wasm; `cargo test zero` 70.
+
 ### zero: a stream that keeps nothing does not fill — `0d2ed15` · 2026-10-08
 
 ```
