@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the six-line lexer's kinds are names — `293c88b` · 2026-10-08
+
+```
+on (token t$) << lex (char c$)
+    kind k$ = if (empty c$) then (space) else (kind of (c$))
+    bool new$ = k$ == mark or k$ != k$[-1]
+    index start$ = if (new$) then (position c$) else (start$[-1])
+    index n$ = if (new$) then (1) else (n$[-1] + 1)
+    t$ << token(k$[-1], start$[-1], n$[-1]) if (new$ and k$[-1] != space)
+```
+
+`suite/zero/lex-zeroic/lex/lex.zero:25-30`, over `type kind = space | word | number | mark` on line 1. Respelled alone, the count rose 21, 502 to 523: an enumeration's case is one bare word, which the parser keeps like a call with no arguments, so `k$[-1] != space` was not a thing that "can do nothing but give a value" and the push stayed outside the branch its lines share. `plain` in `src/zero/zeroic.rs` is now told which bare words are a case. Before 502 and 509 as counted, 746 and 753 on the tool; after, the same four, delta 0. The two stores' IR differs in `int` written `kind`, a `u8`. No case's text changed. Zero 849/849 natively and on wasm.
+
 ### probe takes the zero playground's patch: where the compiler reads from, and what a host wants of the runner — `0345261` · 2026-10-08
 
 ```
