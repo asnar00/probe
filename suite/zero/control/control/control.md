@@ -1,5 +1,5 @@
 # control
-*control flow: `if` and `else` as statements, a stream said by a rule from its own last item where a loop was, `for` over a range, and the sequence forms that replace most loops*
+*control flow: `if` and `else` as statements, a stream said by a rule from its own last item where a loop was, a function applied to a range where a `for` was, and the sequence forms that replace most loops*
 
 layer: runtime
 
@@ -21,7 +21,7 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 - `digits said of (n)` and `collatz steps said (start)` beside them say the same with `count`, `int x$ << n << (x$ / 10) while (x$ >= 10)` and `d << count x$`, which reads better: nothing takes from a stream said so, so how many are waiting is how many were pushed, a second value carried round the loop beside the latest (fm3 question 112, log 190), 34 as counted against 33 for `(12345)` and 108 against 105 for `(6)`, the count's own conversion and subtraction the difference; it was a queue of sixty-four until then, 283 and 613, and `collatz steps said (27)`, 111 steps, failed the queue's check at its sixty-fifth item.
 - `triangle (n)` maps `row (i)`, itself a reduction, over `[1 to n + 1]` and reduces: two loops in the IR, none written, the call of `row` made for each value in the loop that sums.
 - `two counters` says two such streams in one function, `int a$ << 0 << (a$ + 1) while (a$ < 3)`, and reads both.
-- `ticks` writes a line three times by a push with a count, `out$ << ("tick" << "\n") (3) times`. `blast off` and `halves` run a `for` over a literal range down and exclusive, the second leaving a pass early with `continue`; `blast off each` and `halves each` beside them say the same by a function of one item applied to the range, `count off ([3 through 1])`, its push taking `if` and `else`. Applied so, the range is the loop and the call is in it (fm3 log 187): 334 as counted against the `for`'s 328, and 239 against 231, the call and its return, 2 an item, where they were 490 and 420 with the range made an array first. `steps from (a) to (b)` maps `step`, a function with no result, over a range whose bounds are decided at run time.
+- `ticks` writes a line three times by a push with a count, `out$ << ("tick" << "\n") (3) times`. `blast off` and `halves` apply a function of one item to a literal range, down and exclusive, `count off ([3 through 1])` and `odd one ([0 to 4])`, the function's push taking `if` and `else`. Applied so, the range is the loop (fm3 log 187) and the function's lines stand in it, with no call, where the function gives nothing, is said once in the store and is small (fm3 log 191): 328 and 231 as counted, what the `for` with an `if` in it that each was until then cost, to the unit. The store has no `for` now; `suite/zero/arrays`' `walked` is the suite's case of one. `steps from (a) to (b)` maps `step`, a function with no result, over a range whose bounds are decided at run time.
 - `kept twice to (k)` pushes a function of one item applied to a range into a stream of its own kind of item, `kept$ << gives twice ([1 through k])`: the range's loop, each value worked out and pushed. `show twice to (k)` pushes the same into `out$`, where numbers given together are written with spaces between, `2 4 6`: there the array is made, as it was, because what is pushed is the array.
 
 ## rules
@@ -89,9 +89,7 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 >two counters() → 35
 >ticks() → "tick\ntick\ntick"
 >blast off() → "more\nmore\none"
->blast off each() → "more\nmore\none"
 >halves() → "odd\nodd"
->halves each() → "odd\nodd"
 >steps from (1) to (3) → "step\nstep\nstep"
 >steps from (3) to (1) → "step\nstep\nstep"
 >steps from (2) to (2) → "step"

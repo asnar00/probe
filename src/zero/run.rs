@@ -953,6 +953,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A function of one item applied to a range as a statement is
+    /// written in line at the range's loop (fm3 log 191) where it gives
+    /// nothing, is said once in the store and is small: at most four
+    /// lines through its `if`s, no loop, no stream declared, no
+    /// `existing`. Anything else is the call it was
+    #[test]
+    fn a_small_function_applied_to_a_range_is_written_in_line() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-inline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>g (3) → 6\n").unwrap();
+        let g = |fns: &str, call: &str| -> String {
+            std::fs::write(dir.join("h/h.zero"), format!("int kept$\n\n{}\non (int n) << g (int k)\n    {} ([1 through k])\n    n << kept$\n", fns, call)).unwrap();
+            let ir = emit(&dir).unwrap_or_else(|e| panic!("{}: {}", fns, e));
+            let from = ir.find("fn g(k: int) -> int").unwrap();
+            ir[from..from + ir[from..].find("    ret").unwrap()].to_string()
+        };
+        // two lines with an `if` on a push: in line, the test in the loop
+        let small = g("on note (int x)\n    kept$ << x if (x > 1)\n    out$ << \"n\"\n", "note");
+        assert!(!small.contains("note(") && small.contains(": u1 = cmp.gt _") && small.contains(", kept, _"), "{}", small);
+        // five lines: called
+        let big = g("on note (int x)\n    kept$ << x\n    kept$ << x + 1\n    kept$ << x + 2\n    kept$ << x + 3\n    kept$ << x + 4\n", "note");
+        assert!(big.contains("        note(_"), "{}", big);
+        // a loop in it, and a stream declared in it: called
+        let looped = g("on note (int x)\n    kept$ << x << (kept$ + 1) while (_ < 3)\n    for (i in [1 through x])\n        kept$ << i\n", "note");
+        assert!(looped.contains("        note(_"), "{}", looped);
+        let own = g("on note (int x)\n    int s$ << x << 2\n    kept$ << count s$\n", "note");
+        assert!(own.contains("        note(_"), "{}", own);
+        // it calls another small one, which is not applied to the range: that call stays
+        let nested = g("on mark (int x)\n    kept$ << x\n\non note (int x)\n    mark (x + 1)\n", "note");
+        assert!(!nested.contains("note(") && nested.contains("        mark(_"), "{}", nested);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A stream processor with no loop in it handed an array inside a
     /// function (fm3 question 113, log 189): its lines for each item,
     /// each once, in line at a loop over the array and with no
@@ -2391,11 +2425,13 @@ mod tests {
             assert!(!made(&ir) && ir.contains("    n: int = loop(") && !ir.contains(" = sum "), "{}: {}", body, ir);
         }
         assert!(g("    n << twice ([1 to k + 1]) + _").contains(": int = twice(_"), "the call is in the loop");
-        // a function applied to it, a statement: the call in the range's loop
+        // a function applied to it, a statement: the range's loop with
+        // the function's own line in it, `note` being small and giving
+        // nothing (fm3 log 191); one that gives a result is still called
         let each = g("    note ([1 through k])\n    n << kept$");
-        assert!(!made(&each) && each.contains("        note(_"), "{}", each);
+        assert!(!made(&each) && !each.contains("note(") && each.contains("        push_queue_open(_12, _9)\n"), "{}", each);
         let both = g("    note (twice ([1 through k]) + 1)\n    n << kept$");
-        assert!(!made(&both) && both.contains(": int = twice(_") && both.contains("        note(_"), "{}", both);
+        assert!(!made(&both) && both.contains(": int = twice(_") && !both.contains("note("), "{}", both);
         // pushed into a stream of its own kind of item
         let pushed = g("    kept$ << twice ([1 through k])\n    n << kept$");
         assert!(!made(&pushed) && pushed.contains(": int = twice(_"), "{}", pushed);

@@ -66,30 +66,17 @@ on (int n) << two counters()
 on ticks ()
     out$ << ("tick" << "\n") (3) times
 
-on blast off ()
-    for (i in [3 through 1])
-        if (i == 1)
-            out$ << "one" << "\n"
-        else
-            out$ << "more" << "\n"
-
-on halves ()
-    for (i in [0 to 4])
-        if (i % 2 == 0)
-            continue
-        out$ << "odd" << "\n"
-
 on count off (int i)
     out$ << "one" if (i == 1) else "more"
     out$ << "\n"
 
-on blast off each ()
+on blast off ()
     count off ([3 through 1])
 
 on odd one (int i)
     out$ << ("odd" << "\n") if (i % 2 != 0)
 
-on halves each ()
+on halves ()
     odd one ([0 to 4])
 
 on step (int i)

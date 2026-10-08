@@ -2175,7 +2175,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2208,6 +2208,9 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         for d in &f.code.decls {
             if let Decl::Fn(fd) = d {
                 l.declare(fd, &f.name, &f.code.file)?;
+                // its tree kept by its name, for the lines of a small
+                // one written where it is applied (fm3 log 191)
+                l.bodies.insert(mangle(&fd.name), (std::rc::Rc::new(fd.clone()), f.code.file.clone()));
             }
         }
     }
@@ -3444,6 +3447,13 @@ struct Lowerer {
     /// the streams of the function being lowered that hold an item
     /// for certain (`unfed`)
     fed: Names,
+    /// every function the store wrote, by its name, with its file;
+    /// whether the call being lowered is one applied to each value of
+    /// a range, whose lines may stand in its place; and the functions
+    /// whose lines are being written in line now (fm3 log 191)
+    bodies: HashMap<String, (std::rc::Rc<FnDecl>, String)>,
+    inline_here: bool,
+    inlining: Vec<String>,
     /// the file each processor read the new way is written in, for
     /// its lines lowered where a function hands it an array (fm3 log 189)
     zfiles: HashMap<String, String>,
@@ -8058,7 +8068,12 @@ impl Lowerer {
                 // call in it, and no array made to walk
                 if let Some((range, item)) = self.over_range(expr, b).filter(|(_, item)| !matches!(item.kind, ExprKind::Name(_))) {
                     let ExprKind::Range { from, to, inclusive } = &range.kind else { unreachable!() };
-                    let each = |l: &mut Lowerer, x: &Val, b: &mut Body| l.range_item(&item, x, b).map(|_| ());
+                    let each = |l: &mut Lowerer, x: &Val, b: &mut Body| {
+                        l.inline_here = true;
+                        let r = l.range_item(&item, x, b).map(|_| ());
+                        l.inline_here = false;
+                        r
+                    };
                     self.lower_range(from, to, *inclusive, b, RangeSink::Each(&each), *line)?;
                     return Ok(false);
                 }
@@ -11008,6 +11023,50 @@ impl Lowerer {
         self.zthread = Some(t);
     }
 
+    /// May a function's lines be written where it is applied to each
+    /// value of a range (fm3 log 191)? It gives nothing; the store has
+    /// one definition of its name, so no link and no gate stand between
+    /// a call and its lines; it is no task and no platform function;
+    /// and it is small
+    fn inline_ok(&self, info: &FnInfo) -> bool {
+        let Some((fd, _)) = self.bodies.get(&info.key) else { return false };
+        info.results.is_empty() && !info.task && fd.platform.is_empty() && !info.key.starts_with("__")
+            && self.funcs.iter().filter(|g| g.key == info.key).count() == 1
+            && !self.inlining.contains(&info.ir)
+            && small(&fd.body).is_some_and(|n| n <= 4)
+    }
+
+    /// The lines of a function the program wrote, lowered where its
+    /// call would stand, `ops` the values of its parameters: as its own
+    /// feature's, in its own file, seeing only its own parameters, what
+    /// the statement being lowered holds of its own push put aside and
+    /// brought back (as `z_inline` does for a processor's lines)
+    fn inline_fn(&mut self, info: &FnInfo, ops: &[String], b: &mut Body) -> Result<(), Error> {
+        let (fd, ffile) = self.bodies[&info.key].clone();
+        let depth = b.loops.len();
+        let scope: HashMap<String, Var> = info.params.iter().zip(ops).map(|((n, t), v)| (n.clone(), Var { ir: v.clone(), ty: t.clone(), set: true, loop_depth: depth, arr: false })).collect();
+        let vars = std::mem::replace(&mut b.vars, scope);
+        let results = std::mem::take(&mut b.results);
+        let kind = std::mem::replace(&mut b.kind, BodyKind::Fn);
+        let file = std::mem::replace(&mut b.file, ffile);
+        let func = b.func.replace(info.clone());
+        let below = b.below.take();
+        let cur = std::mem::replace(&mut self.cur, info.feature.clone());
+        let held = (self.push_site.take(), self.bare_gates.take(), self.loose_push, self.sure_push, self.zbroken, self.after_push.take(), self.zthread.take(), self.push_read.take(), self.candidate.take(), self.one, self.now);
+        self.inlining.push(info.ir.clone());
+        let done = self.lower_block(&fd.body, b);
+        self.inlining.pop();
+        (self.push_site, self.bare_gates, self.loose_push, self.sure_push, self.zbroken, self.after_push, self.zthread, self.push_read, self.candidate, self.one, self.now) = held;
+        self.cur = cur;
+        b.below = below;
+        b.func = func;
+        b.file = file;
+        b.kind = kind;
+        b.results = results;
+        b.vars = vars;
+        done.map(|_| ())
+    }
+
     /// Is this call a processor with no loop in it handed an array
     /// (fm3 question 113, log 189)? Told from the tree: its one
     /// argument is anything but a stream's own name
@@ -11778,6 +11837,8 @@ impl Lowerer {
     #[allow(clippy::too_many_arguments)]
     fn lower_call(&mut self, parts: &[Part], whole: bool, one: bool, now: bool, e: &Expr, b: &mut Body, dst: Option<&str>) -> Result<Val, Error> {
         let file = b.file.clone();
+        // (asked of the outermost call of the statement, not its arguments')
+        let in_line = std::mem::take(&mut self.inline_here);
         let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
         let (cands, args) = find_methods(&self.funcs, parts, &is_var, &file, e.line)?;
         let cands: Vec<FnInfo> = cands.into_iter().cloned().collect();
@@ -11882,7 +11943,13 @@ impl Lowerer {
         let call = format!("{}({})", info.ir, ops.join(", "));
         match rtys.len() {
             0 => {
-                b.line(&call);
+                // a small function applied to each value of a range:
+                // its lines here, and no call (fm3 log 191)
+                if in_line && self.inline_ok(&info) {
+                    self.inline_fn(&info, &ops, b)?;
+                } else {
+                    b.line(&call);
+                }
                 Ok(Val { text: String::new(), ty: Ty::None, literal: false })
             }
             1 => {
@@ -13039,6 +13106,37 @@ fn time_words_in(e: &Expr, params: &[String], w: &mut Words) {
 /// the streams a block moves: the names `advance x$ by (n)` and
 /// `frame x$` are applied to, anywhere in it, and the stream arguments
 /// of a task call (`task` says which, log 25)
+/// How many lines a body is, counted through its `if`s; none where a
+/// line is a `loop` or a `for`, declares a stream or an array, or
+/// says `existing`: such a function is not written in line (fm3 log 191)
+fn small(stmts: &[Stmt]) -> Option<usize> {
+    let mut n = 0;
+    for s in stmts {
+        n += 1;
+        match s {
+            Stmt::Loop { .. } | Stmt::For { .. } | Stmt::Continue { .. } | Stmt::Break { .. } => return None,
+            Stmt::Var(v) if v.seq || v.arr => return None,
+            Stmt::Push { existing: true, .. } => return None,
+            Stmt::If { then, els, .. } => {
+                n += small(then)?;
+                if let Some(e) = els {
+                    n += small(e)?;
+                }
+            }
+            _ => {}
+        }
+        let mut found = false;
+        walk_stmt(s, &mut |e| {
+            found |= matches!(e.kind, ExprKind::Existing(_));
+            !found
+        });
+        if found {
+            return None;
+        }
+    }
+    Some(n)
+}
+
 /// the streams a block pushes into by name, at any depth of it
 fn pushed_streams(stmts: &[Stmt], out: &mut Vec<String>) {
     for s in stmts {
