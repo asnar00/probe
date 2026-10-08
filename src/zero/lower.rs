@@ -8245,12 +8245,85 @@ impl Lowerer {
     fn seq_bin(&mut self, op: &str, lv: Val, rv: Val, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
         let file = b.file.clone();
         if is_comparison(op) {
-            return Err(lex::error(&file, line, "a comparison over a stream is not in this milestone"));
+            let whole = match op {
+                "==" => ". Whether the two arrays are the same, one bool, is `[==]`",
+                "!=" => ". Whether the two arrays differ, one bool, is `[!=]`",
+                _ => "",
+            };
+            return Err(lex::error(&file, line, format!("`{}` between arrays is applied to each pair and gives a bool for each, and an array of bool is not built (fm3 question 77){}", op, whole)));
         }
         let lifted = vec![lv.ty.elem().is_some(), rv.ty.elem().is_some()];
         let op = op.to_string();
         let f = move |s: &mut Lowerer, ev: &[Val], b: &mut Body| s.emit_bin(&op, ev[0].clone(), ev[1].clone(), None, b, None, line);
         self.lift(vec![lv, rv], lifted, None, b, dst, line, &f)
+    }
+
+    /// `a[] [==] b[]`, `a[] [!=] b[]` (fm3 question 77, log 164): are
+    /// the two arrays the same, one bool. The same length, and the
+    /// same items in the same order: a loop over the items that leaves
+    /// at the first pair that differs, entered only where the lengths
+    /// agree. Nothing is made in the arena
+    fn whole_same(&mut self, op: &str, l: &Expr, r: &Expr, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        let file = b.file.clone();
+        let lv = self.lower_expr(l, None, b, None)?;
+        let rv = self.lower_expr(r, if lv.ty.elem().is_some() { Some(&lv.ty) } else { None }, b, None)?;
+        for (x, v) in [(l, &lv), (r, &rv)] {
+            let what = match (self.kind(x, v, b), &x.kind) {
+                (Kind::Array, _) => continue,
+                (Kind::Stream, ExprKind::Seq(n)) => format!("'{}$' is a stream, its items still arriving: the array of what has arrived is `frame {}$`", n, n),
+                (Kind::Stream, _) => "this side is a stream, its items still arriving".to_string(),
+                (Kind::One, _) => "this side is one value".to_string(),
+            };
+            return Err(lex::error(&file, x.line, format!("`{}` asks whether two arrays are the same, and {} (fm3 question 77): both sides are arrays, `a[] {} b[]`. One item is compared plainly, `a[k] == v`", op, what, op)));
+        }
+        if lv.ty != rv.ty {
+            return Err(lex::error(&file, line, format!("`{}` compares two arrays of one type of item: these hold {} and {}", op, zero_ty(lv.ty.elem().unwrap()), zero_ty(rv.ty.elem().unwrap()))));
+        }
+        let Some(elem) = lv.ty.items().cloned() else {
+            return Err(lex::error(&file, line, format!("`{}` on arrays of {} is not built: the items compared are numbers, enumerations or characters", op, zero_ty(lv.ty.elem().unwrap()))));
+        };
+        let (va, vb) = (self.unread_view(&lv, b), self.unread_view(&rv, b));
+        let (na, nb, same) = (b.tmp(), b.tmp(), b.tmp());
+        b.line(&format!("{}: index = len {}", na, va));
+        b.line(&format!("{}: index = len {}", nb, vb));
+        b.line(&format!("{}: u1 = cmp.eq {}, {}", same, na, nb));
+        let wants_not = op == "[!=]";
+        let out = if wants_not { b.tmp() } else { name_for(dst, &Ty::Bool, b) };
+        b.line(&format!("{}: u1 = if {}", out, same));
+        b.depth += 1;
+        let (all, k) = (b.tmp(), b.tmp());
+        b.open_loop(&format!("{}: u1 = ", all), &format!("{}: index = 0", k), false);
+        b.depth += 1;
+        let done = b.tmp();
+        b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, na));
+        b.line(&format!("if {}", done));
+        b.depth += 1;
+        b.line("break 1");
+        b.depth -= 1;
+        let (x, y, ne) = (b.tmp(), b.tmp(), b.tmp());
+        b.line(&format!("{}: {} = load {}, {}", x, elem.ir(), va, k));
+        b.line(&format!("{}: {} = load {}, {}", y, elem.ir(), vb, k));
+        b.line(&format!("{}: u1 = cmp.ne {}, {}", ne, x, y));
+        b.line(&format!("if {}", ne));
+        b.depth += 1;
+        b.line("break 0");
+        b.depth -= 1;
+        let k2 = b.tmp();
+        b.line(&format!("{}: index = add {}, 1", k2, k));
+        b.line(&format!("continue {}", k2));
+        b.depth -= 1;
+        b.line(&format!("yield {}", all));
+        b.depth -= 1;
+        b.line("else");
+        b.depth += 1;
+        b.line("yield 0");
+        b.depth -= 1;
+        if !wants_not {
+            return Ok(Val { text: out, ty: Ty::Bool, literal: false });
+        }
+        let not = name_for(dst, &Ty::Bool, b);
+        b.line(&format!("{}: u1 = cmp.eq {}, 0", not, out));
+        Ok(Val { text: not, ty: Ty::Bool, literal: false })
     }
 
     /// `x$ + _`, `_ * x$`: a reduction by an operator; `+` is the
@@ -10082,6 +10155,14 @@ impl Lowerer {
                 let name = name_for(dst, &Ty::Bool, b);
                 b.line(&format!("{}: u1 = {} {}, {}", name, op, lv.text, rv.text));
                 Ok(Val { text: name, ty: Ty::Bool, literal: false })
+            }
+            // an operator in square brackets, of two arrays as wholes
+            // (fm3 question 77, log 164)
+            ExprKind::Bin(op, l, r) if op.starts_with('[') => {
+                if !matches!(op.as_str(), "[==]" | "[!=]") {
+                    return Err(lex::error(&file, e.line, format!("`{}` is not ruled as to what it means on two arrays (fm3 question 77): `[==]` and `[!=]` are built, are the two the same. Applied to each pair an operator is written plainly, `a[] {} b[]`", op, op.trim_matches(['[', ']']))));
+                }
+                self.whole_same(op, l, r, b, dst, e.line)
             }
             ExprKind::Bin(op, l, r) => {
                 if self.candidate.is_none() && (matches!(l.kind, ExprKind::Acc) || matches!(r.kind, ExprKind::Acc)) {

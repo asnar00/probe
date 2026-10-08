@@ -1107,6 +1107,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `[==]` and `[!=]` (fm3 question 77, log 164): two arrays compared
+    /// as wholes, one bool; the parser tells the bracketed operator
+    /// from a list written out, and everything else in brackets is
+    /// refused as not ruled
+    #[test]
+    fn two_arrays_are_compared_as_wholes() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-whole-ops");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 1\n").unwrap();
+        let f = |body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("on (int n) << f()\n    int a[] = [1, 2, 3]\n    int b[] = [1, 5, 3]\n    int x$ << 1 << 2\n{}\n", body)).unwrap();
+            emit(&dir)
+        };
+        let refused = |body: &str, what: &str| {
+            let e = f(body).err().unwrap_or_else(|| panic!("not refused: {}", body));
+            assert!(e.contains(what), "{}: {}", body, e);
+        };
+        // one bool: the lengths, and then a loop that leaves at the
+        // first pair that differs
+        let ir = f("    n << if (a[] [==] b[]) then (1) else (0)").unwrap();
+        for l in [": u1 = cmp.eq ", ": u1 = loop(", "                break 1\n", ": u1 = cmp.ne ", "                break 0\n", "    else\n        yield 0\n"] {
+            assert!(ir.contains(l), "{}: {}", l, ir);
+        }
+        assert!(!ir.contains("__queue_int(1000000, _"), "nothing is made for it: {}", ir);
+        let ir = f("    n << if (a[] [!=] b[]) then (1) else (0)").unwrap();
+        assert!(ir.contains(", 0\n    n: int = if "), "{}", ir);
+        // a list and a range written out, a frame, and a list beside it
+        for line in ["a[] [==] [1, 2, 3]", "[1, 2, 3] [==] a[]", "a[] [==] [1 through 3]", "frame x$ [==] a[]", "a[] [==] b[] + [0, 0, 1]"] {
+            f(&format!("    n << if ({}) then (1) else (0)", line)).unwrap_or_else(|e| panic!("{}: {}", line, e));
+        }
+        // a list written out is still a list, a negative first item too
+        assert!(f("    int c[] = [-1, 2]\n    int d[] = [- 1]\n    n << count c[] + count d[]").is_ok());
+        // both sides are arrays
+        refused("    n << if (a[] [==] 2) then (1) else (0)", "h.zero:5: `[==]` asks whether two arrays are the same, and this side is one value (fm3 question 77): both sides are arrays, `a[] [==] b[]`. One item is compared plainly, `a[k] == v`");
+        refused("    n << if (a[] [!=] x$) then (1) else (0)", "`[!=]` asks whether two arrays are the same, and 'x$' is a stream, its items still arriving: the array of what has arrived is `frame x$` (fm3 question 77)");
+        refused("    float h[] = [1.5]\n    n << if (a[] [==] h[]) then (1) else (0)", "`[==]` compares two arrays of one type of item: these hold int and float");
+        // the other operators in brackets are not ruled
+        refused("    n << if (a[] [<] b[]) then (1) else (0)", "h.zero:5: `[<]` is not ruled as to what it means on two arrays (fm3 question 77): `[==]` and `[!=]` are built, are the two the same. Applied to each pair an operator is written plainly, `a[] < b[]`");
+        refused("    int c[] = a[] [+] b[]\n    n << count c[]", "`[+]` is not ruled as to what it means on two arrays");
+        // the plain comparison where one bool is wanted says what to write
+        refused("    if (a[] == b[])\n        n << 1", "h.zero:5: `if (a[] == b[])`: `==` is applied to each pair of items and gives a bool for each, and one is wanted here (fm3 question 77). Whether the two arrays are the same is `[==]`: write `if (a[] [==] b[])`");
+        refused("    if (a[] != [1, 2])\n        n << 1", "Whether the two arrays differ is `[!=]`: write `if (a[] [!=] [1, 2])`");
+        // ... and where an array is wanted its answer is an array of bool
+        refused("    out$ << (a[] == b[])\n    n << 1", "`==` between arrays is applied to each pair and gives a bool for each, and an array of bool is not built (fm3 question 77). Whether the two arrays are the same, one bool, is `[==]`");
+    }
+
     /// The lowering knows which kind a name is (fm3 questions 90 and
     /// 79, log 162): the three crossings that wanted a call resolved
     /// are refused, each beside the line that stands

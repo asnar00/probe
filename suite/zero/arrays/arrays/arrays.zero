@@ -71,3 +71,39 @@ on said whole()
 
 on (int n) << marked()
     n << marks[] + _ + marks[0]
+
+on (bool same) << the same()
+    int a[] = [1, 2, 3]
+    int b[] = [1, 2, 3]
+    same << a[] [==] b[]
+
+on (bool same) << differing by an item()
+    int a[] = [1, 2, 3]
+    int b[] = [1, 5, 3]
+    same << a[] [==] b[]
+
+on (bool same) << differing by length()
+    int a[] = [1, 2, 3]
+    same << a[] [==] [1, 2]
+
+on (bool same) << two empty()
+    int a[] = []
+    int b[] = []
+    same << a[] [==] b[]
+
+on (bool differ) << not the same()
+    int a[] = [1, 2, 3]
+    differ << a[] [!=] [1, 2, 4]
+
+on (bool same) << a text and its letters()
+    string s = "abc"
+    char cs[] = "abc"
+    same << s [==] cs[]
+
+on (int n) << compared for a condition()
+    int a[] = [1, 2, 3]
+    n << if (a[] [==] [1 through 3]) then (7) else (0)
+
+on (bool same) << what arrived()
+    int x$ << 4 << 5 << 6
+    same << frame x$ [==] [4, 5, 6]

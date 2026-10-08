@@ -18,6 +18,11 @@ Sixteen forms, a function each: an array from a list, from a range, from a text;
 
 **An array lowers to the lines a sequence given whole by `=` always did.** Until `$` on an array was refused (fm3 log 161) this store had each form written twice, with the array's mark and, in a function named `... old` beside it, with the `$` every sequence had before the ruling, and the compiler's test asserted the two emitted the same text. The ruling changed how an array is written and nothing about how it is stored or what it costs.
 
+## two arrays compared as wholes
+An operation applied to each item of an array is written plainly, and an operation on the array as a whole is written in square brackets (fm3 question 77, log 164). `a[] + b[]` adds each pair. `a[] [==] b[]` is one `bool`: the two arrays have the same length and the same items in the same order; `a[] [!=] b[]` is its opposite. Both sides are arrays, a name, a list or a range written out, a `frame`; a `string` stands as its characters, so `s [==] cs[]` compares a text with an array of them. It is read where `==` is read and binds as `==` does. `the same`, `differing by an item`, `differing by length`, `two empty`, `not the same`, `a text and its letters`, `compared for a condition` and `what arrived` are its cases.
+
+Refused: one value or a stream on either side, `a[] [==] 2`, `a[] [==] x$` (the array of what has arrived is `frame x$`); two arrays of different types of item; arrays of structs. `[<]`, `[+]` and the other bracketed operators are refused as not ruled. And `if (a[] == b[])`, a bool for each pair where one is wanted, is refused showing the line with `[==]`; where an array is wanted, a plain comparison's answer would be an array of `bool`, which is not built.
+
 ## what is refused
 - A name declared `a[]` and written `a$`, or declared `x$` and written `x[]` or `x[2]`: the mark is part of the name. A marked name written bare, `n << a`, the same.
 - **`int i$ = [1, 2, 3]`**: what `=` gives is an array, and `$` is a stream's mark. The message shows the line as an array, `int i[] = [1, 2, 3]`, and the stream that begins with those items, `int i$ << [1, 2, 3]`. A `$` name given by `=` is a task's or a processor's stream, `int d$ = doubled(x$)`, and nothing else.
@@ -53,3 +58,11 @@ An operation on an array as a whole written in square brackets, `a[] [==] b[]`, 
 >framed() → 60
 >said whole() → "1 2 3"
 >marked() → 10
+>the same() → 1
+>differing by an item() → 0
+>differing by length() → 0
+>two empty() → 1
+>not the same() → 1
+>a text and its letters() → 1
+>compared for a condition() → 7
+>what arrived() → 1

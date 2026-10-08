@@ -1590,6 +1590,16 @@ impl<'a> Parser<'a> {
     fn parse_compare(&mut self) -> Result<Expr, Error> {
         let mut l = self.parse_sum()?;
         loop {
+            // an operator in square brackets is of the two arrays as
+            // wholes (fm3 question 77, log 164): read where `==` is,
+            // kept with its brackets as the operator's name
+            if let Some(op) = self.whole_op() {
+                let line = self.line();
+                self.pos += 3;
+                let r = self.parse_sum()?;
+                l = Expr { kind: ExprKind::Bin(format!("[{}]", op), Box::new(l), Box::new(r)), line };
+                continue;
+            }
             let op = match self.peek() {
                 Some(Tok::Sym(s)) if matches!(*s, "<" | ">" | "<=" | ">=" | "==" | "!=") => *s,
                 _ => break,
@@ -1600,6 +1610,20 @@ impl<'a> Parser<'a> {
             l = Expr { kind: ExprKind::Bin(op.to_string(), Box::new(l), Box::new(r)), line };
         }
         Ok(l)
+    }
+
+    /// `[==]`: an operator in square brackets, three tokens. A list
+    /// written out has a value after its `[`, and no value begins with
+    /// an operator but `-`, which in a list has a value after it and
+    /// here has the `]` (fm3 log 164)
+    fn whole_op(&self) -> Option<&'static str> {
+        if !self.at_sym("[") || !matches!(self.peek_at(2), Some(Tok::Sym("]"))) {
+            return None;
+        }
+        match self.peek_at(1) {
+            Some(Tok::Sym(s)) if matches!(*s, "<" | ">" | "<=" | ">=" | "==" | "!=" | "+" | "-" | "*" | "/" | "%") => Some(*s),
+            _ => None,
+        }
     }
 
     fn parse_sum(&mut self) -> Result<Expr, Error> {
@@ -1658,7 +1682,7 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 let f = self.expect_word()?;
                 e = Expr { kind: ExprKind::Field(Box::new(e), f), line };
-            } else if self.at_sym("[") && matches!(e.kind, ExprKind::Seq(_) | ExprKind::Index(..)) {
+            } else if self.at_sym("[") && matches!(e.kind, ExprKind::Seq(_) | ExprKind::Index(..)) && self.whole_op().is_none() {
                 // an index, only straight after a sequence's name: a `[`
                 // after anything else starts a list
                 let line = self.line();
@@ -1822,6 +1846,8 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     parts.push(Part::Value(Expr { kind: ExprKind::Arr(w), line }));
                 }
+                // (a bracketed operator is no argument: `[==]`, log 164)
+                Some(Tok::Sym("[")) if self.whole_op().is_some() => break,
                 Some(Tok::Int(_)) | Some(Tok::Float(_)) | Some(Tok::Str(_)) | Some(Tok::Sym("[")) | Some(Tok::Sym("_")) | Some(Tok::At(_)) => {
                     let e = self.parse_postfix()?;
                     parts.push(Part::Value(e));

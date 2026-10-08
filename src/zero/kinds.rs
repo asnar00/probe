@@ -185,6 +185,17 @@ impl Walk {
             (Mark::Plain, Mark::Array) => self.refuse(line, format!("'{}[]': '{}' is one value, {}, and has no items", name, name, self.declared(name, &e))),
             // an array where one value is wanted (fm3 question 96, log
             // 161): the name itself, or an operand, has no latest item
+            // `if (a[] == b[])`: a bool for each pair where one is
+            // wanted; the question meant is `[==]` (fm3 log 164)
+            (Mark::Array, Mark::Array) if wants == "one value" && form.ends_with(", between two arrays") => {
+                let op = if form.contains("`==`") { "==" } else { "!=" };
+                let shown = self.source(line).filter(|l| l.matches(&format!(" {} ", op)).count() == 1);
+                let (said, write) = match shown {
+                    Some(l) => (format!("`{}`: ", l), format!("write `{}`", l.replace(&format!(" {} ", op), &format!(" [{}] ", op)))),
+                    None => (String::new(), format!("write `a[] [{}] b[]`", op)),
+                };
+                self.refuse(line, format!("{}`{}` is applied to each pair of items and gives a bool for each, and one is wanted here (fm3 question 77). Whether the two arrays {} is `[{}]`: {}", said, op, if op == "==" { "are the same" } else { "differ" }, op, write));
+            }
             (Mark::Array, Mark::Array) if wants == "one value" && (form == "the value" || form.starts_with("an operand of") || form.starts_with("an arm of")) => {
                 self.refuse(line, format!("'{}[]' is an array, and one value is wanted here: an array has no latest item, as a stream has (fm3 question 90). Its last item is `{}[count {}[] - 1]`, one item `{}[k]`, and its sum `{}[] + _`", name, name, name, name, name));
             }
@@ -370,7 +381,22 @@ impl Walk {
             }
             ExprKind::Bin(op, l, r) => {
                 let acc = matches!(l.kind, ExprKind::Acc) || matches!(r.kind, ExprKind::Acc);
-                let form = if acc { format!("reduced, `{} _`", op) } else { format!("an operand of `{}`", op) };
+                // an operator in square brackets takes its two sides
+                // whole (fm3 question 77, log 164)
+                let whole = op.starts_with('[');
+                let written = |x: &Expr| matches!(x.kind, ExprKind::Arr(_) | ExprKind::List(_) | ExprKind::Range { .. });
+                let form = if acc {
+                    format!("reduced, `{} _`", op)
+                } else if whole {
+                    format!("a side of `{}`", op)
+                } else if matches!(op.as_str(), "==" | "!=") && written(l) && written(r) {
+                    // both sides written as arrays: what is meant is
+                    // the bracketed one, and the refusal says so
+                    format!("an operand of `{}`, between two arrays", op)
+                } else {
+                    format!("an operand of `{}`", op)
+                };
+                let wants = if whole { "a sequence" } else { wants };
                 self.expr(l, wants, &form);
                 self.expr(r, wants, &form);
             }
