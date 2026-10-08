@@ -6,6 +6,9 @@ type Mode = off | on | auto
 type Vec =
     float x, y, z = 0
 
+type duo =
+    int x, y
+
 int seen$ << 0
 int high$
 bool flag$
@@ -143,6 +146,24 @@ on (int n) << local pushed round a loop (int k)
         i$ << i$ + j
         continue (j + 1)
     n << i$
+
+on (int n) << local counted far (int k)
+    int i$ << 0 << (i$ + 1) while (i$ < k)
+    n << count i$
+
+on (int n) << local summed round a loop (int k)
+    int s$
+    loop (int j = 1) while (j <= k)
+        s$ << s$ + j
+        continue (j + 1)
+    n << s$
+
+on (int n) << local pair round a loop (int k)
+    duo p$ << duo(0, 1)
+    loop (int j = 0) while (j < k)
+        p$ << duo(p$.y, p$.x + p$.y)
+        continue (j + 1)
+    n << p$.x
 
 on (int n) << how many of (int x$)
     n << count x$

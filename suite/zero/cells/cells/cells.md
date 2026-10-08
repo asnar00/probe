@@ -21,7 +21,7 @@ Every stream here but `both$` and `t$` is read for its latest item and nothing e
 - `counted` reads `both$` by its name and counts it too.
 
 - **In a function** (fm3 log 186) a stream declared there and read only for its latest item is one value of the function, kept in no queue and no field: where its push has a word, it is what the loop that push lowers to carries. `local up to (k)` is `int i$ << 0 << (i$ + 1) while (_ <= k)`, ten thousand items where a queue fails at its sixty-fifth; `local doubled past (k)` is the same with `until` and `local doubled (k)` with `(k) times`, a count below zero failing a check. `local chosen (k)` pushes into it under an `if`, and `local before any` reads one nothing has been pushed into. `local struct (k)` keeps a structure as its fields, apart, `token t$ << token(1, 0, 0) << token(t$.kind + 1, t$.start + t$.kind, t$.n * 2 + 1) (k) times`, and makes the structure once, where it is read whole, `token last = t$`; `local by the candidate (k)` asks `_.kind` of the candidate. `local shown` writes its value now, `out$ << i$`.
-- `local and counted (k)`, `local pushed round a loop (k)` and `local handed on` are the same stream used as a stream, counted, pushed into inside a loop that began after it, and handed to a function that takes a stream: each is the queue it was, and reads the same.
+- `local and counted (k)` asks `count` of such a stream: nothing takes from it, so the count is how many were pushed, a second value carried beside the latest, and no queue (fm3 question 112, log 190); `local counted far (k)` counts ten thousand. `local pushed round a loop (k)` pushes into one inside a `loop` that began after it, and the loop carries what the stream keeps as it carries a stream it moves, with nothing written in its header; `local summed round a loop (k)` begins with nothing, its name the zero of its type before its first item, and `local pair round a loop (k)` carries a structure's two fields. A push inside a `for`, which carries nothing, still makes the stream a queue of sixty-four; it reads zero before its first item there too. `local handed on` hands the stream to a function that takes one, and is the queue it was.
 
 ## rules
 - A stream's name is its latest item wherever one value is wanted: a declaration without `$`, the push of a result, a condition, a `check`, an index, the bounds of a range, the base of `.field`, a conversion, a field of a struct being built, both sides of an operator there, and an argument of a function whose parameter is one value.
@@ -62,6 +62,9 @@ Every stream here but `both$` and `t$` is read for its latest item and nothing e
 >local by the candidate (5) → 54
 >local and counted (3) → 403
 >local pushed round a loop (4) → 6
+>local counted far (10000) → 10001
+>local summed round a loop (1000) → 500500
+>local pair round a loop (10) → 55
 >local handed on() → 3
 >local shown() → "7"
 

@@ -2175,7 +2175,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -3441,6 +3441,9 @@ struct Lowerer {
     /// name of its function of one item: what a push into the input
     /// calls it with, and what it keeps
     zprocs: HashMap<String, ZProc>,
+    /// the streams of the function being lowered that hold an item
+    /// for certain (`unfed`)
+    fed: Names,
     /// the file each processor read the new way is written in, for
     /// its lines lowered where a function hands it an array (fm3 log 189)
     zfiles: HashMap<String, String>,
@@ -5195,6 +5198,10 @@ impl Lowerer {
     fn lcell_declare(&mut self, name: &str, ty: &Ty, b: &mut Body) {
         let depth = b.loops.len();
         b.vars.insert(name.to_string(), Var { ir: format!("{}{}", LCELL, name), ty: ty.clone(), set: true, loop_depth: depth, arr: false });
+        // one that some line asks `count` of keeps the count too
+        if b.func.as_ref().is_some_and(|f| self.lstreams.contains(&format!("{} {} #", f.ir, name))) {
+            b.vars.insert(lcell_count(name), Var { ir: String::new(), ty: index_ty(), set: false, loop_depth: depth, arr: false });
+        }
         for (k, t, _) in self.lcell_keys(name, b) {
             b.vars.insert(k, Var { ir: String::new(), ty: t, set: false, loop_depth: depth, arr: false });
         }
@@ -5207,7 +5214,7 @@ impl Lowerer {
     /// first item the zero of its type, as a cell reads
     fn lcell_now(&mut self, name: &str, b: &mut Body) -> Vec<Val> {
         let mut out = Vec::new();
-        for (k, t, _) in self.lcell_keys(name, b) {
+        for (k, t, _) in self.lcell_all(name, b) {
             let v = b.vars[&k].clone();
             out.push(if v.set { lcell_val(&v.ir, &t) } else { self.zero_val(&t, b) });
         }
@@ -5215,18 +5222,47 @@ impl Lowerer {
     }
 
     fn lcell_set(&mut self, name: &str, vals: &[Val], b: &mut Body) {
-        for ((k, _, _), v) in self.lcell_keys(name, b).iter().zip(vals) {
+        for ((k, _, _), v) in self.lcell_all(name, b).iter().zip(vals) {
             let var = b.vars.get_mut(k).unwrap();
             var.ir = v.text.clone();
             var.set = true;
         }
     }
 
+    /// what a local cell keeps and, where a line asks `count` of it,
+    /// the count last (fm3 question 112)
+    fn lcell_all(&self, name: &str, b: &Body) -> Vec<(String, Ty, Option<String>)> {
+        let mut keys = self.lcell_keys(name, b);
+        if b.vars.contains_key(&lcell_count(name)) {
+            keys.push((lcell_count(name), index_ty(), None));
+        }
+        keys
+    }
+
+    /// an item pushed into a local cell that counts: one more
+    fn lcell_bump(&mut self, name: &str, b: &mut Body) {
+        let key = lcell_count(name);
+        let Some(v) = b.vars.get(&key).cloned() else { return };
+        // (a count that is known is a number written out, and no line)
+        let n = if v.set && !v.ir.starts_with(|c: char| c.is_ascii_digit()) {
+            let n = b.tmp();
+            b.line(&format!("{}: index = add {}, 1", n, v.ir));
+            n
+        } else {
+            let was: i64 = if v.set { v.ir.parse().unwrap_or(0) } else { 0 };
+            (was + 1).to_string()
+        };
+        let var = b.vars.get_mut(&key).unwrap();
+        var.ir = n;
+        var.set = true;
+    }
+
     /// a local cell read whole: its value, a structure made of its
     /// fields here, the one place it is made
     fn lcell_read(&mut self, name: &str, b: &mut Body, dst: Option<&str>) -> Val {
         let Ty::Stream(elem) = b.vars[name].ty.clone() else { unreachable!() };
-        let vals = self.lcell_now(name, b);
+        let mut vals = self.lcell_now(name, b);
+        vals.truncate(self.lcell_keys(name, b).len());
         match elem.as_ref() {
             Ty::Struct(sn) => {
                 let out = name_for(dst.filter(|d| b.vars.get(*d).map(|v| &v.ty) == Some(elem.as_ref())), &elem, b);
@@ -5284,7 +5320,8 @@ impl Lowerer {
     /// or a push inside a loop that began after the declaration
     #[allow(clippy::too_many_arguments)]
     fn push_lcell(&mut self, name: &str, items: &[Expr], group: usize, cond: Option<&Expr>, word: Repeat, b: &mut Body) -> Result<bool, Error> {
-        let keys = self.lcell_keys(name, b);
+        let keys = self.lcell_all(name, b);
+        let own_keys = self.lcell_keys(name, b).len();
         if keys.iter().any(|(k, _, _)| b.vars[k].loop_depth != b.loops.len()) {
             return Ok(false);
         }
@@ -5300,6 +5337,7 @@ impl Lowerer {
         for e in &items[..once] {
             let Some(vals) = self.lcell_item(name, e, b)? else { return Ok(false) };
             self.lcell_set(name, &vals, b);
+            self.lcell_bump(name, b);
         }
         let Some(c) = cond else { return Ok(true) };
         let grouped = &items[once..];
@@ -5333,7 +5371,7 @@ impl Lowerer {
             match elem.as_ref() {
                 Ty::Struct(sn) if asked => {
                     let out = b.tmp();
-                    b.line(&format!("{}: {} = pack {}", out, sn, texts(vs)));
+                    b.line(&format!("{}: {} = pack {}", out, sn, texts(&vs[..own_keys])));
                     let _ = l;
                     Val { text: out, ty: elem.as_ref().clone(), literal: false }
                 }
@@ -5347,7 +5385,8 @@ impl Lowerer {
             for e in grouped {
                 let Some(vals) = l.lcell_item(name, e, b)? else { return Ok(false) };
                 l.lcell_set(name, &vals, b);
-                *last = vals;
+                l.lcell_bump(name, b);
+                *last = l.lcell_now(name, b);
             }
             Ok(true)
         };
@@ -6777,6 +6816,7 @@ impl Lowerer {
     fn lower_fn_body(&mut self, f: &FnDecl, feature: &str, file: &str) -> Result<(), Error> {
         let key = mangle(&f.name);
         self.regular_locals.clear();
+        self.fed.clear();
         self.views.clear();
         self.frame_only = self.frame_only_arrays(&f.body);
         // methods (log 36): the one declared for these parameter types
@@ -7238,6 +7278,33 @@ impl Lowerer {
                     tys.push(v.ty.clone());
                     streams.push(n.clone());
                 }
+            }
+        }
+        // ... and so is what a local cell keeps, where a line of the
+        // body pushes into it (fm3 log 190): the latest, a field each,
+        // and the count where one is kept, from what they hold now
+        let mut pushed = Vec::new();
+        pushed_streams(body, &mut pushed);
+        for n in pushed {
+            if !self.is_lcell(&n, b) {
+                continue;
+            }
+            for (k, t, _) in self.lcell_all(&n, b) {
+                if carried.contains(&k) {
+                    continue;
+                }
+                let v = b.vars[&k].clone();
+                let init = if v.set {
+                    v.ir.clone()
+                } else {
+                    let z = self.zero_val(&t, b);
+                    if z.literal { z.text } else { b.materialize(&z).text }
+                };
+                b.vars.get_mut(&k).unwrap().set = true;
+                header.push((k.clone(), t.clone(), init));
+                carried.push(k.clone());
+                tys.push(t.clone());
+                streams.push(k);
             }
         }
         let mut results: Vec<String> = yields.to_vec();
@@ -7900,6 +7967,7 @@ impl Lowerer {
                     return Err(lex::error(&file, v.line, format!("'{}' is already declared", v.name)));
                 }
                 let ty = self.decl_ty(v, Some(&b.vars), &file)?;
+                self.fed.remove(&v.name);
                 // a stream the function reads only for its latest item
                 // is one value (fm3 log 186): no queue is made, and
                 // its first items are worked out as a push's are
@@ -10028,10 +10096,24 @@ impl Lowerer {
         matches!(b.kind, BodyKind::Fn | BodyKind::Task { .. }) && b.func.as_ref().is_some_and(|f| f.ir.starts_with("__edge") || (!f.ir.starts_with("__") && !f.key.starts_with("__")))
     }
 
+    /// May a stream the function itself declared still hold nothing
+    /// here (fm3 log 190)? Then its own name on the right of a push
+    /// into it reads as the zero of its type, as it does where the
+    /// stream is one value: a queue's `latest` of nothing fails a
+    /// check, and what the compiler keeps may not show. It holds
+    /// something for certain once an item has been pushed into it at
+    /// the top of the function's body
+    fn unfed(&self, name: &str, b: &Body) -> bool {
+        b.vars.contains_key(name) && !self.fed.contains(name) && matches!(b.kind, BodyKind::Fn) && b.func.as_ref().is_some_and(|f| !f.ir.starts_with("__"))
+    }
+
     /// one push, through `__push` (log 38): a tick from the virtual
     /// clock unless the ring is regular; a struct pushed field by field;
     /// a task's own output sleeps to its next tick after (log 25)
     fn emit_push(&mut self, name: &str, s: &Val, v: &Val, b: &mut Body) {
+        if b.depth == 0 && b.loops.is_empty() && b.vars.contains_key(name) {
+            self.fed.insert(name.to_string());
+        }
         let regular = if b.vars.contains_key(name) { self.regular_locals.contains(name) } else { self.regular.contains(name) };
         if self.device(name, b) {
             // the device stores nothing (question 45): the push is the
@@ -10222,7 +10304,7 @@ impl Lowerer {
         if is_block(e) {
             return Err(block(e));
         }
-        let latest = if self.is_cell(name, b) { PushRead::Cell } else { PushRead::Latest(s.clone(), s.ty.clone()) };
+        let latest = if self.is_cell(name, b) { PushRead::Cell } else if self.unfed(name, b) { PushRead::LatestOr(s.clone(), s.ty.clone()) } else { PushRead::Latest(s.clone(), s.ty.clone()) };
         // `until` (fm3 log 148): the item pushed, and then the
         // condition asked of it, `_` and the stream's own name both
         // the item just pushed; where it holds the loop leaves. The
@@ -10408,6 +10490,7 @@ impl Lowerer {
         }
         let zero_first = b.func.as_ref().is_some_and(|f| self.zero_first.contains(&f.ir));
         // (a stream whose latest is kept reads its field, fm3 log 177)
+        let zero_first = zero_first || self.unfed(name, b);
         self.push_read = Some((name.to_string(), if self.is_cell(name, b) { PushRead::Cell } else if zero_first { PushRead::LatestOr(s.clone(), s.ty.clone()) } else { PushRead::Latest(s.clone(), s.ty.clone()) }));
         let want = if matches!(e.kind, ExprKind::List(_)) { Some(elem) } else { None };
         // an item of a push that happens once (fm3 question 79, log 163)
@@ -11490,6 +11573,25 @@ impl Lowerer {
         // `latest` of a local cell is the value it keeps (fm3 log 186)
         if w == "latest" && !infix && rest.is_empty() && self.is_lcell(&sname, b) {
             return Ok(Some(self.lcell_read(&sname, b, dst)));
+        }
+        // ... and `count` of one is how many were pushed, a second
+        // value kept beside the latest (fm3 question 112, log 190):
+        // nothing takes from a local cell, so what is waiting is all
+        // of them. Asked of one that is not counting, it is noted and
+        // the store lowered again with it counting
+        if w == "count" && !infix && rest.is_empty() && self.is_lcell(&sname, b) {
+            let key = lcell_count(&sname);
+            let n = match b.vars.get(&key) {
+                Some(v) if v.set => b.materialize(&lcell_val(&v.ir.clone(), &index_ty())).text,
+                Some(_) => b.materialize(&Val { text: "0".into(), ty: index_ty(), literal: true }).text,
+                None => {
+                    if let Some(f) = &b.func {
+                        self.uncelled.borrow_mut().insert(format!("{} {} #", f.ir, sname));
+                    }
+                    b.materialize(&Val { text: "0".into(), ty: index_ty(), literal: true }).text
+                }
+            };
+            return Ok(Some(self.settled(n, keeps_index(want), b, dst)));
         }
         // `latest` of a cell is its field (fm3 log 143)
         if w == "latest" && !infix && rest.is_empty() && self.is_cell(&sname, b) {
@@ -12937,6 +13039,23 @@ fn time_words_in(e: &Expr, params: &[String], w: &mut Words) {
 /// the streams a block moves: the names `advance x$ by (n)` and
 /// `frame x$` are applied to, anywhere in it, and the stream arguments
 /// of a task call (`task` says which, log 25)
+/// the streams a block pushes into by name, at any depth of it
+fn pushed_streams(stmts: &[Stmt], out: &mut Vec<String>) {
+    for s in stmts {
+        match s {
+            Stmt::Push { target: Expr { kind: ExprKind::Seq(n), .. }, .. } if !out.contains(n) => out.push(n.clone()),
+            Stmt::If { then, els, .. } => {
+                pushed_streams(then, out);
+                if let Some(e) = els {
+                    pushed_streams(e, out);
+                }
+            }
+            Stmt::Loop { body, .. } | Stmt::For { body, .. } => pushed_streams(body, out),
+            _ => {}
+        }
+    }
+}
+
 fn moved_streams(stmts: &[Stmt], out: &mut Vec<String>, task: &dyn Fn(&[Part]) -> Vec<String>) {
     for s in stmts {
         match s {
@@ -13052,6 +13171,11 @@ const LCELL: &str = "__lcell_";
 
 /// a value a local cell keeps, read back from its text: a literal
 /// where the text is one, as a loop's header and a `break` take
+/// the name under which a local cell keeps how many were pushed
+fn lcell_count(name: &str) -> String {
+    format!("{}__n$", name)
+}
+
 fn lcell_val(text: &str, ty: &Ty) -> Val {
     Val { text: text.to_string(), ty: ty.clone(), literal: text.starts_with(|c: char| c.is_ascii_digit() || c == '-') }
 }

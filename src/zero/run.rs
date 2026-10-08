@@ -1625,9 +1625,9 @@ mod tests {
         assert!(f("    int a[] = [1, 2, 3]\n    int v[] = doubled (a[])\n    int w = doubled (a[1])\n    n << v[2] + w").is_ok());
         // a stream's name there is its latest item, as it was: of a
         // stream the function reads for nothing else, the value
-        // itself (fm3 log 186), and of one it counts, `latest`
+        // itself (fm3 log 186), and of one it peeks into, `latest`
         assert!(f("    int s$ << 1 << 2\n    int v = doubled (s$)\n    n << v").unwrap().contains("    v: int = doubled(2)\n"));
-        assert!(f("    int s$ << 1 << 2\n    int v = doubled (s$)\n    n << v + count s$").unwrap().contains("latest"));
+        assert!(f("    int s$ << 1 << 2\n    int v = doubled (s$)\n    n << v + peek s$ at (0)").unwrap().contains("latest"));
         // a look back in a plain function, and in a task that walks
         refused("    int s$ << 1 << 2\n    n << s$[-1]", "h.zero:19: 's$[-1]' is a look back, the item before the present one, and only a stream processor has a present item (fm3 question 75). In a function a stream's latest item is its name, `s$`; the items its reader has passed are `s$ behind (k)`");
         std::fs::write(dir.join("h/h.zero"), "int x$\nint d$ = diffs(x$)\n\non (int d$) << diffs (int x$)\n    d$ << x$ - x$[-1]\n\non (int n) << f()\n    x$ << 1 << 4\n    n << count d$\n").unwrap();
@@ -1800,7 +1800,7 @@ mod tests {
         // (the stream is read for nothing but its latest, so it is
         // the loop's own value beside the counter, fm3 log 186)
         assert!(g("int d$ << 0 << (d$ + 1 << d$ + 1) (4) times").contains("    d_2: int = loop(_1: int = 0, d: int = 0)\n        _2: u1 = cmp.lt _1, 4\n"));
-        assert!(g("int d$ << 0 << (d$ + 1 << d$ + 1) (4) times\n    int n = count d$").contains("    loop(_2: int = 0)\n        _3: u1 = cmp.lt _2, 4\n"));
+        assert!(g("int d$ << 0 << (d$ + 1 << d$ + 1) (4) times\n    int n = peek d$ at (0)").contains("    loop(_2: int = 0)\n        _3: u1 = cmp.lt _2, 4\n"));
         let ambiguous = "'... (k) times' at the end of a push reads two ways: a function whose name ends `(...) times`, called and pushed once, or what stands before the bracket pushed that many times. For the call put it in brackets, `x$ << (name (k) times)`; for the count put the item in brackets, `x$ << (item) (k) times`";
         let last = "brackets round several items of a push make them the one item its word applies to, and they stand last in the chain (fm3 question 84): `x$ << a << (b << c) (3) times`. Before the last item a group would be its items in order and nothing more: write them without the brackets";
         let value = "brackets round several items of a push make them one item for the word that follows, `x$ << (a << b) (3) times`: a group is not a value, and what may follow it is `if`, `(n) times`, `while`, `until` or `forever`";
@@ -2259,7 +2259,7 @@ mod tests {
         // nothing else (fm3 log 186), `latest` where it is counted too
         let local = with("\non (int n) << g()\n    int i$ << 4 << 5\n    int y = i$ + 1\n    n << y").unwrap();
         assert!(local.contains("fn g() -> int\n    _1: int = const 5\n    y: int = add _1, 1\n    ret y\n"), "{}", local);
-        let local = with("\non (int n) << g()\n    int i$ << 4 << 5\n    int y = i$ + count i$\n    n << y").unwrap();
+        let local = with("\non (int n) << g()\n    int i$ << 4 << 5\n    int y = i$ + peek i$ at (0)\n    n << y").unwrap();
         assert!(local.contains(" = latest_queue(i)\n") && local.contains("    y: int = add "), "{}", local);
         // a cell holds what a ring does not; used as a stream it is refused as it was
         let flag = with("bool up$\n\non (bool b) << g()\n    up$ << true\n    b << up$").unwrap();
@@ -2314,20 +2314,19 @@ mod tests {
         assert!(joined.contains("    q: int = if _1\n        _2: int = add 1, n\n        yield _2\n    else\n        yield 1\n    ret q\n"), "{}", joined);
         // `latest` of it says the same, and keeps no history: the
         // store's other streams are the queues they were
-        let said = with("\non (int p) << g (int n)\n    int q$ << 1 << (q$ * 2) while (q$ <= n)\n    int r$ << 1 << 2\n    p << latest q$ + count r$").unwrap();
+        let said = with("\non (int p) << g (int n)\n    int q$ << 1 << (q$ * 2) while (q$ <= n)\n    int r$ << 1 << 2\n    p << latest q$ + peek r$ at (1)").unwrap();
         assert!(said.contains("    r: int$ = __queue_int(") && !said.contains("__regular_int") && !said.contains("latest_queue(q)"), "{}", said);
         // before its first item, the zero of its type
         let zero = with("\non (int p) << g()\n    int q$\n    p << q$ + 1").unwrap();
         assert!(zero.contains("fn g() -> int\n    _1: int = const 0\n    p: int = add _1, 1\n"), "{}", zero);
         // each of these makes it the stream it was: a queue is made
         for (what, body) in [
-            ("count", "    int q$ << 1 << (q$ * 2) while (q$ <= n)\n    p << q$ + count q$"),
             ("peek", "    int q$ << 1 << (q$ * 2) while (q$ <= n)\n    p << q$ + peek q$ at (0)"),
             ("frame", "    int q$ << 1 << (q$ * 2) while (q$ <= n)\n    int a[] = frame q$\n    p << q$"),
             ("ended", "    int q$ << 1 << (q$ * 2) while (q$ <= n)\n    end q$\n    p << q$"),
             ("a function that takes a stream", "    int q$ << 1 << (q$ * 2) while (q$ <= n)\n    p << q$ + how many (q$)"),
             ("a list pushed", "    int q$ << [1, 2]\n    p << q$ + n"),
-            ("a push inside a loop", "    int q$ << 1\n    loop (int i = 0) while (i < n)\n        q$ << q$ * 2\n        continue (i + 1)\n    p << q$"),
+            ("a push inside a `for`, which carries nothing", "    int q$ << 1\n    for (i in [1 through n])\n        q$ << q$ * 2\n    p << q$"),
             ("a push of it whole into a stream that is stored", "    int q$ << 1 << (q$ * 2) while (q$ <= n)\n    int r$ << frame q$\n    p << q$ + count r$"),
         ] {
             let ir = with(&format!("\non (int p) << g (int n)\n{}", body)).unwrap_or_else(|e| panic!("{}: {}", what, e));
@@ -2335,6 +2334,21 @@ mod tests {
             assert!(g[..g.find("    ret").unwrap()].contains("q: int$ = __queue_int("), "{}: {}", what, ir);
             assert!(!ir.contains("__lcell_"), "{}: {}", what, ir);
         }
+        // `count` of it is how many were pushed, a second value carried
+        // beside the latest (fm3 question 112, log 190): no queue
+        let counted = with("\non (int p) << g (int n)\n    int q$ << n << (q$ / 10) while (q$ >= 10)\n    p << count q$").unwrap();
+        assert!(counted.contains("fn g(n: int) -> int\n    q_2: int, q__n_2: index = loop(q: int = n, q__n: index = 1)\n        _1: u1 = cmp.ge q, 10\n        if _1\n        else\n            break q, q__n\n        _2: int = div q, 10\n        _3: index = add q__n, 1\n        continue _2, _3\n    p: int = conv q__n_2\n    ret p\n"), "{}", counted);
+        // ... one nothing counts carries no count, and three pushed is 3
+        assert!(!with("\non (int p) << g (int n)\n    int q$ << n << (q$ / 10) while (q$ >= 10)\n    p << q$").unwrap().contains("__n"));
+        assert!(with("\non (int p) << g()\n    int q$ << 4 << 5 << 6\n    p << count q$").unwrap().contains("fn g() -> int\n    _1: index = const 3\n    p: int = conv _1\n"));
+        // a push into it inside a `loop` that began after it: the
+        // loop carries what it keeps, as it carries a stream it moves
+        let round = with("\non (int p) << g (int n)\n    int q$\n    loop (int i = 1) while (i <= n)\n        q$ << q$ + i\n        continue (i + 1)\n    p << q$").unwrap();
+        assert!(round.contains("fn g(n: int) -> int\n    q_2: int = loop(i: int = 1, q: int = 0)\n        _1: u1 = cmp.le i, n\n        if _1\n        else\n            break q\n        _2: int = add q, i\n        _3: int = add i, 1\n        continue _3, _2\n    ret q_2\n"), "{}", round);
+        // in a `for` it is a queue, and before its first item its own
+        // name is still the zero of its type, not a failed check
+        let by_for = with("\non (int p) << g (int n)\n    int q$\n    for (i in [1 through n])\n        q$ << q$ + i\n    p << q$").unwrap();
+        assert!(by_for.contains("q: int$ = __queue_int(") && by_for.contains(" = received(q)\n"), "{}", by_for);
         // ... and a refusal in a function with such a stream is said
         // of the program as written, the stream a stream again
         let err = with("\non (int p) << g (int n)\n    int q$ << 1 << (q$ * 2) while (q$ <= n)\n    p << q$ + nothing (n)").expect_err("no such function");
@@ -2344,7 +2358,7 @@ mod tests {
         let fs = with("\non g (int n)\n    kept$ << (kept$ + 1) while (kept$ < n)").unwrap();
         let g = &fs[fs.find("fn g(n: int)").unwrap()..];
         assert!(g.find("cmp.lt").unwrap() < g.find(" = add ").unwrap(), "{}", fs);
-        let stored = with("\non (int p) << g (int n)\n    int q$ << 1 << (q$ * 2) while (q$ <= n)\n    p << count q$").unwrap();
+        let stored = with("\non (int p) << g (int n)\n    int q$ << 1 << (q$ * 2) while (q$ <= n)\n    p << count q$ + peek q$ at (0)").unwrap();
         let g = &stored[stored.find("fn g(n: int) -> int").unwrap()..];
         assert!(g.find("cmp.le").unwrap() < g.find(" = mul ").unwrap(), "{}", stored);
         let _ = std::fs::remove_dir_all(&dir);
@@ -3344,7 +3358,9 @@ mod tests {
             assert!(b.iter().any(|l| l.contains(" = count ")), "{}", ir);
             b.iter().filter(|l| l.contains(" = count ")).count()
         };
-        let straight = |between: &str| format!("on (int n) << f()\n    int s$ << 1 << 2\n    int a = count s$\n{}    n << a + count s$\n", between);
+        // (the stream is peeked into in every body, so it is a queue: a
+        // stream only counted is a number carried, fm3 log 190)
+        let straight = |between: &str| format!("on (int n) << f()\n    int s$ << 1 << 2\n    int z = peek s$ at (0)\n    int a = count s$\n{}    n << a + count s$\n", between);
         // arithmetic, a read, and a call to a function that only computes
         assert_eq!(counts(&straight("    int b = a * 2 + peek s$ at (0)\n    int c = quiet (b)\n")), 1);
         // a push, an `end`, a function that pushes, one that calls one that does
@@ -3356,19 +3372,19 @@ mod tests {
         // a reader moved on is another value
         assert_eq!(counts(&straight("    advance s$ by (1)\n")), 2);
         // an arm of the first asking's own block that pushes and leaves is passed over ...
-        let turn = |arm: &str| format!("on (int n) << f (int k)\n    int s$ << 1 << 2\n    n << loop (int i = 0, int acc = 0) yields acc\n        if (i >= k)\n            break\n        int a = count s$\n        if (a > 5)\n{}        continue (i + 1, acc + a + count s$)\n", arm);
+        let turn = |arm: &str| format!("on (int n) << f (int k)\n    int s$ << 1 << 2\n    int z = peek s$ at (0)\n    n << loop (int i = 0, int acc = 0) yields acc\n        if (i >= k)\n            break\n        int a = count s$\n        if (a > 5)\n{}        continue (i + 1, acc + a + count s$)\n", arm);
         assert_eq!(counts(&turn("            s$ << 9\n            continue (i + 1, acc)\n")), 1);
         // ... one that pushes and goes on is not, nor one nested deeper
         assert_eq!(counts(&turn("            s$ << 9\n")), 2);
         assert_eq!(counts(&turn("            if (a > 6)\n                s$ << 9\n                continue (i + 1, acc)\n")), 2);
         // the second asking in a loop the first is not in: the loop's
         // whole body is between, what follows the asking too
-        let inner = |after: &str| format!("on (int n) << f (int k)\n    int s$ << 1 << 2\n    int a = count s$\n    int t = loop (int i = 0, int acc = 0) yields acc\n        if (i >= k)\n            break\n        int c = count s$\n{}        continue (i + 1, acc + c)\n    n << a + t\n", after);
+        let inner = |after: &str| format!("on (int n) << f (int k)\n    int s$ << 1 << 2\n    int z = peek s$ at (0)\n    int a = count s$\n    int t = loop (int i = 0, int acc = 0) yields acc\n        if (i >= k)\n            break\n        int c = count s$\n{}        continue (i + 1, acc + c)\n    n << a + t\n", after);
         assert_eq!(counts(&inner("")), 1);
         assert_eq!(counts(&inner("        int q = quiet (c)\n")), 1);
         assert_eq!(counts(&inner("        s$ << 9\n")), 2);
         // an asking in one arm is not in hand in the other
-        assert_eq!(counts("on (int n) << f (int k)\n    int s$ << 1 << 2\n    n << count s$ if (k > 0)\n         else count s$ + 1\n"), 2);
+        assert_eq!(counts("on (int n) << f (int k)\n    int s$ << 1 << 2\n    int z = peek s$ at (0)\n    n << count s$ if (k > 0)\n         else count s$ + 1\n"), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
