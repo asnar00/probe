@@ -4,6 +4,27 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: an array compared with a list, with nothing copied — `5abf199` · 2026-10-08
+
+```
+on (bool b) << said()
+    x$ << 1 << 2 << 3
+    b << frame d$ [==] [2, 4, 6]
+```
+
+`suite/zero/zeroic/zeroic/zeroic.zero:99-101`. A case that says what a stream holds cost three times one that `peek`s: the frame was copied into a queue and the list into another. In `src/zero/lower.rs`, `whole_same_listed` compares a list written out where its values stand, its length a number, in a block that leaves at the first difference; `whole_side` reads a frame where the stream's items lie, only where nothing can push before they are read (`quiet`). `lexed right` 1 092 to 608 as counted. So the cases changed over: twenty-six in `zeroic`, and five `peek` cases gone from each six-line lexer store. The meter 130 to 95, `peek` 59 to 24. Five stores moved; the six rows unmoved. Zero 900/900 natively and on wasm; `cargo test zero` 72.
+
+### count: `probe count` passes the function its arguments — `0e07b07` · 2026-10-08
+
+```
+on (int n) << labelled past (int k)
+    beside$ << 3 (k) times
+    lead$ << 1
+    n << beside$
+```
+
+`suite/zero/words/words/words.zero:241-244`. `probe count <file> labelled_past 10` hung for the last agent: `src/main.rs` called the function with no arguments whatever followed its name, so `k` was whatever its register held and the push ran that many times. The integers after the name are now passed, as `probe run` passes them, and `cost::takes` refuses a count that is not the function's own, saying how to write it. The same command prints 171. `a_count_is_given_the_arguments_the_function_takes`.
+
 ### zero: two structures compared, and a case that says what the lexer gave — `5716e22` · 2026-10-08
 
 ```
