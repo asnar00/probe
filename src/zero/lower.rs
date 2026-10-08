@@ -568,12 +568,13 @@ fn __out_block(v: u8[])
     k: index = len v
     q: ptr = addr __out_n
     n: index = load q
-    p: ptr = addr __out
-    r: ptr(u8) = cast p
-    all: u8[] = pack r, 65536, 1
-    d: u8[] = view all, n, k
-    copy d, v
     n2: index = add n, k
+    fits: u1 = cmp.le n2, 65536
+    check fits
+    p: ptr(array(u8, 65536)) = addr __out
+    e: ptr(u8) = index p, n
+    d: u8[] = pack e, k, 1
+    copy d, v
     store n2, q
     ret
 
