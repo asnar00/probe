@@ -4,6 +4,15 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a range used once is never made — `90c014b` · 2026-10-08
+
+```
+on (int n) << doubled sum to (int k)
+    n << [1 through k] * 2 + _
+```
+
+`suite/zero/control/control/control.zero:52-53`. A range reduced was made an array first, a queue and a push an item, then fetched back and summed: 385 as counted for `sum to (10)`. In `src/zero/lower.rs`, `over_range` reads a range under maps of one from the tree and `lower_range` has two new sinks, so the loop that counts also carries the sum, makes the call, or pushes, and what maps is worked out for each value there. `sum to (10)` 385 to 81; `triangle (3)` 911 to 135; `blast off each` 490 to 334 beside its `for`'s 328. Not where a method takes the array: `out$` writes numbers given together with spaces between. `sum to (10000)`, which filled the arena, is a case. Three stores moved; the six rows unmoved. Zero 926/926 natively and on wasm; `cargo test zero` 74.
+
 ### zero: a stream said by a rule in a function is one value carried round its loop — `a63f8cf` · 2026-10-08
 
 ```
