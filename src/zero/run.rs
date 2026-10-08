@@ -2299,6 +2299,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A range, and a map of one over it, is read where it is used
+    /// (fm3 log 187): summed, a function applied to it, or pushed into
+    /// a stream of its own kind of item, it is the loop that counts and
+    /// no array; anything else is the array it was
+    #[test]
+    fn a_range_used_once_is_never_made() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-range-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (3) → 6\n").unwrap();
+        let head = "int kept$\n\non (int d) << twice (int x)\n    d << x * 2\n\non note (int x)\n    kept$ << x\n\non (int n) << how many (int x$)\n    n << count x$\n\non (int n) << held()\n    n << count kept$\n\non (int n) << f (int k)\n    n << [1 through k] + _\n";
+        let g = |body: &str| -> String {
+            std::fs::write(dir.join("h/h.zero"), format!("{}\non (int n) << g (int k)\n{}\n", head, body)).unwrap();
+            let ir = emit(&dir).unwrap_or_else(|e| panic!("{}: {}", body, e));
+            let from = ir.find("fn g(k: int) -> int").unwrap();
+            ir[from..from + ir[from..].find("    ret").unwrap()].to_string()
+        };
+        let made = |ir: &str| ir.contains("__queue_int(") || ir.contains("__regular_int(");
+        // summed: literal bounds, the plain counted loop with the sum beside the counter
+        let lit = g("    n << [1 through 33] + _");
+        assert!(lit.contains("    n: int = loop(_2: int = 1, _1: int = 0)\n        _3: u1 = cmp.le _2, 33\n        if _3\n        else\n            break _1\n        _4: int = add _1, _2\n        _5: int = add _2, 1\n        continue _5, _4\n"), "{}", lit);
+        // ... and bounds worked out, with a map of one, and a function of one item
+        for body in ["    n << [1 through k] + _", "    n << _ + [1 through k] * 2", "    n << (k - [1 through k]) * 2 + _", "    n << twice ([1 to k + 1]) + _"] {
+            let ir = g(body);
+            assert!(!made(&ir) && ir.contains("    n: int = loop(") && !ir.contains(" = sum "), "{}: {}", body, ir);
+        }
+        assert!(g("    n << twice ([1 to k + 1]) + _").contains(": int = twice(_"), "the call is in the loop");
+        // a function applied to it, a statement: the call in the range's loop
+        let each = g("    note ([1 through k])\n    n << kept$");
+        assert!(!made(&each) && each.contains("        note(_"), "{}", each);
+        let both = g("    note (twice ([1 through k]) + 1)\n    n << kept$");
+        assert!(!made(&both) && both.contains(": int = twice(_") && both.contains("        note(_"), "{}", both);
+        // pushed into a stream of its own kind of item
+        let pushed = g("    kept$ << twice ([1 through k])\n    n << kept$");
+        assert!(!made(&pushed) && pushed.contains(": int = twice(_"), "{}", pushed);
+        // each of these is the array it was
+        for (what, body) in [
+            ("given a name", "    int a[] = [1 through k] * 2\n    n << a[] + _"),
+            ("zipped", "    n << [1 through k] * [1 through k] + _"),
+            ("another operator", "    n << [1 through k] * _"),
+            ("pushed where a method takes the array", "    out$ << twice ([1 through k])\n    n << k"),
+        ] {
+            assert!(made(&g(body)), "{}: {}", what, g(body));
+        }
+        // ... and a function that takes a stream is refused it, as it was
+        std::fs::write(dir.join("h/h.zero"), format!("{}\non (int n) << g (int k)\n    n << how many ([1 through k])\n", head)).unwrap();
+        let err = emit(&dir).expect_err("an array handed to a stream's parameter");
+        assert!(err.contains("'how many' takes a stream here"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// What changes at feature scope is a stream (fm3 question 70, log
     /// 145): an assignment to a feature-scope name is refused, with the
     /// declaration to write and the push; so is one to a parameter. A

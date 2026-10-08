@@ -3587,7 +3587,17 @@ impl Fill {
 enum RangeSink<'a> {
     New(Option<&'a str>),
     Into(&'a str, &'a Val),
+    /// each value handed to what uses it, in the range's own loop,
+    /// and nothing made (fm3 log 187)
+    Each(&'a dyn Fn(&mut Lowerer, &Val, &mut Body) -> Result<(), Error>),
+    /// ... and what it gives for each summed, the sum the loop's own
+    /// value and its result; `dst` names it
+    Sum(&'a dyn Fn(&mut Lowerer, &Val, &mut Body) -> Result<Val, Error>, Option<&'a str>),
 }
+
+/// the name a range's value has in the tree that is worked out for
+/// each (fm3 log 187): no name a program writes begins `__`
+const RANGE_ITEM: &str = "__item";
 
 /// what kind of body is being lowered: the scheduler runs after a push
 /// in a plain function only, and a task sleeps after a push into its
@@ -7969,6 +7979,15 @@ impl Lowerer {
                     ExprKind::Phrase(_) | ExprKind::Existing(_) => {}
                     _ => return Err(lex::error(&file, *line, "a statement is a call, an assignment or a declaration")),
                 }
+                // a function applied to a range, and to a map of one
+                // over it (fm3 log 187): the range's loop with the
+                // call in it, and no array made to walk
+                if let Some((range, item)) = self.over_range(expr, b).filter(|(_, item)| !matches!(item.kind, ExprKind::Name(_))) {
+                    let ExprKind::Range { from, to, inclusive } = &range.kind else { unreachable!() };
+                    let each = |l: &mut Lowerer, x: &Val, b: &mut Body| l.range_item(&item, x, b).map(|_| ());
+                    self.lower_range(from, to, *inclusive, b, RangeSink::Each(&each), *line)?;
+                    return Ok(false);
+                }
                 self.lower_expr(expr, None, b, None)?;
                 Ok(false)
             }
@@ -8896,7 +8915,8 @@ impl Lowerer {
                 return Err(lex::error(&file, line, format!("'{}$' holds {} but the range counts over {}", name, s.ty.elem().map(|t| t.ir()).unwrap_or_default(), ty.ir())));
             }
         }
-        // where each value goes: a new ring, stamped once, or the stream
+        // where each value goes: a new ring, stamped once, or the stream;
+        // or to what uses it, nothing made
         let target = |l: &mut Lowerer, count: &str, b: &mut Body| -> (Val, Option<Fill>) {
             match sink {
                 RangeSink::New(dst) => {
@@ -8904,12 +8924,53 @@ impl Lowerer {
                     (c, Some(t))
                 }
                 RangeSink::Into(_, s) => (s.clone(), None),
+                RangeSink::Each(_) | RangeSink::Sum(..) => (Val { text: String::new(), ty: Ty::None, literal: false }, None),
             }
         };
-        let emit = |l: &mut Lowerer, c: &Val, t: &Option<Fill>, x: &str, b: &mut Body| match (t, sink) {
-            (Some(t), _) => b.line(&t.push(&c.text, x)),
-            (None, RangeSink::Into(name, _)) => l.emit_push(name, c, &Val { text: x.to_string(), ty: ty.clone(), literal: false }, b),
-            _ => unreachable!(),
+        // a sum is the loop's own value (fm3 log 187). Its type is
+        // what the first item's working out gives, known only once
+        // the loop's body is lowered, so the loop's lines are written
+        // with three marks where it goes and the marks filled after
+        let summed = matches!(sink, RangeSink::Sum(..));
+        let acc = if summed { b.tmp() } else { String::new() };
+        let (res_mark, hdr_mark, brk_mark) = if summed { ("\u{1}R", "\u{1}H", "\u{1}B") } else { ("", "", "") };
+        let loop_from = b.out.len();
+        let sum_ty: std::cell::RefCell<Option<(Ty, String)>> = std::cell::RefCell::new(None);
+        let emit = |l: &mut Lowerer, c: &Val, t: &Option<Fill>, x: &str, b: &mut Body| -> Result<(), Error> {
+            let item = Val { text: x.to_string(), ty: ty.clone(), literal: false };
+            match (t, sink) {
+                (Some(t), _) => b.line(&t.push(&c.text, x)),
+                (None, RangeSink::Into(name, _)) => l.emit_push(name, c, &item, b),
+                (None, RangeSink::Each(f)) => f(l, &item, b)?,
+                (None, RangeSink::Sum(f, _)) => {
+                    let v = f(l, &item, b)?;
+                    if !matches!(v.ty, Ty::Num(_)) {
+                        return Err(lex::error(&b.file, line, format!("'+' does not reduce a stream of {}", zero_ty(&v.ty))));
+                    }
+                    let next = b.tmp();
+                    b.line(&format!("{}: {} = add {}, {}", next, v.ty.ir(), acc, v.text));
+                    *sum_ty.borrow_mut() = Some((v.ty.clone(), next));
+                }
+                _ => unreachable!(),
+            }
+            Ok(())
+        };
+        // the marks filled: the result named, the sum a parameter from
+        // zero, and each way out giving it
+        let finish = |l: &mut Lowerer, c: Val, b: &mut Body| -> Val {
+            let Some((t, _)) = sum_ty.borrow().clone() else { return c };
+            let RangeSink::Sum(_, dst) = sink else { return c };
+            let _ = l;
+            let out = name_for(dst.filter(|d| b.vars.get(*d).map(|v| &v.ty) == Some(&t)), &t, b);
+            let text = b.out.split_off(loop_from);
+            b.out.push_str(&text.replace(res_mark, &format!("{}: {} = ", out, t.ir())).replace(hdr_mark, &format!(", {}: {} = 0", acc, t.ir())).replace(brk_mark, &format!(" {}", acc)));
+            Val { text: out, ty: t, literal: false }
+        };
+        let carried = |x2: &str| -> String {
+            match sum_ty.borrow().as_ref() {
+                Some((_, next)) => format!("{}, {}", x2, next),
+                None => x2.to_string(),
+            }
         };
         if fv.literal && tv.literal {
             let a: i64 = fv.text.parse().map_err(|_| lex::error(&file, from.line, "a range's bounds are integers"))?;
@@ -8924,21 +8985,21 @@ impl Lowerer {
             let count = (a - z).abs() + inclusive as i64;
             let (c, t) = target(self, &count.to_string(), b);
             let x = b.tmp();
-            b.open_loop("", &format!("{}: {} = {}", x, ty.ir(), a), true);
+            b.open_loop(res_mark, &format!("{}: {} = {}{}", x, ty.ir(), a, hdr_mark), true);
             b.depth += 1;
             let more = b.tmp();
             b.line(&format!("{}: u1 = {} {}, {}", more, cc, x, z));
             b.line(&format!("if {}", more));
             b.line("else");
             b.depth += 1;
-            b.line("break");
+            b.line(&format!("break{}", brk_mark));
             b.depth -= 1;
-            emit(self, &c, &t, &x, b);
+            emit(self, &c, &t, &x, b)?;
             let x2 = b.tmp();
             b.line(&format!("{}: {} = {} {}, 1", x2, ty.ir(), if up { "add" } else { "sub" }, x));
-            b.line(&format!("continue {}", x2));
+            b.line(&format!("continue {}", carried(&x2)));
             b.depth -= 1;
-            return Ok(c);
+            return Ok(finish(self, c, b));
         }
         let fv = b.materialize(&fv);
         let tv = b.materialize(&tv);
@@ -8969,22 +9030,126 @@ impl Lowerer {
         let (c, t) = target(self, &n, b);
         let k = b.tmp();
         let x = b.tmp();
-        b.open_loop("", &format!("{}: index = 0, {}: {} = {}", k, x, ty.ir(), fv.text), false);
+        b.open_loop(res_mark, &format!("{}: index = 0, {}: {} = {}{}", k, x, ty.ir(), fv.text, hdr_mark), false);
         b.depth += 1;
         let done = b.tmp();
         b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
         b.line(&format!("if {}", done));
         b.depth += 1;
-        b.line("break");
+        b.line(&format!("break{}", brk_mark));
         b.depth -= 1;
-        emit(self, &c, &t, &x, b);
+        emit(self, &c, &t, &x, b)?;
         let k2 = b.tmp();
         b.line(&format!("{}: index = add {}, 1", k2, k));
         let x2 = b.tmp();
         b.line(&format!("{}: {} = add {}, {}", x2, ty.ir(), x, step));
-        b.line(&format!("continue {}, {}", k2, x2));
+        b.line(&format!("continue {}, {}", k2, carried(&x2)));
         b.depth -= 1;
-        Ok(c)
+        Ok(finish(self, c, b))
+    }
+
+    /// Is the expression a range under maps of one (fm3 log 187)? A
+    /// range; arithmetic with such a sequence on one side and one
+    /// plain value on the other; a call with one as an argument and
+    /// plain values as the rest (a `-` before a sequence is refused of
+    /// an array, and so is not one of these). Given back: the
+    /// range, and the tree with the range replaced by the hidden name
+    /// its value has in the loop, to be lowered there as one value.
+    /// Read from the tree alone, so anything it cannot tell is no such
+    /// sequence and is the array it was
+    fn over_range(&self, e: &Expr, b: &Body) -> Option<(Expr, Expr)> {
+        let plain = |x: &Expr| self.plain_one(x, b);
+        match &e.kind {
+            ExprKind::Range { .. } => Some((e.clone(), Expr { kind: ExprKind::Name(RANGE_ITEM.into()), line: e.line })),
+            ExprKind::Bin(op, l, r) if matches!(op.as_str(), "+" | "-" | "*" | "/" | "%") => {
+                if plain(r) {
+                    let (range, item) = self.over_range(l, b)?;
+                    return Some((range, Expr { kind: ExprKind::Bin(op.clone(), Box::new(item), r.clone()), line: e.line }));
+                }
+                if plain(l) {
+                    let (range, item) = self.over_range(r, b)?;
+                    return Some((range, Expr { kind: ExprKind::Bin(op.clone(), l.clone(), Box::new(item)), line: e.line }));
+                }
+                None
+            }
+            ExprKind::Phrase(parts) => {
+                // a call: words and bracketed groups, a declared
+                // function's and no type's
+                let Some(Part::Word(first)) = parts.first() else { return None };
+                if self.types.contains_key(first) || b.vars.contains_key(first) || !parts.iter().all(|p| matches!(p, Part::Word(_) | Part::Args(_))) {
+                    return None;
+                }
+                // ... every method of whose name takes single values:
+                // one that takes a stream or an array may be the one
+                // the call means, and no task is mapped
+                let key = parts.iter().filter_map(|p| match p {
+                    Part::Word(w) => Some(w.as_str()),
+                    _ => None,
+                }).collect::<Vec<_>>().join("_");
+                let mut named = self.funcs.iter().filter(|f| f.key == key).peekable();
+                named.peek()?;
+                if named.any(|f| f.task || f.params.iter().any(|(_, t)| matches!(t, Ty::Stream(_)))) {
+                    return None;
+                }
+                let mut found: Option<Expr> = None;
+                let mut out = Vec::new();
+                for p in parts {
+                    let Part::Args(args) = p else {
+                        out.push(p.clone());
+                        continue;
+                    };
+                    let mut group = Vec::new();
+                    for a in args {
+                        if a.name.is_some() {
+                            return None;
+                        }
+                        if plain(&a.value) {
+                            group.push(a.clone());
+                        } else if found.is_none() {
+                            let (range, item) = self.over_range(&a.value, b)?;
+                            found = Some(range);
+                            group.push(Arg { name: None, value: item });
+                        } else {
+                            return None;
+                        }
+                    }
+                    out.push(Part::Args(group));
+                }
+                Some((found?, Expr { kind: ExprKind::Phrase(out), line: e.line }))
+            }
+            _ => None,
+        }
+    }
+
+    /// one plain value, told from the tree: a whole number written
+    /// out, a local or a parameter that is a number, arithmetic of those
+    fn plain_one(&self, e: &Expr, b: &Body) -> bool {
+        match &e.kind {
+            ExprKind::Int(_) => true,
+            ExprKind::Name(n) => b.vars.get(n).is_some_and(|v| v.set && matches!(v.ty, Ty::Num(_))),
+            ExprKind::Phrase(parts) => matches!(parts.as_slice(), [Part::Word(n)] if b.vars.get(n).is_some_and(|v| v.set && matches!(v.ty, Ty::Num(_)))),
+            ExprKind::Bin(op, l, r) => matches!(op.as_str(), "+" | "-" | "*" | "/" | "%") && self.plain_one(l, b) && self.plain_one(r, b),
+            ExprKind::Neg(x) => self.plain_one(x, b),
+            _ => false,
+        }
+    }
+
+    /// The tree `item` lowered for one value of a range, `x`, in the
+    /// range's loop: the hidden name bound to it, and what the tree
+    /// gives, which is one value
+    fn range_item(&mut self, item: &Expr, x: &Val, b: &mut Body) -> Result<Val, Error> {
+        let before = b.vars.insert(RANGE_ITEM.to_string(), Var { ir: x.text.clone(), ty: x.ty.clone(), set: true, loop_depth: b.loops.len(), arr: false });
+        self.one = true;
+        let v = self.lower_expr(item, None, b, None);
+        match before {
+            Some(var) => b.vars.insert(RANGE_ITEM.to_string(), var),
+            None => b.vars.remove(RANGE_ITEM),
+        };
+        let v = v?;
+        if matches!(v.ty, Ty::Stream(_)) {
+            return Err(lex::error(&b.file, item.line, "what is worked out for each value of this range is itself a sequence: not built. Give the range a name first, `int r[] = [a through b]`"));
+        }
+        Ok(v)
     }
 
     /// arithmetic or a comparison on two scalars: a literal takes the
@@ -9526,6 +9691,15 @@ impl Lowerer {
         let file = b.file.clone();
         let acc_left = matches!(l.kind, ExprKind::Acc);
         let seq = if acc_left { r } else { l };
+        // a range, and a map of one over it, summed (fm3 log 187): the
+        // range's loop carrying the sum, and no array
+        if op == "+" {
+            if let Some((range, item)) = self.over_range(seq, b) {
+                let ExprKind::Range { from, to, inclusive } = &range.kind else { unreachable!() };
+                let each = |l: &mut Lowerer, x: &Val, b: &mut Body| l.range_item(&item, x, b);
+                return self.lower_range(from, to, *inclusive, b, RangeSink::Sum(&each, dst), line);
+            }
+        }
         let sv = self.lower_expr(seq, None, b, None)?;
         let Some(e) = sv.ty.elem().cloned() else {
             return Err(lex::error(&file, line, "'_' goes with a stream on the other side"));
@@ -10164,6 +10338,34 @@ impl Lowerer {
         if let ExprKind::Range { from, to, inclusive } = &e.kind {
             self.lower_range(from, to, *inclusive, b, RangeSink::Into(name, s), e.line)?;
             return Ok(());
+        }
+        // ... and a map of one over a range (fm3 log 187): each value
+        // worked out and pushed as an item is, in the range's loop
+        // (only where what it gives is the stream's own kind of
+        // item: anything else may go in through a `<<` method that
+        // takes the array, numbers written to `out$` with spaces
+        // between, and is the array it was, the loop's lines taken
+        // back)
+        if let Some((range, item)) = self.over_range(e, b) {
+            let ExprKind::Range { from, to, inclusive } = &range.kind else { unreachable!() };
+            let line = e.line;
+            let (mark, ntmp, depth) = (b.out.len(), b.ntmp, b.depth);
+            let other = std::cell::Cell::new(false);
+            let each = |l: &mut Lowerer, x: &Val, b: &mut Body| -> Result<(), Error> {
+                let v = l.range_item(&item, x, b)?;
+                if v.ty != *elem {
+                    other.set(true);
+                    return Err(lex::error(&b.file, line, "an array pushed through a method"));
+                }
+                l.push_item(name, s, v, line, b)
+            };
+            let r = self.lower_range(from, to, *inclusive, b, RangeSink::Each(&each), e.line);
+            if !other.get() {
+                return r.map(|_| ());
+            }
+            b.out.truncate(mark);
+            b.ntmp = ntmp;
+            b.depth = depth;
         }
         // a list written out, into a processor's input (fm3 log
         // 124): its items handed over one by one, with no stream

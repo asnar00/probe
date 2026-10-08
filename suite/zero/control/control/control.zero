@@ -49,6 +49,9 @@ on (int n) << collatz steps said (int start)
     int x$ << start << (if (x$ % 2 == 0) then (x$ / 2) else (3 * x$ + 1)) while (x$ != 1)
     n << count x$ - 1
 
+on (int n) << doubled sum to (int k)
+    n << [1 through k] * 2 + _
+
 on (int r) << row (int i)
     r << [0 through i] + _
 
@@ -97,6 +100,15 @@ on steps from (int a) to (int b)
 
 on (int d) << gives twice (int x)
     d << x * 2
+
+int kept$
+
+on (int n) << kept twice to (int k)
+    kept$ << gives twice ([1 through k])
+    n << count kept$ * 100 + kept$
+
+on show twice to (int k)
+    out$ << gives twice ([1 through k])
 
 on (int s) << thirty three counted()
     s << [1 through 33] + _

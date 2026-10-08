@@ -13,15 +13,16 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 - `sign of (x)` is -1, 1 or 0: one push with its condition on it, written as a table, a case a line, and saying all three (fm3 question 88). Until hop twenty-six it was an `if` and an `else if` statement with a push under each and nothing pushed for 0.
 - `magnitude of (x)` keeps a temporary that is one thing or another, `int m = if (x < 0) then (-x) else (x)`, and pushes the result last: pushing the result would end the function, so a value that is tested is a temporary until it is final.
 - `describe (x)` prints one of two strings.
-- `sum to (n)` is a range reduced, `[0 through n] + _`: no loop is written; `sum below (n)` is section 7's `[0 to n] + _`, the exclusive range, 0 to n - 1.
+- `sum to (n)` is a range reduced, `[0 through n] + _`: no loop is written; `sum below (n)` is section 7's `[0 to n] + _`, the exclusive range, 0 to n - 1. **Nothing is made of the range** (fm3 log 187): it is one loop that counts and carries the sum, 81 as counted for `(10)` where the range made an array and then summed was 385, and `sum to (10000)`, which filled the arena, is a case. `doubled sum to (k)` is `[1 through k] * 2 + _`, the doubling worked out for each value in the same loop.
 - `thirty three counted`, `sixty four counted` and `a hundred counted` are the same reduction over a range whose bounds are literals, `[1 through 33] + _`; `thirty three listed`, `sixty four listed` and `a hundred listed` over a list of that many literals; `listed item (i)` and `counted item (i) of (n)` read one item by its index from a list of a hundred and from `[0 through n]`. A list or a range is a new stream with its items present, and these say that it reads back right at any length, in the order written: a store whose streams are all queues gave 560 for `sum to (32)` and 51 for `listed item (0)` until parity hop fifteen (fm3 question 62).
 - `gcd of (a) and (b)` is Euclid's rule said of a stream of a structure, `pair p$ << pair(a, b) << pair(p$.y, p$.x % p$.y) while (p$.y != 0)`, the answer `p$.x`. The two values move together as a loop's `continue (y, r)` moved them, and no `pair` is ever made: the compiler keeps the two fields apart and carries them round the loop. The test is made before the rule is worked out, the condition not reading `_` (fm3 question 111), so the remainder is never taken by a `p$.y` that is 0; worked out first, as every push was until hop thirty-one, it was a remainder by zero on the last pass, which wasm refuses.
 - `power of two above (n)` is `int q$ << 1 << (q$ * 2) while (q$ <= n)`: 20 as counted for `(10)`, what the loop it replaced cost, where the same line was 308 while a stream in a function was a queue of sixty-four.
 - `digits of (n)` and `collatz steps (start)` carry a count beside the value, as a structure: `tally t$ << tally(n, 1) << tally(t$.x / 10, t$.n + 1) while (t$.x >= 10)`, the answer `t$.n`. `collatz steps (27)` is 111 steps.
 - `digits said of (n)` and `collatz steps said (start)` beside them say the same with `count`, `int x$ << n << (x$ / 10) while (x$ >= 10)` and `d << count x$`, which reads better and is dearer: a stream that is counted is still a queue of sixty-four, 283 as counted against 33 for `(12345)` and 613 against 105 for `(6)`, and `collatz steps said (27)` fails the queue's check at its sixty-fifth item (fm3 question 112).
-- `triangle (n)` maps `row (i)`, itself a reduction, over `[1 to n + 1]` and reduces: two loops in the IR, none written.
+- `triangle (n)` maps `row (i)`, itself a reduction, over `[1 to n + 1]` and reduces: two loops in the IR, none written, the call of `row` made for each value in the loop that sums.
 - `two counters` says two such streams in one function, `int a$ << 0 << (a$ + 1) while (a$ < 3)`, and reads both.
-- `ticks` writes a line three times by a push with a count, `out$ << ("tick" << "\n") (3) times`. `blast off` and `halves` run a `for` over a literal range down and exclusive, the second leaving a pass early with `continue`; `blast off each` and `halves each` beside them say the same by a function of one item applied to the range, `count off ([3 through 1])`, its push taking `if` and `else`, and are dearer by half as counted, the range being made an array first; `steps from (a) to (b)` maps `step`, a function with no result, over a range whose bounds are decided at run time.
+- `ticks` writes a line three times by a push with a count, `out$ << ("tick" << "\n") (3) times`. `blast off` and `halves` run a `for` over a literal range down and exclusive, the second leaving a pass early with `continue`; `blast off each` and `halves each` beside them say the same by a function of one item applied to the range, `count off ([3 through 1])`, its push taking `if` and `else`. Applied so, the range is the loop and the call is in it (fm3 log 187): 334 as counted against the `for`'s 328, and 239 against 231, the call and its return, 2 an item, where they were 490 and 420 with the range made an array first. `steps from (a) to (b)` maps `step`, a function with no result, over a range whose bounds are decided at run time.
+- `kept twice to (k)` pushes a function of one item applied to a range into a stream of its own kind of item, `kept$ << gives twice ([1 through k])`: the range's loop, each value worked out and pushed. `show twice to (k)` pushes the same into `out$`, where numbers given together are written with spaces between, `2 4 6`: there the array is made, as it was, because what is pushed is the array.
 
 ## rules
 - A stream said by a rule: its first items, then the rule in brackets and `while`, `until` or `(n) times`. In the rule the stream's own name is its latest item. A `while` whose condition reads `_`, the item about to be pushed, works the item out and then tests it; one whose condition does not is tested first, and the rule is worked out only where it holds.
@@ -31,9 +32,12 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 - A statement after `break` or `continue` is refused: it would never run.
 - `[a through b]` includes b and `[a to b]` stops before it; with a > b the range counts down.
 - A `for` over a literal range shows its count to `probe cost` without a bound.
+- A range that is used once is never made: reduced by `+`, a function applied to it as a statement, or pushed into a stream of its own kind of item, it is the loop that counts, and what maps over it, arithmetic with one value or a function of one item, is worked out for each value there. Given a name, `int x[] = [0 through n]`, zipped with another, or pushed where a method takes the array, it is an array.
 
 ## testing
 >gives twice (4) → 8
+>kept twice to (3) → 306
+>show twice to (3) → "2 4 6"
 >sign of (-5) → -1
 >sign of (7) → 1
 >sign of (0) → 0
@@ -48,6 +52,9 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 >sum to (63) → 2016
 >sum to (99) → 4950
 >sum to (100) → 5050
+>sum to (10000) → 50005000
+>doubled sum to (4) → 20
+>doubled sum to (10000) → 100010000
 >thirty three counted() → 561
 >sixty four counted() → 2080
 >a hundred counted() → 5050
