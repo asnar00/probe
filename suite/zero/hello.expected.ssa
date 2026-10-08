@@ -269,15 +269,12 @@ fn count_down()
         else
             break
         if _2
-            __edge1(_3)
+            __out__int(_3)
+            _5: u8 = const 10
+            __out_ch(_5)
         __step(1000000)
-        _5: int = sub _3, 1
-        continue _5
-    ret
-fn __edge1(__item: int)
-    __out__int(__item)
-    _1: u8 = const 10
-    __out_ch(_1)
+        _6: int = sub _3, 1
+        continue _6
     ret
 
 ; feature bye (layer runtime)

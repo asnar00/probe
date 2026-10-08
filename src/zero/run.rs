@@ -1167,7 +1167,8 @@ mod tests {
         // the wiring line and the standing filter: the edge's function
         // of one item, the filter's push under its condition, the
         // source's own name in the condition the item
-        let ir = with("b$ << a$ forever\nb$ << (i$ << 0) if (i$ > 2) forever\n", "").unwrap();
+        // (an edge nothing calls is not written, fm3 log 195: `g` pushes)
+        let ir = with("b$ << a$ forever\nb$ << (i$ << 0) if (i$ > 2) forever\n", "\non g()\n    i$ << 1\n").unwrap();
         assert!(ir.contains("fn __edge3(__item: int)\n    _this: ptr = context()\n    _1: u1 = cmp.gt __item, 2\n    if _1\n        _2: __ctx = load _this\n        _3: int$ = get _2, b\n        push_queue_open(_3, __item)\n"), "{}", ir);
         let once = "has a stream on its right and no `forever`. If it is wiring, everything that arrives in 'a$' going on into 'b$', write `b$ << a$ forever`. If it is one push when the store starts, of what 'a$' holds then, that is what the line says (fm3 question 79) and it is not built: push it from a function";
         for (lines, body, said) in [
@@ -2852,7 +2853,9 @@ mod tests {
         feature("shown", "base", 1, "out$ << (n$ << \"\\n\") forever\nout$ << (beat$ << \"\\n\") forever\n");
         // wired by a feature that is in the program: an edge each
         let ir = lowered("# p\n").unwrap();
-        assert!(ir.contains("fn __edge1(__item: int)") && ir.contains("fn __edge2(__item: int)"), "{}", ir);
+        // (the first has its lines in the loop over the range that is
+        // pushed, and no function, fm3 log 195; the second is called)
+        assert!(!ir.contains("fn __edge1(") && ir.contains("fn __edge2(__item: int)"), "{}", ir);
         // wired by a feature the product leaves out: no edge, no queue,
         // and the rated stream's step still passes
         let ir = lowered("# p\n\nshown: static off\n").unwrap();
@@ -3032,12 +3035,14 @@ mod tests {
         // the rated stream no word reads has no storage (fm3 log 92): the
         // push calls its edge, and then a step passes, half a second at 2 hz
         // ... one word of the platform's (fm3 log 194)
-        assert!(fast.contains("        if _2\n            __edge1(_3)\n        __step(500000)\n") && !fast.contains("    __wait("), "{}", fast);
+        // and the edge's own lines stand in the loop over the range
+        // (fm3 log 195)
+        assert!(fast.contains("        if _2\n            __out__int(_3)\n            _5: u8 = const 10\n            __out_ch(_5)\n        __step(500000)\n") && !fast.contains("    __wait("), "{}", fast);
         // ... and the statement's first item is on the stream's beat
         // with nothing rounded (fm3 log 98, 99): `run` is only ever
         // called by a case, at 0 s
         assert!(fast.contains("fn run()\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: u1 = get _1, __enabled_h\n") && !fast.contains(", 499999\n"), "{}", fast);
-        assert!(fast.contains("fn __edge1(__item: int)\n") && !fast.contains("__run") && !fast.contains("__node") && !fast.contains("\n    i: int$\n"), "{}", fast);
+        assert!(!fast.contains("fn __edge1(") && !fast.contains("__run") && !fast.contains("__node") && !fast.contains("\n    i: int$\n"), "{}", fast);
         assert_eq!(with("# p\n").unwrap(), fast);
         let err = with("# p\n\nclock: sidereal\n").expect_err("accepted a sidereal clock");
         assert!(err.contains("the product's clock is real or virtual, not 'sidereal'"), "{}", err);
