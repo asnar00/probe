@@ -4,6 +4,17 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `[==]` and `[!=]`, two arrays compared as wholes — `642cd1d` · 2026-10-08
+
+```
+on (bool same) << the same()
+    int a[] = [1, 2, 3]
+    int b[] = [1, 2, 3]
+    same << a[] [==] b[]
+```
+
+`suite/zero/arrays/arrays/arrays.zero:75-78`. fm3's question 77: an operation on each item is written plainly, one on the whole array in square brackets. `[==]` gives one bool, the same length and the same items in order. `src/zero/syntax.rs` reads it as three tokens, `[`, an operator, `]`, which no list begins with. `src/zero/lower.rs` writes a loop that leaves at the first pair that differs, 20 an item as counted. A stream or one value on either side is refused, and so are `[<]`, `[+]` and the rest, as not ruled. `if (a[] == b[])` is refused showing the line with `[==]`. Eight cases, on all five paths; no other store's IR moved. The suite 849/849 natively, `cargo test zero` 61.
+
 ### zero: in a push that happens once, a stream's name is its value now — `023a1c5` · 2026-10-08
 
 ```
