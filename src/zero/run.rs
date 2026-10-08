@@ -780,7 +780,7 @@ mod tests {
         // through the context (fm3 log 110, 138): `more` is under `base`,
         // so it is `__on_more`, which the setters of `more` and of
         // `base` work out, and no gate has an `and` in it
-        assert!(l.ir.contains("fn greet__before_most() -> int\n    _this: ptr = context()\n    _1: __ctx = load _this\n    on: u1 = get _1, __on_more\n    _2: int = if on\n") && !l.ir.contains("__get___enabled"), "{}", l.ir);
+        assert!(l.ir.contains("fn greet__before_most() -> int\n    _this: ptr = context()\n    _1: __ctx = load _this\n    on: u1 = get _1, __on_more\n    if on\n    else\n        _2: int = greet__before_more()\n        ret _2\n    _3: int = greet__before_more()\n") && !l.ir.contains("__get___enabled"), "{}", l.ir);
         assert!(l.ir.contains("fn __set___enabled_more(v: u1)\n    p: ptr = context()\n    c: __ctx = load p\n    c0: __ctx = set c, __enabled_more, v\n    up: u1 = get c, __enabled_base\n    on: u1 = and v, up\n    c1: __ctx = set c0, __on_more, on\n    store c1, p\n    ret\n"), "{}", l.ir);
         assert!(l.ir.contains("fn __set___enabled_base(v: u1)\n    p: ptr = context()\n    c: __ctx = load p\n    c0: __ctx = set c, __enabled_base, v\n    own1: u1 = get c, __enabled_more\n    on1: u1 = and own1, v\n    c1: __ctx = set c0, __on_more, on1\n"), "{}", l.ir);
         // three deep: the innermost's gate is still one field, and the
@@ -2809,7 +2809,7 @@ mod tests {
         };
         // static on: no field, no gate, no setter; the chain called by name
         let ir = with("# p\n\nbase: static on\n", ">value() → 1\n").unwrap();
-        assert!(!ir.contains("__enabled_base") && !ir.contains("fn __on_base") && ir.contains("fn value__gone() -> int\n    _1: int = value__base()\n"), "{}", ir);
+        assert!(!ir.contains("__enabled_base") && !ir.contains("fn __on_base") && ir.contains("fn value() -> int\n    _this: ptr = context()\n    _1: __ctx = load _this\n    on: u1 = get _1, __enabled_gone\n    if on\n    else\n        _2: int = value__base()\n        ret _2\n    _3: int = value__base()\n") && !ir.contains("fn value__gone("), "{}", ir);
         let err = with("# p\n\nbase: static on\n", ">value() → 1\n>value() with base off → 1\n").expect_err("switched a static feature");
         assert!(err.contains("`with base off`: base is static on in the product and cannot be switched"), "{}", err);
         // static off: not in the program, its subtree with it

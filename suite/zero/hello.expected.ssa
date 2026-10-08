@@ -243,7 +243,13 @@ fn __out__int(x: int)
     ret
 
 ; feature hello (layer runtime)
-fn run__hello()
+fn run__before_countdown()
+    _this: ptr = context()
+    _1: __ctx = load _this
+    on: u1 = get _1, __enabled_hello
+    if on
+    else
+        ret
     hello()
     ret
 fn hello()
@@ -256,7 +262,14 @@ fn hello()
     ret
 
 ; feature countdown (layer runtime)
-fn run__countdown()
+fn run__before_bye()
+    _this: ptr = context()
+    _1: __ctx = load _this
+    on: u1 = get _1, __on_countdown
+    if on
+    else
+        run__before_countdown()
+        ret
     count_down()
     run__before_countdown()
     ret
@@ -279,7 +292,14 @@ fn count_down()
     ret
 
 ; feature bye (layer runtime)
-fn run__bye()
+fn run()
+    _this: ptr = context()
+    _1: __ctx = load _this
+    on: u1 = get _1, __on_bye
+    if on
+    else
+        run__before_bye()
+        ret
     run__before_bye()
     goodbye()
     ret
@@ -290,33 +310,6 @@ fn goodbye()
     __out_block(_3)
     _4: u8 = const 10
     __out_ch(_4)
-    ret
-
-; run: the chain bye, countdown, hello, newest outermost; a link whose feature is off falls through
-fn run()
-    _this: ptr = context()
-    _1: __ctx = load _this
-    on: u1 = get _1, __on_bye
-    if on
-        run__bye()
-    else
-        run__before_bye()
-    ret
-fn run__before_bye()
-    _this: ptr = context()
-    _1: __ctx = load _this
-    on: u1 = get _1, __on_countdown
-    if on
-        run__countdown()
-    else
-        run__before_countdown()
-    ret
-fn run__before_countdown()
-    _this: ptr = context()
-    _1: __ctx = load _this
-    on: u1 = get _1, __enabled_hello
-    if on
-        run__hello()
     ret
 
 ; a stream's storage, carved from the arena: cap items (64 unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start

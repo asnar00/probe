@@ -2197,7 +2197,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -3564,6 +3564,9 @@ struct Lowerer {
     /// value into a stream: an edge out of a stream with no storage has
     /// its lines written there, not called (fm3 log 195)
     edge_here: bool,
+    /// the links whose gate stands at the top of the body they gate,
+    /// one function where there were two (fm3 log 197)
+    folded: Names,
     inlining: Vec<String>,
     /// the file each processor read the new way is written in, for
     /// its lines lowered where a function hands it an array (fm3 log 189)
@@ -6526,13 +6529,19 @@ impl Lowerer {
                 // every feature static: the bodies call each other by name
                 continue;
             }
-            writeln!(self.out, "\n; {}: the chain {}, newest outermost; a link whose feature is off falls through", info.ir, info.chain.iter().rev().cloned().collect::<Vec<_>>().join(", ")).unwrap();
+            // said before the first link written, and not at all where
+            // every gate stands at the top of its body (fm3 log 197)
+            let mut said = false;
             for i in (0..n).rev() {
                 if self.statics.contains(&info.chain[i]) {
                     // a static feature's body stands where its link would (log 71)
                     continue;
                 }
                 let name = link_name(&info, i, &self.statics);
+                if self.folded.contains(&name) {
+                    // the gate stands at the top of the body (fm3 log 197)
+                    continue;
+                }
                 let body = format!("{}({})", body_name(&info, i, &self.statics), args.join(", "));
                 let under = if i == 0 { None } else { Some(format!("{}({})", link_name(&info, i - 1, &self.statics), args.join(", "))) };
                 let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
@@ -6578,6 +6587,9 @@ impl Lowerer {
                     }
                     b.depth -= 1;
                     b.line(&format!("ret {}", outs.join(", ")));
+                }
+                if !std::mem::replace(&mut said, true) {
+                    writeln!(self.out, "\n; {}: the chain {}, newest outermost; a link whose feature is off falls through", info.ir, info.chain.iter().rev().cloned().collect::<Vec<_>>().join(", ")).unwrap();
                 }
                 writeln!(self.out, "fn {}({}){}", name, params.join(", "), sig_ret).unwrap();
                 self.out.push_str(&b.out);
@@ -6957,9 +6969,13 @@ impl Lowerer {
         let results: Vec<(String, Ty)> = if info.task { info.params.iter().filter(|(_, t)| matches!(t, Ty::Stream(_))).cloned().collect() } else { info.results.clone() };
         let kind = if info.task { BodyKind::Task { out: info.results.first().map(|(n, _)| n.clone()), hz: "__hz".into() } } else { BodyKind::Fn };
         // in a chain the body is `key__feature`, and `existing` is the link below
+        // ... and where the feature is dynamic the body is written under
+        // its link's name with the gate first (fm3 log 197): a link
+        // calls its body from one place, so the two are one function
+        let folds = info.chain.len() > 1 && !self.statics.contains(feature) && !info.task && info.platform.is_none();
         let (name, below) = if info.chain.len() > 1 {
             let i = info.chain.iter().position(|c| c == feature).unwrap();
-            (body_name(&info, i, &self.statics), if i == 0 { None } else { Some(link_name(&info, i - 1, &self.statics)) })
+            (if folds { link_name(&info, i, &self.statics) } else { body_name(&info, i, &self.statics) }, if i == 0 { None } else { Some(link_name(&info, i - 1, &self.statics)) })
         } else {
             (info.plain.clone(), None)
         };
@@ -7013,6 +7029,32 @@ impl Lowerer {
         writeln!(self.out, "{}", sig).unwrap();
         if let Some(kinds) = &info.platform {
             return self.lower_platform(f, &info, kinds, &sig_params, &results, &mut b);
+        }
+        if folds {
+            // off, the link below is called, or at the bottom the
+            // results' zeros given, and the function left
+            self.folded.insert(name.clone());
+            let args: Vec<String> = info.params.iter().map(|(p, _)| p.clone()).collect();
+            let on = self.gate(feature, Some("on"), &mut b);
+            b.line(&format!("if {}", on));
+            b.line("else");
+            b.depth += 1;
+            let mut vs = Vec::new();
+            match &b.below.clone() {
+                Some(u) if results.is_empty() => b.line(&format!("{}({})", u, args.join(", "))),
+                Some(u) => {
+                    vs = results.iter().map(|_| b.tmp()).collect();
+                    let ds: Vec<String> = vs.iter().zip(&results).map(|(v, (_, t))| format!("{}: {}", v, t.ir())).collect();
+                    b.line(&format!("{} = {}({})", ds.join(", "), u, args.join(", ")));
+                }
+                None => {
+                    for (_, t) in &results {
+                        vs.push(self.zero_val(t, &mut b).text);
+                    }
+                }
+            }
+            b.line(format!("ret {}", vs.join(", ")).trim_end());
+            b.depth -= 1;
         }
         self.tail = true;
         let terminated = self.lower_block(&f.body, &mut b);
