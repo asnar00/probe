@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream that keeps nothing does not fill — `0d2ed15` · 2026-10-08
+
+```
+on (int n) << climbed to (int k)
+    up$ << 1 << (up$ + 1) while (_ <= k)
+    n << up$
+```
+
+`suite/zero/words/words/words.zero:201-203`; `up$` is wired to the output. Read by its name and wired on, a stream was a queue of sixty-four that nothing gave back, so `climbed to (100)` failed a check at its sixty-fifth item; so did a stream a standing line's condition reads. In `src/zero/lower.rs`, `cell_candidates` no longer strikes what an edge mentions, so such a stream is a cell; and one something is wired to and that is otherwise only read by name keeps one word, its latest, stored in `emit_push` before what is wired is called, with no queue (`nowed`). Of twelve shapes tried, seven now pass at a hundred items; four are left, each said in fm3's log 177. Six cases in `words`. `brackets`, `timed` and `words` moved, every moved case cheaper as counted, `tallied` 512 to 184. The six rows unmoved. Zero 879/879 natively and on wasm; `cargo test zero` 70.
+
 ### zero: a published feature may be refactored, and must pass its own cases — `0bc8ef8` · 2026-10-08
 
 ```
