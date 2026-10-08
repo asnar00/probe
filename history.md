@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a link's gate stands at the top of the body it gates — `919e6b3` · 2026-10-08
+
+```
+on run()
+    existing run()
+    goodbye()
+```
+
+`suite/zero/hello/bye/bye.zero:1-3`. With `bye` dynamic this was two functions, a link `run` that read the gate and called `run__bye` or the link below, and `run__bye`. `lower_fn_body` in `src/zero/lower.rs` now writes the body under the link's name with the gate first: off, the link below is called and the function left; on, the body runs. hello's chain is three functions where it was six. hello's `run` 994 to 988 as counted, as expected; static unmoved. Seven stores moved, every case the same or less. Zero 929/929 natively and on wasm; `cargo test zero` 76.
+
 ### zero: a text written to the device is one copy to where its count says — `9df76ef` · 2026-10-08
 
 ```
