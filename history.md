@@ -4,6 +4,15 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a step of a rate is one word of the platform's — `d80b815` · 2026-10-08
+
+```
+int i$ at (1 hz)
+out$ << (i$ << "\n") forever
+```
+
+`suite/zero/hello/countdown/countdown.zero:1-2`. After each item pushed into `i$` a second passes. The pushing function loaded the clock, added the period and called `__wait`, which loaded it again and took the later of the two. A step is now `__step(1000000)`, a word of the platform's beside `__wait` in `src/zero/lower.rs`: on the virtual clock the clock moved on and the place in the output marked, on the real clock the time waited for. `__wait` stays for an alignment, which may find its time already past. hello's `run` 1 055 to 1 034 as counted and static's 1 028 to 1 007, twenty-one each as expected; on the tool static's 1 167 is under its oracle's 1 177. Eight stores with a rate moved, every case the same or less. Zero 929/929 natively; `cargo test zero` 76.
+
 ### zero: the clock's address is formed once a loop — `564f23b` · 2026-10-08
 
 ```
