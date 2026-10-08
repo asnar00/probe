@@ -55,6 +55,17 @@ int fed$
 int two$ = twofold (fed$)
 int twos$
 twos$ << twos$ + two$ forever
+int lead$
+int beside$
+out$ << (lead$ << " " << beside$ << "\n") forever
+int begun$ << 5
+int since$
+since$ << since$ + begun$ forever
+int shut$
+int ran$
+ran$ << ran$ + shut$ forever
+int raw$
+int dbl$ = twofold (raw$)
 
 on (int d$) << twofold (int p$)
     d$ << p$ * 2
@@ -219,3 +230,36 @@ on (int n, int m) << fed to (int k)
     fed$ << 1 << (fed$ + 1) while (_ <= k)
     n << fed$
     m << twos$
+
+on labelled()
+    lead$ << 1
+    beside$ << 3 << 4
+    lead$ << 2
+    beside$ << 5
+    lead$ << 3
+
+on (int n) << labelled past (int k)
+    beside$ << 3 (k) times
+    lead$ << 1
+    n << beside$
+
+on (int a, int b) << begun at five (int k)
+    begun$ << begun$ + 1 (k) times
+    a << begun$
+    b << since$
+
+on (int a, bool b) << shut after (int k)
+    shut$ << 1 (k) times
+    end shut$
+    end shut$
+    a << ran$
+    b << ended shut$
+
+on shut and pushed()
+    shut$ << 1
+    end shut$
+    shut$ << 2
+
+on (int n) << twofold to (int k)
+    raw$ << 1 << (raw$ + 1) while (_ <= k)
+    n << dbl$

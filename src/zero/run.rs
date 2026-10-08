@@ -1983,14 +1983,41 @@ mod tests {
         let bare = with("int quiet$\nout$ << (quiet$ << \"\\n\") forever\n\non g()\n    quiet$ << 1").unwrap();
         assert!(bare.contains(";   quiet: no storage, no word reading it: a push into it calls its edges") && !bare.contains("    quiet: int"), "{}", bare);
         // one more word and it is read in order: a queue, as it was
-        for more in ["\non (int n) << g()\n    n << count up$", "\non g()\n    end up$", "\non (int n) << g()\n    n << peek up$ at (0)"] {
+        for more in ["\non (int n) << g()\n    n << count up$", "\non (int n) << g()\n    n << peek up$ at (0)"] {
             let stored = with(more).unwrap();
             assert!(stored.contains("    up: int$\n") && stored.contains("__queue_int"), "{}", stored);
         }
-        // given a first item where it is declared it is stored too
-        std::fs::write(dir.join("h/h.zero"), head.replacen("int up$\n", "int up$ << 0\n", 1)).unwrap();
+        // ended, it keeps its one word and a bit beside it (fm3 log
+        // 180): `end` reads the bit and sets it, a push asks it, and
+        // `ended` is the bit read
+        let ended = with("\non (bool b) << g()\n    end up$\n    b << ended up$").unwrap();
+        assert!(ended.contains("    up: int\n") && ended.contains("    __zend_up: u1\n") && !ended.contains("__queue_int") && !ended.contains("= ended("), "{}", ended);
+        assert!(ended.contains("fn g() -> u1\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: u1 = get _1, __zend_up\n    if _2\n    else\n        _3: u1 = const 1\n"), "{}", ended);
+        assert!(ended.contains("    _2: u1 = get _1, __zend_up\n    _3: u1 = xor _2, 1\n    check _3\n"), "{}", ended);
+        // given a first item where it is declared it keeps one word
+        // too: zero at the reset, and the item stored and handed on
+        // where the store starts, after the case's context is set
+        std::fs::write(dir.join("h/h.zero"), head.replacen("int up$\n", "int up$ << 7\n", 1)).unwrap();
         let first = emit(&dir).unwrap();
-        assert!(first.contains("    up: int$\n"), "{}", first);
+        assert!(first.contains("    up: int\n") && !first.contains("__queue_int"), "{}", first);
+        assert!(first.contains("fn __zero_start()\n    __first1()\n    ret\n"), "{}", first);
+        assert!(first.contains("fn __first1()\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: u1 = get _1, __enabled_h\n    _5: int = const 7\n    _6: __ctx = load _this\n    _7: __ctx = set _6, up, _5\n    store _7, _this\n    if _2\n        __edge1(_5)\n    if _2\n        __edge2(_5)\n    ret\n"), "{}", first);
+        // a first item and a rate both: each first item has a time,
+        // and it is the queue it was
+        std::fs::write(dir.join("h/h.zero"), head.replacen("int up$\n", "int up$ at (1 hz) << 7\n", 1)).unwrap();
+        let both = emit(&dir).unwrap();
+        assert!(both.contains("    up: int$\n"), "{}", both);
+        // a later item of a line that stands that is another stream's
+        // name is its value now (fm3 question 106): a cell's field
+        // read, and no queue
+        std::fs::write(dir.join("h/h.zero"), "int x$\nint y$\n\nout$ << (x$ << \" \" << y$ << \"\\n\") forever\n\non (int n) << f()\n    y$ << 3 << 4\n    x$ << 1\n    n << 3\n").unwrap();
+        let later = emit(&dir).unwrap();
+        assert!(later.contains("    y: int\n") && !later.contains("__queue_int") && !later.contains("__out__ints(_"), "{}", later);
+        // the output of a stream processor, read only by its name:
+        // a cell its function stores, with no end to tell
+        std::fs::write(dir.join("h/h.zero"), "int x$\nint d$ = doubled (x$)\n\non (int d$) << doubled (int x$)\n    d$ << x$ * 2\n\non (int n) << f()\n    x$ << 1 << 2\n    n << d$ - 1\n").unwrap();
+        let output = emit(&dir).unwrap();
+        assert!(output.contains("    d: int\n") && !output.contains("__queue_int") && !output.contains("end("), "{}", output);
         // with a rate it keeps its latest and its step
         std::fs::write(dir.join("h/h.zero"), head.replacen("int up$\n", "int up$ at (1 hz)\n", 1)).unwrap();
         let rated = emit(&dir).unwrap();
