@@ -4,6 +4,21 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: an edge's lines stand in the loop that pushes a range into its stream — `9a8dc11` · 2026-10-08
+
+```
+out$ << (i$ << "\n") forever
+
+on run()
+    count down()
+    existing run()
+
+on count down()
+    i$ << [10 through 1]
+```
+
+`suite/zero/hello/countdown/countdown.zero:2-9`. `i$` has no storage, so the push called the edge, a function of one item, ten times. In the loop the front end writes over a range pushed into such a stream, `emit_push` in `src/zero/lower.rs` now lowers the edge's own lines where its call stood, by `inline_fn`, under the gate where it was; a single item pushed is still a call, and an edge nothing calls is not written. hello's `run` 1 034 to 1 014 as counted and static's 1 007 to 987, twenty each as expected; on the tool hello's 1 174 is now under its oracle's 1 190. Five stores moved, every case the same or less. Zero 929/929 natively and on wasm; `cargo test zero` 76.
+
 ### zero: a step of a rate is one word of the platform's — `d80b815` · 2026-10-08
 
 ```
