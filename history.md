@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream said by a rule in a function is one value carried round its loop — `a63f8cf` · 2026-10-08
+
+```
+on (int g) << gcd of (int a) and (int b)
+    pair p$ << pair(a, b) << pair(p$.y, p$.x % p$.y) while (p$.y != 0)
+    g << p$.x
+```
+
+`suite/zero/control/control/control.zero:28-30`. A loop said as a stream cost 9 to 20 times the loop: the stream was a queue of sixty-four. In `src/zero/lower.rs`, `push_lcell` keeps a stream a function reads only for its latest item as one value, a parameter of the loop its push lowers to; a structure's fields are carried apart and the structure never made; which locals qualify is settled by lowering, `count` or `frame` making one a queue again. A `while` that does not read `_` is tested before its item is worked out, so this remainder is never by zero. `power of two above (10)` 308 to 20 as counted, the loop's 20; `gcd` 16 for 16. `control`'s five loops and `functions`' one are streams. The meter 90 to 83. Eight stores moved; the six rows unmoved. Zero 921/921 natively and on wasm; `cargo test zero` 73.
+
 ### zero: the meter's four smallest rows, a line at a time — `15dddf0` · 2026-10-08
 
 ```
