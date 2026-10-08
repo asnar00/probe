@@ -70,6 +70,39 @@ A wiring, `int d$ = doubled(x$)`, is a standing connection as it always was. Wha
 >an output ends() → 0, 1
 >tens to (100) → 1009010
 >tens to (25) → 201010
+>one at a time whole() → 1
+>as a block whole() → 1
+>said whole() → 1
+>walked whole() → 1
+>from a literal whole() → 1
+>from a range whole() → 1
+>through two whole() → 1
+>wired twice whole() → 1, 1
+>over text whole() → 1
+>typed whole() with in "a1" → 1
+>also read whole() → 1
+>many whole (60) → 1
+>many whole (3) → 1
+>a line said whole() → 1
+>a running sum whole() → 1, 1
+>summed from a literal whole() → 1
+>a difference whole() → 1
+>two back whole() → 1
+>lines shuffled whole() → 1
+>kept through a block whole() → 1
+>two conditions whole() → 1
+>filtered whole() → 1
+>changed whole() → 1
+>every tenth whole (100) → 1
+>every tenth whole (60) → 1
+>pushed above two whole (5) → 1
+>pushed above two whole (1) → 0
+>no stray zero whole() → 1
+>closed whole() → 1
+>a chain ends whole() → 1
+>how many came whole() → 1
+>a stored input ends whole() → 1
+>tens whole() → 1
 
 ## hostile
 A processor's body that pushes into anything but its own output, declares a name without a `$`, puts an `if` round a line or a `while` on a push is refused, with what to write. `int d$ = doubled(i$)` inside a function is refused: a stream processor is wired at feature scope, and running one inside a function is not built. `y$` has no storage, so nothing limits what is pushed into it; `q$`, which `doubled` fills from it, is a queue read only after the statement, so `many (80)` fails the queue's check at the sixty-fifth item as a push of eighty into any stored stream does.

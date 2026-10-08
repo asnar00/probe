@@ -2539,9 +2539,66 @@ fn settle_pushes(mut ir: String, pushes: &std::collections::BTreeMap<String, Ty>
 /// asked about what lies between the two reads, there being no store to
 /// such a field in any function; `unread`, a `platform` body of the
 /// store's own, which may call a setter, reuses nothing
+///
+/// A field some function writes is reused too, in a function from
+/// which no function that writes it can be reached (fm3 log 181):
+/// this function itself, or any it calls, through any depth, by the
+/// calls written in the text. Nothing else runs between two of its
+/// lines: the front end emits no fibre and no call through a pointer,
+/// its scheduler calls its nodes by name, and a library function
+/// names no function of the store. A function that packs a whole
+/// context is taken to write every field
 fn settle_context(ir: &str, written: &std::collections::HashSet<String>, unread: bool) -> String {
     let names = words;
     let lines: Vec<&str> = ir.lines().collect();
+    // each function's own writes of the context's fields, whether it
+    // packs one whole, and the functions of the text it calls
+    let fn_name = |l: &str| l.strip_prefix("fn ").and_then(|r| r.split('(').next()).map(str::to_string);
+    let defined: std::collections::HashSet<String> = lines.iter().filter_map(|l| fn_name(l)).collect();
+    let mut direct: HashMap<String, (std::collections::HashSet<String>, bool, std::collections::HashSet<String>)> = HashMap::new();
+    let mut cur: Option<String> = None;
+    for l in &lines {
+        if let Some(n) = fn_name(l) {
+            direct.entry(n.clone()).or_default();
+            cur = Some(n);
+            continue;
+        }
+        if !l.starts_with(' ') {
+            cur = None;
+            continue;
+        }
+        let Some(me) = &cur else { continue };
+        let entry = direct.get_mut(me).unwrap();
+        let t = l.trim_start();
+        if let Some((_, rhs)) = t.split_once(": __ctx = set ") {
+            if let Some(f) = rhs.split(", ").nth(1) {
+                entry.0.insert(f.to_string());
+            }
+        }
+        entry.1 |= t.contains(": __ctx = pack ");
+        names(t, &mut |w| {
+            if w != me && defined.contains(w) {
+                entry.2.insert(w.to_string());
+            }
+            None
+        });
+    }
+    // does anything reachable from `from` write `field`?
+    let writes = |from: &str, field: &str| -> bool {
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut work = vec![from];
+        while let Some(f) = work.pop() {
+            if !seen.insert(f) {
+                continue;
+            }
+            let Some((fields, all, calls)) = direct.get(f) else { return true };
+            if *all || fields.contains(field) {
+                return true;
+            }
+            work.extend(calls.iter().map(String::as_str));
+        }
+        false
+    };
     let mut out = String::new();
     let mut i = 0;
     while i < lines.len() {
@@ -2551,6 +2608,7 @@ fn settle_context(ir: &str, written: &std::collections::HashSet<String>, unread:
             i += 1;
             continue;
         }
+        let me = fn_name(lines[i]).unwrap_or_default();
         let start = i + 1;
         let mut end = start;
         while end < lines.len() && lines[end].starts_with(' ') {
@@ -2595,7 +2653,7 @@ fn settle_context(ir: &str, written: &std::collections::HashSet<String>, unread:
                 loads.contains_key(c).then(|| (name.to_string(), f.to_string()))
             });
             if let Some((name, f)) = read {
-                if !unread && !written.contains(&f) {
+                if !unread && (!written.contains(&f) || !writes(&me, &f)) {
                     let temporary = name.len() > 1 && name.starts_with('_') && name[1..].bytes().all(|c| c.is_ascii_digit());
                     match held.iter().find(|(_, g, _)| *g == f) {
                         Some((_, _, earlier)) if temporary => {
@@ -8413,8 +8471,9 @@ impl Lowerer {
         let Some(e) = e else {
             return Err(lex::error(&file, line, "an empty list needs a type: declare the stream, `int i$`"));
         };
-        if !matches!(e, Ty::Num(_) | Ty::Enum(_)) {
-            return Err(lex::error(&file, line, format!("a list of {}: only numbers and enumerations in this milestone", zero_ty(&e))));
+        // (structures of one type, each made by its construction, fm3 log 181)
+        if !matches!(e, Ty::Num(_) | Ty::Enum(_) | Ty::Struct(_)) {
+            return Err(lex::error(&file, line, format!("a list of {}: a list written out holds numbers, enumerations or structures", zero_ty(&e))));
         }
         for (it, v) in items.iter().zip(&vals) {
             if !(v.ty == e || (v.literal && fits_literal(v, &e))) {
@@ -8636,6 +8695,50 @@ impl Lowerer {
         self.lift(vec![lv, rv], lifted, None, b, dst, line, &f)
     }
 
+    /// Two structures of one type, compared (fm3 question 108, log
+    /// 181): every field the same, a field at a time in the order
+    /// declared, a field that is a structure the same way inside, the
+    /// answers joined by `and` with no branch. A field that is a string
+    /// or an array refuses the comparison, naming it. Gives the `u1`
+    /// that says they are the same
+    #[allow(clippy::too_many_arguments)]
+    fn struct_same(&mut self, op: &str, ty: &Ty, x: &str, y: &str, b: &mut Body, file: &str, line: usize) -> Result<String, Error> {
+        let Ty::Struct(name) = ty else { unreachable!() };
+        let Some(TypeInfo::Struct(fields)) = self.types.get(name).cloned() else { unreachable!() };
+        let mut all: Option<String> = None;
+        for (f, fty, _) in &fields {
+            if !matches!(fty, Ty::Bool | Ty::Num(_) | Ty::Char | Ty::Enum(_) | Ty::Struct(_)) {
+                let what = if *fty == Ty::string() { "a string".to_string() } else { format!("an array of {}", fty.elem().map(zero_ty).unwrap_or_default()) };
+                let plain = op.trim_matches(['[', ']']);
+                return Err(lex::error(file, line, format!("'{}' on two `{}`: its field '{}' is {}, and the comparison is every field the same, a field at a time (fm3 question 108): a string or an array in a structure is not compared. Compare the fields that can be, or declare the operator, `on (bool b) << ({} x) {} ({} y)`", op, name, f, what, name, plain, name)));
+            }
+            let (p, q) = (b.tmp(), b.tmp());
+            b.line(&format!("{}: {} = get {}, {}", p, fty.ir(), x, f));
+            b.line(&format!("{}: {} = get {}, {}", q, fty.ir(), y, f));
+            let same = match fty {
+                Ty::Struct(_) => self.struct_same(op, fty, &p, &q, b, file, line)?,
+                _ => {
+                    let t = b.tmp();
+                    b.line(&format!("{}: u1 = cmp.eq {}, {}", t, p, q));
+                    t
+                }
+            };
+            all = Some(match all {
+                None => same,
+                Some(so_far) => {
+                    let t = b.tmp();
+                    b.line(&format!("{}: u1 = and {}, {}", t, so_far, same));
+                    t
+                }
+            });
+        }
+        Ok(all.unwrap_or_else(|| {
+            let t = b.tmp();
+            b.line(&format!("{}: u1 = const 1", t));
+            t
+        }))
+    }
+
     /// `a[] [==] b[]`, `a[] [!=] b[]` (fm3 question 77, log 164): are
     /// the two arrays the same, one bool. The same length, and the
     /// same items in the same order: a loop over the items that leaves
@@ -8657,8 +8760,11 @@ impl Lowerer {
         if lv.ty != rv.ty {
             return Err(lex::error(&file, line, format!("`{}` compares two arrays of one type of item: these hold {} and {}", op, zero_ty(lv.ty.elem().unwrap()), zero_ty(rv.ty.elem().unwrap()))));
         }
-        let Some(elem) = lv.ty.items().cloned() else {
-            return Err(lex::error(&file, line, format!("`{}` on arrays of {} is not built: the items compared are numbers, enumerations or characters", op, zero_ty(lv.ty.elem().unwrap()))));
+        // (an array of structures: each pair by `struct_same`, fm3 log 181)
+        let elem = match (lv.ty.items(), lv.ty.elem()) {
+            (Some(e), _) => e.clone(),
+            (None, Some(e @ Ty::Struct(_))) => e.clone(),
+            _ => return Err(lex::error(&file, line, format!("`{}` on arrays of {} is not built: the items compared are numbers, enumerations, characters or structures of those", op, zero_ty(lv.ty.elem().unwrap())))),
         };
         let (va, vb) = (self.unread_view(&lv, b), self.unread_view(&rv, b));
         let (na, nb, same) = (b.tmp(), b.tmp(), b.tmp());
@@ -8681,7 +8787,22 @@ impl Lowerer {
         let (x, y, ne) = (b.tmp(), b.tmp(), b.tmp());
         b.line(&format!("{}: {} = load {}, {}", x, elem.ir(), va, k));
         b.line(&format!("{}: {} = load {}, {}", y, elem.ir(), vb, k));
-        b.line(&format!("{}: u1 = cmp.ne {}, {}", ne, x, y));
+        if matches!(elem, Ty::Struct(_)) {
+            // the program's own `==` on the type where it has one,
+            // as between two of them (fm3 log 181)
+            let other = Val { text: y.clone(), ty: elem.clone(), literal: false };
+            let same = match self.find_operator("==", &elem, &other, &file, line)? {
+                Some(info) if info.results.first().map(|r| &r.1) == Some(&Ty::Bool) => {
+                    let t = b.tmp();
+                    b.line(&format!("{}: u1 = {}({}, {})", t, info.ir, x, y));
+                    t
+                }
+                _ => self.struct_same(op, &elem, &x, &y, b, &file, line)?,
+            };
+            b.line(&format!("{}: u1 = cmp.eq {}, 0", ne, same));
+        } else {
+            b.line(&format!("{}: u1 = cmp.ne {}, {}", ne, x, y));
+        }
         b.line(&format!("if {}", ne));
         b.depth += 1;
         b.line("break 0");
@@ -10740,6 +10861,18 @@ impl Lowerer {
                     self.now = now;
                     let mut rv = self.lower_expr(r, None, b, None)?;
                     let Some(info) = self.find_operator(op, &lv.ty, &rv, &file, e.line)? else {
+                        // with none declared, two structures of one
+                        // type are the same where every field is (fm3
+                        // question 108, log 181)
+                        if matches!(op.as_str(), "==" | "!=") && rv.ty == lv.ty {
+                            let same = self.struct_same(op, &lv.ty, &lv.text, &rv.text, b, &file, e.line)?;
+                            if op == "==" {
+                                return Ok(Val { text: same, ty: Ty::Bool, literal: false });
+                            }
+                            let name = name_for(dst, &Ty::Bool, b);
+                            b.line(&format!("{}: u1 = cmp.eq {}, 0", name, same));
+                            return Ok(Val { text: name, ty: Ty::Bool, literal: false });
+                        }
                         return Err(lex::error(&file, e.line, format!("no '{}' is defined on a {} and a {}", op, zero_ty(&lv.ty), zero_ty(&rv.ty))));
                     };
                     if rv.literal {
@@ -11180,7 +11313,8 @@ fn quietly_read(features: &[super::store::FeatureDoc], s: &str, call: Called) ->
             ExprKind::Seq(n) | ExprKind::Arr(n) | ExprKind::Name(n) => n != s,
             ExprKind::Index(base, i) if is(base) => quiet(i, s, file, call),
             ExprKind::Phrase(parts) => match parts.as_slice() {
-                [Part::Word(w), x] if w == "count" && part(x) => true,
+                // (`frame` is what has arrived, and cannot tell either, fm3 log 181)
+                [Part::Word(w), x] if (w == "count" || w == "frame") && part(x) => true,
                 [Part::Word(w), x, Part::Word(at), i] if w == "peek" && at == "at" && part(x) => match i {
                     Part::Args(a) => a.iter().all(|a| quiet(&a.value, s, file, call)),
                     Part::Value(v) => quiet(v, s, file, call),

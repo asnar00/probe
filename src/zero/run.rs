@@ -1205,6 +1205,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Two structures compared, a list of them written out, and two
+    /// arrays of them compared whole (fm3 question 108, log 181): every
+    /// field the same, a field at a time; the program's own `==` first
+    /// where it declares one; a field that is a string refuses the
+    /// comparison, naming it
+    #[test]
+    fn two_structures_are_compared_a_field_at_a_time() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-struct-same");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 1\n").unwrap();
+        let types = "type pair =\n    int a, b\n\ntype box =\n    pair lo\n    bool open\n\ntype named =\n    int id\n    string name\n\ntype odd =\n    int v\n\n";
+        let f = |more: &str, body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}on (bool n) << f (pair p, pair q, box s, box t)\n{}\n", types, more, body)).unwrap();
+            emit(&dir)
+        };
+        let refused = |body: &str, what: &str| {
+            let e = f("", body).err().unwrap_or_else(|| panic!("not refused: {}", body));
+            assert!(e.contains(what), "{}: {}", body, e);
+        };
+        // a field at a time, in the order declared, joined by `and`
+        let ir = f("", "    n << p == q").unwrap();
+        assert!(ir.contains("    _1: int = get p, a\n    _2: int = get q, a\n    _3: u1 = cmp.eq _1, _2\n    _4: int = get p, b\n    _5: int = get q, b\n    _6: u1 = cmp.eq _4, _5\n    _7: u1 = and _3, _6\n    ret _7\n"), "{}", ir);
+        // `!=` is its opposite
+        let ir = f("", "    n << p != q").unwrap();
+        assert!(ir.contains("    _7: u1 = and _3, _6\n    n: u1 = cmp.eq _7, 0\n"), "{}", ir);
+        // a field that is a structure, the same way inside
+        let ir = f("", "    n << s == t").unwrap();
+        assert!(ir.contains("    _1: pair = get s, lo\n    _2: pair = get t, lo\n    _3: int = get _1, a\n    _4: int = get _2, a\n") && ir.contains("    _10: u1 = get s, open\n    _11: u1 = get t, open\n    _12: u1 = cmp.eq _10, _11\n    _13: u1 = and _9, _12\n    ret _13\n"), "{}", ir);
+        // the program's own operator comes first, between two and
+        // between two arrays
+        let own = "on (bool b) << (odd x) == (odd y)\n    b << x.v % 2 == y.v % 2\n\n";
+        let ir = f(own, "    odd xs[] = [odd(1), odd(4)]\n    n << odd(1) == odd(3) and xs[] [==] [odd(3), odd(6)]").unwrap();
+        assert_eq!(ir.matches(": u1 = eq_odd(").count(), 2, "{}", ir);
+        // a list of structures is an array of them, and two are
+        // compared whole, each pair a field at a time
+        let ir = f("", "    pair ps[] = [pair(1, 2), pair(3, 4)]\n    n << ps[] [==] [p, q]").unwrap();
+        for l in ["= __queue_pair(", ": pair = load ", ": u1 = loop(", ": u1 = and ", "                break 0\n"] {
+            assert!(ir.contains(l), "{}: {}", l, ir);
+        }
+        refused("    named x = named(1, \"a\")\n    n << x == x", "'==' on two `named`: its field 'name' is a string, and the comparison is every field the same, a field at a time (fm3 question 108): a string or an array in a structure is not compared. Compare the fields that can be, or declare the operator, `on (bool b) << (named x) == (named y)`");
+        refused("    n << p == odd(1)", "no '==' is defined on a pair and a odd");
+        refused("    n << p < q", "no '<' is defined on a pair and a pair");
+        refused("    pair ps[] = [p]\n    odd os[] = [odd(1)]\n    n << ps[] [==] os[]", "`[==]` compares two arrays of one type of item: these hold pair and odd");
+        refused("    pair ps[] = [p, odd(1)]\n    n << true", "the items are pair, this one is a odd");
+    }
+
     /// `[==]` and `[!=]` (fm3 question 77, log 164): two arrays compared
     /// as wholes, one bool; the parser tells the bracketed operator
     /// from a list written out, and everything else in brackets is
@@ -2935,8 +2982,10 @@ mod tests {
     }
 
     /// a field of the context nothing in the store writes is fetched
-    /// once a function, and one that something writes is read wherever
-    /// it is named (fm3 log 110)
+    /// once a function (fm3 log 110); and one that something writes is
+    /// read again only where what writes it can run between the two
+    /// reads, the function itself or one it calls, through any depth
+    /// (fm3 log 181)
     #[test]
     fn a_field_nothing_writes_is_fetched_once() {
         let dir = std::env::temp_dir().join(format!("probe-zero-once-{}", std::process::id()));
@@ -2956,8 +3005,15 @@ mod tests {
         let b = body(&format!("{}on (int n) << f()\n    int a = kept + moved$\n    bump()\n    n << a + kept + moved$\n", head), "f");
         assert!(b.starts_with("    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int = get _1, kept\n") && b.matches("= context()").count() == 1, "{}", b);
         assert_eq!((reads(&b, "kept"), reads(&b, "moved")), (1, 2), "{}", b);
-        // ... the written one twice even with nothing between that writes it
+        // ... the written one once where nothing between writes it:
+        // `idle` does not, and nothing it calls does
         let b = body(&format!("{}on (int n) << f()\n    int a = moved$\n    idle()\n    n << a + moved$\n", head), "f");
+        assert_eq!(reads(&b, "moved"), 1, "{}", b);
+        // ... twice where the write is two calls down
+        let b = body(&format!("{}on deep()\n    idle()\n    bump()\n\non (int n) << f()\n    int a = moved$\n    deep()\n    n << a + moved$\n", head), "f");
+        assert_eq!(reads(&b, "moved"), 2, "{}", b);
+        // ... and twice in the function that writes it itself
+        let b = body(&format!("{}on (int n) << f()\n    int a = moved$\n    moved$ << 7\n    n << a + moved$\n", head), "f");
         assert_eq!(reads(&b, "moved"), 2, "{}", b);
         // a read in one arm is not in hand in the other, nor after them;
         // one above them is in hand in both, and inside a loop

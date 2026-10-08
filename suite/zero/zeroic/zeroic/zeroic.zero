@@ -297,3 +297,136 @@ on (int r$) << decades (int x$)
 on (int n) << tens to (int k)
     dec$ << [1 through k]
     n << count decs$ * 100000 + peek decs$ at (count decs$ - 1)
+
+on (bool b) << one at a time whole()
+    x$ << 1
+    x$ << 2 << 3
+    b << frame d$ [==] [2, 4, 6]
+
+on (bool b) << as a block whole()
+    y$ << [4, 5, 6]
+    b << frame q$ [==] [8, 10, 12]
+
+on (bool b) << said whole()
+    x$ << 1 << 2 << 3
+    b << frame d$ [==] [2, 4, 6]
+
+on (bool b) << walked whole()
+    old$ << 1 << 2 << 3
+    b << frame olds$ [==] [2, 4, 6]
+
+on (bool b) << from a literal whole()
+    b << frame dl$ [==] [2, 4, 6]
+
+on (bool b) << from a range whole()
+    b << frame dr$ [==] [2, 4, 6, 8, 10]
+
+on (bool b) << through two whole()
+    c$ << 1 << 2 << 3
+    b << frame twice$ [==] [4, 8, 12]
+
+on (bool a, bool b) << wired twice whole()
+    p$ << 5 << 6
+    r$ << 7
+    p$ << 8
+    a << frame w$ [==] [50, 61, 82]
+    b << frame v$ [==] [70]
+
+on (bool b) << over text whole()
+    text$ << "ab 1"
+    text$ << "c"
+    b << frame cl$ [==] [1, 1, 0, 2, 1]
+
+on (bool b) << typed whole()
+    b << frame typed$ [==] [1, 2]
+
+on (bool b) << also read whole()
+    s$ << 1 << 2
+    b << frame ds$ [==] [2, 4]
+
+on (bool b) << many whole (int k)
+    y$ << [1 through k]
+    b << frame q$ [==] [1 through k] * 2
+
+on (bool b) << a line said whole()
+    m$ << 4 << 5
+    b << frame t$ [==] [12, 15]
+
+on (bool m, bool k) << a running sum whole()
+    a$ << 1 << 2 << 3
+    b$ << 10
+    a$ << 4
+    m << frame sa$ [==] [1, 3, 6, 10]
+    k << frame sb$ [==] [10]
+
+on (bool b) << summed from a literal whole()
+    b << frame sl$ [==] [1, 3, 6]
+
+on (bool b) << a difference whole()
+    e$ << 5 << 8
+    e$ << 6
+    b << frame de$ [==] [5, 3, -2]
+
+on (bool b) << two back whole()
+    f$ << 1 << 0 << 0 << 0 << 0
+    b << frame ff$ [==] [1, 1, 2, 3, 5]
+
+on (bool b) << lines shuffled whole()
+    g$ << 1 << 1
+    b << frame sg$ [==] [3, 9]
+
+on (bool b) << kept through a block whole()
+    word$ << "aab"
+    word$ << "bb"
+    b << frame rw$ [==] [0, 1, 0, 1, 2]
+
+on (bool b) << two conditions whole()
+    h$ << 3 << 5 << 4 << 100 << 0 << 7
+    b << frame rh$ [==] [0, 1, 0, 1, 0, 0]
+
+on (bool b) << filtered whole()
+    fi$ << 3 << -1 << 0 << 7
+    b << frame pos$ [==] [3, 7]
+
+on (bool b) << changed whole()
+    ch$ << 1 << 1 << 2 << 2 << 2 << 1
+    b << frame cd$ [==] [1, 2, 1]
+
+on (bool b) << every tenth whole (int k)
+    ev$ << [1 through k]
+    b << frame tens$ [==] [1 through k / 10] * 10
+
+on (bool b) << pushed above two whole (int k)
+    plain$ << k if (k > 2)
+    plain$ << 9
+    b << frame plain$ [==] [k, 9]
+
+on (bool b) << no stray zero whole()
+    en$ << 1 << 2
+    end en$
+    end en$
+    b << frame den$ [==] [2, 4]
+
+on (bool b) << closed whole()
+    cl2$ << 5
+    end cl2$
+    end cl2$
+    b << frame cls$ [==] [99]
+
+on (bool b) << a chain ends whole()
+    tin$ << 1 << 2 << 3
+    end tin$
+    b << frame fin$ [==] [6, -1]
+
+on (bool b) << how many came whole()
+    cnt$ << 7 << 7 << 7
+    end cnt$
+    b << frame how$ [==] [3]
+
+on (bool b) << a stored input ends whole()
+    end st$
+    b << frame sts$ [==] [9]
+
+on (bool b) << tens whole()
+    dec$ << [1 through 25]
+    b << frame decs$ [==] [9, 1010]

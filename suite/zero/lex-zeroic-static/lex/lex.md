@@ -32,6 +32,7 @@ It is wired twice, as the walking lexer is. `token u$ = lex(src$)` is the lexer 
 >kinds() → 1, 1
 >third kind() → 3
 >kinds tail() → 2, 3
+>lexed right() → 1
 >a word at the end() → 0, 1
 >lexed() with in "let x = 4" → 3
 >lexed() with in "let" → 0

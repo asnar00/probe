@@ -362,6 +362,60 @@ fn kinds_tail() -> (kind, kind)
     a: kind = get x, kind
     b: kind = get y, kind
     ret a, b
+fn lexed_right() -> u1
+    _this: ptr = context()
+    arrive_first()
+    arrive_again()
+    _1: __ctx = load _this
+    _2: token$ = get _1, u
+    _3: token[], _4: index, _5: token$ = frame_queue(_2)
+    _6: __ctx = load _this
+    _7: __ctx = set _6, u, _5
+    store _7, _this
+    got: token$ = __copy_queue_token(_3)
+    _8: token = pack 1, 0, 3
+    _9: token = pack 1, 4, 1
+    _10: token = pack 3, 6, 1
+    _11: token = pack 2, 8, 2
+    _12: token = pack 3, 10, 1
+    _13: token$ = __queue_token(1000000, 64)
+    push_queue_open _13, _8
+    push_queue_open _13, _9
+    push_queue_open _13, _10
+    push_queue_open _13, _11
+    push_queue_open _13, _12
+    _14: token[] = unread_queue(got)
+    _15: token[] = unread_queue(_13)
+    _16: index = len _14
+    _17: index = len _15
+    _18: u1 = cmp.eq _16, _17
+    same: u1 = if _18
+        _19: u1 = loop(_20: index = 0)
+            _21: u1 = cmp.ge _20, _16
+            if _21
+                break 1
+            _22: token = load _14, _20
+            _23: token = load _15, _20
+            _25: kind = get _22, kind
+            _26: kind = get _23, kind
+            _27: u1 = cmp.eq _25, _26
+            _28: index = get _22, start
+            _29: index = get _23, start
+            _30: u1 = cmp.eq _28, _29
+            _31: u1 = and _27, _30
+            _32: index = get _22, n
+            _33: index = get _23, n
+            _34: u1 = cmp.eq _32, _33
+            _35: u1 = and _31, _34
+            _24: u1 = cmp.eq _35, 0
+            if _24
+                break 0
+            _36: index = add _20, 1
+            continue _36
+        yield _19
+    else
+        yield 0
+    ret same
 fn a_word_at_the_end() -> (int, int)
     _this: ptr = context()
     _1: __ctx = load _this
@@ -552,4 +606,20 @@ fn __queue_u8(hz: i64, cap: index) -> u8$
     buffer_init(vb, sz, cap)
     ring_queue(r, vb, hz, cap)
     s: u8$ = stream r
+    ret s
+
+; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give; stamped once where something asks its time (log 73)
+fn __copy_queue_token(v: token[]) -> token$
+    n: index = len v
+    least: index = const 64
+    cap: index = max(n, least)
+    s: token$ = __queue_token(1000000, cap)
+    loop(i: index = 0)
+        done: u1 = cmp.ge i, n
+        if done
+            break
+        x: token = load v, i
+        push_queue(s, x)
+        i2: index = add i, 1
+        continue i2
     ret s

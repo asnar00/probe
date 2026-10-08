@@ -70,6 +70,12 @@ on (kind a, kind b) << kinds tail()
     a << x.kind
     b << y.kind
 
+on (bool same) << lexed right()
+    arrive first()
+    arrive again()
+    token got[] = frame u$
+    same << got[] [==] [token(word, 0, 3), token(word, 4, 1), token(mark, 6, 1), token(number, 8, 2), token(mark, 10, 1)]
+
 on (int a, int b) << a word at the end()
     src$ << "let"
     a << count u$

@@ -67,3 +67,10 @@ An operation on an array as a whole written in square brackets, `a[] [==] b[]`, 
 >a text and its letters() → 1
 >compared for a condition() → 7
 >what arrived() → 1
+>two points() → 1, 0
+>points apart() → 1
+>two spans() → 1, 0
+>points listed() → 3
+>points the same() → 1, 0
+>points differing() → 0, 0
+>points that arrived() → 1
