@@ -117,6 +117,13 @@ pub struct FeatureDoc {
     /// 49): the feature has other users and its code is immutable from
     /// that date; None while it is in private development
     pub published: Option<String>,
+    /// how the ledger says a published feature's code has changed since
+    /// its date, in words: "has uncommitted changes", "changed on ...
+    /// (commit ...)". Such a feature may be refactored and must still
+    /// pass its own cases (fm3 question 89, log 176), which the runner
+    /// sees to (`run::held`); None where it has not changed, or
+    /// nothing can be told
+    pub changed: Option<String>,
     /// `>existing` among the cases (section 14, log 50): this feature's
     /// test functions call the older features' cases too, rather than
     /// replacing them
@@ -326,7 +333,7 @@ const PLATFORM_FILE: &str = "src/zero/platform.zero";
 fn builtin_platform(types: &HashSet<String>) -> Result<FeatureDoc, Error> {
     let code = syntax::parse_feature("platform", PLATFORM_ZERO, PLATFORM_FILE, types)?;
     let origin = Origin { when: "0000-00-00T00:00:00".into(), text: "(probe) the compiler's own feature: the platform functions every store has".into() };
-    Ok(FeatureDoc { name: "platform".into(), parent: None, layer: Some("platform".into()), origins: vec![origin], published: None, existing_cases: false, cases: Vec::new(), code, md_file: PLATFORM_FILE.into() })
+    Ok(FeatureDoc { name: "platform".into(), parent: None, layer: Some("platform".into()), origins: vec![origin], published: None, changed: None, existing_cases: false, cases: Vec::new(), code, md_file: PLATFORM_FILE.into() })
 }
 
 /// Read a store: every folder with a `.md` and a `.zero` of its own name.
@@ -364,9 +371,9 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     let mut features = Vec::new();
     for (name, zfile, code, mfile, prose) in sources {
         let feature = syntax::parse_feature(&name, &code, &zfile, &types)?;
-        let doc = read_prose(&name, &prose, &mfile, &types, feature)?;
+        let mut doc = read_prose(&name, &prose, &mfile, &types, feature)?;
         if let Some(date) = &doc.published {
-            check_published(&name, &zfile, date)?;
+            doc.changed = check_published(&name, &zfile, &mfile, &prose, date)?;
         }
         features.push(doc);
     }
@@ -408,35 +415,81 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     Ok(store)
 }
 
-/// A published feature's code is immutable (structure.md's lifecycle,
-/// question 24, log 49). The bootstrap's ledger is git, so where the
-/// feature's folder is inside a repository the check is the ledger's:
-/// the code file has no uncommitted change, and the newest commit that
-/// touched it is not dated after the published date, compared at the
-/// date's own precision. Outside a repository, or without git, nothing
-/// can be told and the feature is accepted
-fn check_published(name: &str, zfile: &str, date: &str) -> Result<(), Error> {
+/// A published feature keeps its promise by its cases (structure.md's
+/// lifecycle; fm3 question 89, log 176; first built as log 49's check
+/// of the text). The bootstrap's ledger is git, so where the feature's
+/// folder is inside a repository the ledger is asked two things. Of
+/// the code: has it an uncommitted change, or a commit dated after the
+/// published date, compared at the date's own precision? It may have:
+/// a published feature's code may be refactored, and the answer is
+/// given back in words, for the runner to hold the change to the
+/// feature's own cases. Of the cases: are the `>` lines of the prose's
+/// `## testing` what they were at the published date? If not the
+/// store is refused: the cases are what was promised, and a change of
+/// meaning is a sub-feature. Refused too, as before: code that was
+/// never committed, and changed code with no case to hold it. Outside
+/// a repository, or without git, nothing can be told and the feature
+/// is accepted
+fn check_published(name: &str, zfile: &str, mfile: &str, prose: &str, date: &str) -> Result<Option<String>, Error> {
     let path = Path::new(zfile);
     let (dir, file) = (path.parent().unwrap_or(Path::new(".")), path.file_name().unwrap().to_string_lossy().to_string());
-    let git = |args: &[&str]| -> Option<String> {
-        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).arg("--").arg(&file).output().ok()?;
+    let md = Path::new(mfile).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+    let git = |args: &[&str], of: &str| -> Option<String> {
+        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).arg("--").arg(of).output().ok()?;
         out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
     };
-    let immutable = "a published feature is immutable, so a change of meaning is a sub-feature that redefines what it needs and calls `existing` (structure.md, the lifecycle)";
-    let Some(status) = git(&["status", "--porcelain", "--untracked-files=all"]) else { return Ok(()) };
+    let sub = "a change of meaning is a sub-feature that redefines what it needs and calls `existing` (structure.md, the lifecycle)";
+    let Some(status) = git(&["status", "--porcelain", "--untracked-files=all"], &file) else { return Ok(None) };
     if status.starts_with("??") {
-        return Err(lex::error(zfile, 0, format!("feature {} is published ({}) but its code is not committed: {}", name, date, immutable)));
+        return Err(lex::error(zfile, 0, format!("feature {} is published ({}) but its code is not committed: a published feature is immutable, so {}", name, date, sub)));
     }
+    // is a commit's date after the published date, at the date's precision?
+    let after = |when: &str| {
+        let n = date.len().min(when.len()).min(19);
+        when[..n] > date[..n]
+    };
+    let mut changed = None;
     if !status.is_empty() {
-        return Err(lex::error(zfile, 0, format!("feature {} was published on {} and its code has uncommitted changes: {}", name, date, immutable)));
+        changed = Some("has uncommitted changes".to_string());
+    } else if let Some((hash, when)) = git(&["log", "-1", "--format=%h %cd", "--date=iso-strict"], &file).as_deref().and_then(|l| l.split_once(' ')) {
+        if after(when) {
+            changed = Some(format!("changed on {} (commit {})", when, hash));
+        }
     }
-    let Some(last) = git(&["log", "-1", "--format=%h %cd", "--date=iso-strict"]) else { return Ok(()) };
-    let Some((hash, when)) = last.split_once(' ') else { return Ok(()) };
-    let n = date.len().min(when.len()).min(19);
-    if when[..n] > date[..n] {
-        return Err(lex::error(zfile, 0, format!("feature {} was published on {} and its code changed on {} (commit {}): {}", name, date, when, hash, immutable)));
+    // the cases as they stand, and as the ledger had them at the date:
+    // the newest commit that touched the prose and is not dated after it
+    let cases_of = |text: &str| -> Vec<String> {
+        let mut out = Vec::new();
+        let mut testing = false;
+        for line in text.lines() {
+            let t = line.trim();
+            if t.starts_with("## ") {
+                testing = t == "## testing";
+            } else if testing && t.starts_with('>') {
+                out.push(t[1..].trim().to_string());
+            }
+        }
+        out
+    };
+    let now = cases_of(prose);
+    let at_date = git(&["log", "--format=%H %cd", "--date=iso-strict"], &md).and_then(|log| log.lines().filter_map(|l| l.split_once(' ')).find(|(_, when)| !after(when)).map(|(h, _)| h.to_string()));
+    if let Some(hash) = at_date {
+        let shown = std::process::Command::new("git").arg("-C").arg(dir).arg("show").arg(format!("{}:./{}", hash, md)).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+        if let Some(then) = shown.map(|t| cases_of(&t)) {
+            if then != now {
+                let which = match (now.iter().find(|c| !then.contains(c)), then.iter().find(|c| !now.contains(c))) {
+                    (Some(c), _) => format!("`{}` was not among them", c),
+                    (None, Some(c)) => format!("`{}` is gone", c),
+                    (None, None) => "their order is not what it was".to_string(),
+                };
+                return Err(lex::error(mfile, 0, format!("feature {} was published on {} and its cases have changed since ({}): its cases are what a published feature promises, and {}", name, date, which, sub)));
+            }
+        }
     }
-    Ok(())
+    if let (Some(how), true) = (&changed, now.is_empty()) {
+        return Err(lex::error(zfile, 0, format!("feature {} was published on {} and its code {}, and it has no case that would hold a change: a published feature may be refactored where its own cases still pass (fm3 question 89), and {}", name, date, how, sub)));
+    }
+    Ok(changed)
 }
 
 /// `product.md`: what the product sets and no feature says (zero.md
@@ -679,7 +732,7 @@ fn read_prose(name: &str, prose: &str, file: &str, types: &HashSet<String>, code
     }
     // composition order is the earliest origin
     origins.sort_by(|a, b| a.when.cmp(&b.when));
-    Ok(FeatureDoc { name: name.to_string(), parent, layer, origins, published, existing_cases, cases, code, md_file: file.to_string() })
+    Ok(FeatureDoc { name: name.to_string(), parent, layer, origins, published, changed: None, existing_cases, cases, code, md_file: file.to_string() })
 }
 
 /// `>call(args) [with <feature> off, <feature> on, in "text"] →
@@ -877,11 +930,13 @@ mod tests {
     }
 
     /// composition order is creation time and a tie orders by name
-    /// (log 49); a published feature's code is immutable where the
-    /// ledger can tell: outside a repository nothing is told, inside
-    /// one an uncommitted edit and a commit after the date are refused
+    /// (log 49); and what the reader asks the ledger of a published
+    /// feature (fm3 question 89, log 176): outside a repository nothing
+    /// is told; inside one, code never committed is refused, changed
+    /// code is recorded for the runner to hold to the feature's cases,
+    /// changed code with no case is refused, and changed cases are
     #[test]
-    fn creation_time_orders_and_a_published_feature_is_immutable() {
+    fn creation_time_orders_and_a_published_feature_is_held() {
         let dir = std::env::temp_dir().join(format!("probe-zero-published-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let head = |published: &str| format!("# f\n*x*\n\nlayer: runtime\n{}\n> (suite) 2026-09-08T10:00:00\n\n## testing\n", published);
@@ -898,21 +953,42 @@ mod tests {
         // in a repository: not committed, then committed before the date
         git(&dir, "2026-09-01T10:00:00", &["init", "-q"]);
         assert!(refused(&dir).contains("feature a is published (2026-09-05) but its code is not committed"));
+        // (`d` is published too, and has a case)
+        let cased = |case: &str| format!("{}>{}\n", head("published: 2026-09-05\n"), case);
+        write(&dir, "d", &cased("d() → 4"), "on (int n) << d()\n    n << 4\n");
         git(&dir, "2026-09-01T10:00:00", &["add", "."]);
-        git(&dir, "2026-09-01T10:00:00", &["commit", "-q", "-m", "a and b"]);
-        assert!(read(&dir).is_ok());
-        // an edit after publication: uncommitted, then committed after the date
+        git(&dir, "2026-09-01T10:00:00", &["commit", "-q", "-m", "a, b and d"]);
+        let changed = |dir: &Path, name: &str| read(dir).unwrap().features.iter().find(|f| f.name == name).unwrap().changed.clone();
+        assert_eq!((changed(&dir, "a"), changed(&dir, "d")), (None, None));
+        // an edit after publication to a feature with a case: its code
+        // may change, and how it has is recorded, uncommitted and then
+        // committed after the date
+        write(&dir, "d", &cased("d() → 4"), "on (int n) << d()\n    n << 2 + 2\n");
+        assert_eq!(changed(&dir, "d").as_deref(), Some("has uncommitted changes"));
+        git(&dir, "2026-09-08T10:00:00", &["commit", "-q", "-a", "-m", "d refactored"]);
+        assert!(changed(&dir, "d").is_some_and(|c| c.starts_with("changed on 2026-09-08T10:00:00") && c.contains("(commit ")));
+        // its cases may not: changed, added, removed
+        let sub = "its cases are what a published feature promises, and a change of meaning is a sub-feature that redefines what it needs and calls `existing` (structure.md, the lifecycle)";
+        write(&dir, "d", &cased("d() → 5"), "on (int n) << d()\n    n << 2 + 2\n");
+        assert!(refused(&dir).ends_with(&format!("d.md: feature d was published on 2026-09-05 and its cases have changed since (`d() → 5` was not among them): {}", sub)), "{}", refused(&dir));
+        write(&dir, "d", &format!("{}>d() → 4\n", cased("d() → 4")), "on (int n) << d()\n    n << 2 + 2\n");
+        assert!(refused(&dir).contains("its cases have changed since (their order is not what it was)"), "{}", refused(&dir));
+        write(&dir, "d", &head("published: 2026-09-05\n"), "on (int n) << d()\n    n << 2 + 2\n");
+        assert!(refused(&dir).contains("its cases have changed since (`d() → 4` is gone)"), "{}", refused(&dir));
+        // the rest of the prose may change
+        write(&dir, "d", &format!("{}\n## notes\nprose changed\n", cased("d() → 4")), "on (int n) << d()\n    n << 2 + 2\n");
+        assert!(changed(&dir, "d").is_some());
+        git(&dir, "2026-09-08T11:00:00", &["commit", "-q", "-a", "-m", "d's prose"]);
+        // a feature with no case: a change to its code is refused, as
+        // it was, nothing holding it; uncommitted, then committed
         write(&dir, "a", &head("published: 2026-09-05\n"), "on (int n) << a()\n    n << 11\n");
-        assert!(refused(&dir).contains("feature a was published on 2026-09-05 and its code has uncommitted changes"));
-        git(&dir, "2026-09-08T10:00:00", &["commit", "-q", "-a", "-m", "a changed"]);
+        assert!(refused(&dir).contains("feature a was published on 2026-09-05 and its code has uncommitted changes, and it has no case that would hold a change"));
+        git(&dir, "2026-09-08T12:00:00", &["commit", "-q", "-a", "-m", "a changed"]);
         let err = refused(&dir);
-        assert!(err.contains("feature a was published on 2026-09-05 and its code changed on 2026-09-08T10:00:00") && err.contains("a published feature is immutable"), "{}", err);
+        assert!(err.contains("feature a was published on 2026-09-05 and its code changed on 2026-09-08T12:00:00") && err.contains("it has no case that would hold a change") && err.contains("a change of meaning is a sub-feature"), "{}", err);
         // the date moved to the day of the change is the human's override, accepted
         write(&dir, "a", &head("published: 2026-09-08\n"), "on (int n) << a()\n    n << 11\n");
-        assert!(read(&dir).is_ok());
-        // the prose may change: only the code is immutable
-        write(&dir, "a", &head("published: 2026-09-08\n\nprose changed\n"), "on (int n) << a()\n    n << 11\n");
-        assert!(read(&dir).is_ok());
+        assert_eq!(changed(&dir, "a"), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

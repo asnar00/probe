@@ -105,6 +105,55 @@ fn calls_of(s: &store::Store, l: &lower::Lowered, policy: &ssa::Policy) -> Resul
     Ok(out)
 }
 
+/// A published feature whose code has changed must still pass its own
+/// cases (fm3 question 89, log 176): a refactoring is allowed and a
+/// change of meaning is not, and the feature's cases are what tell
+/// them apart. Its own are the lines of its own `## testing`, each in
+/// the context its line names, every other feature on. They are run
+/// on the path asked for before anything else of the store is, and
+/// the first that fails refuses the store, naming it. A case the path
+/// cannot run is passed over, as the suite passes over it
+fn held(s: &store::Store, cases: &[&Planned], module: &ssa::Module, l: &lower::Lowered, backend: Backend, name: &str, level: usize) -> Result<(), String> {
+    for f in s.features.iter().filter(|f| f.changed.is_some()) {
+        let unreached = out_of_reach(module, &l.funcs, kind_of(backend));
+        let own: Vec<&Planned> = cases.iter().copied().filter(|p| p.feature == f.name && !unreached.contains_key(&p.call.func)).collect();
+        let calls: Vec<suite::Call> = own
+            .iter()
+            .map(|p| suite::Call {
+                func: p.call.func.clone(),
+                args: p.call.args.clone(),
+                nrets: p.call.nrets,
+                checks: p.call.expect == store::Expect::Check,
+                text: true,
+                before: setters(&p.call.context, &p.call.input),
+                live: false,
+                times: matches!(p.call.expect, store::Expect::Timed(_)),
+            })
+            .collect();
+        if calls.is_empty() {
+            continue;
+        }
+        let got = suite::run_calls(module, &l.ir, backend, &calls, name, level)?;
+        for (p, got) in own.iter().zip(got) {
+            if got.as_ref().err().is_some_and(|e| e.starts_with("skip: ")) {
+                continue;
+            }
+            let (ok, note) = judge(&p.call.expect, got);
+            if !ok {
+                return Err(format!(
+                    "feature {} was published on {} and its code {}: a published feature may be refactored and must still pass its own cases (fm3 question 89), and `{}` does not {}. A change of what a feature means is a sub-feature that redefines what it needs and calls `existing` (structure.md, the lifecycle)",
+                    f.name,
+                    f.published.as_deref().unwrap_or(""),
+                    f.changed.as_deref().unwrap_or(""),
+                    p.text,
+                    note
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The contexts a store's cases run in (section 14, log 44, 51): every
 /// feature on, then each feature of the store switched off alone, as a
 /// label and the set of features switched. A feature off takes its
@@ -365,6 +414,9 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bo
     let p = at.map(|i| calls.swap_remove(i)).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", which))?;
     let (text, call) = (p.text.clone(), &p.call);
     let module = build(&l.ir, policy, level)?;
+    // (the case asked for has been taken out of `calls`: it is put
+    // back for the check of a published feature's own cases)
+    held(&s, &calls.iter().chain(std::iter::once(&p)).collect::<Vec<_>>(), &module, &l, Backend::Native, "zero-run", level)?;
     let kind = kind_of(Backend::Native);
     if let Some(why) = out_of_reach(&module, &l.funcs, kind).get(&call.func) {
         return Err(format!("{} is out of reach here: {}", text.split('→').next().unwrap_or("").trim(), skip_note(&l.funcs, why, kind)));
@@ -419,6 +471,7 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
             let cases = calls_of(&s, &l, &policy)?;
             let (runs, over) = plan(&s, &cases)?;
             let module = build(&l.ir, &policy, level)?;
+            held(&s, &cases.iter().collect::<Vec<_>>(), &module, &l, backend, &name, level)?;
             Ok((cases, runs, over, module, l))
         })();
         let (cases, runs, over, module, lowered) = match result {
@@ -3080,6 +3133,56 @@ mod tests {
         refused("o$ << a$ until (ended b$ or ended c$)", &format!("{}`ended` inside a larger condition, or of two streams. The condition may be `ended x$` alone", not));
         refused("o$ << a$ until (count b$ > 2)", &format!("{}`count` asked of the stream the condition reads. An event's condition is `ended x$`, or reads one stream by its name, its value now: `until (stop$ == 1)`", not));
         refused("o$ << a$ until (b$ == c$)", &format!("{}its condition reads 2 streams, 'b$' and 'c$', and an event's condition reads one", not));
+    }
+
+    /// A published feature's code may be refactored, and must still
+    /// pass its own cases (fm3 question 89, log 176). In a scratch
+    /// repository: a respelling that gives what it gave passes,
+    /// uncommitted and committed after the date, with the date left
+    /// alone; one that gives something else refuses the store, naming
+    /// the case; and a case that needs another feature on is run with
+    /// it on
+    #[test]
+    fn a_published_feature_is_held_by_its_cases() {
+        // (a new directory each run, a repository being made in it:
+        // nothing is removed)
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("probe-zero-held-{}-{}", std::process::id(), stamp));
+        let dir = root.join("s");
+        let feature = |name: &str, head: &str, cases: &str, code: &str| {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::write(dir.join(format!("{}/{}.md", name, name)), format!("# {}\n*x*\n\nlayer: runtime\n{}\n> (suite) 2026-09-0{}T10:00:00\n\n## testing\n{}", name, head, if name == "base" { 1 } else { 2 }, cases)).unwrap();
+            std::fs::write(dir.join(format!("{}/{}.zero", name, name)), code).unwrap();
+        };
+        let git = |date: &str, args: &[&str]| {
+            let out = std::process::Command::new("git").arg("-C").arg(&dir).args(["-c", "user.name=probe", "-c", "user.email=probe@probe", "-c", "commit.gpgsign=false"]).args(args).env("GIT_AUTHOR_DATE", date).env("GIT_COMMITTER_DATE", date).output().unwrap();
+            assert!(out.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&out.stderr));
+        };
+        // `base` gives a number; `top`, published, doubles it, so its
+        // case needs `base` on
+        feature("base", "", ">seed() → 21\n", "on (int n) << seed()\n    n << 21\n");
+        let top = |code: &str| feature("top", "published: 2026-09-05\n", ">answer() → 42\n", code);
+        top("on (int n) << answer()\n    n << seed() * 2\n");
+        git("2026-09-01T10:00:00", &["init", "-q"]);
+        git("2026-09-01T10:00:00", &["add", "."]);
+        git("2026-09-01T10:00:00", &["commit", "-q", "-m", "base and top"]);
+        let tested = || test(&root, Backend::Native, 1).unwrap();
+        let fine = |r: &suite::Report| r.failed == 0 && r.log.contains("answer() → 42");
+        assert!(fine(&tested()), "{}", tested().log);
+        // a refactoring, uncommitted: the date left alone, and it passes
+        top("on (int n) << answer()\n    int s = seed()\n    n << s + s\n");
+        assert!(store::read(&dir).unwrap().features.iter().any(|f| f.name == "top" && f.changed.as_deref() == Some("has uncommitted changes")));
+        assert!(fine(&tested()), "{}", tested().log);
+        // ... and committed after the date
+        git("2026-09-08T10:00:00", &["commit", "-q", "-a", "-m", "top refactored"]);
+        assert!(fine(&tested()), "{}", tested().log);
+        // a change of what it gives: the store is refused, naming the case
+        top("on (int n) << answer()\n    n << seed() * 2 + 1\n");
+        let r = tested();
+        assert!(r.failed == 1 && r.log.contains("feature top was published on 2026-09-05 and its code has uncommitted changes: a published feature may be refactored and must still pass its own cases (fm3 question 89), and `answer() → 42` does not (got 43). A change of what a feature means is a sub-feature that redefines what it needs and calls `existing` (structure.md, the lifecycle)"), "{}", r.log);
+        // ... and so is running any case of it
+        let e = run(&dir, "seed()", &suite::backend_policy(Backend::Native).unwrap(), 1, true).unwrap_err();
+        assert!(e.starts_with("feature top was published on 2026-09-05 and its code has uncommitted changes") && e.contains("`answer() → 42` does not (got 43)"), "{}", e);
     }
 
     /// a product's bound (log 41) reaches every loop of the function it
