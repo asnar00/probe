@@ -4,6 +4,16 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a failed check names its line, by the case run again from a build that keeps its place — `e7ab433` · 2026-10-08
+
+```
+on (int n) << kept up (int k)
+    kept$ << 1 (k) times
+    n << peek kept$ at (0) + count kept$ - 1
+```
+
+`suite/zero/checks/said/said.zero:3-5`. `kept up (70)` said "a failed check" and no more; it says `a failed check at said.zero:4: the stream `kept$` is full: 64 items pushed and nothing has read them`, and `kept up (3)` pays nothing for it. Where a case stops, `traced` in `src/zero/run.rs` lowers the same store with `Store.sites`, a diagnostic build in which each statement first stores its site and each checked read or push the numbers it is about to use (`at`, `src/zero/lower.rs`), runs the case again, and reads the site back through `__out_len` and `__out_byte`, which every path's host already calls after a stop. So no emitter, driver or library changed, and the native JIT, wasm, riscv64 and arm64 under qemu report alike. A case may say the line, `→ check at said.zero:4`. No tracked number moved. Zero 947/947 on four paths and 910/910 on air; `probe test` 1024, 1015, 1024, 1024, 987; `cargo test` 173.
+
 ### zero: a link's gate stands at the top of the body it gates — `919e6b3` · 2026-10-08
 
 ```
