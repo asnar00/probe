@@ -1,31 +1,33 @@
+type kind = space | word | number | mark
+
 type token =
-    int kind
+    kind kind
     index start, n
 
 token t$ = lex(in$)
 char src$
 token u$ = lex(src$)
 
-on (int k) << kind of (char c)
+on (kind k) << kind of (char c)
     if (c <= 32)
-        k << 0
+        k << space
     else if (c > 122)
-        k << 3
+        k << mark
     else if (c >= 97)
-        k << 1
+        k << word
     else if (c > 57)
-        k << 3
+        k << mark
     else if (c >= 48)
-        k << 2
+        k << number
     else
-        k << 3
+        k << mark
 
 on (token t$) << lex (char c$)
-    int k$ = if (empty c$) then (0) else (kind of (c$))
-    bool new$ = k$ == 3 or k$ != k$[-1]
+    kind k$ = if (empty c$) then (space) else (kind of (c$))
+    bool new$ = k$ == mark or k$ != k$[-1]
     index start$ = if (new$) then (position c$) else (start$[-1])
     index n$ = if (new$) then (1) else (n$[-1] + 1)
-    t$ << token(k$[-1], start$[-1], n$[-1]) if (new$ and k$[-1] != 0)
+    t$ << token(k$[-1], start$[-1], n$[-1]) if (new$ and k$[-1] != space)
 
 on arrive first()
     src$ << "let x = 4"
@@ -52,7 +54,7 @@ on (int n) << number length()
     token x = peek u$ at (3)
     n << x.n
 
-on (int a, int b) << kinds()
+on (kind a, kind b) << kinds()
     arrive first()
     arrive again()
     token x = peek u$ at (0)
@@ -60,13 +62,13 @@ on (int a, int b) << kinds()
     a << x.kind
     b << y.kind
 
-on (int k) << third kind()
+on (kind k) << third kind()
     arrive first()
     arrive again()
     token x = peek u$ at (2)
     k << x.kind
 
-on (int a, int b) << kinds tail()
+on (kind a, kind b) << kinds tail()
     arrive first()
     arrive again()
     token x = peek u$ at (3)

@@ -1925,6 +1925,17 @@ mod tests {
         std::fs::write(dir.join("h/h.zero"), format!("{}on (int d$) << runs (int x$)\n    bool new$ = x$ != x$[-1]\n    d$ << x$ if (new$ and x$ > 0)\n", head)).unwrap();
         let ir = emit(&dir).unwrap();
         assert!(ir.contains("    _new: u1 = cmp.ne _x, __x_b1\n    _1: u1 = cmp.gt _x, 0\n    _2: u1 = and _new, _1\n    if _2\n"), "{}", ir);
+        // an enumeration's case in what is left is a constant, bare or
+        // said with its type, and waits for the branch as a number
+        // does (fm3 log 168): the lexer's `k$[-1] != space`
+        for case in ["dark", "shade.dark"] {
+            std::fs::write(dir.join("h/h.zero"), format!("type shade = dark | light\n\n{}on (shade s) << shade of (int x)\n    s << if (x > 1) then (light) else (dark)\n\non (int d$) << runs (int x$)\n    shade s$ = shade of (x$)\n    bool new$ = s$ != s$[-1]\n    int n$ = if (new$) then (1) else (n$[-1] + 1)\n    d$ << n$[-1] if (new$ and s$[-1] != {})\n", head, case)).unwrap();
+            let ir = emit(&dir).unwrap();
+            let at = ir.find("fn __z1_each").unwrap();
+            let f = &ir[at..at + ir[at..].find("\n\n").unwrap()];
+            assert!(f.contains("    _n_3: int = if _new\n        _n: int = const 1\n        _1: u1 = cmp.ne __s_b1, 0\n        if _1\n"), "{}: {}", case, f);
+            assert!(!f.contains(" and "), "{}: {}", case, f);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

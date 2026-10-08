@@ -4268,7 +4268,10 @@ impl Lowerer {
         let k = self.zwired;
         let stored = !self.bare.contains(n);
         let p = self.zeroic[&info.key].clone();
-        let w = super::zeroic::write(&p, k, &v.name, stored, self.zloud.contains(&v.name));
+        let w = super::zeroic::write(&p, k, &v.name, stored, self.zloud.contains(&v.name), &|w, of| match of {
+            None => self.enum_case(w).is_some(),
+            Some(c) => matches!(self.types.get(w), Some(TypeInfo::Enum(cases)) if cases.iter().any(|x| x == c)),
+        });
         let mut kept = Vec::new();
         for c in &w.kept {
             kept.push((self.ty(&c.ty, false, file, v.line)?, c.fields.clone(), c.input));

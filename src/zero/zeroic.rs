@@ -745,14 +745,24 @@ fn conjuncts(e: &Expr, out: &mut Vec<Expr>) {
     }
 }
 
+/// is this bare word an enumeration's case; or, with a second word, is
+/// the first an enumeration and the second a case of it
+pub type Case<'a> = &'a dyn Fn(&str, Option<&str>) -> bool;
+
 /// Can working this out do nothing but give a value? Names, literals,
 /// comparisons and the arithmetic that cannot stop a machine. A call
-/// may push or fail a check, and a division by zero traps on wasm
-fn plain(e: &Expr) -> bool {
+/// may push or fail a check, and a division by zero traps on wasm.
+/// An enumeration's case is a constant, and is written as one bare
+/// word, which the parser keeps as it keeps a call with no arguments:
+/// `case` says which bare words are a case, and of a type's name and a
+/// word after its dot, `kind.mark`, whether that is one (fm3 log 168)
+fn plain(e: &Expr, case: Case) -> bool {
     match &e.kind {
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Name(_) => true,
-        ExprKind::Neg(x) | ExprKind::Field(x, _) => plain(x),
-        ExprKind::Bin(op, l, r) => !matches!(op.as_str(), "/" | "%") && plain(l) && plain(r),
+        ExprKind::Phrase(parts) => matches!(parts.as_slice(), [Part::Word(w)] if case(w, None)),
+        ExprKind::Field(x, f) if matches!(&x.kind, ExprKind::Phrase(parts) if matches!(parts.as_slice(), [Part::Word(w)] if case(w, Some(f)))) => true,
+        ExprKind::Neg(x) | ExprKind::Field(x, _) => plain(x, case),
+        ExprKind::Bin(op, l, r) => !matches!(op.as_str(), "/" | "%") && plain(l, case) && plain(r, case),
         _ => false,
     }
 }
@@ -763,7 +773,7 @@ fn plain(e: &Expr) -> bool {
 /// conditions joined, where the rest can do nothing but give a value
 /// (both sides of `and` are always worked out, fm3 question 66, so
 /// only such a rest may wait for the branch)
-fn turns_on(s: &Stmt) -> Vec<String> {
+fn turns_on(s: &Stmt, case: Case) -> Vec<String> {
     match s {
         Stmt::Var(VarDecl { init: Some(Init::Value(Expr { kind: ExprKind::IfElse(c, _, _), .. })), .. }) => match &c.kind {
             ExprKind::Name(n) => vec![n.clone()],
@@ -772,7 +782,7 @@ fn turns_on(s: &Stmt) -> Vec<String> {
         Stmt::If { cond, on_push: true, els: None, .. } => {
             let mut parts = Vec::new();
             conjuncts(cond, &mut parts);
-            if !parts.iter().all(plain) {
+            if !parts.iter().all(|p| plain(p, case)) {
                 return Vec::new();
             }
             parts.iter().filter_map(|p| if let ExprKind::Name(n) = &p.kind { Some(n.clone()) } else { None }).collect()
@@ -789,15 +799,15 @@ fn turns_on(s: &Stmt) -> Vec<String> {
 /// each arm, and a push is made in the arm where the name holds,
 /// under what is left of its condition. The order of the members is
 /// kept, and which arms are worked out is what it was
-fn grouped(lines: Vec<Stmt>, pushes: Vec<Stmt>) -> Vec<Stmt> {
+fn grouped(lines: Vec<Stmt>, pushes: Vec<Stmt>, case: Case) -> Vec<Stmt> {
     let all: Vec<Stmt> = lines.into_iter().chain(pushes).collect();
     let mut out = Vec::new();
     let mut i = 0;
     while i < all.len() {
-        let mut names = turns_on(&all[i]);
+        let mut names = turns_on(&all[i], case);
         let mut j = i + 1;
         while j < all.len() {
-            let next = turns_on(&all[j]);
+            let next = turns_on(&all[j], case);
             let both: Vec<String> = names.iter().filter(|n| next.contains(n)).cloned().collect();
             if both.is_empty() {
                 break;
@@ -851,7 +861,7 @@ fn assign(to: &str, value: Expr, line: usize) -> Stmt {
 /// The functions of wiring `k` of a processor, into the stream `out`.
 /// `stored` says the input has storage, so a sink walks it; `ends`,
 /// that the output is to end after the last tick's pushes
-pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool) -> Written {
+pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool, case: Case) -> Written {
     let line = p.line;
     let each_name = format!("__z{}_each", k);
     let end_name = format!("__z{}_end", k);
@@ -899,7 +909,7 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool) -> Wr
     // a line that neither a push nor a kept value reads is not worked
     // out; and a condition several of them turn on is branched on once
     let after: Vec<Stmt> = made.iter().chain(&given).cloned().collect();
-    let mut body = grouped(needed(lines, &after), made);
+    let mut body = grouped(needed(lines, &after), made, case);
     let inline = body.clone();
     let gives: Vec<String> = p.kept.iter().filter(|c| !c.input).map(|c| local(&c.name)).collect();
     body.extend(given);
@@ -924,7 +934,7 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool) -> Wr
         }
     }
     // a line nothing at the end reads is not worked out there
-    let mut last = grouped(needed(last, &pushes), pushes);
+    let mut last = grouped(needed(last, &pushes), pushes, case);
     if ends {
         last.push(Stmt::Expr { expr: expr(ExprKind::Phrase(vec![Part::Word("end".into()), Part::Value(expr(ExprKind::Seq(out.to_string()), line))]), line), line });
     }

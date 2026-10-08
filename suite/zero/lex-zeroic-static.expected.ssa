@@ -48,8 +48,9 @@ fn __in_ch(c: u8)
     push_queue(s, c)
     ret
 
+type kind = u8
 type token = struct
-    kind: int
+    kind: kind
     start: index
     n: index
 
@@ -77,11 +78,11 @@ type __ctx = struct
     u: token$
     __zend_src: u1
     __z1_at: index
-    __z1_k_1: int
+    __z1_k_1: kind
     __z1_n_1: index
     __z1_start_1: index
     __z2_at: index
-    __z2_k_1: int
+    __z2_k_1: kind
     __z2_n_1: index
     __z2_start_1: index
     __node1_c: u8$
@@ -169,33 +170,33 @@ fn __run()
 ; feature platform (layer platform)
 
 ; feature lex (layer runtime)
-fn kind_of(c: u8) -> int
+fn kind_of(c: u8) -> kind
     _1: u1 = cmp.le c, 32
     if _1
-        k: int = const 0
+        k: kind = const 0
         ret k
     else
         _2: u1 = cmp.gt c, 122
         if _2
-            k_2: int = const 3
+            k_2: kind = const 3
             ret k_2
         else
             _3: u1 = cmp.ge c, 97
             if _3
-                k_3: int = const 1
+                k_3: kind = const 1
                 ret k_3
             else
                 _4: u1 = cmp.gt c, 57
                 if _4
-                    k_4: int = const 3
+                    k_4: kind = const 3
                     ret k_4
                 else
                     _5: u1 = cmp.ge c, 48
                     if _5
-                        k_5: int = const 2
+                        k_5: kind = const 2
                         ret k_5
                     else
-                        k_6: int = const 3
+                        k_6: kind = const 3
                         ret k_6
 fn arrive_first()
     _this: ptr = context()
@@ -205,17 +206,17 @@ fn arrive_first()
     check _3
     _4: __ctx = load _this
     _5: index = get _4, __z2_at
-    _6: int = get _4, __z2_k_1
+    _6: kind = get _4, __z2_k_1
     _7: index = get _4, __z2_n_1
     _8: index = get _4, __z2_start_1
     _9: ptr = addr __s11
-    _12: int, _14: index, _16: index = loop(_10: index = 0, _11: int = _6, _13: index = _7, _15: index = _8)
+    _12: kind, _14: index, _16: index = loop(_10: index = 0, _11: kind = _6, _13: index = _7, _15: index = _8)
         _17: u1 = cmp.ge _10, 9
         if _17
             break _11, _13, _15
         _18: u8 = load _9, _10, 1
         _19: index = add _5, _10
-        _k: int = kind_of(_18)
+        _k: kind = kind_of(_18)
         _20: u1 = cmp.eq _k, 3
         _21: u1 = cmp.ne _k, _11
         _new: u1 = or _20, _21
@@ -249,17 +250,17 @@ fn arrive_again()
     check _3
     _4: __ctx = load _this
     _5: index = get _4, __z2_at
-    _6: int = get _4, __z2_k_1
+    _6: kind = get _4, __z2_k_1
     _7: index = get _4, __z2_n_1
     _8: index = get _4, __z2_start_1
     _9: ptr = addr __s12
-    _12: int, _14: index, _16: index = loop(_10: index = 0, _11: int = _6, _13: index = _7, _15: index = _8)
+    _12: kind, _14: index, _16: index = loop(_10: index = 0, _11: kind = _6, _13: index = _7, _15: index = _8)
         _17: u1 = cmp.ge _10, 3
         if _17
             break _11, _13, _15
         _18: u8 = load _9, _10, 1
         _19: index = add _5, _10
-        _k: int = kind_of(_18)
+        _k: kind = kind_of(_18)
         _20: u1 = cmp.eq _k, 3
         _21: u1 = cmp.ne _k, _11
         _new: u1 = or _20, _21
@@ -294,7 +295,7 @@ fn arrive_again()
         store _37, _this
         _38: __ctx = load _this
         _39: index = get _38, __z2_at
-        _40: int = get _38, __z2_k_1
+        _40: kind = get _38, __z2_k_1
         _41: index = get _38, __z2_n_1
         _42: index = get _38, __z2_start_1
         __z2_end(_39, _40, _41, _42)
@@ -330,7 +331,7 @@ fn number_length() -> int
     _3: index = get x, n
     n: int = conv _3
     ret n
-fn kinds() -> (int, int)
+fn kinds() -> (kind, kind)
     _this: ptr = context()
     arrive_first()
     arrive_again()
@@ -338,19 +339,19 @@ fn kinds() -> (int, int)
     _2: token$ = get _1, u
     x: token = peek_queue(_2, 0)
     y: token = peek_queue(_2, 1)
-    a: int = get x, kind
-    b: int = get y, kind
+    a: kind = get x, kind
+    b: kind = get y, kind
     ret a, b
-fn third_kind() -> int
+fn third_kind() -> kind
     _this: ptr = context()
     arrive_first()
     arrive_again()
     _1: __ctx = load _this
     _2: token$ = get _1, u
     x: token = peek_queue(_2, 2)
-    k: int = get x, kind
+    k: kind = get x, kind
     ret k
-fn kinds_tail() -> (int, int)
+fn kinds_tail() -> (kind, kind)
     _this: ptr = context()
     arrive_first()
     arrive_again()
@@ -358,8 +359,8 @@ fn kinds_tail() -> (int, int)
     _2: token$ = get _1, u
     x: token = peek_queue(_2, 3)
     y: token = peek_queue(_2, 4)
-    a: int = get x, kind
-    b: int = get y, kind
+    a: kind = get x, kind
+    b: kind = get y, kind
     ret a, b
 fn a_word_at_the_end() -> (int, int)
     _this: ptr = context()
@@ -369,17 +370,17 @@ fn a_word_at_the_end() -> (int, int)
     check _3
     _4: __ctx = load _this
     _5: index = get _4, __z2_at
-    _6: int = get _4, __z2_k_1
+    _6: kind = get _4, __z2_k_1
     _7: index = get _4, __z2_n_1
     _8: index = get _4, __z2_start_1
     _9: ptr = addr __s13
-    _12: int, _14: index, _16: index = loop(_10: index = 0, _11: int = _6, _13: index = _7, _15: index = _8)
+    _12: kind, _14: index, _16: index = loop(_10: index = 0, _11: kind = _6, _13: index = _7, _15: index = _8)
         _17: u1 = cmp.ge _10, 3
         if _17
             break _11, _13, _15
         _18: u8 = load _9, _10, 1
         _19: index = add _5, _10
-        _k: int = kind_of(_18)
+        _k: kind = kind_of(_18)
         _20: u1 = cmp.eq _k, 3
         _21: u1 = cmp.ne _k, _11
         _new: u1 = or _20, _21
@@ -418,7 +419,7 @@ fn a_word_at_the_end() -> (int, int)
         store _40, _this
         _41: __ctx = load _this
         _42: index = get _41, __z2_at
-        _43: int = get _41, __z2_k_1
+        _43: kind = get _41, __z2_k_1
         _44: index = get _41, __z2_n_1
         _45: index = get _41, __z2_start_1
         __z2_end(_42, _43, _44, _45)
@@ -432,9 +433,9 @@ fn lexed() -> int
     _3: index = count _2
     n: int = conv _3
     ret n
-fn __z1_each(_c: u8, __at: index, __k_b1: int, __n_b1: index, __start_b1: index) -> (int, index, index)
+fn __z1_each(_c: u8, __at: index, __k_b1: kind, __n_b1: index, __start_b1: index) -> (kind, index, index)
     _this: ptr = context()
-    _k: int = kind_of(_c)
+    _k: kind = kind_of(_c)
     _1: u1 = cmp.eq _k, 3
     _2: u1 = cmp.ne _k, __k_b1
     _new: u1 = or _1, _2
@@ -451,9 +452,9 @@ fn __z1_each(_c: u8, __at: index, __k_b1: int, __n_b1: index, __start_b1: index)
         _n_2: index = add __n_b1, 1
         yield _n_2, __start_b1
     ret _k, _n_3, _start
-fn __z1_end(__at: index, __k_b1: int, __n_b1: index, __start_b1: index)
+fn __z1_end(__at: index, __k_b1: kind, __n_b1: index, __start_b1: index)
     _this: ptr = context()
-    _k: int = const 0
+    _k: kind = const 0
     _1: u1 = cmp.eq _k, 3
     _2: u1 = cmp.ne _k, __k_b1
     _new: u1 = or _1, _2
@@ -477,12 +478,12 @@ fn __z1(c: u8$, __hz: i64) -> u8$
         _6: __ctx = load _this
         _7: index = get _6, __z1_at
         _8: __ctx = load _this
-        _9: int = get _8, __z1_k_1
+        _9: kind = get _8, __z1_k_1
         _10: __ctx = load _this
         _11: index = get _10, __z1_n_1
         _12: __ctx = load _this
         _13: index = get _12, __z1_start_1
-        __now_k: int, __now_n: index, __now_start: index = __z1_each(__item, _7, _9, _11, _13)
+        __now_k: kind, __now_n: index, __now_start: index = __z1_each(__item, _7, _9, _11, _13)
         _14: __ctx = load _this
         _15: __ctx = set _14, __z1_k_1, __now_k
         store _15, _this
@@ -507,16 +508,16 @@ fn __z1(c: u8$, __hz: i64) -> u8$
         _28: __ctx = load _this
         _29: index = get _28, __z1_at
         _30: __ctx = load _this
-        _31: int = get _30, __z1_k_1
+        _31: kind = get _30, __z1_k_1
         _32: __ctx = load _this
         _33: index = get _32, __z1_n_1
         _34: __ctx = load _this
         _35: index = get _34, __z1_start_1
         __z1_end(_29, _31, _33, _35)
     ret c_2
-fn __z2_end(__at: index, __k_b1: int, __n_b1: index, __start_b1: index)
+fn __z2_end(__at: index, __k_b1: kind, __n_b1: index, __start_b1: index)
     _this: ptr = context()
-    _k: int = const 0
+    _k: kind = const 0
     _1: u1 = cmp.eq _k, 3
     _2: u1 = cmp.ne _k, __k_b1
     _new: u1 = or _1, _2
