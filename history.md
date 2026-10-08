@@ -4,6 +4,17 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the suite says it, a result pushed once with its condition — `940417e` + `f0fd9d3` · 2026-10-08
+
+```
+on (int s) << sign of (int x)
+    s << -1 if (x < 0)
+         else 1 if (x > 0)
+         else 0
+```
+
+`suite/zero/control/control/control.zero:1-4`. fm3's question 88, its second landing. `940417e` gives the meter a tenth row in `src/zero/meter.rs`, a result pushed under an `if` statement: 39 lines in ten stores, the meter 130 → 169. `f0fd9d3` rewrites all fourteen functions by a kept script: `kind of` in four lexers and `class of` become tables with no line of IR moved; `sign of` says its third case; `first positive of` says `else` where it leaned on a push ending the function; `power of two above` leaves its loop by `break` and pushes once; `either` keeps its check under the `if` and pushes after it, 3 dearer. The row 39 → 0, the meter 169 → 130 of 2 242. Zero 864/864 natively and on wasm; the six rows unmoved.
+
 ### zero: `else` on a push, and the table — `51b40d2` · 2026-10-08
 
 ```
