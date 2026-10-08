@@ -781,13 +781,13 @@ mod tests {
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 6\n").unwrap();
         let with = |line: &str| -> Result<String, String> {
-            std::fs::write(dir.join("h/h.zero"), format!("on (int n) << f()\n    int x$ = [5, 6, 7]\n    advance x$ by (2)\n{}\n", line)).unwrap();
+            std::fs::write(dir.join("h/h.zero"), format!("on (int n) << f()\n    int x$ << [5, 6, 7]\n    advance x$ by (2)\n{}\n", line)).unwrap();
             emit(&dir)
         };
         for (line, said) in [
             ("    n << peek x$ at (-1)", "h.zero:4: 'peek' counts forward from the reader: -1 is behind it"),
             ("    advance x$ by (-2)\n    n << 1", "h.zero:4: 'advance' moves the reader forward: -2 is behind it"),
-            ("    int b$ = x$ behind (-1)\n    n << 1", "h.zero:4: 'behind' takes how many items, a count: -1 is behind it"),
+            ("    int b[] = x$ behind (-1)\n    n << 1", "h.zero:4: 'behind' takes how many items, a count: -1 is behind it"),
         ] {
             let err = with(line).expect_err(line);
             assert!(err.ends_with(said), "{}: {}", line, err);
@@ -847,7 +847,7 @@ mod tests {
             assert!(err.ends_with(said), "{}: {}", body, err);
         }
         // run inside a function: not built, and said so
-        std::fs::write(dir.join("h/h.zero"), "on (int d$) << doubled (int x$)\n    d$ << x$ * 2\n\non (int n) << f()\n    int i$ = [1, 2, 3]\n    int d$ = doubled(i$)\n    n << count d$\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "on (int d$) << doubled (int x$)\n    d$ << x$ * 2\n\non (int n) << f()\n    int i$ << [1, 2, 3]\n    int d$ = doubled(i$)\n    n << count d$\n").unwrap();
         let err = emit(&dir).expect_err("inside a function");
         assert!(err.ends_with("h.zero:6: 'doubled' is a stream processor with no loop in it: it is wired at feature scope, `int x$ = doubled(...)`, and running one inside a function is not built"), "{}", err);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1046,7 +1046,7 @@ mod tests {
             ("on (int p) << above (int n)\n    loop (int q = 1)\n        if (q > n)\n            p << q\n        continue (q * 2)", "on (int p) = above (int n)\n    loop (int q = 1)\n        if (q > n)\n            p = q\n        continue (q * 2)"),
             ("on (int g) << gcd of (int a) with (int b)\n    g << loop (int x = a, int y = b) while (y != 0) yields x\n        continue (y, x % y)", "on (int g) = gcd of (int a) with (int b)\n    g = loop (int x = a, int y = b) while (y != 0) yields x\n        continue (y, x % y)"),
             ("on (int q, int r) << divide (int a) by (int b)\n    r << a % b\n    q << a / b\n\non (int q, int r) << both()\n    q, r << divide (17) by (5)", "on (int q, int r) = divide (int a) by (int b)\n    r = a % b\n    q = a / b\n\non (int q, int r) = both()\n    q, r = divide (17) by (5)"),
-            ("on (int n) << sum of (int x$)\n    n << x$ + _", "on (int n) = sum of (int x$)\n    n = x$ + _"),
+            ("on (int n) << sum of (int x[])\n    n << x[] + _", "on (int n) = sum of (int x[])\n    n = x[] + _"),
         ];
         for (new, old) in pairs {
             with(new).unwrap_or_else(|e| panic!("{}: {}", new, e));
@@ -1075,9 +1075,10 @@ mod tests {
         assert!(ir.contains("    if _1\n        ret a\n    ret b\n"), "{}", ir);
         let ir = with(pairs[1].0).unwrap();
         assert!(ir.contains("    ret 0\n") || ir.contains("yield 0"), "{}", ir);
-        // a `$` on the result is still a task; a function that gives a
-        // sequence whole keeps `=` (fm3 question 87)
-        let ir = with("on (int i$) << count up to (int n)\n    i$ << 1 << (i$ + 1) while (_ <= n)\n\non (int r$) = squares to (int k)\n    r$ = [1 through k] * [1 through k]").unwrap();
+        // a `$` on the result is still a task; a function that gives an
+        // array says so on its result and is a plain function (fm3
+        // questions 87 and 90, log 159)
+        let ir = with("on (int i$) << count up to (int n)\n    i$ << 1 << (i$ + 1) while (_ <= n)\n\non (int r[]) << squares to (int k)\n    r[] << [1 through k] * [1 through k]").unwrap();
         assert!(ir.contains("fn count_up_to(i: int$, n: int, __hz: i64)") && ir.contains("fn squares_to(k: int) -> int$"), "{}", ir);
         let f = |body: &str| format!("int port = 8\n\non (int y) << f (int x)\n{}", body);
         let two = |body: &str| format!("on (int q, int r) << f (int x)\n{}", body);
@@ -1094,7 +1095,7 @@ mod tests {
             (f("    z << 1\n    y << x"), "h.zero:4: 'z' is not declared: a function's result is named on its first line, `on (int z) << ...`, and a stream is `z$`"),
             (f("    loop (int i = 0)\n        i << 1\n        y << i"), "h.zero:5: 'i' is the loop's own: it is not pushed into. Give its next value with `continue (...)`"),
             (f("    for (i in [1 through 3])\n        i << 1\n    y << x"), "h.zero:5: 'i' is the item of the `for`: it steps by itself and is not pushed into"),
-            (f("    int s$ = [1, 2]\n    s << 3\n    y << x"), "h.zero:5: 's' is written without its `$`: the stream is `s$`, and a push into it is `s$ << ...`"),
+            (f("    int s$ << 1 << 2\n    s << 3\n    y << x"), "h.zero:5: 's' is written without its `$`: the stream is `s$`, and a push into it is `s$ << ...`"),
             (f("    y << x\n    y << 2"), "h.zero:5: this never runs: the function ended when its result was pushed on line 4"),
             (two("    q << x\n    q << 2\n    r << 1"), "h.zero:3: 'q' is pushed twice on this path: a function gives each of its results once"),
             (two("    if (x > 0)\n        q << x\n    q << 2\n    r << 1"), "h.zero:4: 'q' is pushed twice on this path: a function gives each of its results once"),
@@ -1106,40 +1107,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// An array is `int a[]` (fm3 question 90, log 159), and it is what
-    /// a sequence given whole by `=` was: `suite/zero/arrays` writes
-    /// each form both ways, and each pair's two functions are the same
-    /// lines but for their names
+    /// `$` means a stream (fm3 question 90, log 161): an array given
+    /// to a `$` name is refused with its line shown as an array, and
+    /// each word is held to its kind
     #[test]
-    fn an_array_is_the_sequence_it_was() {
-        let ir = emit(Path::new("suite/zero/arrays")).unwrap();
-        let body = |name: &str| -> String {
-            let at = ir.find(&format!("\nfn {}(", name)).unwrap_or_else(|| panic!("no {}", name));
-            let end = ir[at + 1..].find("\nfn ").map_or(ir.len(), |n| at + 1 + n);
-            // the lines after the first, which has the name, to the
-            // blank line that ends the function
-            let lines = ir[at + 1..end].split_once('\n').unwrap().1;
-            lines.split("\n\n").next().unwrap().trim_end().to_string()
+    fn each_word_is_held_to_its_kind() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-kinds");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 1\n").unwrap();
+        let task = "on (int y$) << twice (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        y$ << (peek x$ at (0)) * 2\n        advance x$ by (1)\n\n";
+        let f = |body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}on (int n) << f()\n{}\n", task, body)).unwrap();
+            emit(&dir)
         };
-        let olds: Vec<&str> = ir.lines().filter_map(|l| l.strip_prefix("fn ")).filter_map(|l| l.split('(').next()).filter(|n| n.split('_').any(|w| w == "old")).collect();
-        assert_eq!(olds.len(), 16, "{:?}", olds);
-        for old in olds {
-            let new = old.replace("_old", "");
-            // a text written out has its own data each time it is written:
-            // the number in `__s11` is dropped
-            let unnumbered = |t: String| -> String {
-                let mut out = String::new();
-                let mut rest = t.as_str();
-                while let Some(i) = rest.find("__s") {
-                    out.push_str(&rest[..i + 3]);
-                    rest = rest[i + 3..].trim_start_matches(|c: char| c.is_ascii_digit());
-                }
-                out + rest
-            };
-            // the one pair that reads a feature-scope name reads two names
-            assert_eq!(unnumbered(body(&new)), unnumbered(body(old).replace("olds", "marks")), "{} and {}", new, old);
-            assert!(body(&new).lines().count() >= 2, "{}", new);
+        let refused = |body: &str, what: &str| {
+            let e = f(body).err().unwrap_or_else(|| panic!("not refused: {}", body));
+            assert!(e.contains(what), "{}: {}", body, e);
+        };
+        // what `=` gives a `$` name is a task's stream, or it is an array
+        refused("    int i$ = [1, 2, 3]\n    n << count i$", "h.zero:9: `int i$ = [1, 2, 3]`: what `=` gives here is an array, all there, and `$` is a stream's mark (fm3 question 90). Write `int i[] = [1, 2, 3]`; or, for a stream that begins with these items, `int i$ << [1, 2, 3]`");
+        refused("    int i$ = [1 through 4]\n    n << count i$", "Write `int i[] = [1 through 4]`; or, for a stream that begins with these items, `int i$ << [1 through 4]`");
+        refused("    char c$ = \"hi\"\n    n << count c$", "Write `char c[] = \"hi\"`; or, for a stream that begins with these items, `char c$ << \"hi\"`");
+        refused("    int x$ << 1\n    int g$ = frame x$\n    n << count g$", "h.zero:10: `int g$ = frame x$`: what `=` gives here is an array, all there, and `$` is a stream's mark (fm3 question 90). Write `int g[] = frame x$`");
+        refused("    int a[] = [1, 2]\n    int j$ = a[] * 2\n    n << count j$", "Write `int j[] = a[] * 2`");
+        refused("    int x$ << 1\n    int j$ = x$ * 2\n    n << count j$", "Write `int j[] = x$ * 2`");
+        assert!(f("    int x$ << 1 << 2\n    int d$ = twice (x$)\n    n << count d$").is_ok());
+        assert!(f("    int i$ << [1, 2, 3]\n    int a[] = frame i$\n    n << a[1] + count a[] + (a[] + _)").is_ok());
+        // an array is given whole where it is declared, and never changes
+        refused("    int x$ << 1\n    int d[] = twice (x$)\n    n << count d[]", "`int d[] = twice (x$)`: a task gives a stream, its items arriving, and 'd[]' is an array (fm3 question 90). Write `int d$ = ...`; the array of what has arrived in it is `frame d$`");
+        refused("    int a[] << 1 << 2\n    n << count a[]", "`int a[] << 1 << 2`: an array is given whole where it is declared, by `=`, and never pushed into (fm3 question 90). Write `int a[] = [...]`; what has first items and more to come is a stream, `int a$ << ...`");
+        refused("    int a[] at (1 hz)\n    n << 0", "`int a[] at (1 hz)`: a rate is a stream's, and 'a[]' is an array, all there (fm3 question 90)");
+        refused("    int a[]\n    n << count a[]", "`int a[]`: an array is given whole where it is declared, `int a[] = [1, 2, 3]`, and never changes (fm3 question 90); an empty one is `int a[] = []`. What is declared bare and filled later is a stream, `int a$`");
+        assert!(f("    int a[] = []\n    n << count a[]").is_ok());
+        refused("    int a[] = [1, 2]\n    a[] << 3\n    n << count a[]", "h.zero:10: 'a[] << ...': an array never changes: its items are all there where it is declared, `int a[] = [...]` (fm3 question 90). What is pushed into is a stream, `int a$`");
+        // a stream's words on an array
+        let arr = |line: &str| format!("    int a[] = [1, 2]\n{}", line);
+        refused(&arr("    n << peek a[] at (1)"), "`peek` is a stream's word, asked of what arrives over time, and 'a[]' is an array, all there (fm3 question 90): one item of an array is `a[k]`");
+        refused(&arr("    n << latest a[]"), "`latest` is a stream's word, asked of what arrives over time, and 'a[]' is an array, all there (fm3 question 90): an array's last item is `a[count a[] - 1]`");
+        refused(&arr("    int g[] = frame a[]\n    n << 0"), "`frame` is a stream's word, asked of what arrives over time, and 'a[]' is an array, all there (fm3 question 90): it makes an array of what a stream holds, and this is one already");
+        refused(&arr("    int g[] = a[] behind (1)\n    n << 0"), "`behind` is a stream's word");
+        for (line, word) in [("    advance a[] by (1)\n    n << 0", "advance"), ("    n << position a[]", "position"), ("    n << time of a[]", "time of"), ("    end a[]\n    n << 0", "end"), ("    bool e = ended a[]\n    n << 0", "ended")] {
+            refused(&arr(line), &format!("`{}` is a stream's word, asked of what arrives over time, and 'a[]' is an array, all there (fm3 question 90)", word));
         }
+        // `count` is asked of both
+        assert!(f("    int a[] = [1, 2]\n    int x$ << 1\n    n << count a[] + count x$").is_ok());
+        // an array's forms on a stream
+        let st = |line: &str| format!("    int x$ << 1 << 2\n{}", line);
+        refused(&st("    n << x$[1]"), "h.zero:10: 'x$[k]': an item by its place is an array's, and 'x$' is a stream (fm3 question 90). The item k on from where this reader stands is `peek x$ at (k)`; the array of what has arrived is `frame x$`, and one back is `x$[-1]`");
+        refused(&st("    int k = 1\n    n << x$[k]"), "'x$[k]': an item by its place is an array's");
+        refused(&st("    for (v in x$)\n        check (v > 0)\n    n << 0"), "`for` walks an array, and 'x$' is a stream (fm3 question 90): the array of what has arrived is `frame x$`, `for (x in frame x$)`");
+        refused(&st("    n << x$ + _"), "a reduce with `_` gives one answer of a whole array, and 'x$' is a stream (fm3 question 90): the array of what has arrived is `frame x$`; a running total is a line that stands, `sum$ << sum$ + x$ forever`");
+        assert!(f(&st("    for (v in frame x$)\n        check (v > 0)\n    n << peek x$ at (0) + x$")).is_ok());
+        // an array has no back and no latest item
+        refused(&arr("    n << a[-1]"), "'a[-k]': a look back is a stream's, `x$[-1]`, the item before the present one (fm3 question 90). An array's last item is `a[count a[] - 1]`");
+        let one = "'a[]' is an array, and one value is wanted here: an array has no latest item, as a stream has (fm3 question 90). Its last item is `a[count a[] - 1]`, one item `a[k]`, and its sum `a[] + _`";
+        refused(&arr("    int v = a[]\n    n << v"), one);
+        refused(&arr("    n << a[] + 1"), one);
+        refused(&arr("    if (a[] > 0)\n        n << 1"), one);
+        assert!(f(&arr("    int b[] = a[] + 1\n    n << a[count a[] - 1] + (b[] + _)")).is_ok());
     }
 
     /// The mark is part of a name wherever it is written (fm3 question
@@ -1159,10 +1185,7 @@ mod tests {
             let e = r.err().unwrap_or_else(|| panic!("not refused: {}", what));
             assert!(e.contains(what), "{}", e);
         };
-        // the two spellings are one program in this landing
-        let a = f("    int a[] = [5, 6, 7]\n    n << a[1] + count a[] + (a[] + _)").unwrap();
-        let s = f("    int a$ = [5, 6, 7]\n    n << a$[1] + count a$ + (a$ + _)").unwrap();
-        assert_eq!(a, s);
+        assert!(f("    int a[] = [5, 6, 7]\n    n << a[1] + count a[] + (a[] + _)").is_ok());
         // an array written as a stream, a stream as an array, either bare
         refused(f("    int a[] = [5, 6, 7]\n    n << count a$"), "'a$': 'a' is an array, declared `int a[]` on line 2, and the mark is part of its name wherever it is written (fm3 question 90): write `a[]`, or `a[k]` for one item");
         refused(f("    int x$ << 5\n    n << count x[]"), "'x[]': 'x' is a stream, declared `int x$` on line 2, and the mark is part of its name wherever it is written (fm3 question 90): write `x$`");
@@ -1180,8 +1203,11 @@ mod tests {
         // a function that gives an array is a plain function, told from
         // a task by its result's mark, and gives it once
         let gives = with("on (int r[]) << g (int k)\n    r[] << [1 through k] * [1 through k]\n\non (int n) << f()\n    int s[] = g (4)\n    n << s[3]\n").unwrap();
-        let old = with("on (int r$) = g (int k)\n    r$ = [1 through k] * [1 through k]\n\non (int n) << f()\n    int s$ = g (4)\n    n << s$[3]\n").unwrap();
-        assert_eq!(gives, old);
+        assert!(gives.contains("\nfn g(k: int) -> int$\n") && !gives.contains("fn g(r: int$"), "{}", gives);
+        // the form it had until an array had its mark is refused with
+        // the rest (fm3 question 87, log 161), each line shown as it is to be
+        refused(with("on (int r$) = g (int k)\n    r$ = [1 through k]\n\non (int n) << f()\n    n << 1\n"), "h.zero:1: a function that gives an array says so on its result, `int r[]`, and gives it by pushing it, once; `=` says what a name is (fm3 questions 77, 87 and 90). Write `on (int r[]) << g (int k)`");
+        refused(with("on (int r[]) << g (int k)\n    r[] = [1 through k]\n\non (int n) << f()\n    n << 1\n"), "h.zero:2: 'r[]' is a result, and a result is given by pushing it, an array as any other; `=` says what a name is (fm3 questions 77 and 90). Write `r[] << [1 through k]`");
         refused(with("on (int r[]) << g (int k)\n    r[] << [1 through k] << [1]\n\non (int n) << f()\n    n << 1\n"), "'r[]' is one array, given once: this line pushes it twice. What takes items one after another is a stream, `r$`");
         refused(with("on (int r[]) << g (int k)\n    r[] << [1 through k] (2) times\n\non (int n) << f()\n    n << 1\n"), "`(n) times` on the push of 'r[]' is not built: an array that is a function's result is given whole, once");
         // the mark on the type, and two marks on one name
@@ -1599,7 +1625,7 @@ mod tests {
         let whole = with("\non g()\n    out$ << seen$").unwrap();
         assert!(whole.contains("    seen: int$\n"), "{}", whole);
         // a function that takes the stream whole takes it, as it did
-        let taken = with("\non (int n) << total (int x$)\n    n << x$ + _\n\non (int n) << total (int x)\n    n << x\n\non (int n) << g()\n    n << total (seen$)").unwrap();
+        let taken = with("\non (int n) << total (int x$)\n    n << count x$\n\non (int n) << total (int x)\n    n << x\n\non (int n) << g()\n    n << total (seen$)").unwrap();
         assert!(taken.contains("    seen: int$\n"), "{}", taken);
         // ... and where every method takes one value, the name is one
         let one = with("\non (int n) << twice (int x)\n    n << x * 2\n\non (int n) << g()\n    n << twice (seen$)").unwrap();
@@ -1748,7 +1774,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 3\n>g() → 1\n>h() → 5\n").unwrap();
-        let code = "char t$\nint d$ = runs(t$)\nint x$\nint e$ = twice(x$)\n\non (int d$) << runs (char c$)\n    int n$ = if (c$ == c$[-1]) then (n$[-1] + 1) else (1)\n    d$ << n$\n\non (int e$) << twice (int x$)\n    e$ << x$ * 2\n\non (int n) << f()\n    int d$ = [7, 8, 9]\n    t$ << \"aab\" << \"bc\"\n    n << count d$\n\non (int n) << g()\n    x$ << 4\n    n << count e$\n\non (int n) << h()\n    int k = f()\n    n << count d$\n";
+        let code = "char t$\nint d$ = runs(t$)\nint x$\nint e$ = twice(x$)\n\non (int d$) << runs (char c$)\n    int n$ = if (c$ == c$[-1]) then (n$[-1] + 1) else (1)\n    d$ << n$\n\non (int e$) << twice (int x$)\n    e$ << x$ * 2\n\non (int n) << f()\n    int d[] = [7, 8, 9]\n    t$ << \"aab\" << \"bc\"\n    n << count d[]\n\non (int n) << g()\n    x$ << 4\n    n << count e$\n\non (int n) << h()\n    int k = f()\n    n << count d$\n";
         std::fs::write(dir.join("h/h.zero"), code).unwrap();
         let ir = emit(&dir).unwrap();
         // every push into `t$` is a block: no function of one item for it
@@ -2217,13 +2243,13 @@ mod tests {
         let refused = |code: &str| emit_with(code).expect_err("accepted");
         assert!(refused("on (int o$) << (int x)\n    o$ << 1\n\non f()\n    out$ << 1\n").contains("'int' pushed into 'int$' is the push itself, not a method"));
         assert!(refused("on (char o$) << (char c$)\n    o$ << \"?\"\n\non f()\n    out$ << 1\n").contains("'string' pushed into 'string' is the block push of section 9, not a method"));
-        assert!(refused("on (char o$) = (char o$) << (int x)\n    o$ << \"?\"\n\non f()\n    out$ << 1\n").contains("unexpected '<<' in a function's name"));
+        assert!(refused("on (char o$) = (char o$) << (int x)\n    o$ << \"?\"\n\non f()\n    out$ << 1\n").contains("`=` says what a name is"));
         assert!(refused("on f()\n    int i$ << 1\n    i$ << 2.5\n").contains("'i$' holds int but the item is float"));
         assert!(refused("type token =\n    int kind, start, n\n\non f()\n    token t$ << token(1, 2, 3)\n    out$ << t$\n").contains("'out$' holds char but the item is token$: no `<<` method takes it"));
         // a char is a character, not a small number (question 44)
         assert!(refused("on f()\n    char c = char(65)\n    out$ << (c + 1)\n").contains("'+' on a char: a char is compared, not computed with; convert it, `int(c)`"));
         // a `uint8` stream takes the byte itself, since no method takes one
-        let bytes = emit_with("on (int n) << f()\n    uint8 b$ = \"hi\"\n    b$ << 33\n    n << count b$\n").unwrap();
+        let bytes = emit_with("on (int n) << f()\n    uint8 b$ << \"hi\"\n    b$ << 33\n    n << count b$\n").unwrap();
         assert!(bytes.contains("_5: u8 = const 33") || bytes.contains("const 33"), "{}", bytes);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2309,15 +2335,14 @@ mod tests {
         assert!(ir.contains("\n    __node1_x: index\n") && ir.contains("    _4: index = get _2, pos\n    _5: __ctx = pack 1, 1, _1, _2, _3, _4\n"), "{}", ir);
         // a task that may give back a reader on another ring keeps its
         // whole reader: one that assigns its parameter, declares the
-        // name again, loops over it, hands it to a function or runs a
+        // name again, hands it to a function or runs a
         // task over it, or reads it by a word the rule does not know
         for (body, whole) in [
             ("    loop\n        if (count x$ == 0)\n            break\n        d$ << peek x$ at (0)\n        advance x$ by (1)\n", false),
-            ("    d$ << count x$ << position x$\n    int f$ = frame x$\n    if (ended x$)\n        d$ << latest f$\n", false),
+            ("    d$ << count x$ << position x$\n    int f[] = frame x$\n    if (ended x$)\n        d$ << f[0]\n", false),
             ("    d$ << size(x$)\n    advance x$ by (count x$)\n", true),
-            ("    for (v in x$)\n        d$ << v\n", true),
             ("    d$ << doubled(x$)\n", true),
-            ("    int h$ = x$ behind (1)\n    advance x$ by (count x$)\n", true),
+            ("    int h[] = x$ behind (1)\n    advance x$ by (count x$)\n", true),
         ] {
             std::fs::write(dir.join("h/h.zero"), format!("int a$\nint d$ = moved(a$)\nint far$\n\non (int n) << size (int s$)\n    n << count s$\n\n{}on (int d$) << moved (int x$)\n{}\n{}", task, body, fed)).unwrap();
             let ir = lower::lower(&store::read(&dir).unwrap()).unwrap().ir;

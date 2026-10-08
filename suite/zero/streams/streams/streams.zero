@@ -104,9 +104,9 @@ on (int n) << tokens moved()
 
 on (int n) << tokens framed()
     token t$ << token(1, 0, 3) << token(2, 5, 2) << token(3, 9, 1)
-    token f$ = frame t$
-    token y = peek f$ at (2)
-    n << count f$ * 1000 + y.kind * 100 + y.start * 10 + y.n
+    token f[] = frame t$
+    token y = f[2]
+    n << count f[] * 1000 + y.kind * 100 + y.start * 10 + y.n
 
 on (int n) << logged()
     log$ << 200 << 300
@@ -142,30 +142,36 @@ on (int n) << blocked regular()
 
 on (int n) << indexed()
     int i$ << 5 << 6 << 7
-    n << i$[1] * 10 + i$[2]
+    int a[] = frame i$
+    n << a[1] * 10 + a[2]
 
 on (int n) << summed()
     int i$ << 1 << 2 << 3
-    n << i$ + _
+    int a[] = frame i$
+    n << a[] + _
 
 on (int n) << mapped()
     int i$ << 1 << 2 << 3
-    int j$ = i$ * 2
-    n << j$ + _
+    int a[] = frame i$
+    int j[] = a[] * 2
+    n << j[] + _
 
 on (int n) << walked over()
     int i$ << 1 << 2 << 3
-    for (x in i$)
+    int a[] = frame i$
+    for (x in a[])
         seen$ << seen$ + x
     n << seen$
 
 on (int n) << unread only()
     int i$ << 1 << 2 << 3 << 4
     advance i$ by (2)
-    n << (i$ + _) * 10 + count i$
+    index c = count i$
+    int a[] = frame i$
+    n << (a[] + _) * 10 + c
 
 on (int n) << framed pushed()
     int i$ << 1 << 2
-    int f$ = frame i$
+    int f$ << frame i$
     f$ << 9
     n << count f$ * 10 + latest f$

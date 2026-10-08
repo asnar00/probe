@@ -666,7 +666,6 @@ impl<'a> Parser<'a> {
         self.expect_word()?; // on
         let mut results = Vec::new();
         let mut task = false;
-        let mut old = false;
         // `on (results) << name`, or the form before fm3 question 77,
         // `on (results) = name`, or `on name` with no results — told
         // apart by what follows the first group
@@ -710,15 +709,15 @@ impl<'a> Parser<'a> {
                 }
             } else {
                 // the form before fm3 question 77 is refused (log 153),
-                // but where a result has a `$`: a function that gives
-                // a sequence whole is a task's first line once it says
-                // `<<`, and keeps `=`, body and all, until an array
-                // has its mark (fm3 question 87)
-                if !results.iter().any(|r| r.seq) {
-                    return Err(self.err(format!("a function is declared with `<<` and gives its result by pushing it; `=` says what a name is (fm3 question 77). Write `{}`", self.respelt(line, ") = ", ") << ", "on (results) << name (parameters)"))));
+                // and since an array has its mark (question 87, log
+                // 161) so is the one shape that kept it, a function
+                // that gives a sequence whole
+                let shown = self.respelt(line, ") = ", ") << ", "on (results) << name (parameters)");
+                if let Some(r) = results.iter().find(|r| r.seq) {
+                    let shown = shown.replace(&format!("{}$", r.name), &format!("{}[]", r.name));
+                    return Err(self.err(format!("a function that gives an array says so on its result, `{} {}[]`, and gives it by pushing it, once; `=` says what a name is (fm3 questions 77, 87 and 90). Write `{}`", r.ty, r.name, shown)));
                 }
-                self.expect_sym("=")?;
-                old = true;
+                return Err(self.err(format!("a function is declared with `<<` and gives its result by pushing it; `=` says what a name is (fm3 question 77). Write `{}`", shown)));
             }
         }
         while !self.at(&Tok::Newline) {
@@ -750,8 +749,8 @@ impl<'a> Parser<'a> {
             return Err(self.err("a function's name needs a word or a symbol"));
         }
         self.expect_newline()?;
-        self.results = if old { Vec::new() } else { results.iter().filter(|r| !r.seq).map(|r| r.name.clone()).collect() };
-        self.arr_results = if old || task { Vec::new() } else { results.iter().filter(|r| r.arr).map(|r| r.name.clone()).collect() };
+        self.results = results.iter().filter(|r| !r.seq).map(|r| r.name.clone()).collect();
+        self.arr_results = if task { Vec::new() } else { results.iter().filter(|r| r.arr).map(|r| r.name.clone()).collect() };
         let body = if self.at(&Tok::Indent) { self.parse_block() } else { Ok(Vec::new()) };
         self.results.clear();
         self.arr_results.clear();
@@ -1400,6 +1399,9 @@ impl<'a> Parser<'a> {
                 // a result is given by pushing it (fm3 question 77,
                 // log 153): no local or parameter may have a result's
                 // name, so the name says it
+                if let Some(t) = targets.iter().find(|t| t.feature.is_none() && t.arr && self.arr_results.contains(&t.name)) {
+                    return Err(self.err(format!("'{}[]' is a result, and a result is given by pushing it, an array as any other; `=` says what a name is (fm3 questions 77 and 90). Write `{}`", t.name, self.respelt(line, " = ", " << ", &format!("{}[] << ...", t.name)))));
+                }
                 if let Some(t) = targets.iter().find(|t| t.feature.is_none() && !t.seq && self.results.contains(&t.name)) {
                     return Err(self.err(format!("'{}' is a result, and a result is given by pushing it; `=` says what a name is (fm3 question 77). Write `{}`", t.name, self.respelt(line, " = ", " << ", &format!("{} << ...", t.name)))));
                 }

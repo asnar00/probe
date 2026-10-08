@@ -137,6 +137,33 @@ impl Walk {
         }
     }
 
+    /// a line of the file being walked, as written, for a refusal to show
+    fn source(&self, line: usize) -> Option<String> {
+        let text = std::fs::read_to_string(&self.file).ok()?;
+        text.lines().nth(line.checked_sub(1)?).map(|l| l.trim().to_string())
+    }
+
+    /// `text` with the stream `name$` written as the array `name[]`
+    fn as_array(text: &str, name: &str) -> String {
+        let from = format!("{}$", name);
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(i) = rest.find(&from) {
+            let joined = rest[..i].chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_');
+            out.push_str(&rest[..i]);
+            let after = &rest[i + from.len()..];
+            if joined {
+                out.push_str(&from);
+            } else if after.starts_with('[') {
+                out.push_str(name);
+            } else {
+                out.push_str(&format!("{}[]", name));
+            }
+            rest = after;
+        }
+        out + rest
+    }
+
     /// where a name was declared, for a refusal: `int a[]` on line 3
     fn declared(&self, name: &str, e: &Entry) -> String {
         let at = if e.file == self.file { format!("on line {}", e.line) } else { format!("at {}:{}", e.file, e.line) };
@@ -156,6 +183,36 @@ impl Walk {
             (Mark::Array, Mark::Stream) => self.refuse(line, format!("'{}$': '{}' is an array, {}, and the mark is part of its name wherever it is written (fm3 question 90): write `{}[]`, or `{}[k]` for one item", name, name, self.declared(name, &e), name, name)),
             (Mark::Stream, Mark::Array) => self.refuse(line, format!("'{}[]': '{}' is a stream, {}, and the mark is part of its name wherever it is written (fm3 question 90): write `{}$`", name, name, self.declared(name, &e), name)),
             (Mark::Plain, Mark::Array) => self.refuse(line, format!("'{}[]': '{}' is one value, {}, and has no items", name, name, self.declared(name, &e))),
+            // an array where one value is wanted (fm3 question 96, log
+            // 161): the name itself, or an operand, has no latest item
+            (Mark::Array, Mark::Array) if wants == "one value" && (form == "the value" || form.starts_with("an operand of") || form.starts_with("an arm of")) => {
+                self.refuse(line, format!("'{}[]' is an array, and one value is wanted here: an array has no latest item, as a stream has (fm3 question 90). Its last item is `{}[count {}[] - 1]`, one item `{}[k]`, and its sum `{}[] + _`", name, name, name, name, name));
+            }
+            (Mark::Array, Mark::Array) if form == "pushed into" => {
+                self.refuse(line, format!("'{}[] << ...': an array never changes: its items are all there where it is declared, `{} {}[] = [...]` (fm3 question 90). What is pushed into is a stream, `{} {}$`", name, e.ty, name, e.ty, name));
+            }
+            (Mark::Array, Mark::Array) if form.starts_with("a look back") => {
+                self.refuse(line, format!("'{}[-k]': a look back is a stream's, `x$[-1]`, the item before the present one (fm3 question 90). An array's last item is `{}[count {}[] - 1]`", name, name, name));
+            }
+            (Mark::Array, Mark::Array) if form.starts_with("the word `") && form != "the word `count`" => {
+                let w = form.trim_start_matches("the word `").trim_end_matches('`');
+                let instead = match w {
+                    "peek" => format!(": one item of an array is `{}[k]`", name),
+                    "latest" => format!(": an array's last item is `{}[count {}[] - 1]`", name, name),
+                    "frame" | "behind" | "from ... to" => ": it makes an array of what a stream holds, and this is one already".to_string(),
+                    _ => String::new(),
+                };
+                self.refuse(line, format!("`{}` is a stream's word, asked of what arrives over time, and '{}[]' is an array, all there (fm3 question 90){}", w, name, instead));
+            }
+            (Mark::Stream, Mark::Stream) if form.starts_with("an item by its place") && !self.processor => {
+                self.refuse(line, format!("'{}$[k]': an item by its place is an array's, and '{}$' is a stream (fm3 question 90). The item k on from where this reader stands is `peek {}$ at (k)`; the array of what has arrived is `frame {}$`, and one back is `{}$[-1]`", name, name, name, name, name));
+            }
+            (Mark::Stream, Mark::Stream) if form == "walked by `for`" => {
+                self.refuse(line, format!("`for` walks an array, and '{}$' is a stream (fm3 question 90): the array of what has arrived is `frame {}$`, `for (x in frame {}$)`", name, name, name));
+            }
+            (Mark::Stream, Mark::Stream) if form.starts_with("reduced") && !self.processor => {
+                self.refuse(line, format!("a reduce with `_` gives one answer of a whole array, and '{}$' is a stream (fm3 question 90): the array of what has arrived is `frame {}$`; a running total is a line that stands, `sum$ << sum$ + {}$ forever`", name, name, name));
+            }
             _ => {}
         }
         if let Some(i) = e.at {
@@ -199,6 +256,7 @@ impl Walk {
             (None, None) => "bare".into(),
         };
         let mark = Mark::of(v.seq, v.arr);
+        self.declared_right(v, mark, &place, &how);
         // the value is worked out before the name exists, but a
         // stream's first items may read the stream itself
         let wants = if v.seq { "a sequence" } else { "one value" };
@@ -232,6 +290,36 @@ impl Walk {
         }
         if let Some(r) = &mut v.rate {
             self.expr(r, "one value", "the value");
+        }
+    }
+
+    /// A declaration held to its kind (fm3 question 90, log 161): what
+    /// `=` gives a `$` name is a task's stream or it is an array, and
+    /// an array is given whole where it is declared
+    fn declared_right(&mut self, v: &VarDecl, mark: Mark, place: &Place, how: &str) {
+        let line = v.line;
+        let shown = self.source(line).unwrap_or_else(|| format!("{} {} ...", v.ty, mark.on(&v.name)));
+        match (mark, &v.init) {
+            (Mark::Stream, Some(Init::Value(e))) if *place != Place::Said && !how.starts_with("wired") => {
+                let begins = match e.kind {
+                    ExprKind::List(_) | ExprKind::Range { .. } | ExprKind::Str(_) => format!("; or, for a stream that begins with these items, `{}`", shown.replacen(" = ", " << ", 1)),
+                    _ => String::new(),
+                };
+                self.refuse(line, format!("`{}`: what `=` gives here is an array, all there, and `$` is a stream's mark (fm3 question 90). Write `{}`{}", shown, Walk::as_array(&shown, &v.name), begins));
+            }
+            (Mark::Array, Some(Init::Value(_))) if how.starts_with("wired") => {
+                self.refuse(line, format!("`{}`: a task gives a stream, its items arriving, and '{}[]' is an array (fm3 question 90). Write `{} {}$ = ...`; the array of what has arrived in it is `frame {}$`", shown, v.name, v.ty, v.name, v.name));
+            }
+            (Mark::Array, Some(Init::Pushes { .. })) => {
+                self.refuse(line, format!("`{}`: an array is given whole where it is declared, by `=`, and never pushed into (fm3 question 90). Write `{} {}[] = [...]`; what has first items and more to come is a stream, `{} {}$ << ...`", shown, v.ty, v.name, v.ty, v.name));
+            }
+            (Mark::Array, _) if v.rate.is_some() => {
+                self.refuse(line, format!("`{}`: a rate is a stream's, and '{}[]' is an array, all there (fm3 question 90)", shown, v.name));
+            }
+            (Mark::Array, None) => {
+                self.refuse(line, format!("`{}`: an array is given whole where it is declared, `{} {}[] = [1, 2, 3]`, and never changes (fm3 question 90); an empty one is `{} {}[] = []`. What is declared bare and filled later is a stream, `{} {}$`", shown, v.ty, v.name, v.ty, v.name, v.ty, v.name));
+            }
+            _ => {}
         }
     }
 
@@ -368,6 +456,9 @@ impl Walk {
         } else {
             format!("an argument of `{}`", words)
         };
+        // what a function wants of an argument is its declaration's to
+        // say; a task is handed a stream
+        let wants = if task || wants == "a sink" { wants } else { "an argument" };
         for p in parts {
             match p {
                 Part::Args(a) => self.args(a, wants, &form),
@@ -462,7 +553,9 @@ impl Walk {
 
     fn function(&mut self, f: &mut FnDecl) {
         let method = matches!(f.name.as_slice(), [NamePart::Group, NamePart::Sym(s), ..] if s == "<<");
-        let processor = f.task && matches!(super::zeroic::read(f, &self.file, &self.takers), Ok(Some(_)));
+        // a body `read` refuses is a processor with a mistake in it,
+        // and the refusal is the lowering's to make
+        let processor = f.task && !matches!(super::zeroic::read(f, &self.file, &self.takers), Ok(None));
         self.processor = processor;
         let kind = if processor {
             "a stream processor"
@@ -647,6 +740,14 @@ pub fn report(dir: &std::path::Path) -> Result<String, Error> {
             l.dedup();
             l
         };
+        // `PROBE_ZERO_USES`: a line for each use as well, for a list
+        // of every place a form stands (the handover's, fm3 log 161)
+        if std::env::var("PROBE_ZERO_USES").is_ok() {
+            for u in &n.uses {
+                out.push_str(&format!("use\t{}:{}\t{} {}\t{}\t{}\t{}\t{}\n", u.0, u.1, n.ty, n.mark.on(&n.name), kind, place, u.2, u.3));
+            }
+            continue;
+        }
         out.push_str(&format!("{}\t{}:{}\t{} {}\t{}{}{}\tstream: {}\tarray: {}\tat: {}\n", kind, n.file, n.line, n.ty, n.mark.on(&n.name), place, if n.how.is_empty() { "" } else { ", " }, n.how, stream.join("; "), array.join("; "), lines.join(" ")));
     }
     Ok(out)

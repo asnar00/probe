@@ -68,8 +68,8 @@ on (int m) << smallest()
     m << smaller of (i[]) and (_)
 
 on (int m) << smallest of none()
-    int i$
-    m << smaller of (i$) and (_)
+    int i[] = []
+    m << smaller of (i[]) and (_)
 
 on (int n) << iterated()
     int i[] = [1, 2, 3, 4]
@@ -106,21 +106,21 @@ on (int n) << halves()
     n << int((f[] + _) * 2)
 
 on (int n) << pushed into()
-    int i$ = [1, 2]
+    int i$ << [1, 2]
     i$ << 3
     n << count i$ * 10 + latest i$
 
 on (int n) << read ahead()
-    int i$ = [5, 6, 7]
+    int i$ << [5, 6, 7]
     advance i$ by (1)
-    n << i$[0] * 10 + count i$
+    n << peek i$ at (0) * 10 + count i$
 
 on (int n) << framed sum()
-    int i$ = [1 through 4]
+    int i$ << [1 through 4]
     int f[] = frame i$
     n << (f[] + _) * 10 + count i$
 
 on (int n) << bytes pushed()
-    uint8 b$ = "hi"
+    uint8 b$ << "hi"
     b$ << 33
-    n << count b$ * 100 + int(b$[2])
+    n << count b$ * 100 + int(peek b$ at (2))

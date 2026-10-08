@@ -2,9 +2,9 @@ int x$
 int d$ = doubled(x$)
 int y$
 int q$ = doubled(y$)
-int lit$ = [1, 2, 3]
+int lit$ << [1, 2, 3]
 int dl$ = doubled(lit$)
-int ran$ = [1 through 5]
+int ran$ << [1 through 5]
 int dr$ = doubled(ran$)
 int c$
 int once$ = doubled(c$)

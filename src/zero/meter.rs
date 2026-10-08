@@ -20,12 +20,12 @@ pub const FORMS: [(&str, &str); 9] = [
     ("a name assigned again", "an assignment to a feature-scope variable, a local, a parameter, or a result already given"),
     ("a loop's variable assigned in its body", "an assignment to a name the header of an enclosing `loop` declares"),
     ("a task that walks its input", "in a declaration with `<<`, `peek`, `advance` or `count` applied to one of its `$` parameters"),
-    ("an index or a `peek` forward of now", "`peek x$ at (e)` where `e` is not the literal 0, and `x$[e]` on a task's own input where `e` is not a negative literal"),
+    ("a `peek` forward of now", "`peek x$ at (e)` where `e` is not the literal 0; an item of a stream by its place, `x$[e]`, was counted here and is refused since fm3 question 90"),
     ("an `if` statement with a push under it, in a stream processor", "in a declaration with `<<`, a line that begins `if` with a push anywhere in its block; the zeroic form is the condition on the push's own line, `x$ << item if (c)`"),
     ("`ended` asked inside a loop", "`ended x$` on a line inside a `loop` or a `for`"),
     ("a loop that only computes", "a `loop` no line of which pushes into a stream, ends one, or applies a stream word to one; a call in it may push, unseen"),
-    ("`for` over a sequence", "every `for`"),
-    ("an index into a sequence that may be too short", "`x$[e]` anywhere it is not forward of a task's now, and not a look back, `x$[-1]`, in a stream processor with no loop"),
+    ("`for` over an array", "every `for`: what it walks is an array, a `for` over a stream being refused"),
+    ("an index into an array that may be too short", "`a[e]`, an item of an array by its place, wherever it stands; a look back at a stream, `x$[-1]`, in a stream processor with no loop is not one"),
 ];
 
 /// a line that uses a form: the file, the line, which form
@@ -408,7 +408,7 @@ mod tests {
         let zeroic = store_of("z", "int x$\nint d$ = rising(x$)\n\non (int d$) << rising (int x$)\n    d$ << x$ if (x$ > x$[-1])\n\non (int n) << f()\n    x$ << 1 << 3 << 2\n    n << count d$\n");
         let m = metered(&zeroic).unwrap();
         assert_eq!((m.count(), m.lines), (0, 7), "{:?}", m.found);
-        let walking = store_of("w", "int x$\nint d$ = rising(x$)\nint last = 0\n\non (int d$) << rising (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        int v = peek x$ at (0)\n        if (v > last)\n            d$ << v\n        last = v\n        advance x$ by (1)\n\non (int n) << f()\n    x$ << 1 << 3 << 2\n    int f$ = [4, 5]\n    for (v in f$)\n        n << n + f$[1]\n    n << peek d$ at (1)\n");
+        let walking = store_of("w", "int x$\nint d$ = rising(x$)\nint last = 0\n\non (int d$) << rising (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        int v = peek x$ at (0)\n        if (v > last)\n            d$ << v\n        last = v\n        advance x$ by (1)\n\non (int n) << f()\n    x$ << 1 << 3 << 2\n    int f[] = [4, 5]\n    for (v in f[])\n        n << n + f[1]\n    n << peek d$ at (1)\n");
         let m = metered(&walking).unwrap();
         let forms: Vec<(usize, usize)> = m.found.iter().map(|f| (f.line, f.form)).collect();
         // 7 `count`, 9 `peek`, 13 `advance`: walking; 10: `if` round a
@@ -422,7 +422,7 @@ mod tests {
         assert!(super::super::lower::lower(&store::read(&refused).unwrap()).is_err());
         assert_eq!(metered(&refused).unwrap().count(), 2);
         let text = report(&walking).unwrap();
-        assert!(text.contains(": 8 of 18 lines of zero use a non-zeroic form\n") && text.contains("  h/h.zero:20  a name assigned again\n  h/h.zero:20  an index or a `peek` forward of now\n"), "{}", text);
+        assert!(text.contains(": 8 of 18 lines of zero use a non-zeroic form\n") && text.contains("  h/h.zero:20  a name assigned again\n  h/h.zero:20  a `peek` forward of now\n"), "{}", text);
         for d in [zeroic, walking, refused] {
             let _ = std::fs::remove_dir_all(&d);
         }

@@ -151,12 +151,12 @@ type Span =
     index start, n = 0
 
 on (index p) << where it stands()
-    int x$ = [10, 20, 30, 40]
+    int x$ << [10, 20, 30, 40]
     advance x$ by (2)
     p << position x$
 
 on (int v) << peeked (index i)
-    int x$ = [10, 20, 30, 40]
+    int x$ << [10, 20, 30, 40]
     v << peek x$ at (i)
 
 on (int v) << subscripted (index i)
@@ -164,9 +164,9 @@ on (int v) << subscripted (index i)
     v << x[i]
 
 on (int v) << first after moving (index n)
-    int x$ = [10, 20, 30, 40]
+    int x$ << [10, 20, 30, 40]
     advance x$ by (n)
-    v << x$[0]
+    v << peek x$ at (0)
 
 on (bool b) << more waiting than (index k)
     int x[] = [10, 20, 30, 40]
@@ -178,8 +178,8 @@ on (index n) << last place()
     n << count x[] - 1
 
 on (int v) << the last one()
-    int x$ = [10, 20, 30, 40]
-    v << peek x$ at (count x$ - 1)
+    int x[] = [10, 20, 30, 40]
+    v << x[count x[] - 1]
 
 on (index e) << end of span()
     Span s(3, 4)
