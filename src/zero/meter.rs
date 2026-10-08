@@ -148,7 +148,7 @@ impl Walk {
                 self.expr(a, at, in_loop);
                 self.expr(b, at, in_loop);
             }
-            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Name(_) | ExprKind::Seq(_) | ExprKind::Acc => {}
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Name(_) | ExprKind::Seq(_) | ExprKind::Arr(_) | ExprKind::Acc => {}
         }
     }
 

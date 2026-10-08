@@ -1,0 +1,142 @@
+int marks[] = [3, 4]
+int olds$ = [3, 4]
+int total$ << 0
+
+on (int n) << listed()
+    int a[] = [1, 2, 3, 4]
+    n << count a[]
+
+on (int n) << listed old()
+    int a$ = [1, 2, 3, 4]
+    n << count a$
+
+on (int n) << third()
+    int a[] = [10, 20, 30, 40]
+    n << a[2]
+
+on (int n) << third old()
+    int a$ = [10, 20, 30, 40]
+    n << a$[2]
+
+on (int n) << ranged to (int m)
+    int a[] = [1 through m]
+    n << a[count a[] - 1] * 10 + a[0]
+
+on (int n) << ranged old to (int m)
+    int a$ = [1 through m]
+    n << a$[count a$ - 1] * 10 + a$[0]
+
+on (int n) << texted()
+    char c[] = "hello"
+    n << count c[]
+
+on (int n) << texted old()
+    char c$ = "hello"
+    n << count c$
+
+on (int n) << summed()
+    int a[] = [1, 2, 3, 4]
+    n << a[] + _
+
+on (int n) << summed old()
+    int a$ = [1, 2, 3, 4]
+    n << a$ + _
+
+on (int n) << mapped()
+    int a[] = [1, 2, 3, 4]
+    int b[] = a[] + 1
+    n << b[] + _
+
+on (int n) << mapped old()
+    int a$ = [1, 2, 3, 4]
+    int b$ = a$ + 1
+    n << b$ + _
+
+on (int n) << zipped()
+    int a[] = [1, 2, 3, 4]
+    int b[] = [4, 5, 6]
+    int c[] = a[] + b[]
+    n << count c[] * 100 + c[3] * 10 + (c[] + _) - 25
+
+on (int n) << zipped old()
+    int a$ = [1, 2, 3, 4]
+    int b$ = [4, 5, 6]
+    int c$ = a$ + b$
+    n << count c$ * 100 + c$[3] * 10 + (c$ + _) - 25
+
+on (int n) << walked()
+    int a[] = [1, 2, 3, 4]
+    for (x in a[])
+        total$ << total$ + x
+    n << total$
+
+on (int n) << walked old()
+    int a$ = [1, 2, 3, 4]
+    for (x in a$)
+        total$ << total$ + x
+    n << total$
+
+on (int d) << doubled (int x)
+    d << x * 2
+
+on (int n) << each doubled()
+    int a[] = [1, 2, 3, 4]
+    int j[] = doubled (a[])
+    n << j[] + _
+
+on (int n) << each doubled old()
+    int a$ = [1, 2, 3, 4]
+    int j$ = doubled (a$)
+    n << j$ + _
+
+on (int n) << total of (int x[])
+    n << x[] + _
+
+on (int n) << total old of (int x$)
+    n << x$ + _
+
+on (int n) << handed()
+    int a[] = [1, 2, 3]
+    n << total of (a[]) * 10 + total of ([4, 5])
+
+on (int n) << handed old()
+    int a$ = [1, 2, 3]
+    n << total of (a$) * 10 + total of ([4, 5])
+
+on (int r[]) << squares to (int k)
+    r[] << [1 through k] * [1 through k]
+
+on (int r$) = squares old to (int k)
+    r$ = [1 through k] * [1 through k]
+
+on (int n) << squared()
+    int s[] = squares to (4)
+    n << s[3]
+
+on (int n) << squared old()
+    int s$ = squares to (4)
+    n << s$[3]
+
+on (int n) << framed()
+    int x$ << 1 << 2 << 3
+    int f[] = frame x$
+    n << (f[] + _) * 10 + count x$
+
+on (int n) << framed old()
+    int x$ << 1 << 2 << 3
+    int f$ = frame x$
+    n << (f$ + _) * 10 + count x$
+
+on said whole()
+    int a[] = [1, 2, 3]
+    out$ << a[] << "\n"
+
+on said whole old()
+    int a$ = [1, 2, 3]
+    out$ << a$ << "\n"
+
+on (int n) << marked()
+    n << marks[] + _ + marks[0]
+
+on (int n) << marked old()
+    n << olds$ + _ + olds$[0]

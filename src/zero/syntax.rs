@@ -95,6 +95,9 @@ pub struct Param {
     pub ty: String,
     pub name: String,
     pub seq: bool,
+    /// written `a[]`, an array (fm3 question 90); `seq` is true of it
+    /// too, so what asks "is this a sequence" reads as it did
+    pub arr: bool,
     pub line: usize,
 }
 
@@ -128,6 +131,8 @@ pub struct VarDecl {
     pub ty: String,
     pub name: String,
     pub seq: bool,
+    /// declared `int a[]`, an array (fm3 question 90)
+    pub arr: bool,
     pub init: Option<Init>,
     /// `merge sum`: how two writes combine
     pub merge: Option<String>,
@@ -195,6 +200,8 @@ pub enum LoopInto {
 pub struct Target {
     pub name: String,
     pub seq: bool,
+    /// written `a[]`
+    pub arr: bool,
     pub line: usize,
     /// `countdown.enabled = false`: a feature's implicit variable (log 28)
     pub feature: Option<String>,
@@ -219,6 +226,10 @@ pub enum ExprKind {
     Bool(bool),
     Name(String),
     Seq(String),
+    /// `a[]`: an array's name, whole (fm3 question 90). `kinds::settle`
+    /// holds it to its declaration and writes it as the `Seq` the
+    /// lowering reads, so nothing past the store's reading meets one
+    Arr(String),
     /// `_`: the accumulator of a reduction
     Acc,
     /// `1 hz`, `500 ms`
@@ -360,7 +371,7 @@ pub fn renamed(e: &Expr, stream: &str, to: &str) -> Expr {
 pub fn seqs_in(e: &Expr, out: &mut Vec<String>) {
     let mut each = |x: &Expr| seqs_in(x, out);
     match &e.kind {
-        ExprKind::Seq(n) => {
+        ExprKind::Seq(n) | ExprKind::Arr(n) => {
             if !out.contains(n) {
                 out.push(n.clone());
             }
@@ -432,11 +443,16 @@ pub struct Parser<'a> {
     /// being read: each is given by pushing it, and `y = value` on
     /// one is refused (fm3 question 77, log 153)
     results: Vec<String>,
+    /// ... and its results that are arrays, `on (int r[]) << ...`:
+    /// `r[] << value` gives one, as `y << value` gives a plain one
+    arr_results: Vec<String>,
+    /// was the name `expect_name` last read written `a[]`?
+    arr: bool,
 }
 
 pub fn parse_feature<'a>(name: &str, src: &'a str, file: &'a str, types: &'a HashSet<String>) -> Result<Feature, Error> {
     let toks = lex::lex(src, file)?;
-    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: src.lines().collect(), results: Vec::new() };
+    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: src.lines().collect(), results: Vec::new(), arr_results: Vec::new(), arr: false };
     let mut decls = Vec::new();
     while !p.at_end() {
         decls.push(p.parse_decl()?);
@@ -449,7 +465,7 @@ pub fn parse_call(text: &str, file: &str, line: usize, types: &HashSet<String>) 
     let mut toks = Vec::new();
     lex::lex_line(text, line, file, &mut toks)?;
     toks.push(Token { tok: Tok::Newline, line });
-    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: Vec::new(), results: Vec::new() };
+    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: Vec::new(), results: Vec::new(), arr_results: Vec::new(), arr: false };
     let e = p.parse_expr()?;
     if !p.at(&Tok::Newline) {
         return Err(p.err("the call has something after it"));
@@ -567,7 +583,21 @@ impl<'a> Parser<'a> {
 
     // --- declarations ---
 
+    /// `int[] a`: the mark written on the type
+    fn mark_on_type(&self, ty: &str) -> Error {
+        let name = match self.peek_at(1) {
+            Some(Tok::Word(n)) => n.clone(),
+            _ => "a".to_string(),
+        };
+        self.err(format!("'{}[]': the mark is part of the name and not of the type, wherever the name is written (fm3 question 90): write `{} {}[]`", ty, ty, name))
+    }
+
     fn parse_decl(&mut self) -> Result<Decl, Error> {
+        if let Some(Tok::Arr(w)) = self.peek().cloned() {
+            if self.is_type(&w) {
+                return Err(self.mark_on_type(&w));
+            }
+        }
         match self.peek() {
             Some(Tok::Word(w)) if w == "on" => self.parse_fn().map(Decl::Fn),
             Some(Tok::Word(w)) if w == "type" => self.parse_type().map(Decl::Type),
@@ -586,7 +616,7 @@ impl<'a> Parser<'a> {
                 Ok(Decl::Wire(e))
             }
             // `out$ << i$`: an edge (log 72)
-            Some(Tok::Seq(_)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) => {
+            Some(Tok::Seq(_)) | Some(Tok::Arr(_)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) => {
                 let line = self.line();
                 let began = self.pos;
                 let target = self.parse_primary()?;
@@ -676,7 +706,7 @@ impl<'a> Parser<'a> {
                     // the names' own marks say which (fm3 log 151):
                     // a `$` on a result is a stream produced over
                     // time, and no `$` a value given once
-                    task = results.iter().any(|r| r.seq);
+                    task = results.iter().any(|r| r.seq && !r.arr);
                 }
             } else {
                 // the form before fm3 question 77 is refused (log 153),
@@ -721,8 +751,10 @@ impl<'a> Parser<'a> {
         }
         self.expect_newline()?;
         self.results = if old { Vec::new() } else { results.iter().filter(|r| !r.seq).map(|r| r.name.clone()).collect() };
+        self.arr_results = if old || task { Vec::new() } else { results.iter().filter(|r| r.arr).map(|r| r.name.clone()).collect() };
         let body = if self.at(&Tok::Indent) { self.parse_block() } else { Ok(Vec::new()) };
         self.results.clear();
+        self.arr_results.clear();
         let body = body?;
         let mut platform = Vec::new();
         while self.at_word("platform") {
@@ -808,6 +840,11 @@ impl<'a> Parser<'a> {
         let mut ty: Option<String> = None;
         while !self.at_sym(")") {
             let line = self.line();
+            if let Some(Tok::Arr(w)) = self.peek().cloned() {
+                if self.is_type(&w) {
+                    return Err(self.mark_on_type(&w));
+                }
+            }
             match self.next()? {
                 Tok::Word(w) if self.is_type(&w) || ty.is_none() => {
                     if !self.is_type(&w) {
@@ -816,10 +853,11 @@ impl<'a> Parser<'a> {
                     }
                     ty = Some(w);
                     let (name, seq) = self.expect_name()?;
-                    out.push(Param { ty: ty.clone().unwrap(), name, seq, line });
+                    out.push(Param { ty: ty.clone().unwrap(), name, seq, arr: self.arr, line });
                 }
-                Tok::Word(w) => out.push(Param { ty: ty.clone().unwrap(), name: w, seq: false, line }),
-                Tok::Seq(w) => out.push(Param { ty: ty.clone().unwrap(), name: w, seq: true, line }),
+                Tok::Word(w) => out.push(Param { ty: ty.clone().unwrap(), name: w, seq: false, arr: false, line }),
+                Tok::Seq(w) => out.push(Param { ty: ty.clone().unwrap(), name: w, seq: true, arr: false, line }),
+                Tok::Arr(w) => out.push(Param { ty: ty.clone().unwrap(), name: w, seq: true, arr: true, line }),
                 t => {
                     self.pos -= 1;
                     return Err(self.err(format!("expected a parameter, found {}", t)));
@@ -833,10 +871,17 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
+    /// a name and whether it is a sequence's; `self.arr` says whether
+    /// it was written with an array's mark
     fn expect_name(&mut self) -> Result<(String, bool), Error> {
+        self.arr = false;
         match self.next()? {
             Tok::Word(w) => Ok((w, false)),
             Tok::Seq(w) => Ok((w, true)),
+            Tok::Arr(w) => {
+                self.arr = true;
+                Ok((w, true))
+            }
             t => {
                 self.pos -= 1;
                 Err(self.err(format!("expected a name, found {}", t)))
@@ -891,6 +936,10 @@ impl<'a> Parser<'a> {
         let mut names = Vec::new();
         loop {
             names.push(self.expect_name()?);
+            if self.arr {
+                self.pos -= 1;
+                return Err(self.err("an array as a field of a struct is not built"));
+            }
             if !self.eat_sym(",") {
                 break;
             }
@@ -920,6 +969,7 @@ impl<'a> Parser<'a> {
             return Err(self.err(format!("'{}' is not a type", ty)));
         }
         let (name, seq) = self.expect_name()?;
+        let arr = self.arr;
         // `T x$ at (n hz)`: a stream at a rate, section 9
         let rate = if seq && self.eat_word("at") {
             let args = self.parse_args()?;
@@ -948,7 +998,7 @@ impl<'a> Parser<'a> {
             None
         };
         let merge = if self.eat_word("merge") { Some(self.expect_word()?) } else { None };
-        Ok(VarDecl { line, scope, ty, name, seq, init, merge, rate })
+        Ok(VarDecl { line, scope, ty, name, seq, arr, init, merge, rate })
     }
 
     /// `<< a << b`; a bare `<<` at the end of the line is refused by
@@ -1154,6 +1204,7 @@ impl<'a> Parser<'a> {
         let line = self.line();
         let first = self.peek().cloned();
         match first {
+            Some(Tok::Arr(w)) if self.is_type(&w) => Err(self.mark_on_type(&w)),
             Some(Tok::Word(w)) if w == "if" => {
                 self.pos += 1;
                 let cond = self.parse_expr()?;
@@ -1239,7 +1290,7 @@ impl<'a> Parser<'a> {
                         return Err(self.err(format!("'{}' is not a type: each of a loop's results is its type then its name", ty)));
                     }
                     let (name, seq) = self.expect_name()?;
-                    vars.push(Param { ty, name, seq, line: pline });
+                    vars.push(Param { ty, name, seq, arr: self.arr, line: pline });
                     if !self.eat_sym(",") {
                         break;
                     }
@@ -1248,11 +1299,11 @@ impl<'a> Parser<'a> {
                 self.expect_word()?;
                 self.parse_loop(Some(LoopInto::Declare(vars)), line)
             }
-            Some(Tok::Word(w)) if self.is_type(&w) && matches!(self.peek_at(1), Some(Tok::Word(_)) | Some(Tok::Seq(_))) => {
+            Some(Tok::Word(w)) if self.is_type(&w) && matches!(self.peek_at(1), Some(Tok::Word(_)) | Some(Tok::Seq(_)) | Some(Tok::Arr(_))) => {
                 let v = self.parse_var()?;
                 // `int q, int r = ...`: several typed names, one initializer
                 if self.at_sym(",") && v.init.is_none() {
-                    let mut vars = vec![Param { ty: v.ty.clone(), name: v.name.clone(), seq: v.seq, line: v.line }];
+                    let mut vars = vec![Param { ty: v.ty.clone(), name: v.name.clone(), seq: v.seq, arr: v.arr, line: v.line }];
                     while self.eat_sym(",") {
                         let pline = self.line();
                         let ty = self.expect_word()?;
@@ -1261,7 +1312,7 @@ impl<'a> Parser<'a> {
                             return Err(self.err(format!("'{}' is not a type: each of several results is its type then its name", ty)));
                         }
                         let (name, seq) = self.expect_name()?;
-                        vars.push(Param { ty, name, seq, line: pline });
+                        vars.push(Param { ty, name, seq, arr: self.arr, line: pline });
                     }
                     self.expect_sym("=")?;
                     let value = self.parse_expr()?;
@@ -1280,7 +1331,7 @@ impl<'a> Parser<'a> {
                 loop {
                     let tline = self.line();
                     let name = self.expect_word()?;
-                    targets.push(Target { name, seq: false, line: tline, feature: None, pushed: true });
+                    targets.push(Target { name, seq: false, arr: false, line: tline, feature: None, pushed: true });
                     if !self.eat_sym(",") {
                         break;
                     }
@@ -1315,17 +1366,33 @@ impl<'a> Parser<'a> {
                     None => give,
                 });
             }
-            Some(Tok::Word(_)) | Some(Tok::Seq(_)) if self.assignment_ahead() => {
+            // `r[] << value` where `r[]` is a result of this function:
+            // the array given, once, as `y << value` gives a plain
+            // result (fm3 question 87, log 159)
+            Some(Tok::Arr(w)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) && self.arr_results.contains(&w) => {
+                self.pos += 2;
+                let value = self.parse_expr()?;
+                if self.at_sym("<<") {
+                    return Err(self.err(format!("'{}[]' is one array, given once: this line pushes it twice. What takes items one after another is a stream, `{}$`", w, w)));
+                }
+                if let Some(word) = if self.at_word("times") { Some("`(n) times`") } else if self.at_word("if") { Some("`if`") } else { self.repeat_ahead() } {
+                    return Err(self.err(format!("{} on the push of '{}[]' is not built: an array that is a function's result is given whole, once", word, w)));
+                }
+                self.expect_newline()?;
+                Ok(Stmt::Assign { targets: vec![Target { name: w, seq: true, arr: true, line, feature: None, pushed: true }], value, line })
+            }
+            Some(Tok::Word(_)) | Some(Tok::Seq(_)) | Some(Tok::Arr(_)) if self.assignment_ahead() => {
                 let mut targets = Vec::new();
                 loop {
                     let tline = self.line();
                     let (mut name, seq) = self.expect_name()?;
+                    let arr = self.arr;
                     let mut feature = None;
                     if !seq && self.eat_sym(".") {
                         feature = Some(name);
                         name = self.expect_word()?;
                     }
-                    targets.push(Target { name, seq, line: tline, feature, pushed: false });
+                    targets.push(Target { name, seq, arr, line: tline, feature, pushed: false });
                     if !self.eat_sym(",") {
                         break;
                     }
@@ -1345,7 +1412,7 @@ impl<'a> Parser<'a> {
                 self.expect_newline()?;
                 Ok(Stmt::Assign { targets, value, line })
             }
-            Some(Tok::Seq(_)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) => {
+            Some(Tok::Seq(_)) | Some(Tok::Arr(_)) if matches!(self.peek_at(1), Some(Tok::Sym("<<"))) => {
                 let target = self.parse_primary()?;
                 let (items, group) = self.parse_pushes()?;
                 if items.is_empty() {
@@ -1428,7 +1495,7 @@ impl<'a> Parser<'a> {
     fn loop_ahead(&self) -> bool {
         let mut i = self.pos;
         loop {
-            let (Some(Tok::Word(_)), Some(Tok::Word(_) | Tok::Seq(_))) = (self.toks.get(i).map(|t| &t.tok), self.toks.get(i + 1).map(|t| &t.tok)) else {
+            let (Some(Tok::Word(_)), Some(Tok::Word(_) | Tok::Seq(_) | Tok::Arr(_))) = (self.toks.get(i).map(|t| &t.tok), self.toks.get(i + 1).map(|t| &t.tok)) else {
                 return false;
             };
             match self.toks.get(i + 2).map(|t| &t.tok) {
@@ -1460,7 +1527,7 @@ impl<'a> Parser<'a> {
         let mut i = self.pos;
         loop {
             match self.toks.get(i).map(|t| &t.tok) {
-                Some(Tok::Word(_)) | Some(Tok::Seq(_)) => {}
+                Some(Tok::Word(_)) | Some(Tok::Seq(_)) | Some(Tok::Arr(_)) => {}
                 _ => return false,
             }
             if matches!(self.toks.get(i + 1).map(|t| &t.tok), Some(Tok::Sym("."))) && matches!(self.toks.get(i + 2).map(|t| &t.tok), Some(Tok::Word(_))) {
@@ -1629,6 +1696,23 @@ impl<'a> Parser<'a> {
                 }
                 ExprKind::Seq(w)
             }
+            // an array's name, whole; a stream's word after it is
+            // parsed as it is after a stream's and refused by its kind
+            Tok::Arr(w) => {
+                if matches!(self.peek(), Some(Tok::Word(v)) if !self.ends_phrase(v) && !self.joiner(v, &[]) && !UNITS.contains(&v.as_str())) {
+                    let mut parts = vec![Part::Value(Expr { kind: ExprKind::Arr(w), line })];
+                    parts.extend(self.parse_parts()?);
+                    return Ok(Expr { kind: ExprKind::Phrase(parts), line });
+                }
+                ExprKind::Arr(w)
+            }
+            // `a[k]`: one item of an array, by its place
+            Tok::At(w) => {
+                self.expect_sym("[")?;
+                let i = self.parse_expr()?;
+                self.expect_sym("]")?;
+                ExprKind::Index(Box::new(Expr { kind: ExprKind::Arr(w), line }), Box::new(i))
+            }
             Tok::Sym("_") => ExprKind::Acc,
             Tok::Sym("(") => {
                 // a phrase may begin with a bracket group — `(3) is less
@@ -1731,7 +1815,12 @@ impl<'a> Parser<'a> {
                     let e = self.postfix_of(Expr { kind: ExprKind::Seq(w), line })?;
                     parts.push(Part::Value(e));
                 }
-                Some(Tok::Int(_)) | Some(Tok::Float(_)) | Some(Tok::Str(_)) | Some(Tok::Sym("[")) | Some(Tok::Sym("_")) => {
+                Some(Tok::Arr(w)) => {
+                    let line = self.line();
+                    self.pos += 1;
+                    parts.push(Part::Value(Expr { kind: ExprKind::Arr(w), line }));
+                }
+                Some(Tok::Int(_)) | Some(Tok::Float(_)) | Some(Tok::Str(_)) | Some(Tok::Sym("[")) | Some(Tok::Sym("_")) | Some(Tok::At(_)) => {
                     let e = self.parse_postfix()?;
                     parts.push(Part::Value(e));
                 }

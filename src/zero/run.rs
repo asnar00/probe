@@ -1106,6 +1106,92 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// An array is `int a[]` (fm3 question 90, log 159), and it is what
+    /// a sequence given whole by `=` was: `suite/zero/arrays` writes
+    /// each form both ways, and each pair's two functions are the same
+    /// lines but for their names
+    #[test]
+    fn an_array_is_the_sequence_it_was() {
+        let ir = emit(Path::new("suite/zero/arrays")).unwrap();
+        let body = |name: &str| -> String {
+            let at = ir.find(&format!("\nfn {}(", name)).unwrap_or_else(|| panic!("no {}", name));
+            let end = ir[at + 1..].find("\nfn ").map_or(ir.len(), |n| at + 1 + n);
+            // the lines after the first, which has the name, to the
+            // blank line that ends the function
+            let lines = ir[at + 1..end].split_once('\n').unwrap().1;
+            lines.split("\n\n").next().unwrap().trim_end().to_string()
+        };
+        let olds: Vec<&str> = ir.lines().filter_map(|l| l.strip_prefix("fn ")).filter_map(|l| l.split('(').next()).filter(|n| n.split('_').any(|w| w == "old")).collect();
+        assert_eq!(olds.len(), 16, "{:?}", olds);
+        for old in olds {
+            let new = old.replace("_old", "");
+            // a text written out has its own data each time it is written:
+            // the number in `__s11` is dropped
+            let unnumbered = |t: String| -> String {
+                let mut out = String::new();
+                let mut rest = t.as_str();
+                while let Some(i) = rest.find("__s") {
+                    out.push_str(&rest[..i + 3]);
+                    rest = rest[i + 3..].trim_start_matches(|c: char| c.is_ascii_digit());
+                }
+                out + rest
+            };
+            // the one pair that reads a feature-scope name reads two names
+            assert_eq!(unnumbered(body(&new)), unnumbered(body(old).replace("olds", "marks")), "{} and {}", new, old);
+            assert!(body(&new).lines().count() >= 2, "{}", new);
+        }
+    }
+
+    /// The mark is part of a name wherever it is written (fm3 question
+    /// 90, log 159): each refusal, with its message
+    #[test]
+    fn the_mark_travels() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-marks");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 1\n").unwrap();
+        let with = |text: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), text).unwrap();
+            emit(&dir)
+        };
+        let f = |body: &str| with(&format!("on (int n) << f()\n{}\n", body));
+        let refused = |r: Result<String, String>, what: &str| {
+            let e = r.err().unwrap_or_else(|| panic!("not refused: {}", what));
+            assert!(e.contains(what), "{}", e);
+        };
+        // the two spellings are one program in this landing
+        let a = f("    int a[] = [5, 6, 7]\n    n << a[1] + count a[] + (a[] + _)").unwrap();
+        let s = f("    int a$ = [5, 6, 7]\n    n << a$[1] + count a$ + (a$ + _)").unwrap();
+        assert_eq!(a, s);
+        // an array written as a stream, a stream as an array, either bare
+        refused(f("    int a[] = [5, 6, 7]\n    n << count a$"), "'a$': 'a' is an array, declared `int a[]` on line 2, and the mark is part of its name wherever it is written (fm3 question 90): write `a[]`, or `a[k]` for one item");
+        refused(f("    int x$ << 5\n    n << count x[]"), "'x[]': 'x' is a stream, declared `int x$` on line 2, and the mark is part of its name wherever it is written (fm3 question 90): write `x$`");
+        refused(f("    int x$ << 5\n    n << x[0]"), "'x[]': 'x' is a stream, declared `int x$` on line 2");
+        refused(f("    int a[] = [5, 6, 7]\n    n << a"), "'a' is written without its mark: it is declared `int a[]` on line 2, and the mark is part of its name wherever it is written (fm3 question 90): write `a[]`");
+        refused(f("    int x$ << 5\n    n << x"), "'x' is written without its mark: it is declared `int x$` on line 2");
+        refused(f("    n << count zz[]"), "'zz[]' is not declared: an array is declared with its type, `int zz[] = [1, 2, 3]`");
+        refused(f("    int k = 3\n    n << count k[]"), "'k[]': 'k' is one value, declared `int k` on line 2, and has no items");
+        // a parameter, a result and a feature-scope name are held too
+        refused(with("on (int n) << g (int x[])\n    n << x$ + _\n\non (int n) << f()\n    n << g ([1, 2])\n"), "'x$': 'x' is an array, declared `int x[]` on line 1");
+        refused(with("on (int r[]) << g (int k)\n    r$ << [1 through k]\n\non (int n) << f()\n    n << 1\n"), "'r$': 'r' is an array, declared `int r[]` on line 1");
+        refused(with("int q[] = [1, 2]\n\non (int n) << f()\n    n << q$[0]\n"), "'q$': 'q' is an array, declared `int q[]` on line 1");
+        // a string has no mark and keeps its `s[0]`
+        assert!(f("    string s = \"hello\"\n    n << int(s[0])").is_ok());
+        // a function that gives an array is a plain function, told from
+        // a task by its result's mark, and gives it once
+        let gives = with("on (int r[]) << g (int k)\n    r[] << [1 through k] * [1 through k]\n\non (int n) << f()\n    int s[] = g (4)\n    n << s[3]\n").unwrap();
+        let old = with("on (int r$) = g (int k)\n    r$ = [1 through k] * [1 through k]\n\non (int n) << f()\n    int s$ = g (4)\n    n << s$[3]\n").unwrap();
+        assert_eq!(gives, old);
+        refused(with("on (int r[]) << g (int k)\n    r[] << [1 through k] << [1]\n\non (int n) << f()\n    n << 1\n"), "'r[]' is one array, given once: this line pushes it twice. What takes items one after another is a stream, `r$`");
+        refused(with("on (int r[]) << g (int k)\n    r[] << [1 through k] (2) times\n\non (int n) << f()\n    n << 1\n"), "`(n) times` on the push of 'r[]' is not built: an array that is a function's result is given whole, once");
+        // the mark on the type, and two marks on one name
+        refused(f("    int[] a = [1]\n    n << 0"), "'int[]': the mark is part of the name and not of the type, wherever the name is written (fm3 question 90): write `int a[]`");
+        refused(with("on (int n) << g (int[] x)\n    n << 0\n\non (int n) << f()\n    n << 1\n"), "write `int x[]`");
+        refused(f("    token ops[]$\n    n << 0"), "'ops[]$', a stream of arrays, is not built (fm3 question 90)");
+        refused(f("    int m[][] = [1]\n    n << 0"), "'m[][]', an array of arrays, is not built (fm3 question 90)");
+        refused(with("type T =\n    int xs[]\n\non (int n) << f()\n    n << 0\n"), "an array as a field of a struct is not built");
+    }
+
     /// Brackets widen a word (fm3 question 84, log 155): a word on a
     /// push applies to the last item of its chain, and brackets round
     /// several items make them the one it applies to. How a group is

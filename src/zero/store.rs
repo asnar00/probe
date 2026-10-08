@@ -396,6 +396,9 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     }
     let (left_out, features) = std::mem::take(&mut store.features).into_iter().partition(|f| gone.contains(&f.name));
     (store.left_out, store.features) = (left_out, features);
+    // every name held to its mark, and an array's written as the
+    // lowering reads it (fm3 question 90, log 159)
+    super::kinds::settle(&mut store)?;
     Ok(store)
 }
 

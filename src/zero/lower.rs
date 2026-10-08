@@ -4984,7 +4984,7 @@ impl Lowerer {
         let under = |pushed: Vec<Expr>| -> Vec<Stmt> {
             let kept = |field: &String| Expr { kind: ExprKind::Name(field.clone()), line };
             let bin = |op: &str, l: Expr, r: Expr| Expr { kind: ExprKind::Bin(op.to_string(), Box::new(l), Box::new(r)), line };
-            let put = |field: &String, value: Expr| Stmt::Assign { targets: vec![super::syntax::Target { name: field.clone(), seq: false, line, feature: None, pushed: false }], value, line };
+            let put = |field: &String, value: Expr| Stmt::Assign { targets: vec![super::syntax::Target { name: field.clone(), seq: false, arr: false, line, feature: None, pushed: false }], value, line };
             // where the line keeps its own last item: the field given
             // the first item's value, and the field pushed
             let mut pushed = pushed;
@@ -4994,7 +4994,7 @@ impl Lowerer {
                 // the field back)
                 let local = || Expr { kind: ExprKind::Name("__next".into()), line };
                 let value = std::mem::replace(&mut pushed[0], local());
-                does.push(Stmt::Var(super::syntax::VarDecl { line, scope: Vec::new(), ty: zero_ty(telem), name: "__next".into(), seq: false, init: Some(Init::Value(value)), merge: None, rate: None }));
+                does.push(Stmt::Var(super::syntax::VarDecl { line, scope: Vec::new(), ty: zero_ty(telem), name: "__next".into(), seq: false, arr: false, init: Some(Init::Value(value)), merge: None, rate: None }));
                 does.push(put(field, local()));
                 pushed = pushed.iter().map(|e| super::syntax::renamed(e, tname, field)).collect();
             }
@@ -5026,7 +5026,7 @@ impl Lowerer {
                 line,
                 results: Vec::new(),
                 name: vec![NamePart::Word(name.clone()), NamePart::Group],
-                groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, line }]],
+                groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, arr: false, line }]],
                 task: false,
                 body: under(pushed),
                 platform: Vec::new(),
@@ -5051,7 +5051,7 @@ impl Lowerer {
             line,
             results: Vec::new(),
             name: vec![NamePart::Word(name.clone()), NamePart::Group],
-            groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: sname.clone(), seq: true, line }]],
+            groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: sname.clone(), seq: true, arr: false, line }]],
             task: false,
             body: vec![Stmt::For { var: "__item".into(), seq: seq(sname), body, line }, Stmt::Expr { expr: advance, line }],
             platform: Vec::new(),
@@ -9391,7 +9391,7 @@ impl Lowerer {
     fn ring_kept_in(&self, e: &Expr, x: &str) -> bool {
         match &e.kind {
             ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Acc => true,
-            ExprKind::Name(n) | ExprKind::Seq(n) => n != x,
+            ExprKind::Name(n) | ExprKind::Seq(n) | ExprKind::Arr(n) => n != x,
             ExprKind::Unit(a, _) | ExprKind::Neg(a) | ExprKind::Field(a, _) => self.ring_kept_in(a, x),
             ExprKind::List(items) => items.iter().all(|a| self.ring_kept_in(a, x)),
             ExprKind::Range { from: a, to: c, .. } | ExprKind::Bin(_, a, c) | ExprKind::Index(a, c) => self.ring_kept_in(a, x) && self.ring_kept_in(c, x),
@@ -9726,6 +9726,9 @@ impl Lowerer {
         // 143)? Said by whoever asked, for this expression alone
         let one = std::mem::take(&mut self.one);
         match &e.kind {
+            // an array's name is written as the `Seq` it lowers as
+            // before the lowering is handed the tree (fm3 log 159)
+            ExprKind::Arr(n) => unreachable!("'{}[]' reached the lowering unsettled", n),
             ExprKind::Int(v) => {
                 let ty = match want {
                     Some(Ty::Num(n)) => Ty::Num(n.clone()),
@@ -10378,7 +10381,7 @@ fn quietly_read(features: &[super::store::FeatureDoc], s: &str, call: Called) ->
             Part::Word(_) => false,
         };
         match &e.kind {
-            ExprKind::Seq(n) | ExprKind::Name(n) => n != s,
+            ExprKind::Seq(n) | ExprKind::Arr(n) | ExprKind::Name(n) => n != s,
             ExprKind::Index(base, i) if is(base) => quiet(i, s, file, call),
             ExprKind::Phrase(parts) => match parts.as_slice() {
                 [Part::Word(w), x] if w == "count" && part(x) => true,
@@ -10558,7 +10561,7 @@ fn mentions_init(v: &super::syntax::VarDecl, bound: &Names, call: &dyn Fn(&[Part
 
 fn mentions_in(e: &Expr, bound: &Names, call: &dyn Fn(&[Part], &Names) -> Option<Vec<Expr>>, out: &mut Names) {
     match &e.kind {
-        ExprKind::Seq(n) | ExprKind::Name(n) => {
+        ExprKind::Seq(n) | ExprKind::Arr(n) | ExprKind::Name(n) => {
             if !bound.contains(n) {
                 out.insert(n.clone());
             }

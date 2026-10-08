@@ -2,8 +2,9 @@
 //! a line's indentation opens and closes blocks (`Indent`, `Dedent`),
 //! and a newline ends a statement. There are no comments: a `#` is an
 //! error naming its line (zero.md section 2 — what a comment would say
-//! goes in the feature's `.md`). A name ending in `$` is a sequence and
-//! lexes as one token with the sigil kept apart.
+//! goes in the feature's `.md`). A name ending in `$` is a stream and a
+//! name ending in `[]` an array (fm3 question 90); each lexes as one
+//! token with the mark kept apart.
 
 use std::fmt;
 
@@ -11,8 +12,16 @@ use std::fmt;
 pub enum Tok {
     /// a plain word: a name, a keyword, a type
     Word(String),
-    /// a name with the `$` sigil: a sequence (`c$`)
+    /// a name with the `$` sigil: a stream (`c$`)
     Seq(String),
+    /// a name with empty brackets directly after it: an array, whole
+    /// (`a[]`, fm3 question 90). The mark is part of the name, as `$` is
+    Arr(String),
+    /// a name with `[` directly after it and something in the
+    /// brackets: an array about to be asked for an item, `a[2]`. The
+    /// bracket is left to be read; what is written against the name
+    /// is what tells this from a word followed by a list
+    At(String),
     Int(i64),
     /// a decimal literal, kept as written so the IR gets the same text
     Float(String),
@@ -32,6 +41,8 @@ impl fmt::Display for Tok {
         match self {
             Tok::Word(w) => write!(f, "'{}'", w),
             Tok::Seq(w) => write!(f, "'{}$'", w),
+            Tok::Arr(w) => write!(f, "'{}[]'", w),
+            Tok::At(w) => write!(f, "'{}['", w),
             Tok::Int(v) => write!(f, "{}", v),
             Tok::Float(s) => write!(f, "{}", s),
             Tok::Str(s) => write!(f, "\"{}\"", s),
@@ -240,6 +251,17 @@ pub fn lex_line(text: &str, line: usize, file: &str, toks: &mut Vec<Token>) -> R
             if i < chars.len() && chars[i] == '$' {
                 i += 1;
                 toks.push(Token { tok: Tok::Seq(word), line });
+            } else if i + 1 < chars.len() && chars[i] == '[' && chars[i + 1] == ']' {
+                i += 2;
+                // two marks on one name are ruled and not built
+                match chars.get(i) {
+                    Some('$') => return Err(error(file, line, format!("'{}[]$', a stream of arrays, is not built (fm3 question 90): a stream's item is a number, an enumeration or a struct of those", word))),
+                    Some('[') => return Err(error(file, line, format!("'{}[][]', an array of arrays, is not built (fm3 question 90): an array's item is a number, an enumeration or a struct of those", word))),
+                    _ => {}
+                }
+                toks.push(Token { tok: Tok::Arr(word), line });
+            } else if i < chars.len() && chars[i] == '[' {
+                toks.push(Token { tok: Tok::At(word), line });
             } else {
                 toks.push(Token { tok: Tok::Word(word), line });
             }

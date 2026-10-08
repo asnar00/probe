@@ -6,11 +6,15 @@
 //! its block, as the lowering scopes them. `probe zero names <store>`
 //! prints what it found, every name declared with a mark, how it was
 //! declared and each form it is used in (fm3 log 158): the census the
-//! respelling was made from.
+//! respelling was made from. And `settle` is what makes the mark part
+//! of a name (log 159): every name is held to the mark it was
+//! declared with, and an array's name is then written as the `Seq`
+//! the lowering reads, so an array lowers to the lines a sequence
+//! given whole always did.
 
 use super::lex::{self, Error};
 use super::store::Store;
-use super::syntax::{Decl, Expr, ExprKind, FnDecl, Init, LoopInto, NamePart, Part, Stmt, VarDecl};
+use super::syntax::{Arg, Decl, Expr, ExprKind, FnDecl, Init, LoopInto, NamePart, Part, Stmt, VarDecl};
 use std::collections::HashMap;
 
 /// where a name is declared
@@ -26,9 +30,46 @@ pub enum Place {
     Result(&'static str),
 }
 
+/// the mark a name is declared with, or written with
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Mark {
+    Plain,
+    Stream,
+    Array,
+}
+
+impl Mark {
+    fn of(seq: bool, arr: bool) -> Mark {
+        match (seq, arr) {
+            (_, true) => Mark::Array,
+            (true, false) => Mark::Stream,
+            (false, false) => Mark::Plain,
+        }
+    }
+
+    pub fn on(&self, name: &str) -> String {
+        match self {
+            Mark::Plain => name.to_string(),
+            Mark::Stream => format!("{}$", name),
+            Mark::Array => format!("{}[]", name),
+        }
+    }
+}
+
+/// a name in scope: its mark, and where it was declared
+#[derive(Clone)]
+struct Entry {
+    at: Option<usize>,
+    mark: Mark,
+    ty: String,
+    file: String,
+    line: usize,
+}
+
 /// one name declared with a mark, and every use of it
 #[derive(Clone, Debug)]
 pub struct Named {
+    pub mark: Mark,
     pub file: String,
     pub line: usize,
     pub ty: String,
@@ -50,9 +91,12 @@ const WORDS: [&str; 7] = ["count", "latest", "frame", "ended", "end", "position"
 
 struct Walk {
     names: Vec<Named>,
-    /// the scopes, innermost last: a name, and its entry in `names`
-    /// where it was declared with a mark
-    scopes: Vec<HashMap<String, Option<usize>>>,
+    /// the scopes, innermost last
+    scopes: Vec<HashMap<String, Entry>>,
+    /// write each array's name as the `Seq` the lowering reads, and
+    /// hold each name to its mark: the first refusal is kept
+    settle: bool,
+    refused: Option<Error>,
     file: String,
     /// the tasks of the store by their words, for a wiring
     tasks: Vec<String>,
@@ -65,26 +109,56 @@ struct Walk {
 }
 
 impl Walk {
-    fn declare(&mut self, name: &str, seq: bool, ty: &str, line: usize, place: Place, how: String) {
-        self.declare_from(name, seq, ty, line, place, how, Vec::new())
+    fn declare(&mut self, name: &str, mark: Mark, ty: &str, line: usize, place: Place, how: String) {
+        self.declare_from(name, mark, ty, line, place, how, Vec::new())
     }
 
-    fn declare_from(&mut self, name: &str, seq: bool, ty: &str, line: usize, place: Place, how: String, from: Vec<usize>) {
-        let at = if seq {
-            self.names.push(Named { file: self.file.clone(), line, ty: ty.to_string(), name: name.to_string(), place, how, uses: Vec::new(), from });
+    fn declare_from(&mut self, name: &str, mark: Mark, ty: &str, line: usize, place: Place, how: String, from: Vec<usize>) {
+        let at = if mark != Mark::Plain {
+            self.names.push(Named { mark, file: self.file.clone(), line, ty: ty.to_string(), name: name.to_string(), place, how, uses: Vec::new(), from });
             Some(self.names.len() - 1)
         } else {
             None
         };
-        self.scopes.last_mut().unwrap().insert(name.to_string(), at);
+        self.scopes.last_mut().unwrap().insert(name.to_string(), Entry { at, mark, ty: ty.to_string(), file: self.file.clone(), line });
+    }
+
+    fn entry(&self, name: &str) -> Option<&Entry> {
+        self.scopes.iter().rev().find_map(|s| s.get(name))
     }
 
     fn find(&self, name: &str) -> Option<usize> {
-        self.scopes.iter().rev().find_map(|s| s.get(name)).copied().flatten()
+        self.entry(name).and_then(|e| e.at)
     }
 
-    fn used(&mut self, name: &str, line: usize, form: String, wants: &'static str) {
-        if let Some(i) = self.find(name) {
+    fn refuse(&mut self, line: usize, msg: String) {
+        if self.settle && self.refused.is_none() {
+            self.refused = Some(lex::error(&self.file, line, msg));
+        }
+    }
+
+    /// where a name was declared, for a refusal: `int a[]` on line 3
+    fn declared(&self, name: &str, e: &Entry) -> String {
+        let at = if e.file == self.file { format!("on line {}", e.line) } else { format!("at {}:{}", e.file, e.line) };
+        format!("declared `{} {}` {}", e.ty, e.mark.on(name), at)
+    }
+
+    /// a name written with a mark: held to the one it was declared
+    /// with (fm3 question 90, "the mark travels"), and its use noted
+    fn used(&mut self, name: &str, written: Mark, line: usize, form: String, wants: &'static str) {
+        let Some(e) = self.entry(name).cloned() else {
+            if written == Mark::Array {
+                self.refuse(line, format!("'{}[]' is not declared: an array is declared with its type, `int {}[] = [1, 2, 3]`", name, name));
+            }
+            return;
+        };
+        match (e.mark, written) {
+            (Mark::Array, Mark::Stream) => self.refuse(line, format!("'{}$': '{}' is an array, {}, and the mark is part of its name wherever it is written (fm3 question 90): write `{}[]`, or `{}[k]` for one item", name, name, self.declared(name, &e), name, name)),
+            (Mark::Stream, Mark::Array) => self.refuse(line, format!("'{}[]': '{}' is a stream, {}, and the mark is part of its name wherever it is written (fm3 question 90): write `{}$`", name, name, self.declared(name, &e), name)),
+            (Mark::Plain, Mark::Array) => self.refuse(line, format!("'{}[]': '{}' is one value, {}, and has no items", name, name, self.declared(name, &e))),
+            _ => {}
+        }
+        if let Some(i) = e.at {
             let file = self.file.clone();
             self.names[i].uses.push((file, line, form, wants));
         }
@@ -97,10 +171,11 @@ impl Walk {
             ExprKind::Range { .. } => "given a range".into(),
             ExprKind::Str(_) => "given a text".into(),
             ExprKind::Seq(n) => format!("given `{}$`", n),
+            ExprKind::Arr(n) => format!("given `{}[]`", n),
             ExprKind::Bin(op, ..) => format!("given an operator's sequence, `{}`", op),
             ExprKind::Phrase(parts) => match parts.as_slice() {
-                [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(_), .. })] if w == "frame" => "given a `frame`".into(),
-                [Part::Value(Expr { kind: ExprKind::Seq(_), .. }), Part::Word(w), ..] if w == "behind" || w == "from" => format!("given `{}`", w),
+                [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(_) | ExprKind::Arr(_), .. })] if w == "frame" => "given a `frame`".into(),
+                [Part::Value(Expr { kind: ExprKind::Seq(_) | ExprKind::Arr(_), .. }), Part::Word(w), ..] if w == "behind" || w == "from" => format!("given `{}`", w),
                 _ => {
                     let words = spoken(parts);
                     if self.is_task(&words) {
@@ -114,7 +189,7 @@ impl Walk {
         }
     }
 
-    fn var(&mut self, v: &VarDecl, place: Place) {
+    fn var(&mut self, v: &mut VarDecl, place: Place) {
         let how = match (&v.init, &v.rate) {
             (Some(Init::Value(e)), _) => self.given(e),
             (Some(Init::Pushes { .. }), Some(_)) => "at a rate, first items".into(),
@@ -123,12 +198,12 @@ impl Walk {
             (None, Some(_)) => "at a rate".into(),
             (None, None) => "bare".into(),
         };
+        let mark = Mark::of(v.seq, v.arr);
         // the value is worked out before the name exists, but a
         // stream's first items may read the stream itself
         let wants = if v.seq { "a sequence" } else { "one value" };
-        match &v.init {
+        match &mut v.init {
             Some(Init::Value(e)) => {
-                self.expr(e, wants, "the value");
                 let mut named = Vec::new();
                 // what a word makes of a stream that is over, a `frame`,
                 // `behind`, a window, is all there; what a function
@@ -137,16 +212,15 @@ impl Walk {
                     super::syntax::seqs_in(e, &mut named);
                 }
                 let from = named.iter().filter_map(|n| self.find(n)).collect();
-                self.declare_from(&v.name, v.seq, &v.ty, v.line, place, how, from);
+                self.expr(e, wants, "the value");
+                self.declare_from(&v.name, mark, &v.ty, v.line, place, how, from);
             }
             Some(Init::Construct(args)) => {
-                for a in args {
-                    self.expr(&a.value, "one value", "an argument of a constructor");
-                }
-                self.declare(&v.name, v.seq, &v.ty, v.line, place, how);
+                self.args(args, "one value", "an argument of a constructor");
+                self.declare(&v.name, mark, &v.ty, v.line, place, how);
             }
             Some(Init::Pushes { items, cond, .. }) => {
-                self.declare(&v.name, v.seq, &v.ty, v.line, place, how);
+                self.declare(&v.name, mark, &v.ty, v.line, place, how);
                 for e in items {
                     self.expr(e, "an item of a push", "the item");
                 }
@@ -154,23 +228,48 @@ impl Walk {
                     self.expr(c, "one value", "the value");
                 }
             }
-            None => self.declare(&v.name, v.seq, &v.ty, v.line, place, how),
+            None => self.declare(&v.name, mark, &v.ty, v.line, place, how),
         }
-        if let Some(r) = &v.rate {
+        if let Some(r) = &mut v.rate {
             self.expr(r, "one value", "the value");
+        }
+    }
+
+    fn args(&mut self, args: &mut [Arg], wants: &'static str, form: &str) {
+        for a in args {
+            self.expr(&mut a.value, wants, form);
         }
     }
 
     /// `form` is how the expression itself stands in what is round it,
     /// and matters only where the expression is a name
-    fn expr(&mut self, e: &Expr, wants: &'static str, form: &str) {
-        match &e.kind {
-            ExprKind::Seq(n) => self.used(n, e.line, form.to_string(), wants),
+    fn expr(&mut self, e: &mut Expr, wants: &'static str, form: &str) {
+        let line = e.line;
+        match &mut e.kind {
+            ExprKind::Seq(n) => {
+                let n = n.clone();
+                self.used(&n, Mark::Stream, line, form.to_string(), wants)
+            }
+            ExprKind::Arr(n) => {
+                let n = n.clone();
+                self.used(&n, Mark::Array, line, form.to_string(), wants);
+                if self.settle {
+                    e.kind = ExprKind::Seq(n);
+                }
+            }
+            // a marked name written as a bare word, alone
+            ExprKind::Phrase(parts) if matches!(parts.as_slice(), [Part::Word(_)]) => {
+                let [Part::Word(w)] = parts.as_slice() else { unreachable!() };
+                if let Some(en) = self.entry(w).filter(|en| en.mark != Mark::Plain).cloned() {
+                    let msg = format!("'{}' is written without its mark: it is {}, and the mark is part of its name wherever it is written (fm3 question 90): write `{}`", w, self.declared(w, &en), en.mark.on(w));
+                    self.refuse(line, msg);
+                }
+            }
             ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Name(_) | ExprKind::Acc => {}
             ExprKind::Unit(x, _) => self.expr(x, wants, "the value"),
             ExprKind::Neg(x) => self.expr(x, wants, "an operand of `-`"),
             ExprKind::Field(x, _) => self.expr(x, "one value", "the base of a field"),
-            ExprKind::List(items) => items.iter().for_each(|x| self.expr(x, "one value", "an item of a list")),
+            ExprKind::List(items) => items.iter_mut().for_each(|x| self.expr(x, "one value", "an item of a list")),
             ExprKind::Range { from, to, .. } => {
                 self.expr(from, "one value", "a bound of a range");
                 self.expr(to, "one value", "a bound of a range");
@@ -192,39 +291,62 @@ impl Walk {
                     ExprKind::Int(_) => "an item by its place, `[k]`",
                     _ => "an item by its place, `[e]`",
                 };
-                self.expr(base, wants, form);
                 self.expr(i, "one value", "the value");
+                // `s[0]` on a plain `string s`, or on a word that is no
+                // variable: the name and a list of one item, the tree
+                // the parser made before an array had a mark (log 159)
+                if let ExprKind::Arr(n) = &base.kind {
+                    if !self.entry(n).is_some_and(|en| en.mark != Mark::Plain) {
+                        if self.settle {
+                            let list = Expr { kind: ExprKind::List(vec![(**i).clone()]), line };
+                            e.kind = ExprKind::Phrase(vec![Part::Word(n.clone()), Part::Value(list)]);
+                        }
+                        return;
+                    }
+                }
+                self.expr(base, wants, form);
             }
-            ExprKind::Phrase(parts) | ExprKind::Existing(parts) => self.phrase(parts, e.line, wants),
+            ExprKind::Phrase(parts) | ExprKind::Existing(parts) => self.phrase(parts, line, wants),
         }
     }
 
-    fn phrase(&mut self, parts: &[Part], line: usize, wants: &'static str) {
-        let seq = |p: &Part| -> Option<String> {
+    fn phrase(&mut self, parts: &mut [Part], line: usize, wants: &'static str) {
+        let seq = |p: &Part| -> Option<(String, Mark)> {
+            let of = |e: &Expr| match &e.kind {
+                ExprKind::Seq(n) => Some((n.clone(), Mark::Stream)),
+                ExprKind::Arr(n) => Some((n.clone(), Mark::Array)),
+                _ => None,
+            };
             match p {
-                Part::Value(Expr { kind: ExprKind::Seq(n), .. }) => Some(n.clone()),
-                Part::Args(a) if a.len() == 1 && a[0].name.is_none() => match &a[0].value.kind {
-                    ExprKind::Seq(n) => Some(n.clone()),
-                    _ => None,
-                },
+                Part::Value(e) => of(e),
+                Part::Args(a) if a.len() == 1 && a[0].name.is_none() => of(&a[0].value),
                 _ => None,
             }
         };
-        // a stream's words, as `stream_word` reads them
-        let word: Option<(String, String, &[Part])> = match parts {
-            [Part::Word(t), Part::Word(of), x] if t == "time" && of == "of" => seq(x).map(|n| ("time of".to_string(), n, &parts[3..])),
-            [Part::Word(w), x] if WORDS.contains(&w.as_str()) => seq(x).map(|n| (w.clone(), n, &parts[2..])),
-            [Part::Word(w), x, Part::Word(k), _] if (w == "peek" && k == "at") || (w == "advance" && k == "by") => seq(x).map(|n| (w.clone(), n, &parts[3..])),
-            [x @ Part::Value(_), Part::Word(w), _] if w == "behind" || w == "at" => seq(x).map(|n| (w.clone(), n, &parts[2..])),
-            [x @ Part::Value(_), Part::Word(w), _, Part::Word(to), _] if w == "from" && to == "to" => seq(x).map(|n| ("from ... to".to_string(), n, &parts[2..])),
+        // a stream's words, as `stream_word` reads them: the word, the
+        // part that names the stream, and where the rest begins
+        let word: Option<(String, usize, usize)> = match &*parts {
+            [Part::Word(t), Part::Word(of), x] if t == "time" && of == "of" && seq(x).is_some() => Some(("time of".to_string(), 2, 3)),
+            [Part::Word(w), x] if WORDS.contains(&w.as_str()) && seq(x).is_some() => Some((w.clone(), 1, 2)),
+            [Part::Word(w), x, Part::Word(k), _] if ((w == "peek" && k == "at") || (w == "advance" && k == "by")) && seq(x).is_some() => Some((w.clone(), 1, 3)),
+            [x @ Part::Value(_), Part::Word(w), _] if (w == "behind" || w == "at") && seq(x).is_some() => Some((w.clone(), 0, 2)),
+            [x @ Part::Value(_), Part::Word(w), _, Part::Word(to), _] if w == "from" && to == "to" && seq(x).is_some() => Some(("from ... to".to_string(), 0, 2)),
             _ => None,
         };
-        if let Some((w, n, rest)) = word {
-            if self.find(&n).is_some() {
-                self.used(&n, line, format!("the word `{}`", w), wants);
-                for p in rest {
+        if let Some((w, at, rest)) = word {
+            let (n, mark) = seq(&parts[at]).unwrap();
+            if self.entry(&n).is_some() {
+                self.used(&n, mark, line, format!("the word `{}`", w), wants);
+                if self.settle {
+                    match &mut parts[at] {
+                        Part::Value(e) => e.kind = ExprKind::Seq(n),
+                        Part::Args(a) => a[0].value.kind = ExprKind::Seq(n),
+                        Part::Word(_) => {}
+                    }
+                }
+                for p in &mut parts[rest..] {
                     match p {
-                        Part::Args(a) => a.iter().for_each(|a| self.expr(&a.value, "one value", "the value")),
+                        Part::Args(a) => self.args(a, "one value", "the value"),
                         Part::Value(x) => self.expr(x, "one value", "the value"),
                         Part::Word(_) => {}
                     }
@@ -248,14 +370,14 @@ impl Walk {
         };
         for p in parts {
             match p {
-                Part::Args(a) => a.iter().for_each(|a| self.expr(&a.value, wants, &form)),
+                Part::Args(a) => self.args(a, wants, &form),
                 Part::Value(x) => self.expr(x, wants, &form),
                 Part::Word(_) => {}
             }
         }
     }
 
-    fn block(&mut self, stmts: &[Stmt]) {
+    fn block(&mut self, stmts: &mut [Stmt]) {
         self.scopes.push(HashMap::new());
         for s in stmts {
             self.stmt(s);
@@ -263,7 +385,7 @@ impl Walk {
         self.scopes.pop();
     }
 
-    fn stmt(&mut self, s: &Stmt) {
+    fn stmt(&mut self, s: &mut Stmt) {
         match s {
             Stmt::Var(v) => {
                 let place = if self.processor { Place::Said } else { Place::Local };
@@ -272,14 +394,15 @@ impl Walk {
             Stmt::Multi { vars, value, .. } => {
                 self.expr(value, "one value", "the value");
                 for p in vars {
-                    self.declare(&p.name, p.seq, &p.ty, p.line, Place::Local, "one of several from a call".into());
+                    self.declare(&p.name, Mark::of(p.seq, p.arr), &p.ty, p.line, Place::Local, "one of several from a call".into());
                 }
             }
             Stmt::Assign { targets, value, line } => {
                 let wants = if targets.iter().any(|t| t.seq) { "a sequence" } else { "one value" };
                 self.expr(value, wants, "the value");
                 for t in targets.iter().filter(|t| t.seq) {
-                    self.used(&t.name, *line, "given by `=`".into(), "a sequence");
+                    let form = if t.pushed { "given by `<<`, a result" } else { "given by `=`" };
+                    self.used(&t.name, Mark::of(t.seq, t.arr), *line, form.into(), "a sequence");
                 }
             }
             Stmt::If { cond, then, els, .. } => {
@@ -301,31 +424,28 @@ impl Walk {
                 self.scopes.pop();
                 if let Some(LoopInto::Declare(ps)) = into {
                     for p in ps {
-                        self.declare(&p.name, p.seq, &p.ty, p.line, Place::Local, "what a loop gives".into());
+                        self.declare(&p.name, Mark::of(p.seq, p.arr), &p.ty, p.line, Place::Local, "what a loop gives".into());
                     }
                 }
             }
             Stmt::For { var, seq, body, line } => {
                 self.expr(seq, "a sequence", "walked by `for`");
                 self.scopes.push(HashMap::new());
-                self.declare(var, false, "", *line, Place::Local, String::new());
+                self.declare(var, Mark::Plain, "", *line, Place::Local, String::new());
                 self.block(body);
                 self.scopes.pop();
             }
-            Stmt::Continue { values, .. } | Stmt::Break { values, .. } => values.iter().for_each(|v| self.expr(v, "one value", "the value")),
+            Stmt::Continue { values, .. } | Stmt::Break { values, .. } => values.iter_mut().for_each(|v| self.expr(v, "one value", "the value")),
             Stmt::Check { cond, .. } => self.expr(cond, "one value", "the value"),
-            Stmt::Push { target, items, cond, forever, line, .. } => {
-                self.push(target, items, cond.as_ref(), *forever, *line);
+            Stmt::Push { target, items, cond, forever, .. } => {
+                self.push(target, items, cond.as_mut(), *forever);
             }
             Stmt::Expr { expr, .. } => self.expr(expr, "nothing", "the value"),
         }
     }
 
-    fn push(&mut self, target: &Expr, items: &[Expr], cond: Option<&Expr>, stands: bool, line: usize) {
-        match &target.kind {
-            ExprKind::Seq(n) => self.used(n, line, "pushed into".into(), "a sequence"),
-            _ => self.expr(target, "a sequence", "pushed into"),
-        }
+    fn push(&mut self, target: &mut Expr, items: &mut [Expr], cond: Option<&mut Expr>, stands: bool) {
+        self.expr(target, "a sequence", "pushed into");
         let wants = if stands { "an item of a push that stands" } else { "an item of a push" };
         for e in items {
             self.expr(e, wants, "the item");
@@ -340,8 +460,8 @@ impl Walk {
         self.tasks.iter().any(|t| t == words || words.strip_suffix(" at") == Some(t.as_str()))
     }
 
-    fn function(&mut self, f: &FnDecl) {
-        let method = matches!(f.name.as_slice(), [NamePart::Group, NamePart::Sym(s)] if s == "<<");
+    fn function(&mut self, f: &mut FnDecl) {
+        let method = matches!(f.name.as_slice(), [NamePart::Group, NamePart::Sym(s), ..] if s == "<<");
         let processor = f.task && matches!(super::zeroic::read(f, &self.file, &self.takers), Ok(Some(_)));
         self.processor = processor;
         let kind = if processor {
@@ -352,80 +472,110 @@ impl Walk {
             "a task"
         } else if method {
             "a `<<` method"
-        } else if self.sinks.contains(&f.name.iter().filter_map(|p| if let NamePart::Word(x) = p { Some(x.as_str()) } else { None }).collect::<Vec<_>>().join(" ")) {
+        } else if self.sinks.contains(&said(&f.name)) {
             "a sink"
         } else {
             "a function"
         };
         self.scopes.push(HashMap::new());
         for r in &f.results {
-            self.declare(&r.name, r.seq, &r.ty, f.line, Place::Result(kind), String::new());
+            self.declare(&r.name, Mark::of(r.seq, r.arr), &r.ty, f.line, Place::Result(kind), String::new());
         }
         for (g, group) in f.groups.iter().enumerate() {
             for p in group {
                 let how = if method && g == 0 { "the stream pushed into" } else { "" };
-                self.declare(&p.name, p.seq, &p.ty, f.line, Place::Param(kind), how.to_string());
+                self.declare(&p.name, Mark::of(p.seq, p.arr), &p.ty, f.line, Place::Param(kind), how.to_string());
             }
         }
-        self.block(&f.body);
+        self.block(&mut f.body);
         self.scopes.pop();
         self.processor = false;
     }
+
+    /// the whole store: feature scope first, which is the store's,
+    /// then each feature's functions, wirings and cases
+    fn store(&mut self, features: &mut [&mut super::store::FeatureDoc]) {
+        for f in features.iter() {
+            for d in &f.code.decls {
+                if let Decl::Wire(Expr { kind: ExprKind::Phrase(parts), .. }) = d {
+                    self.sinks.push(spoken(parts));
+                }
+                if let Decl::Fn(fd) = d {
+                    if fd.task {
+                        self.tasks.push(said(&fd.name));
+                    }
+                }
+            }
+        }
+        for f in features.iter_mut() {
+            self.file = f.code.file.clone();
+            for d in &mut f.code.decls {
+                if let Decl::Var(v) = d {
+                    self.var(v, Place::Feature);
+                }
+            }
+        }
+        for f in features.iter_mut() {
+            self.file = f.code.file.clone();
+            for d in &mut f.code.decls {
+                match d {
+                    Decl::Fn(fd) => self.function(fd),
+                    Decl::Wire(e) => self.expr(e, "a sink", "the value"),
+                    Decl::Edge { target, items, first, cond, only, .. } => {
+                        // a `<<` at feature scope with a stream on its right
+                        // stands, by `forever`, a count or an `until`
+                        self.push(target, items, cond.as_mut(), true);
+                        if let Some(c) = only {
+                            self.expr(c, "one value", "the value");
+                        }
+                        if let Some(x) = first {
+                            self.expr(x, "an item of a push that stands", "the value");
+                        }
+                    }
+                    Decl::Var(_) | Decl::Type(_) => {}
+                }
+            }
+            self.file = f.md_file.clone();
+            for c in &mut f.cases {
+                self.expr(&mut c.call, "a case", "the value");
+            }
+        }
+    }
 }
 
-/// the words of a phrase or of a declared name, as a reader says them
+/// the words of a phrase, as a reader says them
 fn spoken(parts: &[Part]) -> String {
     parts.iter().filter_map(|p| if let Part::Word(w) = p { Some(w.as_str()) } else { None }).collect::<Vec<_>>().join(" ")
 }
 
+/// the words of a declared name
+fn said(name: &[NamePart]) -> String {
+    name.iter().filter_map(|p| if let NamePart::Word(x) = p { Some(x.as_str()) } else { None }).collect::<Vec<_>>().join(" ")
+}
+
+fn walk(store: &Store, settle: bool) -> Walk {
+    Walk { names: Vec::new(), scopes: vec![HashMap::new()], settle, refused: None, file: String::new(), tasks: Vec::new(), takers: super::zeroic::takers(store), sinks: Vec::new(), processor: false }
+}
+
+/// Hold every name of a store to the mark it was declared with, and
+/// write each array's name as the `Seq` the lowering reads (fm3 log
+/// 159). After this no tree of the store has an `Arr` in it
+pub fn settle(store: &mut Store) -> Result<(), Error> {
+    let mut w = walk(store, true);
+    let mut features: Vec<&mut super::store::FeatureDoc> = store.features.iter_mut().chain(store.left_out.iter_mut()).collect();
+    w.store(&mut features);
+    match w.refused {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
 /// every name of a store declared with a mark, with its uses
 pub fn names(store: &Store) -> Vec<Named> {
-    let mut w = Walk { names: Vec::new(), scopes: vec![HashMap::new()], file: String::new(), tasks: Vec::new(), takers: super::zeroic::takers(store), sinks: Vec::new(), processor: false };
-    let features: Vec<_> = store.features.iter().chain(store.left_out.iter()).collect();
-    for f in &features {
-        for d in &f.code.decls {
-            if let Decl::Wire(Expr { kind: ExprKind::Phrase(parts), .. }) = d {
-                w.sinks.push(spoken(parts));
-            }
-            if let Decl::Fn(fd) = d {
-                if fd.task {
-                    w.tasks.push(fd.name.iter().filter_map(|p| if let NamePart::Word(x) = p { Some(x.as_str()) } else { None }).collect::<Vec<_>>().join(" "));
-                }
-            }
-        }
-    }
-    // feature scope is the store's: every feature's variables first
-    for f in &features {
-        w.file = f.code.file.clone();
-        for d in &f.code.decls {
-            if let Decl::Var(v) = d {
-                w.var(v, Place::Feature);
-            }
-        }
-    }
-    for f in &features {
-        w.file = f.code.file.clone();
-        for d in &f.code.decls {
-            match d {
-                Decl::Fn(fd) => w.function(fd),
-                Decl::Wire(e) => w.expr(e, "a sink", "the value"),
-                Decl::Edge { target, items, cond, only, forever, line, .. } => {
-                    // a `<<` at feature scope with a stream on its right
-                    // stands, by `forever`, a count or an `until`
-                    let _ = forever;
-                    w.push(target, items, cond.as_ref(), true, *line);
-                    if let Some(c) = only {
-                        w.expr(c, "one value", "the value");
-                    }
-                }
-                Decl::Var(_) | Decl::Type(_) => {}
-            }
-        }
-        w.file = f.md_file.clone();
-        for c in &f.cases {
-            w.expr(&c.call, "a case", "the value");
-        }
-    }
+    let mut w = walk(store, false);
+    let mut copy: Vec<super::store::FeatureDoc> = store.features.iter().chain(store.left_out.iter()).cloned().collect();
+    let mut features: Vec<&mut super::store::FeatureDoc> = copy.iter_mut().collect();
+    w.store(&mut features);
     w.names
 }
 
@@ -497,7 +647,7 @@ pub fn report(dir: &std::path::Path) -> Result<String, Error> {
             l.dedup();
             l
         };
-        out.push_str(&format!("{}\t{}:{}\t{} {}$\t{}{}{}\tstream: {}\tarray: {}\tat: {}\n", kind, n.file, n.line, n.ty, n.name, place, if n.how.is_empty() { "" } else { ", " }, n.how, stream.join("; "), array.join("; "), lines.join(" ")));
+        out.push_str(&format!("{}\t{}:{}\t{} {}\t{}{}{}\tstream: {}\tarray: {}\tat: {}\n", kind, n.file, n.line, n.ty, n.mark.on(&n.name), place, if n.how.is_empty() { "" } else { ", " }, n.how, stream.join("; "), array.join("; "), lines.join(" ")));
     }
     Ok(out)
 }
