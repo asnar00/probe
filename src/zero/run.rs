@@ -1752,11 +1752,17 @@ mod tests {
         let ir = with("sum$ << sum$ + x$ forever\nout$ << (sum$ << \"\\n\") forever\n", "n << k").unwrap();
         assert!(ir.contains("    __last1: int\n") && !ir.contains("    sum: int"), "{}", ir);
         assert!(ir.contains("fn __edge1(__item: int)\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int = get _1, __last1\n    __next: int = add _2, __item\n    _3: __ctx = load _this\n    _4: __ctx = set _3, __last1, __next\n    store _4, _this\n"), "{}", ir);
-        // wired on and read by its name as well: a queue, the read
-        // guarded for the time before anything is pushed, and the queue
-        // not given back under it
+        // wired on and read by its name as well: no queue (fm3 log
+        // 177), its latest item its field, which the line reads, stores
+        // and hands on. It was a queue never given back, sixty-four
+        // items in its lifetime
         let ir = with("sum$ << sum$ + x$ forever\nout$ << (sum$ << \"\\n\") forever\n", "n << sum$").unwrap();
-        assert!(ir.contains("    _3: index = received(_2)\n    _4: u1 = cmp.gt _3, 0\n    _5: int = if _4\n        _6: int = latest_queue(_2)\n        yield _6\n    else\n        yield 0\n    _7: int = add _5, __item\n"), "{}", ir);
+        assert!(ir.contains("    _3: __ctx = load _this\n    _4: int = get _3, sum\n    _5: int = add _4, __item\n    _6: __ctx = load _this\n    _7: __ctx = set _6, sum, _5\n    store _7, _this\n    if _2\n        __edge2(_5)\n    ret\n"), "{}", ir);
+        assert!(!ir.contains("__queue_int") && !ir.contains("latest_queue"), "{}", ir);
+        // counted as well, it is read in order and is the queue it
+        // was, the read guarded and the queue not given back under it
+        let ir = with("sum$ << sum$ + x$ forever\nout$ << (sum$ << \"\\n\") forever\n", "n << sum$ + count sum$").unwrap();
+        assert!(ir.contains(" = received(") && ir.contains(" = latest_queue(") && ir.contains("        yield 0\n"), "{}", ir);
         assert!(!ir.contains("free_queue("), "{}", ir);
         // its own name later in the chain, another stream pacing: each
         // item, and then the latest, which is that item
@@ -1942,6 +1948,57 @@ mod tests {
         std::fs::write(dir.join("h/h.zero"), "int a$\nint d$ = dd(a$)\n\non (int d$) << dd (int x$)\n    d$ << x$ (2) times\n\non (int n) << f (int k)\n    a$ << k\n    n << count d$\n").unwrap();
         let err = emit(&dir).expect_err("a processor");
         assert!(err.ends_with("h.zero:5: `(n) times` on a push repeats it, which is a loop, and a stream processor has none: say the stream by a line of its own, or write `d$ << item if (condition)`"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stream that keeps nothing does not fill (fm3 log 177): one a
+    /// line reads for its value now is a cell, and one that is wired on
+    /// and read by its name has no queue, its latest item one word
+    /// stored where each item is handed on
+    #[test]
+    fn a_stream_that_keeps_nothing_does_not_fill() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-nowed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 3\n").unwrap();
+        let head = "int up$\nint gate$\nint open$\n\nout$ << (up$ << \"\\n\") forever\nopen$ << up$ if (gate$ == 0) forever\n\non (int n) << f()\n    up$ << 1\n    gate$ << 1\n    up$ << up$ + 1\n    n << up$ + open$\n";
+        let with = |more: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}\n", head, more)).unwrap();
+            emit(&dir)
+        };
+        let ir = with("").unwrap();
+        // no queue anywhere: `up$` is wired twice and read by name,
+        // `gate$` is read by a line's condition, `open$` by name
+        assert!(!ir.contains("__queue_int") && !ir.contains("latest_queue"), "{}", ir);
+        assert!(ir.contains("    up: int\n    gate: int\n    open: int\n"), "{}", ir);
+        assert!(ir.contains(";   up: user, last (h), no queue: its latest item is kept, one word, stored where a push into it calls its edges"), "{}", ir);
+        // the store comes before the calls
+        assert!(ir.contains("    _7: __ctx = set _6, up, _5\n    store _7, _this\n    if _2\n        __edge1(_5)\n    if _2\n        __edge2(_5)\n"), "{}", ir);
+        // its own name on the right of its own push is the field
+        assert!(ir.contains("    _15: int = get _14, up\n    _16: int = add _15, 1\n    _17: __ctx = load _this\n    _18: __ctx = set _17, up, _16\n"), "{}", ir);
+        // the line's condition reads the cell
+        assert!(ir.contains("fn __edge2(__item: int)\n    _this: ptr = context()\n    _1: __ctx = load _this\n    _2: int = get _1, gate\n    _3: u1 = cmp.eq _2, 0\n"), "{}", ir);
+        // a stream that is wired and that nothing names is as it was:
+        // no storage and no field
+        let bare = with("int quiet$\nout$ << (quiet$ << \"\\n\") forever\n\non g()\n    quiet$ << 1").unwrap();
+        assert!(bare.contains(";   quiet: no storage, no word reading it: a push into it calls its edges") && !bare.contains("    quiet: int"), "{}", bare);
+        // one more word and it is read in order: a queue, as it was
+        for more in ["\non (int n) << g()\n    n << count up$", "\non g()\n    end up$", "\non (int n) << g()\n    n << peek up$ at (0)"] {
+            let stored = with(more).unwrap();
+            assert!(stored.contains("    up: int$\n") && stored.contains("__queue_int"), "{}", stored);
+        }
+        // given a first item where it is declared it is stored too
+        std::fs::write(dir.join("h/h.zero"), head.replacen("int up$\n", "int up$ << 0\n", 1)).unwrap();
+        let first = emit(&dir).unwrap();
+        assert!(first.contains("    up: int$\n"), "{}", first);
+        // with a rate it keeps its latest and its step
+        std::fs::write(dir.join("h/h.zero"), head.replacen("int up$\n", "int up$ at (1 hz)\n", 1)).unwrap();
+        let rated = emit(&dir).unwrap();
+        assert!(rated.contains("    up: int\n") && !rated.contains("__queue_int") && rated.contains("__wait("), "{}", rated);
+        // the input of a processor, read by name
+        std::fs::write(dir.join("h/h.zero"), "int x$\nint d$ = doubled (x$)\nint sum$\nsum$ << sum$ + d$ forever\n\non (int d$) << doubled (int x$)\n    d$ << x$ * 2\n\non (int n) << f()\n    x$ << 1 << 2\n    n << x$ + sum$ - 5\n").unwrap();
+        let fed = emit(&dir).unwrap();
+        assert!(fed.contains("    x: int\n") && !fed.contains("__queue_int"), "{}", fed);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

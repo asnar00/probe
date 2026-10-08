@@ -45,6 +45,19 @@ int stop$
 int stopped$
 stopped$ << tock$ until (stop$ == 1)
 out$ << (stopped$ << "\n") forever
+int through$
+int gate$
+int let$
+int passed$
+let$ << through$ if (gate$ == 0) forever
+passed$ << passed$ + let$ forever
+int fed$
+int two$ = twofold (fed$)
+int twos$
+twos$ << twos$ + two$ forever
+
+on (int d$) << twofold (int p$)
+    d$ << p$ * 2
 
 on hello thrice()
     out$ << "hello\n" (3) times
@@ -177,3 +190,32 @@ on passed till the stop()
     tock$ << 3
     stop$ << 0
     tock$ << 4
+
+on (int n) << gated (int k)
+    gate$ << 0 (k) times
+    through$ << 5
+    gate$ << 1
+    through$ << 7
+    n << passed$
+
+on (int n) << climbed to (int k)
+    up$ << 1 << (up$ + 1) while (_ <= k)
+    n << up$
+
+on (int n) << tallied to (int k)
+    w$ << [1 through k]
+    n << tally$
+
+on (int n) << asked of the stop (int k)
+    stop$ << 0 (k) times
+    stop$ << 2
+    n << stop$ + k
+
+on (int n) << beaten to (int k)
+    beat$ << 1 << (beat$ + 1) while (_ <= k)
+    n << beat$
+
+on (int n, int m) << fed to (int k)
+    fed$ << 1 << (fed$ + 1) while (_ <= k)
+    n << fed$
+    m << twos$
