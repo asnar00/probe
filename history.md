@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: two structures compared, and a case that says what the lexer gave — `5716e22` · 2026-10-08
+
+```
+on (bool same) << lexed right()
+    arrive first()
+    arrive again()
+    token got[] = frame u$
+    same << got[] [==] [token(word, 0, 3), token(word, 4, 1), token(mark, 6, 1), token(number, 8, 2), token(mark, 10, 1)]
+```
+
+`suite/zero/lex-zeroic/lex/lex.zero:73-77`. A case could not say what a stream of tokens holds. In `src/zero/lower.rs`: `==` on two structures is every field the same (`struct_same`, fm3 question 108), a list of structures is an array, and `whole_same` compares two such arrays. The case is 1 092 as counted, beside five cases that `peek`, 2 595 together. A `frame` writes its stream's field, which cost `two_arrivals` its reuse, so `settle_context` now reuses a field's read where nothing reachable from the function writes it. `zeroic` gains thirty second cases. Eight stores moved; the six rows unmoved. Zero 928/928 natively and on wasm; `cargo test zero` 71.
+
 ### zero: a later item of a standing line is its stream's value now — `cd71053` · 2026-10-08
 
 ```
