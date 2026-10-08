@@ -4,6 +4,14 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `site_said` stands beside `CHECKED`, for a host that runs the module itself — `dfc3e5b` · 2026-10-08
+
+```
+pub fn site_said(sites: &[Site], said: &str) -> Option<String> {
+```
+
+`src/host.rs:154`. It reads `a failed check at #<site>,<a>,<b>`, what a stop in the diagnostic build says, against that build's table, and gives `a failed check at checks.zero:23: item 5 of 2`. It was private to the runner in `src/zero/run.rs`; it is moved word for word, and the runner calls it from `host.rs`. The zero playground's compiler takes `host.rs` and not the runner, runs the module in the page, and can now read a stop as the command line does. `host.rs` names `zero::lower::Site`; nothing in `lower.rs` names `host`. Nothing a program gives is changed: every store's IR, as the program and as the diagnostic build, is the same to the byte from the binary before and after. Zero 947/947 on four paths and 910/910 on air; `probe test` 1024, 1015, 1024, 1024, 987; `cargo test` 173.
+
 ### zero: a failed check names its line, by the case run again from a build that keeps its place — `e7ab433` · 2026-10-08
 
 ```
