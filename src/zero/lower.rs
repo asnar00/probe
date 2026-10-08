@@ -17,6 +17,7 @@
 //! with named constants, a string a `u8[]` view of bytes.
 
 use super::lex::{self, Error};
+use super::kinds::Mark as NameMark;
 use super::store::{Case, Expect, Mark, Store};
 use super::syntax::{Arg, Decl, Expr, ExprKind, FnDecl, Init, LoopInto, NamePart, Part, Repeat, Stmt, TypeKind};
 use std::collections::HashMap;
@@ -344,6 +345,10 @@ pub struct FnInfo {
     /// for — the IR's targets, or `ir` for a body in the IR that serves
     /// every target — and None for a function with a zero body
     pub platform: Option<Vec<String>>,
+    /// the mark each parameter and each result was declared with (fm3
+    /// question 90, log 162): plain, a stream `x$`, or an array `x[]`
+    pub marks: Vec<NameMark>,
+    pub gives: Vec<NameMark>,
 }
 
 /// the refusal of a program that writes its input (question 35)
@@ -387,6 +392,8 @@ struct FVar {
     /// `last`, or the word after `merge`
     merge: String,
     feature: String,
+    /// declared `int a[]`, an array (fm3 question 90, log 162)
+    arr: bool,
 }
 
 pub struct Lowered {
@@ -3409,6 +3416,18 @@ enum PushRead {
     Value(Val),
 }
 
+/// The kind of thing an expression is (fm3 question 90, log 162): one
+/// value; an array, its items all there; or a stream, its items
+/// arriving. The IR has one type for the two sequences, so the kind is
+/// read from the tree: a stream is what a stream's own name is, and
+/// every other sequence is an array
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Kind {
+    One,
+    Array,
+    Stream,
+}
+
 /// a variable in a function's scope: its current IR value and type
 #[derive(Clone, Debug)]
 struct Var {
@@ -3420,6 +3439,9 @@ struct Var {
     /// assigned only at the depth it was declared, or by the loop that
     /// carries it (log 12)
     loop_depth: usize,
+    /// declared `int a[]`, an array (fm3 question 90, log 162): the
+    /// mark of its declaration, which its uses no longer carry
+    arr: bool,
 }
 
 /// a loop being lowered: what `break` and `continue` need
@@ -3506,7 +3528,7 @@ impl Body {
     /// a variable brought into scope, with no value yet
     fn declare(&mut self, name: &str, ty: Ty) {
         let depth = self.loops.len();
-        self.vars.insert(name.to_string(), Var { ir: String::new(), ty, set: false, loop_depth: depth });
+        self.vars.insert(name.to_string(), Var { ir: String::new(), ty, set: false, loop_depth: depth, arr: false });
     }
 
     /// the IR name for a new definition of `name`: the name itself the
@@ -3516,7 +3538,7 @@ impl Body {
         let n = self.defs.entry(name.to_string()).or_insert(0);
         *n += 1;
         let ir = if *n == 1 { name.to_string() } else { format!("{}_{}", name, n) };
-        let v = self.vars.entry(name.to_string()).or_insert(Var { ir: String::new(), ty: ty.clone(), set: false, loop_depth: depth });
+        let v = self.vars.entry(name.to_string()).or_insert(Var { ir: String::new(), ty: ty.clone(), set: false, loop_depth: depth, arr: false });
         v.ty = ty;
         v.set = true;
         v.ir = ir.clone();
@@ -3939,7 +3961,7 @@ impl Lowerer {
         }
         let ptys = |g: &FnInfo| g.params.iter().map(|(_, t)| t.clone()).collect::<Vec<Ty>>();
         let rtys = |g: &FnInfo| g.results.iter().map(|(_, t)| t.clone()).collect::<Vec<Ty>>();
-        let mine = FnInfo { key: key.clone(), ir: String::new(), plain: String::new(), in_set: false, parts: f.name.clone(), params, results, feature: feature.to_string(), task: f.task, chain: vec![feature.to_string()], platform };
+        let mine = FnInfo { key: key.clone(), ir: String::new(), plain: String::new(), in_set: false, parts: f.name.clone(), params, results, feature: feature.to_string(), task: f.task, chain: vec![feature.to_string()], platform, marks: f.params().map(|p| NameMark::of(p.seq, p.arr)).collect(), gives: f.results.iter().map(|p| NameMark::of(p.seq, p.arr)).collect() };
         if let Some(&i) = set.iter().find(|&&i| ptys(&self.funcs[i]) == ptys(&mine)) {
             let other = &self.funcs[i];
             if other.platform.is_some() || mine.platform.is_some() {
@@ -4093,6 +4115,11 @@ impl Lowerer {
                 let Some(Ty::Stream(ae)) = self.stream_var(n, b) else {
                     return Err(lex::error(&file, a.line, format!("'{}$' is not declared: '{}' reads a stream here", n, info.key)));
                 };
+                // a task reads and moves a stream, and an array is
+                // neither read on nor moved (fm3 questions 90 and 93)
+                if self.arr_name(n, b) {
+                    return Err(lex::error(&file, a.line, format!("'{}' takes a stream here, `{} {}$`, and '{}[]' is an array, all there (fm3 questions 90 and 93). What begins with these items is a stream: `{} s$ << {}[]`, and then `s$` handed over", spoken(info), zero_ty(pe), pname, n, zero_ty(pe), n)));
+                }
                 if ae != *pe {
                     return Err(lex::error(&file, a.line, format!("'{}' reads a stream of {}, '{}$' holds {}", info.key, pe.ir(), n, ae.ir())));
                 }
@@ -4235,7 +4262,7 @@ impl Lowerer {
         let zp = ZProc { at: w.at.clone(), kept, end: w.end.as_ref().map(|fd| mangle(&fd.name)), body: std::rc::Rc::new(w.inline.clone()), gives: w.gives.clone(), feature: feature.to_string(), file: file.to_string() };
         for (name, ty) in &w.state() {
             let t = self.ty(ty, false, file, v.line)?;
-            self.fvars.push(FVar { name: name.clone(), ty: t.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string() });
+            self.fvars.push(FVar { name: name.clone(), ty: t.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string(), arr: false });
             self.zfields.push((name.clone(), t));
         }
         let each = mangle(&w.each.name);
@@ -4517,7 +4544,7 @@ impl Lowerer {
         for n in ended {
             let field = format!("__zend_{}", n);
             let feature = self.fvar(n).map(|f| f.feature.clone()).unwrap_or_default();
-            self.fvars.push(FVar { name: field.clone(), ty: Ty::Bool, scope: "node".into(), merge: "last".into(), feature });
+            self.fvars.push(FVar { name: field.clone(), ty: Ty::Bool, scope: "node".into(), merge: "last".into(), feature, arr: false });
             self.zfields.push((field, Ty::Bool));
             self.zended.insert(n.clone());
         }
@@ -4958,7 +4985,7 @@ impl Lowerer {
         }
         let keep = |l: &mut Lowerer, said: &str, ty: Ty| {
             let field = format!("__{}{}", said, l.edges.len() + 1);
-            l.fvars.push(FVar { name: field.clone(), ty: ty.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string() });
+            l.fvars.push(FVar { name: field.clone(), ty: ty.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string(), arr: false });
             l.zfields.push((field.clone(), ty));
             field
         };
@@ -5112,6 +5139,7 @@ impl Lowerer {
             scope: v.scope.first().cloned().unwrap_or_else(|| "user".into()),
             merge: v.merge.clone().unwrap_or_else(|| "last".into()),
             feature: feature.to_string(),
+            arr: v.arr,
         });
         Ok(())
     }
@@ -5242,7 +5270,7 @@ impl Lowerer {
                 fields.push((format!("__node{}_fin", k + 1), Ty::Bool));
             }
             for (name, ty) in fields {
-                self.fvars.push(FVar { name, ty, scope: "node".into(), merge: "last".into(), feature: node.feature.clone() });
+                self.fvars.push(FVar { name, ty, scope: "node".into(), merge: "last".into(), feature: node.feature.clone(), arr: false });
             }
         }
         // every dynamic feature's implicit `enabled` (section 5, log 28),
@@ -5252,7 +5280,7 @@ impl Lowerer {
             if self.statics.contains(f) {
                 continue;
             }
-            self.fvars.insert(at, FVar { name: format!("__enabled_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone() });
+            self.fvars.insert(at, FVar { name: format!("__enabled_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone(), arr: false });
             at += 1;
         }
         // ... and, after the switches, the effective state of each one
@@ -5261,7 +5289,7 @@ impl Lowerer {
         // is one field at any depth (fm3 question 72, log 138)
         let nested: Vec<String> = self.features.iter().filter(|f| !self.statics.contains(*f) && self.dynamic_ancestor(f).is_some()).cloned().collect();
         for f in &nested {
-            self.fvars.insert(at, FVar { name: format!("__on_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone() });
+            self.fvars.insert(at, FVar { name: format!("__on_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone(), arr: false });
             at += 1;
         }
         if !self.fvars.is_empty() {
@@ -6082,6 +6110,13 @@ impl Lowerer {
                 b.declare(n, t.clone());
             }
         }
+        // each keeps the mark it was declared with (fm3 log 162)
+        let marked = info.params.iter().zip(&info.marks).chain(info.results.iter().zip(&info.gives));
+        for ((n, _), _) in marked.filter(|(_, m)| **m == NameMark::Array) {
+            if let Some(v) = b.vars.get_mut(n) {
+                v.arr = true;
+            }
+        }
         if let Some(n) = b.product_bound {
             writeln!(self.out, "; product setting: bound {}: {}", key.replace('_', " "), n).unwrap();
         }
@@ -6135,7 +6170,7 @@ impl Lowerer {
             file: file.to_string(), depth: 0, loops: Vec::new(), kind: BodyKind::Fn, func: Some(info.clone()),
             below, product_bound: self.product.get(&info.key).copied(),
         };
-        b.vars.insert(sname.clone(), Var { ir: "__device".into(), ty: sty, set: true, loop_depth: 0 });
+        b.vars.insert(sname.clone(), Var { ir: "__device".into(), ty: sty, set: true, loop_depth: 0, arr: false });
         let mut sig = format!("fn {}(", name);
         for (i, (n, t)) in info.params.iter().skip(1).enumerate() {
             if i > 0 {
@@ -6476,7 +6511,7 @@ impl Lowerer {
                     let depth = b.loops.len();
                     for (n, ty, init) in &firsts {
                         let v = b.materialize(init);
-                        b.vars.insert(n.clone(), Var { ir: v.text, ty: ty.clone(), set: true, loop_depth: depth });
+                        b.vars.insert(n.clone(), Var { ir: v.text, ty: ty.clone(), set: true, loop_depth: depth, arr: false });
                     }
                     self.one = true;
                     let cv = self.lower_expr(c, Some(&Ty::Bool), b, None)?;
@@ -6551,6 +6586,7 @@ impl Lowerer {
                     }
                     let ty = self.ty(&p.ty, p.seq, &file, p.line)?;
                     b.declare(&p.name, ty);
+                    b.vars.get_mut(&p.name).unwrap().arr = p.arr;
                     (p.name.clone(), p.line, true)
                 }
                 LoopInto::Assign(ts) => {
@@ -6766,7 +6802,7 @@ impl Lowerer {
         let k = b.tmp();
         b.loops.push(LoopCtx { carried: Vec::new(), results: Vec::new(), explicit: 0, yielded: 0, item: Some((k.clone(), "add", "1".into())), loaded: Some(var.to_string()), breaks: 1 });
         let depth = b.loops.len();
-        b.vars.insert(k.clone(), Var { ir: k.clone(), ty: Ty::Num("index".into()), set: true, loop_depth: depth });
+        b.vars.insert(k.clone(), Var { ir: k.clone(), ty: Ty::Num("index".into()), set: true, loop_depth: depth, arr: false });
         let before = b.vars.clone();
         let start = b.out.len();
         b.depth += 1;
@@ -7038,6 +7074,7 @@ impl Lowerer {
                     }
                     let ty = self.ty(&p.ty, p.seq, &file, p.line)?;
                     b.declare(&p.name, ty.clone());
+                    b.vars.get_mut(&p.name).unwrap().arr = p.arr;
                     names.push(p.name.clone());
                     tys.push(ty);
                 }
@@ -7061,6 +7098,7 @@ impl Lowerer {
                 }
                 let ty = self.decl_ty(v, Some(&b.vars), &file)?;
                 b.declare(&v.name, ty.clone());
+                b.vars.get_mut(&v.name).unwrap().arr = v.arr;
                 if let Ty::Stream(_) = &ty {
                     // a stream (log 38): the ring an expression made with
                     // its items resident; or an empty ring, then the chain
@@ -7534,7 +7572,35 @@ impl Lowerer {
                 continue;
             }
             self.one = ones.get(i).copied().unwrap_or(false);
+            // one value is wanted of the call and of this argument, and
+            // it is an array: the function would be applied to each
+            // item and give an array (fm3 log 162)
+            if let (true, ExprKind::Seq(n)) = (self.one, &a.kind) {
+                if self.arr_name(n, b) {
+                    self.one = false;
+                    return Err(lex::error(&file, a.line, each_not_one(info, a, &file)));
+                }
+            }
+            let wanted_one = self.one;
             let mut v = self.lower_expr(a, Some(ty), b, None)?;
+            if wanted_one && v.ty.items().is_some() && !matches!(ty, Ty::Stream(_)) {
+                return Err(lex::error(&file, a.line, each_not_one(info, a, &file)));
+            }
+            // each argument is held to its parameter's kind (fm3
+            // question 90, log 162): an array's items are all there
+            // and a stream's arrive, and a function says which it takes
+            match (info.marks.get(i), self.kind(a, &v, b)) {
+                (Some(NameMark::Array), Kind::Stream) => {
+                    let (ExprKind::Seq(n) | ExprKind::Name(n)) = &a.kind else { unreachable!() };
+                    let said = spoken(info);
+                    return Err(lex::error(&file, a.line, format!("'{}' takes an array here, `{} {}[]`, and '{}$' is a stream, its items still arriving (fm3 question 90). The array of what has arrived is `frame {}$`: hand it that", said, zero_ty(ty.elem().unwrap_or(ty)), info.params[i].0, n, n)));
+                }
+                (Some(NameMark::Stream), Kind::Array) => {
+                    let said = spoken(info);
+                    return Err(lex::error(&file, a.line, format!("'{}' takes a stream here, `{} {}$`, and this is an array, all there (fm3 question 90). What begins with these items is a stream: `{} s$ << ...`, the array pushed into it, and then `s$` handed over", said, zero_ty(ty.elem().unwrap_or(ty)), info.params[i].0, zero_ty(ty.elem().unwrap_or(ty)))));
+                }
+                _ => {}
+            }
             if round != Round::Any {
                 // a literal, or a list of them, as its own type — or as
                 // the width being tried (log 52) — while `choose` asks
@@ -8409,6 +8475,31 @@ impl Lowerer {
         matches!(ty, Ty::Stream(_)).then_some(ty)
     }
 
+    /// is the name in scope here an array's, declared `int a[]` (fm3
+    /// log 162)? A local hides a feature-scope name, as everywhere
+    fn arr_name(&self, name: &str, b: &Body) -> bool {
+        match b.vars.get(name) {
+            Some(v) => v.arr,
+            None => self.fvar(name).is_some_and(|f| f.arr),
+        }
+    }
+
+    /// The kind of an expression that lowered to `v` (fm3 log 162): one
+    /// value where its type is no sequence; a stream where it is a
+    /// stream's own name; else an array, a list, a range, a text, a
+    /// frame, a map, what a function gives, and a `string`, which has
+    /// no mark and answers as its characters
+    fn kind(&self, e: &Expr, v: &Val, b: &Body) -> Kind {
+        if v.ty.elem().is_none() {
+            return Kind::One;
+        }
+        match &e.kind {
+            // (a plain name is the front end's own, in the calls it writes)
+            ExprKind::Seq(n) | ExprKind::Name(n) if !self.arr_name(n, b) => Kind::Stream,
+            _ => Kind::Array,
+        }
+    }
+
     /// the type of any variable in scope, for a message
     fn seq_or_fvar_ty(&self, name: &str, b: &Body) -> Option<Ty> {
         b.vars.get(name).map(|v| v.ty.clone()).or_else(|| self.fvar(name).map(|f| f.ty.clone()))
@@ -9163,7 +9254,7 @@ impl Lowerer {
     fn z_inline(&mut self, zp: &ZProc, each: &str, ops: &[String], b: &mut Body) -> Vec<String> {
         let info = self.funcs.iter().find(|g| g.ir == each).unwrap().clone();
         let depth = b.loops.len();
-        let scope: HashMap<String, Var> = info.params.iter().zip(ops).map(|((n, t), v)| (n.clone(), Var { ir: v.clone(), ty: t.clone(), set: true, loop_depth: depth })).collect();
+        let scope: HashMap<String, Var> = info.params.iter().zip(ops).map(|((n, t), v)| (n.clone(), Var { ir: v.clone(), ty: t.clone(), set: true, loop_depth: depth, arr: false })).collect();
         let vars = std::mem::replace(&mut b.vars, scope);
         let results = std::mem::take(&mut b.results);
         let kind = std::mem::replace(&mut b.kind, BodyKind::Fn);
@@ -9785,6 +9876,12 @@ impl Lowerer {
                 // latest item (fm3 question 79): a cell's field, or the
                 // library's `latest` of any other stream
                 if one {
+                    // an array has no latest item (fm3 question 96):
+                    // the walk refuses the forms it can see, and this
+                    // is any it could not (log 162)
+                    if self.arr_name(w, b) {
+                        return Err(lex::error(&file, e.line, format!("'{}[]' is an array, and one value is wanted here: an array has no latest item, as a stream has (fm3 question 90). Its last item is `{}[count {}[] - 1]`, one item `{}[k]`, and its sum `{}[] + _`", w, w, w, w, w)));
+                    }
                     if self.is_cell(w, b) {
                         return self.read_cell(w, b, dst, e.line);
                     }
@@ -10197,6 +10294,30 @@ impl Lowerer {
             }
         }
     }
+}
+
+/// The refusal of a function of one item handed an array where one
+/// value is wanted of the call (fm3 log 162): applied to each it
+/// gives an array. The line is shown, and respelled as the array's
+/// declaration where it declares a plain name
+fn each_not_one(info: &FnInfo, a: &Expr, file: &str) -> String {
+    let shown = source_line(file, a.line);
+    let whole = match shown.as_deref().and_then(|l| l.split_once(" = ")) {
+        Some((head, rest)) if head.split(' ').count() == 2 && !head.contains(['$', '[', ',']) => format!("For all of them write `{}[] = {}`", head, rest),
+        _ => "For all of them give what it gives to an array's name, `int v[] = ...`".to_string(),
+    };
+    let line = shown.map(|l| format!("`{}`: ", l)).unwrap_or_default();
+    let arg = match &a.kind {
+        ExprKind::Seq(n) => format!("`{}[]`", n),
+        _ => "an array".to_string(),
+    };
+    format!("{}'{}' takes one item, so given {} it is applied to each and gives an array, and one value is wanted here (fm3 questions 90 and 92). {}; for one, hand it one item", line, spoken(info), arg, whole)
+}
+
+/// a line of a file as written, trimmed, for a refusal to show
+fn source_line(file: &str, line: usize) -> Option<String> {
+    let text = std::fs::read_to_string(file).ok()?;
+    text.lines().nth(line.checked_sub(1)?).map(|l| l.trim().to_string())
 }
 
 /// a moved stream's type after a loop: the local's, or the feature variable's

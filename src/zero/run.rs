@@ -794,7 +794,7 @@ mod tests {
         }
         // a literal that is not negative, a subscript that is, and an
         // index worked out to be negative all lower as they did
-        for line in ["    n << peek x$ at (0)", "    n << x$[-1]", "    index i = 0\n    n << peek x$ at (i - 1)"] {
+        for line in ["    n << peek x$ at (0)", "    index i = 0\n    n << peek x$ at (i - 1)"] {
             let ir = with(line).unwrap_or_else(|e| panic!("{}: {}", line, e));
             assert!(ir.contains("fn f() -> int\n"), "{}", ir);
         }
@@ -1105,6 +1105,47 @@ mod tests {
             assert!(err.contains(message), "{}: {}", text, err);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The lowering knows which kind a name is (fm3 questions 90 and
+    /// 79, log 162): the three crossings that wanted a call resolved
+    /// are refused, each beside the line that stands
+    #[test]
+    fn a_call_is_held_to_its_kinds() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-call-kinds");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 1\n").unwrap();
+        let head = "on (int n) << sum of (int x[])\n    n << x[] + _\n\non (int d) << doubled (int x)\n    d << x * 2\n\non shut (int x$)\n    end x$\n\non (int y$) << twice (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        y$ << (peek x$ at (0)) * 2\n        advance x$ by (1)\n\n";
+        let f = |body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}on (int n) << f()\n{}\n", head, body)).unwrap();
+            emit(&dir)
+        };
+        let refused = |body: &str, what: &str| {
+            let e = f(body).err().unwrap_or_else(|| panic!("not refused: {}", body));
+            assert!(e.contains(what), "{}: {}", body, e);
+        };
+        // a stream handed to a function declared over an array
+        refused("    int s$ << 1 << 2\n    n << sum of (s$)", "h.zero:19: 'sum of' takes an array here, `int x[]`, and 's$' is a stream, its items still arriving (fm3 question 90). The array of what has arrived is `frame s$`: hand it that");
+        assert!(f("    int s$ << 1 << 2\n    n << sum of (frame s$)").is_ok());
+        assert!(f("    int a[] = [1, 2]\n    n << sum of (a[]) + sum of ([3, 4]) + sum of (a[] * 2)").is_ok());
+        // an array handed to a function declared over a stream, and to a task
+        refused("    int a[] = [1, 2]\n    shut (a[])\n    n << 1", "h.zero:19: 'shut' takes a stream here, `int x$`, and this is an array, all there (fm3 question 90). What begins with these items is a stream: `int s$ << ...`, the array pushed into it, and then `s$` handed over");
+        refused("    shut ([1, 2])\n    n << 1", "'shut' takes a stream here, `int x$`, and this is an array");
+        assert!(f("    int s$ << [1, 2]\n    shut (s$)\n    n << 1").is_ok());
+        refused("    int a[] = [1, 2]\n    int d$ = twice (a[])\n    n << count d$", "h.zero:19: 'twice' takes a stream here, `int x$`, and 'a[]' is an array, all there (fm3 questions 90 and 93). What begins with these items is a stream: `int s$ << a[]`, and then `s$` handed over");
+        assert!(f("    int s$ << [1, 2]\n    int d$ = twice (s$)\n    n << count d$").is_ok());
+        // an array where one value is declared, through a call
+        refused("    int a[] = [1, 2, 3]\n    int v = doubled (a[])\n    n << v", "h.zero:19: `int v = doubled (a[])`: 'doubled' takes one item, so given `a[]` it is applied to each and gives an array, and one value is wanted here (fm3 questions 90 and 92). For all of them write `int v[] = doubled (a[])`; for one, hand it one item");
+        refused("    int v = doubled ([1, 2])\n    n << v", "h.zero:18: `int v = doubled ([1, 2])`: 'doubled' takes one item, so given an array it is applied to each and gives an array, and one value is wanted here (fm3 questions 90 and 92). For all of them write `int v[] = doubled ([1, 2])`; for one, hand it one item");
+        refused("    int a[] = [1, 2, 3]\n    n << doubled (a[]) + 1", "`n << doubled (a[]) + 1`: 'doubled' takes one item, so given `a[]` it is applied to each and gives an array, and one value is wanted here (fm3 questions 90 and 92). For all of them give what it gives to an array's name, `int v[] = ...`; for one, hand it one item");
+        assert!(f("    int a[] = [1, 2, 3]\n    int v[] = doubled (a[])\n    int w = doubled (a[1])\n    n << v[2] + w").is_ok());
+        // a stream's name there is its latest item, as it was
+        assert!(f("    int s$ << 1 << 2\n    int v = doubled (s$)\n    n << v").unwrap().contains("latest"));
+        // a look back in a plain function, and in a task that walks
+        refused("    int s$ << 1 << 2\n    n << s$[-1]", "h.zero:19: 's$[-1]' is a look back, the item before the present one, and only a stream processor has a present item (fm3 question 75). In a function a stream's latest item is its name, `s$`; the items its reader has passed are `s$ behind (k)`");
+        std::fs::write(dir.join("h/h.zero"), "int x$\nint d$ = diffs(x$)\n\non (int d$) << diffs (int x$)\n    d$ << x$ - x$[-1]\n\non (int n) << f()\n    x$ << 1 << 4\n    n << count d$\n").unwrap();
+        assert!(emit(&dir).is_ok());
     }
 
     /// `$` means a stream (fm3 question 90, log 161): an array given

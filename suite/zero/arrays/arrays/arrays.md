@@ -26,6 +26,9 @@ Sixteen forms, a function each: an array from a list, from a range, from a text;
 - A stream's word on an array: `peek`, `latest`, `advance`, `position`, `time of`, `at`, `ended`, `end`, `empty`, `frame`, `behind`, `from ... to`. One item of an array is `a[k]`.
 - An array's form on a stream: an item by its place, `x$[2]`, `for (v in x$)`, a reduce, `x$ + _`. The array of what has arrived is `frame x$`. A look back, `x$[-1]`, is a stream's; `a[-1]` is refused.
 - An array where one value is wanted, `int v = a[]`, `if (a[] > 0)`: an array has no latest item.
+- The same through a call: `int v = doubled (a[])`, `doubled` taking one item. Applied to each it gives an array, `int v[] = doubled (a[])`; for one, `doubled (a[1])`.
+- A stream handed to a function declared over an array, `total of (x$)`: the array of what has arrived is `frame x$`. And an array handed to a function or a task declared over a stream: what begins with those items is a stream, `int s$ << a[]`.
+- A look back in a plain function or a task that walks, `x$[-1]`: only a stream processor has a present item to look back from.
 - `count` is asked of both: an array's length, and how much of a stream is waiting.
 - `int[] a`: the mark is on the name, `int a[]`.
 - `token ops[]$`, a stream of arrays, and `int m[][]`, an array of arrays: ruled, and not built.

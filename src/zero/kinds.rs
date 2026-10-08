@@ -39,7 +39,7 @@ pub enum Mark {
 }
 
 impl Mark {
-    fn of(seq: bool, arr: bool) -> Mark {
+    pub fn of(seq: bool, arr: bool) -> Mark {
         match (seq, arr) {
             (_, true) => Mark::Array,
             (true, false) => Mark::Stream,
@@ -206,6 +206,12 @@ impl Walk {
             }
             (Mark::Stream, Mark::Stream) if form.starts_with("an item by its place") && !self.processor => {
                 self.refuse(line, format!("'{}$[k]': an item by its place is an array's, and '{}$' is a stream (fm3 question 90). The item k on from where this reader stands is `peek {}$ at (k)`; the array of what has arrived is `frame {}$`, and one back is `{}$[-1]`", name, name, name, name, name));
+            }
+            // a look back outside a stream processor (fm3 log 162): a
+            // function has no present item to look back from, and the
+            // line was `peek x$ at (-1)`, unchecked (question 61)
+            (Mark::Stream, Mark::Stream) if form.starts_with("a look back") && !self.processor => {
+                self.refuse(line, format!("'{}$[-1]' is a look back, the item before the present one, and only a stream processor has a present item (fm3 question 75). In a function a stream's latest item is its name, `{}$`; the items its reader has passed are `{}$ behind (k)`", name, name, name));
             }
             (Mark::Stream, Mark::Stream) if form == "walked by `for`" => {
                 self.refuse(line, format!("`for` walks an array, and '{}$' is a stream (fm3 question 90): the array of what has arrived is `frame {}$`, `for (x in frame {}$)`", name, name, name));
