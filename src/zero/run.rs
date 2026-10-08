@@ -944,10 +944,61 @@ mod tests {
             let err = with(body).expect_err(body);
             assert!(err.ends_with(said), "{}: {}", body, err);
         }
-        // run inside a function: not built, and said so
+        // handed a stream inside a function: a wiring a function makes
+        // is not built, and the message names the array to hand it
+        // (fm3 question 113)
         std::fs::write(dir.join("h/h.zero"), "on (int d$) << doubled (int x$)\n    d$ << x$ * 2\n\non (int n) << f()\n    int i$ << [1, 2, 3]\n    int d$ = doubled(i$)\n    n << count d$\n").unwrap();
         let err = emit(&dir).expect_err("inside a function");
-        assert!(err.ends_with("h.zero:6: 'doubled' is a stream processor with no loop in it: it is wired at feature scope, `int x$ = doubled(...)`, and running one inside a function is not built"), "{}", err);
+        assert!(err.ends_with("h.zero:6: 'doubled' is a stream processor with no loop in it: its lines hold for every item it is handed. At feature scope it is wired, `int y$ = doubled (i$)`; inside a function a line happens once, and what it is handed is an array, `doubled (frame i$)` the array of what has arrived (fm3 question 113). A wiring made by a function is not built"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stream processor with no loop in it handed an array inside a
+    /// function (fm3 question 113, log 189): its lines for each item,
+    /// each once, in line at a loop over the array and with no
+    /// function called; what it keeps the loop's own values, zero
+    /// before the first; its last tick after the last item; pushed
+    /// straight into the function's own stream, or an array where one
+    /// is wanted. A task that walks is refused an array as it was
+    #[test]
+    fn a_processor_handed_an_array_gives_one() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-zapply-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>g (3) → 6\n").unwrap();
+        let head = "int far$\n\non (int d$) << doubled (int x$)\n    d$ << x$ * 2\n\non (int s$) << summed (int x$)\n    int t$ = t$[-1] + x$\n    s$ << t$\n\non (int e$) << closer (int x$)\n    e$ << 99 if (empty x$)\n\non (int d$) << walking (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        d$ << peek x$ at (0)\n        advance x$ by (1)\n";
+        let g = |body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}\non (int n) << g (int k)\n{}\n", head, body)).unwrap();
+            let ir = emit(&dir)?;
+            let from = ir.find("fn g(k: int) -> int").unwrap();
+            Ok(ir[from..from + ir[from..].find("    ret").unwrap()].to_string())
+        };
+        // a list written out, into the function's own stream: three
+        // items, three pushes, no loop, no call and no second stream
+        let listed = g("    int d$ << doubled ([1, 2, k])\n    n << count d$").unwrap();
+        assert!(listed.contains("    _3: int = mul _1, 2\n    push_queue_open(d, _3)\n    _4: int = mul _2, 2\n    push_queue_open(d, _4)\n    _5: int = mul k, 2\n    push_queue_open(d, _5)\n"), "{}", listed);
+        assert!(!listed.contains("loop(") && listed.matches("__queue_int(").count() == 1 && !listed.contains("__z"), "{}", listed);
+        // a frame of the function's own stream: read where it lies, the
+        // line in the loop
+        let framed = g("    int i$ << 1 << 2 << k\n    int d$ << doubled (frame i$)\n    n << count i$ * 10 + count d$").unwrap();
+        assert!(framed.contains(" = frame_queue(i)\n") && !framed.contains("__copy_queue_int"), "{}", framed);
+        assert!(framed.contains(": int = load _") && framed.contains("        push_queue_open(d, _"), "{}", framed);
+        // what is kept is the loop's own value, zero before the first
+        let kept = g("    int i$ << 1 << 2 << k\n    int d$ << summed (frame i$)\n    n << d$").unwrap();
+        assert!(kept.contains("    _6: int = const 0\n    _9: int = loop(_7: index = 0, _8: int = _6)\n") && kept.contains("        _t: int = add _8, _11\n        push_queue_open(d, _t)\n") && kept.contains("        continue _12, _t\n") && !kept.contains("load _this"), "{}", kept);
+        // the last tick, once, after the items
+        let closed = g("    int d$ << closer ([1, k])\n    n << count d$ * 100 + d$").unwrap();
+        assert!(closed.matches("push_queue_open(d, ").count() == 1 && closed.contains(": int = const 99\n"), "{}", closed);
+        // an array where one is wanted: a queue of the function's own
+        for body in ["    int d[] = doubled ([1, 2, k])\n    n << d[] + _", "    n << doubled ([1 through k]) + _", "    far$ << doubled ([1, 2, k])\n    n << far$", "    int d[] = doubled (doubled ([1, k]))\n    n << d[] + _"] {
+            let ir = g(body).unwrap_or_else(|e| panic!("{}: {}", body, e));
+            assert!(ir.contains("__queue_int(") && !ir.contains("__z"), "{}: {}", body, ir);
+        }
+        // a stream handed over, and a walking task handed an array
+        let err = g("    int i$ << 1 << k\n    int d$ << doubled (i$)\n    n << count d$").expect_err("a stream");
+        assert!(err.contains("what it is handed is an array, `doubled (frame i$)`"), "{}", err);
+        let err = g("    int d$ << walking ([1, k])\n    n << count d$").expect_err("a walking task");
+        assert!(err.contains("'walking' reads 'x$' as a stream it moves"), "{}", err);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

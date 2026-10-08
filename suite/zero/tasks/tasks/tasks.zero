@@ -22,18 +22,10 @@ on (int i$) << sawtooth (int n)
     i$ << count up to (n) << count down from (n)
 
 on (int d$) << doubled (int x$)
-    loop
-        if (count x$ == 0)
-            break
-        d$ << peek x$ at (0) * 2
-        advance x$ by (1)
+    d$ << x$ * 2
 
 on (int e$) << closer (int x$)
-    loop
-        if (count x$ == 0)
-            break
-        advance x$ by (1)
-    e$ << 99 if (ended x$)
+    e$ << 99 if (empty x$)
 
 on (int r$) << runs (int x$)
     r$ << count x$
@@ -100,13 +92,12 @@ on (int n) << composed at a rate()
     n << k * 10 + t / 1000000
 
 on (int n) << fed a literal()
-    int i$ << [1, 2, 3]
-    int d$ = doubled(i$)
+    int d$ << doubled ([1, 2, 3])
     n << count d$ * 10 + latest d$
 
 on (int n) << run now moves the reader()
     int i$ << 1 << 2 << 3
-    int d$ = doubled(i$)
+    int d$ << doubled (frame i$)
     n << count i$ * 10 + count d$
 
 on (int n) << run now inside a loop()
@@ -114,9 +105,18 @@ on (int n) << run now inside a loop()
     int d$
     loop (int k = 10) while (k < 12)
         i$ << k
-        d$ << doubled(i$)
+        d$ << doubled (frame i$)
         continue (k + 1)
     n << count d$ * 10 + latest d$
+
+on (int n) << a task run now inside a loop()
+    int i$ << 1 << 2 << 3 << 4
+    int r$
+    loop (int k = 10) while (k < 12)
+        i$ << k
+        r$ << runs(i$)
+        continue (k + 1)
+    n << count r$ * 10 + latest r$
 
 on (int a, int b) << edged()
     left$ << 1 << 2

@@ -2175,7 +2175,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2217,6 +2217,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         l.cur = feature.clone();
         l.declare(fd, feature, file)?;
         l.zeroic.insert(mangle(&fd.name), p.clone());
+        l.zfiles.insert(mangle(&fd.name), file.clone());
     }
     l.name_methods(&store.features.iter().map(|f| (f.name.clone(), f.code.file.clone())).collect())?;
     // a `<<` method over a `char$` is lowered twice (log 87): as it is
@@ -3440,6 +3441,9 @@ struct Lowerer {
     /// name of its function of one item: what a push into the input
     /// calls it with, and what it keeps
     zprocs: HashMap<String, ZProc>,
+    /// the file each processor read the new way is written in, for
+    /// its lines lowered where a function hands it an array (fm3 log 189)
+    zfiles: HashMap<String, String>,
     /// the state of every such wiring, a field of the context each,
     /// after the declared variables and before the nodes'
     zfields: Vec<(String, Ty)>,
@@ -4327,7 +4331,7 @@ impl Lowerer {
             return Err(lex::error(&file, line, format!("'{}' is a sink: it is wired at feature scope, `{}(...)`, and not run here", spoken(info), info.key)));
         }
         if self.zeroic.contains_key(&info.key) {
-            return Err(lex::error(&file, line, format!("'{}' is a stream processor with no loop in it: it is wired at feature scope, `{} x$ = {}(...)`, and running one inside a function is not built", spoken(info), task_elem(info), info.key)));
+            return Err(lex::error(&file, line, self.z_refusal(info, args, b)));
         }
         let Ty::Stream(want) = &info.results[0].1 else { unreachable!() };
         let Ty::Stream(have) = &out.ty else { unreachable!() };
@@ -7914,8 +7918,10 @@ impl Lowerer {
                     // a stream (log 38): the ring an expression made with
                     // its items resident; or an empty ring, then the chain
                     // of pushes, or the task that fills it, run now (log 25)
+                    // (a processor handed an array gives an array, as a
+                    // function does: fm3 log 189)
                     let task = match &v.init {
-                        Some(Init::Value(e)) => self.task_call(e, Some(&b.vars), &file)?,
+                        Some(Init::Value(e)) => self.task_call(e, Some(&b.vars), &file)?.filter(|(info, args, _)| !self.z_takes(info, args, b)),
                         _ => None,
                     };
                     match (&v.init, task) {
@@ -10165,6 +10171,19 @@ impl Lowerer {
         for (i, e) in items.iter().enumerate() {
             // a task call in the chain: the task runs into the stream now
             if let Some((info, args, hz)) = self.task_call(e, Some(&b.vars), &file)? {
+                // a processor with no loop in it handed an array (fm3
+                // log 189): what its lines push, as items of this push
+                if b.kind != BodyKind::Reset && i < once && self.z_takes(&info, &args, b) {
+                    // into the function's own stream of the processor's
+                    // kind of item its lines push straight; anywhere
+                    // else the array is made and pushed as an array is
+                    let direct = b.vars.get(name).is_some_and(|v| !v.arr && v.ty == info.results[0].1) && !self.is_lcell(name, b);
+                    match self.z_apply(&info, &args[0], direct.then_some(name), b, e.line)? {
+                        Some(v) => self.push_item(name, s, v, e.line, b)?,
+                        None => self.loose_push = true,
+                    }
+                    continue;
+                }
                 if b.kind == BodyKind::Reset {
                     return Err(lex::error(&file, e.line, "a task call at feature scope before a pushed item: a chain's items come before its tasks"));
                 }
@@ -10906,6 +10925,255 @@ impl Lowerer {
         self.zthread = Some(t);
     }
 
+    /// Is this call a processor with no loop in it handed an array
+    /// (fm3 question 113, log 189)? Told from the tree: its one
+    /// argument is anything but a stream's own name
+    fn z_takes(&self, info: &FnInfo, args: &[Expr], b: &Body) -> bool {
+        if !self.zeroic.contains_key(&info.key) || args.len() != 1 {
+            return false;
+        }
+        match &args[0].kind {
+            ExprKind::Seq(n) | ExprKind::Name(n) => self.arr_name(n, b),
+            _ => true,
+        }
+    }
+
+    /// what a processor handed a stream inside a function is told
+    fn z_refusal(&self, info: &FnInfo, args: &[Expr], b: &Body) -> String {
+        let said = spoken(info);
+        let given = match args.first().map(|a| &a.kind) {
+            Some(ExprKind::Seq(n) | ExprKind::Name(n)) if self.stream_var(n, b).is_some() => n.clone(),
+            _ => "x".to_string(),
+        };
+        format!("'{}' is a stream processor with no loop in it: its lines hold for every item it is handed. At feature scope it is wired, `{} y$ = {} ({}$)`; inside a function a line happens once, and what it is handed is an array, `{} (frame {}$)` the array of what has arrived (fm3 question 113). A wiring made by a function is not built", said, task_elem(info), said, given, said, given)
+    }
+
+    /// A processor with no loop in it handed an array inside a
+    /// function (fm3 question 113, log 189): its lines for each item
+    /// in order, each once, in line at a loop over the array, what it
+    /// keeps the loop's own values and the zero of its type before
+    /// the first; then, the array being all there, its last tick.
+    /// What the lines push goes into `into`, a stream of the function's
+    /// own, or else into a queue made here, which is the array given
+    fn z_apply(&mut self, info: &FnInfo, arg: &Expr, into: Option<&str>, b: &mut Body, line: usize) -> Result<Option<Val>, Error> {
+        let file = b.file.clone();
+        self.reach(&spoken(info), &info.feature, &file, line)?;
+        let p = self.zeroic[&info.key].clone();
+        let zfile = self.zfiles[&info.key].clone();
+        let Ty::Stream(out_elem) = info.results[0].1.clone() else { unreachable!() };
+        let Ty::Stream(in_elem) = info.params[0].1.clone() else { unreachable!() };
+        let in_ty = Ty::Stream(in_elem.clone());
+        // the array: a list written out is its items; a frame of the
+        // function's own stream is read where it lies, nothing being
+        // able to push into that stream before the loop has read it;
+        // anything else is the array it lowers to
+        enum Items {
+            Listed(Vec<Val>),
+            View(String, String),
+        }
+        let items = match &arg.kind {
+            ExprKind::List(list) => {
+                let mut vals = Vec::new();
+                for x in list {
+                    self.one = true;
+                    let v = self.lower_expr(x, Some(&in_elem), b, None)?;
+                    let v = if v.literal && fits_literal(&v, &in_elem) { Val { ty: (*in_elem).clone(), ..v } } else { v };
+                    if v.ty != *in_elem {
+                        return Err(lex::error(&file, x.line, format!("'{}' takes {} and this item is {}", spoken(info), zero_ty(&in_elem), zero_ty(&v.ty))));
+                    }
+                    vals.push(b.materialize(&v));
+                }
+                Items::Listed(vals)
+            }
+            _ => {
+                let kept_view = match &arg.kind {
+                    ExprKind::Seq(n) => self.views.get(n).filter(|_| b.vars.contains_key(n)).cloned(),
+                    _ => None,
+                };
+                let view = match kept_view {
+                    Some(v) => v,
+                    None => {
+                        let own = matches!(&arg.kind, ExprKind::Phrase(parts) if matches!(parts.as_slice(), [_, Part::Value(Expr { kind: ExprKind::Seq(n), .. })] if b.vars.contains_key(n) && into != Some(n.as_str())));
+                        self.view_wanted = own && is_frame(arg);
+                        let v = self.lower_expr(arg, Some(&in_ty), b, None);
+                        self.view_wanted = false;
+                        let v = v?;
+                        if v.ty != in_ty {
+                            return Err(lex::error(&file, arg.line, format!("'{}' takes an array of {} and this is {}", spoken(info), zero_ty(&in_elem), zero_ty(v.ty.elem().unwrap_or(&v.ty)))));
+                        }
+                        if std::mem::take(&mut self.view_given) { v.text } else { self.unread_view(&v, b) }
+                    }
+                };
+                let n = b.tmp();
+                b.line(&format!("{}: index = len {}", n, view));
+                Items::View(view, n)
+            }
+        };
+        // where the lines push: the function's own stream, or a queue
+        // for as many items as they could push
+        let (out, made) = match into {
+            Some(n) => (n.to_string(), None),
+            None => {
+                let each = p.outs.len();
+                let cap = match &items {
+                    Items::Listed(vals) => ((vals.len() + 1) * each).to_string(),
+                    Items::View(_, n) => {
+                        let c = b.tmp();
+                        b.line(&format!("{}: index = add {}, 1", c, n));
+                        if each == 1 {
+                            c
+                        } else {
+                            let m = b.tmp();
+                            b.line(&format!("{}: index = mul {}, {}", m, c, each));
+                            m
+                        }
+                    }
+                };
+                let key = format!("__zout{}", b.ntmp);
+                let (s, _) = self.new_resident(&out_elem, &cap, b, Some(&key));
+                b.vars.insert(key.clone(), Var { ir: s.text.clone(), ty: s.ty.clone(), set: true, loop_depth: b.loops.len(), arr: false });
+                (key, Some(s))
+            }
+        };
+        let w = super::zeroic::write(&p, 0, &out, false, false, &|w, of| match of {
+            None => self.enum_case(w).is_some(),
+            Some(c) => matches!(self.types.get(w), Some(TypeInfo::Enum(cases)) if cases.iter().any(|x| x == c)),
+        });
+        // the lines' own names and their types: the item, the count
+        // where a line asks `position`, each earlier value kept
+        let mut params: Vec<(String, Ty)> = Vec::new();
+        for q in &w.each.groups[0] {
+            params.push((q.name.clone(), self.ty(&q.ty, false, &zfile, p.line)?));
+        }
+        let counted = p.position;
+        let first = 1 + counted as usize;
+        // what is kept, the zero of its type before the first item
+        let mut kept: Vec<Vec<String>> = Vec::new();
+        let mut tys: Vec<Ty> = Vec::new();
+        let mut at = first;
+        for c in &p.kept {
+            let ty = params[at].1.clone();
+            let mut vals = Vec::new();
+            for _ in 0..c.depth {
+                let z = self.zero_val(&ty, b);
+                vals.push(b.materialize(&z).text);
+            }
+            at += c.depth;
+            kept.push(vals);
+            tys.push(ty);
+        }
+        // the lines lowered where the call stands, as the processor's
+        // feature's and in its file, what this statement holds of its
+        // own push put aside (as `z_inline` does); `ops` the values of
+        // the lines' own names; what the said streams are after them
+        let fake = FnInfo { ir: format!("__zin_{}", info.ir), ..info.clone() };
+        let lines = |l: &mut Lowerer, body: &[Stmt], names: &[(String, Ty)], ops: &[String], gives: &[String], b: &mut Body| -> Result<Vec<String>, Error> {
+            let saved = b.vars.clone();
+            let depth = b.loops.len();
+            for ((n, t), v) in names.iter().zip(ops) {
+                b.vars.insert(n.clone(), Var { ir: v.clone(), ty: t.clone(), set: true, loop_depth: depth, arr: false });
+            }
+            let results = std::mem::take(&mut b.results);
+            let was_file = std::mem::replace(&mut b.file, zfile.clone());
+            let func = b.func.replace(fake.clone());
+            let below = b.below.take();
+            let cur = std::mem::replace(&mut l.cur, info.feature.clone());
+            let held = (l.push_site.take(), l.bare_gates.take(), l.loose_push, l.sure_push, l.zbroken, l.after_push.take(), l.zthread.take(), l.push_read.take(), l.candidate.take(), l.one, l.now);
+            let done = l.lower_block(body, b);
+            let given: Vec<String> = gives.iter().map(|n| b.vars.get(n).map(|v| v.ir.clone()).unwrap_or_default()).collect();
+            (l.push_site, l.bare_gates, l.loose_push, l.sure_push, l.zbroken, l.after_push, l.zthread, l.push_read, l.candidate, l.one, l.now) = held;
+            l.cur = cur;
+            b.below = below;
+            b.func = func;
+            b.file = was_file;
+            b.results = results;
+            b.vars = saved;
+            done.map(|_| given)
+        };
+        // one item: the lines, and each kept stream moved back a place
+        let step = |l: &mut Lowerer, x: &str, k: Option<&str>, kept: &[Vec<String>], b: &mut Body| -> Result<Vec<Vec<String>>, Error> {
+            let mut ops = vec![x.to_string()];
+            ops.extend(k.map(str::to_string));
+            ops.extend(kept.iter().flatten().cloned());
+            let mut given = lines(l, &w.inline, &params, &ops, &w.gives, b)?.into_iter();
+            let mut next = Vec::new();
+            for (c, vals) in p.kept.iter().zip(kept) {
+                let present = if c.input { x.to_string() } else { given.next().unwrap() };
+                let mut moved = vec![present];
+                moved.extend(vals[..vals.len() - 1].iter().cloned());
+                next.push(moved);
+            }
+            Ok(next)
+        };
+        let count = match items {
+            Items::Listed(vals) => {
+                for (i, v) in vals.iter().enumerate() {
+                    let k = counted.then(|| {
+                        let k = b.tmp();
+                        b.line(&format!("{}: index = const {}", k, i));
+                        k
+                    });
+                    kept = step(self, &v.text, k.as_deref(), &kept, b)?;
+                }
+                let n = b.tmp();
+                if counted && w.end.is_some() {
+                    b.line(&format!("{}: index = const {}", n, vals.len()));
+                }
+                n
+            }
+            Items::View(view, n) => {
+                let k = b.tmp();
+                let mut hdr = format!("{}: index = 0", k);
+                let (mut carried, mut left, mut defs) = (Vec::new(), Vec::new(), Vec::new());
+                for (ty, vals) in tys.iter().zip(&kept) {
+                    let (mut cs, mut ls) = (Vec::new(), Vec::new());
+                    for v in vals {
+                        let (c, l) = (b.tmp(), b.tmp());
+                        write!(hdr, ", {}: {} = {}", c, ty.ir(), v).unwrap();
+                        defs.push(format!("{}: {}", l, ty.ir()));
+                        cs.push(c);
+                        ls.push(l);
+                    }
+                    carried.push(cs);
+                    left.push(ls);
+                }
+                let prefix = if defs.is_empty() { String::new() } else { format!("{} = ", defs.join(", ")) };
+                b.open_loop(&prefix, &hdr, false);
+                b.depth += 1;
+                let done = b.tmp();
+                b.line(&format!("{}: u1 = cmp.ge {}, {}", done, k, n));
+                b.line(&format!("if {}", done));
+                b.depth += 1;
+                b.line(format!("break {}", carried.iter().flatten().cloned().collect::<Vec<_>>().join(", ")).trim_end());
+                b.depth -= 1;
+                let x = b.tmp();
+                b.line(&format!("{}: {} = load {}, {}", x, in_elem.ir(), view, k));
+                let next = step(self, &x, counted.then_some(k.as_str()), &carried, b)?;
+                let k2 = b.tmp();
+                b.line(&format!("{}: index = add {}, 1", k2, k));
+                let mut again = vec![k2];
+                again.extend(next.into_iter().flatten());
+                b.line(&format!("continue {}", again.join(", ")));
+                b.depth -= 1;
+                kept = left;
+                n
+            }
+        };
+        // the last tick: the array is all there, so its end is too
+        if let Some(end) = &w.end {
+            let mut ops: Vec<String> = Vec::new();
+            if counted {
+                ops.push(count);
+            }
+            ops.extend(kept.iter().flatten().cloned());
+            lines(self, &end.body, &params[1..], &ops, &[], b)?;
+        }
+        Ok(made.map(|s| {
+            b.vars.remove(&out);
+            s
+        }))
+    }
+
     /// Now reaches the next slot of a stream's beat (question 52 as
     /// refined, `fm3/time.md` "a stream has a beat", fm3 log 98). A
     /// stream with a rate has slots one period apart from its phase,
@@ -11412,6 +11680,15 @@ impl Lowerer {
         let (cands, args) = find_methods(&self.funcs, parts, &is_var, &file, e.line)?;
         let cands: Vec<FnInfo> = cands.into_iter().cloned().collect();
         if cands[0].task {
+            // a processor with no loop in it handed an array gives an
+            // array (fm3 question 113, log 189)
+            if self.z_takes(&cands[0], &args, b) {
+                let v = self.z_apply(&cands[0], &args[0], None, b, e.line)?;
+                return Ok(v.unwrap());
+            }
+            if self.zeroic.contains_key(&cands[0].key) {
+                return Err(lex::error(&file, e.line, self.z_refusal(&cands[0], &args, b)));
+            }
             return Err(lex::error(&file, e.line, task_refusal(&cands[0], e)));
         }
         // which methods the call may mean, by its brackets (log 165).

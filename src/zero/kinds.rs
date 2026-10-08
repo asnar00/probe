@@ -100,6 +100,9 @@ struct Walk {
     file: String,
     /// the tasks of the store by their words, for a wiring
     tasks: Vec<String>,
+    /// ... and those of them that are stream processors with no loop
+    /// in them, which a function may hand an array (fm3 log 189)
+    procs: Vec<String>,
     takers: super::zeroic::Takers,
     /// the functions a feature wires as sinks, `write(out$)`, by
     /// their words: what such a function is handed is a stream
@@ -252,7 +255,7 @@ impl Walk {
                 [Part::Value(Expr { kind: ExprKind::Seq(_) | ExprKind::Arr(_), .. }), Part::Word(w), ..] if w == "behind" || w == "from" => format!("given `{}`", w),
                 _ => {
                     let words = spoken(parts);
-                    if self.is_task(&words) {
+                    if self.is_task(&words) && !self.applied(parts) {
                         format!("wired to the task `{}`", words)
                     } else {
                         format!("given what `{}` gives", words)
@@ -480,7 +483,7 @@ impl Walk {
             Part::Value(x) => matches!(x.kind, ExprKind::Acc),
             Part::Word(_) | Part::Whole => false,
         });
-        let task = self.is_task(&words);
+        let task = self.is_task(&words) && !self.applied(parts);
         let form = if task {
             format!("handed to the task `{}`", words)
         } else if acc {
@@ -583,6 +586,22 @@ impl Walk {
         self.tasks.iter().any(|t| t == words || words.strip_suffix(" at") == Some(t.as_str()))
     }
 
+    /// A stream processor with no loop in it handed an array (fm3
+    /// question 113, log 189): its one argument is anything but a
+    /// stream's own name. It gives an array, as a function does, and
+    /// is no wiring
+    fn applied(&self, parts: &[Part]) -> bool {
+        if !self.procs.iter().any(|t| *t == spoken(parts)) {
+            return false;
+        }
+        let args: Vec<&Expr> = parts.iter().flat_map(|p| match p {
+            Part::Args(a) => a.iter().map(|a| &a.value).collect::<Vec<_>>(),
+            Part::Value(x) => vec![x],
+            Part::Word(_) | Part::Whole => Vec::new(),
+        }).collect();
+        matches!(args.as_slice(), [x] if !matches!(x.kind, ExprKind::Seq(_)))
+    }
+
     fn function(&mut self, f: &mut FnDecl) {
         let method = matches!(f.name.as_slice(), [NamePart::Group, NamePart::Sym(s), ..] if s == "<<");
         // a body `read` refuses is a processor with a mistake in it,
@@ -628,6 +647,9 @@ impl Walk {
                 if let Decl::Fn(fd) = d {
                     if fd.task {
                         self.tasks.push(said(&fd.name));
+                        if matches!(super::zeroic::read(fd, &f.code.file, &self.takers), Ok(Some(_))) {
+                            self.procs.push(said(&fd.name));
+                        }
                     }
                 }
             }
@@ -679,7 +701,7 @@ fn said(name: &[NamePart]) -> String {
 }
 
 fn walk(store: &Store, settle: bool) -> Walk {
-    Walk { names: Vec::new(), scopes: vec![HashMap::new()], settle, refused: None, file: String::new(), tasks: Vec::new(), takers: super::zeroic::takers(store), sinks: Vec::new(), processor: false }
+    Walk { names: Vec::new(), scopes: vec![HashMap::new()], settle, refused: None, file: String::new(), tasks: Vec::new(), procs: Vec::new(), takers: super::zeroic::takers(store), sinks: Vec::new(), processor: false }
 }
 
 /// Hold every name of a store to the mark it was declared with, and
