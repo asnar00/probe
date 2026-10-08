@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a small function applied to a range is written in line at the loop — `6f7bde7` · 2026-10-08
+
+```
+on count off (int i)
+    out$ << "one" if (i == 1) else "more"
+    out$ << "\n"
+
+on blast off ()
+    count off ([3 through 1])
+```
+
+`suite/zero/control/control/control.zero:69-74`. A function applied to a range was the range's loop with a call in it, two an item dearer than the `for` it replaces. `inline_fn` in `src/zero/lower.rs` now lowers the function's own lines there, where it gives nothing, has one definition in the store and is small: four lines at most, no loop, no stream declared, no `existing`. `blast off each` 334 to 328 as counted, its `for`'s number to the unit, so `blast off` and `halves` are the function applied, in place. The meter's `for` row 3 to 1; 78 to 76 in all. Two stores moved; the six rows unmoved. Zero 929/929 natively and on wasm; `cargo test zero` 76.
+
 ### zero: the count of a stream said in a function is carried, and a loop carries one it pushes into — `292c09a` · 2026-10-08
 
 ```
