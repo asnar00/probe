@@ -4,6 +4,15 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a published feature may be refactored, and must pass its own cases — `0bc8ef8` · 2026-10-08
+
+```
+on (int n) << answer()
+    n << 42
+```
+
+`suite/zero/skeleton/skeleton/skeleton.zero:1-2`, the suite's published feature. fm3's question 89: "refactor when needed but tests must pass". The check was of the text and its date, and nothing was run. Now `check_published` in `src/zero/store.rs` records that a published feature's code has changed and refuses only what nothing could hold: code never committed, changed code with no case, and a change to the cases themselves. `held` in `src/zero/run.rs` then runs the feature's own cases before anything else and refuses the store if one fails, naming it. Tried on the lines above and not committed: `n << 40 + 2` passes with the date left alone, `n << 43` is refused. No store's IR moved; the six rows unmoved. The full run: zero 873/873 on four paths, 849 and 24 skipped on the GPU's, `probe test` 1024, 1015, 1024, 1024, 987, `cargo test` 164.
+
 ### zero: `until (an event)` ends a line that stands at the event — `6541c53` · 2026-10-08
 
 ```
