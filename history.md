@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the count of a stream said in a function is carried, and a loop carries one it pushes into — `292c09a` · 2026-10-08
+
+```
+on (int n) << local summed round a loop (int k)
+    int s$
+    loop (int j = 1) while (j <= k)
+        s$ << s$ + j
+        continue (j + 1)
+    n << s$
+```
+
+`suite/zero/cells/cells/cells.zero:154-159`. A stream declared in a function was one value only while nothing counted it and no loop pushed into it; either made it a queue of sixty-four, silently. In `src/zero/lower.rs`, `count` of such a stream is now a second value carried (`lcell_bump`), and `lower_loop` carries what the stream keeps as it carries a stream it moves. `digits said of (12345)` 283 to 34 as counted; `collatz steps said (27)` failed at its sixty-fifth item and gives 111. Found on the way: a queue's own name read before its first push failed a check where a value read zero; `unfed` mends it. Five stores moved; the six rows unmoved. Zero 931/931 natively and on wasm; `cargo test zero` 75.
+
 ### zero: a stream processor handed an array inside a function gives an array — `f411d1f` · 2026-10-08
 
 ```
