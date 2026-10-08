@@ -15,7 +15,7 @@ What landed, one short entry per commit — or per group, when several arrived t
     }
 ```
 
-`src/zero/lower.rs:8438-8443`. Until now the mark on a name was written away just before the lowering ran, so it could not tell `out$ << a[]` from `out$ << x$`. The uses still are; the declaration's mark is kept, on `Var`, `FVar` and each parameter and result of `FnInfo`, and `Kind` says what an expression is: one value, an array or a stream. Three things that wanted a call resolved are now refused: a stream handed to a function over an array, `sum of (s$)`; `int v = doubled (a[])`, which gave the last item doubled; and a look back in a plain function, which read the buffer's header. No store's emitted IR moved. The suite 827/827 natively, `cargo test zero` 60.
+`src/zero/lower.rs:8480-8485`. Until now the mark on a name was written away just before the lowering ran, so it could not tell `out$ << a[]` from `out$ << x$`. The uses still are; the declaration's mark is kept, on `Var`, `FVar` and each parameter and result of `FnInfo`, and `Kind` says what an expression is: one value, an array or a stream. Three things that wanted a call resolved are now refused: a stream handed to a function over an array, `sum of (s$)`; `int v = doubled (a[])`, which gave the last item doubled; and a look back in a plain function, which read the buffer's header. No store's emitted IR moved. The suite 827/827 natively, `cargo test zero` 60.
 
 ### zero: `$` means a stream, each word held to its kind and the 21 names used both ways rewritten — `6246a2b` · 2026-10-08
 
