@@ -4,6 +4,14 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `until (an event)` ends a line that stands at the event — `6541c53` · 2026-10-08
+
+```
+stopped$ << tock$ until (stop$ == 1)
+```
+
+`suite/zero/words/words/words.zero:46`. fm3's question 85, ruled "B": a condition about the item is tested after the push, and one about something else is an event, at which the line ends with nothing going out after. `parse_decl` in `src/zero/syntax.rs` tells them by the streams the condition names and records a `Watch`. For a stream's value, `collect_edge` writes a second function of the line on that stream (`watcher`, `src/zero/lower.rs`), which sets the line's bit, so `stop$` needs no storage; for `ended key$` the bit is set where the stream is ended. `flowed to the end of the key` gives 2 where it gave 3, the one case that changed; two timed cases, each `"0\n1\n2" at 1 hz`. `words` alone moved; the six rows unmoved. Zero 873/873 natively and on wasm, `cargo test zero` 68.
+
 ### zero: three faults a visitor can reach, a conversion, a time written out, a literal held — `ad54175` · 2026-10-08
 
 ```
