@@ -27,7 +27,7 @@ writes `3`. The same line with the word, at feature scope, takes every item as i
 
 ## rules
 - An item of a push in a function is worked out once each time the line runs. A stream's name in it is the stream's latest item; an array's name is the array, all its items.
-- That holds through an operator, `total$ + other$`, through `if (c) then (a) else (b)`, and into an argument of a function of one value.
+- That holds through an operator, `total$ + other$`, through `a if (c) else b`, and into an argument of a function of one value.
 - A stream handed to a task in a chain, `d$ << twice (i$)`, is the stream; so is one a word is asked of, `out$ << frame x$`, which pushes everything unread.
 - A line that stands is not changed: with `forever`, a count or an `until` at feature scope, each item is taken as it comes. Nor is a stream processor's line, where a name is the present item.
 - Before anything has been pushed a stream's name reads as the zero of its type; so do `latest x$` and its own name on the right of a push into it, whatever it is kept as (fm3 question 98; `suite/zero/streams`' `latest before any` and `first of its own`).

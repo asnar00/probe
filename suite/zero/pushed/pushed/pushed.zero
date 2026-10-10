@@ -5,7 +5,7 @@ on (bool yes) << (int a) is under (int b)
     yes << a < b
 
 on (int n) << smaller of (int a) and (int b)
-    n << if (a < b) then (a) else (b)
+    n << (a if (a < b) else b)
 
 on (int s) << sign of (int x)
     s << -1 if (x < 0)
@@ -34,7 +34,7 @@ on (int q, int r) << divide (int a) by (int b)
     r << a - q * b
 
 on (int hi, int lo) << ordered (int a) and (int b)
-    lo << if (a < b) then (a) else (b)
+    lo << (a if (a < b) else b)
     hi << a + b - lo
 
 on (int q, int r) << both of (int a) by (int b)

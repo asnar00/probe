@@ -4,7 +4,7 @@ char in$
 on (char o$) << (int x)
     if (x < 0)
         o$ << "-"
-    int m = if (x < 0) then (x) else (0 - x)
+    int m = x if (x < 0) else 0 - x
     int top = loop (int p = 1) while (m / p <= -10) yields p
         continue (p * 10)
     loop (int p = top) while (p > 0)
@@ -29,10 +29,10 @@ on (char o$) << (float x)
     else
         if (x < 0.0)
             o$ << "-"
-        float m = if (x < 0.0) then (0.0 - x) else (x)
+        float m = 0.0 - x if (x < 0.0) else x
         int64 whole = int64(m)
         int64 scaled = int64((m - float(whole)) * 1000000.0 + 0.5)
-        int64 carry = if (scaled >= 1000000) then (1) else (0)
+        int64 carry = 1 if (scaled >= 1000000) else 0
         o$ << whole + carry
         o$ << "."
         int64 places, int64 digits = loop (int64 places = 6, int64 digits = scaled - carry * 1000000) while (places > 1) yields places, digits
@@ -57,12 +57,12 @@ on (time top) << over one divisor (time x, time k)
         continue (rest, p % rest)
     int64 scale = k.divisor / unit
     int64 scaled = x.divisor / unit
-    int64 m = if (x.count < 0) then (0 - x.count) else (x.count)
-    int64 n = if (k.count < 0) then (0 - k.count) else (k.count)
+    int64 m = 0 - x.count if (x.count < 0) else x.count
+    int64 n = 0 - k.count if (k.count < 0) else k.count
     check (x.divisor <= 9223372036854775807 / scale and m <= 4611686018427387903 / scale and n <= 4611686018427387903 / scaled)
     int64 whole = x.count * scale + k.count * scaled
     int64 places = x.divisor * scale
-    int64 digits = if (whole < 0) then (0 - whole) else (whole)
+    int64 digits = 0 - whole if (whole < 0) else whole
     int64 carry = loop (int64 p = places, int64 rest = digits) while (rest != 0) yields p
         continue (rest, p % rest)
     top << time(whole / carry, places / carry)
@@ -74,10 +74,10 @@ on (int64 steps) << nanoseconds of (time x)
     steps << whole * 1000000000 + digits
 
 on (time t) << (time a) + (time b)
-    t << if (a.divisor == b.divisor) then (time(a.count + b.count, a.divisor)) else (if (a.divisor % b.divisor == 0) then (time(a.count + b.count * (a.divisor / b.divisor), a.divisor)) else (if (b.divisor % a.divisor == 0) then (time(a.count * (b.divisor / a.divisor) + b.count, b.divisor)) else (over one divisor (a, b))))
+    t << (time(a.count + b.count, a.divisor) if (a.divisor == b.divisor) else time(a.count + b.count * (a.divisor / b.divisor), a.divisor) if (a.divisor % b.divisor == 0) else time(a.count * (b.divisor / a.divisor) + b.count, b.divisor) if (b.divisor % a.divisor == 0) else over one divisor (a, b))
 
 on (time t) << (time a) - (time b)
-    t << if (a.divisor == b.divisor) then (time(a.count - b.count, a.divisor)) else (if (a.divisor % b.divisor == 0) then (time(a.count - b.count * (a.divisor / b.divisor), a.divisor)) else (if (b.divisor % a.divisor == 0) then (time(a.count * (b.divisor / a.divisor) - b.count, b.divisor)) else (over one divisor (a, time(0 - b.count, b.divisor)))))
+    t << (time(a.count - b.count, a.divisor) if (a.divisor == b.divisor) else time(a.count - b.count * (a.divisor / b.divisor), a.divisor) if (a.divisor % b.divisor == 0) else time(a.count * (b.divisor / a.divisor) - b.count, b.divisor) if (b.divisor % a.divisor == 0) else over one divisor (a, time(0 - b.count, b.divisor)))
 
 on (time t) << (time a) * (int k)
     t << time(a.count * k, a.divisor)
@@ -86,51 +86,51 @@ on (time t) << (int k) * (time a)
     t << time(k * a.count, a.divisor)
 
 on (time t) << (time a) * (float k)
-    t << if (1000000000 % a.divisor == 0) then (time(int64(a.count * (1000000000 / a.divisor) * k), 1000000000)) else (time(int64(float64(a.count) * 1000000000.0 / float64(a.divisor) * k), 1000000000))
+    t << (time(int64(a.count * (1000000000 / a.divisor) * k), 1000000000) if (1000000000 % a.divisor == 0) else time(int64(float64(a.count) * 1000000000.0 / float64(a.divisor) * k), 1000000000))
 
 on (time t) << (float k) * (time a)
-    t << if (1000000000 % a.divisor == 0) then (time(int64(k * (a.count * (1000000000 / a.divisor))), 1000000000)) else (time(int64(k * (float64(a.count) * 1000000000.0 / float64(a.divisor))), 1000000000))
+    t << (time(int64(k * (a.count * (1000000000 / a.divisor))), 1000000000) if (1000000000 % a.divisor == 0) else time(int64(k * (float64(a.count) * 1000000000.0 / float64(a.divisor))), 1000000000))
 
 on (time top) << finer divisor (time x, int64 k)
     check (k >= 0 and k <= 9223372036854775807 / x.divisor)
     top << time(x.count, x.divisor * k)
 
 on (time t) << (time a) / (int k)
-    t << finer divisor (time(if (k < 0) then (0 - a.count) else (a.count), a.divisor), if (k < 0) then (0 - k) else (k))
+    t << finer divisor (time(0 - a.count if (k < 0) else a.count, a.divisor), 0 - k if (k < 0) else k)
 
 on (time t) << (time a) / (float k)
-    t << if (1000000000 % a.divisor == 0) then (time(int64(a.count * (1000000000 / a.divisor) / k), 1000000000)) else (time(int64(float64(a.count) * 1000000000.0 / float64(a.divisor) / k), 1000000000))
+    t << (time(int64(a.count * (1000000000 / a.divisor) / k), 1000000000) if (1000000000 % a.divisor == 0) else time(int64(float64(a.count) * 1000000000.0 / float64(a.divisor) / k), 1000000000))
 
 on (float r) << (time a) / (time b)
-    r << float(if (a.divisor == b.divisor) then (float64(a.count) / float64(b.count)) else (float64(a.count * b.divisor) / float64(b.count * a.divisor)))
+    r << float(float64(a.count) / float64(b.count) if (a.divisor == b.divisor) else float64(a.count * b.divisor) / float64(b.count * a.divisor))
 
 on (bool r) << (time a) == (time b)
-    r << if (a.divisor == b.divisor) then (a.count == b.count) else (a.count * b.divisor == b.count * a.divisor)
+    r << ((a.count == b.count) if (a.divisor == b.divisor) else (a.count * b.divisor == b.count * a.divisor))
 
 on (bool r) << (time a) != (time b)
-    r << if (a.divisor == b.divisor) then (a.count != b.count) else (a.count * b.divisor != b.count * a.divisor)
+    r << ((a.count != b.count) if (a.divisor == b.divisor) else (a.count * b.divisor != b.count * a.divisor))
 
 on (bool r) << (time a) < (time b)
-    r << if (a.divisor == b.divisor) then (a.count < b.count) else (a.count * b.divisor < b.count * a.divisor)
+    r << ((a.count < b.count) if (a.divisor == b.divisor) else (a.count * b.divisor < b.count * a.divisor))
 
 on (bool r) << (time a) <= (time b)
-    r << if (a.divisor == b.divisor) then (a.count <= b.count) else (a.count * b.divisor <= b.count * a.divisor)
+    r << ((a.count <= b.count) if (a.divisor == b.divisor) else (a.count * b.divisor <= b.count * a.divisor))
 
 on (bool r) << (time a) > (time b)
-    r << if (a.divisor == b.divisor) then (a.count > b.count) else (a.count * b.divisor > b.count * a.divisor)
+    r << ((a.count > b.count) if (a.divisor == b.divisor) else (a.count * b.divisor > b.count * a.divisor))
 
 on (bool r) << (time a) >= (time b)
-    r << if (a.divisor == b.divisor) then (a.count >= b.count) else (a.count * b.divisor >= b.count * a.divisor)
+    r << ((a.count >= b.count) if (a.divisor == b.divisor) else (a.count * b.divisor >= b.count * a.divisor))
 
 on (char o$) << (time x)
-    o$ << nanoseconds(if (1000000000 % x.divisor == 0) then (x.count * (1000000000 / x.divisor)) else (if (x.count < 9223372036 and x.count > -9223372036) then (x.count * 1000000000 / x.divisor) else (nanoseconds of (x))))
+    o$ << nanoseconds(x.count * (1000000000 / x.divisor) if (1000000000 % x.divisor == 0) else x.count * 1000000000 / x.divisor if (x.count < 9223372036 and x.count > -9223372036) else nanoseconds of (x))
 
 on (char o$) << (nanoseconds x)
     int64 steps = x.steps
-    int64 n = if (steps < 0) then (0 - steps) else (steps)
+    int64 n = 0 - steps if (steps < 0) else steps
     if (steps < 0)
         o$ << char(45)
-    int64 unit = if (n == 0) then (1000000000) else (if (n >= 1000000000) then (1000000000) else (if (n >= 1000000) then (1000000) else (if (n >= 1000) then (1000) else (1))))
+    int64 unit = 1000000000 if (n == 0) else 1000000000 if (n >= 1000000000) else 1000000 if (n >= 1000000) else 1000 if (n >= 1000) else 1
     o$ << n / unit
     int64 rest = n % unit
     if (rest != 0)

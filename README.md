@@ -311,10 +311,10 @@ A stream processor may be written with no loop in it, each line holding for ever
 
 ```
 on (token t$) << lex (char c$)
-    kind k$ = if (empty c$) then (space) else (kind of (c$))
+    kind k$ = space if (empty c$) else kind of (c$)
     bool new$ = k$ == mark or k$ != k$[-1]
-    index start$ = if (new$) then (position c$) else (start$[-1])
-    index n$ = if (new$) then (1) else (n$[-1] + 1)
+    index start$ = position c$ if (new$) else start$[-1]
+    index n$ = 1 if (new$) else n$[-1] + 1
     t$ << token(k$[-1], start$[-1], n$[-1]) if (new$ and k$[-1] != space)
 ```
 

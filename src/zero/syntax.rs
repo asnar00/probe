@@ -596,10 +596,80 @@ fn word_said(word: Repeat) -> &'static str {
     }
 }
 
+/// `( ... )` beginning at `i`: one past its close
+fn group_end(s: &str, i: usize) -> Option<usize> {
+    let mut d = 0usize;
+    for (j, ch) in s.char_indices().skip_while(|(j, _)| *j < i) {
+        match ch {
+            '(' => d += 1,
+            ')' => {
+                d -= 1;
+                if d == 0 {
+                    return Some(j + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// whether one of `words` stands outside every bracket of `s`
+fn at_top(s: &str, words: &[&str]) -> bool {
+    let mut d = 0i32;
+    for w in s.split_whitespace() {
+        if d == 0 && words.contains(&w) {
+            return true;
+        }
+        d += w.matches(['(', '[']).count() as i32 - w.matches([')', ']']).count() as i32;
+    }
+    false
+}
+
+/// A line that says `if (c) then (a) else (b)`, as it is written with
+/// the value first, `a if (c) else b` (fm3 question 126): brackets
+/// kept round a choice that stands inside a larger value, and round an
+/// arm that is a comparison. A line it cannot read comes back as it was
+pub fn respelled(s: &str, arm: bool) -> String {
+    let mut from = 0;
+    while let Some(k) = s[from..].find("if (") {
+        let i = from + k;
+        from = i + 1;
+        if s[..i].chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$') {
+            continue;
+        }
+        let Some(c1) = group_end(s, i + 3) else { continue };
+        if !s[c1..].starts_with(" then (") {
+            continue;
+        }
+        let Some(a1) = group_end(s, c1 + 6) else { continue };
+        if !s[a1..].starts_with(" else (") {
+            continue;
+        }
+        let Some(b1) = group_end(s, a1 + 6) else { continue };
+        let cmp = ["==", "!=", "<", "<=", ">", ">=", "and", "or"];
+        let mut a = respelled(&s[c1 + 7..a1 - 1], true);
+        let mut b = respelled(&s[a1 + 7..b1 - 1], true);
+        if at_top(&a, &cmp) || at_top(&a, &["if"]) {
+            a = format!("({})", a);
+        }
+        if at_top(&b, &cmp) {
+            b = format!("({})", b);
+        }
+        let (pre, post) = (&s[..i], respelled(&s[b1..], false));
+        let p = pre.trim_end();
+        let bare = (p.ends_with("<<") || p.ends_with(" =") || p.ends_with('(') || p.ends_with(',')) && (post.trim().is_empty() || post.starts_with([')', ',']));
+        let bare = bare || (arm && pre.trim().is_empty() && post.trim().is_empty());
+        let r = format!("{} if {} else {}", a, &s[i + 3..c1], b);
+        return if bare { format!("{}{}{}", pre, r, post) } else { format!("{}({}){}", pre, r, post) };
+    }
+    s.to_string()
+}
+
 /// a loop word on a push that has an `else`: the two rulings that say
 /// what a word covers give the line two meanings (fm3 question 102)
 fn else_and_word(w: &str) -> String {
-    format!("{} on a push with `else` reads two ways (fm3 questions 84, 91 and 102): the item after `else` pushed that often and the first item once, or whichever is chosen pushed that often. For the first write two pushes on two lines, each with its own `if`; for the second choose the value first, `x$ << if (c) then (a) else (b)` and then the word", w)
+    format!("{} on a push with `else` reads two ways (fm3 questions 84, 91 and 102): the item after `else` pushed that often and the first item once, or whichever is chosen pushed that often. For the first write two pushes on two lines, each with its own `if`; for the second put the choice in brackets, `x$ << (a if (c) else b)` and then the word", w)
 }
 
 const NO_WHEN: &str = "`when` is not a word of zero: a push made where a condition holds is `x$ << item if (condition)`";
@@ -835,7 +905,7 @@ impl<'a> Parser<'a> {
                 let shown = if group == 1 && items.len() > 1 { self.bracketed(line, self.pos - began) } else { None };
                 let PushWords { only, cond, word, forever } = self.push_words()?;
                 if self.else_ahead(false) {
-                    return Err(self.err("`else` on a `<<` at feature scope is not built: a line here stands, with a loop word, and what a word covers on a push with `else` is not ruled (fm3 question 102). Choose the value first, `x$ << if (c) then (a) else (b)`"));
+                    return Err(self.err("`else` on a `<<` at feature scope is not built: a line here stands, with a loop word, and what a word covers on a push with `else` is not ruled (fm3 question 102). Put the choice in brackets, `x$ << (a if (c) else b)`"));
                 }
                 self.expect_newline()?;
                 // a line that stands whose first item is an expression
@@ -1336,7 +1406,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        let default = if self.eat_sym("=") { Some(self.parse_expr()?) } else { None };
+        let default = if self.eat_sym("=") { Some(self.parse_value()?) } else { None };
         for (name, seq) in names {
             out.push(Field { ty: ty.clone(), name, hidden, seq, default: default.clone(), line });
         }
@@ -1374,7 +1444,7 @@ impl<'a> Parser<'a> {
             None
         };
         let init = if self.eat_sym("=") {
-            Some(Init::Value(self.parse_expr()?))
+            Some(Init::Value(self.parse_value()?))
         } else if self.at_sym("(") {
             Some(Init::Construct(self.parse_args()?))
         } else if self.at_sym("<<") {
@@ -1489,7 +1559,7 @@ impl<'a> Parser<'a> {
         if self.eat_word("if") {
             only = Some(self.parse_expr()?);
             if self.at_word("then") {
-                return Err(self.err("an `if` after a push's items says whether the push happens, and takes no `then`: the value that is one thing or another is written first, `x$ << if (c) then (a) else (b)`"));
+                return Err(self.err("an `if` after a push's items says whether the push happens, and takes no `then`: the value that is one thing or another is `x$ << a if (c) else b`"));
             }
         }
         let (mut cond, mut word, mut forever) = (None, Repeat::While, false);
@@ -1759,7 +1829,7 @@ impl<'a> Parser<'a> {
                 let mut values = Vec::new();
                 if self.eat_sym("(") {
                     while !self.at_sym(")") {
-                        values.push(self.parse_expr()?);
+                        values.push(self.parse_value()?);
                         if !self.eat_sym(",") {
                             break;
                         }
@@ -1777,7 +1847,7 @@ impl<'a> Parser<'a> {
                 let mut values = Vec::new();
                 if self.eat_sym("(") {
                     while !self.at_sym(")") {
-                        values.push(self.parse_expr()?);
+                        values.push(self.parse_value()?);
                         if !self.eat_sym(",") {
                             break;
                         }
@@ -1830,7 +1900,7 @@ impl<'a> Parser<'a> {
                         vars.push(Param { ty, name, seq, arr: self.arr, rule: None, line: pline });
                     }
                     self.expect_sym("=")?;
-                    let value = self.parse_expr()?;
+                    let value = self.parse_value()?;
                     self.expect_newline()?;
                     return Ok(Stmt::Multi { vars, value, line });
                 }
@@ -1873,7 +1943,7 @@ impl<'a> Parser<'a> {
                 if self.eat_word("if") {
                     only = Some(self.parse_expr()?);
                     if self.at_word("then") {
-                        return Err(self.err("an `if` after a pushed value says whether the push happens, and takes no `then`: the value that is one thing or another is written first, `y << if (c) then (a) else (b)`"));
+                        return Err(self.err("an `if` after a pushed value says whether the push happens, and takes no `then`: the value that is one thing or another is `y << a if (c) else b`"));
                     }
                 }
                 let often = |p: &Self| if p.at_word("times") { Some("`(n) times`") } else { p.repeat_ahead() };
@@ -1946,7 +2016,7 @@ impl<'a> Parser<'a> {
                 if self.eat_word("loop") {
                     return self.parse_loop(Some(LoopInto::Assign(targets)), line);
                 }
-                let value = self.parse_expr()?;
+                let value = self.parse_value()?;
                 self.expect_newline()?;
                 Ok(Stmt::Assign { targets, value, line })
             }
@@ -2102,6 +2172,30 @@ impl<'a> Parser<'a> {
     }
 
     // --- expressions ---
+
+    /// A value that may be one thing or another on a condition, `a if
+    /// (c) else b`, the one spelling (fm3 question 126, principle 7;
+    /// question 88 built it for a push). It stands where a whole value
+    /// is given: a definition, an argument, round brackets. The tree is
+    /// the one `if (c) then (a) else (b)` made, so what is emitted for
+    /// a line respelled is what it was
+    pub fn parse_value(&mut self) -> Result<Expr, Error> {
+        let line = self.line();
+        let a = self.parse_expr()?;
+        if !self.at_word("if") {
+            return Ok(a);
+        }
+        self.pos += 1;
+        let c = self.parse_expr()?;
+        if self.at_word("then") {
+            return Err(self.err("an `if` after a value says where that value is the one meant, and takes no `then`: `a if (c) else b`"));
+        }
+        if !self.eat_word("else") {
+            return Err(self.err("a value on a condition says both cases, `a if (c) else b`: this one has no `else`, so it is nothing where the condition fails"));
+        }
+        let b = self.parse_value()?;
+        Ok(Expr { kind: ExprKind::IfElse(Box::new(c), Box::new(a), Box::new(b)), line })
+    }
 
     pub fn parse_expr(&mut self) -> Result<Expr, Error> {
         self.parse_or()
@@ -2313,7 +2407,7 @@ impl<'a> Parser<'a> {
                 }
                 self.pos = at;
                 self.expect_sym("(")?;
-                let e = self.parse_expr()?;
+                let e = self.parse_value()?;
                 self.expect_sym(")")?;
                 return Ok(e);
             }
@@ -2356,16 +2450,16 @@ impl<'a> Parser<'a> {
                 "true" => ExprKind::Bool(true),
                 "false" => ExprKind::Bool(false),
                 "if" => {
-                    let c = self.parse_expr()?;
-                    if !self.eat_word("then") {
-                        return Err(self.err("'if' as an expression is 'if (c) then (a) else (b)'"));
-                    }
-                    let a = self.parse_expr()?;
-                    if !self.eat_word("else") {
-                        return Err(self.err("'if' as an expression needs its 'else'"));
-                    }
-                    let b = self.parse_expr()?;
-                    ExprKind::IfElse(Box::new(c), Box::new(a), Box::new(b))
+                    // `if (c) then (a) else (b)` is retired: a value on
+                    // a condition has one spelling, the value first (fm3
+                    // question 126, principle 7). The line to write is
+                    // said where it can be worked out from the text
+                    self.pos -= 1;
+                    let how = match self.lines.get(line.wrapping_sub(1)).map(|l| (l.trim(), respelled(l.trim(), false))) {
+                        Some((old, new)) if new != old => format!("Write `{}`", new),
+                        _ => "Write the value first, `a if (c) else b`".to_string(),
+                    };
+                    return Err(self.err(format!("a value on a condition is written one way, the value first: `a if (c) else b`, in a push, in a definition and in round brackets inside a larger value. `if (c) then (a) else (b)` is no longer zero (fm3 question 126). {}", how)));
                 }
                 "existing" => ExprKind::Existing(self.parse_parts()?),
                 _ => {
@@ -2475,7 +2569,7 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
-            out.push(Arg { name, value: self.parse_expr()? });
+            out.push(Arg { name, value: self.parse_value()? });
             if !self.eat_sym(",") {
                 break;
             }
@@ -2497,7 +2591,7 @@ mod tests {
 
     #[test]
     fn a_function_with_results_and_groups() {
-        let src = "on (number n) << smaller of (number a) and (number b)\n    n << if (a < b) then (a) else (b)\n";
+        let src = "on (number n) << smaller of (number a) and (number b)\n    n << (a if (a < b) else b)\n";
         let f = parse_feature("t", src, "t.zero", &types()).unwrap();
         let Decl::Fn(f) = &f.decls[0] else { panic!() };
         assert_eq!(f.results.len(), 1);

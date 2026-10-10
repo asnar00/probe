@@ -30,7 +30,7 @@ on (int n) << defaulted()
     n << sum of fields (v)
 
 on (Tristate t) << flipped (Tristate x)
-    t << if (x == yes) then (no) else (if (x == no) then (yes) else (maybe))
+    t << (no if (x == yes) else yes if (x == no) else maybe)
 
 on (bool b) << is maybe (Tristate t)
     b << t == Tristate.maybe
@@ -105,7 +105,7 @@ on (bool b) << compared across widths()
     b << a > x
 
 on (number n) << smaller of (number a) and (number b)
-    n << if (a < b) then (a) else (b)
+    n << (a if (a < b) else b)
 
 on (int n) << smaller across types()
     int16 a = 7
@@ -144,7 +144,7 @@ on (int n) << smaller across wide types()
 on (int n) << picked wide (bool c)
     int64 a = 9
     float32 x = 1.5
-    float64 y = if (c) then (a) else (x)
+    float64 y = a if (c) else x
     n << int(y * 2)
 
 type Span =

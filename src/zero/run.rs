@@ -955,7 +955,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-07T10:00:00\n\n## testing\n").unwrap();
-        std::fs::write(dir.join("h/h.zero"), "type token =\n    int kind\n    index start, n\n\nchar src$\ntoken u$ = lex(src$)\nint seen$ << 0\n\non (int k) << kind of (char c)\n    k << if (c <= 32) then (0) else (1)\n\non (token t$) << lex (char c$)\n    int k$ = if (empty c$) then (0) else (kind of (c$))\n    bool new$ = k$ == 3 or k$ != k$[-1]\n    index start$ = if (new$) then (position c$) else (start$[-1])\n    index n$ = if (new$) then (1) else (n$[-1] + 1)\n    t$ << token(k$[-1], start$[-1], n$[-1]) if (new$ and k$[-1] != 0)\n\non arrive first()\n    src$ << \"let x = 4\"\n    seen$ << seen$ + 1\n\non arrive again()\n    src$ << \"2;\\n\"\n    end src$\n\non bump()\n    seen$ << seen$ + 1\n\non (int n) << tokens()\n    n << count u$\n\non (int n) << last length()\n    token x = peek u$ at (3)\n    n << x.n\n\non (int n) << bumps()\n    n << seen$\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "type token =\n    int kind\n    index start, n\n\nchar src$\ntoken u$ = lex(src$)\nint seen$ << 0\n\non (int k) << kind of (char c)\n    k << (0 if (c <= 32) else 1)\n\non (token t$) << lex (char c$)\n    int k$ = 0 if (empty c$) else kind of (c$)\n    bool new$ = k$ == 3 or k$ != k$[-1]\n    index start$ = position c$ if (new$) else start$[-1]\n    index n$ = 1 if (new$) else n$[-1] + 1\n    t$ << token(k$[-1], start$[-1], n$[-1]) if (new$ and k$[-1] != 0)\n\non arrive first()\n    src$ << \"let x = 4\"\n    seen$ << seen$ + 1\n\non arrive again()\n    src$ << \"2;\\n\"\n    end src$\n\non bump()\n    seen$ << seen$ + 1\n\non (int n) << tokens()\n    n << count u$\n\non (int n) << last length()\n    token x = peek u$ at (3)\n    n << x.n\n\non (int n) << bumps()\n    n << seen$\n").unwrap();
         let j = jit_of(&dir);
         let call = |k: i64, f: &str| -> i64 {
             j.call("__zero_context", &[k]).unwrap();
@@ -1042,7 +1042,7 @@ mod tests {
         // the front end wrote walks it, woken where the push is
         assert!(ir.contains("fn __z3(x: int$, __hz: i64) -> int$\n") && f.contains("= __z3("), "{}", ir);
         for (body, said) in [
-            ("    if (x$ > 0)\n        d$ << x$", "h.zero:18: an `if` round a line of a stream processor: every line holds for every item, so the condition goes on the push, `d$ << item if (condition)`, or in the value, `if (c) then (a) else (b)`"),
+            ("    if (x$ > 0)\n        d$ << x$", "h.zero:18: an `if` round a line of a stream processor: every line holds for every item, so the condition goes on the push, `d$ << item if (condition)`, or in the value, `a if (c) else b`"),
             ("    int k = x$ * 2\n    d$ << k", "h.zero:18: in a stream processor every line holds for every item, so each line says a stream: write `int k$ = ...`"),
             ("    d$ << x$ while (_ < 5)", "h.zero:18: `while` on a push repeats it, which is a loop, and a stream processor has none: say the stream by a line of its own, or write `d$ << item if (condition)`"),
             ("    e$ << x$", "h.zero:18: a stream processor pushes into its own output, 'd$'"),
@@ -1301,7 +1301,7 @@ mod tests {
             ("on f (int k)\n    p$ << (k + 1) when (k > 2)", "h.zero:9: `when` is not a word of zero: a push made where a condition holds is `x$ << item if (condition)`"),
             ("on f (int k)\n    p$ << twice (k) when (k > 2)\n\non (int n) << twice (int k)\n    n << k * 2", "h.zero:9: `when` is not a word of zero: a push made where a condition holds is `x$ << item if (condition)`"),
             // the push's `if` takes no `then`
-            ("on f (int k)\n    p$ << k if (k > 2) then (1) else (2)", "h.zero:9: an `if` after a push's items says whether the push happens, and takes no `then`: the value that is one thing or another is written first, `x$ << if (c) then (a) else (b)`"),
+            ("on f (int k)\n    p$ << k if (k > 2) then (1) else (2)", "h.zero:9: an `if` after a push's items says whether the push happens, and takes no `then`: the value that is one thing or another is `x$ << a if (c) else b`"),
             // a name with a word that ends every phrase (log 126)
             ("on (int n) << one if (int k)\n    n << k", "h.zero:8: 'if' cannot be a word of a function's name: it ends a phrase wherever it stands, so no call of this name could be written"),
             ("on (int n) << lines in any order()\n    n << 1", "h.zero:8: 'in' cannot be a word of a function's name: it ends a phrase wherever it stands, so no call of this name could be written"),
@@ -1312,8 +1312,8 @@ mod tests {
         // the three `if`s, told by where the word stands (fm3 log 140):
         // the first of a line is the statement, one where a value is
         // wanted is the expression, one where a value has ended is the
-        // push's. `p$ << if (c) then (a) else (b) if (d)` is both
-        let both = with("on (int n) << f (int k)\n    p$ << if (k > 5) then (10) else (20) if (k > 2)\n    p$ << if (k > 5) then (10) else k + 1 if (k > 2)\n    if (k > 0)\n        p$ << 1 << if (k > 5) then (2) else (3)\n    n << count p$").unwrap();
+        // push's. `p$ << (a if (c) else b) if (d)` is both
+        let both = with("on (int n) << f (int k)\n    p$ << (10 if (k > 5) else 20) if (k > 2)\n    p$ << (10 if (k > 5) else k + 1) if (k > 2)\n    if (k > 0)\n        p$ << 1 << (2 if (k > 5) else 3)\n    n << count p$").unwrap();
         let at = both.find("fn f(k: int) -> int").unwrap();
         let f = &both[at..at + both[at..].find("\n\n").unwrap()];
         // each of the first two lines: the condition, a branch, and
@@ -1614,25 +1614,25 @@ mod tests {
         };
         // one bool: the lengths, and then a loop that leaves at the
         // first pair that differs
-        let ir = f("    n << if (a[] [==] b[]) then (1) else (0)").unwrap();
+        let ir = f("    n << (1 if (a[] [==] b[]) else 0)").unwrap();
         for l in [": u1 = cmp.eq ", ": u1 = loop(", "                break 1\n", ": u1 = cmp.ne ", "                break 0\n", "    else\n        yield 0\n"] {
             assert!(ir.contains(l), "{}: {}", l, ir);
         }
         assert!(!ir.contains("__queue_int(1000000, _"), "nothing is made for it: {}", ir);
-        let ir = f("    n << if (a[] [!=] b[]) then (1) else (0)").unwrap();
+        let ir = f("    n << (1 if (a[] [!=] b[]) else 0)").unwrap();
         assert!(ir.contains(", 0\n    n: int = if "), "{}", ir);
         // a list and a range written out, a frame, and a list beside it
         for line in ["a[] [==] [1, 2, 3]", "[1, 2, 3] [==] a[]", "a[] [==] [1 through 3]", "frame x$ [==] a[]", "a[] [==] b[] + [0, 0, 1]"] {
-            f(&format!("    n << if ({}) then (1) else (0)", line)).unwrap_or_else(|e| panic!("{}: {}", line, e));
+            f(&format!("    n << (1 if ({}) else 0)", line)).unwrap_or_else(|e| panic!("{}: {}", line, e));
         }
         // a list written out is still a list, a negative first item too
         assert!(f("    int c[] = [-1, 2]\n    int d[] = [- 1]\n    n << [count] (c[]) + [count] (d[])").is_ok());
         // both sides are arrays
-        refused("    n << if (a[] [==] 2) then (1) else (0)", "h.zero:5: `[==]` asks whether two arrays are the same, and this side is one value (fm3 question 77): both sides are arrays, `a[] [==] b[]`. One item is compared plainly, `a[k] == v`");
-        refused("    n << if (a[] [!=] x$) then (1) else (0)", "`[!=]` asks whether two arrays are the same, and 'x$' is a stream, its items still arriving: the array of what has arrived is `frame x$` (fm3 question 77)");
-        refused("    float h[] = [1.5]\n    n << if (a[] [==] h[]) then (1) else (0)", "`[==]` compares two arrays of one type of item: these hold int and float");
+        refused("    n << (1 if (a[] [==] 2) else 0)", "h.zero:5: `[==]` asks whether two arrays are the same, and this side is one value (fm3 question 77): both sides are arrays, `a[] [==] b[]`. One item is compared plainly, `a[k] == v`");
+        refused("    n << (1 if (a[] [!=] x$) else 0)", "`[!=]` asks whether two arrays are the same, and 'x$' is a stream, its items still arriving: the array of what has arrived is `frame x$` (fm3 question 77)");
+        refused("    float h[] = [1.5]\n    n << (1 if (a[] [==] h[]) else 0)", "`[==]` compares two arrays of one type of item: these hold int and float");
         // the other operators in brackets are not ruled
-        refused("    n << if (a[] [<] b[]) then (1) else (0)", "h.zero:5: `[<]` is not ruled as to what it means on two arrays (fm3 question 77): `[==]` and `[!=]` are built, are the two the same. Applied to each pair an operator is written plainly, `a[] < b[]`");
+        refused("    n << (1 if (a[] [<] b[]) else 0)", "h.zero:5: `[<]` is not ruled as to what it means on two arrays (fm3 question 77): `[==]` and `[!=]` are built, are the two the same. Applied to each pair an operator is written plainly, `a[] < b[]`");
         refused("    int c[] = a[] [+] b[]\n    n << [count] (c[])", "`[+]` is not ruled as to what it means on two arrays");
         // the plain comparison where one bool is wanted says what to write
         refused("    if (a[] == b[])\n        out$ << 1\n    n << 1", "h.zero:5: `if (a[] == b[])`: `==` is applied to each pair of items and gives a bool for each, and one is wanted here (fm3 question 77). Whether the two arrays are the same is `[==]`: write `if (a[] [==] b[])`");
@@ -1693,7 +1693,7 @@ mod tests {
         refused("on (int k) << f (int c)\n    k << 0 if (c > 0) else 1 (3) times\n", "h.zero:2: `(n) times` on the push of 'k' would give it more than once");
         refused("on f (int c)\n    out$ << 1 if (c > 0) else 2 << 3\n", "h.zero:2: after `else` a push takes one item, `x$ << a if (c) else b`: for several where the condition fails, write the push on two lines, each with its own `if`");
         // a loop word and `else`: questions 84 and 91 pull apart
-        let two = "reads two ways (fm3 questions 84, 91 and 102): the item after `else` pushed that often and the first item once, or whichever is chosen pushed that often. For the first write two pushes on two lines, each with its own `if`; for the second choose the value first, `x$ << if (c) then (a) else (b)` and then the word";
+        let two = "reads two ways (fm3 questions 84, 91 and 102): the item after `else` pushed that often and the first item once, or whichever is chosen pushed that often. For the first write two pushes on two lines, each with its own `if`; for the second put the choice in brackets, `x$ << (a if (c) else b)` and then the word";
         refused("on f (int c)\n    out$ << 1 if (c > 0) else 2 (3) times\n", &format!("h.zero:2: `(n) times` on a push with `else` {}", two));
         refused("on f (int c)\n    out$ << 1 if (c > 0) (3) times else 2\n", &format!("h.zero:2: `(n) times` on a push with `else` {}", two));
         refused("on f (int c)\n    int s$\n    s$ << 1 if (c > 0) else s$ + 1 until (s$ > 3)\n", &format!("h.zero:3: `until` on a push with `else` {}", two));
@@ -1932,6 +1932,56 @@ mod tests {
         refused("    string t else 7.5 = \"ab\"\n    n << 1", "its items are characters: write `else char (32)`");
         refused("    int a[] else = [1, 2]\n    n << a[i]", "`else` on 'a[]' wants the value a read outside gives, `a[] else 0`");
         refused("    float a[] mirrored = [1.0, 2.0]\n    n << 1", "h.zero:11: `mirrored` on 'a[]', a read outside going back the way it came, is ruled and not built yet (fm3 question 127). What a read outside the items gives is `else (v)`, `wrapped` or `clamped`, and zero where nothing is said");
+    }
+
+    /// One spelling of a value on a condition (fm3 question 126,
+    /// principle 7; log 241): `a if (c) else b` wherever a whole value
+    /// is given, the tree the old form made; `if (c) then (a) else (b)`
+    /// refused with the line to write
+    #[test]
+    fn a_value_on_a_condition_has_one_spelling() {
+        let dir = std::env::temp_dir().join("probe-zero-one-spelling");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (1, 2) → 1\n").unwrap();
+        let f = |body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("on (int n) << twice (int x)\n    n << x * 2\n\non (int n) << f (int a, int b)\n{}\n", body)).unwrap();
+            emit(&dir)
+        };
+        let body = |ir: &str| -> String { ir.split("\nfn f(").nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
+        let refused = |text: &str, what: &str| {
+            let e = f(text).err().unwrap_or_else(|| panic!("not refused: {}", text));
+            assert!(e.contains(what), "{}: {}", text, e);
+        };
+        // a definition, round brackets inside a larger value, and an
+        // argument: a value chosen, one `if` with a `yield` each way
+        let chosen = "    m: int = if _1\n        yield a\n    else\n        yield b\n";
+        let read = body(&f("    int m = a if (a < b) else b\n    n << m + 1").unwrap());
+        assert!(read.contains(chosen), "{}", read);
+        let read = body(&f("    n << 1 + (a if (a < b) else b)").unwrap());
+        assert!(read.contains(": int = if _1\n        yield a\n    else\n        yield b\n"), "{}", read);
+        let read = body(&f("    n << twice (a if (a < b) else b)").unwrap());
+        assert!(read.contains(": int = if _1\n        yield a\n    else\n        yield b\n"), "{}", read);
+        // three cases, the later ones in the `else`
+        let read = body(&f("    int m = 0 if (a < 0) else 1 if (a < b) else 2\n    n << m").unwrap());
+        assert!(read.matches(" = if _").count() == 2, "{}", read);
+        // a result's push in brackets is the value pushed; without
+        // them it is the push's own form, a `ret` each way (question 88)
+        let read = body(&f("    n << (a if (a < b) else b)").unwrap());
+        assert!(read.contains("    n: int = if _1\n        yield a\n    else\n        yield b\n    ret n\n"), "{}", read);
+        let read = body(&f("    n << a if (a < b) else b").unwrap());
+        assert!(read.contains("    if _1\n        ret a\n") && read.contains("        ret b\n") && !read.contains("yield"), "{}", read);
+        // the old form, refused where it is read, the line given
+        let gone = "h.zero:5: a value on a condition is written one way, the value first: `a if (c) else b`, in a push, in a definition and in round brackets inside a larger value. `if (c) then (a) else (b)` is no longer zero (fm3 question 126). Write ";
+        refused("    n << if (a < b) then (a) else (b)", &format!("{}`n << a if (a < b) else b`", gone));
+        refused("    int m = if (a < 0) then (-a) else (a)\n    n << m", &format!("{}`int m = -a if (a < 0) else a`", gone));
+        refused("    n << 1 + if (a < b) then (a) else (b)", &format!("{}`n << 1 + (a if (a < b) else b)`", gone));
+        refused("    n << if (a < 0) then (0) else (if (a > b) then (b) else (a))", &format!("{}`n << 0 if (a < 0) else b if (a > b) else a`", gone));
+        refused("    n << twice (if (a < b) then (a) else (b))", &format!("{}`n << twice (a if (a < b) else b)`", gone));
+        refused("    bool k = if (a < b) then (a == 1) else (b == 1)\n    n << 1", &format!("{}`bool k = (a == 1) if (a < b) else (b == 1)`", gone));
+        refused("    n << if (a < b) then a else b", &format!("{}the value first, `a if (c) else b`", gone));
+        // a value with an `if` and no `else` is nothing where it fails
+        refused("    int m = a if (a < b)\n    n << m", "h.zero:5: a value on a condition says both cases, `a if (c) else b`: this one has no `else`, so it is nothing where the condition fails");
+        refused("    int m = a if (a < b) then (b)\n    n << m", "an `if` after a value says where that value is the one meant, and takes no `then`: `a if (c) else b`");
     }
 
     /// A start and a step, and between (fm3 question 127's second
@@ -2304,7 +2354,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>share (7) among (2) → 3\n").unwrap();
-        std::fs::write(dir.join("h/h.zero"), "on (int n) << share (int a) among (int k)\n    n << a / k\n\non (int n) << halved (int a)\n    n << a / 2 + a % 3\n\non (int n) << tested (int a, int k)\n    n << if (k != 0) then (a / k) else (0)\n\non (int n) << checked (int a, int k)\n    check (k > 0)\n    n << a % k\n\non (int n) << looped (int a, int k)\n    n << loop (int x = a, int y = k) while (y != 0) yields x\n        continue (y, x % y)\n\non (int n) << after (int a, int k)\n    if (k != 0)\n        out$ << a / k\n    n << a / k\n\non (float n) << decimal (float a, float k)\n    n << a / k\n\non (time t) << part (int k)\n    t << 1 s / k\n\non (time t) << third()\n    t << 1 s / 3\n\non (float r) << ratio (time a, time b)\n    r << a / b\n\non written (int a)\n    out$ << a\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "on (int n) << share (int a) among (int k)\n    n << a / k\n\non (int n) << halved (int a)\n    n << a / 2 + a % 3\n\non (int n) << tested (int a, int k)\n    n << (a / k if (k != 0) else 0)\n\non (int n) << checked (int a, int k)\n    check (k > 0)\n    n << a % k\n\non (int n) << looped (int a, int k)\n    n << loop (int x = a, int y = k) while (y != 0) yields x\n        continue (y, x % y)\n\non (int n) << after (int a, int k)\n    if (k != 0)\n        out$ << a / k\n    n << a / k\n\non (float n) << decimal (float a, float k)\n    n << a / k\n\non (time t) << part (int k)\n    t << 1 s / k\n\non (time t) << third()\n    t << 1 s / 3\n\non (float r) << ratio (time a, time b)\n    r << a / b\n\non written (int a)\n    out$ << a\n").unwrap();
         let mut s = store::read(&dir).unwrap();
         let l = lower::lower(&s).unwrap();
         let body = |ir: &str, f: &str| -> String { ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
@@ -3123,14 +3173,14 @@ mod tests {
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 2\n").unwrap();
         let head = "int x$\nint d$ = runs(x$)\n\non (bool b) << big (int x)\n    b << x > 100\n\non (int n) << f()\n    x$ << 1 << 1 << 2\n    n << count d$\n\n";
         let with = |body: &str| -> String {
-            std::fs::write(dir.join("h/h.zero"), format!("{}on (int d$) << runs (int x$)\n    bool new$ = x$ != x$[-1]\n    int n$ = if (new$) then (1) else (n$[-1] + 1)\n{}\n", head, body)).unwrap();
+            std::fs::write(dir.join("h/h.zero"), format!("{}on (int d$) << runs (int x$)\n    bool new$ = x$ != x$[-1]\n    int n$ = 1 if (new$) else n$[-1] + 1\n{}\n", head, body)).unwrap();
             let ir = emit(&dir).unwrap();
             let at = ir.find("fn __z1_each").unwrap();
             let rest = &ir[at..];
             rest[..rest.find("\nfn ").unwrap().min(rest.find("\n\n").unwrap_or(rest.len()))].to_string() + "\n"
         };
         // two lines and a push on one condition: one branch, no `and`
-        let f = with("    int first$ = if (new$) then (x$) else (first$[-1])\n    d$ << first$[-1] + n$[-1] if (new$ and n$[-1] > 0)");
+        let f = with("    int first$ = x$ if (new$) else first$[-1]\n    d$ << first$[-1] + n$[-1] if (new$ and n$[-1] > 0)");
         assert!(f.contains("    _first: int, _n_3: int = if _new\n        _n: int = const 1\n        _1: u1 = cmp.gt __n_b1, 0\n        if _1\n"), "{}", f);
         assert!(f.contains("        yield _x, _n\n    else\n        _n_2: int = add __n_b1, 1\n        yield __first_b1, _n_2\n    ret _first, _n_3\n"), "{}", f);
         assert_eq!(f.matches("if ").count(), 2, "{}", f);
@@ -3154,7 +3204,7 @@ mod tests {
         // said with its type, and waits for the branch as a number
         // does (fm3 log 168): the lexer's `k$[-1] != space`
         for case in ["dark", "shade.dark"] {
-            std::fs::write(dir.join("h/h.zero"), format!("type shade = dark | light\n\n{}on (shade s) << shade of (int x)\n    s << if (x > 1) then (light) else (dark)\n\non (int d$) << runs (int x$)\n    shade s$ = shade of (x$)\n    bool new$ = s$ != s$[-1]\n    int n$ = if (new$) then (1) else (n$[-1] + 1)\n    d$ << n$[-1] if (new$ and s$[-1] != {})\n", head, case)).unwrap();
+            std::fs::write(dir.join("h/h.zero"), format!("type shade = dark | light\n\n{}on (shade s) << shade of (int x)\n    s << (light if (x > 1) else dark)\n\non (int d$) << runs (int x$)\n    shade s$ = shade of (x$)\n    bool new$ = s$ != s$[-1]\n    int n$ = 1 if (new$) else n$[-1] + 1\n    d$ << n$[-1] if (new$ and s$[-1] != {})\n", head, case)).unwrap();
             let ir = emit(&dir).unwrap();
             let at = ir.find("fn __z1_each").unwrap();
             let f = &ir[at..at + ir[at..].find("\n\n").unwrap()];
@@ -3180,7 +3230,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 3\n>g() → 1\n>h() → 5\n").unwrap();
-        let code = "char t$\nint d$ = runs(t$)\nint x$\nint e$ = twice(x$)\n\non (int d$) << runs (char c$)\n    int n$ = if (c$ == c$[-1]) then (n$[-1] + 1) else (1)\n    d$ << n$\n\non (int e$) << twice (int x$)\n    e$ << x$ * 2\n\non (int n) << f()\n    int d[] = [7, 8, 9]\n    t$ << \"aab\" << \"bc\"\n    n << [count] (d[])\n\non (int n) << g()\n    x$ << 4\n    n << count e$\n\non (int n) << h()\n    int k = f()\n    n << count d$\n";
+        let code = "char t$\nint d$ = runs(t$)\nint x$\nint e$ = twice(x$)\n\non (int d$) << runs (char c$)\n    int n$ = n$[-1] + 1 if (c$ == c$[-1]) else 1\n    d$ << n$\n\non (int e$) << twice (int x$)\n    e$ << x$ * 2\n\non (int n) << f()\n    int d[] = [7, 8, 9]\n    t$ << \"aab\" << \"bc\"\n    n << [count] (d[])\n\non (int n) << g()\n    x$ << 4\n    n << count e$\n\non (int n) << h()\n    int k = f()\n    n << count d$\n";
         std::fs::write(dir.join("h/h.zero"), code).unwrap();
         let ir = emit(&dir).unwrap();
         // every push into `t$` is a block: no function of one item for it
@@ -3242,7 +3292,7 @@ mod tests {
         assert!(f.contains("    _2: u1 = get _1, __zend_x\n    _3: u1 = xor _2, 1\n    check _3\n"), "{}", f);
         assert_eq!(f.matches(" = set ").count(), 2, "{}", f);
         // a line that asks `empty`: one arm in each function, no branch
-        let ir = with("    int k$ = if (empty x$) then (7) else (x$ + k$[-1])\n    d$ << k$", "").unwrap();
+        let ir = with("    int k$ = 7 if (empty x$) else x$ + k$[-1]\n    d$ << k$", "").unwrap();
         assert!(ir.contains("fn __z1_each(_x: int, __k_b1: int) -> int\n    _this: ptr = context()\n    _k: int = add _x, __k_b1\n"), "{}", ir);
         assert!(ir.contains("fn __z1_end(__k_b1: int)\n    _this: ptr = context()\n    _k: int = const 7\n    _1: __ctx = load _this\n    _2: int$ = get _1, d\n    push_queue_open(_2, _k)\n    ret\n"), "{}", ir);
         // called under "it had not ended", with what is kept
@@ -3275,10 +3325,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (5) → 1\n>sum of (1) and (2) → 3\n").unwrap();
-        std::fs::write(dir.join("h/h.zero"), "on (int s) << sum of (int a) and (int b)\n    s << a + b\n\non (int n) << f (int x)\n    bool ok = x > 0 and x < 9 or x == 100 and sum of (x) and (1) > 3\n    n << if (ok) then (1) else (0)\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "on (int s) << sum of (int a) and (int b)\n    s << a + b\n\non (int n) << f (int x)\n    bool ok = x > 0 and x < 9 or x == 100 and sum of (x) and (1) > 3\n    n << (1 if (ok) else 0)\n").unwrap();
         let ir = emit(&dir).unwrap();
         assert!(ir.contains("fn f(x: int) -> int\n    _1: u1 = cmp.gt x, 0\n    _2: u1 = cmp.lt x, 9\n    _3: u1 = and _1, _2\n    _4: u1 = cmp.eq x, 100\n    _5: int = sum_of_and(x, 1)\n    _6: u1 = cmp.gt _5, 3\n    _7: u1 = and _4, _6\n    ok: u1 = or _3, _7\n"), "{}", ir);
-        std::fs::write(dir.join("h/h.zero"), "on (int n) << f (int x)\n    n << if (x and x > 2) then (1) else (0)\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "on (int n) << f (int x)\n    n << (1 if (x and x > 2) else 0)\n").unwrap();
         let err = emit(&dir).expect_err("a number joined");
         assert!(err.ends_with("h.zero:2: 'and' joins two conditions, and this side is not one: it is `int`"), "{}", err);
         let _ = std::fs::remove_dir_all(&dir);
@@ -3941,7 +3991,7 @@ mod tests {
         assert_eq!(reads(&b, "kept"), 2, "{}", b);
         let b = body(&format!("{}on (int n) << f (int k)\n    int a = 0\n    if (k > 0)\n        a = kept\n    n << a + kept\n", head), "f");
         assert_eq!(reads(&b, "kept"), 2, "{}", b);
-        let b = body(&format!("{}on (int n) << f (int k)\n    int a = kept\n    int s = loop (int i = 0, int t = 0) while (i < k) yields t\n        continue (i + 1, if (i > 2) then (t + kept) else (t + kept + a))\n    n << s + kept\n", head), "f");
+        let b = body(&format!("{}on (int n) << f (int k)\n    int a = kept\n    int s = loop (int i = 0, int t = 0) while (i < k) yields t\n        continue (i + 1, t + kept if (i > 2) else t + kept + a)\n    n << s + kept\n", head), "f");
         assert_eq!(reads(&b, "kept"), 1, "{}", b);
         // a feature's switch is a field nothing writes
         let b = body(&format!("{}on (bool b) << f()\n    bool a = enabled\n    bump()\n    b << a == enabled\n", head), "f");
@@ -4241,7 +4291,7 @@ mod tests {
         refused("on (uint8 r) << f (uint8 x)\n    r << x\n\non run()\n    out$ << f (300)\n", "", &format!("h.zero:5: {}", u8s));
         refused("on (uint8 r) << f ()\n    r << 300\n\non run()\n    out$ << f ()\n", "", &format!("h.zero:2: {}", u8s));
         refused("on run()\n    uint8 x[] = [1, 300]\n    out$ << x[1]\n", "", &format!("h.zero:2: {}", u8s));
-        refused("on run()\n    uint8 a = 100\n    uint8 b = if (a > 0) then (300) else (a)\n    out$ << b\n", "", &format!("h.zero:3: {}", u8s));
+        refused("on run()\n    uint8 a = 100\n    uint8 b = 300 if (a > 0) else a\n    out$ << b\n", "", &format!("h.zero:3: {}", u8s));
         refused("on run()\n    uint8 x$ << 1\n    x$ << 300\n    out$ << x$\n", "", &format!("h.zero:3: {}", u8s));
         // below a signed type, below zero in an unsigned one, a char
         refused("on run()\n    int8 low = -129\n    out$ << low\n", "", "h.zero:2: -129 does not fit an int8, which holds -128 to 127. The written conversion, `int8(-129)`, keeps the low 8 bits");

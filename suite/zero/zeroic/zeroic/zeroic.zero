@@ -160,12 +160,12 @@ on (int o$) << shuffled (int x$)
     int p$ = q$ + 1
 
 on (int n$) << repeats (char c$)
-    int same$ = if (c$ == c$[-1]) then (same$[-1] + 1) else (0)
+    int same$ = same$[-1] + 1 if (c$ == c$[-1]) else 0
     n$ << same$
 
 on (int r$) << risen (int x$)
     bool up$ = x$ > x$[-1] and x$[-1] > 0 or x$ == 100
-    r$ << if (up$) then (1) else (0)
+    r$ << (1 if (up$) else 0)
 
 on (bool b) << between (int lo) and (int hi) holds (int x)
     b << x >= lo and x <= hi
@@ -173,7 +173,7 @@ on (bool b) << between (int lo) and (int hi) holds (int x)
 on (int n) << joined (int x)
     bool inside = between (1) and (9) holds (x)
     bool odd = x % 2 == 1
-    n << if (inside and odd or x == 100) then (1) else (0)
+    n << (1 if (inside and odd or x == 100) else 0)
 
 on (bool m, bool k) << a running sum()
     a$ << 1 << 2 << 3
@@ -284,14 +284,14 @@ on pushed after its end()
 
 on (int a, int b) << an output ends()
     lo$ << 1
-    a << if (ended louds$) then (1) else (0)
+    a << (1 if (ended louds$) else 0)
     end lo$
-    b << if (ended louds$) then (1) else (0)
+    b << (1 if (ended louds$) else 0)
 
 on (int r$) << decades (int x$)
     bool new$ = x$ / 10 != x$[-1] / 10
-    int n$ = if (new$) then (1) else (n$[-1] + 1)
-    int first$ = if (new$) then (x$) else (first$[-1])
+    int n$ = 1 if (new$) else n$[-1] + 1
+    int first$ = x$ if (new$) else first$[-1]
     r$ << first$[-1] * 100 + n$[-1] if (new$ and n$[-1] > 0)
 
 on (int n) << tens to (int k)

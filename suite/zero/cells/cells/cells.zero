@@ -57,7 +57,7 @@ on (int n) << made()
 
 on (int n) << past (int limit)
     bump()
-    n << if (seen$ > limit) then (1) else (0)
+    n << (1 if (seen$ > limit) else 0)
 
 on (int n) << checked()
     bump()

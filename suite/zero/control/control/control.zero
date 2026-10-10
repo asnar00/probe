@@ -10,7 +10,7 @@ on (int s) << sign of (int x)
          else 0
 
 on (int a) << magnitude of (int x)
-    int m = if (x < 0) then (-x) else (x)
+    int m = -x if (x < 0) else x
     a << m
 
 on describe (int x)
@@ -38,7 +38,7 @@ on (int d) << digits of (int n)
     d << t$.n
 
 on (int n) << collatz steps (int start)
-    tally t$ << tally(start, 0) << tally(if (t$.x % 2 == 0) then (t$.x / 2) else (3 * t$.x + 1), t$.n + 1) while (t$.x != 1)
+    tally t$ << tally(start, 0) << tally(t$.x / 2 if (t$.x % 2 == 0) else 3 * t$.x + 1, t$.n + 1) while (t$.x != 1)
     n << t$.n
 
 on (int d) << digits said of (int n)
@@ -46,7 +46,7 @@ on (int d) << digits said of (int n)
     d << count x$
 
 on (int n) << collatz steps said (int start)
-    int x$ << start << (if (x$ % 2 == 0) then (x$ / 2) else (3 * x$ + 1)) while (x$ != 1)
+    int x$ << start << (x$ / 2 if (x$ % 2 == 0) else 3 * x$ + 1) while (x$ != 1)
     n << count x$ - 1
 
 on (int n) << doubled sum to (int k)

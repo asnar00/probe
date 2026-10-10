@@ -1,10 +1,10 @@
 # functions
-*functions and expressions: open-syntax names, named and several results, operators, `if then else`, and the tower of numbers*
+*functions and expressions: open-syntax names, named and several results, operators, a value on a condition, and the tower of numbers*
 
 layer: runtime
 
 > (suite) 2026-09-08T10:00:00
-Plan item 2 of milestone 0: section 6 of zero.md — `on (results) << name (params)`, named results, several results, multiword names with bracketed parameter groups mangled per section 3, operators as functions, `if then else` as an expression, calls, arithmetic over the abstract tower.
+Plan item 2 of milestone 0: section 6 of zero.md — `on (results) << name (params)`, named results, several results, multiword names with bracketed parameter groups mangled per section 3, operators as functions, a value on a condition (`if then else` in that plan, `a if (c) else b` since hop forty-one), calls, arithmetic over the abstract tower.
 
 ## overview
 A function is declared with `on`, its results first, then its name with the parameters in brackets anywhere among the words. `smaller of (a) and (b)` is one function; its IR name is `smaller_of_and`. A function is declared with `<<` and gives its result by pushing it, `d << x * 2` (fm3 question 77; `suite/zero/pushed` is the store for the form). A result is pushed once, at the top level of the body, with its condition on the push where it has one, `r << a if (a > 0) else b` (fm3 question 88). A value that must be tested before it is final is a temporary, said with `=`.
@@ -16,7 +16,7 @@ A function is declared with `on`, its results first, then its name with the para
 - `mean of (a) and (b)` takes both results of `divide` at once.
 - `double (x)` and `negated (x)` are arithmetic and the library's `neg`.
 - `(a) is less than (b)` is a comparison giving a `bool`.
-- `clamp (x) between (lo) and (hi)` nests two `if then else` expressions.
+- `clamp (x) between (lo) and (hi)` says three cases on one push, `lo if (x < lo) else hi if (x > hi) else x`.
 - `narrow (x)` calls `smaller of` with `int32` arguments, so the template is instantiated at 32 bits.
 - `first positive of (a) and (b)` pushes one value or the other, `r << a if (a > 0) else b`: the condition is on the push (fm3 question 88).
 - `ordered (a) and (b)` has two results: after `lo` is pushed the function goes on, and reads `lo`, until `hi` is pushed.

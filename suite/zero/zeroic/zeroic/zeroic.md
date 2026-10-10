@@ -27,7 +27,7 @@ A wiring, `int d$ = doubled(x$)`, is a standing connection as it always was. Wha
 - `lit$` and `ran$` have their items on their declarations, `s$` is read by `count s$` in `also read`, `old$` is walked by a task, and `in$` is the input device: each keeps its storage, and its processor is run over what has arrived, by the scheduler, as a task is.
 - A processor wired twice has two of everything: `placed` on `p$` and on `r$` each count their own items, so `wired twice` gives the third item of `p$` place 2 and the first of `r$` place 0.
 - `text$` is a stream of `char` with no storage because every push into it is of a string literal; `text$ << "ab 1"` is a loop that says four with the line of `classes` in it.
-- Two lines that turn on one condition, `int n$ = if (new$) then (1) else (n$[-1] + 1)` and `int first$ = if (new$) then (x$) else (first$[-1])` in `decades`, and a push that goes out `if (new$ and n$[-1] > 0)`, are one branch on `new$` in the function the compiler writes: the cost of a decision does not depend on how many lines it was said in.
+- Two lines that turn on one condition, `int n$ = 1 if (new$) else n$[-1] + 1` and `int first$ = x$ if (new$) else first$[-1]` in `decades`, and a push that goes out `if (new$ and n$[-1] > 0)`, are one branch on `new$` in the function the compiler writes: the cost of a decision does not depend on how many lines it was said in.
 
 ## testing
 >one at a time() → 1, 1

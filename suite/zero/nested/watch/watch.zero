@@ -1,5 +1,5 @@
 on (int n) << lights()
-    int a = if (one.enabled) then (1) else (0)
-    int b = if (two.enabled) then (10) else (0)
-    int c = if (three.enabled) then (100) else (0)
+    int a = 1 if (one.enabled) else 0
+    int b = 10 if (two.enabled) else 0
+    int c = 100 if (three.enabled) else 0
     n << a + b + c

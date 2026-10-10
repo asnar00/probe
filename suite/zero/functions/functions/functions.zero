@@ -1,5 +1,5 @@
 on (number n) << smaller of (number a) and (number b)
-    n << if (a < b) then (a) else (b)
+    n << (a if (a < b) else b)
 
 on (int q, int r) << divide (int a) by (int b)
     q << a / b
@@ -22,7 +22,7 @@ on (bool yes) << (int a) is less than (int b)
     yes << a < b
 
 on (int c) << clamp (int x) between (int lo) and (int hi)
-    c << if (x < lo) then (lo) else (if (x > hi) then (hi) else (x))
+    c << (lo if (x < lo) else hi if (x > hi) else x)
 
 on (int32 y) << narrow (int32 x)
     int32 big = 1000000
@@ -32,7 +32,7 @@ on (int r) << first positive of (int a) and (int b)
     r << a if (a > 0) else b
 
 on (int lo, int hi) << ordered (int a) and (int b)
-    lo << if (a < b) then (a) else (b)
+    lo << (a if (a < b) else b)
     hi << a + b - lo
 
 on (int p) << power of two above (int n)
@@ -93,7 +93,7 @@ on (int32 w) << width of (int64 x)
 on (int32 w) << int width()
     int x = 2147483647
     int y = x + 1
-    w << if (y < 0) then (32) else (64)
+    w << (32 if (y < 0) else 64)
 
 on (bool ok) << literal takes the int width()
     ok << width of (3) == int width()
@@ -113,7 +113,7 @@ on (int32 w) << float width of (float64 x)
 on (int32 w) << float width()
     float x = 16777217.0
     float y = x - 16777216.0
-    w << if (y == 0.0) then (32) else (64)
+    w << (32 if (y == 0.0) else 64)
 
 on (bool ok) << literal takes the float width()
     ok << float width of (2.5) == float width()

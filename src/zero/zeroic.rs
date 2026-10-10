@@ -399,7 +399,7 @@ pub fn read(fd: &FnDecl, file: &str, takers: &Takers) -> Result<Option<Processor
                 let (item, when) = chosen(s, out, file)?;
                 p.outs.push(Out { item, when, line: *line });
             }
-            Stmt::If { line, .. } => return Err(lex::error(file, *line, format!("an `if` round a line of a stream processor: every line holds for every item, so the condition goes on the push, `{}$ << item if (condition)`, or in the value, `if (c) then (a) else (b)`", out))),
+            Stmt::If { line, .. } => return Err(lex::error(file, *line, format!("an `if` round a line of a stream processor: every line holds for every item, so the condition goes on the push, `{}$ << item if (condition)`, or in the value, `a if (c) else b`", out))),
             Stmt::Multi { line, .. } => return Err(lex::error(file, *line, "in a stream processor each line says one stream: `int k$ = ...`")),
             Stmt::Expr { line, .. } | Stmt::Check { line, .. } => return Err(lex::error(file, *line, format!("a line of a stream processor says a stream, `int k$ = ...`, or pushes into its output, `{}$ << item`", out))),
             Stmt::Assign { .. } | Stmt::Loop { .. } | Stmt::For { .. } | Stmt::Continue { .. } | Stmt::Break { .. } => unreachable!(),
@@ -801,7 +801,7 @@ fn plain(e: &Expr, case: Case) -> bool {
 }
 
 /// The names a member of a function's body turns on: for a line said
-/// `if (c) then (a) else (b)`, `c` where it is a bare name; for a push
+/// `a if (c) else b`, `c` where it is a bare name; for a push
 /// that goes out `if (c and d)`, each bare name among the
 /// conditions joined, where the rest can do nothing but give a value
 /// (both sides of `and` are always worked out, fm3 question 66, so
