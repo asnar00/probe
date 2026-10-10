@@ -188,7 +188,7 @@ fn __zero_new()
             break
         mi2: index = add mi, 1
         continue mi2
-    _1: u8$ = __regular_u8(1000000, 512)
+    _1: u8$ = __stream_u8(1000000, 512)
     _2: int$ = __stream_int(1000000, 64)
     _3: int$ = set _2, rule, 1
     _4: int$ = __stream_int(1000000, 64)
@@ -450,6 +450,31 @@ fn ticked_at_its_own_time() -> int
         yield _9
     v: int = __at_int(_2, _13, 0, 1, 1, 0)
     ret v
+fn through(m: int) -> int
+    _this: ptr = context()
+    _1: __ctx = load _this
+    _2: int$ = get _1, t
+    v: int = seen_at(_2, m)
+    ret v
+fn seen_at(x: int$, m: int) -> int
+    __w1: i64 = const 1000000000
+    _1: i64 = conv m
+    _2: i64 = mul _1, 1000000
+    _4: ptr = get x, ring
+    _5: i64 = load _4, 32
+    _6: i64 = mul _2, _5
+    _7: i64 = div _6, __w1
+    _8: i64 = rem _6, __w1
+    _9: u1 = cmp.lt _2, 0
+    _10: i64 = if _9
+        yield -1
+    else
+        yield _7
+    _11: i64 = get x, edge
+    _12: int = conv _11
+    _13: i64 = get x, rule
+    v: int = __at_int(x, _10, _8, 1000000000, _13, _12)
+    ret v
 
 ; a stream's storage, carved from the arena: cap items (64 unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start
 fn __regular_int(hz: i64, cap: index) -> int$
@@ -480,7 +505,7 @@ fn __stream_int(hz: i64, cap: index) -> int$
     ring_init(r, vb, tb, hz)
     s: int$ = stream r
     ret s
-fn __regular_u8(hz: i64, cap: index) -> u8$
+fn __stream_u8(hz: i64, cap: index) -> u8$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
     slots: index = mul cap, 2
@@ -489,7 +514,11 @@ fn __regular_u8(hz: i64, cap: index) -> u8$
     total: index = add bytes, 16
     vb: ptr = arena_alloc(a, total)
     buffer_init(vb, sz, slots)
-    ring_regular(r, vb, hz, 1, 0)
+    tbytes: index = mul slots, 8
+    ttotal: index = add tbytes, 16
+    tb: ptr = arena_alloc(a, ttotal)
+    buffer_init(tb, 8, slots)
+    ring_init(r, vb, tb, hz)
     s: u8$ = stream r
     ret s
 

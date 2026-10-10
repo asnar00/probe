@@ -13204,13 +13204,67 @@ impl Lowerer {
             Some(Between::Linear) => 2,
             _ => 0,
         };
-        if how == 0 {
+        // ... and so does what it says a read before its first item
+        // gives, `else (v)` (fm3 question 147, log 254, principle 3):
+        // the value's bits in the reader's other word, which nothing
+        // the front end calls reads
+        let carried = match (&v.rule, ty.elem()) {
+            (Some(r @ Rule { outside: Outside::Else(_), .. }), Some(elem)) if word_carries(elem) => {
+                let z = self.outside_val(Some(r), elem, b, v.line)?;
+                Some(self.to_word(&z, elem, b))
+            }
+            _ => None,
+        };
+        if how == 0 && carried.is_none() {
             return Ok(self.make_stream(ty, hz, maker, b, dst));
         }
-        let made = self.make_stream(ty, hz, maker, b, None);
+        let mut made = self.make_stream(ty, hz, maker, b, None);
+        if let Some(w) = &carried {
+            let out = if how == 0 { name_for(dst, ty, b) } else { b.tmp() };
+            b.line(&format!("{}: {} = set {}, edge, {}", out, ty.ir(), made.text, w));
+            made.text = out;
+        }
+        if how == 0 {
+            return Ok(made);
+        }
         let out = name_for(dst, ty, b);
         b.line(&format!("{}: {} = set {}, rule, {}", out, ty.ir(), made.text, how));
         Ok(Val { text: out, ty: ty.clone(), literal: false })
+    }
+
+    /// A value of a stream's item type as the one word a reader has to
+    /// spare (fm3 question 147): a whole number, a character, a `bool`
+    /// or an enumeration converted; a `float` as the bits of the
+    /// 64-bit float it is exactly
+    fn to_word(&mut self, v: &Val, elem: &Ty, b: &mut Body) -> String {
+        let v = b.materialize(&Val { text: v.text.clone(), ty: elem.clone(), literal: v.literal });
+        let w = b.tmp();
+        if matches!(elem, Ty::Num(t) if !is_integer(t)) {
+            let (f, u) = (b.tmp(), b.tmp());
+            b.line(&format!("{}: f64 = conv {}", f, v.text));
+            b.line(&format!("{}: u64 = cast {}", u, f));
+            b.line(&format!("{}: i64 = cast {}", w, u));
+        } else {
+            b.line(&format!("{}: i64 = conv {}", w, v.text));
+        }
+        w
+    }
+
+    /// ... and the value read back from the word of a stream a
+    /// function was handed: what a read before its first item gives.
+    /// Zero where the declaration said nothing, the word being 0
+    fn from_word(&mut self, s: &Val, elem: &Ty, b: &mut Body) -> Val {
+        let (w, out) = (b.tmp(), b.tmp());
+        b.line(&format!("{}: i64 = get {}, edge", w, s.text));
+        if matches!(elem, Ty::Num(t) if !is_integer(t)) {
+            let (u, f) = (b.tmp(), b.tmp());
+            b.line(&format!("{}: u64 = cast {}", u, w));
+            b.line(&format!("{}: f64 = cast {}", f, u));
+            b.line(&format!("{}: {} = conv {}", out, elem.ir(), f));
+        } else {
+            b.line(&format!("{}: {} = conv {}", out, elem.ir(), w));
+        }
+        Val { text: out, ty: elem.clone(), literal: false }
     }
 
     /// `T x$ = e` (log 38): the stream the expression made, its items
@@ -13395,7 +13449,7 @@ impl Lowerer {
     /// the most recent item of a stream, or the zero of its type where
     /// nothing has been pushed (fm3 log 149, 163): what a cell reads
     /// before its first item, said of a stream that is kept another way
-    fn latest_or_zero(&mut self, s: &Val, ty: &Ty, b: &mut Body, dst: Option<&str>, rule: Option<&Rule>) -> Result<Val, Error> {
+    fn latest_or_zero(&mut self, s: &Val, ty: &Ty, b: &mut Body, dst: Option<&str>, rule: Option<&Rule>, handed: bool) -> Result<Val, Error> {
         let Ty::Stream(elem) = ty else { unreachable!() };
         let (n, some) = (b.tmp(), b.tmp());
         let out = match dst {
@@ -13411,8 +13465,10 @@ impl Lowerer {
         b.depth -= 1;
         b.line("else");
         b.depth += 1;
-        // (or what its declaration's `else` says, fm3 log 250)
-        let z = self.outside_val(rule, elem, b, 0)?;
+        // (or what its declaration's `else` says, fm3 log 250; a
+        // stream the function was handed carries that with it, fm3
+        // question 147)
+        let z = if handed && word_carries(elem) { self.from_word(s, elem, b) } else { self.outside_val(rule, elem, b, 0)? };
         b.line(&format!("yield {}", z.text));
         b.depth -= 1;
         Ok(Val { text: out, ty: elem.as_ref().clone(), literal: false })
@@ -15372,7 +15428,7 @@ impl Lowerer {
             }
         };
         self.ats.insert((eir.clone(), blends));
-        let zero = self.outside_val(rule.as_ref(), elem, b, line)?;
+        let zero = if handed && word_carries(elem) { self.from_word(s, elem, b) } else { self.outside_val(rule.as_ref(), elem, b, line)? };
         let how = if handed {
             let t = b.tmp();
             b.line(&format!("{}: i64 = get {}, rule", t, s.text));
@@ -15656,7 +15712,8 @@ impl Lowerer {
             // 3; log 227), whatever the stream is kept as
             ("latest", false, []) if self.may_hold_nothing(&sname, b) => {
                 let rule = self.stream_rule(&sname, b);
-                Ok(Some(self.latest_or_zero(&s, &ty, b, dst, rule.as_ref())?))
+                let handed = self.is_param(&sname, b);
+                Ok(Some(self.latest_or_zero(&s, &ty, b, dst, rule.as_ref(), handed)?))
             }
             ("latest", false, []) => Ok(Some(self.latest_of(&s, &ty, b, dst)?)),
             ("peek", false, [Part::Word(at), arg]) if at == "at" => {
@@ -15985,7 +16042,8 @@ impl Lowerer {
                             PushRead::Latest(s, ty) => self.latest_of(&s, &ty, b, dst),
                             PushRead::LatestOr(s, ty) => {
                                 let rule = self.stream_rule(w, b);
-                                self.latest_or_zero(&s, &ty, b, None, rule.as_ref())
+                                let handed = self.is_param(w, b);
+                                self.latest_or_zero(&s, &ty, b, None, rule.as_ref(), handed)
                             }
                             PushRead::Cell => self.read_cell(w, b, dst, e.line),
                             PushRead::Value(v) => Ok(v),
@@ -16023,7 +16081,8 @@ impl Lowerer {
                         // as a cell reads (fm3 question 75, log 163)
                         Ty::Stream(_) if now || ZERO_FIRST => {
                             let rule = self.stream_rule(w, b);
-                            self.latest_or_zero(&v, &ty, b, dst, rule.as_ref())
+                            let handed = self.is_param(w, b);
+                            self.latest_or_zero(&v, &ty, b, dst, rule.as_ref(), handed)
                         }
                         Ty::Stream(_) => self.latest_of(&v, &ty, b, dst),
                         _ => Err(lex::error(&file, e.line, format!("'{}$' is not a stream: '{}' is a {}", w, w, v.ty.ir()))),
@@ -17633,6 +17692,13 @@ fn fits_literal(v: &Val, ty: &Ty) -> bool {
 }
 
 /// an integer type, abstract or concrete, by its IR name
+/// may a value of this type ride in a stream's reader as one word
+/// (fm3 question 147)? What `else (v)` may be: a number, a character,
+/// a `bool`, a name of an enumeration
+fn word_carries(elem: &Ty) -> bool {
+    matches!(elem, Ty::Num(_) | Ty::Char | Ty::Bool | Ty::Enum(_))
+}
+
 fn is_integer(t: &str) -> bool {
     t == "int" || t == "uint" || t == "index" || (t.len() > 1 && t.starts_with(['i', 'u']) && t[1..].parse::<u32>().is_ok())
 }

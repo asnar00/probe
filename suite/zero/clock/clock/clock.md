@@ -26,6 +26,8 @@ Plan item 12 of milestone 0: section 9's `x$ at (t)` with the time computed once
 >value at (250) → 2
 >value at (300) → 2
 >value at (400) → 3
+>through (400) → 3
+>through (300) → 2
 >value at (5000) → 5
 >where it stands() → 2, 1 s
 >ticked at its own time() → 5

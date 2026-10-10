@@ -44,3 +44,9 @@ on (time t) << none marked when()
 
 on (int v) << ticked at its own time()
     v << t$ at (time of t$)
+
+on (int v) << through (int m)
+    v << seen (t$) at (m)
+
+on (int v) << seen (int x$) at (int m)
+    v << x$ at (m ms)

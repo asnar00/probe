@@ -86,5 +86,27 @@ on (int n) << handed (int m)
 on (int n) << read (float32 x$) at (int m)
     n << int(x$ at (m us))
 
+on (int n) << handed quiet (int m)
+    int quiet$ at (1 khz) else 60
+    n << both of (quiet$) at (m)
+
+on (int n) << handed after (int k) at (int m)
+    int quiet$ at (1 khz) else 60
+    quiet$ << k
+    n << both of (quiet$) at (m)
+
+on (int n) << both of (int x$) at (int m)
+    n << x$ at (m us) * 100 + x$
+
+on (int n) << handed level()
+    float32 level$ at (1 khz) else 2.5
+    n << tenths of (level$)
+
+on (int n) << tenths of (float32 x$)
+    n << int(x$ at (3 ms) * 10.0)
+
+on (int n) << handed note (int m)
+    n << both of (note$) at (m)
+
 on (int n) << paced()
     n << pace$

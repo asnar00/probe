@@ -26,7 +26,7 @@ The words stand after the stream's name and its rate, before `<<` or `=`.
 - **Before the first item** (`else (v)`). `note$` reads 60 before anything is pushed, by its name, by `latest note$` and by `note$ at (1 s)`: `before any` is `60, 60`. Once 64 is pushed its name is 64, and a time before it, `note$ at (0 s - 1 s)`, is still 60. A look back in a processor wired to it reads the same: `stepped`'s `x$[-1]` is 60 for the first item, so `after one` gives `step$` as 4, and `after two` 3. With nothing said all of these are zero.
 - **After the latest item** every stream reads its latest: `held at (99000)` is 40.
 - **What it costs**, the read alone, counted as it runs: the item at or before about 38 where the compiler knows the stream's rate and the time's divisor, 31 where the time is written out; `nearest` about 40; `linear` about 75, a second item read and the blend. A stream with no rate is searched by its ticks, 130 to 250.
-- **The rule goes with the stream**: `handed (1600)` is 30, the function reading by the `nearest` its argument was declared with. An `else` does not go with it: read through a parameter before its first item a stream gives zero.
+- **The rule goes with the stream**: `handed (1600)` is 30, the function reading by the `nearest` its argument was declared with. So does its `else` (fm3 question 147): `handed quiet (5000)` hands `int quiet$ at (1 khz) else 60`, with nothing pushed, to `both of (x$) at (m)`, which reads it at a time and by its name, and is `6060`; with 7 pushed, `handed after (7) at (5000)` is `707`, and at a time before the first item, `handed after (7) at (-5)`, `6007`. `handed level()` is a `float`'s, 2.5, and `handed note (1000)` the feature's own `note$`. The value rides in the stream's reader, a word beside the one that says `nearest` or `linear`.
 
 ## testing
 >held at (1600) → 20
@@ -59,6 +59,11 @@ The words stand after the stream's name and its rate, before `<<` or `=`.
 >local stored before (4) → 904
 >handed (1600) → 30
 >handed (1400) → 20
+>handed quiet (5000) → 6060
+>handed after (7) at (5000) → 707
+>handed after (7) at (-5) → 6007
+>handed level() → 25
+>handed note (1000) → 6060
 >paced() → 0
 
 ## hostile
