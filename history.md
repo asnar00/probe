@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the count of a literal's loop is said once, before the loop — `99f9a64` · 2026-10-10
+
+```
+on arrive first()
+    src$ << "let x = 4"
+```
+
+`suite/zero/lex-zeroic/lex/lex.zero:26`. The six-line lexer is a stream processor, and a text pushed into its input is a loop over the literal's bytes with the processor's lines in it, written by `z_block` in `src/zero/lower.rs`. The loop's test was `cmp.ge _10, 9`, the literal's length written in it, which is three instructions a pass as `probe count` counts, a literal being a `const` where it is used; `fm3/examples/lex-each-min.ssa`'s `arrive (p, n)` is handed its count and tests it in two. The length is now a value before the loop, `_17: index = const 9`, and the test names it.
+
+The parity method on the six lines (fm3 `parity.md`, log 257): the table of `two arrivals` a row a piece of work had the loop's test at 42 against the oracle's 28, the largest row. As it ran, static: 493 to **481** against 478; dynamic: 500 to **488** against 493. Said before the build: 481 and 488. On the tool 737 to 725 and 744 to 732. `a word at the end` 145 to 142 and 149 to 146; `suite/zero/zeroic`'s `kept through a block` 254 to 249 and `over text` 262 to 258. No other store's text moves and no case rises.
+
+---
+
 ### zero: the runner's capture is 65 536 characters a context again — `fb96040` · 2026-10-10
 
 ```
