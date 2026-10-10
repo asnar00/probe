@@ -4,6 +4,27 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a function partway through a push at a rate is a thing going on — `c3c518a` · 2026-10-10
+
+```
+on launch()
+    count down()
+    out$ << "liftoff"
+
+on count down()
+    i$ << [10 through 1]
+```
+
+`suite/zero/going-two/two/two.zero:5-10`, with `int i$ at (1 hz)` above it and `launch` called again by each key that arrives. Hop thirty-seven's list of things going on held a clock and a timed input, each a function that returns after its turn, and left a function that pushes at a rate as the loop it had always been: it held the machine's stack until it was done. So a key at 3.5 s started a second countdown on top of the first, the second ran to its end, and the first's step, coming back ten seconds late, failed a check. `time.md`'s fourth sentence and fm3 question 121 rule otherwise: the two are taken by turns, an item at a time, in time order, the one started first first.
+
+Where a turn of the list can start a function that steps, every function that can reach a step from where an activity starts is now rewritten, in the finished text, as continuations (`rewrite`, `src/zero/turns.rs:660`). A function becomes one function for its start and one for each place it can be left at: a step of a rate, the wait for a slot, or a call of another such function (`make`, `src/zero/turns.rs:542`). A continuation takes its activity's place in a pool and returns a number: 0, it stopped at a step and is due later; 1, the activity is over; anything else, the continuation to go on with at once, a callee's start or the caller's place. `__act_run` calls them in a loop through `__act_go`, which chooses by the number, so nothing calls itself and no second stack is needed. The countdown's loop, left at its step, is begun again as the same loop from the number it was left with, with what followed the step run first: `loop(_8: int = _8__s, __q: u1 = 1)`, `if __q`, `_11: int = sub _8, 1`, `continue _11, 0`. When its test fails it falls out into the rest of the text and returns `launch`'s place, whose continuation writes `liftoff`. What is alive across a place is kept in the pool, a column of words for each thing (`data __act_count_down___8: array(i64, 128)`), 64 places a context; the context has three words for it, and the list one more, the pool's, after the input and the clocks. A wired function's call for a character, and a case's twin, start an activity and run its first turn at once.
+
+The compiler tells a store that needs this by one question asked of the first lowering's text, and only where a case's input arrives at a time (`wanted`, `src/zero/turns.rs:204`; `lower`, `src/zero/lower.rs:2482`): can a function wired over the input reach a step? Where it can, the store is lowered again with the pool's words and rewritten; where a function's shape is not held (it is left inside an `if`, or keeps more than a word across a step) the store stays as it was. Every other store is lowered once. `scratchpad/irdiff.sh` against the binary before names `going-two` and `restart` and no other of 38: hello's and static's text are byte for byte what they were, and the six rows did not move (502, 509, 929, 940, 939, 918 as counted).
+
+`going-two`'s `launch() with in "k" at 3.5 s`, a failed check until now, gives `"10\n9\n8\n7\n" at 1 hz, "6\n10\n" at 4 s, "5\n9\n" at 5 s` and on to the second `liftoff` at 14 s; the same with the key at exactly 4 s; and two keys give three countdowns at once. In `restart` nothing is beneath anything: the touchstone's case is what it was, and a second key at 5 s, a failed check until now, ends the second countdown and begins a third. An activity a `restart` ends is over at once, whole, which `time.md` rules, where the lines written for the stack sent it back through its callers and stopped the program at one that gives a result. Both stores now run on the GPU's path, which skipped them for the recursion: air's skipped cases fall from 48 to 41. An item of a countdown costs 98 as counted and its line, 106 where two are going on, against 35 for a clock; it is paid in these two stores. The full run is `scratchpad/chain120.log`: 1089 runs of the zero suite on four paths, 1048 on air, `cargo test` 181.
+
+---
+
 ### zero: a program's function names and the IR's do not meet — `cdf3239` · 2026-10-10
 
 ```
