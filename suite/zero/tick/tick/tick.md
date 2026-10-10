@@ -24,6 +24,7 @@ A line that stands, `sum$ << sum$ + x$ forever`, runs each time a stream it read
 - `both` pushes 1 into `l$` and then 10 into `r$`, which one line reads, `either$ << l$ + r$ forever`.
 - `got` pushes 1 and 2 into `i$`, which `out$ << ("got " << i$ << "\n") forever` reads after a text.
 - `ended within a tick` pushes 1, 2 and 3 into `n$`: `low$ << n$ until (n$ == 2)` ends at the second, `hi$ << n$ * 10 forever` does not, and `out$ << (low$ << " " << hi$ << "\n") forever` reads both.
+- `doubled beside` pushes 1 and 2 into `p$`, which a stream function reads, `int dbl$ = doubled (p$)`, and a line beside it, `out$ << (p$ << " ") forever`; a third line reads the function's output, `out$ << (dbl$ << "\n") forever`. `doubled where even` is the same over `e$` with a function that pushes only for an even number, `d$ << twice$ if (v$ % 2 == 0)`.
 - `mixed` pushes by turns into `gain$`, which has no rate, and `beat$`, at `1 hz`; `loud$ << beat$ * gain$ forever` reads both.
 
 ## rules
@@ -34,8 +35,9 @@ A line that stands, `sum$ << sum$ + x$ forever`, runs each time a stream it read
 - **What a stream is kept as does not show.** `count ksum$` makes `ksum$` a queue and `count q$` makes `q$` one; both functions write what `summed` writes and then the count, 3. A line out of a stored stream is called where each item is pushed, after it is stored. Before this hop a stored `q$` handed all three items to the first line and then all three to the next.
 - **A line that has ended is passed over.** In `ended within a tick` the line into `low$` ends once it has pushed the 2. The line that writes is still set off by `hi$` at the third item, and reads `low$` for its latest, which is still 2: `1 10`, `2 20`, `2 30`.
 - **A stream with a rate and one without.** `mixed` pushes `gain$ << 2` at 0 s, and `loud$` gets 0, `beat$` holding nothing yet; then `beat$ << 1 << 2`, 2 at 0 s and 4 at 1 s; then `gain$ << 3` at 2 s, where the 2 is still `beat$`'s latest, 6; then `beat$ << 3`, 9, at 2 s as well. The unrated stream's tick falls where its push is written, between the beats.
+- **A stream function is a line of the tick like any other** (fm3 question 123 as the eight principles settle it, log 226). `doubled beside` writes each number and then its double, `1 2`, `2 4`: the wiring is written first and runs first, the number's line is next as written, and the line that reads `dbl$` waits for the wiring. Until hop thirty-eight the function's output was pushed where its input was, and the same text wrote the double before the number, `2`, `1 4`, `2 `. Where the function does not push, `doubled where even` at 1 and 3, the line that reads its output is not set off: `1 2 4`, `3 4 8`. This holds for a function of each item that keeps nothing: one that looks back, counts its place, or pushes in more than one place of its text is still called where its input is pushed, its output's lines running inside it.
 - **How it is compiled** (fm3 log 207). Where calling each line where its stream is pushed already runs the tick in order, which is every chain and every tree whose lines are written in the order they run, the push calls the lines and nothing more is written. Where it does not, the tick is one function, the lines' own statements in order, a pushed item going on in a local of the function to the lines that read it; where a push is under a condition, an `if`, a count, an `until` or a feature's switch, a second local says whether it was made. Nothing is kept between ticks: no list of lines waiting and no marks.
-- **Not ruled, and left as it was** (fm3 question 123): a stream that takes more than one item in a tick, because a line pushes several items into it, two lines of the tick push into it, or a stream processor does, and a stream with a rate of its own, has its lines run where each item is pushed, once an item.
+- **Left as it was** (fm3 question 123): a stream that takes more than one item in a tick, because a line pushes several items into it or two lines of the tick push into it, and a stream with a rate of its own, has its lines run where each item is pushed, once an item.
 
 ## testing
 >summed() → "1 1\n2 3\n3 6"
@@ -47,6 +49,8 @@ A line that stands, `sum$ << sum$ + x$ forever`, runs each time a stream it read
 >both() → "1\n11"
 >got() → "got 1\ngot 2"
 >ended within a tick() → "1 10\n2 20\n2 30"
+>doubled beside() → "1 2\n2 4"
+>doubled where even() → "1 2 4\n3 4 8"
 >mixed() → "0\n2\n" at 0 s, "4\n" at 1 s, "6\n9\n" at 2 s, "end" at 3 s
 
 ## hostile

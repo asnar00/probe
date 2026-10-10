@@ -2115,6 +2115,40 @@ mod tests {
         }
     }
 
+    /// A stream function is a line of the tick like any other (fm3
+    /// question 123 as the eight principles settle it, log 226): where
+    /// its function is one an edge's could be, a tick writes it in
+    /// place, its output's lines after it and a line beside it as
+    /// written. Its last tick is still its own function, called at the
+    /// input's end; one that looks back is still called where its
+    /// input is pushed
+    #[test]
+    fn a_stream_function_is_a_line_of_the_tick() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-ticked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>go() → \"1 2\\n2 4\"\n").unwrap();
+        let with = |wiring: &str, body: &str| -> String {
+            std::fs::write(dir.join("h/h.zero"), format!("int x$\nint d$ = {} (x$)\nout$ << (x$ << \" \") forever\nout$ << (d$ << \"\\n\") forever\n\non (int d$) << doubled (int p$)\n    d$ << p$ * 2\n\non (int d$) << grown (int p$)\n    d$ << p$ + p$[-1]\n\non go()\n{}", wiring, body)).unwrap();
+            emit(&dir).unwrap()
+        };
+        let body = |ir: &str, f: &str| -> String { ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
+        // the tick: the double worked out, the number written, then
+        // the double; the function of one item is called by nothing
+        let ir = with("doubled", "    x$ << 1 << 2\n");
+        let tick = body(&ir, "__tick1");
+        let at = |what: &str| tick.find(what).unwrap_or_else(|| panic!("{} in {}", what, tick));
+        assert!(at("__v_d: int = mul __item, 2") < at("__out__int(__item)") && at("__out__int(__item)") < at("__out__int(__v_d)"), "{}", tick);
+        assert!(body(&ir, "go").contains("__tick1(") && !ir.contains("__z1_each"), "{}", ir);
+        // the input's end is still the processor's last tick
+        let ir = with("doubled", "    x$ << 1\n    end x$\n    out$ << ended d$\n");
+        assert!(body(&ir, "go").contains("__tick1(") && body(&ir, "go").contains("__z1_end()"), "{}", ir);
+        // one that looks back keeps a value and is called as it was
+        let ir = with("grown", "    x$ << 1 << 2\n");
+        assert!(!ir.contains("__tick") && body(&ir, "go").contains("__z1_each("), "{}", ir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A division or a remainder of whole numbers by zero is a failed
     /// check on every path (fm3 question 116, Ash, 10 October 2026; log
     /// 223): a comparison and a `check` before the instruction, left

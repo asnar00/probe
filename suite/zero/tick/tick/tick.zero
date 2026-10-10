@@ -48,6 +48,14 @@ int gain$
 int loud$
 loud$ << beat$ * gain$ forever
 out$ << (loud$ << "\n") forever
+int p$
+int dbl$ = doubled (p$)
+out$ << (p$ << " ") forever
+out$ << (dbl$ << "\n") forever
+int e$
+int evens$ = doubled evens (e$)
+out$ << (e$ << " ") forever
+out$ << (evens$ << "\n") forever
 
 on summed()
     x$ << 1 << 2 << 3
@@ -86,3 +94,16 @@ on mixed()
     gain$ << 3
     beat$ << 3
     out$ << "end" << "\n"
+
+on (int d$) << doubled (int v$)
+    d$ << v$ * 2
+
+on (int d$) << doubled evens (int v$)
+    int twice$ = v$ * 2
+    d$ << twice$ if (v$ % 2 == 0)
+
+on doubled beside()
+    p$ << 1 << 2
+
+on doubled where even()
+    e$ << 1 << 2 << 3 << 4

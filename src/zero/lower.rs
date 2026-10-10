@@ -1490,7 +1490,7 @@ impl<'a> Beat<'a> {
     /// the edges out of a stream with no storage, as definitions
     fn edges_of(&self, n: &str) -> Vec<usize> {
         let mut out = Vec::new();
-        for (edge, _) in self.l.bare_edges.get(n).map(|v| v.as_slice()).unwrap_or_default() {
+        for (edge, _) in self.l.bare_edges.get(n).into_iter().chain(self.l.tick_was.get(n)).flatten() {
             // an edge's function takes its item; a processor's, the
             // item and what its wiring keeps (fm3 log 124)
             if let Some(zp) = self.l.zprocs.get(edge) {
@@ -2327,7 +2327,7 @@ impl Lowerer {
             loop {
                 let mut more = Names::new();
                 for s in &w {
-                    for (edge, _) in self.bare_edges.get(s).map(|v| v.as_slice()).unwrap_or_default() {
+                    for (edge, _) in self.bare_edges.get(s).into_iter().chain(self.tick_was.get(s)).flatten() {
                         more.extend(walker.of_key(edge).0);
                         // ... and its `end`, a processor's last tick
                         if let Some(end) = self.zprocs.get(edge).and_then(|zp| zp.end.clone()) {
@@ -2473,7 +2473,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features) };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features) };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -4296,6 +4296,10 @@ struct Lowerer {
     /// question 116, log 223), each with the body whose text names it.
     /// A division by one of them has no check
     nonzero: Vec<(usize, String)>,
+    /// the lines of a stream as they were before a tick's one function
+    /// took their place, where one is a processor with a last tick:
+    /// the input's `end` still calls it (fm3 log 226)
+    tick_was: HashMap<String, Vec<(String, String)>>,
     /// the functions of the program's own that are one line, the push
     /// of their one result, by IR name: tree and file (`one_line`)
     one_lines: HashMap<String, (std::rc::Rc<FnDecl>, String)>,
@@ -5478,6 +5482,21 @@ impl Lowerer {
             self.zfields.push((name.clone(), t));
         }
         let each = mangle(&w.each.name);
+        // a function an edge's could be: one item in, nothing kept or
+        // counted, and one push into its output in its text (its last
+        // tick, where it has one, is still called at the input's end). A tick writes it in place, a line like any other (fm3
+        // question 123 as the principles settle it, log 226); `sure`
+        // where that push stands under no condition
+        fn pushes(stmts: &[Stmt]) -> usize {
+            stmts.iter().map(|s| match s {
+                Stmt::Push { .. } => 1,
+                Stmt::If { then, els, .. } => pushes(then) + els.as_deref().map_or(0, pushes),
+                Stmt::Loop { .. } | Stmt::For { .. } => 2,
+                _ => 0,
+            }).sum()
+        }
+        let plain = w.walker.is_none() && w.at.is_none() && w.kept.is_empty() && w.each.results.is_empty() && w.each.params().count() == 1 && pushes(&w.each.body) == 1;
+        let sure = plain && w.each.body.iter().any(|s| matches!(s, Stmt::Push { cond: None, .. }));
         self.declare(&w.each, feature, file)?;
         let i = self.funcs.len() - 1;
         self.funcs[i].ir = each.clone();
@@ -5493,7 +5512,7 @@ impl Lowerer {
         }
         let Some(walker) = w.walker else {
             self.bare_edges.entry(n.clone()).or_default().push((each.clone(), feature.to_string()));
-            self.lines.push(Line { name: each.clone(), feature: feature.to_string(), file: file.to_string(), line: v.line, pacers: vec![n.clone()], reads: vec![n.clone()], target: Some(v.name.clone()), items: 0, sure: false, tree: false, after: None, said: format!("{}$ = {}", v.name, phrase_text(e)) });
+            self.lines.push(Line { name: each.clone(), feature: feature.to_string(), file: file.to_string(), line: v.line, pacers: vec![n.clone()], reads: vec![n.clone()], target: Some(v.name.clone()), items: plain as usize, sure, tree: plain, after: None, said: format!("{}$ = {}", v.name, phrase_text(e)) });
             self.zprocs.insert(each, zp);
             return Ok(());
         };
@@ -6012,6 +6031,19 @@ impl Lowerer {
                     if p != &s {
                         names.insert("__item".into(), item_of(p));
                     }
+                    // a processor's function names its item its own
+                    // way, and has locals an edge's has not: the item
+                    // is the tick's, and each local is this line's
+                    // (fm3 log 226)
+                    if self.zprocs.contains_key(&l.name) {
+                        let item = fd.params().next().unwrap().name.clone();
+                        names.insert(item, if p == &s { "__item".to_string() } else { item_of(p) });
+                        let mut locals = Vec::new();
+                        walk_vars(&fd.body, &mut locals);
+                        for v in locals {
+                            names.insert(v.clone(), format!("{}_{}", v, j + 1));
+                        }
+                    }
                 }
                 let target = l.target.as_deref().filter(|t| deferred(t));
                 let sure = cond.is_none() && l.sure;
@@ -6079,6 +6111,9 @@ impl Lowerer {
             self.funcs[i].plain = name.clone();
             self.edges.push((fd, feature, file));
             self.tick_quiet.insert(name.clone(), quiet);
+            if let Some(was) = self.bare_edges.get(&s).filter(|was| was.iter().any(|(e, _)| self.zprocs.get(e).is_some_and(|z| z.end.is_some()))) {
+                self.tick_was.insert(s.clone(), was.clone());
+            }
             self.bare_edges.insert(s.clone(), vec![(name, String::new())]);
         }
         Ok(())
@@ -12971,8 +13006,14 @@ impl Lowerer {
             b.line(&format!("{}: u1 = const 1", one));
             self.field_put(&field, &one, b);
         }
+        // (the lines as they were before a tick took their place: a
+        // processor's last tick is its own function still)
+        let ticked = self.tick_was.get(name).cloned().map(|was| self.bare_edges.insert(name.to_string(), was));
         let gates = self.read_gates(name, b);
         let edges = self.bare_edges.get(name).cloned().unwrap_or_default();
+        if let Some(Some(tick)) = ticked {
+            self.bare_edges.insert(name.to_string(), tick);
+        }
         for ((edge, _), gate) in edges.iter().zip(&gates) {
             let Some(zp) = self.zprocs.get(edge).cloned() else { continue };
             let Some(end) = &zp.end else { continue };
@@ -15929,6 +15970,23 @@ fn is_integer(t: &str) -> bool {
 /// `frame x$`, written as it stands
 fn is_frame(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Phrase(parts) if matches!(parts.as_slice(), [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(_), .. })] if w == "frame"))
+}
+
+/// the names a block declares, its own and its branches'
+fn walk_vars(stmts: &[Stmt], out: &mut Vec<String>) {
+    for s in stmts {
+        match s {
+            Stmt::Var(v) => out.push(v.name.clone()),
+            Stmt::Multi { vars, .. } => out.extend(vars.iter().map(|p| p.name.clone())),
+            Stmt::If { then, els, .. } => {
+                walk_vars(then, out);
+                if let Some(e) = els {
+                    walk_vars(e, out);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// every expression of one statement, and of the statements under it
