@@ -14,10 +14,12 @@ A program is compiled as it always was, with nothing in it that says where it is
 - `kept up (k)` pushes `k` items into `kept$`, a stream of this feature's that holds sixty-four, and gives how many it holds.
 - `counted (k)` pushes into a stream of its own `k` times, which fails where `k` is negative.
 - `looked` asks `checks`' `outside` for an item past the end of its array: the line reported is that feature's, in its file.
+- `share (a) among (k)` divides and `left of (a) among (k)` takes the remainder, by a number the compiler cannot see; `halved (a)` divides by a literal, and `shared safely (a, k)` by a number its own `if` has tested.
 
 ## rules
 - `→ check at <file>:<line>` holds where the check that fails is on that line: the file's own name, and the line of its text. `→ check` holds for any, as it did.
 - What is reported is `a failed check at <file>:<line>: <what>`: a stream that is full, with its name and how many it holds unread; `item I of N` for an array's item or a stream's by its place; `a count of K times`; a push into a stream that has ended, with its name. The program's own `check (c)` says its line, and anything else that stops in a statement says that statement's line.
+- A division or a remainder of whole numbers by zero is a failed check on every path, `a division by zero` (fm3 question 116): the machines do not agree what it gives, arm64 saying 0 and wasm stopping, so the program stops, at its line. The check is a comparison and stands before the division; it is left out where the compiler can see the divisor is not zero, a literal, or a value that the loop's `while`, an `if` or an earlier `check` has just tested, so `halved` and `shared safely` have none. A `float` divided by zero is the machine's infinity and is not this.
 - This feature's cases for `within (9)` and `pushed after end()` stand over `checks`' own wherever this feature is on, and say the line; with it off, `checks`' `→ check` stands, as written.
 - On the GPU, which does not stop at a failed check, the cases are skipped.
 
@@ -29,6 +31,13 @@ A program is compiled as it always was, with nothing in it that says where it is
 >looked() → check at checks.zero:23
 >within (9) → check at checks.zero:2
 >pushed after end() → check at checks.zero:41
+>share (7) among (2) → 3
+>share (7) among (0) → check at said.zero:16
+>left of (7) among (2) → 1
+>left of (7) among (0) → check at said.zero:19
+>halved (9) → 4
+>shared safely (7, 0) → 0
+>shared safely (7, 2) → 3
 
 ## hostile
 `→ check at said.zero` with no line, or `→ check at 4`, is refused: "a case that says where a check fails is `→ check at <file>:<line>`". A case that says the wrong line fails, and is told the right one: "(a failed check at said.zero:4: the stream `kept$` is full: 64 items pushed and nothing has read them)".

@@ -11,3 +11,15 @@ on (int n) << counted (int k)
 
 on (int n) << looked()
     n << outside()
+
+on (int n) << share (int a) among (int k)
+    n << a / k
+
+on (int n) << left of (int a) among (int k)
+    n << a % k
+
+on (int n) << halved (int a)
+    n << a / 2
+
+on (int n) << shared safely (int a, int k)
+    n << if (k != 0) then (a / k) else (0)

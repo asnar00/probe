@@ -24,6 +24,7 @@ fm3 question 120, Ash, the same day: a time is an exact rational, a count over a
 ## rules
 - A time is added to a time and taken from one: `beat + 100 ms`, `1 s - beat`. Two of one divisor add by their counts; where one divisor is a multiple of the other the coarser count is scaled; otherwise both are brought to their least common multiple, `1 s / 3 + 1 s / 7` being ten twenty-firsts of a second. Where that cannot be held in 64 bits a check fails, saying a time is too fine to hold.
 - It is multiplied by a whole number on either side and divided by one, exactly: `beat * 2`, `beat / 2`, `1 s / 3`. By a decimal, `1.5 * beat`, `beat / 2.5`, it is worked out in `float64` and cut to a whole nanosecond.
+- A time divided by a whole number that is zero, or by a time that is none, is a failed check that says its line and `a division by zero` (fm3 question 116): `a part of a second (0)`. The check stands in the program's line and is left out where the compiler knows the number, `1 s / 3`.
 - A time divided by a time is a `float`, and is how a number comes out of one: `beat / 1 ms` is 250.0, `2500 ms / 1 ms` exactly 2500.0, and `int(2500 ms / 1 s)` its whole seconds.
 - A time is compared with a time, `<`, `<=`, `>`, `>=`, `==`, `!=`: two that are the same moment are equal whatever their divisors, `1 s / 2 == 500 ms`.
 - `out$ << t` writes it as the language would read it: to the nanosecond, toward zero, in the largest of `s`, `ms`, `us`, `ns` in which it is at least 1. So a third of a second is written `333.333333 ms` and is still a third.
@@ -54,6 +55,7 @@ fm3 question 120, Ash, the same day: a time is an exact rational, a count over a
 >two divisors compared() → "true true true true"
 >a part of a second (3) → "583.333333 ms false"
 >a part of a second (4) → "500 ms true"
+>a part of a second (0) → check at times.zero:73
 >a third and a half() → 833.333333 ms
 >too fine (4000000007, 4000000009) → check
 

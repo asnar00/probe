@@ -2103,6 +2103,46 @@ mod tests {
         }
     }
 
+    /// A division or a remainder of whole numbers by zero is a failed
+    /// check on every path (fm3 question 116, Ash, 10 October 2026; log
+    /// 223): a comparison and a `check` before the instruction, left
+    /// out where the compiler sees the divisor is not zero, and never
+    /// written in the language's own lines. The diagnostic build says
+    /// the line and the reason
+    #[test]
+    fn a_division_by_zero_is_a_failed_check() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-div-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>share (7) among (2) → 3\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "on (int n) << share (int a) among (int k)\n    n << a / k\n\non (int n) << halved (int a)\n    n << a / 2 + a % 3\n\non (int n) << tested (int a, int k)\n    n << if (k != 0) then (a / k) else (0)\n\non (int n) << checked (int a, int k)\n    check (k > 0)\n    n << a % k\n\non (int n) << looped (int a, int k)\n    n << loop (int x = a, int y = k) while (y != 0) yields x\n        continue (y, x % y)\n\non (int n) << after (int a, int k)\n    if (k != 0)\n        out$ << a / k\n    n << a / k\n\non (float n) << decimal (float a, float k)\n    n << a / k\n\non (time t) << part (int k)\n    t << 1 s / k\n\non (time t) << third()\n    t << 1 s / 3\n\non (float r) << ratio (time a, time b)\n    r << a / b\n\non written (int a)\n    out$ << a\n").unwrap();
+        let mut s = store::read(&dir).unwrap();
+        let l = lower::lower(&s).unwrap();
+        let body = |ir: &str, f: &str| -> String { ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
+        assert!(body(&l.ir, "share_among").contains("    _1: u1 = cmp.ne k, 0\n    check _1\n    n: int = div a, k\n"), "{}", l.ir);
+        // a literal; a value an `if`, a `check` or the loop's own
+        // `while` has tested; a decimal; a time by a number it knows
+        for none in ["halved", "tested", "looped", "decimal", "third"] {
+            assert!(!body(&l.ir, none).contains("check"), "{}: {}", none, body(&l.ir, none));
+        }
+        assert_eq!(body(&l.ir, "checked").matches("check ").count(), 1, "{}", body(&l.ir, "checked"));
+        // past the `if` that tested it, the value is not known again
+        let after = body(&l.ir, "after");
+        assert!(after.matches("check ").count() == 1 && after.contains("\n    check "), "{}", after);
+        // a time divided: the check of the number, and of the other
+        // time's count, where the operator is used
+        assert!(body(&l.ir, "part").contains(": u1 = cmp.ne k, 0\n    check "), "{}", body(&l.ir, "part"));
+        assert_eq!(body(&l.ir, "ratio").matches("    check ").count(), 1, "{}", body(&l.ir, "ratio"));
+        // the language's own lines: the writer of a number divides by
+        // a loop's variable and has no check
+        assert!(l.ir.contains("\nfn __out__int(") && !body(&l.ir, "__out__int").contains("check"), "{}", l.ir);
+        // the diagnostic build names the line and the reason
+        s.sites = true;
+        let d = lower::lower(&s).unwrap();
+        assert!(d.sites.contains(&lower::Site { file: "h.zero".into(), line: 2, what: "a division by zero".into() }), "{:?}", d.sites);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The tick of a stream, compiled (fm3 questions 121 and 86, log
     /// 206 to 208). Where calling each line where its stream is pushed
     /// already runs them in order, the push calls them as it did and no

@@ -489,6 +489,46 @@ pub struct WideLiteral {
     pub ty: String,
 }
 
+/// a whole number's type: the abstract `int`, `uint` and `index`, and
+/// the widths. A division of these by zero is a failed check (fm3
+/// question 116); a decimal's is the machine's infinity
+fn whole_ty(ty: &Ty) -> bool {
+    matches!(ty, Ty::Num(n) if matches!(n.as_str(), "int" | "uint" | "index") || (n.len() > 1 && matches!(&n[..1], "i" | "u") && n[1..].parse::<u32>().is_ok()))
+}
+
+/// What a test just written says of a value (fm3 log 223): the value
+/// that is not zero where the test held, and the one that is not zero
+/// where it failed. `cond` is the test's name in the text `out`, read
+/// from its own line, a comparison of a value with a literal
+fn tested(cond: &str, out: &str) -> (Option<String>, Option<String>) {
+    let head = format!("{}: u1 = cmp.", cond);
+    let Some(l) = out.lines().rev().map(str::trim_start).find(|l| l.starts_with(&head)) else { return (None, None) };
+    let Some((op, rest)) = l[head.len()..].split_once(' ') else { return (None, None) };
+    let Some((x, y)) = rest.split_once(", ") else { return (None, None) };
+    // the value on the left and the literal on the right, turned
+    // round where they were written the other way
+    let (v, k, op) = match (x.parse::<i128>(), y.parse::<i128>()) {
+        (Err(_), Ok(k)) => (x, k, op),
+        (Ok(k), Err(_)) => (y, k, match op { "lt" => "gt", "gt" => "lt", "le" => "ge", "ge" => "le", o => o }),
+        _ => return (None, None),
+    };
+    let v = Some(v.to_string());
+    match op {
+        "ne" if k == 0 => (v, None),
+        "eq" if k == 0 => (None, v),
+        "gt" if k >= 0 => (v, None),
+        "ge" if k >= 1 => (v, None),
+        "lt" if k <= 0 => (v, None),
+        "le" if k <= -1 => (v, None),
+        // (where these fail the value is past the literal the other way)
+        "le" if k >= 0 => (None, v),
+        "lt" if k >= 1 => (None, v),
+        "ge" if k <= 0 => (None, v),
+        "gt" if k <= -1 => (None, v),
+        _ => (None, None),
+    }
+}
+
 /// the range of whole numbers a type holds whatever the product: a
 /// concrete width's, a `char`'s; none for an abstract type
 fn whole_range(ty: &Ty) -> Option<(i128, i128)> {
@@ -2433,7 +2473,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features) };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features) };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -4251,6 +4291,11 @@ struct Lowerer {
     /// the line of a check of the language's own whose site is being
     /// written: its text is named for it
     own_site: Option<usize>,
+    /// values the text has just shown are not zero where the lowering
+    /// stands: a loop's own test, an `if`'s, an earlier `check` (fm3
+    /// question 116, log 223), each with the body whose text names it.
+    /// A division by one of them has no check
+    nonzero: Vec<(usize, String)>,
     /// the functions of the program's own that are one line, the push
     /// of their one result, by IR name: tree and file (`one_line`)
     one_lines: HashMap<String, (std::rc::Rc<FnDecl>, String)>,
@@ -6319,6 +6364,15 @@ impl Lowerer {
     /// round the last `group` items (fm3 log 155)
     #[allow(clippy::too_many_arguments)]
     fn push_cell(&mut self, name: &str, items: &[Expr], group: usize, cond: Option<&Expr>, word: Repeat, b: &mut Body, line: usize) -> Result<bool, Error> {
+        // (what a `while` tested first shows holds to the rule's end,
+        // fm3 log 223)
+        let sure = self.nonzero.len();
+        let done = self.push_cell_ruled(name, items, group, cond, word, b, line);
+        self.nonzero.truncate(sure);
+        done
+    }
+
+    fn push_cell_ruled(&mut self, name: &str, items: &[Expr], group: usize, cond: Option<&Expr>, word: Repeat, b: &mut Body, line: usize) -> Result<bool, Error> {
         let file = b.file.clone();
         let f = self.fvar(name).unwrap().clone();
         self.reach(&format!("{}$", name), &f.feature, &file, line)?;
@@ -6373,6 +6427,7 @@ impl Lowerer {
         if first {
             let none = Val { text: "0".into(), ty: elem.clone(), literal: true };
             let cv = self.push_cond(name, PushRead::Cell, &none, c, word, b)?;
+            self.nonzero.extend(tested(&cv.text, &b.out).0.map(|v| (b as *const Body as usize, v)));
             b.line(&format!("if {}", cv.text));
             b.line("else");
             b.depth += 1;
@@ -6712,9 +6767,15 @@ impl Lowerer {
             // test first, the item worked out only where it holds
             _ if !asked => {
                 let cv = self.push_cond(name, own, &params[0], c, word, b)?;
+                // (the item is worked out where the test held, fm3
+                // log 223)
+                let sure = self.nonzero.len();
+                self.nonzero.extend(tested(&cv.text, &b.out).0.map(|v| (b as *const Body as usize, v)));
                 b.line(&format!("if {}", cv.text));
                 leave(b, &params, true);
-                done = work(self, b, &mut last)?;
+                let worked = work(self, b, &mut last);
+                self.nonzero.truncate(sure);
+                done = worked?;
                 b.line(&format!("continue {}", texts(&last)));
             }
             // `while` that reads it: the candidate worked out, the
@@ -8602,6 +8663,8 @@ impl Lowerer {
         // the block's last statement is the last thing the function
         // does where the block itself is (fm3 log 171)
         let last = self.tail;
+        // what a `check` of this block shows holds to the block's end
+        let sure = self.nonzero.len();
         for (i, s) in stmts.iter().enumerate() {
             self.after_push = match i.checked_sub(1).map(|k| &stmts[k]) {
                 Some(Stmt::Push { target: Expr { kind: ExprKind::Seq(n), .. }, existing: false, .. }) => Some(n.clone()),
@@ -8614,11 +8677,19 @@ impl Lowerer {
             let lowered = self.lower_stmt(s, b);
             self.site_line = outer;
             self.tail = last;
-            terminated = lowered?;
+            terminated = match lowered {
+                Ok(t) => t,
+                Err(e) => {
+                    self.nonzero.truncate(sure);
+                    return Err(e);
+                }
+            };
             if terminated && i + 1 < stmts.len() {
+                self.nonzero.truncate(sure);
                 return Err(lex::error(&b.file, stmt_line(&stmts[i + 1]), "this never runs: the statement before it leaves the block"));
             }
         }
+        self.nonzero.truncate(sure);
         Ok(terminated)
     }
 
@@ -8738,13 +8809,20 @@ impl Lowerer {
         let before = b.vars.clone();
         let start = b.out.len();
         b.depth += 1;
-        let t_term = self.lower_block(then, b)?;
+        // (each arm runs where the test went its way, fm3 log 223)
+        let (sure, (held, failed)) = (self.nonzero.len(), tested(&cv.text, &b.out));
+        self.nonzero.extend(held.map(|v| (b as *const Body as usize, v)));
+        let t_term = self.lower_block(then, b);
+        self.nonzero.truncate(sure);
+        let t_term = t_term?;
         let then_vars = std::mem::replace(&mut b.vars, before.clone());
         let mut then_lines = b.out.split_off(start);
         let (e_term, else_vars) = match els {
             Some(e) => {
-                let t = self.lower_block(e, b)?;
-                (t, std::mem::replace(&mut b.vars, before.clone()))
+                self.nonzero.extend(failed.map(|v| (b as *const Body as usize, v)));
+                let t = self.lower_block(e, b);
+                self.nonzero.truncate(sure);
+                (t?, std::mem::replace(&mut b.vars, before.clone()))
             }
             None => (false, before.clone()),
         };
@@ -8965,6 +9043,7 @@ impl Lowerer {
         }
         let start = b.out.len();
         b.depth += 1;
+        let sure = self.nonzero.len();
         if let Some(c) = cond {
             self.one = true;
             let cv = self.lower_expr(c, Some(&Ty::Bool), b, None)?;
@@ -8972,6 +9051,8 @@ impl Lowerer {
                 return Err(lex::error(&file, c.line, "'while' takes a bool"));
             }
             let cv = b.materialize(&cv);
+            // (the body runs where the test held, fm3 log 223)
+            self.nonzero.extend(tested(&cv.text, &b.out).0.map(|v| (b as *const Body as usize, v)));
             b.line(&format!("if {}", cv.text));
             b.line("else");
             b.depth += 1;
@@ -8982,6 +9063,7 @@ impl Lowerer {
         }
         let was_tail = std::mem::replace(&mut self.tail, false);
         let terminated = self.lower_block(body, b);
+        self.nonzero.truncate(sure);
         self.tail = was_tail;
         let terminated = terminated?;
         if !terminated {
@@ -9794,6 +9876,8 @@ impl Lowerer {
                     return Err(lex::error(&file, *line, "'check' takes a bool"));
                 }
                 let cv = b.materialize(&cv);
+                // (what follows in the block runs where it held)
+                self.nonzero.extend(tested(&cv.text, &b.out).0.map(|v| (b as *const Body as usize, v)));
                 b.line(&format!("if {}", cv.text));
                 b.line("else");
                 b.depth += 1;
@@ -10970,9 +11054,32 @@ impl Lowerer {
             t => return Err(lex::error(&file, line, format!("'{}' takes numbers, not a {}", op, t.ir()))),
         }
         let ty = if cmp { Ty::Bool } else { lv.ty.clone() };
+        if matches!(op, "/" | "%") && whole_ty(&lv.ty) {
+            self.divisor(&rv, b);
+        }
         let name = name_for(dst, &ty, b);
         b.line(&format!("{}: {} = {} {}, {}", name, ty.ir(), op_name(op), lv.text, rv.text));
         Ok(Val { text: name, ty, literal: false })
+    }
+
+    /// Before a division or a remainder of whole numbers (fm3 question
+    /// 116, Ash, 10 October 2026; log 223): a division by zero stops
+    /// the program as a failed check on every path, where the machines
+    /// disagree (arm64 gives 0, wasm stops). The check is left out
+    /// where the compiler can see the divisor is not zero: a literal
+    /// that is not, and a value the text has just tested (`nonzero`).
+    /// The language's own lines have none: their divisors are a power
+    /// of ten a loop keeps above zero or a time's divisor, which no
+    /// program can give and no operator makes zero
+    fn divisor(&mut self, d: &Val, b: &mut Body) {
+        let known = if d.literal { d.text.parse::<i128>().is_ok_and(|n| n != 0) } else { self.nonzero.iter().any(|(body, v)| *body == b as *const Body as usize && *v == d.text) };
+        if known || self.cur == "platform" {
+            return;
+        }
+        self.at("a division by zero", &[], b);
+        let nz = b.tmp();
+        b.line(&format!("{}: u1 = cmp.ne {}, 0", nz, d.text));
+        b.line(&format!("check {}", nz));
     }
 
     /// What the compiler knows of an operator's result with nothing
@@ -12322,6 +12429,13 @@ impl Lowerer {
     /// time round, `_` the last of them
     #[allow(clippy::too_many_arguments)]
     fn lower_pushes(&mut self, name: &str, s: &Val, items: &[Expr], group: usize, cond: Option<&Expr>, word: Repeat, b: &mut Body) -> Result<(), Error> {
+        let sure = self.nonzero.len();
+        let done = self.lower_pushes_ruled(name, s, items, group, cond, word, b);
+        self.nonzero.truncate(sure);
+        done
+    }
+
+    fn lower_pushes_ruled(&mut self, name: &str, s: &Val, items: &[Expr], group: usize, cond: Option<&Expr>, word: Repeat, b: &mut Body) -> Result<(), Error> {
         let file = b.file.clone();
         let Ty::Stream(elem) = s.ty.clone() else { unreachable!() };
         let elem = *elem;
@@ -12445,6 +12559,7 @@ impl Lowerer {
         if first {
             let none = Val { text: "0".into(), ty: elem.clone(), literal: true };
             let cv = self.push_cond(name, latest.clone(), &none, c, word, b)?;
+            self.nonzero.extend(tested(&cv.text, &b.out).0.map(|v| (b as *const Body as usize, v)));
             b.line(&format!("if {}", cv.text));
             b.line("else");
             b.depth += 1;
@@ -14536,6 +14651,22 @@ impl Lowerer {
                     };
                     // the language's own: its line, here (fm3 log 202)
                     if self.own_ops.contains_key(&info.ir) {
+                        // a time divided by a whole number, or by a
+                        // time, is a division of whole numbers
+                        // underneath (fm3 question 116, log 223): the
+                        // check of what it is divided by stands here,
+                        // in the program's line, the operator being
+                        // one line of the language's written in place
+                        if op == "/" && self.cur != "platform" {
+                            let by = match &info.params[1].1 {
+                                t if whole_ty(t) => Some(rv.clone()),
+                                Ty::Struct(_) if rv.ty == time_ty() => Some(self.field_of(&rv, 0, b)),
+                                _ => None,
+                            };
+                            if let Some(by) = by {
+                                self.divisor(&by, b);
+                            }
+                        }
                         return self.own_op(&info, lv, rv, b, dst, e.line);
                     }
                     let mut lv = lv;
@@ -14584,11 +14715,18 @@ impl Lowerer {
                 b.depth += 1;
                 self.one = one;
                 self.now = now;
-                let mut av = self.lower_expr(a, want, b, None)?;
+                let (sure, (held, failed)) = (self.nonzero.len(), tested(&cv.text, &b.out));
+                self.nonzero.extend(held.map(|v| (b as *const Body as usize, v)));
+                let av = self.lower_expr(a, want, b, None);
+                self.nonzero.truncate(sure);
+                let mut av = av?;
                 let mut a_lines = b.out.split_off(start);
                 self.one = one;
                 self.now = now;
-                let mut dv = self.lower_expr(d, if av.literal { want } else { Some(&av.ty) }, b, None)?;
+                self.nonzero.extend(failed.map(|v| (b as *const Body as usize, v)));
+                let dv = self.lower_expr(d, if av.literal { want } else { Some(&av.ty) }, b, None);
+                self.nonzero.truncate(sure);
+                let mut dv = dv?;
                 let mut d_lines = b.out.split_off(start);
                 let ty = match (av.literal, dv.literal) {
                     (true, false) => dv.ty.clone(),
