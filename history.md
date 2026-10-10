@@ -4,6 +4,26 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `count x$` of a stream is how many items it has had — `6edbd08` · 2026-10-10
+
+```
+on (int a, int b) << counted so far()
+    int x$ << 1 << 2 << 3
+    int f[] = frame x$
+    a << [count] (f[]) * 10 + count x$
+    b << [count] (frame x$)
+```
+
+`suite/zero/streams/streams/streams.zero:204`, whose case is `>counted so far() → 33, 0`. Until this commit `count x$` was how many items were unread where a reader stood, the ring's count less the reader's place, so after the frame it gave 0. fm3 question 94, put to Ash as exactly that program: "Count should be 'how many so far' I think". "Unread" is a notion only `frame` has; everywhere else a stream's name is its latest item and reading takes nothing. So `count x$` is the ring's count alone, one counter that no `frame` or `advance` changes; how many are waiting is the length of the array `frame` gives, `[count] (frame x$)`; and something that walks, which must look before it takes, says it in the two words it has, `count x$ - position x$`, how many the stream has had less where this reader stands (question 137, decided by question 126's fourth and seventh principles: no new word, one way to say a thing).
+
+The two meanings are told apart in `src/zero/kinds.rs`, which walks the program's text before the compiler writes any tree of its own. `count x$` of a name marked a stream becomes an inner word no program can write, `count so far` (`SO_FAR`, a word with spaces, which the lexer never makes), and `src/zero/lower.rs` lowers it in `so_far_of` as `get s, ring` and `load`. `count c$ - position c$` of one stream is made the tree `count c$` had (`walked`), so the lowering writes the one instruction `count` for it, as before. The inner word stands beside `count` in the lists that decide by a stream's words what it is kept as, what is quiet and what may be asked twice, so no stream is kept differently. The compiler's own walks of a batch, and an array's length `[count] (a[])`, keep the old instruction. Nothing is newly refused.
+
+The suite said `count` of a stream in 104 lines of 19 stores. 84 are of a stream nothing has taken from and stand as written with the number they had. 12 walk and say `count x$ - position x$`: the two walking lexers' `if (count c$ - position c$ == 0)` and `if (i >= count c$ - position c$)`, `edges`, `tallied`, `timed`, `zeroic`, `tasks`' `runs` and `streams`' `walked`; `edges` and `timed` emit byte for byte what they emitted. 8 asked what was waiting after a `frame` or an `advance` and say `[count] (frame x$)`, or in `unread only` the count of the array its frame made. No case's result changed. Five cases are added: the one above, `counted at a rate` (`n << count x$ * 10 + (count x$ - position x$)` after an `advance` by two of three, 31), `counted when handed on` (a stream advanced and handed to a function, 3), and `suite/zero/control`'s `counted to (100) → 100` and `(1)`, a hundred pushed into a function's stream with none kept.
+
+Measured with `scratchpad/agent54/casediff.sh` against the tree before (`scratchpad/agent55/casediff145.txt`): 17 stores' text moved; a count so far is 2 on the tool where the instruction was 5, and every case that counts falls by 3 to 6. `two_arrivals`, which counts twice: the six lines 502 to 493 static and 509 to 500 dynamic as it ran (746 to 737 and 753 to 744 on the tool), the walking lexer 929 to 920 and 940 to 931 (587 to 578, 598 to 589). I had said 6 a row; it is 9. hello's `run` 939 and static's 918, as they were. Seven cases rise, each now taking a frame to ask what is waiting where it read a number: `advanced` 283 to 416, `read ahead` 279 to 421, `tokens moved` 178 to 317, `counted round a skip` 99 to 268, `framed` 342 to 426, `framed sum` 409 to 493, `run now moves the reader` 378 to 470. The meter is 51 of 2 952, its rows as they were, the walking forms still a `count` on a task's input. The four `lex` `.expected.ssa` are re-made. The full run is `scratchpad/chain133.log`: 1250 runs of the zero suite on four paths and 1209 on air, `probe test` 1025, `cargo test` 187.
+
+---
+
 ### zero: a stream's name as an operand is refused where a function or `for` wants an array — `e22a9fd` · 2026-10-10
 
 ```
