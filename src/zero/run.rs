@@ -4134,6 +4134,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `time of x$` is the time of the stream's latest item (fm3
+    /// question 132, log 249): the ring's count less one over the
+    /// rate, with no reader asked; the latest item's tick where the
+    /// stream has no rate
+    #[test]
+    fn a_stream_s_time_is_its_latest_item_s() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-timeof-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-10T10:00:00\n\n## testing\n").unwrap();
+        let f = |decl: &str| -> String {
+            std::fs::write(dir.join("h/h.zero"), format!("on (time t) << f()\n    {}\n    advance x$ by (1)\n    t << time of x$\n", decl)).unwrap();
+            let ir = lower::lower(&store::read(&dir).unwrap()).unwrap().ir;
+            ir.lines().skip_while(|l| !l.starts_with("fn f(")).skip(1).take_while(|l| l.starts_with(' ')).collect::<Vec<_>>().join("\n")
+        };
+        let rated = f("int x$ at (30 hz) << 1 << 2 << 3");
+        assert!(rated.contains(", ring\n") && rated.contains(" = pack ") && rated.contains(", 30\n") && !rated.contains("position(") && !rated.contains("tick_of("), "{}", rated);
+        let sparse = f("int x$ << 1 << 2 << 3");
+        assert!(sparse.contains("tick_of(") && sparse.contains(", 1000000\n") && !sparse.contains("position("), "{}", sparse);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A feature's stream that only its name and `count` read keeps
     /// its latest item and a counter, and no queue (fm3 question 145,
     /// log 247): the counter is one more at each store of the item

@@ -6915,6 +6915,12 @@ impl Lowerer {
         (out, bound, sourced)
     }
 
+    /// is the name a parameter of the function being lowered, not a
+    /// stream the function or a feature declares?
+    fn is_param(&self, name: &str, b: &Body) -> bool {
+        b.vars.contains_key(name) && b.func.as_ref().is_some_and(|f| f.params.iter().any(|(p, _)| p == name))
+    }
+
     /// the cells that are counted, in the order they are declared
     fn counted_cells(&self) -> Vec<String> {
         self.fvars.iter().filter(|f| self.cells.contains(&f.name) && self.counted.contains(&f.name)).map(|f| f.name.clone()).collect()
@@ -10847,7 +10853,7 @@ impl Lowerer {
         // `position x$` gives the index alone now (log 85, question 42)
         if let [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(n), .. })] = parts.as_slice() {
             if w == "position" && self.stream_var(n, b).is_some() {
-                return Err(lex::error(&file, line, format!("'position' gives one int, the index of the next unread item: `int i = position {}$`, and the time of that item is `time of {}$`", n, n)));
+                return Err(lex::error(&file, line, format!("'position' gives one int, the index of the next unread item: `int i = position {}$`. A stream's time is `time of {}$`, the time of its latest item", n, n)));
             }
         }
         let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
@@ -14767,7 +14773,7 @@ impl Lowerer {
         // clock's rate in its ring
         let hz = match rate {
             Some(hz) => Some(hz),
-            None if !b.vars.contains_key(sname) => Some(CLOCK_HZ),
+            None if !self.is_param(sname, b) => Some(CLOCK_HZ),
             None => None,
         };
         let tick = match (hz, known(&div).filter(|d| *d > 0)) {
@@ -14919,8 +14925,9 @@ impl Lowerer {
                 }
             }
         }
-        // `time of x$`: the tick of the next unread item, and the one
-        // word that times a stream by asking (log 85, question 42)
+        // `time of x$`: the time of the stream's latest item (fm3
+        // question 132, principle 3, log 249), and the one word that
+        // times a stream by asking (log 85, question 42)
         if let [Part::Word(time), Part::Word(of), x] = parts {
             if time == "time" && of == "of" {
                 if let Some(n) = name_of(x).filter(|n| self.stream_var(n, b).is_some()) {
@@ -14932,21 +14939,57 @@ impl Lowerer {
                     // divisor; a stream with no rate keeps a tick an
                     // item, and its time is the tick over the clock's
                     // own rate
+                    // A stream's name is its latest item, and reading
+                    // takes nothing: so its time is its latest item's,
+                    // on the line of time `x$ at (t)` reads, and
+                    // `x$ at (time of x$)` is that item; `0 s` before
+                    // the first. No reader's place enters it
                     let rate = if b.vars.contains_key(&n) { b.rates.get(&n).copied() } else { self.rates.get(&n).copied() };
-                    let (k, t) = (b.tmp(), b.tmp());
-                    b.line(&format!("{}: index, {}: i64 = position({})", k, t, first));
-                    let (count, divisor) = match rate {
+                    let (r, pushed, last, none) = (b.tmp(), b.tmp(), b.tmp(), b.tmp());
+                    b.line(&format!("{}: ptr = get {}, ring", r, first));
+                    b.line(&format!("{}: index = load {}", pushed, r));
+                    b.line(&format!("{}: index = sub {}, 1", last, pushed));
+                    b.line(&format!("{}: u1 = cmp.lt {}, 0", none, last));
+                    let (count, divisor, lit) = match rate {
                         Some(hz) => {
-                            let c = b.tmp();
+                            let (k, c) = (b.tmp(), b.tmp());
+                            b.line(&format!("{}: index = if {}", k, none));
+                            b.depth += 1;
+                            b.line("yield 0");
+                            b.depth -= 1;
+                            b.line("else");
+                            b.depth += 1;
+                            b.line(&format!("yield {}", last));
+                            b.depth -= 1;
                             b.line(&format!("{}: i64 = conv {}", c, k));
-                            (c, hz)
+                            (c, hz.to_string(), true)
                         }
-                        None => (t, CLOCK_HZ),
+                        None => {
+                            let (t, x) = (b.tmp(), b.tmp());
+                            b.line(&format!("{}: i64 = if {}", t, none));
+                            b.depth += 1;
+                            b.line("yield 0");
+                            b.depth -= 1;
+                            b.line("else");
+                            b.depth += 1;
+                            b.line(&format!("{}: i64 = tick_of({}, {})", x, first, last));
+                            b.line(&format!("yield {}", x));
+                            b.depth -= 1;
+                            // the clock that stamped it: the store's,
+                            // but for a parameter, which says its own
+                            if self.is_param(&n, b) {
+                                let h = b.tmp();
+                                b.line(&format!("{}: i64 = load {}, 32", h, r));
+                                (t, h, false)
+                            } else {
+                                (t, CLOCK_HZ.to_string(), true)
+                            }
+                        }
                     };
                     let ty = time_ty();
                     let out = name_for(dst, &ty, b);
                     b.line(&format!("{}: {} = pack {}, {}", out, ty.ir(), count, divisor));
-                    b.known.insert(out.clone(), vec![Some((count.clone(), false)), Some((divisor.to_string(), true))]);
+                    b.known.insert(out.clone(), vec![Some((count.clone(), false)), Some((divisor.clone(), lit))]);
                     return Ok(Some(Val { text: out, ty, literal: false }));
                 }
             }

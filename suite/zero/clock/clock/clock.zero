@@ -30,3 +30,17 @@ on (int v) << none marked at (int m)
 
 on (int n) << paced()
     n << pace$
+
+on (time t) << marked when()
+    mark thrice()
+    t << time of mark$
+
+on (int v) << marked at its own time()
+    mark thrice()
+    v << mark$ at (time of mark$)
+
+on (time t) << none marked when()
+    t << time of mark$
+
+on (int v) << ticked at its own time()
+    v << t$ at (time of t$)

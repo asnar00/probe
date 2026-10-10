@@ -7,13 +7,13 @@ layer: runtime
 Plan item 12 of milestone 0: section 9's `x$ at (t)` with the time computed once at the boundary, over section 10's task at a rate.
 
 ## overview
-`ticks (5)` pushes 1 to 5 into `t$`, wired at `4 hz` on the store's clock, so the ticks fall at 0, 250, 500, 750 and 1000 ms. `value at (m)` turns the milliseconds into a `time` once, at the boundary, and reads the stream at it by its rule, nearest; `where it stands` moves the feature's reader on two items and reports where it is, `position t$` for the index and `time of t$` for the time of that item.
+`ticks (5)` pushes 1 to 5 into `t$`, wired at `4 hz` on the store's clock, so the ticks fall at 0, 250, 500, 750 and 1000 ms. `value at (m)` turns the milliseconds into a `time` once, at the boundary, and reads the stream at it by its rule, nearest; `where it stands` moves the feature's reader on two items and reports `position t$`, where the reader is, and `time of t$`, the time of the stream's latest item.
 
 ## interface
 - `ticks (n)` is the task; `int t$ = ticks(5) at (4 hz)` wires it.
 - `value at (m)` is `t$ at (m ms)`.
-- `mark thrice` pushes 1, 2 and 3 into `mark$`, a stream with no rate, with a push into `pace$` at `2 hz` between them to move the clock: the case's function starts at 1.25 s, after the five ticks, so the three fall at 1.25 s, 2 s and 2.5 s. `marked at (m)` is `mark$ at (m ms)` after them: 0 before the first, the nearer of two between them (1.6 s is nearer 1.25 s than 2 s), the last after the last. `paced` reads `pace$` by its name, so that it is a stream of the program.
-- `where it stands` advances `t$` by two and gives `position t$`, the index of the next unread item, and `time of t$`, its time, the index over the stream's rate, 2 over `4 hz`; `position` asks no time and `time of` is what times the stream (log 85, question 42).
+- `mark thrice` pushes 1, 2 and 3 into `mark$`, a stream with no rate, with a push into `pace$` at `2 hz` between them to move the clock: the case's function starts at 1.25 s, after the five ticks, so the three fall at 1.25 s, 2 s and 2.5 s. `marked at (m)` is `mark$ at (m ms)` after them: 0 before the first, the nearer of two between them (1.6 s is nearer 1.25 s than 2 s), the last after the last. `paced` reads `pace$` by its name, so that it is a stream of the program. `marked when` is `time of mark$` after the three, 2.5 s, and `none marked when` the same of a stream nothing has been pushed into, `0 s`. **`x$ at (time of x$)` is `x$`'s latest item**: `marked at its own time` gives 3 and `ticked at its own time`, `t$ at (time of t$)`, 5.
+- `where it stands` advances `t$` by two and gives `position t$`, the index of the next unread item, and `time of t$`, the time of the stream's latest item whatever the reader has taken, the fifth tick's, 1 s (fm3 question 132; until hop forty-three it was the next unread item's, 500 ms); `position` asks no time and `time of` is what times the stream (log 85, question 42).
 
 ## rules
 - Inside the stream time is the ring's ticks; at the boundary it is `time`, exact seconds (section 9). `m ms` on a variable is `millis(m)` computed once per call (log 33).
@@ -27,7 +27,11 @@ Plan item 12 of milestone 0: section 9's `x$ at (t)` with the time computed once
 >value at (300) → 2
 >value at (400) → 3
 >value at (5000) → 5
->where it stands() → 2, 500 ms
+>where it stands() → 2, 1 s
+>ticked at its own time() → 5
+>marked when() → 2.5 s
+>marked at its own time() → 3
+>none marked when() → 0 s
 >marked at (0) → 0
 >marked at (1300) → 1
 >marked at (1600) → 1

@@ -299,8 +299,16 @@ fn where_it_stands() -> (int, __time)
     i: int = conv _8
     _9: __ctx = load _this
     _10: int$ = get _9, t
-    _11: index, _12: i64 = position(_10)
-    tick: __time = pack _12, 1000000
+    _11: ptr = get _10, ring
+    _12: index = load _11
+    _13: index = sub _12, 1
+    _14: u1 = cmp.lt _13, 0
+    _15: i64 = if _14
+        yield 0
+    else
+        _16: i64 = tick_of(_10, _13)
+        yield _16
+    tick: __time = pack _15, 1000000
     ret i, tick
 fn mark_thrice()
     _this: ptr = context()
@@ -368,6 +376,78 @@ fn paced() -> int
     else
         yield 0
     ret n
+fn marked_when() -> __time
+    _this: ptr = context()
+    mark_thrice()
+    _1: __ctx = load _this
+    _2: int$ = get _1, mark
+    _3: ptr = get _2, ring
+    _4: index = load _3
+    _5: index = sub _4, 1
+    _6: u1 = cmp.lt _5, 0
+    _7: i64 = if _6
+        yield 0
+    else
+        _8: i64 = tick_of(_2, _5)
+        yield _8
+    t: __time = pack _7, 1000000
+    ret t
+fn marked_at_its_own_time() -> int
+    _this: ptr = context()
+    mark_thrice()
+    _1: __ctx = load _this
+    _2: int$ = get _1, mark
+    _5: ptr = get _2, ring
+    _6: index = load _5
+    _7: index = sub _6, 1
+    _8: u1 = cmp.lt _7, 0
+    _9: i64 = if _8
+        yield 0
+    else
+        _10: i64 = tick_of(_2, _7)
+        yield _10
+    _12: u1 = cmp.lt _9, 0
+    _13: i64 = if _12
+        yield -1
+    else
+        yield _9
+    v: int = __at_int(_2, _13, 1, 0)
+    ret v
+fn none_marked_when() -> __time
+    _this: ptr = context()
+    _1: __ctx = load _this
+    _2: int$ = get _1, mark
+    _3: ptr = get _2, ring
+    _4: index = load _3
+    _5: index = sub _4, 1
+    _6: u1 = cmp.lt _5, 0
+    _7: i64 = if _6
+        yield 0
+    else
+        _8: i64 = tick_of(_2, _5)
+        yield _8
+    t: __time = pack _7, 1000000
+    ret t
+fn ticked_at_its_own_time() -> int
+    _this: ptr = context()
+    _1: __ctx = load _this
+    _2: int$ = get _1, t
+    _5: ptr = get _2, ring
+    _6: index = load _5
+    _7: index = sub _6, 1
+    _8: u1 = cmp.lt _7, 0
+    _9: i64 = if _8
+        yield 0
+    else
+        _10: i64 = tick_of(_2, _7)
+        yield _10
+    _12: u1 = cmp.lt _9, 0
+    _13: i64 = if _12
+        yield -1
+    else
+        yield _9
+    v: int = __at_int(_2, _13, 1, 0)
+    ret v
 
 ; a stream's storage, carved from the arena: cap items (64 unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start
 fn __regular_int(hz: i64, cap: index) -> int$
@@ -457,3 +537,27 @@ fn __said_where_it_stands() -> (int, i64)
     q1: i64 = div b1, d1
     n1: i64 = add a1, q1
     ret r0, n1
+fn __said_marked_when() -> i64
+    __w1: i64 = const 1000000000
+    r0: __time = marked_when()
+    c0: i64 = get r0, count
+    d0: i64 = get r0, divisor
+    w0: i64 = div c0, d0
+    m0: i64 = rem c0, d0
+    a0: i64 = mul w0, __w1
+    b0: i64 = mul m0, __w1
+    q0: i64 = div b0, d0
+    n0: i64 = add a0, q0
+    ret n0
+fn __said_none_marked_when() -> i64
+    __w1: i64 = const 1000000000
+    r0: __time = none_marked_when()
+    c0: i64 = get r0, count
+    d0: i64 = get r0, divisor
+    w0: i64 = div c0, d0
+    m0: i64 = rem c0, d0
+    a0: i64 = mul w0, __w1
+    b0: i64 = mul m0, __w1
+    q0: i64 = div b0, d0
+    n0: i64 = add a0, q0
+    ret n0

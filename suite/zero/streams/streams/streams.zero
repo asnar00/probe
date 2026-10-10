@@ -66,6 +66,11 @@ on (int k, time t) << position unread()
     k << position i$
     t << time of i$
 
+on (int a, int b) << read at its own time()
+    int x$ at (1000 hz) << 1 << 2 << 3
+    a << x$ at (time of x$)
+    b << x$
+
 on (bool b) << still open()
     int i$ << 1
     b << ended i$
