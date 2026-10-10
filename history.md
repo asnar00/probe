@@ -4,6 +4,27 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a program's function names and the IR's do not meet — `cdf3239` · 2026-10-10
+
+```
+on (int n) << fill (int k)
+    n << k * 2
+
+on (int n) << div (int a, int b)
+    n << a - b
+
+on (int n) << idle()
+    n << 7
+```
+
+`suite/zero/functions/functions/functions.zero:127-134`. Three faults earlier agents met and left: a case could not call a zero function named `fill` ("no function fill in module"), one named `div` was refused as clashing with a function of the language's own, and one named `idle` died of signal 4 on every path. They are one fault, a program's name meeting a name the IR has, and each met a different kind. `fill` is a function of `lib/slice.ssa`: the program's was then one of several of the name, and a call with no types to tell them apart, a case's, found none. `idle` is no function of a library but a rule of a platform file, `targets/arm64.platform:142`, an instruction the machine has; a function of the program's with that name and those types was replaced by it, and the instruction that waits for an interrupt is not one a process may run. `div` is the opcode the language's own `/` is declared under, and a name's key is its words joined, so the two were held to be one name written two ways.
+
+A function of the program's whose IR name would be a function of `lib/*.ssa` or a rule of `targets/*.platform` is now named apart, `__f_fill` (`name_methods`, `src/zero/lower.rs:5287`). The set is read from those files themselves when a store is lowered (`ir_names`, `src/zero/lower.rs:1101`), so it is every such name and not a list. Calls, links, setters and a case's call are made from the function's IR name and follow it. And a name of words and an operator may share a key: the clash of one name written two ways is asked among functions of one kind. The four cases, `fill (3) → 6`, `div (7, 2) → 5`, `idle() → 7` and a function that calls all three, pass on five paths.
+
+Four stores' emitted text moved and no case's count: `clock`, `control` and `timed` each have a function `ticks`, which `lib/stream.ssa` has too, now `__f_ticks` (`suite/zero/clock.expected.ssa` re-made, two lines); `features` has `count`, now `__f_count`. They ran before because every call of them came from zero with its types. `probe count <text> ticks` must now say `__f_ticks`. The other fault of the pair, `__out_ch` with no bound on the runner's capture, is not in this commit: a compare and a check there are 69 on hello's `run` and on static's, 1 008 and 987 against oracles of 977 and 964, and it waits for the compiler to see where a store's text fits (fm3 log 230). The full run is `scratchpad/chain118.log`: 1087 runs of the zero suite on four paths, 1039 on air, `cargo test` 180.
+
+---
+
 ### zero: a failed check inside the language's own code is reported at the program's line — `dda1462` · 2026-10-10
 
 ```
