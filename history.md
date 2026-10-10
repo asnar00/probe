@@ -4,6 +4,25 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream reads as zero before its first item, and an array is not made from a stream's name — `d82f03d` · 2026-10-10
+
+```
+on (int n) << latest before any()
+    n << latest none$ * 10 + count none$
+
+on (int n) << first of its own()
+    own$ << own$ + 1
+    n << own$ * 10 + count own$
+```
+
+`suite/zero/streams/streams/streams.zero:198-203`. Two small things, each decided by one of the eight principles Ash agreed on 10 October 2026 (fm3 question 126). The first is fm3 question 98, by the third principle: a stream's name is its latest value, and before its first item it reads as zero. That was so of the name read plainly, and of a local stream. Of a feature's stream kept as a queue or a ring, as `none$` and `own$` are because their `count` is asked, `latest none$` and `own$ << own$ + 1` failed the library's check on a stream that holds nothing. Both now give the zero: the first case 0, the second 11. The read is the one the plain name already had, `received`, a comparison and a branch round the library's `latest`, written wherever the compiler cannot see that the stream holds something (`may_hold_nothing`, `src/zero/lower.rs:12291`). It can see it of a local stream pushed into at the top of its function, and of a stream past the first item of the statement pushing into it, so `b$ << 1 << (b$ + 1) until (b$ == 5)` is the text it was. The functions the front end writes for a line that stands are not changed.
+
+The second is fm3 question 97, by the second principle: arrays and streams are two kinds, and nothing meant for one is silently applied to the other. `int j[] = x$ * 2` made an array from what was unread in `x$`, the last place a stream's name meant everything unread. It is refused where the names are held to their marks (`stream_operand`, `src/zero/kinds.rs:91`): "`x$ * ...` is one value, made from the latest item of 'x$', and 'j[]' is an array ... The array of what has arrived is `frame x$`, `int j[] = frame x$ * 2`". No line of the suite said it.
+
+Eleven cases read a feature's stream in one of the two ways and rose by 6 each as counted: `cells`' `counted()` 61 to 67; `streams`' `logged()` 87 to 93 and `blocked regular()` 438 to 444; `tasks`' `a batch()` 184 to 190, `a task run now inside a loop()` 455 to 461, `closed()` 138 to 144, `counted down()` 282 to 288, `ended twice()` 211 to 217, `fed twice()` 158 to 164, `run now inside a loop()` 631 to 637 and `wired at feature scope()` 56 to 62. The six rows did not move. The full run is `scratchpad/chain116.log`: 1079 runs of the zero suite on four paths, 1031 on air, `cargo test` 180.
+
+---
+
 ### zero: a stream function is a line in the tick's order — `a4263f7` · 2026-10-10
 
 ```
