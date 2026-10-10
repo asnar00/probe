@@ -2778,6 +2778,14 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         for (fd, feature, file) in &edges {
             if feature == &f.name {
                 l.in_clock = l.clocks.iter().find(|c| matches!(&fd.name[0], NamePart::Word(w) if *w == c.name)).map(|c| c.stream.clone());
+                // ... and neither does the push of a line that runs at
+                // the close of a slot: its item lands at that time
+                // (fm3 log 234)
+                if let NamePart::Word(w) = &fd.name[0] {
+                    if l.slot_lines().contains(w) {
+                        l.in_clock = l.lines.iter().find(|x| x.name == *w).and_then(|x| x.target.clone());
+                    }
+                }
                 l.lower_fn(fd, feature, file)?;
                 l.in_clock = None;
             }
@@ -5920,7 +5928,10 @@ impl Lowerer {
         if n == 0 {
             return Ok(());
         }
-        let readers = |s: &str| -> Vec<usize> { (0..n).filter(|&i| lines[i].pacers.iter().any(|p| p == s)).collect() };
+        // (a line that runs at the close of a slot is in no tick, fm3
+        // log 234: a push into what it reads marks it and no more)
+        let slots = self.slot_lines();
+        let readers = |s: &str| -> Vec<usize> { (0..n).filter(|&i| !slots.contains(&lines[i].name) && lines[i].pacers.iter().any(|p| p == s)).collect() };
         // a circle: a line that sets off, through what it pushes into,
         // a line that sets it off. Each would call the other for ever
         {
@@ -7616,6 +7627,14 @@ impl Lowerer {
                 self.type_lines.push(";   __act_n, __due_act, __act_i: the pool of activities (fm3 log 232): how many have started, the least time any is due, and which that is".into());
                 own.push_str("__act_n: index\n    __due_act: i64\n    __act_i: index\n    ");
             }
+            let slots = self.slot_lines();
+            if !slots.is_empty() {
+                self.type_lines.push(";   __slot_<line>, __due_close: a line over streams with a rate runs at the close of a slot (fm3 log 234): its bit, set by a push into any of them, and the time the close is due".into());
+                for n in &slots {
+                    own.push_str(&format!("__slot_{}: u1\n    ", n));
+                }
+                own.push_str("__due_close: i64\n    ");
+            }
             let restarts: Vec<String> = self.fvars.iter().filter(|f| self.restarts.contains(&f.name)).map(|f| f.name.clone()).collect();
             for n in &restarts {
                 self.type_lines.push(format!(";   __run_{n}, __phase_{n}: the number of '{n}$'s run, one more at each `restart`, and where its beat begins", n = n));
@@ -7799,6 +7818,11 @@ impl Lowerer {
             }
             if self.acts {
                 own.push_str(&format!("0, {}, 0, ", NEVER));
+            }
+            let slots = self.slot_lines();
+            if !slots.is_empty() {
+                own.push_str(&"0, ".repeat(slots.len()));
+                own.push_str(&format!("{}, ", NEVER));
             }
             let restarts = self.fvars.iter().filter(|f| self.restarts.contains(&f.name)).count();
             own.push_str(&"0, 0, ".repeat(restarts));
@@ -8010,6 +8034,20 @@ impl Lowerer {
         !self.clocks.is_empty() || self.timed_in
     }
 
+    /// The lines that run at the close of a slot (fm3 log 234): a line
+    /// set off by two or more streams, each with a rate, in a store
+    /// with a list. A push into any of them sets the line's bit and
+    /// does not call it; the close, the last thing in the list, calls
+    /// it once when everything else due at that time has had its turn,
+    /// so `mix$ << left$ + right$ forever` gives one item a slot, made
+    /// from that slot's two
+    fn slot_lines(&self) -> Vec<String> {
+        if !self.listed() {
+            return Vec::new();
+        }
+        self.lines.iter().filter(|l| l.pacers.len() > 1 && l.pacers.iter().all(|p| self.rates.contains_key(p))).map(|l| l.name.clone()).collect()
+    }
+
     fn emit_turns(&mut self) {
         if !self.listed() {
             return;
@@ -8040,6 +8078,14 @@ impl Lowerer {
                 self.written.insert(f.to_string());
             }
         }
+        // ... and last the close of a slot (fm3 log 234): two due at
+        // one time are taken in this order, so its turn comes when
+        // everything else due at that time has had its own
+        let slots = self.slot_lines();
+        if !slots.is_empty() {
+            things.push(("__due_close".into(), vec!["__close()".into()]));
+            self.written.insert("__due_close".into());
+        }
         let mut t = String::from("\n; the things going on (fm3 log 217): each has a word of the context, the time it is next due; the earliest due by t has its turn at its time, the first started of two at one time, until none is due\nfn __turns(t: i64)\n    loop(n: i64 = 0)\n");
         writeln!(t, "        some: u1 = cmp.lt n, {}\n        check some\n        x: __ctx = load {}", TURNS, THIS).unwrap();
         for (k, (due, _)) in things.iter().enumerate() {
@@ -8051,7 +8097,15 @@ impl Lowerer {
         }
         let n = things.len();
         let (best, which) = if n == 1 { ("d1".to_string(), None) } else { (format!("b{}", n), Some(format!("k{}", n))) };
-        writeln!(t, "        late: u1 = cmp.gt {}, t\n        if late\n            break\n        __wait({})", best, best).unwrap();
+        writeln!(t, "        late: u1 = cmp.gt {}, t\n        if late\n            break", best).unwrap();
+        // the close of a time has its turn when the list is asked for
+        // a later one: what asks for this very time, the start before
+        // the case's function or a step that ends here, may yet push
+        // in this slot itself (fm3 log 234)
+        if let (false, Some(w)) = (slots.is_empty(), &which) {
+            writeln!(t, "        atc: u1 = cmp.eq {}, {}\n        same: u1 = cmp.ge {}, t\n        hold: u1 = and atc, same\n        if hold\n            break", w, n, best).unwrap();
+        }
+        writeln!(t, "        __wait({})", best).unwrap();
         for (k, (_, turn)) in things.iter().enumerate() {
             let mut pad = "        ".to_string();
             if let Some(w) = &which {
@@ -8072,6 +8126,14 @@ impl Lowerer {
             for f in ["__in_n", "__in_k", "__due_in", "__in_busy"] {
                 self.written.insert(f.to_string());
             }
+        }
+        if !slots.is_empty() {
+            write!(t, "\n; the close of a slot (fm3 log 234): each line over streams with a rate that a push in this slot set off runs once, reading the latest of each; a line that sets another off makes the close due again\nfn __close()\n    x: __ctx = load {this}\n    x2: __ctx = set x, __due_close, {never}\n    store x2, {this}\n", this = THIS, never = NEVER).unwrap();
+            for (k, n) in slots.iter().enumerate() {
+                write!(t, "    s{k}: u1 = get x, __slot_{n}\n    if s{k}\n        y{k}: __ctx = load {this}\n        z{k}: __ctx = set y{k}, __slot_{n}, 0\n        store z{k}, {this}\n        {n}()\n", k = k + 1, n = n, this = THIS).unwrap();
+                self.written.insert(format!("__slot_{}", n));
+            }
+            t.push_str("    ret\n");
         }
         // what is due at the start has its turn before the case's function
         const START: &str = "\nfn __zero_start()\n";
@@ -12555,7 +12617,20 @@ impl Lowerer {
                     // (a line over several streams reads each by its
                     // name, and is handed nothing, fm3 question 86)
                     let bare = self.funcs.iter().find(|f| &f.ir == edge).is_some_and(|f| f.params.is_empty());
-                    b.line(&if bare { format!("{}()", edge) } else { format!("{}({})", edge, v.text) });
+                    if bare && self.slot_lines().contains(edge) {
+                        // a line that runs at the close of the slot
+                        // (fm3 log 234): its bit, and the close due now
+                        let (c1, now, c2, c3) = (b.tmp(), b.tmp(), b.tmp(), b.tmp());
+                        b.line(&format!("{}: __ctx = load {}", c1, THIS));
+                        b.line(&format!("{}: i64 = get {}, __clock", now, c1));
+                        b.line(&format!("{}: __ctx = set {}, __slot_{}, 1", c2, c1, edge));
+                        b.line(&format!("{}: __ctx = set {}, __due_close, {}", c3, c2, now));
+                        b.line(&format!("store {}, {}", c3, THIS));
+                        self.written.insert(format!("__slot_{}", edge));
+                        self.written.insert("__due_close".into());
+                    } else {
+                        b.line(&if bare { format!("{}()", edge) } else { format!("{}({})", edge, v.text) });
+                    }
                 }
                 if gate.is_some() {
                     b.depth -= 1;

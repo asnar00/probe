@@ -1,0 +1,10 @@
+int slow$ at (2 hz)
+int quick$ at (5 hz)
+int mix$
+slow$ << slow$ + 1 if (slow$ < 3) forever
+quick$ << quick$ + 10 if (quick$ < 60) forever
+mix$ << slow$ + quick$ forever
+out$ << (mix$ << "\n") forever
+
+on begin()
+    check (slow$ == 1)

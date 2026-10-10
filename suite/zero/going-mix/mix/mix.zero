@@ -1,0 +1,21 @@
+int left$ at (1 hz)
+int right$ at (1 hz)
+int third$ at (1 hz)
+int mix$
+int all$ at (1 hz)
+left$ << left$ + 1 if (left$ < 3) forever
+right$ << right$ + 10 if (right$ < 30) forever
+third$ << third$ + 100 if (third$ < 300) forever
+mix$ << left$ + right$ forever
+all$ << left$ + right$ + third$ forever
+out$ << (mix$ << " ") forever
+out$ << (all$ << "\n") forever
+
+on begin()
+    check (left$ == 1)
+
+on (int n) << so far()
+    n << mix$
+
+on louder()
+    left$ << 100

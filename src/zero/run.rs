@@ -2250,6 +2250,26 @@ mod tests {
         assert!(emit(Path::new("suite/zero/going-keys")).unwrap().contains("\nfn count_down()\n"));
     }
 
+    /// Two streams with a rate that each get an item in one slot give
+    /// one item of a line that reads both (fm3 log 234): a push into
+    /// either sets the line's bit, and the close of the slot, the last
+    /// thing in the list, calls the line once. A store with no such
+    /// line has no close
+    #[test]
+    fn two_streams_with_a_rate_in_one_slot() {
+        let ir = emit(Path::new("suite/zero/going-mix")).unwrap();
+        for there in ["    __slot___edge4: u1\n    __slot___edge5: u1\n    __due_close: i64\n", "\nfn __close()\n", "        __edge4()\n", "        __edge5()\n", "        hold: u1 = and atc, same\n        if hold\n            break\n", ", __slot___edge4, 1\n"] {
+            assert!(ir.contains(there), "going-mix lacks {:?} in {}", there, ir);
+        }
+        // the clocks mark the line and do not call it: its two calls
+        // are the close's
+        assert_eq!(ir.matches("__edge4()").count(), 2, "{}", ir);
+        for store in ["suite/zero/going", "suite/zero/going-alone", "suite/zero/going-beside", "suite/zero/going-keys", "suite/zero/going-two", "suite/zero/restart", "suite/zero/tick", "suite/zero/hello"] {
+            let ir = emit(Path::new(store)).unwrap();
+            assert!(!ir.contains("__close") && !ir.contains("__slot_"), "{}", store);
+        }
+    }
+
     #[test]
     fn several_things_going_on() {
         let dir = std::env::temp_dir().join(format!("probe-zero-going-{}", std::process::id()));
