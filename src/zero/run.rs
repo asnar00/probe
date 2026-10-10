@@ -921,11 +921,28 @@ mod tests {
         call("run", &[]);
         call("__zero_context", &[1]);
         call("run", &[]);
-        assert_eq!(out(), format!("{}{}", on, off));
-        // ... and the switch written in the second left the first as it was
+        // each context's output is its own, and each context's time
+        // (fm3 question 107, log 215): the second, its countdown off,
+        // wrote two lines and no time passed in it; the first counted
+        // down for ten seconds, whichever ran last
+        let latest = || -> i64 { (0..=call("__out_len", &[])).map(|i| call("__out_mark", &[i])).max().unwrap() };
+        assert_eq!((out(), latest()), (off.clone(), 0));
         call("__zero_context", &[0]);
+        assert_eq!((out(), latest()), (on.clone(), 10_000_000));
+        // ... and the switch written in the second left the first as it
+        // was: run again it counts down again, from where its own clock
+        // stood, and the second has heard nothing of it
         call("run", &[]);
-        assert_eq!(out(), format!("{}{}{}", on, off, on));
+        assert_eq!((out(), latest()), (format!("{}{}", on, on), 20_000_000));
+        call("__zero_context", &[1]);
+        assert_eq!((out(), latest()), (off.clone(), 0));
+        // a context made new begins at nothing written and no time,
+        // the other as it stood
+        call("__zero_new", &[]);
+        call("run", &[]);
+        assert_eq!((out(), latest()), (on.clone(), 10_000_000));
+        call("__zero_context", &[0]);
+        assert_eq!((out(), latest()), (format!("{}{}", on, on), 20_000_000));
 
         // a stream processor's word in progress, a stream's own bit and
         // a variable, each kept across the other context's turn
@@ -3129,10 +3146,13 @@ mod tests {
         // and one inside a loop is formed before the loop
         let ir = lowered(&format!("{}on f()\n    a$ << 1\n    b$ << 2\n    a$ << 3\n", head));
         let f = body(&ir, "f");
-        assert_eq!((f.matches(" = rem ").count(), f.matches("addr __clock").count()), (3, 1), "{}", f);
+        // (the clock is the context's from fm3 log 215: no address is
+        // formed, and each alignment reads the field anew, the wait
+        // before it having moved it)
+        assert_eq!((f.matches(" = rem ").count(), f.matches("addr __clock").count(), f.matches(", __clock\n").count()), (3, 0, 3), "{}", f);
         let ir = lowered(&format!("{}on f()\n    loop (int i = 1) while (i <= 3)\n        a$ << i\n        b$ << i\n        continue (i + 1)\n", head));
         let f = body(&ir, "f");
-        assert!(f.matches("addr __clock").count() == 1 && f.contains(": ptr = addr __clock\n    loop(i: int = 1)\n"), "{}", f);
+        assert!(f.matches("addr __clock").count() == 0 && f.matches(", __clock\n").count() == 2 && f.contains("        _2: __ctx = load _this\n        _3: i64 = get _2, __clock\n"), "{}", f);
         // the statement before pushed into the same stream: on the beat already
         let f = body(&lowered(&format!("{}on f()\n    a$ << 1\n    a$ << 2\n    a$ << 3\n", head)), "f");
         assert_eq!(f.matches(" = rem ").count(), 1, "{}", f);
@@ -3193,7 +3213,7 @@ mod tests {
         // `while` asked of its first values; entered on the beat, none
         let ir = lowered(&format!("{}on f (int k)\n    c$ << 0\n    loop (int i = 1) while (i <= k)\n        a$ << i\n        continue (i + 1)\n", head));
         let f = body(&ir, "f");
-        assert!(f.contains("    _4: int = const 1\n    _5: u1 = cmp.le _4, k\n    if _5\n        _6: ptr = addr __clock\n        _7: i64 = load _6\n        _8: i64 = add _7, 499999\n        _9: i64 = rem _8, 500000\n        _10: i64 = sub _8, _9\n        __wait(_10)\n    loop(i: int = 1)\n"), "{}", f);
+        assert!(f.contains("    _4: int = const 1\n    _5: u1 = cmp.le _4, k\n    if _5\n        _6: __ctx = load _this\n        _7: i64 = get _6, __clock\n        _8: i64 = add _7, 499999\n        _9: i64 = rem _8, 500000\n        _10: i64 = sub _8, _9\n        __wait(_10)\n    loop(i: int = 1)\n"), "{}", f);
         assert_eq!(f.matches(" = rem ").count(), 1, "{}", f);
         let ir = lowered(&format!("{}on f (int k)\n    loop (int i = 1) while (i <= k)\n        a$ << i\n        continue (i + 1)\n", head));
         assert_eq!(rems(&ir, "f"), 0, "{}", ir);
@@ -3239,10 +3259,10 @@ mod tests {
         };
         let real = with("# p\n\nclock: real\n").unwrap();
         assert!(real.contains("fn __counter() -> i64\n") && real.contains("platform arm64\n    __counter() -> i64\n        mrs r, cntpct_el0\n"), "{}", real);
-        assert!(real.contains("fn __wait(t: i64)\n    loop()\n        r: i64 = __real_now()\n"), "{}", real);
+        assert!(real.contains("fn __wait(t: i64)\n    _this: ptr = context()\n    loop()\n        r: i64 = __real_now()\n"), "{}", real);
         assert!(real.contains("c0: i64 = __counter()\n    q: ptr = addr __base\n    store c0, q\n"), "{}", real);
         let fast = with("# p\n\nclock: virtual\n").unwrap();
-        assert!(!fast.contains("__counter") && fast.contains("fn __step(d: i64)\n    p: ptr = addr __clock\n    c: i64 = load p\n    m: i64 = add c, d\n") && !fast.contains("fn __wait(") && real.contains("fn __step(d: i64)\n    p: ptr = addr __clock\n    c: i64 = load p\n    t: i64 = add c, d\n    __wait(t)\n"), "{}", fast);
+        assert!(!fast.contains("__counter") && fast.contains("fn __step(d: i64)\n    _this: ptr = context()\n    x: __ctx = load _this\n    c: i64 = get x, __clock\n    m: i64 = add c, d\n") && !fast.contains("fn __wait(") && real.contains("fn __step(d: i64)\n    _this: ptr = context()\n    x: __ctx = load _this\n    c: i64 = get x, __clock\n    t: i64 = add c, d\n    __wait(t)\n"), "{}", fast);
         // the rated stream no word reads has no storage (fm3 log 92): the
         // push calls its edge, and then a step passes, half a second at 2 hz
         // ... one word of the platform's (fm3 log 194)
@@ -3383,7 +3403,7 @@ mod tests {
         // ... and the node keeps its position, a word, the rest of its
         // reader being the stream's own value, which the push has in
         // hand (fm3 log 111): `doubled` only reads and advances `x$`
-        assert!(ir.contains("\n    __node1_x: index\n") && ir.contains("    _4: index = get _2, pos\n    _5: __ctx = pack 1, 1, _1, _2, _3, _4\n"), "{}", ir);
+        assert!(ir.contains("\n    __node1_x: index\n") && ir.contains("    _4: index = get _2, pos\n    _5: __ctx = pack 0, 0, op, 1, 1, _1, _2, _3, _4"), "{}", ir);
         // a task that may give back a reader on another ring keeps its
         // whole reader: one that assigns its parameter, declares the
         // name again, hands it to a function or runs a

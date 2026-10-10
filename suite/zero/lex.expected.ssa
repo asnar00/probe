@@ -3,14 +3,6 @@
 data __heap: array(u8, 65536)
 data __arena: array(i64, 3)
 
-; the store's virtual clock (log 63): integer ticks on a clock of a
-; million a second, the bootstrap's step; zero at every case, moved on
-; a step by a push into a stream with a rate and by a rated task after
-; each of its pushes, and by nothing else; a push into a stream without
-; a rate is stamped with it. Exact time is the boundary's: `x$ at (t)`
-; and `position` convert once, in the library
-data __clock: array(i64, 1)
-
 ; the output device (section 15, question 45, log 87): `out$` looks like
 ; a stream, but a push into it writes a character to the place and
 ; stores nothing, so these two are the platform's write — one character,
@@ -19,21 +11,26 @@ data __clock: array(i64, 1)
 ; `__out_len` and `__out_byte` read back; a real platform's body per
 ; kind of place — a UART store on the boards, a write to the console
 ; under an OS, the browser's log — is a `platform <target>` block on
-; each of these, beside the `ir` body, and is milestone 1's
+; each of these, beside the `ir` body, and is milestone 1's. The
+; output is the context's (fm3 question 107): how much has been written
+; is its field `__out_n`, and its capture, a half of `__out` for each
+; of the store's two contexts, is where its field `__out_p` points
 data __out: array(u8, 65536)
-data __out_n: array(index, 1)
 
 ; what the device was given, read back by the test runner: the capture
 ; is the runner's, not the store's, and the runner is handed a machine
 ; word whatever an `index` is
 fn __out_len() -> i64
-    q: ptr = addr __out_n
-    n: index = load q
+    _this: ptr = context()
+    x: __ctx = load _this
+    n: index = get x, __out_n
     w: i64 = conv n
     ret w
 
 fn __out_byte(i: i64) -> u8
-    p: ptr = addr __out
+    _this: ptr = context()
+    x: __ctx = load _this
+    p: ptr = get x, __out_p
     b: u8 = load p, i, 1
     ret b
 
@@ -65,7 +62,11 @@ type token = struct
 ;   __node1_c_seen: node, last (lex)
 ;   __node1_fin: node, last (lex)
 ;   __node2_c: node, last (lex)
+;   __out_n, __clock, __out_p: the context's own output and clock (question 107): how much it has written, its time and its capture
 type __ctx = struct
+    __out_n: index
+    __clock: i64
+    __out_p: ptr
     __enabled_platform: u1
     __enabled_lex: u1
     in: u8$
@@ -87,21 +88,25 @@ fn __zero_reset()
     a: ptr = addr __arena
     h: ptr = addr __heap
     arena_init(a, h, 65536)
-    k: ptr = addr __clock
-    store 0: i64, k
-    o: ptr = addr __out_n
-    store 0: index, o
     __zero_new()
     ret
 
 ; the current context at its first values, its streams made in the arena
 fn __zero_new()
+    cx: ptr = context()
+    cm: ptr = addr __ctx_mem
+    second: u1 = cmp.ne cx, cm
+    sw: index = conv second
+    ob: ptr(array(u8, 65536)) = addr __out
+    oi: index = mul sw, 32768
+    oq: ptr(u8) = index ob, oi
+    op: ptr = cast oq
     _1: u8$ = __queue_u8(1000000, 512)
     _2: token$ = __queue_token(1000000, 64)
     _3: u8$ = __queue_u8(1000000, 64)
     _4: token$ = __queue_token(1000000, 64)
     _5: index = get _3, pos
-    _6: __ctx = pack 1, 1, _1, _2, _3, _4, _1, 0, 0, _5
+    _6: __ctx = pack 0, 0, op, 1, 1, _1, _2, _3, _4, _1, 0, 0, _5
     p: ptr = context()
     store _6, p
     ret

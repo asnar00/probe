@@ -583,19 +583,19 @@ data __nul: array(u8, 1)
 data __heap: array(u8, 65536)
 data __arena: array(i64, 3)
 
-; the store's virtual clock (log 63): integer ticks on a clock of a
-; million a second, the bootstrap's step; zero at every case, moved on
-; a step by a push into a stream with a rate and by a rated task after
-; each of its pushes, and by nothing else; a push into a stream without
-; a rate is stamped with it. Exact time is the boundary's: `x$ at (t)`
+; the virtual clock (log 63) is the context's, its field `__clock`
+; (fm3 question 107): integer ticks on a clock of a million a second,
+; the bootstrap's step; zero where a context is made, moved on a step
+; by a push into a stream with a rate and by a rated task after each
+; of its pushes, and by nothing else; a push into a stream without a
+; rate is stamped with it. Exact time is the boundary's: `x$ at (t)`
 ; and `position` convert once, in the library
-data __clock: array(i64, 1)
 ; the scheduler is running: a push from inside a task does not start it again
 data __running: array(i64, 1)
 
 fn __now() -> i64
-    p: ptr = addr __clock
-    k: i64 = load p
+    x: __ctx = load _this
+    k: i64 = get x, __clock
     ret k
 
 ; a task wired at a rate, after each push: the clock reaches the next
@@ -603,8 +603,8 @@ fn __now() -> i64
 fn __sleep(hz: i64)
     rated: u1 = cmp.gt hz, 0
     if rated
-        p: ptr = addr __clock
-        c: i64 = load p
+        x: __ctx = load _this
+        c: i64 = get x, __clock
         d: i64 = div 1000000, hz
         c2: i64 = add c, d
         __wait(c2)
@@ -618,44 +618,49 @@ fn __sleep(hz: i64)
 ; `__out_len` and `__out_byte` read back; a real platform's body per
 ; kind of place — a UART store on the boards, a write to the console
 ; under an OS, the browser's log — is a `platform <target>` block on
-; each of these, beside the `ir` body, and is milestone 1's
+; each of these, beside the `ir` body, and is milestone 1's. The
+; output is the context's (fm3 question 107): how much has been written
+; is its field `__out_n`, and its capture, a half of `__out` for each
+; of the store's two contexts, is where its field `__out_p` points
 data __out: array(u8, 65536)
-data __out_n: array(index, 1)
 
 fn __out_ch(c: u8)
-    q: ptr = addr __out_n
-    n: index = load q
-    p: ptr = addr __out
-    store c, p, n, 1
+    x: __ctx = load _this
+    n: index = get x, __out_n
+    p: ptr = get x, __out_p
     n2: index = add n, 1
-    store n2, q
+    x2: __ctx = set x, __out_n, n2
+    store x2, _this
+    store c, p, n, 1
     ret
 
 fn __out_block(v: u8[])
     k: index = len v
-    q: ptr = addr __out_n
-    n: index = load q
+    x: __ctx = load _this
+    n: index = get x, __out_n
     n2: index = add n, k
-    fits: u1 = cmp.le n2, 65536
+    fits: u1 = cmp.le n2, 32768
     check fits
-    p: ptr(array(u8, 65536)) = addr __out
-    e: ptr(u8) = index p, n
+    p: ptr = get x, __out_p
+    x2: __ctx = set x, __out_n, n2
+    store x2, _this
+    e: ptr(u8) = ptradd p, n
     d: u8[] = pack e, k, 1
     copy d, v
-    store n2, q
     ret
 
 ; what the device was given, read back by the test runner: the capture
 ; is the runner's, not the store's, and the runner is handed a machine
 ; word whatever an `index` is
 fn __out_len() -> i64
-    q: ptr = addr __out_n
-    n: index = load q
+    x: __ctx = load _this
+    n: index = get x, __out_n
     w: i64 = conv n
     ret w
 
 fn __out_byte(i: i64) -> u8
-    p: ptr = addr __out
+    x: __ctx = load _this
+    p: ptr = get x, __out_p
     b: u8 = load p, i, 1
     ret b
 
@@ -665,11 +670,13 @@ fn __out_byte(i: i64) -> u8
 ; and one for its end, indexed by how many bytes the device had been
 ; given. A word that is zero says the clock did not move there. The
 ; runner reads a word for each byte it read, and one more, for a case
-; that asserts on time
-data __out_t: array(i64, 65537)
+; that asserts on time. The marks are the context's as the capture is,
+; a half of `__out_t` each, where its field `__out_m` points
+data __out_t: array(i64, 65538)
 
 fn __out_mark(i: i64) -> i64
-    p: ptr = addr __out_t
+    x: __ctx = load _this
+    p: ptr = get x, __out_m
     w: i64 = load p, i, 8
     ret w
 
@@ -694,12 +701,15 @@ fn __str(p: ptr, n: index) -> u8[]
 /// `__zero_reset`'s lines that forget the last case's marks: the table
 /// cleared as far as that case wrote, before its count of bytes is
 /// zeroed (fm3 log 95)
-const MARKS_RESET: [&str; 10] = [
-    "mo: ptr = addr __out_n",
-    "mn: index = load mo",
-    "mt: ptr = addr __out_t",
-    "loop(mi: index = 0) bound 65536",
-    "    store 0: i64, mt, mi, 8",
+const MARKS_RESET: [&str; 13] = [
+    "mb: ptr(array(i64, 65538)) = addr __out_t",
+    "ms: index = mul sw, 32769",
+    "mq: ptr(i64) = index mb, ms",
+    "om: ptr = cast mq",
+    "was: __ctx = load cx",
+    "mn: index = get was, __out_n",
+    "loop(mi: index = 0) bound 32768",
+    "    store 0: i64, om, mi, 8",
     "    md: u1 = cmp.ge mi, mn",
     "    if md",
     "        break",
@@ -707,16 +717,25 @@ const MARKS_RESET: [&str; 10] = [
     "    continue mi2",
 ];
 
+/// the context's own words, as the comment over its type says them
+const CTX_OWN: &str = ";   __out_n, __clock, __out_p, __out_m: the context's own output and clock (question 107): how much it has written, its time, its capture and its marks";
+
+/// the marks' field, the last of the context's, and its first value,
+/// the last of the pack's: both leave where the marks do
+const MARKS_FIELD: &str = "    __out_m: ptr";
+const MARKS_INIT: &str = ", om";
+
 /// the two words a runner reads the output back with, as the prelude
 /// has them ...
 const READ_BACK: &str = "fn __out_len() -> i64
-    q: ptr = addr __out_n
-    n: index = load q
+    x: __ctx = load _this
+    n: index = get x, __out_n
     w: i64 = conv n
     ret w
 
 fn __out_byte(i: i64) -> u8
-    p: ptr = addr __out
+    x: __ctx = load _this
+    p: ptr = get x, __out_p
     b: u8 = load p, i, 1
     ret b
 ";
@@ -749,8 +768,8 @@ fn __site_now() -> i64
     ret n
 
 fn __out_len() -> i64
-    q: ptr = addr __out_n
-    n: index = load q
+    x: __ctx = load _this
+    n: index = get x, __out_n
     w: i64 = conv n
     s: ptr = addr __site
     k: i64 = load s
@@ -763,12 +782,12 @@ fn __out_len() -> i64
     ret r
 
 fn __out_byte(i: i64) -> u8
-    q: ptr = addr __out_n
-    n: index = load q
+    cx: __ctx = load _this
+    n: index = get cx, __out_n
     w: i64 = conv n
     inside: u1 = cmp.lt i, w
     b: u8 = if inside
-        p: ptr = addr __out
+        p: ptr = get cx, __out_p
         c: u8 = load p, i, 1
         yield c
     else
@@ -825,26 +844,27 @@ const VIRTUAL_CLOCK: &str = r#"
 ; the clock reaches t (log 77): the virtual clock jumps there, and marks
 ; the place in the output where that time begins (fm3 log 95)
 fn __wait(t: i64)
-    p: ptr = addr __clock
-    c: i64 = load p
+    w: __ctx = load _this
+    c: i64 = get w, __clock
     m: i64 = max(c, t)
-    store m, p
-    q: ptr = addr __out_n
-    n: index = load q
-    a: ptr = addr __out_t
+    x: __ctx = load _this
+    x2: __ctx = set x, __clock, m
+    store x2, _this
+    n: index = get x, __out_n
+    a: ptr = get x, __out_m
     store m, a, n, 8
     ret
 
 ; a step of a rate passes (fm3 log 194): the clock moved on by d of its
 ; own steps, which can only be later, and the place marked
 fn __step(d: i64)
-    p: ptr = addr __clock
-    c: i64 = load p
+    x: __ctx = load _this
+    c: i64 = get x, __clock
     m: i64 = add c, d
-    store m, p
-    q: ptr = addr __out_n
-    n: index = load q
-    a: ptr = addr __out_t
+    x2: __ctx = set x, __clock, m
+    store x2, _this
+    n: index = get x, __out_n
+    a: ptr = get x, __out_m
     store m, a, n, 8
     ret
 "#;
@@ -894,16 +914,18 @@ fn __wait(t: i64)
             break
         else
             continue
-    p: ptr = addr __clock
-    c: i64 = load p
+    w: __ctx = load _this
+    c: i64 = get w, __clock
     m: i64 = max(c, t)
-    store m, p
+    x: __ctx = load _this
+    x2: __ctx = set x, __clock, m
+    store x2, _this
     ret
 
 ; a step of a rate passes (fm3 log 194): the time it ends is waited for
 fn __step(d: i64)
-    p: ptr = addr __clock
-    c: i64 = load p
+    x: __ctx = load _this
+    c: i64 = get x, __clock
     t: i64 = add c, d
     __wait(t)
     ret
@@ -2733,6 +2755,10 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         ir.push_str(&text);
     }
     let ir = settle_pushes(ir, &l.queue_pushes, &l.ended, unread);
+    // the clock and the output's count are fields a word of the
+    // platform's writes (fm3 log 215)
+    l.written.insert("__clock".into());
+    l.written.insert("__out_n".into());
     let ir = settle_context(&ir, &l.written, unread);
     let ir = unmade(&ir);
     let ir = wide_once(&ir);
@@ -2769,7 +2795,8 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     // keeps no marks, so its reset does not clear them
     if !pruned.contains("\nfn __wait(") && !pruned.contains("\nfn __step(") && !pruned.contains("\nfn __out_mark(") {
         let reset: String = MARKS_RESET.iter().map(|l| format!("    {}\n", l)).collect();
-        pruned = prune(&ir.replacen(&reset, "", 1), &roots);
+        let bare = ir.replacen(&reset, "", 1).replacen(&format!("\n{}\n", MARKS_FIELD), "\n", 1).replacen(&format!("{}\n    p: ptr = context()\n", MARKS_INIT), "\n    p: ptr = context()\n", 1).replacen(", __out_m: the context's own output and clock (question 107): how much it has written, its time, its capture and its marks", ": the context's own output and clock (question 107): how much it has written, its time and its capture", 1);
+        pruned = prune(&bare, &roots);
     }
     let mut ir = pruned;
     // a structure of the language's own that the text does not name is
@@ -7031,8 +7058,6 @@ impl Lowerer {
         b.line("a: ptr = addr __arena");
         b.line("h: ptr = addr __heap");
         b.line("arena_init(a, h, 65536)");
-        b.line("k: ptr = addr __clock");
-        b.line("store 0: i64, k");
         if self.sited {
             b.line("sp: ptr = addr __site");
             b.line("store 0: i64, sp");
@@ -7100,14 +7125,6 @@ impl Lowerer {
             b.line("r: ptr = addr __running");
             b.line("store 0: i64, r");
         }
-        // the marks of the last case go with its text, cleared while its
-        // count of bytes still says how far they reach (fm3 log 95); the
-        // lines leave again where nothing waits (`lower`)
-        for l in MARKS_RESET {
-            b.line(l);
-        }
-        b.line("o: ptr = addr __out_n");
-        b.line("store 0: index, o");
         // the real clock starts at the reset (log 77)
         if self.clock == super::store::Clock::Real {
             b.line("c0: i64 = __counter()");
@@ -7187,12 +7204,28 @@ impl Lowerer {
                 }
                 fields.push(format!("{}: {}", f.name, self.field_ty(f).ir()));
             }
-            self.type_lines.push(format!("type __ctx = struct\n    {}", fields.join("\n    ")));
+            // the output and the clock are the context's (fm3 question
+            // 107, log 215): how much it has written, its time, and where
+            // its capture and its marks are
+            self.type_lines.push(CTX_OWN.into());
+            self.type_lines.push(format!("type __ctx = struct\n    __out_n: index\n    __clock: i64\n    __out_p: ptr\n    {}\n{}", fields.join("\n    "), MARKS_FIELD));
             // memory for two contexts: the runner's, and a second, so
             // that one store can be run in two (fm3 log 137); the code
             // is the same for any number
             self.data.push("data __ctx_mem: array(__ctx, 2)".into());
             fresh = Some(b.out.len());
+            // which of the store's two contexts this is, and so which
+            // half of the capture and of the marks is its own
+            for l in ["cx: ptr = context()", "cm: ptr = addr __ctx_mem", "second: u1 = cmp.ne cx, cm", "sw: index = conv second", "ob: ptr(array(u8, 65536)) = addr __out", "oi: index = mul sw, 32768", "oq: ptr(u8) = index ob, oi", "op: ptr = cast oq"] {
+                b.line(l);
+            }
+            // the marks of the context's last case go with its text,
+            // cleared while its count of bytes still says how far they
+            // reach (fm3 log 95); the lines leave again where nothing
+            // waits (`lower`)
+            for l in MARKS_RESET {
+                b.line(l);
+            }
             // the initial values, in composition order: every feature on,
             // then the variables, then the nodes' state
             let mut inits: Vec<String> = self.features.iter().filter(|f| !self.statics.contains(*f)).map(|_| "1".to_string()).collect();
@@ -7338,7 +7371,7 @@ impl Lowerer {
                 }
             }
             let c = b.tmp();
-            b.line(&format!("{}: __ctx = pack {}", c, inits.join(", ")));
+            b.line(&format!("{}: __ctx = pack 0, 0, op, {}{}", c, inits.join(", "), MARKS_INIT));
             b.line("p: ptr = context()");
             b.line(&format!("store {}, p", c));
         }
@@ -13051,8 +13084,8 @@ impl Lowerer {
             return;
         }
         let (p, c, u, r, t) = (b.tmp(), b.tmp(), b.tmp(), b.tmp(), b.tmp());
-        b.line(&format!("{}: ptr = addr __clock", p));
-        b.line(&format!("{}: i64 = load {}", c, p));
+        b.line(&format!("{}: __ctx = load {}", p, THIS));
+        b.line(&format!("{}: i64 = get {}, __clock", c, p));
         b.line(&format!("{}: i64 = add {}, {}", u, c, period - 1));
         b.line(&format!("{}: i64 = rem {}, {}", r, u, period));
         b.line(&format!("{}: i64 = sub {}, {}", t, u, r));
