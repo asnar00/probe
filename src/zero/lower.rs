@@ -673,7 +673,7 @@ fn __sleep(hz: i64)
 ; output is the context's (fm3 question 107): how much has been written
 ; is its field `__out_n`, and its capture, a half of `__out` for each
 ; of the store's two contexts, is where its field `__out_p` points
-data __out: array(u8, 65536)
+data __out: array(u8, 131072)
 
 fn __out_ch(c: u8)
     x: __ctx = load _this
@@ -690,7 +690,7 @@ fn __out_block(v: u8[])
     x: __ctx = load _this
     n: index = get x, __out_n
     n2: index = add n, k
-    fits: u1 = cmp.le n2, 32768
+    fits: u1 = cmp.le n2, 65536
     check fits
     p: ptr = get x, __out_p
     x2: __ctx = set x, __out_n, n2
@@ -723,7 +723,7 @@ fn __out_byte(i: i64) -> u8
 ; runner reads a word for each byte it read, and one more, for a case
 ; that asserts on time. The marks are the context's as the capture is,
 ; a half of `__out_t` each, where its field `__out_m` points
-data __out_t: array(i64, 65538)
+data __out_t: array(i64, 131074)
 
 fn __out_mark(i: i64) -> i64
     x: __ctx = load _this
@@ -753,13 +753,13 @@ fn __str(p: ptr, n: index) -> u8[]
 /// cleared as far as that case wrote, before its count of bytes is
 /// zeroed (fm3 log 95)
 const MARKS_RESET: [&str; 13] = [
-    "mb: ptr(array(i64, 65538)) = addr __out_t",
-    "ms: index = mul sw, 32769",
+    "mb: ptr(array(i64, 131074)) = addr __out_t",
+    "ms: index = mul sw, 65537",
     "mq: ptr(i64) = index mb, ms",
     "om: ptr = cast mq",
     "was: __ctx = load cx",
     "mn: index = get was, __out_n",
-    "loop(mi: index = 0) bound 32768",
+    "loop(mi: index = 0) bound 65536",
     "    store 0: i64, om, mi, 8",
     "    md: u1 = cmp.ge mi, mn",
     "    if md",
@@ -8391,7 +8391,7 @@ impl Lowerer {
             fresh = Some(b.out.len());
             // which of the store's two contexts this is, and so which
             // half of the capture and of the marks is its own
-            for l in ["cx: ptr = context()", "cm: ptr = addr __ctx_mem", "second: u1 = cmp.ne cx, cm", "sw: index = conv second", "ob: ptr(array(u8, 65536)) = addr __out", "oi: index = mul sw, 32768", "oq: ptr(u8) = index ob, oi", "op: ptr = cast oq"] {
+            for l in ["cx: ptr = context()", "cm: ptr = addr __ctx_mem", "second: u1 = cmp.ne cx, cm", "sw: index = conv second", "ob: ptr(array(u8, 131072)) = addr __out", "oi: index = mul sw, 65536", "oq: ptr(u8) = index ob, oi", "op: ptr = cast oq"] {
                 b.line(l);
             }
             // the marks of the context's last case go with its text,

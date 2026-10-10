@@ -34,7 +34,7 @@ fn __sleep(hz: i64)
 ; output is the context's (fm3 question 107): how much has been written
 ; is its field `__out_n`, and its capture, a half of `__out` for each
 ; of the store's two contexts, is where its field `__out_p` points
-data __out: array(u8, 65536)
+data __out: array(u8, 131072)
 
 ; what the device was given, read back by the test runner: the capture
 ; is the runner's, not the store's, and the runner is handed a machine
@@ -61,7 +61,7 @@ fn __out_byte(i: i64) -> u8
 ; runner reads a word for each byte it read, and one more, for a case
 ; that asserts on time. The marks are the context's as the capture is,
 ; a half of `__out_t` each, where its field `__out_m` points
-data __out_t: array(i64, 65538)
+data __out_t: array(i64, 131074)
 
 ; the input device (section 15, log 62, question 45): a character
 ; arriving, which under the runner is a case's `with in "text"`. Its
@@ -171,17 +171,17 @@ fn __zero_new()
     cm: ptr = addr __ctx_mem
     second: u1 = cmp.ne cx, cm
     sw: index = conv second
-    ob: ptr(array(u8, 65536)) = addr __out
-    oi: index = mul sw, 32768
+    ob: ptr(array(u8, 131072)) = addr __out
+    oi: index = mul sw, 65536
     oq: ptr(u8) = index ob, oi
     op: ptr = cast oq
-    mb: ptr(array(i64, 65538)) = addr __out_t
-    ms: index = mul sw, 32769
+    mb: ptr(array(i64, 131074)) = addr __out_t
+    ms: index = mul sw, 65537
     mq: ptr(i64) = index mb, ms
     om: ptr = cast mq
     was: __ctx = load cx
     mn: index = get was, __out_n
-    loop(mi: index = 0) bound 32768
+    loop(mi: index = 0) bound 65536
         store 0: i64, om, mi, 8
         md: u1 = cmp.ge mi, mn
         if md

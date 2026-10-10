@@ -2432,6 +2432,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// What a run may write is 65 536 characters, the runner's capture
+    /// of a context (fm3 log 256; from hop thirty-seven to hop
+    /// forty-four it was 32 768, two contexts' worth of the larger
+    /// having passed what arm64's `adr` reaches). A text that does not
+    /// fit is a failed check; a character at a time has none yet
+    #[test]
+    fn a_run_may_write_65536_characters() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-capture-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("s/h")).unwrap();
+        std::fs::write(dir.join("s/h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>wrote (2100) lines → 2100\n>wrote (4096) lines → 4096\n>wrote (4097) lines → check\n>timed (3) → \"7\\n7\\n7\" at 1 hz\n").unwrap();
+        std::fs::write(dir.join("s/h/h.zero"), "int wait$ at (1 hz)\nout$ << (wait$ << \"\\n\") forever\n\non (int n) << wrote (int k) lines\n    out$ << \"sixteen letters\\n\" (k) times\n    n << k\n\non timed (int k)\n    wait$ << 7 (k) times\n").unwrap();
+        let l = lower::lower(&store::read(&dir.join("s")).unwrap()).unwrap();
+        assert!(l.ir.contains("data __out: array(u8, 131072)\n") && l.ir.contains("    fits: u1 = cmp.le n2, 65536\n") && l.ir.contains("data __out_t: array(i64, 131074)\n"), "{}", l.ir);
+        let report = test(&dir, Backend::Native, opt::MAX_LEVEL).unwrap();
+        assert_eq!((report.passed, report.failed), (4, 0), "{}", report.log);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// What cannot run is refused where it is compiled, at its line
     /// (fm3 log 254, principle 8): a whole number or a time divided by
     /// a zero written out, which the IR refused as a literal with no

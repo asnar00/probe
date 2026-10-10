@@ -15,7 +15,7 @@ data __arena: array(i64, 3)
 ; output is the context's (fm3 question 107): how much has been written
 ; is its field `__out_n`, and its capture, a half of `__out` for each
 ; of the store's two contexts, is where its field `__out_p` points
-data __out: array(u8, 65536)
+data __out: array(u8, 131072)
 
 ; what the device was given, read back by the test runner: the capture
 ; is the runner's, not the store's, and the runner is handed a machine
@@ -111,8 +111,8 @@ fn __zero_new()
     cm: ptr = addr __ctx_mem
     second: u1 = cmp.ne cx, cm
     sw: index = conv second
-    ob: ptr(array(u8, 65536)) = addr __out
-    oi: index = mul sw, 32768
+    ob: ptr(array(u8, 131072)) = addr __out
+    oi: index = mul sw, 65536
     oq: ptr(u8) = index ob, oi
     op: ptr = cast oq
     _1: u8$ = __queue_u8(1000000, 512)
