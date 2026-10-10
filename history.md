@@ -4,6 +4,22 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a time is an exact rational, a count over a divisor; a field is hidden by the word — `d4ae193` · 2026-10-10
+
+```
+type time =
+    hidden int64 count
+    hidden int64 divisor = 1
+```
+
+`src/zero/platform.zero:48-50`. A time was one field, a count of nanoseconds, so `1 s / 3 * 3` was `999.999999 ms`. Ash ruled on 10 October 2026 (fm3 question 120) that a time is an exact rational, a count over a divisor, the divisor known to the compiler wherever a rate or a unit is written; it had been given up on 6 October because one operation on the IR's `rational(64, 64)` cost about 49 000. The declaration now has two fields and sixteen functions in zero: `+` and `-` (the same divisor, the counts added; one a multiple of the other, the coarser scaled; otherwise `over one divisor`, a function called, which fails a check, "a time is too fine to hold", where 64 bits cannot hold the result), `*` and `/` by an `int`, exact, and by a `float`, cut to a nanosecond, `/` by a time, the four comparisons, `==` and `!=`, and `<<`. `suite/zero/types/times/times.zero:54-55`, `on a third given back()` with `out$ << 1 s / 3 * 3`, writes `1 s`.
+
+The cost was measured before anything was built (fm3 log 210 to 213). With two fields and the compiler as it stood, `250 ms + 250 ms` counted 8 for 2: the comparison of the two divisors folded and the `if` on it stayed. What was added names no type. In a function written in line a structure made in hand keeps what each field was given, a field read from it is that value, an operator on two whole numbers the compiler knows is worked out, and an `if` on a condition it knows is its one arm (`worked_out`, `src/zero/lower.rs:10610`; `field_of`, `:11291`). A `<<` method of the language's own that is one line is written in line as an operator is, so a time is written from its nanoseconds, a constant where the compiler knows it. A function of the program's own that is one line is written in line where it is handed a structure of which the compiler knows a field (`one_line`, `:11395`). A feature's variable of a structure declared with literals is read as them; an array written out keeps what every item was given; a structure never named again is not made (`unmade`, `:2832`); and a wide whole number is made once a function (`wide_once`, `:2877`). A literal with a unit word is its nanoseconds over a thousand million, so every literal has one divisor (fm3 question 128).
+
+`time of x$` gives a time, the item's index over the stream's rate (fm3 question 119): five functions of the suite that read it into an `int` now give it, and a case says a time, `>where it stands() → 2, 500 ms`, through a twin of its function, `__said_where_it_stands`, that gives nanoseconds. `hidden` (fm3 question 118) is a word on a field of any structure, read and given only in the feature that declares the type: `suite/zero/types/types/types.zero:233-235`, `type account =` with `hidden int balance`. No name begins `__`.
+
+Counted as it ran: an add of two times whose divisor the compiler knows is one add, as it was, and `250 ms + 250 ms` a constant; two parameters of one divisor 3; a third and a seventh 66, by `over one divisor`, whole 64-bit arithmetic (written first in `int128` it counted 39 278). No case of the suite rose, as it ran or on the tool, and 25 fell: `squared()` 362 → 284, `a time scaled()` 383 → 306, `kept two()` 361 → 359, `a time scaled by (3)` 308 → 306. No case's output changed. An array of times is two stores an item where it was one; `kept two()` does not rise because its constants are made once. The six tracked rows did not move, 502, 509, 929, 940, 988, 967; only `types`, `streams`, `tasks` and `clock` moved in their emitted text. Not built: `x$ at (t)` by a ratio the compiler reduces, which is still the library's exact time and `sample`. Full run: zero 1046/1046 on four paths, 1008 on air; `probe test` 1024, 1015, 1024, 1024, 987; `cargo test` 177.
+
 ### zero: the tick of a stream, compiled: each line it sets off once, after what it reads — `0394a22` · 2026-10-10
 
 ```
