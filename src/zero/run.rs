@@ -1349,7 +1349,6 @@ mod tests {
             ("b$ << b$ + 1 forever\n", "", "h.zero:9: a push into 'b$' that reads 'b$' and stands forever would never end: nothing else on its right paces it, and 'b$' has no rate to. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `int b$ at (1 hz)`".to_string()),
             ("b$ << b$ forever\n", "", "h.zero:9: a push into 'b$' that reads 'b$' and stands forever would never end: nothing else on its right paces it, and 'b$' has no rate to. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `int b$ at (1 hz)`".to_string()),
             // ... and at a rate it is a clock, not built
-            ("b$ << a$ forever\ni$ << i$ + 1 forever\n", "", "h.zero:10: a stream that feeds itself forever at a rate is a clock (fm3 question 80, ruled): with nothing else on its right the line is paced by its stream's rate, one more item of 'i$' each beat. It is not built: it needs a schedule ordered by time, and a store's clock is still moved by the code that pushes. Until then a function's push says it with an end, `i$ << 0 << (i$ + 1) while (_ < 4)`".to_string()),
             // in a function, and under `if` there
             ("b$ << a$ forever\n", "\non g()\n    b$ << a$ forever", "h.zero:16: `forever` in a function is a line that would set up a standing connection each time the function runs: not built. Wire it at feature scope, where it stands from the start".to_string()),
             ("b$ << a$ forever\n", "\non g (int k)\n    b$ << k if (k > 0) forever", "h.zero:16: `forever` in a function is a line that would set up a standing connection each time the function runs: not built. Wire it at feature scope, where it stands from the start".to_string()),
@@ -2108,6 +2107,56 @@ mod tests {
     /// lines' own statements in order, a pushed item going on in a
     /// local; a line over two streams is a function of no item, written
     /// once in a tick that reaches it twice; and what is refused
+    /// Several things going on at once (fm3 questions 80 and 121, log
+    /// 217): a line with nothing on its right but its own stream, at a
+    /// rate, is a clock, one of the things going on, with a word of the
+    /// context that says when it is next due; `__turns` takes the
+    /// earliest; a step of a rate gives the others their turns; and a
+    /// case's twin computes the whole timeline. A store with one thing
+    /// going on has none of it and is the text it was
+    #[test]
+    fn several_things_going_on() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-going-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 1\n").unwrap();
+        let with = |lines: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("int i$ at (1 hz)\nint j$ at (2 hz)\nint x$\n{}out$ << (i$ << \"\\n\") forever\nout$ << (j$ << \"\\n\") forever\nout$ << (x$ << \"\\n\") forever\n\non (int n) << f()\n    j$ << 1 << 2\n    n << 1\n", lines)).unwrap();
+            emit(&dir)
+        };
+        // one thing going on: no list, no word, no twin, and the step
+        // the two lines it was
+        let one = with("").unwrap();
+        for gone in ["__turns", "__due", "__whole_"] {
+            assert!(!one.contains(gone), "{} in {}", gone, one);
+        }
+        assert!(one.contains("fn __step(d: i64)\n    _this: ptr = context()\n    x: __ctx = load _this\n    c: i64 = get x, __clock\n    m: i64 = add c, d\n"), "{}", one);
+        for store in ["suite/zero/hello", "suite/zero/static", "suite/zero/timed", "suite/zero/words"] {
+            let ir = emit(Path::new(store)).unwrap();
+            assert!(!ir.contains("__turns") && !ir.contains("__due") && !ir.contains("__whole_"), "{}", store);
+        }
+        // a clock: its function pushes with no wait and no step, moves
+        // its word on a period, and where its `if` fails is over
+        let ir = with("i$ << i$ + 1 if (i$ < 5) forever\n").unwrap();
+        let func = |ir: &str, name: &str| -> String {
+            let at = ir.find(&format!("fn {}(", name)).unwrap_or_else(|| panic!("no {} in {}", name, ir));
+            ir[at..].split("\nfn ").next().unwrap().to_string()
+        };
+        let clock = func(&ir, "__edge1");
+        assert!(!clock.contains("__step(") && !clock.contains("__wait(") && clock.contains(": i64 = get") && clock.contains(", __due1\n") && clock.contains(", 1000000\n") && clock.contains("set") && clock.contains(", __due1, 4611686018427387904\n"), "{}", clock);
+        // the list is asked at the start, in a step, and by the twin
+        let turns = func(&ir, "__turns");
+        assert!(turns.contains("        d1: i64 = get x, __due1\n        late: u1 = cmp.gt d1, t\n        if late\n            break\n        __wait(d1)\n") && turns.contains("            __edge1()\n"), "{}", turns);
+        assert!(func(&ir, "__zero_start").contains("    __turns(0)\n") && func(&ir, "__step").contains("    __turns(m)\n    __wait(m)\n") && func(&ir, "__whole_f").contains(" = f()\n    __turns(4611686018427387903)\n"), "{}", ir);
+        // two clocks: the earlier, and the first written of two at one time
+        let ir = with("i$ << i$ + 1 if (i$ < 5) forever\nj$ << j$ + 1 if (j$ < 5) forever\n").unwrap();
+        assert!(func(&ir, "__turns").contains("        e2: u1 = cmp.lt d2, d1\n        b2: i64 = if e2\n            yield d2\n        else\n            yield d1\n"), "{}", ir);
+        // with no rate it would never end
+        let e = with("x$ << x$ + 1 forever\n").unwrap_err();
+        assert!(e.contains("would never end") && e.contains("for a clock give the stream a rate"), "{}", e);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_tick_is_one_function_in_order() {
         let dir = std::env::temp_dir().join(format!("probe-zero-tick-{}", std::process::id()));
@@ -2216,7 +2265,6 @@ mod tests {
         for (lines, said) in [
             // nothing else on its right: never ending, or a clock
             ("y$ << x$ forever\nsum$ << sum$ + 1 forever\n", "h.zero:6: a push into 'sum$' that reads 'sum$' and stands forever would never end: nothing else on its right paces it, and 'sum$' has no rate to. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `int sum$ at (1 hz)`"),
-            ("sum$ << x$ forever\ni$ << i$ + 1 forever\n", "h.zero:6: a stream that feeds itself forever at a rate is a clock (fm3 question 80, ruled): with nothing else on its right the line is paced by its stream's rate, one more item of 'i$' each beat. It is not built: it needs a schedule ordered by time, and a store's clock is still moved by the code that pushes. Until then a function's push says it with an end, `i$ << 0 << (i$ + 1) while (_ < 4)`"),
             // no word: as any line with a stream on its right
             ("sum$ << sum$ + x$\n", "h.zero:5: a push at feature scope happens once, when the store starts (fm3 question 79), and on a line of its own that is not built: a stream's first items go on its declaration, `int sum$ << ...`, and a line that stands is wiring, `sum$ << x$ forever`"),
         ] {

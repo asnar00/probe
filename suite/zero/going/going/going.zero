@@ -1,0 +1,12 @@
+int slow$ at (2 hz)
+int quick$ at (5 hz)
+slow$ << slow$ + 1 if (slow$ < 3) forever
+quick$ << quick$ + 10 if (quick$ < 60) forever
+out$ << (slow$ << "\n") forever
+out$ << (quick$ << "\n") forever
+
+on begin()
+    out$ << "go\n"
+
+on (int n) << both()
+    n << slow$ + quick$
