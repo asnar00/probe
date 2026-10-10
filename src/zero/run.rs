@@ -1518,7 +1518,12 @@ mod tests {
         for l in ["= __queue_pair(", ": pair = load ", ": u1 = loop(", ": u1 = and ", "                break 0\n"] {
             assert!(ir.contains(l), "{}: {}", l, ir);
         }
-        refused("    named x = named(1, \"a\")\n    n << x == x", "'==' on two `named`: its field 'name' is a string, and the comparison is every field the same, a field at a time (fm3 question 108): a string or an array in a structure is not compared. Compare the fields that can be, or declare the operator, `on (bool b) << (named x) == (named y)`");
+        // a field that is a string is compared as two strings are, by
+        // the `==` the language declares on `string` (fm3 question
+        // 100): the lengths, then the characters
+        let ir = f("", "    named x = named(1, \"a\")\n    named y = named(1, \"b\")\n    n << x == y").unwrap();
+        let read = ir.split("\nfn f(").nth(1).unwrap().split("\nfn ").next().unwrap().to_string();
+        assert!(read.contains(": u1 = cmp.eq ") && read.contains(": u1 = and ") && read.contains(" = len _"), "{}", read);
         refused("    n << p == odd(1)", "no '==' is defined on a pair and an odd: with none declared, '==' is of two of one structure, `(pair) == (pair)`, every field the same");
         refused("    n << p < q", "no '<' is defined on a pair and a pair: no operator is declared on a pair, `on (bool r) << (pair a) < (pair b)`");
         refused("    pair ps[] = [p]\n    odd os[] = [odd(1)]\n    n << ps[] [==] os[]", "`[==]` compares two arrays of one type of item: these hold pair and odd");
@@ -1932,6 +1937,38 @@ mod tests {
         refused("    string t else 7.5 = \"ab\"\n    n << 1", "its items are characters: write `else char (32)`");
         refused("    int a[] else = [1, 2]\n    n << a[i]", "`else` on 'a[]' wants the value a read outside gives, `a[] else 0`");
         refused("    float a[] mirrored = [1.0, 2.0]\n    n << 1", "h.zero:11: `mirrored` on 'a[]', a read outside going back the way it came, is ruled and not built yet (fm3 question 127). What a read outside the items gives is `else (v)`, `wrapped` or `clamped`, and zero where nothing is said");
+    }
+
+    /// `s == t` on two strings is one `bool` (fm3 question 100, log
+    /// 242), said in zero in the language's own feature and written in
+    /// line: what `s [==] t` is, to the line
+    #[test]
+    fn two_strings_are_compared_as_values() {
+        let dir = std::env::temp_dir().join("probe-zero-strings");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (1) → 1\n").unwrap();
+        let f = |body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("type word =\n    string text\n\non (string s) << name of (int k)\n    s << \"one\"\n\non (int n) << f (int k)\n    string s = \"zero\"\n    string t = \"zero\"\n    char cs[] = \"zero\"\n    word w = word(\"let\")\n{}\n", body)).unwrap();
+            emit(&dir)
+        };
+        let body = |ir: &str| -> String { ir.split("\nfn f(").nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
+        let refused = |text: &str, what: &str| {
+            let e = f(text).err().unwrap_or_else(|| panic!("not refused: {}", text));
+            assert!(e.contains(what), "{}: {}", text, e);
+        };
+        let by_hand = body(&f("    n << 1 if (s [==] t) else 0").unwrap());
+        assert_eq!(body(&f("    n << 1 if (s == t) else 0").unwrap()), by_hand);
+        assert!(by_hand.contains(" = len _") && !by_hand.contains("(s, t)"), "{}", by_hand);
+        let by_hand = body(&f("    n << 1 if (s [!=] \"zero\") else 0").unwrap());
+        assert_eq!(body(&f("    n << 1 if (s != \"zero\") else 0").unwrap()), by_hand);
+        // only what makes sense is declared
+        refused("    n << 1 if (s < t) else 0", "h.zero:12: `<` on two strings: a string has `==` and `!=`, whether two texts are the same, and nothing that says which comes first");
+        // an array of characters is an array: each pair, refused
+        refused("    n << 1 if (cs[] == cs[]) else 0", "`==` is applied to each pair of items and gives a bool for each");
+        // not built (fm3 question 144): a field read by name, a result
+        refused("    n << 1 if (w.text == \"let\") else 0", "`==` between arrays is applied to each pair");
+        refused("    n << 1 if (name of (k) == \"one\") else 0", "`==` between arrays is applied to each pair");
+        f("    n << 1 if (w.text [==] \"let\") else 0").unwrap();
     }
 
     /// One spelling of a value on a condition (fm3 question 126,

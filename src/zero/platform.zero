@@ -174,3 +174,9 @@ on print (string s)
 
 on print (int x[])
     out$ << x[] << "\n"
+
+on (bool r) << (string a) == (string b)
+    r << a [==] b
+
+on (bool r) << (string a) != (string b)
+    r << a [!=] b

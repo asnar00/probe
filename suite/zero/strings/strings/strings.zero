@@ -1,0 +1,54 @@
+type word =
+    string text
+    int n = 0
+
+string kept = "zero"
+
+on (int n) << same (int k)
+    string s = "abc"
+    string t = "abd"
+    string u = "abc"
+    n << (1 if (s == u) else 0) * 100 + (1 if (s == t) else 0) * 10 + (1 if (s != t) else 0)
+
+on (int n) << shorter()
+    string s = "zer"
+    n << 1 if (s == "zero") else 0
+
+on (int n) << written first()
+    string s = "zero"
+    n << 1 if ("zero" == s) else 0
+
+on (int n) << both written()
+    n << (1 if ("a" == "a") else 0) * 10 + (1 if ("a" != "a") else 0)
+
+on (int n) << kept is zero()
+    n << 1 if (kept == "zero") else 0
+
+on (bool r) << is zero (string s)
+    r << s == "zero"
+
+on (int n) << handed (int k)
+    string s = "zero"
+    string t = "one"
+    n << (1 if (is zero (s)) else 0) * 10 + (1 if (is zero (t)) else 0)
+
+on (int n) << tested()
+    string name = "zero"
+    if (name == "zero")
+        out$ << "it is"
+    n << 1
+
+on (int n) << words (int k)
+    word a = word("let", k)
+    word b = word("let", 1)
+    word c = word("lex", 1)
+    n << (1 if (a == b) else 0) * 100 + (1 if (b == c) else 0) * 10 + (1 if (b != c) else 0)
+
+on (int n) << a word given (int k)
+    word a = word("let", k)
+    n << 1 if (a == word("let", 1)) else 0
+
+on (int n) << by hand()
+    string s = "zero"
+    string t = "zero"
+    n << 1 if (s [==] t) else 0

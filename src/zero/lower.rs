@@ -5661,7 +5661,11 @@ impl Lowerer {
             }
             // (either operand, fm3 question 117, log 202: `(number k) *
             // (time a)` is declared as `(time a) * (number k)` is)
-            if !matches!(params[0].1, Ty::Struct(_)) && !matches!(params[1].1, Ty::Struct(_)) {
+            // (and the language's own `==` and `!=` on two strings,
+            // fm3 question 100: a string is a value, and a utility type
+            // has its functions declared in zero)
+            let strings = feature == OWN && params.iter().all(|(_, t)| *t == Ty::string());
+            if !strings && !matches!(params[0].1, Ty::Struct(_)) && !matches!(params[1].1, Ty::Struct(_)) {
                 return Err(lex::error(file, f.line, "one of an operator's operands is a declared structure, `on (T r) << (T a) op (U b)`; two numbers have the IR's operators"));
             }
         }
@@ -11828,16 +11832,19 @@ impl Lowerer {
         let Some(TypeInfo::Struct(fields)) = self.types.get(name).cloned() else { unreachable!() };
         let mut all: Option<String> = None;
         for (f, fty, _) in &fields {
-            if !matches!(fty, Ty::Bool | Ty::Num(_) | Ty::Char | Ty::Enum(_) | Ty::Struct(_)) {
+            if !matches!(fty, Ty::Bool | Ty::Num(_) | Ty::Char | Ty::Enum(_) | Ty::Struct(_)) && *fty != Ty::string() {
                 let what = if *fty == Ty::string() { "a string".to_string() } else { format!("an array of {}", fty.elem().map(zero_ty).unwrap_or_default()) };
                 let plain = op.trim_matches(['[', ']']);
-                return Err(lex::error(file, line, format!("'{}' on two `{}`: its field '{}' is {}, and the comparison is every field the same, a field at a time (fm3 question 108): a string or an array in a structure is not compared. Compare the fields that can be, or declare the operator, `on (bool b) << ({} x) {} ({} y)`", op, name, f, what, name, plain, name)));
+                return Err(lex::error(file, line, format!("'{}' on two `{}`: its field '{}' is {}, and the comparison is every field the same, a field at a time (fm3 question 108): an array in a structure is not compared. Compare the fields that can be, or declare the operator, `on (bool b) << ({} x) {} ({} y)`", op, name, f, what, name, plain, name)));
             }
             let (p, q) = (b.tmp(), b.tmp());
             b.line(&format!("{}: {} = get {}, {}", p, fty.ir(), x, f));
             b.line(&format!("{}: {} = get {}, {}", q, fty.ir(), y, f));
             let same = match fty {
                 Ty::Struct(_) => self.struct_same(op, fty, &p, &q, b, file, line)?,
+                // a field that is a string: the comparison `string`
+                // declares (fm3 question 100)
+                Ty::Stream(_) => self.strings_same(&p, &q, b, file, line)?,
                 _ => {
                     let t = b.tmp();
                     b.line(&format!("{}: u1 = cmp.eq {}, {}", t, p, q));
@@ -11858,6 +11865,16 @@ impl Lowerer {
             b.line(&format!("{}: u1 = const 1", t));
             t
         }))
+    }
+
+    /// two strings held as values, the same or not: the `==` the
+    /// language's own feature declares on `string`, written in line
+    fn strings_same(&mut self, x: &str, y: &str, b: &mut Body, file: &str, line: usize) -> Result<String, Error> {
+        let (xv, yv) = (Val { text: x.to_string(), ty: Ty::string(), literal: false }, Val { text: y.to_string(), ty: Ty::string(), literal: false });
+        match self.find_operator("==", &xv, &yv, file, line)? {
+            Some(info) if self.own_ops.contains_key(&info.ir) => Ok(self.own_op(&info, xv, yv, b, None, line)?.text),
+            _ => Err(lex::error(file, line, "`==` on two strings is the language's own, and this build of it declares none")),
+        }
     }
 
     /// `a[] [==] b[]`, `a[] [!=] b[]` (fm3 question 77, log 164): are
@@ -12157,7 +12174,7 @@ impl Lowerer {
         let Some(TypeInfo::Struct(fields)) = self.types.get(name).cloned() else { unreachable!() };
         let mut all: Option<String> = None;
         for ((f, fty, _), v) in fields.iter().zip(vals) {
-            if !matches!(fty, Ty::Bool | Ty::Num(_) | Ty::Char | Ty::Enum(_) | Ty::Struct(_)) {
+            if !matches!(fty, Ty::Bool | Ty::Num(_) | Ty::Char | Ty::Enum(_) | Ty::Struct(_)) && *fty != Ty::string() {
                 // the refusal is `struct_same`'s, said once
                 return self.struct_same(op, ty, x, x, b, file, line);
             }
@@ -12165,6 +12182,7 @@ impl Lowerer {
             b.line(&format!("{}: {} = get {}, {}", p, fty.ir(), x, f));
             let same = match fty {
                 Ty::Struct(_) => self.struct_same(op, fty, &p, &v.text, b, file, line)?,
+                Ty::Stream(_) => self.strings_same(&p, &v.text, b, file, line)?,
                 _ => {
                     let t = b.tmp();
                     b.line(&format!("{}: u1 = cmp.eq {}, {}", t, p, v.text));
@@ -12804,6 +12822,27 @@ impl Lowerer {
 
     /// is the name in scope here an array's, declared `int a[]` (fm3
     /// log 162)? A local hides a feature-scope name, as everywhere
+    /// Whether an expression is a string as it is written (fm3
+    /// question 100): a name with no mark whose type is `string`, or a
+    /// text written out. An array of characters has its mark
+    fn string_written(&self, e: &Expr, b: &Body) -> bool {
+        let named = |n: &str| match b.vars.get(n) {
+            Some(v) => !v.arr && v.ty == Ty::string(),
+            None => self.fvar(n).is_some_and(|f| !f.arr && f.ty == Ty::string()),
+        };
+        match &e.kind {
+            ExprKind::Str(_) => true,
+            ExprKind::Name(n) => named(n),
+            ExprKind::Phrase(parts) => matches!(parts.as_slice(), [Part::Word(n)] if named(n)),
+            _ => false,
+        }
+    }
+
+    /// one side of a comparison of two strings, as a value
+    fn string_side(&mut self, e: &Expr, b: &mut Body) -> Result<Val, Error> {
+        self.lower_expr(e, Some(&Ty::string()), b, None)
+    }
+
     fn arr_name(&self, name: &str, b: &Body) -> bool {
         match b.vars.get(name) {
             Some(v) => v.arr,
@@ -15315,6 +15354,23 @@ impl Lowerer {
             ExprKind::Bin(op, l, r) => {
                 if self.candidate.is_none() && (matches!(l.kind, ExprKind::Acc) || matches!(r.kind, ExprKind::Acc)) {
                     return self.reduce_bin(op, l, r, b, dst, e.line);
+                }
+                // Two strings, `s == t` (fm3 question 100, principle 6):
+                // a string is a value, so this is one `bool`, by the
+                // operator the language's own feature declares on
+                // `string`, written in line. The type does not tell a
+                // string from an array of characters, so it is asked of
+                // each side as written: `cs[] == ds[]` is still each pair
+                if matches!(op.as_str(), "==" | "!=") && self.string_written(l, b) && self.string_written(r, b) {
+                    let (lv, rv) = (self.string_side(l, b)?, self.string_side(r, b)?);
+                    if let Some(info) = self.find_operator(op, &lv, &rv, &file, e.line)? {
+                        if self.own_ops.contains_key(&info.ir) {
+                            return self.own_op(&info, lv, rv, b, dst, e.line);
+                        }
+                    }
+                }
+                if is_comparison(op) && !matches!(op.as_str(), "==" | "!=") && self.string_written(l, b) && self.string_written(r, b) {
+                    return Err(lex::error(&file, e.line, format!("`{}` on two strings: a string has `==` and `!=`, whether two texts are the same, and nothing that says which comes first", op)));
                 }
                 let cmp = is_comparison(op);
                 // a wanted sequence types the items; a wanted number, the operands
