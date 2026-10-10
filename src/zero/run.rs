@@ -615,7 +615,9 @@ fn checks(expect: &store::Expect) -> bool {
 /// a stop that named no line: a failed check and nothing more, or a
 /// trap the machine's own (wasm's remainder by zero)
 fn untraced(e: &str) -> bool {
-    e == suite::checked() || e.starts_with("trap:")
+    // (... or named a line of the language's own, which is not the
+    // line a person is told, fm3 log 228)
+    e == suite::checked() || e.starts_with("trap:") || e.strip_prefix(suite::checked()).is_some_and(|r| r.trim().strip_prefix("at ").is_some_and(|at| at.starts_with(&format!("{}:", crate::host::OWN_SITE))))
 }
 
 /// The case that stopped, run again from the diagnostic build of the
@@ -1085,24 +1087,33 @@ mod tests {
         let l = lower::lower(&s).unwrap();
         let body = |f: &str| -> String { l.ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
         let far = body("far");
-        assert!(far.contains("    __site_at(1)\n") && far.contains(": index = count ") && far.contains("    __site_at3(3, "), "{}", far);
+        assert!(far.contains("    __site_at(2)\n") && far.contains(": index = count ") && far.contains("    __site_at3(4, "), "{}", far);
         let held = body("held");
         assert!(held.contains(": u1 = ended(") && held.contains("        __site_at(") && held.contains("        __site_at3("), "{}", held);
         // a function that stores a site puts back the one it found, so
         // that after a call the place kept is the caller's statement
         assert!(held.starts_with("k: int) -> int\n    __site_was: i64 = __site_now()\n") && held.contains("    __site_at(__site_was)\n    ret "), "{}", held);
-        // and the platform's own lines are in no row of the table
-        assert!(l.sites.iter().all(|x| x.file == "h.zero"), "{:?}", l.sites);
+        // and the platform's own lines are in no row of the table but
+        // the one check the language's own file has, the table's first
+        // row, with its reason (fm3 log 228)
+        assert_eq!(l.sites[0], lower::Site { file: "platform.zero".into(), line: 62, what: "a time is too fine to hold".into() });
+        assert!(l.sites[1..].iter().all(|x| x.file == "h.zero"), "{:?}", l.sites);
         assert!(l.ir.contains("fn __out_len() -> i64\n") && l.ir.contains("        e: i64 = add w, 62\n") && l.ir.contains("data __site_tag = \"check at #\""), "{}", l.ir);
-        assert_eq!(l.sites[0], lower::Site { file: "h.zero".into(), line: 4, what: String::new() });
-        assert_eq!(l.sites[2], lower::Site { file: "h.zero".into(), line: 5, what: "item {a} of {b}".into() });
+        assert_eq!(l.sites[1], lower::Site { file: "h.zero".into(), line: 4, what: String::new() });
+        assert_eq!(l.sites[3], lower::Site { file: "h.zero".into(), line: 5, what: "item {a} of {b}".into() });
         assert!(l.sites.iter().any(|x| x.line == 8 && x.what == "the stream `kept$` is full: {a} items pushed and nothing has read them") && l.sites.iter().any(|x| x.line == 8 && x.what == "a push into `kept$`, which has ended"), "{:?}", l.sites);
         // what comes back is read from the table: three words in
         // hexadecimal, the second and third the numbers handed over,
         // a negative one among them
-        assert_eq!(site_said(&l.sites, "a failed check at #0000000000000003,0000000000000009,0000000000000004").as_deref(), Some("a failed check at h.zero:5: item 9 of 4"));
-        assert_eq!(site_said(&l.sites, "a failed check at #0000000000000003,fffffffffffffffe,0000000000000004").as_deref(), Some("a failed check at h.zero:5: item -2 of 4"));
-        assert_eq!(site_said(&l.sites, "a failed check at #0000000000000001,0000000000000000,0000000000000000").as_deref(), Some("a failed check at h.zero:4"));
+        assert_eq!(site_said(&l.sites, "a failed check at #0000000000000004,0000000000000009,0000000000000004").as_deref(), Some("a failed check at h.zero:5: item 9 of 4"));
+        assert_eq!(site_said(&l.sites, "a failed check at #0000000000000004,fffffffffffffffe,0000000000000004").as_deref(), Some("a failed check at h.zero:5: item -2 of 4"));
+        assert_eq!(site_said(&l.sites, "a failed check at #0000000000000002,0000000000000000,0000000000000000").as_deref(), Some("a failed check at h.zero:4"));
+        // a check of the language's own is told at the line of the
+        // program that called in, the site it found and handed over,
+        // with its own reason; at its own line where it found none
+        assert_eq!(site_said(&l.sites, "a failed check at #0000000000000001,0000000000000004,0000000000000000").as_deref(), Some("a failed check at h.zero:5: a time is too fine to hold"));
+        assert_eq!(site_said(&l.sites, "a failed check at #0000000000000001,0000000000000000,0000000000000000").as_deref(), Some("a failed check at platform.zero:62: a time is too fine to hold"));
+        assert!(untraced("a failed check at platform.zero:62: a time is too fine to hold") && untraced("a failed check") && !untraced("a failed check at h.zero:5: item 9 of 4"));
         assert_eq!(site_said(&l.sites, "a failed check at h.zero:5"), None);
         assert_eq!(site_said(&l.sites, "a failed check at #00000000000000ff,0,0"), None);
         // a case that says the line holds where what is reported begins

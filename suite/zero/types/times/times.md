@@ -22,7 +22,7 @@ fm3 question 120, Ash, the same day: a time is an exact rational, a count over a
 - `twice (a)` takes a time and gives one; `kept two` keeps two in an array and compares the array whole, `ts[] [==] [250 ms, 750 ms]`; `nothing given` is the zero of the type. A time that was worked out handed to `x$ at (t)` is `suite/zero/streams`' `sampled at a time worked out`, a time word making every stream of its store keep a time.
 
 ## rules
-- A time is added to a time and taken from one: `beat + 100 ms`, `1 s - beat`. Two of one divisor add by their counts; where one divisor is a multiple of the other the coarser count is scaled; otherwise both are brought to their least common multiple, `1 s / 3 + 1 s / 7` being ten twenty-firsts of a second. Where that cannot be held in 64 bits a check fails, saying a time is too fine to hold.
+- A time is added to a time and taken from one: `beat + 100 ms`, `1 s - beat`. Two of one divisor add by their counts; where one divisor is a multiple of the other the coarser count is scaled; otherwise both are brought to their least common multiple, `1 s / 3 + 1 s / 7` being ten twenty-firsts of a second. Where that cannot be held in 64 bits a check fails, saying a time is too fine to hold, at the line of the program that added: the check stands in the language's own file, and a person is told their own line, `a failed check at times.zero:79: a time is too fine to hold` (fm3 question 131).
 - It is multiplied by a whole number on either side and divided by one, exactly: `beat * 2`, `beat / 2`, `1 s / 3`. By a decimal, `1.5 * beat`, `beat / 2.5`, it is worked out in `float64` and cut to a whole nanosecond.
 - A time divided by a whole number that is zero, or by a time that is none, is a failed check that says its line and `a division by zero` (fm3 question 116): `a part of a second (0)`. The check stands in the program's line and is left out where the compiler knows the number, `1 s / 3`.
 - A time divided by a time is a `float`, and is how a number comes out of one: `beat / 1 ms` is 250.0, `2500 ms / 1 ms` exactly 2500.0, and `int(2500 ms / 1 s)` its whole seconds.
@@ -57,7 +57,7 @@ fm3 question 120, Ash, the same day: a time is an exact rational, a count over a
 >a part of a second (4) → "500 ms true"
 >a part of a second (0) → check at times.zero:73
 >a third and a half() → 833.333333 ms
->too fine (4000000007, 4000000009) → check
+>too fine (4000000007, 4000000009) → check at times.zero:79
 
 ## hostile
 Each is refused where the program is compiled, in these words (a store that does not declare the operator, `beat` a `time` and `n` an `int`):

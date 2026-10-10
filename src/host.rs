@@ -145,6 +145,10 @@ pub fn checked() -> &'static str {
     CHECKED
 }
 
+/// the file of the language's own feature as a row of the table names
+/// it: a check that fails there is reported at the program's line
+pub const OWN_SITE: &str = "platform.zero";
+
 /// `a failed check at #<site>,<a>,<b>` as the table reads it: what a
 /// stop in the diagnostic build of a zero store says (fm3 log 199), its
 /// site a row of `Lowered.sites` counted from 1, turned into the file,
@@ -155,6 +159,16 @@ pub fn site_said(sites: &[Site], said: &str) -> Option<String> {
     let words: Vec<i64> = said.strip_prefix(checked())?.trim().strip_prefix("at #")?.split(',').map(|w| u64::from_str_radix(w.trim(), 16).map(|v| v as i64)).collect::<Result<_, _>>().ok()?;
     let [n, a, b] = words.as_slice() else { return None };
     let site = sites.get((*n as usize).checked_sub(1)?)?;
+    // a check of the language's own (fm3 log 228): a person is told
+    // their own line, the statement of the program that called in,
+    // which is the site the check found current and handed over, with
+    // the check's reason; the language's line where there was none
+    if site.file == OWN_SITE {
+        if let Some(caller) = (*a as usize).checked_sub(1).and_then(|i| sites.get(i)).filter(|c| c.file != OWN_SITE) {
+            return Some(format!("{} at {}:{}{}", checked(), caller.file, caller.line, if site.what.is_empty() { String::new() } else { format!(": {}", site.what) }));
+        }
+        return Some(format!("{} at {}:{}{}", checked(), site.file, site.line, if site.what.is_empty() { String::new() } else { format!(": {}", site.what) }));
+    }
     let what = site.what.replace("{a}", &a.to_string()).replace("{b}", &b.to_string());
     Some(format!("{} at {}:{}{}", checked(), site.file, site.line, if what.is_empty() { String::new() } else { format!(": {}", what) }))
 }

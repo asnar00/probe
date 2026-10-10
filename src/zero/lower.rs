@@ -9926,11 +9926,31 @@ impl Lowerer {
                 // language's file renumbers no store's strings
                 let own = file == lex::OWN_FILE;
                 let why = b.func.as_ref().and_then(|f| OWN_CHECKS.iter().find(|(k, _)| own && *k == f.key)).map(|(_, w)| format!(": {}", w)).unwrap_or_default();
-                let site = Expr { kind: ExprKind::Str(format!("check at {}:{}{}", base, line, why)), line: *line };
-                self.own_site = own.then_some(*line);
-                let sv = self.lower_expr(&site, None, b, None)?;
-                self.own_site = None;
-                b.line(&format!("print({})", sv.text));
+                if own && self.sited {
+                    // in the diagnostic build a check of the language's
+                    // own writes no text: it stores a row of its own,
+                    // the reason, and hands over the site it found
+                    // current, the statement of the program that called
+                    // in, which is the line a person is told (fm3
+                    // question 131 as the principles settle it, log 228)
+                    let row = Site { file: base, line: *line, what: why.trim_start_matches(": ").to_string() };
+                    let n = match self.sites.iter().position(|s| *s == row) {
+                        Some(i) => i + 1,
+                        None => {
+                            self.sites.push(row);
+                            self.sites.len()
+                        }
+                    };
+                    let cur = b.tmp();
+                    b.line(&format!("{}: i64 = __site_now()", cur));
+                    b.line(&format!("__site_at3({}, {}, 0)", n, cur));
+                } else {
+                    let site = Expr { kind: ExprKind::Str(format!("check at {}:{}{}", base, line, why)), line: *line };
+                    self.own_site = own.then_some(*line);
+                    let sv = self.lower_expr(&site, None, b, None)?;
+                    self.own_site = None;
+                    b.line(&format!("print({})", sv.text));
+                }
                 let z = b.tmp();
                 b.line(&format!("{}: u1 = const 0", z));
                 b.line(&format!("check {}", z));
