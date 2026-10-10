@@ -1,0 +1,9 @@
+int i$ at (1 hz)
+i$ << i$ + 1 if (i$ < 5) forever
+out$ << (i$ << "\n") forever
+
+on (int n) << so far()
+    n << i$
+
+on begin()
+    check (i$ == 1)

@@ -1,0 +1,13 @@
+int i$ at (1 hz)
+int down$ at (1 hz)
+i$ << i$ + 1 if (i$ < 5) forever
+out$ << ("tick " << i$ << "\n") forever
+out$ << (down$ << "\n") forever
+
+on count down()
+    down$ << [3 through 1]
+    out$ << "liftoff\n"
+
+on (int n) << how far after (int k)
+    down$ << [k through 1]
+    n << i$
