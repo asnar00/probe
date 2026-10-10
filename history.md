@@ -4,6 +4,37 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: five faults the playground found: a division by a written zero, two of a clock, a `float`'s zero, and a stream's `else` through a function — `c311c6b`, `8ae617c`, `64d771a`, `8fb553f`, `e449eff` · 2026-10-10
+
+```
+int tick$ at (1 hz)
+tick$ << tick$ + 1 if (tick$ < 3) forever
+int beat$ at (2 hz)
+beat$ << beat$ + 1 if (beat$ < 4) forever
+int wait$ at (1 hz)
+out$ << (wait$ << "\n") forever
+
+on (int n) << read after()
+    wait$ << 7 << 8
+    n << beat$
+```
+
+`suite/zero/quiet-clocks/quiet/quiet.zero:1` and `:14`, whose case is `>read after() → 4`. Five commits, one cause each, found by the zero playground's pass over its pages (fm3 `playground-report.md`) and by fm3 question 147. None changes what a correct program gave.
+
+`c311c6b`: a clock, a line paced by its own stream's rate, asked that rate of `rates`, which holds only streams with no storage that something is wired to. So `tick$` above, which nothing reads, and `beat$`, which a function reads by its name, were each refused as having no rate. The rate is now the one the stream is declared with (`declared_rates`), and each is a clock: `tick$` goes 1, 2, 3 at 0 s, 1 s and 2 s and is over at 3 s; `read() → 1`, the first tick being the store's start, and `read after()`, two seconds on, is 4. `probe zero suite/zero/quiet-clocks trace "read after()"` has a row a tick.
+
+`8ae617c`: `tick$ << tick$ + 1 forever`, a clock with no `if`, gave "the lowered IR did not parse: use of undefined value '__bare'". It is refused at its line: "is a clock, a line paced by its own stream's rate, with nothing to stop it: it would push for ever. A clock needs a way to stop, an `if`".
+
+`64d771a`: `a / 0`, `a % 0` and `beat / 0`, the zero written out, gave "the lowered IR did not parse: a literal needs a type here", `divisor` in `src/zero/lower.rs` having compared the literal with zero. The check of a divisor is left out where the compiler sees it is not zero (`2cd66c7`'s rule); where it sees that it is, the line is refused: "a division by zero: the divisor is written as 0, and a whole number or a time divided by nothing has no value". Unit test `what_cannot_run_is_refused_at_its_line`.
+
+`8fb553f`: `out$ << f[7]` of a `float32 f[]` of three wrote `0`: what a read outside an array gives was the literal `0` typed `float`, and a push handed a literal types it by how it is written. `outside_val` writes a `float`'s zero `0.0`; `suite/zero/platform`'s `>a float outside() → "0.0 3.0 0.0"`. Three stores' text moves by `yield 0` becoming `yield 0.0` and no case of theirs.
+
+`e449eff`: a stream declared `int quiet$ at (1 khz) else 60` read 60 before its first item everywhere but through a function's parameter, where it read 0, though its `nearest` or `linear` went with it in the reader's `rule` word (`f0e9751`). The value of `else` now rides in the reader's `edge` word, which nothing the front end calls reads: a whole number, a character, a `bool` or an enumeration converted, a `float` as the bits of the 64-bit float it is exactly (`to_word`, `from_word`). `suite/zero/sampled-streams`: `>handed quiet (5000) → 6060`, `>handed after (7) at (-5) → 6007`, `>handed level() → 25`. A stream said by a wiring was found to carry its rule already, `suite/zero/clock`'s new `>through (400) → 3`.
+
+No count moved: the six lines 493 and 500, the walking lexer 920 and 931, hello 939, static 918.
+
+---
+
 ### zero: the trace build in the compiler, and `probe zero <store> trace <case>` — `a0a9691` · 2026-10-10
 
 ```
