@@ -195,11 +195,11 @@ on (bool same) << framed before a ring wraps()
     same << got[] [==] [4, 5] and back[] [==] [70]
 
 on (int n) << latest before any()
-    n << latest none$ * 10 + count none$
+    n << latest none$ * 10 + [count] (frame none$)
 
 on (int n) << first of its own()
     own$ << own$ + 1
-    n << own$ * 10 + count own$
+    n << own$ * 10 + [count] (frame own$)
 
 on (int a, int b) << counted so far()
     int x$ << 1 << 2 << 3

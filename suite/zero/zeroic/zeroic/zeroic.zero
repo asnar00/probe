@@ -131,7 +131,7 @@ on (bool b) << typed()
 
 on (int a, bool b) << also read()
     s$ << 1 << 2
-    a << count s$
+    a << [count] (frame s$)
     b << frame ds$ [==] [2, 4]
 
 on (int n) << many (int k)

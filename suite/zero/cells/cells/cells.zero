@@ -105,6 +105,10 @@ on (int n) << counted()
     both$ << both$ + 1
     n << both$ * 10 + count both$
 
+on (int n) << counted far (int k)
+    both$ << (both$ + 1) (k) times
+    n << count both$ * 1000 + both$
+
 on (int n) << local up to (int k)
     int i$ << 0 << (i$ + 1) while (_ <= k)
     n << i$

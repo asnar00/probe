@@ -20,7 +20,7 @@ writes `3`. The same line with the word, at feature scope, takes every item as i
 - `kept from two` keeps a counter from two streams, `total$ << total$ + other$`: the stream's own name is its latest item, as it always was in its own push, and now `other$` is too. `kept with a local` is the same with a local taken first, `int o = late$`, which is how it had to be written before. Both streams of each are read for their latest item and nothing else, so each is one word of the context (`suite/zero/cells`).
 - `one doubled` pushes `a$ * 2`, one item, the latest doubled; `doubled now` hands the name to a function of one value, `d$ << doubled (seen$)`.
 - `a local pushed on` is a stream declared in the function, and `first items` a declaration's own first items, `int s$ << seen$ << 1`.
-- `before the first` and `none yet` read a stream nothing has been pushed into: the zero of its type, whether the compiler keeps one word of it or a queue.
+- `before the first` and `none yet` read a stream nothing has been pushed into: the zero of its type, whether the compiler keeps one word of it or a queue; `none yet` counts it too, `count both$`, 0, a counter beside the word.
 - `all of an array` pushes an array, whole. `each with the latest` pushes `a[] + other$`: each item of the array with the stream's latest added.
 - `three of the latest` pushes `seen$ (3) times`: the latest, three times.
 - `by the word` says `latest seen$`, which is the same thing.

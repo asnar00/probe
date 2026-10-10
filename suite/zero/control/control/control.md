@@ -27,7 +27,7 @@ An `if` statement runs one of two blocks; a variable it assigns has, after it, t
 
 ## rules
 - A stream said by a rule: its first items, then the rule in brackets and `while`, `until` or `(n) times`. In the rule the stream's own name is its latest item. A `while` whose condition reads `_`, the item about to be pushed, works the item out and then tests it; one whose condition does not is tested first, and the rule is worked out only where it holds.
-- A stream declared in a function and read only for its latest item keeps that item and nothing else (`suite/zero/cells` has every case of it). `count` of it keeps a queue.
+- A stream declared in a function and read only for its latest item keeps that item and nothing else (`suite/zero/cells` has every case of it). `count` of it is a second value carried beside the latest, and no queue.
 - A `loop`'s carried variables are exactly those in its header; `continue` gives them in that order, and a bare `continue`, or a body that ends, continues with their current values. A loop's own variables are not assigned in its body (fm3 question 70), and a variable declared outside a loop is not assigned inside it. A `for`'s item is not assigned.
 - `[1 through n]` counts down when n < 1, so a sum from 1 to n is `[0 through n] + _` and rows 1 to n are `[1 to n + 1]`.
 - A statement after `break` or `continue` is refused: it would never run.

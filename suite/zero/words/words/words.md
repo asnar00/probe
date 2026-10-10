@@ -23,7 +23,7 @@ A `<<` sends once, each time its line runs. The words after its items say otherw
 - `three (k) times` and `bump (k) times` are functions whose names end in the word. `bumped by (k)` calls the second as a statement; `the name` pushes the first once, in brackets, `up$ << (three (4) times)`, and `the name twice` pushes it twice, `up$ << three (4) times (2) times`.
 - `bump (k) times` pushes into `seen$`, a cell: the same loop with a store of the field each time round.
 - `beats` pushes `0` and then three more into `beat$`, a stream at `1 hz`: one a second.
-- `first$ << src$ (3) times` at feature scope is a line that stands for the first three items of `src$` and then no more; `first three` pushes five. `some$ << kept$ (2) times` is the same out of a stream that is stored, `kept$` being counted by `first two`.
+- `first$ << src$ (3) times` at feature scope is a line that stands for the first three items of `src$` and then no more; `first three` pushes five. `some$ << kept$ (2) times` is the same out of a stream that is stored, `first two` asking how many are waiting in `kept$`, `[count] (frame kept$)`.
 
 - `counted to five` is the `until` line above, `counted under five` the `while` line beside it, and `counted to five by the item` the `until` written with `_`. `once` is `until (true)`: one push.
 - `doubled past (limit)` pushes into `seen$`, a cell, until the value stored is past the limit.

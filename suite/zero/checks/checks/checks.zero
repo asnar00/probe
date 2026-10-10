@@ -49,4 +49,4 @@ on (int n) << pushed after shut()
 
 on (int n) << pushed steadily()
     steady$ << 1 << 2
-    n << count steady$
+    n << [count] (frame steady$)

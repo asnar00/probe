@@ -128,7 +128,7 @@ on first three()
 
 on first two()
     kept$ << [5 through 9]
-    out$ << count kept$
+    out$ << [count] (frame kept$)
 
 on counted to five()
     up$ << 1 << (up$ + 1) until (up$ == 5)

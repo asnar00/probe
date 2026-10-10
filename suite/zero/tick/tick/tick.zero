@@ -68,11 +68,11 @@ on summed the sum first()
 
 on summed and counted()
     k$ << 1 << 2 << 3
-    out$ << count ksum$
+    out$ << [count] (frame ksum$)
 
 on counted and summed()
     q$ << 1 << 2 << 3
-    out$ << count q$
+    out$ << [count] (frame q$)
 
 on (int n) << diamond()
     d$ << 1 << 2

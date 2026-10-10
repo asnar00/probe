@@ -2523,7 +2523,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features), acts };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features), acts };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -4454,6 +4454,13 @@ struct Lowerer {
     /// of the item's type, a push a store of it and a read a load. A
     /// stream is one where the store reads it only for its latest item
     cells: Names,
+    /// ... and those of them that `count` is asked of (fm3 question
+    /// 145, log 247): a second field of the context beside the latest
+    /// item, `__n_<name>`, how many the stream has had, one more at
+    /// each store of the cell. Found by lowering, as the cells are: a
+    /// count of a cell not here is noted, `#n <name>`, and the store
+    /// lowered again
+    counted: Names,
     /// ... which the lowering settles: a name here met where a stream
     /// is wanted is noted, and the store lowered again with it a stream
     uncelled: std::rc::Rc<std::cell::RefCell<Names>>,
@@ -6898,6 +6905,11 @@ impl Lowerer {
         (out, bound, sourced)
     }
 
+    /// the cells that are counted, in the order they are declared
+    fn counted_cells(&self) -> Vec<String> {
+        self.fvars.iter().filter(|f| self.cells.contains(&f.name) && self.counted.contains(&f.name)).map(|f| f.name.clone()).collect()
+    }
+
     /// is the name a cell, not shadowed here?
     fn is_cell(&self, name: &str, b: &Body) -> bool {
         !b.vars.contains_key(name) && self.cells.contains(name)
@@ -8105,6 +8117,10 @@ impl Lowerer {
                 self.type_lines.push(";   __ended: an activity was ended partway by a `restart`, and is leaving".into());
                 own.push_str("__ended: u1\n    ");
             }
+            for n in self.counted_cells() {
+                self.type_lines.push(format!(";   __n_{n}: how many items '{n}$' has had, `count {n}$`, kept beside its latest item where no queue is", n = n));
+                own.push_str(&format!("__n_{}: index\n    ", n));
+            }
             self.type_lines.push(format!("type __ctx = struct\n    __out_n: index\n    __clock: i64\n    __out_p: ptr\n    {}{}\n{}", own, fields.join("\n    "), MARKS_FIELD));
             // memory for two contexts: the runner's, and a second, so
             // that one store can be run in two (fm3 log 137); the code
@@ -8133,6 +8149,7 @@ impl Lowerer {
             let mut inits: Vec<String> = self.features.iter().filter(|f| !self.statics.contains(*f)).map(|_| "1".to_string()).collect();
             inits.extend(nested.iter().map(|_| "1".to_string()));
             let mut init_of: HashMap<String, String> = HashMap::new();
+            let mut firsts_n: HashMap<String, usize> = HashMap::new();
             for feat in &store.features {
                 for d in &feat.code.decls {
                     let Decl::Var(v) = d else { continue };
@@ -8158,6 +8175,7 @@ impl Lowerer {
                                 _ => &[],
                             };
                             let mut cur = if items.is_empty() || !matches!(elem, Ty::Struct(_) | Ty::Stream(_)) { Some(self.zero_val(&elem, &mut b)) } else { None };
+                            firsts_n.insert(v.name.clone(), items.len());
                             for e in items {
                                 self.push_read = cur.clone().map(|c| (v.name.clone(), PushRead::Value(c)));
                                 let x = self.lower_expr(e, Some(&elem), &mut b, None);
@@ -8289,6 +8307,11 @@ impl Lowerer {
             own.push_str(&"0, 0, ".repeat(restarts));
             if restarts > 0 {
                 own.push_str("0, ");
+            }
+            // a counted cell begins at the number of first items its
+            // declaration gave it
+            for n in self.counted_cells() {
+                own.push_str(&format!("{}, ", firsts_n.get(&n).copied().unwrap_or(0)));
             }
             b.line(&format!("{}: __ctx = pack 0, 0, op, {}{}{}", c, own, inits.join(", "), MARKS_INIT));
             b.line("p: ptr = context()");
@@ -8928,6 +8951,20 @@ impl Lowerer {
     /// context a function makes is written here, so `written` is every
     /// field that changes while a case runs
     fn field_put(&mut self, field: &str, v: &str, b: &mut Body) {
+        // a cell that is counted (fm3 log 247): its counter one more,
+        // in the same load and store of the context
+        if self.cells.contains(field) && self.counted.contains(field) {
+            let (c1, n, n2, c2, c3) = (b.tmp(), b.tmp(), b.tmp(), b.tmp(), b.tmp());
+            b.line(&format!("{}: __ctx = load {}", c1, THIS));
+            b.line(&format!("{}: index = get {}, __n_{}", n, c1, field));
+            b.line(&format!("{}: index = add {}, 1", n2, n));
+            b.line(&format!("{}: __ctx = set {}, {}, {}", c2, c1, field, v));
+            b.line(&format!("{}: __ctx = set {}, __n_{}, {}", c3, c2, field, n2));
+            b.line(&format!("store {}, {}", c3, THIS));
+            self.written.insert(field.to_string());
+            self.written.insert(format!("__n_{}", field));
+            return;
+        }
         let (c1, c2) = (b.tmp(), b.tmp());
         b.line(&format!("{}: __ctx = load {}", c1, THIS));
         b.line(&format!("{}: __ctx = set {}, {}, {}", c2, c1, field, v));
@@ -14660,6 +14697,44 @@ impl Lowerer {
                 }
             }
         }
+        // `[count] (frame x$)`, how many are waiting (fm3 question 145,
+        // log 247): the frame is not made to be counted. The ring's
+        // count less the reader's place, and the reader moved to the
+        // end as the frame would have moved it
+        if let [Part::Word(w), x] = parts {
+            let inner = match x {
+                Part::Value(e) => Some(e),
+                Part::Args(a) if a.len() == 1 && a[0].name.is_none() => Some(&a[0].value),
+                _ => None,
+            };
+            if let (true, Some(Expr { kind: ExprKind::Phrase(p), .. })) = (w == "count", inner) {
+                if let [Part::Word(f), y] = p.as_slice() {
+                    let n = match y {
+                        Part::Args(a) if a.len() == 1 && a[0].name.is_none() => match &a[0].value.kind {
+                            ExprKind::Seq(n) => Some(n.clone()),
+                            _ => None,
+                        },
+                        y => name_of(y),
+                    };
+                    if let (true, Some(n)) = (f == "frame", n) {
+                        if matches!(self.stream_var(&n, b), Some(Ty::Stream(_))) {
+                            let s = self.lower_expr(&Expr { kind: ExprKind::Name(n.clone()), line }, None, b, None)?;
+                            let (r, c, at) = (b.tmp(), b.tmp(), b.tmp());
+                            let wanted = keeps_index(want);
+                            let k = if wanted { name_for(dst, &index_ty(), b) } else { b.tmp() };
+                            b.line(&format!("{}: ptr = get {}, ring", r, s.text));
+                            b.line(&format!("{}: index = load {}", c, r));
+                            b.line(&format!("{}: index = get {}, pos", at, s.text));
+                            b.line(&format!("{}: index = sub {}, {}", k, c, at));
+                            let (sty, st, ct) = (s.ty.clone(), s.text.clone(), c.clone());
+                            let moved = |_: &mut Lowerer, out: &str, b: &mut Body| b.line(&format!("{}: {} = set {}, pos, {}", out, sty.ir(), st, ct));
+                            self.rebind_stream(&n, &s, &moved, b, line)?;
+                            return Ok(Some(self.settled(k, wanted, b, dst)));
+                        }
+                    }
+                }
+            }
+        }
         // `time of x$`: the tick of the next unread item, and the one
         // word that times a stream by asking (log 85, question 42)
         if let [Part::Word(time), Part::Word(of), x] = parts {
@@ -14726,6 +14801,19 @@ impl Lowerer {
                 }
             };
             return Ok(Some(self.settled(n, keeps_index(want), b, dst)));
+        }
+        // `count` of a feature's cell is the counter kept beside it
+        // (fm3 question 145, log 247): no queue is made to be counted
+        if w == SO_FAR && !infix && rest.is_empty() && self.is_cell(&sname, b) {
+            let f = self.fvar(&sname).unwrap().clone();
+            self.reach(&format!("{}$", sname), &f.feature, &b.file, line)?;
+            if !self.counted.contains(&sname) {
+                self.uncelled.borrow_mut().insert(format!("#n {}", sname));
+            }
+            let wanted = keeps_index(want);
+            let d = if wanted { dst.filter(|d| b.vars.get(*d).map(|v| &v.ty) == Some(&index_ty())) } else { None };
+            let n = self.field_get(&format!("__n_{}", sname), "index", d, b);
+            return Ok(Some(self.settled(n, wanted, b, dst)));
         }
         // `latest` of a cell is its field (fm3 log 143)
         if w == "latest" && !infix && rest.is_empty() && self.is_cell(&sname, b) {

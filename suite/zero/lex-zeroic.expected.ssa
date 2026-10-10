@@ -56,7 +56,7 @@ type token = struct
 ;   __enabled_lex: user, last (lex)
 ;   out: the output device, which stores nothing (platform)
 ;   in: user, last (platform)
-;   t: user, last (lex)
+;   t: user, last (lex), a stream of which one value is kept, its latest
 ;   src: no storage, no word reading it: a push into it calls, for each item, what is wired to it (lex)
 ;   u: user, last (lex)
 ;   __zend_src: node, last (lex)
@@ -72,14 +72,16 @@ type token = struct
 ;   __node1_c_seen: node, last (lex)
 ;   __node1_fin: node, last (lex)
 ;   __out_n, __clock, __out_p: the context's own output and clock (question 107): how much it has written, its time and its capture
+;   __n_t: how many items 't$' has had, `count t$`, kept beside its latest item where no queue is
 type __ctx = struct
     __out_n: index
     __clock: i64
     __out_p: ptr
+    __n_t: index
     __enabled_platform: u1
     __enabled_lex: u1
     in: u8$
-    t: token$
+    t: token
     u: token$
     __zend_src: u1
     __z1_at: index
@@ -118,9 +120,9 @@ fn __zero_new()
     oq: ptr(u8) = index ob, oi
     op: ptr = cast oq
     _1: u8$ = __queue_u8(1000000, 512)
-    _2: token$ = __queue_token(1000000, 64)
+    _2: token = pack 0, 0, 0
     _3: token$ = __queue_token(1000000, 64)
-    _4: __ctx = pack 0, 0, op, 1, 1, _1, _2, _3, 0, 0, 0, 0, 0, 0, 0, 0, 0, _1, 0, 0
+    _4: __ctx = pack 0, 0, op, 0, 1, 1, _1, _2, _3, 0, 0, 0, 0, 0, 0, 0, 0, 0, _1, 0, 0
     p: ptr = context()
     store _4, p
     ret
@@ -509,10 +511,8 @@ fn a_word_at_the_end() -> (int, int)
 fn lexed() -> int
     _this: ptr = context()
     _1: __ctx = load _this
-    _2: token$ = get _1, t
-    _3: ptr = get _2, ring
-    _4: index = load _3
-    n: int = conv _4
+    _2: index = get _1, __n_t
+    n: int = conv _2
     ret n
 fn __z1_each(_c: u8, __at: index, __k_b1: kind, __n_b1: index, __start_b1: index) -> (kind, index, index)
     _this: ptr = context()
@@ -524,10 +524,13 @@ fn __z1_each(_c: u8, __at: index, __k_b1: kind, __n_b1: index, __start_b1: index
         _n: index = const 1
         _3: u1 = cmp.ne __k_b1, 0
         if _3
-            _4: __ctx = load _this
-            _5: token$ = get _4, t
-            _6: token = pack __k_b1, __start_b1, __n_b1
-            push_queue_open(_5, _6)
+            _4: token = pack __k_b1, __start_b1, __n_b1
+            _5: __ctx = load _this
+            _6: index = get _5, __n_t
+            _7: index = add _6, 1
+            _8: __ctx = set _5, t, _4
+            _9: __ctx = set _8, __n_t, _7
+            store _9, _this
         yield _n, __at
     else
         _n_2: index = add __n_b1, 1
@@ -542,10 +545,13 @@ fn __z1_end(__at: index, __k_b1: kind, __n_b1: index, __start_b1: index)
     _3: u1 = cmp.ne __k_b1, 0
     _4: u1 = and _new, _3
     if _4
-        _5: __ctx = load _this
-        _6: token$ = get _5, t
-        _7: token = pack __k_b1, __start_b1, __n_b1
-        push_queue_open(_6, _7)
+        _5: token = pack __k_b1, __start_b1, __n_b1
+        _6: __ctx = load _this
+        _7: index = get _6, __n_t
+        _8: index = add _7, 1
+        _9: __ctx = set _6, t, _5
+        _10: __ctx = set _9, __n_t, _8
+        store _10, _this
     ret
 fn __z1(c: u8$, __hz: i64) -> u8$
     _this: ptr = context()
