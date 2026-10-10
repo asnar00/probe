@@ -4,6 +4,26 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: restart, the touchstone: a countdown begun again by a key — `d32dfb0` · 2026-10-10
+
+```
+on launch()
+    count down()
+    out$ << "liftoff"
+
+on count down()
+    restart i$
+    i$ << [10 through 1]
+```
+
+`suite/zero/restart/restart/restart.zero:5-11`. `restart x$` was ruled on 6 October 2026 (fm3 question 52) and waited for something that could end a function partway. It does three things, and the store is `fm3/touchstones.md`'s program with its case as written there: `>launch() with in "k" at 3.5 s → "10\n9\n8\n7\n" at 1 hz, "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\n" at 1 hz from 3.5 s, "liftoff" at 13.5 s`. The key at 3.5 s finds the first countdown partway through its ten seconds; a new one begins with its 10 at 3.5 s and its 9 a second later; the first's 6 is never written, and the first launch never says `liftoff`.
+
+The stream's beat begins again from now: the stream has a phase in the context, the clock at its last restart, and a push that waits for a slot counts slots from it (`align`). The run in progress ends: the stream has the number of its run, one more at each restart, and a function pushing into it reads the number before each step of the rate and after, and where it has changed pushes no more (`step_of`, `src/zero/lower.rs:13469`). The activity that was doing that run ends there: that function sets a bit of the context and returns, and in the finished text every call of a function that can be left that way is followed by the bit asked and a return, up to where the activity was started, the case's twin or the input's turn, which clears it (`settle_ended`, `:3112`). There is no fibre and no jump. The first countdown is on the machine's stack beneath the second, which ran to its end above it, and each of its frames leaves as control comes back down.
+
+The touchstone's `watch(in$)` on a line of its own is no form of the language; it is written `int seen$ = launches (in$)`, a function of one character wired over the input. A key at 4 s, the time the 6 was due, gives no 6, the input being first of two things due at one time. A key at 12 s, after `liftoff`, is a launch of its own. A second key inside the first key's launch stops the program with a failed check (fm3 question 135): what reads the input is partway through the first, and before the check the key was handed over late. The code landed in `1aa0b5a`; this commit is the store and `several_things_going_on`'s assertions. The store runs on the JIT, wasm, riscv and arm-qemu; the GPU's path has no recursion and skips it. The full run is `scratchpad/chain111.log`: 1065 runs of the zero suite on four paths, 1020 on air, `cargo test` 178.
+
+---
+
 ### zero: input that arrives at a time, in a case — `1aa0b5a` · 2026-10-10
 
 ```
