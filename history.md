@@ -4,6 +4,30 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the output's count and the clock are the context's — `e3d9ffe` · 2026-10-10
+
+```
+fn __out_ch(c: u8)
+    x: __ctx = load _this
+    n: index = get x, __out_n
+    p: ptr = get x, __out_p
+    n2: index = add n, 1
+    x2: __ctx = set x, __out_n, n2
+    store x2, _this
+    store c, p, n, 1
+    ret
+```
+
+`src/zero/lower.rs:627-635`. Ash ruled on 10 October 2026 (fm3 question 107) that each context has its own output and its own clock. `__out_n`, how much the output device has been given, and `__clock` were data of the store, and every character written and every step of a rate formed an address to reach them. They are fields of `__ctx` now, and so are two pointers, `__out_p` and `__out_m`, to the context's own capture and its own marks: `__out` and `__out_t` are a half for each of the store's two contexts. A half is 32 768 bytes where the one capture had 65 536, because twice the data passed a megabyte and arm64's `adr` could not reach across it. `__zero_new` finds its half by comparing the context's pointer with the first context's, and clears that context's marks as far as it last wrote.
+
+The store of the context stands before the store of the character. The IR writes a structure in memory whole and drops each store that gives back what was just read, within a block and until something else touches memory (`elide_stores`, `src/opt.rs`); written the other way round, hello's `run` counted 1 601. `__wait` reads the context a second time after its `max`, a call, for the same reason.
+
+Counted as it ran, hello's `run` went from 988 to **939** against `hello-mod.ssa`'s 977, and static's from 967 to **918** against `hello-min.ssa`'s 964; on the tool 1 148 to 1 090 and 1 127 to 1 069. 943 and 922 were said before the build (fm3 log 215): 45 addresses no longer formed, 23 in `__out_ch`, 20 in `__step`, 2 in `__out_block`. The other 4 are `__out_block`'s, two a text: its place in the capture is one `ptradd` on the context's pointer where `index` on the data's typed address wrote a cast and a multiply by one. The lexers' four rows did not move. Every case of all 32 stores was counted on both binaries: none rose, 194 of 225 fell, and no case's output changed.
+
+`two_contexts_each_keep_their_own` (`src/zero/run.rs:892`) runs hello in two contexts by turns and reads back in each its own text and its own time: the second, its countdown off, two lines and no time; the first the countdown and ten seconds, and twenty when it is run again, the second as it stood. The full run is `scratchpad/chain107.log`: 1046 runs of the zero suite on the JIT, wasm, riscv and arm-qemu, 1008 on air, `probe test` on five paths, `cargo test` 177.
+
+---
+
 ### zero: a time is an exact rational, a count over a divisor; a field is hidden by the word — `d4ae193` · 2026-10-10
 
 ```
