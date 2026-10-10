@@ -200,6 +200,9 @@ pub enum TypeKind {
 pub struct Field {
     pub ty: String,
     pub name: String,
+    /// declared `hidden` (fm3 question 118): read and given only in
+    /// the feature that declares the type
+    pub hidden: bool,
     pub seq: bool,
     pub default: Option<Expr>,
     pub line: usize,
@@ -741,7 +744,17 @@ impl<'a> Parser<'a> {
         self.err(format!("'{}[]': the mark is part of the name and not of the type, wherever the name is written (fm3 question 90): write `{} {}[]`", ty, ty, name))
     }
 
+    /// `hidden` anywhere but before a field of a structure (fm3
+    /// question 118): refused, saying where it is said
+    fn hidden_misplaced(&self, what: &str) -> Result<(), Error> {
+        if self.at_word("hidden") && matches!(self.peek_at(1), Some(Tok::Word(w)) if self.is_type(w)) {
+            return Err(self.err(format!("'hidden' is said of a field of a structure, `type account =` and under it `hidden int balance`: the field is then read and given only in the feature that declares the type. {} is not hidden", what)));
+        }
+        Ok(())
+    }
+
     fn parse_decl(&mut self) -> Result<Decl, Error> {
+        self.hidden_misplaced("A variable")?;
         if let Some(Tok::Arr(w)) = self.peek().cloned() {
             if self.is_type(&w) {
                 return Err(self.mark_on_type(&w));
@@ -1067,6 +1080,7 @@ impl<'a> Parser<'a> {
         let mut ty: Option<String> = None;
         while !self.at_sym(")") {
             let line = self.line();
+            self.hidden_misplaced("A parameter or a result")?;
             if let Some(Tok::Arr(w)) = self.peek().cloned() {
                 if self.is_type(&w) {
                     return Err(self.mark_on_type(&w));
@@ -1155,6 +1169,10 @@ impl<'a> Parser<'a> {
     /// one line of fields: `float x, y, z = 0`
     fn parse_fields(&mut self, out: &mut Vec<Field>) -> Result<(), Error> {
         let line = self.line();
+        let hidden = self.at_word("hidden") && matches!(self.peek_at(1), Some(Tok::Word(w)) if self.is_type(w));
+        if hidden {
+            self.pos += 1;
+        }
         let ty = self.expect_word()?;
         if !self.is_type(&ty) {
             self.pos -= 1;
@@ -1173,7 +1191,7 @@ impl<'a> Parser<'a> {
         }
         let default = if self.eat_sym("=") { Some(self.parse_expr()?) } else { None };
         for (name, seq) in names {
-            out.push(Field { ty: ty.clone(), name, seq, default: default.clone(), line });
+            out.push(Field { ty: ty.clone(), name, hidden, seq, default: default.clone(), line });
         }
         Ok(())
     }
@@ -1544,6 +1562,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, Error> {
+        self.hidden_misplaced("A variable")?;
         let line = self.line();
         let first = self.peek().cloned();
         match first {

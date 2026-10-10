@@ -124,14 +124,20 @@ fn time_ty() -> Ty {
 /// what a person is told to write where a time and a number are
 /// crossed with no unit said (fm3 questions 49 and 103): no program
 /// sees the step
-const TIME_SAYS: &str = ". No program sees a time's steps: a number out of a time is a time divided by a time, `t / 1 ms`, and a time out of a number is a number of some time, `n * 1 ms`";
+const TIME_SAYS: &str = ". No program sees a time's count or its divisor: a number out of a time is a time divided by a time, `t / 1 ms`, and a time out of a number is a number of some time, `n * 1 ms`";
 
-/// the steps of a time in a second: a nanosecond, fixed (fm3 question
-/// 120, provisional), the finest unit word
-const TIME_STEPS: i64 = 1_000_000_000;
+/// the divisor of a time that a literal with a unit word makes (fm3
+/// question 120, log 213): a thousand million, the finest unit word's,
+/// so every literal's count is its nanoseconds
+const TIME_DIVISOR: i64 = 1_000_000_000;
 
 /// the feature the language brings with it
 const OWN: &str = "platform";
+
+/// what a failed check of the language's own says, by the function it
+/// stands in: `check (c)` has no way to say why in zero (fm3 question
+/// 128, provisional)
+const OWN_CHECKS: [(&str, &str); 1] = [("over_one_divisor", "a time is too fine to hold")];
 
 /// zero's spelling of a builtin number type to the IR's (section 4)
 fn builtin_type(name: &str) -> Option<Ty> {
@@ -555,6 +561,9 @@ pub struct Call {
     pub func: String,
     pub args: Vec<i64>,
     pub nrets: usize,
+    /// which of its results are times (fm3 log 212): each comes back
+    /// as its nanoseconds, through the function's `__said_` twin
+    pub times: Vec<bool>,
     pub expect: Expect,
     pub context: Vec<(String, bool)>,
     /// the bytes the runner pushes into `in$` before the start (log 62)
@@ -2367,7 +2376,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, one_lines: HashMap::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2404,6 +2413,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         let ir = l.funcs.last().unwrap().ir.clone();
         l.own_ops.insert(ir, (std::rc::Rc::new(fd.clone()), lex::OWN_FILE.to_string()));
     }
+    let mut one_lines: Vec<(usize, std::rc::Rc<FnDecl>, String)> = Vec::new();
     for f in &store.features {
         l.cur = f.name.clone();
         for d in &f.code.decls {
@@ -2412,6 +2422,11 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
                 // its tree kept by its name, for the lines of a small
                 // one written where it is applied (fm3 log 191)
                 l.bodies.insert(mangle(&fd.name), (std::rc::Rc::new(fd.clone()), f.code.file.clone()));
+                // ... and by its place, where it is one line, the push
+                // of its one result (fm3 log 213)
+                if f.name != OWN && !fd.task && fd.platform.is_empty() && matches!(fd.body.as_slice(), [Stmt::Assign { targets, .. }] if fd.results.len() == 1 && matches!(targets.as_slice(), [t] if t.name == fd.results[0].name && t.feature.is_none())) {
+                    one_lines.push((l.funcs.len() - 1, std::rc::Rc::new(fd.clone()), f.code.file.clone()));
+                }
             }
         }
     }
@@ -2424,6 +2439,9 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         l.zfiles.insert(mangle(&fd.name), file.clone());
     }
     l.name_methods(&store.features.iter().map(|f| (f.name.clone(), f.code.file.clone())).collect())?;
+    for (i, fd, file) in one_lines {
+        l.one_lines.insert(l.funcs[i].ir.clone(), (fd, file));
+    }
     // a `<<` method over a `char$` is lowered twice (log 87): as it is
     // written, over a stream, and again over the output device, where
     // `o$` has no value and every push into it is the platform's write.
@@ -2688,8 +2706,36 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     // a `platform` body of the store's own is IR the front end does not
     // read, and may end anything
     let unread = store.features.iter().any(|f| f.name != "platform" && f.code.decls.iter().any(|d| matches!(d, Decl::Fn(fd) if !fd.platform.is_empty())));
+    // a function a case can call that gives a time has a twin for the
+    // runner (fm3 question 119, log 212), which gives each time as its
+    // nanoseconds, toward zero, as it would be written out: a runner
+    // takes whole numbers back from a call on every path
+    let time = time_ty();
+    for f in l.funcs.clone().iter().filter(|f| f.feature != OWN && !f.task && f.platform.is_none() && f.results.iter().any(|(_, t)| *t == time) && f.params.iter().all(|(_, t)| matches!(t, Ty::Num(_) | Ty::Bool | Ty::Enum(_)))) {
+        if !ir.contains(&format!("\nfn {}(", f.ir)) || ir.contains(&format!("\nfn __said_{}(", f.ir)) {
+            continue;
+        }
+        let params: Vec<String> = f.params.iter().map(|(n, t)| format!("{}: {}", n, t.ir())).collect();
+        let rets: Vec<String> = f.results.iter().map(|(_, t)| if *t == time { "i64".to_string() } else { t.ir() }).collect();
+        let mut text = format!("fn __said_{}({}) -> {}\n", f.ir, params.join(", "), if rets.len() == 1 { rets[0].clone() } else { format!("({})", rets.join(", ")) });
+        let got: Vec<String> = f.results.iter().enumerate().map(|(k, (_, t))| format!("r{}: {}", k, t.ir())).collect();
+        text.push_str(&format!("    {} = {}({})\n", got.join(", "), f.ir, f.params.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>().join(", ")));
+        let mut back = Vec::new();
+        for (k, (_, t)) in f.results.iter().enumerate() {
+            if *t != time {
+                back.push(format!("r{}", k));
+                continue;
+            }
+            text.push_str(&format!("    c{k}: i64 = get r{k}, count\n    d{k}: i64 = get r{k}, divisor\n    w{k}: i64 = div c{k}, d{k}\n    m{k}: i64 = rem c{k}, d{k}\n    a{k}: i64 = mul w{k}, 1000000000\n    b{k}: i64 = mul m{k}, 1000000000\n    q{k}: i64 = div b{k}, d{k}\n    n{k}: i64 = add a{k}, q{k}\n", k = k));
+            back.push(format!("n{}", k));
+        }
+        text.push_str(&format!("    ret {}\n", back.join(", ")));
+        ir.push_str(&text);
+    }
     let ir = settle_pushes(ir, &l.queue_pushes, &l.ended, unread);
     let ir = settle_context(&ir, &l.written, unread);
+    let ir = unmade(&ir);
+    let ir = wide_once(&ir);
     let ir = settle_counts(&ir);
     let ir = settle_clock(&ir);
     let ir = if l.sited { settle_sites(&ir) } else { ir };
@@ -2710,6 +2756,9 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     for entry in ["__zero_reset", "__zero_new", "__zero_context", "__zero_start", "__out_len", "__out_byte", "__in_ch"] {
         roots.insert(entry.to_string());
     }
+    // (a function's twin for the runner is reached where it is)
+    let twins: Vec<String> = roots.iter().map(|r| format!("__said_{}", r)).collect();
+    roots.extend(twins);
     // a store with a case that asserts on time has the marks' reader
     // (fm3 log 91, 95), and so does one whose host asks for the times
     if store.times || store.features.iter().any(|f| f.cases.iter().any(|c| matches!(c.expect, Expect::Timed(_)))) {
@@ -2775,6 +2824,176 @@ fn settle_pushes(mut ir: String, pushes: &std::collections::BTreeMap<String, Ty>
 /// its scheduler calls its nodes by name, and a library function
 /// names no function of the store. A function that packs a whole
 /// context is taken to write every field
+/// A structure made and never named again is not made (fm3 log 212):
+/// where a line of the language's own is written in line and the
+/// compiler knows the fields it reads, the operands' own `pack`s are
+/// left with nothing reading them. A function at a time, a `pack`
+/// whose name stands nowhere else in it
+fn unmade(ir: &str) -> String {
+    let mut out = String::with_capacity(ir.len());
+    let lines: Vec<&str> = ir.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let mut j = i + 1;
+        while j < lines.len() && !lines[j].starts_with("fn ") {
+            j += 1;
+        }
+        let body = &lines[i..j];
+        if lines[i].starts_with("fn ") && body.iter().any(|l| l.contains(" = pack ")) {
+            let mut uses: HashMap<&str, usize> = HashMap::new();
+            for l in body {
+                for w in l.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).filter(|w| !w.is_empty()) {
+                    *uses.entry(w).or_default() += 1;
+                }
+            }
+            for l in body {
+                let name = l.trim_start().split(':').next().unwrap_or("");
+                if l.contains(" = pack ") && uses.get(name) == Some(&1) && !l.trim_start().starts_with(';') {
+                    continue;
+                }
+                out.push_str(l);
+                out.push('\n');
+            }
+        } else {
+            for l in body {
+                out.push_str(l);
+                out.push('\n');
+            }
+        }
+        i = j;
+    }
+    out
+}
+
+/// A wide whole number is made once a function (fm3 log 213). Where an
+/// instruction at the top of a function takes a literal that sixteen
+/// bits do not hold, and an arithmetic instruction, a comparison or a
+/// `pack` anywhere in the function takes the same literal of the same
+/// type again, it is made by one `const` in the function's first lines
+/// and named at each. The use at the top runs on every path, so no
+/// path makes more constants than it did. It is what a time's count
+/// and its divisor, each a literal wherever the compiler knows it,
+/// come to where one function names them several times
+fn wide_once(ir: &str) -> String {
+    let lines: Vec<&str> = ir.lines().collect();
+    // each structure's field types, for a `pack`
+    let mut structs: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut k = 0;
+    while k < lines.len() {
+        if let Some(name) = lines[k].strip_prefix("type ").and_then(|r| r.strip_suffix(" = struct")) {
+            let mut fields = Vec::new();
+            while k + 1 < lines.len() && lines[k + 1].starts_with("    ") {
+                k += 1;
+                fields.push(lines[k].split(": ").nth(1).unwrap_or("").trim());
+            }
+            structs.insert(name, fields);
+        }
+        k += 1;
+    }
+    let wide = |t: &str| t.parse::<i64>().is_ok_and(|v| !(-65536..65536).contains(&v));
+    let whole = |ty: &str| ty == "int" || ty == "uint" || ty == "index" || (ty.len() > 1 && ty.starts_with(['i', 'u']) && ty[1..].parse::<u32>().is_ok());
+    let mut out = String::with_capacity(ir.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let mut j = i + 1;
+        while j < lines.len() && !lines[j].starts_with("fn ") {
+            j += 1;
+        }
+        let body = &lines[i..j];
+        if !lines[i].starts_with("fn ") {
+            for l in body {
+                out.push_str(l);
+                out.push('\n');
+            }
+            i = j;
+            continue;
+        }
+        // the type of each name the function defines
+        let mut types: HashMap<&str, &str> = HashMap::new();
+        for l in body.iter().skip(1) {
+            if let Some((name, rest)) = l.trim_start().split_once(": ") {
+                if let Some((ty, _)) = rest.split_once(" = ") {
+                    if !name.contains([' ', ',', '(']) {
+                        types.insert(name, ty);
+                    }
+                }
+            }
+        }
+        // each line's literal operands that qualify: (place among the
+        // operands, type), and whether the line is at the top
+        let operands = |l: &str| -> Vec<(usize, String)> {
+            let t = l.trim_start();
+            let Some((name, rest)) = t.split_once(": ") else { return Vec::new() };
+            let Some((ty, rhs)) = rest.split_once(" = ") else { return Vec::new() };
+            if name.contains([' ', ',', '(']) {
+                return Vec::new();
+            }
+            let Some((op, args)) = rhs.split_once(' ') else { return Vec::new() };
+            let args: Vec<&str> = args.split(", ").collect();
+            let tys: Vec<Option<String>> = match op {
+                "add" | "sub" | "mul" | "div" | "rem" if whole(ty) && args.len() == 2 => vec![Some(ty.to_string()); 2],
+                _ if op.starts_with("cmp.") && args.len() == 2 => {
+                    let other = |a: &str| types.get(a).filter(|t| whole(t)).map(|t| t.to_string());
+                    vec![other(args[1]), other(args[0])]
+                }
+                "pack" => match structs.get(ty) {
+                    Some(fields) if fields.len() == args.len() => fields.iter().map(|f| whole(f).then(|| f.to_string())).collect(),
+                    _ => return Vec::new(),
+                },
+                _ => return Vec::new(),
+            };
+            args.iter().enumerate().filter(|(_, a)| wide(a)).filter_map(|(k, _)| tys[k].clone().map(|t| (k, t))).collect()
+        };
+        let arg = |l: &str, k: usize| l.split_once(" = ").and_then(|(_, rhs)| rhs.split_once(' ')).map(|(_, a)| a.split(", ").nth(k).unwrap_or("").to_string()).unwrap_or_default();
+        let mut uses: HashMap<(String, String), (usize, bool)> = HashMap::new();
+        for l in body.iter().skip(1) {
+            let top = l.starts_with("    ") && !l.starts_with("     ");
+            for (k, ty) in operands(l) {
+                let e = uses.entry((ty, arg(l, k))).or_insert((0, false));
+                e.0 += 1;
+                e.1 |= top;
+            }
+        }
+        let mut shared: Vec<((String, String), String)> = uses.into_iter().filter(|(_, (n, top))| *n >= 2 && *top).map(|(key, _)| key).collect::<Vec<_>>().into_iter().map(|key| (key, String::new())).collect();
+        if shared.is_empty() {
+            for l in body {
+                out.push_str(l);
+                out.push('\n');
+            }
+            i = j;
+            continue;
+        }
+        shared.sort();
+        for (n, (_, name)) in shared.iter_mut().enumerate() {
+            *name = format!("__w{}", n + 1);
+        }
+        out.push_str(body[0]);
+        out.push('\n');
+        for ((ty, lit), name) in &shared {
+            out.push_str(&format!("    {}: {} = const {}\n", name, ty, lit));
+        }
+        for l in body.iter().skip(1) {
+            let ops = operands(l);
+            if ops.is_empty() {
+                out.push_str(l);
+                out.push('\n');
+                continue;
+            }
+            let (head, rhs) = l.split_once(" = ").unwrap();
+            let (op, args) = rhs.split_once(' ').unwrap();
+            let mut args: Vec<String> = args.split(", ").map(str::to_string).collect();
+            for (k, ty) in ops {
+                if let Some((_, name)) = shared.iter().find(|((t, lit), _)| *t == ty && *lit == args[k]) {
+                    args[k] = name.clone();
+                }
+            }
+            out.push_str(&format!("{} = {} {}\n", head, op, args.join(", ")));
+        }
+        i = j;
+    }
+    out
+}
+
 fn settle_context(ir: &str, written: &std::collections::HashSet<String>, unread: bool) -> String {
     let names = words;
     let lines: Vec<&str> = ir.lines().collect();
@@ -3444,7 +3663,24 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str, int_bits: u32) -
             return Err(lex::error(file, case.line, format!("{}: no feature named '{}' in the store", clause, feature)));
         }
     }
-    Ok(Call { func: info.ir.clone(), args: vals, nrets: info.results.len(), expect: case.expect.clone(), context: case.context.clone(), input: case.input.clone().unwrap_or_default().into_bytes() })
+    // a result that is a time (fm3 question 119, log 212): the case
+    // says it as a time, `→ 2, 500 ms`, and calls the function's twin,
+    // which gives the time as its nanoseconds
+    let times: Vec<bool> = info.results.iter().map(|(_, t)| *t == time_ty()).collect();
+    let said: Option<Vec<bool>> = match &case.expect {
+        Expect::Values(v) => Some(vec![false; v.len()]),
+        Expect::Said(v) => Some(v.iter().map(|(_, t)| *t).collect()),
+        _ => None,
+    };
+    if let Some(said) = said {
+        if said.len() == times.len() {
+            if let Some(k) = (0..said.len()).find(|&k| said[k] != times[k]) {
+                return Err(lex::error(file, case.line, if times[k] { format!("result {} of '{}' is a time: the case says it as one, with its unit, `250 ms`", k + 1, info.key) } else { format!("result {} of '{}' is no time, and the case says one", k + 1, info.key) }));
+            }
+        }
+    }
+    let func = if times.iter().any(|t| *t) { format!("__said_{}", info.ir) } else { info.ir.clone() };
+    Ok(Call { func, args: vals, nrets: info.results.len(), times, expect: case.expect.clone(), context: case.context.clone(), input: case.input.clone().unwrap_or_default().into_bytes() })
 }
 
 /// the refusal of an ambiguous call, naming the methods that contend
@@ -3821,6 +4057,21 @@ struct Lowerer {
     /// name and its `type` line, which is written only into a store
     /// whose text names it
     own_types: Vec<(String, String)>,
+    /// the fields declared `hidden`, a structure's name and the
+    /// field's (fm3 question 118)
+    hidden: std::collections::HashSet<(String, String)>,
+    /// a feature's variable of a structure that was declared with
+    /// literals, a literal with a unit word or a construction of
+    /// literals: the expression it was declared with and its feature
+    /// (fm3 question 70, log 212). It is read as that, the context
+    /// not asked
+    fvar_lits: HashMap<String, (Expr, String, String)>,
+    /// the line of a check of the language's own whose site is being
+    /// written: its text is named for it
+    own_site: Option<usize>,
+    /// the functions of the program's own that are one line, the push
+    /// of their one result, by IR name: tree and file (`one_line`)
+    one_lines: HashMap<String, (std::rc::Rc<FnDecl>, String)>,
     /// the parameters of the operator being written in line that were
     /// handed a literal: read by name they are that literal still
     lits: Vec<String>,
@@ -4145,6 +4396,19 @@ struct Body {
     /// the product's trip count for this function's loops (log 41):
     /// `bound <function>: N` in the store's `product.md`
     product_bound: Option<i64>,
+    /// what the compiler knows of a structure in hand (fm3 question
+    /// 120, log 212): for the IR name of one made here, what each
+    /// field was given, and whether that is a literal. A name is
+    /// defined once, so what is known of it holds wherever it is read
+    known: HashMap<String, Vec<Option<(String, bool)>>>,
+    /// the rate of a stream declared in this body with one, by its
+    /// name: what `time of x$` puts under its index (fm3 log 212)
+    rates: HashMap<String, i64>,
+    /// for the IR name of an array made here from a list written out:
+    /// each field that every item was given as one literal, with it
+    /// (fm3 log 213). An array is never changed, so an item read from
+    /// it has that field
+    items_known: HashMap<String, Vec<Option<String>>>,
 }
 
 impl Body {
@@ -4312,8 +4576,13 @@ impl Lowerer {
     /// and the name it has there
     fn str_addr(&mut self, s: &str, b: &mut Body) -> (String, String) {
         let p = b.tmp();
-        self.nstr += 1;
-        let name = format!("__s{}", self.nstr);
+        let name = match self.own_site {
+            Some(line) => format!("__own{}", line),
+            None => {
+                self.nstr += 1;
+                format!("__s{}", self.nstr)
+            }
+        };
         self.data.push(format!("data {} = \"{}\"", name, s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")));
         b.line(&format!("{}: ptr = addr {}", p, name));
         (p, name)
@@ -4506,6 +4775,9 @@ impl Lowerer {
                         Some(Expr { kind: ExprKind::Bool(v), .. }) if ty == Ty::Bool => Some((*v as i64).to_string()),
                         Some(e) => return Err(lex::error(file, e.line, format!("a field's default is a literal of its type ({})", ty.ir()))),
                     };
+                    if f.hidden {
+                        self.hidden.insert((t.name.clone(), f.name.clone()));
+                    }
                     ir.push(format!("{}: {}", f.name, ty.ir()));
                     out.push((f.name.clone(), ty, default));
                 }
@@ -6704,6 +6976,17 @@ impl Lowerer {
                 Some(Init::Construct(args)) => format!(" << {}({})", v.ty, args.iter().map(|a| phrase_text(&a.value)).collect::<Vec<_>>().join(", ")),
                 _ => String::new(),
             };
+            // a structure declared with literals is read as them
+            // (fm3 question 70, log 212)
+            let plain = |e: &Expr| matches!(e.kind, ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_));
+            let said = match &v.init {
+                Some(Init::Value(e)) if matches!(&e.kind, ExprKind::Unit(inner, _) if plain(inner)) => Some(e.clone()),
+                Some(Init::Construct(args)) if !args.is_empty() && args.iter().all(|a| plain(&a.value)) => Some(Expr { kind: ExprKind::Phrase(vec![Part::Word(v.ty.clone()), Part::Args(args.clone())]), line: v.line }),
+                _ => None,
+            };
+            if let (Some(e), Ty::Struct(_)) = (said, &ty) {
+                self.fvar_lits.insert(v.name.clone(), (e, feature.to_string(), file.to_string()));
+            }
             let scope: String = v.scope.iter().map(|w| format!("{} ", w)).collect();
             let merge = v.merge.as_ref().map(|m| format!(" merge {}", m)).unwrap_or_default();
             self.fvar_said.insert(v.name.clone(), format!("{}{} {}${}{}", scope, v.ty, v.name, first, merge));
@@ -6742,7 +7025,7 @@ impl Lowerer {
     /// which puts every variable's initial value in it, and the
     /// scheduler with a function per node (log 25)
     fn emit_context(&mut self, store: &Store) -> Result<(), Error> {
-        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Reset, func: None, below: None, product_bound: None };
+        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), known: HashMap::new(), rates: HashMap::new(), items_known: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Reset, func: None, below: None, product_bound: None };
         // where the reset's lines turn from the store's to the context's
         let mut fresh: Option<usize> = None;
         b.line("a: ptr = addr __arena");
@@ -7278,7 +7561,7 @@ impl Lowerer {
                 }
                 let body = format!("{}({})", body_name(&info, i, &self.statics), args.join(", "));
                 let under = if i == 0 { None } else { Some(format!("{}({})", link_name(&info, i - 1, &self.statics), args.join(", "))) };
-                let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
+                let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), known: HashMap::new(), rates: HashMap::new(), items_known: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
                 self.gate(&info.chain[i].clone(), Some("on"), &mut b);
                 if rets.is_empty() {
                     b.line("if on");
@@ -7343,7 +7626,7 @@ impl Lowerer {
                 let name = named_link(&dev, &dev, &info.chain, i, &self.statics);
                 let body = format!("{}({})", named_body(&dev, &dev, &info.chain, i, &self.statics), dargs.join(", "));
                 let under = if i == 0 { None } else { Some(format!("{}({})", named_link(&dev, &dev, &info.chain, i - 1, &self.statics), dargs.join(", "))) };
-                let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
+                let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), known: HashMap::new(), rates: HashMap::new(), items_known: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
                 self.gate(&info.chain[i].clone(), Some("on"), &mut b);
                 b.line("if on");
                 b.depth += 1;
@@ -7369,7 +7652,7 @@ impl Lowerer {
     /// since; a node with no inputs, once. After a run the node is
     /// finished when all its inputs have ended.
     fn emit_node(&mut self, k: usize, node: &Node) -> Result<(), Error> {
-        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: node.file.clone(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
+        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), known: HashMap::new(), rates: HashMap::new(), items_known: HashMap::new(), results: Vec::new(), file: node.file.clone(), depth: 0, loops: Vec::new(), kind: BodyKind::Node, func: None, below: None, product_bound: None };
         self.field_get(&format!("__node{}_fin", k), "u1", Some("fin"), &mut b);
         b.line("notfin: u1 = xor fin, 1");
         let mut readers = Vec::new();
@@ -7643,6 +7926,20 @@ impl Lowerer {
             self.uncell(name);
             return Ok(Val { text: "__uncell".into(), ty: f.ty, literal: false });
         }
+        // a structure declared with literals is those literals
+        // wherever it is read, a variable keeping the value it was
+        // declared with (fm3 question 70, log 212): the context is
+        // not asked, and what the compiler knows of it it still knows
+        if let Some((e, feature, file)) = self.fvar_lits.get(name).cloned() {
+            let cur = std::mem::replace(&mut self.cur, feature);
+            let was = std::mem::replace(&mut b.file, file);
+            let held = (self.one, self.now);
+            let v = self.lower_expr(&e, Some(&f.ty), b, None);
+            (self.one, self.now) = held;
+            b.file = was;
+            self.cur = cur;
+            return v;
+        }
         let dst = dst.filter(|d| b.vars.get(*d).map(|v| &v.ty) == Some(&f.ty));
         let out = self.field_get(name, &f.ty.ir(), dst, b);
         Ok(Val { text: out, ty: f.ty, literal: false })
@@ -7713,7 +8010,7 @@ impl Lowerer {
         } else {
             (info.plain.clone(), None)
         };
-        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: results.clone(), file: file.to_string(), depth: 0, loops: Vec::new(), kind, func: Some(info.clone()), below, product_bound: self.product.get(&key).copied() };
+        let mut b = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), known: HashMap::new(), rates: HashMap::new(), items_known: HashMap::new(), results: results.clone(), file: file.to_string(), depth: 0, loops: Vec::new(), kind, func: Some(info.clone()), below, product_bound: self.product.get(&key).copied() };
         let mut sig = format!("fn {}(", name);
         let mut sig_params: Vec<(String, Ty)> = Vec::new();
         if let (true, Some(r)) = (info.task, info.results.first()) {
@@ -7845,7 +8142,7 @@ impl Lowerer {
             (dev.clone(), None)
         };
         let mut b = Body {
-            out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(),
+            out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), known: HashMap::new(), rates: HashMap::new(), items_known: HashMap::new(), results: Vec::new(),
             file: file.to_string(), depth: 0, loops: Vec::new(), kind: BodyKind::Fn, func: Some(info.clone()),
             below, product_bound: self.product.get(&info.key).copied(),
         };
@@ -8653,6 +8950,7 @@ impl Lowerer {
         let ty = Ty::Struct(name.to_string());
         let out = name_for(dst, &ty, b);
         b.line(&format!("{}: {} = pack {}", out, ty.ir(), ops.iter().map(|v| v.text.as_str()).collect::<Vec<_>>().join(", ")));
+        b.known.insert(out.clone(), ops.iter().map(|v| Some((v.text.clone(), v.literal))).collect());
         Ok(Val { text: out, ty, literal: false })
     }
 
@@ -8949,6 +9247,11 @@ impl Lowerer {
                         Some(Init::Value(e)) => self.task_call(e, Some(&b.vars), &file)?.filter(|(info, args, _)| !self.z_takes(info, args, b)),
                         _ => None,
                     };
+                    if let Some((_, _, hz)) = &task {
+                        if *hz > 0 {
+                            b.rates.insert(v.name.clone(), *hz);
+                        }
+                    }
                     match (&v.init, task) {
                         (Some(Init::Value(e)), None) => {
                             // an array that is nothing but a frame (fm3
@@ -9118,8 +9421,16 @@ impl Lowerer {
                 b.line("else");
                 b.depth += 1;
                 let base = file.rsplit('/').next().unwrap_or(&file).to_string();
-                let site = Expr { kind: ExprKind::Str(format!("check at {}:{}", base, line)), line: *line };
+                // a check of the language's own says why, by the
+                // function it stands in (`OWN_CHECKS`), and its text is
+                // named for its line, so that a check added to the
+                // language's file renumbers no store's strings
+                let own = file == lex::OWN_FILE;
+                let why = b.func.as_ref().and_then(|f| OWN_CHECKS.iter().find(|(k, _)| own && *k == f.key)).map(|(_, w)| format!(": {}", w)).unwrap_or_default();
+                let site = Expr { kind: ExprKind::Str(format!("check at {}:{}{}", base, line, why)), line: *line };
+                self.own_site = own.then_some(*line);
                 let sv = self.lower_expr(&site, None, b, None)?;
+                self.own_site = None;
                 b.line(&format!("print({})", sv.text));
                 let z = b.tmp();
                 b.line(&format!("{}: u1 = const 0", z));
@@ -9653,7 +9964,7 @@ impl Lowerer {
         let mut widened = Vec::new();
         let mut mapped = Vec::new();
         for (i, cand) in cands.iter().enumerate() {
-            let (start, ntmp, vars, defs, ndata, nstr) = (b.out.len(), b.ntmp, b.vars.clone(), b.defs.clone(), self.data.len(), self.nstr);
+            let (start, ntmp, vars, defs, ndata, nstr, known) = (b.out.len(), b.ntmp, b.vars.clone(), b.defs.clone(), self.data.len(), self.nstr, b.known.clone());
             self.round = round;
             self.trial = trial.clone();
             let tried = self.lower_call_args(cand, args, b);
@@ -9666,6 +9977,7 @@ impl Lowerer {
             }
             b.out.truncate(start);
             b.ntmp = ntmp;
+            b.known = known;
             b.vars = vars;
             b.defs = defs;
             self.data.truncate(ndata);
@@ -9915,6 +10227,16 @@ impl Lowerer {
         for v in &vals {
             // a literal pushed after a stream takes the item's type
             b.line(&t.push(&c.text, &v.text));
+        }
+        // what the compiler knows of every item (fm3 log 213)
+        if let (Ty::Struct(name), false) = (&e, vals.is_empty()) {
+            if let Some(TypeInfo::Struct(fields)) = self.types.get(name) {
+                let lit = |v: &Val, at: usize| b.known.get(&v.text).and_then(|k| k[at].clone()).filter(|(_, l)| *l).map(|(t, _)| t);
+                let all: Vec<Option<String>> = (0..fields.len()).map(|at| lit(&vals[0], at).filter(|first| vals.iter().all(|v| lit(v, at).as_ref() == Some(first)))).collect();
+                if all.iter().any(Option::is_some) {
+                    b.items_known.insert(c.text.clone(), all);
+                }
+            }
         }
         Ok(c)
     }
@@ -10203,6 +10525,9 @@ impl Lowerer {
     fn emit_bin(&mut self, op: &str, mut lv: Val, mut rv: Val, want: Option<&Ty>, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
         let file = b.file.clone();
         let cmp = is_comparison(op);
+        if let Some(v) = self.worked_out(op, &lv, &rv) {
+            return Ok(v);
+        }
         // a literal that does not fit the other side, said as what it
         // is (fm3 hop 34, transformation 123: `k == 3` was "a kind and
         // a decimal"), and an enumeration's values with it
@@ -10271,6 +10596,61 @@ impl Lowerer {
         let name = name_for(dst, &ty, b);
         b.line(&format!("{}: {} = {} {}, {}", name, ty.ir(), op_name(op), lv.text, rv.text));
         Ok(Val { text: name, ty, literal: false })
+    }
+
+    /// What the compiler knows of an operator's result with nothing
+    /// emitted, in a function written in line (fm3 question 120, log
+    /// 212): two whole numbers it knows, worked out here, where the
+    /// answer is one a 64-bit integer holds; a value compared with
+    /// itself; a value times or over one, or plus or less nothing.
+    /// None where it knows nothing, and the operator is emitted. It is
+    /// what lets a line of the language's own, written for any two
+    /// structures, come to one instruction where the fields it tests
+    /// were given as literals
+    fn worked_out(&self, op: &str, lv: &Val, rv: &Val) -> Option<Val> {
+        if self.inlining.is_empty() {
+            return None;
+        }
+        let whole = |v: &Val| if v.literal && matches!(&v.ty, Ty::Num(t) if !matches!(t.as_str(), "f16" | "bf16" | "f32" | "f64" | "float" | "number" | "scalar" | "fixed" | "unit" | "sunit" | "rational" | "decimal")) { v.text.parse::<i128>().ok() } else { None };
+        let cmp = is_comparison(op);
+        let said = |c: bool| Val { text: (c as i64).to_string(), ty: Ty::Bool, literal: true };
+        match (whole(lv), whole(rv)) {
+            (Some(x), Some(y)) => {
+                if cmp {
+                    return Some(said(match op {
+                        "==" => x == y,
+                        "!=" => x != y,
+                        "<" => x < y,
+                        "<=" => x <= y,
+                        ">" => x > y,
+                        _ => x >= y,
+                    }));
+                }
+                let r = match op {
+                    "+" => x.checked_add(y),
+                    "-" => x.checked_sub(y),
+                    "*" => x.checked_mul(y),
+                    "/" if y != 0 => Some(x / y),
+                    "%" if y != 0 => Some(x % y),
+                    _ => None,
+                }?;
+                // (the wider of the two says the type: a literal a
+                // field gave is that field's)
+                let ty = if matches!(&lv.ty, Ty::Num(t) if t == "int") { rv.ty.clone() } else { lv.ty.clone() };
+                // (a 128-bit number the compiler knows may be past 64
+                // bits on its way to one that is not: a count times a
+                // thousand million, then over its divisor)
+                let wide = matches!(&ty, Ty::Num(t) if t == "i128");
+                let (lo, hi) = if wide { (i128::MIN, i128::MAX) } else { whole_range(&ty).unwrap_or((i64::MIN as i128, i64::MAX as i128)) };
+                (r >= lo && r <= hi).then(|| Val { text: r.to_string(), ty, literal: true })
+            }
+            (None, None) if cmp && !lv.literal && !rv.literal && lv.text == rv.text && matches!(lv.ty, Ty::Num(_)) && whole_range(&lv.ty).is_some() => Some(said(matches!(op, "==" | "<=" | ">="))),
+            (None, Some(1)) if matches!(op, "*" | "/") && !lv.literal && matches!(lv.ty, Ty::Num(_)) && fits_literal(rv, &lv.ty) => Some(lv.clone()),
+            (Some(1), None) if op == "*" && !rv.literal && matches!(rv.ty, Ty::Num(_)) && fits_literal(lv, &rv.ty) => Some(rv.clone()),
+            (None, Some(0)) if matches!(op, "+" | "-") && !lv.literal && matches!(lv.ty, Ty::Num(_)) && fits_literal(rv, &lv.ty) => Some(lv.clone()),
+            (Some(0), None) if op == "+" && !rv.literal && matches!(rv.ty, Ty::Num(_)) && fits_literal(lv, &rv.ty) => Some(rv.clone()),
+            _ => None,
+        }
     }
 
     /// an operator with a stream on a side: a map or a zip over the
@@ -10391,6 +10771,11 @@ impl Lowerer {
             // as between two of them (fm3 log 181)
             let other = Val { text: y.clone(), ty: elem.clone(), literal: false };
             let same = match self.find_operator("==", &Val { text: String::new(), ty: elem.clone(), literal: false }, &other, &file, line)? {
+                // (the language's own, its line here: fm3 log 212)
+                Some(info) if self.own_ops.contains_key(&info.ir) => {
+                    let v = self.own_op(&info, Val { text: x.clone(), ty: elem.clone(), literal: false }, other.clone(), b, None, line)?;
+                    b.materialize(&v).text
+                }
                 Some(info) if info.results.first().map(|r| &r.1) == Some(&Ty::Bool) => {
                     let t = b.tmp();
                     b.line(&format!("{}: u1 = {}({}, {})", t, info.ir, x, y));
@@ -10530,14 +10915,26 @@ impl Lowerer {
             let all = b.tmp();
             b.open_loop(&format!("{}: u1 = ", all), "", true);
             b.depth += 1;
+            // (an array made from a list: what every item was given)
+            let items = match &other.kind {
+                ExprKind::Seq(n) if b.vars.get(n).is_some_and(|v| v.arr && v.ir == ov.text) => b.items_known.get(&ov.text).cloned(),
+                _ => None,
+            };
             for (k, v) in vals.iter().enumerate() {
                 let x = b.tmp();
                 b.line(&format!("{}: {} = load {}, {}", x, elem.ir(), view, k));
+                if let Some(items) = &items {
+                    b.known.insert(x.clone(), items.iter().map(|l| l.clone().map(|t| (t, true))).collect());
+                }
                 // a structure's answer is "the same": left under its
                 // `else`, with no invert; a number's is "differs"
                 let (test, same) = match v {
                     Listed::One(v) if matches!(elem, Ty::Struct(_)) => {
                         let same = match self.find_operator("==", &Val { text: String::new(), ty: elem.clone(), literal: false }, v, &file, line)? {
+                            Some(info) if self.own_ops.contains_key(&info.ir) => {
+                                let r = self.own_op(&info, Val { text: x.clone(), ty: elem.clone(), literal: false }, v.clone(), b, None, line)?;
+                                b.materialize(&r).text
+                            }
                             Some(info) if info.results.first().map(|r| &r.1) == Some(&Ty::Bool) => {
                                 let t = b.tmp();
                                 b.line(&format!("{}: u1 = {}({}, {})", t, info.ir, x, v.text));
@@ -10686,7 +11083,7 @@ impl Lowerer {
         let mut out = Names::new();
         // no variable is in scope here: a name that is a local reads
         // as a call to `quiet`, which then says no, the safe way
-        let none = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Fn, func: None, below: None, product_bound: None };
+        let none = Body { out: String::new(), ntmp: 0, vars: HashMap::new(), defs: HashMap::new(), known: HashMap::new(), rates: HashMap::new(), items_known: HashMap::new(), results: Vec::new(), file: String::new(), depth: 0, loops: Vec::new(), kind: BodyKind::Fn, func: None, below: None, product_bound: None };
         for (i, s) in body.iter().enumerate() {
             let Stmt::Var(v) = s else { continue };
             let framed = matches!(&v.init, Some(Init::Value(e)) if is_frame(e));
@@ -10794,17 +11191,17 @@ impl Lowerer {
     }
 
     /// Why a field may not be named here, or None where it may (fm3
-    /// question 118, provisional): a field whose name begins `__` is
-    /// its feature's own, read and given only in the feature that
+    /// question 118, ruled): a field declared `hidden` is its
+    /// feature's own, read and given only in the feature that
     /// declares the type. Where the type is the one a unit word makes,
     /// what to write instead is said
     fn kept(&self, ty: &str, field: &str) -> Option<String> {
         let owner = self.type_feature.get(ty)?;
-        if !field.starts_with("__") || owner == &self.cur {
+        if !self.hidden.contains(&(ty.to_string(), field.to_string())) || owner == &self.cur {
             return None;
         }
         let whose = if owner == OWN { "the language's own".to_string() } else { format!("feature {}'s own", owner) };
-        Some(format!("a field whose name begins `__` is {}, and no other feature reads or gives it{}", whose, if Ty::Struct(ty.to_string()) == time_ty() { TIME_SAYS } else { "" }))
+        Some(format!("a field declared `hidden` is {}, and no other feature reads or gives it{}", whose, if Ty::Struct(ty.to_string()) == time_ty() { TIME_SAYS } else { "" }))
     }
 
     /// the value a unit word is said of, `m` in `m ms`: a whole number,
@@ -10862,12 +11259,45 @@ impl Lowerer {
         if tv.ty != time_ty() {
             return Ok(None);
         }
-        let Some(TypeInfo::Struct(fields)) = self.types.get("time") else { return Ok(None) };
-        let field = fields[0].0.clone();
-        let (k, out) = (b.tmp(), b.tmp());
-        b.line(&format!("{}: i64 = get {}, {}", k, tv.text, field));
-        b.line(&format!("{}: time = nanos({})", out, k));
+        // (its count over its divisor: by the library's own unit
+        // where the compiler knows the divisor is one, else a division
+        // in the library's exact time)
+        let (count, divisor) = (self.field_of(&tv, 0, b), self.field_of(&tv, 1, b));
+        let out = b.tmp();
+        let unit = match divisor.text.as_str() {
+            _ if !divisor.literal => None,
+            "1" => Some("seconds"),
+            "1000" => Some("millis"),
+            "1000000" => Some("micros"),
+            "1000000000" => Some("nanos"),
+            _ => None,
+        };
+        match unit {
+            Some(f) => b.line(&format!("{}: time = {}({})", out, f, count.text)),
+            None => {
+                let (c, d) = (b.materialize(&count), b.materialize(&divisor));
+                let (n, m) = (b.tmp(), b.tmp());
+                b.line(&format!("{}: time = conv {}", n, c.text));
+                b.line(&format!("{}: time = conv {}", m, d.text));
+                b.line(&format!("{}: time = div {}, {}", out, n, m));
+            }
+        }
         Ok(Some(out))
+    }
+
+    /// A field of a structure in hand, by its place: the literal it
+    /// was given where the compiler knows it (fm3 log 212), else a
+    /// `get`
+    fn field_of(&mut self, v: &Val, at: usize, b: &mut Body) -> Val {
+        let Ty::Struct(name) = &v.ty else { unreachable!() };
+        let Some(TypeInfo::Struct(fields)) = self.types.get(name) else { unreachable!() };
+        let (f, fty, _) = fields[at].clone();
+        if let Some(Some((text, literal))) = b.known.get(&v.text).map(|k| k[at].clone()) {
+            return Val { text, ty: fty, literal };
+        }
+        let out = b.tmp();
+        b.line(&format!("{}: {} = get {}, {}", out, fty.ir(), v.text, f));
+        Val { text: out, ty: fty, literal: false }
     }
 
     /// Does this expression plainly give a structure? Asked of the
@@ -10915,7 +11345,7 @@ impl Lowerer {
         let head = format!("no '{}' is defined on {} and {}", op, an(&said(l)), an(&said(r)));
         // (fm3 question 108: two of one structure are the same where
         // every field is, with nothing declared)
-        if matches!(op, "==" | "!=") {
+        if matches!(op, "==" | "!=") && mine.is_empty() {
             return format!("{}: with none declared, '{}' is of two of one structure, `({}) {} ({})`, every field the same", head, op, name, op, name);
         }
         let join = |v: &[String]| match v {
@@ -10948,18 +11378,53 @@ impl Lowerer {
     /// is typed at each use, as the IR types a template per argument
     fn own_op(&mut self, info: &FnInfo, lv: Val, rv: Val, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
         let (fd, ffile) = self.own_ops[&info.ir].clone();
-        let value = match fd.body.as_slice() {
-            [Stmt::Assign { targets, value, .. }] if fd.results.len() == 1 && matches!(targets.as_slice(), [t] if t.name == fd.results[0].name && t.feature.is_none()) => value.clone(),
-            _ => return Err(lex::error(&ffile, fd.line, "an operator of the language's own is one line, the push of its result: it is written in line where it is used")),
+        let file = b.file.clone();
+        // a refusal inside the language's own line is told at the line
+        // that used the operator, which is the one the person wrote
+        self.in_line(info, &fd, &ffile, vec![lv, rv], b, dst, line).map_err(|e| if e.file == ffile { lex::error(&file, line, format!("{} (in the language's own `({}) {} ({})`)", e.msg, zero_ty(&info.params[0].1), match &info.parts[1] { NamePart::Sym(s) => s.as_str(), _ => "" }, zero_ty(&info.params[1].1))) } else { e })
+    }
+
+    /// A function of the program's own that is one line, the push of
+    /// its one result, where it is handed a structure of which the
+    /// compiler knows a field (fm3 question 120, log 213): its tree and
+    /// its file, to be written in line there, so that what the compiler
+    /// knows where the call stands it still knows inside. The store has
+    /// one definition of the name, so no link and no gate stand between
+    /// a call and the line; it is no task and no platform function, and
+    /// it is not being written in line already
+    fn one_line(&self, info: &FnInfo, vals: &[Val], b: &Body) -> Option<(std::rc::Rc<FnDecl>, String)> {
+        let (fd, file) = self.one_lines.get(&info.ir)?;
+        let knows = vals.iter().any(|v| matches!(v.ty, Ty::Struct(_)) && b.known.get(&v.text).is_some_and(|k| k.iter().any(|f| matches!(f, Some((_, true))))));
+        (knows && !info.task && info.platform.is_none() && info.chain.len() <= 1 && self.funcs.iter().filter(|g| g.key == info.key && g.params == info.params).count() == 1 && !self.inlining.contains(&info.ir)).then(|| (fd.clone(), file.clone()))
+    }
+
+    /// A function of one line, the push of its result, lowered where
+    /// its call would stand, each parameter standing for the value it
+    /// was handed: an operator or a `<<` method of the language's own,
+    /// always (`own_op`), and a function of the program's own where the
+    /// compiler knows a field of what it is handed (`one_line`). As its
+    /// own feature's, in its own file, seeing only its parameters
+    fn in_line(&mut self, info: &FnInfo, fd: &FnDecl, ffile: &str, vals: Vec<Val>, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        // (a `<<` method of one line: the one item it pushes on, which
+        // `push_item` then pushes, fm3 log 212)
+        let (value, want) = match fd.body.as_slice() {
+            [Stmt::Assign { targets, value, .. }] if fd.results.len() == 1 && matches!(targets.as_slice(), [t] if t.name == fd.results[0].name && t.feature.is_none()) => (value.clone(), Some(info.results[0].1.clone())),
+            [Stmt::Push { items, .. }] if items.len() == 1 => (items[0].clone(), None),
+            _ => return Err(lex::error(ffile, fd.line, "an operator of the language's own is one line, the push of its result: it is written in line where it is used")),
         };
         if self.inlining.contains(&info.ir) {
-            return Err(lex::error(&ffile, fd.line, "an operator of the language's own uses itself"));
+            return Err(lex::error(ffile, fd.line, "an operator of the language's own uses itself"));
         }
         let depth = b.loops.len();
         let mut scope: HashMap<String, Var> = HashMap::new();
         let mut lits = Vec::new();
-        for (v, (n, p)) in [lv, rv].into_iter().zip(&info.params) {
+        for (v, (n, p)) in vals.into_iter().zip(&info.params) {
             let ty = if !matches!(p, Ty::Num(_)) || is_concrete(p) {
+                // (a whole literal handed to a parameter of a width is
+                // still a number the compiler knows, fm3 log 212)
+                if v.literal && !v.text.contains('.') && matches!(p, Ty::Num(_)) {
+                    lits.push(n.clone());
+                }
                 p.clone()
             } else if v.literal && !v.text.contains('.') {
                 lits.push(n.clone());
@@ -10976,22 +11441,22 @@ impl Lowerer {
             };
             scope.insert(n.clone(), Var { ir: v.text.clone(), ty, set: true, loop_depth: depth, arr: false });
         }
-        let want = info.results[0].1.clone();
         let vars = std::mem::replace(&mut b.vars, scope);
-        let file = std::mem::replace(&mut b.file, ffile.clone());
+        let file = std::mem::replace(&mut b.file, ffile.to_string());
         let cur = std::mem::replace(&mut self.cur, info.feature.clone());
         let held = (std::mem::replace(&mut self.lits, lits), self.one, self.now, self.candidate.take());
         self.inlining.push(info.ir.clone());
         self.one = true;
-        let done = self.lower_expr(&value, Some(&want), b, dst).and_then(|v| self.coerce(v, &want, "an operator's result", b, dst, line));
+        let done = self.lower_expr(&value, want.as_ref(), b, dst).and_then(|v| match &want {
+            Some(w) => self.coerce(v, w, "an operator's result", b, dst, line),
+            None => Ok(v),
+        });
         self.inlining.pop();
         (self.lits, self.one, self.now, self.candidate) = held;
         self.cur = cur;
         b.file = file;
         b.vars = vars;
-        // a refusal inside the language's own line is told at the line
-        // that used the operator, which is the one the person wrote
-        done.map_err(|e| if e.file == ffile { lex::error(&b.file, line, format!("{} (in the language's own `({}) {} ({})`)", e.msg, zero_ty(&info.params[0].1), match &info.parts[1] { NamePart::Sym(s) => s.as_str(), _ => "" }, zero_ty(&info.params[1].1))) } else { e })
+        done
     }
 
     /// the program's operator for a struct on the left: among the
@@ -11060,6 +11525,9 @@ impl Lowerer {
             Some(r) => self.rate_hz(r, &b.file)?,
             None => CLOCK_HZ,
         };
+        if v.rate.is_some() && b.kind != BodyKind::Reset {
+            b.rates.insert(v.name.clone(), hz);
+        }
         // at a rate, or plain because nothing asks its time (log 73):
         // a regular ring; else one that keeps a tick per item
         let maker = if v.rate.is_some() {
@@ -11695,7 +12163,7 @@ impl Lowerer {
         if let Some((range, item)) = self.over_range(e, b) {
             let ExprKind::Range { from, to, inclusive } = &range.kind else { unreachable!() };
             let line = e.line;
-            let (mark, ntmp, depth) = (b.out.len(), b.ntmp, b.depth);
+            let (mark, ntmp, depth, known) = (b.out.len(), b.ntmp, b.depth, b.known.clone());
             let other = std::cell::Cell::new(false);
             let each = |l: &mut Lowerer, x: &Val, b: &mut Body| -> Result<(), Error> {
                 let v = l.range_item(&item, x, b)?;
@@ -11711,6 +12179,7 @@ impl Lowerer {
             }
             b.out.truncate(mark);
             b.ntmp = ntmp;
+            b.known = known;
             b.depth = depth;
         }
         // a list written out, into a processor's input (fm3 log
@@ -11828,6 +12297,12 @@ impl Lowerer {
             return Ok(());
         }
         if let Some(info) = self.find_operator("<<", &Val { text: String::new(), ty: s.ty.clone(), literal: false }, &v, &file, line)? {
+            // the language's own method of one line: the item it
+            // pushes on, worked out here and pushed (fm3 log 212)
+            if self.own_ops.contains_key(&info.ir) && !v.literal {
+                let item = self.own_op(&info, s.clone(), v, b, None, line)?;
+                return self.push_item(name, s, item, line, b);
+            }
             // a literal is typed for the method: its parameter's type
             // where that is concrete, else the literal's own
             if v.literal {
@@ -12849,13 +13324,30 @@ impl Lowerer {
         if let [Part::Word(time), Part::Word(of), x] = parts {
             if time == "time" && of == "of" {
                 if let Some(n) = name_of(x).filter(|n| self.stream_var(n, b).is_some()) {
-                    let sv = self.lower_expr(&Expr { kind: ExprKind::Name(n), line }, None, b, None)?;
+                    let sv = self.lower_expr(&Expr { kind: ExprKind::Name(n.clone()), line }, None, b, None)?;
                     let first = sv.text.clone();
+                    // a time (fm3 questions 49, 119 and 120): the
+                    // item's index over the stream's rate where it was
+                    // declared with one, the compiler knowing the
+                    // divisor; a stream with no rate keeps a tick an
+                    // item, and its time is the tick over the clock's
+                    // own rate
+                    let rate = if b.vars.contains_key(&n) { b.rates.get(&n).copied() } else { self.rates.get(&n).copied() };
                     let (k, t) = (b.tmp(), b.tmp());
                     b.line(&format!("{}: index, {}: i64 = position({})", k, t, first));
-                    let out = name_for(dst, &Ty::Num("int".into()), b);
-                    b.line(&format!("{}: int = conv {}", out, t));
-                    return Ok(Some(Val { text: out, ty: Ty::Num("int".into()), literal: false }));
+                    let (count, divisor) = match rate {
+                        Some(hz) => {
+                            let c = b.tmp();
+                            b.line(&format!("{}: i64 = conv {}", c, k));
+                            (c, hz)
+                        }
+                        None => (t, CLOCK_HZ),
+                    };
+                    let ty = time_ty();
+                    let out = name_for(dst, &ty, b);
+                    b.line(&format!("{}: {} = pack {}, {}", out, ty.ir(), count, divisor));
+                    b.known.insert(out.clone(), vec![Some((count.clone(), false)), Some((divisor.to_string(), true))]);
+                    return Ok(Some(Val { text: out, ty, literal: false }));
                 }
             }
         }
@@ -13177,6 +13669,13 @@ impl Lowerer {
             };
             return self.lift(vals, lifted, acc, b, dst, e.line, &f);
         }
+        // (one line, handed something the compiler knows: written
+        // here, fm3 log 213)
+        if rtys.len() == 1 {
+            if let Some((fd, ffile)) = self.one_line(&info, &vals, b) {
+                return self.in_line(&info, &fd, &ffile, vals, b, dst, e.line);
+            }
+        }
         let ops: Vec<String> = vals.into_iter().map(|v| v.text).collect();
         let call = format!("{}({})", info.ir, ops.join(", "));
         match rtys.len() {
@@ -13304,55 +13803,61 @@ impl Lowerer {
                 // declares, its one field the count of steps, which
                 // the compiler works out. A rate belongs on a stream's
                 // declaration
-                let per = match u.as_str() {
-                    "s" => TIME_STEPS,
-                    "ms" => TIME_STEPS / 1_000,
-                    "us" => TIME_STEPS / 1_000_000,
-                    "ns" => TIME_STEPS / 1_000_000_000,
+                let per: i64 = match u.as_str() {
+                    "s" => TIME_DIVISOR,
+                    "ms" => TIME_DIVISOR / 1_000,
+                    "us" => TIME_DIVISOR / 1_000_000,
+                    "ns" => 1,
                     "hz" | "khz" => return Err(lex::error(&file, e.line, "a rate belongs on a stream's declaration: `T x$ at (n hz)`")),
                     _ => return Err(lex::error(&file, e.line, format!("'{}' is not a unit of time here: s, ms, us or ns", u))),
                 };
                 let ty = time_ty();
-                if !matches!(self.types.get("time"), Some(TypeInfo::Struct(f)) if f.len() == 1) {
-                    return Err(lex::error(&file, e.line, "a literal with a unit word makes a `time`, which the language's own feature declares as a structure of one field, its steps"));
+                if !matches!(self.types.get("time"), Some(TypeInfo::Struct(f)) if f.len() == 2) {
+                    return Err(lex::error(&file, e.line, "a literal with a unit word makes a `time`, which the language's own feature declares as a structure of two fields, a count and its divisor"));
                 }
-                let steps = match inner.kind {
+                // its nanoseconds over a thousand million (fm3
+                // question 120, log 213): every literal has the one
+                // divisor, the finest unit word's, so two of them add
+                // by their counts and one that is written out is
+                // written from its count with nothing multiplied; and
+                // both are known to the compiler wherever the time is
+                // used in line. A decimal, `2.5 s`, is the whole
+                // number of the finest unit its digits reach
+                let (count, lit) = match inner.kind {
                     ExprKind::Int(n) => match n.checked_mul(per) {
-                        Some(k) => k.to_string(),
+                        Some(k) => (k.to_string(), true),
                         None => return Err(lex::error(&file, e.line, format!("`{} {}` is more than a time holds", n, u))),
                     },
-                    // a decimal (fm3 log 173, question 103): what the
-                    // language writes for a time it reads, `2.5 s`. It
-                    // is the whole number of the finest unit its digits
-                    // reach, down to a nanosecond
                     ExprKind::Float(ref s) => {
                         let (f, n) = decimal_time(s, u).map_err(|m| lex::error(&file, e.line, m))?;
                         let unit = match f {
-                            "seconds" => TIME_STEPS,
-                            "millis" => TIME_STEPS / 1_000,
-                            "micros" => TIME_STEPS / 1_000_000,
-                            _ => TIME_STEPS / 1_000_000_000,
+                            "seconds" => TIME_DIVISOR,
+                            "millis" => TIME_DIVISOR / 1_000,
+                            "micros" => TIME_DIVISOR / 1_000_000,
+                            _ => 1,
                         };
                         match n.parse::<i64>().ok().and_then(|n| n.checked_mul(unit)) {
-                            Some(k) => k.to_string(),
+                            Some(k) => (k.to_string(), true),
                             None => return Err(lex::error(&file, e.line, format!("`{} {}` is more than a time holds", s, u))),
                         }
                     }
+                    // a value with a unit: a whole number, widened to
+                    // the count's own width (log 33)
                     _ => {
-                        // a value with a unit: a whole number, widened
-                        // to the steps' own width (log 33)
                         let w = self.unit_value(inner, u, b)?;
                         if per == 1 {
-                            w
+                            (w, false)
                         } else {
                             let k = b.tmp();
                             b.line(&format!("{}: i64 = mul {}, {}", k, w, per));
-                            k
+                            (k, false)
                         }
                     }
                 };
+                let per = TIME_DIVISOR;
                 let out = name_for(dst, &ty, b);
-                b.line(&format!("{}: {} = pack {}", out, ty.ir(), steps));
+                b.line(&format!("{}: {} = pack {}, {}", out, ty.ir(), count, per));
+                b.known.insert(out.clone(), vec![Some((count.clone(), lit)), Some((per.to_string(), true))]);
                 Ok(Val { text: out, ty, literal: false })
             }
             ExprKind::Acc => match &self.candidate {
@@ -13441,6 +13946,26 @@ impl Lowerer {
                 if let Some(why) = self.kept(name, field) {
                     return Err(lex::error(&file, e.line, format!("'.{}' on a {}: {}", field, name, why)));
                 }
+                // in a function written in line, a field of a structure
+                // made here is what it was given, a literal still a
+                // literal (fm3 log 212)
+                if !self.inlining.is_empty() {
+                    let at = fields.iter().position(|(n, _, _)| n == field).unwrap();
+                    if let Some(Some((text, literal))) = b.known.get(&v.text).map(|k| k[at].clone()) {
+                        return Ok(Val { text, ty: fty, literal });
+                    }
+                    // ... and a field read once at the top of the
+                    // function is that value wherever it is read
+                    // again, so that a time added to itself has one
+                    // divisor in the compiler's eyes
+                    if b.depth == 0 && b.loops.is_empty() {
+                        let n = fields.len();
+                        let out = b.tmp();
+                        b.line(&format!("{}: {} = get {}, {}", out, fty.ir(), v.text, field));
+                        b.known.entry(v.text.clone()).or_insert_with(|| vec![None; n])[at] = Some((out.clone(), false));
+                        return Ok(Val { text: out, ty: fty, literal: false });
+                    }
+                }
                 let out = name_for(dst, &fty, b);
                 b.line(&format!("{}: {} = get {}, {}", out, fty.ir(), v.text, field));
                 Ok(Val { text: out, ty: fty, literal: false })
@@ -13468,6 +13993,12 @@ impl Lowerer {
                     if v.ty != Ty::Bool {
                         return Err(lex::error(&file, x.line, format!("'{}' joins two conditions, and this side is not one: it is `{}`", op, zero_ty(&v.ty))));
                     }
+                }
+                // (two conditions the compiler knows, in a function
+                // written in line: known, fm3 log 213)
+                if lv.literal && rv.literal && !self.inlining.is_empty() {
+                    let (x, y) = (lv.text == "1", rv.text == "1");
+                    return Ok(Val { text: ((if op == "and" { x && y } else { x || y }) as i64).to_string(), ty: Ty::Bool, literal: true });
                 }
                 let (lv, rv) = (b.materialize(&lv), b.materialize(&rv));
                 let name = name_for(dst, &Ty::Bool, b);
@@ -13553,6 +14084,11 @@ impl Lowerer {
                             v.ty = p.clone();
                         }
                     }
+                    // (one line, handed something the compiler
+                    // knows: written here, fm3 log 213)
+                    if let Some((fd, ffile)) = self.one_line(&info, &[lv.clone(), rv.clone()], b) {
+                        return self.in_line(&info, &fd, &ffile, vec![lv, rv], b, dst, e.line);
+                    }
                     let ty = info.results[0].1.clone();
                     let name = name_for(dst, &ty, b);
                     b.line(&format!("{}: {} = {}({}, {})", name, ty.ir(), info.ir, lv.text, rv.text));
@@ -13573,6 +14109,13 @@ impl Lowerer {
                 let cv = self.lower_expr(c, Some(&Ty::Bool), b, None)?;
                 if cv.ty != Ty::Bool {
                     return Err(lex::error(&file, c.line, "'if' takes a bool"));
+                }
+                // in a function written in line, a condition the
+                // compiler knows leaves its one arm (fm3 log 212)
+                if cv.literal && !self.inlining.is_empty() {
+                    self.one = one;
+                    self.now = now;
+                    return self.lower_expr(if cv.text == "1" { a } else { d }, want, b, dst);
                 }
                 let cv = b.materialize(&cv);
                 // each arm is lowered into its own block; a literal arm
@@ -13688,6 +14231,17 @@ impl Lowerer {
                                 // method at the call around it
                                 if !v.literal && to.ir() == v.ty.ir() {
                                     return Ok(Val { ty: to, ..v });
+                                }
+                                // in a function written in line, a
+                                // whole number the compiler knows is
+                                // still known under a wider whole type
+                                // (fm3 log 212)
+                                if v.literal && !self.inlining.is_empty() && !v.text.contains('.') && matches!(v.ty, Ty::Num(_)) {
+                                    match &to {
+                                        Ty::Num(t) if t == "i128" || (t == "i64" && v.text.parse::<i64>().is_ok()) => return Ok(Val { text: v.text, ty: to, literal: true }),
+                                        Ty::Num(t) if t == "f64" && v.text.parse::<i64>().is_ok_and(|n| n.abs() < (1 << 53)) => return Ok(Val { text: format!("{}.0", v.text), ty: to, literal: true }),
+                                        _ => {}
+                                    }
                                 }
                                 let v = b.materialize(&v);
                                 let name = name_for(dst, &to, b);

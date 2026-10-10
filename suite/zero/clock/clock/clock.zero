@@ -6,7 +6,7 @@ on (int t$) << ticks (int n)
 on (int v) << value at (int m)
     v << t$ at (m ms)
 
-on (int i, int tick) << where it stands()
+on (int i, time tick) << where it stands()
     advance t$ by (2)
     i << position t$
     tick << time of t$

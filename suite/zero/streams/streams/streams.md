@@ -13,7 +13,7 @@ A stream is a value over time. `T x$` declares an empty one; `<<` pushes its fir
 - `pushed`, `chained`, `repeated` and `counted down from (k)` make streams with `<<`, the last two with a `while` testing `_`; `latest tested` tests `i$` instead and gets one item more. `chained` reads its stream for its latest item and nothing else, so it is three values and no stream at all (fm3 log 186); the others count theirs.
 - `peeked`, `advanced`, `framed`, `history` read a stream with `peek`, `advance`, `frame` and `behind`.
 - `walked` moves a stream inside a `loop`, which carries it and gives the sum it made.
-- `positioned` and `position unread` take `position x$` and `time of x$`, on a regular and an irregular stream.
+- `positioned` and `position unread` take `position x$` and `time of x$`, on a stream with a rate and on one with none: `time of x$` is a time, the item's index over the stream's rate, `2 ms` for item 2 at `1000 hz`, and for a stream with no rate the tick its item keeps over the clock's own rate, `-1 us` where nothing is unread.
 - `still open`, `now closed`, `pushed after end` are `end` and `ended`.
 - `sampled` and `windowed` declare a rate and read by time, `x$ at (t)` and `x$ from (t1) to (t2)`. `sampled at a time worked out` and `windowed between times worked out` hand them a `time` that is a value, `800 us * 2`, where the others hand a literal: a time is a structure declared in zero (fm3 question 117), and the words take one.
 - `tokens`, `tokens moved` and `tokens framed` push and read a stream of the struct `token`, which is one ring whose item is the struct (question 43, log 88).
@@ -43,8 +43,8 @@ A stream is a value over time. `T x$` declares an empty one; `<<` pushes its fir
 >framed() → 36
 >walked() → 10
 >history() → 23
->positioned() → 22
->position unread() → 19
+>positioned() → 2, 2 ms
+>position unread() → 2, -1 us
 >still open() → 0
 >now closed() → 1
 >pushed after end() → check

@@ -46,40 +46,83 @@ on (char o$) << (float x)
             continue (p / 10)
 
 type time =
-    int64 __steps
+    hidden int64 count
+    hidden int64 divisor = 1
+
+type nanoseconds =
+    hidden int64 steps
+
+on (time top) << over one divisor (time x, time k)
+    int64 unit = loop (int64 p = x.divisor, int64 rest = k.divisor) while (rest != 0) yields p
+        continue (rest, p % rest)
+    int64 scale = k.divisor / unit
+    int64 scaled = x.divisor / unit
+    int64 m = if (x.count < 0) then (0 - x.count) else (x.count)
+    int64 n = if (k.count < 0) then (0 - k.count) else (k.count)
+    check (x.divisor <= 9223372036854775807 / scale and m <= 4611686018427387903 / scale and n <= 4611686018427387903 / scaled)
+    int64 whole = x.count * scale + k.count * scaled
+    int64 places = x.divisor * scale
+    int64 digits = if (whole < 0) then (0 - whole) else (whole)
+    int64 carry = loop (int64 p = places, int64 rest = digits) while (rest != 0) yields p
+        continue (rest, p % rest)
+    top << time(whole / carry, places / carry)
+
+on (int64 steps) << nanoseconds of (time x)
+    int64 whole = x.count / x.divisor
+    int64 digits = loop (int64 p = 0, int64 rest = x.count % x.divisor, int64 i = 0) while (i < 9) yields p
+        continue (p * 10 + rest * 10 / x.divisor, rest * 10 % x.divisor, i + 1)
+    steps << whole * 1000000000 + digits
 
 on (time t) << (time a) + (time b)
-    t << time(a.__steps + b.__steps)
+    t << if (a.divisor == b.divisor) then (time(a.count + b.count, a.divisor)) else (if (a.divisor % b.divisor == 0) then (time(a.count + b.count * (a.divisor / b.divisor), a.divisor)) else (if (b.divisor % a.divisor == 0) then (time(a.count * (b.divisor / a.divisor) + b.count, b.divisor)) else (over one divisor (a, b))))
 
 on (time t) << (time a) - (time b)
-    t << time(a.__steps - b.__steps)
+    t << if (a.divisor == b.divisor) then (time(a.count - b.count, a.divisor)) else (if (a.divisor % b.divisor == 0) then (time(a.count - b.count * (a.divisor / b.divisor), a.divisor)) else (if (b.divisor % a.divisor == 0) then (time(a.count * (b.divisor / a.divisor) - b.count, b.divisor)) else (over one divisor (a, time(0 - b.count, b.divisor)))))
 
-on (time t) << (time a) * (number k)
-    t << time(int64(a.__steps * k))
+on (time t) << (time a) * (int k)
+    t << time(a.count * k, a.divisor)
 
-on (time t) << (number k) * (time a)
-    t << time(int64(k * a.__steps))
+on (time t) << (int k) * (time a)
+    t << time(k * a.count, a.divisor)
 
-on (time t) << (time a) / (number k)
-    t << time(int64(a.__steps / k))
+on (time t) << (time a) * (float k)
+    t << if (1000000000 % a.divisor == 0) then (time(int64(a.count * (1000000000 / a.divisor) * k), 1000000000)) else (time(int64(float64(a.count) * 1000000000.0 / float64(a.divisor) * k), 1000000000))
+
+on (time t) << (float k) * (time a)
+    t << if (1000000000 % a.divisor == 0) then (time(int64(k * (a.count * (1000000000 / a.divisor))), 1000000000)) else (time(int64(k * (float64(a.count) * 1000000000.0 / float64(a.divisor))), 1000000000))
+
+on (time t) << (time a) / (int k)
+    t << time(if (k < 0) then (0 - a.count) else (a.count), a.divisor * (if (k < 0) then (0 - k) else (k)))
+
+on (time t) << (time a) / (float k)
+    t << if (1000000000 % a.divisor == 0) then (time(int64(a.count * (1000000000 / a.divisor) / k), 1000000000)) else (time(int64(float64(a.count) * 1000000000.0 / float64(a.divisor) / k), 1000000000))
 
 on (float r) << (time a) / (time b)
-    r << float(float64(a.__steps) / float64(b.__steps))
+    r << float(if (a.divisor == b.divisor) then (float64(a.count) / float64(b.count)) else (float64(a.count * b.divisor) / float64(b.count * a.divisor)))
+
+on (bool r) << (time a) == (time b)
+    r << if (a.divisor == b.divisor) then (a.count == b.count) else (a.count * b.divisor == b.count * a.divisor)
+
+on (bool r) << (time a) != (time b)
+    r << if (a.divisor == b.divisor) then (a.count != b.count) else (a.count * b.divisor != b.count * a.divisor)
 
 on (bool r) << (time a) < (time b)
-    r << a.__steps < b.__steps
+    r << if (a.divisor == b.divisor) then (a.count < b.count) else (a.count * b.divisor < b.count * a.divisor)
 
 on (bool r) << (time a) <= (time b)
-    r << a.__steps <= b.__steps
+    r << if (a.divisor == b.divisor) then (a.count <= b.count) else (a.count * b.divisor <= b.count * a.divisor)
 
 on (bool r) << (time a) > (time b)
-    r << a.__steps > b.__steps
+    r << if (a.divisor == b.divisor) then (a.count > b.count) else (a.count * b.divisor > b.count * a.divisor)
 
 on (bool r) << (time a) >= (time b)
-    r << a.__steps >= b.__steps
+    r << if (a.divisor == b.divisor) then (a.count >= b.count) else (a.count * b.divisor >= b.count * a.divisor)
 
 on (char o$) << (time x)
-    int64 steps = x.__steps
+    o$ << nanoseconds(if (1000000000 % x.divisor == 0) then (x.count * (1000000000 / x.divisor)) else (if (x.count < 9223372036 and x.count > -9223372036) then (x.count * 1000000000 / x.divisor) else (nanoseconds of (x))))
+
+on (char o$) << (nanoseconds x)
+    int64 steps = x.steps
     int64 n = if (steps < 0) then (0 - steps) else (steps)
     if (steps < 0)
         o$ << char(45)

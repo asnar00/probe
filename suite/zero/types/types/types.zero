@@ -229,3 +229,14 @@ on whole seconds()
     time t = 2.5 s
     int n = int(t / 1 s)
     out$ << n << " of " << t
+
+type account =
+    hidden int balance
+    int number
+
+on (account a) << opened (int n) holding (int b)
+    a << account(b, n)
+
+on (int r) << all of (int n) holding (int b)
+    account a = opened (n) holding (b)
+    r << a.balance + a.number

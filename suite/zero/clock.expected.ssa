@@ -112,6 +112,9 @@ fn __push(s: any$, block: any[])
         push(s, t, block)
     ret
 
+type __time = struct
+    count: i64
+    divisor: i64
 
 ; the context: one field per feature-scope variable — name: scope, merge (feature)
 ;   __enabled_platform: user, last (platform)
@@ -242,7 +245,7 @@ fn value_at(m: int) -> int
     _4: time = millis(_3)
     v: int = sample _2, _4
     ret v
-fn where_it_stands() -> (int, int)
+fn where_it_stands() -> (int, __time)
     _this: ptr = context()
     _1: __ctx = load _this
     _2: int$ = get _1, t
@@ -257,7 +260,7 @@ fn where_it_stands() -> (int, int)
     _9: __ctx = load _this
     _10: int$ = get _9, t
     _11: index, _12: i64 = position(_10)
-    tick: int = conv _12
+    tick: __time = pack _12, 1000000
     ret i, tick
 
 ; a stream's storage, carved from the arena: cap items (64 unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start
@@ -289,3 +292,15 @@ fn __regular_u8(hz: i64, cap: index) -> u8$
     ring_regular(r, vb, hz, 1, 0)
     s: u8$ = stream r
     ret s
+fn __said_where_it_stands() -> (int, i64)
+    __w1: i64 = const 1000000000
+    r0: int, r1: __time = where_it_stands()
+    c1: i64 = get r1, count
+    d1: i64 = get r1, divisor
+    w1: i64 = div c1, d1
+    m1: i64 = rem c1, d1
+    a1: i64 = mul w1, __w1
+    b1: i64 = mul m1, __w1
+    q1: i64 = div b1, d1
+    n1: i64 = add a1, q1
+    ret r0, n1

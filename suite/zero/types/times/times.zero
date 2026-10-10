@@ -50,3 +50,30 @@ on kept two()
 on nothing given()
     time t
     out$ << t << " " << t + beat
+
+on a third given back()
+    out$ << 1 s / 3 * 3
+
+on a third()
+    out$ << 1 s / 3
+
+on two quarters()
+    out$ << 250 ms + 250 ms
+
+on a ratio exactly()
+    out$ << 2500 ms / 1 ms
+
+on two divisors()
+    out$ << 1 s / 3 + 1 s / 6 << " " << 1 s / 3 + 1 s / 7 << " " << 1 s / 3 - 1 s / 7
+
+on two divisors compared()
+    out$ << (1 s / 3 < 1 s / 2) << " " << (1 s / 2 == 500 ms) << " " << (1 s / 3 != 333333333 ns) << " " << (2 s / 6 == 1 s / 3)
+
+on a part of a second (int n)
+    out$ << 1 s / n + 250 ms << " " << (1 s / n == 250 ms)
+
+on (time t) << a third and a half()
+    t << 1 s / 3 + 1 s / 2
+
+on too fine (int64 a, int64 b)
+    out$ << 1 s / a + 1 s / b

@@ -452,7 +452,7 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bo
         Err(e) if untraced(&e) => return Err(traced(dir, policy, Backend::Native, level, &sc, "zero-run").unwrap_or(e)),
         g => g?,
     };
-    let vals: Vec<String> = got.values.iter().map(|v| v.to_string()).collect();
+    let vals: Vec<String> = got.values.iter().enumerate().map(|(k, v)| if call.times.get(k) == Some(&true) { store::spell_nanos(*v) } else { v.to_string() }).collect();
     let mut out = String::new();
     if !got.text.is_empty() && !got.text.ends_with('\n') {
         out.push('\n');
@@ -658,6 +658,16 @@ fn judge(expect: &store::Expect, got: Result<suite::Got, String>) -> (bool, Stri
                 (false, format!("(got {})", show(&g.values)))
             }
         }
+        // a time among the values: what came back for it is its
+        // nanoseconds, and it is shown as the language writes a time
+        (store::Expect::Said(want), Ok(g)) => {
+            if g.values.len() == want.len() && g.values.iter().zip(want).all(|(v, (w, _))| v == w) {
+                (true, String::new())
+            } else {
+                let got: Vec<String> = g.values.iter().enumerate().map(|(k, v)| if want.get(k).is_some_and(|w| w.1) { store::spell_nanos(*v) } else { v.to_string() }).collect();
+                (false, format!("(got {})", got.join(", ")))
+            }
+        }
         (store::Expect::Text(want), Ok(g)) => {
             let text = g.text.strip_suffix('\n').unwrap_or(&g.text);
             if text == want {
@@ -848,7 +858,7 @@ mod tests {
         assert_eq!(setters(&[("more".to_string(), false), ("base".to_string(), false), ("base".to_string(), true)], b""), [("__set___enabled_more".to_string(), vec![0]), ("__set___enabled_base".to_string(), vec![0]), ("__set___enabled_base".to_string(), vec![1])]);
         // a case does not stand where its feature is effectively off; a
         // line is a sequence of switches, `on` restoring a flag
-        let sequence = Planned { text: String::new(), call: lower::Call { func: "switches".into(), args: vec![], nrets: 2, expect: store::Expect::Values(vec![0, 1]), context: vec![("more".into(), false), ("base".into(), false), ("base".into(), true)], input: vec![] }, feature: "most".into(), rank: 3, file: "most.md".into(), line: 1 };
+        let sequence = Planned { text: String::new(), call: lower::Call { func: "switches".into(), args: vec![], nrets: 2, times: vec![false, false], expect: store::Expect::Values(vec![0, 1]), context: vec![("more".into(), false), ("base".into(), false), ("base".into(), true)], input: vec![] }, feature: "most".into(), rank: 3, file: "most.md".into(), line: 1 };
         assert!(effective(&s, &["base".to_string()].into_iter().collect(), &sequence).is_none());
         assert_eq!(effective(&s, &["tool".to_string()].into_iter().collect(), &sequence).unwrap().iter().cloned().collect::<Vec<_>>(), ["more", "tool"]);
         // a gate reads one field, the feature's effective state, in line
@@ -1463,7 +1473,9 @@ mod tests {
         let ir = f(own, "    odd xs[] = [odd(1), odd(4)]\n    n << odd(1) == odd(3) and xs[] [==] [odd(3), odd(6)]").unwrap();
         // (the list written out is compared an item at a time, a call
         // an item, fm3 log 183)
-        assert_eq!(ir.matches(": u1 = eq_odd(").count(), 3, "{}", ir);
+        // (`odd(1) == odd(3)`, two made from literals, is the one line
+        // of its function written where it stands, fm3 log 213)
+        assert_eq!(ir.matches(": u1 = eq_odd(").count(), 2, "{}", ir);
         // a list of structures is an array of them, and two are
         // compared whole, each pair a field at a time
         let ir = f("", "    pair ps[] = [pair(1, 2), pair(3, 4)]\n    n << ps[] [==] [p, q]").unwrap();
@@ -3126,7 +3138,7 @@ mod tests {
         assert_eq!(f.matches(" = rem ").count(), 1, "{}", f);
         // by turns into two streams: each statement finds its own stream's slot
         let f = body(&lowered(&format!("{}on f()\n    a$ << 1\n    b$ << 2\n    a$ << 3\n", head)), "f");
-        assert_eq!((f.matches(" = rem ").count(), f.matches("rem _3, 333333").count(), f.matches(", 200000\n").count() + f.matches("    __step(200000)\n").count()), (3, 1, 2), "{}", f);
+        assert_eq!((f.matches(" = rem ").count(), f.matches("rem _3, 333333").count() + f.matches("rem _3, __w").count(), f.matches(", 200000\n").count() + f.matches(": i64 = const 200000\n").count() + f.matches("    __step(200000)\n").count()), (3, 1, 2), "{}", f);
         // a write to the device between two pushes moves no clock
         // (question 56, fm3 log 99), so the second is still on the beat;
         // a push into another stream between them does
@@ -3659,31 +3671,47 @@ mod tests {
             let e = f(line).err().unwrap_or_else(|| panic!("not refused: {}", line));
             assert!(e.ends_with(what), "{}: {}", line, e);
         };
-        let says = ". No program sees a time's steps: a number out of a time is a time divided by a time, `t / 1 ms`, and a time out of a number is a number of some time, `n * 1 ms`";
+        let says = ". No program sees a time's count or its divisor: a number out of a time is a time divided by a time, `t / 1 ms`, and a time out of a number is a number of some time, `n * 1 ms`";
         refused("out$ << beat + 1", "no '+' is defined on a time and an int: '+' on a time is `(time) + (time)`");
         refused("out$ << beat + 0.5", "no '+' is defined on a time and a float: '+' on a time is `(time) + (time)`");
         refused("out$ << 1 + beat", "no '+' is defined on an int and a time: '+' on a time is `(time) + (time)`");
-        refused("out$ << beat * beat", "no '*' is defined on a time and a time: '*' on a time is `(time) * (number)` and `(number) * (time)`");
+        refused("out$ << beat * beat", "no '*' is defined on a time and a time: '*' on a time is `(time) * (int)`, `(int) * (time)`, `(time) * (float)` and `(float) * (time)`");
         refused("out$ << (beat < 1)", "no '<' is defined on a time and an int: '<' on a time is `(time) < (time)`");
-        refused("out$ << beat % beat", "no '%' is defined on a time and a time: a time has '+', '-', '*', '/', '<', '<=', '>' and '>=' and no '%'");
-        refused("out$ << n / beat", "no '/' is defined on an int and a time: '/' on a time is `(time) / (number)` and `(time) / (time)`");
-        refused("out$ << (beat == 1)", "no '==' is defined on a time and an int: with none declared, '==' is of two of one structure, `(time) == (time)`, every field the same");
+        refused("out$ << beat % beat", "no '%' is defined on a time and a time: a time has '+', '-', '*', '/', '==', '!=', '<', '<=', '>' and '>=' and no '%'");
+        refused("out$ << n / beat", "no '/' is defined on an int and a time: '/' on a time is `(time) / (int)`, `(time) / (float)` and `(time) / (time)`");
+        refused("out$ << (beat == 1)", "no '==' is defined on a time and an int: '==' on a time is `(time) == (time)`");
         refused("time t = 5", &format!("'t' is a time but the value is a bare number: say its unit, `5 s` or `5 ms`{}", says));
         refused("time t = n", &format!("'t' is time but the value is int{}", says));
         refused("int k = beat", &format!("'k' is int but the value is time{}", says));
         refused("int k = int(beat)", "int(x) converts a number, not a time: a conversion says no unit. A number out of a time is a time divided by a time, `t / 1 ms`, and its whole seconds are `int(t / 1 s)`");
         refused("float k = float(beat)", "and its whole seconds are `float(t / 1 s)`");
-        refused("int64 k = beat.__steps", &format!("'.__steps' on a time: a field whose name begins `__` is the language's own, and no other feature reads or gives it{}", says));
-        refused("time t = time(5)", &format!("`time(...)` gives a time its '__steps': a field whose name begins `__` is the language's own, and no other feature reads or gives it{}", says));
+        refused("int64 k = beat.count", &format!("'.count' on a time: a field declared `hidden` is the language's own, and no other feature reads or gives it{}", says));
+        refused("int64 k = beat.divisor", &format!("'.divisor' on a time: a field declared `hidden` is the language's own, and no other feature reads or gives it{}", says));
+        refused("time t = time(5)", &format!("`time(...)` gives a time its 'count': a field declared `hidden` is the language's own, and no other feature reads or gives it{}", says));
+        // `hidden` is a word on a field of a structure and nowhere else
+        // (fm3 question 118), and no name begins `__`
+        refused("hidden int k = 3", "'hidden' is said of a field of a structure, `type account =` and under it `hidden int balance`: the field is then read and given only in the feature that declares the type. A variable is not hidden");
+        refused("int64 k = beat.__steps", "a name may not start with '_' ('_' alone is the accumulator; a field a feature keeps to itself is declared `hidden`)");
         refused("time t = time(n)", &format!("no other feature reads or gives it{}", says));
-        refused("int __x = 3", "a name may not start with '_' ('_' alone is the accumulator; a name that begins `__` is the language's own)");
+        refused("int __x = 3", "a name may not start with '_' ('_' alone is the accumulator; a field a feature keeps to itself is declared `hidden`)");
         // ... and the same words for a structure of the program's
         refused("out$ << v * v", "no '*' is defined on a Vec and a Vec: a Vec has '+' and no '*'");
         refused("out$ << v + 1", "no '+' is defined on a Vec and an int: '+' on a Vec is `(Vec) + (Vec)`");
         // what is declared works, each a line of integers written where
         // it is used: no function of the IR, and no rational
         let ir = f("out$ << beat * 2 + 100 ms << (beat < 1 s) << beat / 1 ms << 2 * beat").unwrap();
-        assert!(ir.contains("type __time = struct\n    __steps: i64\n") && !ir.contains("fn add__time") && !ir.contains("fn mul__time") && !ir.contains(": time = "), "{}", ir);
+        // (fm3 question 120, log 213: a time is a count over a divisor,
+        // and where the compiler knows both, as it does of a literal,
+        // the whole line is worked out: 600 ms, true, 250.0 and 500 ms)
+        assert!(ir.contains(": nanoseconds = pack 600000000\n") && ir.contains(": nanoseconds = pack 500000000\n") && !ir.contains("__time") && !ir.contains("fn add__time") && !ir.contains("fn mul__time") && !ir.contains(": time = "), "{}", ir);
+        // a time whose count the compiler does not know: one multiply,
+        // one add, its divisor known and never made
+        let ir = f("out$ << n * beat + 100 ms").unwrap();
+        assert!(ir.contains(" = mul _1, 250000000\n") && ir.contains(" = add _2, 100000000\n") && !ir.contains("__time"), "{}", ir);
+        // ... and one whose divisor it does not know carries it: the
+        // divisors compared when the program runs
+        let ir = f("out$ << 1 s / n + beat").unwrap();
+        assert!(ir.contains("type __time = struct\n    count: i64\n    divisor: i64\n") && ir.contains("over_one_divisor("), "{}", ir);
         // a store with no time in it has no line of one
         std::fs::write(dir.join("h/h.zero"), format!("{}on run()\n    out$ << 3\n", head)).unwrap();
         let ir = emit(&dir).unwrap();
@@ -3696,10 +3724,14 @@ mod tests {
         };
         again("on (time t) << (time a) + (time b)\n    t << a\n", "an operator is not redefined in this milestone; a `<<` method is");
         again("type time =\n    int n\n", "type 'time' is already declared: it is the language's own");
-        // ... but one of its own on a time is a function called
-        std::fs::write(dir.join("h/h.zero"), "on (time t) << (time a) * (time b)\n    t << a * (b / 1 s)\n\non run()\n    time beat = 250 ms\n    out$ << beat * beat\n").unwrap();
+        // ... but one of its own on a time is a function, called where
+        // the compiler does not know what it is handed, and its one
+        // line written where it does (fm3 log 213): `beat * beat` is
+        // 62.5 ms worked out in place
+        std::fs::write(dir.join("h/h.zero"), "on (time t) << (time a) * (time b)\n    t << a * (b / 1 s)\n\non shown (time a)\n    out$ << a * a\n\non run()\n    time beat = 250 ms\n    out$ << beat * beat\n    shown (beat)\n").unwrap();
         let ir = emit(&dir).unwrap();
-        assert!(ir.contains("= mul_time(") && ir.contains("\nfn mul_time(a: __time, b: __time) -> __time\n"), "{}", ir);
+        assert_eq!(ir.matches("= mul_time(").count(), 1, "{}", ir);
+        assert!(ir.contains("= mul_time(a, a)") && ir.contains("\nfn mul_time(a: __time, b: __time) -> __time\n"), "{}", ir);
     }
 
     /// A name given where an enumeration's value is wanted that is none
@@ -3851,7 +3883,7 @@ mod tests {
         refused("on run()\n    uint low = -1\n    out$ << low\n", "int: 32\n", "h.zero:2: -1 does not fit a uint here: this product's uint is 32 bits and holds 0 to 4294967295. How wide a uint is belongs to the product, `int: 64` in its product.md; a type that says its width, `uint64`, holds it on every product");
         // a time written as a decimal is the whole number of a finer unit
         let ir = checked("on run()\n    out$ << 2.5 s << 0.25 s << 1.000001 ms\n", "").unwrap();
-        assert!(ir.contains(": __time = pack 2500000000\n") && ir.contains(": __time = pack 250000000\n") && ir.contains(": __time = pack 1000001\n"), "{}", ir);
+        assert!(ir.contains(": nanoseconds = pack 2500000000\n") && ir.contains(": nanoseconds = pack 250000000\n") && ir.contains(": nanoseconds = pack 1000001\n"), "{}", ir);
         refused("on run()\n    out$ << 1.5 ns\n", "", "h.zero:2: a time is written to the nanosecond: `1.5 ns` is finer");
         // one that reaches the IR unchecked is still said in zero's words
         assert_eq!(unheld("line 0: run: entry: iconst 300 does not fit in type u8").unwrap(), "in 'run': 300 does not fit a uint8, which holds 0 to 255. (The compiler should have named the line: a literal reached the IR unchecked.)");

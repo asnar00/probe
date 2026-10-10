@@ -171,6 +171,10 @@ pub struct Case {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expect {
     Values(Vec<i64>),
+    /// values of which some are times (fm3 question 119, log 212),
+    /// `→ 2, 500 ms`: each as a number, a time as its nanoseconds, and
+    /// whether it was said as a time
+    Said(Vec<(i64, bool)>),
     Text(String),
     /// what was written and when (question 52, fm3 log 91): the pieces
     /// of the output in order, each with the time on the store's clock,
@@ -202,6 +206,23 @@ const TIMED_SHAPE: &str = "a timed result is every piece of the output in order,
 /// a time as a case writes it: whole seconds as `3 s`, a whole number
 /// of milliseconds under a second as `250 ms`, anything else as decimal
 /// seconds, `3.5 s`
+/// A time as the language writes one (`on (char o$) << (nanoseconds
+/// x)` in `platform.zero`), from its nanoseconds: the largest of `s`,
+/// `ms`, `us`, `ns` in which it is at least 1, a decimal with its
+/// trailing zeros dropped
+pub fn spell_nanos(ns: i64) -> String {
+    let n = ns.unsigned_abs();
+    let (unit, word) = if n == 0 || n >= 1_000_000_000 { (1_000_000_000u64, "s") } else if n >= 1_000_000 { (1_000_000, "ms") } else if n >= 1_000 { (1_000, "us") } else { (1, "ns") };
+    let mut out = format!("{}{}", if ns < 0 { "-" } else { "" }, n / unit);
+    if n % unit != 0 {
+        let width = unit.to_string().len() - 1;
+        let frac = format!("{:0width$}", n % unit, width = width);
+        out.push('.');
+        out.push_str(frac.trim_end_matches('0'));
+    }
+    format!("{} {}", out, word)
+}
+
 pub fn spell_time(us: i64) -> String {
     if us % 1_000_000 == 0 {
         format!("{} s", us / 1_000_000)
@@ -349,7 +370,11 @@ const PLATFORM_FILE: &str = lex::OWN_FILE;
 
 fn builtin_platform(types: &HashSet<String>) -> Result<(FeatureDoc, Vec<syntax::FnDecl>), Error> {
     let mut code = syntax::parse_feature("platform", PLATFORM_ZERO, PLATFORM_FILE, types)?;
-    let operator = |d: &syntax::Decl| matches!(d, syntax::Decl::Fn(fd) if matches!(fd.name.as_slice(), [syntax::NamePart::Group, syntax::NamePart::Sym(s), syntax::NamePart::Group] if s != "<<"));
+    // (and a `<<` method that is one line, one item pushed on with
+    // nothing said of it: it too is written in line where it is used,
+    // fm3 log 212)
+    let one_push = |fd: &syntax::FnDecl| matches!(fd.body.as_slice(), [syntax::Stmt::Push { items, cond: None, existing: false, forever: false, .. }] if items.len() == 1);
+    let operator = |d: &syntax::Decl| matches!(d, syntax::Decl::Fn(fd) if matches!(fd.name.as_slice(), [syntax::NamePart::Group, syntax::NamePart::Sym(s), syntax::NamePart::Group] if s != "<<" || one_push(fd)));
     let own_ops = code.decls.iter().filter(|d| operator(d)).filter_map(|d| if let syntax::Decl::Fn(fd) = d { Some(fd.clone()) } else { None }).collect();
     code.decls.retain(|d| !operator(d));
     let origin = Origin { when: "0000-00-00T00:00:00".into(), text: "(probe) the compiler's own feature: the platform functions every store has".into() };
@@ -817,8 +842,38 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
         }
     } else {
         let mut vals = Vec::new();
+        let mut said: Vec<bool> = Vec::new();
         for v in expect.split(',') {
             let v = v.trim();
+            // a time, as the language writes one: `500 ms`, `2.5 s`
+            if let Some((n, unit)) = v.rsplit_once(' ') {
+                let per = match unit {
+                    "s" => 1_000_000_000i64,
+                    "ms" => 1_000_000,
+                    "us" => 1_000,
+                    "ns" => 1,
+                    _ => return Err(lex::error(file, line, format!("a result is a number, a time, a quoted string or `check`, not '{}'", v))),
+                };
+                let n = n.trim();
+                let ns = match n.split_once('.') {
+                    None => n.parse::<i64>().ok().and_then(|k| k.checked_mul(per)),
+                    Some((w, f)) if !f.is_empty() && f.len() <= 9 && f.bytes().all(|c| c.is_ascii_digit()) => {
+                        let scale = 10i64.pow(f.len() as u32);
+                        match (w.parse::<i64>(), f.parse::<i64>()) {
+                            (Ok(k), Ok(f)) if per % scale == 0 => k.checked_mul(per).map(|k| if w.starts_with('-') { k - f * (per / scale) } else { k + f * (per / scale) }),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                let Some(ns) = ns else {
+                    return Err(lex::error(file, line, format!("'{}' is not a time a case can say: a number and a unit, to the nanosecond", v)));
+                };
+                vals.push(ns);
+                said.push(true);
+                continue;
+            }
+            said.push(false);
             let (neg, t) = match v.strip_prefix('-') {
                 Some(t) => (true, t),
                 None => (false, v),
@@ -830,7 +885,11 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
             .map_err(|_| lex::error(file, line, format!("a result is a number, a quoted string or `check`, not '{}'", v)))?;
             vals.push(if neg { n.wrapping_neg() } else { n });
         }
-        Expect::Values(vals)
+        if said.iter().any(|t| *t) {
+            Expect::Said(vals.into_iter().zip(said).collect())
+        } else {
+            Expect::Values(vals)
+        }
     };
     let call_expr = syntax::parse_call(call.trim(), file, line, types)?;
     Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect, context, input })

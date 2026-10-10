@@ -285,17 +285,20 @@ A whole-number literal is held to the type it is given to (fm3 log 173): `uint8 
 
 `suite/zero/types/types/types.zero:226`. The method is the platform's own text, `on (char o$) << (time x)` in `src/zero/platform.zero`, written with character codes and no string, since a string there renumbers every store's data.
 
-A `time` is a structure declared in zero, in the feature the language brings with it (`src/zero/platform.zero`; fm3 question 117), and the only things a time can do are the functions declared on it there: added to a time and taken from one, multiplied and divided by a number, divided by a time, compared with a time, written out.
+A `time` is a structure declared in zero, in the feature the language brings with it (`src/zero/platform.zero`; fm3 question 117), and the only things a time can do are the functions declared on it there. It is an exact rational, a count over a divisor (fm3 question 120): `1 s / 3 * 3` is `1 s`.
 
 ```
 type time =
-    int64 __steps
-
-on (time t) << (time a) + (time b)
-    t << time(a.__steps + b.__steps)
+    hidden int64 count
+    hidden int64 divisor = 1
 ```
 
-The compiler keeps what no declaration can say: a literal with a unit word, `250 ms`, makes one, and the time words on a stream, `x$ at (t)`, take one. An operator of the language's own is written in line where it is used, so `beat + 100 ms` is one integer addition and a store with no time in it has no line of one. A form with no function is refused in words that list what is declared, for any structure: `beat + 1` is "no '+' is defined on a time and an int: '+' on a time is `(time) + (time)`". A field whose name begins `__` is its feature's own, so no program sees the step: a number out of a time is `t / 1 ms`, and `int(t)` is refused naming it.
+```
+on (time t) << (time a) * (int k)
+    t << time(a.count * k, a.divisor)
+```
+
+`src/zero/platform.zero:48-50` and `82-83`. The compiler keeps what no declaration can say: a literal with a unit word, `250 ms`, makes one, its nanoseconds over a thousand million, and the time words on a stream, `x$ at (t)`, take one. An operator or a `<<` method of the language's own that is one line is written in line where it is used, and there the compiler knows what a structure made in hand was given: a field read from it is that value, an operator on two whole numbers it knows is worked out, and an `if` on a condition it knows is its one arm. So `beat + 100 ms` is one integer addition, a divisor the compiler knows is never made, and a store with no time in it has no line of one; a time whose divisor is not known until the program runs, `1 s / n`, carries it, and two such are compared when they are added. A form with no function is refused in words that list what is declared, for any structure: `beat + 1` is "no '+' is defined on a time and an int: '+' on a time is `(time) + (time)`". A field declared `hidden` is read and given only in the feature that declares its type (fm3 question 118), so no program sees the count: a number out of a time is `t / 1 ms`, and `int(t)` is refused naming it. `time of x$` gives a time, the item's index over the stream's rate, and a case whose function gives a time says it as one, `→ 2, 500 ms`.
 
 ```
 on a time added()

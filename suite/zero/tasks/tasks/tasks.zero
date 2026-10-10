@@ -73,23 +73,21 @@ on (int n) << closed once()
     y$ << 1
     n << count e$ * 10 + count q$
 
-on (int n) << rated()
+on (int k, time t) << rated()
     int c$ = count down from (3) at (1 hz)
     advance c$ by (2)
-    int k = position c$
-    int t = time of c$
-    n << k * 10 + t / 1000000
+    k << position c$
+    t << time of c$
 
 on (int n) << sampled at a rate()
     int c$ = count down from (3) at (1 hz)
     n << c$ at (1 s)
 
-on (int n) << composed at a rate()
+on (int k, time t) << composed at a rate()
     int s$ = sawtooth(2) at (1 hz)
     advance s$ by (3)
-    int k = position s$
-    int t = time of s$
-    n << k * 10 + t / 1000000
+    k << position s$
+    t << time of s$
 
 on (int n) << fed a literal()
     int d$ << doubled ([1, 2, 3])
