@@ -16,7 +16,7 @@ use std::path::Path;
 
 /// the non-zeroic forms, in the table's order: what each is called in
 /// a listing, and the rule that finds it in the text
-pub const FORMS: [(&str, &str); 10] = [
+pub const FORMS: [(&str, &str); 9] = [
     ("a name assigned again", "an assignment to a feature-scope variable, a local, a parameter, or a result already given"),
     ("a loop's variable assigned in its body", "an assignment to a name the header of an enclosing `loop` declares"),
     ("a task that walks its input", "in a declaration with `<<`, `peek`, `advance` or `count` applied to one of its `$` parameters"),
@@ -25,7 +25,6 @@ pub const FORMS: [(&str, &str); 10] = [
     ("`ended` asked inside a loop", "`ended x$` on a line inside a `loop` or a `for`"),
     ("a loop that only computes", "a `loop` no line of which pushes into a stream, ends one, or applies a stream word to one; a call in it may push, unseen"),
     ("`for` over an array", "every `for`: what it walks is an array, a `for` over a stream being refused"),
-    ("an index into an array that may be too short", "`a[e]`, an item of an array by its place, wherever it stands; a look back at a stream, `x$[-1]`, in a stream processor with no loop is not one"),
     ("a result pushed under an `if` statement", "the push of a function's result, `r << v`, on a line under an `if` statement, or inside a `loop` or a `for`: anywhere but the top level of the body; the zeroic form is one push at the top level with its condition on it, `r << a if (c) else b` (fm3 question 88)"),
 ];
 
@@ -106,15 +105,12 @@ impl Walk {
             ExprKind::Index(base, idx) => {
                 if let ExprKind::Seq(n) = &base.kind {
                     let back = matches!(idx.kind, ExprKind::Int(k) if k < 0);
-                    if at.task && !at.zeroic && at.inputs.contains(n) {
-                        if !back {
-                            self.note(at, e.line, 3);
-                        }
-                    } else if !(at.zeroic && back) {
-                        self.note(at, e.line, 8);
+                    // an item of an array by its place is no form to
+                    // notice: a read by a place cannot fail (fm3
+                    // question 127), where it was a check that might
+                    if at.task && !at.zeroic && at.inputs.contains(n) && !back {
+                        self.note(at, e.line, 3);
                     }
-                } else {
-                    self.note(at, e.line, 8);
                 }
                 self.expr(base, at, in_loop);
                 self.expr(idx, at, in_loop);
@@ -186,7 +182,7 @@ impl Walk {
                 Stmt::Assign { targets, value, line } => {
                     self.expr(value, at, in_loop);
                     if (self.under > 0 || in_loop) && targets.iter().any(|t| t.pushed && at.results.iter().any(|r| r == &t.name)) {
-                        self.note(at, *line, 9);
+                        self.note(at, *line, 8);
                     }
                     for t in targets {
                         self.assigned(&t.name, *line, at, carried, given);
@@ -228,7 +224,7 @@ impl Walk {
                     self.block(body, at, &inner, true, given);
                     if let Some(LoopInto::Assign(ts)) = into {
                         if (self.under > 0 || in_loop) && ts.iter().any(|t| t.pushed && at.results.iter().any(|r| r == &t.name)) {
-                            self.note(at, *line, 9);
+                            self.note(at, *line, 8);
                         }
                         for t in ts {
                             self.assigned(&t.name, *line, at, carried, given);
@@ -409,9 +405,12 @@ mod tests {
     /// The meter's count is pinned for two small stores that do the
     /// same thing (fm3 log 129). The one written with no loop, a look
     /// back and `if` on its push uses no form on the list: 0 of its 7 lines. The
-    /// one that walks uses six of them on 8 of its 18 lines, a line
+    /// one that walks uses five of them on 7 of its 18 lines, a line
     /// that uses two counted once and listed under both. And it
-    /// refuses nothing: a store the compiler would refuse is metered
+    /// refuses nothing: a store the compiler would refuse is metered.
+    /// An item of an array by its place was a sixth form and its line
+    /// an eighth until a read by a place could not fail (fm3 question
+    /// 127, log 236)
     #[test]
     fn the_meter_counts_non_zeroic_lines() {
         let zeroic = store_of("z", "int x$\nint d$ = rising(x$)\n\non (int d$) << rising (int x$)\n    d$ << x$ if (x$ > x$[-1])\n\non (int n) << f()\n    x$ << 1 << 3 << 2\n    n << count d$\n");
@@ -421,11 +420,12 @@ mod tests {
         let m = metered(&walking).unwrap();
         let forms: Vec<(usize, usize)> = m.found.iter().map(|f| (f.line, f.form)).collect();
         // 7 `count`, 9 `peek`, 13 `advance`: walking; 10: `if` round a
-        // push; 12: a feature-scope name assigned; 18: a `for`; 19: an
-        // index; 20: a `peek` forward of now, the result's giving
-        // being how a function gives it
-        assert_eq!(forms, vec![(7, 2), (9, 2), (10, 4), (12, 0), (13, 2), (18, 7), (19, 8), (20, 3)], "{:?}", m.found);
-        assert_eq!((m.count(), m.lines), (8, 18));
+        // push; 12: a feature-scope name assigned; 18: a `for`; 20: a
+        // `peek` forward of now, the result's giving being how a
+        // function gives it; 19, an item of an array by its place, is
+        // no form
+        assert_eq!(forms, vec![(7, 2), (9, 2), (10, 4), (12, 0), (13, 2), (18, 7), (20, 3)], "{:?}", m.found);
+        assert_eq!((m.count(), m.lines), (7, 18));
         // a body written both ways, which the compiler refuses, is metered
         let refused = store_of("r", "int x$\nint d$ = rising(x$)\n\non (int d$) << rising (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        d$ << x$[-1]\n        advance x$ by (1)\n");
         assert!(super::super::lower::lower(&store::read(&refused).unwrap()).is_err());
@@ -442,9 +442,9 @@ mod tests {
         assert!(e.contains("h.zero:3: 's' is a result, and a result is pushed once, at the top level of its function, with its condition on the push (fm3 question 88): this push stands under the `if` on line 2. Write `s << -1 if (x < 0)`"), "{}", e);
         std::fs::write(under.join("h/h.zero"), "on (int s) << sign of (int x)\n    s << -1 if (x < 0)\n         else 1 if (x > 0)\n         else 0\n").unwrap();
         assert_eq!(metered(&under).unwrap().count(), 0);
-        assert_eq!(FORMS[9].0, "a result pushed under an `if` statement");
+        assert_eq!(FORMS[8].0, "a result pushed under an `if` statement");
         let text = report(&walking).unwrap();
-        assert!(text.contains(": 8 of 18 lines of zero use a non-zeroic form\n") && text.contains("  h/h.zero:19  an index into an array that may be too short\n  h/h.zero:20  a `peek` forward of now\n"), "{}", text);
+        assert!(text.contains(": 7 of 18 lines of zero use a non-zeroic form\n") && text.contains("  h/h.zero:18  `for` over an array\n  h/h.zero:20  a `peek` forward of now\n") && !text.contains("an index into an array"), "{}", text);
         for d in [zeroic, walking, refused, under] {
             let _ = std::fs::remove_dir_all(&d);
         }

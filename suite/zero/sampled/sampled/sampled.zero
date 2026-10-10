@@ -1,0 +1,90 @@
+type point =
+    int x = 0
+    int y = 7
+
+type colour = red | green | blue
+
+int kick[] wrapped = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0]
+int waltz[] wrapped = [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1]
+int three[] = [10, 20, 30]
+int beat$
+int hit$
+
+hit$ << kick[beat$] forever
+out$ << (hit$ << " ") forever
+
+on (int v) << item (int i)
+    int a[] = [10, 20, 30, 40]
+    v << a[i]
+
+on (int v) << written()
+    int a[] = [10, 20, 30, 40]
+    v << a[2] + a[12] + a[-1]
+
+on (int v) << ranged (int i)
+    int a[] = [1 through 5]
+    v << a[i]
+
+on (int v) << or seven (int i)
+    int a[] else 7 = [1, 2]
+    v << a[i]
+
+on (int v) << or less (int i)
+    int a[] else -1 = [1, 2]
+    v << a[i]
+
+on (int v) << kicked (int i)
+    v << kick[i]
+
+on (int v) << waltzed (int i)
+    v << waltz[i]
+
+on (int v) << round (int a[] wrapped) at (int i)
+    v << a[i]
+
+on (int v) << round five (int i)
+    int a[] = [0 to 5]
+    v << [round] (a[]) at (i)
+
+on (int v) << round none (int i)
+    int a[] = []
+    v << [round] (a[]) at (i)
+
+on (int v) << letter (int i)
+    string s = "let x"
+    v << int (s[i])
+
+on (int v) << spaced (int i)
+    string s else char (32) = "let x"
+    v << int (s[i])
+
+on (int v) << characters (int i)
+    char text[] else char (32) = "let x"
+    v << int (text[i])
+
+on (int v) << corner (int i)
+    point ps[] = [point(1, 2), point(3, 4)]
+    point p = ps[i]
+    v << p.x * 10 + p.y
+
+on (int v) << shade (int i)
+    colour cs[] else blue = [red, green]
+    colour c = cs[i]
+    v << 2 if (c == blue) else 1 if (c == green) else 0
+
+on (int v) << pick (int a[] else 5) at (int i)
+    v << a[i]
+
+on (int v) << plainly (int a[]) at (int i)
+    v << a[i]
+
+on (int v) << handed (int i)
+    int a[] else 9 = [1, 2, 3]
+    v << [pick] (a[]) at (i) * 10 + [plainly] (a[]) at (i)
+
+on (int v) << viewed (int i)
+    int loop[] wrapped = three[]
+    v << loop[i] + three[i]
+
+on looped()
+    beat$ << [0 to 20]

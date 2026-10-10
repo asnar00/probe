@@ -1072,7 +1072,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>far (9) → check at h.zero:5\n>far (1) → 2\n>held (70) → check\n").unwrap();
-        std::fs::write(dir.join("h/h.zero"), "int kept$\n\non (int n) << far (int i)\n    int a[] = [1, 2, 3, 4]\n    n << a[i]\n\non (int n) << held (int k)\n    kept$ << 1 (k) times\n    n << peek kept$ at (0)\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "int kept$\n\non (int n) << far (int i)\n    int a$ << 1 << 2 << 3 << 4\n    n << peek a$ at (i)\n\non (int n) << held (int k)\n    kept$ << 1 (k) times\n    n << peek kept$ at (0)\n").unwrap();
         let mut s = store::read(&dir).unwrap();
         // the case's form
         let expects: Vec<store::Expect> = s.features.iter().flat_map(|f| f.cases.iter().map(|c| c.expect.clone())).collect();
@@ -1087,7 +1087,11 @@ mod tests {
         let l = lower::lower(&s).unwrap();
         let body = |f: &str| -> String { l.ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
         let far = body("far");
-        assert!(far.contains("    __site_at(3)\n") && far.contains(": index = count ") && far.contains("    __site_at3(5, "), "{}", far);
+        // (the item is a stream's, by `peek`: an array's item by its
+        // place is no check, fm3 question 127; its row is the one
+        // after its statement's, whichever number that is)
+        let k = l.sites.iter().position(|x| x.what == "item {a} of {b}").expect("a row for the item") + 1;
+        assert!(far.contains("    __site_at(3)\n") && far.contains(": index = count ") && far.contains(&format!("    __site_at3({}, ", k)), "{}", far);
         let held = body("held");
         assert!(held.contains(": u1 = ended(") && held.contains("        __site_at(") && held.contains("        __site_at3("), "{}", held);
         // a function that stores a site puts back the one it found, so
@@ -1102,18 +1106,18 @@ mod tests {
         assert!(l.sites[2..].iter().all(|x| x.file == "h.zero"), "{:?}", l.sites);
         assert!(l.ir.contains("fn __out_len() -> i64\n") && l.ir.contains("        e: i64 = add w, 62\n") && l.ir.contains("data __site_tag = \"check at #\""), "{}", l.ir);
         assert_eq!(l.sites[2], lower::Site { file: "h.zero".into(), line: 4, what: String::new() });
-        assert_eq!(l.sites[4], lower::Site { file: "h.zero".into(), line: 5, what: "item {a} of {b}".into() });
+        assert_eq!(l.sites[k - 1], lower::Site { file: "h.zero".into(), line: 5, what: "item {a} of {b}".into() });
         assert!(l.sites.iter().any(|x| x.line == 8 && x.what == "the stream `kept$` is full: {a} items pushed and nothing has read them") && l.sites.iter().any(|x| x.line == 8 && x.what == "a push into `kept$`, which has ended"), "{:?}", l.sites);
         // what comes back is read from the table: three words in
         // hexadecimal, the second and third the numbers handed over,
         // a negative one among them
-        assert_eq!(site_said(&l.sites, "a failed check at #0000000000000005,0000000000000009,0000000000000004").as_deref(), Some("a failed check at h.zero:5: item 9 of 4"));
-        assert_eq!(site_said(&l.sites, "a failed check at #0000000000000005,fffffffffffffffe,0000000000000004").as_deref(), Some("a failed check at h.zero:5: item -2 of 4"));
+        assert_eq!(site_said(&l.sites, &format!("a failed check at #{:016x},0000000000000009,0000000000000004", k)).as_deref(), Some("a failed check at h.zero:5: item 9 of 4"));
+        assert_eq!(site_said(&l.sites, &format!("a failed check at #{:016x},fffffffffffffffe,0000000000000004", k)).as_deref(), Some("a failed check at h.zero:5: item -2 of 4"));
         assert_eq!(site_said(&l.sites, "a failed check at #0000000000000003,0000000000000000,0000000000000000").as_deref(), Some("a failed check at h.zero:4"));
         // a check of the language's own is told at the line of the
         // program that called in, the site it found and handed over,
         // with its own reason; at its own line where it found none
-        assert_eq!(site_said(&l.sites, "a failed check at #0000000000000001,0000000000000005,0000000000000000").as_deref(), Some("a failed check at h.zero:5: a time is too fine to hold"));
+        assert_eq!(site_said(&l.sites, &format!("a failed check at #0000000000000001,{:016x},0000000000000000", k)).as_deref(), Some("a failed check at h.zero:5: a time is too fine to hold"));
         assert_eq!(site_said(&l.sites, "a failed check at #0000000000000001,0000000000000000,0000000000000000").as_deref(), Some("a failed check at platform.zero:62: a time is too fine to hold"));
         assert!(untraced("a failed check at platform.zero:62: a time is too fine to hold") && untraced("a failed check") && !untraced("a failed check at h.zero:5: item 9 of 4"));
         assert_eq!(site_said(&l.sites, "a failed check at h.zero:5"), None);
@@ -1862,6 +1866,77 @@ mod tests {
         assert!(emit(&dir).is_ok());
     }
 
+    /// A read by a place cannot fail (fm3 question 127, log 236): an
+    /// array's item by its place is written where it is read, the
+    /// place compared with how many items there are and the outside
+    /// value in the branch not taken; no reader's `peek` and no
+    /// `check` is written for it, a diagnostic build has no row for
+    /// it, and what the compiler can count it compares itself
+    #[test]
+    fn a_read_by_a_place_cannot_fail() {
+        let dir = std::env::temp_dir().join("probe-zero-sampled");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (1) → 1\n").unwrap();
+        let head = "int kick[] wrapped = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0]\nint waltz[] wrapped = [1, 0, 0]\n\non (int v) << pick (int a[] else 5) at (int i)\n    v << a[i]\n\non (int v) << round (int a[] wrapped) at (int i)\n    v << a[i]\n\n";
+        let f = |body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}on (int n) << f (int i)\n{}\n", head, body)).unwrap();
+            emit(&dir)
+        };
+        let body = |ir: &str, f: &str| -> String { ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
+        let refused = |text: &str, what: &str| {
+            let e = f(text).err().unwrap_or_else(|| panic!("not refused: {}", text));
+            assert!(e.contains(what), "{}: {}", text, e);
+        };
+        // a place worked out: two compares and a choice, zero outside
+        let ir = f("    int a[] = [1 through 4]\n    n << a[i]").unwrap();
+        let read = body(&ir, "f");
+        assert!(!read.contains("peek") && !read.contains("check"), "{}", read);
+        assert!(read.contains(": u1 = cmp.lt ") && read.contains(": u1 = cmp.ge _") && read.contains(": u1 = and ") && read.contains("    n: int = if ") && read.contains("    else\n        yield 0\n"), "{}", read);
+        // the parameter's own rule, and a count nobody knows, wrapped
+        assert!(body(&ir, "pick_at").contains("    else\n        yield 5\n"), "{}", ir);
+        let round = body(&ir, "round_at");
+        assert!(round.contains(": index = rem ") && round.contains(": u1 = cmp.gt ") && round.contains("    else\n        yield 0\n"), "{}", round);
+        // a place written out, not negative: one compare
+        let read = body(&f("    int a[] = [1 through 4]\n    n << a[2]").unwrap(), "f");
+        assert!(read.contains(": u1 = cmp.lt ") && !read.contains("cmp.ge") && !read.contains(" = and "), "{}", read);
+        // a place written out and the items written out: nothing is
+        // compared, and a place outside reads nothing at all
+        let read = body(&f("    int a[] = [10, 20, 30, 40]\n    n << a[2]").unwrap(), "f");
+        assert!(read.contains(": index = add ") && !read.contains("cmp") && !read.contains(" = if "), "{}", read);
+        let read = body(&f("    int a[] = [10, 20, 30, 40]\n    n << a[9] + a[-1]").unwrap(), "f");
+        assert!(!read.contains("load") && !read.contains("cmp") && read.contains("    _1: int = const 0\n    n: int = add _1, 0\n"), "{}", read);
+        let read = body(&f("    int a[] else 7 = [10, 20]\n    n << a[2]").unwrap(), "f");
+        assert!(!read.contains("load") && read.contains("    n: int = const 7\n"), "{}", read);
+        // sixteen items counted on the declaration: a mask; three: a remainder
+        let read = body(&f("    n << kick[i]").unwrap(), "f");
+        assert!(read.contains(": index = and _") && read.contains(", 15\n") && !read.contains("rem") && !read.contains("cmp"), "{}", read);
+        let read = body(&f("    n << waltz[i]").unwrap(), "f");
+        assert!(read.contains(": index = rem _") && read.contains(", 3\n") && read.contains(": u1 = cmp.lt ") && !read.contains("cmp.gt"), "{}", read);
+        // a second name for the same items copies nothing and reads by its own rule
+        let read = body(&f("    int a[] = [10, 20, 30]\n    int loop[] wrapped = a[]\n    n << loop[i] + a[i]").unwrap(), "f");
+        assert_eq!(read.matches("__queue_int(").count(), 1, "{}", read);
+        assert!(read.contains(": index = rem ") && read.contains("        yield 0\n"), "{}", read);
+        // the diagnostic build has no row for an array's item
+        let mut s = store::read(&dir).unwrap();
+        s.sites = true;
+        std::fs::write(dir.join("h/h.zero"), format!("{}on (int n) << f (int i)\n    int a[] = [1 through 4]\n    n << a[i]\n", head)).unwrap();
+        let l = lower::lower(&{ let mut s = store::read(&dir).unwrap(); s.sites = true; s }).unwrap();
+        assert!(l.sites.iter().all(|x| !x.what.contains("item {a}")), "{:?}", l.sites);
+        let _ = s;
+        // the refusals
+        refused("    int a[] wrapped else 0 = [1, 2]\n    n << a[i]", "h.zero:11: 'a[]' says twice what a read outside it gives, `wrapped` and `else`: an array has one rule for outside");
+        refused("    int a wrapped = 3\n    n << a", "h.zero:11: `wrapped` says how an array is read by a place, and 'a' is one int. It is said of an array or a string where it is declared, `int a[] wrapped = [...]`");
+        refused("    int x$ wrapped\n    n << 1", "`wrapped` says how an array is read by a place, and 'x$' is a stream");
+        refused("    int a[] else 1.5 = [1, 2]\n    n << a[i]", "`else` on 'a[]' says what a read outside it gives, a value of the item's type written out; its items are int: write a number, `else 0`");
+        refused("    int k = 3\n    int a[] else k = [1, 2]\n    n << a[i]", "a value of the item's type written out");
+        refused("    string t else 7.5 = \"ab\"\n    n << 1", "its items are characters: write `else char (32)`");
+        refused("    int a[] else = [1, 2]\n    n << a[i]", "`else` on 'a[]' wants the value a read outside gives, `a[] else 0`");
+        for (word, what) in [("clamped", "a read outside giving the nearest edge"), ("mirrored", "a read outside going back the way it came"), ("nearest", "a read between two items giving the closer"), ("linear", "a read between two items giving the two blended"), ("from (0) to (1)", "the coordinates an array spans, `from (a) to (b)`")] {
+            let w = word.split(' ').next().unwrap();
+            refused(&format!("    float a[] {} = [1.0, 2.0]\n    n << 1", word), &format!("h.zero:11: `{}` on 'a[]', {}, is ruled and not built yet (fm3 question 127). What is built is what a read outside the items gives, `else (v)` or `wrapped`, and zero where nothing is said", w, what));
+        }
+    }
+
     /// `$` means a stream (fm3 question 90, log 161): an array given
     /// to a `$` name is refused with its line shown as an array, and
     /// each word is held to its kind
@@ -1919,8 +1994,10 @@ mod tests {
         refused(&st("    for (v in x$)\n        check (v > 0)\n    n << 0"), "`for` walks an array, and 'x$' is a stream (fm3 question 90): the array of what has arrived is `frame x$`, `for (x in frame x$)`");
         refused(&st("    n << x$ + _"), "a reduce with `_` gives one answer of a whole array, and 'x$' is a stream (fm3 question 90): the array of what has arrived is `frame x$`; a running total is a line that stands, `sum$ << sum$ + x$ forever`");
         assert!(f(&st("    for (v in frame x$)\n        check (v > 0)\n    n << peek x$ at (0) + x$")).is_ok());
-        // an array has no back and no latest item
-        refused(&arr("    n << a[-1]"), "'a[-k]': a look back is a stream's, `x$[-1]`, the item before the present one (fm3 question 90). An array's last item is `a[[count] (a[]) - 1]`");
+        // an array has no latest item; a place before its first is
+        // outside it like any other, and compiles (fm3 question 127,
+        // 142), where it was refused as a stream's look back
+        assert!(f(&arr("    n << a[-1]")).is_ok());
         let one = "'a[]' is an array, and one value is wanted here: an array has no latest item, as a stream has (fm3 question 90). Its last item is `a[[count] (a[]) - 1]`, one item `a[k]`, and its sum `a[] + _`";
         refused(&arr("    int v = a[]\n    n << v"), one);
         refused(&arr("    n << a[] + 1"), one);

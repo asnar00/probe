@@ -5535,7 +5535,10 @@ impl Parser {
                 if let Type::TPtr(_) = scope.values[addr.0 as usize].ty {
                     let (pu, index, elem) = self.typed_access(scope, addr, "load")?;
                     let dty = scope.values[dst.0 as usize].ty;
-                    if dty != elem {
+                    // as for a view: the pointee is the policy's from where
+                    // it is written, and a body's `int` is abstract until
+                    // resolved, in a function whose signature names none
+                    if dty != elem && self.policy.resolve(dty) != self.policy.resolve(elem) {
                         return Err(self.err(format!("load: {} points at {}, but {} is {}", scope.values[addr.0 as usize].name, self.tyname_of(elem), scope.values[dst.0 as usize].name, self.tyname_of(dty))));
                     }
                     return Ok(Inst::Load { dst, addr: pu, off: 0, index });
@@ -5862,7 +5865,7 @@ impl Parser {
                 if let Type::TPtr(_) = scope.values[addr.0 as usize].ty {
                     let (pu, index, elem) = self.typed_access(scope, addr, "store")?;
                     let vty = scope.values[val.0 as usize].ty;
-                    if vty != elem {
+                    if vty != elem && self.policy.resolve(vty) != self.policy.resolve(elem) {
                         return Err(self.err(format!("store: {} points at {}, but {} is {}", scope.values[addr.0 as usize].name, self.tyname_of(elem), scope.values[val.0 as usize].name, self.tyname_of(vty))));
                     }
                     return Ok(Inst::Store { val, addr: pu, off: 0, index });

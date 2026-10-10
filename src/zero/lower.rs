@@ -19,7 +19,7 @@
 use super::lex::{self, Error};
 use super::kinds::Mark as NameMark;
 use super::store::{Case, Expect, Mark, Store};
-use super::syntax::{Arg, Decl, Expr, ExprKind, FnDecl, Init, LoopInto, NamePart, Part, Repeat, Stmt, TypeKind, Watch};
+use super::syntax::{Arg, Decl, Expr, ExprKind, FnDecl, Init, LoopInto, NamePart, Outside, Part, Repeat, Rule, Stmt, TypeKind, Watch};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -446,6 +446,12 @@ struct FVar {
     feature: String,
     /// declared `int a[]`, an array (fm3 question 90, log 162)
     arr: bool,
+    /// what the array's declaration says of a read by a place (fm3
+    /// question 127), and how many items it has where they are written
+    /// out on that line: nothing at feature scope is assigned, so what
+    /// the declaration says holds wherever the name is read
+    rule: Option<Rule>,
+    count: Option<usize>,
 }
 
 /// where a statement of the program is, and what it was asking when a
@@ -4664,6 +4670,13 @@ struct Var {
     /// declared `int a[]`, an array (fm3 question 90, log 162): the
     /// mark of its declaration, which its uses no longer carry
     arr: bool,
+    /// what its declaration says of a read by a place, `int kick[]
+    /// wrapped`, `(int a[] else 0)` (fm3 question 127): the name's, and
+    /// not the array's, so a second name for the same items reads them
+    /// by its own rule and a parameter by the function's
+    rule: Option<Rule>,
+    /// how many items it has, where its declaration writes them out
+    count: Option<usize>,
 }
 
 /// a loop being lowered: what `break` and `continue` need
@@ -4770,7 +4783,7 @@ impl Body {
     /// a variable brought into scope, with no value yet
     fn declare(&mut self, name: &str, ty: Ty) {
         let depth = self.loops.len();
-        self.vars.insert(name.to_string(), Var { ir: String::new(), ty, set: false, loop_depth: depth, arr: false });
+        self.vars.insert(name.to_string(), Var { ir: String::new(), ty, set: false, loop_depth: depth, arr: false, rule: None, count: None });
     }
 
     /// the IR name for a new definition of `name`: the name itself the
@@ -4778,7 +4791,7 @@ impl Body {
     fn define(&mut self, name: &str, ty: Ty) -> String {
         let depth = self.loops.len();
         let ir = self.fresh(name);
-        let v = self.vars.entry(name.to_string()).or_insert(Var { ir: String::new(), ty: ty.clone(), set: false, loop_depth: depth, arr: false });
+        let v = self.vars.entry(name.to_string()).or_insert(Var { ir: String::new(), ty: ty.clone(), set: false, loop_depth: depth, arr: false, rule: None, count: None });
         v.ty = ty;
         v.set = true;
         v.ir = ir.clone();
@@ -5072,6 +5085,259 @@ impl Lowerer {
             b.line(&format!("{}: {} = peek {}, {}", out, elem.ir(), s.text, i));
         }
         Val { text: out, ty: elem, literal: false }
+    }
+
+    /// An array's item by its place: a read that cannot fail (fm3
+    /// question 127, Ash, 10 October 2026; log 236). What is in the
+    /// brackets is a coordinate, and the array's declaration says how
+    /// one outside its items is read: `else (v)`, `wrapped`, and zero
+    /// where it says nothing, the value a declaration with nothing
+    /// given has. The lines are written where the read is, so that
+    /// what the compiler knows of the place and of the array is in
+    /// them: a place written out and an array whose items are counted
+    /// on its declaration are compared here and not when the program
+    /// runs. Two things the reader's `peek` does are not done, each
+    /// being a stream's: a queue's origin moves only when a reader
+    /// gives slots back, and a ring's residency and its remainder by
+    /// half the buffer are for a ring pushed round. An array is given
+    /// its items once, into a buffer at least as long as they are, so
+    /// item k from where its view begins is slot k
+    #[allow(clippy::too_many_arguments)]
+    fn item_at(&mut self, s: &Val, place: &Val, rule: Option<&Rule>, count: Option<usize>, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        let elem = s.ty.elem().unwrap().clone();
+        let known: Option<i64> = if place.literal { place.text.parse().ok() } else { None };
+        let wrapped = matches!(rule, Some(Rule { outside: Outside::Wrapped, .. }));
+        let i = self.as_index(place, b);
+        // where the place and the count are both written out, the
+        // place the item is at, or that it is at none
+        let seen: Option<Option<i64>> = match (known, count) {
+            (Some(k), Some(n)) => Some(match (wrapped, n as i64) {
+                (_, 0) => None,
+                (true, n) => Some(k.rem_euclid(n)),
+                (false, n) => (0..n).contains(&k).then_some(k),
+            }),
+            _ => None,
+        };
+        if let Some(None) = seen {
+            // seen not to be there: the value, and nothing read
+            return self.outside_val(if wrapped { None } else { rule }, &elem, b, line);
+        }
+        let r = b.tmp();
+        b.line(&format!("{}: ptr = get {}, ring", r, s.text));
+        let p = b.tmp();
+        b.line(&format!("{}: index = get {}, pos", p, s.text));
+        // `PROBE_ZERO_ITEMS=1 probe zero test`: every read first checks
+        // the two things the lines below lean on, that no slot of the
+        // array's ring was given back and that it was never pushed
+        // round, so the suite can be run against them
+        if std::env::var_os("PROBE_ZERO_ITEMS").is_some() {
+            let (n, o, ok) = (b.tmp(), b.tmp(), b.tmp());
+            b.line(&format!("{}: index = load {}", n, r));
+            if self.all_queues {
+                b.line(&format!("{}: index = load {}, 8", o, r));
+                b.line(&format!("{}: u1 = cmp.eq {}, 0", ok, o));
+            } else {
+                let (vb, cap, half) = (b.tmp(), b.tmp(), b.tmp());
+                b.line(&format!("{}: ptr = load {}, 16", vb, r));
+                b.line(&format!("{}: index = load {}, 8", cap, vb));
+                b.line(&format!("{}: index = div {}, 2", half, cap));
+                b.line(&format!("{}: u1 = cmp.le {}, {}", ok, n, half));
+                let _ = o;
+            }
+            b.line(&format!("check {}", ok));
+        }
+        // the item's lines, at a place known to be among the items:
+        // `k` on from where the view begins
+        let load = |l: &mut Lowerer, b: &mut Body, k: &str, out: &str| {
+            let at = if k.starts_with("__at:") {
+                k["__at:".len()..].to_string()
+            } else {
+                let at = b.tmp();
+                b.line(&format!("{}: index = add {}, {}", at, p, k));
+                at
+            };
+            let q = b.tmp();
+            if l.all_queues {
+                b.line(&format!("{}: ptr({}) = load {}, 16", q, elem.ir(), r));
+            } else {
+                let vb = b.tmp();
+                let raw = b.tmp();
+                b.line(&format!("{}: ptr = load {}, 16", vb, r));
+                b.line(&format!("{}: ptr = ptradd {}, 16", raw, vb));
+                b.line(&format!("{}: ptr({}) = cast {}", q, elem.ir(), raw));
+            }
+            b.line(&format!("{}: {} = load {}, {}", out, elem.ir(), q, at));
+        };
+        if let Some(Some(k)) = seen {
+            let out = name_for(dst, &elem, b);
+            load(self, b, &k.to_string(), &out);
+            return Ok(Val { text: out, ty: elem, literal: false });
+        }
+        let mut slot = String::new();
+        let (inside, k) = if wrapped {
+            // round again, a true remainder: a place of -1 is the last
+            // item. A count that is a power of two is a mask; an array
+            // of no items has nothing to go round
+            match count {
+                Some(n) if n.is_power_of_two() => {
+                    let k = b.tmp();
+                    b.line(&format!("{}: index = and {}, {}", k, i, n - 1));
+                    let out = name_for(dst, &elem, b);
+                    load(self, b, &k, &out);
+                    return Ok(Val { text: out, ty: elem, literal: false });
+                }
+                Some(n) => {
+                    let k = self.true_rem(&i, &n.to_string(), b);
+                    let out = name_for(dst, &elem, b);
+                    load(self, b, &k, &out);
+                    return Ok(Val { text: out, ty: elem, literal: false });
+                }
+                None => {
+                    // how many items the view has: its ring's count
+                    // less where it begins
+                    let pushed = b.tmp();
+                    b.line(&format!("{}: index = load {}", pushed, r));
+                    let n = b.tmp();
+                    b.line(&format!("{}: index = sub {}, {}", n, pushed, p));
+                    let some = b.tmp();
+                    b.line(&format!("{}: u1 = cmp.gt {}, 0", some, n));
+                    (some, Some(n))
+                }
+            }
+        } else {
+            let pushed = b.tmp();
+            b.line(&format!("{}: index = load {}", pushed, r));
+            let at = b.tmp();
+            b.line(&format!("{}: index = add {}, {}", at, p, i));
+            let under = b.tmp();
+            b.line(&format!("{}: u1 = cmp.lt {}, {}", under, at, pushed));
+            slot = format!("__at:{}", at);
+            if known.is_some_and(|k| k >= 0) {
+                (under, None)
+            } else {
+                let over = b.tmp();
+                b.line(&format!("{}: u1 = cmp.ge {}, 0", over, i));
+                let both = b.tmp();
+                b.line(&format!("{}: u1 = and {}, {}", both, under, over));
+                (both, None)
+            }
+        };
+        let out = name_for(dst, &elem, b);
+        b.line(&format!("{}: {} = if {}", out, elem.ir(), inside));
+        b.depth += 1;
+        let x = b.tmp();
+        match k {
+            Some(n) => {
+                let k = self.true_rem(&i, &n, b);
+                load(self, b, &k, &x);
+            }
+            None => load(self, b, &slot, &x),
+        }
+        b.line(&format!("yield {}", x));
+        b.depth -= 1;
+        b.line("else");
+        b.depth += 1;
+        let z = self.outside_val(if wrapped { None } else { rule }, &elem, b, line)?;
+        b.line(&format!("yield {}", z.text));
+        b.depth -= 1;
+        Ok(Val { text: out, ty: elem, literal: false })
+    }
+
+    /// `i` modulo `n`, `n` more than nothing, as a place among `n`
+    /// items: the IR's remainder has the sign of `i`, so a negative one
+    /// is brought round
+    fn true_rem(&mut self, i: &str, n: &str, b: &mut Body) -> String {
+        let m = b.tmp();
+        b.line(&format!("{}: index = rem {}, {}", m, i, n));
+        let neg = b.tmp();
+        b.line(&format!("{}: u1 = cmp.lt {}, 0", neg, m));
+        let k = b.tmp();
+        b.line(&format!("{}: index = if {}", k, neg));
+        b.depth += 1;
+        let up = b.tmp();
+        b.line(&format!("{}: index = add {}, {}", up, m, n));
+        b.line(&format!("yield {}", up));
+        b.depth -= 1;
+        b.line("else");
+        b.depth += 1;
+        b.line(&format!("yield {}", m));
+        b.depth -= 1;
+        k
+    }
+
+    /// what a read outside an array's items gives: the `else` value its
+    /// declaration wrote, or the zero of the item's type, a structure
+    /// made from its own defaults
+    fn outside_val(&mut self, rule: Option<&Rule>, elem: &Ty, b: &mut Body, line: usize) -> Result<Val, Error> {
+        match rule {
+            Some(Rule { outside: Outside::Else(v), line }) => {
+                let file = b.file.clone();
+                // `char (32)` is a character written out: its code point
+                if let (ExprKind::Phrase(parts), Ty::Char) = (&v.kind, elem) {
+                    if let [Part::Word(w), Part::Args(a)] = parts.as_slice() {
+                        if let (true, [Arg { name: None, value: Expr { kind: ExprKind::Int(n), .. } }]) = (w == "char", a.as_slice()) {
+                            return Ok(Val { text: n.to_string(), ty: Ty::Char, literal: true });
+                        }
+                    }
+                }
+                let got = self.lower_expr(v, Some(elem), b, None)?;
+                if !(got.literal && fits_literal(&got, elem)) {
+                    return Err(lex::error(&file, *line, format!("`else` says what a read outside the array gives, one {} written out: this is {}", zero_ty(elem), if got.literal { format!("a {}", zero_ty(&got.ty)) } else { "worked out".to_string() })));
+                }
+                Ok(got)
+            }
+            _ => {
+                let _ = line;
+                Ok(self.zero_val(elem, b))
+            }
+        }
+    }
+
+    /// What a declaration says of how its array is read (fm3 question
+    /// 127), held to the item's type where it is declared, whether or
+    /// not anything reads it: `else (v)` is a value of the item's type
+    /// written out, a number, `true` or `false`, a name of an
+    /// enumeration, `char (n)`
+    fn rule_ok(&self, rule: Option<&Rule>, ty: &Ty, shown: &str, file: &str) -> Result<(), Error> {
+        let Some(Rule { outside: Outside::Else(v), line }) = rule else { return Ok(()) };
+        let Some(elem) = ty.elem() else { return Ok(()) };
+        let number = |e: &Expr| -> Option<bool> {
+            match &e.kind {
+                ExprKind::Int(_) => Some(false),
+                ExprKind::Float(_) => Some(true),
+                _ => None,
+            }
+        };
+        let fits = match (&v.kind, elem) {
+            (ExprKind::Int(_), Ty::Num(_) | Ty::Char) => true,
+            (ExprKind::Float(_), Ty::Num(t)) => !is_integer(t),
+            (ExprKind::Neg(x), Ty::Num(t)) => number(x).is_some_and(|f| !(f && is_integer(t))),
+            (ExprKind::Bool(_), Ty::Bool) => true,
+            (ExprKind::Name(c), Ty::Enum(n)) => matches!(self.types.get(n), Some(TypeInfo::Enum(cases)) if cases.contains(c)),
+            (ExprKind::Phrase(parts), Ty::Enum(n)) => matches!((parts.as_slice(), self.types.get(n)), ([Part::Word(c)], Some(TypeInfo::Enum(cases))) if cases.contains(c)),
+            (ExprKind::Phrase(parts), Ty::Char) => matches!(parts.as_slice(), [Part::Word(w), Part::Args(a)] if w == "char" && matches!(a.as_slice(), [Arg { name: None, value: Expr { kind: ExprKind::Int(_), .. } }])),
+            _ => false,
+        };
+        if fits {
+            return Ok(());
+        }
+        let how = match elem {
+            Ty::Struct(n) => format!("its items are structures, and a read outside it gives a `{}` made from its own defaults: leave `else` out", n),
+            Ty::Char => "its items are characters: write `else char (32)`".to_string(),
+            Ty::Enum(n) => format!("its items are of the enumeration `{}`: write one of its names", n),
+            Ty::Bool => "its items are `bool`: write `else true` or `else false`".to_string(),
+            _ => format!("its items are {}: write a number, `else 0`", zero_ty(elem)),
+        };
+        Err(lex::error(file, *line, format!("`else` on '{}' says what a read outside it gives, a value of the item's type written out; {}", shown, how)))
+    }
+
+    /// what each parameter of a function says of how it is read, in
+    /// order, from the function's own declaration
+    fn param_rules(&self, info: &FnInfo) -> Vec<Option<Rule>> {
+        match self.bodies.get(&info.key) {
+            Some((fd, _)) => fd.params().map(|p| p.rule.clone()).collect(),
+            None => Vec::new(),
+        }
     }
 
     fn declare_type(&mut self, t: &super::syntax::TypeDecl, file: &str) -> Result<(), Error> {
@@ -5556,7 +5822,7 @@ impl Lowerer {
         let zp = ZProc { at: w.at.clone(), kept, end: w.end.as_ref().map(|fd| mangle(&fd.name)), body: std::rc::Rc::new(w.inline.clone()), gives: w.gives.clone(), feature: feature.to_string(), file: file.to_string() };
         for (name, ty) in &w.state() {
             let t = self.ty(ty, false, file, v.line)?;
-            self.fvars.push(FVar { name: name.clone(), ty: t.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string(), arr: false });
+            self.fvars.push(FVar { name: name.clone(), ty: t.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string(), arr: false, rule: None, count: None });
             self.zfields.push((name.clone(), t));
         }
         let each = mangle(&w.each.name);
@@ -5880,7 +6146,7 @@ impl Lowerer {
         for n in ended {
             let field = format!("__zend_{}", n);
             let feature = self.fvar(n).map(|f| f.feature.clone()).unwrap_or_default();
-            self.fvars.push(FVar { name: field.clone(), ty: Ty::Bool, scope: "node".into(), merge: "last".into(), feature, arr: false });
+            self.fvars.push(FVar { name: field.clone(), ty: Ty::Bool, scope: "node".into(), merge: "last".into(), feature, arr: false, rule: None, count: None });
             self.zfields.push((field, Ty::Bool));
             self.zended.insert(n.clone());
         }
@@ -6073,7 +6339,7 @@ impl Lowerer {
             let Ty::Stream(selem) = &sf.ty else { continue };
             let name = format!("__tick{}", self.tick_quiet.len() + 1);
             let lit = |kind: ExprKind, line: usize| Expr { kind, line };
-            let var = |name: String, ty: String, init: Option<Expr>, line: usize| Stmt::Var(super::syntax::VarDecl { line, scope: Vec::new(), ty, name, seq: false, arr: false, init: init.map(Init::Value), merge: None, rate: None });
+            let var = |name: String, ty: String, init: Option<Expr>, line: usize| Stmt::Var(super::syntax::VarDecl { line, scope: Vec::new(), ty, name, seq: false, arr: false, rule: None, init: init.map(Init::Value), merge: None, rate: None });
             // what each deferred stream's item is called, and whether
             // its push is made for certain
             let item_of = |t: &str| format!("__v_{}", t);
@@ -6178,7 +6444,7 @@ impl Lowerer {
                 line: line0,
                 results: Vec::new(),
                 name: vec![NamePart::Word(name.clone()), NamePart::Group],
-                groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, arr: false, line: line0 }]],
+                groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, arr: false, rule: None, line: line0 }]],
                 task: false,
                 body,
                 platform: Vec::new(),
@@ -6661,13 +6927,13 @@ impl Lowerer {
     /// keeps with no value yet
     fn lcell_declare(&mut self, name: &str, ty: &Ty, b: &mut Body) {
         let depth = b.loops.len();
-        b.vars.insert(name.to_string(), Var { ir: format!("{}{}", LCELL, name), ty: ty.clone(), set: true, loop_depth: depth, arr: false });
+        b.vars.insert(name.to_string(), Var { ir: format!("{}{}", LCELL, name), ty: ty.clone(), set: true, loop_depth: depth, arr: false, rule: None, count: None });
         // one that some line asks `count` of keeps the count too
         if b.func.as_ref().is_some_and(|f| self.lstreams.contains(&format!("{} {} #", f.ir, name))) {
-            b.vars.insert(lcell_count(name), Var { ir: String::new(), ty: index_ty(), set: false, loop_depth: depth, arr: false });
+            b.vars.insert(lcell_count(name), Var { ir: String::new(), ty: index_ty(), set: false, loop_depth: depth, arr: false, rule: None, count: None });
         }
         for (k, t, _) in self.lcell_keys(name, b) {
-            b.vars.insert(k, Var { ir: String::new(), ty: t, set: false, loop_depth: depth, arr: false });
+            b.vars.insert(k, Var { ir: String::new(), ty: t, set: false, loop_depth: depth, arr: false, rule: None, count: None });
         }
         if let Some(f) = &b.func {
             self.lcells_live.insert(format!("{} {}", f.ir, name));
@@ -7110,7 +7376,7 @@ impl Lowerer {
         }
         let keep = |l: &mut Lowerer, said: &str, ty: Ty| {
             let field = format!("__{}{}", said, l.edges.len() + 1);
-            l.fvars.push(FVar { name: field.clone(), ty: ty.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string(), arr: false });
+            l.fvars.push(FVar { name: field.clone(), ty: ty.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string(), arr: false, rule: None, count: None });
             l.zfields.push((field.clone(), ty));
             field
         };
@@ -7166,7 +7432,7 @@ impl Lowerer {
                 // the field back)
                 let local = || Expr { kind: ExprKind::Name("__next".into()), line };
                 let value = std::mem::replace(&mut pushed[0], local());
-                does.push(Stmt::Var(super::syntax::VarDecl { line, scope: Vec::new(), ty: zero_ty(telem), name: "__next".into(), seq: false, arr: false, init: Some(Init::Value(value)), merge: None, rate: None }));
+                does.push(Stmt::Var(super::syntax::VarDecl { line, scope: Vec::new(), ty: zero_ty(telem), name: "__next".into(), seq: false, arr: false, rule: None, init: Some(Init::Value(value)), merge: None, rate: None }));
                 does.push(put(field, local()));
                 pushed = pushed.iter().map(|e| super::syntax::renamed(e, tname, field)).collect();
             }
@@ -7235,9 +7501,9 @@ impl Lowerer {
                 [] => {
                     let mut pushed = vec![first.cloned().unwrap_or(Expr { kind: ExprKind::Name("__item".into()), line })];
                     pushed.extend(items[1..].iter().cloned());
-                    (pushed, vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, arr: false, line }])
+                    (pushed, vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, arr: false, rule: None, line }])
                 }
-                [one] => (items.iter().map(|e| super::syntax::renamed(e, one, "__item")).collect(), vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, arr: false, line }]),
+                [one] => (items.iter().map(|e| super::syntax::renamed(e, one, "__item")).collect(), vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, arr: false, rule: None, line }]),
                 _ => (items.to_vec(), Vec::new()),
             };
             let sure = only.is_none() && counted.is_none() && until.is_none();
@@ -7295,7 +7561,7 @@ impl Lowerer {
             line,
             results: Vec::new(),
             name: vec![NamePart::Word(name.clone()), NamePart::Group],
-            groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: sname.clone(), seq: true, arr: false, line }]],
+            groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: sname.clone(), seq: true, arr: false, rule: None, line }]],
             task: false,
             body: vec![Stmt::For { var: "__item".into(), seq: seq(sname), body, line }, Stmt::Expr { expr: advance, line }],
             platform: Vec::new(),
@@ -7337,7 +7603,7 @@ impl Lowerer {
                 line,
                 results: Vec::new(),
                 name: vec![NamePart::Word(name.clone()), NamePart::Group],
-                groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, arr: false, line }]],
+                groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, arr: false, rule: None, line }]],
                 task: false,
                 body,
                 platform: Vec::new(),
@@ -7358,7 +7624,7 @@ impl Lowerer {
             line,
             results: Vec::new(),
             name: vec![NamePart::Word(name.clone()), NamePart::Group],
-            groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: sname.to_string(), seq: true, arr: false, line }]],
+            groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: sname.to_string(), seq: true, arr: false, rule: None, line }]],
             task: false,
             body: vec![Stmt::For { var: "__item".into(), seq: seq.clone(), body, line }, Stmt::Expr { expr: advance, line }],
             platform: Vec::new(),
@@ -7403,6 +7669,7 @@ impl Lowerer {
             },
             Err(e) => return Err(e),
         };
+        self.rule_ok(v.rule.as_ref(), &ty, &format!("{}{}", v.name, if v.arr { "[]" } else { "" }), file)?;
         if !v.seq {
             let first = match &v.init {
                 Some(Init::Value(e)) => format!(" << {}", phrase_text(e)),
@@ -7431,6 +7698,8 @@ impl Lowerer {
             merge: v.merge.clone().unwrap_or_else(|| "last".into()),
             feature: feature.to_string(),
             arr: v.arr,
+            rule: v.rule.clone(),
+            count: written_count(v),
         });
         Ok(())
     }
@@ -7555,7 +7824,7 @@ impl Lowerer {
                 fields.push((format!("__node{}_fin", k + 1), Ty::Bool));
             }
             for (name, ty) in fields {
-                self.fvars.push(FVar { name, ty, scope: "node".into(), merge: "last".into(), feature: node.feature.clone(), arr: false });
+                self.fvars.push(FVar { name, ty, scope: "node".into(), merge: "last".into(), feature: node.feature.clone(), arr: false, rule: None, count: None });
             }
         }
         // every dynamic feature's implicit `enabled` (section 5, log 28),
@@ -7565,7 +7834,7 @@ impl Lowerer {
             if self.statics.contains(f) {
                 continue;
             }
-            self.fvars.insert(at, FVar { name: format!("__enabled_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone(), arr: false });
+            self.fvars.insert(at, FVar { name: format!("__enabled_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone(), arr: false, rule: None, count: None });
             at += 1;
         }
         // ... and, after the switches, the effective state of each one
@@ -7574,7 +7843,7 @@ impl Lowerer {
         // is one field at any depth (fm3 question 72, log 138)
         let nested: Vec<String> = self.features.iter().filter(|f| !self.statics.contains(*f) && self.dynamic_ancestor(f).is_some()).cloned().collect();
         for f in &nested {
-            self.fvars.insert(at, FVar { name: format!("__on_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone(), arr: false });
+            self.fvars.insert(at, FVar { name: format!("__on_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone(), arr: false, rule: None, count: None });
             at += 1;
         }
         if !self.fvars.is_empty() {
@@ -8674,6 +8943,14 @@ impl Lowerer {
                 v.arr = true;
             }
         }
+        // and what it says of how the function reads it (fm3 question
+        // 127): the parameter's own, whatever the array it is handed said
+        for p in f.params() {
+            if let Some(t) = b.vars.get(&p.name).map(|v| v.ty.clone()) {
+                self.rule_ok(p.rule.as_ref(), &t, &format!("{}{}", p.name, if p.arr { "[]" } else { "" }), file)?;
+                b.vars.get_mut(&p.name).unwrap().rule = p.rule.clone();
+            }
+        }
         if let Some(n) = b.product_bound {
             writeln!(self.out, "; product setting: bound {}: {}", key.replace('_', " "), n).unwrap();
         }
@@ -8766,7 +9043,7 @@ impl Lowerer {
             file: file.to_string(), depth: 0, loops: Vec::new(), kind: BodyKind::Fn, func: Some(info.clone()),
             below, product_bound: self.product.get(&info.key).copied(),
         };
-        b.vars.insert(sname.clone(), Var { ir: "__device".into(), ty: sty, set: true, loop_depth: 0, arr: false });
+        b.vars.insert(sname.clone(), Var { ir: "__device".into(), ty: sty, set: true, loop_depth: 0, arr: false, rule: None, count: None });
         let mut sig = format!("fn {}(", name);
         for (i, (n, t)) in info.params.iter().skip(1).enumerate() {
             if i > 0 {
@@ -9199,7 +9476,7 @@ impl Lowerer {
                     let depth = b.loops.len();
                     for (n, ty, init) in &firsts {
                         let v = b.materialize(init);
-                        b.vars.insert(n.clone(), Var { ir: v.text, ty: ty.clone(), set: true, loop_depth: depth, arr: false });
+                        b.vars.insert(n.clone(), Var { ir: v.text, ty: ty.clone(), set: true, loop_depth: depth, arr: false, rule: None, count: None });
                     }
                     self.one = true;
                     let cv = self.lower_expr(c, Some(&Ty::Bool), b, None)?;
@@ -9282,6 +9559,7 @@ impl Lowerer {
                     let ty = self.ty(&p.ty, p.seq, &file, p.line)?;
                     b.declare(&p.name, ty);
                     b.vars.get_mut(&p.name).unwrap().arr = p.arr;
+                    b.vars.get_mut(&p.name).unwrap().rule = p.rule.clone();
                     (p.name.clone(), p.line, true)
                 }
                 LoopInto::Assign(ts) => {
@@ -9500,7 +9778,7 @@ impl Lowerer {
         let k = b.tmp();
         b.loops.push(LoopCtx { carried: Vec::new(), results: Vec::new(), explicit: 0, yielded: 0, item: Some((k.clone(), "add", "1".into())), loaded: Some(var.to_string()), breaks: 1 });
         let depth = b.loops.len();
-        b.vars.insert(k.clone(), Var { ir: k.clone(), ty: Ty::Num("index".into()), set: true, loop_depth: depth, arr: false });
+        b.vars.insert(k.clone(), Var { ir: k.clone(), ty: Ty::Num("index".into()), set: true, loop_depth: depth, arr: false, rule: None, count: None });
         let before = b.vars.clone();
         let start = b.out.len();
         b.depth += 1;
@@ -9741,6 +10019,8 @@ impl Lowerer {
     /// name is not copied — the variable names it too; a narrower
     /// number is widened (log 37)
     fn assign(&mut self, name: &str, v: Val, b: &mut Body, line: usize) -> Result<(), Error> {
+        // what its declaration wrote out is no longer what it holds
+        b.vars.get_mut(name).unwrap().count = None;
         let var = b.vars[name].clone();
         if v.literal {
             if !fits_literal(&v, &var.ty) {
@@ -9841,6 +10121,7 @@ impl Lowerer {
                     let ty = self.ty(&p.ty, p.seq, &file, p.line)?;
                     b.declare(&p.name, ty.clone());
                     b.vars.get_mut(&p.name).unwrap().arr = p.arr;
+                    b.vars.get_mut(&p.name).unwrap().rule = p.rule.clone();
                     names.push(p.name.clone());
                     tys.push(ty);
                 }
@@ -9878,6 +10159,8 @@ impl Lowerer {
                 }
                 b.declare(&v.name, ty.clone());
                 b.vars.get_mut(&v.name).unwrap().arr = v.arr;
+                self.rule_ok(v.rule.as_ref(), &ty, &format!("{}{}", v.name, if v.arr { "[]" } else { "" }), &file)?;
+                b.vars.get_mut(&v.name).unwrap().rule = v.rule.clone();
                 if let Ty::Stream(_) = &ty {
                     // a stream (log 38): the ring an expression made with
                     // its items resident; or an empty ring, then the chain
@@ -9925,6 +10208,9 @@ impl Lowerer {
                             let s = self.empty_stream(v, &ty, b, Some(&v.name))?;
                             self.assign(&v.name, s, b, v.line)?;
                         }
+                    }
+                    if let Some(var) = b.vars.get_mut(&v.name) {
+                        var.count = written_count(v);
                     }
                     return Ok(false);
                 }
@@ -11163,7 +11449,7 @@ impl Lowerer {
     /// range's loop: the hidden name bound to it, and what the tree
     /// gives, which is one value
     fn range_item(&mut self, item: &Expr, x: &Val, b: &mut Body) -> Result<Val, Error> {
-        let before = b.vars.insert(RANGE_ITEM.to_string(), Var { ir: x.text.clone(), ty: x.ty.clone(), set: true, loop_depth: b.loops.len(), arr: false });
+        let before = b.vars.insert(RANGE_ITEM.to_string(), Var { ir: x.text.clone(), ty: x.ty.clone(), set: true, loop_depth: b.loops.len(), arr: false, rule: None, count: None });
         self.one = true;
         let v = self.lower_expr(item, None, b, None);
         match before {
@@ -12120,12 +12406,12 @@ impl Lowerer {
                 // in `float64`, where a whole literal is their type)
                 let f = Val { ty: float_ty(), ..v.clone() };
                 let f = b.materialize(&f);
-                scope.insert(n.clone(), Var { ir: f.text, ty: float_ty(), set: true, loop_depth: depth, arr: false });
+                scope.insert(n.clone(), Var { ir: f.text, ty: float_ty(), set: true, loop_depth: depth, arr: false, rule: None, count: None });
                 continue;
             } else {
                 v.ty.clone()
             };
-            scope.insert(n.clone(), Var { ir: v.text.clone(), ty, set: true, loop_depth: depth, arr: false });
+            scope.insert(n.clone(), Var { ir: v.text.clone(), ty, set: true, loop_depth: depth, arr: false, rule: None, count: None });
         }
         let vars = std::mem::replace(&mut b.vars, scope);
         let file = std::mem::replace(&mut b.file, ffile.to_string());
@@ -13364,7 +13650,8 @@ impl Lowerer {
     fn z_inline(&mut self, zp: &ZProc, each: &str, ops: &[String], b: &mut Body) -> Vec<String> {
         let info = self.funcs.iter().find(|g| g.ir == each).unwrap().clone();
         let depth = b.loops.len();
-        let scope: HashMap<String, Var> = info.params.iter().zip(ops).map(|((n, t), v)| (n.clone(), Var { ir: v.clone(), ty: t.clone(), set: true, loop_depth: depth, arr: false })).collect();
+        let said = self.param_rules(&info);
+        let scope: HashMap<String, Var> = info.params.iter().zip(ops).enumerate().map(|(k, ((n, t), v))| (n.clone(), Var { ir: v.clone(), ty: t.clone(), set: true, loop_depth: depth, arr: info.marks.get(k) == Some(&NameMark::Array), rule: said.get(k).cloned().flatten(), count: None })).collect();
         let vars = std::mem::replace(&mut b.vars, scope);
         let results = std::mem::take(&mut b.results);
         let kind = std::mem::replace(&mut b.kind, BodyKind::Fn);
@@ -13499,7 +13786,8 @@ impl Lowerer {
     fn inline_fn(&mut self, info: &FnInfo, ops: &[String], b: &mut Body) -> Result<(), Error> {
         let (fd, ffile) = self.bodies[&info.key].clone();
         let depth = b.loops.len();
-        let scope: HashMap<String, Var> = info.params.iter().zip(ops).map(|((n, t), v)| (n.clone(), Var { ir: v.clone(), ty: t.clone(), set: true, loop_depth: depth, arr: false })).collect();
+        let said = self.param_rules(info);
+        let scope: HashMap<String, Var> = info.params.iter().zip(ops).enumerate().map(|(k, ((n, t), v))| (n.clone(), Var { ir: v.clone(), ty: t.clone(), set: true, loop_depth: depth, arr: info.marks.get(k) == Some(&NameMark::Array), rule: said.get(k).cloned().flatten(), count: None })).collect();
         let vars = std::mem::replace(&mut b.vars, scope);
         let results = std::mem::take(&mut b.results);
         let kind = std::mem::replace(&mut b.kind, BodyKind::Fn);
@@ -13628,7 +13916,7 @@ impl Lowerer {
                 };
                 let key = format!("__zout{}", b.ntmp);
                 let (s, _) = self.new_resident(&out_elem, &cap, b, Some(&key));
-                b.vars.insert(key.clone(), Var { ir: s.text.clone(), ty: s.ty.clone(), set: true, loop_depth: b.loops.len(), arr: false });
+                b.vars.insert(key.clone(), Var { ir: s.text.clone(), ty: s.ty.clone(), set: true, loop_depth: b.loops.len(), arr: false, rule: None, count: None });
                 (key, Some(s))
             }
         };
@@ -13668,7 +13956,7 @@ impl Lowerer {
             let saved = b.vars.clone();
             let depth = b.loops.len();
             for ((n, t), v) in names.iter().zip(ops) {
-                b.vars.insert(n.clone(), Var { ir: v.clone(), ty: t.clone(), set: true, loop_depth: depth, arr: false });
+                b.vars.insert(n.clone(), Var { ir: v.clone(), ty: t.clone(), set: true, loop_depth: depth, arr: false, rule: None, count: None });
             }
             let results = std::mem::take(&mut b.results);
             let was_file = std::mem::replace(&mut b.file, zfile.clone());
@@ -14698,8 +14986,23 @@ impl Lowerer {
                 if !matches!(iv.ty, Ty::Num(_)) {
                     return Err(lex::error(&file, idx.line, "an index is an integer"));
                 }
-                let i = self.as_index(&iv, b);
-                Ok(self.peek_at(&sv, &i, b, dst))
+                // a stream's item by its place is refused where names
+                // are held to their marks (fm3 question 90); should one
+                // come here it is the reader's checked word still
+                if matches!(&base.kind, ExprKind::Seq(n) if !self.arr_name(n, b) && self.stream_var(n, b).is_some()) {
+                    let i = self.as_index(&iv, b);
+                    return Ok(self.peek_at(&sv, &i, b, dst));
+                }
+                // an array's item by its place: a read that cannot
+                // fail (fm3 question 127)
+                let (rule, count) = match &base.kind {
+                    ExprKind::Seq(n) | ExprKind::Name(n) => match b.vars.get(n) {
+                        Some(v) => (v.rule.clone(), v.count.filter(|_| v.ir == sv.text)),
+                        None => self.fvar(n).map(|f| (f.rule.clone(), f.count)).unwrap_or((None, None)),
+                    },
+                    _ => (None, None),
+                };
+                self.item_at(&sv, &iv, rule.as_ref(), count, b, dst, e.line)
             }
             ExprKind::Str(s) => {
                 // a string literal: its bytes in `data`, copied into a
@@ -16156,6 +16459,20 @@ fn index_ty() -> Ty {
 /// One that is an `index`, or nothing asked
 fn keeps_index(want: Option<&Ty>) -> bool {
     want.is_none_or(is_index)
+}
+
+/// How many items an array has, where its declaration writes them
+/// out: a list of single values, or a text with no escape in it. An
+/// array never changes, so the count holds wherever the name is read
+fn written_count(v: &super::syntax::VarDecl) -> Option<usize> {
+    if !(v.arr || (v.ty == "string" && !v.seq)) {
+        return None;
+    }
+    match &v.init {
+        Some(Init::Value(Expr { kind: ExprKind::List(items), .. })) => items.iter().all(|x| !matches!(x.kind, ExprKind::List(_) | ExprKind::Range { .. } | ExprKind::Seq(_) | ExprKind::Arr(_) | ExprKind::Str(_))).then_some(items.len()),
+        Some(Init::Value(Expr { kind: ExprKind::Str(t), .. })) => (!t.contains('\\')).then_some(t.len()),
+        _ => None,
+    }
 }
 
 fn fits_literal(v: &Val, ty: &Ty) -> bool {

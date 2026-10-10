@@ -31,7 +31,7 @@ Refused: one value or a stream on either side, `a[] [==] 2`, `a[] [==] x$` (the 
 - An array declared any way but whole: `int a[] << 1 << 2`, `int a[] at (1 hz)`, a bare `int a[]`. An empty one is `int a[] = []`.
 - A push into an array, `a[] << 9`: an array never changes.
 - A stream's word on an array: `peek`, `latest`, `advance`, `position`, `time of`, `at`, `ended`, `end`, `empty`, `frame`, `behind`, `from ... to`. One item of an array is `a[k]`.
-- An array's form on a stream: an item by its place, `x$[2]`, `for (v in x$)`, a reduce, `x$ + _`. The array of what has arrived is `frame x$`. A look back, `x$[-1]`, is a stream's; `a[-1]` is refused.
+- An array's form on a stream: an item by its place, `x$[2]`, `for (v in x$)`, a reduce, `x$ + _`. The array of what has arrived is `frame x$`. A look back, `x$[-1]`, is a stream's; `a[-1]` of an array is a place before its first item, outside it like any other (fm3 question 127, `suite/zero/sampled`), and was refused until a read by a place could not fail.
 - An array where one value is wanted, `int v = a[]`, `if (a[] > 0)`: an array has no latest item.
 - The same through a call: `int v = doubled (a[])`, `doubled` taking one item. Applied to each it gives an array, `int v[] = doubled (a[])`; for one, `doubled (a[1])`.
 - A function declared over an array called plainly, `total of (a[])`: the message shows the line with its brackets. And a function of one item called in them, `[doubled] (a[])`: it is applied to each plainly, `doubled (a[])`.

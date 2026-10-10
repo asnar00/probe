@@ -732,7 +732,7 @@ impl Written {
 }
 
 fn param(ty: &str, n: &str, seq: bool, line: usize) -> Param {
-    Param { ty: ty.to_string(), name: n.to_string(), seq, arr: false, line }
+    Param { ty: ty.to_string(), name: n.to_string(), seq, arr: false, rule: None, line }
 }
 
 fn call(f: &str, args: Vec<Expr>, line: usize) -> Expr {
@@ -919,7 +919,7 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool, case:
     // named last, each the line's own value under another name
     let mut lines = Vec::new();
     for d in &p.said {
-        lines.push(Stmt::Var(VarDecl { line: d.line, scope: Vec::new(), ty: d.ty.clone(), name: local(&d.name), seq: false, arr: false, init: Some(Init::Value(p.each(&d.value))), merge: None, rate: None }));
+        lines.push(Stmt::Var(VarDecl { line: d.line, scope: Vec::new(), ty: d.ty.clone(), name: local(&d.name), seq: false, arr: false, rule: None, init: Some(Init::Value(p.each(&d.value))), merge: None, rate: None }));
     }
     let mut made = Vec::new();
     let push = |item: Expr, when: Option<Expr>, line: usize| -> Option<Stmt> {
@@ -956,7 +956,7 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool, case:
         let v = p.at(&d.value, true);
         if p.something(&v, &alive) {
             alive.push(d.name.clone());
-            last.push(Stmt::Var(VarDecl { line: d.line, scope: Vec::new(), ty: d.ty.clone(), name: local(&d.name), seq: false, arr: false, init: Some(Init::Value(v)), merge: None, rate: None }));
+            last.push(Stmt::Var(VarDecl { line: d.line, scope: Vec::new(), ty: d.ty.clone(), name: local(&d.name), seq: false, arr: false, rule: None, init: Some(Init::Value(v)), merge: None, rate: None }));
         }
     }
     let mut pushes = Vec::new();
@@ -989,7 +989,7 @@ pub fn write(p: &Processor, k: usize, out: &str, stored: bool, ends: bool, case:
         let made = call(&each_name, args, line);
         match given.as_slice() {
             [] => inner.push(Stmt::Expr { expr: made, line }),
-            [one] => inner.push(Stmt::Var(VarDecl { line, scope: Vec::new(), ty: one.ty.clone(), name: one.name.clone(), seq: false, arr: false, init: Some(Init::Value(made)), merge: None, rate: None })),
+            [one] => inner.push(Stmt::Var(VarDecl { line, scope: Vec::new(), ty: one.ty.clone(), name: one.name.clone(), seq: false, arr: false, rule: None, init: Some(Init::Value(made)), merge: None, rate: None })),
             _ => inner.push(Stmt::Multi { vars: given.clone(), value: made, line }),
         }
         for (c, w) in p.kept.iter().zip(&kept) {

@@ -221,9 +221,6 @@ impl Walk {
             (Mark::Array, Mark::Array) if form == "pushed into" => {
                 self.refuse(line, format!("'{}[] << ...': an array never changes: its items are all there where it is declared, `{} {}[] = [...]` (fm3 question 90). What is pushed into is a stream, `{} {}$`", name, e.ty, name, e.ty, name));
             }
-            (Mark::Array, Mark::Array) if form.starts_with("a look back") => {
-                self.refuse(line, format!("'{}[-k]': a look back is a stream's, `x$[-1]`, the item before the present one (fm3 question 90). An array's last item is `{}[[count] ({}[]) - 1]`", name, name, name));
-            }
             (Mark::Array, Mark::Array) if form.starts_with("the word `") && form != "the word `count`" => {
                 let w = form.trim_start_matches("the word `").trim_end_matches('`');
                 let instead = match w {

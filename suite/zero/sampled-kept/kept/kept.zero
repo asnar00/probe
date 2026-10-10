@@ -1,0 +1,29 @@
+int kick[] wrapped = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0]
+int waltz[] wrapped = [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1]
+
+on (int v) << item (int i)
+    int a[] = [10, 20, 30, 40]
+    v << a[i]
+
+on (int v) << or seven (int i)
+    int a[] else 7 = [1, 2]
+    v << a[i]
+
+on (int v) << kicked (int i)
+    v << kick[i]
+
+on (int v) << waltzed (int i)
+    v << waltz[i]
+
+on (int v) << round (int a[] wrapped) at (int i)
+    v << a[i]
+
+on (int v) << earlier (int i)
+    int x$ << 1 << 2 << 3 << 4 << 5
+    advance x$ by (4)
+    int h[] = x$ behind (3)
+    v << [round] (h[]) at (i) * 10 + h[i]
+
+on (int v) << letter (int i)
+    string s = "let x"
+    v << int (s[i])

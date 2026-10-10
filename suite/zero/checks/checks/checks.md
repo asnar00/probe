@@ -12,7 +12,7 @@ Plan item 10 of milestone 0: section 14 of zero.md — `check (c)`, `→ check` 
 ## interface
 - `within (k)` checks k < 5 and gives k; `guarded sum (k)` checks k is not negative and sums 1 to k.
 - `bounded (k)` maps `small (i)`, which checks its item, over a range and reduces, so the check runs once per item; `either (k)` checks inside one arm of an `if`, and pushes its result after it, at the top of its body, `n << 2 if (k > 10) else 1`.
-- `outside` fails the library's own check, an index past the end, which names no site by itself: the runner finds its line by running the case again from a diagnostic build (the feature `said`, fm3 log 199).
+- `outside` reads item 5 of an array of two. It gives 0: a read by a place cannot fail, and outside an array's items it gives zero (fm3 question 127, `suite/zero/sampled`). Until 10 October 2026 it failed the library's own check, an index past the end, and this was the case that showed it.
 - `after printing` writes to `out$`, then fails: what was written comes before the site.
 - `pushed after end` pushes into `late$` after `end late$`, and `pushed after shut` into `wide$`, a stream of `int64`, after `shut`, a function over `int x$`, has ended it through its parameter: each fails the library's check in the push. `pushed steadily` pushes into `steady$`, a stream of a type no `end` in the store reaches.
 
@@ -32,7 +32,7 @@ Plan item 10 of milestone 0: section 14 of zero.md — `check (c)`, `→ check` 
 >either (5) → 1
 >either (50) → 2
 >either (500) → check
->outside() → check
+>outside() → 0
 >after printing() → check
 >pushed after end() → check
 >pushed after shut() → check

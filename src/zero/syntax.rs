@@ -180,8 +180,32 @@ pub struct Param {
     /// written `a[]`, an array (fm3 question 90); `seq` is true of it
     /// too, so what asks "is this a sequence" reads as it did
     pub arr: bool,
+    /// `(int a[] else 0)`: how the function reads it by a coordinate
+    pub rule: Option<Rule>,
     pub line: usize,
 }
+
+/// How an array is read by a coordinate (fm3 question 127, Ash, 10
+/// October 2026): said once, where the array is declared, after its
+/// name and before its value, as a stream says its rate. Built: what a
+/// read outside its items gives. An array that says nothing reads zero
+/// there, so no rule is `None` and not a third word
+#[derive(Clone, Debug)]
+pub struct Rule {
+    pub outside: Outside,
+    pub line: usize,
+}
+
+#[derive(Clone, Debug)]
+pub enum Outside {
+    /// `else (v)`: a value for anywhere outside
+    Else(Box<Expr>),
+    /// `wrapped`: round again, one past the end being the first
+    Wrapped,
+}
+
+/// the words an array's declaration may say after its name
+pub const RULE_WORDS: [&str; 7] = ["else", "wrapped", "clamped", "mirrored", "nearest", "linear", "from"];
 
 #[derive(Clone)]
 pub struct TypeDecl {
@@ -218,6 +242,8 @@ pub struct VarDecl {
     pub seq: bool,
     /// declared `int a[]`, an array (fm3 question 90)
     pub arr: bool,
+    /// `int kick[] wrapped = [...]`: how it is read by a coordinate
+    pub rule: Option<Rule>,
     pub init: Option<Init>,
     /// `merge sum`: how two writes combine
     pub merge: Option<String>,
@@ -1094,11 +1120,22 @@ impl<'a> Parser<'a> {
                     }
                     ty = Some(w);
                     let (name, seq) = self.expect_name()?;
-                    out.push(Param { ty: ty.clone().unwrap(), name, seq, arr: self.arr, line });
+                    let arr = self.arr;
+                    let rule = self.parse_rule(ty.as_ref().unwrap(), &name, seq, arr)?;
+                    out.push(Param { ty: ty.clone().unwrap(), name, seq, arr, rule, line });
                 }
-                Tok::Word(w) => out.push(Param { ty: ty.clone().unwrap(), name: w, seq: false, arr: false, line }),
-                Tok::Seq(w) => out.push(Param { ty: ty.clone().unwrap(), name: w, seq: true, arr: false, line }),
-                Tok::Arr(w) => out.push(Param { ty: ty.clone().unwrap(), name: w, seq: true, arr: true, line }),
+                Tok::Word(w) => {
+                    let rule = self.parse_rule(ty.as_ref().unwrap(), &w, false, false)?;
+                    out.push(Param { ty: ty.clone().unwrap(), name: w, seq: false, arr: false, rule, line })
+                }
+                Tok::Seq(w) => {
+                    let rule = self.parse_rule(ty.as_ref().unwrap(), &w, true, false)?;
+                    out.push(Param { ty: ty.clone().unwrap(), name: w, seq: true, arr: false, rule, line })
+                }
+                Tok::Arr(w) => {
+                    let rule = self.parse_rule(ty.as_ref().unwrap(), &w, true, true)?;
+                    out.push(Param { ty: ty.clone().unwrap(), name: w, seq: true, arr: true, rule, line })
+                }
                 t => {
                     self.pos -= 1;
                     return Err(self.err(format!("expected a parameter, found {}", t)));
@@ -1114,6 +1151,50 @@ impl<'a> Parser<'a> {
 
     /// a name and whether it is a sequence's; `self.arr` says whether
     /// it was written with an array's mark
+    /// What a declaration says, after its name, of how the array is
+    /// read by a coordinate (fm3 question 127): `else (v)` or `wrapped`
+    /// for a read outside its items. The other words of the ruling are
+    /// known and refused by name until they are built, and all of them
+    /// are an array's or a string's and no other name's
+    fn parse_rule(&mut self, ty: &str, name: &str, seq: bool, arr: bool) -> Result<Option<Rule>, Error> {
+        let mut rule: Option<(Rule, String)> = None;
+        loop {
+            let Some(Tok::Word(w)) = self.peek().cloned() else { break };
+            if !RULE_WORDS.contains(&w.as_str()) {
+                break;
+            }
+            let line = self.line();
+            let shown = if arr { format!("{}[]", name) } else if seq { format!("{}$", name) } else { name.to_string() };
+            if !(arr || (ty == "string" && !seq)) {
+                let what = if seq { "a stream: what a stream reads before its first item and between two is its own, and is not said in these words yet".to_string() } else { format!("one {}", ty) };
+                return Err(self.err(format!("`{}` says how an array is read by a place, and '{}' is {}. It is said of an array or a string where it is declared, `int a[] {} = [...]`", w, shown, what, if w == "else" { "else 0" } else { &w })));
+            }
+            let not_built = |what: &str| format!("`{}` on '{}', {}, is ruled and not built yet (fm3 question 127). What is built is what a read outside the items gives, `else (v)` or `wrapped`, and zero where nothing is said", w, shown, what);
+            match w.as_str() {
+                "clamped" => return Err(self.err(not_built("a read outside giving the nearest edge"))),
+                "mirrored" => return Err(self.err(not_built("a read outside going back the way it came"))),
+                "nearest" => return Err(self.err(not_built("a read between two items giving the closer"))),
+                "linear" => return Err(self.err(not_built("a read between two items giving the two blended"))),
+                "from" => return Err(self.err(not_built("the coordinates an array spans, `from (a) to (b)`"))),
+                _ => {}
+            }
+            self.pos += 1;
+            let (outside, said) = if w == "wrapped" {
+                (Outside::Wrapped, "wrapped".to_string())
+            } else {
+                if self.at_sym("=") || self.at_sym(")") || self.at_sym(",") || matches!(self.peek(), Some(Tok::Newline) | None) {
+                    return Err(self.err(format!("`else` on '{}' wants the value a read outside gives, `{} else 0`", shown, shown)));
+                }
+                (Outside::Else(Box::new(self.parse_expr()?)), "else".to_string())
+            };
+            if let Some((_, first)) = &rule {
+                return Err(lex::error(self.file, line, format!("'{}' says twice what a read outside it gives, `{}` and `{}`: an array has one rule for outside", shown, first, said)));
+            }
+            rule = Some((Rule { outside, line }, said));
+        }
+        Ok(rule.map(|(r, _)| r))
+    }
+
     fn expect_name(&mut self) -> Result<(String, bool), Error> {
         self.arr = false;
         match self.next()? {
@@ -1215,6 +1296,7 @@ impl<'a> Parser<'a> {
         }
         let (name, seq) = self.expect_name()?;
         let arr = self.arr;
+        let rule = self.parse_rule(&ty, &name, seq, arr)?;
         // `T x$ at (n hz)`: a stream at a rate, section 9
         let rate = if seq && self.eat_word("at") {
             let args = self.parse_args()?;
@@ -1243,7 +1325,7 @@ impl<'a> Parser<'a> {
             None
         };
         let merge = if self.eat_word("merge") { Some(self.expect_word()?) } else { None };
-        Ok(VarDecl { line, scope, ty, name, seq, arr, init, merge, rate })
+        Ok(VarDecl { line, scope, ty, name, seq, arr, rule, init, merge, rate })
     }
 
     /// `<< a << b`; a bare `<<` at the end of the line is refused by
@@ -1657,7 +1739,7 @@ impl<'a> Parser<'a> {
                         return Err(self.err(format!("'{}' is not a type: each of a loop's results is its type then its name", ty)));
                     }
                     let (name, seq) = self.expect_name()?;
-                    vars.push(Param { ty, name, seq, arr: self.arr, line: pline });
+                    vars.push(Param { ty, name, seq, arr: self.arr, rule: None, line: pline });
                     if !self.eat_sym(",") {
                         break;
                     }
@@ -1670,7 +1752,7 @@ impl<'a> Parser<'a> {
                 let v = self.parse_var()?;
                 // `int q, int r = ...`: several typed names, one initializer
                 if self.at_sym(",") && v.init.is_none() {
-                    let mut vars = vec![Param { ty: v.ty.clone(), name: v.name.clone(), seq: v.seq, arr: v.arr, line: v.line }];
+                    let mut vars = vec![Param { ty: v.ty.clone(), name: v.name.clone(), seq: v.seq, arr: v.arr, rule: None, line: v.line }];
                     while self.eat_sym(",") {
                         let pline = self.line();
                         let ty = self.expect_word()?;
@@ -1679,7 +1761,7 @@ impl<'a> Parser<'a> {
                             return Err(self.err(format!("'{}' is not a type: each of several results is its type then its name", ty)));
                         }
                         let (name, seq) = self.expect_name()?;
-                        vars.push(Param { ty, name, seq, arr: self.arr, line: pline });
+                        vars.push(Param { ty, name, seq, arr: self.arr, rule: None, line: pline });
                     }
                     self.expect_sym("=")?;
                     let value = self.parse_expr()?;

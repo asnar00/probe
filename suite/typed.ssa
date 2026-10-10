@@ -13,6 +13,7 @@
 ;! vector_elems -> 60
 ;! first_elem i64[5,6,7] -> 5
 ;! scalar_indexed i64[5,6,7] 2 -> 7
+;! abstract_elem i64[5,6,7] 0 -> 10
 
 ; a 4 by 3 grid of i32, given as 12 values: row j is elements 4j..4j+3
 fn sum_row(p: ptr, j: i64) -> i32
@@ -140,3 +141,17 @@ fn scalar_indexed(p: ptr, i: i64) -> i64
     q: ptr(i64) = cast p
     v: i64 = load q, i
     ret v
+; a ptr(int): the pointee is the policy's `int` from where it is written,
+; and a body's `int` is abstract until resolved in a function whose
+; signature names none, so the two are compared as the policy has them,
+; as a view's element is; a load and a store. The place is 0 and the
+; number small, so the answer is the same where `int` is 32 bits and
+; the memory given is 64-bit words
+fn abstract_elem(p: ptr, i: i64) -> i64
+    q: ptr(int) = cast p
+    v: int = load q, i
+    w: int = add v, 5
+    store w, q, 0
+    x: int = load q
+    r: i64 = conv x
+    ret r
