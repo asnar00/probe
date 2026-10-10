@@ -69,6 +69,11 @@ pub struct Store {
     /// A runner lowers a store so only to run a case again that failed a
     /// check, to say which line. False as a store is read
     pub sites: bool,
+    /// the trace build (fm3 tracer.md): the diagnostic build, and each
+    /// statement that runs, each name said and each item pushed is
+    /// written down as an event, with the value as zero writes it out,
+    /// for a host to read back after the run. False as a store is read
+    pub trace: bool,
 }
 
 /// how a product builds a feature (section 12): switchable at run time,
@@ -451,7 +456,7 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     // a static-off feature leaves the store with everything under it
     // (log 71): a child under a parent that is never on could never be on
     let mut gone: Vec<String> = Vec::new();
-    let store = Store { path: dir.to_path_buf(), own_ops, features, layers, product, product_file, int_width, float_width, index_width, marks, left_out: Vec::new(), clock, times: false, sites: false };
+    let store = Store { path: dir.to_path_buf(), own_ops, features, layers, product, product_file, int_width, float_width, index_width, marks, left_out: Vec::new(), clock, times: false, sites: false, trace: false };
     for (name, mark) in &store.marks {
         if *mark == Mark::StaticOff {
             gone.extend(store.subtree(name));

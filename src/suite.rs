@@ -328,6 +328,32 @@ fn checked_at(text: &str) -> String {
 /// the forked child's JIT and pipe, for `on_trap`
 static TRAP_JIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static TRAP_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+/// ... and whether the child is to say its trace after its text
+static TRAP_TRACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What a run of a zero store's trace build wrote down (fm3 tracer.md),
+/// as the program left it: the words of `__trace_ev` as far as its
+/// events go, the bytes of the values' texts, and the program's output
+/// as it stood, whether the call returned or stopped at a failed check
+pub struct TraceRead {
+    pub words: Vec<i64>,
+    pub bytes: Vec<u8>,
+    pub output: String,
+}
+
+pub use crate::host::{TRACE_EVENTS, TRACE_TEXT};
+
+/// in a forked child, the trace of a trace build read back through its
+/// two words, as the text is through `__out_len` and `__out_byte`, and
+/// written as numbers after two marks no number has: nothing where the
+/// program has no trace
+fn trace_tail(jit: &emit::jit::JitCode) -> String {
+    let Ok(n) = jit.call("__trace_word", &[0]) else { return String::new() };
+    let words = 4 + 4 * n.clamp(0, TRACE_EVENTS);
+    let bytes = jit.call("__trace_word", &[1]).unwrap_or(0).clamp(0, TRACE_TEXT);
+    let read = |f: &str, k: i64| -> String { (0..k).map(|i| jit.call(f, &[i]).unwrap_or(0).to_string()).collect::<Vec<_>>().join(",") };
+    format!("\x1e{}\x1e{}", read("__trace_word", words), read("__trace_byte", bytes))
+}
 
 /// in a forked child, the breakpoint trap of a failed check: the
 /// program's text — where a zero `check` named its site — goes to the
@@ -350,6 +376,9 @@ extern "C" fn on_trap(_sig: i32) {
                 }
             }
             text.push_str(&String::from_utf8_lossy(&bytes));
+        }
+        if TRAP_TRACE.load(Ordering::SeqCst) {
+            text.push_str(&trace_tail(jit));
         }
     }
     let fd = TRAP_FD.load(Ordering::SeqCst);
@@ -399,6 +428,18 @@ fn watched<T: Send>(jit: &emit::jit::JitCode, f: impl FnOnce() -> T + Send) -> T
 /// check can name its site; the results and the text come back through
 /// the pipe otherwise
 fn forked<F: FnOnce() -> Result<Got, String>>(f: F, jit: Option<&emit::jit::JitCode>) -> Result<Got, String> {
+    forked_traced(f, jit, false).0
+}
+
+/// ... and, where `trace` is set, the child says the trace its program
+/// wrote down after what it says already, on both of its ways out
+fn forked_traced<F: FnOnce() -> Result<Got, String>>(f: F, jit: Option<&emit::jit::JitCode>, trace: bool) -> (Result<Got, String>, Option<TraceRead>) {
+    let mut read = None;
+    let got = forked_read(f, jit, trace, &mut read);
+    (got, read)
+}
+
+fn forked_read<F: FnOnce() -> Result<Got, String>>(f: F, jit: Option<&emit::jit::JitCode>, trace: bool, traced: &mut Option<TraceRead>) -> Result<Got, String> {
     unsafe extern "C" {
         fn fork() -> i32;
         fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
@@ -435,13 +476,17 @@ fn forked<F: FnOnce() -> Result<Got, String>>(f: F, jit: Option<&emit::jit::JitC
             use std::sync::atomic::Ordering;
             TRAP_JIT.store(j as *const emit::jit::JitCode as usize, Ordering::SeqCst);
             TRAP_FD.store(fds[1], Ordering::SeqCst);
+            TRAP_TRACE.store(trace, Ordering::SeqCst);
             unsafe { signal(5, on_trap) }; // SIGTRAP: brk
         }
         let mut w = unsafe { std::fs::File::from_raw_fd(fds[1]) };
-        let text = match f() {
+        let mut text = match f() {
             Ok(g) => format!("{}\x1f{}\x1f{}", g.values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","), g.marks.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","), g.text),
             Err(e) => format!("error: {}", e),
         };
+        if let (true, Some(j)) = (trace, jit) {
+            text.push_str(&trace_tail(j));
+        }
         let _ = w.write_all(text.as_bytes());
         drop(w);
         unsafe { _exit(0) }
@@ -456,6 +501,20 @@ fn forked<F: FnOnce() -> Result<Got, String>>(f: F, jit: Option<&emit::jit::JitC
         0 => {}
         5 => return Err(CHECKED.into()), // SIGTRAP: brk
         sig => return Err(format!("the child died of signal {}", sig)),
+    }
+    // the trace, where one was asked for: the last two fields, numbers
+    if trace {
+        let mut fields = text.rsplitn(3, '\x1e');
+        let (bytes, words, rest) = (fields.next().unwrap_or(""), fields.next(), fields.next());
+        if let (Some(words), Some(rest)) = (words, rest) {
+            let numbers = |l: &str| -> Vec<i64> { l.split(',').filter_map(|v| v.parse().ok()).collect() };
+            let output = match rest.strip_prefix("trap: ") {
+                Some(t) => t.to_string(),
+                None => rest.splitn(3, '\x1f').nth(2).unwrap_or("").to_string(),
+            };
+            *traced = Some(TraceRead { words: numbers(words), bytes: numbers(bytes).into_iter().map(|b| b as u8).collect(), output });
+            text = rest.to_string();
+        }
     }
     if let Some(t) = text.strip_prefix("trap: ") {
         return Err(checked_at(t));
@@ -703,6 +762,76 @@ fn run_wasm(
 // Calls from the zero runner: the same native and wasm paths, with the
 // program's text output read back after each call
 
+/// before a call of a zero store's case on the native JIT: the runner
+/// makes the store's first context the current one, and the reset
+/// works on it (fm3 log 137)
+fn native_reset(module: &ssa::Module, jit: &emit::jit::JitCode) -> Result<(), String> {
+    if module.func("__zero_context").is_some() {
+        jit.call("__zero_context", &[0])?;
+    }
+    if module.func("__zero_reset").is_some() {
+        jit.call("__zero_reset", &[])?;
+    }
+    Ok(())
+}
+
+/// ... and the call, in a forked child: the case's setters, the store's
+/// start, the function, and the text and the marks read back
+fn native_call(module: &ssa::Module, jit: &emit::jit::JitCode, call: &Call) -> Result<Got, String> {
+    let rets: Vec<ssa::Repr> = module.func(&call.func).map(|f| f.rets.iter().map(|&t| f.repr(t)).collect()).unwrap_or_default();
+    let fix = |i: usize, x: i64| match rets.get(i) {
+        Some(r) if r.container() == 32 => opt::norm(*r, x as u32 as i64),
+        _ => x,
+    };
+    for (f, args) in &call.before {
+        jit.call(f, args)?;
+    }
+    if module.func("__zero_start").is_some() {
+        jit.call("__zero_start", &[])?;
+    }
+    let invoke = || -> Result<Vec<i64>, String> {
+        Ok(match call.nrets {
+            0 => jit.call(&call.func, &call.args).map(|_| Vec::new())?,
+            1 => jit.call(&call.func, &call.args).map(|v| vec![fix(0, v)])?,
+            2 => jit.call2(&call.func, &call.args).map(|(a, b)| vec![fix(0, a), fix(1, b)])?,
+            n => return Err(format!("{} results not supported by the runner", n)),
+        })
+    };
+    let values = if call.live { watched(jit, invoke)? } else { invoke()? };
+    let mut text = String::new();
+    if call.text {
+        let n = jit.call("__out_len", &[])?;
+        let mut bytes = Vec::new();
+        for i in 0..n {
+            bytes.push(jit.call("__out_byte", &[i])? as u8);
+        }
+        text = String::from_utf8_lossy(&bytes).to_string();
+    }
+    let mut marks = Vec::new();
+    if call.times {
+        for i in 0..=jit.call("__out_len", &[])? {
+            marks.push(jit.call("__out_mark", &[i])?);
+        }
+    }
+    Ok(Got { values, text, marks })
+}
+
+/// One case of a zero store's trace build (fm3 tracer.md) run on the
+/// native JIT: what the call gave, or where it stopped, and what the
+/// program wrote down as it ran, read back in the child after the call
+/// or after the stop
+pub fn run_trace(module: &ssa::Module, call: &Call) -> Result<(Result<Got, String>, TraceRead), String> {
+    let enc = emit::Encoder::load("targets/arm64.encodings.json")?;
+    let jit = emit::compile(module, &enc).and_then(|c| emit::jit::JitCode::new(&c))?;
+    native_reset(module, &jit)?;
+    let (got, read) = forked_traced(|| native_call(module, &jit, call), Some(&jit), true);
+    let read = read.ok_or_else(|| match &got {
+        Err(e) => e.clone(),
+        Ok(_) => "the program wrote down no trace: it was not built to".to_string(),
+    })?;
+    Ok((got, read))
+}
+
 /// Run calls against one module on a backend. Before every call the
 /// module's `__zero_reset` runs, if it has one (the JIT keeps one
 /// instance of the program for every call; node makes a fresh one per
@@ -721,56 +850,10 @@ pub fn run_calls(module: &ssa::Module, src: &str, backend: Backend, calls: &[Cal
             let jit = emit::compile(module, &enc).and_then(|c| emit::jit::JitCode::new(&c))?;
             let mut out = Vec::new();
             for call in calls {
-                let rets: Vec<ssa::Repr> = module.func(&call.func).map(|f| f.rets.iter().map(|&t| f.repr(t)).collect()).unwrap_or_default();
-                let fix = |i: usize, x: i64| match rets.get(i) {
-                    Some(r) if r.container() == 32 => opt::norm(*r, x as u32 as i64),
-                    _ => x,
-                };
-                // the runner makes the store's first context the current
-                // one, and the reset works on it (fm3 log 137)
-                if module.func("__zero_context").is_some() {
-                    jit.call("__zero_context", &[0])?;
-                }
-                if module.func("__zero_reset").is_some() {
-                    jit.call("__zero_reset", &[])?;
-                }
-                let start = module.func("__zero_start").is_some();
-                let run = || -> Result<Got, String> {
-                    for (f, args) in &call.before {
-                        jit.call(f, args)?;
-                    }
-                    if start {
-                        jit.call("__zero_start", &[])?;
-                    }
-                    let invoke = || -> Result<Vec<i64>, String> {
-                        Ok(match call.nrets {
-                            0 => jit.call(&call.func, &call.args).map(|_| Vec::new())?,
-                            1 => jit.call(&call.func, &call.args).map(|v| vec![fix(0, v)])?,
-                            2 => jit.call2(&call.func, &call.args).map(|(a, b)| vec![fix(0, a), fix(1, b)])?,
-                            n => return Err(format!("{} results not supported by the runner", n)),
-                        })
-                    };
-                    let values = if call.live { watched(&jit, invoke)? } else { invoke()? };
-                    let mut text = String::new();
-                    if call.text {
-                        let n = jit.call("__out_len", &[])?;
-                        let mut bytes = Vec::new();
-                        for i in 0..n {
-                            bytes.push(jit.call("__out_byte", &[i])? as u8);
-                        }
-                        text = String::from_utf8_lossy(&bytes).to_string();
-                    }
-                    let mut marks = Vec::new();
-                    if call.times {
-                        for i in 0..=jit.call("__out_len", &[])? {
-                            marks.push(jit.call("__out_mark", &[i])?);
-                        }
-                    }
-                    Ok(Got { values, text, marks })
-                };
+                native_reset(module, &jit)?;
                 // every call in a child: a failed check the case did not
                 // expect ends the child and is reported, not the runner
-                out.push(forked(run, Some(&jit)));
+                out.push(forked(|| native_call(module, &jit, call), Some(&jit)));
             }
             Ok(out)
         }
@@ -1718,7 +1801,7 @@ fn machine_output(
                 }
                 let data_size = (c.layout.data.len() as u64 + 15) & !15;
                 if data_size + c.layout.slab > AIR_AREA {
-                    return Err(format!("data ({}) and scratch ({}) overrun the driver's area at {:#x}", data_size, c.layout.slab, AIR_AREA));
+                    return Err(format!("data ({}) and scratch ({}) {} at {:#x}", data_size, c.layout.slab, AIR_OVERRUN, AIR_AREA));
                 }
                 let lib = scratch.join(format!("{}.metallib", name));
                 let mem = scratch.join(format!("{}.mem", name));
@@ -1760,6 +1843,8 @@ fn machine_output(
 /// the program's memory: data, then the thread's scratch, then the
 /// driver's output area and heap
 const AIR_AREA: u64 = 0x10_0000;
+/// what the GPU's path says of a program too large for it
+const AIR_OVERRUN: &str = "overrun the driver's area";
 const AIR_HEAP: u64 = 0x20_0000;
 const AIR_MEM: u64 = 0x80_0000;
 
@@ -2009,6 +2094,15 @@ fn run_air(
     }
     match machine_output(Backend::Air, module, policy, src, cases, false, name, scratch, level, None, Some(platform)) {
         Ok(out) => check_hex_lines(&out, cases, name, report),
+        // a program whose data is more than the driver's area holds is
+        // no program of this path (`suite/far.ssa`, which is about data
+        // a megabyte off): its cases are skipped, saying so
+        Err(e) if e.contains(AIR_OVERRUN) => {
+            for c in cases {
+                report.skipped += 1;
+                report.log.push_str(&format!("skip  {:<16} {}: {}\n", name, c.text, e));
+            }
+        }
         Err(e) => fail_all(report, e),
     }
 }

@@ -24,8 +24,20 @@ pub fn emit(dir: &Path) -> Result<String, String> {
 /// case is run again from, and after it the table of sites, a row a
 /// comment, `; site <n>: <file>:<line>[: <what>]`
 pub fn emit_sites(dir: &Path) -> Result<String, String> {
+    emit_build(dir, false)
+}
+
+/// ... and the trace build (fm3 tracer.md), the diagnostic build that
+/// also writes down what it does, with its table: the rows a statement
+/// stores and the rows an event names, `= int n`, `< int x$`, `/ x$`
+pub fn emit_trace(dir: &Path) -> Result<String, String> {
+    emit_build(dir, true)
+}
+
+fn emit_build(dir: &Path, trace: bool) -> Result<String, String> {
     let mut s = store::read(dir).map_err(|e| e.to_string())?;
     s.sites = true;
+    s.trace = trace;
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
     let mut ir = l.ir;
     ir.push_str("\n; the sites (fm3 log 199): what `__site_at` stores, and where it is\n");
@@ -98,9 +110,9 @@ pub fn build(ir: &str, policy: &ssa::Policy, level: usize) -> Result<ssa::Module
 /// a case as the runner places it (log 44): the line as written, the
 /// call, the feature it came from and that feature's place in the
 /// composition order, and where it was written
-struct Planned {
-    text: String,
-    call: lower::Call,
+pub(super) struct Planned {
+    pub(super) text: String,
+    pub(super) call: lower::Call,
     feature: String,
     rank: usize,
     file: String,
@@ -110,7 +122,7 @@ struct Planned {
 /// the calls a store's cases make, in the order the features compose;
 /// a case's literal arguments are typed at the width the store is
 /// built at (log 52)
-fn calls_of(s: &store::Store, l: &lower::Lowered, policy: &ssa::Policy) -> Result<Vec<Planned>, String> {
+pub(super) fn calls_of(s: &store::Store, l: &lower::Lowered, policy: &ssa::Policy) -> Result<Vec<Planned>, String> {
     let mut out = Vec::new();
     for (rank, f) in s.features.iter().enumerate() {
         for c in &f.cases {
@@ -414,6 +426,18 @@ fn skip_note(funcs: &[lower::FnInfo], reaches: &str, kind: &str) -> String {
     format!("'{}' has no platform body for {}", name, kind)
 }
 
+/// the case as its line begins, the newest feature's where several
+/// begin so, since that is the one that stands with every feature on;
+/// or the first case of a function named alone
+fn case_at(calls: &[Planned], which: &str) -> Option<usize> {
+    let head = |p: &Planned| p.text.split('→').next().unwrap_or("").trim() == which.trim();
+    calls.iter().rposition(head).or_else(|| calls.iter().position(|p| p.call.func == which.trim()))
+}
+
+pub(super) fn case_named<'a>(calls: &'a [Planned], which: &str) -> Option<&'a Planned> {
+    case_at(calls, which).map(|i| &calls[i])
+}
+
 /// run one case of a store on the native JIT (log 77): the case line
 /// first, the program's output as it lands, then what the case gave
 /// after an arrow — the numbers, or the output as the case's quoted
@@ -424,11 +448,7 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bo
     let policy = &store_policy(&s, policy);
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
     let calls = calls_of(&s, &l, policy)?;
-    // the case as its line begins, the newest feature's where several
-    // begin so, since that is the one that stands with every feature on;
-    // or the first case of a function named alone
-    let head = |p: &Planned| p.text.split('→').next().unwrap_or("").trim() == which.trim();
-    let at = calls.iter().rposition(head).or_else(|| calls.iter().position(|p| p.call.func == which.trim()));
+    let at = case_at(&calls, which);
     let mut calls = calls;
     let p = at.map(|i| calls.swap_remove(i)).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", which))?;
     let (text, call) = (p.text.clone(), &p.call);
@@ -495,6 +515,10 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
             // what it gives from the program (the expected-IR checks
             // aside, the text being another)
             s.sites = std::env::var("PROBE_ZERO_SITES").is_ok();
+            // ... and of the trace build (fm3 tracer.md) with
+            // PROBE_ZERO_TRACE: what a program gives is not changed by
+            // its being watched
+            s.trace = std::env::var("PROBE_ZERO_TRACE").is_ok();
             let policy = store_policy(&s, &policy);
             let l = lower::lower(&s).map_err(|e| e.to_string())?;
             let cases = calls_of(&s, &l, &policy)?;
@@ -578,11 +602,16 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
             // says `→ check` and no more is run once, as it was
             let got = match got {
                 Err(e) if untraced(&e) && cases[r.case].call.expect != store::Expect::Check => Err(traced(sdir, &policy, backend, level, sc, &name).unwrap_or(e)),
+                // (the suite run from the trace build, PROBE_ZERO_TRACE: a
+                // case that writes down more than the trace holds is
+                // stopped by the trace, and is no case of it)
+                Err(e) if e.contains(crate::host::TRACE_FULL) => Err(format!("skip: the trace is full: a run of more than {} events", crate::host::TRACE_EVENTS)),
                 // (the suite run from the diagnostic build itself,
                 // PROBE_ZERO_SITES: the site is already in hand)
                 Err(e) if !lowered.sites.is_empty() => Err(site_said(&lowered.sites, &e).unwrap_or(e)),
                 g => g,
             };
+            let got = if lowered.sites.is_empty() { got } else { got.map(unsited) };
             // a case a path cannot run (air: a failed check, recursion)
             // is skipped, as the suite skips its own
             if let Some(why) = got.as_ref().err().and_then(|e| e.strip_prefix("skip: ")) {
@@ -618,6 +647,27 @@ fn untraced(e: &str) -> bool {
     // (... or named a line of the language's own, which is not the
     // line a person is told, fm3 log 228)
     e == suite::checked() || e.starts_with("trap:") || e.strip_prefix(suite::checked()).is_some_and(|r| r.trim().strip_prefix("at ").is_some_and(|at| at.starts_with(&format!("{}:", crate::host::OWN_SITE))))
+}
+
+/// What a case that returned gave, from a diagnostic build or a trace
+/// build: the two words that read the text back say the site after it
+/// wherever one is still stored, and one is after a run in which
+/// something going on was ended partway, by a `restart`, and never put
+/// back the site it found. That line is the build's and no part of what
+/// the program wrote: it is taken off, and the marks after it
+pub fn unsited(mut g: suite::Got) -> suite::Got {
+    const LINE: usize = 62;
+    let hex = |s: &str| s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let at = g.text.len().saturating_sub(LINE);
+    let tail = g.text.get(at..).unwrap_or("");
+    let is_site = tail.strip_prefix("\ncheck at #").and_then(|r| r.strip_suffix('\n')).is_some_and(|r| r.split(',').count() == 3 && r.split(',').all(hex));
+    if is_site {
+        g.text.truncate(at);
+        if !g.marks.is_empty() {
+            g.marks.truncate(at + 1);
+        }
+    }
+    g
 }
 
 /// The case that stopped, run again from the diagnostic build of the

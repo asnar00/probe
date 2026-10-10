@@ -28,7 +28,7 @@
 
 use crate::platform::{Native, Natives, Operand, Platform};
 use crate::ssa::{BinOp, BlockId, Cond, Function, Inst, Module, Repr, Type, ValueId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Minimal JSON reader (only what our own encodings file contains)
@@ -469,6 +469,11 @@ enum FixTarget {
     Func(String),
     /// a data item, by name: `adr` gets the distance to it
     Data(String),
+    /// a data item farther off than `adr` reaches, in two parts: `adr`
+    /// gets the low sixteen bits of the distance, and the `movz` after
+    /// it the rest, which is added
+    DataLow(String),
+    DataHigh(String),
 }
 
 struct Fixup {
@@ -529,6 +534,28 @@ pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin
     // group items through the thread's block
     let lowered = crate::ssa::lower_group_addrs(module);
     let module = &lowered;
+    // `adr` reaches a megabyte either way. A data item farther from an
+    // instruction that names it is reached in three instructions, and
+    // which items are so is known only when the image is laid out: the
+    // module is compiled with none held to be far, and again with each
+    // that proved to be, until none is left over (an item made far
+    // moves the code after it by eight bytes a use, so another may
+    // follow it). A program with less than a megabyte of code and data
+    // is compiled once, as it always was
+    let mut far: HashSet<String> = HashSet::new();
+    loop {
+        match compile_image_far(module, enc, platform, origin, &far)? {
+            Ok(c) => return Ok(c),
+            Err(more) => far.extend(more),
+        }
+    }
+}
+
+/// `adr`'s reach, in bytes either way
+const ADR_REACH: i64 = 1 << 20;
+
+/// ... the image, or the data items an `adr` could not reach
+fn compile_image_far(module: &Module, enc: &Encoder, platform: &Platform, origin: usize, far: &HashSet<String>) -> Result<Result<Compiled, HashSet<String>>, String> {
     let natives = platform.natives(module);
     let mut code: Vec<u8> = Vec::new();
     let mut funcs = HashMap::new();
@@ -551,7 +578,7 @@ pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin
             }
         }
         funcs.insert(func.name.clone(), code.len());
-        compile_function(func, enc, &natives, &mut code, &mut call_fixups)
+        compile_function(func, enc, &natives, far, &mut code, &mut call_fixups)
             .map_err(|e| format!("{}: {}", func.name, e))?;
     }
 
@@ -583,22 +610,36 @@ pub fn compile_image(module: &Module, enc: &Encoder, platform: &Platform, origin
     code.extend_from_slice(&rw);
 
     // cross-function fixups (bl) and data addresses (adr)
+    let mut beyond: HashSet<String> = HashSet::new();
     for fix in call_fixups {
         let target = match &fix.target {
             FixTarget::Func(name) => *funcs.get(name.as_str()).ok_or_else(|| format!("call to undefined function {}", name))?,
-            FixTarget::Data(name) => match data_offsets.get(name.as_str()) {
+            FixTarget::Data(name) | FixTarget::DataLow(name) | FixTarget::DataHigh(name) => match data_offsets.get(name.as_str()) {
                 Some(off) => data_base + off,
                 None => rw_base + *rw_offsets.get(name.as_str()).ok_or_else(|| format!("no data named {}", name))?,
             },
             FixTarget::Block(_) => unreachable!(),
         };
         let mut values = fix.values;
-        values[fix.imm_slot] = target as i64 - fix.at as i64;
+        values[fix.imm_slot] = match &fix.target {
+            // (the data is after the code, so the distance is forward;
+            // the `movz` is the instruction after its `adr`)
+            FixTarget::DataLow(_) => (target as i64 - fix.at as i64) & 0xffff,
+            FixTarget::DataHigh(_) => (target as i64 - (fix.at as i64 - 4)) >> 16,
+            FixTarget::Data(name) if !(-ADR_REACH..ADR_REACH).contains(&(target as i64 - fix.at as i64)) => {
+                beyond.insert(name.clone());
+                continue;
+            }
+            _ => target as i64 - fix.at as i64,
+        };
         let word = enc.encode(fix.template, &values)?;
         code[fix.at..fix.at + 4].copy_from_slice(&word.to_le_bytes());
     }
+    if !beyond.is_empty() {
+        return Ok(Err(beyond));
+    }
 
-    Ok(Compiled { code, funcs, code_end, data_base, writable_from })
+    Ok(Ok(Compiled { code, funcs, code_end, data_base, writable_from }))
 }
 
 /// where an argument or result crosses a call: a register of a class
@@ -613,6 +654,8 @@ struct FnEmit<'a> {
     enc: &'a Encoder,
     func: &'a Function,
     natives: &'a Natives,
+    /// the data items farther off than `adr` reaches
+    far: &'a HashSet<String>,
     code: &'a mut Vec<u8>,
     frame: i64,
     alloc: &'a crate::regalloc::Alloc,
@@ -1385,6 +1428,7 @@ fn umov(bits: u32, signed: bool) -> &'static str {
 const MOV_V: &str = "mov {v}.16b, {v}.16b";
 const LDR_D_SP: &str = "ldr {d}, [sp, #{i 0..32760 /8}]";
 const ADR: &str = "adr {x}, #{i -1048576..1048575}";
+const MOVZ_HIGH: &str = "movz {x}, #{i 0..65535}, lsl #16";
 const STR_D_SP: &str = "str {d}, [sp, #{i 0..32760 /8}]";
 
 /// Compile one function into a standalone buffer that will live at arena
@@ -1399,12 +1443,12 @@ pub fn compile_one(
 ) -> Result<Vec<u8>, String> {
     let mut code = Vec::new();
     let mut fixups = Vec::new();
-    compile_function(func, enc, natives, &mut code, &mut fixups)
+    compile_function(func, enc, natives, &HashSet::new(), &mut code, &mut fixups)
         .map_err(|e| format!("{}: {}", func.name, e))?;
     for fix in fixups {
         let name = match &fix.target {
             FixTarget::Func(name) => name,
-            FixTarget::Data(name) => return Err(format!("data ({}) is not supported in the incremental arena yet", name)),
+            FixTarget::Data(name) | FixTarget::DataLow(name) | FixTarget::DataHigh(name) => return Err(format!("data ({}) is not supported in the incremental arena yet", name)),
             FixTarget::Block(_) => unreachable!(),
         };
         let target = resolve(name).ok_or_else(|| format!("call to unknown function {}", name))?;
@@ -1420,6 +1464,7 @@ fn compile_function(
     func: &Function,
     enc: &Encoder,
     natives: &Natives,
+    far: &HashSet<String>,
     code: &mut Vec<u8>,
     call_fixups: &mut Vec<Fixup>,
 ) -> Result<(), String> {
@@ -1480,6 +1525,7 @@ fn compile_function(
         enc,
         func,
         natives,
+        far,
         code,
         frame,
         alloc: &alloc,
@@ -1554,7 +1600,7 @@ fn compile_function(
                 values[fix.imm_slot] = target as i64 - fix.at as i64;
                 e.patch(fix.at, fix.template, &values)?;
             }
-            FixTarget::Func(_) | FixTarget::Data(_) => call_fixups.push(fix),
+            FixTarget::Func(_) | FixTarget::Data(_) | FixTarget::DataLow(_) | FixTarget::DataHigh(_) => call_fixups.push(fix),
         }
     }
     Ok(())
@@ -1963,6 +2009,17 @@ fn compile_inst(e: &mut FnEmit, inst: &Inst) -> Result<(), String> {
                 n => return Err(format!("no {}-bit memory access", n)),
             };
             e.emit(t, &[rv, ra, imm]).map(|_| ())
+        }
+        Inst::Addr { dst, name } if e.far.contains(name) => {
+            // past `adr`'s reach: the low sixteen bits of the distance
+            // by `adr`, the rest in a scratch register, and the two added
+            let rd = e.dst_reg(*dst, 9);
+            let at = e.emit(ADR, &[rd, 0])?;
+            e.fixups.push(Fixup { at, template: ADR, values: vec![rd, 0], imm_slot: 1, target: FixTarget::DataLow(name.clone()) });
+            let at = e.emit(MOVZ_HIGH, &[10, 0])?;
+            e.fixups.push(Fixup { at, template: MOVZ_HIGH, values: vec![10, 0], imm_slot: 1, target: FixTarget::DataHigh(name.clone()) });
+            e.emit("add {x}, {x}, {x}", &[rd, rd, 10])?;
+            e.finish(*dst, rd)
         }
         Inst::Addr { dst, name } => {
             let rd = e.dst_reg(*dst, 9);

@@ -2523,7 +2523,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), zelse: HashMap::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features), acts };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), zelse: HashMap::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites || store.trace, traced: store.trace, trace_open: false, cell_traced: false, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features), acts };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2953,6 +2953,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     let ir = settle_counts(&ir);
     let ir = settle_clock(&ir);
     let ir = if l.sited { settle_sites(&ir) } else { ir };
+    let ir = if l.traced { settle_trace(&ir) } else { ir };
     // the text carries what the store reaches (log 70): every function
     // of the store's own features, the platform feature's that a case
     // names, and the runner's entries are roots
@@ -2973,6 +2974,9 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     // (a function's twin for the runner is reached where it is)
     let twins: Vec<String> = roots.iter().flat_map(|r| [format!("__said_{}", r), format!("__whole_{}", r)]).collect();
     roots.extend(twins);
+    if l.traced {
+        roots.extend(["__trace_word", "__trace_byte"].map(String::from));
+    }
     // a store with a case that asserts on time has the marks' reader
     // (fm3 log 91, 95), and so does one whose host asks for the times
     if store.times || store.features.iter().any(|f| f.cases.iter().any(|c| matches!(c.expect, Expect::Timed(_)))) {
@@ -3441,6 +3445,165 @@ fn settle_context(ir: &str, written: &std::collections::HashSet<String>, unread:
     out
 }
 
+/// The trace build's words (fm3 tracer.md). An event is four words:
+/// the site, a row of `Lowered.sites` (0 where a push is done, all it
+/// set off having run, and less than 0 where a function has returned
+/// to the statement at that row), the clock, how much the device had
+/// been given, and where the event's text begins among the texts. `__trace_ev`
+/// holds four words of its own first: how many events, how many bytes
+/// of text, how deep in the writing of a value, and whether the trace
+/// filled. `__trace_val` opens a value: until `__trace_end` what the
+/// program writes to the device is the value's text and not output,
+/// and nothing that runs to write it is an event. A value is written by
+/// the program's own `<<` for it, which is the program's code and may
+/// do more than write (`suite/zero/platform`'s `watch` counts what is
+/// written, in a stream of its own): so `__trace_val` says whether the
+/// value is to be written at all, no where one is being written
+/// already, the `<<` of a value having said a name of its own; and it
+/// keeps the context as it found it, which `__trace_end` puts back, so
+/// that what a feature keeps is what it kept before the value was
+/// written out. A trace that is full
+/// says so in its fourth word and fails a check, the site stored being
+/// -1, no row of the table: the stop is the trace's and not the
+/// program's (`host::TRACE_FULL`). A host reads it all
+/// back with `__trace_word` and `__trace_byte`, as it reads the output
+const TRACE_WORDS: &str = "data __trace_ev: array(i64, 65540)
+data __trace_tx: array(u8, 65536)
+data __trace_cx: array(__ctx, 1)
+
+fn __trace_at(n: i64)
+    w: ptr = addr __trace_ev
+    on: i64 = load w, 16
+    quiet: u1 = cmp.eq on, 0
+    if quiet
+        k: i64 = load w
+        room: u1 = cmp.lt k, 16384
+        if room
+        else
+            store 1: i64, w, 24
+            full: ptr = addr __site
+            store -1: i64, full
+        check room
+        i: i64 = mul k, 4
+        i0: i64 = add i, 4
+        store n, w, i0, 8
+        _this: ptr = context()
+        cx: __ctx = load _this
+        t: i64 = get cx, __clock
+        i1: i64 = add i, 5
+        store t, w, i1, 8
+        o: index = get cx, __out_n
+        o2: i64 = conv o
+        i2: i64 = add i, 6
+        store o2, w, i2, 8
+        x: i64 = load w, 8
+        i3: i64 = add i, 7
+        store x, w, i3, 8
+        k2: i64 = add k, 1
+        store k2, w
+    ret
+
+fn __trace_val(n: i64) -> u1
+    __trace_at(n)
+    w: ptr = addr __trace_ev
+    on: i64 = load w, 16
+    quiet: u1 = cmp.eq on, 0
+    if quiet
+        store 1: i64, w, 16
+        _this: ptr = context()
+        cx: __ctx = load _this
+        k: ptr = addr __trace_cx
+        store cx, k
+    ret quiet
+
+fn __trace_end()
+    w: ptr = addr __trace_ev
+    store 0: i64, w, 16
+    k: ptr = addr __trace_cx
+    cx: __ctx = load k
+    _this: ptr = context()
+    store cx, _this
+    ret
+
+fn __trace_word(i: i64) -> i64
+    w: ptr = addr __trace_ev
+    v: i64 = load w, i, 8
+    ret v
+
+fn __trace_byte(i: i64) -> u8
+    p: ptr = addr __trace_tx
+    b: u8 = load p, i, 1
+    ret b
+
+fn __site_quiet(n: i64)
+    p: ptr = addr __site
+    store n, p
+    ret
+
+fn __site_back(n: i64)
+    p: ptr = addr __site
+    store n, p
+    some: u1 = cmp.ne n, 0
+    if some
+        m: i64 = sub 0, n
+        __trace_at(m)
+    ret
+
+fn __out_ch(c: u8)
+    w: ptr = addr __trace_ev
+    on: i64 = load w, 16
+    quiet: u1 = cmp.eq on, 0
+    if quiet
+        __out_ch0(c)
+    else
+        one: u1 = cmp.eq on, 1
+        if one
+            x: i64 = load w, 8
+            room: u1 = cmp.lt x, 65536
+            if room
+            else
+                store 1: i64, w, 24
+                full: ptr = addr __site
+                store -1: i64, full
+            check room
+            p: ptr = addr __trace_tx
+            store c, p, x, 1
+            x2: i64 = add x, 1
+            store x2, w, 8
+    ret
+
+fn __out_block(v: u8[])
+    w: ptr = addr __trace_ev
+    on: i64 = load w, 16
+    quiet: u1 = cmp.eq on, 0
+    if quiet
+        __out_block0(v)
+    else
+        n: index = len v
+        loop(i: index = 0)
+            done: u1 = cmp.ge i, n
+            if done
+                break
+            c: u8 = load v, i
+            __out_ch(c)
+            i2: index = add i, 1
+            continue i2
+    ret
+
+";
+
+/// The trace build's text (fm3 tracer.md), made of the diagnostic
+/// build's: a statement's site stored is an event; a function that
+/// puts back the site it found says it is back there; and the
+/// platform's two writes stand behind two that ask first whether a
+/// value is being written
+fn settle_trace(ir: &str) -> String {
+    let ir = ir.replace("__site_at(__site_was)", "__site_back(__site_was)");
+    let ir = ir.replacen("fn __site_at(n: i64)\n    p: ptr = addr __site\n    store n, p\n", "fn __site_at(n: i64)\n    p: ptr = addr __site\n    store n, p\n    __trace_at(n)\n", 1);
+    let ir = ir.replacen("fn __out_block(v: u8[])", "fn __out_block0(v: u8[])", 1);
+    ir.replacen("fn __out_ch(c: u8)", &format!("{}fn __out_ch0(c: u8)", TRACE_WORDS), 1)
+}
+
 /// In the diagnostic build (fm3 log 199), a function that stores a site
 /// puts back the one it found: it reads the site as its first line and
 /// stores it again before each `ret`, so that after a call the place
@@ -3466,7 +3629,7 @@ fn settle_sites(ir: &str) -> String {
         i = end;
         let stores = body.iter().any(|l| {
             let t = l.trim_start();
-            t.starts_with("__site_at(") || t.starts_with("__site_at3(")
+            t.starts_with("__site_at(") || t.starts_with("__site_at3(") || t.starts_with("__site_quiet(")
         });
         if stores {
             out.push_str("    __site_was: i64 = __site_now()\n");
@@ -4416,6 +4579,13 @@ struct Lowerer {
     /// the diagnostic build (fm3 log 199): the table of sites, and the
     /// line of the statement being lowered
     sited: bool,
+    /// the trace build (fm3 tracer.md), which is a diagnostic build too;
+    /// and whether the push being lowered is still to be said done
+    traced: bool,
+    trace_open: bool,
+    /// ... and whether the statement being lowered has said each item
+    /// it stored in a stream kept as one value, where it stored it
+    cell_traced: bool,
     sites: Vec<Site>,
     site_line: usize,
     inlining: Vec<String>,
@@ -7038,7 +7208,7 @@ impl Lowerer {
                 self.uncell(name);
                 return Ok(false);
             };
-            self.field_put(name, &v.text, b);
+            self.cell_put(name, &v, b);
         }
         let Some(c) = cond else { return Ok(true) };
         let grouped = &items[once..];
@@ -7078,12 +7248,12 @@ impl Lowerer {
                 return Ok(false);
             };
             if counter.is_some() {
-                self.field_put(name, &v.text, b);
+                self.cell_put(name, &v, b);
                 continue;
             }
             let v = b.materialize(&v);
             if word == Repeat::Until {
-                self.field_put(name, &v.text, b);
+                self.cell_put(name, &v, b);
                 held.clear();
             }
             held.push(v);
@@ -7114,11 +7284,23 @@ impl Lowerer {
             b.depth -= 1;
         }
         for v in &held {
-            self.field_put(name, &v.text, b);
+            self.cell_put(name, v, b);
         }
         b.line("continue");
         b.depth -= 1;
         Ok(true)
+    }
+
+    /// an item stored in a stream kept as one value; in the trace build
+    /// (fm3 tracer.md) the item is an event, opened and done, so that a
+    /// statement that pushes several shows each
+    fn cell_put(&mut self, name: &str, v: &Val, b: &mut Body) {
+        let traced = self.traced && self.trace(&format!("< {} {}$", zero_ty(&v.ty), name), Some(v), None, b);
+        self.field_put(name, &v.text, b);
+        if traced {
+            b.line("__trace_at(0)");
+            self.cell_traced = true;
+        }
     }
 
     /// Is the name a local cell here (fm3 log 186)? A stream declared
@@ -9419,11 +9601,19 @@ impl Lowerer {
                 Some(Stmt::Push { target: Expr { kind: ExprKind::Seq(n), .. }, existing: false, .. }) => Some(n.clone()),
                 _ => None,
             };
-            self.tail = last && i + 1 == stmts.len();
+            // (the trace build writes a value after the statement that
+            // says it, so no function ends at its last result there)
+            self.tail = last && i + 1 == stmts.len() && !self.traced;
             // the diagnostic build keeps its place (fm3 log 199)
             let outer = std::mem::replace(&mut self.site_line, stmt_line(s));
+            let mark = b.out.len();
             self.at("", &[], b);
+            let said = std::mem::take(&mut self.cell_traced);
             let lowered = self.lower_stmt(s, b);
+            if self.traced && matches!(lowered, Ok(false)) {
+                self.trace_said(s, mark, b);
+            }
+            self.cell_traced = said;
             self.site_line = outer;
             self.tail = last;
             terminated = match lowered {
@@ -9440,6 +9630,140 @@ impl Lowerer {
         }
         self.nonzero.truncate(sure);
         Ok(terminated)
+    }
+
+    /// In the trace build (fm3 tracer.md), the row of a place: `what`
+    /// is `= int n`, a name said, `< int x$`, an item pushed into a
+    /// stream, or `/ x$`, a stream ended. None where nothing is traced:
+    /// the build a program runs from, and the platform's own lines
+    fn trace_row(&mut self, what: &str, b: &Body) -> Option<usize> {
+        if !self.traced || self.site_line == 0 || self.cur == "platform" {
+            return None;
+        }
+        let file = b.file.rsplit('/').next().unwrap_or(&b.file).to_string();
+        let row = Site { file, line: self.site_line, what: what.to_string() };
+        Some(match self.sites.iter().position(|s| *s == row) {
+            Some(i) => i + 1,
+            None => {
+                self.sites.push(row);
+                self.sites.len()
+            }
+        })
+    }
+
+    /// ... and a value at it, as zero writes it out: the event, and
+    /// then the value pushed into `out$`, the platform's write going
+    /// to the trace's text until `__trace_end`. `v` is the value, or
+    /// none where `e` is to be worked out for it. False, and nothing
+    /// written, where no `<<` takes the value
+    fn trace(&mut self, what: &str, v: Option<&Val>, e: Option<&Expr>, b: &mut Body) -> bool {
+        let Some(n) = self.trace_row(what, b) else { return false };
+        let held = (b.out.len(), b.ntmp, b.depth, b.loops.len(), self.loose_push, self.sure_push, self.after_push.clone(), self.zerror.take());
+        // (written only where no value is being written already: the
+        // `<<` that writes one is the program's, and says names too)
+        let open = b.tmp();
+        b.line(&format!("{}: u1 = __trace_val({})", open, n));
+        b.line(&format!("if {}", open));
+        b.depth += 1;
+        let vars = b.vars.clone();
+        // (what is kept of a stream is decided by the program and never
+        // by its being watched: a value whose writing would ask for a
+        // stream to be stored that the program keeps as one value is
+        // not written)
+        let kept = self.uncelled.borrow().clone();
+        let line = self.site_line;
+        let done = match (v, e) {
+            (Some(v), _) => self.push_item("out", &Val { text: String::new(), ty: Ty::string(), literal: false }, v.clone(), line, b),
+            (_, Some(e)) => self.lower_stmt(&Stmt::Push { target: Expr { kind: ExprKind::Seq("out".into()), line }, items: vec![e.clone()], group: 1, cond: None, word: Repeat::While, existing: false, forever: false, line }, b).map(|_| ()),
+            _ => Ok(()),
+        };
+        (self.loose_push, self.sure_push, self.after_push) = (held.4, held.5, held.6);
+        self.zerror = held.7;
+        b.vars = vars;
+        let asked = *self.uncelled.borrow() != kept;
+        if asked {
+            *self.uncelled.borrow_mut() = kept;
+        }
+        if done.is_err() || asked {
+            b.out.truncate(held.0);
+            (b.ntmp, b.depth) = (held.1, held.2);
+            b.loops.truncate(held.3);
+            return false;
+        }
+        b.line("__trace_end()");
+        b.depth -= 1;
+        true
+    }
+
+    /// After a statement, in the trace build: each name it said, with
+    /// its value, a stream processor's `_k` as the `k$` its line says;
+    /// and after a push into a stream that is kept as one value, the
+    /// stream's value now, the push opened and done. A statement that
+    /// says a name and calls nothing is that event, so the event of
+    /// its beginning, the site stored at `mark`, is taken back, the
+    /// site still stored
+    fn trace_said(&mut self, s: &Stmt, mark: usize, b: &mut Body) {
+        let proc = b.func.as_ref().is_some_and(|f| f.ir.starts_with("__z"));
+        let names: Vec<String> = match s {
+            Stmt::Var(v) if v.init.is_some() => vec![v.name.clone()],
+            // (a name declared for a branch to give is no event)
+            Stmt::Var(_) => Vec::new(),
+            Stmt::Multi { vars, .. } => vars.iter().map(|p| p.name.clone()).collect(),
+            Stmt::Assign { targets, .. } | Stmt::Loop { into: Some(LoopInto::Assign(targets)), .. } => targets.iter().filter(|t| t.feature.is_none()).map(|t| t.name.clone()).collect(),
+            Stmt::Loop { into: Some(LoopInto::Declare(vars)), .. } => vars.iter().map(|p| p.name.clone()).collect(),
+            // (a feature's stream kept as one value has said each item where it was stored)
+            Stmt::Push { target: Expr { kind: ExprKind::Seq(n), .. }, existing: false, .. } if self.is_lcell(n, b) || (self.is_cell(n, b) && !self.nowed.contains(n) && !self.cell_traced) => vec![n.clone()],
+            _ => return,
+        };
+        let line = self.site_line;
+        let mut said = false;
+        for n in names.iter().filter(|n| !n.starts_with("__")) {
+            let (ty, arr) = match b.vars.get(n) {
+                Some(v) => (v.ty.clone(), v.arr),
+                None => match self.fvar(n) {
+                    Some(f) => (f.ty.clone(), false),
+                    None => continue,
+                },
+            };
+            let shown = if proc && n.starts_with('_') { format!("{}$", &n[1..]) } else { n.clone() };
+            match (&ty, arr) {
+                (Ty::Stream(elem), false) if **elem != Ty::Char => {
+                    // a stream kept as one value: its value now
+                    if self.is_lcell(n, b) || self.is_cell(n, b) {
+                        let e = Expr { kind: ExprKind::Seq(n.clone()), line };
+                        if self.trace(&format!("< {} {}$", zero_ty(elem), n), None, Some(&e), b) {
+                            b.line("__trace_at(0)");
+                            said = true;
+                        }
+                    }
+                }
+                _ => {
+                    let e = Expr { kind: if arr { ExprKind::Seq(n.clone()) } else { ExprKind::Name(n.clone()) }, line };
+                    let mark = if arr { "[]" } else { "" };
+                    said |= self.trace(&format!("= {} {}{}", zero_ty(ty.elem().filter(|_| arr).unwrap_or(&ty)), shown, mark), None, Some(&e), b);
+                }
+            }
+        }
+        let calls = |e: &Expr| {
+            let mut found = false;
+            super::zeroic::walk(e, &mut |x| {
+                found |= matches!(x.kind, ExprKind::Phrase(_) | ExprKind::Existing(_));
+                true
+            });
+            found
+        };
+        let alone = match s {
+            Stmt::Var(v) => match &v.init {
+                Some(Init::Value(e)) => !calls(e),
+                init => init.is_none(),
+            },
+            Stmt::Assign { value, .. } => !calls(value),
+            _ => false,
+        };
+        if alone && (said || names.is_empty()) {
+            let tail = b.out.split_off(mark).replacen("__site_at(", "__site_quiet(", 1);
+            b.out.push_str(&tail);
+        }
     }
 
     /// In the diagnostic build (fm3 log 199, question 115), the site
@@ -9793,6 +10117,11 @@ impl Lowerer {
         let start = b.out.len();
         b.depth += 1;
         let sure = self.nonzero.len();
+        // the trace build (fm3 tracer.md): the loop's own names, each pass
+        for v in if self.traced { vars } else { &[] } {
+            let ty = zero_ty(&b.vars[&v.name].ty);
+            self.trace(&format!("= {} {}", ty, v.name), None, Some(&Expr { kind: ExprKind::Name(v.name.clone()), line }), b);
+        }
         if let Some(c) = cond {
             self.one = true;
             let cv = self.lower_expr(c, Some(&Ty::Bool), b, None)?;
@@ -13097,6 +13426,38 @@ impl Lowerer {
     /// clock unless the ring is regular; a struct pushed field by field;
     /// a task's own output sleeps to its next tick after (log 25)
     fn emit_push(&mut self, name: &str, s: &Val, v: &Val, b: &mut Body) {
+        // the trace build (fm3 tracer.md): the item, and when what it
+        // set off has run, which is before its step at a rate passes:
+        // other things going on have their turns in a step
+        let traced = self.traced && !self.device(name, b) && self.trace(&format!("< {} {}$", zero_ty(&v.ty), name), Some(v), None, b);
+        let outer = std::mem::replace(&mut self.trace_open, traced);
+        self.emit_push_of(name, s, v, b);
+        self.trace_done(b);
+        self.trace_open = outer;
+    }
+
+    /// In the trace build, a block of characters pushed whole into a
+    /// stream that stores it: one event, the block as the text it is
+    /// (a block of anything else is no event yet)
+    fn trace_block(&mut self, name: &str, view: &str, b: &mut Body) -> bool {
+        let Some(n) = self.trace_row(&format!("< string {}$", name), b) else { return false };
+        let open = b.tmp();
+        b.line(&format!("{}: u1 = __trace_val({})", open, n));
+        b.line(&format!("if {}", open));
+        b.depth += 1;
+        b.line(&format!("__out_block({})", view));
+        b.line("__trace_end()");
+        b.depth -= 1;
+        true
+    }
+
+    fn trace_done(&mut self, b: &mut Body) {
+        if std::mem::take(&mut self.trace_open) {
+            b.line("__trace_at(0)");
+        }
+    }
+
+    fn emit_push_of(&mut self, name: &str, s: &Val, v: &Val, b: &mut Body) {
         if b.depth == 0 && b.loops.is_empty() && b.vars.contains_key(name) {
             self.fed.insert(name.to_string());
         }
@@ -13126,6 +13487,7 @@ impl Lowerer {
             // whether or not an edge was on. The rate is a literal, so
             // the period is worked out here
             if let (Some(&hz), false) = (self.rates.get(name), self.in_clock.as_deref() == Some(name)) {
+                self.trace_done(b);
                 self.step_of(name, hz, b);
             }
             return;
@@ -13178,6 +13540,7 @@ impl Lowerer {
             self.wake(name, &s.text, true, b);
             self.trigger(name, b);
             if self.in_clock.as_deref() != Some(name) {
+                self.trace_done(b);
                 self.step_of(name, hz, b);
             }
         }
@@ -13750,8 +14113,15 @@ impl Lowerer {
         // (fm3 log 109); only where `push_view` would give the block
         // to the queue's push whole
         if !text.is_empty() && text.len() < FEW_ITEMS && self.takes_block(name, b) && self.is_queue(name, b) {
+            let traced = self.traced && elem == Ty::Char && {
+                let (view, _) = self.str_view(text, b);
+                self.trace_block(name, &view, b)
+            };
             let (p, n) = self.str_data(text, b);
             b.line(&format!("push_queue_few({}, {}, {})", s.text, p, n));
+            if traced {
+                b.line("__trace_at(0)");
+            }
             return;
         }
         let (view, n) = self.str_view(text, b);
@@ -13781,7 +14151,11 @@ impl Lowerer {
         if self.takes_block(name, b) {
             let regular = if b.vars.contains_key(name) { self.regular_locals.contains(name) } else { self.regular.contains(name) };
             let word = if self.is_queue(name, b) { self.queue_push(s.ty.elem()) } else if regular { "push".to_string() } else { "__push".to_string() };
+            let traced = self.traced && *elem == Ty::Char && self.trace_block(name, view, b);
             b.line(&format!("{}({}, {})", word, s.text, view));
+            if traced {
+                b.line("__trace_at(0)");
+            }
             return;
         }
         if self.zthread.as_ref().is_some_and(|t| t.stream == name && t.depth == b.depth) {
@@ -13847,6 +14221,7 @@ impl Lowerer {
         // (the lines as they were before a tick took their place: a
         // processor's last tick is its own function still)
         let ticked = self.tick_was.get(name).cloned().map(|was| self.bare_edges.insert(name.to_string(), was));
+        let traced = self.trace(&format!("/ {}$", name), None, None, b);
         let gates = self.read_gates(name, b);
         let edges = self.bare_edges.get(name).cloned().unwrap_or_default();
         if let Some(Some(tick)) = ticked {
@@ -13869,6 +14244,9 @@ impl Lowerer {
             if gate.is_some() {
                 b.depth -= 1;
             }
+        }
+        if traced {
+            b.line("__trace_at(0)");
         }
         if bit {
             b.depth -= 1;
@@ -14083,7 +14461,11 @@ impl Lowerer {
             b.line(&format!("{}: index = add {}, {}", a, base, k));
             a
         });
+        let traced = self.trace(&format!("< {} {}$", zero_ty(elem), t.stream), Some(&Val { text: x.clone(), ty: elem.clone(), literal: false }), None, b);
         let next = self.z_step(&zp, &t.each.clone(), &x, at.as_deref(), &carried, true, b);
+        if traced {
+            b.line("__trace_at(0)");
+        }
         let k2 = b.tmp();
         b.line(&format!("{}: index = add {}, 1", k2, k));
         let mut again = vec![k2];

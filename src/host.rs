@@ -149,6 +149,16 @@ pub fn checked() -> &'static str {
 /// it: a check that fails there is reported at the program's line
 pub const OWN_SITE: &str = "platform.zero";
 
+/// what a stop says where it is the trace build's own (fm3 tracer.md):
+/// the trace held all it holds, and the program was stopped there. Its
+/// site is -1, no row of the table
+pub const TRACE_FULL: &str = "at #ffffffffffffffff,";
+
+/// the most events a trace keeps, and the most bytes of the values'
+/// text (`TRACE_WORDS` in `zero/lower.rs`)
+pub const TRACE_EVENTS: i64 = 16384;
+pub const TRACE_TEXT: i64 = 65536;
+
 /// `a failed check at #<site>,<a>,<b>` as the table reads it: what a
 /// stop in the diagnostic build of a zero store says (fm3 log 199), its
 /// site a row of `Lowered.sites` counted from 1, turned into the file,

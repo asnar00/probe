@@ -1,0 +1,52 @@
+; A data item farther from the code than a machine's nearest way of
+; forming an address reaches. On arm64 `adr` reaches a megabyte either
+; way: an item past that is reached in three instructions, `adr` for the
+; low sixteen bits of the distance, the rest in a scratch register, and
+; the two added, and only an item that is so far pays for it (the image
+; is laid out, and compiled again with the items that proved far). A zero
+; store's trace build is such a program: its events are half a megabyte,
+; after the output's times, which are another half.
+
+data near: array(i64, 2) = 11, 22
+data wide: array(u8, 1200000)
+data far: array(i64, 3) = 5, 6, 7
+data farther: array(u8, 300000)
+data last: array(i64, 2) = 8, 9
+
+;! near_word 1 -> 22
+;! far_word 2 -> 7
+;! last_word 0 -> 8
+;! far_kept 40 -> 51
+;! wide_ends 9 -> 18
+fn near_word(i: i64) -> i64
+    p: ptr = addr near
+    v: i64 = load p, i, 8
+    ret v
+fn far_word(i: i64) -> i64
+    p: ptr = addr far
+    v: i64 = load p, i, 8
+    ret v
+fn last_word(i: i64) -> i64
+    p: ptr = addr last
+    v: i64 = load p, i, 8
+    ret v
+; a far item written and read back, a near one beside it untouched
+fn far_kept(x: i64) -> i64
+    p: ptr = addr last
+    store x, p, 8
+    q: ptr = addr near
+    a: i64 = load q
+    b: i64 = load p, 8
+    r: i64 = add a, b
+    ret r
+; both ends of an item that is itself more than the reach
+fn wide_ends(x: i64) -> i64
+    p: ptr = addr wide
+    c: u8 = conv x
+    store c, p
+    store c, p, 1199999
+    a: u8 = load p
+    b: u8 = load p, 1199999
+    s: u8 = add a, b
+    r: i64 = conv s
+    ret r
