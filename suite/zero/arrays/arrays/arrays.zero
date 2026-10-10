@@ -109,7 +109,7 @@ on (bool same) << a text and its letters()
 
 on (int n) << compared for a condition()
     int a[] = [1, 2, 3]
-    n << (7 if (a[] [==] [1 through 3]) else 0)
+    n << 7 if (a[] [==] [1 through 3]) else 0
 
 on (bool same) << what arrived()
     int x$ << 4 << 5 << 6

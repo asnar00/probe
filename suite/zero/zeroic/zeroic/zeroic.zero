@@ -165,7 +165,7 @@ on (int n$) << repeats (char c$)
 
 on (int r$) << risen (int x$)
     bool up$ = x$ > x$[-1] and x$[-1] > 0 or x$ == 100
-    r$ << (1 if (up$) else 0)
+    r$ << 1 if (up$) else 0
 
 on (bool b) << between (int lo) and (int hi) holds (int x)
     b << x >= lo and x <= hi
@@ -173,7 +173,7 @@ on (bool b) << between (int lo) and (int hi) holds (int x)
 on (int n) << joined (int x)
     bool inside = between (1) and (9) holds (x)
     bool odd = x % 2 == 1
-    n << (1 if (inside and odd or x == 100) else 0)
+    n << 1 if (inside and odd or x == 100) else 0
 
 on (bool m, bool k) << a running sum()
     a$ << 1 << 2 << 3
@@ -284,9 +284,9 @@ on pushed after its end()
 
 on (int a, int b) << an output ends()
     lo$ << 1
-    a << (1 if (ended louds$) else 0)
+    a << 1 if (ended louds$) else 0
     end lo$
-    b << (1 if (ended louds$) else 0)
+    b << 1 if (ended louds$) else 0
 
 on (int r$) << decades (int x$)
     bool new$ = x$ / 10 != x$[-1] / 10

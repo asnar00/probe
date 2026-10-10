@@ -61,7 +61,7 @@ on (int n) << zipped call()
     n << k[] + _
 
 on (number n) << smaller of (number a) and (number b)
-    n << (a if (a < b) else b)
+    n << a if (a < b) else b
 
 on (int m) << smallest()
     int i[] = [4, 1, 3]
