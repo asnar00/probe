@@ -9747,16 +9747,31 @@ impl Lowerer {
     fn emit_bin(&mut self, op: &str, mut lv: Val, mut rv: Val, want: Option<&Ty>, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
         let file = b.file.clone();
         let cmp = is_comparison(op);
+        // a literal that does not fit the other side, said as what it
+        // is (fm3 hop 34, transformation 123: `k == 3` was "a kind and
+        // a decimal"), and an enumeration's values with it
+        let said = |v: &Val| match &v.ty {
+            Ty::Num(_) if v.text.contains('.') => "a decimal".to_string(),
+            Ty::Num(_) => "a whole number".to_string(),
+            t => format!("a {}", zero_ty(t)),
+        };
+        let values = |types: &HashMap<String, TypeInfo>, t: &Ty| match t {
+            Ty::Enum(en) => match types.get(en) {
+                Some(TypeInfo::Enum(cases)) => format!(": a {} is one of {}", en, cases.join(", ")),
+                _ => String::new(),
+            },
+            _ => String::new(),
+        };
         if lv.literal && !rv.literal {
             if !fits_literal(&lv, &rv.ty) {
-                return Err(lex::error(&file, line, format!("'{}' on a decimal and a {}", op, zero_ty(&rv.ty))));
+                return Err(lex::error(&file, line, format!("'{}' on {} and a {}{}", op, said(&lv), zero_ty(&rv.ty), values(&self.types, &rv.ty))));
             }
             self.holds(&lv, &rv.ty, &file, line)?;
             lv.ty = rv.ty.clone();
         }
         if rv.literal && !lv.literal {
             if !fits_literal(&rv, &lv.ty) {
-                return Err(lex::error(&file, line, format!("'{}' on a {} and a decimal", op, zero_ty(&lv.ty))));
+                return Err(lex::error(&file, line, format!("'{}' on a {} and {}{}", op, zero_ty(&lv.ty), said(&rv), values(&self.types, &lv.ty))));
             }
             self.holds(&rv, &lv.ty, &file, line)?;
             rv.ty = lv.ty.clone();

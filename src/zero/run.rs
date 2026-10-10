@@ -3664,6 +3664,26 @@ mod tests {
         assert!(!e.contains("is not one of"), "{}", e);
     }
 
+    /// A literal that does not fit the other side of an operator is said
+    /// as what it is (fm3 hop 34, transformation 123): `k == 3` on an
+    /// enumeration was "'==' on a kind and a decimal", and 3 is no
+    /// decimal. The enumeration's values are said with it
+    #[test]
+    fn a_whole_number_is_not_called_a_decimal() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-literal-said");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>run() → \"x\"\n").unwrap();
+        let refused = |line: &str, what: &str| {
+            std::fs::write(dir.join("h/h.zero"), format!("type kind = space | word | number | mark\n\non run()\n    kind k = word\n    out$ << ({})\n", line)).unwrap();
+            let e = emit(&dir).err().unwrap_or_else(|| panic!("not refused: {}", line));
+            assert!(e.ends_with(what), "{}: {}", line, e);
+        };
+        refused("k == 3", "'==' on a kind and a whole number: a kind is one of space, word, number, mark");
+        refused("3 == k", "'==' on a whole number and a kind: a kind is one of space, word, number, mark");
+        refused("k == 2.5", "'==' on a kind and a decimal: a kind is one of space, word, number, mark");
+    }
+
     /// A conversion between an abstract whole number and a library
     /// number, a float or a time, in a function whose first line names
     /// no abstract type (fm3 log 173): the lowered IR did not parse,
