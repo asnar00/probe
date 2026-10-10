@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: an item's place is worked out where it is read, under the test that reads it — `c688c5f` · 2026-10-10
+
+```
+    index start$ = position c$ if (new$) else start$[-1]
+```
+
+`suite/zero/lex-zeroic/lex/lex.zero:22`, the six-line lexer's line that says where a token starts. A text pushed into the lexer's input is a loop with the lexer's lines in it, and the item's place, `position c$`, was an add at the head of each pass, though only the arm where a token begins reads it; `fm3/examples/lex-each-min.ssa` works it out there. `z_block` in `src/zero/lower.rs` now moves the add, once the pass's lines are written, to stand before the one line that reads it, where exactly one line does and it stands under `if` and `else` alone (`sink_to_reader`). The add's operands stand before the pass and its reader after it, so nothing is read before it is made; it is one add on fewer paths, so no program pays more. Read in two lines, or under a loop, it stays where it was.
+
+The second landing of the parity method on the six lines (fm3 log 258), and the last: the table's rows that could be taken are now none. `two arrivals` as it ran, static: 481 to **478**, level with its oracle's 478; dynamic: 488 to **485** against 493. Said before the build: 478 and 485. On the tool no change, 725 and 732, against 730 and 745. `a word at the end` 142 to 140 and 146 to 144. The two lexer stores' text moves and no other. Unit test `an_instruction_read_in_one_arm_is_worked_out_there`.
+
+---
+
 ### zero: the count of a literal's loop is said once, before the loop — `99f9a64` · 2026-10-10
 
 ```
