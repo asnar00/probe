@@ -2471,6 +2471,23 @@ impl Lowerer {
 }
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
+    // A store where a turn of the list can start a function that
+    // pushes at a rate (fm3 question 135, log 232) is lowered again
+    // with a pool of activities, and such functions rewritten as
+    // continuations (`turns.rs`). The question is asked of the
+    // finished text, and only where a case's input arrives at a time:
+    // every other store is lowered once, as it was. Where the rewrite
+    // does not hold some function's shape the store stays as it was
+    let first = lower_as(store, false)?;
+    if super::turns::wanted(&first.ir) {
+        if let Ok(second) = lower_as(store, true) {
+            return Ok(second);
+        }
+    }
+    Ok(first)
+}
+
+fn lower_as(store: &Store, acts: bool) -> Result<Lowered, Error> {
     // Which streams are cells is settled by lowering (fm3 log 143):
     // whether a mention wants one value is a matter of types, which
     // only the lowering knows. Every stream that could be a cell is
@@ -2481,7 +2498,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     let mut streams = Names::new();
     loop {
         let noted = std::rc::Rc::new(std::cell::RefCell::new(Names::new()));
-        let r = lower_pass(store, &streams, noted.clone());
+        let r = lower_pass(store, &streams, noted.clone(), acts);
         let noted = noted.borrow();
         if noted.is_subset(&streams) {
             return r;
@@ -2490,7 +2507,7 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     }
 }
 
-fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::RefCell<Names>>) -> Result<Lowered, Error> {
+fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::RefCell<Names>>, acts: bool) -> Result<Lowered, Error> {
     // the processors read the new way leave the store before anything
     // looks at it (fm3 log 124): their bodies are not tasks that walk,
     // and every pass below reads a store's functions as written
@@ -2499,7 +2516,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features) };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features), acts };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2934,6 +2951,16 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     if store.times || store.features.iter().any(|f| f.cases.iter().any(|c| matches!(c.expect, Expect::Timed(_)))) {
         roots.insert("__out_mark".to_string());
     }
+    // a function partway through a push at a rate is a thing going on
+    // (fm3 log 232): the rewrite, or the store as it was
+    let ir = if acts {
+        match super::turns::rewrite(&ir) {
+            Some(t) => t,
+            None => return Err(Error { file: store.path.display().to_string(), line: 0, msg: "a function that pushes at a rate has a shape the activities do not hold".into() }),
+        }
+    } else {
+        ir
+    };
     let mut pruned = prune(&ir, &roots);
     // ... and a store where nothing waits and no case reads a mark
     // keeps no marks, so its reset does not clear them
@@ -4342,6 +4369,9 @@ struct Lowerer {
     /// some case of the store gives its input a time (fm3 log 220):
     /// the input is then one of the things going on
     timed_in: bool,
+    /// the store has a pool of activities (fm3 log 232): a turn of the
+    /// list can start a function that pushes at a rate
+    acts: bool,
     /// the streams some `restart` names (fm3 log 220): each has a
     /// phase and the number of its run in the context
     restarts: Names,
@@ -7582,6 +7612,10 @@ impl Lowerer {
                 self.type_lines.push(";   __in_n, __in_k, __in_t, __in_c, __due_in, __in_busy: the input that arrives at a time: how many characters a case gave and how many have arrived, their times and themselves, the time the next is due, and whether what reads the input is partway through an arrival".into());
                 own.push_str("__in_n: index\n    __in_k: index\n    __in_t: ptr\n    __in_c: ptr\n    __due_in: i64\n    __in_busy: u1\n    ");
             }
+            if self.acts {
+                self.type_lines.push(";   __act_n, __due_act, __act_i: the pool of activities (fm3 log 232): how many have started, the least time any is due, and which that is".into());
+                own.push_str("__act_n: index\n    __due_act: i64\n    __act_i: index\n    ");
+            }
             let restarts: Vec<String> = self.fvars.iter().filter(|f| self.restarts.contains(&f.name)).map(|f| f.name.clone()).collect();
             for n in &restarts {
                 self.type_lines.push(format!(";   __run_{n}, __phase_{n}: the number of '{n}$'s run, one more at each `restart`, and where its beat begins", n = n));
@@ -7762,6 +7796,9 @@ impl Lowerer {
             let mut own = String::new();
             if self.timed_in {
                 own.push_str(&format!("0, 0, it, ic, {}, 0, ", NEVER));
+            }
+            if self.acts {
+                own.push_str(&format!("0, {}, 0, ", NEVER));
             }
             let restarts = self.fvars.iter().filter(|f| self.restarts.contains(&f.name)).count();
             own.push_str(&"0, 0, ".repeat(restarts));
@@ -7994,6 +8031,14 @@ impl Lowerer {
                 format!("g{n}: u1 = get x, {field}\nif g{n}\n    {f}()\nelse\n    y{n}: __ctx = load {this}\n    v{n}: i64 = get y{n}, {due}\n    w{n}: i64 = add v{n}, {period}\n    z{n}: __ctx = set y{n}, {due}, w{n}\n    store z{n}, {this}", n = k + 1, field = field, f = c.name, this = THIS, due = c.due, period = c.period).lines().map(str::to_string).collect()
             };
             things.push((c.due.clone(), turn));
+        }
+        // ... and then the pool of activities, each started after
+        // those (fm3 log 232): one word for all of them
+        if self.acts {
+            things.push(("__due_act".into(), vec!["__act_turn()".into()]));
+            for f in ["__act_n", "__due_act", "__act_i"] {
+                self.written.insert(f.to_string());
+            }
         }
         let mut t = String::from("\n; the things going on (fm3 log 217): each has a word of the context, the time it is next due; the earliest due by t has its turn at its time, the first started of two at one time, until none is due\nfn __turns(t: i64)\n    loop(n: i64 = 0)\n");
         writeln!(t, "        some: u1 = cmp.lt n, {}\n        check some\n        x: __ctx = load {}", TURNS, THIS).unwrap();

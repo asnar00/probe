@@ -2219,6 +2219,37 @@ mod tests {
     /// earliest; a step of a rate gives the others their turns; and a
     /// case's twin computes the whole timeline. A store with one thing
     /// going on has none of it and is the text it was
+    /// A function partway through a push at a rate is a thing going on
+    /// (fm3 question 135, log 232): where something that arrives can
+    /// start one, it is continuations over a pool, with no step that
+    /// holds the stack; and in every other store it is the loop it was
+    #[test]
+    fn a_function_partway_is_a_thing_going_on() {
+        for store in ["suite/zero/going-two", "suite/zero/restart"] {
+            let ir = emit(Path::new(store)).unwrap();
+            for there in ["\nfn count_down__0(__a: index) -> i64\n", "\nfn count_down__2(__a: index) -> i64\n", "\nfn launch__1(__a: index) -> i64\n", "\nfn __act_turn()\n", "\ndata __act_due: array(i64, 128)\n", "        __act_w: index = __act_start___z1_each(__item)\n", "    __act_w: index = __act_start_launch()\n", "__act_turn()\n"] {
+                assert!(ir.contains(there), "{} lacks {:?}", store, there);
+            }
+            // nothing is left that steps while holding the stack, and
+            // the functions as they were written are gone
+            for gone in ["\nfn __step(", "\nfn count_down()", "\nfn launch()", "\nfn launched_by("] {
+                assert!(!ir.contains(gone), "{} has {:?}", store, gone);
+            }
+        }
+        // the countdown's loop, left at its step and begun again from
+        // the number it was left with, what followed the step first
+        let two = emit(Path::new("suite/zero/going-two")).unwrap();
+        assert!(two.contains("    loop(_8: int = _8__s, __q: u1 = 1)\n        if __q\n            _11: int = sub _8, 1\n            continue _11, 0\n"), "{}", two);
+        // a store where no turn can start a function that steps has
+        // none of it: a timed input whose function does not push at a
+        // rate, a clock beside a countdown, and one thing going on
+        for store in ["suite/zero/going-keys", "suite/zero/going-beside", "suite/zero/going", "suite/zero/hello", "suite/zero/static", "suite/zero/timed"] {
+            let ir = emit(Path::new(store)).unwrap();
+            assert!(!ir.contains("__act_") && !ir.contains("__0("), "{}", store);
+        }
+        assert!(emit(Path::new("suite/zero/going-keys")).unwrap().contains("\nfn count_down()\n"));
+    }
+
     #[test]
     fn several_things_going_on() {
         let dir = std::env::temp_dir().join(format!("probe-zero-going-{}", std::process::id()));

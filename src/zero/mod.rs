@@ -11,6 +11,7 @@ pub mod meter;
 pub mod run;
 pub mod store;
 pub mod syntax;
+pub mod turns;
 pub mod zeroic;
 
 use crate::{ssa, suite};
