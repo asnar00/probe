@@ -137,7 +137,7 @@ const OWN: &str = "platform";
 /// what a failed check of the language's own says, by the function it
 /// stands in: `check (c)` has no way to say why in zero (fm3 question
 /// 128, provisional)
-const OWN_CHECKS: [(&str, &str); 1] = [("over_one_divisor", "a time is too fine to hold")];
+const OWN_CHECKS: [(&str, &str); 2] = [("over_one_divisor", "a time is too fine to hold"), ("finer_divisor", "a time is too fine to hold")];
 
 /// zero's spelling of a builtin number type to the IR's (section 4)
 fn builtin_type(name: &str) -> Option<Ty> {

@@ -77,3 +77,6 @@ on (time t) << a third and a half()
 
 on too fine (int64 a, int64 b)
     out$ << 1 s / a + 1 s / b
+
+on too fine a part (int64 n)
+    out$ << 1 s / n

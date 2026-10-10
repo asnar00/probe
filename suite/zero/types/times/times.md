@@ -17,7 +17,7 @@ fm3 question 120, Ash, the same day: a time is an exact rational, a count over a
 - `beat` is a `time` at feature scope, `250 ms`.
 - `a time added`, `a time taken`, `a time scaled`, `a time scaled by (n)`, `a number first`, `a time divided`, `a ratio`, `times compared`, `the same` and `each written` each use one of the language's functions on a time, and write what it gives.
 - `a third given back`, `a third`, `two quarters` and `a ratio exactly` are what a reader must see of an exact time: `1 s / 3 * 3` is `1 s`.
-- `two divisors` and `two divisors compared` add, take and compare times whose divisors differ; `a part of a second (n)` makes a time whose divisor is not known until the program runs, `1 s / n`; `a third and a half` gives a time as its result, which a case says as a time; `too fine (a, b)` adds two times whose sum no divisor that fits can hold.
+- `two divisors` and `two divisors compared` add, take and compare times whose divisors differ; `a part of a second (n)` makes a time whose divisor is not known until the program runs, `1 s / n`; `too fine a part (n)` is `1 s / n` written out, for an `n` of 64 bits; `a third and a half` gives a time as its result, which a case says as a time; `too fine (a, b)` adds two times whose sum no divisor that fits can hold.
 - `(time a) * (time b)` is this feature's own operator, declared as on any structure; `squared` uses it.
 - `twice (a)` takes a time and gives one; `kept two` keeps two in an array and compares the array whole, `ts[] [==] [250 ms, 750 ms]`; `nothing given` is the zero of the type. A time that was worked out handed to `x$ at (t)` is `suite/zero/streams`' `sampled at a time worked out`, a time word making every stream of its store keep a time.
 
@@ -25,6 +25,7 @@ fm3 question 120, Ash, the same day: a time is an exact rational, a count over a
 - A time is added to a time and taken from one: `beat + 100 ms`, `1 s - beat`. Two of one divisor add by their counts; where one divisor is a multiple of the other the coarser count is scaled; otherwise both are brought to their least common multiple, `1 s / 3 + 1 s / 7` being ten twenty-firsts of a second. Where that cannot be held in 64 bits a check fails, saying a time is too fine to hold, at the line of the program that added: the check stands in the language's own file, and a person is told their own line, `a failed check at times.zero:79: a time is too fine to hold` (fm3 question 131).
 - It is multiplied by a whole number on either side and divided by one, exactly: `beat * 2`, `beat / 2`, `1 s / 3`. By a decimal, `1.5 * beat`, `beat / 2.5`, it is worked out in `float64` and cut to a whole nanosecond.
 - A time divided by a whole number that is zero, or by a time that is none, is a failed check that says its line and `a division by zero` (fm3 question 116): `a part of a second (0)`. The check stands in the program's line and is left out where the compiler knows the number, `1 s / 3`.
+- A time divided so fine that its divisor cannot be held is a failed check that says the program's line and `a time is too fine to hold` (fm3 question 136): a second's divisor is a thousand million, and a thousand million times `n` must fit in 64 bits. `too fine a part (9223372036)` is held, and written as the whole nanoseconds it has, none; `too fine a part (9223372037)` is not, nor is 2^55, whose product would wrap to nothing. The check is in the language's own function, `finer divisor`, which the division calls. `too fine a part (0)` is a division by zero first.
 - A time divided by a time is a `float`, and is how a number comes out of one: `beat / 1 ms` is 250.0, `2500 ms / 1 ms` exactly 2500.0, and `int(2500 ms / 1 s)` its whole seconds.
 - A time is compared with a time, `<`, `<=`, `>`, `>=`, `==`, `!=`: two that are the same moment are equal whatever their divisors, `1 s / 2 == 500 ms`.
 - `out$ << t` writes it as the language would read it: to the nanosecond, toward zero, in the largest of `s`, `ms`, `us`, `ns` in which it is at least 1. So a third of a second is written `333.333333 ms` and is still a third.
@@ -58,6 +59,10 @@ fm3 question 120, Ash, the same day: a time is an exact rational, a count over a
 >a part of a second (0) → check at times.zero:73
 >a third and a half() → 833.333333 ms
 >too fine (4000000007, 4000000009) → check at times.zero:79
+>too fine a part (36028797018963968) → check at times.zero:82
+>too fine a part (9223372036) → "0 s"
+>too fine a part (9223372037) → check at times.zero:82
+>too fine a part (0) → check at times.zero:82
 
 ## hostile
 Each is refused where the program is compiled, in these words (a store that does not declare the operator, `beat` a `time` and `n` an `int`):

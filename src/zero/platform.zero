@@ -91,8 +91,12 @@ on (time t) << (time a) * (float k)
 on (time t) << (float k) * (time a)
     t << if (1000000000 % a.divisor == 0) then (time(int64(k * (a.count * (1000000000 / a.divisor))), 1000000000)) else (time(int64(k * (float64(a.count) * 1000000000.0 / float64(a.divisor))), 1000000000))
 
+on (time top) << finer divisor (time x, int64 k)
+    check (k >= 0 and k <= 9223372036854775807 / x.divisor)
+    top << time(x.count, x.divisor * k)
+
 on (time t) << (time a) / (int k)
-    t << time(if (k < 0) then (0 - a.count) else (a.count), a.divisor * (if (k < 0) then (0 - k) else (k)))
+    t << finer divisor (time(if (k < 0) then (0 - a.count) else (a.count), a.divisor), if (k < 0) then (0 - k) else (k))
 
 on (time t) << (time a) / (float k)
     t << if (1000000000 % a.divisor == 0) then (time(int64(a.count * (1000000000 / a.divisor) / k), 1000000000)) else (time(int64(float64(a.count) * 1000000000.0 / float64(a.divisor) / k), 1000000000))
