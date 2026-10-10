@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream's name as an operand is refused where a function or `for` wants an array — `e22a9fd` · 2026-10-10
+
+```
+    int x$ << 1 << 2 << 3
+    n << [sum of] (x$ * 2)
+    for (v in x$ * 2)
+```
+
+Lines no store has: they are what is now refused. fm3 question 97 listed three lines in a function that still read a stream's name as everything unread once an operator stood round it. `int j[] = x$ * 2` has been refused since `d82f03d`, naming `frame x$`. The other two went on working: `[sum of] (x$ * 2)`, handed to a function declared over an array, gave 12, the sum of the three items doubled, and `for (v in x$ * 2)` walked three. Question 126's second principle, arrays and streams are two kinds and nothing meant for one is silently applied to the other, decides both. They are refused in the words of the first: "`x$ * ...` is one value, made from the latest item of 'x$', and `for` walks an array: a stream's name is its value now, and nothing of an array's is silently asked of a stream (fm3 questions 90 and 97). The array of what has arrived is `frame x$`, `for (v in frame x$ * 2)`", and for the function, "... and 'sum of' takes an array here, `int a[]` ... write that where `x$` stands".
+
+`for` is refused where names are held to their marks (`src/zero/kinds.rs`, `Stmt::For`, by `stream_operand`, which the declaration's refusal uses); the argument is refused where it is held to its parameter's kind (`src/zero/lower.rs`), since that is where the compiler knows the parameter is an array. `frame x$ * 2` in either place is as it was. No line of the suite said either, so no store's emitted text moved (`scratchpad/irdiff.sh scratchpad/probe141`) and no case changed; `src/zero/run.rs` holds the two refusals beside the ones for a bare `x$`. The six tracked rows are as they were; the meter is 51 of 2 935. The full run is `scratchpad/chain131.log`: 1245 runs of the zero suite on four paths and 1204 on air, `probe test` 1025, `cargo test` 186.
+
+---
+
 ### zero: `==` and `!=` on two strings give one bool, declared in zero — `6190724` · 2026-10-10
 
 ```
