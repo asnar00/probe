@@ -5659,7 +5659,13 @@ impl Lowerer {
             }
             _ => {
                 let _ = line;
-                Ok(self.zero_val(elem, b))
+                // (a `float`'s zero is written as one, `0.0`: written
+                // `0` it is a whole number to whatever is handed it
+                // with no name between, `out$ << f[3]`, fm3 log 254)
+                match elem {
+                    Ty::Num(t) if !is_integer(t) => Ok(Val { text: "0.0".into(), ty: elem.clone(), literal: true }),
+                    _ => Ok(self.zero_val(elem, b)),
+                }
             }
         }
     }

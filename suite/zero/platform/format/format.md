@@ -12,6 +12,7 @@ A push into a stream of characters is dispatched on the item's type (section 6).
 
 ## interface
 - `an int`, `a negative int`, `an int64` write integers in decimal; `ints` and `a frame` a sequence of them with spaces.
+- `a float outside` reads a place outside an array of `float`, the place written out, with no name between the read and the write: the value is a `float`'s zero and is written `0.0` (fm3 log 254; it was written `0`, the zero having been a whole number's).
 - `a float`, `floats`, `a third`, `a negative float`, `a large float`, `two thirds` write floats: the whole part, a point, up to six places with the trailing zeros dropped but one kept; `not a number` and `infinity` write `nan`, `inf`, `-inf`.
 - `a bool` writes `true` and `false`; `a byte` writes a `uint8` as the number it is, and `a char` writes two `char`s as the characters they are.
 - `a struct` writes `point`'s fields with spaces; `a pair` takes this feature's own method; `a colour` writes an enumeration's case.
@@ -31,6 +32,7 @@ A push into a stream of characters is dispatched on the item's type (section 6).
 >a frame() → "5 6 7"
 >a float() → "2.5"
 >floats() → "1.5 3.0 0.25"
+>a float outside() → "0.0 3.0 0.0"
 >a third() → "0.333333"
 >a negative float() → "-0.5"
 >a large float() → "1000000.0"
