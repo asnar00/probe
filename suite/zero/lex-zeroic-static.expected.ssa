@@ -223,7 +223,6 @@ fn arrive_first()
         if _18
             break _11, _13, _15
         _19: u8 = load _9, _10, 1
-        _20: index = add _5, _10
         _k: kind = kind_of(_19)
         _21: u1 = cmp.eq _k, 3
         _22: u1 = cmp.ne _k, _11
@@ -236,6 +235,7 @@ fn arrive_first()
                 _25: token$ = get _24, u
                 _26: token = pack _11, _15, _13
                 push_queue_open(_25, _26)
+            _20: index = add _5, _10
             yield _n, _20
         else
             _n_2: index = add _13, 1
@@ -268,7 +268,6 @@ fn arrive_again()
         if _18
             break _11, _13, _15
         _19: u8 = load _9, _10, 1
-        _20: index = add _5, _10
         _k: kind = kind_of(_19)
         _21: u1 = cmp.eq _k, 3
         _22: u1 = cmp.ne _k, _11
@@ -281,6 +280,7 @@ fn arrive_again()
                 _25: token$ = get _24, u
                 _26: token = pack _11, _15, _13
                 push_queue_open(_25, _26)
+            _20: index = add _5, _10
             yield _n, _20
         else
             _n_2: index = add _13, 1
@@ -419,7 +419,6 @@ fn a_word_at_the_end() -> (int, int)
         if _18
             break _11, _13, _15
         _19: u8 = load _9, _10, 1
-        _20: index = add _5, _10
         _k: kind = kind_of(_19)
         _21: u1 = cmp.eq _k, 3
         _22: u1 = cmp.ne _k, _11
@@ -432,6 +431,7 @@ fn a_word_at_the_end() -> (int, int)
                 _25: token$ = get _24, u
                 _26: token = pack _11, _15, _13
                 push_queue_open(_25, _26)
+            _20: index = add _5, _10
             yield _n, _20
         else
             _n_2: index = add _13, 1

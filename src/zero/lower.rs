@@ -14556,6 +14556,7 @@ impl Lowerer {
         } else {
             b.line(&format!("{}: {} = load {}, {}", x, elem.ir(), from, k));
         }
+        let placed = b.out.len();
         let at = base.as_ref().map(|base| {
             let a = b.tmp();
             b.line(&format!("{}: index = add {}, {}", a, base, k));
@@ -14572,6 +14573,12 @@ impl Lowerer {
         again.extend(next.into_iter().flatten());
         b.line(&format!("continue {}", again.join(", ")));
         b.depth -= 1;
+        // the item's place is worked out where it is read, where one
+        // line of the pass reads it and that line stands under tests
+        // alone (fm3 log 258): `start$` takes it where a token begins
+        if let (Some(a), false) = (&at, self.traced) {
+            sink_to_reader(&mut b.out, placed, a);
+        }
         t.kept = left;
         if let Some(base) = base {
             t.at = Some(match known {
@@ -17704,6 +17711,53 @@ fn fits_literal(v: &Val, ty: &Ty) -> bool {
 }
 
 /// an integer type, abstract or concrete, by its IR name
+/// The line at `mark`, which says `name`, moved to stand before the one
+/// line after it that reads `name`, where there is exactly one and it
+/// stands deeper, under `if` and `else` alone: an instruction whose
+/// operands stand before `mark` is then worked out only on the path
+/// that reads it. Read twice, or not at all, or under a loop, the line
+/// stays where it is
+fn sink_to_reader(out: &mut String, mark: usize, name: &str) {
+    let text = out[mark..].to_string();
+    let lines: Vec<&str> = text.lines().collect();
+    let Some((def, rest)) = lines.split_first() else { return };
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.';
+    let reads = |l: &str| -> usize { l.match_indices(name).filter(|(i, _)| !l[..*i].chars().next_back().is_some_and(word) && !l[i + name.len()..].chars().next().is_some_and(word)).count() };
+    let readers: Vec<usize> = rest.iter().enumerate().filter(|(_, l)| reads(l) > 0).map(|(i, _)| i).collect();
+    let [at] = readers.as_slice() else { return };
+    if reads(rest[*at]) != 1 || indent(rest[*at]) <= indent(def) {
+        return;
+    }
+    // what the reader stands under, from its own line outwards
+    let mut depth = indent(rest[*at]);
+    for l in rest[..*at].iter().rev() {
+        if indent(l) >= depth {
+            continue;
+        }
+        let said = l.trim_start();
+        if !(said.starts_with("if ") || said == "else" || said.contains(" = if ")) {
+            return;
+        }
+        depth = indent(l);
+        if depth <= indent(def) {
+            break;
+        }
+    }
+    let mut moved = String::new();
+    for (i, l) in rest.iter().enumerate() {
+        if i == *at {
+            moved.push_str(&" ".repeat(indent(l)));
+            moved.push_str(def.trim_start());
+            moved.push('\n');
+        }
+        moved.push_str(l);
+        moved.push('\n');
+    }
+    out.truncate(mark);
+    out.push_str(&moved);
+}
+
 /// may a value of this type ride in a stream's reader as one word
 /// (fm3 question 147)? What `else (v)` may be: a number, a character,
 /// a `bool`, a name of an enumeration
@@ -17867,5 +17921,31 @@ fn declares_name(s: &Stmt, name: &str, but: &Stmt) -> bool {
         }
         Stmt::For { var, body, .. } => var == name || body.iter().any(|t| declares_name(t, name, but)),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sink_to_reader;
+
+    /// An instruction is moved to its one reader where that reader
+    /// stands under tests alone (fm3 log 258), and stays where it is
+    /// read twice, read at its own depth, or read under a loop
+    #[test]
+    fn an_instruction_read_in_one_arm_is_worked_out_there() {
+        let moved = |text: &str| -> String {
+            let mut out = format!("    before\n{}", text);
+            sink_to_reader(&mut out, "    before\n".len(), "_9");
+            out["    before\n".len()..].to_string()
+        };
+        let def = "    _9: index = add _5, _10\n";
+        // one reader, in an arm of an arm
+        assert_eq!(moved(&format!("{}    _n: index, _s: index = if _new\n        if _c\n            push(_q)\n        yield 1, _9\n    else\n        yield _m, _15\n    continue _k\n", def)), "    _n: index, _s: index = if _new\n        if _c\n            push(_q)\n        _9: index = add _5, _10\n        yield 1, _9\n    else\n        yield _m, _15\n    continue _k\n");
+        // in the `else`
+        assert_eq!(moved(&format!("{}    if _new\n        f()\n    else\n        g(_9)\n", def)), "    if _new\n        f()\n    else\n        _9: index = add _5, _10\n        g(_9)\n");
+        // read twice; read where it stands; read under a loop; a longer name is another name
+        for same in ["    _s: index = if _new\n        yield _9\n    else\n        yield _15\n    continue _9\n", "    continue _9\n", "    loop(i: index = 0)\n        if _c\n            g(_9)\n        continue i\n", "    if _c\n        g(_90, x_9)\n"] {
+            assert_eq!(moved(&format!("{}{}", def, same)), format!("{}{}", def, same), "{}", same);
+        }
     }
 }
