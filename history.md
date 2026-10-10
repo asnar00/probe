@@ -4,6 +4,14 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a name that is none of an enumeration's values is told so, with the values — `5176282` · 2026-10-10
+
+```
+                                return Err(lex::error(&file, e.line, format!("'{}' is not one of {}'s values: {}", w, en, cases.join(", "))));
+```
+
+`src/zero/lower.rs:13148`. With `type kind = space | word | number | mark`, `kind k = letter` was refused as "no function named 'letter'": a lone word where an enumeration's value is wanted, that is no variable, no value and no function, fell through to the call. It now says "'letter' is not one of kind's values: space, word, number, mark", and `k == letter` the same. A function's name there is told what it was. Test `a_name_that_is_no_value_of_an_enumeration`. No store's emitted IR moves and no number. `cargo test zero` 79.
+
 ### zero: `time` is a structure declared in zero, and does only what is declared on it — `7dcff83` · 2026-10-10
 
 ```
