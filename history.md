@@ -4,6 +4,21 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `==` and `!=` on two strings give one bool, declared in zero — `6190724` · 2026-10-10
+
+```
+on (bool r) << is zero (string s)
+    r << s == "zero"
+```
+
+`suite/zero/strings/strings/strings.zero:27`. `string s` has no mark and is a value made of characters, but `s == t` was refused with the other plain comparisons of arrays, "applied to each pair", pointing at `s [==] t`. fm3 question 100, decided by question 126's sixth principle (a utility type is declared in zero with only the functions that make sense), makes it one `bool`, and it is said in zero: `src/zero/platform.zero:178`, `on (bool r) << (string a) == (string b)` with the one line `r << a [==] b`, and `!=` with `[!=]`, at the file's end so that no line number of the language's own moved. The compiler writes that line where the comparison stands, as it does a `time`'s operators, so `s == t` emits what `s [==] t` emits and costs the same.
+
+Two things stood in the way of saying it in zero and are changed in `src/zero/lower.rs`. An operator wanted a declared structure for one of its operands: the language's own feature may now declare one on two strings. And the compiler's type for a string is an array of characters', so a comparison asks of each side how it is written (`string_written`): a name with no mark whose type is `string`, or a text in quotes. `cs[] == ds[]` on two arrays of `char` is still each pair and still refused; `s < t` is refused, "a string has `==` and `!=`, whether two texts are the same, and nothing that says which comes first". A structure with a `string` field now compares field by field, which fm3 question 108 refused for want of this (`struct_same`, `strings_same`). Not built: a string that is a field read by name, `a.text == "let"`, or a function's result is still refused as two arrays, and `[==]` works there (fm3 question 144).
+
+No store's emitted text moved but the new one's, `suite/zero/strings`, 12 cases; `two_strings_are_compared_as_values` and `two_structures_are_compared_a_field_at_a_time` (`src/zero/run.rs`). The six tracked rows are as they were; the meter is 51 of 2 935. The full run is `scratchpad/chain130.log`: 1245 runs of the zero suite on four paths and 1204 on air, `probe test` 1025, `cargo test` 186.
+
+---
+
 ### zero: the 18 pushes of a value on a condition, written as a push says it — `92c87f7` · 2026-10-10
 
 ```
