@@ -4,6 +4,25 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a clock, and several things going on at once, taken in time order — `076b7df` · 2026-10-10
+
+```
+int slow$ at (2 hz)
+int quick$ at (5 hz)
+slow$ << slow$ + 1 if (slow$ < 3) forever
+quick$ << quick$ + 10 if (quick$ < 60) forever
+out$ << (slow$ << "\n") forever
+out$ << (quick$ << "\n") forever
+```
+
+`suite/zero/going/going/going.zero:1-6`. A line that stands with nothing on its right but its own stream, at a rate, is a clock (fm3 question 80, ruled 7 October): paced by its stream's rate, one more item each beat. It was refused, "it needs a schedule ordered by time", because one function at a time had a now. This is the second half of `fm3/schedule.md`: each such line is a thing going on with a now of its own, and the runner takes whichever is due earliest, the first started of two at one time (question 121). `begin`, which writes `go`, gives `"1\n10\ngo\n" at 0 s, "20\n" at 200 ms, "30\n" at 400 ms, "2\n" at 500 ms, "40\n" at 600 ms, "50\n" at 800 ms, "3\n60" at 1 s`: the two streams' items in time order, `slow$`'s first at 0 s and at 1 s, the case's function after both at 0 s, and the clocks going on to 1 s after it has returned.
+
+A clock's function has no item and is the line's own push, which neither waits for a slot nor moves the clock (`in_clock`), and after it a word of the context, `__dueN`, the time the line is next due, moved on a period; where the `if` fails the word is no time at all (`collect_edge`, `ClockLine`, `src/zero/lower.rs:4265`). The list is those words in the order written. `__turns(t)` (`emit_turns`, `:7698`) finds the least, and while it is at or before `t` moves the clock there and calls that line. It is asked in three places: `__zero_start`, for what is due at the start; `__step`, where a function's own now moves on, for everything else due by the time the step ends (`STEP_TURNS`, `:876`); and a twin of the case's function, `__whole_<name>`, for all that is left. A clock that never stops fails a check after 10 000 turns. There is no fibre in it: wasm and the GPU's path have no second stack, so a thing going on is a function that returns, its state the context's.
+
+A store with no clock has none of this. Every store of the suite but the new one is the text it was, byte for byte (`scratchpad/irdiff.sh` against the binary before), and hello's `run` is 939 and static's 918 as they were. Counted as it ran, an item of one of two clocks costs 47 and the line that writes it: 25 the list asked, 7 the wait, 15 the clock's own function. `several_things_going_on` (`src/zero/run.rs`) holds both halves. The case gave one text in twenty runs and on five paths; the full run is `scratchpad/chain108.log`, 1048 runs of the zero suite on four paths and 1010 on air, `cargo test` 178.
+
+---
+
 ### zero: the output's count and the clock are the context's — `e3d9ffe` · 2026-10-10
 
 ```
