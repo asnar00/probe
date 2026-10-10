@@ -2523,7 +2523,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features), acts };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), zelse: HashMap::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features), acts };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2817,10 +2817,16 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         writeln!(l.out, "fn __{}_{}(hz: i64, cap: index) -> {}$\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, 64)\n{}    sz: index = sizeof {}\n    bytes: index = mul sz, {}\n    total: index = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, {})\n{}    {}\n    s: {}$ = stream r\n    ret s", maker, t, t, line, t, slots, slots, ticks, init, t).unwrap();
     }
     if !l.ats.is_empty() {
-        writeln!(l.out, "\n; a stream read at a time where the compiler does not know its rate (fm3 question 120, log 248): the time comes as a tick of the stream's clock, worked out in integers where the read is; the item at or before it is found by the library's `before`, arithmetic on a ring with a rate and a search by halves over the ticks on one without, bounded by what the ring keeps; `near` takes the later item where it is strictly closer. Before the first item the read gives `zero`, after the latest the latest; a time whose item the ring no longer keeps fails the ring's own check").unwrap();
+        writeln!(l.out, "\n; a stream read at a time where the compiler does not know its rate (fm3 question 120, log 248): the time comes as a tick of the stream's clock and what is left over of one, `left` parts of `over`, worked out in integers where the read is; the item at or before it is found by the library's `before`, arithmetic on a ring with a rate and a search by halves over the ticks on one without, bounded by what the ring keeps; `rule` is what the stream's declaration says of a time between two items (fm3 question 127, log 250), 0 the item at or before, 1 `nearest`, the later item where it is strictly closer, 2 `linear`, the two blended by how far along the tick is. Before the first item the read gives `zero`, after the latest the latest; a time whose item the ring no longer keeps fails the ring's own check").unwrap();
     }
-    for t in &l.ats {
-        writeln!(l.out, "fn __at_{t}(s: {t}$, tick: i64, near: u1, zero: {t}) -> {t}\n    r: ptr = get s, ring\n    lo: index = before(s, tick)\n    base: index = ring_base(r)\n    early: u1 = cmp.lt lo, 0\n    v: {t} = if early\n        whole: u1 = cmp.eq base, 0\n        check whole\n        yield zero\n    else\n        pushed: index = load r\n        kl: index = add base, lo\n        kh: index = add kl, 1\n        more: u1 = cmp.lt kh, pushed\n        both: u1 = and more, near\n        k: index = if both\n            tl: i64 = tick_of(s, kl)\n            th: i64 = tick_of(s, kh)\n            dl: i64 = sub tick, tl\n            dh: i64 = sub th, tick\n            closer: u1 = cmp.lt dh, dl\n            kk: index = if closer\n                yield kh\n            else\n                yield kl\n            yield kk\n        else\n            yield kl\n        vals: {t}[] = ring_values(r)\n        i: index = ring_index(s, k)\n        x: {t} = load vals, i\n        yield x\n    ret v", t = t).unwrap();
+    for (t, blends) in &l.ats {
+        // (`linear` is written only where the items are a `float`)
+        let (load, tail) = if *blends {
+            (format!("        x: {t} = load vals, i\n        lin: u1 = cmp.eq rule, 2\n        bl: u1 = and more, lin\n        y: {t} = if bl\n            tl2: i64 = tick_of(s, kl)\n            th2: i64 = tick_of(s, kh)\n            ih: index = ring_index(s, kh)\n            xh: {t} = load vals, ih\n            dn: i64 = sub tick, tl2\n            n1: i64 = mul dn, over\n            n2: i64 = add n1, left\n            dd: i64 = sub th2, tl2\n            d1: i64 = mul dd, over\n            wn: {t} = conv n2\n            wd: {t} = conv d1\n            w: {t} = div wn, wd\n            df: {t} = sub xh, x\n            pr: {t} = mul df, w\n            z: {t} = add x, pr\n            yield z\n        else\n            yield x\n", t = t), "        yield y\n")
+        } else {
+            (format!("        x: {t} = load vals, i\n", t = t), "        yield x\n")
+        };
+        writeln!(l.out, "fn __at_{t}(s: {t}$, tick: i64, left: i64, over: i64, rule: i64, zero: {t}) -> {t}\n    r: ptr = get s, ring\n    lo: index = before(s, tick)\n    base: index = ring_base(r)\n    early: u1 = cmp.lt lo, 0\n    v: {t} = if early\n        whole: u1 = cmp.eq base, 0\n        check whole\n        yield zero\n    else\n        pushed: index = load r\n        kl: index = add base, lo\n        kh: index = add kl, 1\n        more: u1 = cmp.lt kh, pushed\n        near: u1 = cmp.eq rule, 1\n        both: u1 = and more, near\n        k: index = if both\n            tl: i64 = tick_of(s, kl)\n            th: i64 = tick_of(s, kh)\n            dl: i64 = sub tick, tl\n            dh: i64 = sub th, tick\n            a1: i64 = mul dh, over\n            a2: i64 = sub a1, left\n            b1: i64 = mul dl, over\n            b2: i64 = add b1, left\n            closer: u1 = cmp.lt a2, b2\n            kk: index = if closer\n                yield kh\n            else\n                yield kl\n            yield kk\n        else\n            yield kl\n        vals: {t}[] = ring_values(r)\n        i: index = ring_index(s, k)\n{load}{tail}    ret v", t = t, load = load, tail = tail).unwrap();
     }
     if !l.copies.is_empty() {
         writeln!(l.out, "\n; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give; stamped once where something asks its time (log 73)").unwrap();
@@ -4419,6 +4425,8 @@ struct Lowerer {
     /// the state of every such wiring, a field of the context each,
     /// after the declared variables and before the nodes'
     zfields: Vec<(String, Ty)>,
+    /// ... and the fields among them that begin at an `else`'s value
+    zelse: HashMap<String, Rule>,
     /// the edges' functions in which the target's own name is read on
     /// its own standing line (fm3 log 149)
     zero_first: Names,
@@ -4462,7 +4470,7 @@ struct Lowerer {
     /// the item types some stream is read at a time through
     /// `__at_<T>` (fm3 log 248): a stream whose rate the compiler does
     /// not know where it is read
-    ats: std::collections::BTreeSet<String>,
+    ats: std::collections::BTreeSet<(String, bool)>,
     cells: Names,
     /// ... and those of them that `count` is asked of (fm3 question
     /// 145, log 247): a second field of the context beside the latest
@@ -6029,6 +6037,16 @@ impl Lowerer {
             kept.push((self.ty(&c.ty, false, file, v.line)?, c.fields.clone(), c.input));
         }
         let zp = ZProc { at: w.at.clone(), kept, end: w.end.as_ref().map(|fd| mangle(&fd.name)), body: std::rc::Rc::new(w.inline.clone()), gives: w.gives.clone(), feature: feature.to_string(), file: file.to_string() };
+        // what a look back at the input gives before its first item
+        // is what the input's declaration says, `else (v)` (fm3 log
+        // 250): the first value of each field the wiring keeps of it
+        if let Some(r) = self.fvar(n).and_then(|f| f.rule.clone()).filter(|r| matches!(r.outside, Outside::Else(_))) {
+            for c in w.kept.iter().filter(|c| c.input) {
+                for f in &c.fields {
+                    self.zelse.insert(f.clone(), r.clone());
+                }
+            }
+        }
         for (name, ty) in &w.state() {
             let t = self.ty(ty, false, file, v.line)?;
             self.fvars.push(FVar { name: name.clone(), ty: t.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string(), arr: false, rule: None, count: None });
@@ -6915,6 +6933,15 @@ impl Lowerer {
         (out, bound, sourced)
     }
 
+    /// what a stream's declaration says of how it is read (fm3 log
+    /// 250): the function's own stream of the name, else the feature's
+    fn stream_rule(&self, name: &str, b: &Body) -> Option<Rule> {
+        match b.vars.get(name) {
+            Some(v) => v.rule.clone(),
+            None => self.fvar(name).and_then(|f| f.rule.clone()),
+        }
+    }
+
     /// is the name a parameter of the function being lowered, not a
     /// stream the function or a feature declares?
     fn is_param(&self, name: &str, b: &Body) -> bool {
@@ -7164,9 +7191,22 @@ impl Lowerer {
     /// first item the zero of its type, as a cell reads
     fn lcell_now(&mut self, name: &str, b: &mut Body) -> Vec<Val> {
         let mut out = Vec::new();
+        // (before its first item, zero, or what the declaration's
+        // `else` says, fm3 log 250; its count is nothing)
+        let rule = b.vars.get(name).and_then(|v| v.rule.clone());
+        let counter = lcell_count(name);
         for (k, t, _) in self.lcell_all(name, b) {
             let v = b.vars[&k].clone();
-            out.push(if v.set { lcell_val(&v.ir, &t) } else { self.zero_val(&t, b) });
+            out.push(if v.set {
+                lcell_val(&v.ir, &t)
+            } else if k != counter && rule.is_some() {
+                match self.outside_val(rule.as_ref(), &t, b, 0) {
+                    Ok(z) => z,
+                    Err(_) => self.zero_val(&t, b),
+                }
+            } else {
+                self.zero_val(&t, b)
+            });
         }
         out
     }
@@ -7889,7 +7929,7 @@ impl Lowerer {
             },
             Err(e) => return Err(e),
         };
-        self.rule_ok(v.rule.as_ref(), &ty, &format!("{}{}", v.name, if v.arr { "[]" } else { "" }), file)?;
+        self.rule_ok(v.rule.as_ref(), &ty, &format!("{}{}", v.name, if v.arr { "[]" } else if v.seq { "$" } else { "" }), file)?;
         if !v.seq {
             let first = match &v.init {
                 Some(Init::Value(e)) => format!(" << {}", phrase_text(e)),
@@ -8190,7 +8230,9 @@ impl Lowerer {
                                 Some(Init::Pushes { items, .. }) if !self.nowed.contains(&v.name) => items,
                                 _ => &[],
                             };
-                            let mut cur = if items.is_empty() || !matches!(elem, Ty::Struct(_) | Ty::Stream(_)) { Some(self.zero_val(&elem, &mut b)) } else { None };
+                            // (before its first item a cell reads as zero,
+                            // or as its declaration's `else` says, log 250)
+                            let mut cur = if items.is_empty() || !matches!(elem, Ty::Struct(_) | Ty::Stream(_)) { Some(self.outside_val(v.rule.as_ref(), &elem, &mut b, v.line)?) } else { None };
                             firsts_n.insert(v.name.clone(), items.len());
                             for e in items {
                                 self.push_read = cur.clone().map(|c| (v.name.clone(), PushRead::Value(c)));
@@ -8281,8 +8323,11 @@ impl Lowerer {
             }
             // what the wirings of processors keep (fm3 log 124): the
             // zero of each, nothing having arrived
-            for (_, ty) in self.zfields.clone() {
-                let z = self.zero_val(&ty, &mut b);
+            for (name, ty) in self.zfields.clone() {
+                let z = match self.zelse.get(&name).cloned() {
+                    Some(r) => self.outside_val(Some(&r), &ty, &mut b, 0)?,
+                    None => self.zero_val(&ty, &mut b),
+                };
                 inits.push(z.text);
             }
             // a node's readers start where its inputs' rings start (a
@@ -10394,7 +10439,9 @@ impl Lowerer {
                 // is one value (fm3 log 186): no queue is made, and
                 // its first items are worked out as a push's are
                 if self.lcell_ok(v, &ty, b) {
+                    self.rule_ok(v.rule.as_ref(), &ty, &format!("{}$", v.name), &file)?;
                     self.lcell_declare(&v.name, &ty, b);
+                    b.vars.get_mut(&v.name).unwrap().rule = v.rule.clone();
                     if let Some(Init::Pushes { items, group, cond, word }) = &v.init {
                         if !self.push_lcell(&v.name, items, *group, cond.as_ref(), *word, b)? {
                             return Err(self.lcell_again(&v.name, b, v.line));
@@ -10404,7 +10451,7 @@ impl Lowerer {
                 }
                 b.declare(&v.name, ty.clone());
                 b.vars.get_mut(&v.name).unwrap().arr = v.arr;
-                self.rule_ok(v.rule.as_ref(), &ty, &format!("{}{}", v.name, if v.arr { "[]" } else { "" }), &file)?;
+                self.rule_ok(v.rule.as_ref(), &ty, &format!("{}{}", v.name, if v.arr { "[]" } else if v.seq { "$" } else { "" }), &file)?;
                 b.vars.get_mut(&v.name).unwrap().rule = v.rule.clone();
                 if let Ty::Stream(_) = &ty {
                     // a stream (log 38): the ring an expression made with
@@ -12788,7 +12835,21 @@ impl Lowerer {
         } else {
             self.flavour(Some(&v.name), b)
         };
-        Ok(self.make_stream(ty, hz, maker, b, dst))
+        // what the declaration says of a time between two items rides
+        // in the reader (fm3 log 250), so that a function handed the
+        // stream reads it as it was declared
+        let how = match v.rule.as_ref().map(|r| r.between) {
+            Some(Between::Nearest) => 1,
+            Some(Between::Linear) => 2,
+            _ => 0,
+        };
+        if how == 0 {
+            return Ok(self.make_stream(ty, hz, maker, b, dst));
+        }
+        let made = self.make_stream(ty, hz, maker, b, None);
+        let out = name_for(dst, ty, b);
+        b.line(&format!("{}: {} = set {}, rule, {}", out, ty.ir(), made.text, how));
+        Ok(Val { text: out, ty: ty.clone(), literal: false })
     }
 
     /// `T x$ = e` (log 38): the stream the expression made, its items
@@ -12973,7 +13034,7 @@ impl Lowerer {
     /// the most recent item of a stream, or the zero of its type where
     /// nothing has been pushed (fm3 log 149, 163): what a cell reads
     /// before its first item, said of a stream that is kept another way
-    fn latest_or_zero(&mut self, s: &Val, ty: &Ty, b: &mut Body, dst: Option<&str>) -> Result<Val, Error> {
+    fn latest_or_zero(&mut self, s: &Val, ty: &Ty, b: &mut Body, dst: Option<&str>, rule: Option<&Rule>) -> Result<Val, Error> {
         let Ty::Stream(elem) = ty else { unreachable!() };
         let (n, some) = (b.tmp(), b.tmp());
         let out = match dst {
@@ -12989,7 +13050,8 @@ impl Lowerer {
         b.depth -= 1;
         b.line("else");
         b.depth += 1;
-        let z = self.zero_val(elem, b);
+        // (or what its declaration's `else` says, fm3 log 250)
+        let z = self.outside_val(rule, elem, b, 0)?;
         b.line(&format!("yield {}", z.text));
         b.depth -= 1;
         Ok(Val { text: out, ty: elem.as_ref().clone(), literal: false })
@@ -14662,7 +14724,13 @@ impl Lowerer {
     /// after the latest the latest (question 127): no check of the
     /// read's own is left. None where the operand is no time
     #[allow(clippy::too_many_arguments)]
-    fn at_time(&mut self, sname: &str, s: &Val, elem: &Ty, a: &Expr, between: Between, b: &mut Body, dst: Option<&str>) -> Result<Option<Val>, Error> {
+    fn at_time(&mut self, sname: &str, s: &Val, elem: &Ty, a: &Expr, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Option<Val>, Error> {
+        // what the stream's declaration says of a read (fm3 question
+        // 127, log 250): between two items, and before the first. A
+        // parameter is read by the rule that travels in its reader
+        let rule = self.stream_rule(sname, b);
+        let between = rule.as_ref().map_or(Between::Before, |r| r.between);
+        let handed = self.is_param(sname, b);
         // (`m ms`, a variable and a unit word, is the literal's form)
         let a = match &a.kind {
             ExprKind::Phrase(parts) => match parts.as_slice() {
@@ -14680,6 +14748,7 @@ impl Lowerer {
         let known = |v: &Val| -> Option<i64> { if v.literal { v.text.parse().ok() } else { None } };
         let rate = if b.vars.contains_key(sname) { b.rates.get(sname).copied() } else { self.rates.get(sname).copied() };
         let near = between == Between::Nearest;
+        let blends = matches!(elem, Ty::Num(t) if !is_integer(t));
         // the count times `m`, plus `add`, over `d`: the index, or the tick
         let scaled = |b: &mut Body, m: i64, add: i64, d: i64| -> String {
             if let Some(c) = known(&count) {
@@ -14711,12 +14780,41 @@ impl Lowerer {
             None => None,
         };
         let eir = elem.ir();
-        if let (Some(hz), Some(d), false) = (rate, known(&div).filter(|d| *d > 0), self.all_queues) {
+        if let (Some(hz), Some(d), false, false) = (rate, known(&div).filter(|d| *d > 0), self.all_queues, handed) {
             let g = gcd(hz, d);
             let (m, d) = (hz / g, d / g);
-            // nearest, the later item only where it is strictly closer:
-            // the index and a half, less the smallest part, cut
-            let q = if near { scaled(b, 2 * m, d - 1, 2 * d) } else { scaled(b, m, 0, d) };
+            let zero = self.outside_val(rule.as_ref(), elem, b, line)?;
+            // `linear`: the index is the count times `m` over `d`, and
+            // what is left over, over `d`, is how far along to the next
+            let linear = between == Between::Linear && d != 1;
+            let (q, left) = if linear {
+                let c = match known(&count) {
+                    Some(_) => {
+                        let t = b.tmp();
+                        b.line(&format!("{}: i64 = const {}", t, count.text));
+                        t
+                    }
+                    None => count.text.clone(),
+                };
+                let num = if m != 1 {
+                    let t = b.tmp();
+                    b.line(&format!("{}: i64 = mul {}, {}", t, c, m));
+                    t
+                } else {
+                    c
+                };
+                let (q, r) = (b.tmp(), b.tmp());
+                b.line(&format!("{}: i64 = div {}, {}", q, num, d));
+                b.line(&format!("{}: i64 = rem {}, {}", r, num, d));
+                (q, Some(r))
+            } else if near {
+                // nearest, the later item only where it is strictly
+                // closer: the index and a half, less the smallest
+                // part, cut
+                (scaled(b, 2 * m, d - 1, 2 * d), None)
+            } else {
+                (scaled(b, m, 0, d), None)
+            };
             let (r, pushed, last) = (b.tmp(), b.tmp(), b.tmp());
             b.line(&format!("{}: ptr = get {}, ring", r, s.text));
             b.line(&format!("{}: index = load {}", pushed, r));
@@ -14756,14 +14854,40 @@ impl Lowerer {
             let out = name_for(dst, elem, b);
             b.line(&format!("{}: {} = if {}", out, eir, outside));
             b.depth += 1;
-            b.line("yield 0");
+            b.line(&format!("yield {}", zero.text));
             b.depth -= 1;
             b.line("else");
             b.depth += 1;
             let (s0, x) = (b.tmp(), b.tmp());
             b.line(&format!("{}: {} = set {}, pos, {}", s0, s.ty.ir(), s.text, kc));
             b.line(&format!("{}: {} = peek {}, 0", x, eir, s0));
-            b.line(&format!("yield {}", x));
+            match left {
+                Some(r) => {
+                    // the two either side blended, where there is a later one
+                    let (more, y) = (b.tmp(), b.tmp());
+                    b.line(&format!("{}: u1 = cmp.lt {}, {}", more, kc, last));
+                    b.line(&format!("{}: {} = if {}", y, eir, more));
+                    b.depth += 1;
+                    let (xh, wn, wd, w, df, pr, z) = (b.tmp(), b.tmp(), b.tmp(), b.tmp(), b.tmp(), b.tmp(), b.tmp());
+                    b.line(&format!("{}: {} = peek {}, 1", xh, eir, s0));
+                    b.line(&format!("{}: {} = conv {}", wn, eir, r));
+                    b.line(&format!("{}: i64 = const {}", wd, d));
+                    let wdf = b.tmp();
+                    b.line(&format!("{}: {} = conv {}", wdf, eir, wd));
+                    b.line(&format!("{}: {} = div {}, {}", w, eir, wn, wdf));
+                    b.line(&format!("{}: {} = sub {}, {}", df, eir, xh, x));
+                    b.line(&format!("{}: {} = mul {}, {}", pr, eir, df, w));
+                    b.line(&format!("{}: {} = add {}, {}", z, eir, x, pr));
+                    b.line(&format!("yield {}", z));
+                    b.depth -= 1;
+                    b.line("else");
+                    b.depth += 1;
+                    b.line(&format!("yield {}", x));
+                    b.depth -= 1;
+                    b.line(&format!("yield {}", y));
+                }
+                None => b.line(&format!("yield {}", x)),
+            }
             b.depth -= 1;
             return Ok(Some(Val { text: out, ty: elem.clone(), literal: false }));
         }
@@ -14776,10 +14900,13 @@ impl Lowerer {
             None if !self.is_param(sname, b) => Some(CLOCK_HZ),
             None => None,
         };
-        let tick = match (hz, known(&div).filter(|d| *d > 0)) {
+        // the time as `num` over `den` ticks: the tick, and what is
+        // left over of one where the rule reads between two items
+        let frac = handed || between != Between::Before;
+        let (num, den): (String, String) = match (hz, known(&div).filter(|d| *d > 0)) {
             (Some(hz), Some(d)) => {
                 let g = gcd(hz, d);
-                scaled(b, hz / g, 0, d / g)
+                (scaled(b, hz / g, 0, 1), (d / g).to_string())
             }
             _ => {
                 let h = match hz {
@@ -14791,12 +14918,28 @@ impl Lowerer {
                         h
                     }
                 };
-                let (n, t) = (b.tmp(), b.tmp());
+                let n = b.tmp();
                 b.line(&format!("{}: i64 = mul {}, {}", n, count.text, h));
-                b.line(&format!("{}: i64 = div {}, {}", t, n, div.text));
-                t
+                (n, div.text.clone())
             }
         };
+        let (tick, left) = match (num.parse::<i64>(), den.parse::<i64>()) {
+            (Ok(n), Ok(d)) => (n.div_euclid(d).to_string(), n.rem_euclid(d).to_string()),
+            (_, Ok(1)) => (num.clone(), "0".to_string()),
+            _ => {
+                let t = b.tmp();
+                b.line(&format!("{}: i64 = div {}, {}", t, num, den));
+                let l = if frac {
+                    let l = b.tmp();
+                    b.line(&format!("{}: i64 = rem {}, {}", l, num, den));
+                    l
+                } else {
+                    "0".to_string()
+                };
+                (t, l)
+            }
+        };
+        let (left, over) = if frac { (left, den) } else { ("0".to_string(), "1".to_string()) };
         let tick = match early {
             Some(true) => "-1".to_string(),
             Some(false) => tick,
@@ -14814,9 +14957,22 @@ impl Lowerer {
                 t
             }
         };
-        self.ats.insert(eir.clone());
+        self.ats.insert((eir.clone(), blends));
+        let zero = self.outside_val(rule.as_ref(), elem, b, line)?;
+        let how = if handed {
+            let t = b.tmp();
+            b.line(&format!("{}: i64 = get {}, rule", t, s.text));
+            t
+        } else {
+            match between {
+                Between::Before => "0",
+                Between::Nearest => "1",
+                Between::Linear => "2",
+            }
+            .to_string()
+        };
         let out = name_for(dst, elem, b);
-        b.line(&format!("{}: {} = __at_{}({}, {}, {}, 0)", out, eir, eir, s.text, tick, if near { 1 } else { 0 }));
+        b.line(&format!("{}: {} = __at_{}({}, {}, {}, {}, {}, {})", out, eir, eir, s.text, tick, left, over, how, zero.text));
         Ok(Some(Val { text: out, ty: elem.clone(), literal: false }))
     }
 
@@ -15084,7 +15240,10 @@ impl Lowerer {
             // before a stream's first item `latest` reads as the zero
             // of its type, as its name does (fm3 question 98, principle
             // 3; log 227), whatever the stream is kept as
-            ("latest", false, []) if self.may_hold_nothing(&sname, b) => Ok(Some(self.latest_or_zero(&s, &ty, b, dst)?)),
+            ("latest", false, []) if self.may_hold_nothing(&sname, b) => {
+                let rule = self.stream_rule(&sname, b);
+                Ok(Some(self.latest_or_zero(&s, &ty, b, dst, rule.as_ref())?))
+            }
             ("latest", false, []) => Ok(Some(self.latest_of(&s, &ty, b, dst)?)),
             ("peek", false, [Part::Word(at), arg]) if at == "at" => {
                 let Some(a) = one_arg(arg) else { return Ok(None) };
@@ -15197,7 +15356,7 @@ impl Lowerer {
             ("at", true, [arg]) => {
                 no_struct(self, "'at'")?;
                 let Some(a) = one_arg(arg) else { return Ok(None) };
-                match self.at_time(&sname, &s, &elem, &a, Between::Nearest, b, dst)? {
+                match self.at_time(&sname, &s, &elem, &a, b, dst, line)? {
                     Some(v) => Ok(Some(v)),
                     None => Err(lex::error(&file, a.line, "'x$ at (t)' takes a time, `1500 us`, `2 ms`, `1 s`")),
                 }
@@ -15410,7 +15569,10 @@ impl Lowerer {
                         }
                         return match read {
                             PushRead::Latest(s, ty) => self.latest_of(&s, &ty, b, dst),
-                            PushRead::LatestOr(s, ty) => self.latest_or_zero(&s, &ty, b, None),
+                            PushRead::LatestOr(s, ty) => {
+                                let rule = self.stream_rule(w, b);
+                                self.latest_or_zero(&s, &ty, b, None, rule.as_ref())
+                            }
                             PushRead::Cell => self.read_cell(w, b, dst, e.line),
                             PushRead::Value(v) => Ok(v),
                         };
@@ -15445,7 +15607,10 @@ impl Lowerer {
                     return match ty {
                         // before its first item, the zero of its type,
                         // as a cell reads (fm3 question 75, log 163)
-                        Ty::Stream(_) if now || ZERO_FIRST => self.latest_or_zero(&v, &ty, b, dst),
+                        Ty::Stream(_) if now || ZERO_FIRST => {
+                            let rule = self.stream_rule(w, b);
+                            self.latest_or_zero(&v, &ty, b, dst, rule.as_ref())
+                        }
                         Ty::Stream(_) => self.latest_of(&v, &ty, b, dst),
                         _ => Err(lex::error(&file, e.line, format!("'{}$' is not a stream: '{}' is a {}", w, w, v.ty.ir()))),
                     };

@@ -1,0 +1,90 @@
+int note$ at (4 hz) else 60
+int step$ = stepped (note$)
+int seen$ else 7
+float32 slide$ linear
+int near$ nearest
+int pace$ at (2 hz)
+
+on (int d$) << stepped (int x$)
+    d$ << x$ - x$[-1]
+
+on (int n) << held at (int m)
+    float32 x$ at (1 khz) << 10.0 << 20.0 << 30.0 << 40.0
+    float32 v = x$ at (m us)
+    n << int(v)
+
+on (int n) << nearest at (int m)
+    float32 x$ at (1 khz) nearest << 10.0 << 20.0 << 30.0 << 40.0
+    float32 v = x$ at (m us)
+    n << int(v)
+
+on (int n) << blended at (int m)
+    float32 level$ at (1 khz) linear << 10.0 << 20.0 << 30.0 << 40.0
+    float32 v = level$ at (m us)
+    n << int(v * 10.0)
+
+on (int n) << blended halfway()
+    float32 level$ at (1 khz) linear << 10.0 << 20.0 << 30.0 << 40.0
+    float32 v = level$ at (1500 us)
+    n << int(v * 10.0)
+
+on (int n) << slid at (int m)
+    slide$ << 10.0
+    pace$ << 0
+    slide$ << 20.0
+    pace$ << 0
+    slide$ << 40.0
+    n << int(slide$ at (m ms))
+
+on (int n) << neared at (int m)
+    near$ << 1
+    pace$ << 0
+    near$ << 2
+    pace$ << 0
+    near$ << 3
+    n << near$ at (m ms)
+
+on (int a, int b) << before any()
+    a << note$
+    b << note$ at (1 s)
+
+on (int a, int b) << latest before any()
+    a << latest note$
+    b << seen$
+
+on (int a, int b) << after one()
+    note$ << 64
+    a << note$ * 100 + note$ at (0 s)
+    b << step$
+
+on (int a, int b) << after two()
+    note$ << 64 << 67
+    a << note$ at (250 ms) * 100 + note$ at (0 s - 1 s)
+    b << step$
+
+on (int n) << seen and pushed (int k)
+    int was = seen$
+    seen$ << k
+    n << was * 100 + seen$
+
+on (int n) << local before (int k)
+    int own$ else 5
+    int was = own$
+    own$ << k
+    n << was * 100 + own$
+
+on (int n) << local stored before (int k)
+    int own$ at (1 khz) else 9
+    int a = own$ at (2 ms)
+    own$ << k
+    n << a * 100 + own$ at (2 ms)
+
+on (int n) << handed (int m)
+    float32 x$ at (1 khz) nearest << 10.0 << 20.0 << 30.0 << 40.0
+    n << read (x$) at (m)
+
+on (int n) << read (float32 x$) at (int m)
+    n << int(x$ at (m us))
+
+on (int n) << paced()
+    n << pace$

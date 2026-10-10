@@ -716,11 +716,14 @@ pub struct Parser<'a> {
     /// the value about to be read is a bare argument of a phrase, where
     /// a `[` begins a list and never a bracketed call
     bare: bool,
+    /// reading a stream's own declaration, where it may say how it is
+    /// read at a time (fm3 question 127, log 250)
+    declared: bool,
 }
 
 pub fn parse_feature<'a>(name: &str, src: &'a str, file: &'a str, types: &'a HashSet<String>) -> Result<Feature, Error> {
     let toks = lex::lex(src, file)?;
-    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: src.lines().collect(), results: Vec::new(), arr_results: Vec::new(), nest: Vec::new(), arr: false, bare: false };
+    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: src.lines().collect(), results: Vec::new(), arr_results: Vec::new(), nest: Vec::new(), arr: false, bare: false, declared: false };
     let mut decls = Vec::new();
     while !p.at_end() {
         decls.push(p.parse_decl()?);
@@ -733,7 +736,7 @@ pub fn parse_call(text: &str, file: &str, line: usize, types: &HashSet<String>) 
     let mut toks = Vec::new();
     lex::lex_line(text, line, file, &mut toks)?;
     toks.push(Token { tok: Tok::Newline, line });
-    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: Vec::new(), results: Vec::new(), arr_results: Vec::new(), nest: Vec::new(), arr: false, bare: false };
+    let mut p = Parser { toks, pos: 0, file, types, ranges: 0, header: 0, lines: Vec::new(), results: Vec::new(), arr_results: Vec::new(), nest: Vec::new(), arr: false, bare: false, declared: false };
     let e = p.parse_expr()?;
     if !p.at(&Tok::Newline) {
         return Err(p.err("the call has something after it"));
@@ -1257,8 +1260,28 @@ impl<'a> Parser<'a> {
             }
             let line = self.line();
             let shown = if arr { format!("{}[]", name) } else if seq { format!("{}$", name) } else { name.to_string() };
-            if !(arr || (ty == "string" && !seq)) {
-                let what = if seq { "a stream: what a stream reads before its first item and between two is its own, and is not said in these words yet".to_string() } else { format!("one {}", ty) };
+            // a stream says three of these where it is declared (fm3
+            // question 127, log 250): what a read at a time between
+            // two items gives, `nearest` or `linear`, and what one
+            // before its first gives, `else (v)`. The rest are an
+            // array's, each refused saying why
+            let stream = seq && !arr && self.declared;
+            if stream {
+                let why = match w.as_str() {
+                    "wrapped" => Some("a stream has no end to go round to: its items go on arriving"),
+                    "mirrored" => Some("a stream has no end to turn back at: its items go on arriving"),
+                    "clamped" => Some("a read after a stream's latest item gives the latest already, and what a read before its first gives is said with `else`"),
+                    "from" => Some("a stream's start and its step are its phase and its rate, which `at (n hz)` says"),
+                    _ => None,
+                };
+                if let Some(why) = why {
+                    return Err(self.err(format!("`{}` on '{}': {}. A stream's declaration may say what a read at a time between two items gives, `nearest` or `linear`, and what a read before its first item gives, `else 0` (fm3 question 127)", w, shown, why)));
+                }
+            } else if !(arr || (ty == "string" && !seq)) {
+                if seq {
+                    return Err(self.err(format!("`{}` on '{}', a parameter: a stream is read by what its own declaration says, and `nearest`, `linear` and `else` are written there, after its name and its rate, `{} {} {}`. A function reads the stream it is handed by that", w, shown, ty, shown, if w == "else" { "else 0" } else { &w })));
+                }
+                let what = format!("one {}", ty);
                 return Err(self.err(format!("`{}` says how an array is read by a place, and '{}' is {}. It is said of an array or a string where it is declared, `int a[] {} = [...]`", w, shown, what, if w == "else" { "else 0" } else { &w })));
             }
             if w == "mirrored" {
@@ -1269,7 +1292,7 @@ impl<'a> Parser<'a> {
             match w.as_str() {
                 "nearest" | "linear" => {
                     if !r.2.is_empty() {
-                        return Err(lex::error(self.file, line, format!("'{}' says twice what a read between two items gives, `{}` and `{}`: an array has one rule for between", shown, r.2, w)));
+                        return Err(lex::error(self.file, line, format!("'{}' says twice what a read between two items gives, `{}` and `{}`: {} has one rule for between", shown, r.2, w, if seq && !arr { "a stream" } else { "an array" })));
                     }
                     r.0.between = if w == "nearest" { Between::Nearest } else { Between::Linear };
                     r.2 = w.clone();
@@ -1300,7 +1323,7 @@ impl<'a> Parser<'a> {
                         }
                     };
                     if !r.1.is_empty() {
-                        return Err(lex::error(self.file, line, format!("'{}' says twice what a read outside it gives, `{}` and `{}`: an array has one rule for outside", shown, r.1, w)));
+                        return Err(lex::error(self.file, line, format!("'{}' says twice what a read outside it gives, `{}` and `{}`: {} has one rule for outside", shown, r.1, w, if seq && !arr { "a stream" } else { "an array" })));
                     }
                     r.0.outside = outside;
                     r.1 = w.clone();
@@ -1432,7 +1455,8 @@ impl<'a> Parser<'a> {
         }
         let (name, seq) = self.expect_name()?;
         let arr = self.arr;
-        let rule = self.parse_rule(&ty, &name, seq, arr)?;
+        self.declared = seq;
+        let mut rule = self.parse_rule(&ty, &name, seq, arr)?;
         // `T x$ at (n hz)`: a stream at a rate, section 9
         let rate = if seq && self.eat_word("at") {
             let args = self.parse_args()?;
@@ -1443,6 +1467,15 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        // how a stream is read at a time is said after its rate (fm3
+        // log 250): one order, `float level$ at (10 hz) linear`
+        if seq && rate.is_some() {
+            if rule.is_some() {
+                return Err(self.err(format!("'{}$' says how it is read before it says its rate: the rate comes first, `{} {}$ at (n hz) linear`", name, ty, name)));
+            }
+            rule = self.parse_rule(&ty, &name, seq, arr)?;
+        }
+        self.declared = false;
         let init = if self.eat_sym("=") {
             Some(Init::Value(self.parse_value()?))
         } else if self.at_sym("(") {

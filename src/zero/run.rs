@@ -1933,7 +1933,7 @@ mod tests {
         // the refusals
         refused("    int a[] wrapped else 0 = [1, 2]\n    n << a[i]", "h.zero:11: 'a[]' says twice what a read outside it gives, `wrapped` and `else`: an array has one rule for outside");
         refused("    int a wrapped = 3\n    n << a", "h.zero:11: `wrapped` says how an array is read by a place, and 'a' is one int. It is said of an array or a string where it is declared, `int a[] wrapped = [...]`");
-        refused("    int x$ wrapped\n    n << 1", "`wrapped` says how an array is read by a place, and 'x$' is a stream");
+        refused("    int x$ wrapped\n    n << 1", "`wrapped` on 'x$': a stream has no end to go round to");
         refused("    int a[] else 1.5 = [1, 2]\n    n << a[i]", "`else` on 'a[]' says what a read outside it gives, a value of the item's type written out; its items are int: write a number, `else 0`");
         refused("    int k = 3\n    int a[] else k = [1, 2]\n    n << a[i]", "a value of the item's type written out");
         refused("    string t else 7.5 = \"ab\"\n    n << 1", "its items are characters: write `else char (32)`");
@@ -4121,16 +4121,56 @@ mod tests {
         };
         // 1 khz against a nanosecond's divisor: one over a million
         let rated = f("", "    int x$ at (1 khz) << 1 << 2 << 3\n", "x$ at (m us)");
-        assert!(rated.contains(" = div ") && rated.contains(", 2000000\n") && rated.contains(" = peek ") && !rated.contains("sample") && !rated.contains("__at_"), "{}", rated);
+        assert!(rated.contains(" = div ") && rated.contains(", 1000000\n") && rated.contains(" = peek ") && !rated.contains("sample") && !rated.contains("__at_"), "{}", rated);
         // a time written out: the index is worked out by the compiler
         let lit = f("", "    int x$ at (1 khz) << 1 << 2 << 3\n", "x$ at (1600 us)");
-        assert!(!lit.contains(" = div ") && !lit.contains(" = mul ") && lit.contains(" = cmp.gt 2, "), "{}", lit);
+        assert!(!lit.contains(" = div ") && !lit.contains(" = mul ") && lit.contains(" = cmp.gt 1, "), "{}", lit);
         // 48 khz against a second's thirtieth: times 1600, no divide
         let video = f("", "    int a$ at (48 khz) << 1 << 2 << 3\n", "a$ at (1 s / 30 * m)");
         assert!(!video.contains("sample"), "{}", video);
         // no rate: the tick of the store's clock, and the search
         let sparse = f("int k$\n\n", "    k$ << 1\n", "k$ at (m ms)");
         assert!(sparse.contains("__at_int(") && sparse.contains(" = div ") && !sparse.contains("sample"), "{}", sparse);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stream's declaration says how it is read at a time, in three
+    /// of an array's words (fm3 question 127, log 250): `nearest`,
+    /// `linear`, `else (v)`; with nothing said the item at or before.
+    /// The array's other words are refused of a stream by name
+    #[test]
+    fn a_stream_says_how_it_is_read() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-srule-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-10T10:00:00\n\n## testing\n").unwrap();
+        let ir = |decl: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("on (float32 n) << f (int m)\n    {}\n    n << x$ at (m us)\n", decl)).unwrap();
+            let ir = lower::lower(&store::read(&dir).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?.ir;
+            Ok(ir.lines().skip_while(|l| !l.starts_with("fn f(")).skip(1).take_while(|l| l.starts_with(' ')).collect::<Vec<_>>().join("\n"))
+        };
+        // nothing said: the count over a million, nothing added
+        let held = ir("float32 x$ at (1 khz) << 1.0 << 2.0").unwrap();
+        assert!(held.contains(", 1000000\n") && !held.contains(", 999999\n") && !held.contains(", rule, "), "{}", held);
+        let near = ir("float32 x$ at (1 khz) nearest << 1.0 << 2.0").unwrap();
+        assert!(near.contains(", 999999\n") && near.contains(", 2000000\n") && near.contains(" = set ") && near.contains(", rule, 1\n"), "{}", near);
+        // linear: the index, what is left over, and two items read
+        let lin = ir("float32 x$ at (1 khz) linear << 1.0 << 2.0").unwrap();
+        assert!(lin.contains(" = rem ") && lin.matches(" = peek ").count() == 2 && lin.contains(", rule, 2\n"), "{}", lin);
+        // `else`: the value a read before the first item gives
+        let other = ir("float32 x$ at (1 khz) else 9.5 << 1.0").unwrap();
+        assert!(other.contains("yield 9.5\n"), "{}", other);
+        for (decl, why) in [
+            ("float32 x$ wrapped", "a stream has no end to go round to"),
+            ("float32 x$ mirrored", "a stream has no end to turn back at"),
+            ("float32 x$ clamped", "a read after a stream's latest item gives the latest already"),
+            ("float32 x$ from (0) to (1)", "a stream's start and its step are its phase and its rate"),
+            ("int x$ linear", "two whole numbers blended are not a whole number"),
+            ("float32 x$ linear at (1 khz)", "the rate comes first"),
+        ] {
+            let err = ir(decl).expect_err(decl);
+            assert!(err.contains(why), "{}: {}", decl, err);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

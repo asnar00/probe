@@ -190,11 +190,12 @@ fn __zero_new()
         continue mi2
     _1: u8$ = __regular_u8(1000000, 512)
     _2: int$ = __stream_int(1000000, 64)
-    _3: int$ = __stream_int(1000000, 64)
-    _4: int$ = __regular_int(2, 64)
-    _5: __ctx = pack 0, 0, op, 1, 1, _1, _2, _3, _4, 0, om
+    _3: int$ = set _2, rule, 1
+    _4: int$ = __stream_int(1000000, 64)
+    _5: int$ = __regular_int(2, 64)
+    _6: __ctx = pack 0, 0, op, 1, 1, _1, _3, _4, _5, 0, om
     p: ptr = context()
-    store _5, p
+    store _6, p
     ret
 
 ; the runner's: the k-th of the store's contexts is the current one
@@ -278,12 +279,13 @@ fn value_at(m: int) -> int
     _3: i64 = conv m
     _4: i64 = mul _3, 1000000
     _6: i64 = div _4, 1000
-    _7: u1 = cmp.lt _4, 0
-    _8: i64 = if _7
+    _7: i64 = rem _4, 1000
+    _8: u1 = cmp.lt _4, 0
+    _9: i64 = if _8
         yield -1
     else
         yield _6
-    v: int = __at_int(_2, _8, 1, 0)
+    v: int = __at_int(_2, _9, _7, 1000, 1, 0)
     ret v
 fn where_it_stands() -> (int, __time)
     _this: ptr = context()
@@ -348,7 +350,7 @@ fn marked_at(m: int) -> int
         yield -1
     else
         yield _6
-    v: int = __at_int(_2, _8, 1, 0)
+    v: int = __at_int(_2, _8, 0, 1, 0, 0)
     ret v
 fn none_marked_at(m: int) -> int
     _this: ptr = context()
@@ -362,7 +364,7 @@ fn none_marked_at(m: int) -> int
         yield -1
     else
         yield _6
-    v: int = __at_int(_2, _8, 1, 0)
+    v: int = __at_int(_2, _8, 0, 1, 0, 0)
     ret v
 fn paced() -> int
     _this: ptr = context()
@@ -411,7 +413,7 @@ fn marked_at_its_own_time() -> int
         yield -1
     else
         yield _9
-    v: int = __at_int(_2, _13, 1, 0)
+    v: int = __at_int(_2, _13, 0, 1, 0, 0)
     ret v
 fn none_marked_when() -> __time
     _this: ptr = context()
@@ -446,7 +448,7 @@ fn ticked_at_its_own_time() -> int
         yield -1
     else
         yield _9
-    v: int = __at_int(_2, _13, 1, 0)
+    v: int = __at_int(_2, _13, 0, 1, 1, 0)
     ret v
 
 ; a stream's storage, carved from the arena: cap items (64 unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start
@@ -491,8 +493,8 @@ fn __regular_u8(hz: i64, cap: index) -> u8$
     s: u8$ = stream r
     ret s
 
-; a stream read at a time where the compiler does not know its rate (fm3 question 120, log 248): the time comes as a tick of the stream's clock, worked out in integers where the read is; the item at or before it is found by the library's `before`, arithmetic on a ring with a rate and a search by halves over the ticks on one without, bounded by what the ring keeps; `near` takes the later item where it is strictly closer. Before the first item the read gives `zero`, after the latest the latest; a time whose item the ring no longer keeps fails the ring's own check
-fn __at_int(s: int$, tick: i64, near: u1, zero: int) -> int
+; a stream read at a time where the compiler does not know its rate (fm3 question 120, log 248): the time comes as a tick of the stream's clock and what is left over of one, `left` parts of `over`, worked out in integers where the read is; the item at or before it is found by the library's `before`, arithmetic on a ring with a rate and a search by halves over the ticks on one without, bounded by what the ring keeps; `rule` is what the stream's declaration says of a time between two items (fm3 question 127, log 250), 0 the item at or before, 1 `nearest`, the later item where it is strictly closer, 2 `linear`, the two blended by how far along the tick is. Before the first item the read gives `zero`, after the latest the latest; a time whose item the ring no longer keeps fails the ring's own check
+fn __at_int(s: int$, tick: i64, left: i64, over: i64, rule: i64, zero: int) -> int
     r: ptr = get s, ring
     lo: index = before(s, tick)
     base: index = ring_base(r)
@@ -506,13 +508,18 @@ fn __at_int(s: int$, tick: i64, near: u1, zero: int) -> int
         kl: index = add base, lo
         kh: index = add kl, 1
         more: u1 = cmp.lt kh, pushed
+        near: u1 = cmp.eq rule, 1
         both: u1 = and more, near
         k: index = if both
             tl: i64 = tick_of(s, kl)
             th: i64 = tick_of(s, kh)
             dl: i64 = sub tick, tl
             dh: i64 = sub th, tick
-            closer: u1 = cmp.lt dh, dl
+            a1: i64 = mul dh, over
+            a2: i64 = sub a1, left
+            b1: i64 = mul dl, over
+            b2: i64 = add b1, left
+            closer: u1 = cmp.lt a2, b2
             kk: index = if closer
                 yield kh
             else

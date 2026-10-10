@@ -1,4 +1,4 @@
-int t$ = ticks(5) at (4 hz)
+int t$ nearest = ticks(5) at (4 hz)
 
 on (int t$) << ticks (int n)
     t$ << 1 << (t$ + 1) while (_ <= n)

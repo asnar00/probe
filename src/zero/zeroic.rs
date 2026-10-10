@@ -375,6 +375,9 @@ pub fn read(fd: &FnDecl, file: &str, takers: &Takers) -> Result<Option<Processor
     for s in &fd.body {
         match s {
             Stmt::Var(v) if v.seq => {
+                if v.rule.is_some() {
+                    return Err(lex::error(file, v.line, format!("'{}$' is said by a line of a stream processor, and how such a stream is read, `nearest`, `linear` or `else`, is not built: say it where the stream the processor is wired into is declared", v.name)));
+                }
                 let Some(Init::Value(e)) = &v.init else {
                     return Err(lex::error(file, v.line, format!("in a stream processor a line says what a stream is, for every item: `{} {}$ = ...`", v.ty, v.name)));
                 };
