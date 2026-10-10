@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the tick of a stream, compiled: each line it sets off once, after what it reads — `0394a22` · 2026-10-10
+
+```
+int x$
+int sum$
+sum$ << sum$ + x$ forever
+out$ << (x$ << " ") forever
+out$ << (sum$ << "\n") forever
+```
+
+`suite/zero/tick/tick/tick.zero:1-5`, with `>summed() → "1 1\n2 3\n3 6"`. A line that stands was a function called where its stream is pushed, depth first, so this text wrote `1`, `1 3`, `2 6`, `3 `: the first line ran to the bottom, writing the sum, before the second wrote the number; and a line over two streams was refused. Ash ruled on 10 October 2026 (fm3 question 121) that a stream with no rate ticks once a push and that within a tick each line runs once, after everything it reads, lines that do not depend on each other in the order written. `settle_ticks` (`src/zero/lower.rs:5296`) works out, for each stream, the lines its tick reaches and that order. Where calling each line where its stream is pushed already gives it, which is every chain and was every store of the suite, nothing is written differently: hello's `run` 988 and static's 967, the four lexer rows, and every emitted text but `words`' are as they were. Where it does not, the tick is one function, `__tickN(__item)`, a zero tree of the lines' own statements in order (`tick_stmts`, `:14754`): a push into a stream that later lines read calls nothing, its item a local of the function, and where the push is under an `if`, a count, an `until` or a feature's switch a second local says whether it was made. No list of lines waiting and no marks are kept. The running sum beside its number, three items: 336 depth first, with the wrong text, **316** as a tick. The diamond, `twice$ << d$ * 2`, `next$ << d$ + 1`, `both$ << twice$ + next$`, one item of `both$` for each of `d$`: 64 an item. A line over several streams (fm3 question 86) is a function of no item, a line of each of them, each read by its name for its latest: `either$ << l$ + r$ forever` with `l$ << 1` and then `r$ << 10` gives 1 and then 11. A line is set off by the streams its items name wherever they stand, `out$ << ("got " << i$ << "\n") forever`. A line out of a stored stream is a function of one item too, called where the item is pushed after it is stored (`call_lines`, `:11406`), so `count x$` somewhere in a store no longer changes the order its lines run in; a stream a call cannot reach where it is pushed, a task's output, one handed to a function, the input device, keeps its node (`settle_node_fed`, `:5565`). Two lines each set off by what the other pushes are refused as a circle. **Changed by the ruling**, both in `suite/zero/words`: `labelled()`, whose line `out$ << (lead$ << " " << beside$ << "\n") forever` was paced by `lead$` alone, writes a line for each item of either, `"1 0\n1 3\n1 4\n2 4\n2 5\n3 5"` where it wrote `"1 0\n2 4\n3 5"`, 312 to 621 as counted; `labelled past (100)` writes its hundred lines, 711 to 10 813. `first two()` fell 408 to 304, its line `some$ << kept$ (2) times` no longer a node. No other case's count moved. Not ruled and left as it was (fm3 question 123): a stream that takes several items in a tick, or has a rate, or is a stream processor's output, runs its lines where each item is pushed. New store `suite/zero/tick`, eleven cases over two features; test `a_tick_is_one_function_in_order`. The full run: zero 1034/1034 on the native JIT, wasm, riscv and arm-qemu, 997/997 and 37 skipped on air; `probe test` 1024, 1015, 1024, 1024, 987; `cargo test` 177.
+
 ### zero: a whole number that does not fit the other side of an operator is called one — `89e21f4` · 2026-10-10
 
 ```
