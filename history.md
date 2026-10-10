@@ -4,6 +4,22 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a time divided so fine its divisor cannot be held is a failed check — `adc36fa` · 2026-10-10
+
+```
+on (time top) << finer divisor (time x, int64 k)
+    check (k >= 0 and k <= 9223372036854775807 / x.divisor)
+    top << time(x.count, x.divisor * k)
+```
+
+`src/zero/platform.zero:94-96`. A time is a count over a divisor, and `(time a) / (int k)` multiplies the divisor by `k`. A second's divisor is a thousand million, and a thousand million times 2^55 is nothing in 64 bits: `1 s / 36028797018963968` was a time whose divisor is zero, and writing it out divided by that divisor in the language's own lines, which carry no check of their own; arm64 gave 0 and wasm stopped (fm3 question 136, found by hop thirty-eight and not built). A time divided by a number that is itself zero was a failed check already, in the program's own line, since `2cd66c7`.
+
+The division's one line now calls this function with the size of `k`, and the function checks that the product fits before it makes the time (`src/zero/platform.zero:99`). An operator of the language's own must be one line, written in line where it is used, so the check stands in a function the line calls, as the add's does in `over one divisor`. Its reason is the compiler's sentence by the function's name (`OWN_CHECKS`, `src/zero/lower.rs:140`), and `dda1462`'s row hands the program's own line over, so `suite/zero/types`' `too fine a part (36028797018963968)` (`times.zero:81-82`, `out$ << 1 s / n`) stops with `a failed check at times.zero:82: a time is too fine to hold`. `(9223372037)`, the least `n` a second cannot be divided by, says the same; `(9223372036)` is held, and written `0 s`, the whole nanoseconds it has; `(0)` is `a division by zero` at the same line.
+
+It costs 9 as counted for a division by a number the program works out (`a part of a second (3)` 427 to 445) and 15 for one that is written, `1 s / 3` (`a third and a half()` 56 to 86): the compiler does not leave the check out for a literal, the time's own divisor not being in hand where the division is lowered. `types` is the one store whose emitted text moves, and the six rows are what they were. The table of sites in a diagnostic build has a second row of the language's own, so `a_failed_check_names_its_line` counts the program's rows from 3. One thing met on the way and not understood: written with a result named `t` and parameters `a` and `m`, the function changed three pushes of `lex-zeroic`'s text from `push_queue_open` to the checked `push_queue`; with the names `over one divisor` uses nothing else moves (fm3 log 235). The full run is `scratchpad/chain122.log`: 1097 runs of the zero suite on four paths, 1053 on air, `cargo test` 182.
+
+---
+
 ### zero: two streams with a rate in one slot give one item of a line that reads both — `06434e5` · 2026-10-10
 
 ```
