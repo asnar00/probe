@@ -4,6 +4,14 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a whole number that does not fit the other side of an operator is called one — `89e21f4` · 2026-10-10
+
+```
+            Ty::Num(_) => "a whole number".to_string(),
+```
+
+`src/zero/lower.rs:9755`. With `type kind = space | word | number | mark`, `k == 3` was refused as "'==' on a kind and a decimal": the refusal called any literal that did not fit the other side a decimal, and 3 is not one. It says what the literal is and, for an enumeration, its values: "'==' on a kind and a whole number: a kind is one of space, word, number, mark"; `k == 2.5` is still "a kind and a decimal". Test `a_whole_number_is_not_called_a_decimal`. No store's emitted IR moves and no number. `cargo test zero` 80.
+
 ### zero: a name that is none of an enumeration's values is told so, with the values — `5176282` · 2026-10-10
 
 ```
