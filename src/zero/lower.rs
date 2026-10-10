@@ -12191,7 +12191,7 @@ impl Lowerer {
         }
         let ty = if cmp { Ty::Bool } else { lv.ty.clone() };
         if matches!(op, "/" | "%") && whole_ty(&lv.ty) {
-            self.divisor(&rv, b);
+            self.divisor(&rv, line, b)?;
         }
         let name = name_for(dst, &ty, b);
         b.line(&format!("{}: {} = {} {}, {}", name, ty.ir(), op_name(op), lv.text, rv.text));
@@ -12207,15 +12207,23 @@ impl Lowerer {
     /// The language's own lines have none: their divisors are a power
     /// of ten a loop keeps above zero or a time's divisor, which no
     /// program can give and no operator makes zero
-    fn divisor(&mut self, d: &Val, b: &mut Body) {
+    ///
+    /// ... and where it can see that the divisor is zero, a 0 written
+    /// out, there is nothing to run: the line is refused (fm3 log 254,
+    /// principle 8)
+    fn divisor(&mut self, d: &Val, line: usize, b: &mut Body) -> Result<(), Error> {
         let known = if d.literal { d.text.parse::<i128>().is_ok_and(|n| n != 0) } else { self.nonzero.iter().any(|(body, v)| *body == b as *const Body as usize && *v == d.text) };
         if known || self.cur == "platform" {
-            return;
+            return Ok(());
+        }
+        if d.literal && d.text.parse::<i128>() == Ok(0) {
+            return Err(lex::error(&b.file, line, "a division by zero: the divisor is written as 0, and a whole number or a time divided by nothing has no value. (A `float` divided by `0.0` is infinity.)"));
         }
         self.at("a division by zero", &[], b);
         let nz = b.tmp();
         b.line(&format!("{}: u1 = cmp.ne {}, 0", nz, d.text));
         b.line(&format!("check {}", nz));
+        Ok(())
     }
 
     /// What the compiler knows of an operator's result with nothing
@@ -16347,7 +16355,7 @@ impl Lowerer {
                                 _ => None,
                             };
                             if let Some(by) = by {
-                                self.divisor(&by, b);
+                                self.divisor(&by, e.line, b)?;
                             }
                         }
                         return self.own_op(&info, lv, rv, b, dst, e.line);

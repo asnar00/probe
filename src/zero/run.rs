@@ -2432,6 +2432,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// What cannot run is refused where it is compiled, at its line
+    /// (fm3 log 254, principle 8): a whole number or a time divided by
+    /// a zero written out, which the IR refused as a literal with no
+    /// type; and a clock with no `if`, which the IR refused as a value
+    /// nothing defines. A clock that has one is a clock whatever its
+    /// stream is kept as, read by nothing or by a function
+    #[test]
+    fn what_cannot_run_is_refused_at_its_line() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>run() → 0\n").unwrap();
+        let refused = |code: &str| -> String {
+            std::fs::write(dir.join("h/h.zero"), code).unwrap();
+            match lower::lower(&store::read(&dir).unwrap()) {
+                Ok(_) => "(compiled)".to_string(),
+                Err(e) => e.to_string(),
+            }
+        };
+        for (code, line) in [("on (int n) << run()\n    int a = 7\n    n << a / 0\n", 3), ("on (int n) << run()\n    int a = 7\n    n << a % 0\n", 3), ("on (int n) << run()\n    time beat = 1 s\n    time part = beat / 0\n    n << 1\n", 3)] {
+            let e = refused(code);
+            assert!(e.contains(&format!("h.zero:{}: a division by zero: the divisor is written as 0", line)), "{}", e);
+        }
+        // (a `float` by `0.0` is infinity, and a divisor that is a name is the check)
+        assert_eq!(refused("on (int n) << run()\n    float a = 7.0\n    float q = a / 0.0\n    int z = 0\n    n << 7 / z\n"), "(compiled)");
+        let e = refused("int tick$ at (1 hz)\ntick$ << tick$ + 1 forever\nout$ << (tick$ << \"\\n\") forever\n\non (int n) << run()\n    n << 0\n");
+        assert!(e.contains("h.zero:2: ") && e.contains("is a clock, a line paced by its own stream's rate, with nothing to stop it") && e.contains("A clock needs a way to stop, an `if`"), "{}", e);
+        // with an `if`: read by a line, by nothing, by a function
+        for code in ["int tick$ at (1 hz)\ntick$ << tick$ + 1 if (tick$ < 3) forever\nout$ << (tick$ << \"\\n\") forever\n\non (int n) << run()\n    n << 0\n", "int tick$ at (1 hz)\ntick$ << tick$ + 1 if (tick$ < 3) forever\n\non (int n) << run()\n    n << 0\n", "int tick$ at (1 hz)\ntick$ << tick$ + 1 if (tick$ < 3) forever\n\non (int n) << run()\n    n << tick$\n"] {
+            assert_eq!(refused(code), "(compiled)", "{}", code);
+        }
+        let e = refused("int tick$\ntick$ << tick$ + 1 if (tick$ < 3) forever\n\non (int n) << run()\n    n << 0\n");
+        assert!(e.contains("'tick$' has no rate to"), "{}", e);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A division or a remainder of whole numbers by zero is a failed
     /// check on every path (fm3 question 116, Ash, 10 October 2026; log
     /// 223): a comparison and a `check` before the instruction, left

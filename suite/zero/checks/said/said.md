@@ -41,3 +41,5 @@ A program is compiled as it always was, with nothing in it that says where it is
 
 ## hostile
 `→ check at said.zero` with no line, or `→ check at 4`, is refused: "a case that says where a check fails is `→ check at <file>:<line>`". A case that says the wrong line fails, and is told the right one: "(a failed check at said.zero:4: the stream `kept$` is full: 64 items pushed and nothing has read them)".
+
+A division by a zero written out is refused where it is compiled, a whole number's or a time's: `q << a / 0`, `a % 0` and `beat / 0` are "a division by zero: the divisor is written as 0, and a whole number or a time divided by nothing has no value. (A `float` divided by `0.0` is infinity.)". It was "the lowered IR did not parse: a literal needs a type here". A divisor that is a name is the failed check at its line, as it was (`suite/zero/checks`' `share (7) among (0)`).
