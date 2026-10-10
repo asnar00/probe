@@ -4,6 +4,58 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the trace build in the compiler, and `probe zero <store> trace <case>` — `a0a9691` · 2026-10-10
+
+```
+on arrive first()
+    src$ << "let x = 4"
+
+on arrive again()
+    src$ << "2;\n"
+    end src$
+
+on (int a, int b) << two arrivals()
+    arrive first()
+    a << count u$
+    arrive again()
+    b << count u$
+```
+
+`suite/zero/lex-zeroic/lex/lex.zero:26`, whose case is `>two arrivals() → 3, 5`. Ash, 10 October: "tools that an agent (such as yourself) can use to ... trace the workings on a diagnostic". `probe zero suite/zero/lex-zeroic trace two_arrivals` prints:
+
+```
+lex-zeroic: two arrivals()   17 steps, 223 events
+step  line  src$  k$      new$   start$  n$  u$          a  b  ran
+   1  34                                                       34
+   2  27    'l'   word    true   0       1                     27 20 12 13 14 21 23 22 24
+   3  27    'e'   word    false  0       2                     27 20 12 13 14 21 23 22
+   4  27    't'   word    false  0       3                     27 20 12 13 14 21 23 22
+   5  27    ' '   space   true   3       1   word 0 3          27 20 12 21 23 22 24
+   6  27    'x'   word    true   4       1                     27 20 12 13 14 21 23 22 24
+   7  27    ' '   space   true   5       1   word 4 1          27 20 12 21 23 22 24
+   8  27    '='   mark    true   6       1                     27 20 12 13 14 15 21 23 22 24
+   9  27    ' '   space   true   7       1   mark 6 1          27 20 12 21 23 22 24
+  10  27    '4'   number  true   8       1                     27 20 12 13 14 15 16 21 23 22 24
+  11  35                                                 3     35
+  12  36                                                       36
+  13  30    '2'   number  false  8       2                     30 20 12 13 14 15 16 21 23 22
+  14  30    ';'   mark    true   10      1   number 8 2        30 20 12 13 14 15 21 23 22 24
+  15  30    '\n'  space   true   11      1   mark 10 1         30 20 12 21 23 22 24
+  16  31    end   space   false                                31 20 21 24
+  17  37                                                    5  37
+-> 3, 5
+```
+
+A row is a step: one item pushed from a plain function with everything it set off, or one statement outside any push. A column is a stream, or a name a plain function says; `ran` is the lines that ran, in the order they first ran. The store is lowered a third way, as its *trace build* (`Store.trace`): the diagnostic build of `e7ab433`, in which `__site_at`, which each statement already calls, also appends an event to `data __trace_ev`, and the lowering writes each value where it has it in hand as `__trace_val(n)`, the push of the value into `out$`, `__trace_end()`, the platform's write going to the trace's text between the two. So a value is shown by the code that would print it. The case is run on the native JIT in a forked child, which reads the events back through `__trace_word` and `__trace_byte` after the call or after a stop (`suite::run_trace`), and `src/zero/trace.rs` groups them into steps. `--json` gives the sites, the events and the steps.
+
+The lowering's part was the zero playground's patch to its own copy of this compiler, 444 lines put back each time its pin moved (fm3 `tracer.md`); it is taken in as it stood, and `trace.rs` is its `site/trace.js` in Rust: on the playground's 47 examples the two print the same table. A store that is not traced lowers to the text it had: `scratchpad/irdiff.sh` against the binary before names none.
+
+Running the suite from the trace build, `PROBE_ZERO_TRACE=1 probe zero test`, found five things. A store with times could not be compiled for arm64: with the trace's events its data passes the megabyte `adr` reaches. `src/emit.rs` now forms a far address in three instructions, `adr` for the low sixteen bits of the distance, `movz x10, #hi, lsl #16` and `add`, for a data item that proved out of reach when the image was laid out, the module being compiled again with those items held far; a program under a megabyte is compiled once. `suite/far.ssa` has five cases the binary before refuses; the GPU's path skips them, its driver's area being a megabyte. `suite/zero/platform`'s `watch` redefines `<<` of a whole number to count what is written, `written$ << written$ + 1`, and the trace writes a value by that `<<`, which says `written$`, which the trace writes: 98 cases died of the stack. `__trace_val` now answers whether the value is to be written, not where one is being written already, and keeps the context for `__trace_end` to put back, so what a feature keeps is not moved by a value being shown. `suite/zero/words`' `n << dbl$` traced read `dbl$` whole and made it a queue, which filled: the lowering puts back what it knew of which streams are stored, and a value whose writing asks for more is not written. Seven cases of `restart` and `going-two` failed under `PROBE_ZERO_SITES=1` before this commit, an activity that `restart` ends never putting its site back, so the diagnostic build's line stood after the text of a case that had returned: `run::unsited` takes it off. And a run of more than 16384 events stores site -1 where the trace stops it, and the suite passes over that case saying so.
+
+Each item pushed into a feature's stream kept as one value is now an event (`cell_put`), where a statement that pushed three showed the last; and a block of characters pushed whole into a stored stream is one event whose value is the text (`trace_block`), so the walking lexer's `src$ << "let x = 4"` is a step. Native and wasm, the suite from the trace build: 1293 of 1300 runs, the seven being the `.expected.ssa` comparisons, and `cells`' `counted up to (10000)` passed over as a full trace. No count moved.
+
+---
+
 ### zero: a stream says how it is read at a time, `nearest`, `linear`, `else (v)`, and with nothing said reads the item at or before — `f0e9751` · 2026-10-10
 
 ```
