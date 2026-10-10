@@ -4,6 +4,25 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream says how it is read at a time, `nearest`, `linear`, `else (v)`, and with nothing said reads the item at or before — `f0e9751` · 2026-10-10
+
+```
+on (int n) << blended at (int m)
+    float32 level$ at (1 khz) linear << 10.0 << 20.0 << 30.0 << 40.0
+    float32 v = level$ at (m us)
+    n << int(v * 10.0)
+```
+
+`suite/zero/sampled-streams/reads/reads.zero:21`, whose cases are `>blended at (1500) → 250`, `(1250) → 225`, `(2750) → 375`, `(99000) → 400` and `(-5) → 0`. fm3 question 127, Ash on a sampler: "a view of an underlying array (and I guess so is a stream)". A stream's declaration may now say, after its name and its rate, what `x$ at (t)` gives where the time falls between two items, `nearest` or `linear`, and what a read before its first item gives, `else (v)`, in the words an array's declaration has had since `29f743b`. The same store declares `int note$ at (4 hz) else 60` and wires `stepped` to it, whose line is `d$ << x$ - x$[-1]`: `>before any() → 60, 60` reads it by its name and by a time before anything is pushed, and `>after one() → 6464, 4` pushes 64 and finds the processor's look back had read 60.
+
+With nothing said the read is the item at or before the time, `>held at (1600) → 20`: what the stream's name was at that time, and what an array reads between two places (question 146, provisional). Until this commit it was the nearest, which was the library's default; `sampler.md` had taken the item at or before to be what a stream did already. The three sampling cases of `suite/zero/streams` and `suite/zero/clock`'s `int t$ nearest = ticks(5) at (4 hz)` now say `nearest` and give what they gave.
+
+`parse_rule` in `src/zero/syntax.rs` reads the three words on a stream's own declaration and refuses an array's others by name: `wrapped` and `mirrored`, a stream having no end to go round to or turn back at; `clamped`, a read after the latest giving the latest already; `from (a) to (b)`, a stream's start and step being its phase and its rate. The words written before the rate, and on a parameter, are refused saying where they go, and `linear` on whole numbers by the array's own check (question 143). In `src/zero/lower.rs`, `at_time` writes the item at or before as the count times `m` over `d`, `nearest` as it was, and `linear` with the same divide's remainder over `d` as the weight of a second item read; `__at_<T>`, the function for a stream whose rate is not known where it is read, takes the rule as a number and what is left over of a tick, so that `nearest` and `linear` are exact there too. What a declaration says of between rides in the stream's reader, set once where it is declared, so a function handed the stream reads it as declared (`>handed (1600) → 30`). `else`'s value is a cell's first value, the other arm of `latest_or_zero`, a local stream's first value, and the first value of the fields a processor's wiring keeps of its input. It does not go with a stream into a function, and a stream said by a line of a processor takes none of the words (question 147).
+
+The read alone, a stream at `1 khz` read at `m us`: 39 as counted with nothing said (32 with the time written out), 44 `nearest`, 72 `linear`; I had said about 38, 40 and 75. Against the tree before (`scratchpad/agent56/casediff150.txt`), only `clock`, `streams` and the new store moved. Two cases change, both added two commits ago over `clock`'s `mark$`, which says nothing: `marked at (1800) → 2` is 1 and `marked at (2300) → 3` is 2, the item at or before; they fall, 504 to 410. The cases that say `nearest` rise by 1 to 9: the word set where the stream is declared, and through `__at_<T>` the remainder kept (`value at (250)` 248 to 257). `suite/zero/sampled-streams` has 31 cases and the refusals in its `## hostile`. The six tracked rows are as they were; the meter is 51 of 3 061. The full run is `scratchpad/chain139.log`: 1301 runs of the zero suite on four paths and 1260 on air, `probe test` 1025, `cargo test` 191.
+
+---
+
 ### zero: `time of x$` is the time of a stream's latest item — `8f53a9a` · 2026-10-10
 
 ```
