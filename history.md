@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the 18 pushes of a value on a condition, written as a push says it — `92c87f7` · 2026-10-10
+
+```
+    n << a if (a < b) else b
+```
+
+`suite/zero/functions/functions/functions.zero:2`. `678a848` respelled every `if (c) then (a) else (b)` the value's way, with a push in brackets, `n << (a if (a < b) else b)`, so that nothing emitted moved. This commit takes the brackets off the 18 pushes of the suite whose whole item is the choice. That is how fm3 question 88 rules a result is given on a condition, and it is the push's own form: an `if` with a push under each arm, not a value chosen and then pushed. So these 18 lines' emitted text does move, in nine stores, `arrays`, `cells`, `checks`, `functions`, `marks`, `pushed`, `sequences`, `types` and `zeroic`: for a result, `if c` and `ret a`, then `ret b`, where there was a value `if` with two `yield`s and one `ret`.
+
+No case's count moves, as it ran or on the tool: `scratchpad/agent54/casediff.sh scratchpad/probe139 scratchpad/agent54/head142a` counts every case of the nine stores on `678a848`'s text and on this one's, and no line differs. Emitted lines go both ways by one to four a store (`functions` 417 to 416, `zeroic` 2 556 to 2 560). The six tracked rows are as they were and no `.expected.ssa` moved. The 22 lines of `src/zero/platform.zero` keep the value's way, in brackets where the line is a push: with the brackets off, `streams` and `types` no longer compiled, "an operator of the language's own is one line, the push of its result".
+
+The full run is `scratchpad/chain129.log`: 1233 runs of the zero suite on four paths and 1192 on air, `probe test` 1025, `cargo test` 185. The meter is 51 of 2 893.
+
+---
+
 ### zero: one spelling of a value on a condition, `a if (c) else b`; `if (c) then (a) else (b)` retired — `678a848` · 2026-10-10
 
 ```
