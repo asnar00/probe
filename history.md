@@ -4,6 +4,23 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a start and a step, and between: `from (a) to (b)`, `nearest`, `linear`, `clamped` — `29f743b` · 2026-10-10
+
+```
+float curve[] from (0) to (1) linear clamped = [0.0, 0.1, 0.4, 0.9, 1.0]
+>curved (625) → 650
+```
+
+`suite/zero/sampled-between/between/between.zero:1` and `between.md:35`. The second part of fm3 question 127 (Ash, 10 October 2026: "a sampler also has two floats (t0, dt) that scale and offset the value inside the [] to get to an index, just like for streams and time"). What is in an array's brackets is a coordinate, and the declaration says how one becomes an item. `from (a) to (b)` gives the coordinates the items span, the first at `a` and the last at `b`, two numbers written out; the index is the coordinate less the start, times the last item's place, over the span, worked out in `float`, so an array of one item divides by nothing. A coordinate between two items reads the item at or before it where nothing is said, which is what a stream read at a time gives; `nearest` reads the closer, the later where it is halfway; `linear` reads the two either side, each by the array's own rule for outside, and gives the first plus the difference times how far along. `clamped` is the nearest of the first and last items. So the curve above is `sampler.md`'s: read at a half it is 0.4, and at five eighths 0.65, halfway from 0.4 to 0.9; a case line compares whole numbers and the store gives thousandths.
+
+`linear` is for items that are a `float` and is refused for an enumeration, a `char` and a structure, and for a whole number too, two of them blended not being one (fm3 question 143). `mirrored` stays refused by name. A whole place on an array that says no `from` is compiled as `bf396a7` left it and no store's emitted text moved (`scratchpad/irdiff.sh`). Two things a program could already write changed: a coordinate that is a `float` was cut toward zero, so `a[-0.5]` read item 0, and is now outside; and a decimal written in the brackets, `a[2.5]`, was refused and compiles. An array of no items declared `wrapped` and read by a place worked out wrote a remainder by nothing; it reads zero.
+
+What a read costs on the tool, the read alone, an array at feature scope with its five items counted, beside 13 for a whole place there: a `float` coordinate at or before 18, the five being a `conv`, a `conv` back, a compare, a choice and a subtract; `nearest` 20; `from (0) to (1)` 22 and `from (2) to (6)` 26; `linear` 35; the curve, all three, 43; `clamped` on a whole place 15, and 18 on a parameter, whose count is not known. Nothing is folded for a coordinate written out, `curve[0.625]` 44: the front end does not know how wide the product's `float` is.
+
+`suite/zero/sampled-between` has 71 cases and `a_coordinate_between_two_items` (`src/zero/run.rs`) the lines and the refusals. The six tracked rows are as they were, 502, 509, 929, 940, 939 and 918 as counted; the meter is 51 of 2 893 lines of zero. The full run is `scratchpad/chain128.log`: 1233 runs of the zero suite on four paths and 1192 on air, `probe test` 1025, `cargo test` 184.
+
+---
+
 ### zero: said's case for a stream's peek past what is there is taken out — `6e7f944` · 2026-10-10
 
 ```
