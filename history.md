@@ -4,6 +4,22 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: an array's length is `[count] (a[])` — `47cdac7` · 2026-10-10
+
+```
+    k << loop (index i = 0) yields i
+        if (i >= [count] (x[]))
+            break
+```
+
+`suite/zero/types/types/types.zero:190-192`. `count` was one word on two kinds, an array's length and how much of a stream is waiting. Ruled on 10 October 2026 (fm3 question 126, Ash: "Count should be [count] right? Processes the whole array and returns a number"): plain is each item and square brackets are the whole array, for the language's own words as for a program's functions, so an array's length is `[count] (a[])`. Anything that gives an array stands in the round brackets: a name, a list, a map, `[count] (frame x$)`. A reduce stays `a[] + _`, an operator applied between the items and no function handed the array. `count s` of a `string` stays plain, a string being a value, and so does `count x$` of a stream.
+
+The brackets are read where a store's names are held to their marks, and taken off there (`counted`, `src/zero/kinds.rs:450`), so the lowering reads the word as it always has and nothing it emits moved: every store's text is byte for byte what the binary before gave for the tree before (`scratchpad/agent51/treediff.sh`). Refused, each saying what to write: `count a[]` and `count (frame x$)`, "an array's length is `[count] (a[])`, the whole array in square brackets as for any function handed one"; `[count] (x$)`, a stream in the brackets; `[count] (s)`, a string.
+
+Rewritten to the new form: 21 lines of the suite's zero in seven stores (`arrays`, `sequences`, `streams`, `types`, `tasks`, `now`, `platform`'s `machine`), the two writers of an array in `src/zero/platform.zero`, 26 lines of `src/zero/run.rs`'s tests, the four messages of the compiler that show an array's last item, now `a[[count] (a[]) - 1]`, and three of the suite's `.md` files. No case's result or count changed; the meter is 76 of 2 679. `count x$` as how many items a stream has had (fm3 question 94) is not in this commit. The full run is `scratchpad/chain114.log`: 1073 runs of the zero suite on four paths, 1025 on air, `cargo test` 179.
+
+---
+
 ### zero: a division by zero is a failed check — `2cd66c7` · 2026-10-10
 
 ```
