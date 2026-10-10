@@ -13138,6 +13138,17 @@ impl Lowerer {
                     if let Some(v) = self.enum_case(w) {
                         return Ok(v);
                     }
+                    // a name where an enumeration's value is wanted that
+                    // is none of them, and no function either: its
+                    // values are said (fm3 hop 34, transformation 123)
+                    if let Some(Ty::Enum(en)) = want {
+                        if let Some(TypeInfo::Enum(cases)) = self.types.get(en) {
+                            let is_var = |_: &str| false;
+                            if find_methods(&self.funcs, parts, &is_var, &file, e.line).is_err() {
+                                return Err(lex::error(&file, e.line, format!("'{}' is not one of {}'s values: {}", w, en, cases.join(", "))));
+                            }
+                        }
+                    }
                 }
                 // a type applied to arguments: a struct constructed, or a
                 // number converted

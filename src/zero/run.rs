@@ -3640,6 +3640,30 @@ mod tests {
         assert!(ir.contains("= mul_time(") && ir.contains("\nfn mul_time(a: __time, b: __time) -> __time\n"), "{}", ir);
     }
 
+    /// A name given where an enumeration's value is wanted that is none
+    /// of its values is told so, with the values (fm3 hop 34,
+    /// transformation 123): it was "no function named 'letter'"
+    #[test]
+    fn a_name_that_is_no_value_of_an_enumeration() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-enum-values");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>run() → \"x\"\n").unwrap();
+        let f = |lines: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("type kind = space | word | number | mark\n\non (int n) << seven()\n    n << 7\n\non run()\n{}    out$ << 1\n", lines)).unwrap();
+            emit(&dir)
+        };
+        let said = "'letter' is not one of kind's values: space, word, number, mark";
+        for lines in ["    kind k = letter\n", "    kind k = word\n    out$ << (k == letter)\n"] {
+            let e = f(lines).err().unwrap_or_else(|| panic!("not refused: {}", lines));
+            assert!(e.ends_with(said), "{}: {}", lines, e);
+        }
+        // a value of it, and a function's name where one is wanted, are as they were
+        f("    kind k = word\n    out$ << (k == mark)\n").unwrap();
+        let e = f("    kind k = seven()\n").err().unwrap();
+        assert!(!e.contains("is not one of"), "{}", e);
+    }
+
     /// A conversion between an abstract whole number and a library
     /// number, a float or a time, in a function whose first line names
     /// no abstract type (fm3 log 173): the lowered IR did not parse,
