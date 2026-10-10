@@ -4,6 +4,21 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: one spelling of a value on a condition, `a if (c) else b`; `if (c) then (a) else (b)` retired — `678a848` · 2026-10-10
+
+```
+    int m = -x if (x < 0) else x
+    kind k$ = space if (empty c$) else kind of (c$)
+```
+
+`suite/zero/control/control/control.zero:13` and `suite/zero/lex-zeroic/lex/lex.zero:20`. zero had two ways to write a value that is one thing or another: `a if (c) else b`, built in hop twenty-two for the push of a result (fm3 question 88), and `if (c) then (a) else (b)`, which a definition and a larger value had to use. fm3 question 126's seventh principle, one way to say a thing, keeps the first. It is now read wherever a whole value is given: after the `=` of a definition, in round brackets, as an argument, in `continue (...)` and `break (...)`, and as a field's default (`parse_value`, `src/zero/syntax.rs`), and it makes the tree the old form made. The old form is refused where it is read, and the refusal gives the line to write, worked out from the line's own text by `syntax::respelled`: `n << 1 + if (a < b) then (a) else (b)` is told "Write `n << 1 + (a if (a < b) else b)`".
+
+56 lines of zero are respelled, 22 of them in the language's own `src/zero/platform.zero`, and every one the value's way: a definition bare, a choice inside a larger value in round brackets, and a push whose whole item was the choice in brackets too, `n << (a if (a < b) else b)`. That makes this commit only a respelling, and the proof is that nothing emitted moved: `scratchpad/agent54/treediff.sh scratchpad/probe138 scratchpad/agent54/head141` runs `29f743b`'s binary on `29f743b`'s tree against this binary on this tree, store by store, and no store differs by a byte; no `.expected.ssa` moved; the six tracked rows are 502, 509, 929, 940, 939 and 918. `lex-zeroic`'s three lines of the six are among them. The language's own operators on a `time` stay in brackets for good: an operator of the language's own is one line, the push of its result, so that it is written in line where it is used, and the push's own form of `else` is not that.
+
+fm3 question 102 stands: `x$ << a if (c) else b (3) times` reads two ways and is refused saying both; the second is now written `x$ << (a if (c) else b)` and then the word. A value with an `if` and no `else`, `int m = a if (a < b)`, is refused. `a_value_on_a_condition_has_one_spelling` (`src/zero/run.rs`) holds the forms and seven refusals, and 23 lines of the tests' own zero are respelled. `cargo test zero` 89; the full run is with the commit after this one, which takes the brackets off the 18 pushes.
+
+---
+
 ### zero: a start and a step, and between: `from (a) to (b)`, `nearest`, `linear`, `clamped` — `29f743b` · 2026-10-10
 
 ```
