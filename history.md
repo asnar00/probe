@@ -4,6 +4,23 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream function is a line in the tick's order — `a4263f7` · 2026-10-10
+
+```
+int p$
+int dbl$ = doubled (p$)
+out$ << (p$ << " ") forever
+out$ << (dbl$ << "\n") forever
+```
+
+`suite/zero/tick/tick/tick.zero:51-54`. With `p$ << 1 << 2` this wrote `2`, `1 4`, `2 `, the double before the number. A tick runs each line after what it reads and independent lines as written (fm3 question 121), but a stream function's output was pushed where its input was, its lines running inside its call, and `settle_ticks` held such a stream to be one that ticks on its own (fm3 question 123). It now writes `1 2`, `2 4`: the wiring first, being written first, then the number's line, then the line that reads `dbl$`, which waits for the wiring.
+
+A wiring is a line the tick can write in place where its function is one an edge's could be: one item in, nothing looked back at or kept, no count of its place, and one push into its output in its text (`collect_zeroic`, `src/zero/lower.rs:5498`). Its output is then deferred like any line's. Where the tick's order is the order the calls already give, nothing is written, and no store that was in the suite moved by a byte, hello and static among them (`scratchpad/irdiff.sh scratchpad/probe128` names `tick` alone). Where it is not, the tick's one function has the processor's statements, its item the tick's and each of its locals renamed for the place (`walk_vars`, `src/zero/lower.rs:15976`). A push under a condition sets the tick's flag: `doubled where even`, `d$ << twice$ if (v$ % 2 == 0)`, writes `1 2 4`, `3 4 8`, the line on the output not set off at 1 and 3. A processor's last tick is still its own function, called at the input's `end`, the stream's lines as they were being kept for it (`tick_was`). A function that looks back, counts its place or pushes in two places of its text is called as it was, its output's lines inside it.
+
+`doubled beside` is 201 as counted where the old order was 215 on the same text, `doubled where even` 343 for 345. `mixed()` in the same store is 418 where it was 404, and is 418 on the binary before too: the store now has a wiring beside its stream with a rate, so the first push at a rate waits for its slot. The six rows did not move. The full run is `scratchpad/chain115.log`: 1077 runs of the zero suite on four paths, 1029 on air, `cargo test` 180.
+
+---
+
 ### zero: an array's length is `[count] (a[])` — `47cdac7` · 2026-10-10
 
 ```
