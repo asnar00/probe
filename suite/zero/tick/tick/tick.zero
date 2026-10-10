@@ -1,0 +1,88 @@
+int x$
+int sum$
+sum$ << sum$ + x$ forever
+out$ << (x$ << " ") forever
+out$ << (sum$ << "\n") forever
+int y$
+int tot$
+out$ << (y$ << " ") forever
+tot$ << tot$ + y$ forever
+out$ << (tot$ << "\n") forever
+int w$
+int run$
+run$ << run$ + w$ forever
+out$ << (run$ << "\n") forever
+out$ << (w$ << " ") forever
+int k$
+int ksum$
+ksum$ << ksum$ + k$ forever
+out$ << (k$ << " ") forever
+out$ << (ksum$ << "\n") forever
+int q$
+int qsum$
+qsum$ << qsum$ + q$ forever
+out$ << (q$ << " ") forever
+out$ << (qsum$ << "\n") forever
+int d$
+int twice$
+int next$
+int both$
+twice$ << d$ * 2 forever
+next$ << d$ + 1 forever
+both$ << twice$ + next$ forever
+int l$
+int r$
+int either$
+either$ << l$ + r$ forever
+out$ << (either$ << "\n") forever
+int i$
+out$ << ("got " << i$ << "\n") forever
+int n$
+int low$
+int hi$
+low$ << n$ until (n$ == 2)
+hi$ << n$ * 10 forever
+out$ << (low$ << " " << hi$ << "\n") forever
+int beat$ at (1 hz)
+int gain$
+int loud$
+loud$ << beat$ * gain$ forever
+out$ << (loud$ << "\n") forever
+
+on summed()
+    x$ << 1 << 2 << 3
+
+on summed the number first()
+    y$ << 1 << 2 << 3
+
+on summed the sum first()
+    w$ << 1 << 2 << 3
+
+on summed and counted()
+    k$ << 1 << 2 << 3
+    out$ << count ksum$
+
+on counted and summed()
+    q$ << 1 << 2 << 3
+    out$ << count q$
+
+on (int n) << diamond()
+    d$ << 1 << 2
+    n << both$
+
+on both()
+    l$ << 1
+    r$ << 10
+
+on got()
+    i$ << 1 << 2
+
+on ended within a tick()
+    n$ << 1 << 2 << 3
+
+on mixed()
+    gain$ << 2
+    beat$ << 1 << 2
+    gain$ << 3
+    beat$ << 3
+    out$ << "end" << "\n"

@@ -47,7 +47,12 @@ pub enum Decl {
     /// `watch` is what ends the line where its `until` is an event
     /// (fm3 question 85, log 174): a condition that names neither the
     /// stream being moved, nor the line's target, nor `_`
-    Edge { target: Expr, items: Vec<Expr>, group: usize, shown: Option<String>, first: Option<Expr>, cond: Option<Expr>, word: Repeat, only: Option<Expr>, forever: bool, watch: Option<Watch>, line: usize },
+    ///
+    /// `paced` is every stream the items name but the target, where
+    /// that is not the one stream the first item names (fm3 questions
+    /// 86 and 121, log 207): any of them sets the line off, and the
+    /// items are as they were written, `first` none
+    Edge { target: Expr, items: Vec<Expr>, group: usize, shown: Option<String>, first: Option<Expr>, cond: Option<Expr>, word: Repeat, only: Option<Expr>, forever: bool, watch: Option<Watch>, paced: Option<Vec<String>>, line: usize },
 }
 
 /// The event that ends a line that stands, `out$ << i$ until (...)`
@@ -419,6 +424,39 @@ pub fn as_item(e: &Expr, stream: &str) -> Expr {
     renamed(e, stream, "__item")
 }
 
+/// the other way: the name `__item` read as the stream again
+fn renamed_back(e: &Expr, stream: &str) -> Expr {
+    fn go(e: &Expr, stream: &str) -> Expr {
+        let f = |x: &Expr| Box::new(go(x, stream));
+        let parts = |ps: &[Part]| -> Vec<Part> {
+            ps.iter()
+                .map(|p| match p {
+                    Part::Args(list) => Part::Args(list.iter().map(|a| Arg { name: a.name.clone(), value: go(&a.value, stream) }).collect()),
+                    Part::Value(x) => Part::Value(go(x, stream)),
+                    Part::Word(w) => Part::Word(w.clone()),
+                    Part::Whole => Part::Whole,
+                })
+                .collect()
+        };
+        let kind = match &e.kind {
+            ExprKind::Name(n) if n == "__item" => ExprKind::Seq(stream.into()),
+            ExprKind::Unit(x, u) => ExprKind::Unit(f(x), u.clone()),
+            ExprKind::Neg(x) => ExprKind::Neg(f(x)),
+            ExprKind::Field(x, n) => ExprKind::Field(f(x), n.clone()),
+            ExprKind::List(items) => ExprKind::List(items.iter().map(|x| go(x, stream)).collect()),
+            ExprKind::Range { from, to: end, inclusive } => ExprKind::Range { from: f(from), to: f(end), inclusive: *inclusive },
+            ExprKind::Bin(op, l, r) => ExprKind::Bin(op.clone(), f(l), f(r)),
+            ExprKind::Index(l, r) => ExprKind::Index(f(l), f(r)),
+            ExprKind::IfElse(c, a, b) => ExprKind::IfElse(f(c), f(a), f(b)),
+            ExprKind::Phrase(ps) => ExprKind::Phrase(parts(ps)),
+            ExprKind::Existing(ps) => ExprKind::Existing(parts(ps)),
+            k => k.clone(),
+        };
+        Expr { kind, line: e.line }
+    }
+    go(e, stream)
+}
+
 /// an expression with a stream's name read as the value of the name `to`
 pub fn renamed(e: &Expr, stream: &str, to: &str) -> Expr {
     let f = |x: &Expr| Box::new(renamed(x, stream, to));
@@ -748,19 +786,62 @@ impl<'a> Parser<'a> {
                 // stream's name read as the item that has arrived
                 let mut items = items;
                 let mut first = None;
-                if (forever || matches!(word, Repeat::Times | Repeat::Until) && cond.is_some()) && !matches!(items[0].kind, ExprKind::Seq(_)) {
+                let stands = forever || matches!(word, Repeat::Times | Repeat::Until) && cond.is_some();
+                let own = |n: &String| matches!(&target.kind, ExprKind::Seq(t) if t == n);
+                if stands && !matches!(items[0].kind, ExprKind::Seq(_)) {
                     let mut named = Vec::new();
                     seqs_in(&items[0], &mut named);
-                    named.retain(|n| !matches!(&target.kind, ExprKind::Seq(t) if t == n));
+                    named.retain(|n| !own(n));
                     if let [x] = named.as_slice() {
                         first = Some(as_item(&items[0], x));
                         items[0] = Expr { kind: ExprKind::Seq(x.clone()), line: items[0].line };
                     }
                 }
+                // A line is set off by the streams its items name,
+                // wherever they stand in its chain, any of them (fm3
+                // questions 86 and 121, log 207). Where that is the one
+                // stream its first item names, the line is as it was
+                // read above. Where it is not, a stream named after
+                // the first item or more than one of them, `paced` is
+                // every stream the items name but the line's own
+                // target, and the items are left as they are written
+                let mut all = Vec::new();
+                items.iter().chain(first.iter()).for_each(|e| seqs_in(e, &mut all));
+                all.retain(|n| !own(n));
+                let one = match (&items[0].kind, all.as_slice()) {
+                    (ExprKind::Seq(s), [x]) => s == x,
+                    (ExprKind::Seq(_), []) => true,
+                    _ => all.is_empty(),
+                };
+                let paced = if stands && !one {
+                    // (the first item is as it was written)
+                    if let Some(x) = first.take() {
+                        let ExprKind::Seq(s) = &items[0].kind else { unreachable!() };
+                        items[0] = renamed_back(&x, s);
+                    }
+                    Some(all)
+                } else {
+                    None
+                };
+                // the one stream a line reads is, in its conditions,
+                // the item that has arrived
+                let item_of: Option<String> = match (&paced, items.first().map(|e| &e.kind)) {
+                    (Some(ps), _) => match ps.as_slice() {
+                        [p] => Some(p.clone()),
+                        _ => None,
+                    },
+                    (None, Some(ExprKind::Seq(s))) => Some(s.clone()),
+                    _ => None,
+                };
+                let moved: Vec<String> = match (&paced, items.first().map(|e| &e.kind)) {
+                    (Some(ps), _) => ps.clone(),
+                    (None, Some(ExprKind::Seq(s))) => vec![s.clone()],
+                    _ => Vec::new(),
+                };
                 // in the condition of a standing filter the source's
                 // own name is the item that has arrived
-                let only = match (only, items.first().map(|e| &e.kind)) {
-                    (Some(c), Some(ExprKind::Seq(s))) => Some(as_item(&c, s)),
+                let only = match (only, &item_of) {
+                    (Some(c), Some(s)) => Some(as_item(&c, s)),
                     (c, _) => c,
                 };
                 // ... and so it is in the `until` of a line that
@@ -770,10 +851,10 @@ impl<'a> Parser<'a> {
                 // question 85, log 174): the line ends when it comes
                 // to hold, and what the condition reads is watched
                 let mut watch = None;
-                if let (Some(c), Repeat::Until, Some(ExprKind::Seq(s))) = (&cond, word, items.first().map(|e| &e.kind)) {
+                if let (Some(c), Repeat::Until, false) = (&cond, word, moved.is_empty()) {
                     let mut named = Vec::new();
                     seqs_in(c, &mut named);
-                    let about_item = says_acc(c) || named.iter().any(|n| n == s || matches!(&target.kind, ExprKind::Seq(t) if t == n));
+                    let about_item = says_acc(c) || named.iter().any(|n| moved.contains(n) || own(n));
                     if !about_item && !named.is_empty() {
                         let refuse = |why: String| lex::error(self.file, line, format!("a line that stands until an event ends when the event comes to hold (fm3 question 85), and this one is not built: {}", why));
                         let ended = |c: &Expr| match &c.kind {
@@ -794,14 +875,14 @@ impl<'a> Parser<'a> {
                         });
                     }
                 }
-                let cond = match (cond, word, items.first().map(|e| &e.kind), &watch) {
+                let cond = match (cond, word, &item_of, &watch) {
                     // the stream an event's condition reads is, in it,
                     // the item of that stream that has arrived
                     (Some(c), Repeat::Until, _, Some(Watch::Value(k))) => Some(as_item(&c, k)),
-                    (Some(c), Repeat::Until, Some(ExprKind::Seq(s)), None) => Some(as_item(&c, s)),
+                    (Some(c), Repeat::Until, Some(s), None) => Some(as_item(&c, s)),
                     (c, _, _, _) => c,
                 };
-                Ok(Decl::Edge { target, items, group, shown, first, cond, word, only, forever, watch, line })
+                Ok(Decl::Edge { target, items, group, shown, first, cond, word, only, forever, watch, paced, line })
             }
             _ => Err(self.err(format!("expected 'on', 'type', a variable declaration or a wiring at the top of the feature, found {}", self.found()))),
         }

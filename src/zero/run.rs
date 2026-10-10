@@ -2058,8 +2058,6 @@ mod tests {
             // the last item stands and something is written before it
             ("out$ << \"values: \" << c$ forever\n", format!("h.zero:5: 'out$ << \"values: \" << c$ forever': `forever` applies to the last item of its chain (fm3 question 84), `c$`; what is written before it, `\"values: \"`, {}", once)),
             ("b$ << 0 << c$ (3) times\n", format!("h.zero:5: 'b$ << 0 << c$ (3) times': `(3) times` applies to the last item of its chain (fm3 question 84), `c$`; what is written before it, `0`, {}", once)),
-            // a group whose first item names no stream
-            ("out$ << (\"values: \" << c$) forever\n", "h.zero:5: a line that stands is paced by the stream its first item names, and the first of 'out$ << (\"values: \" << c$)' names none; 'c$' comes after it. Not built".to_string()),
             ("out$ << c$ forever\nb$ << (1 << 2) forever\n", "h.zero:6: nothing on the right of 'b$ << 1 << 2' is a stream: `forever` makes a push happen again whenever what is on its right has something new, and a value never has".to_string()),
             // a count and an `until` without the brackets
             ("out$ << c$ << \"\\n\" (3) times\n", "h.zero:5: 'out$ << c$ << \"\\n\" (3) times': `(3) times` applies to the last item of its chain (fm3 question 84), so this is `c$` once and then `\"\\n\"` 3 times, when the store starts, and a push then is not built (fm3 question 80). For the first 3 items of 'c$', each with what follows it, put the items in brackets: `out$ << (c$ << \"\\n\") (3) times`".to_string()),
@@ -2072,6 +2070,72 @@ mod tests {
             let err = with(lines).expect_err(lines);
             assert!(err.ends_with(&said), "{}: {}", lines, err);
         }
+    }
+
+    /// The tick of a stream, compiled (fm3 questions 121 and 86, log
+    /// 206 to 208). Where calling each line where its stream is pushed
+    /// already runs them in order, the push calls them as it did and no
+    /// tick is written; where it does not, one function holds the
+    /// lines' own statements in order, a pushed item going on in a
+    /// local; a line over two streams is a function of no item, written
+    /// once in a tick that reaches it twice; and what is refused
+    #[test]
+    fn a_tick_is_one_function_in_order() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-tick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (3) → 1\n").unwrap();
+        std::fs::write(dir.join("product.md"), "# product\n*x*\n\nplatform: static on\nh: static on\n").unwrap();
+        let head = "int x$\nint y$\nint a$\nint b$\nint z$\nint sum$\nint beat$ at (1 hz)\n";
+        let with = |lines: &str, f: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}{}\non (int n) << f (int k)\n    x$ << k\n    {}\n", head, lines, f)).unwrap();
+            emit(&dir)
+        };
+        let func = |ir: &str, name: &str| -> String {
+            let at = ir.find(&format!("fn {}(", name)).unwrap_or_else(|| panic!("no {} in {}", name, ir));
+            ir[at..].split("\nfn ").next().unwrap().to_string()
+        };
+        // a chain, and two lines out of one stream neither of which
+        // feeds anything: called where the stream is pushed, no tick
+        let ir = with("sum$ << sum$ + x$ forever\nout$ << (sum$ << \"\\n\") forever\n", "n << k").unwrap();
+        assert!(!ir.contains("__tick") && func(&ir, "f").contains("    __edge1(k)\n"), "{}", ir);
+        // ... and the number's line written first: in order already
+        let ir = with("out$ << (x$ << \" \") forever\nsum$ << sum$ + x$ forever\nout$ << (sum$ << \"\\n\") forever\n", "n << k").unwrap();
+        assert!(!ir.contains("__tick"), "{}", ir);
+        // the sum's line written first: its reader is written after
+        // the number's line, and depth first would run it before. One
+        // function: the sum worked out, the number written, the sum
+        // written, and the push calls it and nothing else
+        let ir = with("sum$ << sum$ + x$ forever\nout$ << (x$ << \" \") forever\nout$ << (sum$ << \"\\n\") forever\n", "n << k").unwrap();
+        let tick = func(&ir, "__tick1");
+        assert!(tick.contains("    __next_1: int = add _2, __item\n") && tick.contains("    __out__int(__item)\n    _5: u8 = const 32\n    __out_ch(_5)\n    __out__int(__next_1)\n    _6: u8 = const 10\n    __out_ch(_6)\n    ret"), "{}", tick);
+        assert!(func(&ir, "f").contains("    __tick1(k)\n") && !ir.contains("fn __edge"), "{}", ir);
+        // the diamond: the line over both written once, after both,
+        // each read by its name, one word of the context each
+        let ir = with("a$ << x$ * 2 forever\nb$ << x$ + 1 forever\nz$ << a$ + b$ forever\n", "n << z$").unwrap();
+        let tick = func(&ir, "__tick1");
+        assert_eq!(tick.matches("add ").count(), 2, "{}", tick);
+        assert!(tick.find("set _1, a, __v_a").unwrap() < tick.find("set _3, b, __v_b").unwrap() && tick.find("set _3, b, __v_b").unwrap() < tick.find("get _5, a\n").unwrap(), "{}", tick);
+        // pushed by a function, `a$` sets the line off alone, by a
+        // call with no item
+        let ir = with("out$ << (x$ << \" \") forever\nz$ << a$ + b$ forever\n", "a$ << k\n    n << z$").unwrap();
+        assert!(!ir.contains("__tick") && func(&ir, "f").contains("    __edge2()\n"), "{}", ir);
+        // a stream that is stored ticks once a push too: the item is
+        // stored and the line called, where it was a node run after
+        // the statement
+        let ir = with("out$ << (x$ << \" \") forever\n", "n << count x$").unwrap();
+        assert!(func(&ir, "f").contains("    push_queue_open(_2, k)\n    __edge1(k)\n") && !ir.contains("fn __node"), "{}", func(&ir, "f"));
+        for (lines, said) in [
+            // a circle
+            ("a$ << b$ forever\nb$ << a$ forever\nz$ << x$ forever\n", "h.zero:8: 'a$ << b$' sets off 'b$ << a$', and that sets off the first again: a circle, and a tick of either would never end. A stream may be said from its own earlier items and never from itself at the present one: in a stream processor one of them looks back, `a$[-1]`"),
+            // a line reached in order and where a second kind of stream is pushed
+            ("a$ << (x$ << x$) forever\nb$ << x$ forever\nz$ << a$ + b$ forever\n", "h.zero:10: 'z$ << ...' is set off twice in one tick of 'x$': through 'b$', and through 'a$', which a line pushes more than one item into. Whether it then runs once, or once for each item, is not ruled (fm3 question 123). Not built"),
+            ("a$ << x$ forever\nbeat$ << x$ forever\nz$ << a$ + beat$ forever\n", "h.zero:10: 'z$ << ...' is set off twice in one tick of 'x$': through 'a$', and through 'beat$', which has a rate, a beat of its own. Whether it then runs once, or once for each item, is not ruled (fm3 question 123). Not built"),
+        ] {
+            let err = with(lines, "n << z$").expect_err(lines);
+            assert!(err.ends_with(said), "{}: {}", lines, err);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The running sum (fm3 question 80's second half, log 149): on
@@ -2121,8 +2185,6 @@ mod tests {
         assert!(ir.contains("    _1: int = mul __item, 2\n    _2: __ctx = load _this\n    _3: __ctx = set _2, sum, _1\n"), "{}", ir);
         with("sum$ << sum$ + x$ (3) times\n", "n << sum$").unwrap();
         for (lines, said) in [
-            // two other streams: which paces is not settled
-            ("sum$ << sum$ + x$ + y$ forever\n", "h.zero:5: 'sum$ << ...' reads 2 streams, 'x$' and 'y$', and which of them sets the line off is not settled (fm3 question 86): an item of either with the other's latest, or one of each together. Not built: say one stream by a line of its own first"),
             // nothing else on its right: never ending, or a clock
             ("y$ << x$ forever\nsum$ << sum$ + 1 forever\n", "h.zero:6: a push into 'sum$' that reads 'sum$' and stands forever would never end: nothing else on its right paces it, and 'sum$' has no rate to. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `int sum$ at (1 hz)`"),
             ("sum$ << x$ forever\ni$ << i$ + 1 forever\n", "h.zero:6: a stream that feeds itself forever at a rate is a clock (fm3 question 80, ruled): with nothing else on its right the line is paced by its stream's rate, one more item of 'i$' each beat. It is not built: it needs a schedule ordered by time, and a store's clock is still moved by the code that pushes. Until then a function's push says it with an end, `i$ << 0 << (i$ + 1) while (_ < 4)`"),

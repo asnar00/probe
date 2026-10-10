@@ -2367,7 +2367,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2523,6 +2523,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     // it always was; and where it is stored after all, it is no cell,
     // which the next pass is told, so that its words are read as a
     // stream's from the start
+    l.settle_node_fed(store);
     let stored: Vec<String> = sourced.iter().filter(|n| l.cells.contains(*n) && !l.bare.contains(*n)).cloned().collect();
     for n in &stored {
         l.uncell(n);
@@ -2540,7 +2541,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
             match d {
                 Decl::Var(v) => l.collect_nodes(v, &f.name, &f.code.file)?,
                 Decl::Wire(e) => l.collect_wire(e, &f.name, &f.code.file)?,
-                Decl::Edge { target, items, group, shown, first, cond, word, only, forever, watch, line } => l.collect_edge(target, items, (*group, shown.as_deref()), first.as_ref(), cond.as_ref(), *word, only.as_ref(), *forever, watch.as_ref(), *line, &f.name, &f.code.file)?,
+                Decl::Edge { target, items, group, shown, first, cond, word, only, forever, watch, paced, line } => l.collect_edge(target, items, (*group, shown.as_deref()), first.as_ref(), cond.as_ref(), *word, only.as_ref(), *forever, watch.as_ref(), paced.as_deref(), *line, &f.name, &f.code.file)?,
                 _ => {}
             }
         }
@@ -2568,6 +2569,9 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
             l.firsts.push(name);
         }
     }
+    // the tick of each stream (fm3 question 121, log 207): settled once
+    // every line that stands is known, before any body is lowered
+    l.settle_ticks(store)?;
     // the arrival bound (log 79): the most items one push statement
     // from a plain function or the reset pushes into each feature-scope
     // stream, counted before anything is lowered
@@ -2692,7 +2696,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     // the text carries what the store reaches (log 70): every function
     // of the store's own features, the platform feature's that a case
     // names, and the runner's entries are roots
-    let mut roots: std::collections::HashSet<String> = l.funcs.iter().filter(|f| f.feature != "platform" && !f.ir.starts_with("__z") && !f.ir.starts_with("__edge")).map(|f| f.ir.clone()).collect();
+    let mut roots: std::collections::HashSet<String> = l.funcs.iter().filter(|f| f.feature != "platform" && !f.ir.starts_with("__z") && !f.ir.starts_with("__edge") && !f.ir.starts_with("__tick")).map(|f| f.ir.clone()).collect();
     for f in &store.features {
         roots.insert(format!("__set___enabled_{}", f.name));
         for c in &f.cases {
@@ -3694,6 +3698,16 @@ struct Lowerer {
     /// of one item the front end wrote, and the feature whose gate it is
     /// called under
     bare_edges: HashMap<String, Vec<(String, String)>>,
+    /// every line that stands, in the order written (fm3 log 207)
+    lines: Vec<Line>,
+    /// the streams a call cannot reach where they are pushed: a task's
+    /// output, a stream handed to a function, one given first items
+    /// that is stored, the input device. A line out of one that is
+    /// stored stays a node of the scheduler
+    node_fed: Names,
+    /// the functions that are ticks, each with the streams it pushes
+    /// into whose readers it runs itself, later (fm3 log 207)
+    tick_quiet: HashMap<String, Names>,
     /// while a push statement into a bare stream is lowered: the stream,
     /// and each edge's gate, read once before the items (None where the
     /// edge's feature is static)
@@ -3904,6 +3918,35 @@ struct Lowerer {
     now: bool,
     /// ... and of each argument of the call about to be chosen
     arg_nows: Vec<bool>,
+}
+
+/// A line that stands, as the tick of a stream sees it (fm3 question
+/// 121, log 207): what sets it off, what it reads, what it pushes into
+#[derive(Clone)]
+struct Line {
+    /// its function
+    name: String,
+    feature: String,
+    file: String,
+    line: usize,
+    /// the streams that set it off, each of which has it among its lines
+    pacers: Vec<String>,
+    /// every stream it names but its own target: it runs after them
+    reads: Vec<String>,
+    /// the stream it pushes into; a line's event pushes into none
+    target: Option<String>,
+    /// how many items one run pushes into the target; 0 where that is
+    /// not known, a stream processor
+    items: usize,
+    /// it pushes whenever it runs: no `if`, no count, no `until`
+    sure: bool,
+    /// its function is a tree the front end wrote, which a tick can
+    /// write in line; a processor's is not
+    tree: bool,
+    /// the function of its event, which runs before it
+    after: Option<String>,
+    /// the line as the program wrote it, for a refusal
+    said: String,
 }
 
 /// a wiring of a processor read the new way whose input has no
@@ -4918,6 +4961,7 @@ impl Lowerer {
         }
         let Some(walker) = w.walker else {
             self.bare_edges.entry(n.clone()).or_default().push((each.clone(), feature.to_string()));
+            self.lines.push(Line { name: each.clone(), feature: feature.to_string(), file: file.to_string(), line: v.line, pacers: vec![n.clone()], reads: vec![n.clone()], target: Some(v.name.clone()), items: 0, sure: false, tree: false, after: None, said: format!("{}$ = {}", v.name, phrase_text(e)) });
             self.zprocs.insert(each, zp);
             return Ok(());
         };
@@ -5026,12 +5070,16 @@ impl Lowerer {
             _ => None,
         })).collect();
         let mut edged: Names = store.features.iter().flat_map(|f| f.code.decls.iter().filter_map(|d| match d {
-            Decl::Edge { items, .. } => match items.first().map(|e| &e.kind) {
+            Decl::Edge { items, paced: None, .. } => match items.first().map(|e| &e.kind) {
                 Some(ExprKind::Seq(n)) => Some(n.clone()),
                 _ => None,
             },
             _ => None,
         })).collect();
+        edged.extend(store.features.iter().flat_map(|f| f.code.decls.iter().filter_map(|d| match d {
+            Decl::Edge { paced: Some(ps), .. } => Some(ps.clone()),
+            _ => None,
+        })).flatten());
         // ... and the stream a line's event reads, which its second
         // function is the edge of (fm3 log 174)
         edged.extend(store.features.iter().flat_map(|f| f.code.decls.iter().filter_map(|d| match d {
@@ -5124,7 +5172,7 @@ impl Lowerer {
                 // way and every push into the stream by name is of
                 // string literals, no method is ever met, and the
                 // stream needs no queue for one (fm3 log 124, decision 6)
-                let processors = store.features.iter().all(|g| g.code.decls.iter().all(|d| !matches!(d, Decl::Edge { items, .. } if matches!(items.first(), Some(Expr { kind: ExprKind::Seq(n), .. }) if n == s)) && !matches!(d, Decl::Edge { watch: Some(Watch::Value(n)), .. } if n == s)));
+                let processors = store.features.iter().all(|g| g.code.decls.iter().all(|d| !matches!(d, Decl::Edge { items, .. } if matches!(items.first(), Some(Expr { kind: ExprKind::Seq(n), .. }) if n == s)) && !matches!(d, Decl::Edge { watch: Some(Watch::Value(n)), .. } if n == s) && !matches!(d, Decl::Edge { paced: Some(ps), .. } if ps.contains(s))));
                 if !(wired && processors && literals_only(&store.features, s)) {
                     continue;
                 }
@@ -5225,6 +5273,365 @@ impl Lowerer {
         Ok(())
     }
 
+    /// The tick of each stream, compiled (fm3 question 121, log 207).
+    /// A tick of `s$` is the lines `s$` sets off and those the streams
+    /// they push into set off, down; its order is the least by where
+    /// the lines are written among those that put each line after
+    /// everything it reads. Where calling each line where its stream
+    /// is pushed, depth first, already gives that order and meets no
+    /// line twice, nothing is done: the push calls the lines as it
+    /// always did. Where it does not, the tick is one function the
+    /// front end writes as a zero tree, the lines' own statements in
+    /// order: a push into a stream that later lines of the tick read
+    /// calls nothing, its item going on in a local and, where the push
+    /// is under a condition, a second local saying whether it was
+    /// made; and that function becomes the stream's one line. Nothing
+    /// is kept between ticks
+    ///
+    /// Not ruled, and left as it was: a stream that takes more than one
+    /// item in a tick (two lines of the tick push into it, a line
+    /// pushes several, a stream processor pushes into it) or that has
+    /// a rate of its own has its lines run where each item is pushed,
+    /// a tick of its own inside this one (fm3 question 123)
+    fn settle_ticks(&mut self, store: &Store) -> Result<(), Error> {
+        let lines = self.lines.clone();
+        let n = lines.len();
+        if n == 0 {
+            return Ok(());
+        }
+        let readers = |s: &str| -> Vec<usize> { (0..n).filter(|&i| lines[i].pacers.iter().any(|p| p == s)).collect() };
+        // a circle: a line that sets off, through what it pushes into,
+        // a line that sets it off. Each would call the other for ever
+        {
+            let mut state = vec![0u8; n];
+            for root in 0..n {
+                if state[root] != 0 {
+                    continue;
+                }
+                let mut stack: Vec<(usize, Vec<usize>)> = vec![(root, lines[root].target.as_deref().map(readers).unwrap_or_default())];
+                state[root] = 1;
+                while let Some((i, next)) = stack.last_mut() {
+                    let i = *i;
+                    let Some(j) = next.pop() else {
+                        state[i] = 2;
+                        stack.pop();
+                        continue;
+                    };
+                    match state[j] {
+                        0 => {
+                            state[j] = 1;
+                            stack.push((j, lines[j].target.as_deref().map(readers).unwrap_or_default()));
+                        }
+                        1 => {
+                            let (a, b) = (&lines[j], &lines[i]);
+                            let t = a.target.clone().unwrap_or_default();
+                            return Err(lex::error(&a.file, a.line, if i == j {
+                                format!("'{}' is set off by '{}$', the stream it pushes into: a circle, and a tick of it would never end", a.said, t)
+                            } else {
+                                format!("'{}' sets off '{}', and that sets off the first again: a circle, and a tick of either would never end. A stream may be said from its own earlier items and never from itself at the present one: in a stream processor one of them looks back, `{}$[-1]`", a.said, b.said, t)
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let rated: Names = store.features.iter().flat_map(|f| f.code.decls.iter().filter_map(|d| match d {
+            Decl::Var(v) if v.rate.is_some() => Some(v.name.clone()),
+            _ => None,
+        })).collect();
+        let mut roots: Vec<String> = self.bare_edges.keys().cloned().collect();
+        roots.sort();
+        for s in roots {
+            // which streams take their items one tick each, inside
+            // this one, settled by going round: what is reached
+            // depends on it
+            let mut nested: HashMap<String, &str> = HashMap::new();
+            let reach = loop {
+                let mut reach: Vec<usize> = Vec::new();
+                let mut work = vec![s.clone()];
+                while let Some(u) = work.pop() {
+                    for j in readers(&u) {
+                        if reach.contains(&j) {
+                            continue;
+                        }
+                        reach.push(j);
+                        if let Some(t) = &lines[j].target {
+                            if !nested.contains_key(t) && !readers(t).is_empty() {
+                                work.push(t.clone());
+                            }
+                        }
+                    }
+                }
+                let mut grew = false;
+                for &j in &reach {
+                    let Some(t) = &lines[j].target else { continue };
+                    if nested.contains_key(t) || readers(t).is_empty() {
+                        continue;
+                    }
+                    let into = reach.iter().filter(|&&k| lines[k].target.as_ref() == Some(t)).count();
+                    let why = if !lines[j].tree {
+                        Some("which a stream processor pushes into")
+                    } else if into > 1 {
+                        Some("which two lines of the tick push into")
+                    } else if lines[j].items != 1 {
+                        Some("which a line pushes more than one item into")
+                    } else if rated.contains(t) {
+                        Some("which has a rate, a beat of its own")
+                    } else {
+                        None
+                    };
+                    if let Some(why) = why {
+                        nested.insert(t.clone(), why);
+                        grew = true;
+                    }
+                }
+                if !grew {
+                    break reach;
+                }
+            };
+            let made = |t: &str| reach.iter().any(|&k| lines[k].target.as_deref() == Some(t));
+            let deferred = |t: &str| !nested.contains_key(t) && made(t) && !readers(t).is_empty();
+            // a line reached in order and also where a stream of the
+            // other kind is pushed: once, or once an item, is not ruled
+            for &j in &reach {
+                if let Some(p) = lines[j].pacers.iter().find(|p| nested.contains_key(*p) && made(p)) {
+                    let l = &lines[j];
+                    let other = l.pacers.iter().find(|q| *q == &s || deferred(q)).cloned().unwrap_or_default();
+                    return Err(lex::error(&l.file, l.line, format!("'{}' is set off twice in one tick of '{}$': through '{}$', and through '{}$', {}. Whether it then runs once, or once for each item, is not ruled (fm3 question 123). Not built", l.said, s, other, p, nested[p])));
+                }
+            }
+            // the order: each line after what it reads, the lowest
+            // written first among those that are free
+            let before = |i: usize, j: usize| -> bool { lines[i].target.as_deref().is_some_and(|t| deferred(t) && lines[j].reads.iter().any(|r| r == t)) || lines[j].after.as_ref() == Some(&lines[i].name) };
+            let mut left: Vec<usize> = reach.clone();
+            left.sort();
+            let mut order: Vec<usize> = Vec::new();
+            while !left.is_empty() {
+                let Some(at) = left.iter().position(|&j| !left.iter().any(|&i| i != j && before(i, j))) else {
+                    let (a, b) = (&lines[left[0]], &lines[*left.iter().find(|&&i| before(i, left[0])).unwrap_or(&left[0])]);
+                    return Err(lex::error(&a.file, a.line, format!("'{}' reads what '{}' pushes at the present item, and that line reads what the first pushes: a circle, and no order puts each after the other in a tick of '{}$'", a.said, b.said, s)));
+                };
+                order.push(left.remove(at));
+            }
+            // depth first, as the push calls them today
+            let mut depth: Vec<usize> = Vec::new();
+            let mut work: Vec<usize> = readers(&s);
+            work.reverse();
+            while let Some(j) = work.pop() {
+                depth.push(j);
+                if let Some(t) = lines[j].target.as_deref().filter(|t| deferred(t)) {
+                    let mut more = readers(t);
+                    more.reverse();
+                    work.extend(more);
+                }
+                if depth.len() > n * n + n {
+                    break;
+                }
+            }
+            if depth == order {
+                continue;
+            }
+            // not in order: one function, the tick
+            if let Some(&j) = order.iter().find(|&&j| !lines[j].tree) {
+                let l = &lines[j];
+                return Err(lex::error(&l.file, l.line, format!("'{}' wires a stream processor into a tick of '{}$' whose lines do not come in the order they are called where each stream is pushed, and a processor is called there: not built. Say the processor's line as a line that stands, `d$ << x$ * 2 forever`, or put the lines that read '{}$' in the order they are to run", l.said, s, s)));
+            }
+            let (Some(sf), line0) = (self.fvar(&s).cloned(), lines[order[0]].line) else { continue };
+            let Ty::Stream(selem) = &sf.ty else { continue };
+            let name = format!("__tick{}", self.tick_quiet.len() + 1);
+            let lit = |kind: ExprKind, line: usize| Expr { kind, line };
+            let var = |name: String, ty: String, init: Option<Expr>, line: usize| Stmt::Var(super::syntax::VarDecl { line, scope: Vec::new(), ty, name, seq: false, arr: false, init: init.map(Init::Value), merge: None, rate: None });
+            // what each deferred stream's item is called, and whether
+            // its push is made for certain
+            let item_of = |t: &str| format!("__v_{}", t);
+            let flag_of = |t: &str| format!("__p_{}", t);
+            let mut certain: HashMap<String, bool> = HashMap::new();
+            let mut body: Vec<Stmt> = Vec::new();
+            let mut heads: Vec<Stmt> = Vec::new();
+            let mut conds: Vec<(String, Option<Expr>, Vec<Stmt>)> = Vec::new();
+            let mut quiet = Names::new();
+            // where every line is one feature's, its gate stands once
+            // round them all, and inside it each push is as certain as
+            // it would be were the feature static
+            let whole = Some(&lines[order[0]].feature).filter(|f| !self.statics.contains(*f) && order.iter().all(|&j| &lines[j].feature == *f)).cloned();
+            for &j in &order {
+                let l = &lines[j];
+                // the line runs where its feature is on and something
+                // it is set off by has an item this tick
+                let gate = (whole.is_none() && !self.statics.contains(&l.feature)).then(|| lit(ExprKind::Field(Box::new(lit(ExprKind::Phrase(vec![Part::Word(l.feature.clone())]), l.line)), "enabled".into()), l.line));
+                let set_off: Vec<&String> = l.pacers.iter().filter(|p| *p == &s || deferred(p)).collect();
+                let news = if set_off.iter().any(|p| *p == &s || certain[*p]) {
+                    None
+                } else {
+                    set_off.iter().map(|p| lit(ExprKind::Name(flag_of(p)), l.line)).reduce(|a, b| lit(ExprKind::Bin("or".into(), Box::new(a), Box::new(b)), l.line))
+                };
+                let key = format!("{} {}", if gate.is_some() { l.feature.as_str() } else { "" }, if news.is_some() { set_off.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ") } else { String::new() });
+                let cond = match (gate, news) {
+                    (Some(g), Some(c)) => Some(lit(ExprKind::Bin("and".into(), Box::new(g), Box::new(c)), l.line)),
+                    (g, c) => g.or(c),
+                };
+                // its own statements, the item it is handed being the
+                // root's or the local of the stream it reads
+                let fd = self.edges.iter().find(|(fd, _, _)| mangle(&fd.name) == l.name).map(|(fd, _, _)| fd.clone()).expect("a line's function");
+                let mut names: HashMap<String, String> = HashMap::new();
+                names.insert("__next".into(), format!("__next_{}", j + 1));
+                if let ([p], true) = (l.pacers.as_slice(), fd.params().count() == 1) {
+                    if p != &s {
+                        names.insert("__item".into(), item_of(p));
+                    }
+                }
+                let target = l.target.as_deref().filter(|t| deferred(t));
+                let sure = cond.is_none() && l.sure;
+                if let Some(t) = target {
+                    certain.insert(t.to_string(), sure);
+                    quiet.insert(t.to_string());
+                    if !sure {
+                        let elem = self.fvar(t).and_then(|f| f.ty.elem().cloned()).map(|e| zero_ty(&e)).unwrap_or_default();
+                        heads.push(var(flag_of(t), "bool".into(), Some(lit(ExprKind::Bool(false), l.line)), l.line));
+                        heads.push(var(item_of(t), elem, None, l.line));
+                    }
+                }
+                let elem = target.and_then(|t| self.fvar(t)).and_then(|f| f.ty.elem().cloned()).map(|e| zero_ty(&e)).unwrap_or_default();
+                let stmts = tick_stmts(&fd.body, &names, &|t: &str, value: Expr, push: Stmt| -> Option<Vec<Stmt>> {
+                    if target != Some(t) {
+                        return None;
+                    }
+                    let line = value.line;
+                    let put = |name: String, value: Expr| Stmt::Assign { targets: vec![super::syntax::Target { name, seq: false, arr: false, line, feature: None, pushed: false }], value, line };
+                    Some(if sure {
+                        vec![var(item_of(t), elem.clone(), Some(value), line), push]
+                    } else {
+                        vec![put(item_of(t), value), push, put(flag_of(t), lit(ExprKind::Bool(true), line))]
+                    })
+                });
+                // lines that stand under one condition share it
+                match conds.last_mut() {
+                    Some((k, c, block)) if c.is_some() && *k == key => block.extend(stmts),
+                    _ => conds.push((key, cond, stmts)),
+                }
+            }
+            body.extend(heads);
+            for (_, cond, stmts) in conds {
+                match cond {
+                    Some(c) => {
+                        let line = c.line;
+                        body.push(Stmt::If { cond: c, then: stmts, els: None, line, on_push: false });
+                    }
+                    None => body.extend(stmts),
+                }
+            }
+            if let Some(f) = whole {
+                let cond = lit(ExprKind::Field(Box::new(lit(ExprKind::Phrase(vec![Part::Word(f)]), line0)), "enabled".into()), line0);
+                body = vec![Stmt::If { cond, then: body, els: None, line: line0, on_push: false }];
+            }
+            // the function is the feature's whose layer is highest
+            // among its lines', which may name them all
+            let top = order.iter().map(|&j| &lines[j]).max_by_key(|l| self.ranks.get(&l.feature).copied().unwrap_or(0)).unwrap();
+            let (feature, file) = (top.feature.clone(), top.file.clone());
+            let fd = FnDecl {
+                line: line0,
+                results: Vec::new(),
+                name: vec![NamePart::Word(name.clone()), NamePart::Group],
+                groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, arr: false, line: line0 }]],
+                task: false,
+                body,
+                platform: Vec::new(),
+            };
+            let was = std::mem::replace(&mut self.cur, feature.clone());
+            let declared = self.declare(&fd, &feature, &file);
+            self.cur = was;
+            declared?;
+            let i = self.funcs.len() - 1;
+            self.funcs[i].ir = name.clone();
+            self.funcs[i].plain = name.clone();
+            self.edges.push((fd, feature, file));
+            self.tick_quiet.insert(name.clone(), quiet);
+            self.bare_edges.insert(s.clone(), vec![(name, String::new())]);
+        }
+        Ok(())
+    }
+
+    /// The streams a call cannot reach where they are pushed (fm3 log
+    /// 207). A line out of a stream is a function of one item, called
+    /// where the item is pushed by the stream's name; these are pushed
+    /// some other way: the input device, by the platform; a task's
+    /// output and a walking processor's, through the task's parameter;
+    /// a stream handed to a function of the store, which may push
+    /// through its own name for it; a stream a `<<` method takes whole;
+    /// and one that is stored and given first items, pushed at the
+    /// reset before a case has a context. Erring toward yes costs
+    /// nothing a program can see: the line is then a node, as it was
+    fn settle_node_fed(&mut self, store: &Store) {
+        const WORDS: [&str; 11] = ["count", "ended", "position", "latest", "frame", "end", "empty", "peek", "advance", "time", "restart"];
+        let mut fed = Names::new();
+        fed.insert("in".to_string());
+        for f in &store.features {
+            let file = f.code.file.as_str();
+            let mut handed = |e: &Expr| -> bool {
+                let (ExprKind::Phrase(parts) | ExprKind::Existing(parts)) = &e.kind else { return true };
+                let direct = |parts: &[Part], out: &mut Names| {
+                    for p in parts {
+                        match p {
+                            Part::Value(Expr { kind: ExprKind::Seq(n), .. }) => {
+                                out.insert(n.clone());
+                            }
+                            Part::Args(list) => out.extend(list.iter().filter_map(|a| match &a.value.kind {
+                                ExprKind::Seq(n) => Some(n.clone()),
+                                _ => None,
+                            })),
+                            _ => {}
+                        }
+                    }
+                };
+                match find_methods(&self.funcs, parts, &|w| self.fvar(w).is_some(), file, 0) {
+                    Ok((_, args)) => fed.extend(args.iter().filter_map(|a| match &a.kind {
+                        ExprKind::Seq(n) => Some(n.clone()),
+                        _ => None,
+                    })),
+                    // (a stream's own word is no handing over)
+                    Err(_) => match parts.first() {
+                        Some(Part::Word(w)) if WORDS.contains(&w.as_str()) => {}
+                        Some(Part::Value(Expr { kind: ExprKind::Seq(_), .. })) => {}
+                        _ => direct(parts, &mut fed),
+                    },
+                }
+                true
+            };
+            for d in &f.code.decls {
+                match d {
+                    Decl::Fn(fd) => fd.body.iter().for_each(|s| walk_stmt(s, &mut handed)),
+                    Decl::Var(v) => walk_stmt(&Stmt::Var(v.clone()), &mut handed),
+                    Decl::Wire(e) => super::zeroic::walk(e, &mut handed),
+                    Decl::Edge { items, first, cond, only, .. } => items.iter().chain(first.iter()).chain(cond.iter()).chain(only.iter()).for_each(|e| super::zeroic::walk(e, &mut handed)),
+                    Decl::Type(_) => {}
+                }
+            }
+        }
+        for f in &store.features {
+            for d in &f.code.decls {
+                let Decl::Var(v) = d else { continue };
+                match &v.init {
+                    Some(Init::Value(e)) if matches!(self.task_call(e, None, &f.code.file), Ok(Some(_))) => {
+                        if !self.zwire(v, &f.code.file).is_some_and(|n| self.bare.contains(&n)) {
+                            fed.insert(v.name.clone());
+                        }
+                    }
+                    Some(Init::Pushes { .. }) if !self.bare.contains(&v.name) => {
+                        fed.insert(v.name.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for v in &self.fvars {
+            if self.funcs.iter().any(|g| matches!(g.parts.as_slice(), [NamePart::Group, NamePart::Sym(op), NamePart::Group] if op == "<<") && g.params.first().map(|p| &p.1) == Some(&v.ty)) {
+                fed.insert(v.name.clone());
+            }
+        }
+        self.node_fed = fed;
+    }
+
     /// the input of a processor read the new way that this declaration
     /// wires, `int d$ = doubled (x$)` (fm3 log 124)
     fn zwire(&self, v: &super::syntax::VarDecl, file: &str) -> Option<String> {
@@ -5273,10 +5680,11 @@ impl Lowerer {
         for f in &store.features {
             for d in &f.code.decls {
                 match d {
-                    Decl::Edge { items, watch, .. } => {
+                    Decl::Edge { items, watch, paced, .. } => {
                         if let Some(Expr { kind: ExprKind::Seq(n), .. }) = items.first() {
                             sourced.insert(n.clone());
                         }
+                        sourced.extend(paced.iter().flatten().cloned());
                         if let Some(Watch::Value(n)) = watch {
                             sourced.insert(n.clone());
                         }
@@ -5850,7 +6258,7 @@ impl Lowerer {
     /// dispatch a push in a function uses, and pushes the rest of the
     /// chain after each item (question 38)
     #[allow(clippy::too_many_arguments)]
-    fn collect_edge(&mut self, target: &Expr, items: &[Expr], (group, shown): (usize, Option<&str>), first: Option<&Expr>, cond: Option<&Expr>, word: Repeat, only: Option<&Expr>, forever: bool, watch: Option<&Watch>, line: usize, feature: &str, file: &str) -> Result<(), Error> {
+    fn collect_edge(&mut self, target: &Expr, items: &[Expr], (group, shown): (usize, Option<&str>), first: Option<&Expr>, cond: Option<&Expr>, word: Repeat, only: Option<&Expr>, forever: bool, watch: Option<&Watch>, paced: Option<&[String]>, line: usize, feature: &str, file: &str) -> Result<(), Error> {
         let ExprKind::Seq(tname) = &target.kind else {
             return Err(lex::error(file, line, "`<<` pushes into a stream, named `x$`"));
         };
@@ -5924,24 +6332,31 @@ impl Lowerer {
         let mut pacers = Vec::new();
         super::syntax::seqs_in(&items[0], &mut pacers);
         pacers.retain(|n| n != tname);
-        if forever && pacers.is_empty() && mentions_seq(&items[0], tname) {
+        // A line set off by a stream that is not its first item, or by
+        // any of several (fm3 questions 86 and 121, log 207): each is
+        // a feature-scope stream, and an array the items name sets
+        // nothing off
+        let mut srcs: Vec<String> = Vec::new();
+        for n in paced.unwrap_or_default() {
+            match self.fvar(n) {
+                Some(f) if matches!(f.ty, Ty::Stream(_)) && !f.arr => srcs.push(n.clone()),
+                Some(_) => {}
+                None => return Err(lex::error(file, line, format!("'{}$' is not a feature-scope stream: a line that stands reads one", n))),
+            }
+        }
+        if let Some(n) = srcs.iter().find(|n| self.input_device(n, None) && srcs.len() > 1) {
+            return Err(lex::error(file, line, format!("'{}' reads '{}$', the input device, and another stream: a line over the device and a second stream is not built", said, n)));
+        }
+        if paced.is_none() && forever && pacers.is_empty() && mentions_seq(&items[0], tname) {
             return Err(lex::error(file, line, match self.rates.get(tname) {
                 None => format!("a push into '{}$' that reads '{}$' and stands forever would never end: nothing else on its right paces it, and '{}$' has no rate to. For one more item write it with no `forever`, in a function; for a clock give the stream a rate, `{} {}$ at (1 hz)`", tname, tname, tname, zero_ty(telem), tname),
                 Some(_) => format!("a stream that feeds itself forever at a rate is a clock (fm3 question 80, ruled): with nothing else on its right the line is paced by its stream's rate, one more item of '{}$' each beat. It is not built: it needs a schedule ordered by time, and a store's clock is still moved by the code that pushes. Until then a function's push says it with an end, `{}$ << 0 << ({}$ + 1) while (_ < 4)`", tname, tname, tname),
             }));
         }
-        if (forever || cond.is_some()) && pacers.len() > 1 {
-            return Err(lex::error(file, line, format!("'{}' reads {} streams, {}, and which of them sets the line off is not settled (fm3 question 86): an item of either with the other's latest, or one of each together. Not built: say one stream by a line of its own first", said, pacers.len(), pacers.iter().map(|n| format!("'{}$'", n)).collect::<Vec<_>>().join(" and "))));
-        }
-        let ExprKind::Seq(sname) = &items[0].kind else {
-            // (a group whose first item names no stream and a later
-            // one does: a line is paced by what its first item names)
-            let mut later = Vec::new();
-            items[1..].iter().for_each(|e| super::syntax::seqs_in(e, &mut later));
-            later.retain(|n| n != tname);
-            if let (true, Some(x)) = (forever && pacers.is_empty(), later.first()) {
-                return Err(lex::error(file, items[0].line, format!("a line that stands is paced by the stream its first item names, and the first of '{}' names none; '{}$' comes after it. Not built", wired, x)));
-            }
+        let ExprKind::Seq(sname) = (match srcs.first() {
+            Some(n) => &ExprKind::Seq(n.clone()),
+            None => &items[0].kind,
+        }) else {
             if forever {
                 return Err(lex::error(file, items[0].line, format!("nothing on the right of '{}' is a stream: `forever` makes a push happen again whenever what is on its right has something new, and a value never has", said)));
             }
@@ -5995,13 +6410,25 @@ impl Lowerer {
         };
         self.reach(&format!("{}$", tname), &tf.feature, file, line)?;
         self.reach(&format!("{}$", sname), &sf.feature, file, items[0].line)?;
+        for n in srcs.iter().skip(1) {
+            let owner = self.fvar(n).map(|f| f.feature.clone()).unwrap_or_default();
+            self.reach(&format!("{}$", n), &owner, file, line)?;
+        }
+        if let Some(n) = srcs.iter().find(|n| *n == tname) {
+            return Err(lex::error(file, line, format!("'{}$' would feed itself", n)));
+        }
+        // a stream a call cannot reach where it is pushed (see
+        // `node_fed`) cannot set off a line written this way
+        if let Some(n) = srcs.iter().find(|n| !self.bare.contains(*n) && self.node_fed.contains(*n)) {
+            return Err(lex::error(file, line, format!("'{}' is set off by '{}$', which a task, a function it is handed to or the store's start pushes into, where no line can be called an item at a time: a line that reads it together with another stream, or after its first item, is not built. Say it by a line of its own first, `mid$ << {}$ forever`", said, n, n)));
+        }
         let name = format!("__edge{}", self.edges.len() + 1);
         let seq = |n: &str| Expr { kind: ExprKind::Seq(n.to_string()), line };
         // the target read on its own line: before anything has been
         // pushed into it, the zero of its type (fm3 log 149)
         // ... and it is not to be freed under the read: a node gives a
         // queue's slots back only where nothing reads it by name
-        if first.into_iter().chain(&items[1..]).any(|e| mentions_seq(e, tname)) {
+        if first.into_iter().chain(items.iter()).any(|e| mentions_seq(e, tname)) {
             self.zero_first.insert(name.clone());
             self.read_by_name.insert(tname.clone());
         }
@@ -6031,6 +6458,7 @@ impl Lowerer {
         // where it is a stream's value, by a second function of the
         // line, on that stream, made before the one that moves so that
         // the scheduler runs it first
+        let mut watched = None;
         match (watch, &until) {
             (Some(Watch::Ended(k)), Some((field, _))) => {
                 if self.fvar(k).is_none_or(|f| !matches!(f.ty, Ty::Stream(_))) {
@@ -6038,7 +6466,11 @@ impl Lowerer {
                 }
                 self.end_bits.entry(k.clone()).or_default().push(field.clone());
             }
-            (Some(Watch::Value(k)), Some((field, c))) => self.watcher(k, field, c, &said, line, feature, file)?,
+            (Some(Watch::Value(k)), Some((field, c))) => {
+                let had = self.lines.len();
+                self.watcher(k, field, c, &said, line, feature, file)?;
+                watched = self.lines.get(had).map(|l| l.name.clone());
+            }
             _ => {}
         }
         // a standing filter, `e$ << x$ if (x$ > 0) forever`: the push
@@ -6087,14 +6519,28 @@ impl Lowerer {
         // edge is a function of one item, its body the chain with the
         // item first, lowered as a plain function's push: a push into
         // the stream calls it, and there is no node
-        if self.bare.contains(sname) {
-            let mut pushed = vec![first.cloned().unwrap_or(Expr { kind: ExprKind::Name("__item".into()), line })];
-            pushed.extend(items[1..].iter().cloned());
+        // ... and so is a line out of a stream that is stored and that
+        // only plain pushes by its name feed: the push stores the item
+        // and calls the line, so that a stream ticks once a push
+        // whatever it is kept as (fm3 question 121, log 207). A line
+        // over several streams reads each by its name, and is a
+        // function of no item (fm3 question 86)
+        if !srcs.is_empty() || self.bare.contains(sname) || !self.node_fed.contains(sname) {
+            let (pushed, params) = match srcs.as_slice() {
+                [] => {
+                    let mut pushed = vec![first.cloned().unwrap_or(Expr { kind: ExprKind::Name("__item".into()), line })];
+                    pushed.extend(items[1..].iter().cloned());
+                    (pushed, vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, arr: false, line }])
+                }
+                [one] => (items.iter().map(|e| super::syntax::renamed(e, one, "__item")).collect(), vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, arr: false, line }]),
+                _ => (items.to_vec(), Vec::new()),
+            };
+            let sure = only.is_none() && counted.is_none() && until.is_none();
             let fd = FnDecl {
                 line,
                 results: Vec::new(),
                 name: vec![NamePart::Word(name.clone()), NamePart::Group],
-                groups: vec![vec![super::syntax::Param { ty: zero_ty(selem), name: "__item".into(), seq: false, arr: false, line }]],
+                groups: vec![params],
                 task: false,
                 body: under(pushed),
                 platform: Vec::new(),
@@ -6106,7 +6552,16 @@ impl Lowerer {
             // its tree kept, to be written in line at a range's loop
             // (fm3 log 195)
             self.bodies.insert(self.funcs[i].key.clone(), (std::rc::Rc::new(fd.clone()), file.to_string()));
-            self.bare_edges.entry(sname.clone()).or_default().push((name, feature.to_string()));
+            let from: Vec<String> = if srcs.is_empty() { vec![sname.clone()] } else { srcs.clone() };
+            for n in &from {
+                self.bare_edges.entry(n.clone()).or_default().push((name.clone(), feature.to_string()));
+            }
+            // what the line names anywhere but its own target: it runs
+            // after each of them has, in a tick that reaches both
+            let mut reads = from.clone();
+            first.into_iter().chain(items.iter()).chain(only).chain(cond).for_each(|e| super::syntax::seqs_in(e, &mut reads));
+            reads.retain(|n| n != tname);
+            self.lines.push(Line { name, feature: feature.to_string(), file: file.to_string(), line, pacers: from, reads, target: Some(tname.clone()), items: items.len(), sure, tree: true, after: watched, said: said.clone() });
             self.edges.push((fd, feature.to_string(), file.to_string()));
             return Ok(());
         }
@@ -6172,7 +6627,7 @@ impl Lowerer {
         let set = Stmt::Assign { targets: vec![super::syntax::Target { name: field.to_string(), seq: false, arr: false, line, feature: None, pushed: false }], value: Expr { kind: ExprKind::Bool(true), line }, line };
         let body = vec![Stmt::If { cond: cond.clone(), then: vec![set], els: None, line, on_push: false }];
         let seq = Expr { kind: ExprKind::Seq(sname.to_string()), line };
-        if self.bare.contains(sname) {
+        if self.bare.contains(sname) || !self.node_fed.contains(sname) {
             let fd = FnDecl {
                 line,
                 results: Vec::new(),
@@ -6186,7 +6641,8 @@ impl Lowerer {
             let i = self.funcs.len() - 1;
             self.funcs[i].ir = name.clone();
             self.funcs[i].plain = name.clone();
-            self.bare_edges.entry(sname.to_string()).or_default().push((name, feature.to_string()));
+            self.bare_edges.entry(sname.to_string()).or_default().push((name.clone(), feature.to_string()));
+            self.lines.push(Line { name, feature: feature.to_string(), file: file.to_string(), line, pacers: vec![sname.to_string()], reads: vec![sname.to_string()], target: None, items: 0, sure: false, tree: true, after: None, said: format!("{} until (...), its event", said) });
             self.edges.push((fd, feature.to_string(), file.to_string()));
             return Ok(());
         }
@@ -8724,7 +9180,7 @@ impl Lowerer {
                 // edge's gate is read once, before the items, a feature
                 // being switched at the next event and not in the
                 // middle of a statement
-                let bare = self.is_bare(n, b);
+                let bare = (self.is_bare(n, b) || self.lined(n, b)) && !self.ticked(n, b);
                 let mut gated = false;
                 if bare {
                     self.z_open(n, b);
@@ -10820,7 +11276,7 @@ impl Lowerer {
         // for each item that sets the line off, and what it names
         // beside that item it reads for its value now (fm3 question
         // 106, log 180)
-        matches!(b.kind, BodyKind::Fn | BodyKind::Task { .. }) && b.func.as_ref().is_some_and(|f| f.ir.starts_with("__edge") || (!f.ir.starts_with("__") && !f.key.starts_with("__")))
+        matches!(b.kind, BodyKind::Fn | BodyKind::Task { .. }) && b.func.as_ref().is_some_and(|f| f.ir.starts_with("__edge") || f.ir.starts_with("__tick") || (!f.ir.starts_with("__") && !f.key.starts_with("__")))
     }
 
     /// May a stream the function itself declared still hold nothing
@@ -10861,52 +11317,7 @@ impl Lowerer {
             if self.nowed.contains(name) && !b.vars.contains_key(name) {
                 self.field_put(name, &v.text, b);
             }
-            let gates = match &self.bare_gates {
-                Some((n, g)) if n == name => g.clone(),
-                _ => self.read_gates(name, b),
-            };
-            let edges = self.bare_edges.get(name).cloned().unwrap_or_default();
-            if let Some(mut t) = self.zthread.take_if(|t| t.stream == name) {
-                // the statement carries the wiring's state (fm3 log
-                // 124): the item is the function's call, and nothing
-                // is fetched or stored round it. Deeper than the
-                // statement itself the carried values could not follow
-                if t.depth == b.depth {
-                    self.z_call(&mut t, &v.text, b);
-                } else {
-                    self.zbroken = true;
-                }
-                self.zthread = Some(t);
-            } else {
-                for ((edge, _), gate) in edges.iter().zip(&gates) {
-                    if let Some(on) = gate {
-                        b.line(&format!("if {}", on));
-                        b.depth += 1;
-                    }
-                    if let Some(zp) = self.zprocs.get(edge).cloned() {
-                        // a processor's function: its wiring's state
-                        // fetched, the call, the state stored
-                        let mut t = self.z_load(&zp, name, edge, b);
-                        self.z_call(&mut t, &v.text, b);
-                        self.z_store(&t, b);
-                    } else if let Some(info) = self.edge_in_line(edge) {
-                        // in the loop over a range the edge's own
-                        // lines, with no call and no return an item
-                        // (fm3 log 195); an error in them is the
-                        // statement's
-                        let was = std::mem::replace(&mut self.edge_here, false);
-                        if let Err(e) = self.inline_fn(&info, &[v.text.clone()], b) {
-                            self.zerror.get_or_insert(e);
-                        }
-                        self.edge_here = was;
-                    } else {
-                        b.line(&format!("{}({})", edge, v.text));
-                    }
-                    if gate.is_some() {
-                        b.depth -= 1;
-                    }
-                }
-            }
+            self.call_lines(name, &v, b);
             // at a rate, a step then passes (question 52): the item was
             // pushed at now, and now moves on by the item's length,
             // whether or not an edge was on. The rate is a literal, so
@@ -10937,11 +11348,21 @@ impl Lowerer {
             }
             let word = self.queue_push(s.ty.elem());
             b.line(&format!("{}({}, {})", word, s.text, v.text));
+            if self.lined(name, b) {
+                self.call_lines(name, &v, b);
+            }
         } else if regular {
             let v = b.materialize(v);
             b.line(&format!("push({}, {})", s.text, v.text));
+            if self.lined(name, b) {
+                self.call_lines(name, &v, b);
+            }
         } else {
-            self.emit_push_only(s, v, b);
+            let v = b.materialize(v);
+            self.emit_push_only(s, &v, b);
+            if self.lined(name, b) {
+                self.call_lines(name, &v, b);
+            }
         }
         // one item, at the depth of the statement that pushes it: the
         // statement is known to have pushed something (fm3 log 103)
@@ -10961,6 +11382,78 @@ impl Lowerer {
             if out.as_deref() == Some(name) && self.any_rated_wiring {
                 let hz = hz.clone();
                 b.line(&format!("__sleep({})", hz));
+            }
+        }
+    }
+
+    /// is the name a feature-scope stream that lines stand on, called
+    /// where an item is pushed into it?
+    fn lined(&self, name: &str, b: &Body) -> bool {
+        !b.vars.contains_key(name) && self.bare_edges.contains_key(name)
+    }
+
+    /// does the function being lowered, a tick, run the lines of this
+    /// stream itself, later and in their order (fm3 log 207)?
+    fn ticked(&self, name: &str, b: &Body) -> bool {
+        b.func.as_ref().is_some_and(|f| self.tick_quiet.get(&f.ir).is_some_and(|q| q.contains(name)))
+    }
+
+    /// An item handed to each line that stands on the stream it was
+    /// pushed into, in the order the lines were written, where that
+    /// line's feature is on (question 50 and 51, fm3 log 92); where the
+    /// stream's tick is not in that order, the one entry is the tick's
+    /// own function (fm3 question 121, log 207)
+    fn call_lines(&mut self, name: &str, v: &Val, b: &mut Body) {
+        if self.ticked(name, b) {
+            return;
+        }
+        let gates = match &self.bare_gates {
+            Some((n, g)) if n == name => g.clone(),
+            _ => self.read_gates(name, b),
+        };
+        let edges = self.bare_edges.get(name).cloned().unwrap_or_default();
+        if let Some(mut t) = self.zthread.take_if(|t| t.stream == name) {
+            // the statement carries the wiring's state (fm3 log
+            // 124): the item is the function's call, and nothing
+            // is fetched or stored round it. Deeper than the
+            // statement itself the carried values could not follow
+            if t.depth == b.depth {
+                self.z_call(&mut t, &v.text, b);
+            } else {
+                self.zbroken = true;
+            }
+            self.zthread = Some(t);
+        } else {
+            for ((edge, _), gate) in edges.iter().zip(&gates) {
+                if let Some(on) = gate {
+                    b.line(&format!("if {}", on));
+                    b.depth += 1;
+                }
+                if let Some(zp) = self.zprocs.get(edge).cloned() {
+                    // a processor's function: its wiring's state
+                    // fetched, the call, the state stored
+                    let mut t = self.z_load(&zp, name, edge, b);
+                    self.z_call(&mut t, &v.text, b);
+                    self.z_store(&t, b);
+                } else if let Some(info) = self.edge_in_line(edge) {
+                    // in the loop over a range the edge's own
+                    // lines, with no call and no return an item
+                    // (fm3 log 195); an error in them is the
+                    // statement's
+                    let was = std::mem::replace(&mut self.edge_here, false);
+                    if let Err(e) = self.inline_fn(&info, &[v.text.clone()], b) {
+                        self.zerror.get_or_insert(e);
+                    }
+                    self.edge_here = was;
+                } else {
+                    // (a line over several streams reads each by its
+                    // name, and is handed nothing, fm3 question 86)
+                    let bare = self.funcs.iter().find(|f| &f.ir == edge).is_some_and(|f| f.params.is_empty());
+                    b.line(&if bare { format!("{}()", edge) } else { format!("{}({})", edge, v.text) });
+                }
+                if gate.is_some() {
+                    b.depth -= 1;
+                }
             }
         }
     }
@@ -11429,7 +11922,7 @@ impl Lowerer {
     /// one, which take it an item at a time
     fn takes_block(&self, name: &str, b: &Body) -> bool {
         let own = matches!(&b.kind, BodyKind::Task { out, .. } if out.as_deref() == Some(name));
-        !self.device(name, b) && !own && !self.is_bare(name, b) && self.paced(name, b).is_none()
+        !self.device(name, b) && !own && !self.is_bare(name, b) && !self.lined(name, b) && self.paced(name, b).is_none()
     }
 
     /// the `n` items of a view pushed as one block (log 69) — one by one
@@ -12117,7 +12610,8 @@ impl Lowerer {
         let edges = self.bare_edges.get(name).cloned().unwrap_or_default();
         let mut gates = Vec::new();
         for (_, feature) in &edges {
-            if self.statics.contains(feature) {
+            // (a tick's function reads its lines' gates itself)
+            if feature.is_empty() || self.statics.contains(feature) {
                 gates.push(None);
             } else {
                 let on = self.gate(feature, None, b);
@@ -13444,6 +13938,35 @@ fn stream_uses(features: &[super::store::FeatureDoc], task: &dyn Fn(&Expr, &str)
                 }
                 Decl::Var(v) => mentions_init(v, &none, &|p, b| call(p, b, &f.code.file), &mut named),
                 Decl::Wire(e) => mentions_in(e, &none, &|p, b| call(p, b, &f.code.file), &mut named),
+                // a line set off by a stream that is not its first
+                // item, or by several (fm3 question 86, log 207): each
+                // is wired to the target. One alone is handed to the
+                // line as its item, and that is no reading of it;
+                // several are each read by name, for their latest
+                Decl::Edge { target: Expr { kind: ExprKind::Seq(t), .. }, items, cond, only, watch, paced: Some(ps), .. } => {
+                    let one = match ps.as_slice() {
+                        [p] => Some(p),
+                        _ => None,
+                    };
+                    for e in items.iter().chain(cond.iter()).chain(only.iter()) {
+                        let e = match one {
+                            Some(p) => super::syntax::renamed(e, p, "__item"),
+                            None => e.clone(),
+                        };
+                        let mut own = Names::new();
+                        mentions_in(&e, &none, &|p, b| call(p, b, &f.code.file), &mut own);
+                        own.remove(t);
+                        own.remove("__item");
+                        named.extend(own);
+                    }
+                    for p in ps {
+                        wires.push((p.clone(), t.clone()));
+                    }
+                    pushed.insert(t.clone());
+                    if let Some(Watch::Value(k)) = watch {
+                        wires.push((k.clone(), t.clone()));
+                    }
+                }
                 Decl::Edge { target, items, cond, only, watch, .. } => {
                     // (what a line's first item reads of its own target
                     // is `settle_bare`'s to weigh, fm3 log 149; a first
@@ -14223,6 +14746,78 @@ fn is_frame(e: &Expr) -> bool {
 }
 
 /// every expression of one statement, and of the statements under it
+/// A line's statements as a tick writes them (fm3 log 207): the names
+/// in `names` read as what they are called there, and a push into a
+/// stream given to `defer` replaced by what it gives back, which is
+/// handed the stream, the push's one item and the push of that item
+/// by its local's name
+fn tick_stmts(stmts: &[Stmt], names: &HashMap<String, String>, defer: &dyn Fn(&str, Expr, Stmt) -> Option<Vec<Stmt>>) -> Vec<Stmt> {
+    fn expr(e: &Expr, names: &HashMap<String, String>) -> Expr {
+        let f = |x: &Expr| Box::new(expr(x, names));
+        let parts = |ps: &[Part]| -> Vec<Part> {
+            ps.iter()
+                .map(|p| match p {
+                    Part::Args(list) => Part::Args(list.iter().map(|a| Arg { name: a.name.clone(), value: expr(&a.value, names) }).collect()),
+                    Part::Value(x) => Part::Value(expr(x, names)),
+                    Part::Word(w) => Part::Word(names.get(w).cloned().unwrap_or_else(|| w.clone())),
+                    Part::Whole => Part::Whole,
+                })
+                .collect()
+        };
+        let kind = match &e.kind {
+            ExprKind::Name(n) => ExprKind::Name(names.get(n).cloned().unwrap_or_else(|| n.clone())),
+            ExprKind::Unit(x, u) => ExprKind::Unit(f(x), u.clone()),
+            ExprKind::Neg(x) => ExprKind::Neg(f(x)),
+            ExprKind::Field(x, n) => ExprKind::Field(f(x), n.clone()),
+            ExprKind::List(items) => ExprKind::List(items.iter().map(|x| expr(x, names)).collect()),
+            ExprKind::Range { from, to, inclusive } => ExprKind::Range { from: f(from), to: f(to), inclusive: *inclusive },
+            ExprKind::Bin(op, l, r) => ExprKind::Bin(op.clone(), f(l), f(r)),
+            ExprKind::Index(l, r) => ExprKind::Index(f(l), f(r)),
+            ExprKind::IfElse(c, a, b) => ExprKind::IfElse(f(c), f(a), f(b)),
+            ExprKind::Phrase(ps) => ExprKind::Phrase(parts(ps)),
+            ExprKind::Existing(ps) => ExprKind::Existing(parts(ps)),
+            k => k.clone(),
+        };
+        Expr { kind, line: e.line }
+    }
+    let mut out = Vec::new();
+    for s in stmts {
+        match s {
+            Stmt::Var(v) => {
+                let mut v = v.clone();
+                v.name = names.get(&v.name).cloned().unwrap_or(v.name);
+                v.init = match v.init {
+                    Some(Init::Value(e)) => Some(Init::Value(expr(&e, names))),
+                    other => other,
+                };
+                out.push(Stmt::Var(v));
+            }
+            Stmt::Assign { targets, value, line } => {
+                let targets = targets.iter().map(|t| super::syntax::Target { name: names.get(&t.name).cloned().unwrap_or_else(|| t.name.clone()), ..t.clone() }).collect();
+                out.push(Stmt::Assign { targets, value: expr(value, names), line: *line });
+            }
+            Stmt::If { cond, then, els, line, on_push } => out.push(Stmt::If { cond: expr(cond, names), then: tick_stmts(then, names, defer), els: els.as_ref().map(|e| tick_stmts(e, names, defer)), line: *line, on_push: *on_push }),
+            Stmt::Push { target, items, group, cond, word, existing, forever, line } => {
+                let items: Vec<Expr> = items.iter().map(|e| expr(e, names)).collect();
+                let cond = cond.as_ref().map(|e| expr(e, names));
+                let gone = match (&target.kind, items.as_slice()) {
+                    (ExprKind::Seq(t), [one]) => {
+                        let local = Expr { kind: ExprKind::Name(format!("__v_{}", t)), line: *line };
+                        defer(t, one.clone(), Stmt::Push { target: target.clone(), items: vec![local], group: *group, cond: cond.clone(), word: *word, existing: *existing, forever: *forever, line: *line })
+                    }
+                    _ => None,
+                };
+                match gone {
+                    Some(stmts) => out.extend(stmts),
+                    None => out.push(Stmt::Push { target: target.clone(), items, group: *group, cond, word: *word, existing: *existing, forever: *forever, line: *line }),
+                }
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    out
+}
+
 fn walk_stmt(s: &Stmt, f: &mut dyn FnMut(&Expr) -> bool) {
     let init = |v: &super::syntax::VarDecl, f: &mut dyn FnMut(&Expr) -> bool| match &v.init {
         Some(Init::Value(e)) => super::zeroic::walk(e, f),
