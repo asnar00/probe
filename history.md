@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: said's case for a stream's peek past what is there is taken out — `6e7f944` · 2026-10-10
+
+```
+>looked() → 0
+```
+
+`suite/zero/checks/said/said.md:31`. `bf396a7` made a read of an array by a place a thing that cannot fail, so this case, which had ended `→ check at checks.zero:23` with the reason `item 5 of 2`, gives 0. To keep that reason in the suite the same commit gave `said` a function `peeked`, a stream of two items asked by `peek` for the one three on, and the case `peeked (3) → check at said.zero:29`. Its one line is a `peek` forward of now, a form the meter counts: that row went from 24 lines to 25, and `probe zero meter suite/zero` read 52 where taking out the row for an array's index, 25 lines of 76, should have left 51. The entry for `bf396a7` below says 51; it was 52 until this commit.
+
+The function and its two cases are taken out. A store written to show where a failed check is reported is no place to add a form the language is taking out, and the reason for a stream's `peek` past what is there is held where it was already, by `a_failed_check_names_its_line` (`src/zero/run.rs`), which finds the row `item {a} of {b}` in a diagnostic build's table and reads `item 9 of 4` and `item -2 of 4` back from it. The meter is 51 of 2 829 lines of zero, the two new stores of `bf396a7` being 89 of them. `checks`' emitted text is what it was before `bf396a7` but for `outside`, which reads its item in line. The full run is `scratchpad/chain126.log`: 1162 runs of the zero suite on four paths and 1121 on air, `probe test` 1025, `cargo test` 183.
+
+---
+
 ### zero: a read of an array by a place cannot fail — `bf396a7` · 2026-10-10
 
 ```
