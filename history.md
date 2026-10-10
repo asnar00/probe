@@ -4,6 +4,28 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a clock alone, a clock beside a countdown, and a clock read for its latest — `2fccc1e` · 2026-10-10
+
+```
+int i$ at (1 hz)
+int down$ at (1 hz)
+i$ << i$ + 1 if (i$ < 5) forever
+out$ << ("tick " << i$ << "\n") forever
+out$ << (down$ << "\n") forever
+
+on count down()
+    down$ << [3 through 1]
+    out$ << "liftoff\n"
+```
+
+`suite/zero/going-beside/beside/beside.zero:1-9`. The cases a clock is held by, on the code of `076b7df`; nothing in `src` changed. `count down()` gives `"tick 1\n3\n" at 0 s, "tick 2\n2\n" at 1 s, "tick 3\n1\n" at 2 s, "tick 4\nliftoff\n" at 3 s, "tick 5" at 4 s`: a function with a now of its own beside a line with one, the clock first at each second because its line stood before the function was called (fm3 question 121), and going on after the function has returned. `how far after (2)`, which pushes two numbers at `1 hz` and then reads `i$` by its name, gives 3: the clock's item at 2 s is made before the function goes on at 2 s.
+
+`suite/zero/going-alone` is the smallest program with a clock: `i$ << i$ + 1 if (i$ < 5) forever` on a stream at `1 hz` gives `"1\n2\n3\n4\n5" at 1 hz`, its first item there before the case's function begins, the line no longer due once its `if` fails.
+
+Counted as it ran, an item of a clock alone costs 35 and the line that writes it: 13 the list asked, 7 the wait, 15 the clock's own function. A function's step in a store with a list, nothing due, is 21 where it is 7 in a store with none. All seven cases pass on five paths, and the two timed ones gave one text in twenty runs each. The full run is `scratchpad/chain109.log`: 1053 runs of the zero suite on four paths, 1015 on air, `cargo test` 178.
+
+---
+
 ### zero: a clock, and several things going on at once, taken in time order — `076b7df` · 2026-10-10
 
 ```
