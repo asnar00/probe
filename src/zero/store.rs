@@ -15,6 +15,13 @@ use std::path::{Path, PathBuf};
 #[derive(Clone)]
 pub struct Store {
     pub path: PathBuf,
+    /// the operators the language's own feature declares, `on (time t)
+    /// << (time a) + (time b)` (fm3 question 117, log 202): each is a
+    /// line written where it is used and no function of the store, so
+    /// they stand here and not among the platform feature's
+    /// declarations, where every pass that reads a store's functions
+    /// would meet them
+    pub own_ops: Vec<syntax::FnDecl>,
     /// the features in composition order: earliest origin first
     pub features: Vec<FeatureDoc>,
     /// the layers, lowest first, from `order.md` beside the feature
@@ -338,12 +345,15 @@ fn parse_timed(toks: &[lex::Tok], file: &str, line: usize) -> Result<Expect, Err
 /// store has, `print` first among them, with bodies in the IR; composed
 /// first, in the lowest layer, `platform`
 const PLATFORM_ZERO: &str = include_str!("platform.zero");
-const PLATFORM_FILE: &str = "src/zero/platform.zero";
+const PLATFORM_FILE: &str = lex::OWN_FILE;
 
-fn builtin_platform(types: &HashSet<String>) -> Result<FeatureDoc, Error> {
-    let code = syntax::parse_feature("platform", PLATFORM_ZERO, PLATFORM_FILE, types)?;
+fn builtin_platform(types: &HashSet<String>) -> Result<(FeatureDoc, Vec<syntax::FnDecl>), Error> {
+    let mut code = syntax::parse_feature("platform", PLATFORM_ZERO, PLATFORM_FILE, types)?;
+    let operator = |d: &syntax::Decl| matches!(d, syntax::Decl::Fn(fd) if matches!(fd.name.as_slice(), [syntax::NamePart::Group, syntax::NamePart::Sym(s), syntax::NamePart::Group] if s != "<<"));
+    let own_ops = code.decls.iter().filter(|d| operator(d)).filter_map(|d| if let syntax::Decl::Fn(fd) = d { Some(fd.clone()) } else { None }).collect();
+    code.decls.retain(|d| !operator(d));
     let origin = Origin { when: "0000-00-00T00:00:00".into(), text: "(probe) the compiler's own feature: the platform functions every store has".into() };
-    Ok(FeatureDoc { name: "platform".into(), parent: None, layer: Some("platform".into()), origins: vec![origin], published: None, changed: None, existing_cases: false, cases: Vec::new(), code, md_file: PLATFORM_FILE.into() })
+    Ok((FeatureDoc { name: "platform".into(), parent: None, layer: Some("platform".into()), origins: vec![origin], published: None, changed: None, existing_cases: false, cases: Vec::new(), code, md_file: PLATFORM_FILE.into() }, own_ops))
 }
 
 /// Read a store: every folder with a `.md` and a `.zero` of its own name.
@@ -360,6 +370,9 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     }
     // a type may be declared by any feature: collect the names first
     let mut types: HashSet<String> = HashSet::new();
+    // (the language's own feature first: `time` is a type it declares,
+    // fm3 question 117)
+    types.extend(syntax::declared_types(PLATFORM_ZERO));
     let mut sources = Vec::new();
     for f in &folders {
         let name = f.file_name().unwrap().to_string_lossy().to_string();
@@ -392,7 +405,8 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     features.sort_by(|a, b| a.origins[0].when.cmp(&b.origins[0].when).then(a.name.cmp(&b.name)));
     let layers = read_order(dir)?;
     check_tree(&mut features, &layers)?;
-    features.insert(0, builtin_platform(&types)?);
+    let (platform, own_ops) = builtin_platform(&types)?;
+    features.insert(0, platform);
     let (product, [int_width, float_width, index_width], marks, clock, product_file) = read_product(dir)?;
     for (name, mark) in &marks {
         if !features.iter().any(|f| &f.name == name) {
@@ -405,7 +419,7 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     // a static-off feature leaves the store with everything under it
     // (log 71): a child under a parent that is never on could never be on
     let mut gone: Vec<String> = Vec::new();
-    let store = Store { path: dir.to_path_buf(), features, layers, product, product_file, int_width, float_width, index_width, marks, left_out: Vec::new(), clock, times: false, sites: false };
+    let store = Store { path: dir.to_path_buf(), own_ops, features, layers, product, product_file, int_width, float_width, index_width, marks, left_out: Vec::new(), clock, times: false, sites: false };
     for (name, mark) in &store.marks {
         if *mark == Mark::StaticOff {
             gone.extend(store.subtree(name));

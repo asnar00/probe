@@ -15,7 +15,7 @@ A stream is a value over time. `T x$` declares an empty one; `<<` pushes its fir
 - `walked` moves a stream inside a `loop`, which carries it and gives the sum it made.
 - `positioned` and `position unread` take `position x$` and `time of x$`, on a regular and an irregular stream.
 - `still open`, `now closed`, `pushed after end` are `end` and `ended`.
-- `sampled` and `windowed` declare a rate and read by time, `x$ at (t)` and `x$ from (t1) to (t2)`.
+- `sampled` and `windowed` declare a rate and read by time, `x$ at (t)` and `x$ from (t1) to (t2)`. `sampled at a time worked out` and `windowed between times worked out` hand them a `time` that is a value, `800 us * 2`, where the others hand a literal: a time is a structure declared in zero (fm3 question 117), and the words take one.
 - `tokens`, `tokens moved` and `tokens framed` push and read a stream of the struct `token`, which is one ring whose item is the struct (question 43, log 88).
 - `logged` and `logged and read` push into and read the feature-scope stream `log$`. `counted round a push` counts a stream of its own, pushes into it and counts again, 2 and then 3: a second `count` of the same reader is the first's number only where nothing between could have pushed (fm3 log 112). `counted round a skip` counts `log$`, calls `skip one logged`, which advances the feature's reader, and counts again in the same function: 3 and then 2, so the second count is of the reader as the call left it (fm3 log 110).
 - `blocked` and `blocked regular` push a block, `x$ << block$`: a string into a stream of bytes, a list into a regular stream.
@@ -50,6 +50,8 @@ A stream is a value over time. `T x$` declares an empty one; `<<` pushes its fir
 >pushed after end() → check
 >sampled() → 30
 >windowed() → 23
+>sampled at a time worked out() → 30
+>windowed between times worked out() → 1
 >tokens() → 341
 >tokens moved() → 1252
 >tokens framed() → 3391

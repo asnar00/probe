@@ -1471,8 +1471,8 @@ mod tests {
             assert!(ir.contains(l), "{}: {}", l, ir);
         }
         refused("    named x = named(1, \"a\")\n    n << x == x", "'==' on two `named`: its field 'name' is a string, and the comparison is every field the same, a field at a time (fm3 question 108): a string or an array in a structure is not compared. Compare the fields that can be, or declare the operator, `on (bool b) << (named x) == (named y)`");
-        refused("    n << p == odd(1)", "no '==' is defined on a pair and a odd");
-        refused("    n << p < q", "no '<' is defined on a pair and a pair");
+        refused("    n << p == odd(1)", "no '==' is defined on a pair and an odd: with none declared, '==' is of two of one structure, `(pair) == (pair)`, every field the same");
+        refused("    n << p < q", "no '<' is defined on a pair and a pair: no operator is declared on a pair, `on (bool r) << (pair a) < (pair b)`");
         refused("    pair ps[] = [p]\n    odd os[] = [odd(1)]\n    n << ps[] [==] os[]", "`[==]` compares two arrays of one type of item: these hold pair and odd");
         refused("    pair ps[] = [p, odd(1)]\n    n << true", "the items are pair, this one is a odd");
     }
@@ -3576,6 +3576,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A `time` is a structure the language's own feature declares in
+    /// zero, and does only what is declared on it there (fm3 question
+    /// 117, log 202): each form with no function is refused in words
+    /// that list the methods there are, a time's field is its
+    /// feature's own, and a store with no time in it has no line of
+    /// one. The words are any structure's, `Vec` as much as `time`
+    #[test]
+    fn a_time_does_only_what_is_declared() {
+        // (one directory, written over each run: nothing is removed)
+        let dir = std::env::temp_dir().join("probe-zero-time-declared");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>run() → \"x\"\n").unwrap();
+        let head = "type Vec =\n    float x, y\n\non (Vec v) << (Vec a) + (Vec b)\n    v << Vec(a.x + b.x, a.y + b.y)\n\n";
+        let f = |line: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("{}on run()\n    time beat = 250 ms\n    Vec v = Vec(1.0, 2.0)\n    int n = 3\n    {}\n", head, line)).unwrap();
+            emit(&dir)
+        };
+        let refused = |line: &str, what: &str| {
+            let e = f(line).err().unwrap_or_else(|| panic!("not refused: {}", line));
+            assert!(e.ends_with(what), "{}: {}", line, e);
+        };
+        let says = ". No program sees a time's steps: a number out of a time is a time divided by a time, `t / 1 ms`, and a time out of a number is a number of some time, `n * 1 ms`";
+        refused("out$ << beat + 1", "no '+' is defined on a time and an int: '+' on a time is `(time) + (time)`");
+        refused("out$ << beat + 0.5", "no '+' is defined on a time and a float: '+' on a time is `(time) + (time)`");
+        refused("out$ << 1 + beat", "no '+' is defined on an int and a time: '+' on a time is `(time) + (time)`");
+        refused("out$ << beat * beat", "no '*' is defined on a time and a time: '*' on a time is `(time) * (number)` and `(number) * (time)`");
+        refused("out$ << (beat < 1)", "no '<' is defined on a time and an int: '<' on a time is `(time) < (time)`");
+        refused("out$ << beat % beat", "no '%' is defined on a time and a time: a time has '+', '-', '*', '/', '<', '<=', '>' and '>=' and no '%'");
+        refused("out$ << n / beat", "no '/' is defined on an int and a time: '/' on a time is `(time) / (number)` and `(time) / (time)`");
+        refused("out$ << (beat == 1)", "no '==' is defined on a time and an int: with none declared, '==' is of two of one structure, `(time) == (time)`, every field the same");
+        refused("time t = 5", &format!("'t' is a time but the value is a bare number: say its unit, `5 s` or `5 ms`{}", says));
+        refused("time t = n", &format!("'t' is time but the value is int{}", says));
+        refused("int k = beat", &format!("'k' is int but the value is time{}", says));
+        refused("int k = int(beat)", "int(x) converts a number, not a time: a conversion says no unit. A number out of a time is a time divided by a time, `t / 1 ms`, and its whole seconds are `int(t / 1 s)`");
+        refused("float k = float(beat)", "and its whole seconds are `float(t / 1 s)`");
+        refused("int64 k = beat.__steps", &format!("'.__steps' on a time: a field whose name begins `__` is the language's own, and no other feature reads or gives it{}", says));
+        refused("time t = time(5)", &format!("`time(...)` gives a time its '__steps': a field whose name begins `__` is the language's own, and no other feature reads or gives it{}", says));
+        refused("time t = time(n)", &format!("no other feature reads or gives it{}", says));
+        refused("int __x = 3", "a name may not start with '_' ('_' alone is the accumulator; a name that begins `__` is the language's own)");
+        // ... and the same words for a structure of the program's
+        refused("out$ << v * v", "no '*' is defined on a Vec and a Vec: a Vec has '+' and no '*'");
+        refused("out$ << v + 1", "no '+' is defined on a Vec and an int: '+' on a Vec is `(Vec) + (Vec)`");
+        // what is declared works, each a line of integers written where
+        // it is used: no function of the IR, and no rational
+        let ir = f("out$ << beat * 2 + 100 ms << (beat < 1 s) << beat / 1 ms << 2 * beat").unwrap();
+        assert!(ir.contains("type __time = struct\n    __steps: i64\n") && !ir.contains("fn add__time") && !ir.contains("fn mul__time") && !ir.contains(": time = "), "{}", ir);
+        // a store with no time in it has no line of one
+        std::fs::write(dir.join("h/h.zero"), format!("{}on run()\n    out$ << 3\n", head)).unwrap();
+        let ir = emit(&dir).unwrap();
+        assert!(!ir.contains("__time") && ir.contains("type Vec = struct"), "{}", ir);
+        // the language's own operator is not declared again, nor its type
+        let again = |code: &str, what: &str| {
+            std::fs::write(dir.join("h/h.zero"), format!("{}\non run()\n    out$ << 1\n", code)).unwrap();
+            let e = emit(&dir).err().unwrap_or_else(|| panic!("not refused: {}", code));
+            assert!(e.ends_with(what), "{}: {}", code, e);
+        };
+        again("on (time t) << (time a) + (time b)\n    t << a\n", "an operator is not redefined in this milestone; a `<<` method is");
+        again("type time =\n    int n\n", "type 'time' is already declared: it is the language's own");
+        // ... but one of its own on a time is a function called
+        std::fs::write(dir.join("h/h.zero"), "on (time t) << (time a) * (time b)\n    t << a * (b / 1 s)\n\non run()\n    time beat = 250 ms\n    out$ << beat * beat\n").unwrap();
+        let ir = emit(&dir).unwrap();
+        assert!(ir.contains("= mul_time(") && ir.contains("\nfn mul_time(a: __time, b: __time) -> __time\n"), "{}", ir);
+    }
+
     /// A conversion between an abstract whole number and a library
     /// number, a float or a time, in a function whose first line names
     /// no abstract type (fm3 log 173): the lowered IR did not parse,
@@ -3588,16 +3652,17 @@ mod tests {
         let dir = std::env::temp_dir().join("probe-zero-conv-abstract");
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>run() → \"true\"\n").unwrap();
-        let lit = |t: &str| if t == "time" { "55 s" } else { "55" };
+        // (a `time` was the fourth: it is a structure declared in zero
+        // now and no number converts to one, fm3 question 117)
         let wasm = suite::backend_policy(Backend::Wasm).unwrap();
         let native = suite::backend_policy(Backend::Native).unwrap();
         let mut tried = 0;
         for whole in ["int", "uint"] {
-            for other in ["float", "float32", "float64", "time"] {
+            for other in ["float", "float32", "float64"] {
                 for (f, t) in [(whole, other), (other, whole)] {
-                    let same = if t == "time" { "b == 55 s" } else { "b == 55" };
-                    let a = format!("on run()\n    {} a = {}\n    {} b = {}(a)\n    out$ << ({})\n", f, lit(f), t, t, same);
-                    let b = format!("on ({} b) << turned ({} a)\n    b << {}(a)\n\non run()\n    {} a = {}\n    {} b = turned (a)\n    out$ << ({})\n", t, f, t, f, lit(f), t, same);
+                    let same = "b == 55";
+                    let a = format!("on run()\n    {} a = 55\n    {} b = {}(a)\n    out$ << ({})\n", f, t, t, same);
+                    let b = format!("on ({} b) << turned ({} a)\n    b << {}(a)\n\non run()\n    {} a = 55\n    {} b = turned (a)\n    out$ << ({})\n", t, f, t, f, t, same);
                     for code in [a, b] {
                         std::fs::write(dir.join("h/h.zero"), &code).unwrap();
                         for product in ["int: 32\nfloat: 32\n", "int: 64\nfloat: 64\n"] {
@@ -3615,7 +3680,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(tried, 128);
+        assert_eq!(tried, 96);
     }
 
     /// A literal is held to the type it is given to (fm3 log 173): the
@@ -3680,7 +3745,7 @@ mod tests {
         refused("on run()\n    uint low = -1\n    out$ << low\n", "int: 32\n", "h.zero:2: -1 does not fit a uint here: this product's uint is 32 bits and holds 0 to 4294967295. How wide a uint is belongs to the product, `int: 64` in its product.md; a type that says its width, `uint64`, holds it on every product");
         // a time written as a decimal is the whole number of a finer unit
         let ir = checked("on run()\n    out$ << 2.5 s << 0.25 s << 1.000001 ms\n", "").unwrap();
-        assert!(ir.contains(": time = millis(2500)\n") && ir.contains(": time = millis(250)\n") && ir.contains(": time = nanos(1000001)\n"), "{}", ir);
+        assert!(ir.contains(": __time = pack 2500000000\n") && ir.contains(": __time = pack 250000000\n") && ir.contains(": __time = pack 1000001\n"), "{}", ir);
         refused("on run()\n    out$ << 1.5 ns\n", "", "h.zero:2: a time is written to the nanosecond: `1.5 ns` is finer");
         // one that reaches the IR unchecked is still said in zero's words
         assert_eq!(unheld("line 0: run: entry: iconst 300 does not fit in type u8").unwrap(), "in 'run': 300 does not fit a uint8, which holds 0 to 255. (The compiler should have named the line: a literal reached the IR unchecked.)");

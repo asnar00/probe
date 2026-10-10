@@ -45,12 +45,44 @@ on (char o$) << (float x)
             o$ << char(48 + (digits / p) % 10)
             continue (p / 10)
 
+type time =
+    int64 __steps
+
+on (time t) << (time a) + (time b)
+    t << time(a.__steps + b.__steps)
+
+on (time t) << (time a) - (time b)
+    t << time(a.__steps - b.__steps)
+
+on (time t) << (time a) * (number k)
+    t << time(int64(a.__steps * k))
+
+on (time t) << (number k) * (time a)
+    t << time(int64(k * a.__steps))
+
+on (time t) << (time a) / (number k)
+    t << time(int64(a.__steps / k))
+
+on (float r) << (time a) / (time b)
+    r << float(float64(a.__steps) / float64(b.__steps))
+
+on (bool r) << (time a) < (time b)
+    r << a.__steps < b.__steps
+
+on (bool r) << (time a) <= (time b)
+    r << a.__steps <= b.__steps
+
+on (bool r) << (time a) > (time b)
+    r << a.__steps > b.__steps
+
+on (bool r) << (time a) >= (time b)
+    r << a.__steps >= b.__steps
+
 on (char o$) << (time x)
-    time m = if (x < 0 s) then (0 s - x) else (x)
-    int64 n = (int64(m * 2000000000) + 1) / 2
-    if (x < 0 s)
-        if (n > 0)
-            o$ << char(45)
+    int64 steps = x.__steps
+    int64 n = if (steps < 0) then (0 - steps) else (steps)
+    if (steps < 0)
+        o$ << char(45)
     int64 unit = if (n == 0) then (1000000000) else (if (n >= 1000000000) then (1000000000) else (if (n >= 1000000) then (1000000) else (if (n >= 1000) then (1000) else (1))))
     o$ << n / unit
     int64 rest = n % unit

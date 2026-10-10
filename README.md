@@ -285,6 +285,25 @@ A whole-number literal is held to the type it is given to (fm3 log 173): `uint8 
 
 `suite/zero/types/types/types.zero:226`. The method is the platform's own text, `on (char o$) << (time x)` in `src/zero/platform.zero`, written with character codes and no string, since a string there renumbers every store's data.
 
+A `time` is a structure declared in zero, in the feature the language brings with it (`src/zero/platform.zero`; fm3 question 117), and the only things a time can do are the functions declared on it there: added to a time and taken from one, multiplied and divided by a number, divided by a time, compared with a time, written out.
+
+```
+type time =
+    int64 __steps
+
+on (time t) << (time a) + (time b)
+    t << time(a.__steps + b.__steps)
+```
+
+The compiler keeps what no declaration can say: a literal with a unit word, `250 ms`, makes one, and the time words on a stream, `x$ at (t)`, take one. An operator of the language's own is written in line where it is used, so `beat + 100 ms` is one integer addition and a store with no time in it has no line of one. A form with no function is refused in words that list what is declared, for any structure: `beat + 1` is "no '+' is defined on a time and an int: '+' on a time is `(time) + (time)`". A field whose name begins `__` is its feature's own, so no program sees the step: a number out of a time is `t / 1 ms`, and `int(t)` is refused naming it.
+
+```
+on a time added()
+    out$ << beat + 100 ms << " " << beat + beat
+```
+
+`suite/zero/types/times/times.zero:9-10`, which writes `350 ms 500 ms`.
+
 A stream processor may be written with no loop in it, each line holding for every item that arrives (fm3 question 75; `src/zero/zeroic.rs`, `suite/zero/zeroic`). This is the lexer of `suite/zero/lex-zeroic`, whole:
 
 ```

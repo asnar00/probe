@@ -227,5 +227,5 @@ on times written()
 
 on whole seconds()
     time t = 2.5 s
-    int n = int(t)
+    int n = int(t / 1 s)
     out$ << n << " of " << t

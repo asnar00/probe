@@ -93,6 +93,9 @@ const SYMBOLS: [&str; 23] = [
 /// set its depth, and the depth stack gives `Indent` and `Dedent`
 /// tokens around blocks. Every non-blank line ends with `Newline`, and
 /// the stream ends with the dedents that close what is still open.
+/// the file of the feature the language brings with it
+pub const OWN_FILE: &str = "src/zero/platform.zero";
+
 pub fn lex(src: &str, file: &str) -> Result<Vec<Token>, Error> {
     let mut toks = Vec::new();
     let mut depths: Vec<usize> = vec![0];
@@ -242,7 +245,12 @@ pub fn lex_line(text: &str, line: usize, file: &str, toks: &mut Vec<Token>) -> R
             }
             continue;
         }
-        if c.is_alphabetic() {
+        // a name that begins `__` is the language's own (fm3 question
+        // 118): its feature writes one, a field it keeps to itself.
+        // After a `.` anyone's is read as a name, so that the lowering
+        // can say whose field it is and what to write instead
+        let own = c == '_' && i + 2 < chars.len() && chars[i + 1] == '_' && chars[i + 2].is_alphabetic() && (file == OWN_FILE || matches!(toks.last(), Some(Token { tok: Tok::Sym("."), .. })));
+        if c.is_alphabetic() || own {
             let start = i;
             while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
                 i += 1;
@@ -269,7 +277,7 @@ pub fn lex_line(text: &str, line: usize, file: &str, toks: &mut Vec<Token>) -> R
         }
         if c == '_' {
             if i + 1 < chars.len() && (chars[i + 1].is_alphanumeric() || chars[i + 1] == '_') {
-                return Err(error(file, line, "a name may not start with '_' ('_' alone is the accumulator)"));
+                return Err(error(file, line, "a name may not start with '_' ('_' alone is the accumulator; a name that begins `__` is the language's own)"));
             }
             toks.push(Token { tok: Tok::Sym("_"), line });
             i += 1;

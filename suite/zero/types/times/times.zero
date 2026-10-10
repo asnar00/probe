@@ -1,0 +1,52 @@
+time beat = 250 ms
+
+on (time t) << (time a) * (time b)
+    t << a * (b / 1 s)
+
+on (time t) << twice (time a)
+    t << a + a
+
+on a time added()
+    out$ << beat + 100 ms << " " << beat + beat
+
+on a time taken()
+    out$ << 1 s - beat << " " << beat - 1 s
+
+on a time scaled()
+    out$ << beat * 2 << " " << beat * 0.5
+
+on a time scaled by (int n)
+    out$ << beat * n << " " << n * beat
+
+on a number first()
+    out$ << 2 * beat << " " << 1.5 * beat
+
+on a time divided()
+    out$ << beat / 2 << " " << beat / 2.5 << " " << 1 s / 3
+
+on a ratio()
+    out$ << 2500 ms / 1 s << " " << int(beat / 1 ms) << " " << int(2500 ms / 1 s)
+
+on times compared()
+    time late = 600 ms
+    out$ << (late < 1 s) << " " << (late < 600 ms) << " " << (late <= 600 ms) << " " << (late <= beat) << " " << (late > beat) << " " << (late > 1 s) << " " << (late >= 600 ms) << " " << (late >= 1 s)
+
+on the same()
+    out$ << (beat == 250 ms) << " " << (beat != 250 ms) << " " << (beat == 1 s)
+
+on each written()
+    out$ << beat << " " << 2.5 s << " " << 1500 us << " " << 0 s << " " << 0 s - beat << " " << 1 ns
+
+on squared()
+    out$ << beat * beat
+
+on twice handed (int n)
+    out$ << twice (beat * n)
+
+on kept two()
+    time ts[] = [beat, beat * 3]
+    out$ << (ts[] [==] [250 ms, 750 ms]) << " " << (ts[] [==] [250 ms, 1 s])
+
+on nothing given()
+    time t
+    out$ << t << " " << t + beat
