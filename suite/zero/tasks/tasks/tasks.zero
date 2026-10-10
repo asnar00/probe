@@ -34,7 +34,7 @@ on (int r$) << runs (int x$)
 on (int n) << sawtoothed()
     int i$ = sawtooth(5)
     int f[] = frame i$
-    n << count f[] * 100 + f[4] * 10 + f[9]
+    n << [count] (f[]) * 100 + f[4] * 10 + f[9]
 
 on (int n) << counted down()
     int i$ << count down from (3)

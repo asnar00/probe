@@ -1553,7 +1553,7 @@ mod tests {
         // other way, where something is pushed before its last use,
         // and where a function is called there
         for body in [
-            "    int g[] = frame x$\n    n << g[] [==] [1, 2] and count g[] == 2",
+            "    int g[] = frame x$\n    n << g[] [==] [1, 2] and [count] (g[]) == 2",
             "    int g[] = frame x$\n    x$ << 3\n    n << g[] [==] [1, 2]",
             "    int g[] = frame x$\n    int k = bump()\n    n << g[] [==] [1, 2]",
             "    int g[] = frame x$\n    n << g[] [==] [1, bump()]",
@@ -1609,14 +1609,14 @@ mod tests {
             f(&format!("    n << if ({}) then (1) else (0)", line)).unwrap_or_else(|e| panic!("{}: {}", line, e));
         }
         // a list written out is still a list, a negative first item too
-        assert!(f("    int c[] = [-1, 2]\n    int d[] = [- 1]\n    n << count c[] + count d[]").is_ok());
+        assert!(f("    int c[] = [-1, 2]\n    int d[] = [- 1]\n    n << [count] (c[]) + [count] (d[])").is_ok());
         // both sides are arrays
         refused("    n << if (a[] [==] 2) then (1) else (0)", "h.zero:5: `[==]` asks whether two arrays are the same, and this side is one value (fm3 question 77): both sides are arrays, `a[] [==] b[]`. One item is compared plainly, `a[k] == v`");
         refused("    n << if (a[] [!=] x$) then (1) else (0)", "`[!=]` asks whether two arrays are the same, and 'x$' is a stream, its items still arriving: the array of what has arrived is `frame x$` (fm3 question 77)");
         refused("    float h[] = [1.5]\n    n << if (a[] [==] h[]) then (1) else (0)", "`[==]` compares two arrays of one type of item: these hold int and float");
         // the other operators in brackets are not ruled
         refused("    n << if (a[] [<] b[]) then (1) else (0)", "h.zero:5: `[<]` is not ruled as to what it means on two arrays (fm3 question 77): `[==]` and `[!=]` are built, are the two the same. Applied to each pair an operator is written plainly, `a[] < b[]`");
-        refused("    int c[] = a[] [+] b[]\n    n << count c[]", "`[+]` is not ruled as to what it means on two arrays");
+        refused("    int c[] = a[] [+] b[]\n    n << [count] (c[])", "`[+]` is not ruled as to what it means on two arrays");
         // the plain comparison where one bool is wanted says what to write
         refused("    if (a[] == b[])\n        out$ << 1\n    n << 1", "h.zero:5: `if (a[] == b[])`: `==` is applied to each pair of items and gives a bool for each, and one is wanted here (fm3 question 77). Whether the two arrays are the same is `[==]`: write `if (a[] [==] b[])`");
         refused("    if (a[] != [1, 2])\n        out$ << 1\n    n << 1", "Whether the two arrays differ is `[!=]`: write `if (a[] [!=] [1, 2])`");
@@ -1755,7 +1755,7 @@ mod tests {
         let dir = std::env::temp_dir().join("probe-zero-whole-calls");
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 1\n").unwrap();
-        let head = "on (int n) << sum of (int x[])\n    n << x[] + _\n\non (int d) << doubled (int x)\n    d << x * 2\n\non (int r[]) << scale (int x[]) by (int k)\n    r[] << x[] * k\n\non (int n) << (int a[]) joined to (int b[])\n    n << count a[] + count b[]\n\non describe (int x)\n    out$ << \"one \"\n\non describe (int x[])\n    out$ << \"many \"\n\n";
+        let head = "on (int n) << sum of (int x[])\n    n << x[] + _\n\non (int d) << doubled (int x)\n    d << x * 2\n\non (int r[]) << scale (int x[]) by (int k)\n    r[] << x[] * k\n\non (int n) << (int a[]) joined to (int b[])\n    n << [count] (a[]) + [count] (b[])\n\non describe (int x)\n    out$ << \"one \"\n\non describe (int x[])\n    out$ << \"many \"\n\n";
         let f = |body: &str| -> Result<String, String> {
             std::fs::write(dir.join("h/h.zero"), format!("{}on (int n) << f()\n    int a[] = [1, 2, 3]\n{}\n", head, body)).unwrap();
             emit(&dir)
@@ -1766,7 +1766,7 @@ mod tests {
         };
         // the call, with a name, a list, a bare array and a frame; the
         // brackets round the words up to the first group
-        for line in ["n << [sum of] (a[])", "n << [sum of] ([4, 5]) + [sum of] ([1 through 3])", "n << [sum of] a[]", "int x$ << 1\n    n << [sum of] (frame x$)", "int s[] = [scale] (a[]) by (2)\n    n << count s[]"] {
+        for line in ["n << [sum of] (a[])", "n << [sum of] ([4, 5]) + [sum of] ([1 through 3])", "n << [sum of] a[]", "int x$ << 1\n    n << [sum of] (frame x$)", "int s[] = [scale] (a[]) by (2)\n    n << [count] (s[])"] {
             let ir = f(&format!("    {}", line)).unwrap_or_else(|e| panic!("{}: {}", line, e));
             assert!(ir.contains("sum_of(") || ir.contains("scale_by("), "{}: {}", line, ir);
         }
@@ -1774,12 +1774,24 @@ mod tests {
         refused("    n << sum of (a[])", "h.zero:21: `n << sum of (a[])`: 'sum of' takes an array whole, `int x[]`, and is called with its name in square brackets (fm3 question 77): write `n << [sum of] (a[])`");
         refused("    n << sum of (a[]) * 10 + sum of ([4, 5])", "write `n << [sum of] (a[]) * 10 + [sum of] ([4, 5])`");
         refused("    n << [sum of] (a[]) + sum of ([4, 5])", "write `n << [sum of] (a[]) + [sum of] ([4, 5])`");
-        refused("    int s[] = scale (a[]) by (2)\n    n << count s[]", "`int s[] = scale (a[]) by (2)`: 'scale by' takes an array whole, `int x[]`, and is called with its name in square brackets (fm3 question 77): write `int s[] = [scale] (a[]) by (2)`");
+        refused("    int s[] = scale (a[]) by (2)\n    n << [count] (s[])", "`int s[] = scale (a[]) by (2)`: 'scale by' takes an array whole, `int x[]`, and is called with its name in square brackets (fm3 question 77): write `int s[] = [scale] (a[]) by (2)`");
         // the bracketed call of a function of one item
-        refused("    int d[] = [doubled] (a[])\n    n << count d[]", "h.zero:21: `[doubled]`: 'doubled' takes one item, and a function of one item is applied to each item of an array plainly, `doubled (a[])` (fm3 question 77). The brackets are for a function declared over an array, `(int x[])`");
-        assert!(f("    int d[] = doubled (a[])\n    n << count d[]").is_ok());
-        // a word of the language is no function
-        refused("    n << [count] (a[])", "`[count]`: no function of this name is declared over an array. The words of the language, `count`, `frame` and the rest, are written plainly; whether they take brackets is not ruled (fm3 question 77)");
+        refused("    int d[] = [doubled] (a[])\n    n << [count] (d[])", "h.zero:21: `[doubled]`: 'doubled' takes one item, and a function of one item is applied to each item of an array plainly, `doubled (a[])` (fm3 question 77). The brackets are for a function declared over an array, `(int x[])`");
+        assert!(f("    int d[] = doubled (a[])\n    n << [count] (d[])").is_ok());
+        // of the language's own words `count` takes them, an array's
+        // length (fm3 question 126, log 225): anything that gives an
+        // array stands in the round brackets, and the text is what the
+        // plain word's was
+        let counted = f("    int x$ << 1 << 2\n    n << [count] (a[]) + [count] (frame x$) + [count] ([1, 2]) + [count] (a[] * 2) + a[[count] (a[]) - 1]").unwrap();
+        assert!(counted.contains(": index = count "), "{}", counted);
+        refused("    n << count a[]", "h.zero:21: `count a[]`: an array's length is `[count] (a[])`, the whole array in square brackets as for any function handed one (fm3 question 126). `count` is written plainly of a stream, `count x$`, and of a `string`");
+        refused("    int x$ << 1\n    n << count (frame x$)", "`count (frame x$)`: an array's length is `[count] (frame x$)`");
+        refused("    n << count [1, 2]", "`count (...)`: an array's length is `[count] (...)`");
+        refused("    int x$ << 1\n    n << [count] (x$)", "`[count] (x$)`: square brackets hand a word the whole of an array, and 'x$' is a stream. Of a stream the word is plain, `count x$`; the array of what is waiting in it is `frame x$`, and how many, `[count] (frame x$)` (fm3 questions 94 and 126)");
+        refused("    string s = \"ab\"\n    n << [count] (s)", "`[count] (s)`: square brackets hand a word the whole of an array, and 's' is one value. Of a `string` the word is plain, `count s` (fm3 question 126)");
+        assert!(f("    string s = \"ab\"\n    int x$ << 1\n    n << count s + count x$").is_ok());
+        // a word of the language that is a stream's is no function
+        refused("    int x$ << 1\n    int g[] = [frame] (x$)", "`[frame]`: no function of this name is declared over an array. Of the language's own words `[count]` alone takes brackets, an array's length (fm3 question 126); `frame` and the rest are a stream's and are written plainly");
         // a name with a method of each kind: the call says which
         let both = f("    describe (a[])\n    n << 1").unwrap();
         assert!(both.contains("        describe(_") && !both.contains("    describe__ints(a)\n"), "{}", both);
@@ -1863,25 +1875,25 @@ mod tests {
         refused("    int a[] = [1, 2]\n    int j$ = a[] * 2\n    n << count j$", "Write `int j[] = a[] * 2`");
         refused("    int x$ << 1\n    int j$ = x$ * 2\n    n << count j$", "Write `int j[] = x$ * 2`");
         assert!(f("    int x$ << 1 << 2\n    int d$ = twice (x$)\n    n << count d$").is_ok());
-        assert!(f("    int i$ << [1, 2, 3]\n    int a[] = frame i$\n    n << a[1] + count a[] + (a[] + _)").is_ok());
+        assert!(f("    int i$ << [1, 2, 3]\n    int a[] = frame i$\n    n << a[1] + [count] (a[]) + (a[] + _)").is_ok());
         // an array is given whole where it is declared, and never changes
-        refused("    int x$ << 1\n    int d[] = twice (x$)\n    n << count d[]", "`int d[] = twice (x$)`: a task gives a stream, its items arriving, and 'd[]' is an array (fm3 question 90). Write `int d$ = ...`; the array of what has arrived in it is `frame d$`");
-        refused("    int a[] << 1 << 2\n    n << count a[]", "`int a[] << 1 << 2`: an array is given whole where it is declared, by `=`, and never pushed into (fm3 question 90). Write `int a[] = [...]`; what has first items and more to come is a stream, `int a$ << ...`");
+        refused("    int x$ << 1\n    int d[] = twice (x$)\n    n << [count] (d[])", "`int d[] = twice (x$)`: a task gives a stream, its items arriving, and 'd[]' is an array (fm3 question 90). Write `int d$ = ...`; the array of what has arrived in it is `frame d$`");
+        refused("    int a[] << 1 << 2\n    n << [count] (a[])", "`int a[] << 1 << 2`: an array is given whole where it is declared, by `=`, and never pushed into (fm3 question 90). Write `int a[] = [...]`; what has first items and more to come is a stream, `int a$ << ...`");
         refused("    int a[] at (1 hz)\n    n << 0", "`int a[] at (1 hz)`: a rate is a stream's, and 'a[]' is an array, all there (fm3 question 90)");
-        refused("    int a[]\n    n << count a[]", "`int a[]`: an array is given whole where it is declared, `int a[] = [1, 2, 3]`, and never changes (fm3 question 90); an empty one is `int a[] = []`. What is declared bare and filled later is a stream, `int a$`");
-        assert!(f("    int a[] = []\n    n << count a[]").is_ok());
-        refused("    int a[] = [1, 2]\n    a[] << 3\n    n << count a[]", "h.zero:10: 'a[] << ...': an array never changes: its items are all there where it is declared, `int a[] = [...]` (fm3 question 90). What is pushed into is a stream, `int a$`");
+        refused("    int a[]\n    n << [count] (a[])", "`int a[]`: an array is given whole where it is declared, `int a[] = [1, 2, 3]`, and never changes (fm3 question 90); an empty one is `int a[] = []`. What is declared bare and filled later is a stream, `int a$`");
+        assert!(f("    int a[] = []\n    n << [count] (a[])").is_ok());
+        refused("    int a[] = [1, 2]\n    a[] << 3\n    n << [count] (a[])", "h.zero:10: 'a[] << ...': an array never changes: its items are all there where it is declared, `int a[] = [...]` (fm3 question 90). What is pushed into is a stream, `int a$`");
         // a stream's words on an array
         let arr = |line: &str| format!("    int a[] = [1, 2]\n{}", line);
         refused(&arr("    n << peek a[] at (1)"), "`peek` is a stream's word, asked of what arrives over time, and 'a[]' is an array, all there (fm3 question 90): one item of an array is `a[k]`");
-        refused(&arr("    n << latest a[]"), "`latest` is a stream's word, asked of what arrives over time, and 'a[]' is an array, all there (fm3 question 90): an array's last item is `a[count a[] - 1]`");
+        refused(&arr("    n << latest a[]"), "`latest` is a stream's word, asked of what arrives over time, and 'a[]' is an array, all there (fm3 question 90): an array's last item is `a[[count] (a[]) - 1]`");
         refused(&arr("    int g[] = frame a[]\n    n << 0"), "`frame` is a stream's word, asked of what arrives over time, and 'a[]' is an array, all there (fm3 question 90): it makes an array of what a stream holds, and this is one already");
         refused(&arr("    int g[] = a[] behind (1)\n    n << 0"), "`behind` is a stream's word");
         for (line, word) in [("    advance a[] by (1)\n    n << 0", "advance"), ("    n << position a[]", "position"), ("    n << time of a[]", "time of"), ("    end a[]\n    n << 0", "end"), ("    bool e = ended a[]\n    n << 0", "ended")] {
             refused(&arr(line), &format!("`{}` is a stream's word, asked of what arrives over time, and 'a[]' is an array, all there (fm3 question 90)", word));
         }
         // `count` is asked of both
-        assert!(f("    int a[] = [1, 2]\n    int x$ << 1\n    n << count a[] + count x$").is_ok());
+        assert!(f("    int a[] = [1, 2]\n    int x$ << 1\n    n << [count] (a[]) + count x$").is_ok());
         // an array's forms on a stream
         let st = |line: &str| format!("    int x$ << 1 << 2\n{}", line);
         refused(&st("    n << x$[1]"), "h.zero:10: 'x$[k]': an item by its place is an array's, and 'x$' is a stream (fm3 question 90). The item k on from where this reader stands is `peek x$ at (k)`; the array of what has arrived is `frame x$`, and one back is `x$[-1]`");
@@ -1890,12 +1902,12 @@ mod tests {
         refused(&st("    n << x$ + _"), "a reduce with `_` gives one answer of a whole array, and 'x$' is a stream (fm3 question 90): the array of what has arrived is `frame x$`; a running total is a line that stands, `sum$ << sum$ + x$ forever`");
         assert!(f(&st("    for (v in frame x$)\n        check (v > 0)\n    n << peek x$ at (0) + x$")).is_ok());
         // an array has no back and no latest item
-        refused(&arr("    n << a[-1]"), "'a[-k]': a look back is a stream's, `x$[-1]`, the item before the present one (fm3 question 90). An array's last item is `a[count a[] - 1]`");
-        let one = "'a[]' is an array, and one value is wanted here: an array has no latest item, as a stream has (fm3 question 90). Its last item is `a[count a[] - 1]`, one item `a[k]`, and its sum `a[] + _`";
+        refused(&arr("    n << a[-1]"), "'a[-k]': a look back is a stream's, `x$[-1]`, the item before the present one (fm3 question 90). An array's last item is `a[[count] (a[]) - 1]`");
+        let one = "'a[]' is an array, and one value is wanted here: an array has no latest item, as a stream has (fm3 question 90). Its last item is `a[[count] (a[]) - 1]`, one item `a[k]`, and its sum `a[] + _`";
         refused(&arr("    int v = a[]\n    n << v"), one);
         refused(&arr("    n << a[] + 1"), one);
         refused(&arr("    if (a[] > 0)\n        out$ << 1\n    n << 1"), one);
-        assert!(f(&arr("    int b[] = a[] + 1\n    n << a[count a[] - 1] + (b[] + _)")).is_ok());
+        assert!(f(&arr("    int b[] = a[] + 1\n    n << a[[count] (a[]) - 1] + (b[] + _)")).is_ok());
     }
 
     /// The mark is part of a name wherever it is written (fm3 question
@@ -1915,15 +1927,15 @@ mod tests {
             let e = r.err().unwrap_or_else(|| panic!("not refused: {}", what));
             assert!(e.contains(what), "{}", e);
         };
-        assert!(f("    int a[] = [5, 6, 7]\n    n << a[1] + count a[] + (a[] + _)").is_ok());
+        assert!(f("    int a[] = [5, 6, 7]\n    n << a[1] + [count] (a[]) + (a[] + _)").is_ok());
         // an array written as a stream, a stream as an array, either bare
         refused(f("    int a[] = [5, 6, 7]\n    n << count a$"), "'a$': 'a' is an array, declared `int a[]` on line 2, and the mark is part of its name wherever it is written (fm3 question 90): write `a[]`, or `a[k]` for one item");
-        refused(f("    int x$ << 5\n    n << count x[]"), "'x[]': 'x' is a stream, declared `int x$` on line 2, and the mark is part of its name wherever it is written (fm3 question 90): write `x$`");
+        refused(f("    int x$ << 5\n    n << [count] (x[])"), "'x[]': 'x' is a stream, declared `int x$` on line 2, and the mark is part of its name wherever it is written (fm3 question 90): write `x$`");
         refused(f("    int x$ << 5\n    n << x[0]"), "'x[]': 'x' is a stream, declared `int x$` on line 2");
         refused(f("    int a[] = [5, 6, 7]\n    n << a"), "'a' is written without its mark: it is declared `int a[]` on line 2, and the mark is part of its name wherever it is written (fm3 question 90): write `a[]`");
         refused(f("    int x$ << 5\n    n << x"), "'x' is written without its mark: it is declared `int x$` on line 2");
-        refused(f("    n << count zz[]"), "'zz[]' is not declared: an array is declared with its type, `int zz[] = [1, 2, 3]`");
-        refused(f("    int k = 3\n    n << count k[]"), "'k[]': 'k' is one value, declared `int k` on line 2, and has no items");
+        refused(f("    n << [count] (zz[])"), "'zz[]' is not declared: an array is declared with its type, `int zz[] = [1, 2, 3]`");
+        refused(f("    int k = 3\n    n << [count] (k[])"), "'k[]': 'k' is one value, declared `int k` on line 2, and has no items");
         // a parameter, a result and a feature-scope name are held too
         refused(with("on (int n) << g (int x[])\n    n << x$ + _\n\non (int n) << f()\n    n << g ([1, 2])\n"), "'x$': 'x' is an array, declared `int x[]` on line 1");
         refused(with("on (int r[]) << g (int k)\n    r$ << [1 through k]\n\non (int n) << f()\n    n << 1\n"), "'r$': 'r' is an array, declared `int r[]` on line 1");
@@ -2940,7 +2952,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 3\n>g() → 1\n>h() → 5\n").unwrap();
-        let code = "char t$\nint d$ = runs(t$)\nint x$\nint e$ = twice(x$)\n\non (int d$) << runs (char c$)\n    int n$ = if (c$ == c$[-1]) then (n$[-1] + 1) else (1)\n    d$ << n$\n\non (int e$) << twice (int x$)\n    e$ << x$ * 2\n\non (int n) << f()\n    int d[] = [7, 8, 9]\n    t$ << \"aab\" << \"bc\"\n    n << count d[]\n\non (int n) << g()\n    x$ << 4\n    n << count e$\n\non (int n) << h()\n    int k = f()\n    n << count d$\n";
+        let code = "char t$\nint d$ = runs(t$)\nint x$\nint e$ = twice(x$)\n\non (int d$) << runs (char c$)\n    int n$ = if (c$ == c$[-1]) then (n$[-1] + 1) else (1)\n    d$ << n$\n\non (int e$) << twice (int x$)\n    e$ << x$ * 2\n\non (int n) << f()\n    int d[] = [7, 8, 9]\n    t$ << \"aab\" << \"bc\"\n    n << [count] (d[])\n\non (int n) << g()\n    x$ << 4\n    n << count e$\n\non (int n) << h()\n    int k = f()\n    n << count d$\n";
         std::fs::write(dir.join("h/h.zero"), code).unwrap();
         let ir = emit(&dir).unwrap();
         // every push into `t$` is a block: no function of one item for it

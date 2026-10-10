@@ -9,7 +9,7 @@ fm3 question 90, log 159. Ash, 7 October 2026: "streams and arrays ARE different
 ## overview
 An array's items are all there, and it never changes. A stream's arrive, and it has a now. The text shows which a name is: `int a[] = [1, 2, 3, 4]` is an array and `int seen$` a stream, and the mark is written with the name everywhere, so no line has to be read with its declaration beside it.
 
-The whole of an array is its name with empty brackets, `a[]`: `count a[]`, `a[] + _`, `for (x in a[])`, `out$ << a[]`. One item is the name with a place in the brackets, `a[2]`. A list written out, a range and a text are arrays, and so is what `frame x$` gives: everything that has arrived in a stream and not been read, all there.
+The whole of an array is its name with empty brackets, `a[]`: `[count] (a[])`, `a[] + _`, `for (x in a[])`, `out$ << a[]`. One item is the name with a place in the brackets, `a[2]`. A list written out, a range and a text are arrays, and so is what `frame x$` gives: everything that has arrived in a stream and not been read, all there.
 
 A function says what it takes and gives by the same marks: `on (int n) << total of (int x[])` takes an array, whole, and is called with its name in square brackets, `[total of] (a[])` (fm3 question 77, log 165), and `on (int r[]) << squares to (int k)` gives one, by pushing it once, `r[] << [1 through k] * [1 through k]`, as any function gives its result. The mark on the result is what tells it from a task, whose result is a stream, `on (int i$) << count up to (int n)`.
 

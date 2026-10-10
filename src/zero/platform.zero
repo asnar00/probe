@@ -152,14 +152,14 @@ on (char o$) << (bool b)
         o$ << "false"
 
 on (char o$) << (int x[])
-    loop (int i = 0) while (i < count x[])
+    loop (int i = 0) while (i < [count] (x[]))
         if (i > 0)
             o$ << " "
         o$ << x[i]
         continue (i + 1)
 
 on (char o$) << (float x[])
-    loop (int i = 0) while (i < count x[])
+    loop (int i = 0) while (i < [count] (x[]))
         if (i > 0)
             o$ << " "
         o$ << x[i]

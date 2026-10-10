@@ -14345,7 +14345,7 @@ impl Lowerer {
                 // walk refuses the forms it can see, and this is any
                 // it could not (log 162)
                 if one && self.arr_name(w, b) {
-                    return Err(lex::error(&file, e.line, format!("'{}[]' is an array, and one value is wanted here: an array has no latest item, as a stream has (fm3 question 90). Its last item is `{}[count {}[] - 1]`, one item `{}[k]`, and its sum `{}[] + _`", w, w, w, w, w)));
+                    return Err(lex::error(&file, e.line, format!("'{}[]' is an array, and one value is wanted here: an array has no latest item, as a stream has (fm3 question 90). Its last item is `{}[[count] ({}[]) - 1]`, one item `{}[k]`, and its sum `{}[] + _`", w, w, w, w, w)));
                 }
                 // ... and in a line that happens once (log 163), where
                 // an array's name is the array, whole
@@ -14770,7 +14770,7 @@ impl Lowerer {
                 let is_var = |w: &str| b.vars.contains_key(w) || self.fvar(w).is_some();
                 if find_methods(&self.funcs, rest, &is_var, &file, e.line).is_err() {
                     let words: Vec<&str> = rest.iter().filter_map(|p| if let Part::Word(w) = p { Some(w.as_str()) } else { None }).collect();
-                    return Err(lex::error(&file, e.line, format!("`[{}]`: no function of this name is declared over an array. The words of the language, `count`, `frame` and the rest, are written plainly; whether they take brackets is not ruled (fm3 question 77)", words.join(" "))));
+                    return Err(lex::error(&file, e.line, format!("`[{}]`: no function of this name is declared over an array. Of the language's own words `[count]` alone takes brackets, an array's length (fm3 question 126); `frame` and the rest are a stream's and are written plainly", words.join(" "))));
                 }
                 self.lower_call(rest, true, one, now, e, b, dst)
             }

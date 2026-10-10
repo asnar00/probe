@@ -3,7 +3,7 @@ int total$ << 0
 
 on (int n) << how many()
     int i[] = [1, 2, 3, 4]
-    n << count i[]
+    n << [count] (i[])
 
 on (int n) << third()
     int i[] = [10, 20, 30, 40]
@@ -11,11 +11,11 @@ on (int n) << third()
 
 on (int n) << through()
     int i[] = [1 through 4]
-    n << count i[] * 10 + i[3]
+    n << [count] (i[]) * 10 + i[3]
 
 on (int n) << up to (int m)
     int i[] = [0 to m]
-    n << i[count i[] - 1]
+    n << i[[count] (i[]) - 1]
 
 on (int n) << down()
     int i[] = [5 through 1]
@@ -42,7 +42,7 @@ on (int n) << zipped()
     int i[] = [1, 2, 3, 4]
     int j[] = [4, 5, 6]
     int k[] = i[] + j[]
-    n << count k[] * 100 + k[3] * 10 + (k[] + _) - 25
+    n << [count] (k[]) * 100 + k[3] * 10 + (k[] + _) - 25
 
 on (int d) << doubled (int x)
     d << x * 2

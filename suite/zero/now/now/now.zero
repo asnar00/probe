@@ -67,7 +67,7 @@ on (int n) << each with the latest()
     int s$
     s$ << a[] + other$
     int f[] = frame s$
-    n << count f[] * 100 + (f[] + _)
+    n << [count] (f[]) * 100 + (f[] + _)
 
 on (int n) << doubled now()
     seen$ << 4 << 5

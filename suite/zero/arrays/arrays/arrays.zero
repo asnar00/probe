@@ -10,7 +10,7 @@ int total$ << 0
 
 on (int n) << listed()
     int a[] = [1, 2, 3, 4]
-    n << count a[]
+    n << [count] (a[])
 
 on (int n) << third()
     int a[] = [10, 20, 30, 40]
@@ -18,11 +18,11 @@ on (int n) << third()
 
 on (int n) << ranged to (int m)
     int a[] = [1 through m]
-    n << a[count a[] - 1] * 10 + a[0]
+    n << a[[count] (a[]) - 1] * 10 + a[0]
 
 on (int n) << texted()
     char c[] = "hello"
-    n << count c[]
+    n << [count] (c[])
 
 on (int n) << summed()
     int a[] = [1, 2, 3, 4]
@@ -37,7 +37,7 @@ on (int n) << zipped()
     int a[] = [1, 2, 3, 4]
     int b[] = [4, 5, 6]
     int c[] = a[] + b[]
-    n << count c[] * 100 + c[3] * 10 + (c[] + _) - 25
+    n << [count] (c[]) * 100 + c[3] * 10 + (c[] + _) - 25
 
 on (int n) << walked()
     int a[] = [1, 2, 3, 4]
@@ -132,7 +132,7 @@ on (bool a, bool b) << two spans()
 
 on (int n) << points listed()
     point ps[] = [point(1, 2), point(3, 4), point(5, 6)]
-    n << count ps[]
+    n << [count] (ps[])
 
 on (bool a, bool b) << points the same()
     point ps[] = [point(1, 2), point(3, 4)]

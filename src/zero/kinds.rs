@@ -200,19 +200,19 @@ impl Walk {
                 self.refuse(line, format!("{}`{}` is applied to each pair of items and gives a bool for each, and one is wanted here (fm3 question 77). Whether the two arrays {} is `[{}]`: {}", said, op, if op == "==" { "are the same" } else { "differ" }, op, write));
             }
             (Mark::Array, Mark::Array) if wants == "one value" && (form == "the value" || form.starts_with("an operand of") || form.starts_with("an arm of")) => {
-                self.refuse(line, format!("'{}[]' is an array, and one value is wanted here: an array has no latest item, as a stream has (fm3 question 90). Its last item is `{}[count {}[] - 1]`, one item `{}[k]`, and its sum `{}[] + _`", name, name, name, name, name));
+                self.refuse(line, format!("'{}[]' is an array, and one value is wanted here: an array has no latest item, as a stream has (fm3 question 90). Its last item is `{}[[count] ({}[]) - 1]`, one item `{}[k]`, and its sum `{}[] + _`", name, name, name, name, name));
             }
             (Mark::Array, Mark::Array) if form == "pushed into" => {
                 self.refuse(line, format!("'{}[] << ...': an array never changes: its items are all there where it is declared, `{} {}[] = [...]` (fm3 question 90). What is pushed into is a stream, `{} {}$`", name, e.ty, name, e.ty, name));
             }
             (Mark::Array, Mark::Array) if form.starts_with("a look back") => {
-                self.refuse(line, format!("'{}[-k]': a look back is a stream's, `x$[-1]`, the item before the present one (fm3 question 90). An array's last item is `{}[count {}[] - 1]`", name, name, name));
+                self.refuse(line, format!("'{}[-k]': a look back is a stream's, `x$[-1]`, the item before the present one (fm3 question 90). An array's last item is `{}[[count] ({}[]) - 1]`", name, name, name));
             }
             (Mark::Array, Mark::Array) if form.starts_with("the word `") && form != "the word `count`" => {
                 let w = form.trim_start_matches("the word `").trim_end_matches('`');
                 let instead = match w {
                     "peek" => format!(": one item of an array is `{}[k]`", name),
-                    "latest" => format!(": an array's last item is `{}[count {}[] - 1]`", name, name),
+                    "latest" => format!(": an array's last item is `{}[[count] ({}[]) - 1]`", name, name),
                     "frame" | "behind" | "from ... to" => ": it makes an array of what a stream holds, and this is one already".to_string(),
                     _ => String::new(),
                 };
@@ -429,7 +429,88 @@ impl Walk {
                 }
                 self.expr(base, wants, form);
             }
-            ExprKind::Phrase(parts) | ExprKind::Existing(parts) => self.phrase(parts, line, wants),
+            ExprKind::Phrase(parts) => {
+                self.counted(parts, line);
+                self.phrase(parts, line, wants)
+            }
+            ExprKind::Existing(parts) => self.phrase(parts, line, wants),
+        }
+    }
+
+    /// `count`, on an array and on a stream (fm3 question 126, Ash, 10
+    /// October 2026; log 225). Plain is each item and square brackets
+    /// are the whole array, for the language's own words as for a
+    /// program's functions: an array's length is `[count] (a[])`,
+    /// anything that gives an array standing in the round brackets.
+    /// The brackets are taken off here, where the names are held to
+    /// their marks, and the lowering reads the word as it always has.
+    /// Asked plainly of an array it is refused, saying what to write;
+    /// so is a stream or a string in the square brackets. `count x$`
+    /// of a stream and `count s` of a `string` stay plain
+    fn counted(&mut self, parts: &mut Vec<Part>, line: usize) {
+        fn one(p: &Part) -> Option<&Expr> {
+            match p {
+                Part::Value(e) => Some(e),
+                Part::Args(a) if a.len() == 1 && a[0].name.is_none() => Some(&a[0].value),
+                _ => None,
+            }
+        }
+        // what is written where an array is: its name, a list, a
+        // range, `frame x$`, or an operator with one of those on a side
+        fn array(e: &Expr) -> bool {
+            match &e.kind {
+                ExprKind::Arr(_) | ExprKind::List(_) | ExprKind::Range { .. } => true,
+                ExprKind::Phrase(p) => matches!(p.as_slice(), [Part::Word(w), _] if w == "frame"),
+                ExprKind::Bin(_, l, r) => array(l) || array(r),
+                _ => false,
+            }
+        }
+        fn said(e: &Expr) -> String {
+            match &e.kind {
+                ExprKind::Arr(n) => format!("{}[]", n),
+                ExprKind::Phrase(p) => match p.as_slice() {
+                    [Part::Word(w), x] if w == "frame" => match one(x).map(|x| &x.kind) {
+                        Some(ExprKind::Seq(n)) => format!("frame {}$", n),
+                        _ => "...".to_string(),
+                    },
+                    _ => "...".to_string(),
+                },
+                _ => "...".to_string(),
+            }
+        }
+        match parts.as_slice() {
+            [Part::Whole, Part::Word(w), x] if w == "count" => {
+                let Some(e) = one(x) else { return };
+                match &e.kind {
+                    ExprKind::Seq(n) => {
+                        let msg = format!("`[count] ({}$)`: square brackets hand a word the whole of an array, and '{}$' is a stream. Of a stream the word is plain, `count {}$`; the array of what is waiting in it is `frame {}$`, and how many, `[count] (frame {}$)` (fm3 questions 94 and 126)", n, n, n, n, n);
+                        self.refuse(line, msg)
+                    }
+                    ExprKind::Name(n) => {
+                        let msg = format!("`[count] ({})`: square brackets hand a word the whole of an array, and '{}' is one value. Of a `string` the word is plain, `count {}` (fm3 question 126)", n, n, n);
+                        self.refuse(line, msg)
+                    }
+                    ExprKind::Phrase(p) if matches!(p.as_slice(), [Part::Word(_)]) => {
+                        let [Part::Word(n)] = p.as_slice() else { unreachable!() };
+                        let msg = format!("`[count] ({})`: square brackets hand a word the whole of an array, and '{}' is one value. Of a `string` the word is plain, `count {}` (fm3 question 126)", n, n, n);
+                        self.refuse(line, msg)
+                    }
+                    _ => {
+                        if self.settle {
+                            parts.remove(0);
+                        }
+                    }
+                }
+            }
+            [Part::Word(w), x] if w == "count" => {
+                let Some(e) = one(x) else { return };
+                if array(e) {
+                    let of = said(e);
+                    let msg = format!("`count {}`: an array's length is `[count] ({})`, the whole array in square brackets as for any function handed one (fm3 question 126). `count` is written plainly of a stream, `count x$`, and of a `string`", if matches!(e.kind, ExprKind::Arr(_)) { of.clone() } else { format!("({})", of) }, of);
+                    self.refuse(line, msg);
+                }
+            }
+            _ => {}
         }
     }
 

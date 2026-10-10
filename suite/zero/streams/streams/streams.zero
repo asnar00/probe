@@ -37,7 +37,7 @@ on (int n) << framed()
     int i$ << 1 << 2 << 3
     int f[] = frame i$
     int g[] = frame i$
-    n << count f[] * 10 + count g[] + (f[] + _)
+    n << [count] (f[]) * 10 + [count] (g[]) + (f[] + _)
 
 on (int n) << walked()
     int i$ << 1 << 2 << 3 << 4
@@ -99,7 +99,7 @@ on (bool same) << windowed between times worked out()
 on (int n) << windowed()
     int x$ at (1000 hz) << 1 << 2 << 3 << 4 << 5
     int w[] = x$ from (2 ms) to (4 ms)
-    n << count w[] * 10 + w[0]
+    n << [count] (w[]) * 10 + w[0]
 
 on (int n) << tokens()
     token t$ << token(1, 0, 3) << token(3, 4, 1)
@@ -116,7 +116,7 @@ on (int n) << tokens framed()
     token t$ << token(1, 0, 3) << token(2, 5, 2) << token(3, 9, 1)
     token f[] = frame t$
     token y = f[2]
-    n << count f[] * 1000 + y.kind * 100 + y.start * 10 + y.n
+    n << [count] (f[]) * 1000 + y.kind * 100 + y.start * 10 + y.n
 
 on (int n) << logged()
     log$ << 200 << 300

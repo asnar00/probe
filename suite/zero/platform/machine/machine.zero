@@ -26,5 +26,5 @@ on (int64 r) << three minus one (int64 a)
 on (int n, int64 last) << count doubled (int64 k)
     int64 x[] = [1 through k]
     int64 d[] = (x[]) doubled
-    n << count d[]
+    n << [count] (d[])
     last << d[k - 1]
