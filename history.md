@@ -4,6 +4,25 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `x$ at (t)` is an index worked out in integers, and a read before a stream's first item is zero — `126156d` · 2026-10-10
+
+```
+on (int n) << sampled at (int m)
+    float32 x$ at (1 khz) << 10.0 << 20.0 << 30.0 << 40.0
+    float32 v = x$ at (m us)
+    n << int(v)
+```
+
+`suite/zero/streams/streams/streams.zero:89`, whose cases are `>sampled at (1600) → 30`, `(1400) → 20`, `(-5) → 0` and `(99000) → 40`. Until this commit `x$ at (t)` turned the time into the IR library's exact rational and called its `sample`: 3 074 as it ran and 343 300 on the tool, the one thing left of the cost a time had before it was a count over a divisor. fm3 question 120 rules that a stream's arithmetic is on indices only, and that where the stream's rate and the time's divisor are both known to the compiler the index is the time's count times a ratio the compiler has reduced: one multiply and at most one divide, no divisor at run time.
+
+`at_time` in `src/zero/lower.rs` writes it. The ring of a stream with a rate has an item a tick of its own rate and its first at tick 0, so the index is the time in the stream's ticks, `count * m / d` with `m / d` the rate over the divisor reduced when the program is compiled. Above, `m us` is `m * 1000` over a thousand million and the rate a thousand, so the ratio is one over a million; the nearest item, which is what a stream read at a time has given since September, is `(m * 1000 * 2 + 999999) / 2000000`. Then the ring's count, a compare and a choice so that a read after the latest gives the latest, and the library's `peek` from the ring's start. A time written out is worked out by the compiler, `x$ at (1600 us)` being item 2 with no arithmetic left. A stream with no rate keeps the ticks of the store's clock, a microsecond, and so does one wired at feature scope; for those, and for a stream that is a parameter, the tick is worked out the same way, against the clock's rate or the ring's own word, and a function the compiler writes into the store's text, `__at_<T>`, finds the item with the library's `before`: arithmetic on a ring with a rate, a search by halves over the ticks on one without, bounded by the sixty-four items a ring keeps.
+
+A read before the stream's first item gives zero, the answer its name gives before anything is pushed (question 127). The library's two checks on a sample, that the stream holds something and that the time is not before its first item, went with the call; no case had expected either. A time whose item the ring no longer keeps is still the ring's own failed check.
+
+Measured against the tree before (`scratchpad/agent56/casediff148.txt`): `sampled` and `sampled at a time worked out` 3 507 to 214 as they ran and 343 474 to 214 on the tool; `tasks`' `sampled at a rate` 2 947 to 399 and 295 002 to 688; `suite/zero/clock`'s `value at (250)` 3 213 to 248 and 343 310 to 232. The read alone is 31 with the time written out and about 40 worked out, which is what I had said; through `__at_<T>` it is 130 to 250, where I had said about 150. Every case gives what it gave. Fourteen are added: the four above; `clock`'s `marked at (m)` seven times, over a stream with no rate whose three items fall at 1.25 s, 2 s and 2.5 s, `none marked at (10) → 0`, `value at (-10) → 0` and `paced`. Only `clock`, `streams` and `tasks` moved. `x$ from (a) to (b)` is still the library's `window`. The six tracked rows are as they were; the meter is 51 of 2 974. The full run is `scratchpad/chain136.log`: 1265 runs of the zero suite on four paths and 1224 on air, `probe test` 1025, `cargo test` 189.
+
+---
+
 ### zero: a counted stream keeps a counter, not a queue, and `[count] (frame x$)` does not make the frame — `4eced5d` · 2026-10-10
 
 ```
