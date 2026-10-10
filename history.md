@@ -4,6 +4,21 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a division by zero is a failed check — `2cd66c7` · 2026-10-10
+
+```
+on (int n) << share (int a) among (int k)
+    n << a / k
+```
+
+`suite/zero/checks/said/said.zero:15-16`. `share (7) among (0)` gave 0 on the native JIT, where arm64's divide gives zero, and stopped on wasm, where it traps; `1 s / 0` wrote `0 s`. Ruled on 10 October 2026 (fm3 question 116): a division or a remainder of whole numbers by zero stops the program on every path as a failed check, `a failed check at said.zero:16: a division by zero`. The check is a comparison of the divisor with zero and a `check`, written before the `div` or the `rem` in the one place the front end writes either for two numbers (`divisor`, `src/zero/lower.rs:11074`), so a map, a zip, a reduce and a rule all have it. The diagnostic build stores its site first, with the reason.
+
+It is left out where the compiler can see the divisor is not zero. A literal that is not; and a value the text has just compared with a literal, read back from the comparison's own line (`tested`, `src/zero/lower.rs:503`): the `while` of the loop the division stands in, the `if` in whose arm it stands, statement or value, and a `check` earlier in the block. Nothing is modified in zero, so a value tested is the value divided by. `halved (a)`, `a / 2`, has none, and `if (k != 0) then (a / k) else (0)` has none. The language's own lines (`src/zero/platform.zero`) have none either: they divide by a power of ten a loop keeps above zero, or by a time's divisor, which no program can give and no operator makes zero. A time divided by a whole number multiplies its divisor, and a time by a time divides two counts, so the compiler writes the check where either operator is used, in the program's own line, and leaves it out of `1 s / 3`. A `float` divided by zero is still the machine's infinity.
+
+Counted, a check is 3. hello's `run` is 939 and static's 918, as they were, and the four lexer rows did not move; with the check in the language's own lines hello and static would be 972 and 951, the writer of a number testing `m / p <= -10` eleven times. The cases that rose, by 3 for each division whose divisor the compiler cannot see: `functions`' `divide (17) by (5)` 4 to 7 and `mean of (3) and (5)` 8 to 11, `pushed`'s `divide (17) by (5)` 4 to 7 and `both of (17) by (5)` 6 to 9, `types`' `a part of a second (3)` 421 to 427 and `(4)` 278 to 284. `control`'s `gcd of`, a remainder under `while (p$.y != 0)`, and `pushed`'s `into a hundred`, under its own `check (x != 0)`, did not. Eight cases are new, `a part of a second (0) → check at times.zero:73` among them. The full run is `scratchpad/chain113.log`: 1073 runs of the zero suite on four paths, 1025 on air, `cargo test` 179.
+
+---
+
 ### zero: restart, the touchstone: a countdown begun again by a key — `d32dfb0` · 2026-10-10
 
 ```
