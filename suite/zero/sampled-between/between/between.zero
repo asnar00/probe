@@ -1,0 +1,88 @@
+float curve[] from (0) to (1) linear clamped = [0.0, 0.1, 0.4, 0.9, 1.0]
+float steps[] = [0.0, 0.1, 0.4, 0.9, 1.0]
+float bars[] from (2) to (6) = [0.1, 0.2, 0.3, 0.4, 0.5]
+float below[] from (-1) to (1) nearest = [0.1, 0.2, 0.3, 0.4, 0.5]
+float ring[] linear wrapped = [0.0, 1.0, 0.5, 0.2]
+
+on (int n) << thousandths (float v)
+    n << int (v * 1000.0 + 0.5)
+
+on (float x) << of a thousand (int k)
+    x << float (k) / 1000.0
+
+on (int v) << curved (int k)
+    v << thousandths (curve[of a thousand (k)])
+
+on (int v) << halfway()
+    v << thousandths (curve[0.5])
+
+on (int v) << five eighths()
+    v << thousandths (curve[0.625])
+
+on (int v) << stepped (int k)
+    v << thousandths (steps[of a thousand (k)])
+
+on (int v) << written()
+    v << thousandths (steps[2.5] + steps[-0.5] + steps[7.5])
+
+on (int v) << closest (int k)
+    float a[] nearest = [0.0, 0.1, 0.4, 0.9, 1.0]
+    v << thousandths (a[of a thousand (k)])
+
+on (int v) << blended (int k)
+    float a[] linear = [0.2, 0.4, 0.8]
+    v << thousandths (a[of a thousand (k)])
+
+on (int v) << blended or one (int k)
+    float a[] linear else 1.0 = [0.2, 0.4, 0.8]
+    v << thousandths (a[of a thousand (k)])
+
+on (int v) << round (int k)
+    v << thousandths (ring[of a thousand (k)])
+
+on (int v) << barred (int k)
+    v << thousandths (bars[of a thousand (k)])
+
+on (int v) << barred at (int i)
+    v << thousandths (bars[i])
+
+on (int v) << lowered (int k)
+    v << thousandths (below[of a thousand (k)])
+
+on (int v) << edge (int i)
+    int a[] clamped = [10, 20, 30]
+    v << a[i]
+
+on (int v) << edges()
+    int a[] clamped = [10, 20, 30]
+    v << a[-4] * 100 + a[1] * 10 + a[9]
+
+on (int v) << held (int a[] clamped) at (int i)
+    v << a[i]
+
+on (int v) << held four (int i)
+    int a[] = [1 through 4]
+    v << [held] (a[]) at (i)
+
+on (int v) << held none (int i)
+    int a[] = []
+    v << [held] (a[]) at (i)
+
+on (int v) << spread (float a[] from (0) to (1) linear clamped) at (int k)
+    v << thousandths (a[of a thousand (k)])
+
+on (int v) << spread three (int k)
+    float a[] = [0.0, 1.0, 0.5]
+    v << [spread] (a[]) at (k)
+
+on (int v) << spread one (int k)
+    float a[] = [0.7]
+    v << [spread] (a[]) at (k)
+
+on (int v) << spread none (int k)
+    float a[] = []
+    v << [spread] (a[]) at (k)
+
+on (int v) << letter (int k)
+    string s from (0) to (1) clamped = "let x"
+    v << int (s[of a thousand (k)])

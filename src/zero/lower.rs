@@ -19,7 +19,7 @@
 use super::lex::{self, Error};
 use super::kinds::Mark as NameMark;
 use super::store::{Case, Expect, Mark, Store};
-use super::syntax::{Arg, Decl, Expr, ExprKind, FnDecl, Init, LoopInto, NamePart, Outside, Part, Repeat, Rule, Stmt, TypeKind, Watch};
+use super::syntax::{Arg, Between, Decl, Expr, ExprKind, FnDecl, Init, LoopInto, NamePart, Outside, Part, Repeat, Rule, Stmt, TypeKind, Watch};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -5105,8 +5105,124 @@ impl Lowerer {
     #[allow(clippy::too_many_arguments)]
     fn item_at(&mut self, s: &Val, place: &Val, rule: Option<&Rule>, count: Option<usize>, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
         let elem = s.ty.elem().unwrap().clone();
+        let decimal = place.literal && place.text.contains('.');
+        let whole = matches!(&place.ty, Ty::Num(t) if is_integer(t)) && !decimal;
+        let span = rule.and_then(|r| r.span.clone());
+        if whole && span.is_none() {
+            return self.item_at_place(s, place, rule, count, b, dst, line);
+        }
+        // A coordinate that is not a plain place (fm3 question 127's
+        // second part, log 240): the index is the coordinate less the
+        // start, over the step, worked out in `float`; the step is the
+        // span over the last item's place, so it is written as a
+        // multiply and then a divide and an array of one item divides
+        // by nothing. Nothing here is folded for a coordinate written
+        // out: how wide the product's `float` is is not known here
+        let between = rule.map_or(Between::Before, |r| r.between);
+        let dec = |t: &str| if t.contains('.') { t.to_string() } else { format!("{}.0", t) };
+        let mut f = b.tmp();
+        if place.literal {
+            b.line(&format!("{}: float = const {}", f, dec(&place.text)));
+        } else if place.ty == float_ty() {
+            f = place.text.clone();
+        } else {
+            b.line(&format!("{}: float = conv {}", f, place.text));
+        }
+        if let Some((a, z)) = &span {
+            let from_zero = a.parse::<f64>().is_ok_and(|a| a == 0.0);
+            let width = if from_zero {
+                dec(z)
+            } else {
+                let (d, zc, w) = (b.tmp(), b.tmp(), b.tmp());
+                b.line(&format!("{}: float = sub {}, {}", d, f, dec(a)));
+                b.line(&format!("{}: float = const {}", zc, dec(z)));
+                b.line(&format!("{}: float = sub {}, {}", w, zc, dec(a)));
+                f = d;
+                w
+            };
+            let last = match count {
+                Some(n) => format!("{}.0", n as i64 - 1),
+                None => {
+                    let (r, p, pushed, n, l, lf) = (b.tmp(), b.tmp(), b.tmp(), b.tmp(), b.tmp(), b.tmp());
+                    b.line(&format!("{}: ptr = get {}, ring", r, s.text));
+                    b.line(&format!("{}: index = get {}, pos", p, s.text));
+                    b.line(&format!("{}: index = load {}", pushed, r));
+                    b.line(&format!("{}: index = sub {}, {}", n, pushed, p));
+                    b.line(&format!("{}: index = sub {}, 1", l, n));
+                    b.line(&format!("{}: float = conv {}", lf, l));
+                    lf
+                }
+            };
+            let (m, q) = (b.tmp(), b.tmp());
+            b.line(&format!("{}: float = mul {}, {}", m, f, last));
+            b.line(&format!("{}: float = div {}, {}", q, m, width));
+            f = q;
+        }
+        let g = if between == Between::Nearest {
+            let h = b.tmp();
+            b.line(&format!("{}: float = add {}, 0.5", h, f));
+            h
+        } else {
+            f.clone()
+        };
+        // the item at or before: `conv` cuts toward zero, so a
+        // coordinate below zero is brought down one where it was cut
+        let (cut, back, under) = (b.tmp(), b.tmp(), b.tmp());
+        b.line(&format!("{}: index = conv {}", cut, g));
+        b.line(&format!("{}: float = conv {}", back, cut));
+        b.line(&format!("{}: u1 = cmp.lt {}, {}", under, g, back));
+        let lo = b.tmp();
+        b.line(&format!("{}: index = if {}", lo, under));
+        b.depth += 1;
+        let down = b.tmp();
+        b.line(&format!("{}: index = sub {}, 1", down, cut));
+        b.line(&format!("yield {}", down));
+        b.depth -= 1;
+        b.line("else");
+        b.depth += 1;
+        b.line(&format!("yield {}", cut));
+        b.depth -= 1;
+        let lov = Val { text: lo.clone(), ty: index_ty(), literal: false };
+        if between != Between::Linear {
+            return self.item_at_place(s, &lov, rule, count, b, dst, line);
+        }
+        // the two items either side, each by the array's own rule for
+        // outside, and the first plus the difference times how far
+        // along the coordinate is
+        let (lof, t, hi) = (b.tmp(), b.tmp(), b.tmp());
+        b.line(&format!("{}: float = conv {}", lof, lo));
+        b.line(&format!("{}: float = sub {}, {}", t, f, lof));
+        b.line(&format!("{}: index = add {}, 1", hi, lo));
+        let hiv = Val { text: hi, ty: index_ty(), literal: false };
+        let v0 = self.item_at_place(s, &lov, rule, count, b, None, line)?;
+        let v1 = self.item_at_place(s, &hiv, rule, count, b, None, line)?;
+        let te = if elem == float_ty() {
+            t
+        } else {
+            let c = b.tmp();
+            b.line(&format!("{}: {} = conv {}", c, elem.ir(), t));
+            c
+        };
+        let (d, m) = (b.tmp(), b.tmp());
+        b.line(&format!("{}: {} = sub {}, {}", d, elem.ir(), v1.text, v0.text));
+        b.line(&format!("{}: {} = mul {}, {}", m, elem.ir(), d, te));
+        let out = name_for(dst, &elem, b);
+        b.line(&format!("{}: {} = add {}, {}", out, elem.ir(), v0.text, m));
+        Ok(Val { text: out, ty: elem, literal: false })
+    }
+
+    /// an array's item by a whole place: what `item_at` says, and what
+    /// every coordinate comes to once it is an index
+    #[allow(clippy::too_many_arguments)]
+    fn item_at_place(&mut self, s: &Val, place: &Val, rule: Option<&Rule>, count: Option<usize>, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Val, Error> {
+        let elem = s.ty.elem().unwrap().clone();
         let known: Option<i64> = if place.literal { place.text.parse().ok() } else { None };
         let wrapped = matches!(rule, Some(Rule { outside: Outside::Wrapped, .. }));
+        let clamped = matches!(rule, Some(Rule { outside: Outside::Clamped, .. }));
+        // an array of no items has nothing to go round and no edge
+        if count == Some(0) {
+            return self.outside_val(if wrapped { None } else { rule }, &elem, b, line);
+        }
         let i = self.as_index(place, b);
         // where the place and the count are both written out, the
         // place the item is at, or that it is at none
@@ -5114,6 +5230,7 @@ impl Lowerer {
             (Some(k), Some(n)) => Some(match (wrapped, n as i64) {
                 (_, 0) => None,
                 (true, n) => Some(k.rem_euclid(n)),
+                (false, n) if clamped => Some(k.clamp(0, n - 1)),
                 (false, n) => (0..n).contains(&k).then_some(k),
             }),
             _ => None,
@@ -5174,25 +5291,61 @@ impl Lowerer {
             return Ok(Val { text: out, ty: elem, literal: false });
         }
         let mut slot = String::new();
-        let (inside, k) = if wrapped {
+        // `clamped`: the nearest of the first and last items, two
+        // compares and two choices; one where the place is written out
+        let clamp = |b: &mut Body, i: &str, last: &str| -> String {
+            let c = if known.is_some_and(|k| k >= 0) {
+                i.to_string()
+            } else {
+                let (neg, c) = (b.tmp(), b.tmp());
+                b.line(&format!("{}: u1 = cmp.lt {}, 0", neg, i));
+                b.line(&format!("{}: index = if {}", c, neg));
+                b.depth += 1;
+                b.line("yield 0");
+                b.depth -= 1;
+                b.line("else");
+                b.depth += 1;
+                b.line(&format!("yield {}", i));
+                b.depth -= 1;
+                c
+            };
+            let (over, k) = (b.tmp(), b.tmp());
+            b.line(&format!("{}: u1 = cmp.gt {}, {}", over, c, last));
+            b.line(&format!("{}: index = if {}", k, over));
+            b.depth += 1;
+            b.line(&format!("yield {}", last));
+            b.depth -= 1;
+            b.line("else");
+            b.depth += 1;
+            b.line(&format!("yield {}", c));
+            b.depth -= 1;
+            k
+        };
+        if let (true, Some(n)) = (clamped, count) {
+            let k = clamp(b, &i, &(n - 1).to_string());
+            let out = name_for(dst, &elem, b);
+            load(self, b, &k, &out);
+            return Ok(Val { text: out, ty: elem, literal: false });
+        }
+        let (inside, k) = if wrapped || clamped {
             // round again, a true remainder: a place of -1 is the last
             // item. A count that is a power of two is a mask; an array
             // of no items has nothing to go round
             match count {
-                Some(n) if n.is_power_of_two() => {
+                Some(n) if wrapped && n.is_power_of_two() => {
                     let k = b.tmp();
                     b.line(&format!("{}: index = and {}, {}", k, i, n - 1));
                     let out = name_for(dst, &elem, b);
                     load(self, b, &k, &out);
                     return Ok(Val { text: out, ty: elem, literal: false });
                 }
-                Some(n) => {
+                Some(n) if wrapped => {
                     let k = self.true_rem(&i, &n.to_string(), b);
                     let out = name_for(dst, &elem, b);
                     load(self, b, &k, &out);
                     return Ok(Val { text: out, ty: elem, literal: false });
                 }
-                None => {
+                _ => {
                     // how many items the view has: its ring's count
                     // less where it begins
                     let pushed = b.tmp();
@@ -5227,6 +5380,12 @@ impl Lowerer {
         b.depth += 1;
         let x = b.tmp();
         match k {
+            Some(n) if clamped => {
+                let last = b.tmp();
+                b.line(&format!("{}: index = sub {}, 1", last, n));
+                let k = clamp(b, &i, &last);
+                load(self, b, &k, &x);
+            }
             Some(n) => {
                 let k = self.true_rem(&i, &n, b);
                 load(self, b, &k, &x);
@@ -5270,7 +5429,7 @@ impl Lowerer {
     /// made from its own defaults
     fn outside_val(&mut self, rule: Option<&Rule>, elem: &Ty, b: &mut Body, line: usize) -> Result<Val, Error> {
         match rule {
-            Some(Rule { outside: Outside::Else(v), line }) => {
+            Some(Rule { outside: Outside::Else(v), line, .. }) => {
                 let file = b.file.clone();
                 // `char (32)` is a character written out: its code point
                 if let (ExprKind::Phrase(parts), Ty::Char) = (&v.kind, elem) {
@@ -5299,8 +5458,22 @@ impl Lowerer {
     /// written out, a number, `true` or `false`, a name of an
     /// enumeration, `char (n)`
     fn rule_ok(&self, rule: Option<&Rule>, ty: &Ty, shown: &str, file: &str) -> Result<(), Error> {
-        let Some(Rule { outside: Outside::Else(v), line }) = rule else { return Ok(()) };
         let Some(elem) = ty.elem() else { return Ok(()) };
+        // `linear` blends two items, so the items are a `float` (fm3
+        // question 143): a whole number blended is not a whole number
+        if let Some(Rule { between: Between::Linear, line, .. }) = rule {
+            if !matches!(elem, Ty::Num(t) if !is_integer(t)) {
+                let why = match elem {
+                    Ty::Num(_) => "two whole numbers blended are not a whole number: declare the items `float`".to_string(),
+                    Ty::Enum(n) => format!("there is nothing between two names of the enumeration `{}`", n),
+                    Ty::Char => "there is nothing between two characters".to_string(),
+                    Ty::Bool => "there is nothing between `true` and `false`".to_string(),
+                    _ => format!("its items are {}, which nothing here blends", zero_ty(elem)),
+                };
+                return Err(lex::error(file, *line, format!("`linear` on '{}' blends the two items either side of a coordinate, and {}. `nearest` gives the closer of the two, and with nothing said it is the item at or before", shown, why)));
+            }
+        }
+        let Some(Rule { outside: Outside::Else(v), line, .. }) = rule else { return Ok(()) };
         let number = |e: &Expr| -> Option<bool> {
             match &e.kind {
                 ExprKind::Int(_) => Some(false),
@@ -14982,9 +15155,11 @@ impl Lowerer {
                     return Err(lex::error(&file, e.line, format!("an index into a {}, which has no items", sv.ty.ir())));
                 }
                 self.one = true;
-                let iv = self.lower_expr(idx, Some(&index_ty()), b, None)?;
-                if !matches!(iv.ty, Ty::Num(_)) {
-                    return Err(lex::error(&file, idx.line, "an index is an integer"));
+                // what is in the brackets is a coordinate, a number of
+                // any kind (fm3 question 127): a whole one is a place
+                let iv = self.lower_expr(idx, None, b, None)?;
+                if !matches!(iv.ty, Ty::Num(_)) || iv.ty == time_ty() {
+                    return Err(lex::error(&file, idx.line, "what is in an array's brackets is a number: a place, or a coordinate where the array says `from (a) to (b)`"));
                 }
                 // a stream's item by its place is refused where names
                 // are held to their marks (fm3 question 90); should one

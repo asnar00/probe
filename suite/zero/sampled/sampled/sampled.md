@@ -90,9 +90,5 @@ A rule on something that is not an array or a string, `int a wrapped = 3`: "`wra
 
 `else` with a value that is not one of the item's type written out, `int a[] else 1.5 = [1, 2]`, or `else k` with `k` a variable: "`else` on 'a[]' says what a read outside it gives, a value of the item's type written out; its items are int: write a number, `else 0`". On a `string`, `string s else 7.5 = "ab"`: "... its items are characters: write `else char (32)`". On an array of structures, `point ps[] else 3 = [point(1)]`: "... its items are structures, and a read outside it gives a `point` made from its own defaults: leave `else` out". With no value, `int a[] else = [1, 2]`: "`else` on 'a[]' wants the value a read outside gives, `a[] else 0`".
 
-Ruled and not built, each refused by name:
-- `int a[] clamped = [1, 2]`: "`clamped` on 'a[]', a read outside giving the nearest edge, is ruled and not built yet (fm3 question 127). What is built is what a read outside the items gives, `else (v)` or `wrapped`, and zero where nothing is said".
-- `int a[] mirrored = [1, 2]`: "`mirrored` on 'a[]', a read outside going back the way it came, is ruled and not built yet (fm3 question 127). ..."
-- `float a[] from (0) to (1) = [1.0, 2.0]`: "`from` on 'a[]', the coordinates an array spans, `from (a) to (b)`, is ruled and not built yet (fm3 question 127). ..."
-- `float a[] nearest = [1.0, 2.0]`: "`nearest` on 'a[]', a read between two items giving the closer, is ruled and not built yet (fm3 question 127). ..."
-- `float a[] linear = [1.0, 2.0]`: "`linear` on 'a[]', a read between two items giving the two blended, is ruled and not built yet (fm3 question 127). ..."
+`clamped`, `from (a) to (b)`, `nearest` and `linear` are built since hop forty-one and are `suite/zero/sampled-between`'s. Ruled and not built, refused by name:
+- `int a[] mirrored = [1, 2]`: "`mirrored` on 'a[]', a read outside going back the way it came, is ruled and not built yet (fm3 question 127). What a read outside the items gives is `else (v)`, `wrapped` or `clamped`, and zero where nothing is said".

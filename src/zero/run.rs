@@ -1931,10 +1931,58 @@ mod tests {
         refused("    int k = 3\n    int a[] else k = [1, 2]\n    n << a[i]", "a value of the item's type written out");
         refused("    string t else 7.5 = \"ab\"\n    n << 1", "its items are characters: write `else char (32)`");
         refused("    int a[] else = [1, 2]\n    n << a[i]", "`else` on 'a[]' wants the value a read outside gives, `a[] else 0`");
-        for (word, what) in [("clamped", "a read outside giving the nearest edge"), ("mirrored", "a read outside going back the way it came"), ("nearest", "a read between two items giving the closer"), ("linear", "a read between two items giving the two blended"), ("from (0) to (1)", "the coordinates an array spans, `from (a) to (b)`")] {
-            let w = word.split(' ').next().unwrap();
-            refused(&format!("    float a[] {} = [1.0, 2.0]\n    n << 1", word), &format!("h.zero:11: `{}` on 'a[]', {}, is ruled and not built yet (fm3 question 127). What is built is what a read outside the items gives, `else (v)` or `wrapped`, and zero where nothing is said", w, what));
-        }
+        refused("    float a[] mirrored = [1.0, 2.0]\n    n << 1", "h.zero:11: `mirrored` on 'a[]', a read outside going back the way it came, is ruled and not built yet (fm3 question 127). What a read outside the items gives is `else (v)`, `wrapped` or `clamped`, and zero where nothing is said");
+    }
+
+    /// A start and a step, and between (fm3 question 127's second
+    /// part, log 240): `from (a) to (b)`, `nearest`, `linear`,
+    /// `clamped`, what each writes and what is refused
+    #[test]
+    fn a_coordinate_between_two_items() {
+        let dir = std::env::temp_dir().join("probe-zero-between");
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (1.0) → 1\n").unwrap();
+        let f = |body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("on (float n) << f (float x)\n{}\n", body)).unwrap();
+            emit(&dir)
+        };
+        let body = |ir: &str, f: &str| -> String { ir.split(&format!("\nfn {}(", f)).nth(1).unwrap().split("\nfn ").next().unwrap().to_string() };
+        let refused = |text: &str, what: &str| {
+            let e = f(text).err().unwrap_or_else(|| panic!("not refused: {}", text));
+            assert!(e.contains(what), "{}: {}", text, e);
+        };
+        // a decimal with nothing said: the item at or before, a cut
+        // toward zero brought down one below zero, and one read
+        let read = body(&f("    float a[] = [0.0, 0.5, 1.0]\n    n << a[x]").unwrap(), "f");
+        assert!(read.contains(": index = conv x\n") && read.contains(": u1 = cmp.lt x, ") && read.matches(": float = load ").count() == 1 && !read.contains("check"), "{}", read);
+        // `nearest`: a half added first
+        let read = body(&f("    float a[] nearest = [0.0, 0.5, 1.0]\n    n << a[x]").unwrap(), "f");
+        assert!(read.contains(": float = add x, 0.5\n") && read.matches(": float = load ").count() == 1, "{}", read);
+        // `from (0) to (1)`, three items counted: times 2, over 1
+        let read = body(&f("    float a[] from (0) to (1) = [0.0, 0.5, 1.0]\n    n << a[x]").unwrap(), "f");
+        assert!(read.contains(": float = mul x, 2.0\n") && read.contains(", 1.0\n") && !read.contains(": float = sub x"), "{}", read);
+        // a start that is not 0 is taken off, and the span worked out
+        let read = body(&f("    float a[] from (-1) to (1) = [0.0, 0.5, 1.0]\n    n << a[x]").unwrap(), "f");
+        assert!(read.contains(": float = sub x, -1.0\n") && read.contains(": float = const 1.0\n"), "{}", read);
+        // `linear`: two reads and the blend; `clamped` reads no zero
+        let read = body(&f("    float a[] linear clamped = [0.0, 0.5, 1.0]\n    n << a[x]").unwrap(), "f");
+        assert!(read.matches(": float = load ").count() == 2 && read.contains(": float = mul ") && read.contains("    n: float = add ") && read.contains("yield 2\n") && !read.contains(" = and "), "{}", read);
+        // a whole place on an array that says no `from` is the read it was
+        let read = body(&f("    float a[] nearest = [0.0, 0.5, 1.0]\n    int i = 2\n    n << a[i]").unwrap(), "f");
+        assert!(!read.contains(": float = conv") && !read.contains(": float = add") && read.matches(": float = load ").count() == 1, "{}", read);
+        // the refusals
+        refused("    int a[] linear = [1, 2]\n    n << 1.0", "h.zero:2: `linear` on 'a[]' blends the two items either side of a coordinate, and two whole numbers blended are not a whole number: declare the items `float`. `nearest` gives the closer of the two, and with nothing said it is the item at or before");
+        refused("    char a[] linear = \"ab\"\n    n << 1.0", "there is nothing between two characters");
+        refused("    string s linear = \"ab\"\n    n << 1.0", "there is nothing between two characters");
+        refused("    n << 1.0\n\ntype colour = red | green\n\non (int v) << g()\n    colour cs[] linear = [red, green]\n    v << 1", "h.zero:7: `linear` on 'cs[]' blends the two items either side of a coordinate, and there is nothing between two names of the enumeration `colour`");
+        refused("    float a[] nearest linear = [1.0, 2.0]\n    n << 1.0", "h.zero:2: 'a[]' says twice what a read between two items gives, `nearest` and `linear`: an array has one rule for between");
+        refused("    float a[] clamped wrapped = [1.0, 2.0]\n    n << 1.0", "'a[]' says twice what a read outside it gives, `clamped` and `wrapped`: an array has one rule for outside");
+        refused("    float a[] from (0) to (1) from (0) to (2) = [1.0, 2.0]\n    n << 1.0", "'a[]' says `from` twice: an array spans one run of coordinates");
+        refused("    float a[] from (1) to (1.0) = [1.0, 2.0]\n    n << 1.0", "'a[]' spans `from (1) to (1.0)`, no distance at all: the first item's coordinate and the last's are two numbers");
+        refused("    float a[] from (0) = [1.0, 2.0]\n    n << 1.0", "`from` on 'a[]' says the coordinates its items span, the first item's and the last's: `a[] from (0) to (1)`");
+        refused("    float a[] from (x) to (1) = [1.0, 2.0]\n    n << 1.0", "`from` on 'a[]' says the coordinates its items span, each a number written out in round brackets: `a[] from (0) to (1)`");
+        refused("    float a[] from 0 to 1 = [1.0, 2.0]\n    n << 1.0", "each a number written out in round brackets");
+        refused("    float y from (0) to (1) = 2.0\n    n << y", "`from` says how an array is read by a place, and 'y' is one float");
     }
 
     /// `$` means a stream (fm3 question 90, log 161): an array given

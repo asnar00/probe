@@ -187,21 +187,41 @@ pub struct Param {
 
 /// How an array is read by a coordinate (fm3 question 127, Ash, 10
 /// October 2026): said once, where the array is declared, after its
-/// name and before its value, as a stream says its rate. Built: what a
-/// read outside its items gives. An array that says nothing reads zero
-/// there, so no rule is `None` and not a third word
+/// name and before its value, as a stream says its rate. Three things
+/// may be said: what a read outside its items gives; the coordinates
+/// the items span, `from (a) to (b)`, the first item at `a` and the
+/// last at `b`; and what a coordinate between two items gives. An
+/// array that says nothing is read by a plain place, zero outside and
+/// the item at or before between, so no rule is `None`
 #[derive(Clone, Debug)]
 pub struct Rule {
     pub outside: Outside,
+    /// `from (a) to (b)`, each as it was written
+    pub span: Option<(String, String)>,
+    pub between: Between,
     pub line: usize,
 }
 
 #[derive(Clone, Debug)]
 pub enum Outside {
+    /// nothing said: the zero of the item's type
+    Zero,
     /// `else (v)`: a value for anywhere outside
     Else(Box<Expr>),
     /// `wrapped`: round again, one past the end being the first
     Wrapped,
+    /// `clamped`: the nearest of the first and last items
+    Clamped,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Between {
+    /// nothing said: the item at or before, as a stream read at a time
+    Before,
+    /// `nearest`: the closer of the two, the later where it is halfway
+    Nearest,
+    /// `linear`: the two blended by how far along the coordinate is
+    Linear,
 }
 
 /// the words an array's declaration may say after its name
@@ -1152,12 +1172,14 @@ impl<'a> Parser<'a> {
     /// a name and whether it is a sequence's; `self.arr` says whether
     /// it was written with an array's mark
     /// What a declaration says, after its name, of how the array is
-    /// read by a coordinate (fm3 question 127): `else (v)` or `wrapped`
-    /// for a read outside its items. The other words of the ruling are
-    /// known and refused by name until they are built, and all of them
-    /// are an array's or a string's and no other name's
+    /// read by a coordinate (fm3 question 127): `else (v)`, `wrapped` or
+    /// `clamped` for a read outside its items, `from (a) to (b)` for the
+    /// coordinates they span, `nearest` or `linear` for a read between
+    /// two, in any order and one of each. `mirrored` is known and
+    /// refused by name until graphics want it, and all of them are an
+    /// array's or a string's and no other name's
     fn parse_rule(&mut self, ty: &str, name: &str, seq: bool, arr: bool) -> Result<Option<Rule>, Error> {
-        let mut rule: Option<(Rule, String)> = None;
+        let mut rule: Option<(Rule, String, String)> = None;
         loop {
             let Some(Tok::Word(w)) = self.peek().cloned() else { break };
             if !RULE_WORDS.contains(&w.as_str()) {
@@ -1169,30 +1191,74 @@ impl<'a> Parser<'a> {
                 let what = if seq { "a stream: what a stream reads before its first item and between two is its own, and is not said in these words yet".to_string() } else { format!("one {}", ty) };
                 return Err(self.err(format!("`{}` says how an array is read by a place, and '{}' is {}. It is said of an array or a string where it is declared, `int a[] {} = [...]`", w, shown, what, if w == "else" { "else 0" } else { &w })));
             }
-            let not_built = |what: &str| format!("`{}` on '{}', {}, is ruled and not built yet (fm3 question 127). What is built is what a read outside the items gives, `else (v)` or `wrapped`, and zero where nothing is said", w, shown, what);
-            match w.as_str() {
-                "clamped" => return Err(self.err(not_built("a read outside giving the nearest edge"))),
-                "mirrored" => return Err(self.err(not_built("a read outside going back the way it came"))),
-                "nearest" => return Err(self.err(not_built("a read between two items giving the closer"))),
-                "linear" => return Err(self.err(not_built("a read between two items giving the two blended"))),
-                "from" => return Err(self.err(not_built("the coordinates an array spans, `from (a) to (b)`"))),
-                _ => {}
+            if w == "mirrored" {
+                return Err(self.err(format!("`mirrored` on '{}', a read outside going back the way it came, is ruled and not built yet (fm3 question 127). What a read outside the items gives is `else (v)`, `wrapped` or `clamped`, and zero where nothing is said", shown)));
             }
             self.pos += 1;
-            let (outside, said) = if w == "wrapped" {
-                (Outside::Wrapped, "wrapped".to_string())
-            } else {
-                if self.at_sym("=") || self.at_sym(")") || self.at_sym(",") || matches!(self.peek(), Some(Tok::Newline) | None) {
-                    return Err(self.err(format!("`else` on '{}' wants the value a read outside gives, `{} else 0`", shown, shown)));
+            let r = rule.get_or_insert((Rule { outside: Outside::Zero, span: None, between: Between::Before, line }, String::new(), String::new()));
+            match w.as_str() {
+                "nearest" | "linear" => {
+                    if !r.2.is_empty() {
+                        return Err(lex::error(self.file, line, format!("'{}' says twice what a read between two items gives, `{}` and `{}`: an array has one rule for between", shown, r.2, w)));
+                    }
+                    r.0.between = if w == "nearest" { Between::Nearest } else { Between::Linear };
+                    r.2 = w.clone();
                 }
-                (Outside::Else(Box::new(self.parse_expr()?)), "else".to_string())
-            };
-            if let Some((_, first)) = &rule {
-                return Err(lex::error(self.file, line, format!("'{}' says twice what a read outside it gives, `{}` and `{}`: an array has one rule for outside", shown, first, said)));
+                "from" => {
+                    if r.0.span.is_some() {
+                        return Err(lex::error(self.file, line, format!("'{}' says `from` twice: an array spans one run of coordinates", shown)));
+                    }
+                    let a = self.parse_span_end(&shown)?;
+                    if !self.eat_word("to") {
+                        return Err(self.err(format!("`from` on '{}' says the coordinates its items span, the first item's and the last's: `{} from (0) to (1)`", shown, shown)));
+                    }
+                    let b = self.parse_span_end(&shown)?;
+                    if a.parse::<f64>().ok() == b.parse::<f64>().ok() {
+                        return Err(lex::error(self.file, line, format!("'{}' spans `from ({}) to ({})`, no distance at all: the first item's coordinate and the last's are two numbers", shown, a, b)));
+                    }
+                    r.0.span = Some((a, b));
+                }
+                _ => {
+                    let outside = match w.as_str() {
+                        "wrapped" => Outside::Wrapped,
+                        "clamped" => Outside::Clamped,
+                        _ => {
+                            if self.at_sym("=") || self.at_sym(")") || self.at_sym(",") || matches!(self.peek(), Some(Tok::Newline) | None) {
+                                return Err(self.err(format!("`else` on '{}' wants the value a read outside gives, `{} else 0`", shown, shown)));
+                            }
+                            Outside::Else(Box::new(self.parse_expr()?))
+                        }
+                    };
+                    if !r.1.is_empty() {
+                        return Err(lex::error(self.file, line, format!("'{}' says twice what a read outside it gives, `{}` and `{}`: an array has one rule for outside", shown, r.1, w)));
+                    }
+                    r.0.outside = outside;
+                    r.1 = w.clone();
+                }
             }
-            rule = Some((Rule { outside, line }, said));
         }
-        Ok(rule.map(|(r, _)| r))
+        Ok(rule.map(|(r, _, _)| r))
+    }
+
+    /// one end of `from (a) to (b)`: a number written out, in round
+    /// brackets, a minus allowed (fm3 log 240: principle 4, as `else`
+    /// takes a value written out)
+    fn parse_span_end(&mut self, shown: &str) -> Result<String, Error> {
+        let how = format!("`from` on '{}' says the coordinates its items span, each a number written out in round brackets: `{} from (0) to (1)`", shown, shown);
+        if !self.eat_sym("(") {
+            return Err(self.err(how));
+        }
+        let neg = self.eat_sym("-");
+        let n = match self.peek().cloned() {
+            Some(Tok::Int(n)) => n.to_string(),
+            Some(Tok::Float(f)) => f,
+            _ => return Err(self.err(how)),
+        };
+        self.pos += 1;
+        if !self.eat_sym(")") {
+            return Err(self.err(how));
+        }
+        Ok(if neg { format!("-{}", n) } else { n })
     }
 
     fn expect_name(&mut self) -> Result<(String, bool), Error> {
