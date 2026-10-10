@@ -1,0 +1,20 @@
+int tick$ at (1 hz)
+tick$ << tick$ + 1 if (tick$ < 3) forever
+int beat$ at (2 hz)
+beat$ << beat$ + 1 if (beat$ < 4) forever
+int wait$ at (1 hz)
+out$ << (wait$ << "\n") forever
+
+on run()
+    out$ << "go\n"
+
+on (int n) << read()
+    n << beat$
+
+on (int n) << read after()
+    wait$ << 7 << 8
+    n << beat$
+
+on waited()
+    wait$ << 7 << 8
+    out$ << beat$
