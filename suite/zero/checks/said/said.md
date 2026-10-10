@@ -13,7 +13,7 @@ A program is compiled as it always was, with nothing in it that says where it is
 ## interface
 - `kept up (k)` pushes `k` items into `kept$`, a stream of this feature's that holds sixty-four, and gives how many it holds.
 - `counted (k)` pushes into a stream of its own `k` times, which fails where `k` is negative.
-- `looked` asks `checks`' `outside` for an item past the end of its array, and is given 0: an array's item by its place is no check and cannot fail (fm3 question 127). `peeked (i)` asks a stream of two items for the one `i` on from its reader, which is a stream's word and a check still.
+- `looked` asks `checks`' `outside` for an item past the end of its array, and is given 0: an array's item by its place is no check and cannot fail (fm3 question 127).
 - `share (a) among (k)` divides and `left of (a) among (k)` takes the remainder, by a number the compiler cannot see; `halved (a)` divides by a literal, and `shared safely (a, k)` by a number its own `if` has tested.
 
 ## rules
@@ -29,8 +29,6 @@ A program is compiled as it always was, with nothing in it that says where it is
 >counted (2) → 2
 >counted (-2) → check at said.zero:9
 >looked() → 0
->peeked (1) → 5
->peeked (3) → check at said.zero:29
 >within (9) → check at checks.zero:2
 >pushed after end() → check at checks.zero:41
 >share (7) among (2) → 3

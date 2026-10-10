@@ -23,7 +23,3 @@ on (int n) << halved (int a)
 
 on (int n) << shared safely (int a, int k)
     n << if (k != 0) then (a / k) else (0)
-
-on (int n) << peeked (int i)
-    int s$ << 4 << 5
-    n << peek s$ at (i)
