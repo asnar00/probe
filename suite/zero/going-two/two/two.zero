@@ -1,0 +1,17 @@
+int i$ at (1 hz)
+out$ << (i$ << "\n") forever
+int seen$ = launches (in$)
+
+on launch()
+    count down()
+    out$ << "liftoff"
+
+on count down()
+    i$ << [10 through 1]
+
+on (int n) << launched by (char c)
+    launch()
+    n << 1
+
+on (int k$) << launches (char c$)
+    k$ << launched by (c$)

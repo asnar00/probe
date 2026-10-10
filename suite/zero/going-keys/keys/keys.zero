@@ -1,0 +1,14 @@
+int i$ at (1 hz)
+out$ << (i$ << "\n") forever
+int key$ = codes (in$)
+out$ << ("key " << key$ << "\n") forever
+
+on (int n) << code of (char c)
+    n << int(c)
+
+on (int k$) << codes (char c$)
+    k$ << code of (c$)
+
+on count down()
+    i$ << [5 through 1]
+    out$ << "liftoff\n"

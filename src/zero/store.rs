@@ -166,6 +166,10 @@ pub struct Case {
     /// the case's input (section 15, log 62): `with in "text"`, the
     /// bytes the runner pushes into `in$` before the program starts
     pub input: Option<String>,
+    /// the input a case gives a time (fm3 question 53, log 220): `with
+    /// in "k" at 3.5 s`, several allowed, each a text and the time it
+    /// arrives, in the clock's steps, the times not going back
+    pub input_at: Vec<(String, i64)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -199,6 +203,9 @@ pub const CLOCK_HZ: i64 = 1_000_000;
 pub fn period(hz: i64) -> i64 {
     CLOCK_HZ / hz
 }
+
+/// the shape of a timed input, for a refusal
+const TIMED_INPUT: &str = "a timed input is a text and the time it arrives, `in \"k\" at 3.5 s` or `at 500 ms`; several are joined by commas, in the order they arrive";
 
 /// the shape of a timed result, for a refusal
 const TIMED_SHAPE: &str = "a timed result is every piece of the output in order, each `\"text\" at <n> s` or `<n> ms`, or `\"text\" at <n> hz` for its lines one a step, with `from <n> s` where they do not start at 0 s, joined by commas: `\"3\\n2\\n1\\n\" at 1 hz, \"liftoff\" at 3 s`";
@@ -798,6 +805,7 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
         .ok_or_else(|| lex::error(file, line, "a case is `>call(args) → result`"))?;
     let mut context = Vec::new();
     let mut input = None;
+    let mut input_at: Vec<(String, i64)> = Vec::new();
     let call = match call.find(") with ") {
         Some(i) => {
             let mut toks = Vec::new();
@@ -807,10 +815,29 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
                 match part {
                     [lex::Tok::Word(name), lex::Tok::Word(w)] if w == "off" => context.push((name.clone(), false)),
                     [lex::Tok::Word(name), lex::Tok::Word(w)] if w == "on" => context.push((name.clone(), true)),
-                    // an input with a time is ruled and waits for restart (question 53)
-                    [lex::Tok::Word(w), lex::Tok::Str(_), lex::Tok::Word(at), ..] if w == "in" && at == "at" => {
-                        return Err(lex::error(file, line, "a timed input, `in \"k\" at 3.5 s`, is ruled (question 53) and not built: delivering it needs a function suspended partway, which is restart's"));
+                    // an input with a time (question 53, fm3 log 220):
+                    // the text arrives then, a thing going on like any other
+                    [lex::Tok::Word(w), lex::Tok::Str(text), lex::Tok::Word(at), n, lex::Tok::Word(unit)] if w == "in" && at == "at" => {
+                        let per = match unit.as_str() {
+                            "s" => 1_000_000i64,
+                            "ms" => 1000,
+                            _ => return Err(lex::error(file, line, TIMED_INPUT)),
+                        };
+                        let us = match n {
+                            lex::Tok::Int(v) if *v >= 0 => v.checked_mul(per),
+                            lex::Tok::Float(f) => f.parse::<f64>().ok().map(|x| (x * per as f64).round() as i64),
+                            _ => None,
+                        };
+                        let Some(us) = us else { return Err(lex::error(file, line, TIMED_INPUT)) };
+                        if text.is_empty() {
+                            return Err(lex::error(file, line, "a timed input has at least one character: a time at which nothing arrives says nothing"));
+                        }
+                        if input_at.last().is_some_and(|(_, t)| *t > us) {
+                            return Err(lex::error(file, line, "the times of a case's input do not go back: write the pieces in the order they arrive"));
+                        }
+                        input_at.push((text.clone(), us));
                     }
+                    [lex::Tok::Word(w), lex::Tok::Str(_), lex::Tok::Word(at), ..] if w == "in" && at == "at" => return Err(lex::error(file, line, TIMED_INPUT)),
                     [lex::Tok::Word(w), lex::Tok::Str(text)] if w == "in" => {
                         if input.replace(text.clone()).is_some() {
                             return Err(lex::error(file, line, "a case has one `in \"text\"`"));
@@ -892,7 +919,7 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
         }
     };
     let call_expr = syntax::parse_call(call.trim(), file, line, types)?;
-    Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect, context, input })
+    Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect, context, input, input_at })
 }
 
 #[cfg(test)]
@@ -994,9 +1021,11 @@ mod tests {
         assert!(err("f() → \"a\" at 1 hz from 2 hz").contains("a timed result is every piece"));
         assert!(err("f() → \"a\" at 3 s, \"b\\nc\" at 1 hz").contains("the times of a timed result do not go back: 0 s after 3 s"));
         assert!(err("f() → \"a\\nb\\nc\" at 1 hz, \"d\" at 1 s").contains("the times of a timed result do not go back: 1 s after 2 s"));
-        // a timed input is ruled and not built
-        let e = parse_case("f() with in \"k\" at 3.5 s → \"a\" at 0 s", "x.md", 8, &types).err().unwrap().to_string();
-        assert!(e.contains("a timed input, `in \"k\" at 3.5 s`, is ruled (question 53) and not built"), "{}", e);
+        // a timed input (fm3 log 220): each piece a text and its time
+        let c = parse_case("f() with in \"k\" at 3.5 s, in \"ab\" at 4 s → \"a\" at 0 s", "x.md", 8, &types).unwrap();
+        assert_eq!((c.input, c.input_at), (None, vec![("k".to_string(), 3_500_000), ("ab".to_string(), 4_000_000)]));
+        assert!(err("f() with in \"k\" at 2 s, in \"j\" at 1 s → 1").contains("the times of a case's input do not go back"));
+        assert!(err("f() with in \"k\" at 2 hz → 1").contains("a timed input is a text and the time it arrives"));
         // what a run prints: a run of three or more single lines a whole
         // rate's period apart is folded, and every spelling parses back
         let back = |pieces: Vec<(String, i64)>, spelt: &str| {

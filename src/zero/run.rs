@@ -141,7 +141,7 @@ fn held(s: &store::Store, cases: &[&Planned], module: &ssa::Module, l: &lower::L
                 nrets: p.call.nrets,
                 checks: checks(&p.call.expect),
                 text: true,
-                before: setters(&p.call.context, &p.call.input),
+                before: setters(&p.call.context, &p.call.input, &p.call.input_at),
                 live: false,
                 times: matches!(p.call.expect, store::Expect::Timed(_)),
             })
@@ -217,9 +217,12 @@ fn effective(s: &store::Store, x: &BTreeSet<String>, p: &Planned) -> Option<BTre
 /// effective state is worked out where a switch is written, so a line
 /// that switches a parent off and on again runs the code that must
 /// leave its children as they were
-pub fn setters(switches: &[(String, bool)], input: &[u8]) -> Vec<(String, Vec<i64>)> {
+pub fn setters(switches: &[(String, bool)], input: &[u8], input_at: &[(u8, i64)]) -> Vec<(String, Vec<i64>)> {
     let mut calls: Vec<(String, Vec<i64>)> = switches.iter().map(|(f, on)| (format!("__set___enabled_{}", f), vec![*on as i64])).collect();
     calls.extend(input.iter().map(|&c| ("__in_ch".to_string(), vec![c as i64])));
+    // ... and what arrives at a time is handed over with its time
+    // (fm3 log 220), to arrive when the program reaches it
+    calls.extend(input_at.iter().map(|&(c, t)| ("__in_at".to_string(), vec![c as i64, t])));
     calls
 }
 
@@ -317,7 +320,7 @@ fn plan(s: &store::Store, cases: &[Planned]) -> Result<(Vec<Run>, Vec<Over>), St
         }
         // a case's input is part of its call (log 62): two lines
         // with different inputs are two promises
-        let same: Vec<usize> = (0..runs.len()).filter(|&j| standing[j] && runs[j].off == runs[i].off && cases[runs[j].case].feature == cases[runs[i].case].feature && cases[runs[j].case].call.func == cases[runs[i].case].call.func && cases[runs[j].case].call.args == cases[runs[i].case].call.args && cases[runs[j].case].call.input == cases[runs[i].case].call.input).collect();
+        let same: Vec<usize> = (0..runs.len()).filter(|&j| standing[j] && runs[j].off == runs[i].off && cases[runs[j].case].feature == cases[runs[i].case].feature && cases[runs[j].case].call.func == cases[runs[i].case].call.func && cases[runs[j].case].call.args == cases[runs[i].case].call.args && cases[runs[j].case].call.input == cases[runs[i].case].call.input && cases[runs[j].case].call.input_at == cases[runs[i].case].call.input_at).collect();
         if same.len() < 2 {
             continue;
         }
@@ -445,7 +448,7 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bo
         println!("{}", text.split('→').next().unwrap_or("").trim());
         let _ = std::io::stdout().flush();
     }
-    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: checks(&call.expect), text: true, before: setters(&call.context, &call.input), live: true, times: timed };
+    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: checks(&call.expect), text: true, before: setters(&call.context, &call.input, &call.input_at), live: true, times: timed };
     // a check that fails is traced to its line by the diagnostic build
     // (fm3 log 199): a person is looking
     let got = match suite::run_calls(&module, &l.ir, Backend::Native, std::slice::from_ref(&sc), "zero-run", level)?.remove(0) {
@@ -550,7 +553,7 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                     checks: checks(&c.expect),
                     // every case reads the text back: a failed check names its site there
                     text: true,
-                    before: setters(&r.switches, &c.input),
+                    before: setters(&r.switches, &c.input, &c.input_at),
                     live: false,
                     times: matches!(c.expect, store::Expect::Timed(_)),
                 }
@@ -853,12 +856,12 @@ mod tests {
         let off = effective(&s, &BTreeSet::new(), base_off).unwrap();
         assert_eq!(off.iter().cloned().collect::<Vec<_>>(), ["base"]);
         assert_eq!(s.closure(&off).iter().cloned().collect::<Vec<_>>(), ["base", "more", "most", "tool"]);
-        assert_eq!(setters(&base_off.call.context, b"hi"), [("__set___enabled_base".to_string(), vec![0]), ("__in_ch".to_string(), vec![104]), ("__in_ch".to_string(), vec![105])]);
+        assert_eq!(setters(&base_off.call.context, b"hi", &[]), [("__set___enabled_base".to_string(), vec![0]), ("__in_ch".to_string(), vec![104]), ("__in_ch".to_string(), vec![105])]);
         // a line's switches are made in order, an `on` a call too
-        assert_eq!(setters(&[("more".to_string(), false), ("base".to_string(), false), ("base".to_string(), true)], b""), [("__set___enabled_more".to_string(), vec![0]), ("__set___enabled_base".to_string(), vec![0]), ("__set___enabled_base".to_string(), vec![1])]);
+        assert_eq!(setters(&[("more".to_string(), false), ("base".to_string(), false), ("base".to_string(), true)], b"", &[]), [("__set___enabled_more".to_string(), vec![0]), ("__set___enabled_base".to_string(), vec![0]), ("__set___enabled_base".to_string(), vec![1])]);
         // a case does not stand where its feature is effectively off; a
         // line is a sequence of switches, `on` restoring a flag
-        let sequence = Planned { text: String::new(), call: lower::Call { func: "switches".into(), args: vec![], nrets: 2, times: vec![false, false], expect: store::Expect::Values(vec![0, 1]), context: vec![("more".into(), false), ("base".into(), false), ("base".into(), true)], input: vec![] }, feature: "most".into(), rank: 3, file: "most.md".into(), line: 1 };
+        let sequence = Planned { text: String::new(), call: lower::Call { func: "switches".into(), args: vec![], nrets: 2, times: vec![false, false], expect: store::Expect::Values(vec![0, 1]), context: vec![("more".into(), false), ("base".into(), false), ("base".into(), true)], input: vec![], input_at: vec![] }, feature: "most".into(), rank: 3, file: "most.md".into(), line: 1 };
         assert!(effective(&s, &["base".to_string()].into_iter().collect(), &sequence).is_none());
         assert_eq!(effective(&s, &["tool".to_string()].into_iter().collect(), &sequence).unwrap().iter().cloned().collect::<Vec<_>>(), ["more", "tool"]);
         // a gate reads one field, the feature's effective state, in line
@@ -2147,10 +2150,20 @@ mod tests {
         // the list is asked at the start, in a step, and by the twin
         let turns = func(&ir, "__turns");
         assert!(turns.contains("        d1: i64 = get x, __due1\n        late: u1 = cmp.gt d1, t\n        if late\n            break\n        __wait(d1)\n") && turns.contains("            __edge1()\n"), "{}", turns);
-        assert!(func(&ir, "__zero_start").contains("    __turns(0)\n") && func(&ir, "__step").contains("    __turns(m)\n    __wait(m)\n") && func(&ir, "__whole_f").contains(" = f()\n    __turns(4611686018427387903)\n"), "{}", ir);
+        assert!(func(&ir, "__zero_start").contains("    __turns(0)\n") && func(&ir, "__step").contains("    __turns(m)\n") && func(&ir, "__step").contains("    held: u1 = cmp.le c2, m\n    check held\n    __wait(m)\n") && func(&ir, "__whole_f").contains(" = f()\n    __turns(4611686018427387903)\n"), "{}", ir);
         // two clocks: the earlier, and the first written of two at one time
         let ir = with("i$ << i$ + 1 if (i$ < 5) forever\nj$ << j$ + 1 if (j$ < 5) forever\n").unwrap();
         assert!(func(&ir, "__turns").contains("        e2: u1 = cmp.lt d2, d1\n        b2: i64 = if e2\n            yield d2\n        else\n            yield d1\n"), "{}", ir);
+        // input that arrives at a time (fm3 log 220): where a case
+        // gives one, the input is the first of the things going on;
+        // where none does, the store has no word for it
+        assert!(!ir.contains("__in_at") && !ir.contains("__due_in"), "{}", ir);
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() with in \"k\" at 1.5 s → 1\n").unwrap();
+        let ir = with("i$ << i$ + 1 if (i$ < 5) forever\n").unwrap();
+        assert!(func(&ir, "__turns").contains("        d1: i64 = get x, __due_in\n        d2: i64 = get x, __due1\n        e2: u1 = cmp.lt d2, d1\n") && func(&ir, "__turns").contains("            __in_turn()\n") && ir.contains("\nfn __in_at(c: u8, t: i64)\n"), "{}", ir);
+        let ir = with("").unwrap();
+        assert!(func(&ir, "__turns").contains("        d1: i64 = get x, __due_in\n        late: u1 = cmp.gt d1, t\n") && func(&ir, "__in_turn").contains("    check free\n") && func(&ir, "__in_turn").contains("    __in_ch(c)\n"), "{}", ir);
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 1\n").unwrap();
         // with no rate it would never end
         let e = with("x$ << x$ + 1 forever\n").unwrap_err();
         assert!(e.contains("would never end") && e.contains("for a clock give the stream a rate"), "{}", e);

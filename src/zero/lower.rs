@@ -568,6 +568,10 @@ pub struct Call {
     pub context: Vec<(String, bool)>,
     /// the bytes the runner pushes into `in$` before the start (log 62)
     pub input: Vec<u8>,
+    /// the bytes that arrive at a time (fm3 log 220), each with the
+    /// time in the clock's steps: handed over before the start, each
+    /// arriving when the list reaches it
+    pub input_at: Vec<(u8, i64)>,
 }
 
 /// the IR every store gets: the arena, the clock, the two functions
@@ -882,9 +886,23 @@ fn __step(d: i64)
     c: i64 = get w, __clock
     m: i64 = add c, d
     __turns(m)
+    v: __ctx = load _this
+    c2: i64 = get v, __clock
+    held: u1 = cmp.le c2, m
+    check held
     __wait(m)
     ret
 "#;
+
+/// the lines of `STEP_TURNS` that stop a function whose step ended
+/// with the clock already past it (fm3 question 135): they leave where
+/// a `restart` may have ended the function, which then goes on to
+/// find that out
+const STEP_HELD: &str = "    v: __ctx = load _this
+    c2: i64 = get v, __clock
+    held: u1 = cmp.le c2, m
+    check held
+";
 
 /// ... and on the real clock it waits on the machine's counter: the
 /// board's `now()` and `hz()` as a `platform arm64` body, read at the
@@ -2415,7 +2433,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features) };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2719,14 +2737,14 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     ir.push_str(&if l.sited { prelude.replacen(READ_BACK, SITED_READ_BACK, 1) } else { prelude });
     // the one function that differs per clock (log 77)
     let clock = if store.clock == super::store::Clock::Real { REAL_CLOCK } else { VIRTUAL_CLOCK };
-    if l.clocks.is_empty() {
+    if !l.listed() {
         ir.push_str(clock);
     } else {
         // where several things are going on a step of a rate gives
         // the others their turns first (fm3 log 217)
         let at = clock.find("\n; a step of a rate passes").unwrap();
         ir.push_str(&clock[..at]);
-        ir.push_str(STEP_TURNS);
+        ir.push_str(&if l.restarts.is_empty() { STEP_TURNS.to_string() } else { STEP_TURNS.replacen(STEP_HELD, "", 1) });
     }
     ir.push_str(if l.rings.iter().any(|(_, m)| m == "stream") {
         PUSH_BRANCHED
@@ -2787,7 +2805,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     // twin of its function, which calls it and then gives everything
     // still due its turn: the program computes its whole timeline
     // (`fm3/time.md`)
-    if !l.clocks.is_empty() {
+    if l.listed() {
         for f in l.funcs.clone().iter().filter(|f| f.feature != OWN && !f.task && f.platform.is_none() && f.params.iter().all(|(_, t)| matches!(t, Ty::Num(_) | Ty::Bool | Ty::Enum(_)))) {
             if !ir.contains(&format!("\nfn {}(", f.ir)) || f.ir.starts_with("__") {
                 continue;
@@ -2806,6 +2824,14 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
             ir.push_str(&format!("fn __whole_{}({}){}\n    {}{}\n    __turns({})\n    ret{}\n", f.ir, params.join(", "), head, if got.is_empty() { String::new() } else { format!("{} = ", got.join(", ")) }, call, NEVER - 1, if back.is_empty() { String::new() } else { format!(" {}", back.join(", ")) }));
         }
     }
+    // an activity ended partway by a `restart` leaves (fm3 log 220)
+    let ir = if l.restarts.is_empty() {
+        ir
+    } else {
+        l.written.insert("__ended".into());
+        let giving: Names = l.funcs.iter().filter(|f| !f.task && !f.results.is_empty()).map(|f| f.ir.clone()).collect();
+        settle_ended(&ir, &giving)
+    };
     let ir = settle_pushes(ir, &l.queue_pushes, &l.ended, unread);
     // the clock and the output's count are fields a word of the
     // platform's writes (fm3 log 215)
@@ -2831,7 +2857,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
             }
         }
     }
-    for entry in ["__zero_reset", "__zero_new", "__zero_context", "__zero_start", "__out_len", "__out_byte", "__in_ch"] {
+    for entry in ["__zero_reset", "__zero_new", "__zero_context", "__zero_start", "__out_len", "__out_byte", "__in_ch", "__in_at"] {
         roots.insert(entry.to_string());
     }
     // (a function's twin for the runner is reached where it is)
@@ -3069,6 +3095,80 @@ fn wide_once(ir: &str) -> String {
             out.push_str(&format!("{} = {} {}\n", head, op, args.join(", ")));
         }
         i = j;
+    }
+    out
+}
+
+/// An activity ended partway by a `restart` leaves (fm3 question 52,
+/// log 220). A push into a restarted stream that finds its run over
+/// sets `__ended` and returns (`step_of`). Here, in the finished text,
+/// every function that can be left that way is found, and after each
+/// call of one: a function with no result asks the bit and returns
+/// too, and can itself be left that way; a function of the program's
+/// that gives a result cannot leave with none, and stops, a failed
+/// check; and anything else is where an activity was started, a
+/// case's twin, the input's turn, a task's run, and clears the bit and
+/// goes on
+fn settle_ended(ir: &str, giving: &Names) -> String {
+    let lines: Vec<&str> = ir.lines().collect();
+    let name_of = |l: &str| l.strip_prefix("fn ").and_then(|r| r.split('(').next()).map(str::to_string);
+    // each function: its lines, and whether it has a result
+    let mut fns: Vec<(String, usize, usize, bool)> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if let Some(n) = name_of(lines[i]) {
+            let mut end = i + 1;
+            while end < lines.len() && lines[end].starts_with(' ') {
+                end += 1;
+            }
+            fns.push((n, i + 1, end, lines[i].contains(" -> ")));
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    let calls = |l: &str, g: &str| -> bool {
+        let t = l.trim_start();
+        t.starts_with(&format!("{}(", g)) || t.contains(&format!(" = {}(", g))
+    };
+    let leaves = |n: &str, result: bool| !result && !n.starts_with("__whole_") && n != "__in_turn" && n != "__turns";
+    let mut ended: Names = fns.iter().filter(|(_, a, b, _)| lines[*a..*b].iter().any(|l| l.contains(", __ended, 1"))).map(|(n, ..)| n.clone()).collect();
+    loop {
+        let more: Vec<String> = fns.iter().filter(|(n, a, b, result)| !ended.contains(n) && leaves(n, *result) && lines[*a..*b].iter().any(|l| ended.iter().any(|g| calls(l, g)))).map(|(n, ..)| n.clone()).collect();
+        if more.is_empty() {
+            break;
+        }
+        ended.extend(more);
+    }
+    let mut out = String::new();
+    let mut at = 0;
+    for (n, a, b, result) in &fns {
+        for l in &lines[at..*a] {
+            out.push_str(l);
+            out.push('\n');
+        }
+        at = *b;
+        let mut k = 0;
+        for l in &lines[*a..*b] {
+            out.push_str(l);
+            out.push('\n');
+            if !ended.iter().any(|g| calls(l, g)) {
+                continue;
+            }
+            k += 1;
+            let pad = " ".repeat(l.len() - l.trim_start().len());
+            if leaves(n, *result) {
+                out.push_str(&format!("{pad}__e{k}: __ctx = load {this}\n{pad}__f{k}: u1 = get __e{k}, __ended\n{pad}if __f{k}\n{pad}    ret\n", pad = pad, k = k, this = THIS));
+            } else if giving.contains(n) {
+                out.push_str(&format!("{pad}__e{k}: __ctx = load {this}\n{pad}__f{k}: u1 = get __e{k}, __ended\n{pad}__h{k}: u1 = xor __f{k}, 1\n{pad}check __h{k}\n", pad = pad, k = k, this = THIS));
+            } else {
+                out.push_str(&format!("{pad}__e{k}: __ctx = load {this}\n{pad}__g{k}: __ctx = set __e{k}, __ended, 0\n{pad}store __g{k}, {this}\n", pad = pad, k = k, this = THIS));
+            }
+        }
+    }
+    for l in &lines[at..] {
+        out.push_str(l);
+        out.push('\n');
     }
     out
 }
@@ -3762,7 +3862,7 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str, int_bits: u32) -
     // ... and where several things are going on, the twin that
     // computes the whole timeline (fm3 log 217)
     let func = if lowered.ir.contains(&format!("\nfn __whole_{}(", info.ir)) { format!("__whole_{}", info.ir) } else { func };
-    Ok(Call { func, args: vals, nrets: info.results.len(), times, expect: case.expect.clone(), context: case.context.clone(), input: case.input.clone().unwrap_or_default().into_bytes() })
+    Ok(Call { func, args: vals, nrets: info.results.len(), times, expect: case.expect.clone(), context: case.context.clone(), input: case.input.clone().unwrap_or_default().into_bytes(), input_at: case.input_at.iter().flat_map(|(text, t)| text.bytes().map(|c| (c, *t)).collect::<Vec<_>>()).collect() })
 }
 
 /// the refusal of an ambiguous call, naming the methods that contend
@@ -4161,6 +4261,12 @@ struct Lowerer {
     /// into it there is on its beat, the list having called it, and
     /// neither waits for a slot nor moves the clock on
     in_clock: Option<String>,
+    /// some case of the store gives its input a time (fm3 log 220):
+    /// the input is then one of the things going on
+    timed_in: bool,
+    /// the streams some `restart` names (fm3 log 220): each has a
+    /// phase and the number of its run in the context
+    restarts: Names,
     /// the parameters of the operator being written in line that were
     /// handed a literal: read by name they are that literal still
     lits: Vec<String>,
@@ -7331,7 +7437,25 @@ impl Lowerer {
             // 107, log 215): how much it has written, its time, and where
             // its capture and its marks are
             self.type_lines.push(CTX_OWN.into());
-            self.type_lines.push(format!("type __ctx = struct\n    __out_n: index\n    __clock: i64\n    __out_p: ptr\n    {}\n{}", fields.join("\n    "), MARKS_FIELD));
+            // ... and what several things going on keep (fm3 log 220):
+            // the input's pieces and the time the next arrives; for a
+            // stream some `restart` names, its phase and its run's
+            // number; and the bit that says an activity has been ended
+            let mut own = String::new();
+            if self.timed_in {
+                self.type_lines.push(";   __in_n, __in_k, __in_t, __in_c, __due_in, __in_busy: the input that arrives at a time: how many characters a case gave and how many have arrived, their times and themselves, the time the next is due, and whether what reads the input is partway through an arrival".into());
+                own.push_str("__in_n: index\n    __in_k: index\n    __in_t: ptr\n    __in_c: ptr\n    __due_in: i64\n    __in_busy: u1\n    ");
+            }
+            let restarts: Vec<String> = self.fvars.iter().filter(|f| self.restarts.contains(&f.name)).map(|f| f.name.clone()).collect();
+            for n in &restarts {
+                self.type_lines.push(format!(";   __run_{n}, __phase_{n}: the number of '{n}$'s run, one more at each `restart`, and where its beat begins", n = n));
+                own.push_str(&format!("__run_{n}: i64\n    __phase_{n}: i64\n    ", n = n));
+            }
+            if !restarts.is_empty() {
+                self.type_lines.push(";   __ended: an activity was ended partway by a `restart`, and is leaving".into());
+                own.push_str("__ended: u1\n    ");
+            }
+            self.type_lines.push(format!("type __ctx = struct\n    __out_n: index\n    __clock: i64\n    __out_p: ptr\n    {}{}\n{}", own, fields.join("\n    "), MARKS_FIELD));
             // memory for two contexts: the runner's, and a second, so
             // that one store can be run in two (fm3 log 137); the code
             // is the same for any number
@@ -7348,6 +7472,11 @@ impl Lowerer {
             // waits (`lower`)
             for l in MARKS_RESET {
                 b.line(l);
+            }
+            if self.timed_in {
+                for l in ["ia: ptr = addr __arena", "it: ptr = arena_alloc(ia, 2048)", "ic: ptr = arena_alloc(ia, 256)"] {
+                    b.line(l);
+                }
             }
             // the initial values, in composition order: every feature on,
             // then the variables, then the nodes' state
@@ -7494,7 +7623,16 @@ impl Lowerer {
                 }
             }
             let c = b.tmp();
-            b.line(&format!("{}: __ctx = pack 0, 0, op, {}{}", c, inits.join(", "), MARKS_INIT));
+            let mut own = String::new();
+            if self.timed_in {
+                own.push_str(&format!("0, 0, it, ic, {}, 0, ", NEVER));
+            }
+            let restarts = self.fvars.iter().filter(|f| self.restarts.contains(&f.name)).count();
+            own.push_str(&"0, 0, ".repeat(restarts));
+            if restarts > 0 {
+                own.push_str("0, ");
+            }
+            b.line(&format!("{}: __ctx = pack 0, 0, op, {}{}{}", c, own, inits.join(", "), MARKS_INIT));
             b.line("p: ptr = context()");
             b.line(&format!("store {}, p", c));
         }
@@ -7695,38 +7833,65 @@ impl Lowerer {
     /// before the case's function; a step of a rate (`STEP_TURNS`) for
     /// what is due before the step ends; a case's twin (`lower`) for
     /// all that is left. A store with none has none of this
+    fn listed(&self) -> bool {
+        !self.clocks.is_empty() || self.timed_in
+    }
+
     fn emit_turns(&mut self) {
-        if self.clocks.is_empty() {
+        if !self.listed() {
             return;
+        }
+        // the things going on, in the order started: the input, which
+        // is the platform's and was there first, and then the clocks
+        // as written. Each is its word and what its turn does
+        let mut things: Vec<(String, Vec<String>)> = Vec::new();
+        if self.timed_in {
+            things.push(("__due_in".into(), vec!["__in_turn()".into()]));
+        }
+        for (k, c) in self.clocks.iter().enumerate() {
+            // a clock whose feature is off does nothing at its beat,
+            // and its time passes (question 51)
+            let turn = if self.statics.contains(&c.feature) {
+                vec![format!("{}()", c.name)]
+            } else {
+                let field = if self.dynamic_ancestor(&c.feature).is_some() { format!("__on_{}", c.feature) } else { format!("__enabled_{}", c.feature) };
+                format!("g{n}: u1 = get x, {field}\nif g{n}\n    {f}()\nelse\n    y{n}: __ctx = load {this}\n    v{n}: i64 = get y{n}, {due}\n    w{n}: i64 = add v{n}, {period}\n    z{n}: __ctx = set y{n}, {due}, w{n}\n    store z{n}, {this}", n = k + 1, field = field, f = c.name, this = THIS, due = c.due, period = c.period).lines().map(str::to_string).collect()
+            };
+            things.push((c.due.clone(), turn));
         }
         let mut t = String::from("\n; the things going on (fm3 log 217): each has a word of the context, the time it is next due; the earliest due by t has its turn at its time, the first started of two at one time, until none is due\nfn __turns(t: i64)\n    loop(n: i64 = 0)\n");
         writeln!(t, "        some: u1 = cmp.lt n, {}\n        check some\n        x: __ctx = load {}", TURNS, THIS).unwrap();
-        for (k, c) in self.clocks.iter().enumerate() {
-            writeln!(t, "        d{}: i64 = get x, {}", k + 1, c.due).unwrap();
+        for (k, (due, _)) in things.iter().enumerate() {
+            writeln!(t, "        d{}: i64 = get x, {}", k + 1, due).unwrap();
             if k > 0 {
                 let (prev, prevk) = if k == 1 { ("d1".to_string(), "1".to_string()) } else { (format!("b{}", k), format!("k{}", k)) };
                 writeln!(t, "        e{n}: u1 = cmp.lt d{n}, {prev}\n        b{n}: i64 = if e{n}\n            yield d{n}\n        else\n            yield {prev}\n        k{n}: i64 = if e{n}\n            yield {n}\n        else\n            yield {prevk}", n = k + 1, prev = prev, prevk = prevk).unwrap();
             }
         }
-        let n = self.clocks.len();
+        let n = things.len();
         let (best, which) = if n == 1 { ("d1".to_string(), None) } else { (format!("b{}", n), Some(format!("k{}", n))) };
         writeln!(t, "        late: u1 = cmp.gt {}, t\n        if late\n            break\n        __wait({})", best, best).unwrap();
-        for (k, c) in self.clocks.iter().enumerate() {
+        for (k, (_, turn)) in things.iter().enumerate() {
             let mut pad = "        ".to_string();
             if let Some(w) = &which {
                 writeln!(t, "        is{n}: u1 = cmp.eq {w}, {n}\n        if is{n}", n = k + 1, w = w).unwrap();
                 pad.push_str("    ");
             }
-            // a clock whose feature is off does nothing at its beat,
-            // and its time passes (question 51)
-            if self.statics.contains(&c.feature) {
-                writeln!(t, "{}{}()", pad, c.name).unwrap();
-            } else {
-                let field = if self.dynamic_ancestor(&c.feature).is_some() { format!("__on_{}", c.feature) } else { format!("__enabled_{}", c.feature) };
-                writeln!(t, "{pad}g{n}: u1 = get x, {field}\n{pad}if g{n}\n{pad}    {f}()\n{pad}else\n{pad}    y{n}: __ctx = load {this}\n{pad}    v{n}: i64 = get y{n}, {due}\n{pad}    w{n}: i64 = add v{n}, {period}\n{pad}    z{n}: __ctx = set y{n}, {due}, w{n}\n{pad}    store z{n}, {this}", pad = pad, n = k + 1, field = field, f = c.name, this = THIS, due = c.due, period = c.period).unwrap();
+            for l in turn {
+                writeln!(t, "{}{}", pad, l).unwrap();
             }
         }
         t.push_str("        n2: i64 = add n, 1\n        continue n2\n    ret\n");
+        if self.timed_in {
+            // what reads the input runs where a character arrives, as
+            // it runs when the store starts
+            let run = if self.out.contains("\nfn __run()") { "    __run()\n" } else { "" };
+            let clear = if self.restarts.is_empty() { String::new() } else { format!("    z: __ctx = load {this}\n    z2: __ctx = set z, __ended, 0\n    store z2, {this}\n", this = THIS) };
+            write!(t, "\n; a character of a case's input that arrives at a time (fm3 log 220), handed over before the start: kept, and the first of them is when the input is next due\nfn __in_at(c: u8, t: i64)\n    x: __ctx = load {this}\n    n: index = get x, __in_n\n    room: u1 = cmp.lt n, 256\n    check room\n    k: index = get x, __in_k\n    tp: ptr = get x, __in_t\n    cp: ptr = get x, __in_c\n    d: i64 = get x, __due_in\n    first: u1 = cmp.eq n, k\n    d2: i64 = if first\n        yield t\n    else\n        yield d\n    n2: index = add n, 1\n    y: __ctx = load {this}\n    y2: __ctx = set y, __in_n, n2\n    y3: __ctx = set y2, __due_in, d2\n    store y3, {this}\n    store t, tp, n, 8\n    store c, cp, n, 1\n    ret\n\n; the input's turn: its next character arrives, the time of the one after is when it is next due, and what reads the input runs. A character that arrives while what reads the input is still partway through an earlier one cannot be given its turn, and the program stops (fm3 question 135)\nfn __in_turn()\n    x: __ctx = load {this}\n    busy: u1 = get x, __in_busy\n    free: u1 = xor busy, 1\n    check free\n    k: index = get x, __in_k\n    n: index = get x, __in_n\n    tp: ptr = get x, __in_t\n    cp: ptr = get x, __in_c\n    c: u8 = load cp, k, 1\n    k2: index = add k, 1\n    more: u1 = cmp.lt k2, n\n    d: i64 = if more\n        t: i64 = load tp, k2, 8\n        yield t\n    else\n        never: i64 = const {never}\n        yield never\n    y: __ctx = load {this}\n    y2: __ctx = set y, __in_k, k2\n    y3: __ctx = set y2, __due_in, d\n    y4: __ctx = set y3, __in_busy, 1\n    store y4, {this}\n    __in_ch(c)\n{run}{clear}    q: __ctx = load {this}\n    q2: __ctx = set q, __in_busy, 0\n    store q2, {this}\n    ret\n", this = THIS, never = NEVER, run = run, clear = clear).unwrap();
+            for f in ["__in_n", "__in_k", "__due_in", "__in_busy"] {
+                self.written.insert(f.to_string());
+            }
+        }
         // what is due at the start has its turn before the case's function
         const START: &str = "\nfn __zero_start()\n";
         match self.out.find(START) {
@@ -8768,7 +8933,7 @@ impl Lowerer {
         // twice. A loop of no passes pushes nothing and takes no time
         if let Some(hz) = beat {
             match cond {
-                None => self.align(hz, b),
+                None => self.align(hz, None, b),
                 Some(c) => {
                     let outer = b.vars.clone();
                     let depth = b.loops.len();
@@ -8782,7 +8947,7 @@ impl Lowerer {
                     b.vars = outer;
                     b.line(&format!("if {}", cv.text));
                     b.depth += 1;
-                    self.align(hz, b);
+                    self.align(hz, None, b);
                     b.depth -= 1;
                 }
             }
@@ -9693,7 +9858,7 @@ impl Lowerer {
                 let on_beat = self.after_push.take().as_deref() == Some(n.as_str()) || self.on_beat.contains(&(s as *const Stmt as usize));
                 let rate = if self.is_bare(n, b) { self.rates.get(n).copied() } else { self.paced(n, b) };
                 if let (Some(hz), false) = (rate, on_beat || self.in_clock.as_deref() == Some(n.as_str())) {
-                    self.align(hz, b);
+                    self.align(hz, Some(n.as_str()), b);
                 }
                 self.push_target = true;
                 let s = self.lower_expr(&Expr { kind: ExprKind::Name(n.clone()), line: *line }, None, b, None);
@@ -12003,7 +12168,7 @@ impl Lowerer {
             // whether or not an edge was on. The rate is a literal, so
             // the period is worked out here
             if let (Some(&hz), false) = (self.rates.get(name), self.in_clock.as_deref() == Some(name)) {
-                self.step(hz, b);
+                self.step_of(name, hz, b);
             }
             return;
         }
@@ -12055,7 +12220,7 @@ impl Lowerer {
             self.wake(name, &s.text, true, b);
             self.trigger(name, b);
             if self.in_clock.as_deref() != Some(name) {
-                self.step(hz, b);
+                self.step_of(name, hz, b);
             }
         }
         if let BodyKind::Task { out, hz } = &b.kind {
@@ -13259,8 +13424,29 @@ impl Lowerer {
     /// each item's step then leaves it on the next slot. The period is
     /// `step`'s, so slot k is at k periods whichever way it is reached.
     /// A period of one step of the clock is every time there is
-    fn align(&mut self, hz: i64, b: &mut Body) {
+    fn align(&mut self, hz: i64, of: Option<&str>, b: &mut Body) {
         let period = super::store::period(hz);
+        // a stream some `restart` names has a phase (fm3 log 220):
+        // its slots are counted from where its beat last began. Where
+        // the stream is not in hand, a loop's alignment made before
+        // the loop, it is the one such stream of that rate
+        let restarted: Vec<String> = match of {
+            Some(n) => if self.restarts.contains(n) && !b.vars.contains_key(n) { vec![n.to_string()] } else { Vec::new() },
+            None => self.restarts.iter().filter(|n| self.rates.get(*n) == Some(&hz)).cloned().collect(),
+        };
+        if let [n] = restarted.as_slice() {
+            let (p, c, ph, u0, u, r, t0, t) = (b.tmp(), b.tmp(), b.tmp(), b.tmp(), b.tmp(), b.tmp(), b.tmp(), b.tmp());
+            b.line(&format!("{}: __ctx = load {}", p, THIS));
+            b.line(&format!("{}: i64 = get {}, __clock", c, p));
+            b.line(&format!("{}: i64 = get {}, __phase_{}", ph, p, n));
+            b.line(&format!("{}: i64 = sub {}, {}", u0, c, ph));
+            b.line(&format!("{}: i64 = add {}, {}", u, u0, period - 1));
+            b.line(&format!("{}: i64 = rem {}, {}", r, u, period));
+            b.line(&format!("{}: i64 = sub {}, {}", t0, u, r));
+            b.line(&format!("{}: i64 = add {}, {}", t, t0, ph));
+            b.line(&format!("__wait({})", t));
+            return;
+        }
         if period <= 1 {
             return;
         }
@@ -13271,6 +13457,40 @@ impl Lowerer {
         b.line(&format!("{}: i64 = rem {}, {}", r, u, period));
         b.line(&format!("{}: i64 = sub {}, {}", t, u, r));
         b.line(&format!("__wait({})", t));
+    }
+
+    /// A step of a rate after a push into the stream of this name.
+    /// Where some `restart` names the stream (fm3 log 220) the number
+    /// of its run is read before the step and after: if it has
+    /// changed, the stream was restarted while the step passed, the
+    /// run this push belongs to is over, and the activity doing it
+    /// ends here, the bit set for its callers to leave by. A function
+    /// that gives a result cannot leave with none, and stops
+    fn step_of(&mut self, name: &str, hz: i64, b: &mut Body) {
+        if !self.restarts.contains(name) || b.vars.contains_key(name) {
+            self.step(hz, b);
+            return;
+        }
+        let (c1, r0) = (b.tmp(), b.tmp());
+        b.line(&format!("{}: __ctx = load {}", c1, THIS));
+        b.line(&format!("{}: i64 = get {}, __run_{}", r0, c1, name));
+        self.step(hz, b);
+        let (c2, r1, over) = (b.tmp(), b.tmp(), b.tmp());
+        b.line(&format!("{}: __ctx = load {}", c2, THIS));
+        b.line(&format!("{}: i64 = get {}, __run_{}", r1, c2, name));
+        b.line(&format!("{}: u1 = cmp.ne {}, {}", over, r1, r0));
+        b.line(&format!("if {}", over));
+        b.depth += 1;
+        self.field_put("__ended", "1", b);
+        if b.results.is_empty() && b.kind == BodyKind::Fn {
+            b.line("ret");
+        } else {
+            let z = b.tmp();
+            b.line(&format!("{}: u1 = const 0", z));
+            b.line(&format!("check {}", z));
+        }
+        b.depth -= 1;
+        self.written.insert(format!("__run_{}", name));
     }
 
     /// a step of a rate passes (question 52, fm3 log 92, 194): the
@@ -13533,6 +13753,32 @@ impl Lowerer {
                 _ => None,
             }
         };
+        // `restart x$` (fm3 question 52, log 220): the stream's beat
+        // begins again from now, its phase the clock; and its run's
+        // number is one more, by which whatever was partway through a
+        // push into it finds its run is over (`step_of`)
+        if let [Part::Word(w), x] = parts {
+            if w == "restart" {
+                if let Some(n) = name_of(x) {
+                    if b.vars.contains_key(&n) || !self.restarts.contains(&n) || !self.rates.contains_key(&n) || self.fvar(&n).is_none() {
+                        return Err(lex::error(&file, line, format!("`restart {}$`: the stream's beat begins again from now and the run in progress ends (fm3 question 52). It is built for a feature-scope stream declared with a rate, said as a statement of a function", n)));
+                    }
+                    let (c1, r, r2, now, c2, c3) = (b.tmp(), b.tmp(), b.tmp(), b.tmp(), b.tmp(), b.tmp());
+                    b.line(&format!("{}: __ctx = load {}", c1, THIS));
+                    b.line(&format!("{}: i64 = get {}, __run_{}", r, c1, n));
+                    b.line(&format!("{}: i64 = add {}, 1", r2, r));
+                    b.line(&format!("{}: i64 = get {}, __clock", now, c1));
+                    b.line(&format!("{}: __ctx = set {}, __run_{}, {}", c2, c1, n, r2));
+                    b.line(&format!("{}: __ctx = set {}, __phase_{}, {}", c3, c2, n, now));
+                    b.line(&format!("store {}, {}", c3, THIS));
+                    self.written.insert(format!("__run_{}", n));
+                    self.written.insert(format!("__phase_{}", n));
+                    // the next push into it is on its beat: now is its first slot
+                    self.after_push = Some(n.clone());
+                    return Ok(Some(Val { text: String::new(), ty: Ty::None, literal: false }));
+                }
+            }
+        }
         // `time of x$`: the tick of the next unread item, and the one
         // word that times a stream by asking (log 85, question 42)
         if let [Part::Word(time), Part::Word(of), x] = parts {
@@ -14867,6 +15113,40 @@ fn pushed_by_name(features: &[super::store::FeatureDoc], s: &str) -> bool {
         })
     }
     features.iter().any(|f| f.code.decls.iter().any(|d| matches!(d, Decl::Fn(fd) if block(&fd.body, s))))
+}
+
+/// the streams some `restart x$` in the store names (fm3 log 220)
+fn restarted(features: &[super::store::FeatureDoc]) -> Names {
+    fn block(stmts: &[Stmt], out: &mut Names) {
+        for st in stmts {
+            match st {
+                Stmt::Expr { expr: Expr { kind: ExprKind::Phrase(parts), .. }, .. } => {
+                    if let [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(n), .. })] = parts.as_slice() {
+                        if w == "restart" {
+                            out.insert(n.clone());
+                        }
+                    }
+                }
+                Stmt::If { then, els, .. } => {
+                    block(then, out);
+                    if let Some(e) = els {
+                        block(e, out);
+                    }
+                }
+                Stmt::Loop { body, .. } | Stmt::For { body, .. } => block(body, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Names::new();
+    for f in features {
+        for d in &f.code.decls {
+            if let Decl::Fn(fd) = d {
+                block(&fd.body, &mut out);
+            }
+        }
+    }
+    out
 }
 
 /// is every push into the stream of this name, in any function of the
