@@ -4,6 +4,25 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `time of x$` is the time of a stream's latest item — `8f53a9a` · 2026-10-10
+
+```
+on (int a, int b) << read at its own time()
+    int x$ at (1000 hz) << 1 << 2 << 3
+    a << x$ at (time of x$)
+    b << x$
+```
+
+`suite/zero/streams/streams/streams.zero:69`, whose case is `>read at its own time() → 3, 3`. Until this commit `time of x$` was the time of the next unread item where the feature's reader stood, counted from the stream's first slot, and `-1 us` where nothing was unread, so it did not compose with `x$ at (t)`. fm3 question 132, decided by question 126's third principle: a stream's name is its latest item and reading takes nothing, so `time of x$` is the time of its latest item, on the one line of time `x$ at (t)` reads, and `0 s` before its first. `x$ at (time of x$)` is then `x$`'s latest item, which is the case above; `suite/zero/clock/clock/clock.zero:38`, `marked at its own time`, says the same of a stream with no rate, and `ticked at its own time` of one wired at feature scope.
+
+In `stream_word` (`src/zero/lower.rs`) no reader is asked. For a stream whose rate the compiler knows it is the ring's count less one, not below zero, over the rate, seven lines where the library's `position` was called. For one with no rate it is the latest item's tick, `tick_of`, over the rate of the clock that stamped it: the store's, a literal, except for a parameter, which says its own in its ring, and `x$ at (t)` reads a parameter by the same word so that the two agree there too. The refusal of `int k, int t = position x$` now says "A stream's time is `time of x$`, the time of its latest item".
+
+Two cases change. `streams`' `position unread() → 2, -1 us` is `2, 0 s`: two items pushed where the case began, the reader past both, and the time is the latest item's stamp. `clock`'s `where it stands() → 2, 500 ms` is `2, 1 s`: the reader moved on two of five ticks at `4 hz`, and the time is the fifth's and not the third's. `positioned`, `rated` and `composed at a rate` give what they gave, the reader in each standing at the latest item. Five cases are added: the one above, `marked at its own time() → 3`, `ticked at its own time() → 5`, `marked when() → 2.5 s` and `none marked when() → 0 s`, a stream nothing has been pushed into.
+
+Measured against the tree before (`scratchpad/agent56/casediff149.txt`): `positioned` 182 to 169, `rated` 433 to 383, `composed at a rate` 530 to 480, `where it stands` 79 to 76. `position unread` rises, 210 to 253 as it ran (263 to 260 on the tool): it read no item, the reader having nothing unread, and now reads its latest item's stamp out of the ring. Only `clock`, `streams` and `tasks` moved. The six tracked rows are as they were; the meter is 51 of 2 988. The full run is `scratchpad/chain137.log`: 1270 runs of the zero suite on four paths and 1229 on air, `probe test` 1025, `cargo test` 190.
+
+---
+
 ### zero: `x$ at (t)` is an index worked out in integers, and a read before a stream's first item is zero — `126156d` · 2026-10-10
 
 ```
