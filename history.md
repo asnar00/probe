@@ -4,6 +4,24 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a counted stream keeps a counter, not a queue, and `[count] (frame x$)` does not make the frame — `4eced5d` · 2026-10-10
+
+```
+on (int n) << counted far (int k)
+    both$ << (both$ + 1) (k) times
+    n << count both$ * 1000 + both$
+```
+
+`suite/zero/cells/cells/cells.zero:108`, over `int both$ << 5`, whose case is `>counted far (100) → 101105`: a hundred and one items, the latest 105. Until this commit `count both$` made `both$` a queue of sixty-four and the sixty-fifth push failed a check, which is the storage behind a stream showing through. fm3 question 145's second and third parts, both decided by question 126's first principle, cost is the compiler's. A feature's stream that only its name and `count` read is now a cell and a counter: `count x$` of a cell reads a field of the context, `__n_<x>`, and every store of the cell (`field_put` in `src/zero/lower.rs`, the one place a function writes the context) adds one to it in the same load and store. The field starts at the number of first items on the declaration. Which cells are counted is found the way which streams are cells is, by lowering: a count of a cell not yet known to be counted is noted, `#n <name>`, and the store is lowered again. A stream that is wired on and read by its name and `count` keeps its latest item and the counter in the same way, which needed nothing more.
+
+And `[count] (frame x$)`, the ruled way to say how many are waiting, no longer makes the frame in the arena to ask its length: it is the ring's count less the reader's place, and the reader set to the ring's count as the frame would have moved it, five lines (`stream_word`).
+
+Seven cases used `count` precisely to make a stream stored, and say how many are waiting instead, which only a queue can answer; each gives what it gave: `streams`' `latest before any` and `first of its own`, `tick`'s `summed and counted` and `counted and summed`, `zeroic`'s `also read`, `checks`' `pushed steadily`, `words`' `first two`. Twenty unit tests of `src/zero/run.rs` had done the same and are respelled, three of them with `peek` or the walking form where the text they assert on is the whole function; `a_counted_stream_keeps_a_counter_and_no_queue` is new. `brackets`' `d$` and `control`'s `kept$`, which a group with a count and an array are pushed into, stay queues.
+
+Measured with `scratchpad/agent54/casediff.sh` against the tree before (`scratchpad/agent56/casediff147.txt`), twelve stores' text moved. The seven cases that rose in hop forty-two are each under what they were before it: `advanced` 416 to 281, `read ahead` 421 to 277, `tokens moved` 317 to 176, `counted round a skip` 268 to 90, `framed` 426 to 340, `framed sum` 493 to 407, `run now moves the reader` 470 to 373. A counted cell: `cells`' `counted` 64 to 15, `now`'s `one doubled` and `doubled now` 52 to 21 and `none yet` 17 to 7, `tasks`' `closed` 138 to 81 and `closed once` 106 to 48, `words`' `flowed to three` 361 to 276. Six of the respelled cases rise by 3 to 8, the reader moved and stored back where a count was two lines. No case's result changed. The six tracked rows are as they were; the six-line lexers' `.expected.ssa` moved because their `t$` is counted and nothing else. The meter is 51 of 2 955, three lines of zero more. The full run is `scratchpad/chain135.log`: 1251 runs of the zero suite on four paths and 1210 on air, `probe test` 1025, `cargo test` 188.
+
+---
+
 ### zero: `count x$` of a stream is how many items it has had — `6edbd08` · 2026-10-10
 
 ```
