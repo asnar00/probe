@@ -345,11 +345,13 @@ fn two_arrivals() -> (int, int)
     arrive_first()
     _1: __ctx = load _this
     _2: token$ = get _1, u
-    _3: index = count _2
-    a: int = conv _3
+    _3: ptr = get _2, ring
+    _4: index = load _3
+    a: int = conv _4
     arrive_again()
-    _6: index = count _2
-    b: int = conv _6
+    _7: ptr = get _2, ring
+    _8: index = load _7
+    b: int = conv _8
     ret a, b
 fn number_start() -> int
     _this: ptr = context()
@@ -432,31 +434,34 @@ fn a_word_at_the_end() -> (int, int)
         free_queue(_19)
     _20: __ctx = load _this
     _21: token$ = get _20, u
-    _22: index = count _21
-    a: int = conv _22
-    _25: u1 = ended(_2)
+    _22: ptr = get _21, ring
+    _23: index = load _22
+    a: int = conv _23
+    _26: u1 = ended(_2)
     end(_2)
-    if _25
+    if _26
     else
-        _26: __ctx = load _this
-        _27: index = get _26, __node2_c
-        _28: u8$ = set _2, pos, _27
+        _27: __ctx = load _this
+        _28: index = get _27, __node2_c
+        _29: u8$ = set _2, pos, _28
         if _9
-            _33: u8$ = lex(_21, _28, 0: i64)
-            _34: index = get _33, pos
-            _35: __ctx = load _this
-            _36: __ctx = set _35, __node2_c, _34
-            store _36, _this
-            free_queue(_33)
-    _39: index = count _21
-    b: int = conv _39
+            _34: u8$ = lex(_21, _29, 0: i64)
+            _35: index = get _34, pos
+            _36: __ctx = load _this
+            _37: __ctx = set _36, __node2_c, _35
+            store _37, _this
+            free_queue(_34)
+    _40: ptr = get _21, ring
+    _41: index = load _40
+    b: int = conv _41
     ret a, b
 fn lexed() -> int
     _this: ptr = context()
     _1: __ctx = load _this
     _2: token$ = get _1, t
-    _3: index = count _2
-    n: int = conv _3
+    _3: ptr = get _2, ring
+    _4: index = load _3
+    n: int = conv _4
     ret n
 
 ; a stream's storage, carved from the arena: cap items (64 unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start

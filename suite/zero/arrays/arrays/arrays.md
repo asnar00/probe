@@ -37,7 +37,7 @@ Refused: one value or a stream on either side, `a[] [==] 2`, `a[] [==] x$` (the 
 - A function declared over an array called plainly, `total of (a[])`: the message shows the line with its brackets. And a function of one item called in them, `[doubled] (a[])`: it is applied to each plainly, `doubled (a[])`.
 - A stream handed to a function declared over an array, `[total of] (x$)`: the array of what has arrived is `frame x$`. And an array handed to a function or a task declared over a stream: what begins with those items is a stream, `int s$ << a[]`.
 - A look back in a plain function or a task that walks, `x$[-1]`: only a stream processor has a present item to look back from.
-- `count` is asked of both: an array's length, and how much of a stream is waiting.
+- `count` is asked of both: an array's length, `[count] (a[])`, and how many items a stream has had, `count x$` (fm3 question 94); how many are waiting in a stream is the length of the array `frame` gives, `framed`'s `[count] (frame x$)`, 0 after the frame before it.
 - `int[] a`: the mark is on the name, `int a[]`.
 - `token ops[]$`, a stream of arrays, and `int m[][]`, an array of arrays: ruled, and not built.
 - An array as a field of a struct: not built.

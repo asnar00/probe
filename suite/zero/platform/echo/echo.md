@@ -12,7 +12,7 @@ Third pass item 4 (rulings-3, log 62): input is the system stream `in$`, declare
 
 ## interface
 - `echo ()` writes `frame in$` to `out$`.
-- `bytes waiting ()` gives `count in$`.
+- `bytes waiting ()` gives `count in$`, how many characters the input has had (fm3 question 94); nothing takes from the feature's own view of the input, so that is how many are waiting in it too.
 
 ## rules
 - `with in "text"` is one clause of the case's `with`, in any order with the switches, and one per line; the clause is read by the lexer, so a comma or a bracket inside the string is the string's.

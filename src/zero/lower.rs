@@ -18,6 +18,7 @@
 
 use super::lex::{self, Error};
 use super::kinds::Mark as NameMark;
+use super::kinds::SO_FAR;
 use super::store::{Case, Expect, Mark, Store};
 use super::syntax::{Arg, Between, Decl, Expr, ExprKind, FnDecl, Init, LoopInto, NamePart, Outside, Part, Repeat, Rule, Stmt, TypeKind, Watch};
 use std::collections::HashMap;
@@ -1814,7 +1815,7 @@ impl<'a> Beat<'a> {
             [Part::Word(w), Part::Args(_)] if self.l.types.contains_key(w) || builtin_type(w).is_some() => true,
             [Part::Word(w), Part::Value(Expr { kind: ExprKind::List(_), .. })] => is_var(w),
             [Part::Word(t), Part::Word(of), x] if t == "time" && of == "of" => seq(x),
-            [Part::Word(w), x] if seq(x) => matches!(w.as_str(), "count" | "latest" | "frame" | "ended" | "position" | "end"),
+            [Part::Word(w), x] if seq(x) => matches!(w.as_str(), "count" | SO_FAR | "latest" | "frame" | "ended" | "position" | "end"),
             [Part::Word(w), x, Part::Word(k), _] if seq(x) => (w == "peek" && k == "at") || (w == "advance" && k == "by"),
             [x, Part::Word(w), _] if seq(x) => w == "behind" || w == "at",
             [x, Part::Word(f), _, Part::Word(t), _] if seq(x) => f == "from" && t == "to",
@@ -2300,7 +2301,7 @@ impl<'a> Beat<'a> {
                 let seq = |p: &Part| matches!(p, Part::Value(Expr { kind: ExprKind::Seq(_), .. }));
                 match parts.as_slice() {
                     [Part::Word(w)] => is_var(w),
-                    [Part::Word(w), x] if seq(x) => matches!(w.as_str(), "count" | "ended" | "position" | "latest"),
+                    [Part::Word(w), x] if seq(x) => matches!(w.as_str(), "count" | SO_FAR | "ended" | "position" | "latest"),
                     [Part::Word(w), x, Part::Word(at), Part::Value(i)] if seq(x) && w == "peek" && at == "at" => self.twice(i, scope),
                     [Part::Word(w), x, Part::Word(at), Part::Args(a)] if seq(x) && w == "peek" && at == "at" => a.iter().all(|a| self.twice(&a.value, scope)),
                     _ => false,
@@ -5054,6 +5055,20 @@ impl Lowerer {
         self.settled(n, wanted, b, dst)
     }
 
+    /// How many items a stream has had, `count x$` (fm3 question 94,
+    /// Ash, 10 October 2026; log 245): the ring's own count of what was
+    /// pushed, which no reader's place enters and no `frame` changes.
+    /// The two lines the library's `received` is, written here: the
+    /// call is priced 4 and they are 2
+    fn so_far_of(&mut self, s: &Val, want: Option<&Ty>, b: &mut Body, dst: Option<&str>) -> Val {
+        let wanted = keeps_index(want);
+        let r = b.tmp();
+        let n = if wanted { name_for(dst, &index_ty(), b) } else { b.tmp() };
+        b.line(&format!("{}: ptr = get {}, ring", r, s.text));
+        b.line(&format!("{}: index = load {}", n, r));
+        self.settled(n, wanted, b, dst)
+    }
+
     /// What a stream word that counts gives (fm3 log 122): the `index`
     /// itself where the place that takes it is one, or asks nothing, an
     /// operand of an operator; and the `int` it always was, converted
@@ -6654,7 +6669,7 @@ impl Lowerer {
     /// reset before a case has a context. Erring toward yes costs
     /// nothing a program can see: the line is then a node, as it was
     fn settle_node_fed(&mut self, store: &Store) {
-        const WORDS: [&str; 11] = ["count", "ended", "position", "latest", "frame", "end", "empty", "peek", "advance", "time", "restart"];
+        const WORDS: [&str; 12] = ["count", SO_FAR, "ended", "position", "latest", "frame", "end", "empty", "peek", "advance", "time", "restart"];
         let mut fed = Names::new();
         fed.insert("in".to_string());
         for f in &store.features {
@@ -12235,7 +12250,7 @@ impl Lowerer {
                     // function of that one word, which it would call
                     [Part::Word(w)] => b.vars.contains_key(w) || !self.funcs.iter().any(|f| matches!(f.parts.as_slice(), [NamePart::Word(x)] if x == w)),
                     [Part::Word(w), Part::Args(_)] => (self.types.contains_key(w) || builtin_type(w).is_some()) && !b.vars.contains_key(w),
-                    [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(_), .. })] => matches!(w.as_str(), "count" | "latest" | "frame" | "ended" | "position"),
+                    [Part::Word(w), Part::Value(Expr { kind: ExprKind::Seq(_), .. })] => matches!(w.as_str(), "count" | SO_FAR | "latest" | "frame" | "ended" | "position"),
                     _ => false,
                 },
                 _ => true,
@@ -14471,7 +14486,7 @@ impl Lowerer {
                 }
                 let it = |p: &Part| matches!(p, Part::Value(Expr { kind: ExprKind::Seq(n), .. }) if n == x);
                 let rest: &[Part] = match parts.as_slice() {
-                    [Part::Word(w), s] if it(s) && matches!(w.as_str(), "count" | "ended" | "position" | "latest" | "frame") => &[],
+                    [Part::Word(w), s] if it(s) && matches!(w.as_str(), "count" | SO_FAR | "ended" | "position" | "latest" | "frame") => &[],
                     [Part::Word(w), s, Part::Word(at), arg] if it(s) && ((w == "peek" && at == "at") || (w == "advance" && at == "by")) => std::slice::from_ref(arg),
                     all => all,
                 };
@@ -14698,7 +14713,7 @@ impl Lowerer {
         // nothing takes from a local cell, so what is waiting is all
         // of them. Asked of one that is not counting, it is noted and
         // the store lowered again with it counting
-        if w == "count" && !infix && rest.is_empty() && self.is_lcell(&sname, b) {
+        if (w == "count" || w == SO_FAR) && !infix && rest.is_empty() && self.is_lcell(&sname, b) {
             let key = lcell_count(&sname);
             let n = match b.vars.get(&key) {
                 Some(v) if v.set => b.materialize(&lcell_val(&v.ir.clone(), &index_ty())).text,
@@ -14750,6 +14765,7 @@ impl Lowerer {
         let none = Val { text: String::new(), ty: Ty::None, literal: false };
         match (w.as_str(), infix, rest) {
             ("count", false, []) => Ok(Some(self.count_of(&s, want, b, dst))),
+            (SO_FAR, false, []) => Ok(Some(self.so_far_of(&s, want, b, dst))),
             // before a stream's first item `latest` reads as the zero
             // of its type, as its name does (fm3 question 98, principle
             // 3; log 227), whatever the stream is kept as
@@ -15971,7 +15987,7 @@ fn quietly_read(features: &[super::store::FeatureDoc], s: &str, call: Called) ->
             ExprKind::Index(base, i) if is(base) => quiet(i, s, file, call),
             ExprKind::Phrase(parts) => match parts.as_slice() {
                 // (`frame` is what has arrived, and cannot tell either, fm3 log 181)
-                [Part::Word(w), x] if (w == "count" || w == "frame") && part(x) => true,
+                [Part::Word(w), x] if (w == "count" || w == SO_FAR || w == "frame") && part(x) => true,
                 [Part::Word(w), x, Part::Word(at), i] if w == "peek" && at == "at" && part(x) => match i {
                     Part::Args(a) => a.iter().all(|a| quiet(&a.value, s, file, call)),
                     Part::Value(v) => quiet(v, s, file, call),
@@ -16315,7 +16331,7 @@ fn time_words_init(v: &super::syntax::VarDecl, params: &[String], w: &mut Words)
 /// that a queue named only by these still frees its slots (question 48)
 fn no_item_read(parts: &[Part]) -> bool {
     match parts {
-        [Part::Word(x), Part::Value(Expr { kind: ExprKind::Seq(_), .. })] => x == "count" || x == "ended" || x == "end" || x == "position",
+        [Part::Word(x), Part::Value(Expr { kind: ExprKind::Seq(_), .. })] => x == "count" || x == SO_FAR || x == "ended" || x == "end" || x == "position",
         [Part::Word(t), Part::Word(o), Part::Value(Expr { kind: ExprKind::Seq(_), .. })] => t == "time" && o == "of",
         _ => false,
     }

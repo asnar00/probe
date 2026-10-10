@@ -33,7 +33,7 @@ on (int n) << peeked()
 on (int n) << advanced()
     int i$ << 5 << 6 << 7
     advance i$ by (2)
-    n << peek i$ at (0) * 10 + count i$
+    n << peek i$ at (0) * 10 + [count] (frame i$)
 
 on (int n) << framed()
     int i$ << 1 << 2 << 3
@@ -43,7 +43,7 @@ on (int n) << framed()
 
 on (int n) << walked()
     int i$ << 1 << 2 << 3 << 4
-    n << loop (int acc = 0) while (count i$ > 0) yields acc
+    n << loop (int acc = 0) while (count i$ - position i$ > 0) yields acc
         int x = peek i$ at (0)
         advance i$ by (1)
         continue (acc + x)
@@ -112,7 +112,7 @@ on (int n) << tokens moved()
     token t$ << token(1, 0, 3) << token(2, 5, 2)
     advance t$ by (1)
     token x = latest t$
-    n << count t$ * 1000 + x.kind * 100 + x.start * 10 + x.n
+    n << [count] (frame t$) * 1000 + x.kind * 100 + x.start * 10 + x.n
 
 on (int n) << tokens framed()
     token t$ << token(1, 0, 3) << token(2, 5, 2) << token(3, 9, 1)
@@ -142,7 +142,7 @@ on (int n) << counted round a skip()
     log$ << 7 << 8
     int a = count log$
     skip one logged()
-    n << a * 10 + count log$
+    n << a * 10 + [count] (frame log$)
 
 on (int n) << blocked()
     uint8 b$ << "hi"
@@ -177,9 +177,8 @@ on (int n) << walked over()
 on (int n) << unread only()
     int i$ << 1 << 2 << 3 << 4
     advance i$ by (2)
-    index c = count i$
     int a[] = frame i$
-    n << (a[] + _) * 10 + c
+    n << (a[] + _) * 10 + [count] (a[])
 
 on (int n) << framed pushed()
     int i$ << 1 << 2
@@ -201,3 +200,22 @@ on (int n) << latest before any()
 on (int n) << first of its own()
     own$ << own$ + 1
     n << own$ * 10 + count own$
+
+on (int a, int b) << counted so far()
+    int x$ << 1 << 2 << 3
+    int f[] = frame x$
+    a << [count] (f[]) * 10 + count x$
+    b << [count] (frame x$)
+
+on (int n) << counted at a rate()
+    int x$ at (1000 hz) << 1 << 2 << 3
+    advance x$ by (2)
+    n << count x$ * 10 + (count x$ - position x$)
+
+on (int n) << how many so far (int x$)
+    n << count x$
+
+on (int n) << counted when handed on()
+    int i$ << 5 << 6 << 7
+    advance i$ by (2)
+    n << how many so far (i$)

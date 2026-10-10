@@ -16,7 +16,7 @@ on (int k) << kind of (char c)
 
 on (token t$) << lex (char c$)
     loop
-        if (count c$ == 0)
+        if (count c$ - position c$ == 0)
             break
         int k = kind of (peek c$ at (0))
         index start = position c$
@@ -28,7 +28,7 @@ on (token t$) << lex (char c$)
             advance c$ by (1)
             continue
         index n = loop (index i = 1, index m = -1) yields m
-            if (i >= count c$)
+            if (i >= count c$ - position c$)
                 if (ended c$)
                     break (i)
                 break

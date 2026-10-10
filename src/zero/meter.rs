@@ -51,7 +51,7 @@ impl Metered {
     }
 }
 
-const STREAM_WORDS: [&str; 7] = ["peek", "advance", "count", "frame", "latest", "ended", "position"];
+const STREAM_WORDS: [&str; 8] = ["peek", "advance", "count", super::kinds::SO_FAR, "frame", "latest", "ended", "position"];
 
 /// what the walk knows of where it stands
 struct At<'a> {
@@ -416,10 +416,11 @@ mod tests {
         let zeroic = store_of("z", "int x$\nint d$ = rising(x$)\n\non (int d$) << rising (int x$)\n    d$ << x$ if (x$ > x$[-1])\n\non (int n) << f()\n    x$ << 1 << 3 << 2\n    n << count d$\n");
         let m = metered(&zeroic).unwrap();
         assert_eq!((m.count(), m.lines), (0, 7), "{:?}", m.found);
-        let walking = store_of("w", "int x$\nint d$ = rising(x$)\nint last = 0\n\non (int d$) << rising (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        int v = peek x$ at (0)\n        if (v > last)\n            d$ << v\n        last = v\n        advance x$ by (1)\n\non (int n) << f()\n    x$ << 1 << 3 << 2\n    int f[] = [4, 5]\n    for (v in f[])\n        out$ << f[1]\n    n << peek d$ at (1)\n");
+        let walking = store_of("w", "int x$\nint d$ = rising(x$)\nint last = 0\n\non (int d$) << rising (int x$)\n    loop\n        if (count x$ - position x$ == 0)\n            break\n        int v = peek x$ at (0)\n        if (v > last)\n            d$ << v\n        last = v\n        advance x$ by (1)\n\non (int n) << f()\n    x$ << 1 << 3 << 2\n    int f[] = [4, 5]\n    for (v in f[])\n        out$ << f[1]\n    n << peek d$ at (1)\n");
         let m = metered(&walking).unwrap();
         let forms: Vec<(usize, usize)> = m.found.iter().map(|f| (f.line, f.form)).collect();
-        // 7 `count`, 9 `peek`, 13 `advance`: walking; 10: `if` round a
+        // 7 `count`, of what is waiting, `count x$ - position x$` (fm3
+        // question 137), 9 `peek`, 13 `advance`: walking; 10: `if` round a
         // push; 12: a feature-scope name assigned; 18: a `for`; 20: a
         // `peek` forward of now, the result's giving being how a
         // function gives it; 19, an item of an array by its place, is
@@ -427,7 +428,7 @@ mod tests {
         assert_eq!(forms, vec![(7, 2), (9, 2), (10, 4), (12, 0), (13, 2), (18, 7), (20, 3)], "{:?}", m.found);
         assert_eq!((m.count(), m.lines), (7, 18));
         // a body written both ways, which the compiler refuses, is metered
-        let refused = store_of("r", "int x$\nint d$ = rising(x$)\n\non (int d$) << rising (int x$)\n    loop\n        if (count x$ == 0)\n            break\n        d$ << x$[-1]\n        advance x$ by (1)\n");
+        let refused = store_of("r", "int x$\nint d$ = rising(x$)\n\non (int d$) << rising (int x$)\n    loop\n        if (count x$ - position x$ == 0)\n            break\n        d$ << x$[-1]\n        advance x$ by (1)\n");
         assert!(super::super::lower::lower(&store::read(&refused).unwrap()).is_err());
         assert_eq!(metered(&refused).unwrap().count(), 2);
         // a result pushed under an `if` statement (fm3 question 88,

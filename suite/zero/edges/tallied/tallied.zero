@@ -3,7 +3,7 @@ keep(raw$)
 
 on keep (int x$)
     loop
-        if (count x$ == 0)
+        if (count x$ - position x$ == 0)
             break
         kept$ << kept$ + peek x$ at (0)
         advance x$ by (1)
@@ -22,7 +22,7 @@ soak(x$)
 
 on soak (int x$)
     loop
-        if (count x$ == 0)
+        if (count x$ - position x$ == 0)
             break
         soaked$ << soaked$ + peek x$ at (0)
         advance x$ by (1)

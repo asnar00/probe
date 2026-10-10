@@ -103,7 +103,15 @@ pub fn stream_operand(e: &Expr) -> Option<(String, String)> {
 }
 
 /// the words the lowering applies to a stream by its name (`stream_word`)
-const WORDS: [&str; 7] = ["count", "latest", "frame", "ended", "end", "position", "empty"];
+const WORDS: [&str; 8] = ["count", SO_FAR, "latest", "frame", "ended", "end", "position", "empty"];
+
+/// `count x$` of a stream, how many items it has had (fm3 question 94,
+/// Ash, 10 October 2026; log 245): the word the lowering reads for it.
+/// No program can write it, the lexer making no word with a space in
+/// it. `count` itself stays what it was underneath, how many are
+/// unread where a reader stands: an array's length, the compiler's own
+/// walks of a batch, and what `count c$ - position c$` is written as
+pub const SO_FAR: &str = "count so far";
 
 struct Walk {
     names: Vec<Named>,
@@ -426,8 +434,18 @@ impl Walk {
                     format!("an operand of `{}`", op)
                 };
                 let wants = if whole { "a sequence" } else { wants };
+                // `count c$ - position c$`: how many the stream has had
+                // less where this reader stands, what is waiting, said
+                // in the surviving words by something that walks (fm3
+                // question 137, principles 4 and 7). It is the one
+                // instruction `count` always was, and is made that tree
+                // here, so that everything after reads what it read
+                let waiting = if op == "-" { walked(l, r) } else { None };
                 self.expr(l, wants, &form);
                 self.expr(r, wants, &form);
+                if let (true, Some(n)) = (self.settle, waiting) {
+                    e.kind = ExprKind::Phrase(vec![Part::Word("count".into()), Part::Value(Expr { kind: ExprKind::Seq(n), line })]);
+                }
             }
             ExprKind::IfElse(c, a, b) => {
                 self.expr(c, "one value", "the value");
@@ -509,7 +527,7 @@ impl Walk {
                 let Some(e) = one(x) else { return };
                 match &e.kind {
                     ExprKind::Seq(n) => {
-                        let msg = format!("`[count] ({}$)`: square brackets hand a word the whole of an array, and '{}$' is a stream. Of a stream the word is plain, `count {}$`; the array of what is waiting in it is `frame {}$`, and how many, `[count] (frame {}$)` (fm3 questions 94 and 126)", n, n, n, n, n);
+                        let msg = format!("`[count] ({}$)`: square brackets hand a word the whole of an array, and '{}$' is a stream. Of a stream the word is plain, `count {}$`, how many items it has had; the array of what is waiting in it is `frame {}$`, and how many, `[count] (frame {}$)` (fm3 questions 94 and 126)", n, n, n, n, n);
                         self.refuse(line, msg)
                     }
                     ExprKind::Name(n) => {
@@ -565,6 +583,10 @@ impl Walk {
         };
         if let Some((w, at, rest)) = word {
             let (n, mark) = seq(&parts[at]).unwrap();
+            // of a stream `count` is how many it has had (`SO_FAR`)
+            if self.settle && w == "count" && mark == Mark::Stream {
+                parts[0] = Part::Word(SO_FAR.to_string());
+            }
             if self.entry(&n).is_some() {
                 self.used(&n, mark, line, format!("the word `{}`", w), wants);
                 if self.settle {
@@ -808,6 +830,29 @@ impl Walk {
 }
 
 /// the words of a phrase, as a reader says them
+/// the stream both sides name, where the left is `count x$` and the
+/// right `position x$`, each written with the stream's mark
+fn walked(l: &Expr, r: &Expr) -> Option<String> {
+    let of = |e: &Expr, word: &str| -> Option<String> {
+        let ExprKind::Phrase(parts) = &e.kind else { return None };
+        let [Part::Word(w), x] = parts.as_slice() else { return None };
+        if w != word {
+            return None;
+        }
+        let x = match x {
+            Part::Value(x) => x,
+            Part::Args(a) if a.len() == 1 && a[0].name.is_none() => &a[0].value,
+            _ => return None,
+        };
+        match &x.kind {
+            ExprKind::Seq(n) => Some(n.clone()),
+            _ => None,
+        }
+    };
+    let n = of(l, "count")?;
+    (of(r, "position")? == n).then_some(n)
+}
+
 fn spoken(parts: &[Part]) -> String {
     parts.iter().filter_map(|p| if let Part::Word(w) = p { Some(w.as_str()) } else { None }).collect::<Vec<_>>().join(" ")
 }

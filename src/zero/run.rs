@@ -1251,7 +1251,7 @@ mod tests {
         // items and stored once; no read in the body is checked
         let f = &ir[ir.find("fn f() -> int").unwrap()..];
         let f = &f[..f[1..].find("\nfn ").map_or(f.len(), |i| i + 1)];
-        assert_eq!(f.matches("= get ").count() - f.matches("get _1, __enabled_h").count() - f.matches(", d\n").count(), 3, "{}", f);
+        assert_eq!(f.matches("= get ").count() - f.matches("get _1, __enabled_h").count() - f.matches(", d\n").count() - f.matches(", ring\n").count(), 3, "{}", f);
         assert_eq!(f.matches("store ").count(), 1, "{}", f);
         let each = &ir[ir.find("fn __z1_each(").unwrap()..];
         let each = &each[..each[1..].find("\nfn ").map_or(each.len(), |i| i + 1)];
@@ -1809,7 +1809,7 @@ mod tests {
         refused("    n << count a[]", "h.zero:21: `count a[]`: an array's length is `[count] (a[])`, the whole array in square brackets as for any function handed one (fm3 question 126). `count` is written plainly of a stream, `count x$`, and of a `string`");
         refused("    int x$ << 1\n    n << count (frame x$)", "`count (frame x$)`: an array's length is `[count] (frame x$)`");
         refused("    n << count [1, 2]", "`count (...)`: an array's length is `[count] (...)`");
-        refused("    int x$ << 1\n    n << [count] (x$)", "`[count] (x$)`: square brackets hand a word the whole of an array, and 'x$' is a stream. Of a stream the word is plain, `count x$`; the array of what is waiting in it is `frame x$`, and how many, `[count] (frame x$)` (fm3 questions 94 and 126)");
+        refused("    int x$ << 1\n    n << [count] (x$)", "`[count] (x$)`: square brackets hand a word the whole of an array, and 'x$' is a stream. Of a stream the word is plain, `count x$`, how many items it has had; the array of what is waiting in it is `frame x$`, and how many, `[count] (frame x$)` (fm3 questions 94 and 126)");
         refused("    string s = \"ab\"\n    n << [count] (s)", "`[count] (s)`: square brackets hand a word the whole of an array, and 's' is one value. Of a `string` the word is plain, `count s` (fm3 question 126)");
         assert!(f("    string s = \"ab\"\n    int x$ << 1\n    n << count s + count x$").is_ok());
         // a word of the language that is a stream's is no function
@@ -4072,7 +4072,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// a second `count` of the same reader value is the first's number
+    /// `count x$` of a stream is how many items it has had (fm3 question
+    /// 94, Ash, 10 October 2026; log 245): the ring's own count, two
+    /// lines no reader's place enters. What is waiting where a reader
+    /// stands is said `count x$ - position x$` (question 137) and is the
+    /// one instruction `count` it always was, with no `position` asked;
+    /// and an array's length keeps that instruction
+    #[test]
+    fn a_stream_s_count_is_how_many_it_has_had() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-sofar-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-10T10:00:00\n\n## testing\n").unwrap();
+        let f = |line: &str| -> String {
+            std::fs::write(dir.join("h/h.zero"), format!("on (int n) << f()\n    int s$ << 1 << 2 << 3\n    advance s$ by (1)\n    n << {}\n", line)).unwrap();
+            let ir = lower::lower(&store::read(&dir).unwrap()).unwrap().ir;
+            ir.lines().skip_while(|l| !l.starts_with("fn f(")).skip(1).take_while(|l| l.starts_with(' ')).collect::<Vec<_>>().join("\n")
+        };
+        let so_far = f("count s$");
+        assert!(so_far.contains(", ring\n") && !so_far.contains(" = count "), "{}", so_far);
+        let waiting = f("count s$ - position s$");
+        assert!(waiting.contains(" = count ") && !waiting.contains("position(") && !waiting.contains(" = sub "), "{}", waiting);
+        // the other way round is two numbers subtracted
+        let other = f("position s$ - count s$");
+        assert!(other.contains(" = sub ") && !other.contains(" = count "), "{}", other);
+        let framed = f("[count] (frame s$)");
+        assert!(framed.contains(" = count "), "{}", framed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// a second asking of what is waiting, `count s$ - position s$`, the
+    /// one instruction `count` (fm3 question 137, log 245), is the first's
+    /// number
     /// where nothing between could have pushed, and only there (fm3 log 112)
     #[test]
     fn count_is_asked_once_where_nothing_between_could_push() {
@@ -4090,7 +4121,7 @@ mod tests {
         };
         // (the stream is peeked into in every body, so it is a queue: a
         // stream only counted is a number carried, fm3 log 190)
-        let straight = |between: &str| format!("on (int n) << f()\n    int s$ << 1 << 2\n    int z = peek s$ at (0)\n    int a = count s$\n{}    n << a + count s$\n", between);
+        let straight = |between: &str| format!("on (int n) << f()\n    int s$ << 1 << 2\n    int z = peek s$ at (0)\n    int a = (count s$ - position s$)\n{}    n << a + (count s$ - position s$)\n", between);
         // arithmetic, a read, and a call to a function that only computes
         assert_eq!(counts(&straight("    int b = a * 2 + peek s$ at (0)\n    int c = quiet (b)\n")), 1);
         // a push, an `end`, a function that pushes, one that calls one that does
@@ -4102,19 +4133,19 @@ mod tests {
         // a reader moved on is another value
         assert_eq!(counts(&straight("    advance s$ by (1)\n")), 2);
         // an arm of the first asking's own block that pushes and leaves is passed over ...
-        let turn = |arm: &str| format!("on (int n) << f (int k)\n    int s$ << 1 << 2\n    int z = peek s$ at (0)\n    n << loop (int i = 0, int acc = 0) yields acc\n        if (i >= k)\n            break\n        int a = count s$\n        if (a > 5)\n{}        continue (i + 1, acc + a + count s$)\n", arm);
+        let turn = |arm: &str| format!("on (int n) << f (int k)\n    int s$ << 1 << 2\n    int z = peek s$ at (0)\n    n << loop (int i = 0, int acc = 0) yields acc\n        if (i >= k)\n            break\n        int a = (count s$ - position s$)\n        if (a > 5)\n{}        continue (i + 1, acc + a + (count s$ - position s$))\n", arm);
         assert_eq!(counts(&turn("            s$ << 9\n            continue (i + 1, acc)\n")), 1);
         // ... one that pushes and goes on is not, nor one nested deeper
         assert_eq!(counts(&turn("            s$ << 9\n")), 2);
         assert_eq!(counts(&turn("            if (a > 6)\n                s$ << 9\n                continue (i + 1, acc)\n")), 2);
         // the second asking in a loop the first is not in: the loop's
         // whole body is between, what follows the asking too
-        let inner = |after: &str| format!("on (int n) << f (int k)\n    int s$ << 1 << 2\n    int z = peek s$ at (0)\n    int a = count s$\n    int t = loop (int i = 0, int acc = 0) yields acc\n        if (i >= k)\n            break\n        int c = count s$\n{}        continue (i + 1, acc + c)\n    n << a + t\n", after);
+        let inner = |after: &str| format!("on (int n) << f (int k)\n    int s$ << 1 << 2\n    int z = peek s$ at (0)\n    int a = (count s$ - position s$)\n    int t = loop (int i = 0, int acc = 0) yields acc\n        if (i >= k)\n            break\n        int c = (count s$ - position s$)\n{}        continue (i + 1, acc + c)\n    n << a + t\n", after);
         assert_eq!(counts(&inner("")), 1);
         assert_eq!(counts(&inner("        int q = quiet (c)\n")), 1);
         assert_eq!(counts(&inner("        s$ << 9\n")), 2);
         // an asking in one arm is not in hand in the other
-        assert_eq!(counts("on (int n) << f (int k)\n    int s$ << 1 << 2\n    int z = peek s$ at (0)\n    n << count s$ if (k > 0)\n         else count s$ + 1\n"), 2);
+        assert_eq!(counts("on (int n) << f (int k)\n    int s$ << 1 << 2\n    int z = peek s$ at (0)\n    n << (count s$ - position s$) if (k > 0)\n         else (count s$ - position s$) + 1\n"), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

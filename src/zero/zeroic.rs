@@ -60,7 +60,7 @@ pub struct Processor {
 }
 
 /// the reader's words: a body that applies one to its input walks it
-const READER: [&str; 6] = ["peek", "advance", "count", "frame", "latest", "unread"];
+const READER: [&str; 7] = ["peek", "advance", "count", super::kinds::SO_FAR, "frame", "latest", "unread"];
 const READER_AFTER: [&str; 3] = ["behind", "at", "from"];
 
 fn is_seq(e: &Expr, x: &str) -> bool {

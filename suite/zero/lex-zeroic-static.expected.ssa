@@ -310,11 +310,13 @@ fn two_arrivals() -> (int, int)
     arrive_first()
     _1: __ctx = load _this
     _2: token$ = get _1, u
-    _3: index = count _2
-    a: int = conv _3
+    _3: ptr = get _2, ring
+    _4: index = load _3
+    a: int = conv _4
     arrive_again()
-    _6: index = count _2
-    b: int = conv _6
+    _7: ptr = get _2, ring
+    _8: index = load _7
+    b: int = conv _8
     ret a, b
 fn lexed_right() -> u1
     _this: ptr = context()
@@ -440,31 +442,34 @@ fn a_word_at_the_end() -> (int, int)
     store _32, _this
     _33: __ctx = load _this
     _34: token$ = get _33, u
-    _35: index = count _34
-    a: int = conv _35
-    _36: __ctx = load _this
-    _37: u1 = get _36, __zend_src
-    if _37
+    _35: ptr = get _34, ring
+    _36: index = load _35
+    a: int = conv _36
+    _37: __ctx = load _this
+    _38: u1 = get _37, __zend_src
+    if _38
     else
-        _38: u1 = const 1
-        _39: __ctx = load _this
-        _40: __ctx = set _39, __zend_src, _38
-        store _40, _this
-        _41: __ctx = load _this
-        _42: index = get _41, __z2_at
-        _43: kind = get _41, __z2_k_1
-        _44: index = get _41, __z2_n_1
-        _45: index = get _41, __z2_start_1
-        __z2_end(_42, _43, _44, _45)
-    _48: index = count _34
-    b: int = conv _48
+        _39: u1 = const 1
+        _40: __ctx = load _this
+        _41: __ctx = set _40, __zend_src, _39
+        store _41, _this
+        _42: __ctx = load _this
+        _43: index = get _42, __z2_at
+        _44: kind = get _42, __z2_k_1
+        _45: index = get _42, __z2_n_1
+        _46: index = get _42, __z2_start_1
+        __z2_end(_43, _44, _45, _46)
+    _49: ptr = get _34, ring
+    _50: index = load _49
+    b: int = conv _50
     ret a, b
 fn lexed() -> int
     _this: ptr = context()
     _1: __ctx = load _this
     _2: token$ = get _1, t
-    _3: index = count _2
-    n: int = conv _3
+    _3: ptr = get _2, ring
+    _4: index = load _3
+    n: int = conv _4
     ret n
 fn __z1_each(_c: u8, __at: index, __k_b1: kind, __n_b1: index, __start_b1: index) -> (kind, index, index)
     _this: ptr = context()

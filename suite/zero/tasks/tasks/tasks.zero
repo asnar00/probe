@@ -28,8 +28,8 @@ on (int e$) << closer (int x$)
     e$ << 99 if (empty x$)
 
 on (int r$) << runs (int x$)
-    r$ << count x$
-    advance x$ by (count x$)
+    r$ << count x$ - position x$
+    advance x$ by (count x$ - position x$)
 
 on (int n) << sawtoothed()
     int i$ = sawtooth(5)
@@ -96,7 +96,7 @@ on (int n) << fed a literal()
 on (int n) << run now moves the reader()
     int i$ << 1 << 2 << 3
     int d$ << doubled (frame i$)
-    n << count i$ * 10 + count d$
+    n << [count] (frame i$) * 10 + count d$
 
 on (int n) << run now inside a loop()
     int i$ << 1 << 2 << 3 << 4

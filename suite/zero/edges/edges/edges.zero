@@ -42,7 +42,7 @@ on levels()
 
 on tally (int x$)
     loop
-        if (count x$ == 0)
+        if (count x$ - position x$ == 0)
             break
         sum$ << sum$ + peek x$ at (0)
         advance x$ by (1)

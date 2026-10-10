@@ -349,11 +349,13 @@ fn two_arrivals() -> (int, int)
     arrive_first()
     _1: __ctx = load _this
     _2: token$ = get _1, u
-    _3: index = count _2
-    a: int = conv _3
+    _3: ptr = get _2, ring
+    _4: index = load _3
+    a: int = conv _4
     arrive_again()
-    _6: index = count _2
-    b: int = conv _6
+    _7: ptr = get _2, ring
+    _8: index = load _7
+    b: int = conv _8
     ret a, b
 fn lexed_right() -> u1
     _this: ptr = context()
@@ -482,32 +484,35 @@ fn a_word_at_the_end() -> (int, int)
         store _34, _this
     _35: __ctx = load _this
     _36: token$ = get _35, u
-    _37: index = count _36
-    a: int = conv _37
-    _38: __ctx = load _this
-    _39: u1 = get _38, __zend_src
-    if _39
+    _37: ptr = get _36, ring
+    _38: index = load _37
+    a: int = conv _38
+    _39: __ctx = load _this
+    _40: u1 = get _39, __zend_src
+    if _40
     else
-        _40: u1 = const 1
-        _41: __ctx = load _this
-        _42: __ctx = set _41, __zend_src, _40
-        store _42, _this
+        _41: u1 = const 1
+        _42: __ctx = load _this
+        _43: __ctx = set _42, __zend_src, _41
+        store _43, _this
         if _5
-            _45: __ctx = load _this
-            _46: index = get _45, __z2_at
-            _47: kind = get _45, __z2_k_1
-            _48: index = get _45, __z2_n_1
-            _49: index = get _45, __z2_start_1
-            __z2_end(_46, _47, _48, _49)
-    _52: index = count _36
-    b: int = conv _52
+            _46: __ctx = load _this
+            _47: index = get _46, __z2_at
+            _48: kind = get _46, __z2_k_1
+            _49: index = get _46, __z2_n_1
+            _50: index = get _46, __z2_start_1
+            __z2_end(_47, _48, _49, _50)
+    _53: ptr = get _36, ring
+    _54: index = load _53
+    b: int = conv _54
     ret a, b
 fn lexed() -> int
     _this: ptr = context()
     _1: __ctx = load _this
     _2: token$ = get _1, t
-    _3: index = count _2
-    n: int = conv _3
+    _3: ptr = get _2, ring
+    _4: index = load _3
+    n: int = conv _4
     ret n
 fn __z1_each(_c: u8, __at: index, __k_b1: kind, __n_b1: index, __start_b1: index) -> (kind, index, index)
     _this: ptr = context()
