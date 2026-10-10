@@ -2523,7 +2523,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features), acts };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features), acts };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2815,6 +2815,12 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         // in both halves (log 65); a queue's is a plain run of slots
         let (line, slots) = if maker == "queue" { ("", "cap") } else { ("    slots: index = mul cap, 2\n", "slots") };
         writeln!(l.out, "fn __{}_{}(hz: i64, cap: index) -> {}$\n    a: ptr = addr __arena\n    r: ptr = arena_alloc(a, 64)\n{}    sz: index = sizeof {}\n    bytes: index = mul sz, {}\n    total: index = add bytes, 16\n    vb: ptr = arena_alloc(a, total)\n    buffer_init(vb, sz, {})\n{}    {}\n    s: {}$ = stream r\n    ret s", maker, t, t, line, t, slots, slots, ticks, init, t).unwrap();
+    }
+    if !l.ats.is_empty() {
+        writeln!(l.out, "\n; a stream read at a time where the compiler does not know its rate (fm3 question 120, log 248): the time comes as a tick of the stream's clock, worked out in integers where the read is; the item at or before it is found by the library's `before`, arithmetic on a ring with a rate and a search by halves over the ticks on one without, bounded by what the ring keeps; `near` takes the later item where it is strictly closer. Before the first item the read gives `zero`, after the latest the latest; a time whose item the ring no longer keeps fails the ring's own check").unwrap();
+    }
+    for t in &l.ats {
+        writeln!(l.out, "fn __at_{t}(s: {t}$, tick: i64, near: u1, zero: {t}) -> {t}\n    r: ptr = get s, ring\n    lo: index = before(s, tick)\n    base: index = ring_base(r)\n    early: u1 = cmp.lt lo, 0\n    v: {t} = if early\n        whole: u1 = cmp.eq base, 0\n        check whole\n        yield zero\n    else\n        pushed: index = load r\n        kl: index = add base, lo\n        kh: index = add kl, 1\n        more: u1 = cmp.lt kh, pushed\n        both: u1 = and more, near\n        k: index = if both\n            tl: i64 = tick_of(s, kl)\n            th: i64 = tick_of(s, kh)\n            dl: i64 = sub tick, tl\n            dh: i64 = sub th, tick\n            closer: u1 = cmp.lt dh, dl\n            kk: index = if closer\n                yield kh\n            else\n                yield kl\n            yield kk\n        else\n            yield kl\n        vals: {t}[] = ring_values(r)\n        i: index = ring_index(s, k)\n        x: {t} = load vals, i\n        yield x\n    ret v", t = t).unwrap();
     }
     if !l.copies.is_empty() {
         writeln!(l.out, "\n; a view's items as a new stream (log 38): what `frame`, `behind`, `from ... to` and a string literal give; stamped once where something asks its time (log 73)").unwrap();
@@ -4453,6 +4459,10 @@ struct Lowerer {
     /// of which one value is kept, the latest. A field of the context
     /// of the item's type, a push a store of it and a read a load. A
     /// stream is one where the store reads it only for its latest item
+    /// the item types some stream is read at a time through
+    /// `__at_<T>` (fm3 log 248): a stream whose rate the compiler does
+    /// not know where it is read
+    ats: std::collections::BTreeSet<String>,
     cells: Names,
     /// ... and those of them that `count` is asked of (fm3 question
     /// 145, log 247): a second field of the context beside the latest
@@ -14630,6 +14640,180 @@ impl Lowerer {
         }
     }
 
+    /// `x$ at (t)`, a stream read at a time, on indices (fm3 question
+    /// 120, log 248). A time is a count over a divisor, and the item
+    /// wanted is the time in the stream's own ticks. Where the compiler
+    /// knows the stream's rate and the time's divisor the ratio of the
+    /// two is reduced here, when the program is compiled, and the index
+    /// is the count times one number over another: one multiply and at
+    /// most one divide, no divisor at run time; the ring of a stream
+    /// with a rate has an item a tick and its first at tick 0, so the
+    /// tick is the index, read by the library's `peek` from the ring's
+    /// start. Where it does not know the rate, a stream with no rate
+    /// or one that is a parameter, the tick is worked out the same way
+    /// against the clock's rate or the ring's own word, and `__at_<T>`
+    /// finds the item. Before the first item the read gives zero and
+    /// after the latest the latest (question 127): no check of the
+    /// read's own is left. None where the operand is no time
+    #[allow(clippy::too_many_arguments)]
+    fn at_time(&mut self, sname: &str, s: &Val, elem: &Ty, a: &Expr, between: Between, b: &mut Body, dst: Option<&str>) -> Result<Option<Val>, Error> {
+        // (`m ms`, a variable and a unit word, is the literal's form)
+        let a = match &a.kind {
+            ExprKind::Phrase(parts) => match parts.as_slice() {
+                [Part::Word(w), Part::Word(u)] if (b.vars.contains_key(w) || self.fvar(w).is_some()) && matches!(u.as_str(), "s" | "ms" | "us" | "ns") => Expr { kind: ExprKind::Unit(Box::new(Expr { kind: ExprKind::Name(w.clone()), line: a.line }), u.clone()), line: a.line },
+                _ => a.clone(),
+            },
+            _ => a.clone(),
+        };
+        self.one = true;
+        let tv = self.lower_expr(&a, Some(&time_ty()), b, None)?;
+        if tv.ty != time_ty() {
+            return Ok(None);
+        }
+        let (count, div) = (self.field_of(&tv, 0, b), self.field_of(&tv, 1, b));
+        let known = |v: &Val| -> Option<i64> { if v.literal { v.text.parse().ok() } else { None } };
+        let rate = if b.vars.contains_key(sname) { b.rates.get(sname).copied() } else { self.rates.get(sname).copied() };
+        let near = between == Between::Nearest;
+        // the count times `m`, plus `add`, over `d`: the index, or the tick
+        let scaled = |b: &mut Body, m: i64, add: i64, d: i64| -> String {
+            if let Some(c) = known(&count) {
+                if let Some(k) = c.checked_mul(m).and_then(|x| x.checked_add(add)) {
+                    return k.div_euclid(d).to_string();
+                }
+            }
+            let mut x = count.text.clone();
+            if m != 1 {
+                let t = b.tmp();
+                b.line(&format!("{}: i64 = mul {}, {}", t, x, m));
+                x = t;
+            }
+            if add != 0 {
+                let t = b.tmp();
+                b.line(&format!("{}: i64 = add {}, {}", t, x, add));
+                x = t;
+            }
+            if d != 1 {
+                let t = b.tmp();
+                b.line(&format!("{}: i64 = div {}, {}", t, x, d));
+                x = t;
+            }
+            x
+        };
+        // a time before nothing: before every stream's first item
+        let early = match known(&count) {
+            Some(c) => Some(c < 0),
+            None => None,
+        };
+        let eir = elem.ir();
+        if let (Some(hz), Some(d), false) = (rate, known(&div).filter(|d| *d > 0), self.all_queues) {
+            let g = gcd(hz, d);
+            let (m, d) = (hz / g, d / g);
+            // nearest, the later item only where it is strictly closer:
+            // the index and a half, less the smallest part, cut
+            let q = if near { scaled(b, 2 * m, d - 1, 2 * d) } else { scaled(b, m, 0, d) };
+            let (r, pushed, last) = (b.tmp(), b.tmp(), b.tmp());
+            b.line(&format!("{}: ptr = get {}, ring", r, s.text));
+            b.line(&format!("{}: index = load {}", pushed, r));
+            b.line(&format!("{}: index = sub {}, 1", last, pushed));
+            let k = if q.parse::<i64>().is_ok() {
+                q
+            } else {
+                let k = b.tmp();
+                b.line(&format!("{}: index = conv {}", k, q));
+                k
+            };
+            let (over, kc, none) = (b.tmp(), b.tmp(), b.tmp());
+            b.line(&format!("{}: u1 = cmp.gt {}, {}", over, k, last));
+            b.line(&format!("{}: index = if {}", kc, over));
+            b.depth += 1;
+            b.line(&format!("yield {}", last));
+            b.depth -= 1;
+            b.line("else");
+            b.depth += 1;
+            b.line(&format!("yield {}", k));
+            b.depth -= 1;
+            b.line(&format!("{}: u1 = cmp.lt {}, 0", none, last));
+            let outside = match early {
+                Some(true) => {
+                    let t = b.tmp();
+                    b.line(&format!("{}: u1 = const 1", t));
+                    t
+                }
+                Some(false) => none,
+                None => {
+                    let (neg, t) = (b.tmp(), b.tmp());
+                    b.line(&format!("{}: u1 = cmp.lt {}, 0", neg, count.text));
+                    b.line(&format!("{}: u1 = or {}, {}", t, none, neg));
+                    t
+                }
+            };
+            let out = name_for(dst, elem, b);
+            b.line(&format!("{}: {} = if {}", out, eir, outside));
+            b.depth += 1;
+            b.line("yield 0");
+            b.depth -= 1;
+            b.line("else");
+            b.depth += 1;
+            let (s0, x) = (b.tmp(), b.tmp());
+            b.line(&format!("{}: {} = set {}, pos, {}", s0, s.ty.ir(), s.text, kc));
+            b.line(&format!("{}: {} = peek {}, 0", x, eir, s0));
+            b.line(&format!("yield {}", x));
+            b.depth -= 1;
+            return Ok(Some(Val { text: out, ty: elem.clone(), literal: false }));
+        }
+        // the rate not known here: the tick of the stream's clock. A
+        // feature's stream with no rate is stamped by the store's
+        // clock, whose rate the compiler knows; anything else says its
+        // clock's rate in its ring
+        let hz = match rate {
+            Some(hz) => Some(hz),
+            None if !b.vars.contains_key(sname) => Some(CLOCK_HZ),
+            None => None,
+        };
+        let tick = match (hz, known(&div).filter(|d| *d > 0)) {
+            (Some(hz), Some(d)) => {
+                let g = gcd(hz, d);
+                scaled(b, hz / g, 0, d / g)
+            }
+            _ => {
+                let h = match hz {
+                    Some(hz) => hz.to_string(),
+                    None => {
+                        let (r, h) = (b.tmp(), b.tmp());
+                        b.line(&format!("{}: ptr = get {}, ring", r, s.text));
+                        b.line(&format!("{}: i64 = load {}, 32", h, r));
+                        h
+                    }
+                };
+                let (n, t) = (b.tmp(), b.tmp());
+                b.line(&format!("{}: i64 = mul {}, {}", n, count.text, h));
+                b.line(&format!("{}: i64 = div {}, {}", t, n, div.text));
+                t
+            }
+        };
+        let tick = match early {
+            Some(true) => "-1".to_string(),
+            Some(false) => tick,
+            None => {
+                let (neg, t) = (b.tmp(), b.tmp());
+                b.line(&format!("{}: u1 = cmp.lt {}, 0", neg, count.text));
+                b.line(&format!("{}: i64 = if {}", t, neg));
+                b.depth += 1;
+                b.line("yield -1");
+                b.depth -= 1;
+                b.line("else");
+                b.depth += 1;
+                b.line(&format!("yield {}", tick));
+                b.depth -= 1;
+                t
+            }
+        };
+        self.ats.insert(eir.clone());
+        let out = name_for(dst, elem, b);
+        b.line(&format!("{}: {} = __at_{}({}, {}, {}, 0)", out, eir, eir, s.text, tick, if near { 1 } else { 0 }));
+        Ok(Some(Val { text: out, ty: elem.clone(), literal: false }))
+    }
+
     /// a stream variable takes its moved reader: a new version of a
     /// local, the field of a feature variable stored
     fn rebind_stream(&mut self, name: &str, s: &Val, moved: &dyn Fn(&mut Lowerer, &str, &mut Body), b: &mut Body, line: usize) -> Result<(), Error> {
@@ -14970,12 +15154,10 @@ impl Lowerer {
             ("at", true, [arg]) => {
                 no_struct(self, "'at'")?;
                 let Some(a) = one_arg(arg) else { return Ok(None) };
-                let Some(tv) = self.ir_time(&a, b)? else {
-                    return Err(lex::error(&file, a.line, "'x$ at (t)' takes a time, `1500 us`, `2 ms`, `1 s`"));
-                };
-                let out = name_for(dst, &elem, b);
-                b.line(&format!("{}: {} = sample {}, {}", out, elem.ir(), s.text, tv));
-                Ok(Some(Val { text: out, ty: *elem, literal: false }))
+                match self.at_time(&sname, &s, &elem, &a, Between::Nearest, b, dst)? {
+                    Some(v) => Ok(Some(v)),
+                    None => Err(lex::error(&file, a.line, "'x$ at (t)' takes a time, `1500 us`, `2 ms`, `1 s`")),
+                }
             }
             ("from", true, [a1, Part::Word(to), a2]) if to == "to" => {
                 no_struct(self, "'from'")?;

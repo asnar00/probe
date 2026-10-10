@@ -12,12 +12,14 @@ Plan item 12 of milestone 0: section 9's `x$ at (t)` with the time computed once
 ## interface
 - `ticks (n)` is the task; `int t$ = ticks(5) at (4 hz)` wires it.
 - `value at (m)` is `t$ at (m ms)`.
+- `mark thrice` pushes 1, 2 and 3 into `mark$`, a stream with no rate, with a push into `pace$` at `2 hz` between them to move the clock: the case's function starts at 1.25 s, after the five ticks, so the three fall at 1.25 s, 2 s and 2.5 s. `marked at (m)` is `mark$ at (m ms)` after them: 0 before the first, the nearer of two between them (1.6 s is nearer 1.25 s than 2 s), the last after the last. `paced` reads `pace$` by its name, so that it is a stream of the program.
 - `where it stands` advances `t$` by two and gives `position t$`, the index of the next unread item, and `time of t$`, its time, the index over the stream's rate, 2 over `4 hz`; `position` asks no time and `time of` is what times the stream (log 85, question 42).
 
 ## rules
 - Inside the stream time is the ring's ticks; at the boundary it is `time`, exact seconds (section 9). `m ms` on a variable is `millis(m)` computed once per call (log 33).
 - Between two ticks the nearest wins: 300 ms reads the item at 250 ms, 400 ms the one at 500 ms.
-- After the last item the stream holds its last value; before the first, a sample fails a check.
+- After the last item the stream holds its last value; before the first it reads as zero, as its name does before anything is pushed (fm3 question 127): `value at (-10)` is 0, and so is `none marked at (10)`, a stream nothing has been pushed into. Until hop forty-three each of those two was a failed check.
+- A read at a time is worked out on indices (fm3 question 120, log 248): the time's count times a ratio the compiler has reduced, one multiply and at most one divide, no divisor at run time. `t$` is wired at feature scope and `mark$` has no rate: their items carry the ticks of the store's clock, a microsecond, so `m ms` becomes a tick, `m * 1000000 / 1000`, and the item at or before it is found, by arithmetic for `t$` and by halving over the ticks `mark$` keeps, at most seven rounds for sixty-four items. `value at (250)` is 248 as counted where it was 3 213.
 
 ## testing
 >value at (0) → 1
@@ -26,6 +28,16 @@ Plan item 12 of milestone 0: section 9's `x$ at (t)` with the time computed once
 >value at (400) → 3
 >value at (5000) → 5
 >where it stands() → 2, 500 ms
+>marked at (0) → 0
+>marked at (1300) → 1
+>marked at (1600) → 1
+>marked at (1800) → 2
+>marked at (2300) → 3
+>marked at (9000) → 3
+>marked at (-10) → 0
+>none marked at (10) → 0
+>value at (-10) → 0
+>paced() → 0
 
 ## hostile
 `t$ at (m)` without a unit is refused: "'x$ at (t)' takes a time, `1500 us`, `2 ms`, `1 s`". `value at (m)` with `m` a float parameter is refused: "'ms' takes a whole number, given a float".

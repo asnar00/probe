@@ -4103,6 +4103,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `x$ at (t)` is an index worked out in integers (fm3 question
+    /// 120, log 248): where the compiler knows the stream's rate and
+    /// the time's divisor, the count times a reduced ratio, and the
+    /// ring read by a place; where it does not, a tick and `__at_<T>`.
+    /// The library's exact time and its `sample` are not called
+    #[test]
+    fn a_stream_is_read_at_a_time_by_an_index() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-at-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-10T10:00:00\n\n## testing\n").unwrap();
+        let f = |head: &str, decl: &str, read: &str| -> String {
+            std::fs::write(dir.join("h/h.zero"), format!("{}on (int n) << f (int m)\n{}    n << {}\n", head, decl, read)).unwrap();
+            let ir = lower::lower(&store::read(&dir).unwrap()).unwrap().ir;
+            ir.lines().skip_while(|l| !l.starts_with("fn f(")).skip(1).take_while(|l| l.starts_with(' ')).collect::<Vec<_>>().join("\n")
+        };
+        // 1 khz against a nanosecond's divisor: one over a million
+        let rated = f("", "    int x$ at (1 khz) << 1 << 2 << 3\n", "x$ at (m us)");
+        assert!(rated.contains(" = div ") && rated.contains(", 2000000\n") && rated.contains(" = peek ") && !rated.contains("sample") && !rated.contains("__at_"), "{}", rated);
+        // a time written out: the index is worked out by the compiler
+        let lit = f("", "    int x$ at (1 khz) << 1 << 2 << 3\n", "x$ at (1600 us)");
+        assert!(!lit.contains(" = div ") && !lit.contains(" = mul ") && lit.contains(" = cmp.gt 2, "), "{}", lit);
+        // 48 khz against a second's thirtieth: times 1600, no divide
+        let video = f("", "    int a$ at (48 khz) << 1 << 2 << 3\n", "a$ at (1 s / 30 * m)");
+        assert!(!video.contains("sample"), "{}", video);
+        // no rate: the tick of the store's clock, and the search
+        let sparse = f("int k$\n\n", "    k$ << 1\n", "k$ at (m ms)");
+        assert!(sparse.contains("__at_int(") && sparse.contains(" = div ") && !sparse.contains("sample"), "{}", sparse);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A feature's stream that only its name and `count` read keeps
     /// its latest item and a counter, and no queue (fm3 question 145,
     /// log 247): the counter is one more at each store of the item

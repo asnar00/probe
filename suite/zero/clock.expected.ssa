@@ -90,6 +90,20 @@ fn __wait(t: i64)
     store m, a, n, 8
     ret
 
+; a step of a rate passes (fm3 log 194): the clock moved on by d of its
+; own steps, which can only be later, and the place marked
+fn __step(d: i64)
+    _this: ptr = context()
+    x: __ctx = load _this
+    c: i64 = get x, __clock
+    m: i64 = add c, d
+    x2: __ctx = set x, __clock, m
+    store x2, _this
+    n: index = get x, __out_n
+    a: ptr = get x, __out_m
+    store m, a, n, 8
+    ret
+
 ; a push into any stream (log 38): stamped with the clock on a ring
 ; that keeps ticks, the next sample on one that does not. Over `any`,
 ; since a ring may hold a struct (log 88)
@@ -124,6 +138,8 @@ type __time = struct
 ;   out: the output device, which stores nothing (platform)
 ;   in: user, last (platform)
 ;   t: user, last (clock)
+;   mark: user, last (clock)
+;   pace: user, last (clock)
 ;   __node1_fin: node, last (clock)
 ;   __out_n, __clock, __out_p, __out_m: the context's own output and clock (question 107): how much it has written, its time, its capture and its marks
 type __ctx = struct
@@ -134,6 +150,8 @@ type __ctx = struct
     __enabled_clock: u1
     in: u8$
     t: int$
+    mark: int$
+    pace: int$
     __node1_fin: u1
     __out_m: ptr
 
@@ -172,9 +190,11 @@ fn __zero_new()
         continue mi2
     _1: u8$ = __regular_u8(1000000, 512)
     _2: int$ = __stream_int(1000000, 64)
-    _3: __ctx = pack 0, 0, op, 1, 1, _1, _2, 0, om
+    _3: int$ = __stream_int(1000000, 64)
+    _4: int$ = __regular_int(2, 64)
+    _5: __ctx = pack 0, 0, op, 1, 1, _1, _2, _3, _4, 0, om
     p: ptr = context()
-    store _3, p
+    store _5, p
     ret
 
 ; the runner's: the k-th of the store's contexts is the current one
@@ -256,8 +276,14 @@ fn value_at(m: int) -> int
     _1: __ctx = load _this
     _2: int$ = get _1, t
     _3: i64 = conv m
-    _4: time = millis(_3)
-    v: int = sample _2, _4
+    _4: i64 = mul _3, 1000000
+    _6: i64 = div _4, 1000
+    _7: u1 = cmp.lt _4, 0
+    _8: i64 = if _7
+        yield -1
+    else
+        yield _6
+    v: int = __at_int(_2, _8, 1, 0)
     ret v
 fn where_it_stands() -> (int, __time)
     _this: ptr = context()
@@ -276,8 +302,86 @@ fn where_it_stands() -> (int, __time)
     _11: index, _12: i64 = position(_10)
     tick: __time = pack _12, 1000000
     ret i, tick
+fn mark_thrice()
+    _this: ptr = context()
+    _1: __ctx = load _this
+    _2: int$ = get _1, mark
+    _3: int = const 1
+    __push(_2, _3)
+    _4: __ctx = load _this
+    _5: i64 = get _4, __clock
+    _6: i64 = add _5, 499999
+    _7: i64 = rem _6, 500000
+    _8: i64 = sub _6, _7
+    __wait(_8)
+    _9: __ctx = load _this
+    _10: int$ = get _9, pace
+    _11: int = const 0
+    push(_10, _11)
+    __step(500000)
+    _14: int = const 2
+    __push(_2, _14)
+    _17: int = const 0
+    push(_10, _17)
+    __step(500000)
+    _20: int = const 3
+    __push(_2, _20)
+    ret
+fn marked_at(m: int) -> int
+    _this: ptr = context()
+    mark_thrice()
+    _1: __ctx = load _this
+    _2: int$ = get _1, mark
+    _3: i64 = conv m
+    _4: i64 = mul _3, 1000000
+    _6: i64 = div _4, 1000
+    _7: u1 = cmp.lt _4, 0
+    _8: i64 = if _7
+        yield -1
+    else
+        yield _6
+    v: int = __at_int(_2, _8, 1, 0)
+    ret v
+fn none_marked_at(m: int) -> int
+    _this: ptr = context()
+    _1: __ctx = load _this
+    _2: int$ = get _1, mark
+    _3: i64 = conv m
+    _4: i64 = mul _3, 1000000
+    _6: i64 = div _4, 1000
+    _7: u1 = cmp.lt _4, 0
+    _8: i64 = if _7
+        yield -1
+    else
+        yield _6
+    v: int = __at_int(_2, _8, 1, 0)
+    ret v
+fn paced() -> int
+    _this: ptr = context()
+    _1: __ctx = load _this
+    _2: int$ = get _1, pace
+    _3: index = received(_2)
+    _4: u1 = cmp.gt _3, 0
+    n: int = if _4
+        _5: int = latest _2
+        yield _5
+    else
+        yield 0
+    ret n
 
 ; a stream's storage, carved from the arena: cap items (64 unless more are) — a ring keeps them in twice that many slots, each item in both halves so that every window is one view (log 65), and a tick per item unless regular; a queue keeps them in a plain run of cap slots, item k at k minus the origin (log 89) — and a reader's view at its start
+fn __regular_int(hz: i64, cap: index) -> int$
+    a: ptr = addr __arena
+    r: ptr = arena_alloc(a, 64)
+    slots: index = mul cap, 2
+    sz: index = sizeof int
+    bytes: index = mul sz, slots
+    total: index = add bytes, 16
+    vb: ptr = arena_alloc(a, total)
+    buffer_init(vb, sz, slots)
+    ring_regular(r, vb, hz, 1, 0)
+    s: int$ = stream r
+    ret s
 fn __stream_int(hz: i64, cap: index) -> int$
     a: ptr = addr __arena
     r: ptr = arena_alloc(a, 64)
@@ -306,6 +410,41 @@ fn __regular_u8(hz: i64, cap: index) -> u8$
     ring_regular(r, vb, hz, 1, 0)
     s: u8$ = stream r
     ret s
+
+; a stream read at a time where the compiler does not know its rate (fm3 question 120, log 248): the time comes as a tick of the stream's clock, worked out in integers where the read is; the item at or before it is found by the library's `before`, arithmetic on a ring with a rate and a search by halves over the ticks on one without, bounded by what the ring keeps; `near` takes the later item where it is strictly closer. Before the first item the read gives `zero`, after the latest the latest; a time whose item the ring no longer keeps fails the ring's own check
+fn __at_int(s: int$, tick: i64, near: u1, zero: int) -> int
+    r: ptr = get s, ring
+    lo: index = before(s, tick)
+    base: index = ring_base(r)
+    early: u1 = cmp.lt lo, 0
+    v: int = if early
+        whole: u1 = cmp.eq base, 0
+        check whole
+        yield zero
+    else
+        pushed: index = load r
+        kl: index = add base, lo
+        kh: index = add kl, 1
+        more: u1 = cmp.lt kh, pushed
+        both: u1 = and more, near
+        k: index = if both
+            tl: i64 = tick_of(s, kl)
+            th: i64 = tick_of(s, kh)
+            dl: i64 = sub tick, tl
+            dh: i64 = sub th, tick
+            closer: u1 = cmp.lt dh, dl
+            kk: index = if closer
+                yield kh
+            else
+                yield kl
+            yield kk
+        else
+            yield kl
+        vals: int[] = ring_values(r)
+        i: index = ring_index(s, k)
+        x: int = load vals, i
+        yield x
+    ret v
 fn __said_where_it_stands() -> (int, i64)
     __w1: i64 = const 1000000000
     r0: int, r1: __time = where_it_stands()

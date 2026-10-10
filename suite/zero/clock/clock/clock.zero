@@ -10,3 +10,23 @@ on (int i, time tick) << where it stands()
     advance t$ by (2)
     i << position t$
     tick << time of t$
+
+int mark$
+int pace$ at (2 hz)
+
+on mark thrice()
+    mark$ << 1
+    pace$ << 0
+    mark$ << 2
+    pace$ << 0
+    mark$ << 3
+
+on (int v) << marked at (int m)
+    mark thrice()
+    v << mark$ at (m ms)
+
+on (int v) << none marked at (int m)
+    v << mark$ at (m ms)
+
+on (int n) << paced()
+    n << pace$

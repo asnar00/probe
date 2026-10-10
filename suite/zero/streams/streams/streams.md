@@ -15,7 +15,7 @@ A stream is a value over time. `T x$` declares an empty one; `<<` pushes its fir
 - `walked` moves a stream inside a `loop`, which carries it and gives the sum it made.
 - `positioned` and `position unread` take `position x$` and `time of x$`, on a stream with a rate and on one with none: `time of x$` is a time, the item's index over the stream's rate, `2 ms` for item 2 at `1000 hz`, and for a stream with no rate the tick its item keeps over the clock's own rate, `-1 us` where nothing is unread.
 - `still open`, `now closed`, `pushed after end` are `end` and `ended`.
-- `sampled` and `windowed` declare a rate and read by time, `x$ at (t)` and `x$ from (t1) to (t2)`. `sampled at a time worked out` and `windowed between times worked out` hand them a `time` that is a value, `800 us * 2`, where the others hand a literal: a time is a structure declared in zero (fm3 question 117), and the words take one.
+- `sampled` and `windowed` declare a rate and read by time, `x$ at (t)` and `x$ from (t1) to (t2)`. `sampled at a time worked out` and `windowed between times worked out` hand them a `time` that is a value, `800 us * 2`, where the others hand a literal: a time is a structure declared in zero (fm3 question 117), and the words take one. **A read at a time is worked out on indices** (fm3 question 120, log 248): a time is a count over a divisor and the stream has a rate, so the item wanted is the count times the rate over the divisor, a ratio the compiler reduces when it compiles, one multiply and at most one divide. `sampled at (m)` is `x$ at (m us)` on a stream at `1 khz`: `m us` is `m * 1000` over a thousand million, the ratio is one over a million, and the nearest item is `(m * 1000 * 2 + 999999) / 2000000`; for `x$ at (1600 us)` the compiler has worked it out, item 2. The read is about 40 as counted where the library's exact time made it 3 074, `sampled()` 214 where it was 3 507. Before the stream's first item a read gives zero, `sampled at (-5)`, and after its latest the latest, `sampled at (99000)` (question 127); before hop forty-three the first of those was a failed check.
 - `tokens`, `tokens moved` and `tokens framed` push and read a stream of the struct `token`, which is one ring whose item is the struct (question 43, log 88).
 - `logged` and `logged and read` push into and read the feature-scope stream `log$`. `counted round a push` counts a stream of its own, pushes into it and counts again, 2 and then 3: a second `count` of the same reader is the first's number only where nothing between could have pushed (fm3 log 112). `counted round a skip` counts `log$`, 3, calls `skip one logged`, which advances the feature's reader, and asks what is waiting in the same function, `[count] (frame log$)`: 2, so the frame is taken from the reader as the call left it (fm3 log 110); `count log$` there would still be 3.
 - `blocked` and `blocked regular` push a block, `x$ << block$`: a string into a stream of bytes, a list into a regular stream.
@@ -53,6 +53,10 @@ A stream is a value over time. `T x$` declares an empty one; `<<` pushes its fir
 >sampled() → 30
 >windowed() → 23
 >sampled at a time worked out() → 30
+>sampled at (1600) → 30
+>sampled at (1400) → 20
+>sampled at (-5) → 0
+>sampled at (99000) → 40
 >windowed between times worked out() → 1
 >tokens() → 341
 >tokens moved() → 1252
