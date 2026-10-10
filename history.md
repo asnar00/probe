@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: input that arrives at a time, in a case — `1aa0b5a` · 2026-10-10
+
+```
+>count down() with in "k" at 3.5 s → "5\n4\n3\n2\n" at 1 hz, "key 107\n" at 3.5 s, "1\n" at 4 s, "liftoff" at 5 s
+```
+
+`suite/zero/going-keys/keys/keys.md:24`. A case could give its input only as text that had all arrived before the program started; `with in "k" at 3.5 s`, ruled on 6 October (fm3 question 53), was refused. A case now gives each piece a time, several allowed, the times not going back (`parse_case`, `src/zero/store.rs`). The runner hands each character over before the start by `__in_at(c, t)`, and the input is one of the things going on: its word of the context is the time of its next character, its turn is that character's arrival and then what reads the input, and it is first in the list `__turns` asks (`emit_turns`, `src/zero/lower.rs:7840`), the device being the platform's and there before any line or any function a case calls. So the key is handled after the 2 at 3 s and before the 1 at 4 s, and what it sets off is stamped 3.5 s. `"ab"` at 1 s is written before the number due at 1 s; a key at 7 s, two seconds after the function has returned, is handled at 7 s; and the same key with no time arrives before the start as it always did. A store none of whose cases gives a time has no word for the input.
+
+One shape is not held (fm3 question 135). A thing in the list returns after each turn, but a function that pushes at a rate holds its place on the machine's stack, and only the one on top can go on: wasm and the GPU's path have no second stack to give another. A second countdown started by a key, with the first still going and nothing ending it, runs to its end above the first. The first's step then comes back to a clock already past the time it was to end, and fails a check; so does an arrival that finds what reads the input still inside an earlier one. `suite/zero/going-two` is that program, `>launch() with in "k" at 3.5 s → check`, where before it would have written the first countdown's last six numbers late. The GPU's path, which has no recursion, skips the store.
+
+This change to `lower.rs` also carries `restart x$`, whose store and assertions are the next commit. A store with no clock, no timed input and no restart is the text it was: `scratchpad/irdiff.sh` against the binary before names `going-beside`, whose step gained the check, and the new stores. hello's `run` is 939 and static's 918. The full run is `scratchpad/chain110.log`: 1060 runs of the zero suite on four paths, 1020 on air, `cargo test` 178.
+
+---
+
 ### zero: a clock alone, a clock beside a countdown, and a clock read for its latest — `2fccc1e` · 2026-10-10
 
 ```
