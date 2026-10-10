@@ -1086,8 +1086,9 @@ mod tests {
         let f = &ir[ir.find("fn f() -> int").unwrap()..];
         let f = &f[..f[1..].find("\nfn ").map_or(f.len(), |i| i + 1)];
         assert_eq!(f.matches("__z1_each(").count(), 2, "{}", f);
-        // the literal is a loop that says four, the processor's line in it
-        assert!(f.contains(", 4\n") && f.contains(" = load ") && !f.contains("__z2_each(") && f.contains(": int = conv "), "{}", f);
+        // the literal is a loop that says four, once and before it (fm3
+        // log 257), the processor's line in it
+        assert!(f.contains(": index = const 4\n") && f.contains(" = load ") && !f.contains("__z2_each(") && f.contains(": int = conv "), "{}", f);
         // `s$` is read by `count s$`: it keeps its queue, and the sink
         // the front end wrote walks it, woken where the push is
         assert!(ir.contains("fn __z3(x: int$, __hz: i64) -> int$\n") && f.contains("= __z3("), "{}", ir);

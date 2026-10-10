@@ -14530,6 +14530,18 @@ impl Lowerer {
             left.push(ls);
         }
         let prefix = if defs.is_empty() { String::new() } else { format!("{} = ", defs.join(", ")) };
+        // a count that is written out, a literal's length, is said once
+        // before the loop and the test names it: written in the test it
+        // is a `const` a pass, where a hand-written loop is handed its
+        // count (fm3 log 257)
+        let n = match n.parse::<i64>() {
+            Ok(_) => {
+                let c = b.tmp();
+                b.line(&format!("{}: index = const {}", c, n));
+                c
+            }
+            Err(_) => n.to_string(),
+        };
         b.open_loop(&prefix, &hdr, known.is_some());
         b.depth += 1;
         let done = b.tmp();
