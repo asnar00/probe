@@ -123,3 +123,15 @@ on (int32 w) << float width at thirty two bits()
 
 on (int32 w) << float width at sixty four bits()
     w << float width of (float64(2.5))
+
+on (int n) << fill (int k)
+    n << k * 2
+
+on (int n) << div (int a, int b)
+    n << a - b
+
+on (int n) << idle()
+    n << 7
+
+on (int n) << named as the machine names()
+    n << fill (3) * 100 + div (7, 2) * 10 + idle()

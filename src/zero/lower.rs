@@ -1093,6 +1093,32 @@ fn copy_infix(maker: &str) -> &'static str {
     }
 }
 
+/// The names the IR has that a program's function could take (fm3 log
+/// 229): every function of `lib/*.ssa`, which a program is linked
+/// with, and every rule of `targets/*.platform`, which replaces a
+/// function of its name with the machine's instruction. Read once,
+/// from the files themselves
+fn ir_names() -> &'static std::collections::HashSet<String> {
+    static NAMES: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        let mut names = std::collections::HashSet::new();
+        let name = |l: &str| -> Option<String> {
+            let end = l.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))?;
+            (end > 0 && l[end..].starts_with('(')).then(|| l[..end].to_string())
+        };
+        for (dir, ext) in [("lib", "ssa"), ("targets", "platform")] {
+            for f in crate::vfs::read_dir(dir).unwrap_or_default().into_iter().filter(|p| p.extension().is_some_and(|x| x == ext)) {
+                let Ok(text) = crate::vfs::read_to_string(&f) else { continue };
+                for l in text.lines() {
+                    let l = if ext == "ssa" { l.strip_prefix("fn ") } else { Some(l) };
+                    names.extend(l.and_then(name));
+                }
+            }
+        }
+        names
+    })
+}
+
 pub fn mangle(parts: &[NamePart]) -> String {
     let words: Vec<String> = parts
         .iter()
@@ -5167,7 +5193,12 @@ impl Lowerer {
         // method, which a later feature redefines and chains (log 28);
         // other types are a new method of the name, told apart in the
         // IR by its types
-        let set: Vec<usize> = self.funcs.iter().enumerate().filter(|(_, g)| g.key == key).map(|(i, _)| i).collect();
+        // (a name of words and an operator are two kinds and may share
+        // a key: the language's own `/` is declared under its opcode,
+        // `div`, and a program may have a function of that name, fm3
+        // log 229)
+        let symbol = |parts: &[NamePart]| parts.iter().any(|p| matches!(p, NamePart::Sym(_)));
+        let set: Vec<usize> = self.funcs.iter().enumerate().filter(|(_, g)| g.key == key && symbol(&g.parts) == symbol(&f.name)).map(|(i, _)| i).collect();
         if let Some(&i) = set.iter().find(|&&i| self.funcs[i].parts != f.name) {
             return Err(lex::error(file, f.line, format!("'{}' clashes with a function of feature {} that mangles to the same name", key, self.funcs[i].feature)));
         }
@@ -5248,10 +5279,16 @@ impl Lowerer {
         for key in keys {
             let idx: Vec<usize> = (0..self.funcs.len()).filter(|&i| self.funcs[i].key == key && self.funcs[i].ir.is_empty()).collect();
             let set = idx.len() > 1 && idx.iter().all(|&i| self.funcs[i].params.iter().all(|(_, t)| is_concrete(t)));
+            // a name the IR has, a function of its library or a rule of
+            // a platform file, is not the program's to take: `fill`
+            // would be one of several of the name, and `idle` the
+            // machine's instruction (fm3 log 229). The program's is
+            // named apart, and every call, link and setter follows
+            let base = if ir_names().contains(&key) { format!("__f_{}", key) } else { key.clone() };
             for (k, &i) in idx.iter().enumerate() {
                 let tys: Vec<String> = self.funcs[i].params.iter().map(|(_, t)| t.ir()).collect();
-                let ir = if k == 0 { key.clone() } else { crate::ssa::method_name(&key, &tys) };
-                self.funcs[i].plain = if set { key.clone() } else { ir.clone() };
+                let ir = if k == 0 { base.clone() } else { crate::ssa::method_name(&base, &tys) };
+                self.funcs[i].plain = if set { base.clone() } else { ir.clone() };
                 self.funcs[i].ir = ir;
                 self.funcs[i].in_set = set;
             }

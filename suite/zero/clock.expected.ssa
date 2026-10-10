@@ -218,7 +218,7 @@ fn __node1() -> u1
         _3: __ctx = load _this
         _4: int$ = get _3, t
         _5: int = const 5
-        ticks(_4, _5, 4: i64)
+        __f_ticks(_4, _5, 4: i64)
         _6: __ctx = load _this
         _7: __ctx = set _6, __node1_fin, 1
         store _7, _this
@@ -236,7 +236,7 @@ fn __run()
 ; feature platform (layer platform)
 
 ; feature clock (layer runtime)
-fn ticks(t: int$, n: int, __hz: i64)
+fn __f_ticks(t: int$, n: int, __hz: i64)
     _1: int = const 1
     __push(t, _1)
     __sleep(__hz)
