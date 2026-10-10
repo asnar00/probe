@@ -2164,6 +2164,23 @@ mod tests {
         let ir = with("").unwrap();
         assert!(func(&ir, "__turns").contains("        d1: i64 = get x, __due_in\n        late: u1 = cmp.gt d1, t\n") && func(&ir, "__in_turn").contains("    check free\n") && func(&ir, "__in_turn").contains("    __in_ch(c)\n"), "{}", ir);
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 1\n").unwrap();
+        // `restart x$` (fm3 question 52, log 220): the stream has a
+        // phase and the number of its run; a push into it reads the
+        // number round each step and, finding it changed, sets the
+        // bit and leaves; a caller asks the bit and leaves too; the
+        // case's twin clears it. A store with no `restart` has none
+        assert!(!ir.contains("__run_") && !ir.contains("__phase_") && !ir.contains("__ended"), "{}", ir);
+        std::fs::write(dir.join("h/h.zero"), "int i$ at (1 hz)\nout$ << (i$ << \"\\n\") forever\n\non (int n) << f()\n    n << 1\n\non launch()\n    count down()\n    out$ << \"liftoff\"\n\non count down()\n    restart i$\n    i$ << [3 through 1]\n").unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>launch() with in \"k\" at 1.5 s → \"3\" at 0 s\n").unwrap();
+        let ir = emit(&dir).unwrap();
+        let down = func(&ir, "count_down");
+        assert!(down.contains(": i64 = get") && down.contains(", __run_i\n") && down.contains(", __phase_i, ") && down.contains("        __step(1000000)\n") && down.contains(", __ended, 1\n") && down.contains("            ret\n"), "{}", down);
+        assert!(func(&ir, "launch").contains("    count_down()\n    __e1: __ctx = load _this\n    __f1: u1 = get __e1, __ended\n    if __f1\n        ret\n"), "{}", ir);
+        assert!(func(&ir, "__whole_launch").contains("    launch()\n    __e1: __ctx = load _this\n    __g1: __ctx = set __e1, __ended, 0\n"), "{}", ir);
+        assert!(!func(&ir, "__step").contains("check held"), "{}", ir);
+        let e = { std::fs::write(dir.join("h/h.zero"), "int i$\nout$ << (i$ << \"\\n\") forever\n\non (int n) << f()\n    restart i$\n    n << 1\n").unwrap(); emit(&dir).unwrap_err() };
+        assert!(e.contains("`restart i$`") && e.contains("declared with a rate"), "{}", e);
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f() → 1\n").unwrap();
         // with no rate it would never end
         let e = with("x$ << x$ + 1 forever\n").unwrap_err();
         assert!(e.contains("would never end") && e.contains("for a clock give the stream a rate"), "{}", e);
