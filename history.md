@@ -4,6 +4,26 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: two streams with a rate in one slot give one item of a line that reads both — `06434e5` · 2026-10-10
+
+```
+int left$ at (1 hz)
+int right$ at (1 hz)
+left$ << left$ + 1 if (left$ < 3) forever
+right$ << right$ + 10 if (right$ < 30) forever
+mix$ << left$ + right$ forever
+```
+
+`suite/zero/going-mix/mix/mix.zero:1-2`, `6-7` and `9`. Two clocks at one rate, and a line that reads both. `schedule.md`'s third shape, which is ftr and decks: a reader expects one item of `mix$` a slot, `11`, `22`, `33`. A line over several streams was a function of no item called where each of them is pushed (fm3 question 86), so this gave two items a slot, `1` and `11`, then `12` and `22`: the first of each pair made with the right channel of the slot before, a value that was never true of anything.
+
+A line set off by two or more streams, each with a rate, in a store that has a list of things going on, now runs at the close of a slot (`slot_lines`, `src/zero/lower.rs:8044`). A push into any of its streams does not call it: it sets the line's bit, a word of the context, and says the close is due now (`src/zero/lower.rs:12621`). The close is one more word in the list, the last, after the input, the clocks and the pool of activities. Two things due at one time are taken in the list's order, so the close has its turn when everything else due at that time has had its own, and it calls each marked line once (`__close`, written at `src/zero/lower.rs:8131`). The list itself has one new test: the close of a time is held until the list is asked for a later time (`src/zero/lower.rs:8106`), because what asks for this very time, the start before a case's function or a step that ends here, may yet push in this slot itself. Such a line is in no tick, and its own push neither waits for a slot nor steps, as a clock's does not: its item lands at the time of the slot.
+
+`suite/zero/going-mix`: `begin()` gives `"11 111\n22 222\n33 333" at 1 hz`, the second number three clocks summed into a stream that has the same rate; and `louder()`, which pushes 100 into `left$` in the slot its clock has pushed 1 into, gives `110` and not two items: the line reads the latest at the close, so the later item replaces the earlier in a slot. That is agent 48's recommendation for fm3 question 124, which is not ruled, and it is provisional. `suite/zero/going-mix-rates` has `2 hz` and `5 hz`: seven items of `mix$` for nine pushed, at 0, 200, 400, 500, 600 and 800 ms and 1 s, one at each time either stream has an item, a slot of one with no item of the other reading the other's latest. Not built of 124: where the line's own target has a rate that differs from its sources', its item can land between two of the target's slots and stays there; and two functions pushing into one stream in one slot still each give an item to a line of that one stream.
+
+An item of `mix$` is about 69 as counted and the line's own lines once (a turn of the list for the close 43, its wait 7, the close 9, a bit at each push 5), where it was the line's own lines twice. No store that was in the suite moves by a byte (`scratchpad/irdiff.sh scratchpad/probe133` names the two new stores only) and the six rows are what they were. The full run is `scratchpad/chain121.log`: 1093 runs of the zero suite on four paths, 1052 on air, `cargo test` 182.
+
+---
+
 ### zero: a function partway through a push at a rate is a thing going on — `c3c518a` · 2026-10-10
 
 ```
