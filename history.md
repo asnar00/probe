@@ -4,6 +4,21 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a failed check inside the language's own code is reported at the program's line — `dda1462` · 2026-10-10
+
+```
+on too fine (int64 a, int64 b)
+    out$ << 1 s / a + 1 s / b
+```
+
+`suite/zero/types/times/times.zero:78-79`. Two times whose common divisor 64 bits cannot hold fail a check in the language's own `over one divisor`, and the program was told `a failed check at platform.zero:62: a time is too fine to hold`: the line of `src/zero/platform.zero` where the check stands (fm3 question 131). A person is told their own line (the third and eighth of the principles of fm3 question 126). The case now says `>too fine (4000000007, 4000000009) → check at times.zero:79`, and `probe zero suite/zero/types run "too fine (4000000007, 4000000009)"` says `a failed check at times.zero:79: a time is too fine to hold`.
+
+A `check` writes its own site as text before it stops, in every build, so the runner never asked the diagnostic build about this one. Now it does, wherever what stopped named a line of the language's file (`untraced`, `src/zero/run.rs:617`). And in the diagnostic build a check of the language's own writes no text: it stores a row of the table that is its own, the language's file, its line and its reason, and hands over as the row's first number the site it found current (`src/zero/lower.rs:9929`). The language's lines store no site, so that is the statement of the program that called in, through however many of the language's functions. The table's reader gives such a row the caller's file and line with the row's reason, and the language's own line where no site was current (`site_said`, `src/host.rs:158`, which the playground's page reads the table with too).
+
+The build a program runs from is not changed: no store's emitted text moved and no case's count, and a host with no diagnostic build says what it said. The table of every store gains a first row, the one check the language's file has. The full run is `scratchpad/chain117.log`: 1079 runs of the zero suite on four paths, 1031 on air, `cargo test` 180.
+
+---
+
 ### zero: a stream reads as zero before its first item, and an array is not made from a stream's name — `d82f03d` · 2026-10-10
 
 ```
