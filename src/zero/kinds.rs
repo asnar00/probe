@@ -88,7 +88,7 @@ pub struct Named {
 
 /// a stream's name standing as an operand of an operator, however deep
 /// in operators: the name and the operator
-fn stream_operand(e: &Expr) -> Option<(String, String)> {
+pub fn stream_operand(e: &Expr) -> Option<(String, String)> {
     match &e.kind {
         ExprKind::Bin(op, l, r) if !op.starts_with('[') => [l, r].into_iter().find_map(|x| match &x.kind {
             ExprKind::Seq(n) => Some((n.clone(), op.clone())),
@@ -662,6 +662,16 @@ impl Walk {
                 }
             }
             Stmt::For { var, seq, body, line } => {
+                // a stream's name as an operand where `for` wants an
+                // array (fm3 question 97, principle 2; log 243)
+                if let Some((n, op)) = stream_operand(seq).filter(|(n, _)| self.entry(n).is_some_and(|en| en.mark == Mark::Stream)) {
+                    let write = match self.source(*line) {
+                        Some(l) if l.matches(&format!("{}$", n)).count() == 1 => format!(", `{}`", l.replace(&format!("{}$", n), &format!("frame {}$", n))),
+                        _ => String::new(),
+                    };
+                    let msg = format!("`{}$ {} ...` is one value, made from the latest item of '{}$', and `for` walks an array: a stream's name is its value now, and nothing of an array's is silently asked of a stream (fm3 questions 90 and 97). The array of what has arrived is `frame {}$`{}", n, op, n, n, write);
+                    self.refuse(*line, msg);
+                }
                 self.expr(seq, "a sequence", "walked by `for`");
                 self.scopes.push(HashMap::new());
                 self.declare(var, Mark::Plain, "", *line, Place::Local, String::new());

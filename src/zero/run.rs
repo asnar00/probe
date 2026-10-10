@@ -1825,6 +1825,8 @@ mod tests {
         assert!(f("    int up$\n    int k = 4\n    up$ << [k] (3) times\n    n << count up$").is_ok());
         // a stream is still not an array, brackets or none
         refused("    int x$ << 1\n    n << [sum of] (x$)", "'sum of' takes an array here, `int x[]`, and 'x$' is a stream");
+        // ... and so is a stream's name as an operand there (fm3 question 97, log 243)
+        refused("    int x$ << 1\n    n << [sum of] (x$ * 2)", "`x$ * ...` is one value, made from the latest item of 'x$', and 'sum of' takes an array here, `int x[]`: a stream's name is its value now, and nothing of an array's is silently asked of a stream (fm3 questions 90 and 97). The array of what has arrived is `frame x$`: write that where `x$` stands");
     }
 
     /// The lowering knows which kind a name is (fm3 questions 90 and
@@ -2127,6 +2129,7 @@ mod tests {
         refused(&st("    n << x$[1]"), "h.zero:10: 'x$[k]': an item by its place is an array's, and 'x$' is a stream (fm3 question 90). The item k on from where this reader stands is `peek x$ at (k)`; the array of what has arrived is `frame x$`, and one back is `x$[-1]`");
         refused(&st("    int k = 1\n    n << x$[k]"), "'x$[k]': an item by its place is an array's");
         refused(&st("    for (v in x$)\n        check (v > 0)\n    n << 0"), "`for` walks an array, and 'x$' is a stream (fm3 question 90): the array of what has arrived is `frame x$`, `for (x in frame x$)`");
+        refused(&st("    for (v in x$ * 2)\n        check (v > 0)\n    n << 0"), "`x$ * ...` is one value, made from the latest item of 'x$', and `for` walks an array: a stream's name is its value now, and nothing of an array's is silently asked of a stream (fm3 questions 90 and 97). The array of what has arrived is `frame x$`, `for (v in frame x$ * 2)`");
         refused(&st("    n << x$ + _"), "a reduce with `_` gives one answer of a whole array, and 'x$' is a stream (fm3 question 90): the array of what has arrived is `frame x$`; a running total is a line that stands, `sum$ << sum$ + x$ forever`");
         assert!(f(&st("    for (v in frame x$)\n        check (v > 0)\n    n << peek x$ at (0) + x$")).is_ok());
         // an array has no latest item; a place before its first is

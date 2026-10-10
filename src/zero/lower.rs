@@ -10898,6 +10898,15 @@ impl Lowerer {
                     return Err(lex::error(&file, a.line, each_not_one(info, a, &file)));
                 }
             }
+            // a stream's name as an operand where the function takes
+            // an array (fm3 question 97, principle 2; log 243):
+            // `[sum of] (x$ * 2)` is not a map over what is unread
+            if let (Some(NameMark::Array), Some((n, op))) = (info.marks.get(i), super::kinds::stream_operand(a)) {
+                if !self.arr_name(&n, b) && self.stream_var(&n, b).is_some() {
+                    let said = spoken(info);
+                    return Err(lex::error(&file, a.line, format!("`{}$ {} ...` is one value, made from the latest item of '{}$', and '{}' takes an array here, `{} {}[]`: a stream's name is its value now, and nothing of an array's is silently asked of a stream (fm3 questions 90 and 97). The array of what has arrived is `frame {}$`: write that where `{}$` stands", n, op, n, said, zero_ty(ty.elem().unwrap_or(ty)), info.params[i].0, n, n)));
+                }
+            }
             let wanted_one = self.one;
             self.now = nows.get(i).copied().unwrap_or(false);
             let mut v = self.lower_expr(a, Some(ty), b, None)?;
