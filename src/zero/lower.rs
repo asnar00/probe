@@ -2473,7 +2473,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features) };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), cell_only: Names::new(), cells: Names::new(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features) };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -4300,6 +4300,9 @@ struct Lowerer {
     /// took their place, where one is a processor with a last tick:
     /// the input's `end` still calls it (fm3 log 226)
     tick_was: HashMap<String, Vec<(String, String)>>,
+    /// the stream a statement is pushing into, past its first item:
+    /// it holds something (fm3 log 227)
+    fed_here: Option<String>,
     /// the functions of the program's own that are one line, the push
     /// of their one result, by IR name: tree and file (`one_line`)
     one_lines: HashMap<String, (std::rc::Rc<FnDecl>, String)>,
@@ -12277,6 +12280,18 @@ impl Lowerer {
         b.vars.contains_key(name) && !self.fed.contains(name) && matches!(b.kind, BodyKind::Fn) && b.func.as_ref().is_some_and(|f| !f.ir.starts_with("__"))
     }
 
+    /// May the stream hold nothing here, for all the compiler knows
+    /// (fm3 question 98, principle 3; log 227)? Then a read of its
+    /// latest item is written to give the zero of its type: `latest
+    /// x$`, and its own name on the right of a push into it. A local
+    /// stream pushed into at the top of its function holds something
+    /// (`unfed`); a feature's stream may hold nothing wherever a
+    /// function of the program reads it. In the functions the front end
+    /// writes, a read is what it was
+    fn may_hold_nothing(&self, name: &str, b: &Body) -> bool {
+        self.fed_here.as_deref() != Some(name) && (self.unfed(name, b) || (!b.vars.contains_key(name) && self.fvar(name).is_some() && b.func.as_ref().is_some_and(|f| !f.ir.starts_with("__"))))
+    }
+
     /// one push, through `__push` (log 38): a tick from the virtual
     /// clock unless the ring is regular; a struct pushed field by field;
     /// a task's own output sleeps to its next tick after (log 25)
@@ -12466,6 +12481,7 @@ impl Lowerer {
     fn lower_pushes(&mut self, name: &str, s: &Val, items: &[Expr], group: usize, cond: Option<&Expr>, word: Repeat, b: &mut Body) -> Result<(), Error> {
         let sure = self.nonzero.len();
         let done = self.lower_pushes_ruled(name, s, items, group, cond, word, b);
+        self.fed_here = None;
         self.nonzero.truncate(sure);
         done
     }
@@ -12521,11 +12537,18 @@ impl Lowerer {
                 continue;
             }
             if i < once {
-                self.push_once(name, s, e, &elem, b)?;
+                // (after the statement's first item the stream holds
+                // something, and its name is read as it was)
+                self.fed_here = (i > 0).then(|| name.to_string());
+                let pushed = self.push_once(name, s, e, &elem, b);
+                self.fed_here = None;
+                pushed?;
             }
         }
         let Some(c) = cond else { return Ok(()) };
         let grouped = &items[once..];
+        // (the rule's items come after the statement's first ones)
+        self.fed_here = (once > 0).then(|| name.to_string());
         let Some((e, before)) = grouped.split_last() else { return Ok(()) };
         // `(n) times`: the items worked out and pushed each time
         // round, whatever they are, a text and a range among them
@@ -12545,7 +12568,8 @@ impl Lowerer {
         if is_block(e) {
             return Err(block(e));
         }
-        let latest = if self.is_cell(name, b) { PushRead::Cell } else if self.unfed(name, b) { PushRead::LatestOr(s.clone(), s.ty.clone()) } else { PushRead::Latest(s.clone(), s.ty.clone()) };
+        // (an item pushed before the rule: the stream holds something)
+        let latest = if self.is_cell(name, b) { PushRead::Cell } else if once == 0 && self.may_hold_nothing(name, b) { PushRead::LatestOr(s.clone(), s.ty.clone()) } else { PushRead::Latest(s.clone(), s.ty.clone()) };
         // `until` (fm3 log 148): the item pushed, and then the
         // condition asked of it, `_` and the stream's own name both
         // the item just pushed; where it holds the loop leaves. The
@@ -12733,7 +12757,7 @@ impl Lowerer {
         }
         let zero_first = b.func.as_ref().is_some_and(|f| self.zero_first.contains(&f.ir));
         // (a stream whose latest is kept reads its field, fm3 log 177)
-        let zero_first = zero_first || self.unfed(name, b);
+        let zero_first = zero_first || self.may_hold_nothing(name, b);
         self.push_read = Some((name.to_string(), if self.is_cell(name, b) { PushRead::Cell } else if zero_first { PushRead::LatestOr(s.clone(), s.ty.clone()) } else { PushRead::Latest(s.clone(), s.ty.clone()) }));
         let want = if matches!(e.kind, ExprKind::List(_)) { Some(elem) } else { None };
         // an item of a push that happens once (fm3 question 79, log 163)
@@ -14040,6 +14064,10 @@ impl Lowerer {
         let none = Val { text: String::new(), ty: Ty::None, literal: false };
         match (w.as_str(), infix, rest) {
             ("count", false, []) => Ok(Some(self.count_of(&s, want, b, dst))),
+            // before a stream's first item `latest` reads as the zero
+            // of its type, as its name does (fm3 question 98, principle
+            // 3; log 227), whatever the stream is kept as
+            ("latest", false, []) if self.may_hold_nothing(&sname, b) => Ok(Some(self.latest_or_zero(&s, &ty, b, dst)?)),
             ("latest", false, []) => Ok(Some(self.latest_of(&s, &ty, b, dst)?)),
             ("peek", false, [Part::Word(at), arg]) if at == "at" => {
                 let Some(a) = one_arg(arg) else { return Ok(None) };

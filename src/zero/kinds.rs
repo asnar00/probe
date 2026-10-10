@@ -86,6 +86,22 @@ pub struct Named {
     pub from: Vec<usize>,
 }
 
+/// a stream's name standing as an operand of an operator, however deep
+/// in operators: the name and the operator
+fn stream_operand(e: &Expr) -> Option<(String, String)> {
+    match &e.kind {
+        ExprKind::Bin(op, l, r) if !op.starts_with('[') => [l, r].into_iter().find_map(|x| match &x.kind {
+            ExprKind::Seq(n) => Some((n.clone(), op.clone())),
+            _ => stream_operand(x),
+        }),
+        ExprKind::Neg(x) => match &x.kind {
+            ExprKind::Seq(n) => Some((n.clone(), "-".to_string())),
+            _ => stream_operand(x),
+        },
+        _ => None,
+    }
+}
+
 /// the words the lowering applies to a stream by its name (`stream_word`)
 const WORDS: [&str; 7] = ["count", "latest", "frame", "ended", "end", "position", "empty"];
 
@@ -282,6 +298,19 @@ impl Walk {
         let wants = if v.seq { "a sequence" } else { "one value" };
         match &mut v.init {
             Some(Init::Value(e)) => {
+                // an array given a stream's name as an operand (fm3
+                // question 97, principle 2: nothing meant for one kind
+                // is silently applied to the other; log 227)
+                if v.arr {
+                    if let Some((n, op)) = stream_operand(e).filter(|(n, _)| self.entry(n).is_some_and(|en| en.mark == Mark::Stream)) {
+                        let write = match self.source(v.line) {
+                            Some(l) if l.matches(&format!("{}$", n)).count() == 1 => format!(", `{}`", l.replace(&format!("{}$", n), &format!("frame {}$", n))),
+                            _ => String::new(),
+                        };
+                        let msg = format!("`{}$ {} ...` is one value, made from the latest item of '{}$', and '{}[]' is an array: a stream's name is its value now, and nothing of an array's is silently asked of a stream (fm3 questions 90 and 97). The array of what has arrived is `frame {}$`{}", n, op, n, v.name, n, write);
+                        self.refuse(v.line, msg);
+                    }
+                }
                 let mut named = Vec::new();
                 // what a word makes of a stream that is over, a `frame`,
                 // `behind`, a window, is all there; what a function

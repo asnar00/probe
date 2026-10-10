@@ -3,6 +3,8 @@ type token =
 
 int log$ << 100
 int seen$ << 0
+int none$
+int own$
 
 on (int n) << pushed()
     int i$ << 1 << 2 << 3
@@ -192,3 +194,10 @@ on (bool same) << framed before a ring wraps()
     advance x$ by (70)
     int back[] = x$ behind (1)
     same << got[] [==] [4, 5] and back[] [==] [70]
+
+on (int n) << latest before any()
+    n << latest none$ * 10 + count none$
+
+on (int n) << first of its own()
+    own$ << own$ + 1
+    n << own$ * 10 + count own$

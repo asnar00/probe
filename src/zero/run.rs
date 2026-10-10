@@ -1877,6 +1877,11 @@ mod tests {
         assert!(f("    int x$ << 1 << 2\n    int d$ = twice (x$)\n    n << count d$").is_ok());
         assert!(f("    int i$ << [1, 2, 3]\n    int a[] = frame i$\n    n << a[1] + [count] (a[]) + (a[] + _)").is_ok());
         // an array is given whole where it is declared, and never changes
+        // an array given a stream's name as an operand: refused,
+        // naming `frame` (fm3 question 97, principle 2; log 227)
+        refused("    int x$ << 1 << 2\n    int j[] = x$ * 2\n    n << j[] + _", "`x$ * ...` is one value, made from the latest item of 'x$', and 'j[]' is an array: a stream's name is its value now, and nothing of an array's is silently asked of a stream (fm3 questions 90 and 97). The array of what has arrived is `frame x$`, `int j[] = frame x$ * 2`");
+        refused("    int x$ << 1 << 2\n    int j[] = 1 + x$ * 2\n    n << j[] + _", "`x$ * ...` is one value");
+        assert!(f("    int x$ << 1 << 2\n    int j[] = frame x$ * 2\n    n << j[] + _").is_ok());
         refused("    int x$ << 1\n    int d[] = twice (x$)\n    n << [count] (d[])", "`int d[] = twice (x$)`: a task gives a stream, its items arriving, and 'd[]' is an array (fm3 question 90). Write `int d$ = ...`; the array of what has arrived in it is `frame d$`");
         refused("    int a[] << 1 << 2\n    n << [count] (a[])", "`int a[] << 1 << 2`: an array is given whole where it is declared, by `=`, and never pushed into (fm3 question 90). Write `int a[] = [...]`; what has first items and more to come is a stream, `int a$ << ...`");
         refused("    int a[] at (1 hz)\n    n << 0", "`int a[] at (1 hz)`: a rate is a stream's, and 'a[]' is an array, all there (fm3 question 90)");
