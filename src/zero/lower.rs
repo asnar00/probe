@@ -7761,6 +7761,12 @@ impl Lowerer {
         if sname == tname && clock.is_none() {
             return Err(lex::error(file, line, format!("'{}$' would feed itself", tname)));
         }
+        // a clock with no `if` would push for ever, and a run that
+        // never ends gives nothing: refused at its line (fm3 log 254,
+        // principle 8)
+        if clock.is_some() && only.is_none() && cond.is_none() {
+            return Err(lex::error(file, line, format!("'{}' is a clock, a line paced by its own stream's rate, with nothing to stop it: it would push for ever. A clock needs a way to stop, an `if`: `{} if ({}$ < 10) forever`", said, said, tname)));
+        }
         if clock.is_some() && cond.is_some() {
             return Err(lex::error(file, line, format!("'{}' is a clock, a line paced by its own stream's rate (fm3 question 80), and a clock is stopped by `if`, `{} if (...) forever`: with a count or `until` it is not built", said, said)));
         }

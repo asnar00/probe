@@ -27,4 +27,6 @@ fm3 question 80, log 217 and log 255. A clock is a line paced by its own stream'
 >waited() → "7\n" at 0 s, "8\n" at 1 s, "4" at 2 s
 
 ## hostile
+A clock with nothing to stop it is refused where it is compiled (fm3 log 254, principle 8): `tick$ << tick$ + 1 forever` over `int tick$ at (1 hz)` is "'tick$ << ...' is a clock, a line paced by its own stream's rate, with nothing to stop it: it would push for ever. A clock needs a way to stop, an `if`: `tick$ << ... if (tick$ < 10) forever`". It was "the lowered IR did not parse: use of undefined value '__bare'".
+
 A clock over a stream with no rate is refused as before: "a push into 'tick$' that reads 'tick$' and stands forever would never end: nothing else on its right paces it, and 'tick$' has no rate to".
