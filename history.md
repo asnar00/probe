@@ -4,6 +4,25 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: `time` is a structure declared in zero, and does only what is declared on it — `7dcff83` · 2026-10-10
+
+```
+type time =
+    int64 __steps
+
+on (time t) << (time a) + (time b)
+    t << time(a.__steps + b.__steps)
+```
+
+`src/zero/platform.zero:48-52`. `time` was one of the compiler's numbers, the IR's exact rational, so `beat + 1` gave `1.25 s` and `beat * beat` a time. Ash ruled (fm3 question 117) that it is a utility type declared with the language's own type features: the feature the language brings with it now declares the structure and the functions on it, `+` and `-` of two times, `*` by a number on either side, `/` by a number, `/` by a time giving a float, the four comparisons and the method that writes one, and those are all a time can do. The compiler keeps what no declaration can say: `250 ms` makes one, `x$ at (t)` takes one. To let the text say it, an operator may have a structure as either operand; an operator of the language's own is written in line where it is used and is never a function of the IR; `int64` meets an abstract `int` in `int64`; and a field whose name begins `__` is its feature's own, so no program reads the steps. A form with no function is refused listing what is declared, for any structure: `beat + 1` is "no '+' is defined on a time and an int: '+' on a time is `(time) + (time)`"; `int(t)` and `time t = 5` are refused naming `int(t / 1 s)` and `5 s`.
+
+```
+on a time added()
+    out$ << beat + 100 ms << " " << beat + beat
+```
+
+`suite/zero/types/times/times.zero:9-10`, which writes `350 ms 500 ms`. Before and after: `types`' `times written()` 10 568 → 948 counted as it ran, `whole seconds()` 2 305 → 400, its line now `int(t / 1 s)`; no other case of any store moved; the six tracked rows 502, 509, 929, 940, 988, 967 and the meter's 76 are where they were. A structure of one field costs what its field does, 3 and 3 on the tool for `(a + b) * k`. Every store with no time in it emits the text it did, byte for byte; `types` moved, and `streams` by two new functions. Zero 1014/1014 on four paths and 977/977 on air; `probe test` 1024, 1015, 1024, 1024, 987; `cargo test` 174.
+
 ### zero: `site_said` stands beside `CHECKED`, for a host that runs the module itself — `dfc3e5b` · 2026-10-08
 
 ```
