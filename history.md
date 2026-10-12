@@ -4,6 +4,26 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a turn taken ahead and taken back, held by the test: keeps-key with its clock and its sum far — `4a19703` · 2026-10-12
+
+```
+beat$ << beat$ + 1 if (beat$ < 6) forever
+sum$ << sum$ + beat$ forever
+log$ << beat$ forever
+```
+
+`suite/zero/keeps-key/bump/bump.zero:4-6`. `76df429` let far work ahead of a key and said a turn that would send more than text is taken back whole. No cut of restart has such a turn: far's turns there send text, or stop at a call that crosses. So that path ran in no test. This store has it, with the first two of these lines far and the key's function at the screen, `--far bump.zero:4,bump.zero:5`: each beat pushes into `log$`, a stored stream that `bumped by` reads at the screen, and a push that crosses is not text. `probe zero suite/zero/keeps-key placement --far bump.zero:4,bump.zero:5 --wire 100 ms --case 'begin() with in "k" at 2.25 s'`, rows of it:
+
+```
+100 ms  200 ms   screen → far  a telling: nothing for a time up to 100 ms                          for 0 s
+200 ms           far           takes back a turn it took ahead: it would have sent more than text  for 1 s
+1 s     1.1 s    screen → far  a telling: nothing for a time up to 1 s                             for 0 s
+1.1 s   1.2 s    far → screen  a push into a stored stream, made again where it is read            for 1 s
+1.1 s   1.2 s    far → screen  text "3\n"                                                          for 1 s
+```
+
+The case gives its own line, `306` at 2.25 s, with 7 pieces of 8 late, each as late as `0e3a586` had it: at this cut working ahead buys nothing and costs a turn tried for each beat. `far_works_ahead_of_a_key` now runs the store's three cases there and reads those rows. A test only: no text of any build moved, and the numbers of `76df429` stand. Full run `scratchpad/chain161.log`: 1 329 runs on four paths, 1 288 with 41 skipped on the GPU's, `cargo test` 203.
+
 ### zero: far works ahead of a key, and goes back: a copy before each turn taken untold, the screen's text kept in a queue and dropped where a key makes it void — `76df429` · 2026-10-12
 
 ```
