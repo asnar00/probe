@@ -4,7 +4,7 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
-### zero: the cut moved over a wire that takes time: the move's word, far's state, and a function partway handed across — `71939f6` · 2026-10-12
+### zero: the cut moved over a wire that takes time: the move's word, far's state, and a function partway handed across — `71939f6` · 2026-10-13
 
 ```
 int i$ at (1 hz)
