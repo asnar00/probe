@@ -4,6 +4,55 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a wire that takes time, with a key: far works on a time only when the screen has told it nothing earlier is coming — `0e3a586` · 2026-10-12
+
+```
+int i$ at (1 hz)
+out$ << (i$ << "\n") forever
+int seen$ = launches (in$)
+
+on launch()
+    count down()
+    out$ << "liftoff"
+
+on count down()
+    restart i$
+    i$ << [10 through 1]
+```
+
+`suite/zero/restart/restart/restart.zero:1-11`, the touchstone: a key on the input begins the countdown again. `dbac6ff` gave the wire between two places a delay and refused a store like this one, because here something comes from outside. hello has no input, so far may work its whole countdown out at once. restart's far cannot: it cannot know that no key was pressed at 2.9 s until the world's clock says 3 s.
+
+So a place works on what is for a time only when the other has told it nothing earlier is coming, and the screen's telling is bounded by the world's clock: the moment after now, at the input's rank, which is the first. It is an item of the wire, said when it frees far to take the turn it is waiting for. `probe zero suite/zero/restart run 'launch() with in "k" at 3.5 s' --far all --wire 100 ms`:
+
+```
+launch() with in "k" at 3.5 s
+→ "10\n9\n8\n7\n" at 1 hz, "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\nliftoff" at 1 hz from 3.5 s
+late: 15 pieces of 15, the most 200 ms
+  "10\n" for 0 s, shown at 200 ms, 200 ms late
+  "9\n" for 1 s, shown at 1.2 s, 200 ms late
+  "8\n" for 2 s, shown at 2.2 s, 200 ms late
+  "7\n" for 3 s, shown at 3.2 s, 200 ms late
+  "10\n" for 3.5 s, shown at 3.7 s, 200 ms late
+  "9\n" for 4.5 s, shown at 4.7 s, 200 ms late
+```
+
+and so on to `liftoff` for 13.5 s at 13.7 s. By its own times it is restart's own line; every piece is two delays late, one for the telling to cross and one for the text to come back. `placement --far all --wire 100 ms` has the wire's record:
+
+```
+1 s     1.1 s    screen → far  a telling: nothing for a time up to 1 s                   for 0 s
+1.1 s   1.2 s    far → screen  text "9\n"                                                for 1 s
+3.5 s   3.6 s    screen → far  a push into a stored stream, made again where it is read  for 3.5 s
+3.6 s   3.7 s    far → screen  text "10\n"                                               for 3.5 s
+```
+
+The key is a push into the input's stored stream at the screen, an item of the wire, and the line that reads it, `int seen$ = launches (in$)`, is given its turn where it arrives. With the key read at the screen and `launch` far, the touchstone's own cut, three pieces of fifteen are late. That is the safe bound. With far let to work ahead of the screen's telling, by a switch only `a_wire_takes_time_with_a_key` has, the first countdown's `6` is written for 4 s, after the key: working ahead needs far put back, which is not built.
+
+Three things the suite found. `going-two`'s `count down from (5) with in "k" at 2.5 s`, with `count down from` far, gave `10` before `2` at 3 s: of two functions partway at two places and due at one time the screen's went first, and the one started first was far. A cut that puts two functions that step at different places is now refused by name (fm3 question 155). A function wired over a stream is begun for an item only where it steps, and two characters handed to such a line in one turn, the first's function having crossed, stop the program (`__wonce`, fm3 question 156). And `suite/zero/zeroic`'s `int dl$ = doubled(lit$)`, far, never ran, its stream's first items having been pushed by nobody: far's lines that walk a stored stream are given their turn when the world begins.
+
+`PROBE_ZERO_CUTS=wire=100 probe zero test suite/zero` on wasm, a measurement: **14 of 47 stores hold every case at every cut by their own times, 29 at every cut that is not refused, none has a cut that runs and gives something else, 4 are not built for a wire; 650 cuts run and 272 refused; 29 678 of 29 678 runs.** 402 of the 650 cuts show nothing late and the most is 39.8 s. With no delay the same counts and nothing late. Of the 19 stores that have a case with a time, 9 and 9 and one not built: 216 cuts run, 37 refused, 5 297 of 5 297 runs. The eight proof stores on riscv64 and arm64 under qemu, 255 of 255; restart on the GPU's path, 30 of 30. The 272 refused: 183 a function still on the stack apart from what it calls, 30 the reader of a stored stream at both places, 21 a case's call of such a function far, 18 two functions that step at different places, 12 a field wider than a word, 8 a push of more than a word. The six rows are 478, 485, 920, 931, 939 and 918, and `irdiff.sh scratchpad/probe158` names nothing.
+
+---
+
 ### zero: a wire that takes time: a list a place, a call that crosses is the function's record put on the wire, and the world a function of the text — `dbac6ff` · 2026-10-12
 
 ```
