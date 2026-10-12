@@ -4,6 +4,74 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a wire that takes time: a list a place, a call that crosses is the function's record put on the wire, and the world a function of the text — `dbac6ff` · 2026-10-12
+
+```
+int i$ at (1 hz)
+out$ << (i$ << "\n") forever
+
+on run()
+    count down()
+    existing run()
+
+on count down()
+    i$ << [10 through 1]
+```
+
+`suite/zero/hello/countdown/countdown.zero:1-9`, hello's countdown, not a character changed. Hops forty-five and forty-six ran it at two places with a wire that takes no time, at a fixed cut and at one moved while it counts. This gives the wire a delay, said on the command line: `probe zero suite/zero/hello run 'run()' --far all --wire 100 ms`.
+
+```
+run()
+→ "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\n" at 1 hz, "hello world\ngoodbye" at 10 s
+late: 1 piece of 12, the most 200 ms
+  "10\n" for 0 s, shown at 200 ms, 200 ms late
+```
+
+There are two times, and only one is the program's. The time of a thing is what the case's line says, and a wire adds nothing to it: the first line is the case by its own times and is what is compared with the case. The world has a clock too, the runner's: a thing put on the wire when it says w comes out at w + d, a place acts only on what has reached it, and a piece of text is shown at the later of its time and when it reached the screen. Here the call arrives far at 100 ms, far works the whole countdown out, all of it is at the screen at 200 ms, and every piece but the first is kept until its time. With only `hello` far the countdown is on time and `hello world` and `goodbye` are 200 ms late; with `count down` far and the line that writes its numbers at the screen, the `10` again.
+
+It is a further build beside the placed one, `Store.wire`, and three things are different in it.
+
+**A list a place** (fm3 question 150's B). The lowering writes the things going on as `__list_next`, the time of the earliest and its rank in the order they were started, and `__list_turn`, in place of `__turns`; each place has its own words, and a clock is on the list of the place its line is at.
+
+**A call that crosses is the function's record put on the wire.** `turns::rewrite_wire` writes every function a turn can reach that is a unit's, and whatever calls one on the way, as continuations over the pool, as hop thirty-nine did for a function that steps. A call nested where no place is held is first put out as a function of its own, so the shapes held stay three: hello's `if _2 / __edge1(_3)` inside its loop is `count_down__o1`:
+
+```
+fn count_down__o1__0(__a: index) -> i64
+    __s1: ptr = addr __act_count_down__o1___2
+    __s2: u8 = load __s1, __a, 8
+    _2: u1 = cmp.ne __s2, 0
+    __s3: ptr = addr __act_count_down__o1___3
+    _3: int = load __s3, __a, 8
+    if _2
+        __s4: ptr = addr __act___edge1____item
+        store _3, __s4, __a, 8
+        __s5: ptr = addr __act_to___edge1
+        store 15: i64, __s5, __a, 8
+        ret 12
+```
+
+and where the continuation to go on with is at the other place, the record goes there:
+
+```
+    loop(c: i64 = k)
+        here: u1 = __act_here(c)
+        if here
+        else
+            __act_send(__a, c)
+            break
+        n: i64 = __act_go(__a, c)
+```
+
+So nothing waits on the machine's stack, and a place's whole state is its context, its streams and its half of the pool. An edge at the other place is such a call too, its end coming back: with nothing waited for, `suite/zero/keeps`' line 4 would have its `2` at the screen before the `3 ` that line 5 writes far (fm3 question 154). Text for the output and a push into a stored stream are one way.
+
+**The world is a function of the text**, `__world`, the only caller of `context_set`, called by a case's twin. It hands over what the wire holds when the world's clock reaches the time it arrives, lets a place take the earliest turn it has, has each place say where it stands when it can do no more, and moves its clock on. A place takes a turn only when the other has had everything it was sent and has told it, by an item of the wire, that it will begin nothing earlier; a telling carries the time and the rank, so a clock far and written first goes before a function at the screen due at the same time. A field of the context the cut says crosses goes with a record and with a telling, and only where its sender has changed it since it last sent or was sent it. With the screen let to take its turn untold, by a switch only `a_wire_takes_time` has, `keeps`' `begin()` with its clock far writes `go` before `1 1`.
+
+`PROBE_ZERO_CUTS=wire=100 probe zero test suite/zero`, a measurement: **16 of 47 stores hold every case at every cut by their own times, 23 at every cut that is not refused, none has a cut that runs and gives something else, 8 are not built for a wire; 604 cuts run and 228 refused, 27 744 of 27 744 runs.** 354 of the 604 cuts show nothing late; the most any piece is late is 39.8 s, `words`, a loop of calls two delays each. With `wire` alone, no delay, the same counts and nothing late anywhere. The same on the JIT; the five proof stores on riscv64 and arm64 under qemu, 180 of 180; hello on the GPU's path, 64 of 64, there being no recursion in it. What is refused, by name: 168 cuts that would put a function still on the stack apart from what it calls, one that is handed, gives or keeps more than a word across a call; 20 a case's call of such a function, far; 12 a field wider than a word; 8 a push of more than a word; 20 the reader of a stored stream at both places, as before. A store whose input arrives at a time is refused until the next commit.
+
+hello's `run` as `probe count` counts it in this build: 28 551 with nothing far and 22 636 with everything far at no delay, 35 481 and 24 667 at 100 ms, against 939 plain and 3 498 built to move. The world's loop is most of it, 23 279 of the 28 551: every pass asks each place what it has. None of it is in a plain build: `scratchpad/irdiff.sh scratchpad/probe157` names nothing, a placed build and a build that moves are the texts they were, and the six rows are 478, 485, 920, 931, 939 and 918.
+
+---
+
 ### zero: an array or a string is copied where the wire is crossed, and 39 cuts are no longer refused — `6584735` · 2026-10-12
 
 ```
