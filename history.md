@@ -4,6 +4,30 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the cut, one program at two places: the placed build, the wire, and every case at every cut — `65ad350` · 2026-10-12
+
+```
+int i$ at (1 hz)
+out$ << (i$ << "\n") forever
+
+on run()
+    count down()
+    existing run()
+
+on count down()
+    i$ << [10 through 1]
+```
+
+`suite/zero/hello/countdown/countdown.zero`, whole, and not a character of it changed. ash, 12 October: "I would do the cut now and prove it out on a much simpler example than FTR- something on the scale of hello world". A cut is a split of one unchanged program between two places, and this is the first hop of it: a fourth way to build a store, the *placed build* (`Store.places`), in which the program runs at two places in one process, `screen`, the store's first context, which has the output, the input and the list of things going on, and `far`, its second, which has no device, each with memory of its own. A unit is a function or a line that stands, named by where it is written: hello has seven, the three definitions of `run`, `hello`, `count down`, `goodbye` and line 2 above. `probe zero suite/zero/hello run 'run()' --fast --far 'count down'` gives hello's own line, `"10\n9\n8\n7\n6\n5\n4\n3\n2\n1\n" at 1 hz, "hello world\ngoodbye" at 10 s`, with `count down` far and line 2 at the screen; so do `--far 'count down,countdown.zero:2'`, `--far all` and every other cut the runner tries.
+
+`src/zero/places.rs`, 905 lines, rewrites the finished text, as `turns.rs` does. The finished text has one way to reach state, a field of the context through `context()`, and one way to leave a function, `ret`: so a unit's function gets a line at its head that asks the wire for its own place and a line before each `ret` that asks for its caller's; the platform's two writes ask for the screen; a push into a stored stream is made again at the other place where the stream is read there; and `__wire(to)`, the only caller of `context_set` in such a build, carries the time and each field the cut says crosses. Which fields those are is read off the text: for every function, which fields of the context it gets and sets, and a field crosses in a direction where it is written at the place left and read or written at the place arrived at. The cut itself is data, a table `__cut` the runner fills by calls before the case as it sets a feature's switch, so one compiled program runs at every cut, and on every path with no driver changed. A function left at its steps (`turns.rs`) has its record in the pool copied into far's half when a continuation placed far is entered, and back when it returns. `probe zero <store> placement [--far <units>]` prints every unit and where it runs and every crossing with what it carries; `emit places` prints the build.
+
+`PROBE_ZERO_CUTS=1 probe zero test` runs every case again with every unit far and with each unit alone far and holds it to the case's own line. hello, restart (the key crosses one way and the text the other), `going-keys`, `going-two` and `going-mix`: 39 cuts, 214 runs, all hold, on the JIT, wasm, riscv64, arm64 under qemu and the GPU. Over the suite on the JIT, a measurement: **21 of 46 stores hold every case at every cut**; the other 25 hold at every cut that is not refused, 851 cuts run and 136 refused by name, and 43 993 of 43 993 runs at a cut give the case's own line. A cut is refused where it would carry an address, an array or a stream handed between two places, or would put one reader of a stored stream at both. Each place's memory is its own: in `a_place_has_memory_of_its_own`, with one field or one stream deliberately not carried, a read far gives 0 where the case says 7, and restart's key never arrives.
+
+A plain build is what it was: `scratchpad/irdiff.sh scratchpad/probe153` names no store, and the six rows of the parity table are 478, 485, 920, 931, 939 and 918. Under `places` `lower.rs` writes no unit's lines inside another's function and hands the rewrite its table of units; that is all it does. A crossing costs 74 as `probe count` counts hello's `run`: placed with nothing far 1 736, the countdown far 3 374, everything far 5 594, against the plain build's 939. The full run, `scratchpad/chain151.log`: 1 322 runs on four paths, 1 281 on the GPU's, `cargo test` 197. fm3 `cut.md` is the design note, with what moving the cut while the program runs will need.
+
+---
+
 ### zero: a parameter of any name in a function left at its steps, and a case's function named as the library names one — `ce7482a` · 2026-10-12
 
 ```
