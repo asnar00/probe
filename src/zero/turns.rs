@@ -361,7 +361,7 @@ fn is_context(s: &Stmt) -> bool {
 }
 
 /// a value a column of the pool can hold: one word or less
-fn word(ty: &str) -> bool {
+pub(super) fn word(ty: &str) -> bool {
     let sized = |p: &str| ty.strip_prefix(p).map_or(false, |n| matches!(n, "1" | "8" | "16" | "32" | "64"));
     matches!(ty, "int" | "uint" | "index" | "size" | "ptr") || sized("i") || sized("u")
 }
@@ -949,4 +949,430 @@ pub fn rewrite(ir: &str, moved: bool) -> Option<String> {
         out.push('\n');
     }
     Some(out)
+}
+
+/// how many items the wire holds one way (fm3 log 269): the pool has
+/// a row for each, where a record in flight is
+pub(super) const WIRE_Q: usize = 256;
+
+/// a store whose input arrives at a time is built for a wire (fm3
+/// log 269, transformation 162)
+const WIRE_INPUT: bool = false;
+
+/// every name a line of a function's body defines, with its type: a
+/// plain definition, and a loop's own
+fn scope_defs(head: &str) -> Vec<(String, String)> {
+    let mut out = defs(head);
+    if let Some(at) = head.find("loop(") {
+        if head.ends_with(')') || head[at..].contains(") bound ") || head[at..].rfind(')').is_some() {
+            out.extend(loop_params(&head[at..]).into_iter().map(|(n, t, _)| (n, t)));
+        }
+    }
+    out
+}
+
+/// A call nested where the rewrite holds no place, an `if` in an `if`
+/// or an `if` in a loop (fm3 log 269), is put out as a function of its
+/// own: handed what it reads, giving what it makes that is read after.
+/// The shapes held stay three. One statement of one function at a
+/// time: the body with the call of the new function in its place, and
+/// the new function's lines; nothing where every statement is held
+fn outline(f: &Func, r: &BTreeSet<String>, n: usize) -> Result<Option<(Vec<String>, Vec<String>, String)>, String> {
+    let shape = |what: &str| format!("`{}` has a call or a step where no place is held yet (fm3 question 139): {}", f.name, what);
+    let ss = stmts(&f.body, 1);
+    let mut at = 0;
+    for s in &ss {
+        let first = at;
+        at += s.lines.len();
+        if kind(s, 1, r, true).is_some() {
+            continue;
+        }
+        let head = s.head();
+        if !(head.starts_with("loop(") || head.starts_with("if ")) {
+            return Err(shape(head));
+        }
+        // the statements a level in, of the loop's body or of both branches
+        let mut i = 1;
+        while i < s.lines.len() {
+            if depth(&s.lines[i]) != 2 {
+                i += 1;
+                continue;
+            }
+            let mut j = i + 1;
+            while j < s.lines.len() && (depth(&s.lines[j]) > 2 || depth(&s.lines[j]) == 2 && s.lines[j].trim() == "else") {
+                j += 1;
+            }
+            let child = Stmt { lines: s.lines[i..j].to_vec() };
+            let held = !child.lines.iter().any(|l| leaves(l, r)) || matches!(kind(&child, 2, r, true), Some(Kind::Plain | Kind::At(_)));
+            if held {
+                i = j;
+                continue;
+            }
+            // what leaves a function cannot be put out of it
+            let mut loops: Vec<usize> = Vec::new();
+            for l in &child.lines {
+                let (d, t) = (depth(l), l.trim());
+                loops.retain(|n| *n < d);
+                if t == "ret" || t.starts_with("ret ") {
+                    return Err(shape("a `ret` beneath it"));
+                }
+                if (t == "break" || t.starts_with("break ") || t == "continue" || t.starts_with("continue ")) && loops.is_empty() {
+                    return Err(shape("a `break` or a `continue` of a loop around it"));
+                }
+                if t.contains("loop(") {
+                    loops.push(d);
+                }
+            }
+            let (a, b) = (first + i, first + j);
+            let mut before: Vec<(String, String)> = f.params.clone();
+            for l in &f.body[..a] {
+                before.extend(scope_defs(l.trim()));
+            }
+            let own: Vec<(String, String)> = child.lines.iter().flat_map(|l| scope_defs(l.trim())).collect();
+            let mut params: Vec<(String, String)> = Vec::new();
+            let mut this = false;
+            for l in &child.lines {
+                for (_, tok) in tokens(l) {
+                    if tok == "_this" {
+                        this = true;
+                    } else if let Some((pn, pt)) = before.iter().find(|(pn, _)| pn == tok) {
+                        if !own.iter().any(|(o, _)| o == tok) && !params.iter().any(|(q, _)| q == tok) {
+                            params.push((pn.clone(), pt.clone()));
+                        }
+                    }
+                }
+            }
+            let outs: Vec<(String, String)> = defs(child.head()).into_iter().filter(|(o, _)| f.body[b..].iter().any(|l| names(l, o))).collect();
+            if let Some((pn, pt)) = params.iter().chain(&outs).find(|(_, t)| !word(t)) {
+                return Err(format!("`{}` keeps `{}`, a `{}`, across a call that may cross, and a place of the pool holds a word", f.name, pn, pt));
+            }
+            let name = format!("{}__o{}", f.name, n);
+            let mut text = vec![format!("fn {}({}){}", name, params.iter().map(|(pn, pt)| format!("{}: {}", pn, pt)).collect::<Vec<_>>().join(", "), match outs.len() {
+                0 => String::new(),
+                1 => format!(" -> {}", outs[0].1),
+                _ => format!(" -> ({})", outs.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>().join(", ")),
+            })];
+            if this {
+                text.push("    _this: ptr = context()".to_string());
+            }
+            text.extend(child.lines.iter().map(|l| l[4..].to_string()));
+            text.push(if outs.is_empty() { "    ret".to_string() } else { format!("    ret {}", outs.iter().map(|(o, _)| o.clone()).collect::<Vec<_>>().join(", ")) });
+            let call = format!("        {}{}({})", if outs.is_empty() { String::new() } else { format!("{} = ", outs.iter().map(|(o, t)| format!("{}: {}", o, t)).collect::<Vec<_>>().join(", ")) }, name, params.iter().map(|(pn, _)| pn.clone()).collect::<Vec<_>>().join(", "));
+            let mut body = f.body[..a].to_vec();
+            body.push(call);
+            body.extend(f.body[b..].iter().cloned());
+            return Ok(Some((body, text, name)));
+        }
+        return Err(shape(head));
+    }
+    Ok(None)
+}
+
+/// the function a call was put out of, `f` for `f__o3`: it is the one
+/// left as written where what was put out is not held either
+fn parent(name: &str) -> String {
+    let mut b = name;
+    while let Some((x, n)) = b.rsplit_once("__o") {
+        if n.is_empty() || !n.chars().all(|c| c.is_ascii_digit()) {
+            break;
+        }
+        b = x;
+    }
+    b.to_string()
+}
+
+/// The rewrite for a build whose wire takes time (fm3 cut.md, "a wire
+/// that takes time"; log 269). Nothing may wait on the machine's stack
+/// for something that crosses, so a call of a unit's function is a
+/// place its caller is left at, as a step is: every function a turn
+/// can reach that is a unit's and takes and gives words is written as
+/// continuations, and so is whatever calls one on the way there. A
+/// turn begins where the list calls a clock's line or a line at the
+/// close of a slot, where a case's twin calls its function, and where
+/// a function wired over a stream is called for an item. A record
+/// takes a place of the pool where it begins or arrives and gives it
+/// up where it is over or leaves; `__act_here` and `__act_send`, the
+/// placed build's, say whether the continuation to go on with is at
+/// this place and put the record on the wire where it is not. Why, by
+/// name, where a function's shape is not held
+pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>) -> Result<String, String> {
+    if ir.matches("data __ctx_mem: array(__ctx, 2)").count() != 1 {
+        return Err("the store keeps no context: nothing in it can be placed".into());
+    }
+    if !WIRE_INPUT && ir.contains("\nfn __in_turn(") {
+        return Err("its input arrives at a time, which is something from outside: a place may then work on a time only when the other has told it nothing earlier is coming, and that is built next".into());
+    }
+    let mut ir = ir.to_string();
+    let mut helpers: BTreeSet<String> = BTreeSet::new();
+    // what is a continuation: found, and found again as calls are put out
+    // a function whose shape is not held, or that keeps more than a
+    // word across a call, stays on the machine's stack, and what it
+    // calls is then bound to its place: found by trying
+    let mut left: BTreeSet<String> = BTreeSet::new();
+    let candidates = |fns: &[Func], helpers: &BTreeSet<String>, left: &BTreeSet<String>| -> (BTreeSet<String>, Vec<(String, String)>) {
+        let by: HashMap<&str, &Func> = fns.iter().map(|f| (f.name.as_str(), f)).collect();
+        // (a name with several definitions, one a type, is the IR's to choose among: it stays as written)
+        let plain = |f: &Func| f.params.iter().all(|(_, t)| word(t)) && f.rets.iter().all(|t| word(t)) && !left.contains(&f.name) && fns.iter().filter(|g| g.name == f.name).count() == 1;
+        // the functions from which a step or a unit's function is reached
+        let mut need: BTreeSet<String> = fns.iter().filter(|f| units.contains(&f.name) || helpers.contains(&f.name)).map(|f| f.name.clone()).collect();
+        loop {
+            let more: Vec<String> = fns.iter().filter(|f| !need.contains(&f.name) && !matches!(f.name.as_str(), "__step" | "__wait" | "__turns") && f.body.iter().any(|l| called(l).iter().any(|c| *c == "__step" || need.contains(*c)))).map(|f| f.name.clone()).collect();
+            if more.is_empty() {
+                break;
+            }
+            need.extend(more);
+        }
+        let mut starts: Vec<(String, String)> = Vec::new();
+        for f in fns {
+            let targets: Vec<String> = f.body.iter().flat_map(|l| called(l)).map(str::to_string).collect();
+            for g in targets {
+                let Some(callee) = by.get(g.as_str()) else { continue };
+                let begins = f.name.starts_with("__whole_") && g.starts_with("__case_") || f.name == "__list_turn" && need.contains(&g) && g != "__in_turn" || wired(f).is_some_and(|e| e == g);
+                if begins && plain(callee) && !starts.contains(&(f.name.clone(), g.clone())) {
+                    starts.push((f.name.clone(), g));
+                }
+            }
+        }
+        let mut r: BTreeSet<String> = BTreeSet::new();
+        let mut todo: Vec<String> = starts.iter().map(|(_, g)| g.clone()).collect();
+        while let Some(g) = todo.pop() {
+            let Some(f) = by.get(g.as_str()) else { continue };
+            if !need.contains(&g) && !g.starts_with("__case_") || !plain(f) || !r.insert(g.clone()) {
+                continue;
+            }
+            todo.extend(f.body.iter().flat_map(|l| called(l)).map(str::to_string));
+        }
+        (r, starts)
+    };
+    let original = ir.clone();
+    let (mut lines, fns, r, starts, mut m, order, mut text);
+    let mut tries = 0;
+    'again: loop {
+        tries += 1;
+        if tries > 200 {
+            return Err("its functions could not be settled".into());
+        }
+        ir = original.clone();
+        helpers.clear();
+        for _ in 0..400 {
+            let (ls, fs) = parse(&ir);
+            let (r0, _) = candidates(&fs, &helpers, &left);
+            let mut put: Option<(usize, usize, Vec<String>, Vec<String>, String)> = None;
+            for f in fs.iter().filter(|f| r0.contains(&f.name)) {
+                match outline(f, &r0, helpers.len() + 1) {
+                    Ok(Some((body, t, name))) => {
+                        put = Some((f.at.0, f.at.1, body, t, name));
+                        break;
+                    }
+                    Ok(None) => {}
+                    // (a function put out of another is that other's: it is the one left as written)
+                    Err(_) => {
+                        left.insert(parent(&f.name));
+                        continue 'again;
+                    }
+                }
+            }
+            let Some((a, b, body, t, name)) = put else { break };
+            helpers.insert(name);
+            let mut out: Vec<String> = ls[..=a].to_vec();
+            out.extend(body);
+            out.extend(t);
+            out.extend(ls[b..].iter().cloned());
+            ir = out.join("\n");
+            ir.push('\n');
+        }
+        let (ls, fs) = parse(&ir);
+        let (r1, st) = candidates(&fs, &helpers, &left);
+        if st.is_empty() {
+            return Err("no case of it calls a function".into());
+        }
+        // (the functions are leaked for the life of the rewrite, which is one command)
+        let fs: &'static [Func] = Box::leak(fs.into_boxed_slice());
+        let r1: &'static BTreeSet<String> = Box::leak(Box::new(r1));
+        let by1: HashMap<String, &Func> = fs.iter().map(|f| (f.name.clone(), f)).collect();
+        // a function called with a value of another type than its
+        // parameter's is one the IR makes anew for that type (`int`
+        // handed an `i64`): it stays as written
+        for f in fs.iter().filter(|f| r1.contains(&f.name)) {
+            let mut types: HashMap<String, String> = f.params.iter().cloned().collect();
+            for l in &f.body {
+                types.extend(scope_defs(l.trim()));
+            }
+            for l in &f.body {
+                let Some((d, g, args)) = call_of(l.trim()) else { continue };
+                let Some(callee) = by1.get(&g).filter(|_| r1.contains(&g)) else { continue };
+                let odd = args.iter().zip(&callee.params).any(|(a, (_, pt))| types.get(a).is_some_and(|t| t != pt)) || d.iter().zip(&callee.rets).any(|((_, t), rt)| t != rt) || args.len() != callee.params.len();
+                if odd {
+                    left.insert(parent(&g));
+                    continue 'again;
+                }
+            }
+        }
+        let mut m1 = Maker { r: r1, fns: by1.clone(), ids: HashMap::new(), fields: Vec::new(), tmp: 0, held: BTreeSet::new(), here: 0, ifs: true };
+        let mut order1: Vec<(bool, String, usize)> = Vec::new();
+        for g in r1.iter() {
+            let f = by1[g];
+            let mut n = 0;
+            order1.push((false, g.clone(), 0));
+            for s in &stmts(&f.body, 1) {
+                let Some(k) = kind(s, 1, r1, true) else {
+                    left.insert(parent(g));
+                    continue 'again;
+                };
+                match k {
+                    Kind::Plain => {}
+                    Kind::At(_) => {
+                        n += 1;
+                        order1.push((false, g.clone(), n));
+                    }
+                    Kind::Loop(_, ps) => {
+                        for _ in ps.iter().flatten() {
+                            n += 1;
+                            order1.push((true, g.clone(), n));
+                        }
+                    }
+                    Kind::If(_, ps, ..) => {
+                        for _ in ps.iter().flatten() {
+                            n += 1;
+                            order1.push((false, g.clone(), n));
+                        }
+                    }
+                }
+            }
+        }
+        order1.sort_by_key(|(inner, ..)| !*inner);
+        for (k, (_, g, n)) in order1.iter().enumerate() {
+            m1.ids.insert((g.clone(), *n), k as i64 + 2);
+        }
+        let mut text1: Vec<String> = Vec::new();
+        for g in r1.iter() {
+            let f = by1[g];
+            m1.fields.push((m1.to(g), "i64".into()));
+            for (k, t) in f.rets.iter().enumerate() {
+                m1.fields.push((m1.res(g, k), t.clone()));
+            }
+            let before = m1.fields.len();
+            let made = m1.make(f);
+            // more than a word kept across a place: the function is left as written
+            if made.is_none() || m1.fields[before..].iter().any(|(_, t)| !word(t)) {
+                left.insert(parent(g));
+                continue 'again;
+            }
+            text1.extend(made.unwrap());
+        }
+        (lines, fns, r, starts, m, order, text) = (ls, fs, r1, st, m1, order1, text1);
+        break;
+    }
+    let by: HashMap<String, &Func> = fns.iter().map(|f| (f.name.clone(), f)).collect();
+    let ended = ir.contains("    __ended: u1\n");
+    text.push("\n; the continuation of this number (fm3 log 232), which gives the one to go on with: 0, it stopped at a step; 1, the activity is over".into());
+    text.push("fn __act_go(__a: index, k: i64) -> i64".into());
+    for (_, g, n) in &order {
+        let id = m.ids[&(g.clone(), *n)];
+        text.push(format!("    is{id}: u1 = cmp.eq k, {id}\n    if is{id}\n        n{id}: i64 = {g}__{n}(__a)\n        ret n{id}", id = id, g = g, n = n));
+    }
+    text.push("    ret 1".into());
+    let over = if ended { "\n        e: __ctx = load _this\n        gone: u1 = get e, __ended\n        if gone\n            e2: __ctx = set e, __ended, 0\n            store e2, _this\n            store {never}: i64, dp, __a, 8\n            store 0: i64, pp, __a, 8\n            break".replace("{never}", &NEVER.to_string()) } else { String::new() };
+    text.push(format!("\n; a function partway goes on from a continuation until one stops at a step, or it is over, which a `restart` that ended it also says, or the one to go on with is at the other place (fm3 log 269): then its record is put on the wire. Over or gone, its place in the pool is free\nfn __act_run(__a: index, k: i64)\n{this}    dp: ptr = addr __act_due\n    pp: ptr = addr __act_pc\n    loop(c: i64 = k)\n        here: u1 = __act_here(c)\n        if here\n        else\n            __act_send(__a, c)\n            break\n        n: i64 = __act_go(__a, c){over}\n        on: u1 = cmp.gt n, 1\n        if on\n        else\n            done: u1 = cmp.eq n, 1\n            if done\n                store {never}: i64, dp, __a, 8\n                store 0: i64, pp, __a, 8\n            break\n        continue n\n    ret", this = if ended { "    _this: ptr = context()\n" } else { "" }, over = over, never = NEVER));
+    text.push(format!("\n; the pool's word of the list: the least time any function partway at this place is due and which that is, of two at one time the first to have begun or arrived here (fm3 questions 121 and 155)\nfn __act_next()\n    _this: ptr = context()\n    x: __ctx = load _this\n    n: index = get x, __act_n\n    cm: ptr = addr __ctx_mem\n    second: u1 = cmp.ne _this, cm\n    sw: index = conv second\n    base: index = mul sw, {pool}\n    top: index = add base, n\n    dp: ptr = addr __act_due\n    bp: ptr = addr __act_born\n    loop(k: index = base, b: i64 = {never}, i: index = base, o: i64 = 0)\n        done: u1 = cmp.ge k, top\n        if done\n            y: __ctx = load _this\n            y2: __ctx = set y, __due_act, b\n            y3: __ctx = set y2, __act_i, i\n            store y3, _this\n            break\n        d: i64 = load dp, k, 8\n        w: i64 = load bp, k, 8\n        sooner: u1 = cmp.lt d, b\n        same: u1 = cmp.eq d, b\n        older: u1 = cmp.lt w, o\n        tie: u1 = and same, older\n        live: u1 = cmp.lt d, {never}\n        tied: u1 = and tie, live\n        less: u1 = or sooner, tied\n        b2: i64 = if less\n            yield d\n        else\n            yield b\n        i2: index = if less\n            yield k\n        else\n            yield i\n        o2: i64 = if less\n            yield w\n        else\n            yield o\n        k2: index = add k, 1\n        continue k2, b2, i2, o2\n    ret", never = NEVER, pool = POOL));
+    text.push("\n; the pool's turn: the function that is due goes on\nfn __act_turn()\n    _this: ptr = context()\n    x: __ctx = load _this\n    i: index = get x, __act_i\n    pp: ptr = addr __act_pc\n    k: i64 = load pp, i, 8\n    __act_run(i, k)\n    __act_next()\n    ret".into());
+    text.push(format!("\n; a place of this place's half of the pool (fm3 log 269): one given up, or the next never used; and the order it came in\nfn __act_slot() -> index\n    _this: ptr = context()\n    x: __ctx = load _this\n    n: index = get x, __act_n\n    cm: ptr = addr __ctx_mem\n    second: u1 = cmp.ne _this, cm\n    sw: index = conv second\n    base: index = mul sw, {pool}\n    top: index = add base, n\n    pp: ptr = addr __act_pc\n    found: index = loop(k: index = base)\n        done: u1 = cmp.ge k, top\n        if done\n            break k\n        pc: i64 = load pp, k, 8\n        free: u1 = cmp.eq pc, 0\n        if free\n            break k\n        k2: index = add k, 1\n        continue k2\n    fresh: u1 = cmp.eq found, top\n    if fresh\n        room: u1 = cmp.lt n, {pool}\n        check room\n        n2: index = add n, 1\n        y: __ctx = load _this\n        y2: __ctx = set y, __act_n, n2\n        store y2, _this\n    z: __ctx = load _this\n    b: i64 = get z, __act_b\n    b2: i64 = add b, 1\n    z2: __ctx = set z, __act_b, b2\n    store z2, _this\n    bp: ptr = addr __act_born\n    store b, bp, found, 8\n    ret found", pool = POOL));
+    let mut made: BTreeSet<String> = BTreeSet::new();
+    for (caller, g) in &starts {
+        if !r.contains(g) {
+            continue;
+        }
+        let f = by[g];
+        if made.insert(g.clone()) {
+            let params: Vec<String> = f.params.iter().map(|(n, t)| format!("{}: {}", n, t)).collect();
+            let mut s = format!("\n; a function begins (fm3 log 232, 269): a place in the pool, its parameters, and {}\nfn __act_start_{g}({params}) -> index\n    __a: index = __act_slot()\n", if g.starts_with("__case_") { "its first turn when the world gives it one: it is a case's call, due now" } else { "its first turn at once" }, g = g, params = params.join(", "));
+            let mut ls = Vec::new();
+            m.tmp = 0;
+            for (n, t) in &f.params {
+                let col = m.field(g, n, t);
+                m.write(&col, n, t, "    ", &mut ls);
+            }
+            let col = m.to(g);
+            m.write(&col, "1", "i64", "    ", &mut ls);
+            m.write("__act_pc", &m.ids[&(g.clone(), 0)].to_string(), "i64", "    ", &mut ls);
+            s.push_str(&ls.join("\n"));
+            if g.starts_with("__case_") {
+                s.push_str("\n    __c: ptr = context()\n    __x: __ctx = load __c\n    __now: i64 = get __x, __clock\n    __dp: ptr = addr __act_due\n    store __now, __dp, __a, 8\n    __act_next()\n    ret __a");
+            } else {
+                s.push_str(&format!("\n    __act_run(__a, {})\n    __act_next()\n    ret __a", m.ids[&(g.clone(), 0)]));
+            }
+            text.push(s);
+        }
+        let c = by[caller];
+        let mut n = 0;
+        for k in c.at.0 + 1..c.at.1 {
+            if let Some((d, name, args)) = call_of(lines[k].trim()) {
+                if name == *g {
+                    if !d.is_empty() {
+                        return Err(format!("`{}` is begun by `{}`, which waits for what it gives", g, caller));
+                    }
+                    n += 1;
+                    let pad = lines[k][..lines[k].len() - lines[k].trim_start().len()].to_string();
+                    lines[k] = format!("{}__act_w{}_{}: index = __act_start_{}({})", pad, made.len(), n, g, args.join(", "));
+                }
+            }
+        }
+    }
+    if let Some((_, t)) = m.fields.iter().find(|(_, t)| !word(t)) {
+        return Err(format!("a function keeps a `{}` across a call that may cross or a step, and a place of the pool holds a word", t));
+    }
+    let kept: BTreeSet<String> = {
+        let mut kept = BTreeSet::new();
+        let mut todo: Vec<String> = fns.iter().filter(|f| !r.contains(&f.name)).flat_map(|f| lines[f.at.0 + 1..f.at.1].iter().flat_map(|l| called(l)).map(str::to_string).collect::<Vec<_>>()).filter(|c| r.contains(c)).collect();
+        while let Some(g) = todo.pop() {
+            if kept.insert(g.clone()) {
+                todo.extend(by[&g].body.iter().flat_map(|l| called(l)).filter(|c| r.contains(*c)).map(str::to_string));
+            }
+        }
+        kept
+    };
+    // nothing of the program left as it was written may wait on the
+    // machine's stack: a unit's function still on it that reaches a
+    // step, or a continuation that calls one of the language's own
+    // that waits
+    let mut waits: BTreeSet<String> = BTreeSet::new();
+    loop {
+        let more: Vec<String> = fns.iter().filter(|f| !waits.contains(&f.name) && !matches!(f.name.as_str(), "__step" | "__wait" | "__list_turn" | "__turns") && lines[f.at.0 + 1..f.at.1].iter().any(|l| called(l).iter().any(|c| *c == "__step" || *c == "__wait" || waits.contains(*c)))).map(|f| f.name.clone()).collect();
+        if more.is_empty() {
+            break;
+        }
+        waits.extend(more);
+    }
+    for f in fns.iter() {
+        if r.contains(&f.name) {
+            if let Some(c) = f.body.iter().flat_map(|l| called(l)).find(|c| waits.contains(*c) && !r.contains(*c)) {
+                return Err(format!("`{}` calls `{}`, which waits on the machine's stack", f.name, c));
+            }
+        }
+        if (units.contains(&f.name) || f.name.starts_with("__case_")) && (!r.contains(&f.name) || kept.contains(&f.name)) && waits.contains(&f.name) {
+            return Err(format!("`{}` keeps the machine's stack across a step of a rate: it is handed, or gives, more than a word, or is called by a function that is", f.name));
+        }
+    }
+    let mut out = String::new();
+    let gone: Vec<(usize, usize)> = fns.iter().filter(|f| r.contains(&f.name) && !kept.contains(&f.name)).map(|f| f.at).collect();
+    let rows = 2 * POOL + 2 * WIRE_Q;
+    for (k, l) in lines.iter().enumerate() {
+        if gone.iter().any(|(a, b)| k >= *a && k < *b) {
+            continue;
+        }
+        if l.starts_with("data __ctx_mem: ") {
+            out.push_str(&format!("; the functions partway (fm3 log 232, 269): a function left at a step or at a call that may cross, and whatever called it. The pool is a column for each thing kept, {} places for each of the two places and one for each item the wire may hold: the time a function is next due, the continuation it goes on with (0, the place is free), the order it came in, and for each function the place it returns to, its results, its parameters and what is alive across the places it is left at\ndata __act_due: array(i64, {n})\ndata __act_pc: array(i64, {n})\ndata __act_born: array(i64, {n})\n", POOL, n = rows));
+            for (n, t) in &m.fields {
+                out.push_str(&format!("data {}: array(i64, {}) ; {}\n", n, rows, t));
+            }
+        }
+        out.push_str(l);
+        out.push('\n');
+    }
+    out.push_str("\n; the continuations (fm3 log 232, 269)\n");
+    for l in text {
+        out.push_str(&l);
+        out.push('\n');
+    }
+    Ok(out)
 }

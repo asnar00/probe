@@ -2502,6 +2502,12 @@ pub fn lower(store: &Store) -> Result<Lowered, Error> {
     // does not hold some function's shape the store stays as it was
     // ... and so is a placed build whose cut may be moved (fm3 cut.md,
     // log 265): a function on the machine's stack cannot be moved
+    // ... and one whose wire takes time (fm3 log 269), where nothing
+    // may wait on the machine's stack at all: a store the rewrite does
+    // not hold is not built for a wire, and says why
+    if store.places && store.wire {
+        return lower_as(store, true);
+    }
     let first = lower_as(store, false)?;
     if super::turns::wanted(&first.ir) || store.places && store.moved {
         if let Ok(second) = lower_as(store, true) {
@@ -2540,7 +2546,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), zelse: HashMap::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites || store.trace, declared_rates: HashMap::new(), traced: store.trace, trace_open: false, cell_traced: false, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features), acts, moved: store.places && store.moved, places: store.places, wired_at: Vec::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), zelse: HashMap::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites || store.trace, declared_rates: HashMap::new(), traced: store.trace, trace_open: false, cell_traced: false, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features), acts, moved: store.places && store.moved, wire: store.places && store.wire, places: store.places, wired_at: Vec::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2948,6 +2954,28 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
             let got: Vec<String> = rets.iter().enumerate().map(|(k, t)| format!("r{}: {}", k, t)).collect();
             let back: Vec<String> = (0..rets.len()).map(|k| format!("r{}", k)).collect();
             let call = format!("{}{}({})", if said { "__said_" } else { "" }, f.ir, f.params.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>().join(", "));
+            if l.wire {
+                // a case's call is a function begun at the screen, and
+                // the world gives everything its turn (fm3 log 269)
+                if !ir.contains("\ndata __case_res: ") {
+                    ir.push_str("\n; what a case's call gave, kept at the screen for the runner (fm3 log 269)\ndata __case_res: array(i64, 8)\n");
+                }
+                let args: Vec<String> = f.params.iter().map(|(n, _)| n.clone()).collect();
+                let mut keep = String::new();
+                let mut read = String::new();
+                for (k, t) in rets.iter().enumerate() {
+                    let at = if k == 0 { String::new() } else { format!(", {}", 8 * k) };
+                    if t == "u1" {
+                        keep.push_str(&format!("    b{k}: u8 = conv r{k}\n    store b{k}, p{at}\n", k = k, at = at));
+                        read.push_str(&format!("    b{k}: u8 = load p{at}\n    r{k}: u1 = cmp.ne b{k}, 0\n", k = k, at = at));
+                    } else {
+                        keep.push_str(&format!("    store r{k}, p{at}\n", k = k, at = at));
+                        read.push_str(&format!("    r{k}: {t} = load p{at}\n", k = k, t = t, at = at));
+                    }
+                }
+                ir.push_str(&format!("fn __whole_{f}({params}){head}\n    __case_{f}({args})\n    __world()\n    p: ptr = addr __case_res\n{read}    ret{back}\nfn __case_{f}({params})\n    {got}{call}\n    p: ptr = addr __case_res\n{keep}    ret\n", f = f.ir, params = params.join(", "), head = head, args = args.join(", "), read = read, back = if back.is_empty() { String::new() } else { format!(" {}", back.join(", ")) }, got = if got.is_empty() { String::new() } else { format!("{} = ", got.join(", ")) }, call = call, keep = keep));
+                continue;
+            }
             ir.push_str(&format!("fn __whole_{}({}){}\n    {}{}\n    __turns({})\n    ret{}\n", f.ir, params.join(", "), head, if got.is_empty() { String::new() } else { format!("{} = ", got.join(", ")) }, call, NEVER - 1, if back.is_empty() { String::new() } else { format!(" {}", back.join(", ")) }));
         }
     }
@@ -2996,15 +3024,30 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     }
     // a store with a case that asserts on time has the marks' reader
     // (fm3 log 91, 95), and so does one whose host asks for the times
-    if store.times || store.features.iter().any(|f| f.cases.iter().any(|c| matches!(c.expect, Expect::Timed(_)))) {
+    if store.times || l.wire || store.features.iter().any(|f| f.cases.iter().any(|c| matches!(c.expect, Expect::Timed(_)))) {
         roots.insert("__out_mark".to_string());
+    }
+    // what the world calls of a place (fm3 log 269): its list, its
+    // pool, and the lines that walk a stored stream
+    if l.wire {
+        for entry in ["__list_next", "__list_turn", "__act_run", "__act_next", "__act_slot", "__act_go", "__run", "__wait"] {
+            roots.insert(entry.to_string());
+        }
     }
     // a function partway through a push at a rate is a thing going on
     // (fm3 log 232): the rewrite, or the store as it was
     let ir = if acts {
-        match super::turns::rewrite(&ir, l.moved) {
-            Some(t) => t,
-            None => return Err(Error { file: store.path.display().to_string(), line: 0, msg: "a function that pushes at a rate has a shape the activities do not hold".into() }),
+        if l.wire {
+            let units: std::collections::BTreeSet<String> = l.units(store).into_iter().flat_map(|u| u.irs).collect();
+            match super::turns::rewrite_wire(&ir, &units) {
+                Ok(t) => t,
+                Err(why) => return Err(Error { file: store.path.display().to_string(), line: 0, msg: format!("the store is not built for a wire that takes time yet: {}", why) }),
+            }
+        } else {
+            match super::turns::rewrite(&ir, l.moved) {
+                Some(t) => t,
+                None => return Err(Error { file: store.path.display().to_string(), line: 0, msg: "a function that pushes at a rate has a shape the activities do not hold".into() }),
+            }
         }
     } else {
         ir
@@ -3034,7 +3077,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     // the text it was
     let mut placed = None;
     if store.places {
-        match super::places::rewrite(&ir, &l.units(store)) {
+        match super::places::rewrite(&ir, &l.units(store), l.wire) {
             Ok((text, p)) => {
                 ir = text;
                 placed = Some(p);
@@ -4597,6 +4640,9 @@ struct Lowerer {
     /// (fm3 cut.md, log 265): the move is a thing going on, the first
     /// word of the list, so the store has a list whatever else it has
     moved: bool,
+    /// a placed build whose wire takes time (fm3 cut.md, log 269): a
+    /// list a place, written as `__list_next` and `__list_turn`
+    wire: bool,
     /// the placed build (fm3 cut.md, log 261): no unit's lines are
     /// written inside another unit's function, so that each can be
     /// placed
@@ -8411,6 +8457,10 @@ impl Lowerer {
             if self.acts {
                 self.type_lines.push(";   __act_n, __due_act, __act_i: the pool of activities (fm3 log 232): how many have started, the least time any is due, and which that is".into());
                 own.push_str("__act_n: index\n    __due_act: i64\n    __act_i: index\n    ");
+                if self.wire {
+                    self.type_lines.push(";   __act_b: how many functions have begun or arrived at this place (fm3 log 269): of two due together the first of them goes first".into());
+                    own.push_str("__act_b: i64\n    ");
+                }
             }
             let slots = self.slot_lines();
             if !slots.is_empty() {
@@ -8617,6 +8667,9 @@ impl Lowerer {
             }
             if self.acts {
                 own.push_str(&format!("0, {}, 0, ", NEVER));
+                if self.wire {
+                    own.push_str("0, ");
+                }
             }
             let slots = self.slot_lines();
             if !slots.is_empty() {
@@ -8910,7 +8963,7 @@ impl Lowerer {
     /// what is due before the step ends; a case's twin (`lower`) for
     /// all that is left. A store with none has none of this
     fn listed(&self) -> bool {
-        !self.clocks.is_empty() || self.timed_in || self.moved
+        !self.clocks.is_empty() || self.timed_in || self.moved || self.wire
     }
 
     /// The lines that run at the close of a slot (fm3 log 234): a line
@@ -8975,52 +9028,57 @@ impl Lowerer {
             things.push(("__due_close".into(), vec!["__close()".into()]));
             self.written.insert("__due_close".into());
         }
-        let mut t = String::from("\n; the things going on (fm3 log 217): each has a word of the context, the time it is next due; the earliest due by t has its turn at its time, the first started of two at one time, until none is due\nfn __turns(t: i64)\n    loop(n: i64 = 0)\n");
-        writeln!(t, "        some: u1 = cmp.lt n, {}\n        check some\n        x: __ctx = load {}", TURNS, THIS).unwrap();
-        for (k, (due, _)) in things.iter().enumerate() {
-            writeln!(t, "        d{}: i64 = get x, {}", k + 1, due).unwrap();
-            if k > 0 {
-                let (prev, prevk) = if k == 1 { ("d1".to_string(), "1".to_string()) } else { (format!("b{}", k), format!("k{}", k)) };
-                writeln!(t, "        e{n}: u1 = cmp.lt d{n}, {prev}\n        b{n}: i64 = if e{n}\n            yield d{n}\n        else\n            yield {prev}\n        k{n}: i64 = if e{n}\n            yield {n}\n        else\n            yield {prevk}", n = k + 1, prev = prev, prevk = prevk).unwrap();
+        let mut t;
+        if self.wire {
+            t = self.wire_list(&things, &slots);
+        } else {
+            t = String::from("\n; the things going on (fm3 log 217): each has a word of the context, the time it is next due; the earliest due by t has its turn at its time, the first started of two at one time, until none is due\nfn __turns(t: i64)\n    loop(n: i64 = 0)\n");
+            writeln!(t, "        some: u1 = cmp.lt n, {}\n        check some\n        x: __ctx = load {}", TURNS, THIS).unwrap();
+            for (k, (due, _)) in things.iter().enumerate() {
+                writeln!(t, "        d{}: i64 = get x, {}", k + 1, due).unwrap();
+                if k > 0 {
+                    let (prev, prevk) = if k == 1 { ("d1".to_string(), "1".to_string()) } else { (format!("b{}", k), format!("k{}", k)) };
+                    writeln!(t, "        e{n}: u1 = cmp.lt d{n}, {prev}\n        b{n}: i64 = if e{n}\n            yield d{n}\n        else\n            yield {prev}\n        k{n}: i64 = if e{n}\n            yield {n}\n        else\n            yield {prevk}", n = k + 1, prev = prev, prevk = prevk).unwrap();
+                }
             }
-        }
-        let n = things.len();
-        let (best, which) = if n == 1 { ("d1".to_string(), None) } else { (format!("b{}", n), Some(format!("k{}", n))) };
-        writeln!(t, "        late: u1 = cmp.gt {}, t\n        if late\n            break", best).unwrap();
-        // the move's turn does not move the clock or mark the output:
-        // it is not the program's, and leaves no trace in its times
-        let alone = self.moved && which.is_none();
-        if self.moved {
-            match &which {
-                Some(w) => writeln!(t, "        mv: u1 = cmp.eq {}, 1\n        if mv\n            __move_turn()\n            nm: i64 = add n, 1\n            continue nm", w).unwrap(),
-                None => writeln!(t, "        __move_turn()").unwrap(),
+            let n = things.len();
+            let (best, which) = if n == 1 { ("d1".to_string(), None) } else { (format!("b{}", n), Some(format!("k{}", n))) };
+            writeln!(t, "        late: u1 = cmp.gt {}, t\n        if late\n            break", best).unwrap();
+            // the move's turn does not move the clock or mark the output:
+            // it is not the program's, and leaves no trace in its times
+            let alone = self.moved && which.is_none();
+            if self.moved {
+                match &which {
+                    Some(w) => writeln!(t, "        mv: u1 = cmp.eq {}, 1\n        if mv\n            __move_turn()\n            nm: i64 = add n, 1\n            continue nm", w).unwrap(),
+                    None => writeln!(t, "        __move_turn()").unwrap(),
+                }
             }
-        }
-        // the close of a time has its turn when the list is asked for
-        // a later one: what asks for this very time, the start before
-        // the case's function or a step that ends here, may yet push
-        // in this slot itself (fm3 log 234)
-        if let (false, Some(w)) = (slots.is_empty(), &which) {
-            writeln!(t, "        atc: u1 = cmp.eq {}, {}\n        same: u1 = cmp.ge {}, t\n        hold: u1 = and atc, same\n        if hold\n            break", w, n, best).unwrap();
-        }
-        if !alone {
-            writeln!(t, "        __wait({})", best).unwrap();
-        }
-        for (k, (_, turn)) in things.iter().enumerate().filter(|(_, (_, turn))| !turn.is_empty()) {
-            let mut pad = "        ".to_string();
-            if let Some(w) = &which {
-                writeln!(t, "        is{n}: u1 = cmp.eq {w}, {n}\n        if is{n}", n = k + 1, w = w).unwrap();
-                pad.push_str("    ");
+            // the close of a time has its turn when the list is asked for
+            // a later one: what asks for this very time, the start before
+            // the case's function or a step that ends here, may yet push
+            // in this slot itself (fm3 log 234)
+            if let (false, Some(w)) = (slots.is_empty(), &which) {
+                writeln!(t, "        atc: u1 = cmp.eq {}, {}\n        same: u1 = cmp.ge {}, t\n        hold: u1 = and atc, same\n        if hold\n            break", w, n, best).unwrap();
             }
-            for l in turn {
-                writeln!(t, "{}{}", pad, l).unwrap();
+            if !alone {
+                writeln!(t, "        __wait({})", best).unwrap();
             }
-        }
-        t.push_str("        n2: i64 = add n, 1\n        continue n2\n    ret\n");
-        if self.moved {
-            // (the placed build's rewrite writes its body, `places.rs`,
-            // which knows the table)
-            t.push_str("\n; the cut's move (fm3 cut.md, log 265)\nfn __move_turn()\n    ret\n");
+            for (k, (_, turn)) in things.iter().enumerate().filter(|(_, (_, turn))| !turn.is_empty()) {
+                let mut pad = "        ".to_string();
+                if let Some(w) = &which {
+                    writeln!(t, "        is{n}: u1 = cmp.eq {w}, {n}\n        if is{n}", n = k + 1, w = w).unwrap();
+                    pad.push_str("    ");
+                }
+                for l in turn {
+                    writeln!(t, "{}{}", pad, l).unwrap();
+                }
+            }
+            t.push_str("        n2: i64 = add n, 1\n        continue n2\n    ret\n");
+            if self.moved {
+                // (the placed build's rewrite writes its body, `places.rs`,
+                // which knows the table)
+                t.push_str("\n; the cut's move (fm3 cut.md, log 265)\nfn __move_turn()\n    ret\n");
+            }
         }
         if self.timed_in {
             // what reads the input runs where a character arrives, as
@@ -9032,7 +9090,7 @@ impl Lowerer {
                 self.written.insert(f.to_string());
             }
         }
-        if !slots.is_empty() {
+        if !slots.is_empty() && !self.wire {
             write!(t, "\n; the close of a slot (fm3 log 234): each line over streams with a rate that a push in this slot set off runs once, reading the latest of each; a line that sets another off makes the close due again\nfn __close()\n    x: __ctx = load {this}\n    x2: __ctx = set x, __due_close, {never}\n    store x2, {this}\n", this = THIS, never = NEVER).unwrap();
             for (k, n) in slots.iter().enumerate() {
                 write!(t, "    s{k}: u1 = get x, __slot_{n}\n    if s{k}\n        y{k}: __ctx = load {this}\n        z{k}: __ctx = set y{k}, __slot_{n}, 0\n        store z{k}, {this}\n        {n}()\n", k = k + 1, n = n, this = THIS).unwrap();
@@ -9042,7 +9100,10 @@ impl Lowerer {
         }
         // what is due at the start has its turn before the case's function
         const START: &str = "\nfn __zero_start()\n";
-        match self.out.find(START) {
+        // (in a build with a wire the world gives everything its turn,
+        // from the case's twin)
+        match self.out.find(START).filter(|_| !self.wire).or(if self.wire { Some(usize::MAX) } else { None }) {
+            Some(usize::MAX) => {}
             Some(at) => {
                 let end = at + self.out[at..].find("    ret\n").unwrap();
                 self.out.insert_str(end, "    __turns(0)\n");
@@ -9053,6 +9114,61 @@ impl Lowerer {
         for c in &self.clocks {
             self.written.insert(c.due.clone());
         }
+    }
+
+    /// The list of a place (fm3 cut.md, "a wire that takes time"; log
+    /// 269): in a build whose wire takes time each place has its own
+    /// words and takes its own turns, and the world asks it two things:
+    /// what is the earliest thing it has, its time and its rank in the
+    /// order the things were started, and to take that turn. A clock is
+    /// on the list of the place its line is at; a line that runs at the
+    /// close of a slot runs where it is, when its bit has reached it.
+    /// `__here__<f>` is the placed build's: is f's unit at this place
+    fn wire_list(&mut self, things: &[(String, Vec<String>)], slots: &[String]) -> String {
+        // each thing: the lines that give its time here as `d<n>`, and its turn.
+        // A line that runs at the close of a slot is a thing of its own, in the
+        // order written, so that two of them at two places run in that order
+        let mut entries: Vec<(String, Vec<String>)> = Vec::new();
+        for (due, turn) in things {
+            if due == "__due_close" {
+                for s in slots {
+                    let n = entries.len() + 1;
+                    entries.push((format!("    cs{n}: u1 = get x, __slot_{s}\n    ch{n}: u1 = __here__{s}()\n    cb{n}: u1 = and cs{n}, ch{n}\n    cn{n}: i64 = get x, __clock\n    d{n}: i64 = if cb{n}\n        yield cn{n}\n    else\n        yield nv\n", n = n, s = s), vec![format!("z{n}: __ctx = load _this", n = n), format!("w{n}: __ctx = set z{n}, __slot_{s}, 0", n = n, s = s), format!("store w{n}, _this", n = n), format!("{}()", s)]));
+                    self.written.insert(format!("__slot_{}", s));
+                }
+            } else if let Some(c) = self.clocks.iter().find(|c| c.due == *due) {
+                let n = entries.len() + 1;
+                entries.push((format!("    q{n}: i64 = get x, {due}\n    h{n}: u1 = __here__{f}()\n    d{n}: i64 = if h{n}\n        yield q{n}\n    else\n        yield nv\n", n = n, due = due, f = c.name), turn.clone()));
+            } else {
+                let n = entries.len() + 1;
+                entries.push((format!("    d{}: i64 = get x, {}\n", n, due), turn.clone()));
+            }
+        }
+        let mut t = String::from("\n; the things going on at this place (fm3 log 269): the time of the earliest, and its rank in the order they were started, which is the same at both places\nfn __list_next() -> (i64, i64)\n    _this: ptr = context()\n    x: __ctx = load _this\n    nv: i64 = const 4611686018427387904\n");
+        for (k, (due, _)) in entries.iter().enumerate() {
+            let n = k + 1;
+            t.push_str(due);
+            if k > 0 {
+                let (prev, prevk) = if k == 1 { ("d1".to_string(), "1".to_string()) } else { (format!("b{}", k), format!("k{}", k)) };
+                writeln!(t, "    e{n}: u1 = cmp.lt d{n}, {prev}\n    b{n}: i64 = if e{n}\n        yield d{n}\n    else\n        yield {prev}\n    k{n}: i64 = if e{n}\n        yield {n}\n    else\n        yield {prevk}", n = n, prev = prev, prevk = prevk).unwrap();
+            }
+        }
+        match entries.len() {
+            0 => t.push_str("    ret nv, 0\n"),
+            1 => t.push_str("    ret d1, 1\n"),
+            n => writeln!(t, "    ret b{n}, k{n}", n = n).unwrap(),
+        }
+        t.push_str("\n; ... and its turn: the clock reaches its time, and it goes on\nfn __list_turn()\n    _this: ptr = context()\n    t: i64, k: i64 = __list_next()\n    __wait(t)\n    x: __ctx = load _this\n");
+        for (k, (_, turn)) in entries.iter().enumerate() {
+            writeln!(t, "    is{n}: u1 = cmp.eq k, {n}\n    if is{n}", n = k + 1).unwrap();
+            for l in turn {
+                writeln!(t, "        {}", l).unwrap();
+            }
+        }
+        // (a step of a rate in a function still on the stack would ask
+        // for this: the rewrite refuses a store that has one)
+        t.push_str("    ret\n\nfn __turns(t: i64)\n    ret\n");
+        t
     }
 
     fn emit_links(&mut self) {

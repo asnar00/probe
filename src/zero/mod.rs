@@ -22,6 +22,20 @@ use std::process::ExitCode;
 
 /// `probe zero <store> emit`, `probe zero <store> run <case>`,
 /// `probe zero <store> trace <case>`, `probe zero test [dir] [wasm|riscv|arm-qemu|air]`
+/// The wire's delay a command says (fm3 cut.md, "a wire that takes
+/// time"): `--wire <time>`, the time one word or two, `100ms` or `100
+/// ms`. Gives it, and the places in `args` it took
+fn wire_said(args: &[String]) -> Result<(Option<i64>, Vec<usize>), String> {
+    let Some(i) = args.iter().position(|a| a == "--wire") else { return Ok((None, Vec::new())) };
+    let Some(n) = args.get(i + 1) else { return Err("a wire's delay is said `--wire <time>`: `--wire 100 ms`".to_string()) };
+    let unit = args.get(i + 2).filter(|u| *u == "s" || *u == "ms");
+    let t = run::time_said(&match unit {
+        Some(u) => format!("{}{}", n, u),
+        None => n.clone(),
+    })?;
+    Ok((Some(t), (i..i + if unit.is_some() { 3 } else { 2 }).collect()))
+}
+
 /// The moves a command says (fm3 cut.md, "the cut, moved"): each `--then
 /// <units> at <time>`, the time one word or two, `4.5s` or `4.5 s`.
 /// Gives each cut with its time, and the places in `args` they took
@@ -61,7 +75,9 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         eprintln!("                                         written, `countdown.zero:2`, or a function by its words; several with commas; `all`");
         eprintln!("                            [--then <units> at <time>]  ... and the cut moved while it runs: at that time the units");
         eprintln!("                                         named are the ones far, `none` for every unit at the screen; said again, a second move");
+        eprintln!("                            [--wire <time>]            ... over a wire that takes that long, `--wire 100 ms`: the case by its own times, and what was late");
         eprintln!("       probe zero <store> placement [--far <units>]   every unit and where it runs at that cut, and what the wire carries");
+        eprintln!("                            [--wire <time>] [--case <case>]  ... and one case over such a wire: what it carried, when each left and arrived");
         eprintln!("                            [--then <units> at <time>]  ... and each move: what is handed across, and the cut after it");
         eprintln!("       probe zero <store> trace <case>  run the case from the store's trace build: a row a step, a column a stream,");
         eprintln!("                            [--json]     what each was given and the lines that ran; or the events and steps as JSON");
@@ -125,7 +141,13 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         // trace build's (fm3 tracer.md)
         Some(store) if args.get(1).map(String::as_str) == Some("emit") && matches!(args.get(2).map(String::as_str), Some("sites" | "trace" | "places")) => match match args[2].as_str() {
             "trace" => run::emit_trace(Path::new(store)),
-            "places" => moves_said(args).and_then(|(then, _)| run::emit_placed(Path::new(store), args.iter().position(|a| a == "--far").and_then(|i| args.get(i + 1)).map(String::as_str), &then)),
+            "places" => moves_said(args).and_then(|(then, _)| {
+                let far = args.iter().position(|a| a == "--far").and_then(|i| args.get(i + 1)).map(String::as_str);
+                match wire_said(args)? {
+                    (None, _) => run::emit_placed(Path::new(store), far, &then),
+                    (wire, _) => run::emit_wired(Path::new(store), far, &then, wire),
+                }
+            }),
             _ => run::emit_sites(Path::new(store)),
         } {
             Ok(ir) => {
@@ -151,7 +173,12 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         // unit runs at a cut, and what the wire carries (fm3 cut.md)
         Some(store) if args.get(1).map(String::as_str) == Some("placement") => {
             let far = args.iter().position(|a| a == "--far").and_then(|i| args.get(i + 1));
-            match moves_said(args).and_then(|(then, _)| run::placement(Path::new(store), far.map(String::as_str), &then)) {
+            let case = args.iter().position(|a| a == "--case").and_then(|i| args.get(i + 1));
+            match moves_said(args).and_then(|(then, _)| match wire_said(args)? {
+                (Some(_), _) if !then.is_empty() => Err("a cut is not moved over a wire that takes time yet".to_string()),
+                (Some(d), _) => run::placement_wire(Path::new(store), far.map(String::as_str), d, case.map(String::as_str), &policy, level),
+                _ => run::placement(Path::new(store), far.map(String::as_str), &then),
+            }) {
                 Ok(out) => {
                     print!("{}", out);
                     ExitCode::SUCCESS
@@ -180,7 +207,27 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let Some(case) = args.iter().enumerate().skip(2).find(|(i, a)| *a != "--fast" && *a != "-t" && Some(*i) != at && Some(*i) != at.map(|k| k + 1) && !used.contains(i)).map(|(_, a)| a) else { return usage() };
+            // ... and over a wire that takes time: `--wire <time>`
+            let (wire, wused) = match wire_said(args) {
+                Ok(w) => w,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+            let Some(case) = args.iter().enumerate().skip(2).find(|(i, a)| *a != "--fast" && *a != "-t" && Some(*i) != at && Some(*i) != at.map(|k| k + 1) && !used.contains(i) && !wused.contains(i)).map(|(_, a)| a) else { return usage() };
+            if let Some(d) = wire {
+                return match if then.is_empty() { run::run_wire(Path::new(store), case, &policy, level, far.map(String::as_str), d) } else { Err("a cut is not moved over a wire that takes time yet".to_string()) } {
+                    Ok(out) => {
+                        print!("{}", out);
+                        ExitCode::SUCCESS
+                    }
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        ExitCode::FAILURE
+                    }
+                };
+            }
             match match (far, then.is_empty()) {
                 (None, true) => run::run(Path::new(store), case, &policy, level, fast),
                 (far, _) => run::run_cut(Path::new(store), case, &policy, level, fast, far.map(String::as_str), &then),

@@ -45,13 +45,29 @@ pub fn emit_trace(dir: &Path) -> Result<String, String> {
 /// the time it is gone to, the text is that of a build whose cut may
 /// be moved, and `__cut` hands the moves over as well
 pub fn emit_placed(dir: &Path, far: Option<&str>, then: &[(String, i64)]) -> Result<String, String> {
-    let mut s = store::read(dir).map_err(|e| e.to_string())?;
+    emit_wired(dir, far, then, None)
+}
+
+/// ... and with a wire that takes time (fm3 cut.md, "a wire that takes
+/// time"), the text of that build, `__cut` setting the delay too
+pub fn emit_wired(dir: &Path, far: Option<&str>, then: &[(String, i64)], wire: Option<i64>) -> Result<String, String> {
+    if wire.is_some() && !then.is_empty() {
+        return Err("a cut is not moved over a wire that takes time yet".into());
+    }
+    let mut s = match wire {
+        Some(_) => wired(dir)?,
+        None => store::read(dir).map_err(|e| e.to_string())?,
+    };
     s.places = true;
     s.moved = !then.is_empty();
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
     let mut ir = l.ir;
-    if let (true, Some(p)) = (far.is_some() || !then.is_empty(), &l.placed) {
-        let cut = cut_of(p, far, then)?;
+    if let (true, Some(p)) = (far.is_some() || !then.is_empty() || wire.is_some(), &l.placed) {
+        let mut cut = cut_of(p, far, then)?;
+        if let Some(d) = wire {
+            cut.before.push(("__wire_set".to_string(), vec![d]));
+            cut.label.push_str(&format!(", a wire of {}", spell_late(d)));
+        }
         ir.push_str(&format!("\n; the cut, {}, as the runner fills it before a case\nfn __cut()\n", cut.label));
         for (f, args) in &cut.before {
             ir.push_str(&format!("    {}({})\n", f, args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")));
@@ -612,6 +628,223 @@ pub fn run_cut(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast
     Ok(out)
 }
 
+/// A store built for a wire that takes time (fm3 cut.md, "a wire that
+/// takes time"; log 269), on the runner's clock
+fn wired(dir: &Path) -> Result<store::Store, String> {
+    let mut s = store::read(dir).map_err(|e| e.to_string())?;
+    s.clock = store::Clock::Virtual;
+    s.places = true;
+    s.wire = true;
+    s.times = true;
+    Ok(s)
+}
+
+/// a time as a lateness is said: `200 ms`, `1.5 s`
+pub fn spell_late(us: i64) -> String {
+    if us % 1000 == 0 && us.abs() < 1_000_000 {
+        format!("{} ms", us / 1000)
+    } else {
+        store::spell_time(us)
+    }
+}
+
+/// One piece of what a case wrote over a wire that takes time: its
+/// text, the time it is for, which is the program's, and when it was
+/// shown, by the world's clock
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shown {
+    pub text: String,
+    pub own: i64,
+    pub shown: i64,
+}
+
+/// What was written, cut where either time changes and after each
+/// line: `own` is the capture's marks, a word where the clock moved,
+/// and `shown` a word for each character
+pub fn shown_pieces(text: &str, own: &[i64], shown: &[i64]) -> Vec<Shown> {
+    let bytes = text.as_bytes();
+    let mut out: Vec<Shown> = Vec::new();
+    let mut now = 0i64;
+    let mut cur: Option<(usize, i64, i64)> = None;
+    for i in 0..bytes.len() {
+        if let Some(t) = own.get(i).filter(|t| **t != 0) {
+            now = *t;
+        }
+        let at = shown.get(i).copied().unwrap_or(0).max(now);
+        match cur {
+            Some((_, o, s)) if o == now && s == at => {}
+            Some((from, o, s)) => {
+                out.push(Shown { text: String::from_utf8_lossy(&bytes[from..i]).to_string(), own: o, shown: s });
+                cur = Some((i, now, at));
+            }
+            None => cur = Some((i, now, at)),
+        }
+        if bytes[i] == b'\n' {
+            let (from, o, s) = cur.take().unwrap();
+            out.push(Shown { text: String::from_utf8_lossy(&bytes[from..=i]).to_string(), own: o, shown: s });
+        }
+    }
+    if let Some((from, o, s)) = cur {
+        out.push(Shown { text: String::from_utf8_lossy(&bytes[from..]).to_string(), own: o, shown: s });
+    }
+    out
+}
+
+/// what was late, as `run` says it beneath a case's line
+pub fn late_said(pieces: &[Shown]) -> String {
+    let late: Vec<&Shown> = pieces.iter().filter(|p| p.shown > p.own).collect();
+    if late.is_empty() {
+        return format!("late: nothing, of {} piece{}\n", pieces.len(), if pieces.len() == 1 { "" } else { "s" });
+    }
+    let most = late.iter().map(|p| p.shown - p.own).max().unwrap_or(0);
+    let mut out = format!("late: {} piece{} of {}, the most {}\n", late.len(), if late.len() == 1 { "" } else { "s" }, pieces.len(), spell_late(most));
+    for p in late {
+        out.push_str(&format!("  {:?} for {}, shown at {}, {} late\n", p.text, store::spell_time(p.own), store::spell_time(p.shown), spell_late(p.shown - p.own)));
+    }
+    out
+}
+
+/// One case at a cut over a wire that takes time: what it gave, by
+/// its own times; each piece with when it was shown; and the wire's
+/// record, six words an item. The case is run three times, the runner
+/// reading back one thing each time by the words it has on every path
+/// (fm3 log 269); `but` is a test's switch
+#[allow(clippy::too_many_arguments)]
+pub(super) fn wire_runs(module: &ssa::Module, l: &lower::Lowered, backend: Backend, level: usize, name: &str, cut: &[(String, Vec<i64>)], wire: i64, but: i64, p: &Planned, switches: &[(String, bool)]) -> Result<(Result<suite::Got, String>, Vec<Shown>, Vec<i64>), String> {
+    let c = &p.call;
+    let call = |mode: i64| suite::Call { func: c.func.clone(), args: c.args.clone(), nrets: c.nrets, checks: checks(&c.expect), text: true, before: cut.iter().cloned().chain([("__wire_set".to_string(), vec![wire]), ("__wire_but".to_string(), vec![but]), ("__wire_mode".to_string(), vec![mode])]).chain(setters(switches, &c.input, &c.input_at)).collect(), live: false, times: true };
+    let mut got = suite::run_calls(module, &l.ir, backend, &[call(0), call(1), call(2)], name, level)?;
+    let log = got.pop().unwrap().map(|g| g.marks).unwrap_or_default();
+    let shown = got.pop().unwrap();
+    let own = got.pop().unwrap();
+    let pieces = match (&own, &shown) {
+        (Ok(o), Ok(s)) => shown_pieces(&o.text, &o.marks, &s.marks),
+        _ => Vec::new(),
+    };
+    Ok((own, pieces, log))
+}
+
+/// `probe zero <store> run <case> --far <cut> --wire <time>`: the case
+/// by its own times, which is what is compared with the case, and
+/// beneath it what was late
+pub fn run_wire(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, far: Option<&str>, wire: i64) -> Result<String, String> {
+    let (head, shown, pieces) = wire_case(dir, which, policy, level, Backend::Native, far, wire, 0)?;
+    Ok(format!("{}\n→ {}\n{}", head, shown, late_said(&pieces)))
+}
+
+/// ... as its parts: the case's call as written, what it gave by its
+/// own times, and each piece with when it was shown. `but` is a
+/// test's switch, a place that does not wait to be told
+#[allow(clippy::too_many_arguments)]
+pub(super) fn wire_case(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, backend: Backend, far: Option<&str>, wire: i64, but: i64) -> Result<(String, String, Vec<Shown>), String> {
+    let s = wired(dir)?;
+    let policy = &store_policy(&s, policy);
+    let l = lower::lower(&s).map_err(|e| e.to_string())?;
+    let placed = l.placed.as_ref().ok_or("the store was not placed")?;
+    let cut = cut_of(placed, far, &[])?.before;
+    let calls = calls_of(&s, &l, policy)?;
+    let p = case_named(&calls, which).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", which))?;
+    let module = build(&l.ir, policy, level)?;
+    let (own, pieces, _) = wire_runs(&module, &l, backend, level, "zero-wire", &cut, wire, but, p, &p.call.context)?;
+    let got = own?;
+    let vals: Vec<String> = got.values.iter().enumerate().map(|(k, v)| if p.call.times.get(k) == Some(&true) { store::spell_nanos(*v) } else { v.to_string() }).collect();
+    let shown = match p.call.expect {
+        store::Expect::Timed(_) => store::spell_timed(&self::pieces(&got)),
+        store::Expect::Text(_) => format!("{:?}", got.text.strip_suffix('\n').unwrap_or(&got.text)),
+        _ => vals.join(", "),
+    };
+    Ok((p.text.split('→').next().unwrap_or("").trim().to_string(), shown, pieces))
+}
+
+/// `probe zero <store> placement --far <cut> --wire <time>`: the table
+/// as it is, and then one case run over the wire: each thing the wire
+/// carried, when it left and when it arrived by the world's clock, and
+/// what was late. The case is the one named, or the store's first
+/// that says a time
+pub fn placement_wire(dir: &Path, far: Option<&str>, wire: i64, which: Option<&str>, policy: &ssa::Policy, level: usize) -> Result<String, String> {
+    let s = wired(dir)?;
+    let policy = &store_policy(&s, policy);
+    let l = lower::lower(&s).map_err(|e| e.to_string())?;
+    let placed = l.placed.as_ref().ok_or("the store was not placed")?;
+    let (first, _) = cuts_named(placed, far, &[])?;
+    let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let calls = calls_of(&s, &l, policy)?;
+    let cases: Vec<String> = calls.iter().map(|c| c.call.func.trim_start_matches("__whole_").trim_start_matches("__said_").to_string()).collect();
+    // the table as it is, of the build whose wire takes no time: what
+    // crosses is the program's and the cut's, whatever the wire
+    let _ = (&name, &cases);
+    let mut out = placement(dir, far, &[])?;
+    if let Some(why) = placed.refused(&first) {
+        if !out.contains("\nrefused: ") {
+            out.push_str(&format!("\nover a wire that takes time, refused: {}\n", why));
+        }
+        return Ok(out);
+    }
+    let p = match which {
+        Some(w) => case_named(&calls, w).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", w))?,
+        None => calls.iter().find(|c| matches!(c.call.expect, store::Expect::Timed(_))).or(calls.first()).ok_or("the store has no case")?,
+    };
+    let cut = placed.cut(&first).before;
+    let module = build(&l.ir, policy, level)?;
+    let (own, pieces, log) = wire_runs(&module, &l, Backend::Native, level, "zero-wire", &cut, wire, 0, p, &p.call.context)?;
+    let got = own?;
+    out.push_str(&format!("\na wire of {}, by the world's clock: `{}`\n\n", spell_late(wire), p.text.split('→').next().unwrap_or("").trim()));
+    // the wire's record, text a character an item put together
+    let mut rows: Vec<[String; 5]> = Vec::new();
+    let mut text: Option<(i64, i64, i64, i64, String)> = None;
+    let flush = |text: &mut Option<(i64, i64, i64, i64, String)>, rows: &mut Vec<[String; 5]>| {
+        if let Some((_, left, at, stamp, t)) = text.take() {
+            rows.push([store::spell_time(left), store::spell_time(at), "far → screen".to_string(), format!("text {:?}", t), format!("for {}", store::spell_time(stamp))]);
+        }
+    };
+    for item in log.chunks(6).filter(|c| c.len() == 6) {
+        let (to, kind, left, at, stamp, a) = (item[0], item[1], item[2], item[3], item[4], item[5]);
+        let way = if to == 1 { "screen → far" } else { "far → screen" };
+        if kind == 1 {
+            match &mut text {
+                Some((t, l2, a2, s2, chars)) if (*t, *l2, *a2, *s2) == (to, left, at, stamp) => chars.push(a as u8 as char),
+                _ => {
+                    flush(&mut text, &mut rows);
+                    text = Some((to, left, at, stamp, (a as u8 as char).to_string()));
+                }
+            }
+            continue;
+        }
+        flush(&mut text, &mut rows);
+        let what = match kind {
+            // (a block's record is how many characters and the first seven)
+            2 => {
+                let (mut w, mut chars) = (a, Vec::new());
+                while w > 255 {
+                    chars.push((w & 255) as u8);
+                    w >>= 8;
+                }
+                chars.reverse();
+                let n = w as usize;
+                format!("text {:?}{}", String::from_utf8_lossy(&chars).to_string(), if n > chars.len() { format!(" and {} more", n - chars.len()) } else { String::new() })
+            }
+            3 => "a push into a stored stream, made again where it is read".to_string(),
+            4 => format!("a function partway, to go on in {}", placed.continued(a)),
+            _ => format!("a telling: nothing before {}", if a >= 1 << 62 { "the end".to_string() } else { store::spell_time(a) }),
+        };
+        rows.push([store::spell_time(left), store::spell_time(at), way.to_string(), what, format!("for {}", store::spell_time(stamp))]);
+    }
+    flush(&mut text, &mut rows);
+    rows.insert(0, ["left".to_string(), "arrived".to_string(), String::new(), "what".to_string(), "its own time".to_string()]);
+    let w: Vec<usize> = (0..4).map(|k| rows.iter().map(|r| r[k].chars().count()).max().unwrap_or(0)).collect();
+    for r in &rows {
+        let padded = |s: &str, n: usize| format!("{}{}", s, " ".repeat(n.saturating_sub(s.chars().count())));
+        out.push_str(&format!("{}  {}  {}  {}  {}\n", padded(&r[0], w[0]), padded(&r[1], w[1]), padded(&r[2], w[2]), padded(&r[3], w[3]), r[4]).trim_end().to_string());
+        out.push('\n');
+    }
+    let shown = match p.call.expect {
+        store::Expect::Timed(_) => store::spell_timed(&self::pieces(&got)),
+        _ => format!("{:?}", got.text.strip_suffix('\n').unwrap_or(&got.text)),
+    };
+    out.push_str(&format!("\n→ {}\n{}", shown, late_said(&pieces)));
+    Ok(out)
+}
+
 /// every store under `dir`, its cases run on the backend, reported as the suite does
 pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String> {
     let mut stores: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
@@ -751,7 +984,21 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
     // far and with each unit alone far, and compared with the case's
     // own. Counted apart, after the line that counts the suite's runs
     let mut cuts = Cuts::default();
-    if std::env::var("PROBE_ZERO_CUTS").is_ok() {
+    // ... and over a wire that takes time (fm3 cut.md, "a wire that
+    // takes time"), `PROBE_ZERO_CUTS=wire` for a wire of no delay and
+    // `wire=100` for one of that many milliseconds: each store's build
+    // for a wire, every case at every cut, by its own times; and how
+    // late each cut shows what it shows. `wire-timed=100`: only the
+    // stores that have a case with a time
+    let wire_asked = std::env::var("PROBE_ZERO_CUTS").ok().filter(|v| v.starts_with("wire"));
+    let mut wires = Wires::default();
+    if let Some(v) = &wire_asked {
+        let d = v.split('=').nth(1).and_then(|n| n.parse::<i64>().ok()).unwrap_or(0) * 1000;
+        for sdir in &stores {
+            test_wire(sdir, &policy, backend, level, &mut report, &mut wires, d, v.starts_with("wire-timed"));
+        }
+    }
+    if std::env::var("PROBE_ZERO_CUTS").is_ok() && wire_asked.is_none() {
         // (`PROBE_ZERO_CUTS=moves`: the moves alone)
         for sdir in stores.iter().filter(|_| !std::env::var("PROBE_ZERO_CUTS").is_ok_and(|v| v.starts_with("moves"))) {
             test_cuts(sdir, &policy, backend, level, &mut report, &mut cuts);
@@ -779,6 +1026,15 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
         ));
         report.passed += cuts.passed;
         report.failed += cuts.failed;
+    }
+    if wires.stores > 0 {
+        report.log.push_str(&format!(
+            "wire: {} of {} stores hold at every cut; {} hold at every cut that is not refused; {} have a cut that does not hold; {} are not built for a wire ({} cuts run, {} refused; {} of {} runs at a cut hold by their own times; {} of {} cases in their contexts hold at every cut tried)\n",
+            wires.hold, wires.stores, wires.hold_but, wires.broken, wires.unbuilt, wires.cuts, wires.refused, wires.passed, wires.passed + wires.failed, wires.case_hold, wires.cases
+        ));
+        report.log.push_str(&format!("late: {} of {} cuts show nothing late; the most a piece is late at any cut is {}\n", wires.cuts_on_time, wires.cuts, spell_late(wires.most)));
+        report.passed += wires.passed;
+        report.failed += wires.failed;
     }
     if cuts.timed > 0 {
         report.log.push_str(&format!(
@@ -821,6 +1077,157 @@ struct Cuts {
     moves_refused: usize,
     moves_passed: usize,
     moves_failed: usize,
+}
+
+/// what the suite over a wire that takes time found, over its stores
+#[derive(Default)]
+pub(super) struct Wires {
+    pub(super) stores: usize,
+    pub(super) hold: usize,
+    pub(super) hold_but: usize,
+    pub(super) broken: usize,
+    /// the stores the rewrite does not hold, each refused by name
+    pub(super) unbuilt: usize,
+    pub(super) cuts: usize,
+    pub(super) refused: usize,
+    pub(super) passed: usize,
+    pub(super) failed: usize,
+    /// a case in a context: how many there are in the stores built,
+    /// and how many give their own line at every cut tried
+    pub(super) cases: usize,
+    pub(super) case_hold: usize,
+    /// the cuts at which no piece of any case is shown late, and the
+    /// most any piece is
+    pub(super) cuts_on_time: usize,
+    pub(super) most: i64,
+}
+
+/// One store over a wire that takes time (fm3 cut.md, "a wire that
+/// takes time"; log 269): its build for a wire, compiled once, and
+/// each case in each of its contexts at every cut the runner tries,
+/// every unit far and each alone, with a wire of `d`. A case is
+/// compared by its own times; when each piece was shown is read back
+/// by a second run and its lateness counted. A store or a cut the
+/// build does not hold is refused by name, passed over and counted
+pub(super) fn test_wire(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, report: &mut Report, wires: &mut Wires, d: i64, timed_only: bool) {
+    let name = sdir.file_name().unwrap().to_string_lossy().to_string();
+    let Ok(s) = wired(sdir) else { return };
+    if timed_only && !s.features.iter().any(|f| f.cases.iter().any(|c| matches!(c.expect, store::Expect::Timed(_)))) {
+        return;
+    }
+    wires.stores += 1;
+    let built = (|| -> Result<(Vec<Planned>, Vec<Run>, ssa::Module, lower::Lowered), String> {
+        let policy = store_policy(&s, policy);
+        let l = lower::lower(&s).map_err(|e| e.to_string())?;
+        let cases = calls_of(&s, &l, &policy)?;
+        let (runs, _) = plan(&s, &cases)?;
+        let module = build(&l.ir, &policy, level)?;
+        Ok((cases, runs, module, l))
+    })();
+    let (cases, runs, module, lowered) = match built {
+        Ok(b) => b,
+        Err(e) => {
+            wires.unbuilt += 1;
+            report.log.push_str(&format!("wire  {:<16} not built: {}\n", name, e.split(": ").skip(1).collect::<Vec<_>>().join(": ")));
+            return;
+        }
+    };
+    let Some(placed) = &lowered.placed else { return };
+    let unreached = out_of_reach(&module, &lowered.funcs, kind_of(backend));
+    let runs: Vec<&Run> = runs.iter().filter(|r| !unreached.contains_key(&cases[r.case].call.func)).collect();
+    let (mut refused, mut failed, mut ran) = (0, 0, 0);
+    let (mut most, mut on_time) = (0i64, 0);
+    let mut bad = vec![false; runs.len()];
+    for far in super::places::cuts(placed) {
+        let label = placed.label(&far);
+        if let Some(why) = placed.refused(&far) {
+            refused += 1;
+            wires.refused += 1;
+            report.log.push_str(&format!("wire  {:<16} [{}] refused: {}\n", name, label, why));
+            continue;
+        }
+        wires.cuts += 1;
+        ran += 1;
+        let cut = placed.cut(&far);
+        let call = |r: &Run, mode: i64| {
+            let c = &cases[r.case].call;
+            suite::Call { func: c.func.clone(), args: c.args.clone(), nrets: c.nrets, checks: checks(&c.expect), text: true, before: cut.before.iter().cloned().chain([("__wire_set".to_string(), vec![d]), ("__wire_mode".to_string(), vec![mode])]).chain(setters(&r.switches, &c.input, &c.input_at)).collect(), live: false, times: true }
+        };
+        if runs.is_empty() {
+            continue;
+        }
+        // (two batches, the second to read back when each piece was
+        // shown: node's argument list holds only so many calls)
+        let both = [0, 1].map(|mode| suite::run_calls(&module, &lowered.ir, backend, &runs.iter().map(|r| call(r, mode)).collect::<Vec<_>>(), &format!("{}-wire", name), level));
+        let got = match both {
+            [Ok(own), Ok(shown)] => Ok(own.into_iter().zip(shown).flat_map(|(o, s)| [o, s]).collect::<Vec<_>>()),
+            [Err(e), _] | [_, Err(e)] => Err(e),
+        };
+        let got: Result<Vec<Result<suite::Got, String>>, String> = got;
+        let got = match got {
+            Ok(g) => g,
+            Err(e) => {
+                failed += 1;
+                wires.failed += 1;
+                bad.iter_mut().for_each(|b| *b = true);
+                report.log.push_str(&format!("FAIL  {:<16} [{}] {}\n", name, label, e));
+                continue;
+            }
+        };
+        let mut late = 0i64;
+        let mut got = got.into_iter();
+        for (i, r) in runs.iter().enumerate() {
+            let text = format!("{} [{}, a wire of {}]", labelled(&cases[r.case].text, &r.label), label, spell_late(d));
+            let (Some(own), shown) = (got.next(), got.next()) else { break };
+            if own.as_ref().err().is_some_and(|e| e.starts_with("skip: ")) {
+                continue;
+            }
+            if let (Ok(o), Some(Ok(sh))) = (&own, &shown) {
+                late = late.max(shown_pieces(&o.text, &o.marks, &sh.marks).iter().map(|p| p.shown - p.own).max().unwrap_or(0));
+            }
+            // a check that fails is traced to its line as any is, by
+            // running the case again at one place (fm3 question 115)
+            let own = match own {
+                Err(e) if untraced(&e) && cases[r.case].call.expect != store::Expect::Check => {
+                    let c = &cases[r.case].call;
+                    // (the build for a wire has a list whatever the store has, and so a twin for every case's function: the store as it is may have none)
+                    let plain = |func: &str| suite::Call { func: func.to_string(), args: c.args.clone(), nrets: c.nrets, checks: checks(&c.expect), text: true, before: setters(&r.switches, &c.input, &c.input_at), live: false, times: matches!(c.expect, store::Expect::Timed(_)) };
+                    Err(traced(sdir, &store_policy(&s, policy), backend, level, &plain(&c.func), &name).or_else(|| traced(sdir, &store_policy(&s, policy), backend, level, &plain(c.func.trim_start_matches("__whole_")), &name)).unwrap_or(e))
+                }
+                g => g,
+            };
+            // (a case that gives no times is compared as it is: its marks are asked for only to say what was late)
+            let own = own.map(|mut g| {
+                if !matches!(cases[r.case].call.expect, store::Expect::Timed(_)) {
+                    g.marks.clear();
+                }
+                g
+            });
+            let (ok, note) = judge(&cases[r.case].call.expect, own);
+            if ok {
+                wires.passed += 1;
+            } else {
+                failed += 1;
+                wires.failed += 1;
+                bad[i] = true;
+                report.log.push_str(&format!("FAIL  {:<16} {}   {}\n", name, text, note));
+            }
+        }
+        wires.most = wires.most.max(late);
+        most = most.max(late);
+        if late == 0 {
+            wires.cuts_on_time += 1;
+            on_time += 1;
+        }
+    }
+    wires.cases += runs.len();
+    wires.case_hold += bad.iter().filter(|b| !**b).count();
+    match (failed, refused) {
+        (0, 0) => wires.hold += 1,
+        (0, _) => wires.hold_but += 1,
+        _ => wires.broken += 1,
+    }
+    report.log.push_str(&format!("wires {:<16} {} units, {} cuts run{}{}\n", name, placed.units.len(), ran, if refused > 0 { format!(", {} refused", refused) } else { String::new() }, if failed > 0 { format!(", {} runs do not hold", failed) } else { format!(": every case holds at each by its own times; nothing late at {}, the most {}", on_time, spell_late(most)) }));
 }
 
 /// The two times a case with a time is moved at (fm3 log 265): one
@@ -1647,6 +2054,91 @@ mod tests {
         let timed = Path::new("suite/zero/timed");
         let err = run_cut(timed, "count down()", &native, opt::MAX_LEVEL, true, Some("all"), &[(s("none"), 4_500_000)]).unwrap_err();
         assert!(err.starts_with("this move cannot be made yet: 'count down' cannot be moved while it runs: its function `count_down` keeps the machine's stack"), "{}", err);
+    }
+
+    /// A wire that takes time, where nothing comes from outside (fm3
+    /// cut.md, "a wire that takes time"; log 269, 270). hello, not a
+    /// character changed, at the touchstone's four cuts over a wire of
+    /// 100 ms: by its own times the case's own line at each, and what
+    /// is late is the first number, by the wire there and back, the
+    /// rest having been worked out ahead and kept until its time. With
+    /// only `hello` far the countdown is on time and the two lines
+    /// after it are late. A wire of no delay shows nothing late. A
+    /// store that keeps something, its clock and its sum at different
+    /// places. The same on another machine. And a place acts only on
+    /// what has reached it: with the screen let to take its turn
+    /// before far has said it will begin nothing earlier, which only
+    /// this test can ask for, the case's call is written before the
+    /// clock's first beat
+    #[test]
+    fn a_wire_takes_time() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let hello = Path::new("suite/zero/hello");
+        let line = "\"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s";
+        let late = |pieces: &[Shown]| -> Vec<(String, i64, i64)> { pieces.iter().filter(|p| p.shown > p.own).map(|p| (p.text.clone(), p.own, p.shown)).collect() };
+        let first = vec![("10\n".to_string(), 0, 200_000)];
+        for (far, want) in [("none", vec![]), ("count down", first.clone()), ("count down,countdown.zero:2", first.clone()), ("all", first.clone()), ("hello", vec![("hello world\n".to_string(), 10_000_000, 10_200_000), ("goodbye\n".to_string(), 10_000_000, 10_200_000)])] {
+            let (_, shown, pieces) = wire_case(hello, "run()", &native, opt::MAX_LEVEL, Backend::Native, Some(far), 100_000, 0).unwrap();
+            assert_eq!(shown, line, "far: {}", far);
+            assert_eq!(pieces.len(), 12, "far: {}", far);
+            assert_eq!(late(&pieces), want, "far: {}", far);
+            let (_, shown, pieces) = wire_case(hello, "run()", &native, opt::MAX_LEVEL, Backend::Native, Some(far), 0, 0).unwrap();
+            assert_eq!((shown.as_str(), late(&pieces).len()), (line, 0), "far: {}, no delay", far);
+        }
+        assert_eq!(run_wire(hello, "run()", &native, opt::MAX_LEVEL, Some("all"), 100_000).unwrap(), format!("run()\n→ {}\nlate: 1 piece of 12, the most 200 ms\n  \"10\\n\" for 0 s, shown at 200 ms, 200 ms late\n", line));
+        // the placement: the table as it is, and what the wire carried
+        // by the world's clock. Everything far, the call arrives at
+        // 100 ms and the whole countdown leaves then
+        let spaced = |t: String| t.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("\n");
+        let table = spaced(placement_wire(hello, Some("all"), 100_000, None, &native, opt::MAX_LEVEL).unwrap());
+        for row in ["a wire of 100 ms, by the world's clock: `run()`", "0 s 100 ms screen → far a function partway, to go on in `run` for 0 s", "100 ms 200 ms far → screen text \"10\\n\" for 0 s", "100 ms 200 ms far → screen text \"1\\n\" for 9 s", "100 ms 200 ms far → screen text \"hello w\" and 4 more for 10 s", "100 ms 200 ms far → screen a function partway, to go on in a case's own call for 10 s", "late: 1 piece of 12, the most 200 ms"] {
+            assert!(table.contains(row), "no {:?} in\n{}", row, table);
+        }
+        // a store not placed is not built for a wire; a placed build
+        // with no wire is the text it was; one with a wire has the
+        // world, a list a place, and no function that jumps
+        let mut st = store::read(hello).unwrap();
+        let unplaced = lower::lower(&st).unwrap().ir;
+        st.wire = true;
+        assert_eq!(lower::lower(&st).unwrap().ir, unplaced);
+        st.wire = false;
+        st.places = true;
+        let fixed = lower::lower(&st).unwrap().ir;
+        assert!(!fixed.contains("__world") && !fixed.contains("__list_") && !fixed.contains("__wq_") && fixed.contains("\nfn __wire(to: i64) -> i64\n"), "{}", fixed);
+        st.wire = true;
+        let wired = lower::lower(&st).unwrap().ir;
+        assert!(wired.contains("\nfn __world()\n") && wired.contains("\nfn __list_next() -> (i64, i64)\n") && wired.contains("\nfn count_down__o1__0(__a: index) -> i64\n") && !wired.contains("\nfn __wire(") && !wired.contains("__wire_unit"), "{}", wired);
+        assert_eq!(wired.matches("context_set(").count(), 1, "one function makes a place the current one");
+        // a store that keeps something: its clock far and its sum at
+        // the screen, and the other way
+        let keeps = Path::new("suite/zero/keeps");
+        for (case, want) in [("begin()", "\"1 1\\ngo\\n\" at 0 s, \"3 2\\n6 3\\n10 4\" at 1 hz from 1 s"), ("count to (5)", "\"1 1\\n3 2\\n6 3\\n10 4\\n\" at 1 hz, \"15\" at 5 s")] {
+            for far in ["keeps.zero:3", "keeps.zero:4", "keeps.zero:5", "count to", "all", "none"] {
+                for d in [0, 100_000] {
+                    let (_, shown, pieces) = wire_case(keeps, case, &native, opt::MAX_LEVEL, Backend::Native, Some(far), d, 0).unwrap();
+                    assert_eq!(shown, want, "{} far: {}, a wire of {}", case, far, d);
+                    assert!(d > 0 || late(&pieces).is_empty(), "{} far: {}: late with no delay", case, far);
+                }
+            }
+        }
+        let (_, _, pieces) = wire_case(keeps, "begin()", &native, opt::MAX_LEVEL, Backend::Native, Some("keeps.zero:3"), 100_000, 0).unwrap();
+        assert_eq!(late(&pieces), vec![("1 1\n".to_string(), 0, 100_000), ("go\n".to_string(), 0, 300_000)]);
+        // a place acts only on what has reached it
+        let (_, shown, _) = wire_case(keeps, "begin()", &native, opt::MAX_LEVEL, Backend::Native, Some("keeps.zero:3"), 100_000, 1).unwrap();
+        assert_eq!(shown, "\"go\\n1 1\\n\" at 0 s, \"3 2\\n6 3\\n10 4\" at 1 hz from 1 s");
+        // every cut the runner tries of the proof's stores, over no
+        // delay and over 100 ms, on the JIT and on another machine
+        // with nothing of its driver changed
+        let names = ["hello", "keeps", "static", "going", "going-mix"];
+        for (backend, d) in [(Backend::Native, 0), (Backend::Wasm, 100_000)] {
+            let policy = suite::backend_policy(backend).unwrap();
+            let (mut report, mut wires) = (Report { passed: 0, failed: 0, skipped: 0, log: String::new() }, Wires::default());
+            for name in names {
+                test_wire(&Path::new("suite/zero").join(name), &policy, backend, opt::MAX_LEVEL, &mut report, &mut wires, d, false);
+            }
+            assert_eq!((wires.hold, wires.unbuilt, wires.refused, wires.failed, wires.case_hold), (5, 0, 0, 0, wires.cases), "{}", report.log);
+            assert!(d > 0 || wires.cuts_on_time == wires.cuts, "{}", report.log);
+        }
     }
 
     /// A move hands across what it must (fm3 cut.md, "the cut, moved").
