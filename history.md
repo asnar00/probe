@@ -4,6 +4,32 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the cut moved while the program runs: a move is a thing going on, and what the second cut needs is handed across once — `0b8b9a3` · 2026-10-12
+
+```
+int beat$ at (1 hz)
+int sum$
+beat$ << beat$ + 1 if (beat$ < 4) forever
+sum$ << sum$ + beat$ forever
+```
+
+`suite/zero/keeps/keeps/keeps.zero:1-4`, a clock and its running sum, from the store this commit adds: the smallest program that keeps something from one second to the next. hello keeps nothing, and hello is the first proof. `probe zero suite/zero/hello run 'run()' --fast --far all --then none at 4.5 s` starts hello, not a character of it changed, with every unit far, and at 4.5 s, with 6 written and 5 due at 5 s, brings every unit to the screen. The case is hello's own line, `"10\n9\n8\n7\n6\n5\n4\n3\n2\n1\n" at 1 hz, "hello world\ngoodbye" at 10 s`: no number written twice and none missed. So is the other way, `--far none --then all`, and only `count down` moving, each at 4.5 s and at 5 s, where the move is before the 5 that is due then, and two moves, `--then none at 2.5 s --then all at 7.5 s`. That the move is made, and not passed over, is in the count: hello's `run` is 4 668 moved at 0.5 s, 6 904 at 4.5 s, 9 699 at 9.5 s and 11 038 never moved.
+
+A store can now be built a further way, placed and to be moved (`Store.moved`), which only `--then` and `PROBE_ZERO_CUTS` ask for. A placed build that is not to be moved is the text it was (`emit places` of every store, with nothing far and with everything far, against the binary before: nothing differs), and a plain build is (`irdiff.sh scratchpad/probe155` names nothing; the six rows are 478, 485, 920, 931, 939 and 918). In the build that moves:
+
+- **The move is a thing going on, due at its time**: the first word of the list, `__due_move`, before the input and the clocks, so the store has a list whatever else it has, and a move due when something else is due goes first, having been said before the case was. Its turn does not move the clock or mark the output, so a move leaves no trace in a case's times.
+- **hello's functions are left at their steps** (`turns.rs`). It was written for a store where a key can start a function; where the cut may be moved a case's own function is enough of a start. And hello's `run` was a shape it did not hold: a dynamic feature's gate is `if on / else / <the chain below> / ret`, the call that reaches the step inside an `if`. A place at the top of a branch of an `if` that is a statement at the top of a function is now held, in a build that moves and in no other. A function between two turns is a record of the pool, which is the screen's, so a function partway is not handed across at all: hello's is seven columns, when it is next due, where it goes on from, the number to push next, the switch's bit and three places to return to.
+- **In the move's turn** (`__move_turn`, written by `places.rs`) the bytes of the cut's table are rewritten from the next of four later tables, filled before the case as the first is, and `__hand` copies once what the new cut needs at a place that does not have it. What that is, is worked out from the facts that fill the table (`Placed::hands`), the wire's carrying being lazy: a field goes from far to the screen where no unit at the screen wrote it or was being given it before and one uses it there after, and from the screen to far where a unit at the screen wrote it before, one at far uses it after and none at the screen writes it after. A field only one unit touches, which no fixed cut carries, is among them. A stored stream's storage goes to a place that reads it after and did not before, a queue's resident items or a ring's buffers with their counts, and the place a reader that takes has read to goes with its unit: restart's input is pushed at the screen and read by a line that moves.
+- **Refused by name**: a move that changes the place of a unit one of whose functions may be on the machine's stack when the list takes a turn, `'count down' cannot be moved while it runs: ...`, and a move from or to a cut that is itself refused.
+
+`probe zero <store> placement --far all --then none at 4.5 s` prints the two tables and between them what is handed across: for hello "the table, 17 bytes of the cut" and "nothing else: no field of the context, and no stored stream"; for `keeps` moved at 2.5 s the latest of `sum$`, of `total$` and of `beat$` and what the line that looks back keeps, each from far to the screen. `a_move_hands_across_what_it_must` runs `keeps` with one of them deliberately not handed across, which only the test can ask for: without the total `count to (5)` writes 9 for 15, three numbers added far and two at the screen to nothing; without the sum `4 -2` for `10 4`; and restart with its input's items not handed never sees its second key.
+
+`PROBE_ZERO_CUTS=1 probe zero test` now also moves every case whose result has a time after 0 s, everything far and then at the screen and the other way, at a time when a piece of its result is due and at one halfway from the piece before, when none is (for hello 5 s and 4.5 s): **53 of 58 such cases, in 19 stores, hold at every move tried; 212 moves run and 20 are refused**, all five cases of `timed`, whose `count down` keeps a stream across its step and so the machine's stack; 212 of 212 that run give the case's own line, the same on the JIT, wasm, riscv64 and arm64 under qemu, and the six stores of the proof on the GPU's path, 88 of 88. Each unit moved alone, to far and back, from among the others at either place (`PROBE_ZERO_CUTS=moves-each`, a search for faults): 6 948 moves, every one that runs holding. The fixed cuts with the new store: 22 of 47 stores hold at every cut, 861 cuts run and 136 refused. A move costs 297 on hello, the table's 17 bytes and the tests of what might be handed.
+
+Found on the way and mended in `turns.rs`: a loop left at a step before its own test, `words`' `beat$ << 0 << (beat$ + 1) until (beat$ == 3)`, was written with text after a loop that nothing leaves, which the IR refuses. The full run, `scratchpad/chain154.log`: 1 325 runs on four paths, 1 284 on the GPU's, `cargo test` 199.
+
+---
+
 ### zero: the cut on every path: the same table of cuts on wasm, riscv64 and arm64 under qemu as on the JIT — `965c2d4` · 2026-10-12
 
 ```
