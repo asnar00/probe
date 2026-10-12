@@ -4,6 +4,26 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a parameter of any name in a function left at its steps, and a case's function named as the library names one — `ce7482a` · 2026-10-12
+
+```
+on count down from (int n)
+    i$ << [n through n - 4]
+```
+
+`suite/zero/going-two/two/two.zero:12`. Two faults mended before the cut is built (fm3 log 260). In a store where a key can start a function that pushes at a rate, each such function is continuations over a pool (`src/zero/turns.rs`), and what starts an activity, `__act_start_<g>`, takes the function's own parameters. It named its own values `x`, `n`, `room`, `n2`, `x2`, `cm`, `second`, `sw` and `base`, so a parameter `n` was said twice and the store did not compile: "value 'n' is defined more than once". They are `__x`, `__n`, `__room` and so on now. `count down from (5)` gives `"5\n4\n3\n2\n1" at 1 hz`, and with a key at 2.5 s a `launch` goes on beside it by turns, `"2\n10\n" at 3 s`.
+
+```
+on open()
+    out$ << "go\n"
+```
+
+`suite/zero/going-mix/mix/mix.zero:23`. A case that called this wrote `go` and stopped, where the same function named `run` wrote the clocks' lines after it. It was the name. `lib/stream.ssa` has an `open`, so the program's is written `__f_open`, and the twin a case calls where several things are going on, `__whole_<name>`, which gives everything still due its turn, was not made for a name beginning `__`: that was how a function the compiler writes was told from the program's. Three more places in `src/zero/lower.rs` told them so (`once_line`, `unfed`, `may_hold_nothing`), and there a stream of the function's own read before anything was in it failed a check: `suite/zero/functions/functions/functions.zero:136`, `open() → 1`. One test now, `made`, a name beginning `__` that is not `__f_`.
+
+`scratchpad/irdiff.sh scratchpad/probe152` names `functions`, `going-mix`, `going-two` and `restart` (the start's names) and no other store. The six rows of the parity table are where they were, 478, 485, 920, 931, 939 and 918 as they ran. The meter 51 of 3 108. The full run, `scratchpad/chain149.log`: 1 322 runs on four paths, 1 281 on the GPU's, `cargo test` 195.
+
+---
+
 ### zero: an item's place is worked out where it is read, under the test that reads it — `c688c5f` · 2026-10-10
 
 ```
