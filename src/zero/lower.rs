@@ -1126,6 +1126,15 @@ fn ir_names() -> &'static std::collections::HashSet<String> {
     })
 }
 
+/// Is this IR name one of the functions the front end writes, `__edge1`,
+/// `__z2_each`, `__turns`? They begin `__`; and so does a function of
+/// the program's whose own name the IR's library has, `open`, written
+/// `__f_open` (fm3 log 229), which is the program's all the same (fm3
+/// log 260)
+fn made(ir: &str) -> bool {
+    ir.starts_with("__") && !ir.starts_with("__f_")
+}
+
 pub fn mangle(parts: &[NamePart]) -> String {
     let words: Vec<String> = parts
         .iter()
@@ -2917,7 +2926,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     // (`fm3/time.md`)
     if l.listed() {
         for f in l.funcs.clone().iter().filter(|f| f.feature != OWN && !f.task && f.platform.is_none() && f.params.iter().all(|(_, t)| matches!(t, Ty::Num(_) | Ty::Bool | Ty::Enum(_)))) {
-            if !ir.contains(&format!("\nfn {}(", f.ir)) || f.ir.starts_with("__") {
+            if !ir.contains(&format!("\nfn {}(", f.ir)) || made(&f.ir) {
                 continue;
             }
             let said = ir.contains(&format!("\nfn __said_{}(", f.ir));
@@ -13484,7 +13493,7 @@ impl Lowerer {
         // for each item that sets the line off, and what it names
         // beside that item it reads for its value now (fm3 question
         // 106, log 180)
-        matches!(b.kind, BodyKind::Fn | BodyKind::Task { .. }) && b.func.as_ref().is_some_and(|f| f.ir.starts_with("__edge") || f.ir.starts_with("__tick") || (!f.ir.starts_with("__") && !f.key.starts_with("__")))
+        matches!(b.kind, BodyKind::Fn | BodyKind::Task { .. }) && b.func.as_ref().is_some_and(|f| f.ir.starts_with("__edge") || f.ir.starts_with("__tick") || (!made(&f.ir) && !f.key.starts_with("__")))
     }
 
     /// May a stream the function itself declared still hold nothing
@@ -13495,7 +13504,7 @@ impl Lowerer {
     /// something for certain once an item has been pushed into it at
     /// the top of the function's body
     fn unfed(&self, name: &str, b: &Body) -> bool {
-        b.vars.contains_key(name) && !self.fed.contains(name) && matches!(b.kind, BodyKind::Fn) && b.func.as_ref().is_some_and(|f| !f.ir.starts_with("__"))
+        b.vars.contains_key(name) && !self.fed.contains(name) && matches!(b.kind, BodyKind::Fn) && b.func.as_ref().is_some_and(|f| !made(&f.ir))
     }
 
     /// May the stream hold nothing here, for all the compiler knows
@@ -13507,7 +13516,7 @@ impl Lowerer {
     /// function of the program reads it. In the functions the front end
     /// writes, a read is what it was
     fn may_hold_nothing(&self, name: &str, b: &Body) -> bool {
-        self.fed_here.as_deref() != Some(name) && (self.unfed(name, b) || (!b.vars.contains_key(name) && self.fvar(name).is_some() && b.func.as_ref().is_some_and(|f| !f.ir.starts_with("__"))))
+        self.fed_here.as_deref() != Some(name) && (self.unfed(name, b) || (!b.vars.contains_key(name) && self.fvar(name).is_some() && b.func.as_ref().is_some_and(|f| !made(&f.ir))))
     }
 
     /// one push, through `__push` (log 38): a tick from the virtual

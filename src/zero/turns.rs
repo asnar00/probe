@@ -747,7 +747,10 @@ pub fn rewrite(ir: &str) -> Option<String> {
         let f = by[g];
         if made.insert(g.clone()) {
             let params: Vec<String> = f.params.iter().map(|(n, t)| format!("{}: {}", n, t)).collect();
-            let mut s = format!("\n; an activity starts: a place in the pool, its parameters, and its first turn at once\nfn __act_start_{g}({params}) -> index\n    _this: ptr = context()\n    x: __ctx = load _this\n    n: index = get x, __act_n\n    room: u1 = cmp.lt n, {pool}\n    check room\n    n2: index = add n, 1\n    x2: __ctx = set x, __act_n, n2\n    store x2, _this\n    cm: ptr = addr __ctx_mem\n    second: u1 = cmp.ne _this, cm\n    sw: index = conv second\n    base: index = mul sw, {pool}\n    __a: index = add base, n\n", g = g, params = params.join(", "), pool = POOL);
+            // (what the start makes of its own is named as no parameter
+            // of a program's can be, fm3 log 260: `count down from (int
+            // n)` has an `n`)
+            let mut s = format!("\n; an activity starts: a place in the pool, its parameters, and its first turn at once\nfn __act_start_{g}({params}) -> index\n    _this: ptr = context()\n    __x: __ctx = load _this\n    __n: index = get __x, __act_n\n    __room: u1 = cmp.lt __n, {pool}\n    check __room\n    __n2: index = add __n, 1\n    __x2: __ctx = set __x, __act_n, __n2\n    store __x2, _this\n    __cm: ptr = addr __ctx_mem\n    __second: u1 = cmp.ne _this, __cm\n    __sw: index = conv __second\n    __base: index = mul __sw, {pool}\n    __a: index = add __base, __n\n", g = g, params = params.join(", "), pool = POOL);
             let mut lines = Vec::new();
             for (n, t) in &f.params {
                 let col = m.field(g, n, t);

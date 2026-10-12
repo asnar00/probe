@@ -133,5 +133,10 @@ on (int n) << div (int a, int b)
 on (int n) << idle()
     n << 7
 
+on (int n) << open()
+    int seen$
+    seen$ << seen$ + 1
+    n << seen$
+
 on (int n) << named as the machine names()
     n << fill (3) * 100 + div (7, 2) * 10 + idle()

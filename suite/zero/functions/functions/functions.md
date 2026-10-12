@@ -32,7 +32,7 @@ A function is declared with `on`, its results first, then its name with the para
 - To test a result, say a temporary, test it, then push the result (`magnitude of` in the `control` store).
 - A name is a set of methods. A call picks the method by the types of all its arguments: among the methods that take them, the one whose every parameter type fits the others' — `int32` before `int` before `number` — and a call with no such method is ambiguous and refused. A literal is its own type first, `int` or `float`, and fits any number type only when no method takes that. A method that takes an argument as it is beats one the call would map over a sequence. A method with the same parameter types is a redefinition (the `more` feature); with other types, a new method.
 - A `number` parameter takes any number; the result comes back as the argument's type.
-- A program's names and the IR's do not meet (fm3 log 229). `fill` is a function of the IR's library, `idle` an instruction a platform file gives the machine, and `div` the opcode the language's own `/` is declared under; a program may have a function of each name, called from zero and from a case. In the IR each is named apart, `__f_fill`, as is any function whose name the library or a platform file has, read from those files when the store is compiled. Before hop thirty-eight a case could not call `fill`, `div` was refused as a clash, and `idle` ran the machine's instruction and died.
+- A program's names and the IR's do not meet (fm3 log 229). `fill` is a function of the IR's library, `idle` an instruction a platform file gives the machine, and `div` the opcode the language's own `/` is declared under; a program may have a function of each name, called from zero and from a case. In the IR each is named apart, `__f_fill`, as is any function whose name the library or a platform file has, read from those files when the store is compiled. Before hop thirty-eight a case could not call `fill`, `div` was refused as a clash, and `idle` ran the machine's instruction and died. And a function so named is the program's in every other way (fm3 log 260): `open`, a word of the library's, declares a stream of its own and reads it before anything is in it, `seen$ << seen$ + 1`, which is 0 and then 1 as it is in a function of any other name. Before hop forty-five the compiler took `__f_open` for a function it had written itself, where a stream's name is read as it stands, and the read of nothing was a failed check.
 - A bare integer literal that no method takes as an `int` is the product's `int` width next: the path's policy (`int64` on native, riscv, arm-qemu and air, `int32` on wasm) unless the store's `product.md` says `int: 32` or `int: 64`, which pins the store on every path. Only when no method takes that either does the literal fit any number type. The emitted IR says where the width decided a call: `; a bare literal took the product's int width, int64, choosing among width of (int32), width of (int64)`.
 
 ## testing
@@ -75,6 +75,7 @@ A function is declared with `on`, its results first, then its name with the para
 >fill (3) → 6
 >div (7, 2) → 5
 >idle() → 7
+>open() → 1
 >named as the machine names() → 657
 
 ## hostile

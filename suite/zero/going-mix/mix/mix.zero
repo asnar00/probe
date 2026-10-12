@@ -19,3 +19,6 @@ on (int n) << so far()
 
 on louder()
     left$ << 100
+
+on open()
+    out$ << "go\n"

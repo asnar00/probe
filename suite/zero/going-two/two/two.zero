@@ -9,6 +9,9 @@ on launch()
 on count down()
     i$ << [10 through 1]
 
+on count down from (int n)
+    i$ << [n through n - 4]
+
 on (int n) << launched by (char c)
     launch()
     n << 1

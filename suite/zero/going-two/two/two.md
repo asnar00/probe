@@ -12,6 +12,7 @@ Hop 37 (fm3 question 135, log 220): the shape the list did not hold. Hop 39 (log
 ## interface
 - `launch` counts down and writes `liftoff`.
 - `launched by (c)` calls `launch` and gives 1; `launches (c$)` pushes that for each character that arrives.
+- `count down from (n)` pushes five numbers into `i$`, from `n` down, and writes nothing after them.
 
 ## rules
 - Items are handled in time order, across every stream (`time.md`, the fourth sentence): two countdowns each partway through are taken by turns, an item at a time. The first has pushed 10, 9, 8 and 7 when the key arrives at 3.5 s; from 4 s both push into `i$` each second, and the first says `liftoff` at 10 s, the second at 14 s.
@@ -20,9 +21,12 @@ Hop 37 (fm3 question 135, log 220): the shape the list did not hold. Hop 39 (log
 - A third may start while two are going on: a second key at 5.5 s gives three numbers a second from 6 s.
 - A function that pushes at a rate does not hold the machine's stack here: it is left at each step and gone on with when it is next due, its place and its variables kept in a record of its own (fm3 log 232). The compiler does this only in a store where something that arrives can start such a function; in every other store the function is the loop it was.
 - With no key there is one countdown, and it is hello's.
+- **A function left at its steps may have a parameter of any name** (fm3 log 260). `count down from (int n)` is begun by a case and is partway, its 2 just written, when a key at 2.5 s begins a `launch` beside it: from 3 s the two go on by turns, the one begun first first, `2` and `10`, then `1` and `9`, and the launch alone from 5 s to its `liftoff` at 13 s. Until hop forty-five this did not compile: what starts an activity kept its own place under the name `n`, and the program's `n` was said twice.
 
 ## testing
 >launch() with in "k" at 3.5 s → "10\n9\n8\n7\n" at 1 hz, "6\n10\n" at 4 s, "5\n9\n" at 5 s, "4\n8\n" at 6 s, "3\n7\n" at 7 s, "2\n6\n" at 8 s, "1\n5\n" at 9 s, "liftoff4\n" at 10 s, "3\n2\n1\n" at 1 hz from 11 s, "liftoff" at 14 s
 >launch() with in "k" at 4 s → "10\n9\n8\n7\n" at 1 hz, "6\n10\n" at 4 s, "5\n9\n" at 5 s, "4\n8\n" at 6 s, "3\n7\n" at 7 s, "2\n6\n" at 8 s, "1\n5\n" at 9 s, "liftoff4\n" at 10 s, "3\n2\n1\n" at 1 hz from 11 s, "liftoff" at 14 s
 >launch() with in "k" at 3.5 s, in "k" at 5.5 s → "10\n9\n8\n7\n" at 1 hz, "6\n10\n" at 4 s, "5\n9\n" at 5 s, "4\n8\n10\n" at 6 s, "3\n7\n9\n" at 7 s, "2\n6\n8\n" at 8 s, "1\n5\n7\n" at 9 s, "liftoff4\n6\n" at 10 s, "3\n5\n" at 11 s, "2\n4\n" at 12 s, "1\n3\n" at 13 s, "liftoff2\n" at 14 s, "1\n" at 15 s, "liftoff" at 16 s
 >launch() → "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\n" at 1 hz, "liftoff" at 10 s
+>count down from (5) → "5\n4\n3\n2\n1" at 1 hz
+>count down from (5) with in "k" at 2.5 s → "5\n4\n3\n" at 1 hz, "2\n10\n" at 3 s, "1\n9\n" at 4 s, "8\n7\n6\n5\n4\n3\n2\n1\nliftoff" at 1 hz from 5 s
