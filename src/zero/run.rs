@@ -1265,6 +1265,16 @@ mod tests {
         }
         assert_eq!((cuts.hold, cuts.stores, cuts.refused, cuts.failed, cuts.unplaced), (5, 5, 0, 0, 0), "{}", report.log);
         assert!(cuts.cuts == 39 && cuts.passed > 200, "{} cuts, {} runs\n{}", cuts.cuts, cuts.passed, report.log);
+        // ... and on another machine with nothing of its driver changed
+        // (fm3 log 263): the cut is the calls a runner makes before any
+        // case, and the wire is the program's own IR. wasm here; riscv64,
+        // arm64 under qemu and the GPU are run by hand, the same counts
+        let wasm = suite::backend_policy(Backend::Wasm).unwrap();
+        let (mut report, mut there) = (Report { passed: 0, failed: 0, skipped: 0, log: String::new() }, Cuts::default());
+        for name in ["hello", "restart", "going-keys", "going-two", "going-mix"] {
+            test_cuts(&Path::new("suite/zero").join(name), &wasm, Backend::Wasm, opt::MAX_LEVEL, &mut report, &mut there);
+        }
+        assert_eq!((there.hold, there.refused, there.failed, there.cuts, there.passed), (5, 0, 0, cuts.cuts, cuts.passed), "{}", report.log);
     }
 
     /// Each place has memory of its own (fm3 cut.md): what a unit at
