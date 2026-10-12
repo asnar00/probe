@@ -75,10 +75,10 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         eprintln!("                                         written, `countdown.zero:2`, or a function by its words; several with commas; `all`");
         eprintln!("                            [--then <units> at <time>]  ... and the cut moved while it runs: at that time the units");
         eprintln!("                                         named are the ones far, `none` for every unit at the screen; said again, a second move");
-        eprintln!("                            [--wire <time>]            ... over a wire that takes that long, `--wire 100 ms`: the case by its own times, what was late, and, where far works ahead of a key, the turns it took and threw away");
+        eprintln!("                            [--wire <time>]            ... over a wire that takes that long, `--wire 100 ms`: the case by its own times, what was late, and, where far works ahead of a key, the turns it took and threw away; with `--then`, the cut moved over that wire");
         eprintln!("       probe zero <store> placement [--far <units>]   every unit and where it runs at that cut, and what the wire carries");
         eprintln!("                            [--wire <time>] [--case <case>]  ... and one case over such a wire: what it carried, when each left and arrived, each piece the screen dropped unshown and each time far went back");
-        eprintln!("                            [--then <units> at <time>]  ... and each move: what is handed across, and the cut after it");
+        eprintln!("                            [--then <units> at <time>]  ... and each move: what is handed across, and the cut after it; with `--wire`, the move's own items among what the wire carried");
         eprintln!("       probe zero <store> trace <case>  run the case from the store's trace build: a row a step, a column a stream,");
         eprintln!("                            [--json]     what each was given and the lines that ran; or the events and steps as JSON");
         eprintln!("       probe zero meter <store|dir>     the lines that use a non-zeroic form: a store's, listed, or a row a store");
@@ -175,8 +175,7 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
             let far = args.iter().position(|a| a == "--far").and_then(|i| args.get(i + 1));
             let case = args.iter().position(|a| a == "--case").and_then(|i| args.get(i + 1));
             match moves_said(args).and_then(|(then, _)| match wire_said(args)? {
-                (Some(_), _) if !then.is_empty() => Err("a cut is not moved over a wire that takes time yet".to_string()),
-                (Some(d), _) => run::placement_wire(Path::new(store), far.map(String::as_str), d, case.map(String::as_str), &policy, level),
+                (Some(d), _) => run::placement_wire_moved(Path::new(store), far.map(String::as_str), &then, d, case.map(String::as_str), &policy, level),
                 _ => run::placement(Path::new(store), far.map(String::as_str), &then),
             }) {
                 Ok(out) => {
@@ -217,7 +216,7 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
             };
             let Some(case) = args.iter().enumerate().skip(2).find(|(i, a)| *a != "--fast" && *a != "-t" && Some(*i) != at && Some(*i) != at.map(|k| k + 1) && !used.contains(i) && !wused.contains(i)).map(|(_, a)| a) else { return usage() };
             if let Some(d) = wire {
-                return match if then.is_empty() { run::run_wire(Path::new(store), case, &policy, level, far.map(String::as_str), d) } else { Err("a cut is not moved over a wire that takes time yet".to_string()) } {
+                return match run::run_wire_moved(Path::new(store), case, &policy, level, far.map(String::as_str), &then, d) {
                     Ok(out) => {
                         print!("{}", out);
                         ExitCode::SUCCESS

@@ -58,7 +58,7 @@ const OWN: [&str; 4] = ["__out_n", "__clock", "__out_p", "__out_m"];
 /// ... and, where the wire takes time and each place has a list of
 /// its own (fm3 log 269), the words of that list: a place's own, never
 /// the other's
-const OWN_LIST: [&str; 11] = ["__act_n", "__due_act", "__act_i", "__act_b", "__in_n", "__in_k", "__in_t", "__in_c", "__due_in", "__in_busy", "__due_close"];
+const OWN_LIST: [&str; 13] = ["__act_n", "__due_act", "__act_i", "__act_b", "__in_n", "__in_k", "__in_t", "__in_c", "__due_in", "__in_busy", "__due_close", "__due_move", "__move_k"];
 
 /// how many of the wire's items its record holds, for a person
 const WIRE_LOG: usize = 1024;
@@ -199,6 +199,10 @@ pub struct Placed {
     /// the units a function of which is left at a step of a rate, and
     /// so may be due at its place
     stepping: BTreeSet<usize>,
+    /// where the wire takes time, the word of each clock, when it is
+    /// next due, and the unit its line is: the word is the line's
+    /// place's, and a move hands it across with the line (fm3 log 276)
+    clock_dues: Vec<(String, usize)>,
 }
 
 /// one thing a move hands across: its byte in the move's table, the
@@ -640,6 +644,18 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool) -> Result<(String, Placed),
             dues.extend(f.body.iter().filter_map(|l| def(l.trim())).filter_map(|(_, _, rhs)| rhs.strip_prefix("get x, __due")).filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())).map(|n| format!("__due{}", n)));
         }
     }
+    // (the word of each clock is its line's: a move hands it across
+    // with the line, fm3 log 276)
+    let mut clock_dues: Vec<(String, usize)> = Vec::new();
+    if let Some(f) = fns.iter().find(|f| wire && f.name == "__list_next") {
+        for pair in f.body.windows(2) {
+            let (Some((_, _, a)), Some((_, _, b))) = (def(pair[0].trim()), def(pair[1].trim())) else { continue };
+            let (Some(due), Some(g)) = (a.strip_prefix("get x, ").filter(|d| dues.contains(*d)), b.strip_prefix("__here__").and_then(|g| g.strip_suffix("()"))) else { continue };
+            if let Some(u) = units.iter().position(|u| u.irs.iter().any(|i| i == g)) {
+                clock_dues.push((due.to_string(), u));
+            }
+        }
+    }
     // what each entity does: its own functions and every function of
     // nobody's that they reach, which runs where it is called; and a
     // function nothing reaches is the runner's to call, at the screen
@@ -711,7 +727,7 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool) -> Result<(String, Placed),
     let mut hand_fields = fields.clone();
     if moved {
         for (name, ty) in &ctx_fields {
-            if OWN.contains(&name.as_str()) || reader.handles.contains_key(name) || fields.iter().any(|(n, _, _)| n == name) {
+            if OWN.contains(&name.as_str()) || reader.handles.contains_key(name) || fields.iter().any(|(n, _, _)| n == name) || wire && OWN_LIST.contains(&name.as_str()) {
                 continue;
             }
             let wrote = facts.iter().any(|f| f.writes.contains(name));
@@ -781,6 +797,15 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool) -> Result<(String, Placed),
             k += 1;
             continue;
         };
+        if moved && wire && f.name == "__move_turn" {
+            // (over a wire that takes time, fm3 log 276: the screen's
+            // own bytes of the table, each unit that leaves it marked
+            // nowhere, and the move's word put on the wire with the
+            // functions partway that go with it)
+            out.push_str(&format!("fn __move_turn()\n    c: ptr = context()\n    x: __ctx = load c\n    k: index = get x, __move_k\n    t: i64 = get x, __due_move\n    k2: index = add k, 1\n    tp: ptr = addr __move_t\n    d: i64 = load tp, k2, 8\n    x2: __ctx = set x, __move_k, k2\n    x3: __ctx = set x2, __due_move, d\n    store x3, c\n    cp: ptr = addr __cut\n    np: ptr = addr __cuts\n    base: index = mul k, {size}\n    loop(i: index = 0) bound {nu}\n        done: u1 = cmp.ge i, {nu}\n        if done\n            break\n        j: index = add base, i\n        nb: u8 = load np, j, 1\n        ob: u8 = load cp, i, 1\n        was: u1 = cmp.eq ob, 0\n        to: u1 = cmp.eq nb, 1\n        goes: u1 = and was, to\n        if goes\n            store 2: u8, cp, i, 1\n        i2: index = add i, 1\n        continue i2\n    loop(m: index = {nu}) bound {size}\n        done2: u1 = cmp.ge m, {size}\n        if done2\n            break\n        j2: index = add base, m\n        b2: u8 = load np, j2, 1\n        store b2, cp, m, 1\n        m2: index = add m, 2\n        continue m2\n    kw: i64 = conv k\n    row: index = __wput(10, kw, t, t)\n    __wstamp(row, t)\n    qm: ptr(array(__ctx, {q2})) = addr __wq_ctx\n    qe: ptr(__ctx) = index qm, row\n    qp: ptr = cast qe\n    store x3, qp\n{ship}    __wsent_move(t)\n    ret\n", size = size, nu = nu, q2 = 2 * WIRE_Q, ship = if pooled { "    __wship()\n" } else { "" }));
+            k = f.at.1;
+            continue;
+        }
         if moved && f.name == "__move_turn" {
             out.push_str(&format!("fn __move_turn()\n    c: ptr = context()\n    x: __ctx = load c\n    k: index = get x, __move_k\n    k2: index = add k, 1\n    tp: ptr = addr __move_t\n    d: i64 = load tp, k2, 8\n    x2: __ctx = set x, __move_k, k2\n    x3: __ctx = set x2, __due_move, d\n    store x3, c\n    cp: ptr = addr __cut\n    np: ptr = addr __cuts\n    base: index = mul k, {size}\n    loop(i: index = 0) bound {size}\n        done: u1 = cmp.ge i, {size}\n        if done\n            break\n        j: index = add base, i\n        b: u8 = load np, j, 1\n        store b, cp, i, 1\n        i2: index = add i, 1\n        continue i2\n    __hand(k)\n    ret\n", size = size));
             k = f.at.1;
@@ -1015,41 +1040,83 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool) -> Result<(String, Placed),
     if moved {
         out.push_str("\n; the runner's: when the k-th move is due, a byte of the table of the cut after it, and a byte of what it hands across\nfn __move_at(k: index, t: i64)\n    p: ptr = addr __move_t\n    store t, p, k, 8\n    first: u1 = cmp.eq k, 0\n    if first\n        c: ptr = context()\n        x: __ctx = load c\n        x2: __ctx = set x, __due_move, t\n        store x2, c\n    ret\n");
         out.push_str(&format!("fn __move_set(k: index, i: index, v: u8)\n    p: ptr = addr __cuts\n    b: index = mul k, {size}\n    j: index = add b, i\n    store v, p, j, 1\n    ret\nfn __hand_set(k: index, i: index, v: u8)\n    p: ptr = addr __hands\n    b: index = mul k, {hsize}\n    j: index = add b, i\n    store v, p, j, 1\n    ret\n", size = size, hsize = hsize));
-        // what a move hands across, once, in its turn: the wire's own
-        // work, done for both places at the screen
-        let mut h = String::from("\n; what the k-th move hands across (fm3 cut.md, \"the cut, moved\"), once, in the move's turn: each field of the context its table says, copied from the place that has it to the place that will use it; each stored stream's storage, where it will be read at a place that was not being given its items; and the place of each reader that moved. The table of the cut says what the wire carries from then on\nfn __hand(k: index)\n    cm: ptr(array(__ctx, 2)) = addr __ctx_mem\n    z0: index = const 0\n    z1: index = const 1\n    e0: ptr(__ctx) = index cm, z0\n    e1: ptr(__ctx) = index cm, z1\n    p0: ptr = cast e0\n    p1: ptr = cast e1\n    s0: __ctx = load p0\n    f0: __ctx = load p1\n    hp: ptr = addr __hands\n");
-        h.push_str(&format!("    hb: index = mul k, {}\n", hsize));
-        let mut c = 0;
-        for (j, (name, ty, plain)) in hand_fields.iter().enumerate() {
-            // (a field that holds an address is never handed: such a
-            // move is refused; but a stream kept as a value that is a
-            // string or an array is copied, fm3 log 267)
-            if !plain && !ty.ends_with('$') {
-                continue;
-            }
-            let (to_far, to_screen) = if *plain {
-                (format!("        yield a{}\n", j), format!("        yield b{}\n", j))
-            } else {
-                let item = ty.trim_end_matches('$');
-                carried_types.insert(item.to_string());
-                (format!("        ca{j}: {ty} = __copied_{item}(a{j})\n        yield ca{j}\n", j = j, ty = ty, item = item), format!("        cb{j}: {ty} = __copied_{item}(b{j})\n        yield cb{j}\n", j = j, ty = ty, item = item))
-            };
-            h.push_str(&format!("    i{j}: index = add hb, {j}\n    h{j}: u8 = load hp, i{j}, 1\n    u{j}: u1 = cmp.eq h{j}, 1\n    d{j}: u1 = cmp.eq h{j}, 2\n    a{j}: {ty} = get s{c}, {name}\n    b{j}: {ty} = get f{c}, {name}\n    nb{j}: {ty} = if u{j}\n{to_far}    else\n        yield b{j}\n    na{j}: {ty} = if d{j}\n{to_screen}    else\n        yield a{j}\n    f{c2}: __ctx = set f{c}, {name}, nb{j}\n    s{c2}: __ctx = set s{c}, {name}, na{j}\n", j = j, ty = ty, name = name, c = c, c2 = c + 1, to_far = to_far, to_screen = to_screen));
-            c += 1;
-        }
         let mut used: BTreeSet<&'static str> = BTreeSet::new();
-        for (r, (names, _)) in rings.iter().enumerate() {
-            let (Some(at), Some(kind)) = (ring_at[r], kinds[r]) else { continue };
-            used.insert(kind);
-            let ty = ctx_fields.iter().find(|(n, _)| *n == names[0]).map(|(_, t)| t.clone()).unwrap_or_default();
-            h.push_str(&format!("    ri{r}: index = add hb, {at}\n    rh{r}: u8 = load hp, ri{r}, 1\n    ra{r}: {ty} = get s{c}, {first}\n    rb{r}: {ty} = get f{c}, {first}\n    ru{r}: u1 = cmp.eq rh{r}, 1\n    if ru{r}\n        __hand_{kind}(ra{r}, rb{r})\n    rd{r}: u1 = cmp.eq rh{r}, 2\n    if rd{r}\n        __hand_{kind}(rb{r}, ra{r})\n", r = r, at = at, ty = ty, first = names[0], c = c, kind = kind));
-            for (m, name) in names.iter().enumerate() {
-                h.push_str(&format!("    qi{r}_{m}: index = add hb, {at}\n    qh{r}_{m}: u8 = load hp, qi{r}_{m}, 1\n    qa{r}_{m}: {ty} = get s{c}, {name}\n    qb{r}_{m}: {ty} = get f{c}, {name}\n    pa{r}_{m}: index = get qa{r}_{m}, pos\n    pb{r}_{m}: index = get qb{r}_{m}, pos\n    qu{r}_{m}: u1 = cmp.eq qh{r}_{m}, 1\n    qd{r}_{m}: u1 = cmp.eq qh{r}_{m}, 2\n    nq{r}_{m}: index = if qu{r}_{m}\n        yield pa{r}_{m}\n    else\n        yield pb{r}_{m}\n    np{r}_{m}: index = if qd{r}_{m}\n        yield pb{r}_{m}\n    else\n        yield pa{r}_{m}\n    qy{r}_{m}: {ty} = set qb{r}_{m}, pos, nq{r}_{m}\n    qx{r}_{m}: {ty} = set qa{r}_{m}, pos, np{r}_{m}\n    f{c2}: __ctx = set f{c}, {name}, qy{r}_{m}\n    s{c2}: __ctx = set s{c}, {name}, qx{r}_{m}\n", r = r, m = m, at = at + 1 + m, ty = ty, name = name, c = c, c2 = c + 1));
+        if wire {
+            // what a move hands across over a wire that takes time (fm3
+            // log 276): taken at the place it reaches, from the sender's
+            // context as it was when it sent, which the item keeps
+            let mut h = format!("\n; what the k-th move hands across over a wire that takes time (fm3 cut.md, \"the cut moved over a wire that takes time\"; log 276), taken here, at the place it has reached, when its item arrives: `dir` is 1 for what the screen sent with the move's word and 2 for what far sent back. Each field of the context the move's table says, from the sender's context as it was when it sent, which the item's row keeps; and both places' note of what was last sent of it, so that it is not said again. Each stored stream's storage, read where it lies at the sender, which no longer reads it; and the place of each reader that moved\nfn __whand(row: index, k: index, dir: u8)\n    c: ptr = context()\n    y0: __ctx = load c\n    qm: ptr(array(__ctx, {q2})) = addr __wq_ctx\n    qe: ptr(__ctx) = index qm, row\n    qp: ptr = cast qe\n    x: __ctx = load qp\n    hp: ptr = addr __hands\n    hb: index = mul k, {hsize}\n    __wnoted(row, k, dir)\n", q2 = 2 * WIRE_Q, hsize = hsize);
+            // (... and both places' note of what was last sent of each field the wire carries, a function of its own: a context is wide, and one function with three of them a field is a frame too deep for a machine with a small stack)
+            let mut note = format!("\n; both places' note of what was last sent of a field the wire carries, set to what a move handed of it\nfn __wnoted(row: index, k: index, dir: u8)\n    qm: ptr(array(__ctx, {q2})) = addr __wq_ctx\n    qe: ptr(__ctx) = index qm, row\n    qp: ptr = cast qe\n    x: __ctx = load qp\n    sm: ptr(array(__ctx, 2)) = addr __wshadow\n    z0: index = const 0\n    z1: index = const 1\n    e0: ptr(__ctx) = index sm, z0\n    e1: ptr(__ctx) = index sm, z1\n    p0: ptr = cast e0\n    p1: ptr = cast e1\n    s0: __ctx = load p0\n    t0: __ctx = load p1\n    hp: ptr = addr __hands\n    hb: index = mul k, {hsize}\n", q2 = 2 * WIRE_Q, hsize = hsize);
+            let (mut c, mut sc) = (0, 0);
+            for (j, (name, ty, plain)) in hand_fields.iter().enumerate() {
+                if !plain && !ty.ends_with('$') {
+                    continue;
+                }
+                let take = if *plain {
+                    format!("        yield a{}\n", j)
+                } else {
+                    let item = ty.trim_end_matches('$');
+                    carried_types.insert(item.to_string());
+                    format!("        ca{j}: {ty} = __copied_{item}(a{j})\n        yield ca{j}\n", j = j, ty = ty, item = item)
+                };
+                h.push_str(&format!("    i{j}: index = add hb, {j}\n    h{j}: u8 = load hp, i{j}, 1\n    g{j}: u1 = cmp.eq h{j}, dir\n    a{j}: {ty} = get x, {name}\n    b{j}: {ty} = get y{c}, {name}\n    v{j}: {ty} = if g{j}\n{take}    else\n        yield b{j}\n    y{c2}: __ctx = set y{c}, {name}, v{j}\n", j = j, ty = ty, name = name, c = c, c2 = c + 1, take = take));
+                c += 1;
+                if *plain && j < fields.len() {
+                    note.push_str(&format!("    i{j}: index = add hb, {j}\n    h{j}: u8 = load hp, i{j}, 1\n    g{j}: u1 = cmp.eq h{j}, dir\n    a{j}: {ty} = get x, {name}\n    sa{j}: {ty} = get s{sc}, {name}\n    su{j}: {ty} = if g{j}\n        yield a{j}\n    else\n        yield sa{j}\n    s{sc2}: __ctx = set s{sc}, {name}, su{j}\n    ta{j}: {ty} = get t{sc}, {name}\n    tu{j}: {ty} = if g{j}\n        yield a{j}\n    else\n        yield ta{j}\n    t{sc2}: __ctx = set t{sc}, {name}, tu{j}\n", j = j, ty = ty, name = name, sc = sc, sc2 = sc + 1));
+                    sc += 1;
+                }
+            }
+            for (r, (names, _)) in rings.iter().enumerate() {
+                let (Some(at), Some(kind)) = (ring_at[r], kinds[r]) else { continue };
+                used.insert(kind);
+                let ty = ctx_fields.iter().find(|(n, _)| *n == names[0]).map(|(_, t)| t.clone()).unwrap_or_default();
+                h.push_str(&format!("    ri{r}: index = add hb, {at}\n    rh{r}: u8 = load hp, ri{r}, 1\n    rg{r}: u1 = cmp.eq rh{r}, dir\n    ra{r}: {ty} = get x, {first}\n    rb{r}: {ty} = get y{c}, {first}\n    if rg{r}\n        __hand_{kind}(ra{r}, rb{r})\n", r = r, at = at, ty = ty, first = names[0], c = c, kind = kind));
+                for (m, name) in names.iter().enumerate() {
+                    h.push_str(&format!("    qi{r}_{m}: index = add hb, {at}\n    qh{r}_{m}: u8 = load hp, qi{r}_{m}, 1\n    qg{r}_{m}: u1 = cmp.eq qh{r}_{m}, dir\n    qa{r}_{m}: {ty} = get x, {name}\n    qb{r}_{m}: {ty} = get y{c}, {name}\n    pa{r}_{m}: index = get qa{r}_{m}, pos\n    pb{r}_{m}: index = get qb{r}_{m}, pos\n    nq{r}_{m}: index = if qg{r}_{m}\n        yield pa{r}_{m}\n    else\n        yield pb{r}_{m}\n    qy{r}_{m}: {ty} = set qb{r}_{m}, pos, nq{r}_{m}\n    y{c2}: __ctx = set y{c}, {name}, qy{r}_{m}\n", r = r, m = m, at = at + 1 + m, ty = ty, name = name, c = c, c2 = c + 1));
+                    c += 1;
+                }
+            }
+            h.push_str(&format!("    store y{c}, c\n    ret\n", c = c));
+            note.push_str(&format!("    store s{sc}, p0\n    store t{sc}, p1\n    ret\n", sc = sc));
+            out.push_str(&h);
+            out.push_str(&note);
+        } else {
+            // what a move hands across, once, in its turn: the wire's own
+            // work, done for both places at the screen
+            let mut h = String::from("\n; what the k-th move hands across (fm3 cut.md, \"the cut, moved\"), once, in the move's turn: each field of the context its table says, copied from the place that has it to the place that will use it; each stored stream's storage, where it will be read at a place that was not being given its items; and the place of each reader that moved. The table of the cut says what the wire carries from then on\nfn __hand(k: index)\n    cm: ptr(array(__ctx, 2)) = addr __ctx_mem\n    z0: index = const 0\n    z1: index = const 1\n    e0: ptr(__ctx) = index cm, z0\n    e1: ptr(__ctx) = index cm, z1\n    p0: ptr = cast e0\n    p1: ptr = cast e1\n    s0: __ctx = load p0\n    f0: __ctx = load p1\n    hp: ptr = addr __hands\n");
+            h.push_str(&format!("    hb: index = mul k, {}\n", hsize));
+            let mut c = 0;
+            for (j, (name, ty, plain)) in hand_fields.iter().enumerate() {
+                // (a field that holds an address is never handed: such a
+                // move is refused; but a stream kept as a value that is a
+                // string or an array is copied, fm3 log 267)
+                if !plain && !ty.ends_with('$') {
+                    continue;
+                }
+                let (to_far, to_screen) = if *plain {
+                    (format!("        yield a{}\n", j), format!("        yield b{}\n", j))
+                } else {
+                    let item = ty.trim_end_matches('$');
+                    carried_types.insert(item.to_string());
+                    (format!("        ca{j}: {ty} = __copied_{item}(a{j})\n        yield ca{j}\n", j = j, ty = ty, item = item), format!("        cb{j}: {ty} = __copied_{item}(b{j})\n        yield cb{j}\n", j = j, ty = ty, item = item))
+                };
+                h.push_str(&format!("    i{j}: index = add hb, {j}\n    h{j}: u8 = load hp, i{j}, 1\n    u{j}: u1 = cmp.eq h{j}, 1\n    d{j}: u1 = cmp.eq h{j}, 2\n    a{j}: {ty} = get s{c}, {name}\n    b{j}: {ty} = get f{c}, {name}\n    nb{j}: {ty} = if u{j}\n{to_far}    else\n        yield b{j}\n    na{j}: {ty} = if d{j}\n{to_screen}    else\n        yield a{j}\n    f{c2}: __ctx = set f{c}, {name}, nb{j}\n    s{c2}: __ctx = set s{c}, {name}, na{j}\n", j = j, ty = ty, name = name, c = c, c2 = c + 1, to_far = to_far, to_screen = to_screen));
                 c += 1;
             }
+            for (r, (names, _)) in rings.iter().enumerate() {
+                let (Some(at), Some(kind)) = (ring_at[r], kinds[r]) else { continue };
+                used.insert(kind);
+                let ty = ctx_fields.iter().find(|(n, _)| *n == names[0]).map(|(_, t)| t.clone()).unwrap_or_default();
+                h.push_str(&format!("    ri{r}: index = add hb, {at}\n    rh{r}: u8 = load hp, ri{r}, 1\n    ra{r}: {ty} = get s{c}, {first}\n    rb{r}: {ty} = get f{c}, {first}\n    ru{r}: u1 = cmp.eq rh{r}, 1\n    if ru{r}\n        __hand_{kind}(ra{r}, rb{r})\n    rd{r}: u1 = cmp.eq rh{r}, 2\n    if rd{r}\n        __hand_{kind}(rb{r}, ra{r})\n", r = r, at = at, ty = ty, first = names[0], c = c, kind = kind));
+                for (m, name) in names.iter().enumerate() {
+                    h.push_str(&format!("    qi{r}_{m}: index = add hb, {at}\n    qh{r}_{m}: u8 = load hp, qi{r}_{m}, 1\n    qa{r}_{m}: {ty} = get s{c}, {name}\n    qb{r}_{m}: {ty} = get f{c}, {name}\n    pa{r}_{m}: index = get qa{r}_{m}, pos\n    pb{r}_{m}: index = get qb{r}_{m}, pos\n    qu{r}_{m}: u1 = cmp.eq qh{r}_{m}, 1\n    qd{r}_{m}: u1 = cmp.eq qh{r}_{m}, 2\n    nq{r}_{m}: index = if qu{r}_{m}\n        yield pa{r}_{m}\n    else\n        yield pb{r}_{m}\n    np{r}_{m}: index = if qd{r}_{m}\n        yield pb{r}_{m}\n    else\n        yield pa{r}_{m}\n    qy{r}_{m}: {ty} = set qb{r}_{m}, pos, nq{r}_{m}\n    qx{r}_{m}: {ty} = set qa{r}_{m}, pos, np{r}_{m}\n    f{c2}: __ctx = set f{c}, {name}, qy{r}_{m}\n    s{c2}: __ctx = set s{c}, {name}, qx{r}_{m}\n", r = r, m = m, at = at + 1 + m, ty = ty, name = name, c = c, c2 = c + 1));
+                    c += 1;
+                }
+            }
+            h.push_str(&format!("    store s{c}, p0\n    store f{c}, p1\n    ret\n", c = c));
+            out.push_str(&h);
         }
-        h.push_str(&format!("    store s{c}, p0\n    store f{c}, p1\n    ret\n", c = c));
-        out.push_str(&h);
         if used.contains("queue") {
             out.push_str("\n; a queue handed across (lib/stream.ssa, the queue): the items not yet given back, in their slots, and how many it has had, where its first slot stands, and whether it has ended\nfn __hand_queue(a: any$, b: any$)\n    ra: ptr = get a, ring\n    rb: ptr = get b, ring\n    n: index = load ra\n    o: index = load ra, 8\n    k: index = sub n, o\n    qa: ptr(any) = load ra, 16\n    qb: ptr(any) = load rb, 16\n    s: any[] = pack qa, k, 1\n    d: any[] = pack qb, k, 1\n    copy d, s\n    store n, rb\n    store o, rb, 8\n    e: i64 = load ra, 56\n    store e, rb, 56\n    ret\n");
         }
@@ -1067,12 +1134,12 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool) -> Result<(String, Placed),
         let heres: Vec<(String, Option<usize>)> = heres.into_iter().map(|g| { let o = units.iter().position(|u| u.irs.contains(&g)); (g, o) }).collect();
         let carried_fields: Vec<(usize, String, String)> = fields.iter().enumerate().filter(|(_, (_, ty, plain))| *plain && word(ty) && ty != "ptr").map(|(j, (n, t, _))| (j, n.clone(), t.clone())).collect();
         conts = ids.clone();
-        out.push_str(&wire_text(&World { fbase, fields: carried_fields, ids, heres, arrivals: arrivals.clone(), pooled, input: fns.iter().any(|f| f.name == "__in_turn"), runs: fns.iter().any(|f| f.name == "__run"), writes: (present.contains("__out_ch"), present.contains("__out_block")), cols: pool.clone() }));
+        out.push_str(&wire_text(&World { fbase, fields: carried_fields, ids, heres, arrivals: arrivals.clone(), pooled, input: fns.iter().any(|f| f.name == "__in_turn"), runs: fns.iter().any(|f| f.name == "__run"), writes: (present.contains("__out_ch"), present.contains("__out_block")), cols: pool.clone(), moved, nu, size }));
     }
     for item in &carried_types {
         out.push_str(&format!("\n; a value that holds an address, an array or a string, copied (fm3 log 267): its storage as the library lays it out, a queue's resident items in a buffer of their number or a ring's buffers whole, with its counts, its beat and its end, carved from the arena; the reader's place and its rules go with the value. A value is never modified, so the copy is the value\nfn __copied_{t}(v: {t}$) -> {t}$\n    r: ptr = get v, ring\n    ar: ptr = addr __arena\n    n: ptr = arena_alloc(ar, 64)\n    pushed: index = load r\n    o: index = load r, 8\n    hz: i64 = load r, 32\n    st: i64 = load r, 40\n    t0: i64 = load r, 48\n    e: i64 = load r, 56\n    w: index = load r, 24\n    store pushed, n\n    store o, n, 8\n    store hz, n, 32\n    store st, n, 40\n    store t0, n, 48\n    store e, n, 56\n    sz: index = sizeof {t}\n    stepped: u1 = cmp.ne st, 0\n    worded: u1 = cmp.ne w, 0\n    queue: u1 = and stepped, worded\n    if queue\n        k: index = sub pushed, o\n        one: index = const 1\n        cap: index = max(k, one)\n        bytes: index = mul sz, cap\n        total: index = add bytes, 16\n        vb: ptr = arena_alloc(ar, total)\n        buffer_init(vb, sz, cap)\n        slots: ptr = ptradd vb, 16\n        qa: ptr({t}) = load r, 16\n        qb: ptr({t}) = cast slots\n        s: {t}[] = pack qa, k, 1\n        d: {t}[] = pack qb, k, 1\n        copy d, s\n        store slots, n, 16\n        store cap, n, 24\n    else\n        wa: ptr = load r, 16\n        cap2: index = load wa, 8\n        bytes2: index = mul sz, cap2\n        total2: index = add bytes2, 16\n        wb: ptr = arena_alloc(ar, total2)\n        buffer_init(wb, sz, cap2)\n        va: {t}[] = slice wa\n        vc: {t}[] = slice wb\n        copy vc, va\n        store wb, n, 16\n        ta: ptr = load r, 24\n        if worded\n            tcap: index = load ta, 8\n            tbytes: index = mul tcap, 8\n            ttotal: index = add tbytes, 16\n            tb: ptr = arena_alloc(ar, ttotal)\n            eight: index = const 8\n            buffer_init(tb, eight, tcap)\n            ka: i64[] = slice ta\n            kb: i64[] = slice tb\n            copy kb, ka\n            store tb, n, 24\n        else\n            store ta, n, 24\n    v2: {t}$ = set v, ring, n\n    ret v2\n\n; ... where the wire was crossed to bring it: called at its own place, a function is handed the value itself\nfn __carried_{t}(v: {t}$, w: i64) -> {t}$\n    a: ptr = context()\n    cm: ptr = addr __ctx_mem\n    second: u1 = cmp.ne a, cm\n    here: i64 = conv second\n    same: u1 = cmp.eq here, w\n    if same\n        ret v\n    c: {t}$ = __copied_{t}(v)\n    ret c\n", t = item));
     }
-    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, copied, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize), wire, glue, unwired, conts, stepping }))
+    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, copied, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize), wire, glue, unwired, conts, stepping, clock_dues }))
 }
 
 /// what the world's text is written from
@@ -1096,6 +1163,11 @@ struct World {
     writes: (bool, bool),
     /// the pool's columns, for a copy of far's half (fm3 log 273)
     cols: Vec<String>,
+    /// the cut may be moved (fm3 log 276), and how many units there are
+    /// and how long the cut's table is
+    moved: bool,
+    nu: usize,
+    size: usize,
 }
 
 /// The world and the wire of a build whose wire takes time (fm3 cut.md,
@@ -1167,8 +1239,14 @@ fn wire_text(w: &World) -> String {
     let bound = if w.input { "    now: i64 = load wp\n    lim: i64 = add now, 1\n    screen: u1 = cmp.eq p, 0\n    sooner: u1 = cmp.lt lim, t0\n    same: u1 = cmp.eq lim, t0\n    first: u1 = cmp.lt 1, r0\n    tie: u1 = and same, first\n    under: u1 = or sooner, tie\n    use: u1 = and screen, under\n    t: i64 = if use\n        yield lim\n    else\n        yield t0\n    r: i64 = if use\n        yield 1\n    else\n        yield r0\n" } else { "    t: i64 = add t0, 0\n    r: i64 = add r0, 0\n" };
     t.push_str(&format!("\n; a place says where it stands (fm3 log 269): the time and the rank of the earliest thing it has, before which it will begin nothing unless it is sent something, and how much of what it was sent it has had. The screen can say nothing of a time the world's clock has not reached where a key may yet be pressed: its bound is then the moment after now, at the input's rank, which is the first. Said where this place's own earliest thing has changed, or it has been sent something since it last said; and, where only the world's clock has moved its bound on, when that frees the other to take the turn it is waiting for and not before. An item of the wire, carrying the fields that cross\nfn __wsay() -> u1\n    p: index = __wplace()\n{next}    wp: ptr = addr __w\n{bound}    b: index = mul p, 8\n    i2: index = add b, 10\n    recv: i64 = load wp, i2, 8\n    i5: index = add b, 13\n    st: i64 = load wp, i5, 8\n    i6: index = add b, 14\n    sr: i64 = load wp, i6, 8\n    i7: index = add b, 15\n    sa: i64 = load wp, i7, 8\n    e1: u1 = cmp.eq st, t\n    e2: u1 = cmp.eq sr, r\n    e3: u1 = cmp.eq sa, recv\n    e12: u1 = and e1, e2\n    p2: index = mul p, 2\n    i8: index = add p2, 28\n    ot: i64 = load wp, i8, 8\n    i9: index = add p2, 29\n    or0: i64 = load wp, i9, 8\n    o1: u1 = cmp.eq ot, t0\n    o2: u1 = cmp.eq or0, r0\n    o12: u1 = and o1, o2\n    j3: index = add b, 11\n    pt: i64 = load wp, j3, 8\n    j4: index = add b, 12\n    pr: i64 = load wp, j4, 8\n    olt: u1 = cmp.lt pt, st\n    oeq: u1 = cmp.eq pt, st\n    orl: u1 = cmp.lt pr, sr\n    otie: u1 = and oeq, orl\n    past: u1 = or olt, otie\n    nv: i64 = const {never}\n    never: u1 = cmp.ge pt, nv\n    unheld: u1 = or past, never\n    ult: u1 = cmp.lt pt, t\n    ueq: u1 = cmp.eq pt, t\n    url: u1 = cmp.lt pr, r\n    utie: u1 = and ueq, url\n    frees: u1 = or ult, utie\n    stays: u1 = xor frees, 1\n    idle: u1 = or unheld, stays\n    creep: u1 = or e12, idle\n    q1: u1 = and e3, o12\n    q2: u1 = and q1, creep\n    dirty: u1 = __wfields_dirty()\n    clean: u1 = xor dirty, 1\n    quiet: u1 = and q2, clean\n    if quiet\n        ret 0\n    row: index = __wput(5, t, r, t)\n    m: i64 = __wfields_out(row)\n    cp: ptr = addr __wq_c\n    store m, cp, row, 8\n    ep: ptr = addr __wq_e\n    store recv, ep, row, 8\n    store t, wp, i5, 8\n    store r, wp, i6, 8\n    store recv, wp, i7, 8\n    store t0, wp, i8, 8\n    store r0, wp, i9, 8\n    carries: u1 = cmp.ne m, 0\n    if carries\n        __wsent()\n    ret 1\n", bound = bound, never = NEVER, next = if w.input { "    t9: i64, r9: i64 = __list_next()\n    wa: ptr = addr __wa\n    pk: i64 = load wa, 16\n    pkd: u1 = cmp.ne pk, 0\n    isfar: u1 = cmp.ne p, 0\n    held: u1 = and pkd, isfar\n    bt: i64 = load wa, 24\n    br: i64 = load wa, 32\n    t0: i64 = if held\n        yield bt\n    else\n        yield t9\n    r0: i64 = if held\n        yield br\n    else\n        yield r9\n" } else { "    t0: i64, r0: i64 = __list_next()\n" }));
     // delivery
+    // (the three items of a move, fm3 log 276: the move's word, at far, which first goes back to the move's time where it was ahead; far's state, at the screen; and a function partway handed across, which is given a place and not gone on with)
+    let moves = if w.moved {
+        format!("    is10: u1 = cmp.eq kind, 10\n    if is10\n        __wrecv()\n{back}        ka: index = conv a\n        __wmove_far(row, ka, b)\n        ret 1\n    is11: u1 = cmp.eq kind, 11\n    if is11\n        __wrecv()\n        kb: index = conv a\n        __wmove_screen(row, kb)\n        ret 1\n{take}", back = if w.input { "        __wback(b, 1)\n" } else { "" }, take = if w.pooled { "    is12: u1 = cmp.eq kind, 12\n    if is12\n        __wtake(row)\n        ret 1\n" } else { "" })
+    } else {
+        String::new()
+    };
     let take = if w.pooled { format!("    is4: u1 = cmp.eq kind, 4\n    if is4\n        __wrecv()\n        cq: ptr = addr __wq_c\n        cm4: i64 = load cq, row, 8\n        __wfields_in(row, cm4)\n        slot: index = __act_slot()\n        bp: ptr = addr __act_born\n        born: i64 = load bp, slot, 8\n        fl: index = add row, {flight}\n        __act_carry(fl, slot)\n        store born, bp, slot, 8\n        pp: ptr = addr __act_pc\n        store a, pp, slot, 8\n        __act_run(slot, a)\n        __act_next()\n", flight = 2 * pool) } else { String::new() };
-    t.push_str(&format!("\n; the wire's earliest item toward a place is handed over, where the world's clock has reached the time it arrives: text into the capture; a push made again, and the lines that walk the stream given their turn; a function partway given a place of the pool and gone on with at once, being part of the turn that sent it; a telling kept\nfn __wdeliver(pi: i32) -> u1\n    __zero_context(pi)\n    p: index = conv pi\n    wp: ptr = addr __w\n    p2: index = mul p, 2\n    hi: index = add p2, 24\n    ti: index = add p2, 25\n    head: i64 = load wp, hi, 8\n    tail: i64 = load wp, ti, 8\n    none: u1 = cmp.ge head, tail\n    if none\n        ret 0\n    m: i64 = rem head, {q}\n    mi: index = conv m\n    qb: index = mul p, {q}\n    row: index = add qb, mi\n    ap: ptr = addr __wq_at\n    at: i64 = load ap, row, 8\n    now: i64 = load wp\n    notyet: u1 = cmp.gt at, now\n    if notyet\n        ret 0\n    head2: i64 = add head, 1\n    store head2, wp, hi, 8\n    gi: index = add p, 6\n    store 0: i64, wp, gi, 8\n    kp: ptr = addr __wq_kind\n    kind: i64 = load kp, row, 8\n    aq: ptr = addr __wq_a\n    a: i64 = load aq, row, 8\n    bq: ptr = addr __wq_b\n    b: i64 = load bq, row, 8\n    tq: ptr = addr __wq_t\n    stamp: i64 = load tq, row, 8\n{head}    is3: u1 = cmp.eq kind, 3\n    if is3\n        __wrecv()\n        __wire_push(a, b)\n{run}{take}    is5: u1 = cmp.eq kind, 5\n    if is5\n        cq5: ptr = addr __wq_c\n        cm5: i64 = load cq5, row, 8\n        __wfields_in(row, cm5)\n        fed: u1 = cmp.ne cm5, 0\n        if fed\n            __wrecv()\n        b8: index = mul p, 8\n        j1: index = add b8, 11\n        store a, wp, j1, 8\n        j2: index = add b8, 12\n        store b, wp, j2, 8\n        eq: ptr = addr __wq_e\n        ack: i64 = load eq, row, 8\n        j3: index = add b8, 9\n        store ack, wp, j3, 8\n{unpark}    ret 1\n", q = q, unpark = if w.input && w.pooled { "        ua: ptr = addr __wa\n        upk: i64 = load ua, 16\n        uon: u1 = cmp.ne upk, 0\n        ufar: u1 = cmp.ne p, 0\n        uu: u1 = and uon, ufar\n        if uu\n            ubt: i64 = load ua, 24\n            ubr: i64 = load ua, 32\n            ult: u1 = cmp.lt ubt, a\n            ueq: u1 = cmp.eq ubt, a\n            url: u1 = cmp.lt ubr, b\n            utie: u1 = and ueq, url\n            upast: u1 = or ult, utie\n            if upast\n                __wunpark()\n" } else { "" }, run = if w.runs { "        __run()\n" } else { "" }, take = take, head = if w.input { "    rq: ptr = addr __wq_r\n    rk: i64 = load rq, row, 8\n    eq0: ptr = addr __wq_e\n    ev: i64 = load eq0, row, 8\n    cq0: ptr = addr __wq_c\n    cm0: i64 = load cq0, row, 8\n    k1: u1 = cmp.eq kind, 1\n    k2: u1 = cmp.eq kind, 2\n    text: u1 = or k1, k2\n    if text\n        __wkeep(kind, a, b, stamp, rk, ev)\n        ret 1\n    k5: u1 = cmp.eq kind, 5\n    nof: u1 = cmp.eq cm0, 0\n    plain: u1 = and k5, nof\n    scr: u1 = cmp.eq p, 0\n    if plain\n        if scr\n        else\n            __wclock(stamp)\n            __wpassed(a, b)\n    else\n        if scr\n            __wflush(stamp, rk)\n        else\n            __wback(stamp, rk)\n        wa: ptr = addr __wa\n        ri: index = add p, 10\n        store rk, wa, ri, 8\n        __wclock(stamp)\n".to_string() } else { format!("    __wclock(stamp)\n{}{}", if w.writes.0 { "    is1: u1 = cmp.eq kind, 1\n    if is1\n        ch: u8 = conv a\n        __cap_ch(ch)\n" } else { "" }, if w.writes.1 { "    is2: u1 = cmp.eq kind, 2\n    if is2\n        ao: index = conv a\n        bk: index = conv b\n        tp: ptr = addr __wq_text\n        qs: ptr(u8) = ptradd tp, ao\n        v: u8[] = pack qs, bk, 1\n        __cap_block(v)\n" } else { "" }) }));
+    t.push_str(&format!("\n; the wire's earliest item toward a place is handed over, where the world's clock has reached the time it arrives: text into the capture; a push made again, and the lines that walk the stream given their turn; a function partway given a place of the pool and gone on with at once, being part of the turn that sent it; a telling kept\nfn __wdeliver(pi: i32) -> u1\n    __zero_context(pi)\n    p: index = conv pi\n    wp: ptr = addr __w\n    p2: index = mul p, 2\n    hi: index = add p2, 24\n    ti: index = add p2, 25\n    head: i64 = load wp, hi, 8\n    tail: i64 = load wp, ti, 8\n    none: u1 = cmp.ge head, tail\n    if none\n        ret 0\n    m: i64 = rem head, {q}\n    mi: index = conv m\n    qb: index = mul p, {q}\n    row: index = add qb, mi\n    ap: ptr = addr __wq_at\n    at: i64 = load ap, row, 8\n    now: i64 = load wp\n    notyet: u1 = cmp.gt at, now\n    if notyet\n        ret 0\n    head2: i64 = add head, 1\n    store head2, wp, hi, 8\n    gi: index = add p, 6\n    store 0: i64, wp, gi, 8\n    kp: ptr = addr __wq_kind\n    kind: i64 = load kp, row, 8\n    aq: ptr = addr __wq_a\n    a: i64 = load aq, row, 8\n    bq: ptr = addr __wq_b\n    b: i64 = load bq, row, 8\n    tq: ptr = addr __wq_t\n    stamp: i64 = load tq, row, 8\n{moves}{head}    is3: u1 = cmp.eq kind, 3\n    if is3\n        __wrecv()\n        __wire_push(a, b)\n{run}{take}    is5: u1 = cmp.eq kind, 5\n    if is5\n        cq5: ptr = addr __wq_c\n        cm5: i64 = load cq5, row, 8\n        __wfields_in(row, cm5)\n        fed: u1 = cmp.ne cm5, 0\n        if fed\n            __wrecv()\n        b8: index = mul p, 8\n        j1: index = add b8, 11\n        store a, wp, j1, 8\n        j2: index = add b8, 12\n        store b, wp, j2, 8\n        eq: ptr = addr __wq_e\n        ack: i64 = load eq, row, 8\n        j3: index = add b8, 9\n        store ack, wp, j3, 8\n{unpark}    ret 1\n", q = q, unpark = if w.input && w.pooled { "        ua: ptr = addr __wa\n        upk: i64 = load ua, 16\n        uon: u1 = cmp.ne upk, 0\n        ufar: u1 = cmp.ne p, 0\n        uu: u1 = and uon, ufar\n        if uu\n            ubt: i64 = load ua, 24\n            ubr: i64 = load ua, 32\n            ult: u1 = cmp.lt ubt, a\n            ueq: u1 = cmp.eq ubt, a\n            url: u1 = cmp.lt ubr, b\n            utie: u1 = and ueq, url\n            upast: u1 = or ult, utie\n            if upast\n                __wunpark()\n" } else { "" }, moves = moves, run = if w.runs { "        __run()\n" } else { "" }, take = take, head = if w.input { "    rq: ptr = addr __wq_r\n    rk: i64 = load rq, row, 8\n    eq0: ptr = addr __wq_e\n    ev: i64 = load eq0, row, 8\n    cq0: ptr = addr __wq_c\n    cm0: i64 = load cq0, row, 8\n    k1: u1 = cmp.eq kind, 1\n    k2: u1 = cmp.eq kind, 2\n    text: u1 = or k1, k2\n    if text\n        __wkeep(kind, a, b, stamp, rk, ev)\n        ret 1\n    k5: u1 = cmp.eq kind, 5\n    nof: u1 = cmp.eq cm0, 0\n    plain: u1 = and k5, nof\n    scr: u1 = cmp.eq p, 0\n    if plain\n        if scr\n        else\n            __wclock(stamp)\n            __wpassed(a, b)\n    else\n        if scr\n            __wflush(stamp, rk)\n        else\n            __wback(stamp, rk)\n        wa: ptr = addr __wa\n        ri: index = add p, 10\n        store rk, wa, ri, 8\n        __wclock(stamp)\n".to_string() } else { format!("    __wclock(stamp)\n{}{}", if w.writes.0 { "    is1: u1 = cmp.eq kind, 1\n    if is1\n        ch: u8 = conv a\n        __cap_ch(ch)\n" } else { "" }, if w.writes.1 { "    is2: u1 = cmp.eq kind, 2\n    if is2\n        ao: index = conv a\n        bk: index = conv b\n        tp: ptr = addr __wq_text\n        qs: ptr(u8) = ptradd tp, ao\n        v: u8[] = pack qs, bk, 1\n        __cap_block(v)\n" } else { "" }) }));
     // a turn
     // (where far may work ahead, fm3 log 273: the screen shows a piece it is keeping where that comes before its own earliest thing and its time has come; and far, not told, takes its turn ahead)
     let next = if w.input { "    t1: i64, r1: i64 = __list_next()\n    ap: ptr = addr __wa\n    pk0: i64 = load ap, 16\n    pkn: u1 = cmp.ne pk0, 0\n    isf: u1 = cmp.ne p, 0\n    pkd: u1 = and pkn, isf\n    bt0: i64 = load ap, 24\n    br0: i64 = load ap, 32\n    t: i64 = if pkd\n        yield bt0\n    else\n        yield t1\n    r: i64 = if pkd\n        yield br0\n    else\n        yield r1\n" } else { "    t: i64, r: i64 = __list_next()\n" };
@@ -1184,7 +1262,37 @@ fn wire_text(w: &World) -> String {
     if w.input {
         t.push_str(&ahead_text(w));
     }
+    if w.moved {
+        t.push_str(&move_text(w));
+    }
     t.push_str("\n; the runner's: the wire's delay; what `__out_mark` reads back, 0 a piece's own time, 1 when it was shown, 2 the wire's record; and a test's switch\nfn __wire_set(d: i64)\n    wp: ptr = addr __w\n    store d, wp, 8\n    ret\nfn __wire_mode(m: i64)\n    wp: ptr = addr __w\n    store m, wp, 16\n    ret\nfn __wire_but(s: i64)\n    wp: ptr = addr __w\n    store s, wp, 24\n    ret\n");
+    t
+}
+
+/// The cut moved over a wire that takes time (fm3 cut.md, "the cut
+/// moved over a wire that takes time"; log 276), as text. The move's
+/// turn, `__move_turn`, is the screen's and is written with the table.
+/// Here: what far does when the move's word reaches it, what the screen
+/// does when far's state reaches it, the functions partway that go
+/// with a unit, and the screen's count of the word as a thing sent
+fn move_text(w: &World) -> String {
+    let (q, pool, nu, size) = (WIRE_Q, POOL, w.nu, w.size);
+    let mut t = String::new();
+    t.push_str(&format!("\n; the time an item of a move is for: the move's own, or when a function partway is next due, and not its sender's clock. In the item's row and in the wire's record\nfn __wstamp(row: index, t: i64)\n    tq: ptr = addr __wq_t\n    store t, tq, row, 8\n    wp: ptr = addr __w\n    ln: i64 = load wp, 32\n    some: u1 = cmp.gt ln, 0\n    room: u1 = cmp.lt ln, {log}\n    mine: u1 = and some, room\n    if mine\n        l1: i64 = sub ln, 1\n        l6: i64 = mul l1, 6\n        l4: i64 = add l6, 4\n        li: index = conv l4\n        lp: ptr = addr __wlog\n        store t, lp, li, 8\n    ret\n", log = WIRE_LOG));
+    // the screen's count of the word
+    t.push_str(&format!("\n; the move's word is a thing the screen has sent, which far answers: and, where far works ahead, it is for the move's time at the move's rank, so that every piece the screen is keeping that was written in ignorance of it, for then or later, is dropped\nfn __wsent_move(t: i64)\n    wp: ptr = addr __w\n    n: i64 = load wp, 64\n    n2: i64 = add n, 1\n    store n2, wp, 64\n{void}    ret\n", void = if w.input { format!("    ap: ptr = addr __wa\n    sr: i64 = load ap, 80\n    m: i64 = rem n2, {sends}\n    mi: index = conv m\n    tp: ptr = addr __ws_t\n    store t, tp, mi, 8\n    rp: ptr = addr __ws_r\n    store sr, rp, mi, 8\n    __wvoid(t, sr, n2)\n", sends = SENDS) } else { String::new() }));
+    if w.pooled {
+        t.push_str("\n; is the continuation of this number a unit's that is nowhere: between the place that left it and the place that takes it\nfn __wmoving(pc: i64) -> u1\n    cp: ptr = addr __cut\n");
+        for (id, o) in &w.ids {
+            if let Some(u) = o {
+                t.push_str(&format!("    is{id}: u1 = cmp.eq pc, {id}\n    if is{id}\n        c{id}: u8 = load cp, {u}\n        m{id}: u1 = cmp.eq c{id}, 2\n        ret m{id}\n", id = id, u = u));
+            }
+        }
+        t.push_str("    ret 0\n");
+        t.push_str(&format!("\n; the functions partway at this place that go on in a unit that is leaving it: each is put on the wire, a record an item, with the time it is next due, the oldest first, so that the order they were begun in is theirs at the place they reach; and its place here is free. `__w`'s fourth word, 32, is a test's: they are not sent\nfn __wship()\n    c: ptr = context()\n    x: __ctx = load c\n    n: index = get x, __act_n\n    p: index = __wplace()\n    base: index = mul p, {pool}\n    top: index = add base, n\n    pp: ptr = addr __act_pc\n    bp: ptr = addr __act_born\n    dp: ptr = addr __act_due\n    wp: ptr = addr __w\n    but: i64 = load wp, 24\n    bm: i64 = and but, 32\n    sends: u1 = cmp.eq bm, 0\n    loop(j: index = 0) bound {pool1}\n        best: index = loop(s: index = base, i: index = top, o: i64 = {never}) bound {pool1}\n            done: u1 = cmp.ge s, top\n            if done\n                break i\n            pc: i64 = load pp, s, 8\n            mv: u1 = __wmoving(pc)\n            w: i64 = load bp, s, 8\n            older: u1 = cmp.lt w, o\n            take: u1 = and mv, older\n            i2: index = if take\n                yield s\n            else\n                yield i\n            o2: i64 = if take\n                yield w\n            else\n                yield o\n            s2: index = add s, 1\n            continue s2, i2, o2\n        none: u1 = cmp.eq best, top\n        if none\n            break\n        if sends\n            pc2: i64 = load pp, best, 8\n            due: i64 = load dp, best, 8\n            row: index = __wput(12, pc2, due, pc2)\n            __wstamp(row, due)\n            fl: index = add row, {flight}\n            __act_carry(best, fl)\n        store {never}: i64, dp, best, 8\n        store 0: i64, pp, best, 8\n        j2: index = add j, 1\n        continue j2\n    __act_next()\n    ret\n\n; ... and one that arrives is given a place of this half of the pool, as it is: when it is next due and where it goes on are the record's own, and the list takes its turn then. It is not gone on with at once, as a function partway that crosses in a call is\nfn __wtake(row: index)\n    slot: index = __act_slot()\n    bp: ptr = addr __act_born\n    born: i64 = load bp, slot, 8\n    fl: index = add row, {flight}\n    __act_carry(fl, slot)\n    store born, bp, slot, 8\n    __act_next()\n    ret\n", pool = pool, pool1 = pool + 1, never = NEVER, flight = 2 * pool));
+    }
+    let (ship, next) = if w.pooled { ("        __wship()\n", "    __act_next()\n") } else { ("", "") };
+    t.push_str(&format!("\n; the move's word has reached far (fm3 log 276): the k-th move, for time t. Each unit the screen left is far's now, with what the screen sent of it, which is taken from the word's row; each unit that leaves far is nowhere until the screen has it; far's own bytes of the table are the new cut's. And where anything leaves far, far sends its state, as it is, and the functions partway that go with it, and waits for the screen's answer before it takes a turn\nfn __wmove_far(row: index, k: index, t: i64)\n    cp: ptr = addr __cut\n    np: ptr = addr __cuts\n    base: index = mul k, {size}\n    back: i64 = loop(i: index = 0, n: i64 = 0) bound {nu1}\n        done: u1 = cmp.ge i, {nu}\n        if done\n            break n\n        j: index = add base, i\n        nb: u8 = load np, j, 1\n        ob: u8 = load cp, i, 1\n        comes: u1 = cmp.eq ob, 2\n        was: u1 = cmp.eq ob, 1\n        to: u1 = cmp.eq nb, 0\n        goes: u1 = and was, to\n        u0: u8 = if goes\n            yield 2\n        else\n            yield ob\n        ub: u8 = if comes\n            yield 1\n        else\n            yield u0\n        store ub, cp, i, 1\n        g: i64 = conv goes\n        n2: i64 = add n, g\n        i2: index = add i, 1\n        continue i2, n2\n    loop(m: index = {nu1}) bound {size}\n        done2: u1 = cmp.ge m, {size}\n        if done2\n            break\n        j2: index = add base, m\n        b2: u8 = load np, j2, 1\n        store b2, cp, m, 1\n        m2: index = add m, 2\n        continue m2\n    __whand(row, k, 1)\n    some: u1 = cmp.gt back, 0\n    if some\n        c: ptr = context()\n        x: __ctx = load c\n        kw: i64 = conv k\n        row2: index = __wput(11, kw, t, t)\n        __wstamp(row2, t)\n        qm: ptr(array(__ctx, {q2})) = addr __wq_ctx\n        qe: ptr(__ctx) = index qm, row2\n        qp: ptr = cast qe\n        store x, qp\n{ship}        __wsent()\n{next}    ret\n\n; far's state has reached the screen: each unit far left is the screen's now, with what far sent of it\nfn __wmove_screen(row: index, k: index)\n    cp: ptr = addr __cut\n    loop(i: index = 0) bound {nu1}\n        done: u1 = cmp.ge i, {nu}\n        if done\n            break\n        ob: u8 = load cp, i, 1\n        comes: u1 = cmp.eq ob, 2\n        if comes\n            store 0: u8, cp, i, 1\n        i2: index = add i, 1\n        continue i2\n    __whand(row, k, 2)\n{next}    ret\n", size = size, nu = nu, nu1 = nu + 1, q2 = 2 * q, ship = ship, next = next));
     t
 }
 
@@ -1447,6 +1555,17 @@ impl Placed {
         let u = |name: &str, cut: &BTreeSet<usize>, p: usize| (0..n).any(|e| self.at(e, cut) == p && (self.facts[e].writes.contains(name) || self.facts[e].reads.contains(name)));
         let mut out = Vec::new();
         for (j, (name, _, _)) in self.hand_fields.iter().enumerate() {
+            // (where the wire takes time a clock's word is at the place
+            // its line is at, and goes where the line goes, fm3 log 276)
+            if let Some((_, line)) = self.clock_dues.iter().find(|(d, _)| d == name) {
+                let dir = match (a.contains(line), b.contains(line)) {
+                    (false, true) => 1,
+                    (true, false) => 2,
+                    _ => continue,
+                };
+                out.push(Hand { at: j, dir, what: self.field_said(name), name: name.clone() });
+                continue;
+            }
             let dir = if !w(name, a, 0) && !u(name, a, 0) && u(name, b, 0) {
                 2
             } else if w(name, a, 0) && u(name, b, 1) && !w(name, b, 0) {
@@ -1496,6 +1615,19 @@ impl Placed {
                 return Some(format!("'{}$' would be handed across at the move, and how it is kept is not one the move knows how to hand yet", h.name));
             }
         }
+        // over a wire that takes time (fm3 log 276) a stream's storage
+        // is read where it lies when the move's item arrives, which is
+        // what was sent only where the place that sent it reads the
+        // stream no longer
+        if self.wire {
+            let (_, read_a, _) = self.carries(a);
+            let (_, read_b, _) = self.carries(b);
+            for (r, (names, _)) in self.rings.iter().enumerate().filter(|(_, (n, _))| !n.is_empty()) {
+                if (0..2).any(|q| read_b[r][q] && !read_a[r][q] && read_a[r][1 - q] && read_b[r][1 - q]) {
+                    return Some(format!("'{}$' would be read at both places after the move, and newly at one: over a wire that takes time what a stream holds is handed across where the place that sends it reads it no longer, and not yet where it goes on reading it", names[0]));
+                }
+            }
+        }
         None
     }
 
@@ -1532,7 +1664,7 @@ impl Placed {
         let mut out = self.table(store, first, cases);
         let mut was = first;
         for (next, t) in then {
-            out.push_str(&format!("\nat {} the cut moves: {}, the first thing due at that time\n\n", super::store::spell_time(*t), self.label(next)));
+            out.push_str(&format!("\nat {} the cut moves: {}, the first thing due at that time{}\n\n", super::store::spell_time(*t), self.label(next), if self.wire { ", said at the screen" } else { "" }));
             if let Some(why) = self.move_refused(was, next) {
                 out.push_str(&format!("refused: {}\n", why));
                 return out;
@@ -1542,17 +1674,21 @@ impl Placed {
             for (u, unit) in self.units.iter().enumerate().filter(|(u, _)| was.contains(u) != next.contains(u)) {
                 out.push_str(&format!("{:<w1$}  {:<6}  {}\n", unit.name, place(self.at(u, was)), place(self.at(u, next)), w1 = w1));
             }
-            let mut rows: Vec<(String, String, String, String)> = vec![("the table".to_string(), format!("{} bytes of the cut", self.sizes.0), String::new(), "rewritten in the move's turn: where each unit runs, and what the wire carries from then on".to_string())];
+            let how = |dir: u8| if !self.wire { "copied once, in the move's turn" } else if dir == 1 { "sent with the move's word, and far's when that arrives" } else { "sent by far when the move's word reaches it, and the screen's when that arrives" };
+            let mut rows: Vec<(String, String, String, String)> = vec![("the table".to_string(), format!("{} bytes of the cut", self.sizes.0), String::new(), if self.wire { "each place's own bytes rewritten when the move reaches it: the screen's in the move's turn, far's when the word arrives; a unit between the two is at neither" } else { "rewritten in the move's turn: where each unit runs, and what the wire carries from then on" }.to_string())];
             let hands = self.hands(was, next);
             for h in &hands {
                 let kind = if self.rings.iter().any(|(n, _)| n.contains(&h.name)) { "a stream" } else if h.name.starts_with("__enabled_") || h.name.starts_with("__on_") { "a switch" } else if h.name.starts_with("__") { "kept" } else { "an item" };
-                rows.push((kind.to_string(), h.what.clone(), if h.dir == 1 { "screen → far" } else { "far → screen" }.to_string(), "copied once, in the move's turn".to_string()));
+                rows.push((kind.to_string(), h.what.clone(), if h.dir == 1 { "screen → far" } else { "far → screen" }.to_string(), how(h.dir).to_string()));
             }
             if hands.is_empty() {
                 rows.push(("nothing else".to_string(), "no field of the context, and no stored stream".to_string(), String::new(), "none that a unit that moves reads or writes is at the place it leaves and not at the place it goes to".to_string()));
             }
             let partway: Vec<String> = self.units.iter().enumerate().filter(|(u, _)| self.left.contains(u)).map(|(_, unit)| format!("`{}`", unit.shown())).collect::<BTreeSet<_>>().into_iter().collect();
-            if !partway.is_empty() {
+            let partway: Vec<String> = if self.wire { self.units.iter().enumerate().filter(|(u, _)| self.left.contains(u) && was.contains(u) != next.contains(u)).map(|(_, unit)| format!("`{}`", unit.shown())).collect::<BTreeSet<_>>().into_iter().collect() } else { partway };
+            if !partway.is_empty() && self.wire {
+                rows.push(("a function".to_string(), format!("partway, of a unit that moves: {}", partway.join(", ")), "with its unit".to_string(), format!("its record is a place of the pool, {} columns, at the place its function is: an item of the wire each, with when it is next due, where it goes on from and what it keeps", self.pool.len())));
+            } else if !partway.is_empty() {
                 rows.push(("not handed".to_string(), format!("a function partway: {}", partway.join(", ")), String::new(), format!("its record is a place of the pool, {} columns, which is the screen's between its turns: when it is next due, where it goes on from, what it keeps", self.pool.len())));
             }
             let w: Vec<usize> = (0..3).map(|k| rows.iter().map(|r| [&r.0, &r.1, &r.2][k].chars().count()).max().unwrap_or(0)).collect();

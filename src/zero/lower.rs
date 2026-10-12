@@ -9158,8 +9158,12 @@ impl Lowerer {
             1 => t.push_str("    ret d1, 1\n"),
             n => writeln!(t, "    ret b{n}, k{n}", n = n).unwrap(),
         }
-        t.push_str("\n; ... and its turn: the clock reaches its time, and it goes on\nfn __list_turn()\n    _this: ptr = context()\n    t: i64, k: i64 = __list_next()\n    __wait(t)\n    x: __ctx = load _this\n");
-        for (k, (_, turn)) in entries.iter().enumerate() {
+        // (the cut's move, fm3 log 276, is the first of them and is the
+        // screen's alone: its turn does not move the clock or mark the
+        // output, being no part of the program)
+        let mv = if self.moved { "    mv: u1 = cmp.eq k, 1\n    if mv\n        __move_turn()\n        ret\n" } else { "" };
+        write!(t, "\n; ... and its turn: the clock reaches its time, and it goes on\nfn __list_turn()\n    _this: ptr = context()\n    t: i64, k: i64 = __list_next()\n{}    __wait(t)\n    x: __ctx = load _this\n", mv).unwrap();
+        for (k, (_, turn)) in entries.iter().enumerate().filter(|(_, (_, turn))| !turn.is_empty()) {
             writeln!(t, "    is{n}: u1 = cmp.eq k, {n}\n    if is{n}", n = k + 1).unwrap();
             for l in turn {
                 writeln!(t, "        {}", l).unwrap();
@@ -9168,6 +9172,10 @@ impl Lowerer {
         // (a step of a rate in a function still on the stack would ask
         // for this: the rewrite refuses a store that has one)
         t.push_str("    ret\n\nfn __turns(t: i64)\n    ret\n");
+        if self.moved {
+            // (the placed build's rewrite writes its body, `places.rs`)
+            t.push_str("\n; the cut's move over a wire that takes time (fm3 cut.md, log 276)\nfn __move_turn()\n    ret\n");
+        }
         t
     }
 

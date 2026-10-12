@@ -51,9 +51,6 @@ pub fn emit_placed(dir: &Path, far: Option<&str>, then: &[(String, i64)]) -> Res
 /// ... and with a wire that takes time (fm3 cut.md, "a wire that takes
 /// time"), the text of that build, `__cut` setting the delay too
 pub fn emit_wired(dir: &Path, far: Option<&str>, then: &[(String, i64)], wire: Option<i64>) -> Result<String, String> {
-    if wire.is_some() && !then.is_empty() {
-        return Err("a cut is not moved over a wire that takes time yet".into());
-    }
     let mut s = match wire {
         Some(_) => wired(dir)?,
         None => store::read(dir).map_err(|e| e.to_string())?,
@@ -746,8 +743,16 @@ pub fn thrown_said(thrown: Option<i64>) -> String {
 /// `probe zero <store> run <case> --far <cut> --wire <time>`: the case
 /// by its own times, which is what is compared with the case, and
 /// beneath it what was late
+#[allow(dead_code)]
 pub fn run_wire(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, far: Option<&str>, wire: i64) -> Result<String, String> {
-    let (head, shown, pieces, thrown) = wire_case_cost(dir, which, policy, level, Backend::Native, far, wire, 0)?;
+    run_wire_moved(dir, which, policy, level, far, &[], wire)
+}
+
+/// ... and the cut moved while it runs (fm3 cut.md, "the cut moved
+/// over a wire that takes time"; log 276): `then` is each cut gone to
+/// and the time the move is said at the screen
+pub fn run_wire_moved(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, far: Option<&str>, then: &[(String, i64)], wire: i64) -> Result<String, String> {
+    let (head, shown, pieces, thrown) = wire_moved_case(dir, which, policy, level, Backend::Native, far, then, wire, 0, None)?;
     Ok(format!("{}\n→ {}\n{}{}", head, shown, late_said(&pieces), thrown_said(thrown)))
 }
 
@@ -765,11 +770,25 @@ pub(super) fn wire_case(dir: &Path, which: &str, policy: &ssa::Policy, level: us
 /// does not drop what it is keeping)
 #[allow(clippy::too_many_arguments)]
 pub(super) fn wire_case_cost(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, backend: Backend, far: Option<&str>, wire: i64, but: i64) -> Result<(String, String, Vec<Shown>, Option<i64>), String> {
-    let s = wired(dir)?;
+    wire_moved_case(dir, which, policy, level, backend, far, &[], wire, but, None)
+}
+
+/// ... and with the cut's moves; `dropped` is a test's, one thing a
+/// move deliberately does not hand across
+#[allow(clippy::too_many_arguments)]
+pub(super) fn wire_moved_case(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, backend: Backend, far: Option<&str>, then: &[(String, i64)], wire: i64, but: i64, dropped: Option<&str>) -> Result<(String, String, Vec<Shown>, Option<i64>), String> {
+    let mut s = wired(dir)?;
+    s.moved = !then.is_empty();
     let policy = &store_policy(&s, policy);
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
     let placed = l.placed.as_ref().ok_or("the store was not placed")?;
-    let cut = cut_of(placed, far, &[])?.before;
+    let cut = match dropped {
+        None => cut_of(placed, far, then)?.before,
+        Some(_) => {
+            let (first, later) = cuts_named(placed, far, then)?;
+            placed.moves_but(&first, &later, dropped).before
+        }
+    };
     let calls = calls_of(&s, &l, policy)?;
     let p = case_named(&calls, which).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", which))?;
     let module = build(&l.ir, policy, level)?;
@@ -789,30 +808,41 @@ pub(super) fn wire_case_cost(dir: &Path, which: &str, policy: &ssa::Policy, leve
 /// carried, when it left and when it arrived by the world's clock, and
 /// what was late. The case is the one named, or the store's first
 /// that says a time
+#[allow(dead_code)]
 pub fn placement_wire(dir: &Path, far: Option<&str>, wire: i64, which: Option<&str>, policy: &ssa::Policy, level: usize) -> Result<String, String> {
-    let s = wired(dir)?;
+    placement_wire_moved(dir, far, &[], wire, which, policy, level)
+}
+
+/// ... and with the cut's moves (fm3 log 276): the tables of the build
+/// for a wire, with what each move hands across in it; and in the list
+/// of what the wire carried, the move's own items
+pub fn placement_wire_moved(dir: &Path, far: Option<&str>, then: &[(String, i64)], wire: i64, which: Option<&str>, policy: &ssa::Policy, level: usize) -> Result<String, String> {
+    let mut s = wired(dir)?;
+    s.moved = !then.is_empty();
     let policy = &store_policy(&s, policy);
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
     let placed = l.placed.as_ref().ok_or("the store was not placed")?;
-    let (first, _) = cuts_named(placed, far, &[])?;
+    let (first, later) = cuts_named(placed, far, then)?;
     let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let calls = calls_of(&s, &l, policy)?;
     let cases: Vec<String> = calls.iter().map(|c| c.call.func.trim_start_matches("__whole_").trim_start_matches("__said_").to_string()).collect();
     // the table as it is, of the build whose wire takes no time: what
     // crosses is the program's and the cut's, whatever the wire
-    let _ = (&name, &cases);
-    let mut out = placement(dir, far, &[])?;
+    let mut out = if later.is_empty() { placement(dir, far, &[])? } else { placed.table_moved(&name, &first, &later, &cases) };
     if let Some(why) = placed.refused(&first) {
         if !out.contains("\nrefused: ") {
             out.push_str(&format!("\nover a wire that takes time, refused: {}\n", why));
         }
         return Ok(out);
     }
+    if out.contains("\nrefused: ") {
+        return Ok(out);
+    }
     let p = match which {
         Some(w) => case_named(&calls, w).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", w))?,
         None => calls.iter().find(|c| matches!(c.call.expect, store::Expect::Timed(_))).or(calls.first()).ok_or("the store has no case")?,
     };
-    let cut = placed.cut(&first).before;
+    let cut = placed.moves(&first, &later).before;
     let module = build(&l.ir, policy, level)?;
     let (own, pieces, log, thrown) = wire_runs(&module, &l, Backend::Native, level, "zero-wire", &cut, wire, 0, p, &p.call.context)?;
     let got = own?;
@@ -878,6 +908,10 @@ pub fn placement_wire(dir: &Path, far: Option<&str>, wire: i64, which: Option<&s
             2 => block(a),
             3 => "a push into a stored stream, made again where it is read".to_string(),
             4 => format!("a function partway, to go on in {}", placed.continued(a)),
+            // (the items of a move, fm3 log 276)
+            10 => "the move's word: the cut's new table, and what the screen hands with it".to_string(),
+            11 => "far's state: what far hands across at the move".to_string(),
+            12 => format!("a function partway, handed across at the move, to go on in {} when it is next due", placed.continued(a)),
             // (the screen's bound where a key may yet be pressed is the moment after the world's clock)
             _ if a == left + 1 => format!("a telling: nothing for a time up to {}", store::spell_time(left)),
             _ => format!("a telling: nothing before {}", if a >= 1 << 62 { "the end".to_string() } else { store::spell_time(a) }),
@@ -1047,7 +1081,18 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
     // stores that have a case with a time
     let wire_asked = std::env::var("PROBE_ZERO_CUTS").ok().filter(|v| v.starts_with("wire"));
     let mut wires = Wires::default();
-    if let Some(v) = &wire_asked {
+    // ... and the cut moved over such a wire (fm3 cut.md, "the cut
+    // moved over a wire that takes time"; log 276), `wire-moves=100`:
+    // each case with a time moved partway, both ways, at two times.
+    // `wire-moves-each=100`, a search for faults: each unit alone
+    let mut wmoves = (Cuts::default(), Wires::default());
+    let moves_asked = wire_asked.as_ref().filter(|v| v.starts_with("wire-moves")).map(|v| v.split('=').nth(1).and_then(|n| n.parse::<i64>().ok()).unwrap_or(0) * 1000);
+    if let Some(d) = moves_asked {
+        for sdir in &stores {
+            test_wire_moves(sdir, &policy, backend, level, &mut report, &mut wmoves.0, &mut wmoves.1, d, wire_asked.as_ref().is_some_and(|v| v.starts_with("wire-moves-each")));
+        }
+    }
+    if let Some(v) = wire_asked.as_ref().filter(|_| moves_asked.is_none()) {
         let d = v.split('=').nth(1).and_then(|n| n.parse::<i64>().ok()).unwrap_or(0) * 1000;
         for sdir in &stores {
             test_wire(sdir, &policy, backend, level, &mut report, &mut wires, d, v.starts_with("wire-timed"));
@@ -1093,6 +1138,18 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
         }
         report.passed += wires.passed;
         report.failed += wires.failed;
+    }
+    if let (Some(d), (cuts, wires)) = (moves_asked, &wmoves) {
+        report.log.push_str(&format!(
+            "moves over a wire of {}: {} of {} cases with a time hold by their own times at every move tried; {} hold at every move that is not refused; {} have a move that does not hold; in {} stores, {} of which are not built to move over a wire ({} moves run, {} refused; {} of {} runs of a move hold)\n",
+            spell_late(d), cuts.case_hold, cuts.timed, cuts.case_hold_but, cuts.case_broken, cuts.moved_stores, cuts.unmoved, cuts.moves, cuts.moves_refused, cuts.moves_passed, cuts.moves_passed + cuts.moves_failed
+        ));
+        report.log.push_str(&format!("late: {} of {} moves show nothing late; the most a piece is late at any move is {}; {} of {} pieces of text are shown late\n", wires.cuts_on_time, cuts.moves, spell_late(wires.most), wires.late, wires.pieces));
+        if wires.ahead_cuts > 0 {
+            report.log.push_str(&format!("ahead: in {} moves of stores with an input that arrives at a time far works ahead of it; {} turns it took were thrown away\n", wires.ahead_cuts, wires.thrown));
+        }
+        report.passed += cuts.moves_passed;
+        report.failed += cuts.moves_failed;
     }
     if cuts.timed > 0 {
         report.log.push_str(&format!(
@@ -1431,6 +1488,136 @@ fn test_moves(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize,
         }
     }
     report.log.push_str(&format!("moves {:<16} {} cases with a time, {} moves run{}{}\n", name, runs.len(), scalls.len(), if any_refused { format!(", {} of {} ways refused", refused.iter().flatten().count(), ways.len()) } else { String::new() }, if total > 0 { format!(", {} runs do not hold", total) } else if scalls.is_empty() { String::new() } else { ": every case holds at each".to_string() }));
+}
+
+/// One store's cases with a time, each moved partway over a wire that
+/// takes time (fm3 cut.md, "the cut moved over a wire that takes time";
+/// log 276): from the build for a wire whose cut may be moved, compiled
+/// once, everything far and then everything at the screen, and the
+/// other way, at the two times `move_times` gives, with a wire of `d`.
+/// A case is compared by its own times; when each piece was shown is
+/// read back by a second run and its lateness counted. A store the
+/// build does not hold, and a move that cannot be made, is refused by
+/// name, passed over and counted
+#[allow(clippy::too_many_arguments)]
+fn test_wire_moves(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, report: &mut Report, cuts: &mut Cuts, wires: &mut Wires, d: i64, each: bool) {
+    let name = sdir.file_name().unwrap().to_string_lossy().to_string();
+    let Ok(mut s) = wired(sdir) else { return };
+    if !s.features.iter().any(|f| f.cases.iter().any(|c| move_times(&c.expect).is_some())) {
+        return;
+    }
+    cuts.moved_stores += 1;
+    s.moved = true;
+    let built = (|| -> Result<(Vec<Planned>, Vec<Run>, ssa::Module, lower::Lowered), String> {
+        let policy = store_policy(&s, policy);
+        let l = lower::lower(&s).map_err(|e| e.to_string())?;
+        let cases = calls_of(&s, &l, &policy)?;
+        let (runs, _) = plan(&s, &cases)?;
+        let module = build(&l.ir, &policy, level)?;
+        Ok((cases, runs, module, l))
+    })();
+    let (cases, runs, module, lowered) = match built {
+        Ok(b) => b,
+        Err(e) => {
+            cuts.unmoved += 1;
+            report.log.push_str(&format!("wmove {:<16} not built: {}\n", name, e.split(": ").skip(1).collect::<Vec<_>>().join(": ")));
+            return;
+        }
+    };
+    let Some(placed) = &lowered.placed else { return };
+    let unreached = out_of_reach(&module, &lowered.funcs, kind_of(backend));
+    let runs: Vec<(&Run, (i64, i64))> = runs.iter().filter(|r| !unreached.contains_key(&cases[r.case].call.func)).filter_map(|r| move_times(&cases[r.case].call.expect).map(|t| (r, t))).collect();
+    let (none, all) = (BTreeSet::new(), placed.all());
+    let mut ways = vec![(all.clone(), none.clone()), (none.clone(), all.clone())];
+    if each {
+        for u in 0..placed.units.len() {
+            let one: BTreeSet<usize> = [u].into_iter().collect();
+            let rest: BTreeSet<usize> = all.iter().copied().filter(|v| *v != u).collect();
+            ways.extend([(one.clone(), none.clone()), (none.clone(), one), (all.clone(), rest.clone()), (rest, all.clone())]);
+        }
+    }
+    let refused: Vec<Option<String>> = ways.iter().map(|(a, b)| placed.move_refused(a, b)).collect();
+    for ((a, b), why) in ways.iter().zip(&refused) {
+        if let Some(why) = why {
+            report.log.push_str(&format!("wmove {:<16} [{}, then {}] refused: {}\n", name, placed.label(a), placed.label(b).trim_start_matches("far: "), why));
+        }
+    }
+    // every move of every case: a batch for what each gave by its own
+    // times, and one for when each piece was shown
+    let mut scalls: [Vec<suite::Call>; 2] = [Vec::new(), Vec::new()];
+    let mut said: Vec<(usize, String)> = Vec::new();
+    for (i, (r, (between, due))) in runs.iter().enumerate() {
+        let c = &cases[r.case].call;
+        for ((a, b), why) in ways.iter().zip(&refused) {
+            for t in [*between, *due] {
+                if why.is_some() {
+                    cuts.moves_refused += 1;
+                    continue;
+                }
+                let cut = placed.moves(a, &[(b.clone(), t)]);
+                said.push((i, format!("{}, a wire of {}", cut.label, spell_late(d))));
+                for mode in 0..2 {
+                    scalls[mode as usize].push(suite::Call { func: c.func.clone(), args: c.args.clone(), nrets: c.nrets, checks: checks(&c.expect), text: true, before: cut.before.iter().cloned().chain([("__wire_set".to_string(), vec![d]), ("__wire_mode".to_string(), vec![mode])]).chain(setters(&r.switches, &c.input, &c.input_at)).collect(), live: false, times: true });
+                }
+            }
+        }
+    }
+    cuts.timed += runs.len();
+    cuts.moves += said.len();
+    let mut failed = vec![0usize; runs.len()];
+    let mut total = 0;
+    let (mut most, mut on_time) = (0i64, 0);
+    if !said.is_empty() {
+        let both = [0, 1].map(|mode| suite::run_calls(&module, &lowered.ir, backend, &scalls[mode], &format!("{}-wmove", name), level));
+        match both {
+            [Ok(own), Ok(shown)] => {
+                for (((i, label), own), shown) in said.iter().zip(own).zip(shown) {
+                    let r = runs[*i].0;
+                    let mut late = 0i64;
+                    if let (Ok(o), Ok(sh)) = (&own, &shown) {
+                        let pieces = shown_pieces(&o.text, &o.marks, &sh.marks);
+                        late = pieces.iter().map(|p| p.shown - p.own).max().unwrap_or(0);
+                        wires.pieces += pieces.len();
+                        wires.late += pieces.iter().filter(|p| p.shown > p.own).count();
+                        if works_ahead(&lowered.ir) {
+                            wires.thrown += sh.marks.last().copied().unwrap_or(0);
+                            wires.ahead_cuts += 1;
+                        }
+                    }
+                    most = most.max(late);
+                    if late == 0 {
+                        on_time += 1;
+                    }
+                    let (ok, note) = judge(&cases[r.case].call.expect, own);
+                    if ok {
+                        cuts.moves_passed += 1;
+                    } else {
+                        failed[*i] += 1;
+                        total += 1;
+                        cuts.moves_failed += 1;
+                        report.log.push_str(&format!("FAIL  {:<16} {} [{}]   {}\n", name, labelled(&cases[r.case].text, &r.label), label, note));
+                    }
+                }
+            }
+            [Err(e), _] | [_, Err(e)] => {
+                total = said.len();
+                cuts.moves_failed += said.len();
+                failed.iter_mut().for_each(|f| *f += 1);
+                report.log.push_str(&format!("FAIL  {:<16} [moved over a wire] {}\n", name, e));
+            }
+        }
+    }
+    wires.most = wires.most.max(most);
+    wires.cuts_on_time += on_time;
+    let any_refused = refused.iter().any(Option::is_some);
+    for f in &failed {
+        match (*f, any_refused) {
+            (0, false) => cuts.case_hold += 1,
+            (0, true) => cuts.case_hold_but += 1,
+            _ => cuts.case_broken += 1,
+        }
+    }
+    report.log.push_str(&format!("wmoves {:<15} {} cases with a time, {} moves run{}{}\n", name, runs.len(), said.len(), if any_refused { format!(", {} of {} ways refused", refused.iter().flatten().count(), ways.len()) } else { String::new() }, if total > 0 { format!(", {} runs do not hold", total) } else if said.is_empty() { String::new() } else { format!(": every case holds at each by its own times; nothing late at {}, the most {}", on_time, spell_late(most)) }));
 }
 
 /// One store at every cut the runner tries (fm3 touchstones.md, "hello,
@@ -2437,6 +2624,154 @@ mod tests {
             assert_eq!((wires.stores, wires.unbuilt, wires.failed, wires.case_hold), (4, 0, 0, wires.cases), "{}", report.log);
             assert_eq!((wires.cuts, wires.refused), (19, 8), "{}", report.log);
         }
+    }
+
+    /// The cut moved over a wire that takes time (fm3 cut.md, "the cut
+    /// moved over a wire that takes time"; log 276). hello, not a
+    /// character changed, everything far, a wire of 100 ms, and at 4.5 s
+    /// everything comes to the screen: the move's word leaves the screen
+    /// at 4.5 s, far's state is at the screen at 4.7 s, and the 5 is
+    /// worked out there on time. By its own times the case is hello's
+    /// line; one piece is late, the first 10. Said at 4.9 s the 5 is
+    /// 100 ms late, and at 5 s, the move first, 200 ms. Then restart
+    /// with its key at the move's own time, where far, which had worked
+    /// on to liftoff, goes back and the screen drops what it was
+    /// keeping; and the stores that keep something, where with one
+    /// thing deliberately not sent the sum is wrong, and with the
+    /// functions partway not sent the countdown does not go on
+    #[test]
+    fn the_cut_is_moved_over_a_wire_that_takes_time() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let hello = Path::new("suite/zero/hello");
+        let line = "\"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s";
+        let late = |pieces: &[Shown]| -> Vec<(String, i64, i64)> { pieces.iter().filter(|p| p.shown > p.own).map(|p| (p.text.clone(), p.own, p.shown)).collect() };
+        let moved = |dir: &Path, case: &str, far: &str, then: &[(&str, i64)], d: i64, but: i64, dropped: Option<&str>| {
+            let then: Vec<(String, i64)> = then.iter().map(|(c, t)| (c.to_string(), *t)).collect();
+            wire_moved_case(dir, case, &native, opt::MAX_LEVEL, Backend::Native, Some(far), &then, d, but, dropped).unwrap()
+        };
+        let ten = ("10\n".to_string(), 0, 200_000);
+        let five = |shown: i64| ("5\n".to_string(), 5_000_000, shown);
+        for (far, then, want) in [
+            ("all", vec![("none", 4_500_000)], vec![ten.clone()]),
+            ("none", vec![("all", 4_500_000)], vec![]),
+            ("count down", vec![("none", 4_500_000)], vec![ten.clone()]),
+            ("none", vec![("count down", 4_500_000)], vec![]),
+            // at 5 s the move is first, and the 5 waits for it
+            ("all", vec![("none", 5_000_000)], vec![ten.clone(), five(5_200_000)]),
+            ("none", vec![("all", 5_000_000)], vec![five(5_200_000)]),
+            // said too near a piece: far's state is at the screen at 5.1 s
+            ("all", vec![("none", 4_900_000)], vec![ten.clone(), five(5_100_000)]),
+            ("none", vec![("all", 4_900_000)], vec![five(5_100_000)]),
+            ("all", vec![("none", 2_500_000), ("all", 7_500_000)], vec![ten.clone()]),
+        ] {
+            let (_, shown, pieces, thrown) = moved(hello, "run()", far, &then, 100_000, 0, None);
+            assert_eq!(shown, line, "far: {}, then {:?}", far, then);
+            assert_eq!((pieces.len(), late(&pieces), thrown), (12, want, None), "far: {}, then {:?}", far, then);
+            // ... and over a wire that takes no time nothing is late
+            let (_, shown, pieces, _) = moved(hello, "run()", far, &then, 0, 0, None);
+            assert_eq!((shown.as_str(), late(&pieces).len()), (line, 0), "far: {}, then {:?}, no delay", far, then);
+        }
+        let at: Vec<(String, i64)> = vec![("none".to_string(), 4_500_000)];
+        assert_eq!(run_wire_moved(hello, "run()", &native, opt::MAX_LEVEL, Some("all"), &at, 100_000).unwrap(), format!("run()\n→ {}\nlate: 1 piece of 12, the most 200 ms\n  \"10\\n\" for 0 s, shown at 200 ms, 200 ms late\n", line));
+        // the placement: what is handed across, and the move's own
+        // items with when they left and arrived
+        let spaced = |t: String| t.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("\n");
+        let table = spaced(placement_wire_moved(hello, Some("all"), &at, 100_000, None, &native, opt::MAX_LEVEL).unwrap());
+        for row in ["at 4.5 s the cut moves: far: nothing, the first thing due at that time, said at the screen", "0 s 100 ms screen → far a telling: nothing before 4.5 s for 0 s", "100 ms 200 ms far → screen text \"6\\n\" for 4 s", "4.5 s 4.6 s screen → far the move's word: the cut's new table, and what the screen hands with it for 4.5 s", "4.6 s 4.7 s far → screen far's state: what far hands across at the move for 4.5 s", "4.6 s 4.7 s far → screen a function partway, handed across at the move, to go on in `count down` when it is next due for 5 s", "late: 1 piece of 12, the most 200 ms"] {
+            assert!(table.contains(row), "no {:?} in\n{}", row, table);
+        }
+        // far, told of nothing past the move, sent nothing for after it
+        assert!(!table.contains("text \"5\\n\""), "{}", table);
+        // only a build for a wire whose cut may be moved has any of it,
+        // and a build that moves with no wire is the text it was
+        let mut st = store::read(hello).unwrap();
+        st.places = true;
+        st.wire = true;
+        let plain = lower::lower(&st).unwrap().ir;
+        assert!(!plain.contains("__wmove_far") && !plain.contains("__whand") && !plain.contains("__move_turn") && !plain.contains("__due_move"), "a wire's build with no move is the text it was");
+        st.moved = true;
+        let both = lower::lower(&st).unwrap().ir;
+        assert!(both.contains("\nfn __wmove_far(row: index, k: index, t: i64)\n") && both.contains("\nfn __whand(row: index, k: index, dir: u8)\n") && both.contains("\nfn __wship()\n") && both.contains("    mv: u1 = cmp.eq k, 1\n    if mv\n        __move_turn()\n        ret\n") && !both.contains("\nfn __hand(k: index)\n"), "{}", both);
+        assert_eq!(both.matches("context_set(").count(), 1, "one function makes a place the current one");
+        st.wire = false;
+        let fixed = lower::lower(&st).unwrap().ir;
+        assert!(fixed.contains("\nfn __hand(k: index)\n") && !fixed.contains("__whand") && !fixed.contains("__wship"), "a build that moves with no wire is the text it was");
+        // restart, moved at its key's own time: the move first, then
+        // the key. Far, which had worked on to liftoff, goes back to
+        // 3 s; the screen drops the 6 to liftoff it was keeping
+        let restart = Path::new("suite/zero/restart");
+        let key = "launch() with in \"k\" at 3.5 s";
+        let rline = "\"10\\n9\\n8\\n7\\n\" at 1 hz, \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz from 3.5 s";
+        let (_, shown, pieces, thrown) = moved(restart, key, "all", &[("none", 3_500_000)], 100_000, 0, None);
+        assert_eq!((shown.as_str(), late(&pieces), thrown), (rline, vec![ten.clone(), ("10\n".to_string(), 3_500_000, 3_700_000)], Some(7)));
+        let (_, shown, pieces, thrown) = moved(restart, key, "none", &[("all", 3_500_000)], 100_000, 0, None);
+        assert_eq!((shown.as_str(), late(&pieces), thrown), (rline, vec![("10\n".to_string(), 3_500_000, 3_900_000)], Some(7)));
+        let three: Vec<(String, i64)> = vec![("none".to_string(), 3_500_000)];
+        let table = spaced(placement_wire_moved(restart, Some("all"), &three, 100_000, Some(key), &native, opt::MAX_LEVEL).unwrap());
+        for row in ["a stream the items of in$ that far still holds, with their times, and its counts far → screen sent by far when the move's word reaches it, and the screen's when that arrives", "3.5 s 3.6 s screen → far the move's word: the cut's new table, and what the screen hands with it for 3.5 s", "3.5 s at the screen dropped unshown: text \"6\\n\" for 4 s", "3.5 s at the screen dropped unshown: text \"liftoff\" for 10 s", "3.6 s far goes back to 3 s: 7 turns thrown away", "3.6 s 3.7 s far → screen far's state: what far hands across at the move for 3.5 s", "3.6 s 3.7 s far → screen a function partway, handed across at the move, to go on in `count down` when it is next due for 4 s"] {
+            assert!(table.contains(row), "no {:?} in\n{}", row, table);
+        }
+        assert!(!table.contains("dropped unshown: text \"7\\n\""), "{}", table);
+        // a program that keeps something: its sums, its clock's latest,
+        // its look back, and, in this build, when its clock is next
+        // due, each sent with the move; with one not sent it goes wrong
+        let keeps = Path::new("suite/zero/keeps");
+        let (to, fro): ([(&str, i64); 1], [(&str, i64); 1]) = ([("none", 2_500_000)], [("all", 2_500_000)]);
+        let fifteen = "\"1 1\\n3 2\\n6 3\\n10 4\\n\" at 1 hz, \"15\" at 5 s";
+        let go = "\"1 1\\ngo\\n\" at 0 s, \"3 2\\n6 3\\n10 4\" at 1 hz from 1 s";
+        for (case, far, then, dropped, want) in [
+            ("count to (5)", "all", &to, None, fifteen),
+            ("count to (5)", "none", &fro, None, fifteen),
+            ("begin()", "all", &to, None, go),
+            ("begin()", "none", &fro, None, go),
+            // 1, 2 and 3 were added at one place; 4 and 5 at the other, to nothing
+            ("count to (5)", "all", &to, Some("total"), "\"1 1\\n3 2\\n6 3\\n10 4\\n\" at 1 hz, \"9\" at 5 s"),
+            ("count to (5)", "none", &fro, Some("total"), "\"1 1\\n3 2\\n6 3\\n10 4\\n\" at 1 hz, \"9\" at 5 s"),
+            ("begin()", "all", &to, Some("sum"), "\"1 1\\ngo\\n\" at 0 s, \"3 2\\n6 3\\n4 -2\" at 1 hz from 1 s"),
+            ("begin()", "all", &to, Some("beat"), "\"1 1\\ngo\\n\" at 0 s, \"3 2\\n6 3\\n7 1\\n9 2\\n12 3\\n16 4\" at 1 hz from 1 s"),
+            ("begin()", "all", &to, Some("__z1_x_1"), "\"1 1\\ngo\\n\" at 0 s, \"3 2\\n6 3\\n10 10\" at 1 hz from 1 s"),
+            // when the clock is next due not sent: it beats at once where it arrives
+            ("begin()", "all", &to, Some("__due1"), "\"1 1\\ngo\\n\" at 0 s, \"3 2\\n\" at 1 s, \"6 3\\n10 4\" at 2 s"),
+            ("begin()", "none", &fro, Some("__due1"), "\"1 1\\ngo\\n\" at 0 s, \"3 2\\n\" at 1 s, \"6 3\\n10 4\" at 2 s"),
+        ] {
+            assert_eq!(moved(keeps, case, far, then, 100_000, 0, dropped).1, want, "{} far: {}, not sent: {:?}", case, far, dropped);
+        }
+        // ... and this build's own new thing, the pool's records of the
+        // units that move: not sent, by a switch only this test has,
+        // the count and the countdown do not go on
+        assert_eq!(moved(keeps, "count to (5)", "all", &to, 100_000, 32, None).1, "\"1 1\\n3 2\\n6 3\\n10 4\" at 1 hz");
+        for (far, then) in [("all", [("none", 4_500_000)]), ("none", [("all", 4_500_000)])] {
+            assert_eq!(moved(hello, "run()", far, &then, 100_000, 32, None).1, "\"10\\n9\\n8\\n7\\n6\" at 1 hz", "far: {}", far);
+        }
+        // a sum that crosses between two keys, and restart's input:
+        // its items not sent, the second key is not seen
+        let keyed = Path::new("suite/zero/keeps-key");
+        let two = "begin() with in \"k\" at 2.25 s, in \"k\" at 4.25 s";
+        for (far, then) in [("all", [("none", 3_500_000)]), ("none", [("all", 3_500_000)])] {
+            assert_eq!(moved(keyed, two, far, &then, 100_000, 0, None).1, "\"1\\ngo\\n\" at 0 s, \"3\\n\" at 1 s, \"6\\n\" at 2 s, \"306\\n\" at 2.25 s, \"310\\n\" at 3 s, \"315\\n\" at 4 s, \"515\\n\" at 4.25 s, \"521\" at 5 s", "far: {}", far);
+        }
+        let keys = "launch() with in \"k\" at 3.5 s, in \"k\" at 5 s";
+        assert_eq!(moved(restart, keys, "all", &[("none", 4_000_000)], 100_000, 0, None).1, "\"10\\n9\\n8\\n7\\n\" at 1 hz, \"10\\n\" at 3.5 s, \"9\\n\" at 4.5 s, \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz from 5 s");
+        assert_eq!(moved(restart, keys, "all", &[("none", 4_000_000)], 100_000, 0, Some("in")).1, rline);
+        // every case with a time of the stores of the proof, moved both
+        // ways at two times, on the JIT and on another machine
+        let names = ["hello", "restart", "going-keys", "going-two", "going-mix", "keeps", "keeps-key"];
+        for backend in [Backend::Native, Backend::Wasm] {
+            let policy = suite::backend_policy(backend).unwrap();
+            let (mut report, mut cuts, mut wires) = (Report { passed: 0, failed: 0, skipped: 0, log: String::new() }, Cuts::default(), Wires::default());
+            for name in names {
+                test_wire_moves(&Path::new("suite/zero").join(name), &policy, backend, opt::MAX_LEVEL, &mut report, &mut cuts, &mut wires, 100_000, false);
+            }
+            assert_eq!((cuts.moved_stores, cuts.unmoved, cuts.moves, cuts.moves_refused, cuts.moves_failed, cuts.case_hold), (7, 0, 100, 0, 0, cuts.timed), "{}", report.log);
+            // (and with no delay nothing is late)
+            let (mut report, mut cuts, mut wires) = (Report { passed: 0, failed: 0, skipped: 0, log: String::new() }, Cuts::default(), Wires::default());
+            for name in names {
+                test_wire_moves(&Path::new("suite/zero").join(name), &policy, backend, opt::MAX_LEVEL, &mut report, &mut cuts, &mut wires, 0, false);
+            }
+            assert_eq!((cuts.moves, cuts.moves_failed, wires.late), (100, 0, 0), "{}", report.log);
+        }
+        // what is refused, by name: a move from or to a cut that is
+        assert!(cut_of(lower::lower(&{ let mut s = wired(Path::new("suite/zero/words")).unwrap(); s.moved = true; s }).unwrap().placed.as_ref().unwrap(), Some("all"), &[("none".to_string(), 1_500_000)]).unwrap_err().starts_with("this cut cannot be run yet: 'first two' cannot run far over a wire that takes time yet"));
     }
 
     /// A move hands across what it must (fm3 cut.md, "the cut, moved").
