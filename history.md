@@ -4,6 +4,63 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the cut moved over a wire that takes time: the move's word, far's state, and a function partway handed across — `71939f6` · 2026-10-12
+
+```
+int i$ at (1 hz)
+out$ << (i$ << "\n") forever
+
+on run()
+    count down()
+    existing run()
+
+on count down()
+    i$ << [10 through 1]
+```
+
+`suite/zero/hello/countdown/countdown.zero`, not a character changed. `--then` with `--wire` was refused, `a cut is not moved over a wire that takes time yet`; it is built. `probe zero suite/zero/hello run 'run()' --far all --then none at 4.5 s --wire 100 ms`: everything far, a wire of 100 ms, and at 4.5 s, with 6 shown and 5 due at 5 s, everything comes to the screen:
+
+```
+run()
+→ "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\n" at 1 hz, "hello world\ngoodbye" at 10 s
+late: 1 piece of 12, the most 200 ms
+  "10\n" for 0 s, shown at 200 ms, 200 ms late
+```
+
+and rows of its placement, the same command with `placement` for `run`:
+
+```
+0 s     100 ms   screen → far  a telling: nothing before 4.5 s                                                              for 0 s
+100 ms  200 ms   far → screen  text "6\n"                                                                                  for 4 s
+4.5 s   4.6 s    screen → far  the move's word: the cut's new table, and what the screen hands with it                      for 4.5 s
+4.6 s   4.7 s    far → screen  far's state: what far hands across at the move                                               for 4.5 s
+4.6 s   4.7 s    far → screen  a function partway, handed across at the move, to go on in `count down` when it is next due  for 5 s
+```
+
+**The move is the first word of the screen's list** (`wire_list`, `lower.rs`) and is taken as any turn is: when the world's clock has reached its time and far has told the screen it has nothing earlier, so nothing of the program's is in flight when it is taken. Its turn does not move the clock. It is three kinds of item of the wire (`move_text` and `__move_turn`, `places.rs`): 10, the move's word, which carries which move it is and is for the move's time; 11, far's state, sent where anything leaves far; 12, a function partway handed across, a record of the pool an item, which the place it reaches puts in its pool with when it is next due and does not go on with at once.
+
+**A unit's byte of the cut is 0 the screen, 1 far, and 2 nowhere**, between the place that left it and the place that takes it. The bytes after the units were a place's own already, so each place rewrites its own when the move reaches it: the screen in the move's turn, far when the word arrives. A function of a unit that is nowhere is at neither place and neither takes its turn.
+
+**What is handed** (`__whand`): the fields `Placed::hands` lists, read from the sender's context as the item's row keeps it; each stored stream's storage and each reader's place; and two things this build adds, both of which with no delay were the screen's and were not handed: when each clock whose line moves is next due, and the pool's records whose next continuation is a unit's that moves, oldest first (`__wship`, `__wtake`).
+
+**Far and the move.** A store with an input has the copies hop forty-eight gave it; there the word puts far back to the move's time (`__wback`) and the screen, sending it, drops what it was keeping for after it (`__wsent_move`, `__wvoid`): restart moved at 3.5 s with its key at 3.5 s gives its own line, 2 pieces of 15 late, `3.6 s  far  goes back to 3 s: 7 turns thrown away`. A store with none, hello, is told of nothing past the next move, the move being a word of the screen's list: far works 10 to 6 out at 0.1 s and waits at the 5. No copy, nothing dropped, and hello's build for a wire with no move is not touched (fm3 question 159).
+
+**What it costs is lateness, printed.** Said at 4.9 s the 5 is shown at 5.1 s, 100 ms late; at 5 s, the move first, at 5.2 s. The screen takes no turn from the move's turn until far has answered its word, two delays.
+
+**The measurement**, `PROBE_ZERO_CUTS=wire-moves=100 probe zero test suite/zero`, every case with a time moved both ways at two times, wasm and the JIT alike:
+
+```
+moves over a wire of 100 ms: 50 of 56 cases with a time hold by their own times at every move tried; 6 hold at every move that is not refused; 0 have a move that does not hold; in 20 stores, 1 of which are not built to move over a wire (200 moves run, 24 refused; 200 of 200 runs of a move hold)
+late: 37 of 200 moves show nothing late; the most a piece is late at any move is 2.1 s; 350 of 1607 pieces of text are shown late
+ahead: in 76 moves of stores with an input that arrives at a time far works ahead of it; 400 turns it took were thrown away
+```
+
+The 24 refused are `tick`'s and `words`', a case's own call of a function still on the machine's stack, far; `timed` is not built for a wire. With no delay, `wire-moves=0`: the same 200 of 200, `0 of 1568 pieces of text are shown late`. Refused, new, by name: a move after which a stream is read at both places and newly at one, its storage being read where it lies when the item arrives.
+
+`the_cut_is_moved_over_a_wire_that_takes_time`, a `cargo test`: hello each way at 4.5 s, 4.9 s and 5 s and moved twice; restart with its key; `keeps` with one thing not sent, `9` for `15`; and with the pool's records not sent, by a switch only it has, hello's countdown stops at 6. A plain build, a placed build with no wire, fixed and moved, and a wire's build with no move are the text they were. The six rows: 478, 485, 920, 931, 939, 918. Full run `scratchpad/chain163.log`: 1329/1329 on four paths, 1288/1288 on the GPU's, `cargo test` 204 passed.
+
+---
+
 ### zero: a turn taken ahead and taken back, held by the test: keeps-key with its clock and its sum far — `4a19703` · 2026-10-12
 
 ```
