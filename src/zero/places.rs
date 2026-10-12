@@ -196,9 +196,6 @@ pub struct Placed {
     unwired: BTreeSet<usize>,
     /// each continuation's number and the unit it is of
     conts: Vec<(i64, Option<usize>)>,
-    /// the units a function of which is left at a step of a rate, and
-    /// so may be due at its place
-    stepping: BTreeSet<usize>,
     /// where the wire takes time, the word of each clock, when it is
     /// next due, and the unit its line is: the word is the line's
     /// place's, and a move hands it across with the line (fm3 log 276)
@@ -1125,8 +1122,6 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool) -> Result<(String, Placed),
         }
     }
     let mut conts: Vec<(i64, Option<usize>)> = Vec::new();
-    // (a continuation that says when it is next due is left at a step)
-    let stepping: BTreeSet<usize> = if wire { fns.iter().filter(|f| f.body.iter().any(|l| l.trim().ends_with(": ptr = addr __act_due"))).filter_map(|f| owner.get(&f.name).copied().filter(|&o| o < nu)).collect() } else { BTreeSet::new() };
     if wire {
         let ids: Vec<(i64, Option<usize>)> = fns.iter().find(|f| f.name == "__act_go").map(|f| f.body.iter().filter_map(|l| def(l.trim())).filter_map(|(n, _, rhs)| Some((n.strip_prefix('n')?.parse::<i64>().ok()?, rhs.split('(').next()?.to_string()))).map(|(id, g)| (id, owner.get(&g).copied().filter(|&o| o < nu))).collect()).unwrap_or_default();
         let heres: BTreeSet<String> = lines.iter().flat_map(|l| called(l)).filter_map(|c| c.strip_prefix("__here__")).map(str::to_string).collect();
@@ -1139,7 +1134,7 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool) -> Result<(String, Placed),
     for item in &carried_types {
         out.push_str(&format!("\n; a value that holds an address, an array or a string, copied (fm3 log 267): its storage as the library lays it out, a queue's resident items in a buffer of their number or a ring's buffers whole, with its counts, its beat and its end, carved from the arena; the reader's place and its rules go with the value. A value is never modified, so the copy is the value\nfn __copied_{t}(v: {t}$) -> {t}$\n    r: ptr = get v, ring\n    ar: ptr = addr __arena\n    n: ptr = arena_alloc(ar, 64)\n    pushed: index = load r\n    o: index = load r, 8\n    hz: i64 = load r, 32\n    st: i64 = load r, 40\n    t0: i64 = load r, 48\n    e: i64 = load r, 56\n    w: index = load r, 24\n    store pushed, n\n    store o, n, 8\n    store hz, n, 32\n    store st, n, 40\n    store t0, n, 48\n    store e, n, 56\n    sz: index = sizeof {t}\n    stepped: u1 = cmp.ne st, 0\n    worded: u1 = cmp.ne w, 0\n    queue: u1 = and stepped, worded\n    if queue\n        k: index = sub pushed, o\n        one: index = const 1\n        cap: index = max(k, one)\n        bytes: index = mul sz, cap\n        total: index = add bytes, 16\n        vb: ptr = arena_alloc(ar, total)\n        buffer_init(vb, sz, cap)\n        slots: ptr = ptradd vb, 16\n        qa: ptr({t}) = load r, 16\n        qb: ptr({t}) = cast slots\n        s: {t}[] = pack qa, k, 1\n        d: {t}[] = pack qb, k, 1\n        copy d, s\n        store slots, n, 16\n        store cap, n, 24\n    else\n        wa: ptr = load r, 16\n        cap2: index = load wa, 8\n        bytes2: index = mul sz, cap2\n        total2: index = add bytes2, 16\n        wb: ptr = arena_alloc(ar, total2)\n        buffer_init(wb, sz, cap2)\n        va: {t}[] = slice wa\n        vc: {t}[] = slice wb\n        copy vc, va\n        store wb, n, 16\n        ta: ptr = load r, 24\n        if worded\n            tcap: index = load ta, 8\n            tbytes: index = mul tcap, 8\n            ttotal: index = add tbytes, 16\n            tb: ptr = arena_alloc(ar, ttotal)\n            eight: index = const 8\n            buffer_init(tb, eight, tcap)\n            ka: i64[] = slice ta\n            kb: i64[] = slice tb\n            copy kb, ka\n            store tb, n, 24\n        else\n            store ta, n, 24\n    v2: {t}$ = set v, ring, n\n    ret v2\n\n; ... where the wire was crossed to bring it: called at its own place, a function is handed the value itself\nfn __carried_{t}(v: {t}$, w: i64) -> {t}$\n    a: ptr = context()\n    cm: ptr = addr __ctx_mem\n    second: u1 = cmp.ne a, cm\n    here: i64 = conv second\n    same: u1 = cmp.eq here, w\n    if same\n        ret v\n    c: {t}$ = __copied_{t}(v)\n    ret c\n", t = item));
     }
-    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, copied, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize), wire, glue, unwired, conts, stepping, clock_dues }))
+    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, copied, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize), wire, glue, unwired, conts, clock_dues }))
 }
 
 /// what the world's text is written from
@@ -1471,11 +1466,10 @@ impl Placed {
                 return Some(format!("{} cannot run apart from {} over a wire that takes time yet: `{}` calls `{}` and waits for it on the machine's stack, not being left at its calls yet: it is handed, gives or keeps more than a word, or has a call where no place is held (fm3 question 139)", self.who(far_one), self.who(other), c.caller, c.callee));
             }
         }
-        // two functions partway at two places and due at one time: the
-        // order they were started in is known to neither (fm3 question 155)
-        if let (Some(&a), Some(&b)) = (self.stepping.iter().find(|u| !far.contains(u)), self.stepping.iter().find(|u| far.contains(u))) {
-            return Some(format!("{} and {} each step at a rate and would be at different places: of two functions partway at two places and due at one time, which was started first is known to neither place yet (fm3 question 155)", self.who(b), self.who(a)));
-        }
+        // (two functions partway at two places and due at one time are
+        // taken first begun first, each record carrying when it was
+        // begun and a telling's rank that of its sender's earliest:
+        // fm3 question 155, log 278. Such a cut was refused)
         let (fields, read, pushed) = self.carries(far);
         for ((name, ty, plain), c) in self.fields.iter().zip(&fields) {
             if (c[0] || c[1]) && !(*plain && word(ty) && ty != "ptr") {

@@ -2472,8 +2472,8 @@ mod tests {
                 test_wire(&Path::new("suite/zero").join(name), &policy, backend, opt::MAX_LEVEL, &mut report, &mut wires, 100_000, false);
             }
             assert_eq!((wires.stores, wires.unbuilt, wires.failed, wires.case_hold), (4, 0, 0, wires.cases), "{}", report.log);
-            // (refused by name: `going-keys`' line apart from what its function calls on the stack, and `going-two`'s two functions that step at different places)
-            assert_eq!((wires.cuts, wires.refused), (26, 5), "{}", report.log);
+            // (refused by name: `going-keys`' line apart from what its function calls on the stack; `going-two`'s two functions that step at different places were, until a record carried when it was begun, fm3 log 278)
+            assert_eq!((wires.cuts, wires.refused), (28, 3), "{}", report.log);
         }
         // two characters that arrive together at a line whose function
         // crosses are not taken out of order: the program stops
@@ -2622,7 +2622,7 @@ mod tests {
                 test_wire(&Path::new("suite/zero").join(name), &policy, backend, opt::MAX_LEVEL, &mut report, &mut wires, 100_000, false);
             }
             assert_eq!((wires.stores, wires.unbuilt, wires.failed, wires.case_hold), (4, 0, 0, wires.cases), "{}", report.log);
-            assert_eq!((wires.cuts, wires.refused), (19, 8), "{}", report.log);
+            assert_eq!((wires.cuts, wires.refused), (21, 6), "{}", report.log);
         }
     }
 
@@ -2772,6 +2772,54 @@ mod tests {
         }
         // what is refused, by name: a move from or to a cut that is
         assert!(cut_of(lower::lower(&{ let mut s = wired(Path::new("suite/zero/words")).unwrap(); s.moved = true; s }).unwrap().placed.as_ref().unwrap(), Some("all"), &[("none".to_string(), 1_500_000)]).unwrap_err().starts_with("this cut cannot be run yet: 'first two' cannot run far over a wire that takes time yet"));
+    }
+
+    /// Which of two functions was started first, carried (fm3 question
+    /// 155's B; cut.md; log 278). Two functions partway, one at each
+    /// place and due at one time, are taken in the order they were
+    /// begun: a record carries the time it was begun, and the rank a
+    /// place says of its earliest thing has that time in it. `going-two`
+    /// has both partway: its case's own `count down from`, begun at 0 s,
+    /// and the `count down` its key begins at 2.5 s, both due at 3 s.
+    /// With `count down from` far the 2 is first, where the screen's
+    /// own went first and the case gave `10` before `2`; such a cut was
+    /// refused by name and now runs
+    #[test]
+    fn of_two_functions_at_two_places_the_first_begun_goes_first() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let two = Path::new("suite/zero/going-two");
+        let case = "count down from (5) with in \"k\" at 2.5 s";
+        let line = "\"5\\n4\\n3\\n\" at 1 hz, \"2\\n10\\n\" at 3 s, \"1\\n9\\n\" at 4 s, \"8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz from 5 s";
+        for far in ["count down from", "count down", "launch", "all", "none"] {
+            let (_, shown, pieces) = wire_case(two, case, &native, opt::MAX_LEVEL, Backend::Native, Some(far), 100_000, 0).unwrap();
+            assert_eq!(shown, line, "far: {}", far);
+            // (the 2 is shown before the 10, which waits for it)
+            let at = |text: &str| pieces.iter().find(|p| p.text == text && p.own == 3_000_000).map(|p| p.shown).unwrap();
+            assert!(at("2\n") <= at("10\n"), "far: {}: {:?}", far, pieces);
+        }
+        // with the function begun first far, both are late and in order
+        let (_, _, pieces) = wire_case(two, case, &native, opt::MAX_LEVEL, Backend::Native, Some("count down from"), 100_000, 0).unwrap();
+        let three: Vec<(&str, i64)> = pieces.iter().filter(|p| p.own == 3_000_000).map(|p| (p.text.as_str(), p.shown)).collect();
+        assert_eq!(three, vec![("2\n", 3_200_000), ("10\n", 3_400_000)]);
+        // the record's own word, and the rank that carries it
+        let mut st = store::read(two).unwrap();
+        st.places = true;
+        st.wire = true;
+        let text = lower::lower(&st).unwrap().ir;
+        assert!(text.contains("\ndata __act_begun: array(i64, ") && text.contains("    kk: i64 = mul kq, 17592186044416\n") && text.contains("    k: i64 = div kr, 17592186044416\n"), "{}", text);
+        st.wire = false;
+        st.moved = true;
+        assert!(!lower::lower(&st).unwrap().ir.contains("__act_begun"), "a build with no wire is the text it was");
+        // the four stores whose only refused cuts were these hold at
+        // every cut, on the JIT and on another machine
+        for backend in [Backend::Native, Backend::Wasm] {
+            let policy = suite::backend_policy(backend).unwrap();
+            let (mut report, mut wires) = (Report { passed: 0, failed: 0, skipped: 0, log: String::new() }, Wires::default());
+            for name in ["going-two", "going-beside", "quiet-clocks", "timed-zeroic"] {
+                test_wire(&Path::new("suite/zero").join(name), &policy, backend, opt::MAX_LEVEL, &mut report, &mut wires, 100_000, false);
+            }
+            assert_eq!((wires.stores, wires.hold, wires.refused, wires.failed, wires.case_hold), (4, 4, 0, 0, wires.cases), "{}", report.log);
+        }
     }
 
     /// A move hands across what it must (fm3 cut.md, "the cut, moved").

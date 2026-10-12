@@ -9125,11 +9125,18 @@ impl Lowerer {
     /// close of a slot runs where it is, when its bit has reached it.
     /// `__here__<f>` is the placed build's: is f's unit at this place
     fn wire_list(&mut self, things: &[(String, Vec<String>)], slots: &[String]) -> String {
+        /// what a thing's number in the list is multiplied by in its rank
+        const RANK: i64 = 1 << 44;
         // each thing: the lines that give its time here as `d<n>`, and its turn.
         // A line that runs at the close of a slot is a thing of its own, in the
         // order written, so that two of them at two places run in that order
         let mut entries: Vec<(String, Vec<String>)> = Vec::new();
+        // (which of them is the pool's word, fm3 log 278)
+        let mut pool_n: Option<usize> = None;
         for (due, turn) in things {
+            if due == "__due_act" {
+                pool_n = Some(entries.len() + 1);
+            }
             if due == "__due_close" {
                 for s in slots {
                     let n = entries.len() + 1;
@@ -9144,7 +9151,7 @@ impl Lowerer {
                 entries.push((format!("    d{}: i64 = get x, {}\n", n, due), turn.clone()));
             }
         }
-        let mut t = String::from("\n; the things going on at this place (fm3 log 269): the time of the earliest, and its rank in the order they were started, which is the same at both places\nfn __list_next() -> (i64, i64)\n    _this: ptr = context()\n    x: __ctx = load _this\n    nv: i64 = const 4611686018427387904\n");
+        let mut t = String::from("\n; the things going on at this place (fm3 log 269): the time of the earliest, and its rank in the order they were started, which is the same at both places: its number in the list times 2^44 and, where it is a function partway, the time that was begun (fm3 log 278)\nfn __list_next() -> (i64, i64)\n    _this: ptr = context()\n    x: __ctx = load _this\n    nv: i64 = const 4611686018427387904\n");
         for (k, (due, _)) in entries.iter().enumerate() {
             let n = k + 1;
             t.push_str(due);
@@ -9153,16 +9160,31 @@ impl Lowerer {
                 writeln!(t, "    e{n}: u1 = cmp.lt d{n}, {prev}\n    b{n}: i64 = if e{n}\n        yield d{n}\n    else\n        yield {prev}\n    k{n}: i64 = if e{n}\n        yield {n}\n    else\n        yield {prevk}", n = n, prev = prev, prevk = prevk).unwrap();
             }
         }
-        match entries.len() {
-            0 => t.push_str("    ret nv, 0\n"),
-            1 => t.push_str("    ret d1, 1\n"),
-            n => writeln!(t, "    ret b{n}, k{n}", n = n).unwrap(),
+        // the rank is the thing's number in the list, and for a
+        // function partway also the time it was begun (fm3 question
+        // 155, log 278): one word, the number times 2^44 and the time
+        // added, so that everything that compares two ranks takes of
+        // two functions partway at two places the first begun
+        let (best, which) = match entries.len() {
+            0 => (String::new(), String::new()),
+            1 => ("d1".to_string(), "    kq: i64 = const 1\n".to_string()),
+            n => (format!("b{}", n), format!("    kq: i64 = add k{}, 0\n", n)),
+        };
+        if entries.is_empty() {
+            t.push_str("    ret nv, 0\n");
+        } else {
+            t.push_str(&which);
+            writeln!(t, "    kk: i64 = mul kq, {}", RANK).unwrap();
+            match pool_n {
+                Some(pn) => writeln!(t, "    ip: u1 = cmp.eq kq, {pn}\n    ai: index = get x, __act_i\n    gp: ptr = addr __act_begun\n    gb: i64 = load gp, ai, 8\n    ga: i64 = if ip\n        yield gb\n    else\n        yield 0\n    rk: i64 = add kk, ga\n    ret {best}, rk", pn = pn, best = best).unwrap(),
+                None => writeln!(t, "    ret {}, kk", best).unwrap(),
+            }
         }
         // (the cut's move, fm3 log 276, is the first of them and is the
         // screen's alone: its turn does not move the clock or mark the
         // output, being no part of the program)
         let mv = if self.moved { "    mv: u1 = cmp.eq k, 1\n    if mv\n        __move_turn()\n        ret\n" } else { "" };
-        write!(t, "\n; ... and its turn: the clock reaches its time, and it goes on\nfn __list_turn()\n    _this: ptr = context()\n    t: i64, k: i64 = __list_next()\n{}    __wait(t)\n    x: __ctx = load _this\n", mv).unwrap();
+        write!(t, "\n; ... and its turn: the clock reaches its time, and it goes on\nfn __list_turn()\n    _this: ptr = context()\n    t: i64, kr: i64 = __list_next()\n    k: i64 = div kr, {}\n{}    __wait(t)\n    x: __ctx = load _this\n", RANK, mv).unwrap();
         for (k, (_, turn)) in entries.iter().enumerate().filter(|(_, (_, turn))| !turn.is_empty()) {
             writeln!(t, "    is{n}: u1 = cmp.eq k, {n}\n    if is{n}", n = k + 1).unwrap();
             for l in turn {
