@@ -4,6 +4,76 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: far works ahead of a key, and goes back: a copy before each turn taken untold, the screen's text kept in a queue and dropped where a key makes it void — `76df429` · 2026-10-12
+
+```
+on launch()
+    count down()
+    out$ << "liftoff"
+
+on count down()
+    restart i$
+    i$ << [10 through 1]
+```
+
+`suite/zero/restart/restart/restart.zero:5-11`. `0e3a586` ran this at two places over a wire that takes 100 ms with the safe bound: far worked on what is for a time only when the screen had told it no key came earlier, and every piece was two delays late. Now far does not wait. It takes the turn, sends only text from it, and keeps a copy of itself before it; the screen keeps the text in a queue until its time; and when a key is pressed two things that are then stale are put right, each by the place that has it. `probe zero suite/zero/restart run 'launch() with in "k" at 3.5 s' --far all --wire 100 ms`:
+
+```
+launch() with in "k" at 3.5 s
+→ "10\n9\n8\n7\n" at 1 hz, "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\nliftoff" at 1 hz from 3.5 s
+late: 2 pieces of 15, the most 200 ms
+  "10\n" for 0 s, shown at 200 ms, 200 ms late
+  "10\n" for 3.5 s, shown at 3.7 s, 200 ms late
+far worked ahead: 7 turns it took were thrown away
+```
+
+By its own times it is restart's own line, as it was. Two pieces are late where fifteen were, and they could not have been otherwise: the first `10`, its call having to cross, and the `10` after the key, the key having to cross. The `9` for 1 s is shown at 1 s. From `placement --far all --wire 100 ms`, which now shows beside what the wire carried each piece the screen dropped and each time far went back; rows of it, the numbers between left out:
+
+```
+left    arrived                 what                                                      its own time
+100 ms  200 ms   far → screen   text "10\n"                                               for 0 s
+100 ms  200 ms   far → screen   text "9\n"                                                for 1 s
+100 ms  200 ms   far → screen   text "6\n"                                                for 4 s
+100 ms  200 ms   far → screen   text "liftoff"                                            for 10 s
+100 ms  200 ms   far → screen   a telling: nothing before 10 s                            for 10 s
+3.5 s   3.6 s    screen → far   a push into a stored stream, made again where it is read  for 3.5 s
+3.5 s            at the screen  dropped unshown: text "6\n"                               for 4 s
+3.5 s            at the screen  dropped unshown: text "liftoff"                           for 10 s
+3.5 s   3.6 s    screen → far   a telling: nothing for a time up to 3.5 s                 for 3.5 s
+3.6 s            far            goes back to 3 s: 7 turns thrown away
+3.6 s   3.7 s    far → screen   text "10\n"                                               for 3.5 s
+3.6 s   3.7 s    far → screen   text "9\n"                                                for 4.5 s
+3.6 s   3.7 s    far → screen   text "6\n"                                                for 7.5 s
+3.6 s   3.7 s    far → screen   text "liftoff"                                            for 13.5 s
+3.6 s   3.7 s    far → screen   a telling: nothing before the end                         for 13.5 s
+```
+
+**The screen voids its own text.** A piece written in a turn taken ahead carries how much of the screen's sending far had had (`__wq_e`) and the time and rank of the turn that wrote it (`__wq_r`, a column more of the wire). The screen keeps the time and rank of each thing it sends. A piece whose count is behind and that is for the time of the first sending it did not know of, or later, is dropped: when the screen sends (`__wvoid`, from `__wsent`), and as it arrives if it was in flight (`__wkeep`). So with a key at 3.95 s, which far hears of at 4.05 s, the `6` for 4 s is never shown: it was dropped at 3.95 s. What is kept is a real queue (`__wk_*`), shown by the screen's `__wturn` in the order of the turns that wrote it, the lesser of its head and the screen's own earliest thing, when the world's clock has reached its time.
+
+**Far goes back.** Before each turn it takes untold (`__wturn`, where it is not free and nothing bars it) far keeps a copy (`__wcopy`): its context, its half of the pool to `__act_n`, and the part of the arena its context was made in, which is every stored stream's header and items. Sixteen copies; past that it waits to be told, and is late, not wrong. Something from the screen that is not a plain telling (`__wdeliver`) puts it back, before the program is given it, to the copy made before its first turn for that time and rank or later (`__wback`), and a plain telling drops the copies it has passed (`__wpassed`).
+
+**Only text is sent ahead.** A turn that would push into a stored stream the screen reads, or leaves changed a field of the context that crosses, is put back to its copy at once with what it put on the wire taken off again, and waits. A turn that reaches a call that crosses stops there: its text has gone, its function stays at far (`__act_send`), and until the screen's telling has passed that turn it is the only turn far has (`__wunpark`). That is how restart's `liftoff` is on time, though the turn that writes it ends with `launch`'s own end going back to the case's call (fm3 question 157). The first build barred only another try at the turn, and a clock far, whose word of the list is moved on by a later continuation, took its beat twice: `suite/zero/keeps-key`'s `begin()` wrote `4` and `6` at 1 s. Found by the suite's own run at every cut, of the store this commit adds.
+
+```
+int beat$ at (1 hz)
+int sum$
+int log$
+beat$ << beat$ + 1 if (beat$ < 6) forever
+sum$ << sum$ + beat$ forever
+log$ << beat$ forever
+out$ << (sum$ << "\n") forever
+int seen$ = bumps (in$)
+
+on (int n) << bumped by (char c)
+    sum$ << sum$ + 100 * [count] (frame log$)
+```
+
+`suite/zero/keeps-key/bump/bump.zero:1-11`: a running sum that a key adds to, by a hundred for each beat since the last key. `begin() with in "k" at 2.25 s`, everything far, gives its own line, `306` at 2.25 s; with far not put back, by a switch only `far_works_ahead_of_a_key` has, `621`, six beats and a sum of 21 where the key found three and 6; and put back but for its streams, `1106`. With the screen's dropping off, restart shows the first countdown's `6` at 4 s.
+
+**The numbers.** `PROBE_ZERO_CUTS=wire=100 probe zero test suite/zero wasm`: every run at every cut holds by its own times, 29 698 of 29 698 (29 678 of 29 678 before, the new store being 20). How many cuts show nothing late did not move, 402 of 650 and 38 of 216 of the stores with a time, and cannot: a cut with anything far shows its first piece late. What moved is how many pieces are late: 3 146 of 38 973 before, 2 952 after, delta 194, all of it in the three stores with a timed input, 581 of their 1 122 before and 387 after; with everything far restart 80 of 80 before and 10 after, going-keys 36 and 12 of 36, going-two 108 and 13 of 108. The same on riscv64 and arm64 under qemu for the four stores, 95 of 95. restart's `launch()` as `probe count` counts it, everything far at 100 ms: 64 583 before, 70 637 after; a copy is about 2 440, of which 2 212 are the bytes of far's part of the arena. hello's, having no input: 24 941, as it was.
+
+**What did not move.** Only a store with an input that arrives at a time has any of this. Every other store's build for a wire is byte for byte what it was (`scratchpad/agent61/wirediff.sh scratchpad/probe159` names `going-keys`, `going-two`, `restart` and the new store), and so are every plain build and every placed build with no `--wire` (`irdiff.sh`, `placediff.sh`: nothing). The six rows: 478, 485, 920, 931, 939, 918. The meter 51 of 3 127 → 51 of 3 144, the new store's lines. Full run `scratchpad/chain160.log`: 1 329 runs on four paths and 1 288 with 41 skipped on the GPU's, `probe test` whole on five, `cargo test` 203.
+
 ### zero: a wire that takes time, with a key: far works on a time only when the screen has told it nothing earlier is coming — `0e3a586` · 2026-10-12
 
 ```
