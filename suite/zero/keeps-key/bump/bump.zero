@@ -1,0 +1,21 @@
+int beat$ at (1 hz)
+int sum$
+int log$
+beat$ << beat$ + 1 if (beat$ < 6) forever
+sum$ << sum$ + beat$ forever
+log$ << beat$ forever
+out$ << (sum$ << "\n") forever
+int seen$ = bumps (in$)
+
+on (int n) << bumped by (char c)
+    sum$ << sum$ + 100 * [count] (frame log$)
+    n << 1
+
+on (int k$) << bumps (char c$)
+    k$ << bumped by (c$)
+
+on begin()
+    out$ << "go\n"
+
+on (int t) << so far()
+    t << sum$
