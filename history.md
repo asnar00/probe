@@ -4,6 +4,33 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: an array or a string is copied where the wire is crossed, and 39 cuts are no longer refused — `6584735` · 2026-10-12
+
+```
+on (int n) << total of (int x[])
+    n << x[] + _
+```
+
+`suite/zero/arrays/arrays/arrays.zero:56-57`, a function handed an array. Placed apart from its caller it was refused, with every function handed or giving an array, a string or a stream: in the IR the three are one type, `fn total_of(x: int$)`, a view of storage in the memory of the place that made it, and the placed build, which reads the finished text, could not tell a value from a stream. The lowering can: each parameter and result keeps the mark it was declared with, and it now tells the rewrite which of a unit's are values, declared `x[]` or a plain `string` (`Unit.values`).
+
+Those the wire copies. `probe zero suite/zero/arrays emit places`:
+
+```
+fn total_of(x__0: int$) -> int
+    __pw: i64 = __wire_unit(10)
+    x: int$ = __carried_int(x__0, __pw)
+    _1: int[] = unread_queue(x)
+    n: int = sum _1
+    __wire_back(__pw)
+    ret n
+```
+
+`__carried_int` gives the value itself where the function was called at its own place and a copy where the wire was crossed to reach it; a result is copied where its `ret` crosses back. The copy is of the storage as the library lays it out, told apart by its header, a queue's resident items in a buffer of just their number or a ring's buffers whole, with its counts, its beat and its end, and the reader's place and rules go with the value. A value is never modified, so the copy is the value. `handed()`, which calls `total of` twice, is 389 as counted with both at one place, 12 of it the two tests, and 773 with `total of` far, 96 of it the two copies. A string kept as a stream's latest value, `variables`' `open_tool$ << "edit"`, is copied by the wire where it copied a number. A stream handed to a function is its storage and stays refused, now by its own word: `'how many so far' is handed, or gives, a stream`.
+
+`PROBE_ZERO_CUTS=1 probe zero test suite/zero`: **31 of 47 stores hold every case at every cut, where 22 did; 900 cuts run and 97 refused, where 861 and 136**; 46 154 of 46 154 runs at a cut give the case's own line, the same on the JIT, wasm, riscv64 and arm64 under qemu. The nine stores that now hold: `arrays`, `sequences`, `pushed`, `functions`, `strings`, `sampled`, `sampled-kept`, `sampled-between`, `variables`. The 39 are 35 functions handed an array or a string and 4 strings kept; the prompt's 59 counted 20 that are streams, which the IR's type does not tell from arrays. What is left: 76 one reader of a stored stream at both places, taking what it reads; 20 a stream handed to a function; 1 a push through a function. The moves are as they were, 53 of 58 cases. A plain build is the text it was (`irdiff.sh` names nothing), and so is the placed build of every store but the ten that hand a value or keep a string. `a_value_is_copied_at_a_crossing`. The full run, `scratchpad/chain155.log`: 1 325 runs on four paths, 1 284 on the GPU's, `cargo test` 200.
+
+---
+
 ### zero: the cut moved while the program runs: a move is a thing going on, and what the second cut needs is handed across once — `0b8b9a3` · 2026-10-12
 
 ```
