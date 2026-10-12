@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the cut on every path: the same table of cuts on wasm, riscv64 and arm64 under qemu as on the JIT — `965c2d4` · 2026-10-12
+
+```
+int seen$ = launches (in$)
+```
+
+`suite/zero/restart/restart/restart.zero:3`, the line that reads the input. With it placed far the key a case gives at 3.5 s is pushed into the input at the screen and made again at `far`, where the line reads it, and the countdown it restarts writes its numbers back at the screen. That holds on every machine path, and nothing was built for it: the placed build of the commit before fills its cut by calls a runner already makes before a case, as it sets a feature's switch, and the wire, the pushes made again and the pool's copies are IR in the store's own text. No driver, emitter or library changed.
+
+This commit is the proof and a test. `PROBE_ZERO_CUTS=1 probe zero test suite/zero <path>` gives the same line on the JIT, wasm, riscv64 under qemu and arm64 under qemu: 21 of 46 stores hold every case at every cut, the other 25 at every cut that is not refused, 851 cuts run and 136 refused, 43 993 of 43 993 runs at a cut giving the case's own line. wasm takes 82 seconds, the two machines under qemu a little over four minutes each, and the JIT five and a half, a case there being a forked child. On the GPU's path the five stores of the cut's proof, hello, restart, `going-keys`, `going-two` and `going-mix`, hold at every cut, 39 cuts and 214 runs in eight seconds; the whole suite there, 44 000 runs, was stopped after 27 minutes and is not measured. `a_case_holds_at_every_cut` runs the five stores at every cut on wasm after the JIT and holds the two tallies equal. The full run, `scratchpad/chain152.log`: 1 322 runs on four paths, 1 281 on the GPU's, `cargo test` 197.
+
+---
+
 ### zero: the cut, one program at two places: the placed build, the wire, and every case at every cut — `65ad350` · 2026-10-12
 
 ```
