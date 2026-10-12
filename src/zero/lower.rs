@@ -8855,7 +8855,16 @@ impl Lowerer {
                 }
                 irs.dedup();
                 let words = Some(spoken(&info)).filter(|w| !w.is_empty());
-                found.push((rank, fd.line, Unit { name: format!("{}:{}", short(&f.code.file), fd.line), words, said: source_line(&f.code.file, fd.line), irs }));
+                // which of its parameters and results are values that
+                // hold an address, an array or a string (fm3 log 267):
+                // in the IR they are a stream's type, and only the
+                // declaration says which they are
+                let value = |t: &Ty, m: Option<&NameMark>| matches!(t, Ty::Stream(_)) && (m == Some(&NameMark::Array) || m == Some(&NameMark::Plain) && *t == Ty::string());
+                let values = (
+                    info.params.iter().enumerate().filter(|(k, (_, t))| value(t, info.marks.get(*k))).map(|(_, (n, _))| n.clone()).collect(),
+                    info.results.iter().enumerate().filter(|(k, (_, t))| value(t, info.gives.get(*k))).map(|(k, _)| k).collect(),
+                );
+                found.push((rank, fd.line, Unit { name: format!("{}:{}", short(&f.code.file), fd.line), words, said: source_line(&f.code.file, fd.line), irs, values }));
             }
         }
         // the lines: each function the front end wrote for one, by
@@ -8879,7 +8888,7 @@ impl Lowerer {
                 None => {
                     let rank = store.features.iter().position(|f| f.name == feature).unwrap_or(0);
                     let said = source_line(&file, line).or_else(|| self.lines.iter().find(|l| l.name == name).map(|l| l.said.clone()));
-                    found.push((rank, line, Unit { name: unit_name, words: None, said, irs: vec![name] }));
+                    found.push((rank, line, Unit { name: unit_name, words: None, said, irs: vec![name], values: (Vec::new(), Vec::new()) }));
                 }
             }
         }

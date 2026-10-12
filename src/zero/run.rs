@@ -1692,6 +1692,59 @@ mod tests {
         assert!(!got[1].0 && got[1].1 == "(printed \"10\\n9\\n8\\n7\\n\" at 1 hz, \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz from 3.5 s)", "{:?}", got[1]);
     }
 
+    /// An array or a string handed to a function at the other place,
+    /// or given by one, is copied at the crossing (fm3 question 152,
+    /// log 267). In the IR the two are a stream's type; the lowering
+    /// says which parameters and results are values, by how they were
+    /// declared, and those the wire copies: at the head of the
+    /// function for a parameter, where its `ret` crosses back for a
+    /// result. A stream handed to a function is its storage and stays
+    /// refused. So the stores whose only refused cuts were values hold
+    /// every case at every cut
+    #[test]
+    fn a_value_is_copied_at_a_crossing() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let placed = |name: &str| -> lower::Lowered {
+            let mut s = store::read(&Path::new("suite/zero").join(name)).unwrap();
+            s.places = true;
+            lower::lower(&s).unwrap()
+        };
+        let arrays = placed("arrays");
+        let at = arrays.ir.find("\nfn total_of(x__0: int$) -> int\n").expect("the parameter is the caller's until the wire is crossed");
+        let body: Vec<&str> = arrays.ir[at + 1..].lines().skip(1).take(2).collect();
+        assert!(body[0].starts_with("    __pw: i64 = __wire_unit(") && body[1] == "    x: int$ = __carried_int(x__0, __pw)", "{:?}", body);
+        assert!(arrays.ir.contains(": int$ = __carried_int(_37, __pb") && arrays.ir.contains("\nfn __copied_int(v: int$) -> int$\n"), "a result is copied where the wire is crossed back");
+        let p = arrays.placed.as_ref().unwrap();
+        for far in ["total of", "squares to"] {
+            assert_eq!(p.refused(&p.named(far).unwrap()), None, "{}", far);
+        }
+        // a string kept as a stream's latest value, written at one
+        // place and read at the other, is copied by the wire
+        let variables = placed("variables");
+        let p = variables.placed.as_ref().unwrap();
+        assert_eq!(p.refused(&p.named("tool opened").unwrap()), None);
+        assert!(variables.ir.contains(": u8$ = __copied_u8(a"), "{}", variables.ir);
+        // a stream handed to a function is still an address
+        let streams = placed("streams");
+        let p = streams.placed.as_ref().unwrap();
+        let why = p.refused(&p.named("how many so far").unwrap()).unwrap();
+        assert!(why.contains("'how many so far' is handed, or gives, a stream, which is an address"), "{}", why);
+        // a store that hands no value across has none of it
+        assert!(!placed("hello").ir.contains("__copied_") && !placed("hello").ir.contains("__carried_"));
+        let names = ["arrays", "sequences", "pushed", "functions", "strings", "sampled", "sampled-kept", "sampled-between", "variables"];
+        let (mut report, mut cuts) = (Report { passed: 0, failed: 0, skipped: 0, log: String::new() }, Cuts::default());
+        for name in names {
+            test_cuts(&Path::new("suite/zero").join(name), &native, Backend::Native, opt::MAX_LEVEL, &mut report, &mut cuts);
+        }
+        assert_eq!((cuts.hold, cuts.stores, cuts.refused, cuts.failed, cuts.unplaced), (9, 9, 0, 0, 0), "{}", report.log);
+        let wasm = suite::backend_policy(Backend::Wasm).unwrap();
+        let (mut report, mut there) = (Report { passed: 0, failed: 0, skipped: 0, log: String::new() }, Cuts::default());
+        for name in names {
+            test_cuts(&Path::new("suite/zero").join(name), &wasm, Backend::Wasm, opt::MAX_LEVEL, &mut report, &mut there);
+        }
+        assert_eq!((there.hold, there.refused, there.failed, there.cuts, there.passed), (9, 0, 0, cuts.cuts, cuts.passed), "{}", report.log);
+    }
+
     #[test]
     fn a_negative_literal_index_is_refused() {
         let dir = std::env::temp_dir().join(format!("probe-zero-negative-{}", std::process::id()));

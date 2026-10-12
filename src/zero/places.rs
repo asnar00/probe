@@ -38,6 +38,10 @@ pub struct Unit {
     pub said: Option<String>,
     /// the functions of the text that are it
     pub irs: Vec<String>,
+    /// those of a function's parameters, by name, and of its results,
+    /// by place, that are values holding an address: an array or a
+    /// string (fm3 log 267). The wire copies them
+    pub values: (Vec<String>, Vec<usize>),
 }
 
 impl Unit {
@@ -131,6 +135,9 @@ pub struct Placed {
     rings: Vec<(Vec<String>, bool)>,
     /// each function's parameters' and results' types
     sigs: HashMap<String, Vec<String>>,
+    /// for each function of a unit, which places of its signature,
+    /// parameters and then results, are values the wire copies
+    copied: HashMap<String, Vec<usize>>,
     /// the cut may be moved while the program runs (fm3 cut.md, "the
     /// cut, moved"; log 265)
     pub moved: bool,
@@ -431,6 +438,21 @@ pub fn rewrite(ir: &str, units: &[Unit]) -> Result<(String, Placed), String> {
             owner.insert(f.name.clone(), screen);
         }
     }
+    // the values the wire copies (fm3 log 267): a unit's parameters
+    // and results that are an array or a string, by their place in
+    // each of its functions' signatures. A continuation has none: a
+    // function that keeps one across a step keeps the stack
+    let mut copied: HashMap<String, Vec<usize>> = HashMap::new();
+    for f in &fns {
+        let Some(&u) = owner.get(&f.name).filter(|&&u| u < nu && base(&f.name) == f.name) else { continue };
+        let (params, results) = &units[u].values;
+        let mut at: Vec<usize> = f.params.iter().enumerate().filter(|(_, (n, t))| t.ends_with('$') && params.contains(n)).map(|(i, _)| i).collect();
+        at.extend(f.rets.iter().enumerate().filter(|(k, t)| t.ends_with('$') && results.contains(k)).map(|(k, _)| f.params.len() + k));
+        if !at.is_empty() {
+            copied.insert(f.name.clone(), at);
+        }
+    }
+    let mut carried_types: BTreeSet<String> = BTreeSet::new();
     // the context's fields, and the structures a field may be
     let mut structs: HashMap<String, Vec<String>> = HashMap::new();
     let mut ctx_fields: Vec<(String, String)> = Vec::new();
@@ -672,12 +694,26 @@ pub fn rewrite(ir: &str, units: &[Unit]) -> Result<(String, Placed), String> {
         // a continuation's place in the pool is its caller's, and it is
         // given its own
         let cont = unit.is_some() && pooled && base(&f.name) != f.name && f.params.len() == 1 && f.params[0].0 == "__a";
-        out.push_str(&if cont { lines[k].replacen("(__a: index)", "(__a0: index)", 1) } else { lines[k].clone() });
+        // a parameter that is an array or a string is the caller's
+        // until the wire is crossed, and a copy after (fm3 log 267)
+        let values: Vec<usize> = copied.get(&f.name).cloned().unwrap_or_default();
+        let mut head = if cont { lines[k].replacen("(__a: index)", "(__a0: index)", 1) } else { lines[k].clone() };
+        for &i in values.iter().filter(|&&i| i < f.params.len()) {
+            let (name, ty) = &f.params[i];
+            head = head.replacen(&format!("{}: {}", name, ty), &format!("{}__0: {}", name, ty), 1);
+        }
+        out.push_str(&head);
         out.push('\n');
         if let Some(u) = unit {
             out.push_str(&format!("    __pw: i64 = __wire_unit({})\n", u));
         } else if wrapped {
             out.push_str("    __pw: i64 = __wire(0)\n");
+        }
+        for &i in values.iter().filter(|&&i| i < f.params.len()) {
+            let (name, ty) = &f.params[i];
+            let item = ty.trim_end_matches('$');
+            carried_types.insert(item.to_string());
+            out.push_str(&format!("    {name}: {ty} = __carried_{item}({name}__0, __pw)\n", name = name, ty = ty, item = item));
         }
         if cont {
             out.push_str("    __a: index = __act_in(__a0, __pw)\n");
@@ -711,6 +747,23 @@ pub fn rewrite(ir: &str, units: &[Unit]) -> Result<(String, Placed), String> {
                 out.push_str(&format!("{p}__ro{n}: u1 = __ring_here({r})\n{p}if __ro{n}\n{p}    {t}\n{p}__rc{n}: i64 = __ring_far({r})\n{p}__rk{n}: u1 = cmp.ne __rc{n}, 2\n{p}if __rk{n}\n{p}    __rp{n}: ptr = context()\n{p}    __rx{n}: __ctx = load __rp{n}\n{p}    __rs{n}: {ty} = get __rx{n}, {field}\n{p}    {again}\n{p}    __wire_back(__rc{n})\n", p = p, n = n, r = s.ring, t = t, ty = s.ty, field = s.field, again = again));
                 continue;
             }
+            // a result that is an array or a string is copied where
+            // the wire is crossed back, at the caller's place
+            if wrapped && t.starts_with("ret ") && values.iter().any(|&i| i >= f.params.len()) {
+                n += 1;
+                let mut vals = split_top(&t["ret ".len()..]);
+                out.push_str(&format!("{}__pb{}: i64 = __wire(__pw)\n", p, n));
+                for &i in values.iter().filter(|&&i| i >= f.params.len()) {
+                    let k = i - f.params.len();
+                    let ty = &f.rets[k];
+                    let item = ty.trim_end_matches('$');
+                    carried_types.insert(item.to_string());
+                    out.push_str(&format!("{p}__rv{n}_{k}: {ty} = __carried_{item}({v}, __pb{n})\n", p = p, n = n, k = k, ty = ty, item = item, v = vals[k]));
+                    vals[k] = format!("__rv{}_{}", n, k);
+                }
+                out.push_str(&format!("{}ret {}\n", p, vals.join(", ")));
+                continue;
+            }
             if wrapped && (t == "ret" || t.starts_with("ret ")) {
                 if cont {
                     out.push_str(&format!("{}__act_out(__a0, __a)\n", p));
@@ -732,8 +785,18 @@ pub fn rewrite(ir: &str, units: &[Unit]) -> Result<(String, Placed), String> {
     if !fields.is_empty() {
         out.push_str("    cp: ptr = addr __cut\n    fi: index = conv from\n");
     }
-    for (j, (name, ty, _)) in fields.iter().enumerate() {
-        out.push_str(&format!("    i{j}: index = add fi, {at}\n    h{j}: u8 = load cp, i{j}, 1\n    g{j}: u1 = cmp.ne h{j}, 0\n    a{j}: {ty} = get x, {name}\n    b{j}: {ty} = get y{y}, {name}\n    v{j}: {ty} = if g{j}\n        yield a{j}\n    else\n        yield b{j}\n    y{z}: __ctx = set y{y}, {name}, v{j}\n", j = j, at = fbase + 2 * j, ty = ty, name = name, y = j + 1, z = j + 2));
+    for (j, (name, ty, plain)) in fields.iter().enumerate() {
+        // (a stream kept as its latest value where that is a string
+        // or an array, fm3 log 267: the value is copied, the address
+        // it holds being the other place's)
+        let take = if !plain && ty.ends_with('$') {
+            let item = ty.trim_end_matches('$');
+            carried_types.insert(item.to_string());
+            format!("        c{j}: {ty} = __copied_{item}(a{j})\n        yield c{j}\n", j = j, ty = ty, item = item)
+        } else {
+            format!("        yield a{j}\n", j = j)
+        };
+        out.push_str(&format!("    i{j}: index = add fi, {at}\n    h{j}: u8 = load cp, i{j}, 1\n    g{j}: u1 = cmp.ne h{j}, 0\n    a{j}: {ty} = get x, {name}\n    b{j}: {ty} = get y{y}, {name}\n    v{j}: {ty} = if g{j}\n{take}    else\n        yield b{j}\n    y{z}: __ctx = set y{y}, {name}, v{j}\n", j = j, at = fbase + 2 * j, ty = ty, name = name, y = j + 1, z = j + 2, take = take));
     }
     out.push_str(&format!("    store y{}, b\n    ret from\n", fields.len() + 1));
     out.push_str("\n; back over the wire, to the place a crossing left\nfn __wire_back(to: i64)\n    r: i64 = __wire(to)\n    ret\n");
@@ -763,11 +826,19 @@ pub fn rewrite(ir: &str, units: &[Unit]) -> Result<(String, Placed), String> {
         let mut c = 0;
         for (j, (name, ty, plain)) in hand_fields.iter().enumerate() {
             // (a field that holds an address is never handed: such a
-            // move is refused)
-            if !plain {
+            // move is refused; but a stream kept as a value that is a
+            // string or an array is copied, fm3 log 267)
+            if !plain && !ty.ends_with('$') {
                 continue;
             }
-            h.push_str(&format!("    i{j}: index = add hb, {j}\n    h{j}: u8 = load hp, i{j}, 1\n    u{j}: u1 = cmp.eq h{j}, 1\n    d{j}: u1 = cmp.eq h{j}, 2\n    a{j}: {ty} = get s{c}, {name}\n    b{j}: {ty} = get f{c}, {name}\n    nb{j}: {ty} = if u{j}\n        yield a{j}\n    else\n        yield b{j}\n    na{j}: {ty} = if d{j}\n        yield b{j}\n    else\n        yield a{j}\n    f{c2}: __ctx = set f{c}, {name}, nb{j}\n    s{c2}: __ctx = set s{c}, {name}, na{j}\n", j = j, ty = ty, name = name, c = c, c2 = c + 1));
+            let (to_far, to_screen) = if *plain {
+                (format!("        yield a{}\n", j), format!("        yield b{}\n", j))
+            } else {
+                let item = ty.trim_end_matches('$');
+                carried_types.insert(item.to_string());
+                (format!("        ca{j}: {ty} = __copied_{item}(a{j})\n        yield ca{j}\n", j = j, ty = ty, item = item), format!("        cb{j}: {ty} = __copied_{item}(b{j})\n        yield cb{j}\n", j = j, ty = ty, item = item))
+            };
+            h.push_str(&format!("    i{j}: index = add hb, {j}\n    h{j}: u8 = load hp, i{j}, 1\n    u{j}: u1 = cmp.eq h{j}, 1\n    d{j}: u1 = cmp.eq h{j}, 2\n    a{j}: {ty} = get s{c}, {name}\n    b{j}: {ty} = get f{c}, {name}\n    nb{j}: {ty} = if u{j}\n{to_far}    else\n        yield b{j}\n    na{j}: {ty} = if d{j}\n{to_screen}    else\n        yield a{j}\n    f{c2}: __ctx = set f{c}, {name}, nb{j}\n    s{c2}: __ctx = set s{c}, {name}, na{j}\n", j = j, ty = ty, name = name, c = c, c2 = c + 1, to_far = to_far, to_screen = to_screen));
             c += 1;
         }
         let mut used: BTreeSet<&'static str> = BTreeSet::new();
@@ -790,7 +861,10 @@ pub fn rewrite(ir: &str, units: &[Unit]) -> Result<(String, Placed), String> {
             out.push_str("\n; a ring handed across (lib/stream.ssa, the ring): its items with their times, how many it has had, its beat and whether it has ended\nfn __hand_ring(a: any$, b: any$)\n    ra: ptr = get a, ring\n    rb: ptr = get b, ring\n    n: index = load ra\n    store n, rb\n    hz: i64 = load ra, 32\n    store hz, rb, 32\n    st: i64 = load ra, 40\n    store st, rb, 40\n    t0: i64 = load ra, 48\n    store t0, rb, 48\n    e: i64 = load ra, 56\n    store e, rb, 56\n    wa: ptr = load ra, 16\n    wb: ptr = load rb, 16\n    va: any[] = slice wa\n    vb: any[] = slice wb\n    copy vb, va\n    ta: ptr = load ra, 24\n    tb: ptr = load rb, 24\n    none: ptr = const 0\n    timed: u1 = cmp.ne ta, none\n    if timed\n        ka: i64[] = slice ta\n        kb: i64[] = slice tb\n        copy kb, ka\n    ret\n");
         }
     }
-    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize) }))
+    for item in &carried_types {
+        out.push_str(&format!("\n; a value that holds an address, an array or a string, copied (fm3 log 267): its storage as the library lays it out, a queue's resident items in a buffer of their number or a ring's buffers whole, with its counts, its beat and its end, carved from the arena; the reader's place and its rules go with the value. A value is never modified, so the copy is the value\nfn __copied_{t}(v: {t}$) -> {t}$\n    r: ptr = get v, ring\n    ar: ptr = addr __arena\n    n: ptr = arena_alloc(ar, 64)\n    pushed: index = load r\n    o: index = load r, 8\n    hz: i64 = load r, 32\n    st: i64 = load r, 40\n    t0: i64 = load r, 48\n    e: i64 = load r, 56\n    w: index = load r, 24\n    store pushed, n\n    store o, n, 8\n    store hz, n, 32\n    store st, n, 40\n    store t0, n, 48\n    store e, n, 56\n    sz: index = sizeof {t}\n    stepped: u1 = cmp.ne st, 0\n    worded: u1 = cmp.ne w, 0\n    queue: u1 = and stepped, worded\n    if queue\n        k: index = sub pushed, o\n        one: index = const 1\n        cap: index = max(k, one)\n        bytes: index = mul sz, cap\n        total: index = add bytes, 16\n        vb: ptr = arena_alloc(ar, total)\n        buffer_init(vb, sz, cap)\n        slots: ptr = ptradd vb, 16\n        qa: ptr({t}) = load r, 16\n        qb: ptr({t}) = cast slots\n        s: {t}[] = pack qa, k, 1\n        d: {t}[] = pack qb, k, 1\n        copy d, s\n        store slots, n, 16\n        store cap, n, 24\n    else\n        wa: ptr = load r, 16\n        cap2: index = load wa, 8\n        bytes2: index = mul sz, cap2\n        total2: index = add bytes2, 16\n        wb: ptr = arena_alloc(ar, total2)\n        buffer_init(wb, sz, cap2)\n        va: {t}[] = slice wa\n        vc: {t}[] = slice wb\n        copy vc, va\n        store wb, n, 16\n        ta: ptr = load r, 24\n        if worded\n            tcap: index = load ta, 8\n            tbytes: index = mul tcap, 8\n            ttotal: index = add tbytes, 16\n            tb: ptr = arena_alloc(ar, ttotal)\n            eight: index = const 8\n            buffer_init(tb, eight, tcap)\n            ka: i64[] = slice ta\n            kb: i64[] = slice tb\n            copy kb, ka\n            store tb, n, 24\n        else\n            store ta, n, 24\n    v2: {t}$ = set v, ring, n\n    ret v2\n\n; ... where the wire was crossed to bring it: called at its own place, a function is handed the value itself\nfn __carried_{t}(v: {t}$, w: i64) -> {t}$\n    a: ptr = context()\n    cm: ptr = addr __ctx_mem\n    second: u1 = cmp.ne a, cm\n    here: i64 = conv second\n    same: u1 = cmp.eq here, w\n    if same\n        ret v\n    c: {t}$ = __copied_{t}(v)\n    ret c\n", t = item));
+    }
+    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, copied, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize) }))
 }
 
 impl Placed {
@@ -873,14 +947,17 @@ impl Placed {
             if self.at(c.from, far) == self.at(c.to, far) || c.to == self.screen() {
                 continue;
             }
-            if let Some(ty) = self.sigs.get(&c.callee).and_then(|s| s.iter().find(|t| t.contains('$') || t.contains('[') || t.contains("ptr"))) {
+            // (an array or a string is copied at the crossing, fm3 log
+            // 267: what is left is a stream, which is its storage)
+            let values = self.copied.get(&c.callee);
+            if let Some(ty) = self.sigs.get(&c.callee).and_then(|s| s.iter().enumerate().find(|(i, t)| (t.contains('$') || t.contains('[') || t.contains("ptr")) && !values.is_some_and(|v| v.contains(i))).map(|(_, t)| t)) {
                 let (far_one, other) = if far.contains(&c.to) { (c.to, c.from) } else { (c.from, c.to) };
-                return Some(format!("{} cannot run apart from {} yet: {} is handed, or gives, {}, which is an address in the memory of the place it was made at", self.who(far_one), self.who(other), self.who(c.to), address(ty)));
+                return Some(format!("{} cannot run apart from {} yet: {} is handed, or gives, {}, which is an address in the memory of the place it was made at", self.who(far_one), self.who(other), self.who(c.to), if ty.contains('$') { "a stream" } else { address(ty) }));
             }
         }
         let (fields, read, pushed) = self.carries(far);
         for ((name, ty, plain), c) in self.fields.iter().zip(&fields) {
-            if (c[0] || c[1]) && !plain {
+            if (c[0] || c[1]) && !plain && !ty.ends_with('$') {
                 return Some(format!("'{}{}' is written at one place and read at the other, and it holds {}, which is an address in the memory of the place it was made at", name.trim_start_matches("__"), if ty.ends_with('$') { "$" } else { "" }, address(ty)));
             }
         }
@@ -1002,7 +1079,7 @@ impl Placed {
             return Some(format!("{} cannot be moved while it runs: its function `{}` keeps the machine's stack across a step of a rate, in a shape the compiler does not yet leave at its steps (fm3 question 139), so it may be partway when the move is due", self.who(*u), f));
         }
         for h in self.hands(a, b) {
-            if let Some((_, ty, false)) = self.hand_fields.get(h.at).filter(|(n, _, _)| *n == h.name) {
+            if let Some((_, ty, false)) = self.hand_fields.get(h.at).filter(|(n, ty, _)| *n == h.name && !ty.ends_with('$')) {
                 return Some(format!("'{}{}' would be handed across at the move, and it holds {}, which is an address in the memory of the place it was made at", h.name.trim_start_matches("__"), if ty.ends_with('$') { "$" } else { "" }, address(ty)));
             }
             if h.at >= self.sizes.1 {
@@ -1132,7 +1209,9 @@ impl Placed {
             if a == b {
                 continue;
             }
-            let types = self.sigs.get(&c.callee).cloned().unwrap_or_default();
+            // (an array or a string is copied at the crossing, fm3 log 267)
+            let values = self.copied.get(&c.callee);
+            let types: Vec<String> = self.sigs.get(&c.callee).cloned().unwrap_or_default().into_iter().enumerate().map(|(i, t)| if !values.is_some_and(|v| v.contains(&i)) { t } else if t == "u8$" { "a string, copied".to_string() } else { format!("an array of `{}`, copied", t.trim_end_matches('$')) }).collect();
             let (kind, what) = if c.to == self.screen() {
                 match c.callee.as_str() {
                     "__out_ch" | "__out_block" => ("text".to_string(), "characters for out$, written at the screen at their time".to_string()),
