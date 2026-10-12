@@ -34,6 +34,55 @@ pub fn emit_trace(dir: &Path) -> Result<String, String> {
     emit_build(dir, true)
 }
 
+/// ... and the placed build (fm3 cut.md): the text that runs at two
+/// places, the wire and the table of the cut in it
+///
+/// With a cut named, a function `__cut` after the text fills the table
+/// as the runner would before a case: `probe count <text> run
+/// --after=__zero_reset,__cut` then prices the case at that cut
+pub fn emit_placed(dir: &Path, far: Option<&str>) -> Result<String, String> {
+    let mut s = store::read(dir).map_err(|e| e.to_string())?;
+    s.places = true;
+    let l = lower::lower(&s).map_err(|e| e.to_string())?;
+    let mut ir = l.ir;
+    if let (Some(names), Some(p)) = (far, &l.placed) {
+        let far = p.named(names)?;
+        if let Some(why) = p.refused(&far) {
+            return Err(format!("this cut cannot be run yet: {}", why));
+        }
+        let cut = p.cut(&far);
+        ir.push_str(&format!("\n; the cut, {}, as the runner fills it before a case\nfn __cut()\n", cut.label));
+        for (f, args) in &cut.before {
+            ir.push_str(&format!("    {}({})\n", f, args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")));
+        }
+        ir.push_str("    ret\n");
+    }
+    Ok(ir)
+}
+
+/// The placement of a store at a cut (fm3 cut.md; distribution.md,
+/// "what the compiler does", 7): every unit and where it runs, every
+/// crossing, what kind it is and what is carried. `far` names the
+/// units placed far, `count down,countdown.zero:2` or `all`; none,
+/// and everything is at the screen
+pub fn placement(dir: &Path, far: Option<&str>) -> Result<String, String> {
+    let mut s = store::read(dir).map_err(|e| e.to_string())?;
+    s.clock = store::Clock::Virtual;
+    s.places = true;
+    let l = lower::lower(&s).map_err(|e| e.to_string())?;
+    let p = l.placed.as_ref().ok_or("the store was not placed")?;
+    let far = match far {
+        Some(names) => p.named(names)?,
+        None => BTreeSet::new(),
+    };
+    let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    // the functions a case of the store calls: each is a call made at
+    // the screen
+    let policy = store_policy(&s, &ssa::Policy::new(ssa::Type::I64)?);
+    let cases: Vec<String> = calls_of(&s, &l, &policy)?.iter().map(|c| c.call.func.trim_start_matches("__whole_").trim_start_matches("__said_").to_string()).collect();
+    Ok(p.table(&name, &far, &cases))
+}
+
 fn emit_build(dir: &Path, trace: bool) -> Result<String, String> {
     let mut s = store::read(dir).map_err(|e| e.to_string())?;
     s.sites = true;
@@ -443,10 +492,28 @@ pub(super) fn case_named<'a>(calls: &'a [Planned], which: &str) -> Option<&'a Pl
 /// after an arrow — the numbers, or the output as the case's quoted
 /// text; on the real clock unless `fast`
 pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bool) -> Result<String, String> {
+    run_cut(dir, which, policy, level, fast, None)
+}
+
+/// ... and at a cut (fm3 cut.md): `far` names the units that run at
+/// the second place, and the case is run from the store's placed build
+pub fn run_cut(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bool, far: Option<&str>) -> Result<String, String> {
     let mut s = store::read(dir).map_err(|e| e.to_string())?;
     s.clock = if fast { store::Clock::Virtual } else { store::Clock::Real };
+    s.places = far.is_some();
     let policy = &store_policy(&s, policy);
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
+    // the cut's table is filled before anything else of the case
+    let cut = match (far, &l.placed) {
+        (Some(names), Some(p)) => {
+            let far = p.named(names)?;
+            if let Some(why) = p.refused(&far) {
+                return Err(format!("this cut cannot be run yet: {}", why));
+            }
+            p.cut(&far).before
+        }
+        _ => Vec::new(),
+    };
     let calls = calls_of(&s, &l, policy)?;
     let at = case_at(&calls, which);
     let mut calls = calls;
@@ -468,7 +535,7 @@ pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bo
         println!("{}", text.split('→').next().unwrap_or("").trim());
         let _ = std::io::stdout().flush();
     }
-    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: checks(&call.expect), text: true, before: setters(&call.context, &call.input, &call.input_at), live: true, times: timed };
+    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: checks(&call.expect), text: true, before: cut.into_iter().chain(setters(&call.context, &call.input, &call.input_at)).collect(), live: true, times: timed };
     // a check that fails is traced to its line by the diagnostic build
     // (fm3 log 199): a person is looking
     let got = match suite::run_calls(&module, &l.ir, Backend::Native, std::slice::from_ref(&sc), "zero-run", level)?.remove(0) {
@@ -623,6 +690,16 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
             report.case(ok, &name, &text, &note);
         }
     }
+    // the suite at every cut (fm3 cut.md), where it is asked for: each
+    // store's cases run again from its placed build with every unit
+    // far and with each unit alone far, and compared with the case's
+    // own. Counted apart, after the line that counts the suite's runs
+    let mut cuts = Cuts::default();
+    if std::env::var("PROBE_ZERO_CUTS").is_ok() {
+        for sdir in &stores {
+            test_cuts(sdir, &policy, backend, level, &mut report, &mut cuts);
+        }
+    }
     // the last line counts runs: every case in every context it stands
     // in (log 44), the expected-IR checks among the cases
     report.log.push_str(&format!(
@@ -633,7 +710,126 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
         nover,
         if report.skipped > 0 { format!(", {} skipped", report.skipped) } else { String::new() }
     ));
+    if cuts.stores > 0 {
+        report.log.push_str(&format!(
+            "cuts: {} of {} stores hold at every cut; {} hold at every cut that is not refused; {} have a cut that does not hold; {} could not be placed ({} cuts run, {} refused; {} of {} runs at a cut hold)\n",
+            cuts.hold, cuts.stores, cuts.hold_but, cuts.broken, cuts.unplaced, cuts.cuts, cuts.refused, cuts.passed, cuts.passed + cuts.failed
+        ));
+        report.passed += cuts.passed;
+        report.failed += cuts.failed;
+    }
     Ok(report)
+}
+
+/// what the suite at every cut found, over all its stores
+#[derive(Default)]
+struct Cuts {
+    stores: usize,
+    /// every cut of the store ran, and every case held at each
+    hold: usize,
+    /// ... or held at every cut that was not refused
+    hold_but: usize,
+    broken: usize,
+    unplaced: usize,
+    cuts: usize,
+    refused: usize,
+    passed: usize,
+    failed: usize,
+}
+
+/// One store at every cut the runner tries (fm3 touchstones.md, "hello,
+/// in two places", step 1): the store's placed build, compiled once,
+/// and each case in each of its contexts run with every unit far and
+/// with each unit alone far, the cut being the calls that fill its
+/// table before the case. A cut that would carry an address is refused
+/// by name, passed over and counted (fm3 question 152)
+fn test_cuts(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, report: &mut Report, cuts: &mut Cuts) {
+    let name = sdir.file_name().unwrap().to_string_lossy().to_string();
+    cuts.stores += 1;
+    let built = (|| -> Result<(Vec<Planned>, Vec<Run>, ssa::Module, lower::Lowered, ssa::Policy), String> {
+        let mut s = store::read(sdir).map_err(|e| e.to_string())?;
+        s.clock = store::Clock::Virtual;
+        s.places = true;
+        let policy = store_policy(&s, policy);
+        let l = lower::lower(&s).map_err(|e| e.to_string())?;
+        let cases = calls_of(&s, &l, &policy)?;
+        let (runs, _) = plan(&s, &cases)?;
+        let module = build(&l.ir, &policy, level)?;
+        Ok((cases, runs, module, l, policy))
+    })();
+    let (cases, runs, module, lowered, policy) = match built {
+        Ok(b) => b,
+        Err(e) => {
+            cuts.unplaced += 1;
+            report.log.push_str(&format!("cut   {:<16} could not be placed: {}\n", name, e));
+            return;
+        }
+    };
+    let Some(placed) = &lowered.placed else { return };
+    let unreached = out_of_reach(&module, &lowered.funcs, kind_of(backend));
+    let runs: Vec<&Run> = runs.iter().filter(|r| !unreached.contains_key(&cases[r.case].call.func)).collect();
+    let (mut refused, mut failed, mut ran) = (0, 0, 0);
+    for far in super::places::cuts(placed) {
+        let label = placed.label(&far);
+        if let Some(why) = placed.refused(&far) {
+            refused += 1;
+            cuts.refused += 1;
+            report.log.push_str(&format!("cut   {:<16} [{}] refused: {}\n", name, label, why));
+            continue;
+        }
+        cuts.cuts += 1;
+        ran += 1;
+        let cut = placed.cut(&far);
+        let label = cut.label.clone();
+        let scalls: Vec<suite::Call> = runs
+            .iter()
+            .map(|r| {
+                let c = &cases[r.case].call;
+                suite::Call { func: c.func.clone(), args: c.args.clone(), nrets: c.nrets, checks: checks(&c.expect), text: true, before: cut.before.iter().cloned().chain(setters(&r.switches, &c.input, &c.input_at)).collect(), live: false, times: matches!(c.expect, store::Expect::Timed(_)) }
+            })
+            .collect();
+        if scalls.is_empty() {
+            continue;
+        }
+        let got = match suite::run_calls(&module, &lowered.ir, backend, &scalls, &format!("{}-cut", name), level) {
+            Ok(g) => g,
+            Err(e) => {
+                failed += 1;
+                cuts.failed += 1;
+                report.log.push_str(&format!("FAIL  {:<16} [{}] {}\n", name, label, e));
+                continue;
+            }
+        };
+        for ((r, got), sc) in runs.iter().zip(got).zip(&scalls) {
+            let text = format!("{} [{}]", labelled(&cases[r.case].text, &r.label), label);
+            // a check that fails far is traced to its line as any is,
+            // by running the case again at one place (fm3 question 115)
+            let got = match got {
+                Err(e) if untraced(&e) && cases[r.case].call.expect != store::Expect::Check => {
+                    let plain = suite::Call { func: sc.func.clone(), args: sc.args.clone(), nrets: sc.nrets, checks: sc.checks, text: sc.text, before: sc.before[cut.before.len()..].to_vec(), live: false, times: sc.times };
+                    Err(traced(sdir, &policy, backend, level, &plain, &name).unwrap_or(e))
+                }
+                g => g,
+            };
+            if got.as_ref().err().is_some_and(|e| e.starts_with("skip: ")) {
+                continue;
+            }
+            let (ok, note) = judge(&cases[r.case].call.expect, got);
+            if ok {
+                cuts.passed += 1;
+            } else {
+                failed += 1;
+                cuts.failed += 1;
+                report.log.push_str(&format!("FAIL  {:<16} {}   {}\n", name, text, note));
+            }
+        }
+    }
+    match (failed, refused) {
+        (0, 0) => cuts.hold += 1,
+        (0, _) => cuts.hold_but += 1,
+        _ => cuts.broken += 1,
+    }
+    report.log.push_str(&format!("cuts  {:<16} {} units, {} cuts run{}{}\n", name, placed.units.len(), ran, if refused > 0 { format!(", {} refused", refused) } else { String::new() }, if failed > 0 { format!(", {} runs do not hold", failed) } else { ": every case holds at each".to_string() }));
 }
 
 /// does the case expect a failed check?
@@ -1027,6 +1223,93 @@ mod tests {
         assert_eq!((call(1, "tokens"), call(1, "last_length"), call(0, "tokens")), (4, 3, 4));
         assert_eq!((call(0, "bumps"), call(1, "bumps")), (1, 3));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The cut (fm3 cut.md; touchstones.md, "hello, in two places", step
+    /// 1): hello, not a character of it changed, gives its own case at
+    /// the four cuts of the touchstone's table by name, from one placed
+    /// build whose cut is a table the runner fills; and hello, restart
+    /// and the three stores of things going on hold every case at every
+    /// cut the runner tries, every unit far and each alone
+    #[test]
+    fn a_case_holds_at_every_cut() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let hello = Path::new("suite/zero/hello");
+        let plain = run(hello, "run()", &native, opt::MAX_LEVEL, true).unwrap();
+        assert_eq!(plain, "→ \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s\n");
+        for far in ["", "count down", "count down,countdown.zero:2", "all"] {
+            assert_eq!(run_cut(hello, "run()", &native, opt::MAX_LEVEL, true, Some(far)).unwrap(), plain, "far: {}", far);
+        }
+        // a name three definitions have is not guessed at
+        let err = run_cut(hello, "run()", &native, opt::MAX_LEVEL, true, Some("run")).unwrap_err();
+        assert!(err.contains("'run' is 3 units") && err.contains("hello.zero:1, countdown.zero:4, bye.zero:1"), "{}", err);
+        // the placement: the countdown far, its line at the screen
+        // (the table's columns are as wide as their widest row: read
+        // with the spaces between them made one)
+        let spaced = |t: String| t.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("\n");
+        let table = spaced(placement(hello, Some("count down")).unwrap());
+        for row in ["countdown.zero:8 far the function `count down`", "countdown.zero:2 screen the line `out$ << (i$ << \"\\n\") forever`", "a call countdown.zero:4 → countdown.zero:8 screen → far nothing over, its end back", "an item countdown.zero:8 → countdown.zero:2 far → screen one `int`, with its time, to the line that reads it", "a switch the switch of feature countdown screen → far"] {
+            assert!(table.contains(row), "no {:?} in\n{}", row, table);
+        }
+        assert!(placement(hello, None).unwrap().ends_with("the wire carries nothing\n"));
+        let all = spaced(placement(hello, Some("all")).unwrap());
+        assert!(all.contains("a call a case's own → bye.zero:1 screen → far nothing over, its end back") && all.contains("text countdown.zero:2 → the screen far → screen"), "{}", all);
+        // a plain build has nothing of it
+        let s = store::read(hello).unwrap();
+        let l = lower::lower(&s).unwrap();
+        assert!(!s.places && l.placed.is_none() && !l.ir.contains("__wire") && !l.ir.contains("__cut"));
+        let mut report = Report { passed: 0, failed: 0, skipped: 0, log: String::new() };
+        let mut cuts = Cuts::default();
+        for name in ["hello", "restart", "going-keys", "going-two", "going-mix"] {
+            test_cuts(&Path::new("suite/zero").join(name), &native, Backend::Native, opt::MAX_LEVEL, &mut report, &mut cuts);
+        }
+        assert_eq!((cuts.hold, cuts.stores, cuts.refused, cuts.failed, cuts.unplaced), (5, 5, 0, 0, 0), "{}", report.log);
+        assert!(cuts.cuts == 39 && cuts.passed > 200, "{} cuts, {} runs\n{}", cuts.cuts, cuts.passed, report.log);
+    }
+
+    /// Each place has memory of its own (fm3 cut.md): what a unit at
+    /// `far` reads is there because the wire carried it. With one thing
+    /// deliberately not carried, which only this test can ask for, the
+    /// program goes wrong: a stream kept as one value, written at the
+    /// screen and read far, reads as nothing was ever pushed; and
+    /// restart's key, pushed into the input at the screen, never
+    /// arrives at the line that reads it far
+    #[test]
+    fn a_place_has_memory_of_its_own() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let dir = std::env::temp_dir().join(format!("probe-zero-places-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-12T10:00:00\n\n## testing\n>both (7) → 7\n").unwrap();
+        std::fs::write(dir.join("h/h.zero"), "int level$ << 0\n\non put level (int n)\n    level$ << n\n\non (int n) << read level()\n    n << level$\n\non (int n) << both (int k)\n    put level (k)\n    n << read level()\n").unwrap();
+        let gives = |dir: &Path, case: &str, far: &str, dropped: Option<&str>| -> (store::Expect, Result<suite::Got, String>) {
+            let mut s = store::read(dir).unwrap();
+            s.clock = store::Clock::Virtual;
+            s.places = true;
+            let policy = store_policy(&s, &native);
+            let l = lower::lower(&s).unwrap();
+            let p = l.placed.as_ref().unwrap();
+            let far = p.named(far).unwrap();
+            assert_eq!(p.refused(&far), None);
+            let cut = p.cut_but(&far, dropped);
+            let cases = calls_of(&s, &l, &policy).unwrap();
+            let c = &case_named(&cases, case).unwrap().call;
+            let module = build(&l.ir, &policy, opt::MAX_LEVEL).unwrap();
+            let sc = suite::Call { func: c.func.clone(), args: c.args.clone(), nrets: c.nrets, checks: false, text: true, before: cut.before.into_iter().chain(setters(&c.context, &c.input, &c.input_at)).collect(), live: false, times: matches!(c.expect, store::Expect::Timed(_)) };
+            (c.expect.clone(), suite::run_calls(&module, &l.ir, Backend::Native, &[sc], "zero-places", opt::MAX_LEVEL).unwrap().remove(0))
+        };
+        let (want, got) = gives(&dir, "both (7)", "read level", None);
+        assert!(judge(&want, got).0);
+        let (_, got) = gives(&dir, "both (7)", "read level", Some("level"));
+        assert_eq!(got.unwrap().values, [0], "read far, the stream not carried: what far's own memory holds");
+        let _ = std::fs::remove_dir_all(&dir);
+        let restart = Path::new("suite/zero/restart");
+        let case = "launch() with in \"k\" at 3.5 s";
+        let (want, got) = gives(restart, case, "restart.zero:3", None);
+        assert!(judge(&want, got).0);
+        let (want, got) = gives(restart, case, "restart.zero:3", Some("in"));
+        let (ok, said) = judge(&want, got);
+        assert!(!ok && said == "(printed \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz)", "{}", said);
     }
 
     #[test]

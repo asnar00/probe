@@ -8,6 +8,7 @@ pub mod kinds;
 pub mod lex;
 pub mod lower;
 pub mod meter;
+pub mod places;
 pub mod run;
 pub mod store;
 pub mod syntax;
@@ -25,14 +26,20 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
     let usage = || {
         eprintln!("usage: probe zero <store> emit          print the store's IR");
         eprintln!("                            [sites|trace] ... of its diagnostic build, or its trace build, and the table of places");
+        eprintln!("                            [places [--far <units>]] ... of its placed build, which runs at two places (fm3 cut.md),");
+        eprintln!("                                         and a function `__cut` that fills the table for that cut");
         eprintln!("       probe zero <store> run <case>    run one ## testing case natively, on the real clock");
         eprintln!("                            [--fast|-t]  ... as fast as it can, on the virtual clock");
+        eprintln!("                            [--far <units>]  ... at a cut: the units named run at a second place, each by where it is");
+        eprintln!("                                         written, `countdown.zero:2`, or a function by its words; several with commas; `all`");
+        eprintln!("       probe zero <store> placement [--far <units>]   every unit and where it runs at that cut, and what the wire carries");
         eprintln!("       probe zero <store> trace <case>  run the case from the store's trace build: a row a step, a column a stream,");
         eprintln!("                            [--json]     what each was given and the lines that ran; or the events and steps as JSON");
         eprintln!("       probe zero meter <store|dir>     the lines that use a non-zeroic form: a store's, listed, or a row a store");
         eprintln!("       probe zero names <store>         every name with a `$` or `[]`: how it is declared, and each use");
         eprintln!("       probe zero test [dir] [path]     run every store under dir (suite/zero)");
         eprintln!("                                        on a path: wasm, riscv, arm-qemu, air (native by default)");
+        eprintln!("                                        PROBE_ZERO_CUTS=1: and again at every cut, every unit far and each alone");
         ExitCode::FAILURE
     };
     match args.first().map(String::as_str) {
@@ -85,7 +92,11 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         // `emit sites`: the diagnostic build's text, and its table of
         // sites as comments after it (fm3 log 199); `emit trace`, the
         // trace build's (fm3 tracer.md)
-        Some(store) if args.get(1).map(String::as_str) == Some("emit") && matches!(args.get(2).map(String::as_str), Some("sites" | "trace")) => match if args[2] == "trace" { run::emit_trace(Path::new(store)) } else { run::emit_sites(Path::new(store)) } {
+        Some(store) if args.get(1).map(String::as_str) == Some("emit") && matches!(args.get(2).map(String::as_str), Some("sites" | "trace" | "places")) => match match args[2].as_str() {
+            "trace" => run::emit_trace(Path::new(store)),
+            "places" => run::emit_placed(Path::new(store), args.iter().position(|a| a == "--far").and_then(|i| args.get(i + 1)).map(String::as_str)),
+            _ => run::emit_sites(Path::new(store)),
+        } {
             Ok(ir) => {
                 print!("{}", ir);
                 ExitCode::SUCCESS
@@ -105,11 +116,36 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        // `probe zero <store> placement [--far <units>]`: where each
+        // unit runs at a cut, and what the wire carries (fm3 cut.md)
+        Some(store) if args.get(1).map(String::as_str) == Some("placement") => {
+            let far = args.iter().position(|a| a == "--far").and_then(|i| args.get(i + 1));
+            match run::placement(Path::new(store), far.map(String::as_str)) {
+                Ok(out) => {
+                    print!("{}", out);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{}", e);
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some(store) if args.get(1).map(String::as_str) == Some("run") && args.len() >= 3 => {
             // on the real clock unless told to run as fast as it can (log 77)
             let fast = args[2..].iter().any(|a| a == "--fast" || a == "-t");
-            let Some(case) = args[2..].iter().find(|a| *a != "--fast" && *a != "-t") else { return usage() };
-            match run::run(Path::new(store), case, &policy, level, fast) {
+            // at a cut (fm3 cut.md): `--far <units>`, the units that
+            // run at the second place
+            let at = args.iter().position(|a| a == "--far");
+            let far = at.and_then(|i| args.get(i + 1));
+            if at.is_some() && far.is_none() {
+                return usage();
+            }
+            let Some(case) = args.iter().enumerate().skip(2).find(|(i, a)| *a != "--fast" && *a != "-t" && Some(*i) != at && Some(*i) != at.map(|k| k + 1)).map(|(_, a)| a) else { return usage() };
+            match match far {
+                Some(far) => run::run_cut(Path::new(store), case, &policy, level, fast, Some(far)),
+                None => run::run(Path::new(store), case, &policy, level, fast),
+            } {
                 Ok(out) => {
                     print!("{}", out);
                     ExitCode::SUCCESS

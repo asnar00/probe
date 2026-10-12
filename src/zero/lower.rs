@@ -424,6 +424,8 @@ struct Node {
     file: String,
     /// the wiring as written, for the IR's comment
     text: String,
+    /// the line it is written on
+    line: usize,
 }
 
 /// a declared type
@@ -484,6 +486,10 @@ pub struct Lowered {
     /// the number a statement stores is its place here, from 1. Empty
     /// unless the store was lowered with `sites`
     pub sites: Vec<Site>,
+    /// the placed build's units and what each does to the context (fm3
+    /// cut.md), from which a runner says a cut. None unless the store
+    /// was lowered with `places`
+    pub placed: Option<super::places::Placed>,
 }
 
 /// a literal an abstract type holds under some products and not others
@@ -2532,7 +2538,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), zelse: HashMap::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites || store.trace, declared_rates: HashMap::new(), traced: store.trace, trace_open: false, cell_traced: false, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features), acts };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), zelse: HashMap::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites || store.trace, declared_rates: HashMap::new(), traced: store.trace, trace_open: false, cell_traced: false, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features), acts, places: store.places, wired_at: Vec::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -3020,7 +3026,21 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
             ir = ir.replacen(&format!("{}{}\n", alone, line), "", 1);
         }
     }
-    Ok(Lowered { ir, funcs: l.funcs, features: l.features, marks: store.marks.clone(), wide: l.wide, sites: l.sites })
+    // the placed build (fm3 cut.md, log 261): the finished text
+    // rewritten so that each unit runs where a table says, everything
+    // that crosses going through one function. A store not placed is
+    // the text it was
+    let mut placed = None;
+    if store.places {
+        match super::places::rewrite(&ir, &l.units(store)) {
+            Ok((text, p)) => {
+                ir = text;
+                placed = Some(p);
+            }
+            Err(msg) => return Err(Error { file: store.path.display().to_string(), line: 0, msg }),
+        }
+    }
+    Ok(Lowered { ir, funcs: l.funcs, features: l.features, marks: store.marks.clone(), wide: l.wide, sites: l.sites, placed })
 }
 
 /// Each queue's push takes its word (fm3 log 108). `ended` is written
@@ -4571,6 +4591,14 @@ struct Lowerer {
     /// the store has a pool of activities (fm3 log 232): a turn of the
     /// list can start a function that pushes at a rate
     acts: bool,
+    /// the placed build (fm3 cut.md, log 261): no unit's lines are
+    /// written inside another unit's function, so that each can be
+    /// placed
+    places: bool,
+    /// ... and where the functions the front end writes for a wiring
+    /// of a stream processor are written, which their own trees do not
+    /// say: the function's name, the wiring's file and line
+    wired_at: Vec<(String, String, usize)>,
     /// the streams some `restart` names (fm3 log 220): each has a
     /// phase and the number of its run in the context
     restarts: Names,
@@ -6175,7 +6203,7 @@ impl Lowerer {
                 }
             }
             let text = format!("{} {}$ {} {}", v.ty, v.name, if matches!(v.init, Some(Init::Value(_))) { "=" } else { "<<" }, phrase_text(e));
-            self.nodes.push(Node { info, out: Some(v.name.clone()), args, hz, feature: feature.to_string(), file: file.to_string(), text });
+            self.nodes.push(Node { info, out: Some(v.name.clone()), args, hz, feature: feature.to_string(), file: file.to_string(), text, line: v.line });
         }
         Ok(())
     }
@@ -6240,6 +6268,9 @@ impl Lowerer {
             self.zfields.push((name.clone(), t));
         }
         let each = mangle(&w.each.name);
+        for fd in [Some(&w.each), w.end.as_ref(), w.walker.as_ref()].into_iter().flatten() {
+            self.wired_at.push((mangle(&fd.name), file.to_string(), v.line));
+        }
         // a function an edge's could be: one item in, nothing kept or
         // counted, and one push into its output in its text (its last
         // tick, where it has one, is still called at the input's end). A tick writes it in place, a line like any other (fm3
@@ -6283,7 +6314,7 @@ impl Lowerer {
         let info = self.funcs[i].clone();
         self.node_inputs.insert(n.clone());
         let text = format!("{} {}$ = {}", v.ty, v.name, phrase_text(e));
-        self.nodes.push(Node { info, out: None, args: vec![a.clone()], hz: 0, feature: feature.to_string(), file: file.to_string(), text });
+        self.nodes.push(Node { info, out: None, args: vec![a.clone()], hz: 0, feature: feature.to_string(), file: file.to_string(), text, line: v.line });
         self.edges.push((walker, feature.to_string(), file.to_string()));
         Ok(())
     }
@@ -6340,7 +6371,7 @@ impl Lowerer {
             }
         }
         let text = phrase_text(e);
-        self.nodes.push(Node { info, out: None, args, hz, feature: feature.to_string(), file: file.to_string(), text });
+        self.nodes.push(Node { info, out: None, args, hz, feature: feature.to_string(), file: file.to_string(), text, line: e.line });
         Ok(())
     }
 
@@ -8049,7 +8080,7 @@ impl Lowerer {
         self.edge_fns.insert(name, sname.clone());
         let info = self.funcs[i].clone();
         self.node_inputs.insert(sname.clone());
-        self.nodes.push(Node { info, out: None, args: vec![items[0].clone()], hz: 0, feature: feature.to_string(), file: file.to_string(), text: said });
+        self.nodes.push(Node { info, out: None, args: vec![items[0].clone()], hz: 0, feature: feature.to_string(), file: file.to_string(), text: said, line });
         self.edges.push((fd, feature.to_string(), file.to_string()));
         Ok(())
     }
@@ -8112,7 +8143,7 @@ impl Lowerer {
         self.edge_fns.insert(name, sname.to_string());
         let info = self.funcs[i].clone();
         self.node_inputs.insert(sname.to_string());
-        self.nodes.push(Node { info, out: None, args: vec![seq], hz: 0, feature: feature.to_string(), file: file.to_string(), text: format!("{} until (...), its event", said) });
+        self.nodes.push(Node { info, out: None, args: vec![seq], hz: 0, feature: feature.to_string(), file: file.to_string(), text: format!("{} until (...), its event", said), line });
         self.edges.push((fd, feature.to_string(), file.to_string()));
         Ok(())
     }
@@ -8775,6 +8806,72 @@ impl Lowerer {
         }
         self.nodes = nodes;
         Ok(())
+    }
+
+    /// The units of a placed build (fm3 cut.md, question 151): what a
+    /// cut places. Each function the program declares, a definition of
+    /// a chain its own, with the functions of the text that are it, its
+    /// body and its link; and each line that stands, with the function
+    /// or functions the front end wrote for it. Named by where it is
+    /// written, as a failed check names a line. Not units: a stream
+    /// function, which runs where the line that wires it runs; a
+    /// function with a body for a machine; the language's own
+    fn units(&self, store: &Store) -> Vec<super::places::Unit> {
+        use super::places::Unit;
+        let short = |file: &str| file.rsplit('/').next().unwrap_or(file).to_string();
+        // (the feature's place in the composition, the line, the unit)
+        let mut found: Vec<(usize, usize, Unit)> = Vec::new();
+        for (rank, f) in store.features.iter().enumerate().filter(|(_, f)| f.name != "platform") {
+            let mut met: HashMap<String, usize> = HashMap::new();
+            for d in &f.code.decls {
+                let Decl::Fn(fd) = d else { continue };
+                let key = mangle(&fd.name);
+                let nth = met.entry(key.clone()).or_insert(0);
+                let info = self.funcs.iter().filter(|g| g.key == key && g.chain.contains(&f.name)).nth(*nth).cloned();
+                *nth += 1;
+                let Some(info) = info else { continue };
+                if info.task || info.platform.is_some() || made(&info.ir) {
+                    continue;
+                }
+                let i = info.chain.iter().position(|c| *c == f.name).unwrap_or(0);
+                let mut irs = if info.chain.len() > 1 { vec![body_name(&info, i, &self.statics), link_name(&info, i, &self.statics)] } else { vec![info.ir.clone()] };
+                // (a `<<` method is lowered twice, the second over the
+                // output device, log 87)
+                if let Some(dev) = self.device_fns.get(&info.ir) {
+                    irs.extend(if info.chain.len() > 1 { vec![named_body(dev, dev, &info.chain, i, &self.statics), named_link(dev, dev, &info.chain, i, &self.statics)] } else { vec![dev.clone()] });
+                }
+                irs.dedup();
+                let words = Some(spoken(&info)).filter(|w| !w.is_empty());
+                found.push((rank, fd.line, Unit { name: format!("{}:{}", short(&f.code.file), fd.line), words, said: source_line(&f.code.file, fd.line), irs }));
+            }
+        }
+        // the lines: each function the front end wrote for one, by
+        // where the line is written
+        let mut at: Vec<(String, String, usize, String)> = Vec::new();
+        for (fd, feature, file) in &self.edges {
+            let name = mangle(&fd.name);
+            if name.starts_with("__first") {
+                continue;
+            }
+            let line = self.wired_at.iter().find(|(n, _, _)| *n == name).map_or(fd.line, |w| w.2);
+            at.push((name, file.clone(), line, feature.clone()));
+        }
+        for (k, node) in self.nodes.iter().enumerate() {
+            at.push((format!("__node{}", k + 1), node.file.clone(), node.line, node.feature.clone()));
+        }
+        for (name, file, line, feature) in at {
+            let unit_name = format!("{}:{}", short(&file), line);
+            match found.iter_mut().find(|(_, _, u)| u.name == unit_name && u.words.is_none()) {
+                Some((_, _, u)) => u.irs.push(name),
+                None => {
+                    let rank = store.features.iter().position(|f| f.name == feature).unwrap_or(0);
+                    let said = source_line(&file, line).or_else(|| self.lines.iter().find(|l| l.name == name).map(|l| l.said.clone()));
+                    found.push((rank, line, Unit { name: unit_name, words: None, said, irs: vec![name] }));
+                }
+            }
+        }
+        found.sort_by_key(|(rank, line, _)| (*rank, *line));
+        found.into_iter().map(|(_, _, u)| u).collect()
     }
 
     /// the links of every chain (log 28): `key` is the outermost, and
@@ -13050,6 +13147,9 @@ impl Lowerer {
     /// a call and the line; it is no task and no platform function, and
     /// it is not being written in line already
     fn one_line(&self, info: &FnInfo, vals: &[Val], b: &Body) -> Option<(std::rc::Rc<FnDecl>, String)> {
+        if self.places {
+            return None;
+        }
         let (fd, file) = self.one_lines.get(&info.ir)?;
         let knows = vals.iter().any(|v| matches!(v.ty, Ty::Struct(_)) && b.known.get(&v.text).is_some_and(|k| k.iter().any(|f| matches!(f, Some((_, true))))));
         (knows && !info.task && info.platform.is_none() && info.chain.len() <= 1 && self.funcs.iter().filter(|g| g.key == info.key && g.params == info.params).count() == 1 && !self.inlining.contains(&info.ir)).then(|| (fd.clone(), file.clone()))
@@ -14286,7 +14386,7 @@ impl Lowerer {
     /// stream's rate must pass whether or not the feature is on
     fn z_carries(&self, name: &str, items: &[Expr], cond: Option<&Expr>, gates: &[Option<String>]) -> Option<String> {
         let [(each, _)] = self.bare_edges.get(name)?.as_slice() else { return None };
-        if !self.zprocs.contains_key(each) || cond.is_some() || items.iter().any(|e| matches!(e.kind, ExprKind::Range { .. })) {
+        if self.places || !self.zprocs.contains_key(each) || cond.is_some() || items.iter().any(|e| matches!(e.kind, ExprKind::Range { .. })) {
             return None;
         }
         if gates.first().is_some_and(|g| g.is_some()) && self.rates.contains_key(name) {
@@ -14606,7 +14706,8 @@ impl Lowerer {
     /// its stream (fm3 log 195): the front end's own loop is pushing,
     /// and the edge is small as a function applied to a range is
     fn edge_in_line(&self, edge: &str) -> Option<FnInfo> {
-        if !self.edge_here || self.inlining.iter().any(|f| f == edge) {
+        // (in a placed build a line is its own function, to be placed)
+        if self.places || !self.edge_here || self.inlining.iter().any(|f| f == edge) {
             return None;
         }
         let info = self.funcs.iter().find(|f| f.ir == edge)?;
@@ -14621,7 +14722,7 @@ impl Lowerer {
     /// and it is small
     fn inline_ok(&self, info: &FnInfo) -> bool {
         let Some((fd, _)) = self.bodies.get(&info.key) else { return false };
-        info.results.is_empty() && !info.task && fd.platform.is_empty() && !info.key.starts_with("__")
+        !self.places && info.results.is_empty() && !info.task && fd.platform.is_empty() && !info.key.starts_with("__")
             && self.funcs.iter().filter(|g| g.key == info.key).count() == 1
             && !self.inlining.contains(&info.ir)
             && small(&fd.body).is_some_and(|n| n <= 4)

@@ -13,24 +13,24 @@ use std::collections::{BTreeSet, HashMap};
 
 /// the records of one context: an activity started past this many in
 /// one case fails a check
-const POOL: usize = 64;
+pub(super) const POOL: usize = 64;
 const NEVER: i64 = 1 << 62;
 
-struct Func {
-    name: String,
-    params: Vec<(String, String)>,
-    rets: Vec<String>,
+pub(super) struct Func {
+    pub(super) name: String,
+    pub(super) params: Vec<(String, String)>,
+    pub(super) rets: Vec<String>,
     /// the body's lines, indentation kept
-    body: Vec<String>,
+    pub(super) body: Vec<String>,
     /// the lines of the text it stands at, `fn` line first
-    at: (usize, usize),
+    pub(super) at: (usize, usize),
 }
 
 fn is_ident(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-fn tokens(s: &str) -> Vec<(usize, &str)> {
+pub(super) fn tokens(s: &str) -> Vec<(usize, &str)> {
     let mut out = Vec::new();
     let b = s.as_bytes();
     let mut i = 0;
@@ -67,11 +67,11 @@ fn renamed(s: &str, map: &HashMap<String, String>) -> String {
 }
 
 /// the functions a line calls: a name with a bracket after it
-fn called(line: &str) -> Vec<&str> {
+pub(super) fn called(line: &str) -> Vec<&str> {
     tokens(line).into_iter().filter(|(at, t)| line[at + t.len()..].starts_with('(')).map(|(_, t)| t).collect()
 }
 
-fn split_top(s: &str) -> Vec<String> {
+pub(super) fn split_top(s: &str) -> Vec<String> {
     let mut out = Vec::new();
     let (mut depth, mut cur) = (0i32, String::new());
     let cs: Vec<char> = s.chars().collect();
@@ -134,7 +134,7 @@ fn call_of(head: &str) -> Option<(Vec<(String, String)>, String, Vec<String>)> {
     Some((d, name.to_string(), split_top(&right[open + 1..right.len() - 1])))
 }
 
-fn parse(ir: &str) -> (Vec<String>, Vec<Func>) {
+pub(super) fn parse(ir: &str) -> (Vec<String>, Vec<Func>) {
     let lines: Vec<String> = ir.lines().map(str::to_string).collect();
     let mut fns = Vec::new();
     let mut i = 0;
