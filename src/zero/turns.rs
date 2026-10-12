@@ -955,10 +955,6 @@ pub fn rewrite(ir: &str, moved: bool) -> Option<String> {
 /// a row for each, where a record in flight is
 pub(super) const WIRE_Q: usize = 256;
 
-/// a store whose input arrives at a time is built for a wire (fm3
-/// log 269, transformation 162)
-const WIRE_INPUT: bool = false;
-
 /// every name a line of a function's body defines, with its type: a
 /// plain definition, and a loop's own
 fn scope_defs(head: &str) -> Vec<(String, String)> {
@@ -1099,9 +1095,6 @@ pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>) -> Result<String, String
     if ir.matches("data __ctx_mem: array(__ctx, 2)").count() != 1 {
         return Err("the store keeps no context: nothing in it can be placed".into());
     }
-    if !WIRE_INPUT && ir.contains("\nfn __in_turn(") {
-        return Err("its input arrives at a time, which is something from outside: a place may then work on a time only when the other has told it nothing earlier is coming, and that is built next".into());
-    }
     let mut ir = ir.to_string();
     let mut helpers: BTreeSet<String> = BTreeSet::new();
     // what is a continuation: found, and found again as calls are put out
@@ -1122,12 +1115,22 @@ pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>) -> Result<String, String
             }
             need.extend(more);
         }
+        // (a function wired over a stream is begun for an item where it
+        // steps, as it was, fm3 log 232; one that does not is called)
+        let mut steps: BTreeSet<String> = BTreeSet::new();
+        loop {
+            let more: Vec<String> = fns.iter().filter(|f| !steps.contains(&f.name) && !matches!(f.name.as_str(), "__step" | "__wait" | "__list_turn" | "__turns") && f.body.iter().any(|l| called(l).iter().any(|c| *c == "__step" || *c == "__wait" || steps.contains(*c)))).map(|f| f.name.clone()).collect();
+            if more.is_empty() {
+                break;
+            }
+            steps.extend(more);
+        }
         let mut starts: Vec<(String, String)> = Vec::new();
         for f in fns {
             let targets: Vec<String> = f.body.iter().flat_map(|l| called(l)).map(str::to_string).collect();
             for g in targets {
                 let Some(callee) = by.get(g.as_str()) else { continue };
-                let begins = f.name.starts_with("__whole_") && g.starts_with("__case_") || f.name == "__list_turn" && need.contains(&g) && g != "__in_turn" || wired(f).is_some_and(|e| e == g);
+                let begins = f.name.starts_with("__whole_") && g.starts_with("__case_") || f.name == "__list_turn" && need.contains(&g) && g != "__in_turn" || wired(f).is_some_and(|e| e == g) && steps.contains(&g);
                 if begins && plain(callee) && !starts.contains(&(f.name.clone(), g.clone())) {
                     starts.push((f.name.clone(), g));
                 }
@@ -1285,7 +1288,11 @@ pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>) -> Result<String, String
         let f = by[g];
         if made.insert(g.clone()) {
             let params: Vec<String> = f.params.iter().map(|(n, t)| format!("{}: {}", n, t)).collect();
-            let mut s = format!("\n; a function begins (fm3 log 232, 269): a place in the pool, its parameters, and {}\nfn __act_start_{g}({params}) -> index\n    __a: index = __act_slot()\n", if g.starts_with("__case_") { "its first turn when the world gives it one: it is a case's call, due now" } else { "its first turn at once" }, g = g, params = params.join(", "));
+            // (begun for an item of a stream by the function wired over
+            // it: the one before it in this turn must not have gone to
+            // the other place, or the two could be taken out of order)
+            let once = if by.get(caller).is_some_and(|c| wired(c).is_some()) { "    __wonce()\n" } else { "" };
+            let mut s = format!("\n; a function begins (fm3 log 232, 269): a place in the pool, its parameters, and {}\nfn __act_start_{g}({params}) -> index\n{once}    __a: index = __act_slot()\n", if g.starts_with("__case_") { "its first turn when the world gives it one: it is a case's call, due now" } else { "its first turn at once" }, g = g, params = params.join(", "), once = once);
             let mut ls = Vec::new();
             m.tmp = 0;
             for (n, t) in &f.params {

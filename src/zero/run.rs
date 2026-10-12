@@ -825,6 +825,8 @@ pub fn placement_wire(dir: &Path, far: Option<&str>, wire: i64, which: Option<&s
             }
             3 => "a push into a stored stream, made again where it is read".to_string(),
             4 => format!("a function partway, to go on in {}", placed.continued(a)),
+            // (the screen's bound where a key may yet be pressed is the moment after the world's clock)
+            _ if a == left + 1 => format!("a telling: nothing for a time up to {}", store::spell_time(left)),
             _ => format!("a telling: nothing before {}", if a >= 1 << 62 { "the end".to_string() } else { store::spell_time(a) }),
         };
         rows.push([store::spell_time(left), store::spell_time(at), way.to_string(), what, format!("for {}", store::spell_time(stamp))]);
@@ -2139,6 +2141,88 @@ mod tests {
             assert_eq!((wires.hold, wires.unbuilt, wires.refused, wires.failed, wires.case_hold), (5, 0, 0, 0, wires.cases), "{}", report.log);
             assert!(d > 0 || wires.cuts_on_time == wires.cuts, "{}", report.log);
         }
+    }
+
+    /// A wire that takes time, with a key (fm3 cut.md, "a wire that
+    /// takes time"; log 271). A store with an input has something from
+    /// outside, and far cannot know that no key was pressed at 2.9 s
+    /// until the world's clock says 3 s: it works on what is for a
+    /// time only when the screen has told it nothing earlier is
+    /// coming, and that telling is an item of the wire. So restart,
+    /// not a character changed, everything far over 100 ms, gives its
+    /// own line by its own times and every piece 200 ms late: the 9
+    /// for 1 s at 1.2 s, the key pressed at 3.5 s, the 10 for 3.5 s at
+    /// 3.7 s. The cut the touchstone names, the key read at the screen
+    /// and `launch` far, and every cut the runner tries. And the bound
+    /// is needed: with far let to work ahead of the screen's telling,
+    /// which only this test can ask for, a number of the first
+    /// countdown is written for a time after the key
+    #[test]
+    fn a_wire_takes_time_with_a_key() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let restart = Path::new("suite/zero/restart");
+        let cases = [
+            ("launch() with in \"k\" at 3.5 s", "\"10\\n9\\n8\\n7\\n\" at 1 hz, \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz from 3.5 s", 15),
+            ("launch()", "\"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz", 11),
+            ("launch() with in \"k\" at 4 s", "\"10\\n9\\n8\\n7\\n10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz", 15),
+            ("launch() with in \"k\" at 3.5 s, in \"k\" at 5 s", "\"10\\n9\\n8\\n7\\n\" at 1 hz, \"10\\n\" at 3.5 s, \"9\\n\" at 4.5 s, \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz from 5 s", 17),
+            ("launch() with in \"k\" at 12 s", "\"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz, \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz from 12 s", 22),
+        ];
+        for (case, want, n) in cases {
+            // (what the plain build gives, in the same spelling)
+            assert_eq!(run(restart, case, &native, opt::MAX_LEVEL, true).unwrap().trim_start(), format!("→ {}\n", want), "{}", case);
+            let (_, shown, pieces) = wire_case(restart, case, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), 100_000, 0).unwrap();
+            assert_eq!(shown, want, "{}", case);
+            assert_eq!((pieces.len(), pieces.iter().filter(|p| p.shown - p.own == 200_000).count()), (n, n), "{}: every piece 200 ms late", case);
+            let (_, shown, pieces) = wire_case(restart, case, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), 0, 0).unwrap();
+            assert_eq!((shown.as_str(), pieces.iter().filter(|p| p.shown > p.own).count()), (want, 0), "{}, no delay", case);
+        }
+        let (_, _, pieces) = wire_case(restart, cases[0].0, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), 100_000, 0).unwrap();
+        let at = |k: usize| (pieces[k].text.as_str(), pieces[k].own, pieces[k].shown);
+        assert_eq!((at(0), at(1), at(3), at(4), at(5), at(14)), (("10\n", 0, 200_000), ("9\n", 1_000_000, 1_200_000), ("7\n", 3_000_000, 3_200_000), ("10\n", 3_500_000, 3_700_000), ("9\n", 4_500_000, 4_700_000), ("liftoff", 13_500_000, 13_700_000)));
+        // the touchstone's step 3: the key read at the screen, `launch` far
+        for far in ["launch", "launch,count down", "restart.zero:3", "none"] {
+            let (_, shown, _) = wire_case(restart, cases[0].0, &native, opt::MAX_LEVEL, Backend::Native, Some(far), 100_000, 0).unwrap();
+            assert_eq!(shown, cases[0].1, "far: {}", far);
+        }
+        // the placement with its times: the screen's telling at 1 s
+        // lets far work on 1 s, and the key crosses as a push
+        let spaced = |t: String| t.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("\n");
+        let table = spaced(placement_wire(restart, Some("all"), 100_000, None, &native, opt::MAX_LEVEL).unwrap());
+        for row in ["a wire of 100 ms, by the world's clock: `launch() with in \"k\" at 3.5 s`", "1 s 1.1 s screen → far a telling: nothing for a time up to 1 s", "1.1 s 1.2 s far → screen text \"9\\n\" for 1 s", "3.5 s 3.6 s screen → far a push into a stored stream, made again where it is read for 3.5 s", "3.6 s 3.7 s far → screen text \"10\\n\" for 3.5 s", "late: 15 pieces of 15, the most 200 ms"] {
+            assert!(table.contains(row), "no {:?} in\n{}", row, table);
+        }
+        // the bound is needed
+        let (_, shown, pieces) = wire_case(restart, cases[0].0, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), 100_000, 2).unwrap();
+        assert_ne!(shown, cases[0].1);
+        assert!(pieces.iter().any(|p| p.text == "6\n" && p.own == 4_000_000), "{}: {:?}", shown, pieces);
+        // every cut the runner tries, of the stores with a key and of
+        // one with two clocks in a slot, on the JIT and on another machine
+        let names = ["restart", "going-keys", "going-two", "going-mix"];
+        for backend in [Backend::Native, Backend::Wasm] {
+            let policy = suite::backend_policy(backend).unwrap();
+            let (mut report, mut wires) = (Report { passed: 0, failed: 0, skipped: 0, log: String::new() }, Wires::default());
+            for name in names {
+                test_wire(&Path::new("suite/zero").join(name), &policy, backend, opt::MAX_LEVEL, &mut report, &mut wires, 100_000, false);
+            }
+            assert_eq!((wires.stores, wires.unbuilt, wires.failed, wires.case_hold), (4, 0, 0, wires.cases), "{}", report.log);
+            // (refused by name: `going-keys`' line apart from what its function calls on the stack, and `going-two`'s two functions that step at different places)
+            assert_eq!((wires.cuts, wires.refused), (26, 5), "{}", report.log);
+        }
+        // two characters that arrive together at a line whose function
+        // crosses are not taken out of order: the program stops
+        // (fm3 question 156)
+        let dir = std::env::temp_dir().join(format!("probe-wire-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("restart")).unwrap();
+        std::fs::copy("suite/zero/restart/restart/restart.zero", dir.join("restart/restart.zero")).unwrap();
+        let md = std::fs::read_to_string("suite/zero/restart/restart/restart.md").unwrap();
+        std::fs::write(dir.join("restart/restart.md"), format!("{}\n>launch() with in \"kk\" → check\n", md.trim_end())).unwrap();
+        let err = wire_case(&dir, "launch() with in \"kk\"", &native, opt::MAX_LEVEL, Backend::Native, Some("launch"), 100_000, 0);
+        assert!(err.as_ref().err().is_some_and(|e| e.starts_with(suite::checked())), "{:?}", err.map(|(_, s, _)| s));
+        let ok = wire_case(&dir, "launch() with in \"kk\"", &native, opt::MAX_LEVEL, Backend::Native, Some("none"), 100_000, 0);
+        assert!(ok.is_ok(), "{:?}", ok.err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A move hands across what it must (fm3 cut.md, "the cut, moved").
