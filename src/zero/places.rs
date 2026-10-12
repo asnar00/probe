@@ -19,6 +19,11 @@
 //! the runner as the calls that fill the table.
 
 use super::turns::{called, parse, split_top, tokens, Func, POOL};
+
+/// how many times a cut may be moved in one case (fm3 log 265): the
+/// later cuts are tables beside the first, filled before the case
+pub const MOVES: usize = 4;
+const NEVER: i64 = 1 << 62;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// A unit: what a cut places. A function the program declares, each
@@ -126,6 +131,38 @@ pub struct Placed {
     rings: Vec<(Vec<String>, bool)>,
     /// each function's parameters' and results' types
     sigs: HashMap<String, Vec<String>>,
+    /// the cut may be moved while the program runs (fm3 cut.md, "the
+    /// cut, moved"; log 265)
+    pub moved: bool,
+    /// the fields a move may hand across, in the order of their bytes:
+    /// those the wire may carry, and after them those only one unit
+    /// touches, which no fixed cut carries and a unit that moves needs
+    hand_fields: Vec<(String, String, bool)>,
+    /// each stored stream's first byte in a move's table: whether its
+    /// storage is handed across, and after it a byte for each field
+    /// that holds it, a reader's place. None where the rewrite does not
+    /// know how the stream is kept
+    ring_at: Vec<Option<usize>>,
+    /// the units one of whose functions may be on the machine's stack
+    /// when the list takes a turn, with that function
+    held: Vec<(usize, String)>,
+    /// the pool's columns, and the units whose functions are left at
+    /// their steps and so keep their place there
+    pool: Vec<String>,
+    left: BTreeSet<usize>,
+    /// the size of the cut's table and of a move's
+    sizes: (usize, usize),
+}
+
+/// one thing a move hands across: its byte in the move's table, the
+/// direction, 1 from the screen to far and 2 from far to the screen,
+/// what it is to a person, and the field or stream it is
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hand {
+    at: usize,
+    dir: u8,
+    pub what: String,
+    name: String,
 }
 
 /// a cut, as the runner uses it
@@ -423,17 +460,36 @@ pub fn rewrite(ir: &str, units: &[Unit]) -> Result<(String, Placed), String> {
     // one (a stream and a reader's own place in it)
     let mut handles: HashMap<String, usize> = HashMap::new();
     let mut rings: Vec<Vec<String>> = Vec::new();
+    // how each is kept, a queue or a ring, read off what made it: a
+    // move hands a stream's storage across by its kind
+    let mut kinds: Vec<Option<&'static str>> = Vec::new();
     {
         let new = fns.iter().find(|f| f.name == "__zero_new").ok_or("the store has no reset")?;
         let packed = new.body.iter().filter_map(|l| def(l.trim())).find(|(_, ty, rhs)| *ty == "__ctx" && rhs.starts_with("pack ")).map(|(_, _, rhs)| split_top(&rhs["pack ".len()..])).unwrap_or_default();
+        let maker = |value: &str| -> Option<&'static str> {
+            let mut v = value.to_string();
+            for _ in 0..8 {
+                let rhs = new.body.iter().filter_map(|l| def(l.trim())).find(|(n, _, _)| *n == v).map(|(_, _, rhs)| rhs)?;
+                if rhs.starts_with("__queue_") || rhs.starts_with("__copy_queue_") {
+                    return Some("queue");
+                }
+                if rhs.starts_with("__regular_") || rhs.starts_with("__stream_") {
+                    return Some("ring");
+                }
+                // a reader's rule set on it: the stream beneath
+                v = split_top(rhs.strip_prefix("set ")?).first()?.clone();
+            }
+            None
+        };
         let mut made: HashMap<String, usize> = HashMap::new();
         for (k, (name, ty)) in ctx_fields.iter().enumerate() {
             if !ty.ends_with('$') {
                 continue;
             }
             let value = packed.get(k).cloned().unwrap_or_else(|| name.clone());
-            let r = *made.entry(value).or_insert_with(|| {
+            let r = *made.entry(value.clone()).or_insert_with(|| {
                 rings.push(Vec::new());
+                kinds.push(maker(&value));
                 rings.len() - 1
             });
             rings[r].push(name.clone());
@@ -540,6 +596,50 @@ pub fn rewrite(ir: &str, units: &[Unit]) -> Result<(String, Placed), String> {
     let sigs: HashMap<String, Vec<String>> = fns.iter().map(|f| (f.name.clone(), f.params.iter().map(|(_, t)| t.clone()).chain(f.rets.iter().cloned()).collect())).collect();
     let (fbase, rbase) = (nu, nu + 2 * fields.len());
     let size = (rbase + 4 * rings.len()).max(1);
+    // a build whose cut may be moved (fm3 cut.md, log 265) has the
+    // move's turn in its list, written by the lowering with no body
+    let moved = fns.iter().any(|f| f.name == "__move_turn");
+    // what a move may hand across: the wire's fields, and each field
+    // only one unit touches. A fixed cut never carries the second
+    // kind; a unit that moves leaves it behind
+    let mut hand_fields = fields.clone();
+    if moved {
+        for (name, ty) in &ctx_fields {
+            if OWN.contains(&name.as_str()) || reader.handles.contains_key(name) || fields.iter().any(|(n, _, _)| n == name) {
+                continue;
+            }
+            let wrote = facts.iter().any(|f| f.writes.contains(name));
+            let by_a_unit = facts[..nu].iter().any(|f| f.writes.contains(name) || f.reads.contains(name));
+            if wrote && by_a_unit {
+                hand_fields.push((name.clone(), ty.clone(), carried(ty, &structs)));
+            }
+        }
+    }
+    let mut ring_at: Vec<Option<usize>> = Vec::new();
+    let mut hsize = hand_fields.len();
+    for (r, (names, _)) in rings.iter().enumerate() {
+        if names.is_empty() || kinds[r].is_none() {
+            ring_at.push(None);
+        } else {
+            ring_at.push(Some(hsize));
+            hsize += 1 + names.len();
+        }
+    }
+    let hsize = hsize.max(1);
+    // the functions from which the list can be reached: one of them
+    // is on the machine's stack when a turn is taken, and its unit
+    // cannot be moved in that turn
+    let mut reach: BTreeSet<String> = BTreeSet::new();
+    if moved {
+        loop {
+            let more: Vec<String> = fns.iter().filter(|f| !reach.contains(&f.name) && own[&f.name].calls.iter().any(|c| c == "__turns" || reach.contains(c))).map(|f| f.name.clone()).collect();
+            if more.is_empty() {
+                break;
+            }
+            reach.extend(more);
+        }
+    }
+    let held: Vec<(usize, String)> = fns.iter().filter(|f| reach.contains(&f.name)).filter_map(|f| owner.get(&f.name).copied().filter(|&o| o < nu).map(|o| (o, f.name.clone()))).collect();
     let sites: HashMap<usize, &Site> = reader.sites.iter().filter(|s| rings[s.ring].1).map(|s| (s.at, s)).collect();
     let marks = ctx_fields.iter().any(|(n, _)| n == "__out_m");
     let pooled = lines.iter().any(|l| l.starts_with("data __act_due: "));
@@ -552,12 +652,20 @@ pub fn rewrite(ir: &str, units: &[Unit]) -> Result<(String, Placed), String> {
         let Some(f) = fns.iter().find(|f| f.at.0 == k) else {
             if lines[k].starts_with("data __ctx_mem: ") {
                 out.push_str(&format!("; the cut (fm3 cut.md): where each unit runs, 0 the screen and 1 far, a byte each, {} of them; then for each field of the context the wire may carry, whether it is carried from the screen and whether from far; then for each stored stream, at each place, whether a push there is left out, the stream being read only at the other, and whether it is made again at the other. The runner fills it before a case; all zero, every unit is at the screen and nothing crosses\ndata __cut: array(u8, {})\n", nu, size));
+                if moved {
+                    out.push_str(&format!("; the cut's moves (fm3 cut.md, log 265), {m} at most: the time each is due; the table of the cut after each, as `__cut` is laid out; and what each hands across, a byte for each field of the context that some move may ({nf} of them: the wire's, and those only one unit touches) and then for each stored stream one for its storage and one for the place of each field that reads it: 0 nothing, 1 from the screen to far, 2 from far to the screen. The runner fills them before a case\ndata __move_t: array(i64, {mt})\ndata __cuts: array(u8, {cs})\ndata __hands: array(u8, {hs})\n", m = MOVES, nf = hand_fields.len(), mt = MOVES + 1, cs = MOVES * size, hs = MOVES * hsize));
+                }
             }
             out.push_str(&lines[k]);
             out.push('\n');
             k += 1;
             continue;
         };
+        if moved && f.name == "__move_turn" {
+            out.push_str(&format!("fn __move_turn()\n    c: ptr = context()\n    x: __ctx = load c\n    k: index = get x, __move_k\n    k2: index = add k, 1\n    tp: ptr = addr __move_t\n    d: i64 = load tp, k2, 8\n    x2: __ctx = set x, __move_k, k2\n    x3: __ctx = set x2, __due_move, d\n    store x3, c\n    cp: ptr = addr __cut\n    np: ptr = addr __cuts\n    base: index = mul k, {size}\n    loop(i: index = 0) bound {size}\n        done: u1 = cmp.ge i, {size}\n        if done\n            break\n        j: index = add base, i\n        b: u8 = load np, j, 1\n        store b, cp, i, 1\n        i2: index = add i, 1\n        continue i2\n    __hand(k)\n    ret\n", size = size));
+            k = f.at.1;
+            continue;
+        }
         let who = owner.get(&f.name).copied().filter(|_| !machine.contains(f.name.as_str()));
         let unit = who.filter(|&o| o < nu);
         let wrapped = unit.is_some() || screens(&f.name);
@@ -582,6 +690,16 @@ pub fn rewrite(ir: &str, units: &[Unit]) -> Result<(String, Placed), String> {
                 // both places made new, and the cut put back: every
                 // unit at the screen
                 out.push_str(&format!("{p}__zero_context(1)\n{p}__zero_new()\n{p}__zero_context(0)\n{p}__zero_new()\n{p}__cp: ptr = addr __cut\n{p}loop(__ci: index = 0) bound {size}\n{p}    __cd: u1 = cmp.ge __ci, {size}\n{p}    if __cd\n{p}        break\n{p}    store 0: u8, __cp, __ci, 1\n{p}    __ci2: index = add __ci, 1\n{p}    continue __ci2\n", p = p, size = size));
+                if moved {
+                    // ... and no move due, the later tables emptied
+                    out.push_str(&format!("{p}__mp: ptr = addr __move_t\n", p = p));
+                    for m in 0..=MOVES {
+                        out.push_str(&format!("{p}store {never}: i64, __mp, {at}\n", p = p, never = NEVER, at = 8 * m));
+                    }
+                    for (name, n) in [("__cuts", MOVES * size), ("__hands", MOVES * hsize)] {
+                        out.push_str(&format!("{p}__zp{name}: ptr = addr {name}\n{p}loop(__zi{name}: index = 0) bound {n}\n{p}    __zd{name}: u1 = cmp.ge __zi{name}, {n}\n{p}    if __zd{name}\n{p}        break\n{p}    store 0: u8, __zp{name}, __zi{name}, 1\n{p}    __zj{name}: index = add __zi{name}, 1\n{p}    continue __zj{name}\n", p = p, name = name, n = n));
+                    }
+                }
                 continue;
             }
             if let Some(s) = sites.get(&j) {
@@ -633,7 +751,46 @@ pub fn rewrite(ir: &str, units: &[Unit]) -> Result<(String, Placed), String> {
         }
         out.push_str("    ret\n");
     }
-    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs }))
+    let pool: Vec<String> = lines.iter().filter_map(|l| l.strip_prefix("data __act_")).filter_map(|l| l.split(':').next()).map(|c| format!("__act_{}", c)).collect();
+    let left: BTreeSet<usize> = if pooled { fns.iter().filter(|f| base(&f.name) != f.name).filter_map(|f| owner.get(&f.name).copied().filter(|&o| o < nu)).collect() } else { BTreeSet::new() };
+    if moved {
+        out.push_str("\n; the runner's: when the k-th move is due, a byte of the table of the cut after it, and a byte of what it hands across\nfn __move_at(k: index, t: i64)\n    p: ptr = addr __move_t\n    store t, p, k, 8\n    first: u1 = cmp.eq k, 0\n    if first\n        c: ptr = context()\n        x: __ctx = load c\n        x2: __ctx = set x, __due_move, t\n        store x2, c\n    ret\n");
+        out.push_str(&format!("fn __move_set(k: index, i: index, v: u8)\n    p: ptr = addr __cuts\n    b: index = mul k, {size}\n    j: index = add b, i\n    store v, p, j, 1\n    ret\nfn __hand_set(k: index, i: index, v: u8)\n    p: ptr = addr __hands\n    b: index = mul k, {hsize}\n    j: index = add b, i\n    store v, p, j, 1\n    ret\n", size = size, hsize = hsize));
+        // what a move hands across, once, in its turn: the wire's own
+        // work, done for both places at the screen
+        let mut h = String::from("\n; what the k-th move hands across (fm3 cut.md, \"the cut, moved\"), once, in the move's turn: each field of the context its table says, copied from the place that has it to the place that will use it; each stored stream's storage, where it will be read at a place that was not being given its items; and the place of each reader that moved. The table of the cut says what the wire carries from then on\nfn __hand(k: index)\n    cm: ptr(array(__ctx, 2)) = addr __ctx_mem\n    z0: index = const 0\n    z1: index = const 1\n    e0: ptr(__ctx) = index cm, z0\n    e1: ptr(__ctx) = index cm, z1\n    p0: ptr = cast e0\n    p1: ptr = cast e1\n    s0: __ctx = load p0\n    f0: __ctx = load p1\n    hp: ptr = addr __hands\n");
+        h.push_str(&format!("    hb: index = mul k, {}\n", hsize));
+        let mut c = 0;
+        for (j, (name, ty, plain)) in hand_fields.iter().enumerate() {
+            // (a field that holds an address is never handed: such a
+            // move is refused)
+            if !plain {
+                continue;
+            }
+            h.push_str(&format!("    i{j}: index = add hb, {j}\n    h{j}: u8 = load hp, i{j}, 1\n    u{j}: u1 = cmp.eq h{j}, 1\n    d{j}: u1 = cmp.eq h{j}, 2\n    a{j}: {ty} = get s{c}, {name}\n    b{j}: {ty} = get f{c}, {name}\n    nb{j}: {ty} = if u{j}\n        yield a{j}\n    else\n        yield b{j}\n    na{j}: {ty} = if d{j}\n        yield b{j}\n    else\n        yield a{j}\n    f{c2}: __ctx = set f{c}, {name}, nb{j}\n    s{c2}: __ctx = set s{c}, {name}, na{j}\n", j = j, ty = ty, name = name, c = c, c2 = c + 1));
+            c += 1;
+        }
+        let mut used: BTreeSet<&'static str> = BTreeSet::new();
+        for (r, (names, _)) in rings.iter().enumerate() {
+            let (Some(at), Some(kind)) = (ring_at[r], kinds[r]) else { continue };
+            used.insert(kind);
+            let ty = ctx_fields.iter().find(|(n, _)| *n == names[0]).map(|(_, t)| t.clone()).unwrap_or_default();
+            h.push_str(&format!("    ri{r}: index = add hb, {at}\n    rh{r}: u8 = load hp, ri{r}, 1\n    ra{r}: {ty} = get s{c}, {first}\n    rb{r}: {ty} = get f{c}, {first}\n    ru{r}: u1 = cmp.eq rh{r}, 1\n    if ru{r}\n        __hand_{kind}(ra{r}, rb{r})\n    rd{r}: u1 = cmp.eq rh{r}, 2\n    if rd{r}\n        __hand_{kind}(rb{r}, ra{r})\n", r = r, at = at, ty = ty, first = names[0], c = c, kind = kind));
+            for (m, name) in names.iter().enumerate() {
+                h.push_str(&format!("    qi{r}_{m}: index = add hb, {at}\n    qh{r}_{m}: u8 = load hp, qi{r}_{m}, 1\n    qa{r}_{m}: {ty} = get s{c}, {name}\n    qb{r}_{m}: {ty} = get f{c}, {name}\n    pa{r}_{m}: index = get qa{r}_{m}, pos\n    pb{r}_{m}: index = get qb{r}_{m}, pos\n    qu{r}_{m}: u1 = cmp.eq qh{r}_{m}, 1\n    qd{r}_{m}: u1 = cmp.eq qh{r}_{m}, 2\n    nq{r}_{m}: index = if qu{r}_{m}\n        yield pa{r}_{m}\n    else\n        yield pb{r}_{m}\n    np{r}_{m}: index = if qd{r}_{m}\n        yield pb{r}_{m}\n    else\n        yield pa{r}_{m}\n    qy{r}_{m}: {ty} = set qb{r}_{m}, pos, nq{r}_{m}\n    qx{r}_{m}: {ty} = set qa{r}_{m}, pos, np{r}_{m}\n    f{c2}: __ctx = set f{c}, {name}, qy{r}_{m}\n    s{c2}: __ctx = set s{c}, {name}, qx{r}_{m}\n", r = r, m = m, at = at + 1 + m, ty = ty, name = name, c = c, c2 = c + 1));
+                c += 1;
+            }
+        }
+        h.push_str(&format!("    store s{c}, p0\n    store f{c}, p1\n    ret\n", c = c));
+        out.push_str(&h);
+        if used.contains("queue") {
+            out.push_str("\n; a queue handed across (lib/stream.ssa, the queue): the items not yet given back, in their slots, and how many it has had, where its first slot stands, and whether it has ended\nfn __hand_queue(a: any$, b: any$)\n    ra: ptr = get a, ring\n    rb: ptr = get b, ring\n    n: index = load ra\n    o: index = load ra, 8\n    k: index = sub n, o\n    qa: ptr(any) = load ra, 16\n    qb: ptr(any) = load rb, 16\n    s: any[] = pack qa, k, 1\n    d: any[] = pack qb, k, 1\n    copy d, s\n    store n, rb\n    store o, rb, 8\n    e: i64 = load ra, 56\n    store e, rb, 56\n    ret\n");
+        }
+        if used.contains("ring") {
+            out.push_str("\n; a ring handed across (lib/stream.ssa, the ring): its items with their times, how many it has had, its beat and whether it has ended\nfn __hand_ring(a: any$, b: any$)\n    ra: ptr = get a, ring\n    rb: ptr = get b, ring\n    n: index = load ra\n    store n, rb\n    hz: i64 = load ra, 32\n    store hz, rb, 32\n    st: i64 = load ra, 40\n    store st, rb, 40\n    t0: i64 = load ra, 48\n    store t0, rb, 48\n    e: i64 = load ra, 56\n    store e, rb, 56\n    wa: ptr = load ra, 16\n    wb: ptr = load rb, 16\n    va: any[] = slice wa\n    vb: any[] = slice wb\n    copy vb, va\n    ta: ptr = load ra, 24\n    tb: ptr = load rb, 24\n    none: ptr = const 0\n    timed: u1 = cmp.ne ta, none\n    if timed\n        ka: i64[] = slice ta\n        kb: i64[] = slice tb\n        copy kb, ka\n    ret\n");
+        }
+    }
+    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize) }))
 }
 
 impl Placed {
@@ -662,6 +819,10 @@ impl Placed {
         for name in text.split(',').map(str::trim).filter(|n| !n.is_empty()) {
             if name == "all" {
                 out.extend(self.all());
+                continue;
+            }
+            // (every unit at the screen, which a move may go to)
+            if name == "none" {
                 continue;
             }
             let found: Vec<usize> = (0..self.units.len()).filter(|&u| self.units[u].name == name || self.units[u].words.as_deref() == Some(name)).collect();
@@ -781,6 +942,145 @@ impl Placed {
         Cut { before, label: self.label(far) }
     }
 
+    /// What a move from one cut to another hands across, once (fm3
+    /// cut.md, "the cut, moved"; log 265). The wire's carrying is lazy,
+    /// a field copied as the wire is crossed, and the move is made at
+    /// the screen. So a field goes from far to the screen where no
+    /// unit at the screen wrote it or was being given it before and one
+    /// uses it there after; and from the screen to far where a unit at
+    /// the screen wrote it before, one at far uses it after, and none
+    /// at the screen writes it after, when the wire would carry it at
+    /// the next crossing anyway. A stored stream's storage goes to a
+    /// place where it is read after and was not before, a stream being
+    /// whole only where it is read; and the place of a reader that
+    /// takes goes with its unit
+    pub fn hands(&self, a: &BTreeSet<usize>, b: &BTreeSet<usize>) -> Vec<Hand> {
+        let n = self.facts.len();
+        let w = |name: &str, cut: &BTreeSet<usize>, p: usize| (0..n).any(|e| self.at(e, cut) == p && self.facts[e].writes.contains(name));
+        let u = |name: &str, cut: &BTreeSet<usize>, p: usize| (0..n).any(|e| self.at(e, cut) == p && (self.facts[e].writes.contains(name) || self.facts[e].reads.contains(name)));
+        let mut out = Vec::new();
+        for (j, (name, _, _)) in self.hand_fields.iter().enumerate() {
+            let dir = if !w(name, a, 0) && !u(name, a, 0) && u(name, b, 0) {
+                2
+            } else if w(name, a, 0) && u(name, b, 1) && !w(name, b, 0) {
+                1
+            } else {
+                continue;
+            };
+            out.push(Hand { at: j, dir, what: self.field_said(name), name: name.clone() });
+        }
+        let (_, read_a, _) = self.carries(a);
+        let (_, read_b, _) = self.carries(b);
+        for (r, (names, _)) in self.rings.iter().enumerate().filter(|(_, (n, _))| !n.is_empty()) {
+            let at = self.ring_at[r].unwrap_or(usize::MAX);
+            for q in 0..2 {
+                if read_b[r][q] && !read_a[r][q] && read_a[r][1 - q] {
+                    out.push(Hand { at, dir: if q == 1 { 1 } else { 2 }, what: format!("the items of {}$ that {} still holds, with their times, and its counts", names[0], if q == 1 { "the screen" } else { "far" }), name: names[0].clone() });
+                }
+            }
+            for (m, field) in names.iter().enumerate() {
+                let takes = |cut: &BTreeSet<usize>, p: usize| (0..n).any(|e| self.at(e, cut) == p && self.facts[e].taken.contains(field));
+                for q in 0..2 {
+                    if takes(b, q) && !takes(a, q) && takes(a, 1 - q) {
+                        out.push(Hand { at: at.saturating_add(1 + m), dir: if q == 1 { 1 } else { 2 }, what: format!("where the reader of {}$ has read to{}", names[0], if *field == names[0] { String::new() } else { format!(" ({})", field) }), name: field.clone() });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Why a move cannot be made (fm3 log 265): one of its cuts is
+    /// itself refused; a unit that moves may be on the machine's stack
+    /// when the move is due; or something it must hand across holds an
+    /// address, or is a stream the rewrite does not know how to hand
+    pub fn move_refused(&self, a: &BTreeSet<usize>, b: &BTreeSet<usize>) -> Option<String> {
+        if let Some(why) = self.refused(a).or_else(|| self.refused(b)) {
+            return Some(why);
+        }
+        if let Some((u, f)) = self.held.iter().find(|(u, _)| a.contains(u) != b.contains(u)) {
+            return Some(format!("{} cannot be moved while it runs: its function `{}` keeps the machine's stack across a step of a rate, in a shape the compiler does not yet leave at its steps (fm3 question 139), so it may be partway when the move is due", self.who(*u), f));
+        }
+        for h in self.hands(a, b) {
+            if let Some((_, ty, false)) = self.hand_fields.get(h.at).filter(|(n, _, _)| *n == h.name) {
+                return Some(format!("'{}{}' would be handed across at the move, and it holds {}, which is an address in the memory of the place it was made at", h.name.trim_start_matches("__"), if ty.ends_with('$') { "$" } else { "" }, address(ty)));
+            }
+            if h.at >= self.sizes.1 {
+                return Some(format!("'{}$' would be handed across at the move, and how it is kept is not one the move knows how to hand yet", h.name));
+            }
+        }
+        None
+    }
+
+    /// A cut and its moves: the calls that fill the table, and after
+    /// them, for each move, when it is due, the table of the cut it
+    /// goes to and what it hands across
+    pub fn moves(&self, first: &BTreeSet<usize>, then: &[(BTreeSet<usize>, i64)]) -> Cut {
+        self.moves_but(first, then, None)
+    }
+
+    /// ... and the same with one thing deliberately not handed across,
+    /// which only a test asks for: the proof that a move hands across
+    /// what it must is that the program then goes wrong
+    pub fn moves_but(&self, first: &BTreeSet<usize>, then: &[(BTreeSet<usize>, i64)], dropped: Option<&str>) -> Cut {
+        let Cut { mut before, mut label } = self.cut(first);
+        let mut was = first;
+        for (k, (next, t)) in then.iter().enumerate() {
+            let k = k as i64;
+            before.push(("__move_at".to_string(), vec![k, *t]));
+            before.extend(self.cut(next).before.into_iter().map(|(_, args)| ("__move_set".to_string(), vec![k, args[0], args[1]])));
+            before.extend(self.hands(was, next).into_iter().filter(|h| dropped != Some(h.name.as_str())).map(|h| ("__hand_set".to_string(), vec![k, h.at as i64, h.dir as i64])));
+            label.push_str(&format!(", then {} at {}", self.label(next).trim_start_matches("far: "), super::store::spell_time(*t)));
+            was = next;
+        }
+        Cut { before, label }
+    }
+
+    /// The placement of a cut that moves: the first cut's table, and
+    /// for each move when it is, which units change place, what is
+    /// handed across, read off the same facts that fill the move's
+    /// table, and the table of the cut it goes to
+    pub fn table_moved(&self, store: &str, first: &BTreeSet<usize>, then: &[(BTreeSet<usize>, i64)], cases: &[String]) -> String {
+        let place = |p: usize| if p == 0 { "screen" } else { "far" };
+        let mut out = self.table(store, first, cases);
+        let mut was = first;
+        for (next, t) in then {
+            out.push_str(&format!("\nat {} the cut moves: {}, the first thing due at that time\n\n", super::store::spell_time(*t), self.label(next)));
+            if let Some(why) = self.move_refused(was, next) {
+                out.push_str(&format!("refused: {}\n", why));
+                return out;
+            }
+            let w1 = self.units.iter().map(|u| u.name.len()).max().unwrap_or(4).max(4);
+            out.push_str(&format!("{:<w1$}  {:<6}  {}\n", "unit", "was", "is", w1 = w1));
+            for (u, unit) in self.units.iter().enumerate().filter(|(u, _)| was.contains(u) != next.contains(u)) {
+                out.push_str(&format!("{:<w1$}  {:<6}  {}\n", unit.name, place(self.at(u, was)), place(self.at(u, next)), w1 = w1));
+            }
+            let mut rows: Vec<(String, String, String, String)> = vec![("the table".to_string(), format!("{} bytes of the cut", self.sizes.0), String::new(), "rewritten in the move's turn: where each unit runs, and what the wire carries from then on".to_string())];
+            let hands = self.hands(was, next);
+            for h in &hands {
+                let kind = if self.rings.iter().any(|(n, _)| n.contains(&h.name)) { "a stream" } else if h.name.starts_with("__enabled_") || h.name.starts_with("__on_") { "a switch" } else if h.name.starts_with("__") { "kept" } else { "an item" };
+                rows.push((kind.to_string(), h.what.clone(), if h.dir == 1 { "screen → far" } else { "far → screen" }.to_string(), "copied once, in the move's turn".to_string()));
+            }
+            if hands.is_empty() {
+                rows.push(("nothing else".to_string(), "no field of the context, and no stored stream".to_string(), String::new(), "none that a unit that moves reads or writes is at the place it leaves and not at the place it goes to".to_string()));
+            }
+            let partway: Vec<String> = self.units.iter().enumerate().filter(|(u, _)| self.left.contains(u)).map(|(_, unit)| format!("`{}`", unit.shown())).collect::<BTreeSet<_>>().into_iter().collect();
+            if !partway.is_empty() {
+                rows.push(("not handed".to_string(), format!("a function partway: {}", partway.join(", ")), String::new(), format!("its record is a place of the pool, {} columns, which is the screen's between its turns: when it is next due, where it goes on from, what it keeps", self.pool.len())));
+            }
+            let w: Vec<usize> = (0..3).map(|k| rows.iter().map(|r| [&r.0, &r.1, &r.2][k].chars().count()).max().unwrap_or(0)).collect();
+            out.push_str("\nhanded across at the move\n");
+            for (a, b, c, d) in &rows {
+                let padded = |s: &str, n: usize| format!("{}{}", s, " ".repeat(n.saturating_sub(s.chars().count())));
+                out.push_str(&format!("{}  {}  {}  {}\n", padded(a, w[0]), padded(b, w[1]), padded(c, w[2]), d));
+            }
+            out.push('\n');
+            out.push_str(&self.table(store, next, cases));
+            was = next;
+        }
+        out
+    }
+
     /// what a field of the context is, to a person
     fn field_said(&self, name: &str) -> String {
         if let Some(f) = name.strip_prefix("__enabled_").or_else(|| name.strip_prefix("__on_")) {
@@ -824,6 +1124,9 @@ impl Placed {
         }
         let mut rows: Vec<(String, String, String, String)> = Vec::new();
         let name = |e: usize| if e == self.screen() { "the screen".to_string() } else { self.units[e].name.clone() };
+        // (of the screen's own, a case's twin is the case's call, and
+        // the pool's turn is the list's)
+        let from = |c: &Crossing| if c.from != self.screen() { name(c.from) } else if c.caller.starts_with("__whole_") || c.caller.starts_with("__said_") { "a case's own".to_string() } else if matches!(c.caller.as_str(), "__act_go" | "__turns" | "__close") { "the list".to_string() } else { name(c.from) };
         for c in &self.crossings {
             let (a, b) = (self.at(c.from, far), self.at(c.to, far));
             if a == b {
@@ -853,7 +1156,7 @@ impl Placed {
             } else {
                 ("a call".to_string(), if types.is_empty() { "nothing over, its end back".to_string() } else { format!("{} over and back, and its end", types.join(", ")) })
             };
-            rows.push((kind, format!("{} → {}", name(c.from), name(c.to)), format!("{} → {}", place(a), place(b)), what));
+            rows.push((kind, format!("{} → {}", from(c), name(c.to)), format!("{} → {}", place(a), place(b)), what));
         }
         // a case's own call, made at the screen, of a function placed far
         for (u, unit) in self.units.iter().enumerate().filter(|(u, _)| far.contains(u)) {

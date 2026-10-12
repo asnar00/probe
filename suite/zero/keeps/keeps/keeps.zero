@@ -1,0 +1,23 @@
+int beat$ at (1 hz)
+int sum$
+beat$ << beat$ + 1 if (beat$ < 4) forever
+sum$ << sum$ + beat$ forever
+out$ << (sum$ << " ") forever
+int rise$ = rising (sum$)
+out$ << (rise$ << "\n") forever
+int n$ at (1 hz)
+int total$
+total$ << total$ + n$ forever
+
+on (int d$) << rising (int x$)
+    d$ << x$ - x$[-1]
+
+on begin()
+    out$ << "go\n"
+
+on count to (int k)
+    n$ << [1 through k]
+    out$ << total$
+
+on (int t) << so far()
+    t << sum$

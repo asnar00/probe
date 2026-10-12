@@ -81,6 +81,13 @@ pub struct Store {
     /// the runner fills before a case, and everything that crosses
     /// goes through one function, the wire. False as a store is read
     pub places: bool,
+    /// ... and the placed build whose cut may be moved while the
+    /// program runs (fm3 cut.md, "the cut, moved"; log 265): the move
+    /// is a thing going on, due at its time, so the store has a list
+    /// whatever else it has, and its functions that push at a rate are
+    /// left at their steps. Read only where `places` is set. False as
+    /// a store is read
+    pub moved: bool,
 }
 
 /// how a product builds a feature (section 12): switchable at run time,
@@ -463,7 +470,7 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
     // a static-off feature leaves the store with everything under it
     // (log 71): a child under a parent that is never on could never be on
     let mut gone: Vec<String> = Vec::new();
-    let store = Store { path: dir.to_path_buf(), own_ops, features, layers, product, product_file, int_width, float_width, index_width, marks, left_out: Vec::new(), clock, times: false, sites: false, trace: false, places: false };
+    let store = Store { path: dir.to_path_buf(), own_ops, features, layers, product, product_file, int_width, float_width, index_width, marks, left_out: Vec::new(), clock, times: false, sites: false, trace: false, places: false, moved: false };
     for (name, mark) in &store.marks {
         if *mark == Mark::StaticOff {
             gone.extend(store.subtree(name));

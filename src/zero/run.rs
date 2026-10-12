@@ -40,17 +40,18 @@ pub fn emit_trace(dir: &Path) -> Result<String, String> {
 /// With a cut named, a function `__cut` after the text fills the table
 /// as the runner would before a case: `probe count <text> run
 /// --after=__zero_reset,__cut` then prices the case at that cut
-pub fn emit_placed(dir: &Path, far: Option<&str>) -> Result<String, String> {
+///
+/// ... and with moves (fm3 cut.md, "the cut, moved"), `then` a cut and
+/// the time it is gone to, the text is that of a build whose cut may
+/// be moved, and `__cut` hands the moves over as well
+pub fn emit_placed(dir: &Path, far: Option<&str>, then: &[(String, i64)]) -> Result<String, String> {
     let mut s = store::read(dir).map_err(|e| e.to_string())?;
     s.places = true;
+    s.moved = !then.is_empty();
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
     let mut ir = l.ir;
-    if let (Some(names), Some(p)) = (far, &l.placed) {
-        let far = p.named(names)?;
-        if let Some(why) = p.refused(&far) {
-            return Err(format!("this cut cannot be run yet: {}", why));
-        }
-        let cut = p.cut(&far);
+    if let (true, Some(p)) = (far.is_some() || !then.is_empty(), &l.placed) {
+        let cut = cut_of(p, far, then)?;
         ir.push_str(&format!("\n; the cut, {}, as the runner fills it before a case\nfn __cut()\n", cut.label));
         for (f, args) in &cut.before {
             ir.push_str(&format!("    {}({})\n", f, args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")));
@@ -60,27 +61,82 @@ pub fn emit_placed(dir: &Path, far: Option<&str>) -> Result<String, String> {
     Ok(ir)
 }
 
+/// The cut a command names, `--far <units>`, and its moves, `--then
+/// <units> at <time>`, as the calls that say them to the program; or
+/// why it cannot be run. A move goes forward in time, and a store has
+/// room for `places::MOVES` of them
+fn cut_of(p: &super::places::Placed, far: Option<&str>, then: &[(String, i64)]) -> Result<super::places::Cut, String> {
+    let (first, later) = cuts_named(p, far, then)?;
+    if !later.is_empty() && !p.moved {
+        return Err("the store was not built to have its cut moved".into());
+    }
+    if let Some(why) = p.refused(&first) {
+        return Err(format!("this cut cannot be run yet: {}", why));
+    }
+    let mut was = &first;
+    for (next, _) in &later {
+        if let Some(why) = p.move_refused(was, next) {
+            return Err(format!("this move cannot be made yet: {}", why));
+        }
+        was = next;
+    }
+    Ok(p.moves(&first, &later))
+}
+
+fn cuts_named(p: &super::places::Placed, far: Option<&str>, then: &[(String, i64)]) -> Result<(BTreeSet<usize>, Vec<(BTreeSet<usize>, i64)>), String> {
+    let first = match far {
+        Some(names) => p.named(names)?,
+        None => BTreeSet::new(),
+    };
+    if then.len() > super::places::MOVES {
+        return Err(format!("a cut may be moved {} times in one run, and {} moves are said", super::places::MOVES, then.len()));
+    }
+    let mut later = Vec::new();
+    for (k, (names, t)) in then.iter().enumerate() {
+        if k > 0 && then[k - 1].1 >= *t {
+            return Err(format!("the moves of a cut go forward in time: {} is not after {}", store::spell_time(*t), store::spell_time(then[k - 1].1)));
+        }
+        later.push((p.named(names)?, *t));
+    }
+    Ok((first, later))
+}
+
+/// A time as a command line says it, `4.5 s`, `4.5s` or `250 ms`, in
+/// the clock's steps
+pub fn time_said(text: &str) -> Result<i64, String> {
+    let t = text.trim();
+    let (n, per) = if let Some(n) = t.strip_suffix("ms") { (n, 1000.0) } else if let Some(n) = t.strip_suffix('s') { (n, 1_000_000.0) } else { return Err(format!("'{}' is not a time: a number and `s` or `ms`, `4.5 s`", text)) };
+    match n.trim().parse::<f64>() {
+        Ok(x) if x >= 0.0 && x.is_finite() => Ok((x * per).round() as i64),
+        _ => Err(format!("'{}' is not a time: a number and `s` or `ms`, `4.5 s`", text)),
+    }
+}
+
 /// The placement of a store at a cut (fm3 cut.md; distribution.md,
 /// "what the compiler does", 7): every unit and where it runs, every
 /// crossing, what kind it is and what is carried. `far` names the
 /// units placed far, `count down,countdown.zero:2` or `all`; none,
 /// and everything is at the screen
-pub fn placement(dir: &Path, far: Option<&str>) -> Result<String, String> {
+///
+/// ... and with moves, the table of each cut, and between two what is
+/// handed across at the move (fm3 cut.md, "the cut, moved")
+pub fn placement(dir: &Path, far: Option<&str>, then: &[(String, i64)]) -> Result<String, String> {
     let mut s = store::read(dir).map_err(|e| e.to_string())?;
     s.clock = store::Clock::Virtual;
     s.places = true;
+    s.moved = !then.is_empty();
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
     let p = l.placed.as_ref().ok_or("the store was not placed")?;
-    let far = match far {
-        Some(names) => p.named(names)?,
-        None => BTreeSet::new(),
-    };
+    let (far, later) = cuts_named(p, far, then)?;
     let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     // the functions a case of the store calls: each is a call made at
     // the screen
     let policy = store_policy(&s, &ssa::Policy::new(ssa::Type::I64)?);
     let cases: Vec<String> = calls_of(&s, &l, &policy)?.iter().map(|c| c.call.func.trim_start_matches("__whole_").trim_start_matches("__said_").to_string()).collect();
-    Ok(p.table(&name, &far, &cases))
+    if later.is_empty() {
+        return Ok(p.table(&name, &far, &cases));
+    }
+    Ok(p.table_moved(&name, &far, &later, &cases))
 }
 
 fn emit_build(dir: &Path, trace: bool) -> Result<String, String> {
@@ -492,27 +548,27 @@ pub(super) fn case_named<'a>(calls: &'a [Planned], which: &str) -> Option<&'a Pl
 /// after an arrow — the numbers, or the output as the case's quoted
 /// text; on the real clock unless `fast`
 pub fn run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bool) -> Result<String, String> {
-    run_cut(dir, which, policy, level, fast, None)
+    run_cut(dir, which, policy, level, fast, None, &[])
 }
 
 /// ... and at a cut (fm3 cut.md): `far` names the units that run at
 /// the second place, and the case is run from the store's placed build
-pub fn run_cut(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bool, far: Option<&str>) -> Result<String, String> {
+///
+/// ... and moved while it runs (fm3 cut.md, "the cut, moved"): `then`
+/// is each cut gone to and the time, and the build is one whose cut
+/// may be moved
+pub fn run_cut(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast: bool, far: Option<&str>, then: &[(String, i64)]) -> Result<String, String> {
     let mut s = store::read(dir).map_err(|e| e.to_string())?;
     s.clock = if fast { store::Clock::Virtual } else { store::Clock::Real };
-    s.places = far.is_some();
+    s.places = far.is_some() || !then.is_empty();
+    s.moved = !then.is_empty();
     let policy = &store_policy(&s, policy);
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
-    // the cut's table is filled before anything else of the case
-    let cut = match (far, &l.placed) {
-        (Some(names), Some(p)) => {
-            let far = p.named(names)?;
-            if let Some(why) = p.refused(&far) {
-                return Err(format!("this cut cannot be run yet: {}", why));
-            }
-            p.cut(&far).before
-        }
-        _ => Vec::new(),
+    // the cut's table is filled before anything else of the case, and
+    // its moves handed over
+    let cut = match &l.placed {
+        Some(p) => cut_of(p, far, then)?.before,
+        None => Vec::new(),
     };
     let calls = calls_of(&s, &l, policy)?;
     let at = case_at(&calls, which);
@@ -696,8 +752,14 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
     // own. Counted apart, after the line that counts the suite's runs
     let mut cuts = Cuts::default();
     if std::env::var("PROBE_ZERO_CUTS").is_ok() {
-        for sdir in &stores {
+        // (`PROBE_ZERO_CUTS=moves`: the moves alone)
+        for sdir in stores.iter().filter(|_| !std::env::var("PROBE_ZERO_CUTS").is_ok_and(|v| v.starts_with("moves"))) {
             test_cuts(sdir, &policy, backend, level, &mut report, &mut cuts);
+        }
+        // ... and each case with a time moved partway (fm3 cut.md,
+        // "the cut, moved"), from the build whose cut may be moved
+        for sdir in &stores {
+            test_moves(sdir, &policy, backend, level, &mut report, &mut cuts);
         }
     }
     // the last line counts runs: every case in every context it stands
@@ -718,6 +780,14 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
         report.passed += cuts.passed;
         report.failed += cuts.failed;
     }
+    if cuts.timed > 0 {
+        report.log.push_str(&format!(
+            "moves: {} of {} cases with a time hold at every move tried; {} hold at every move that is not refused; {} have a move that does not hold; in {} stores, {} of which could not be built to move ({} moves run, {} refused; {} of {} runs of a move hold)\n",
+            cuts.case_hold, cuts.timed, cuts.case_hold_but, cuts.case_broken, cuts.moved_stores, cuts.unmoved, cuts.moves, cuts.moves_refused, cuts.moves_passed, cuts.moves_passed + cuts.moves_failed
+        ));
+        report.passed += cuts.moves_passed;
+        report.failed += cuts.moves_failed;
+    }
     Ok(report)
 }
 
@@ -735,6 +805,150 @@ struct Cuts {
     refused: usize,
     passed: usize,
     failed: usize,
+    /// the cut moved while a case runs: the stores that have a case
+    /// with a time, and those of them with no build that moves
+    moved_stores: usize,
+    unmoved: usize,
+    /// such cases, a run in each context: those that hold at every
+    /// move tried, at every move not refused, and those with a move
+    /// that runs and gives something else
+    timed: usize,
+    case_hold: usize,
+    case_hold_but: usize,
+    case_broken: usize,
+    /// a move is one case in one context, one direction, one time
+    moves: usize,
+    moves_refused: usize,
+    moves_passed: usize,
+    moves_failed: usize,
+}
+
+/// The two times a case with a time is moved at (fm3 log 265): one
+/// when a piece of its result is due, the piece nearest the middle of
+/// the case, and one halfway from the piece before to that, when
+/// nothing of the result is. None where the result has no time after
+/// its start
+pub(super) fn move_times(expect: &store::Expect) -> Option<(i64, i64)> {
+    let store::Expect::Timed(pieces) = expect else { return None };
+    let mut times: Vec<i64> = pieces.iter().map(|(_, t)| *t).collect();
+    times.sort();
+    times.dedup();
+    let last = *times.last()?;
+    if last <= 0 {
+        return None;
+    }
+    let due = times.iter().copied().filter(|t| *t > 0).min_by_key(|t| ((2 * t - last).abs(), -*t))?;
+    let before = times.iter().copied().filter(|t| *t < due).max().unwrap_or(0);
+    Some(((before + due) / 2, due))
+}
+
+/// One store's cases with a time, each moved partway (fm3 touchstones.md,
+/// "hello, in two places", step 2; cut.md, "the cut, moved"): from the
+/// build whose cut may be moved, compiled once, everything far and
+/// then everything at the screen, and the other way, at the two times
+/// `move_times` gives, and compared with the case's own line. A move
+/// that cannot be made is refused by name, passed over and counted
+fn test_moves(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, report: &mut Report, cuts: &mut Cuts) {
+    let name = sdir.file_name().unwrap().to_string_lossy().to_string();
+    let Ok(mut s) = store::read(sdir) else { return };
+    if !s.features.iter().any(|f| f.cases.iter().any(|c| move_times(&c.expect).is_some())) {
+        return;
+    }
+    cuts.moved_stores += 1;
+    s.clock = store::Clock::Virtual;
+    s.places = true;
+    s.moved = true;
+    let built = (|| -> Result<(Vec<Planned>, Vec<Run>, ssa::Module, lower::Lowered), String> {
+        let policy = store_policy(&s, policy);
+        let l = lower::lower(&s).map_err(|e| e.to_string())?;
+        let cases = calls_of(&s, &l, &policy)?;
+        let (runs, _) = plan(&s, &cases)?;
+        let module = build(&l.ir, &policy, level)?;
+        Ok((cases, runs, module, l))
+    })();
+    let (cases, runs, module, lowered) = match built {
+        Ok(b) => b,
+        Err(e) => {
+            cuts.unmoved += 1;
+            report.log.push_str(&format!("move  {:<16} could not be built to move: {}\n", name, e));
+            return;
+        }
+    };
+    let Some(placed) = &lowered.placed else { return };
+    let unreached = out_of_reach(&module, &lowered.funcs, kind_of(backend));
+    let runs: Vec<(&Run, (i64, i64))> = runs.iter().filter(|r| !unreached.contains_key(&cases[r.case].call.func)).filter_map(|r| move_times(&cases[r.case].call.expect).map(|t| (r, t))).collect();
+    let (none, all) = (BTreeSet::new(), placed.all());
+    let mut ways = vec![(all.clone(), none.clone()), (none.clone(), all.clone())];
+    // (`PROBE_ZERO_CUTS=moves-each`, a search for faults and no part
+    // of the count a handover gives: each unit alone moved, to far and
+    // back, from among the others at the screen and from among them far)
+    if std::env::var("PROBE_ZERO_CUTS").as_deref() == Ok("moves-each") {
+        for u in 0..placed.units.len() {
+            let one: BTreeSet<usize> = [u].into_iter().collect();
+            let rest: BTreeSet<usize> = all.iter().copied().filter(|v| *v != u).collect();
+            ways.extend([(one.clone(), none.clone()), (none.clone(), one), (all.clone(), rest.clone()), (rest, all.clone())]);
+        }
+    }
+    let refused: Vec<Option<String>> = ways.iter().map(|(a, b)| placed.move_refused(a, b)).collect();
+    for ((a, b), why) in ways.iter().zip(&refused) {
+        if let Some(why) = why {
+            report.log.push_str(&format!("move  {:<16} [{}, then {}] refused: {}\n", name, placed.label(a), placed.label(b).trim_start_matches("far: "), why));
+        }
+    }
+    // every move of every case, one batch
+    let mut scalls: Vec<suite::Call> = Vec::new();
+    let mut said: Vec<(usize, String)> = Vec::new();
+    for (i, (r, (between, due))) in runs.iter().enumerate() {
+        let c = &cases[r.case].call;
+        for ((a, b), why) in ways.iter().zip(&refused) {
+            for t in [*between, *due] {
+                if why.is_some() {
+                    cuts.moves_refused += 1;
+                    continue;
+                }
+                let cut = placed.moves(a, &[(b.clone(), t)]);
+                said.push((i, cut.label));
+                scalls.push(suite::Call { func: c.func.clone(), args: c.args.clone(), nrets: c.nrets, checks: checks(&c.expect), text: true, before: cut.before.into_iter().chain(setters(&r.switches, &c.input, &c.input_at)).collect(), live: false, times: true });
+            }
+        }
+    }
+    cuts.timed += runs.len();
+    cuts.moves += scalls.len();
+    let mut failed = vec![0usize; runs.len()];
+    let mut total = 0;
+    if !scalls.is_empty() {
+        match suite::run_calls(&module, &lowered.ir, backend, &scalls, &format!("{}-move", name), level) {
+            Ok(got) => {
+                for ((i, label), got) in said.iter().zip(got) {
+                    let r = runs[*i].0;
+                    let (ok, note) = judge(&cases[r.case].call.expect, got);
+                    if ok {
+                        cuts.moves_passed += 1;
+                    } else {
+                        failed[*i] += 1;
+                        total += 1;
+                        cuts.moves_failed += 1;
+                        report.log.push_str(&format!("FAIL  {:<16} {} [{}]   {}\n", name, labelled(&cases[r.case].text, &r.label), label, note));
+                    }
+                }
+            }
+            Err(e) => {
+                total = scalls.len();
+                cuts.moves_failed += scalls.len();
+                failed.iter_mut().for_each(|f| *f += 1);
+                report.log.push_str(&format!("FAIL  {:<16} [moved] {}\n", name, e));
+            }
+        }
+    }
+    let any_refused = refused.iter().any(Option::is_some);
+    for f in &failed {
+        match (*f, any_refused) {
+            (0, false) => cuts.case_hold += 1,
+            (0, true) => cuts.case_hold_but += 1,
+            _ => cuts.case_broken += 1,
+        }
+    }
+    report.log.push_str(&format!("moves {:<16} {} cases with a time, {} moves run{}{}\n", name, runs.len(), scalls.len(), if any_refused { format!(", {} of {} ways refused", refused.iter().flatten().count(), ways.len()) } else { String::new() }, if total > 0 { format!(", {} runs do not hold", total) } else if scalls.is_empty() { String::new() } else { ": every case holds at each".to_string() }));
 }
 
 /// One store at every cut the runner tries (fm3 touchstones.md, "hello,
@@ -1238,21 +1452,21 @@ mod tests {
         let plain = run(hello, "run()", &native, opt::MAX_LEVEL, true).unwrap();
         assert_eq!(plain, "→ \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s\n");
         for far in ["", "count down", "count down,countdown.zero:2", "all"] {
-            assert_eq!(run_cut(hello, "run()", &native, opt::MAX_LEVEL, true, Some(far)).unwrap(), plain, "far: {}", far);
+            assert_eq!(run_cut(hello, "run()", &native, opt::MAX_LEVEL, true, Some(far), &[]).unwrap(), plain, "far: {}", far);
         }
         // a name three definitions have is not guessed at
-        let err = run_cut(hello, "run()", &native, opt::MAX_LEVEL, true, Some("run")).unwrap_err();
+        let err = run_cut(hello, "run()", &native, opt::MAX_LEVEL, true, Some("run"), &[]).unwrap_err();
         assert!(err.contains("'run' is 3 units") && err.contains("hello.zero:1, countdown.zero:4, bye.zero:1"), "{}", err);
         // the placement: the countdown far, its line at the screen
         // (the table's columns are as wide as their widest row: read
         // with the spaces between them made one)
         let spaced = |t: String| t.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("\n");
-        let table = spaced(placement(hello, Some("count down")).unwrap());
+        let table = spaced(placement(hello, Some("count down"), &[]).unwrap());
         for row in ["countdown.zero:8 far the function `count down`", "countdown.zero:2 screen the line `out$ << (i$ << \"\\n\") forever`", "a call countdown.zero:4 → countdown.zero:8 screen → far nothing over, its end back", "an item countdown.zero:8 → countdown.zero:2 far → screen one `int`, with its time, to the line that reads it", "a switch the switch of feature countdown screen → far"] {
             assert!(table.contains(row), "no {:?} in\n{}", row, table);
         }
-        assert!(placement(hello, None).unwrap().ends_with("the wire carries nothing\n"));
-        let all = spaced(placement(hello, Some("all")).unwrap());
+        assert!(placement(hello, None, &[]).unwrap().ends_with("the wire carries nothing\n"));
+        let all = spaced(placement(hello, Some("all"), &[]).unwrap());
         assert!(all.contains("a call a case's own → bye.zero:1 screen → far nothing over, its end back") && all.contains("text countdown.zero:2 → the screen far → screen"), "{}", all);
         // a plain build has nothing of it
         let s = store::read(hello).unwrap();
@@ -1320,6 +1534,162 @@ mod tests {
         let (want, got) = gives(restart, case, "restart.zero:3", Some("in"));
         let (ok, said) = judge(&want, got);
         assert!(!ok && said == "(printed \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz)", "{}", said);
+    }
+
+    /// one store's build whose cut may be moved, and cases of it run at
+    /// moves: each the case, the units far at first, the cuts gone to
+    /// with their times, and a thing deliberately not handed across at
+    /// the moves. Gives whether each held and what the runner said
+    fn moved_runs(dir: &Path, backend: Backend, runs: &[(&str, &str, &[(&str, i64)], Option<&str>)]) -> Vec<(bool, String)> {
+        let policy = suite::backend_policy(backend).unwrap();
+        let mut s = store::read(dir).unwrap();
+        s.clock = store::Clock::Virtual;
+        s.places = true;
+        s.moved = true;
+        let policy = store_policy(&s, &policy);
+        let l = lower::lower(&s).unwrap();
+        let p = l.placed.as_ref().unwrap();
+        let cases = calls_of(&s, &l, &policy).unwrap();
+        let module = build(&l.ir, &policy, opt::MAX_LEVEL).unwrap();
+        let mut wants = Vec::new();
+        let scalls: Vec<suite::Call> = runs
+            .iter()
+            .map(|(case, far, then, dropped)| {
+                let c = &case_named(&cases, case).unwrap().call;
+                let first = p.named(far).unwrap();
+                let later: Vec<(BTreeSet<usize>, i64)> = then.iter().map(|(names, t)| (p.named(names).unwrap(), *t)).collect();
+                let mut was = &first;
+                for (next, _) in &later {
+                    assert_eq!(p.move_refused(was, next), None);
+                    was = next;
+                }
+                wants.push(c.expect.clone());
+                suite::Call { func: c.func.clone(), args: c.args.clone(), nrets: c.nrets, checks: false, text: true, before: p.moves_but(&first, &later, *dropped).before.into_iter().chain(setters(&c.context, &c.input, &c.input_at)).collect(), live: false, times: matches!(c.expect, store::Expect::Timed(_)) }
+            })
+            .collect();
+        suite::run_calls(&module, &l.ir, backend, &scalls, "zero-moved", opt::MAX_LEVEL).unwrap().into_iter().zip(wants).map(|(got, want)| judge(&want, got)).collect()
+    }
+
+    /// The cut, moved (fm3 cut.md, "the cut, moved"; touchstones.md,
+    /// "hello, in two places", step 2): hello, not a character of it
+    /// changed, started with everything far, and at 4.5 s, with 6
+    /// written and 5 due, everything comes to the screen; the other
+    /// way; only the countdown; at 5 s, where the move is before the 5
+    /// that is due then; and moved twice. Each gives hello's own line,
+    /// no number twice and none missed. Then restart, moved before its
+    /// key, with it and in its second countdown; the stores of things
+    /// going on; and the store that keeps something
+    #[test]
+    fn the_cut_is_moved_while_the_program_runs() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let hello = Path::new("suite/zero/hello");
+        let plain = run(hello, "run()", &native, opt::MAX_LEVEL, true).unwrap();
+        assert_eq!(plain, "→ \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s\n");
+        let s = |x: &str| x.to_string();
+        for (far, to) in [("all", "none"), ("none", "all"), ("count down", "none")] {
+            for t in [4_500_000, 5_000_000] {
+                assert_eq!(run_cut(hello, "run()", &native, opt::MAX_LEVEL, true, Some(far), &[(s(to), t)]).unwrap(), plain, "far: {}, then {} at {}", far, to, t);
+            }
+        }
+        assert_eq!(run_cut(hello, "run()", &native, opt::MAX_LEVEL, true, Some("all"), &[(s("none"), 2_500_000), (s("all"), 7_500_000)]).unwrap(), plain);
+        let err = run_cut(hello, "run()", &native, opt::MAX_LEVEL, true, Some("all"), &[(s("none"), 5_000_000), (s("all"), 5_000_000)]).unwrap_err();
+        assert!(err.contains("go forward in time"), "{}", err);
+        // what is handed across, read off the text: for hello the
+        // table, and nothing else; its functions partway are the pool's
+        let spaced = |t: String| t.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("\n");
+        let table = spaced(placement(hello, Some("all"), &[(s("none"), 4_500_000)]).unwrap());
+        for row in ["at 4.5 s the cut moves: far: nothing, the first thing due at that time", "countdown.zero:8 far screen", "the table 17 bytes of the cut rewritten in the move's turn", "nothing else no field of the context, and no stored stream", "not handed a function partway: `count down`, `run` its record is a place of the pool, 7 columns"] {
+            assert!(table.contains(row), "no {:?} in\n{}", row, table);
+        }
+        // a placed build that is not to be moved has no list and no
+        // pool, as it had none; one that is has both; and a store not
+        // placed is not moved
+        let mut st = store::read(hello).unwrap();
+        let unplaced = lower::lower(&st).unwrap().ir;
+        st.moved = true;
+        assert_eq!(lower::lower(&st).unwrap().ir, unplaced);
+        st.moved = false;
+        st.places = true;
+        let fixed = lower::lower(&st).unwrap().ir;
+        assert!(!fixed.contains("__move") && !fixed.contains("__act_") && !fixed.contains("fn __turns("), "{}", fixed);
+        st.moved = true;
+        let moved = lower::lower(&st).unwrap().ir;
+        assert!(moved.contains("\nfn __move_turn()\n") && moved.contains("\nfn run__0(__a0: index) -> i64\n") && moved.contains("        d1: i64 = get x, __due_move\n"), "{}", moved);
+        // restart's five cases, the cut moved before the key, with the
+        // key, the move first, and in the second countdown
+        let restart = Path::new("suite/zero/restart");
+        let cases = ["launch() with in \"k\" at 3.5 s", "launch()", "launch() with in \"k\" at 4 s", "launch() with in \"k\" at 3.5 s, in \"k\" at 5 s", "launch() with in \"k\" at 12 s"];
+        let ways: [(&str, [(&str, i64); 1]); 6] = [("all", [("none", 2_000_000)]), ("none", [("all", 2_000_000)]), ("all", [("none", 3_500_000)]), ("none", [("all", 3_500_000)]), ("all", [("none", 5_000_000)]), ("none", [("all", 5_000_000)])];
+        let runs: Vec<(&str, &str, &[(&str, i64)], Option<&str>)> = cases.iter().flat_map(|c| ways.iter().map(move |(far, then)| (*c, *far, &then[..], None))).collect();
+        for ((ok, said), (case, far, then, _)) in moved_runs(restart, Backend::Native, &runs).into_iter().zip(&runs) {
+            assert!(ok, "{} far: {}, then {:?}: {}", case, far, then, said);
+        }
+        // every case with a time of the proof's stores, at the runner's
+        // two times, both ways
+        let names = ["hello", "restart", "going-keys", "going-two", "going-mix", "keeps"];
+        let mut report = Report { passed: 0, failed: 0, skipped: 0, log: String::new() };
+        let mut cuts = Cuts::default();
+        for name in names {
+            test_moves(&Path::new("suite/zero").join(name), &native, Backend::Native, opt::MAX_LEVEL, &mut report, &mut cuts);
+        }
+        assert_eq!((cuts.case_hold, cuts.moves_refused, cuts.moves_failed, cuts.unmoved, cuts.moved_stores), (cuts.timed, 0, 0, 0, 6), "{}", report.log);
+        assert!(cuts.timed == 22 && cuts.moves == 88 && cuts.moves_passed == 88, "{} cases, {} moves\n{}", cuts.timed, cuts.moves, report.log);
+        // ... and on another machine, nothing of its driver changed: the
+        // moves are calls a runner makes before a case, as a cut's are
+        let wasm = suite::backend_policy(Backend::Wasm).unwrap();
+        let (mut report, mut there) = (Report { passed: 0, failed: 0, skipped: 0, log: String::new() }, Cuts::default());
+        for name in names {
+            test_moves(&Path::new("suite/zero").join(name), &wasm, Backend::Wasm, opt::MAX_LEVEL, &mut report, &mut there);
+        }
+        assert_eq!((there.case_hold, there.moves_refused, there.moves_failed, there.moves, there.moves_passed), (cuts.timed, 0, 0, cuts.moves, cuts.moves_passed), "{}", report.log);
+        // a function that keeps the machine's stack across a step is
+        // not moved, and the move is refused by its name
+        let timed = Path::new("suite/zero/timed");
+        let err = run_cut(timed, "count down()", &native, opt::MAX_LEVEL, true, Some("all"), &[(s("none"), 4_500_000)]).unwrap_err();
+        assert!(err.starts_with("this move cannot be made yet: 'count down' cannot be moved while it runs: its function `count_down` keeps the machine's stack"), "{}", err);
+    }
+
+    /// A move hands across what it must (fm3 cut.md, "the cut, moved").
+    /// The store that keeps something, moved at 2.5 s: its running sums,
+    /// its clock's latest and its look back are at the place the units
+    /// leave and are copied once to the place they go to. With one of
+    /// them deliberately not handed across, which only this test can
+    /// ask for, the program goes wrong: the sum begins again from
+    /// nothing. And restart's input, read far and then at the screen:
+    /// with its items not handed across, the second key is not seen
+    #[test]
+    fn a_move_hands_across_what_it_must() {
+        let keeps = Path::new("suite/zero/keeps");
+        let at: [(&str, i64); 1] = [("none", 2_500_000)];
+        let back: [(&str, i64); 1] = [("all", 2_500_000)];
+        let got = moved_runs(keeps, Backend::Native, &[
+            ("count to (5)", "all", &at, None),
+            ("count to (5)", "all", &at, Some("total")),
+            ("count to (5)", "none", &back, None),
+            ("count to (5)", "none", &back, Some("total")),
+            ("begin()", "all", &at, None),
+            ("begin()", "all", &at, Some("sum")),
+            ("begin()", "all", &at, Some("beat")),
+            ("begin()", "all", &at, Some("__z1_x_1")),
+        ]);
+        assert!(got[0].0 && got[2].0 && got[4].0, "{:?}", got);
+        // 1, 2 and 3 were added far; 4 and 5 at the screen, to nothing
+        for k in [1, 3] {
+            assert!(!got[k].0 && got[k].1 == "(printed \"1 1\\n3 2\\n6 3\\n10 4\\n\" at 1 hz, \"9\" at 5 s)", "{:?}", got[k]);
+        }
+        // the sum not handed: 4 at 3 s, where the case has 10, and it
+        // has fallen by 2 from the 6 the look back remembers
+        assert!(!got[5].0 && got[5].1 == "(printed \"1 1\\ngo\\n\" at 0 s, \"3 2\\n6 3\\n4 -2\" at 1 hz from 1 s)", "{:?}", got[5]);
+        // the clock's latest not handed: it counts again from 1, to 4
+        assert!(!got[6].0 && got[6].1 == "(printed \"1 1\\ngo\\n\" at 0 s, \"3 2\\n6 3\\n7 1\\n9 2\\n12 3\\n16 4\" at 1 hz from 1 s)", "{:?}", got[6]);
+        // the look back not handed: the rise is from nothing
+        assert!(!got[7].0 && got[7].1 == "(printed \"1 1\\ngo\\n\" at 0 s, \"3 2\\n6 3\\n10 10\" at 1 hz from 1 s)", "{:?}", got[7]);
+        let restart = Path::new("suite/zero/restart");
+        let case = "launch() with in \"k\" at 3.5 s, in \"k\" at 5 s";
+        let four: [(&str, i64); 1] = [("none", 4_000_000)];
+        let got = moved_runs(restart, Backend::Native, &[(case, "all", &four, None), (case, "all", &four, Some("in"))]);
+        assert!(got[0].0, "{:?}", got);
+        assert!(!got[1].0 && got[1].1 == "(printed \"10\\n9\\n8\\n7\\n\" at 1 hz, \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz from 3.5 s)", "{:?}", got[1]);
     }
 
     #[test]

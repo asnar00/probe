@@ -253,6 +253,11 @@ enum Kind {
     At(Point),
     /// a loop left at places of its own body: the body's statements
     Loop(Vec<Stmt>, Vec<Option<Point>>),
+    /// an `if` that is a statement, left at places at the top of a
+    /// branch (fm3 log 265): the statements of its two branches one
+    /// after the other, how many of them are the first's, and whether
+    /// an `else` is written
+    If(Vec<Stmt>, Vec<Option<Point>>, usize, bool),
 }
 
 struct Maker<'a> {
@@ -267,6 +272,8 @@ struct Maker<'a> {
     /// the number of the continuation being written: left again at
     /// its own place, the pool already says where to go on
     here: i64,
+    /// a place in a branch of an `if` is held (fm3 log 265)
+    ifs: bool,
 }
 
 fn point_of(head: &str, r: &BTreeSet<String>) -> Option<Point> {
@@ -283,7 +290,7 @@ fn leaves(line: &str, r: &BTreeSet<String>) -> bool {
     called(line).iter().any(|c| *c == "__step" || *c == "__wait" || r.contains(*c))
 }
 
-fn kind(s: &Stmt, d: usize, r: &BTreeSet<String>) -> Option<Kind> {
+fn kind(s: &Stmt, d: usize, r: &BTreeSet<String>, ifs: bool) -> Option<Kind> {
     if let Some(p) = point_of(s.head(), r) {
         return Some(Kind::At(p));
     }
@@ -296,15 +303,57 @@ fn kind(s: &Stmt, d: usize, r: &BTreeSet<String>) -> Option<Kind> {
         let body = stmts(&s.lines[1..], 2);
         let mut ps = Vec::new();
         for b in &body {
-            match kind(b, 2, r)? {
+            match kind(b, 2, r, ifs)? {
                 Kind::Plain => ps.push(None),
                 Kind::At(p) => ps.push(Some(p)),
-                Kind::Loop(..) => return None,
+                Kind::Loop(..) | Kind::If(..) => return None,
             }
         }
         return Some(Kind::Loop(body, ps));
     }
+    // ... and, where the cut may be moved (fm3 log 265), at the top of
+    // a branch of an `if` that is a statement at the top of the
+    // function: a dynamic feature's gate, `if on / else / <the chain
+    // below> / ret`, is this
+    if ifs && d == 1 && s.head().starts_with("if ") {
+        let at = s.lines.iter().position(|l| depth(l) == 1 && l.trim() == "else");
+        let (first, second) = match at {
+            Some(a) => (&s.lines[1..a], &s.lines[a + 1..]),
+            None => (&s.lines[1..], &s.lines[..0]),
+        };
+        let mut body = stmts(first, 2);
+        let split = body.len();
+        body.extend(stmts(second, 2));
+        let mut ps = Vec::new();
+        for b in &body {
+            match kind(b, 2, r, ifs)? {
+                Kind::Plain => ps.push(None),
+                Kind::At(p) => ps.push(Some(p)),
+                Kind::Loop(..) | Kind::If(..) => return None,
+            }
+        }
+        return Some(Kind::If(body, ps, split, at.is_some()));
+    }
     None
+}
+
+/// Can the loop these lines are be left by a `break` of its own? One
+/// that cannot is where its function ends: nothing can follow it, and
+/// the IR refuses text that does (fm3 log 266). A loop left at a place
+/// before its test is such a one in the continuation that begins it
+fn exits(lines: &[String]) -> bool {
+    let mut inner: Option<usize> = None;
+    for l in &lines[1..] {
+        let (d, t) = (depth(l), l.trim());
+        if inner.map_or(false, |n| d > n) {
+            continue;
+        }
+        inner = if t.starts_with("loop(") || t.contains(" = loop(") { Some(d) } else { None };
+        if t == "break" || t.starts_with("break ") {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_context(s: &Stmt) -> bool {
@@ -456,11 +505,55 @@ impl<'a> Maker<'a> {
                     return;
                 }
                 Kind::Loop(body, ps) => {
+                    let at = out.len();
                     out.push(ss[j].lines[0].clone());
                     self.body(f, ss, kinds, j, body, ps, 0, out);
+                    if !exits(&out[at..]) {
+                        return;
+                    }
+                }
+                Kind::If(body, ps, split, other) => {
+                    out.push(ss[j].lines[0].clone());
+                    self.branch(f, ss, kinds, j, body, ps, (0, 0, *split), false, out);
+                    if *other {
+                        out.push("    else".to_string());
+                        self.branch(f, ss, kinds, j, body, ps, (*split, *split, body.len()), false, out);
+                    }
                 }
             }
         }
+    }
+
+    /// A branch of an `if` from one of its statements on, to the first
+    /// place: `span` is where to begin, and where the branch begins
+    /// and ends among the statements of the two. In a continuation the
+    /// rest of a branch stands at the top of the function, a level
+    /// out. Says whether the branch ended there, left or returned from
+    #[allow(clippy::too_many_arguments)]
+    fn branch(&mut self, f: &Func, ss: &[Stmt], kinds: &[Kind], j: usize, body: &[Stmt], ps: &[Option<Point>], span: (usize, usize, usize), out_a_level: bool, out: &mut Vec<String>) -> bool {
+        let (from, lo, hi) = span;
+        for i in from..hi {
+            match &ps[i] {
+                None => {
+                    let s = if out_a_level { Stmt { lines: body[i].lines.iter().map(|l| l[4..].to_string()).collect() } } else { body[i].clone() };
+                    self.plain(f, &s, out);
+                }
+                Some(p) => {
+                    let mut live = self.live_top(f, ss, j);
+                    live.extend(self.live_within(body, lo, i, hi));
+                    let id = self.ids[&(f.name.clone(), self.place(kinds, j, i))];
+                    self.leave(f, p, id, &live, if out_a_level { "    " } else { "        " }, out);
+                    return true;
+                }
+            }
+        }
+        hi > from && body[hi - 1].head().starts_with("ret")
+    }
+
+    /// what is alive across a place in a branch, of the branch's own
+    fn live_within(&self, body: &[Stmt], lo: usize, i: usize, hi: usize) -> Vec<(String, String)> {
+        let cands: Vec<(String, String)> = body[lo..i].iter().flat_map(|s| defs(s.head())).collect();
+        cands.into_iter().filter(|(n, _)| body[i + 1..hi].iter().any(|s| s.lines.iter().any(|l| names(l, n)))).collect()
     }
 
     /// a loop's body from one of its statements on, to the first place
@@ -494,7 +587,7 @@ impl<'a> Maker<'a> {
                         return n;
                     }
                 }
-                Kind::Loop(_, ps) => {
+                Kind::Loop(_, ps) | Kind::If(_, ps, ..) => {
                     for (ii, p) in ps.iter().enumerate() {
                         if p.is_some() {
                             n += 1;
@@ -543,7 +636,7 @@ impl<'a> Maker<'a> {
         let ss = stmts(&f.body, 1);
         let mut kinds = Vec::new();
         for s in &ss {
-            kinds.push(kind(s, 1, self.r)?);
+            kinds.push(kind(s, 1, self.r, self.ifs)?);
         }
         let mut out = Vec::new();
         // the start: the parameters are the pool's
@@ -636,7 +729,35 @@ impl<'a> Maker<'a> {
                                 l.push_str(", 0");
                             }
                         }
-                        self.top(f, &ss, &kinds, j + 1, &mut out);
+                        if exits(&out[at..]) {
+                            self.top(f, &ss, &kinds, j + 1, &mut out);
+                        }
+                    }
+                }
+                Kind::If(body, ps, split, _) => {
+                    for (i, p) in ps.iter().enumerate() {
+                        let Some(p) = p else { continue };
+                        let place = self.place(&kinds, j, i);
+                        self.open(f, place, &ss[..j], &mut out);
+                        let (lo, hi) = if i < *split { (0, *split) } else { (*split, body.len()) };
+                        let mut live = self.live_top(f, &ss, j);
+                        live.extend(self.live_within(body, lo, i, hi));
+                        self.held = live.iter().map(|(n, _)| n.clone()).collect();
+                        for (n, t) in &live {
+                            let col = self.field(&f.name, n, t);
+                            self.read(&col, n, t, "    ", &mut out);
+                        }
+                        if let Point::Call(d, g, _) = p {
+                            for (k, (n, t)) in d.iter().enumerate() {
+                                let col = self.res(g, k);
+                                self.read(&col, n, t, "    ", &mut out);
+                            }
+                        }
+                        // the rest of the branch, and then what
+                        // follows the `if`
+                        if !self.branch(f, &ss, &kinds, j, body, ps, (i + 1, lo, hi), true, &mut out) {
+                            self.top(f, &ss, &kinds, j + 1, &mut out);
+                        }
                     }
                 }
             }
@@ -657,7 +778,7 @@ fn loop_params(head: &str) -> Vec<(String, String, String)> {
 
 /// The rewrite (fm3 log 232), or nothing where some function's shape
 /// is not held and the store stays as it was
-pub fn rewrite(ir: &str) -> Option<String> {
+pub fn rewrite(ir: &str, moved: bool) -> Option<String> {
     let (mut lines, fns) = parse(ir);
     let r0 = steppers(&fns);
     let by: HashMap<String, &Func> = fns.iter().map(|f| (f.name.clone(), f)).collect();
@@ -675,7 +796,9 @@ pub fn rewrite(ir: &str) -> Option<String> {
             }
         }
     }
-    if !starts.iter().any(|(f, _)| !f.starts_with("__whole_")) {
+    // (where the cut may be moved, fm3 log 265, a case's own function
+    // is enough: the move is the other thing going on)
+    if starts.is_empty() || !moved && !starts.iter().any(|(f, _)| !f.starts_with("__whole_")) {
         return None;
     }
     // every function such a start reaches that can itself reach a step
@@ -690,7 +813,7 @@ pub fn rewrite(ir: &str) -> Option<String> {
     if ir.matches("data __ctx_mem: array(__ctx, 2)").count() != 1 {
         return None;
     }
-    let mut m = Maker { r: &r, fns: by.iter().map(|(k, v)| (k.clone(), *v)).collect(), ids: HashMap::new(), fields: Vec::new(), tmp: 0, held: BTreeSet::new(), here: 0 };
+    let mut m = Maker { r: &r, fns: by.iter().map(|(k, v)| (k.clone(), *v)).collect(), ids: HashMap::new(), fields: Vec::new(), tmp: 0, held: BTreeSet::new(), here: 0, ifs: moved };
     // the continuations' numbers, from 2: the places inside loops
     // first, being where an item is, so that the choice among them
     // meets those first
@@ -701,7 +824,7 @@ pub fn rewrite(ir: &str) -> Option<String> {
         let mut n = 0;
         order.push((false, g.clone(), 0));
         for s in &ss {
-            match kind(s, 1, &r)? {
+            match kind(s, 1, &r, moved)? {
                 Kind::Plain => {}
                 Kind::At(_) => {
                     n += 1;
@@ -711,6 +834,12 @@ pub fn rewrite(ir: &str) -> Option<String> {
                     for _ in ps.iter().flatten() {
                         n += 1;
                         order.push((true, g.clone(), n));
+                    }
+                }
+                Kind::If(_, ps, ..) => {
+                    for _ in ps.iter().flatten() {
+                        n += 1;
+                        order.push((false, g.clone(), n));
                     }
                 }
             }
