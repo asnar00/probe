@@ -4,6 +4,64 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: of two functions partway at two places the first begun goes first: a record carries when it was begun — `9630034` · 2026-10-13
+
+```
+on count down()
+    i$ << [10 through 1]
+
+on count down from (int n)
+    i$ << [n through n - 4]
+```
+
+`suite/zero/going-two/two/two.zero:9-13`, with the case `>count down from (5) with in "k" at 2.5 s → "5\n4\n3\n" at 1 hz, "2\n10\n" at 3 s, "1\n9\n" at 4 s, "8\n7\n6\n5\n4\n3\n2\n1\nliftoff" at 1 hz from 5 s`. The case's own `count down from` is begun at 0 s; its key begins `count down` at 2.5 s; both are due at 3 s, and the one begun first writes first (fm3 question 121). Over a wire that takes time, with the two at different places, the order they were begun in was known to neither place: the screen's went first, the case gave `"10\n2\n"`, and such a cut was refused by name, 18 of the suite's. fm3 question 155's option B, decided, is built. `probe zero suite/zero/going-two run 'count down from (5) with in "k" at 2.5 s' --far 'count down from' --wire 100 ms`:
+
+```
+count down from (5) with in "k" at 2.5 s
+→ "5\n4\n3\n" at 1 hz, "2\n10\n" at 3 s, "1\n9\n" at 4 s, "8\n7\n6\n5\n4\n3\n2\n1\nliftoff" at 1 hz from 5 s
+late: 8 pieces of 16, the most 400 ms
+  "5\n" for 0 s, shown at 200 ms, 200 ms late
+  "4\n" for 1 s, shown at 1.2 s, 200 ms late
+  "3\n" for 2 s, shown at 2.2 s, 200 ms late
+  "2\n" for 3 s, shown at 3.2 s, 200 ms late
+  "10\n" for 3 s, shown at 3.4 s, 400 ms late
+  "1\n" for 4 s, shown at 4.2 s, 200 ms late
+  "9\n" for 4 s, shown at 4.4 s, 400 ms late
+  "8\n" for 5 s, shown at 5.2 s, 200 ms late
+far worked ahead: no turn it took was thrown away
+```
+
+and rows of its placement, from 2.5 s:
+
+```
+2.5 s   2.6 s    screen → far  a telling: nothing for a time up to 2.5 s                       for 2.5 s
+3 s     3.1 s    screen → far  a telling: nothing before 3 s                                   for 2.5 s
+3.1 s   3.2 s    far → screen  a function partway, to go on in `out$ << (i$ << "\n") forever`  for 3 s
+3.1 s   3.2 s    far → screen  a telling: nothing before the end                               for 3 s
+3.2 s   3.3 s    screen → far  a function partway, to go on in `count down from`               for 3 s
+3.2 s   3.3 s    screen → far  a telling: nothing before 3 s                                   for 3 s
+3.3 s   3.4 s    far → screen  a telling: nothing before 4 s                                   for 4 s
+```
+
+At 3 s the screen has `count down`'s 10 to write and does not: far has told it that its own earliest thing is for 3 s too and was begun first. Far's 2 crosses to the line that writes it, is shown at 3.2 s, and its end goes back; then the 10, at 3.4 s.
+
+**A record carries when it was begun.** The pool has a column more, `__act_begun`, set where a place of the pool is taken (`__act_slot`, `turns.rs`) and carried with the record as every column is: in a call that crosses, at a move, in the copy far keeps before a turn taken ahead. Within a place two functions due together are taken first begun first (`__act_next`).
+
+**A telling carries it in the word it has.** The rank a place says of its earliest thing was the thing's number in the list. It is that number times 2^44 and, for the pool's word, the time the earliest function there was begun, added (`wire_list`, `lower.rs`); `__list_turn` divides to find which thing it is. So a telling keeps its two words, and every comparison of two ranks the world makes takes the first begun with no line of it changed: who goes first of two due together (`__wturn`), which copy far goes back to (`__wback`), which kept piece is shown first (`__wkeep`, `__wflush`), which turn a telling has passed (`__wpassed`). The refusal is gone (`refused_wire`, `places.rs`). What is still the screen's first: two functions at two places due at one time and begun at one time.
+
+`PROBE_ZERO_CUTS=wire=100 probe zero test suite/zero wasm`, before and after:
+
+| | `71939f6` | now |
+|---|---|---|
+| cuts run, refused | 655, 275 | 673, 257 |
+| runs at a cut that hold by their own times | 29 698 of 29 698 | 30 107 of 30 107 |
+| stores that hold at every cut | 14 of 48 | 18 of 48: `going-two`, `going-beside`, `quiet-clocks`, `timed-zeroic` with them |
+| pieces of text shown late | 3 025 of 39 123 | 3 180 of 41 658 |
+
+With no delay, 673 of 673 cuts show nothing late. The moves over a wire, `wire-moves=100`: 200 of 200, as they were. Every build for a wire that has a pool is new text; a plain build and a placed build with no wire, fixed and moved, are the text they were. The six rows: 478, 485, 920, 931, 939, 918. hello's `run` for a wire of 100 ms as counted, the rank worked out at every asking: 35 659 → 36 938 with nothing far, 24 941 → 25 528 with everything far. `of_two_functions_at_two_places_the_first_begun_goes_first`, a `cargo test`. Full run `scratchpad/chain164.log`: 1329/1329 on four paths, 1288/1288 on the GPU's, `cargo test` 205 passed.
+
+---
+
 ### zero: the cut moved over a wire that takes time: the move's word, far's state, and a function partway handed across — `71939f6` · 2026-10-13
 
 ```
