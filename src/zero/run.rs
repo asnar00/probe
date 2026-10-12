@@ -2318,7 +2318,9 @@ mod tests {
     /// dropping, and the copy of far's streams: with each left out, by
     /// a switch only this test has, the case gives something else. A
     /// store that keeps a running sum across its key gives a wrong
-    /// number, 621 for 306, where far is not put back. A store with no
+    /// number, 621 for 306, where far is not put back; and at the cut
+    /// where a beat pushes into a stream the screen reads, a turn
+    /// taken ahead is taken back and the case holds. A store with no
     /// input that arrives at a time has none of this in its text. And
     /// every cut the runner tries of the stores with a key, on the JIT
     /// and on another machine
@@ -2382,7 +2384,7 @@ mod tests {
         let keeps = Path::new("suite/zero/keeps-key");
         for case in ["begin()", "begin() with in \"k\" at 2.25 s", "begin() with in \"k\" at 2.25 s, in \"k\" at 4.25 s"] {
             let plain = run(keeps, case, &native, opt::MAX_LEVEL, true).unwrap();
-            for far in ["all", "bump.zero:4", "bump.zero:5", "begin", "none"] {
+            for far in ["all", "bump.zero:4", "bump.zero:5", "bump.zero:4,bump.zero:5", "begin", "none"] {
                 let (_, shown, _) = wire_case(keeps, case, &native, opt::MAX_LEVEL, Backend::Native, Some(far), 100_000, 0).unwrap();
                 assert_eq!(format!("→ {}\n", shown), plain.trim_start(), "{} far: {}", case, far);
             }
@@ -2392,6 +2394,15 @@ mod tests {
         assert!(has(&pieces, "306\n", 2_250_000) && has(&pieces, "321\n", 5_000_000), "{:?}", pieces);
         assert_eq!(pieces.iter().filter(|p| p.shown > p.own).map(|p| (p.text.as_str(), p.own, p.shown)).collect::<Vec<_>>(), vec![("1\n", 0, 100_000), ("go\n", 0, 300_000), ("306\n", 2_250_000, 2_450_000)]);
         assert_eq!(thrown, Some(10));
+        // a turn that would send more than text is taken back: with
+        // the clock and its sum far and the key's function at the
+        // screen, each beat pushes into the stored stream the key's
+        // function reads, and far's turn for it, taken ahead, is put
+        // back whole and waits to be told. Late, and the case's own line
+        let table = spaced(placement_wire(keeps, Some("bump.zero:4,bump.zero:5"), 100_000, Some(one), &native, opt::MAX_LEVEL).unwrap());
+        for row in ["200 ms far takes back a turn it took ahead: it would have sent more than text for 1 s", "1.1 s 1.2 s far → screen text \"3\\n\" for 1 s", "late: 7 pieces of 8, the most 200 ms"] {
+            assert!(table.contains(row), "no {:?} in\n{}", row, table);
+        }
         // ... not put back, six beats and a sum of 21 where the key
         // found three and 6
         let (_, _, pieces, _) = all(keeps, one, 4);
