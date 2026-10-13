@@ -2865,6 +2865,69 @@ mod tests {
         let (_, shown, _, _) = wire_case_cost(&dir, key, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), 100_000, 64).unwrap();
         assert_eq!(shown, "\"1\\n\" at 0 s, \"2\\nkey\\n3\\n\" at 2 hz from 1 s, \"4\\n\" at 3 s, \"38\" at 4 s", "with the values not copied, the four items far made ahead are still in the array: 2, 4, 6, 8 and then 4, 6 and 8 again");
         let _ = std::fs::remove_dir_all(&dir);
+        // One storage under two names of one record is copied once. A
+        // function's own stream, pushed into two `if`s deep after a
+        // call: the inner `if` is put out as a function of its own,
+        // handed the stream, so the record holds it twice, as
+        // `gathered`'s `s` and as `gathered__o1`'s. Copied apiece where
+        // the record comes back from `doubled`, the push would go into
+        // one copy and the frame be taken of the other: 1 for 7, which
+        // is what this gave before the copies were kept for an arrival
+        // (`__land_was`, `__land_note`)
+        let dir = std::env::temp_dir().join(format!("probe-wire-gathered-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("gathered")).unwrap();
+        std::fs::write(dir.join("gathered/gathered.zero"), "on (int d) << doubled (int x)\n    d << x * 2\n\non (int n) << gathered (int k)\n    int s$\n    s$ << 1\n    if (k > 0)\n        if (k > 1)\n            s$ << doubled (k)\n    int f[] = frame s$\n    n << f[] + _\n").unwrap();
+        std::fs::write(dir.join("gathered/gathered.md"), "# gathered\n*a stream a function makes, pushed into in a call put out of it*\n\nlayer: runtime\n\n> (suite) 2026-10-13T13:00:00\nA function's own stream, pushed into two `if`s deep after a call.\n\n## testing\n>gathered (3) → 7\n>gathered (1) → 1\n").unwrap();
+        let text = lower::lower(&wired(&dir).unwrap()).unwrap().ir;
+        assert!(text.contains("\ndata __act_gathered__s__ring: ") && text.contains("\ndata __act_gathered__o1__s__ring: "), "the stream is held under two names");
+        for far in ["doubled", "gathered", "all"] {
+            assert_eq!(run_wire(&dir, "gathered (3)", &native, opt::MAX_LEVEL, Some(far), 100_000).unwrap(), "gathered (3)\n→ 7\nlate: nothing, of 0 pieces\n", "{} far", far);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A function still on the machine's stack is called at its own
+    /// place (fm3 cut.md, "one way to leave a function"; log 286). A
+    /// function over an abstract type, `smaller of (number a) and
+    /// (number b)`, is the IR's to make anew for the types a call has,
+    /// and so is no continuation; one with several definitions, one a
+    /// type, and one called with another type than its parameter's,
+    /// likewise. A function left at its calls cannot wait for it across
+    /// a wire. So the call is put out as a function of the callee's own
+    /// unit whose one statement is the call, with the types the call
+    /// site has: the record crosses to the callee's place and the
+    /// callee is called there, on the stack
+    #[test]
+    fn a_function_on_the_stack_is_called_at_its_own_place() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let functions = Path::new("suite/zero/functions");
+        assert_eq!(run_wire(functions, "narrow (300000)", &native, opt::MAX_LEVEL, Some("narrow"), 100_000).unwrap(), "narrow (300000)\n→ 300000\nlate: nothing, of 0 pieces\n");
+        let l = lower::lower(&wired(functions).unwrap()).unwrap();
+        let at = l.ir.find("\nfn smaller_of_and__o1__0(__a: index) -> i64\n").expect("the call is a function of its own, left as any is");
+        assert!(l.ir[at..].lines().take(8).any(|t| t == "    __r0: i32 = smaller_of_and(__p0, __p1)"), "it calls the function as written, with the call's own types");
+        assert!(l.ir.contains("\nfn smaller_of_and(a: number, b: number) -> number\n"), "the function itself is as it was written");
+        let p = l.placed.as_ref().unwrap();
+        for far in ["narrow", "kind of a decimal", "width at thirty two bits", "describe a decimal"] {
+            assert_eq!(p.refused(&p.named(far).unwrap()), None, "{}", far);
+        }
+        // a case's own call of such a function is the screen's, and
+        // still waits for it: refused by name, for the abstract type
+        let why = p.refused(&p.named("smaller of and").unwrap()).unwrap();
+        assert!(why.contains("is called by `__case_smaller_of_and`, the screen's own") && why.ends_with("it is handed `number`, an abstract type, for which the IR makes the function anew"), "{}", why);
+        // a stream handed to a function is no value, and is never
+        // handed through such a call: the callee would be given a copy
+        let checks = lower::lower(&wired(Path::new("suite/zero/checks")).unwrap()).unwrap();
+        assert!(!checks.ir.contains("\nfn shut__o"), "a stream is not handed as a value");
+        let p = checks.placed.as_ref().unwrap();
+        assert!(p.refused(&p.named("shut").unwrap()).unwrap().ends_with("it is handed a stream"));
+        // every cut of two stores that call such functions, on wasm
+        let wasm = suite::backend_policy(Backend::Wasm).unwrap();
+        let (mut report, mut wires) = (Report { passed: 0, failed: 0, skipped: 0, log: String::new() }, Wires::default());
+        for name in ["functions", "sequences"] {
+            test_wire(&Path::new("suite/zero").join(name), &wasm, Backend::Wasm, opt::MAX_LEVEL, &mut report, &mut wires, 100_000, false);
+        }
+        assert_eq!((wires.stores, wires.failed, wires.unbuilt, wires.broken), (2, 0, 0, 0), "{}", report.log);
     }
 
     /// Which of two functions was started first, carried (fm3 question
