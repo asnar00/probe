@@ -4,6 +4,74 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a value wider than a word is kept across a place, and an array is copied where its record arrives — `f552104` · 2026-10-13
+
+```
+on (int n) << total of (int x[])
+    n << x[] + _
+
+on (int n) << handed()
+    int a[] = [1, 2, 3]
+    n << [total of] (a[]) * 10 + [total of] ([4, 5])
+```
+
+`suite/zero/arrays/arrays/arrays.zero:56-61`. A place of the pool held a word (fm3 question 139), so a function handed, giving or keeping anything wider kept the machine's stack, and over a wire that takes time every cut that put it apart from what it calls, or from what calls it, was refused. After the last entry that was the largest thing holding a function on the stack: an array or a string, a structure, a `float`, an enumeration. Hop fifty's second landing, transformation 167 (fm3 log 284, 285).
+
+**A value is as many columns as it has words** (`turns::Types`, read off the text's `type` lines; `Maker::register`, `read`, `write`). An enumeration, `type kind = u8`, is a word. A `float` is a column, a `store` and a `load` being typed by the value. A structure is a column a field, taken apart with `get` and put back with `pack`. An array or a string, `T$` in the IR, is its handle's four words, `ring`, `pos`, `rule`, `edge`; an array's view, `T[]`, its three. Which `T$` is a value the text does not say, an array, a string and a stream being one type: a parameter or a result is one where the lowering says so (`Unit.values`), a kept name where its own line makes it (`__queue_T`) or a function whose result is a value gives it (`turns::valued`). A stream that is neither a field's, which the entry before holds, nor a value is not held: its function stays on the stack and the refusal says so. A function over an abstract type, `smaller of and (number a, number b)`, is the IR's to make anew and stays too.
+
+**Where a record arrives at a place each array or string in it is copied into that place's memory**, so that no address crosses: `__act_land(row)`, written beside the pool. It is called over a wire where a function partway arrives in a call or is handed at a move (`__wland`, in `__wdeliver` and `__wtake`); with no wire where a record goes into far's half for a turn and comes back (`__act_in`, `__act_out`); and where far keeps a copy of itself before a turn taken ahead (`__wland_all`), each of its records being given storage of its own so that the copy keeps what was. A place of the pool newly taken has its address columns set to nothing, and nothing is passed over. `probe zero suite/zero/arrays emit places --wire 100 ms`:
+
+```
+fn __act_land_int(c: ptr, row: index)
+    r0: i64 = load c, row, 8
+    has: u1 = cmp.ne r0, 0
+    if has
+        r: ptr = load c, row, 8
+        st: i64 = load r, 40
+        w: index = load r, 24
+        stepped: u1 = cmp.ne st, 0
+        worded: u1 = cmp.ne w, 0
+        queue: u1 = and stepped, worded
+        if queue
+            ar: ptr = addr __arena
+            n: ptr = arena_alloc(ar, 64)
+```
+
+**A queue is copied with the room it was made with.** Hop forty-six's copy of a value handed at a crossing carves a buffer of exactly the items there are. `each doubled`, `int j[] = doubled (a[])` (`arrays.zero:53`), pushes an item into `j` after each call of `doubled`, so the array is alive across the call while it is still being made; copied to its length it had no room, and the case stopped at the first cut tried.
+
+```
+$ probe zero suite/zero/arrays run 'handed()' --far 'total of' --wire 100 ms
+handed()
+→ 69
+late: nothing, of 0 pieces
+$ probe zero suite/zero/arrays placement --far 'total of' --wire 100 ms --case 'handed()'      (rows of it)
+arrays.zero:56   far   the function `total of`
+arrays.zero:59   screen  the function `handed`
+the wire carries
+a call  arrays.zero:59 → arrays.zero:56  screen → far  an array of `int`, copied, int over and back, and its end
+a wire of 100 ms, by the world's clock: `handed()`
+left   arrived   what   its own time
+0 s   0 s   screen → far  a telling: nothing before 0 s   for 0 s
+0 s   0 s   far → screen  a telling: nothing before the end   for 0 s
+0 s   100 ms   screen → far  a function partway, to go on in `total of`  for 0 s
+0 s   100 ms   screen → far  a telling: nothing before the end   for 0 s
+100 ms  200 ms   far → screen  a function partway, to go on in `handed`   for 0 s
+100 ms  200 ms   far → screen  a telling: nothing before the end   for 0 s
+200 ms  300 ms   screen → far  a function partway, to go on in `total of`  for 0 s
+200 ms  300 ms   screen → far  a telling: nothing before the end   for 0 s
+300 ms  400 ms   far → screen  a function partway, to go on in `handed`   for 0 s
+300 ms  400 ms   far → screen  a telling: nothing before the end   for 0 s
+400 ms  500 ms   screen → far  a telling: nothing before the end   for 0 s
+```
+
+**On wasm, cuts over a wire of 100 ms: 700 run and 264 refused → 803 run and 161 refused; 38 008 of 38 008 runs give the case's own line; 25 of 48 stores hold at every cut, where 18.** Moves are as they were after the last entry: 244 of 244 with no wire, 228 run and 16 refused over 100 ms. The 161 left: 42 a function with several definitions, over an abstract type or called with another type, each a unit a cut puts apart from its caller; 42 the reader of a stored stream at both places; 30 a stream handed to a function; 14 a push of more than a word; 12 a function wired over a stream that does not step; 8 a field of the context wider than a word (a field that is an enumeration now crosses as a word, 10 cuts); 6 a shape; 5 a push through a function; 2 not reached. `clock` and `tasks` are not built.
+
+`a_value_wider_than_a_word_is_kept_across_a_place`, a `cargo test`: the cuts of `arrays`, the columns, seven stores at every cut on wasm; and that the copy is needed. A store of the test's own, a function far that doubles four numbers a second apart into an array, and a key at 1.5 s: far works all four out ahead and is put back to 1 s. With the values not copied, by a switch only the test has (`__wire_but(64)`), the array is not put back with the rest and holds 2, 4, 6, 8 and then 4, 6, 8 again: the case gives `38` for `20`. No store of the suite with a timed input keeps a value in a record.
+
+What a wider record costs, as `probe count` counts `handed()` over 100 ms: nothing far 6 900; `total of` far, two calls that cross and come back, 19 143, of which the four copies are 560. hello's `run` in the wire's build is 25 528 and 36 938 and restart's `launch()` 72 917, as they were: their text did not change. A plain build and a placed build with no move are byte for byte what they were (`irdiff.sh`, `agent59/placediff.sh` against `probe164`); a build that moves changed for `clock`, whose `mark thrice` could not be moved and now is; a wire's build for 18 stores. The six rows are 478, 485, 920, 931, 939 and 918. Full run `scratchpad/chain167.log`: 1329/1329 on the JIT, wasm, riscv and arm-qemu, 1288/1288 with 41 skipped on air; `probe test` 1030, 1021 + 9 skipped, 1030, 1030, 993 + 37 skipped; `cargo test` 206 passed, 2 ignored.
+
+---
+
 ### zero: a stream kept across a step is read from the context again; a refusal for the stack says why — `c2ddf8a` · 2026-10-13
 
 ```
