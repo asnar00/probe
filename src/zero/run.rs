@@ -2789,6 +2789,84 @@ mod tests {
         assert!(cut_of(lower::lower(&{ let mut s = wired(Path::new("suite/zero/lex")).unwrap(); s.moved = true; s }).unwrap().placed.as_ref().unwrap(), Some("number start"), &[("none".to_string(), 1_500_000)]).unwrap_err().starts_with("this cut cannot be run yet: 'u$' is stored, and one reader of it would be at both places"));
     }
 
+    /// A value wider than a word across a place (fm3 cut.md, "one way to
+    /// leave a function"; log 284). A function handed, giving or keeping
+    /// an array, a string, a structure, a `float` or an enumeration is
+    /// left at its calls as one that keeps words is: a value is as many
+    /// columns of the pool as it has words, and where its record arrives
+    /// at a place each array or string in it is copied into that place's
+    /// memory (`__act_land`), so that no address crosses. So a cut
+    /// between a function and the one it hands an array to runs over a
+    /// wire that takes time. And the copy is needed: far, working ahead
+    /// of a key, keeps a copy of itself before each turn, and with the
+    /// values not copied, by a switch only this test has, an array far is
+    /// still making when the key arrives is not put back with the rest
+    #[test]
+    fn a_value_wider_than_a_word_is_kept_across_a_place() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let arrays = Path::new("suite/zero/arrays");
+        for (case, far, gives) in [("handed()", "total of", "69"), ("handed()", "handed", "69"), ("each doubled()", "doubled", "20"), ("squared()", "squares to", "16"), ("squared()", "all", "16")] {
+            assert_eq!(run_wire(arrays, case, &native, opt::MAX_LEVEL, Some(far), 100_000).unwrap(), format!("{}\n→ {}\nlate: nothing, of 0 pieces\n", case, gives), "{} with {} far", case, far);
+        }
+        let text = lower::lower(&wired(arrays).unwrap()).unwrap();
+        let p = text.placed.as_ref().unwrap();
+        for far in ["total of", "handed", "doubled", "each doubled", "squares to", "squared", "all"] {
+            assert_eq!(p.refused(&p.named(far).unwrap()), None, "{}", far);
+        }
+        // the array `handed` makes is `total of`'s parameter, four
+        // columns; the array `each doubled` is making and the view it
+        // walks are kept across its call; and a record that arrives has
+        // them copied
+        let ir = &text.ir;
+        for col in ["__act_total_of__x__ring", "__act_total_of__x__pos", "__act_each_doubled___4__ring", "__act_each_doubled___1__ptr", "__act_each_doubled___1__len", "__act_res0_squares_to__ring"] {
+            assert!(ir.contains(&format!("\ndata {}: array(i64, ", col)), "no column {}", col);
+        }
+        assert!(ir.contains("\nfn __act_land(row: index)\n") && ir.contains("\nfn __act_land_int(c: ptr, row: index)\n") && ir.contains("\nfn __act_land_view_int(c: ptr, lc: ptr, sc: ptr, row: index)\n"));
+        assert!(ir.contains("        __act_carry(fl, slot)\n        __wland(slot)\n"), "a function partway that arrives has its values copied");
+        // a structure is a column a field, a `float` a column, and an
+        // enumeration a word
+        let types = lower::lower(&wired(Path::new("suite/zero/types")).unwrap()).unwrap();
+        assert!(types.ir.contains("\ndata __act_sum_of_fields__v__x: array(i64, ") && types.ir.contains("\ndata __act_sum_of_fields__v__z: array(i64, "), "a `Vec` is three columns");
+        let p = types.placed.as_ref().unwrap();
+        for far in ["sum of fields", "flipped", "twice"] {
+            assert_eq!(p.refused(&p.named(far).unwrap()), None, "{}", far);
+        }
+        // a store that keeps no value has none of it
+        for name in ["hello", "restart", "keeps-key"] {
+            let t = lower::lower(&wired(&Path::new("suite/zero").join(name)).unwrap()).unwrap().ir;
+            assert!(!t.contains("__act_land") && !t.contains("__wland"), "{}", name);
+        }
+        // every cut of the stores whose refusals were values, on
+        // wasm, and of one of them on the JIT
+        let all: &[&str] = &["arrays", "strings", "pushed", "sampled", "sampled-kept", "sampled-between", "brackets"];
+        for (backend, policy, names) in [(Backend::Native, native.clone(), &all[1..2]), (Backend::Wasm, suite::backend_policy(Backend::Wasm).unwrap(), all)] {
+            let (mut report, mut wires) = (Report { passed: 0, failed: 0, skipped: 0, log: String::new() }, Wires::default());
+            for name in names {
+                test_wire(&Path::new("suite/zero").join(name), &policy, backend, opt::MAX_LEVEL, &mut report, &mut wires, 100_000, false);
+            }
+            assert_eq!((wires.hold, wires.stores, wires.refused, wires.failed, wires.unbuilt), (names.len(), names.len(), 0, 0, 0), "{}", report.log);
+        }
+        // an array a function is still making when a key is pressed.
+        // `build` doubles four numbers, one a second, each call of
+        // `slowly doubled` a step; far works all four out ahead, the
+        // key at 1.5 s puts it back to what it was at 1 s, and the
+        // array it was making must be put back too: one item, not four.
+        // With the copy not made the sum is 38 for 20
+        let dir = std::env::temp_dir().join(format!("probe-wire-built-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("built")).unwrap();
+        std::fs::write(dir.join("built/built.zero"), "int n$ at (1 hz)\nout$ << (n$ << \"\\n\") forever\nint seen$ = keys (in$)\n\non (int d) << slowly doubled (int x)\n    n$ << x\n    d << x * 2\n\non (int n) << pressed (char c)\n    out$ << \"key\\n\"\n    n << 1\n\non (int k$) << keys (char c$)\n    k$ << pressed (c$)\n\non build()\n    int a[] = [1, 2, 3, 4]\n    int b[] = slowly doubled (a[])\n    int t = b[] + _\n    out$ << t\n").unwrap();
+        let key = "build() with in \"k\" at 1.5 s";
+        let line = "\"1\\n\" at 0 s, \"2\\nkey\\n3\\n\" at 2 hz from 1 s, \"4\\n\" at 3 s, \"20\" at 4 s";
+        std::fs::write(dir.join("built/built.md"), format!("# built\n*an array a function is still making when a key is pressed*\n\nlayer: runtime\n\n> (suite) 2026-10-13T12:00:00\nA function that builds an array an item a second, and a key.\n\n## testing\n>build() → \"1\\n2\\n3\\n4\\n20\" at 1 hz\n>{} → {}\n", key, line)).unwrap();
+        assert_eq!(run(&dir, key, &native, opt::MAX_LEVEL, true).unwrap().trim_start(), format!("→ {}\n", line), "the plain build");
+        let (_, shown, _, thrown) = wire_case_cost(&dir, key, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), 100_000, 0).unwrap();
+        assert_eq!((shown.as_str(), thrown), (line, Some(5)));
+        let (_, shown, _, _) = wire_case_cost(&dir, key, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), 100_000, 64).unwrap();
+        assert_eq!(shown, "\"1\\n\" at 0 s, \"2\\nkey\\n3\\n\" at 2 hz from 1 s, \"4\\n\" at 3 s, \"38\" at 4 s", "with the values not copied, the four items far made ahead are still in the array: 2, 4, 6, 8 and then 4, 6 and 8 again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Which of two functions was started first, carried (fm3 question
     /// 155's B; cut.md; log 278). Two functions partway, one at each
     /// place and due at one time, are taken in the order they were

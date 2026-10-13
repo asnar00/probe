@@ -3034,6 +3034,11 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
             roots.insert(entry.to_string());
         }
     }
+    // (where a record arrives its values are copied, fm3 log 284: the
+    // placed build's own functions call it)
+    if store.places {
+        roots.insert("__act_land".to_string());
+    }
     // a function partway through a push at a rate is a thing going on
     // (fm3 log 232): the rewrite, or the store as it was
     let mut stack_why = std::collections::BTreeMap::new();
@@ -3050,7 +3055,8 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
                 Err(why) => return Err(Error { file: store.path.display().to_string(), line: 0, msg: format!("the store is not built for a wire that takes time yet: {}", why) }),
             }
         } else {
-            match super::turns::rewrite(&ir, l.moved) {
+            let values: HashMap<String, (Vec<String>, Vec<usize>)> = l.units(store).iter().flat_map(|u| u.irs.iter().map(|i| (i.clone(), u.values.clone())).collect::<Vec<_>>()).collect();
+            match super::turns::rewrite(&ir, l.moved, &values) {
                 Some(t) => t,
                 None => return Err(Error { file: store.path.display().to_string(), line: 0, msg: "a function that pushes at a rate has a shape the activities do not hold".into() }),
             }
