@@ -4,6 +4,12 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### README: what leaves the machine's stack over a wire, and what stays on it — `4eae960` · 2026-10-13
+
+The README's section on `probe zero` said, from hop forty-seven, that "a function that is handed, gives or keeps more than a word across a call stays on the stack and is not placed apart from what it calls". After the three entries below that is not so, and the sentence now says what they built and what still stays: a function handed a stream, one wired over a stream that does not step, one with a call in a loop that gives a value. No code changed; the full run of the entry below stands.
+
+---
+
 ### zero: a function still on the stack is called at its own place; one array under two names of a record is copied once — `23c9900` · 2026-10-13
 
 ```
