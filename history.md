@@ -4,6 +4,65 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a function still on the stack is called at its own place; one array under two names of a record is copied once — `23c9900` · 2026-10-13
+
+```
+on (number n) << smaller of (number a) and (number b)
+    n << a if (a < b) else b
+```
+
+`suite/zero/functions/functions/functions.zero:1-2`, and at line 27 `on (int32 y) << narrow (int32 x)`, which calls it. `smaller_of_and(a: number, b: number) -> number` is over an abstract type: the IR makes it anew for the types a call has, so it cannot be written as continuations, and `narrow`, left at its calls, called it on the machine's stack and could not be apart from it over a wire that takes time. The same of a name with several definitions, one a type (`width of`), and of a function called with another type than its parameter's (`__out__int` handed an `i64`). Hop fifty's prompt had these left on the stack "where it calls nothing that crosses", which each does; but each is a unit a cut can put apart from its *caller*, and after the last entry that was 42 cuts, the largest reason left that was the stack (fm3 log 285, 286). Hop fifty's third landing, transformation 170.
+
+**The call is put out as a function of the callee's own unit whose one statement is the call, with the types the call has.** `probe zero suite/zero/functions emit places --far narrow --wire 100 ms`:
+
+```
+fn smaller_of_and__o1__0(__a: index) -> i64
+    __s1: ptr = addr __act_smaller_of_and__o1____p0
+    __p0: i32 = load __s1, __a, 8
+    __s2: ptr = addr __act_smaller_of_and__o1____p1
+    __p1: i32 = load __s2, __a, 8
+    __r0: i32 = smaller_of_and(__p0, __p1)
+    __s3: ptr = addr __act_res0_smaller_of_and__o1
+    store __r0, __s3, __a, 8
+    __s5: ptr = addr __act_to_smaller_of_and__o1
+    __s4: i64 = load __s5, __a, 8
+    ret __s4
+```
+
+`smaller_of_and__o1` is plain and concrete, so it is continuations as any function is; by its name it is `smaller of and`'s unit's, as a call `outline` puts out is its function's; so `narrow` is left at the call, the record crosses, and the function is called at its own place, on the stack, as written. It is done for any unit's function still on the stack that does not wait. A stream's type is handed through such a call only where it is a value on both sides, the caller's name and the callee's parameter: a stream a function made, handed to `how many of (int s$)`, is not, the callee being free to push into it.
+
+```
+$ probe zero suite/zero/functions run 'narrow (300000)' --far narrow --wire 100 ms
+narrow (300000)
+→ 300000
+late: nothing, of 0 pieces
+0 s   100 ms   screen → far  a function partway, to go on in `narrow`   for 0 s
+100 ms  200 ms   far → screen  a function partway, to go on in `smaller of and`   for 0 s
+200 ms  300 ms   screen → far  a function partway, to go on in `narrow`   for 0 s
+300 ms  400 ms   far → screen  a function partway, to go on in a case's own call  for 0 s
+```
+
+**And a fault in the entry before this, mended** (fm3 log 287). `f552104` copies each array or string a record holds where the record arrives. A call put out of a function is handed what it reads, so a stream a function made can be in one record under two names; each was copied apiece, and a push through one name was not seen through the other. A program of the test's own, no case of the suite having it:
+
+```
+on (int n) << gathered (int k)
+    int s$
+    s$ << 1
+    if (k > 0)
+        if (k > 1)
+            s$ << doubled (k)
+    int f[] = frame s$
+    n << f[] + _
+```
+
+With `doubled` far over 100 ms `gathered (3)` gave **1 for 7**: a run that was made and did not give the case's line, which the suite's 38 008 of 38 008 did not show. At an arrival each storage is now copied once, `__land_was` and `__land_note` keeping for that arrival each storage copied and its copy. It gives 7 at `doubled`, `gathered` and everything far, and is asserted in `a_value_wider_than_a_word_is_kept_across_a_place`.
+
+**On wasm, cuts over a wire of 100 ms: 803 run and 161 refused → 823 run and 141 refused; 40 643 of 40 643 runs give the case's own line.** Moves are as they were. Of the 42, 20 are left: 10 `platform`'s `__out__float`, itself called with another type and so on the stack, calling `__out__int`; 6 a case's own call of a function over an abstract type, the case's twin being the same template; 4 two definitions of one name. The 141: 42 the reader of a stored stream at both places, 31 a stream handed to a function, 20 those, 14 a push of more than a word, 12 a function wired over a stream that does not step, 8 a field wider than a word, 7 a shape, 5 a push through a function, 2 not reached. `a_function_on_the_stack_is_called_at_its_own_place`, a `cargo test`.
+
+A plain build, a placed build with no wire and a build that moves are byte for byte what they were (`irdiff.sh`, `agent59/placediff.sh`, `agent62/moveddiff.sh` against `probe165`); a wire's build changed for 15 stores, hello and restart not among them. The six rows are 478, 485, 920, 931, 939 and 918. Full run `scratchpad/chain168.log`: 1329/1329 on the JIT, wasm, riscv and arm-qemu, 1288/1288 with 41 skipped on air; `probe test` 1030, 1021 + 9 skipped, 1030, 1030, 993 + 37 skipped; `cargo test` 207 passed, 2 ignored.
+
+---
+
 ### zero: a value wider than a word is kept across a place, and an array is copied where its record arrives — `f552104` · 2026-10-13
 
 ```
