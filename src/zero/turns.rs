@@ -311,10 +311,11 @@ fn kind(s: &Stmt, d: usize, r: &BTreeSet<String>, ifs: bool) -> Option<Kind> {
         }
         return Some(Kind::Loop(body, ps));
     }
-    // ... and, where the cut may be moved (fm3 log 265), at the top of
-    // a branch of an `if` that is a statement at the top of the
-    // function: a dynamic feature's gate, `if on / else / <the chain
-    // below> / ret`, is this
+    // ... and at the top of a branch of an `if` that is a statement at
+    // the top of the function: a dynamic feature's gate, `if on / else
+    // / <the chain below> / ret`, is this. First held where the cut
+    // may be moved (fm3 log 265), and from log 282 wherever the pool
+    // is wanted (fm3 question 153's B)
     if ifs && d == 1 && s.head().starts_with("if ") {
         let at = s.lines.iter().position(|l| depth(l) == 1 && l.trim() == "else");
         let (first, second) = match at {
@@ -424,6 +425,50 @@ impl<'a> Maker<'a> {
         out.push(format!("{}store {}, {}, __a, 8", pad, said(val, ty), p));
     }
 
+    /// A name alive across a place is kept (fm3 log 282). A reader of
+    /// a stream of the context keeps what is its own, where it has
+    /// read to and its two rules: which stream it is the text says,
+    /// and the record holds no address
+    fn keep(&mut self, f: &Func, n: &str, ty: &str, pad: &str, out: &mut Vec<String>) {
+        if ty.ends_with('$') && matches!(prov(f, n), Prov::Field(_)) {
+            for (part, pt) in [("pos", "index"), ("rule", "i64"), ("edge", "i64")] {
+                let v = self.t();
+                out.push(format!("{}{}: {} = get {}, {}", pad, v, pt, n, part));
+                let col = self.field(&f.name, &format!("{}__{}", n, part), pt);
+                self.write(&col, &v, pt, pad, out);
+            }
+            return;
+        }
+        let col = self.field(&f.name, n, ty);
+        self.write(&col, n, ty, pad, out);
+    }
+
+    /// ... and read again where the function goes on, under the name
+    /// `to`: a stream of the context from the context, the place this
+    /// continuation runs at
+    fn fetch(&mut self, f: &Func, n: &str, to: &str, ty: &str, pad: &str, out: &mut Vec<String>) {
+        if ty.ends_with('$') {
+            if let Prov::Field(x) = prov(f, n) {
+                let (c, cx) = (self.t(), self.t());
+                out.push(format!("{}{}: ptr = context()", pad, c));
+                out.push(format!("{}{}: __ctx = load {}", pad, cx, c));
+                let mut h = self.t();
+                out.push(format!("{}{}: {} = get {}, {}", pad, h, ty, cx, x));
+                for (k, (part, pt)) in [("pos", "index"), ("rule", "i64"), ("edge", "i64")].into_iter().enumerate() {
+                    let v = self.t();
+                    let col = self.field(&f.name, &format!("{}__{}", n, part), pt);
+                    self.read(&col, &v, pt, pad, out);
+                    let h2 = if k == 2 { to.to_string() } else { self.t() };
+                    out.push(format!("{}{}: {} = set {}, {}, {}", pad, h2, ty, h, part, v));
+                    h = h2;
+                }
+                return;
+            }
+        }
+        let col = self.field(&f.name, n, ty);
+        self.read(&col, to, ty, pad, out);
+    }
+
     /// a `ret`: the results kept, and the caller's place given
     fn ret(&mut self, f: &Func, line: &str, out: &mut Vec<String>) {
         let pad = line[..line.len() - line.trim_start().len()].to_string();
@@ -456,8 +501,7 @@ impl<'a> Maker<'a> {
             if self.held.contains(n) {
                 continue;
             }
-            let col = self.field(&f.name, n, ty);
-            self.write(&col, n, ty, pad, out);
+            self.keep(f, n, ty, pad, out);
         }
         match p {
             Point::Step(_) | Point::Wait(_) => {
@@ -656,8 +700,7 @@ impl<'a> Maker<'a> {
                     let live = self.live_top(f, &ss, j);
                     self.held = live.iter().map(|(n, _)| n.clone()).collect();
                     for (n, t) in &live {
-                        let col = self.field(&f.name, n, t);
-                        self.read(&col, n, t, "    ", &mut out);
+                        self.fetch(f, n, n, t, "    ", &mut out);
                     }
                     if let Point::Call(d, g, _) = p {
                         for (k, (n, t)) in d.iter().enumerate() {
@@ -675,22 +718,19 @@ impl<'a> Maker<'a> {
                         let live = self.live_top(f, &ss, j);
                         self.held = live.iter().map(|(n, _)| n.clone()).collect();
                         for (n, t) in &live {
-                            let col = self.field(&f.name, n, t);
-                            self.read(&col, n, t, "    ", &mut out);
+                            self.fetch(f, n, n, t, "    ", &mut out);
                         }
                         // the loop begins again from the number it
                         // was left with, what followed the place run
                         // first, under names of its own
                         let mut heads = Vec::new();
                         for (n, t, _) in loop_params(ss[j].head()) {
-                            let col = self.field(&f.name, &n, &t);
-                            self.read(&col, &format!("{}__s", n), &t, "    ", &mut out);
+                            self.fetch(f, &n, &format!("{}__s", n), &t, "    ", &mut out);
                             heads.push(format!("{}: {} = {}__s", n, t, n));
                         }
                         let mut map = HashMap::new();
                         for (n, t) in self.live_body(body, i) {
-                            let col = self.field(&f.name, &n, &t);
-                            self.read(&col, &format!("{}__r", n), &t, "    ", &mut out);
+                            self.fetch(f, &n, &format!("{}__r", n), &t, "    ", &mut out);
                             map.insert(n.clone(), format!("{}__r", n));
                         }
                         if let Point::Call(d, g, _) = p {
@@ -744,8 +784,7 @@ impl<'a> Maker<'a> {
                         live.extend(self.live_within(body, lo, i, hi));
                         self.held = live.iter().map(|(n, _)| n.clone()).collect();
                         for (n, t) in &live {
-                            let col = self.field(&f.name, n, t);
-                            self.read(&col, n, t, "    ", &mut out);
+                            self.fetch(f, n, n, t, "    ", &mut out);
                         }
                         if let Point::Call(d, g, _) = p {
                             for (k, (n, t)) in d.iter().enumerate() {
@@ -813,7 +852,7 @@ pub fn rewrite(ir: &str, moved: bool) -> Option<String> {
     if ir.matches("data __ctx_mem: array(__ctx, 2)").count() != 1 {
         return None;
     }
-    let mut m = Maker { r: &r, fns: by.iter().map(|(k, v)| (k.clone(), *v)).collect(), ids: HashMap::new(), fields: Vec::new(), tmp: 0, held: BTreeSet::new(), here: 0, ifs: moved };
+    let mut m = Maker { r: &r, fns: by.iter().map(|(k, v)| (k.clone(), *v)).collect(), ids: HashMap::new(), fields: Vec::new(), tmp: 0, held: BTreeSet::new(), here: 0, ifs: true };
     // the continuations' numbers, from 2: the places inside loops
     // first, being where an item is, so that the choice among them
     // meets those first
@@ -824,7 +863,7 @@ pub fn rewrite(ir: &str, moved: bool) -> Option<String> {
         let mut n = 0;
         order.push((false, g.clone(), 0));
         for s in &ss {
-            match kind(s, 1, &r, moved)? {
+            match kind(s, 1, &r, true)? {
                 Kind::Plain => {}
                 Kind::At(_) => {
                     n += 1;
@@ -967,14 +1006,109 @@ fn scope_defs(head: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Why a function of a build for a wire stays on the machine's stack
+/// (fm3 log 280): the kind of thing not yet held, `stream`, `value`,
+/// `structure`, `float`, `shape`, `wired`, `defs`, and a sentence
+#[derive(Clone, Debug)]
+pub struct Why {
+    pub kind: &'static str,
+    pub said: String,
+}
+
+/// the text for a wire, and each function left on the stack with why
+pub struct Wired {
+    pub text: String,
+    pub stack: std::collections::BTreeMap<String, Why>,
+}
+
+/// where a name of a stream's type came from, read off the lines that
+/// define it: a field of the context, which is that field's stream;
+/// made in the function; a parameter; or something a function gave
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Prov {
+    Field(String),
+    Made,
+    Param(usize),
+    Unknown,
+}
+
+pub(super) fn prov(f: &Func, name: &str) -> Prov {
+    let mut n = name.to_string();
+    for _ in 0..32 {
+        let Some(l) = f.body.iter().map(|l| l.trim()).find(|l| defs(l).iter().any(|(d, _)| *d == n)) else {
+            return f.params.iter().position(|(p, _)| *p == n).map_or(Prov::Unknown, Prov::Param);
+        };
+        let Some((_, rhs)) = l.split_once(" = ") else { return Prov::Unknown };
+        if let Some(args) = rhs.strip_prefix("get ") {
+            let a = split_top(args);
+            // (a field of the context: what it is read from is a `__ctx`)
+            if a.len() == 2 && f.body.iter().any(|l| l.trim().starts_with(&format!("{}: __ctx = ", a[0]))) {
+                return Prov::Field(a[1].clone());
+            }
+            return Prov::Unknown;
+        }
+        if let Some(args) = rhs.strip_prefix("set ") {
+            let Some(h) = split_top(args).first().cloned() else { return Prov::Unknown };
+            n = h;
+            continue;
+        }
+        let Some(open) = rhs.find('(') else { return Prov::Unknown };
+        let g = &rhs[..open];
+        if ["__queue_", "__copy_queue_", "__copy_", "__regular_", "__stream_"].iter().any(|p| g.starts_with(p)) {
+            return Prov::Made;
+        }
+        // the reader of a stream moved on is a reader of that stream
+        if matches!(g, "frame_queue" | "frame" | "advance" | "sampling") && rhs.ends_with(')') {
+            let Some(h) = split_top(&rhs[open + 1..rhs.len() - 1]).first().cloned() else { return Prov::Unknown };
+            n = h;
+            continue;
+        }
+        return Prov::Unknown;
+    }
+    Prov::Unknown
+}
+
+/// a type wider than a word, to a person, and its kind: `value` says
+/// whether a stream's type is known to hold a value, an array or a
+/// string, or a stream
+fn wide(ty: &str, value: Option<bool>) -> Why {
+    if ty.ends_with("[]") || ty.contains('[') {
+        return Why { kind: "value", said: "an array".into() };
+    }
+    if ty.ends_with('$') {
+        return match value {
+            Some(true) => Why { kind: "value", said: "an array or a string".into() },
+            Some(false) => Why { kind: "stream", said: "a stream".into() },
+            None => Why { kind: "stream", said: "a stream a function gave it".into() },
+        };
+    }
+    if matches!(ty, "float" | "f16" | "f32" | "f64") {
+        return Why { kind: "float", said: "a `float`".into() };
+    }
+    Why { kind: "structure", said: format!("a structure, `{}`", ty) }
+}
+
+/// what a name a function keeps is, where it is wider than a word
+fn kept(f: &Func, name: &str, ty: &str, values: &HashMap<String, (Vec<String>, Vec<usize>)>) -> Why {
+    if !ty.ends_with('$') {
+        return wide(ty, None);
+    }
+    match prov(f, name) {
+        Prov::Field(x) => Why { kind: "stream", said: format!("the stream `{}$`", x.trim_start_matches("__")) },
+        Prov::Made => Why { kind: "value", said: "an array, a string or a stream it made".into() },
+        Prov::Param(i) => wide(ty, Some(values.get(&parent(&f.name)).is_some_and(|(p, _)| p.contains(&f.params[i].0)))),
+        Prov::Unknown => wide(ty, None),
+    }
+}
+
 /// A call nested where the rewrite holds no place, an `if` in an `if`
 /// or an `if` in a loop (fm3 log 269), is put out as a function of its
 /// own: handed what it reads, giving what it makes that is read after.
 /// The shapes held stay three. One statement of one function at a
 /// time: the body with the call of the new function in its place, and
 /// the new function's lines; nothing where every statement is held
-fn outline(f: &Func, r: &BTreeSet<String>, n: usize) -> Result<Option<(Vec<String>, Vec<String>, String)>, String> {
-    let shape = |what: &str| format!("`{}` has a call or a step where no place is held yet (fm3 question 139): {}", f.name, what);
+fn outline(f: &Func, r: &BTreeSet<String>, n: usize, values: &HashMap<String, (Vec<String>, Vec<usize>)>) -> Result<Option<(Vec<String>, Vec<String>, String)>, Why> {
+    let shape = |what: &str| Why { kind: "shape", said: format!("it has a call or a step where no place is held yet (fm3 question 139): {}", what) };
     let ss = stmts(&f.body, 1);
     let mut at = 0;
     for s in &ss {
@@ -1039,8 +1173,34 @@ fn outline(f: &Func, r: &BTreeSet<String>, n: usize) -> Result<Option<(Vec<Strin
                 }
             }
             let outs: Vec<(String, String)> = defs(child.head()).into_iter().filter(|(o, _)| f.body[b..].iter().any(|l| names(l, o))).collect();
+            // (a reader of a stream of the context is handed as what
+            // is its own, three words, and read from the context again
+            // in the function put out: fm3 log 282)
+            let mut before_call: Vec<String> = Vec::new();
+            let mut first: Vec<String> = Vec::new();
+            let mut split: Vec<(String, String)> = Vec::new();
+            for (pn, pt) in params.drain(..) {
+                let field = if pt.ends_with('$') { if let Prov::Field(x) = prov(f, &pn) { Some(x) } else { None } } else { None };
+                let Some(x) = field else {
+                    split.push((pn, pt));
+                    continue;
+                };
+                first.push(format!("    {}__c: ptr = context()", pn));
+                first.push(format!("    {}__x: __ctx = load {}__c", pn, pn));
+                first.push(format!("    {}__0: {} = get {}__x, {}", pn, pt, pn, x));
+                let mut h = format!("{}__0", pn);
+                for (k, (part, wt)) in [("pos", "index"), ("rule", "i64"), ("edge", "i64")].into_iter().enumerate() {
+                    before_call.push(format!("        {}__{}: {} = get {}, {}", pn, part, wt, pn, part));
+                    split.push((format!("{}__{}", pn, part), wt.to_string()));
+                    let h2 = if k == 2 { pn.clone() } else { format!("{}__{}", pn, k + 1) };
+                    first.push(format!("    {}: {} = set {}, {}, {}__{}", h2, pt, h, part, pn, part));
+                    h = h2;
+                }
+            }
+            let params = split;
             if let Some((pn, pt)) = params.iter().chain(&outs).find(|(_, t)| !word(t)) {
-                return Err(format!("`{}` keeps `{}`, a `{}`, across a call that may cross, and a place of the pool holds a word", f.name, pn, pt));
+                let w = kept(f, pn, pt, values);
+                return Err(Why { kind: w.kind, said: format!("it keeps `{}`, {}, across a call that may cross, and a place of the pool holds a word", pn, w.said) });
             }
             let name = format!("{}__o{}", f.name, n);
             let mut text = vec![format!("fn {}({}){}", name, params.iter().map(|(pn, pt)| format!("{}: {}", pn, pt)).collect::<Vec<_>>().join(", "), match outs.len() {
@@ -1051,10 +1211,12 @@ fn outline(f: &Func, r: &BTreeSet<String>, n: usize) -> Result<Option<(Vec<Strin
             if this {
                 text.push("    _this: ptr = context()".to_string());
             }
+            text.extend(first);
             text.extend(child.lines.iter().map(|l| l[4..].to_string()));
             text.push(if outs.is_empty() { "    ret".to_string() } else { format!("    ret {}", outs.iter().map(|(o, _)| o.clone()).collect::<Vec<_>>().join(", ")) });
             let call = format!("        {}{}({})", if outs.is_empty() { String::new() } else { format!("{} = ", outs.iter().map(|(o, t)| format!("{}: {}", o, t)).collect::<Vec<_>>().join(", ")) }, name, params.iter().map(|(pn, _)| pn.clone()).collect::<Vec<_>>().join(", "));
             let mut body = f.body[..a].to_vec();
+            body.extend(before_call);
             body.push(call);
             body.extend(f.body[b..].iter().cloned());
             return Ok(Some((body, text, name)));
@@ -1091,7 +1253,7 @@ fn parent(name: &str) -> String {
 /// placed build's, say whether the continuation to go on with is at
 /// this place and put the record on the wire where it is not. Why, by
 /// name, where a function's shape is not held
-pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>) -> Result<String, String> {
+pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>, values: &HashMap<String, (Vec<String>, Vec<usize>)>) -> Result<Wired, String> {
     if ir.matches("data __ctx_mem: array(__ctx, 2)").count() != 1 {
         return Err("the store keeps no context: nothing in it can be placed".into());
     }
@@ -1102,6 +1264,7 @@ pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>) -> Result<String, String
     // word across a call, stays on the machine's stack, and what it
     // calls is then bound to its place: found by trying
     let mut left: BTreeSet<String> = BTreeSet::new();
+    let mut why: std::collections::BTreeMap<String, Why> = std::collections::BTreeMap::new();
     let candidates = |fns: &[Func], helpers: &BTreeSet<String>, left: &BTreeSet<String>| -> (BTreeSet<String>, Vec<(String, String)>) {
         let by: HashMap<&str, &Func> = fns.iter().map(|f| (f.name.as_str(), f)).collect();
         // (a name with several definitions, one a type, is the IR's to choose among: it stays as written)
@@ -1162,14 +1325,15 @@ pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>) -> Result<String, String
             let (r0, _) = candidates(&fs, &helpers, &left);
             let mut put: Option<(usize, usize, Vec<String>, Vec<String>, String)> = None;
             for f in fs.iter().filter(|f| r0.contains(&f.name)) {
-                match outline(f, &r0, helpers.len() + 1) {
+                match outline(f, &r0, helpers.len() + 1, values) {
                     Ok(Some((body, t, name))) => {
                         put = Some((f.at.0, f.at.1, body, t, name));
                         break;
                     }
                     Ok(None) => {}
                     // (a function put out of another is that other's: it is the one left as written)
-                    Err(_) => {
+                    Err(e) => {
+                        why.insert(parent(&f.name), e);
                         left.insert(parent(&f.name));
                         continue 'again;
                     }
@@ -1206,6 +1370,7 @@ pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>) -> Result<String, String
                 let Some(callee) = by1.get(&g).filter(|_| r1.contains(&g)) else { continue };
                 let odd = args.iter().zip(&callee.params).any(|(a, (_, pt))| types.get(a).is_some_and(|t| t != pt)) || d.iter().zip(&callee.rets).any(|((_, t), rt)| t != rt) || args.len() != callee.params.len();
                 if odd {
+                    why.insert(parent(&g), Why { kind: "defs", said: format!("it is called by `{}` with a value of another type than its parameter's, and so is the IR's to make anew for that type", f.name) });
                     left.insert(parent(&g));
                     continue 'again;
                 }
@@ -1219,6 +1384,7 @@ pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>) -> Result<String, String
             order1.push((false, g.clone(), 0));
             for s in &stmts(&f.body, 1) {
                 let Some(k) = kind(s, 1, r1, true) else {
+                    why.insert(parent(g), Why { kind: "shape", said: "it has a call or a step where no place is held yet (fm3 question 139)".into() });
                     left.insert(parent(g));
                     continue 'again;
                 };
@@ -1258,6 +1424,12 @@ pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>) -> Result<String, String
             let made = m1.make(f);
             // more than a word kept across a place: the function is left as written
             if made.is_none() || m1.fields[before..].iter().any(|(_, t)| !word(t)) {
+                let prefix = format!("__act_{}__", g);
+                let w = m1.fields[before..].iter().find(|(_, t)| !word(t)).map(|(n, t)| (n.strip_prefix(&prefix).unwrap_or(n).to_string(), kept(f, n.strip_prefix(&prefix).unwrap_or(n), t, values)));
+                why.insert(parent(g), match w {
+                    Some((n, w)) => Why { kind: w.kind, said: format!("it keeps `{}`, {}, across a call that may cross or a step, and a place of the pool holds a word", n, w.said) },
+                    None => Why { kind: "shape", said: "it has a call or a step where no place is held yet (fm3 question 139)".into() },
+                });
                 left.insert(parent(g));
                 continue 'again;
             }
@@ -1338,6 +1510,46 @@ pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>) -> Result<String, String
         }
         kept
     };
+    // why each function still on the machine's stack is (fm3 log 280):
+    // its own reason, or that of what calls it and waits for it
+    let mut stack: std::collections::BTreeMap<String, Why> = std::collections::BTreeMap::new();
+    let on_stack = |f: &Func| !r.contains(&f.name) || kept.contains(&f.name);
+    for f in fns.iter().filter(|f| on_stack(f)) {
+        let vals = values.get(&f.name);
+        let own = if fns.iter().filter(|g| g.name == f.name).count() > 1 {
+            Some(Why { kind: "defs", said: "it has several definitions, one a type, and is the IR's to choose among".into() })
+        } else if let Some((i, (n, t))) = f.params.iter().enumerate().find(|(_, (_, t))| !word(t)) {
+            let _ = i;
+            let w = wide(t, if t.ends_with('$') { vals.map(|(p, _)| p.contains(n)) } else { None });
+            Some(Why { kind: w.kind, said: format!("it is handed {}", if t.ends_with('$') && vals.is_none() { "a stream, an array or a string" } else { w.said.as_str() }) })
+        } else if let Some((k, t)) = f.rets.iter().enumerate().find(|(_, t)| !word(t)) {
+            let w = wide(t, if t.ends_with('$') { vals.map(|(_, g)| g.contains(&k)) } else { None });
+            Some(Why { kind: w.kind, said: format!("it gives {}", if t.ends_with('$') && vals.is_none() { "a stream, an array or a string" } else { w.said.as_str() }) })
+        } else if let Some(w) = why.get(&f.name) {
+            Some(w.clone())
+        } else if f.name.ends_with("_each") && fns.iter().any(|g| wired(g).is_some_and(|e| e == f.name)) {
+            Some(Why { kind: "wired", said: "it is the function of a line wired over a stream, which is called for each item, and not begun, where it does not step".into() })
+        } else {
+            None
+        };
+        if let Some(w) = own {
+            stack.insert(f.name.clone(), w);
+        }
+    }
+    loop {
+        let mut more: Vec<(String, Why)> = Vec::new();
+        for f in fns.iter().filter(|f| on_stack(f) && !stack.contains_key(&f.name)) {
+            let caller = fns.iter().find(|g| stack.contains_key(&g.name) && lines[g.at.0 + 1..g.at.1].iter().any(|l| called(l).contains(&f.name.as_str())));
+            if let Some(g) = caller {
+                let w = &stack[&g.name];
+                more.push((f.name.clone(), Why { kind: w.kind, said: format!("it is called by `{}`, which waits for it on the stack: {}", g.name, w.said.strip_prefix("it is called by ").map_or(w.said.clone(), |_| w.said.clone())) }));
+            }
+        }
+        if more.is_empty() {
+            break;
+        }
+        stack.extend(more);
+    }
     // nothing of the program left as it was written may wait on the
     // machine's stack: a unit's function still on it that reaches a
     // step, or a continuation that calls one of the language's own
@@ -1357,7 +1569,7 @@ pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>) -> Result<String, String
             }
         }
         if (units.contains(&f.name) || f.name.starts_with("__case_")) && (!r.contains(&f.name) || kept.contains(&f.name)) && waits.contains(&f.name) {
-            return Err(format!("`{}` keeps the machine's stack across a step of a rate: it is handed, or gives, more than a word, or is called by a function that is", f.name));
+            return Err(format!("`{}` keeps the machine's stack across a step of a rate: {}", f.name, stack.get(&f.name).map_or("it is not reached from where a turn begins", |w| w.said.as_str())));
         }
     }
     let mut out = String::new();
@@ -1381,5 +1593,5 @@ pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>) -> Result<String, String
         out.push_str(&l);
         out.push('\n');
     }
-    Ok(out)
+    Ok(Wired { text: out, stack })
 }

@@ -2311,11 +2311,26 @@ mod tests {
             test_moves(&Path::new("suite/zero").join(name), &wasm, Backend::Wasm, opt::MAX_LEVEL, &mut report, &mut there);
         }
         assert_eq!((there.case_hold, there.moves_refused, there.moves_failed, there.moves, there.moves_passed), (cuts.timed, 0, 0, cuts.moves, cuts.moves_passed), "{}", report.log);
-        // a function that keeps the machine's stack across a step is
-        // not moved, and the move is refused by its name
+        // a function that keeps a stream of the context across its
+        // step kept the machine's stack, and its move was refused by
+        // name (`timed`'s `count down`, which reads `i$` once above its
+        // loop). It is left at its step now (fm3 log 282): what it
+        // keeps is where its reader has read to, and which stream that
+        // is the continuation reads from the context of the place it
+        // goes on at
         let timed = Path::new("suite/zero/timed");
-        let err = run_cut(timed, "count down()", &native, opt::MAX_LEVEL, true, Some("all"), &[(s("none"), 4_500_000)]).unwrap_err();
-        assert!(err.starts_with("this move cannot be made yet: 'count down' cannot be moved while it runs: its function `count_down` keeps the machine's stack"), "{}", err);
+        for (far, then) in [("all", "none"), ("none", "all")] {
+            let out = run_cut(timed, "launch()", &native, opt::MAX_LEVEL, true, Some(far), &[(s(then), 4_500_000)]).unwrap();
+            assert!(out.trim_end().ends_with("→ \"20\\n18\\n16\\n14\\n12\\n10\\n8\\n6\\n4\\n2\\nliftoff\" at 1 hz"), "{} {}: {}", far, then, out);
+        }
+        let mut st = store::read(timed).unwrap();
+        st.places = true;
+        st.moved = true;
+        let text = lower::lower(&st).unwrap().ir;
+        let at = text.find("\nfn count_down__1(__a0: index) -> i64\n").expect("the countdown is left at its step");
+        let body: Vec<&str> = text[at + 1..].lines().take_while(|l| !l.starts_with("fn ") || l.starts_with("fn count_down__1(")).collect();
+        assert!(body.iter().any(|l| l.ends_with(": int$ = get __s2, i")) && body.iter().any(|l| l.trim_start().starts_with("_2: int$ = set ") && l.contains(", edge, ")), "the stream is read from the context again: {:#?}", body);
+        assert!(text.contains("\ndata __act_count_down___2__pos: ") && !text.contains("\ndata __act_count_down___2: "), "what is kept of it is the reader's own, three words, and no address");
     }
 
     /// A wire that takes time, where nothing comes from outside (fm3
@@ -2771,7 +2786,7 @@ mod tests {
             assert_eq!((cuts.moves, cuts.moves_failed, wires.late), (100, 0, 0), "{}", report.log);
         }
         // what is refused, by name: a move from or to a cut that is
-        assert!(cut_of(lower::lower(&{ let mut s = wired(Path::new("suite/zero/words")).unwrap(); s.moved = true; s }).unwrap().placed.as_ref().unwrap(), Some("all"), &[("none".to_string(), 1_500_000)]).unwrap_err().starts_with("this cut cannot be run yet: 'first two' cannot run far over a wire that takes time yet"));
+        assert!(cut_of(lower::lower(&{ let mut s = wired(Path::new("suite/zero/lex")).unwrap(); s.moved = true; s }).unwrap().placed.as_ref().unwrap(), Some("number start"), &[("none".to_string(), 1_500_000)]).unwrap_err().starts_with("this cut cannot be run yet: 'u$' is stored, and one reader of it would be at both places"));
     }
 
     /// Which of two functions was started first, carried (fm3 question

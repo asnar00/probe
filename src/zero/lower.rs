@@ -3036,11 +3036,17 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     }
     // a function partway through a push at a rate is a thing going on
     // (fm3 log 232): the rewrite, or the store as it was
+    let mut stack_why = std::collections::BTreeMap::new();
     let ir = if acts {
         if l.wire {
-            let units: std::collections::BTreeSet<String> = l.units(store).into_iter().flat_map(|u| u.irs).collect();
-            match super::turns::rewrite_wire(&ir, &units) {
-                Ok(t) => t,
+            let us = l.units(store);
+            let units: std::collections::BTreeSet<String> = us.iter().flat_map(|u| u.irs.clone()).collect();
+            let values: HashMap<String, (Vec<String>, Vec<usize>)> = us.iter().flat_map(|u| u.irs.iter().map(|i| (i.clone(), u.values.clone()))).collect();
+            match super::turns::rewrite_wire(&ir, &units, &values) {
+                Ok(t) => {
+                    stack_why = t.stack;
+                    t.text
+                }
                 Err(why) => return Err(Error { file: store.path.display().to_string(), line: 0, msg: format!("the store is not built for a wire that takes time yet: {}", why) }),
             }
         } else {
@@ -3078,8 +3084,9 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     let mut placed = None;
     if store.places {
         match super::places::rewrite(&ir, &l.units(store), l.wire) {
-            Ok((text, p)) => {
+            Ok((text, mut p)) => {
                 ir = text;
+                p.stack = stack_why;
                 placed = Some(p);
             }
             Err(msg) => return Err(Error { file: store.path.display().to_string(), line: 0, msg }),

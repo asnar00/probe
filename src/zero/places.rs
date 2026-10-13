@@ -200,6 +200,9 @@ pub struct Placed {
     /// next due, and the unit its line is: the word is the line's
     /// place's, and a move hands it across with the line (fm3 log 276)
     clock_dues: Vec<(String, usize)>,
+    /// where the wire takes time, why each function still on the
+    /// machine's stack is (fm3 log 280)
+    pub stack: std::collections::BTreeMap<String, super::turns::Why>,
 }
 
 /// one thing a move hands across: its byte in the move's table, the
@@ -1134,7 +1137,7 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool) -> Result<(String, Placed),
     for item in &carried_types {
         out.push_str(&format!("\n; a value that holds an address, an array or a string, copied (fm3 log 267): its storage as the library lays it out, a queue's resident items in a buffer of their number or a ring's buffers whole, with its counts, its beat and its end, carved from the arena; the reader's place and its rules go with the value. A value is never modified, so the copy is the value\nfn __copied_{t}(v: {t}$) -> {t}$\n    r: ptr = get v, ring\n    ar: ptr = addr __arena\n    n: ptr = arena_alloc(ar, 64)\n    pushed: index = load r\n    o: index = load r, 8\n    hz: i64 = load r, 32\n    st: i64 = load r, 40\n    t0: i64 = load r, 48\n    e: i64 = load r, 56\n    w: index = load r, 24\n    store pushed, n\n    store o, n, 8\n    store hz, n, 32\n    store st, n, 40\n    store t0, n, 48\n    store e, n, 56\n    sz: index = sizeof {t}\n    stepped: u1 = cmp.ne st, 0\n    worded: u1 = cmp.ne w, 0\n    queue: u1 = and stepped, worded\n    if queue\n        k: index = sub pushed, o\n        one: index = const 1\n        cap: index = max(k, one)\n        bytes: index = mul sz, cap\n        total: index = add bytes, 16\n        vb: ptr = arena_alloc(ar, total)\n        buffer_init(vb, sz, cap)\n        slots: ptr = ptradd vb, 16\n        qa: ptr({t}) = load r, 16\n        qb: ptr({t}) = cast slots\n        s: {t}[] = pack qa, k, 1\n        d: {t}[] = pack qb, k, 1\n        copy d, s\n        store slots, n, 16\n        store cap, n, 24\n    else\n        wa: ptr = load r, 16\n        cap2: index = load wa, 8\n        bytes2: index = mul sz, cap2\n        total2: index = add bytes2, 16\n        wb: ptr = arena_alloc(ar, total2)\n        buffer_init(wb, sz, cap2)\n        va: {t}[] = slice wa\n        vc: {t}[] = slice wb\n        copy vc, va\n        store wb, n, 16\n        ta: ptr = load r, 24\n        if worded\n            tcap: index = load ta, 8\n            tbytes: index = mul tcap, 8\n            ttotal: index = add tbytes, 16\n            tb: ptr = arena_alloc(ar, ttotal)\n            eight: index = const 8\n            buffer_init(tb, eight, tcap)\n            ka: i64[] = slice ta\n            kb: i64[] = slice tb\n            copy kb, ka\n            store tb, n, 24\n        else\n            store ta, n, 24\n    v2: {t}$ = set v, ring, n\n    ret v2\n\n; ... where the wire was crossed to bring it: called at its own place, a function is handed the value itself\nfn __carried_{t}(v: {t}$, w: i64) -> {t}$\n    a: ptr = context()\n    cm: ptr = addr __ctx_mem\n    second: u1 = cmp.ne a, cm\n    here: i64 = conv second\n    same: u1 = cmp.eq here, w\n    if same\n        ret v\n    c: {t}$ = __copied_{t}(v)\n    ret c\n", t = item));
     }
-    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, copied, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize), wire, glue, unwired, conts, clock_dues }))
+    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, copied, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize), wire, glue, unwired, conts, clock_dues , stack: Default::default() }))
 }
 
 /// what the world's text is written from
@@ -1459,11 +1462,17 @@ impl Placed {
                 if matches!(c.caller.as_str(), "__run" | "__act_go") || self.at(c.to, far) == 0 {
                     continue;
                 }
-                return Some(format!("{} cannot run far over a wire that takes time yet: its function `{}` is called by `{}`, the screen's own, which waits for it on the machine's stack, the function being handed, or giving, more than a word", self.who(c.to), c.callee, c.caller));
+                return Some(format!("{} cannot run far over a wire that takes time yet: its function `{}` is called by `{}`, the screen's own, which waits for it on the machine's stack: {}", self.who(c.to), c.callee, c.caller, self.why(&c.callee)));
             }
             if self.at(c.from, far) != self.at(c.to, far) {
                 let (far_one, other) = if far.contains(&c.to) { (c.to, c.from) } else { (c.from, c.to) };
-                return Some(format!("{} cannot run apart from {} over a wire that takes time yet: `{}` calls `{}` and waits for it on the machine's stack, not being left at its calls yet: it is handed, gives or keeps more than a word, or has a call where no place is held (fm3 question 139)", self.who(far_one), self.who(other), c.caller, c.callee));
+                // (the caller's reason where it is the caller that is
+                // still on the stack; the callee's where a function left
+                // at its calls calls one that is not, fm3 log 280)
+                return Some(match self.stack.get(&c.caller) {
+                    Some(w) => format!("{} cannot run apart from {} over a wire that takes time yet: `{}` calls `{}` and waits for it on the machine's stack, not being left at its calls yet: {}", self.who(far_one), self.who(other), c.caller, c.callee, w.said),
+                    None => format!("{} cannot run apart from {} over a wire that takes time yet: `{}` calls `{}`, which is not left at its calls yet, and waits for it on the machine's stack: {}", self.who(far_one), self.who(other), c.caller, c.callee, self.why(&c.callee)),
+                });
             }
         }
         // (two functions partway at two places and due at one time are
@@ -1482,6 +1491,11 @@ impl Placed {
             }
         }
         None
+    }
+
+    /// why a function is still on the machine's stack, as a sentence
+    fn why(&self, f: &str) -> String {
+        self.stack.get(f).map_or("it is not reached from where a turn begins".to_string(), |w| w.said.clone())
     }
 
     /// what the continuation of this number is, to a person: the unit
