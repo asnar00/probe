@@ -4,6 +4,64 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a stream kept across a step is read from the context again; a refusal for the stack says why — `c2ddf8a` · 2026-10-13
+
+```
+on count down()
+    i$ << [10 through 1]
+```
+
+`suite/zero/timed/timed/timed.zero:16-17`. It lowers to `_2: int$ = get _1, i` read once above the loop and `push_queue_open(_2, _3)` inside it, after the step, so the handle is alive across the step. A handle is four words in the IR, a reader's view: the address of the stream's storage, where this reader has read to, and two rules. A place of the pool holds a word (fm3 question 139), so `count down` kept the machine's stack: a move of it was refused by name, 20 of the suite's moves, and the store was not built for a wire that takes time at all. Hop fifty's first landing, transformation 164 (fm3 question 153's recommendation, decided; log 282).
+
+**A name read from a field of the context is that field's stream, and the record holds no address.** `turns::prov` reads a name's own line: `get <a __ctx>, field`, through any `set` of the reader's words and any reader moved on (`frame_queue`, `advance`). Kept across a place are the reader's own three words, `pos`, `rule` and `edge` (`Maker::keep`); going on, the continuation reads the field from the context of the place it runs at and sets the three on it (`Maker::fetch`). `probe zero suite/zero/timed emit places --far all --then none at 4.5 s`, the countdown going on:
+
+```
+fn count_down__1(__a0: index) -> i64
+    __pw: i64 = __wire_unit(3)
+    __a: index = __act_in(__a0, __pw)
+    _this: ptr = context()
+    __s1: ptr = context()
+    __s2: __ctx = load __s1
+    __s3: int$ = get __s2, i
+    __s5: ptr = addr __act_count_down___2__pos
+    __s4: index = load __s5, __a, 8
+    __s6: int$ = set __s3, pos, __s4
+    __s8: ptr = addr __act_count_down___2__rule
+    __s7: i64 = load __s8, __a, 8
+    __s9: int$ = set __s6, rule, __s7
+    __s11: ptr = addr __act_count_down___2__edge
+    __s10: i64 = load __s11, __a, 8
+    _2: int$ = set __s9, edge, __s10
+    __s12: ptr = addr __act_count_down___3
+    _3__s: int = load __s12, __a, 8
+    loop(_3: int = _3__s, __q: u1 = 1)
+```
+
+Which stream it is is the field's name, in the text and nowhere in the record, so a record that crosses or is handed at a move reads the stream of the place it has reached, whose items the move has handed across. At one place it is the handle the stack form kept. A call put out of a function (`outline`) is handed such a stream as its three words and reads the field again. **The `if` shape** (`Kind::If`, hop forty-six) is held wherever the pool is wanted, question 153's B, and no longer only in a build that moves.
+
+```
+$ probe zero suite/zero/timed run 'launch()' --fast --far all --then none at 4.5 s
+liftoff
+→ "20\n18\n16\n14\n12\n10\n8\n6\n4\n2\nliftoff" at 1 hz
+$ probe zero suite/zero/timed run 'launch()' --far all --then none at 4.5 s --wire 100 ms
+launch()
+→ "20\n18\n16\n14\n12\n10\n8\n6\n4\n2\nliftoff" at 1 hz
+late: 1 piece of 11, the most 200 ms
+  "20\n" for 0 s, shown at 200 ms, 200 ms late
+$ probe zero suite/zero/timed run 'launch()' --far none --then all at 4.5 s --wire 100 ms
+launch()
+→ "20\n18\n16\n14\n12\n10\n8\n6\n4\n2\nliftoff" at 1 hz
+late: nothing, of 11 pieces
+```
+
+**And a refusal for the stack names its reason** (fm3 log 280, 281). `rewrite_wire` keeps why each function stays on the machine's stack, a kind and a sentence (`turns::Why`), `Placed.stack` holds it, and `refused_wire` says the caller's reason where the caller waits and the callee's where a function left at its calls calls one that is not: `'total of' cannot run apart from 'handed' over a wire that takes time yet: `handed__0` calls `total_of`, which is not left at its calls yet, and waits for it on the machine's stack: it is handed an array or a string`. With that the 257 cuts refused over a wire were counted by what each waits for before anything was built: a stream kept 30 (and all 44 refused moves, and two of the four stores not built), a stream handed 22, an array or a string 48, a `float` 34, a structure about 21, an enumeration about 15, several definitions or an abstract type about 26, a function wired over a stream that does not step 7, a shape 5; and 50 that are not the stack.
+
+On wasm, before and after: **moves with no wire, 53 of 58 cases, 212 run and 20 refused → 61 of 61, 244 run, none refused; moves over a wire of 100 ms, 50 of 56 cases, 200 run and 24 refused → 57 of 61, 228 run, 16 refused; cuts over a wire of 100 ms, 673 run, 257 refused and four stores not built → 700 run, 264 refused, two not built.** Every run that is made gives the case's own line: 244 of 244, 228 of 228, 30 838 of 30 838. `timed` and `sampled-streams` are built for a wire, 14 of their cuts running and 20 refused, most for the reader of a stored stream at both places; 13 cuts of the stores built before run that did not; 17 whose first reason was a stream kept now name a second. The 16 moves left are `words`', where a line set off by a stream's first value is called by the start itself; `clock` and `tasks` are not built, a task that walks and steps being run by the scheduler and not the list.
+
+A plain build and a placed build with no move are byte for byte what they were (`scratchpad/irdiff.sh` and `agent59/placediff.sh` against `probe163` name nothing): `restart` and `going-two`, the two plain builds shown to `turns.rs`, have no gate that reaches a step. A build that moves changed for `timed` and `sampled-streams`; a wire's build for twelve stores, hello and restart not among them. The six rows are 478, 485, 920, 931, 939 and 918. `the_cut_is_moved_while_the_program_runs` asserted the refusal and now asserts `timed` moved at 4.5 s both ways and the continuation's text. Full run `scratchpad/chain166.log`: 1329/1329 on the JIT, wasm, riscv and arm-qemu, 1288/1288 with 41 skipped on air; `probe test` 1030, 1021 + 9 skipped, 1030, 1030, 993 + 37 skipped; `cargo test` 205 passed, 2 ignored.
+
+---
+
 ### zero: of two functions partway at two places the first begun goes first: a record carries when it was begun — `9630034` · 2026-10-13
 
 ```
