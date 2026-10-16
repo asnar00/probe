@@ -862,7 +862,7 @@ pub fn chose_said(wire: &Wire, log: &[i64]) -> String {
     let mut out = String::new();
     for item in log.chunks(6).filter(|c| c.len() == 6) {
         match item[1] {
-            15 => out.push_str(&format!("chose: nothing far at {}: a round trip of its own out longer than {}, the screen waiting on far\n", store::spell_time(item[2]), spell_late(b))),
+            15 => out.push_str(&format!("chose: nothing far at {}{}: a round trip of its own out longer than {}, the screen waiting on far\n", store::spell_time(item[2]), if log.chunks(6).any(|c| c.len() == 6 && c[1] == 18 && c[2] == item[2]) { ", by running far's part again" } else { "" }, spell_late(b))),
             16 => out.push_str(&format!("chose: the cut given at {}: a second of round trips within {}, nothing due within {}\n", store::spell_time(item[2]), spell_late(b), spell_late(item[5]))),
             _ => {}
         }
@@ -1026,6 +1026,8 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
         if let Some((to, left, at, stamp, t)) = text.take() {
             if to == 6 {
                 rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("dropped unshown: text {:?}", t), format!("for {}", store::spell_time(stamp))]);
+            } else if to == 19 {
+                rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("dropped, made before far heard of the move: text {:?}", t), format!("for {}", store::spell_time(stamp))]);
             } else {
                 rows.push([store::spell_time(left), store::spell_time(at), "far → screen".to_string(), format!("text {:?}", t), format!("for {}", store::spell_time(stamp))]);
             }
@@ -1046,13 +1048,16 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
         let (to, kind, left, at, stamp, a) = (item[0], item[1], item[2], item[3], item[4], item[5]);
         let way = if to == 1 { "screen → far" } else { "far → screen" };
         // (text sent, and text dropped, a character a line of the record)
-        if kind == 1 || kind == 6 {
-            let tag = if kind == 6 { 6 } else { to };
+        // (and a character dropped by its count, fm3 log 292)
+        let dropped_char = kind == 19 && a & 15 == 1;
+        if kind == 1 || kind == 6 || dropped_char {
+            let tag = if kind == 1 { to } else { kind };
+            let ch = if dropped_char { (a >> 4) as u8 as char } else { a as u8 as char };
             match &mut text {
-                Some((t, l2, a2, s2, chars)) if (*t, *l2, *a2, *s2) == (tag, left, at, stamp) => chars.push(a as u8 as char),
+                Some((t, l2, a2, s2, chars)) if (*t, *l2, *a2, *s2) == (tag, left, at, stamp) => chars.push(ch),
                 _ => {
                     flush(&mut text, &mut rows);
-                    text = Some((tag, left, at, stamp, (a as u8 as char).to_string()));
+                    text = Some((tag, left, at, stamp, ch.to_string()));
                 }
             }
             continue;
@@ -1081,6 +1086,28 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
                 rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("chooses the cut given: a second of round trips within the bound, nothing due within {}", spell_late(a)), String::new()]);
                 continue;
             }
+            // (the screen running far's part again, fm3 log 292)
+            18 => {
+                rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("runs far's part again from its start to {}: {} turn{}, {} item{} of its log given at their times; takes far's units{}", store::spell_time(left), a & 0xfffff, if a & 0xfffff == 1 { "" } else { "s" }, (a >> 20) & 0xfffff, if (a >> 20) & 0xfffff == 1 { "" } else { "s" }, match a >> 40 { 0 => String::new(), n => format!(", and {} push{} or function{} partway far's part sent that it had not had", n, if n == 1 { "" } else { "es" }, if n == 1 { "" } else { "s" }) }), String::new()]);
+                continue;
+            }
+            20 => {
+                rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("{} item{} of far's text it had not shown, kept to be shown now; {} it was keeping from far, its own turns' to write now", a & 0xfffff, if a & 0xfffff == 1 { "" } else { "s" }, a >> 20), String::new()]);
+                continue;
+            }
+            19 => {
+                let what = match a & 15 {
+                    2 => "a block of text".to_string(),
+                    3 => "a push into a stored stream".to_string(),
+                    4 => "a function partway".to_string(),
+                    5 => "a telling".to_string(),
+                    11 => "far's state".to_string(),
+                    12 => "a function partway, handed across at a move".to_string(),
+                    k => format!("an item of kind {}", k),
+                };
+                rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("dropped, made before far heard of the move: {}", what), format!("for {}", store::spell_time(stamp))]);
+                continue;
+            }
             _ => {}
         }
         let what = match kind {
@@ -1091,6 +1118,7 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
             10 => "the move's word: the cut's new table, and what the screen hands with it".to_string(),
             11 => "far's state: what far hands across at the move".to_string(),
             12 => format!("a function partway, handed across at the move, to go on in {} when it is next due", placed.continued(a)),
+            17 => "the move's word, far's part taken by the screen: the cut's new table, and nothing to send back".to_string(),
             // (the screen's bound where a key may yet be pressed is the moment after the world's clock)
             _ if a == left + 1 => format!("a telling: nothing for a time up to {}", store::spell_time(left)),
             _ => format!("a telling: nothing before {}", if a >= 1 << 62 { "the end".to_string() } else { store::spell_time(a) }),
@@ -7184,7 +7212,7 @@ mod tests {
         let back = vec![(3_000_000, GONE), (6_000_000, 100_000)];
         let out = run_wire_moved(hello, "run()", &native, opt::MAX_LEVEL, Some("all"), &[], chosen(back.clone(), 250_000)).unwrap();
         assert!(out.starts_with(&format!("run()\n→ {}\n", line)), "{}", out);
-        assert!(out.contains("\nchose: nothing far at 3.25 s: ") && out.contains("\nchose: the cut given at 7.2 s: "), "{}", out);
+        assert!(out.contains("\nchose: nothing far at 3.25 s, by running far's part again: ") && out.contains("\nchose: the cut given at 7.2 s: "), "{}", out);
         let table = placement_wire_moved(hello, Some("all"), &[], chosen(back.clone(), 250_000), None, &native, opt::MAX_LEVEL).unwrap();
         assert!(table.contains("chooses nothing far: a round trip of its own out longer than 250 ms") && table.contains("the move's word"), "{}", table);
         // the cut given nothing far: the chooser has nothing to choose, and begins no round trip
@@ -7196,5 +7224,58 @@ mod tests {
         // a wire's build with no `--choose` has no chooser
         let plain = emit_wired(hello, Some("all"), &[], Some(&Wire::from(100_000))).unwrap();
         assert!(!plain.contains("\nfn __wchoose(") && !plain.contains("data __wc:"));
+    }
+
+    // The screen takes far's part by running it again (fm3 cut.md, "the
+    // screen runs far's part again"; log 292): hello's own line over a
+    // wire that slows, goes, or goes and comes back, nothing late but
+    // the first 10; restart's key, sent far just before the wire went,
+    // read again where `launch` now is; and three switches only this
+    // test has, each giving something else: run again without the log,
+    // old items not dropped, and run again from where far is and not
+    // from its start, the last on a running sum of the test's own
+    #[test]
+    fn the_screen_runs_far_again() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let hello = Path::new("suite/zero/hello");
+        let restart = Path::new("suite/zero/restart");
+        let line = "\"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s";
+        let chosen = |then: Vec<(i64, i64)>| Wire { d: 100_000, then, choose: Some(250_000) };
+        for then in [vec![(3_000_000, 2_000_000)], vec![(3_000_000, GONE)], vec![(3_000_000, GONE), (6_000_000, 100_000)]] {
+            let out = run_wire_moved(hello, "run()", &native, opt::MAX_LEVEL, Some("all"), &[], chosen(then.clone())).unwrap();
+            assert!(out.starts_with(&format!("run()\n→ {}\nlate: 1 piece of 12, the most 200 ms\n  \"10\\n\" for 0 s, shown at 200 ms, 200 ms late\n", line)), "{:?}\n{}", then, out);
+            assert!(out.contains("\nchose: nothing far at 3.25 s, by running far's part again: "), "{}", out);
+        }
+        let table = placement_wire_moved(hello, Some("all"), &[], chosen(vec![(3_000_000, GONE), (6_000_000, 100_000)]), None, &native, opt::MAX_LEVEL).unwrap();
+        assert!(table.contains("runs far's part again from its start to 3.25 s: 3 turns, 1 item of its log given at their times; takes far's units") && table.contains("the move's word, far's part taken by the screen"), "{}", table);
+        // restart, the key at 3.5 s reaching far at 3.6 s and the wire gone at 3.55 s: far's answer never comes, the screen runs `launch` again with the key it sent, and the countdown begins again at the key
+        let key = "launch() with in \"k\" at 3.5 s";
+        let own = "\"10\\n9\\n8\\n7\\n\" at 1 hz, \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz from 3.5 s";
+        let gone = vec![(3_550_000, GONE)];
+        let (_, shown, pieces, _) = wire_moved_case(restart, key, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], chosen(gone.clone()), 0, None).unwrap();
+        assert_eq!(shown, own);
+        assert!(pieces.iter().any(|p| p.text == "10\n" && p.own == 3_500_000 && p.shown == 3_750_000), "{:?}", pieces);
+        // without the log the part run again has no call and no key, and nothing it gives
+        let (_, shown, _, _) = wire_moved_case(restart, key, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], chosen(gone), 128, None).unwrap();
+        assert_eq!(shown, "\"10\\n9\\n8\\n7\" at 1 hz", "run again without the log, the countdown has not begun again at the key");
+        // the wire back at 6 s: what far sent at 3.6 s, the second countdown, arrives then, made before far heard of the move, and is dropped
+        let back = vec![(3_550_000, GONE), (6_000_000, 100_000)];
+        let (_, shown, _, _) = wire_moved_case(restart, key, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], chosen(back.clone()), 0, None).unwrap();
+        assert_eq!(shown, own);
+        let (_, twice, _, _) = wire_moved_case(restart, key, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], chosen(back), 256, None).unwrap();
+        assert!(twice.matches("10\\n").count() > own.matches("10\\n").count(), "old items not dropped, a number is shown twice: {}", twice);
+        // a running sum far keeps across its turns, run again from its start, and from where far is
+        let dir = std::env::temp_dir().join(format!("probe-wire-again-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sum")).unwrap();
+        std::fs::write(dir.join("sum/sum.zero"), "int beat$ at (1 hz)\nint sum$\nbeat$ << beat$ + 1 if (beat$ < 24) forever\nsum$ << sum$ + beat$ forever\nout$ << (sum$ << \"\\n\") forever\n\non begin()\n    sum$ << sum$ + 100\n").unwrap();
+        let sum = "\"1\\n101\\n\" at 0 s, \"103\\n106\\n110\\n115\\n121\\n128\\n136\\n145\\n155\\n166\\n178\\n191\\n205\\n220\\n236\\n253\\n271\\n290\\n310\\n331\\n353\\n376\\n400\" at 1 hz from 1 s";
+        std::fs::write(dir.join("sum/sum.md"), format!("# sum\n*a running sum far keeps across its turns*\n\nlayer: runtime\n\n> (suite) 2026-10-16T12:00:00\nA clock of twenty-four beats, their running sum, and a call that adds a hundred to it.\n\n## testing\n>begin() → {}\n", sum)).unwrap();
+        let slows = vec![(3_000_000, 2_000_000)];
+        let (_, shown, _, _) = wire_moved_case(&dir, "begin()", &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], chosen(slows.clone()), 0, None).unwrap();
+        assert_eq!(shown, sum);
+        let (_, wrong, _, _) = wire_moved_case(&dir, "begin()", &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], chosen(slows), 512, None).unwrap();
+        assert!(wrong.contains("\"371\\n390\\n410\\n431\\n453\\n476\\n500\" at 1 hz from 17 s"), "run again from where far is, the call is given again to a far that had it: a hundred too many, 371 for 271: {}", wrong);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
