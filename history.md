@@ -4,6 +4,32 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the cut chosen by the runner, at the screen, between the cut given and nothing far — `8594db8` · 2026-10-16
+
+Hop fifty-one's second landing, transformation 172 (fm3 log 290; question 163, Ash's ruling: the cut is chosen by the program's runner, aiming at least lateness and then least work at the device). `--choose 250 ms` beside `--far` and `--wire`: nobody says a cut after the first. A chooser at the screen, which knows only what reaches it, round trips of its own and what far's last telling said, and never the wire's table of changes, makes a move due now.
+
+**The rule.** Far's part could be later than the bound where the screen is waiting on far, far's last telling having said it owes something or far not having answered what was sent, and a round trip of the screen's own has been out longer than the bound: then nothing far. It could not be later where every round trip begun in the last whole second came back within the bound: then the cut given back, where nothing on the screen's list is due within the last round trip measured. Lateness under the bound counts as none, so a steady wire of 100 ms, round trips of 200 ms, keeps the cut given and costs no piece. `probe zero suite/zero/hello run 'run()' --fast --far all --choose 250 ms --wire 100 ms then gone at 3 s then 100 ms at 6 s`:
+
+```
+run()
+→ "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\n" at 1 hz, "hello world\ngoodbye" at 10 s
+late: 4 pieces of 12, the most 2.2 s
+  "10\n" for 0 s, shown at 200 ms, 200 ms late
+  "6\n" for 4 s, shown at 6.2 s, 2.2 s late
+  "5\n" for 5 s, shown at 6.2 s, 1.2 s late
+  "4\n" for 6 s, shown at 6.2 s, 200 ms late
+far worked ahead: 7 turns it took were thrown away
+chose: nothing far at 3.25 s: a round trip of its own out longer than 250 ms, the screen waiting on far
+chose: the cut given at 7.2 s: a second of round trips within 250 ms, nothing due within 200 ms
+the screen's own round trips: 29, the longest back 3.2 s
+```
+
+**The build** is the wire's build that moves, its four tables nothing far and the cut given by turns, each due at the never-time until the chooser writes `__due_move`; and since a move may come at any time, as a key may, it has the screen's bound and far's copies whatever the store has. In `places.rs`, `choose_text`: `__wchoose`, asked by `__world` at every pass; `__wpinged`; `__wchoose_next`, taken by `__wnext` only while something else is still to happen; `__wire_choose`. A ping is an item, kinds 13 and 14, answered at once and counted as nothing a turn waits for; each choice a line of the wire's record, 15 and 16, which `run` and `placement` print. `--choose` with `--then` is refused by name. Only where `--choose` is said: `irdiff.sh`, `agent59/placediff.sh`, `agent61/wirediff.sh` and `agent62/moveddiff.sh` against `scratchpad/probe167` name nothing.
+
+**What it does not do yet.** The move is hop forty-nine's, which waits for far's state over the same wire, and the screen drops what it was keeping at the move: above, the 6, 5 and 4 wait for the wire's return. Over the suite, every store that says a time, everything far, `PROBE_ZERO_CUTS=choose=250` against `choose=0` (the cut given throughout, in the same build), 141 runs a wire: pieces late after the change 183 against 133 over 2 s from 1 s, 120 against 47 gone and back at 3 s, 152 against 44 over 3 s for a second; gone for good, 88 runs give their line against 120, the rest stopping short, the wire's. Choosing pays only when the screen can take far's part without far, running it again from what it sent (173, not built; fm3 cut.md says what it needs). hello's `run` counted with the chooser over a steady wire: 207 681, beside 25 528, the round trips' passes of the world's loop; no cost work. A test, `the_cut_is_chosen`. The full run, `scratchpad/chain171.log`: 1 329 of 1 329 on four paths, 1 288 and 41 skipped on the GPU's, `probe test` on all five, `cargo test` 209 passed.
+
+---
+
 ### zero: a wire whose delay changes while the program runs, and that can go and come back — `d44514f` · 2026-10-16
 
 Hop fifty-one's first landing, transformation 171 (fm3 log 289). Until now a wire took one delay for a whole run. Now the command line says how it changes: `--wire 100 ms then 2 s at 3 s`, `--wire 100 ms then gone at 3 s then 100 ms at 6 s`, up to eight changes, forward in time, none at 0 s. No program and no case changes.
