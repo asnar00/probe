@@ -3089,7 +3089,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     // the text it was
     let mut placed = None;
     if store.places {
-        match super::places::rewrite(&ir, &l.units(store), l.wire, store.places && store.wire && store.changes) {
+        match super::places::rewrite(&ir, &l.units(store), l.wire, store.places && store.wire && store.changes, store.places && store.wire && store.moved && store.choose) {
             Ok((text, mut p)) => {
                 ir = text;
                 p.stack = stack_why;

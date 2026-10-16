@@ -30,7 +30,12 @@ use std::process::ExitCode;
 /// 2 s at 3 s`, as many `then`s as wanted, `then gone at <time>` where
 /// the wire goes
 fn wire_said(args: &[String]) -> Result<(Option<run::Wire>, Vec<usize>), String> {
-    let Some(i) = args.iter().position(|a| a == "--wire") else { return Ok((None, Vec::new())) };
+    let Some(i) = args.iter().position(|a| a == "--wire") else {
+        if args.iter().any(|a| a == "--choose") {
+            return Err("`--choose <bound>` is said with `--far <cut>` and `--wire <time>`: the runner chooses between the cut given and nothing far as the wire changes".to_string());
+        }
+        return Ok((None, Vec::new()));
+    };
     // a time at k, one word or two: the time, and the place after it
     let time_at = |k: usize| -> Result<(i64, usize), String> {
         let Some(n) = args.get(k) else { return Err("a wire's delay is said `--wire <time>`: `--wire 100 ms`, `--wire 100 ms then 2 s at 3 s`".to_string()) };
@@ -52,7 +57,17 @@ fn wire_said(args: &[String]) -> Result<(Option<run::Wire>, Vec<usize>), String>
         then.push((at, v));
         k = after;
     }
-    Ok((Some(run::Wire { d, then }.checked()?), (i..k).collect()))
+    let mut used: Vec<usize> = (i..k).collect();
+    // (the chooser's bound, said beside the wire, fm3 log 290)
+    let choose = match args.iter().position(|a| a == "--choose") {
+        Some(c) => {
+            let (b, after) = time_at(c + 1)?;
+            used.extend(c..after);
+            Some(b)
+        }
+        None => None,
+    };
+    Ok((Some(run::Wire { d, then, choose }.checked()?), used))
 }
 
 /// The moves a command says (fm3 cut.md, "the cut, moved"): each `--then
@@ -95,6 +110,7 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         eprintln!("                            [--then <units> at <time>]  ... and the cut moved while it runs: at that time the units");
         eprintln!("                                         named are the ones far, `none` for every unit at the screen; said again, a second move");
         eprintln!("                            [--wire <time>]            ... over a wire that takes that long, `--wire 100 ms`: the case by its own times, what was late, and, where far works ahead of a key, the turns it took and threw away; with `--then`, the cut moved over that wire");
+        eprintln!("                            [--choose <bound>]         ... with `--far` and `--wire`: the runner chooses each cut after the first, between it and nothing far, at the screen, by round trips of its own: lateness under the bound is none; each choice printed with its time and reason");
         eprintln!("                            [--wire <time> then <time>|gone at <time> ...]  ... over a wire whose delay changes while it runs, or that goes: an item takes the delay of when it is put on, a gone wire holds it until it comes back; beneath what was late, the pieces never shown where the wire went for good");
         eprintln!("       probe zero <store> placement [--far <units>]   every unit and where it runs at that cut, and what the wire carries");
         eprintln!("                            [--wire <time>] [--case <case>]  ... and one case over such a wire: what it carried, when each left and arrived, each piece the screen dropped unshown and each time far went back");
