@@ -4,6 +4,29 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a wire whose delay changes while the program runs, and that can go and come back — `d44514f` · 2026-10-16
+
+Hop fifty-one's first landing, transformation 171 (fm3 log 289). Until now a wire took one delay for a whole run. Now the command line says how it changes: `--wire 100 ms then 2 s at 3 s`, `--wire 100 ms then gone at 3 s then 100 ms at 6 s`, up to eight changes, forward in time, none at 0 s. No program and no case changes.
+
+**An item takes the delay of the moment it is put on the wire.** Where the wire is gone it holds what is put on it, and the item arrives when the wire comes back plus the delay it comes back with, or never, as a connection that drops and reconnects with nothing lost. And the wire keeps its order: an item never arrives before one put on before it the same way. In the world's text, and only in a build where such a wire is said (`Store.changes`), a table `__wsch` filled by the runner's `__wire_at(k, from, delay)`, and `__wat(now, d)`, which `__wput` asks in place of `now + d`. `__world`'s two checks at its end, that each place has nothing left, are not made where the wire still holds something it will never deliver: what is left then is the wire's.
+
+restart, everything far, its key at 3.5 s, `probe zero suite/zero/restart run 'launch() with in "k" at 3.5 s' --far all --wire 100 ms then gone at 3 s`:
+
+```
+launch() with in "k" at 3.5 s
+→ "10\n9\n8\n7" at 1 hz
+late: 1 piece of 4, the most 200 ms
+  "10\n" for 0 s, shown at 200 ms, 200 ms late
+never shown: 11 pieces, the wire gone from 3 s
+far worked ahead: no turn it took was thrown away
+```
+
+The key never reaches far; the screen dropped the first countdown's last seven pieces when it sent it, as it does for any key, and nothing comes back. The case is not held, and the runner says it is the wire's. With the wire back at 6 s the case is restart's own line and the `10` after the key is at 6.2 s; with a wire of 2 s from 3 s, at 7.5 s. hello with everything far is untouched by any of these after 0.2 s: its whole text is at the screen by then.
+
+`a_wire_slows_goes_and_comes_back` holds the three and the order. No store of the suite puts two items on one way across a fall in the delay, each place waiting for its answers; the order is held all the same. A wire that does not change builds as it did: `irdiff.sh`, `agent59/placediff.sh`, `agent61/wirediff.sh` and `agent62/moveddiff.sh` against `scratchpad/probe166` name nothing; the six rows are 478, 485, 920, 931, 939 and 918. The full run, `scratchpad/chain170.log`: 1 329 of 1 329 runs on native, wasm, riscv and arm-qemu, 1 288 on the GPU's path with 41 skipped, `probe test` on all five paths, `cargo test` 208 passed.
+
+---
+
 ### README: what leaves the machine's stack over a wire, and what stays on it — `4eae960` · 2026-10-13
 
 The README's section on `probe zero` said, from hop forty-seven, that "a function that is handed, gives or keeps more than a word across a call stays on the stack and is not placed apart from what it calls". After the three entries below that is not so, and the sentence now says what they built and what still stays: a function handed a stream, one wired over a stream that does not step, one with a call in a loop that gives a value. No code changed; the full run of the entry below stands.
