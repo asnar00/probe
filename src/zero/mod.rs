@@ -25,15 +25,34 @@ use std::process::ExitCode;
 /// The wire's delay a command says (fm3 cut.md, "a wire that takes
 /// time"): `--wire <time>`, the time one word or two, `100ms` or `100
 /// ms`. Gives it, and the places in `args` it took
-fn wire_said(args: &[String]) -> Result<(Option<i64>, Vec<usize>), String> {
+///
+/// ... and a wire whose delay changes (fm3 log 289): `--wire 100 ms then
+/// 2 s at 3 s`, as many `then`s as wanted, `then gone at <time>` where
+/// the wire goes
+fn wire_said(args: &[String]) -> Result<(Option<run::Wire>, Vec<usize>), String> {
     let Some(i) = args.iter().position(|a| a == "--wire") else { return Ok((None, Vec::new())) };
-    let Some(n) = args.get(i + 1) else { return Err("a wire's delay is said `--wire <time>`: `--wire 100 ms`".to_string()) };
-    let unit = args.get(i + 2).filter(|u| *u == "s" || *u == "ms");
-    let t = run::time_said(&match unit {
-        Some(u) => format!("{}{}", n, u),
-        None => n.clone(),
-    })?;
-    Ok((Some(t), (i..i + if unit.is_some() { 3 } else { 2 }).collect()))
+    // a time at k, one word or two: the time, and the place after it
+    let time_at = |k: usize| -> Result<(i64, usize), String> {
+        let Some(n) = args.get(k) else { return Err("a wire's delay is said `--wire <time>`: `--wire 100 ms`, `--wire 100 ms then 2 s at 3 s`".to_string()) };
+        let unit = args.get(k + 1).filter(|u| *u == "s" || *u == "ms");
+        let t = run::time_said(&match unit {
+            Some(u) => format!("{}{}", n, u),
+            None => n.clone(),
+        })?;
+        Ok((t, k + if unit.is_some() { 2 } else { 1 }))
+    };
+    let (d, mut k) = time_at(i + 1)?;
+    let mut then = Vec::new();
+    while args.get(k).map(String::as_str) == Some("then") {
+        let (v, next) = if args.get(k + 1).map(String::as_str) == Some("gone") { (run::GONE, k + 2) } else { time_at(k + 1)? };
+        if args.get(next).map(String::as_str) != Some("at") {
+            return Err("a wire's change is said `then <time> at <time>` or `then gone at <time>`: `--wire 100 ms then gone at 3 s`".to_string());
+        }
+        let (at, after) = time_at(next + 1)?;
+        then.push((at, v));
+        k = after;
+    }
+    Ok((Some(run::Wire { d, then }.checked()?), (i..k).collect()))
 }
 
 /// The moves a command says (fm3 cut.md, "the cut, moved"): each `--then
@@ -76,6 +95,7 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         eprintln!("                            [--then <units> at <time>]  ... and the cut moved while it runs: at that time the units");
         eprintln!("                                         named are the ones far, `none` for every unit at the screen; said again, a second move");
         eprintln!("                            [--wire <time>]            ... over a wire that takes that long, `--wire 100 ms`: the case by its own times, what was late, and, where far works ahead of a key, the turns it took and threw away; with `--then`, the cut moved over that wire");
+        eprintln!("                            [--wire <time> then <time>|gone at <time> ...]  ... over a wire whose delay changes while it runs, or that goes: an item takes the delay of when it is put on, a gone wire holds it until it comes back; beneath what was late, the pieces never shown where the wire went for good");
         eprintln!("       probe zero <store> placement [--far <units>]   every unit and where it runs at that cut, and what the wire carries");
         eprintln!("                            [--wire <time>] [--case <case>]  ... and one case over such a wire: what it carried, when each left and arrived, each piece the screen dropped unshown and each time far went back");
         eprintln!("                            [--then <units> at <time>]  ... and each move: what is handed across, and the cut after it; with `--wire`, the move's own items among what the wire carried");
@@ -145,7 +165,7 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
                 let far = args.iter().position(|a| a == "--far").and_then(|i| args.get(i + 1)).map(String::as_str);
                 match wire_said(args)? {
                     (None, _) => run::emit_placed(Path::new(store), far, &then),
-                    (wire, _) => run::emit_wired(Path::new(store), far, &then, wire),
+                    (wire, _) => run::emit_wired(Path::new(store), far, &then, wire.as_ref()),
                 }
             }),
             _ => run::emit_sites(Path::new(store)),
@@ -175,7 +195,7 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
             let far = args.iter().position(|a| a == "--far").and_then(|i| args.get(i + 1));
             let case = args.iter().position(|a| a == "--case").and_then(|i| args.get(i + 1));
             match moves_said(args).and_then(|(then, _)| match wire_said(args)? {
-                (Some(d), _) => run::placement_wire_moved(Path::new(store), far.map(String::as_str), &then, d, case.map(String::as_str), &policy, level),
+                (Some(w), _) => run::placement_wire_moved(Path::new(store), far.map(String::as_str), &then, w, case.map(String::as_str), &policy, level),
                 _ => run::placement(Path::new(store), far.map(String::as_str), &then),
             }) {
                 Ok(out) => {

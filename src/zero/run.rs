@@ -50,9 +50,13 @@ pub fn emit_placed(dir: &Path, far: Option<&str>, then: &[(String, i64)]) -> Res
 
 /// ... and with a wire that takes time (fm3 cut.md, "a wire that takes
 /// time"), the text of that build, `__cut` setting the delay too
-pub fn emit_wired(dir: &Path, far: Option<&str>, then: &[(String, i64)], wire: Option<i64>) -> Result<String, String> {
+pub fn emit_wired(dir: &Path, far: Option<&str>, then: &[(String, i64)], wire: Option<&Wire>) -> Result<String, String> {
     let mut s = match wire {
-        Some(_) => wired(dir)?,
+        Some(w) => {
+            let mut s = wired(dir)?;
+            s.changes = !w.then.is_empty();
+            s
+        }
         None => store::read(dir).map_err(|e| e.to_string())?,
     };
     s.places = true;
@@ -61,9 +65,10 @@ pub fn emit_wired(dir: &Path, far: Option<&str>, then: &[(String, i64)], wire: O
     let mut ir = l.ir;
     if let (true, Some(p)) = (far.is_some() || !then.is_empty() || wire.is_some(), &l.placed) {
         let mut cut = cut_of(p, far, then)?;
-        if let Some(d) = wire {
-            cut.before.push(("__wire_set".to_string(), vec![d]));
-            cut.label.push_str(&format!(", a wire of {}", spell_late(d)));
+        if let Some(w) = wire {
+            cut.before.push(("__wire_set".to_string(), vec![w.d]));
+            cut.before.extend(w.calls());
+            cut.label.push_str(&format!(", a wire of {}", w.said()));
         }
         ir.push_str(&format!("\n; the cut, {}, as the runner fills it before a case\nfn __cut()\n", cut.label));
         for (f, args) in &cut.before {
@@ -625,6 +630,90 @@ pub fn run_cut(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast
     Ok(out)
 }
 
+/// A wire as a command says it (fm3 log 289): its first delay, and
+/// each change with the time it takes effect and the delay from then,
+/// `GONE` where the wire goes. `--wire 100 ms then gone at 3 s then
+/// 100 ms at 6 s`
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Wire {
+    pub d: i64,
+    pub then: Vec<(i64, i64)>,
+}
+
+/// a gone wire's delay: the never-time of the world's text
+pub const GONE: i64 = 1 << 62;
+
+impl From<i64> for Wire {
+    fn from(d: i64) -> Wire {
+        Wire { d, then: Vec::new() }
+    }
+}
+
+impl From<&Wire> for Wire {
+    fn from(w: &Wire) -> Wire {
+        w.clone()
+    }
+}
+
+impl Wire {
+    /// as a person reads it: `100 ms then gone at 3 s`
+    pub fn said(&self) -> String {
+        let mut out = spell_late(self.d);
+        for (at, d) in &self.then {
+            out.push_str(&format!(" then {} at {}", if *d >= GONE { "gone".to_string() } else { spell_late(*d) }, store::spell_time(*at)));
+        }
+        out
+    }
+    /// the calls that fill the build's table of changes, after the cut's
+    pub fn calls(&self) -> Vec<(String, Vec<i64>)> {
+        self.then.iter().enumerate().map(|(k, (at, d))| ("__wire_at".to_string(), vec![k as i64, *at, *d])).collect()
+    }
+    /// where the wire goes and does not come back, from when
+    pub fn gone_for_good(&self) -> Option<i64> {
+        match self.then.last() {
+            Some((at, d)) if *d >= GONE => Some(self.then.iter().rev().take_while(|(_, d)| *d >= GONE).last().map(|(a, _)| *a).unwrap_or(*at)),
+            _ => None,
+        }
+    }
+    /// a wire said with changes is checked as `--then` is: forward in
+    /// time, none at 0 s, `places::CHANGES` at most
+    pub fn checked(self) -> Result<Wire, String> {
+        if self.then.len() > super::places::CHANGES {
+            return Err(format!("a wire's delay may change {} times in one run, and {} changes are said", super::places::CHANGES, self.then.len()));
+        }
+        for (k, (at, _)) in self.then.iter().enumerate() {
+            if *at <= 0 {
+                return Err("a wire's change is at a time after 0 s: at 0 s the wire is its first delay, `--wire 2 s`".to_string());
+            }
+            if k > 0 && self.then[k - 1].0 >= *at {
+                return Err(format!("the changes of a wire go forward in time: {} is not after {}", store::spell_time(*at), store::spell_time(self.then[k - 1].0)));
+            }
+        }
+        Ok(self)
+    }
+}
+
+/// beneath what was late, where the wire went for good and the case's
+/// text stops short of what the case says (fm3 log 289): how many of
+/// its pieces were never shown, a piece a line as `late:` counts them.
+/// Nothing where the wire comes back or the text is not the start of
+/// the case's
+pub fn never_said(wire: &Wire, expect: &store::Expect, got: &str) -> String {
+    let Some(from) = wire.gone_for_good() else { return String::new() };
+    let want: String = match expect {
+        store::Expect::Timed(p) => p.iter().map(|(t, _)| t.as_str()).collect(),
+        store::Expect::Text(t) => t.clone(),
+        _ => return String::new(),
+    };
+    let (want, got) = (want.strip_suffix('\n').unwrap_or(&want).to_string(), got.strip_suffix('\n').unwrap_or(got).to_string());
+    if got.len() >= want.len() || !want.starts_with(&got) {
+        return String::new();
+    }
+    let rest = &want[got.len()..];
+    let n = rest.split_inclusive('\n').filter(|l| !l.trim_end_matches('\n').is_empty()).count();
+    format!("never shown: {} piece{}, the wire gone from {}\n", n, if n == 1 { "" } else { "s" }, store::spell_time(from))
+}
+
 /// A store built for a wire that takes time (fm3 cut.md, "a wire that
 /// takes time"; log 269), on the runner's clock
 fn wired(dir: &Path) -> Result<store::Store, String> {
@@ -751,9 +840,11 @@ pub fn run_wire(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, far
 /// ... and the cut moved while it runs (fm3 cut.md, "the cut moved
 /// over a wire that takes time"; log 276): `then` is each cut gone to
 /// and the time the move is said at the screen
-pub fn run_wire_moved(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, far: Option<&str>, then: &[(String, i64)], wire: i64) -> Result<String, String> {
-    let (head, shown, pieces, thrown) = wire_moved_case(dir, which, policy, level, Backend::Native, far, then, wire, 0, None)?;
-    Ok(format!("{}\n→ {}\n{}{}", head, shown, late_said(&pieces), thrown_said(thrown)))
+pub fn run_wire_moved<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, far: Option<&str>, then: &[(String, i64)], wire: W) -> Result<String, String> {
+    let wire: Wire = wire.into();
+    let ((head, shown, pieces, thrown), expect) = wire_moved_case_said(dir, which, policy, level, Backend::Native, far, then, &wire, 0, None)?;
+    let never = never_said(&wire, &expect, &pieces.iter().map(|p| p.text.as_str()).collect::<String>());
+    Ok(format!("{}\n→ {}\n{}{}{}", head, shown, late_said(&pieces), never, thrown_said(thrown)))
 }
 
 /// ... as its parts: the case's call as written, what it gave by its
@@ -776,23 +867,33 @@ pub(super) fn wire_case_cost(dir: &Path, which: &str, policy: &ssa::Policy, leve
 /// ... and with the cut's moves; `dropped` is a test's, one thing a
 /// move deliberately does not hand across
 #[allow(clippy::too_many_arguments)]
-pub(super) fn wire_moved_case(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, backend: Backend, far: Option<&str>, then: &[(String, i64)], wire: i64, but: i64, dropped: Option<&str>) -> Result<(String, String, Vec<Shown>, Option<i64>), String> {
+pub(super) fn wire_moved_case<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, backend: Backend, far: Option<&str>, then: &[(String, i64)], wire: W, but: i64, dropped: Option<&str>) -> Result<(String, String, Vec<Shown>, Option<i64>), String> {
+    wire_moved_case_said(dir, which, policy, level, backend, far, then, wire, but, dropped).map(|(r, _)| r)
+}
+
+/// ... and what the case says it gives
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+fn wire_moved_case_said<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, backend: Backend, far: Option<&str>, then: &[(String, i64)], wire: W, but: i64, dropped: Option<&str>) -> Result<((String, String, Vec<Shown>, Option<i64>), store::Expect), String> {
+    let wire: Wire = wire.into();
     let mut s = wired(dir)?;
     s.moved = !then.is_empty();
+    s.changes = !wire.then.is_empty();
     let policy = &store_policy(&s, policy);
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
     let placed = l.placed.as_ref().ok_or("the store was not placed")?;
-    let cut = match dropped {
+    let mut cut = match dropped {
         None => cut_of(placed, far, then)?.before,
         Some(_) => {
             let (first, later) = cuts_named(placed, far, then)?;
             placed.moves_but(&first, &later, dropped).before
         }
     };
+    cut.extend(wire.calls());
     let calls = calls_of(&s, &l, policy)?;
     let p = case_named(&calls, which).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", which))?;
     let module = build(&l.ir, policy, level)?;
-    let (own, pieces, _, thrown) = wire_runs(&module, &l, backend, level, "zero-wire", &cut, wire, but, p, &p.call.context)?;
+    let (own, pieces, _, thrown) = wire_runs(&module, &l, backend, level, "zero-wire", &cut, wire.d, but, p, &p.call.context)?;
     let got = own?;
     let vals: Vec<String> = got.values.iter().enumerate().map(|(k, v)| if p.call.times.get(k) == Some(&true) { store::spell_nanos(*v) } else { v.to_string() }).collect();
     let shown = match p.call.expect {
@@ -800,7 +901,7 @@ pub(super) fn wire_moved_case(dir: &Path, which: &str, policy: &ssa::Policy, lev
         store::Expect::Text(_) => format!("{:?}", got.text.strip_suffix('\n').unwrap_or(&got.text)),
         _ => vals.join(", "),
     };
-    Ok((p.text.split('→').next().unwrap_or("").trim().to_string(), shown, pieces, thrown))
+    Ok(((p.text.split('→').next().unwrap_or("").trim().to_string(), shown, pieces, thrown), p.call.expect.clone()))
 }
 
 /// `probe zero <store> placement --far <cut> --wire <time>`: the table
@@ -816,9 +917,11 @@ pub fn placement_wire(dir: &Path, far: Option<&str>, wire: i64, which: Option<&s
 /// ... and with the cut's moves (fm3 log 276): the tables of the build
 /// for a wire, with what each move hands across in it; and in the list
 /// of what the wire carried, the move's own items
-pub fn placement_wire_moved(dir: &Path, far: Option<&str>, then: &[(String, i64)], wire: i64, which: Option<&str>, policy: &ssa::Policy, level: usize) -> Result<String, String> {
+pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: &[(String, i64)], wire: W, which: Option<&str>, policy: &ssa::Policy, level: usize) -> Result<String, String> {
+    let wire: Wire = wire.into();
     let mut s = wired(dir)?;
     s.moved = !then.is_empty();
+    s.changes = !wire.then.is_empty();
     let policy = &store_policy(&s, policy);
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
     let placed = l.placed.as_ref().ok_or("the store was not placed")?;
@@ -842,11 +945,12 @@ pub fn placement_wire_moved(dir: &Path, far: Option<&str>, then: &[(String, i64)
         Some(w) => case_named(&calls, w).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", w))?,
         None => calls.iter().find(|c| matches!(c.call.expect, store::Expect::Timed(_))).or(calls.first()).ok_or("the store has no case")?,
     };
-    let cut = placed.moves(&first, &later).before;
+    let mut cut = placed.moves(&first, &later).before;
+    cut.extend(wire.calls());
     let module = build(&l.ir, policy, level)?;
-    let (own, pieces, log, thrown) = wire_runs(&module, &l, Backend::Native, level, "zero-wire", &cut, wire, 0, p, &p.call.context)?;
+    let (own, pieces, log, thrown) = wire_runs(&module, &l, Backend::Native, level, "zero-wire", &cut, wire.d, 0, p, &p.call.context)?;
     let got = own?;
-    out.push_str(&format!("\na wire of {}, by the world's clock: `{}`\n\n", spell_late(wire), p.text.split('→').next().unwrap_or("").trim()));
+    out.push_str(&format!("\na wire of {}, by the world's clock: `{}`\n\n", wire.said(), p.text.split('→').next().unwrap_or("").trim()));
     // the wire's record, text a character an item put together; and,
     // where far works ahead of a key (fm3 log 273), beside what the
     // wire carried: each piece the screen dropped unshown, each time
@@ -930,7 +1034,8 @@ pub fn placement_wire_moved(dir: &Path, far: Option<&str>, then: &[(String, i64)
         store::Expect::Timed(_) => store::spell_timed(&self::pieces(&got)),
         _ => format!("{:?}", got.text.strip_suffix('\n').unwrap_or(&got.text)),
     };
-    out.push_str(&format!("\n→ {}\n{}{}", shown, late_said(&pieces), thrown_said(thrown)));
+    let never = never_said(&wire, &p.call.expect, &pieces.iter().map(|p| p.text.as_str()).collect::<String>());
+    out.push_str(&format!("\n→ {}\n{}{}{}", shown, late_said(&pieces), never, thrown_said(thrown)));
     Ok(out)
 }
 
@@ -6784,5 +6889,56 @@ mod tests {
         let mut coster = crate::cost::Coster::new(&module, None, None, None);
         let r = coster.report("count_down").unwrap();
         assert!(r.loops.iter().any(|l| l.contains("count_down: loop at b1 x10 (")), "{:?}", r.loops);
+    }
+
+    /// A wire whose delay changes while the program runs, and that goes
+    /// and comes back (fm3 log 289). restart, everything far, its key at
+    /// 3.5 s: the key waits on a slow wire, is held by a gone one until
+    /// it comes back, and never reaches far where it never does, the
+    /// pieces after it never shown and the runner saying so. And the
+    /// order the wire keeps, where the delay falls from 2 s to 100 ms:
+    /// no item arrives before one put on before it the same way (no
+    /// store of the suite puts two on one way across such a fall, the
+    /// places waiting for answers; the order is held all the same)
+    #[test]
+    fn a_wire_slows_goes_and_comes_back() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let restart = Path::new("suite/zero/restart");
+        let key = "launch() with in \"k\" at 3.5 s";
+        let line = "\"10\\n9\\n8\\n7\\n\" at 1 hz, \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz from 3.5 s";
+        let late = |pieces: &[Shown]| -> Vec<(String, i64, i64)> { pieces.iter().filter(|p| p.shown > p.own).map(|p| (p.text.clone(), p.own, p.shown)).collect() };
+        let wire = |then: Vec<(i64, i64)>| Wire { d: 100_000, then };
+        // slower from 3 s: the key reaches far at 5.5 s and its text the screen at 7.5 s
+        let (_, shown, pieces, _) = wire_moved_case(restart, key, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], wire(vec![(3_000_000, 2_000_000)]), 0, None).unwrap();
+        assert_eq!(shown, line);
+        assert_eq!(late(&pieces)[1], ("10\n".to_string(), 3_500_000, 7_500_000));
+        // gone from 3 s and back at 6 s with 100 ms: the key is held, and arrives at 6.1 s
+        let (_, shown, pieces, _) = wire_moved_case(restart, key, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], wire(vec![(3_000_000, GONE), (6_000_000, 100_000)]), 0, None).unwrap();
+        assert_eq!(shown, line);
+        assert_eq!(late(&pieces)[1], ("10\n".to_string(), 3_500_000, 6_200_000));
+        // gone for good: the first countdown to the key, and the runner says the rest is the wire's
+        let out = run_wire_moved(restart, key, &native, opt::MAX_LEVEL, Some("all"), &[], wire(vec![(3_000_000, GONE)])).unwrap();
+        assert!(out.starts_with(&format!("{}\n→ \"10\\n9\\n8\\n7\" at 1 hz\n", key)), "{}", out);
+        assert!(out.contains("\nnever shown: 11 pieces, the wire gone from 3 s\n"), "{}", out);
+        // the order kept, the arrivals each way never going back
+        let table = placement_wire_moved(restart, Some("all"), &[], wire(vec![(3_000_000, 2_000_000), (4_000_000, 100_000)]), Some(key), &native, opt::MAX_LEVEL).unwrap();
+        let rows: Vec<(String, i64)> = table.lines().filter_map(|l| {
+            let cols: Vec<&str> = l.split("  ").map(str::trim).filter(|c| !c.is_empty()).collect();
+            let at = cols.get(1).and_then(|a| time_said(a).ok())?;
+            let way = cols.get(2).filter(|w| w.contains('→'))?;
+            Some((way.to_string(), at))
+        }).collect();
+        assert!(rows.len() > 10, "{}", table);
+        for way in ["screen → far", "far → screen"] {
+            let ats: Vec<i64> = rows.iter().filter(|(w, _)| w == way).map(|(_, a)| *a).collect();
+            assert!(ats.windows(2).all(|p| p[0] <= p[1]), "{}: {:?}\n{}", way, ats, table);
+        }
+        let (_, shown, _, _) = wire_moved_case(restart, key, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], wire(vec![(3_000_000, 2_000_000), (4_000_000, 100_000)]), 0, None).unwrap();
+        assert_eq!(shown, line);
+        // a wire that does not change is built as it was: no table of changes
+        let steady = emit_wired(restart, Some("all"), &[], Some(&Wire::from(100_000))).unwrap();
+        assert!(!steady.contains("\nfn __wat(") && !steady.contains("data __wsch"));
+        let changing = emit_wired(restart, Some("all"), &[], Some(&wire(vec![(3_000_000, GONE)]))).unwrap();
+        assert!(changing.contains("\nfn __wat(") && changing.contains("__wire_at(0, 3000000, 4611686018427387904)"));
     }
 }
