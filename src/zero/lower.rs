@@ -2955,10 +2955,10 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
             let back: Vec<String> = (0..rets.len()).map(|k| format!("r{}", k)).collect();
             let call = format!("{}{}({})", if said { "__said_" } else { "" }, f.ir, f.params.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>().join(", "));
             if l.wire {
-                // a case's call is a function begun at the screen, and
+                // a case's call is a function begun at the client, and
                 // the world gives everything its turn (fm3 log 269)
                 if !ir.contains("\ndata __case_res: ") {
-                    ir.push_str("\n; what a case's call gave, kept at the screen for the runner (fm3 log 269)\ndata __case_res: array(i64, 8)\n");
+                    ir.push_str("\n; what a case's call gave, kept at the client for the runner (fm3 log 269)\ndata __case_res: array(i64, 8)\n");
                 }
                 let args: Vec<String> = f.params.iter().map(|(n, _)| n.clone()).collect();
                 let mut keep = String::new();
@@ -9194,7 +9194,7 @@ impl Lowerer {
             }
         }
         // (the cut's move, fm3 log 276, is the first of them and is the
-        // screen's alone: its turn does not move the clock or mark the
+        // client's alone: its turn does not move the clock or mark the
         // output, being no part of the program)
         let mv = if self.moved { "    mv: u1 = cmp.eq k, 1\n    if mv\n        __move_turn()\n        ret\n" } else { "" };
         write!(t, "\n; ... and its turn: the clock reaches its time, and it goes on\nfn __list_turn()\n    _this: ptr = context()\n    t: i64, kr: i64 = __list_next()\n    k: i64 = div kr, {}\n{}    __wait(t)\n    x: __ctx = load _this\n", RANK, mv).unwrap();

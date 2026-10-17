@@ -75,8 +75,8 @@ pub struct Store {
     /// for a host to read back after the run. False as a store is read
     pub trace: bool,
     /// the placed build (fm3 cut.md): the program runs at two places in
-    /// one process, `screen`, the store's first context, which has the
-    /// devices, and `far`, its second, each with memory of its own;
+    /// one process, `client`, the store's first context, which has the
+    /// devices, and `server`, its second, each with memory of its own;
     /// where each function and each line that stands runs is a table
     /// the runner fills before a case, and everything that crosses
     /// goes through one function, the wire. False as a store is read
@@ -100,8 +100,8 @@ pub struct Store {
     /// read
     pub changes: bool,
     /// ... and whose cut the runner chooses (fm3 log 290): the build
-    /// that moves, with the screen's bound and far's copies whatever
-    /// the store has, and the chooser at the screen. Read only where
+    /// that moves, with the client's bound and the server's copies whatever
+    /// the store has, and the chooser at the client. Read only where
     /// `wire` and `moved` are set. False as a store is read
     pub choose: bool,
     /// ... and whose wire has a speed or comes and goes (fm3 log 294):

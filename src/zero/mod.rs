@@ -32,7 +32,7 @@ use std::process::ExitCode;
 fn wire_said(args: &[String]) -> Result<(Option<run::Wire>, Vec<usize>), String> {
     let Some(i) = args.iter().position(|a| a == "--wire") else {
         if args.iter().any(|a| a == "--choose") {
-            return Err("`--choose <bound>` is said with `--far <cut>` and `--wire <time>`: the runner chooses between the cut given and nothing far as the wire changes".to_string());
+            return Err("`--choose <bound>` is said with `--server <cut>` and `--wire <time>`: the runner chooses between the cut given and nothing on the server as the wire changes".to_string());
         }
         return Ok((None, Vec::new()));
     };
@@ -167,20 +167,20 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
     let usage = || {
         eprintln!("usage: probe zero <store> emit          print the store's IR");
         eprintln!("                            [sites|trace] ... of its diagnostic build, or its trace build, and the table of places");
-        eprintln!("                            [places [--far <units>]] ... of its placed build, which runs at two places (fm3 cut.md),");
+        eprintln!("                            [places [--server <units>]] ... of its placed build, which runs at two places (fm3 cut.md),");
         eprintln!("                                         and a function `__cut` that fills the table for that cut");
         eprintln!("                            [--then <units> at <time>] ... of the build whose cut may be moved, and its moves in `__cut`");
         eprintln!("       probe zero <store> run <case>    run one ## testing case natively, on the real clock");
         eprintln!("                            [--fast|-t]  ... as fast as it can, on the virtual clock");
-        eprintln!("                            [--far <units>]  ... at a cut: the units named run at a second place, each by where it is");
+        eprintln!("                            [--server <units>]  ... at a cut: the units named run at a second place, each by where it is");
         eprintln!("                                         written, `countdown.zero:2`, or a function by its words; several with commas; `all`");
         eprintln!("                            [--then <units> at <time>]  ... and the cut moved while it runs: at that time the units");
-        eprintln!("                                         named are the ones far, `none` for every unit at the screen; said again, a second move");
-        eprintln!("                            [--wire <time>]            ... over a wire that takes that long, `--wire 100 ms`: the case by its own times, what was late, and, where far works ahead of a key, the turns it took and threw away; with `--then`, the cut moved over that wire");
-        eprintln!("                            [--choose <bound>]         ... with `--far` and `--wire`: the runner chooses each cut after the first, between it and nothing far, at the screen, by round trips of its own: lateness under the bound is none; each choice printed with its time and reason");
+        eprintln!("                                         named are the ones on the server, `none` for every unit at the client; said again, a second move");
+        eprintln!("                            [--wire <time>]            ... over a wire that takes that long, `--wire 100 ms`: the case by its own times, what was late, and, where the server works ahead of a key, the turns it took and threw away; with `--then`, the cut moved over that wire");
+        eprintln!("                            [--choose <bound>]         ... with `--server` and `--wire`: the runner chooses each cut after the first, between it and nothing on the server, at the client, by round trips of its own: lateness under the bound is none; each choice printed with its time and reason");
         eprintln!("                            [--wire <time> then <time>|gone at <time> ...]  ... over a wire whose delay changes while it runs, or that goes: an item takes the delay of when it is put on, a gone wire holds it until it comes back; beneath what was late, the pieces never shown where the wire went for good");
-        eprintln!("       probe zero <store> placement [--far <units>]   every unit and where it runs at that cut, and what the wire carries");
-        eprintln!("                            [--wire <time>] [--case <case>]  ... and one case over such a wire: what it carried, when each left and arrived, each piece the screen dropped unshown and each time far went back");
+        eprintln!("       probe zero <store> placement [--server <units>]   every unit and where it runs at that cut, and what the wire carries");
+        eprintln!("                            [--wire <time>] [--case <case>]  ... and one case over such a wire: what it carried, when each left and arrived, each piece the client dropped unshown and each time the server went back");
         eprintln!("                            [--then <units> at <time>]  ... and each move: what is handed across, and the cut after it; with `--wire`, the move's own items among what the wire carried");
         eprintln!("       probe zero <store> trace <case>  run the case from the store's trace build: a row a step, a column a stream,");
         eprintln!("                            [--json]     what each was given and the lines that ran; or the events and steps as JSON");
@@ -188,8 +188,8 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         eprintln!("       probe zero names <store>         every name with a `$` or `[]`: how it is declared, and each use");
         eprintln!("       probe zero test [dir] [path]     run every store under dir (suite/zero)");
         eprintln!("                                        on a path: wasm, riscv, arm-qemu, air (native by default)");
-        eprintln!("                                        PROBE_ZERO_CUTS=1: and again at every cut, every unit far and each alone,");
-        eprintln!("                                        and a case with a time moved partway, everything far to the screen and back");
+        eprintln!("                                        PROBE_ZERO_CUTS=1: and again at every cut, every unit on the server and each alone,");
+        eprintln!("                                        and a case with a time moved partway, everything on the server to the client and back");
         ExitCode::FAILURE
     };
     match args.first().map(String::as_str) {
@@ -245,10 +245,10 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         Some(store) if args.get(1).map(String::as_str) == Some("emit") && matches!(args.get(2).map(String::as_str), Some("sites" | "trace" | "places")) => match match args[2].as_str() {
             "trace" => run::emit_trace(Path::new(store)),
             "places" => moves_said(args).and_then(|(then, _)| {
-                let far = args.iter().position(|a| a == "--far").and_then(|i| args.get(i + 1)).map(String::as_str);
+                let server = args.iter().position(|a| a == "--server").and_then(|i| args.get(i + 1)).map(String::as_str);
                 match wire_said(args)? {
-                    (None, _) => run::emit_placed(Path::new(store), far, &then),
-                    (wire, _) => run::emit_wired(Path::new(store), far, &then, wire.as_ref()),
+                    (None, _) => run::emit_placed(Path::new(store), server, &then),
+                    (wire, _) => run::emit_wired(Path::new(store), server, &then, wire.as_ref()),
                 }
             }),
             _ => run::emit_sites(Path::new(store)),
@@ -272,14 +272,14 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        // `probe zero <store> placement [--far <units>]`: where each
+        // `probe zero <store> placement [--server <units>]`: where each
         // unit runs at a cut, and what the wire carries (fm3 cut.md)
         Some(store) if args.get(1).map(String::as_str) == Some("placement") => {
-            let far = args.iter().position(|a| a == "--far").and_then(|i| args.get(i + 1));
+            let server = args.iter().position(|a| a == "--server").and_then(|i| args.get(i + 1));
             let case = args.iter().position(|a| a == "--case").and_then(|i| args.get(i + 1));
             match moves_said(args).and_then(|(then, _)| match wire_said(args)? {
-                (Some(w), _) => run::placement_wire_moved(Path::new(store), far.map(String::as_str), &then, w, case.map(String::as_str), &policy, level),
-                _ => run::placement(Path::new(store), far.map(String::as_str), &then),
+                (Some(w), _) => run::placement_wire_moved(Path::new(store), server.map(String::as_str), &then, w, case.map(String::as_str), &policy, level),
+                _ => run::placement(Path::new(store), server.map(String::as_str), &then),
             }) {
                 Ok(out) => {
                     print!("{}", out);
@@ -294,11 +294,11 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         Some(store) if args.get(1).map(String::as_str) == Some("run") && args.len() >= 3 => {
             // on the real clock unless told to run as fast as it can (log 77)
             let fast = args[2..].iter().any(|a| a == "--fast" || a == "-t");
-            // at a cut (fm3 cut.md): `--far <units>`, the units that
+            // at a cut (fm3 cut.md): `--server <units>`, the units that
             // run at the second place
-            let at = args.iter().position(|a| a == "--far");
-            let far = at.and_then(|i| args.get(i + 1));
-            if at.is_some() && far.is_none() {
+            let at = args.iter().position(|a| a == "--server");
+            let server = at.and_then(|i| args.get(i + 1));
+            if at.is_some() && server.is_none() {
                 return usage();
             }
             // ... and moved while it runs: `--then <units> at <time>`
@@ -319,7 +319,7 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
             };
             let Some(case) = args.iter().enumerate().skip(2).find(|(i, a)| *a != "--fast" && *a != "-t" && Some(*i) != at && Some(*i) != at.map(|k| k + 1) && !used.contains(i) && !wused.contains(i)).map(|(_, a)| a) else { return usage() };
             if let Some(d) = wire {
-                return match run::run_wire_moved(Path::new(store), case, &policy, level, far.map(String::as_str), &then, d) {
+                return match run::run_wire_moved(Path::new(store), case, &policy, level, server.map(String::as_str), &then, d) {
                     Ok(out) => {
                         print!("{}", out);
                         ExitCode::SUCCESS
@@ -330,9 +330,9 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
                     }
                 };
             }
-            match match (far, then.is_empty()) {
+            match match (server, then.is_empty()) {
                 (None, true) => run::run(Path::new(store), case, &policy, level, fast),
-                (far, _) => run::run_cut(Path::new(store), case, &policy, level, fast, far.map(String::as_str), &then),
+                (server, _) => run::run_cut(Path::new(store), case, &policy, level, fast, server.map(String::as_str), &then),
             } {
                 Ok(out) => {
                     print!("{}", out);
