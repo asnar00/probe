@@ -902,9 +902,16 @@ pub fn run_wire(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, far
 /// and the time the move is said at the screen
 pub fn run_wire_moved<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, far: Option<&str>, then: &[(String, i64)], wire: W) -> Result<String, String> {
     let wire: Wire = wire.into();
-    let ((head, shown, pieces, thrown), expect, log) = wire_moved_case_said(dir, which, policy, level, Backend::Native, far, then, &wire, 0, None)?;
+    let ((head, shown, pieces, thrown), expect, log) = wire_moved_case_said(dir, which, policy, level, Backend::Native, far, then, &wire, said_but(), None)?;
     let never = never_said(&wire, &expect, &pieces.iter().map(|p| p.text.as_str()).collect::<String>());
     Ok(format!("{}\n→ {}\n{}{}{}{}", head, shown, late_said(&pieces), never, thrown_said(thrown), chose_said(&wire, &log)))
+}
+
+/// the switches a test may set (`__wire_but`), said for `run` and
+/// `placement` by `PROBE_ZERO_BUT=<n>` (fm3 log 298): 3072 is hop
+/// fifty-two's chooser, as `PROBE_ZERO_CUTS=choose52` has it over the suite
+fn said_but() -> i64 {
+    std::env::var("PROBE_ZERO_BUT").ok().and_then(|v| v.parse().ok()).unwrap_or(0)
 }
 
 /// what the chooser chose (fm3 log 290), as `run` says it, from the
@@ -1121,7 +1128,7 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
     let mut cut = if wire.choose.is_some() { chosen_cut(placed, far, then, &wire)? } else { placed.moves(&first, &later).before };
     cut.extend(wire.calls());
     let module = build(&l.ir, policy, level)?;
-    let (own, pieces, log, thrown) = wire_runs(&module, &l, Backend::Native, level, "zero-wire", &cut, wire.d, 0, p, &p.call.context)?;
+    let (own, pieces, log, thrown) = wire_runs(&module, &l, Backend::Native, level, "zero-wire", &cut, wire.d, said_but(), p, &p.call.context)?;
     let got = own?;
     out.push_str(&format!("\na wire of {}, by the world's clock: `{}`\n\n", wire.said(), p.text.split('→').next().unwrap_or("").trim()));
     // the wire's record, text a character an item put together; and,
@@ -1164,6 +1171,7 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
         let n = w as usize;
         format!("text {:?}{}", String::from_utf8_lossy(&chars).to_string(), if n > chars.len() { format!(" and {} more", n - chars.len()) } else { String::new() })
     };
+    let mut start: Option<i64> = None;
     for item in log.chunks(6).filter(|c| c.len() == 6) {
         let (to, kind, left, at, stamp, a) = (item[0], item[1], item[2], item[3], item[4], item[5]);
         let way = if to == 1 { "screen → far" } else { "far → screen" };
@@ -1238,9 +1246,15 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
                 rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("chooses the cut given: {} of round trips within the bound, nothing due within {}", if stamp == 1_000_000 { "a second".to_string() } else { spell_late(stamp) }, spell_late(a)), String::new()]);
                 continue;
             }
+            // (far's new start at a giving back, fm3 log 298)
+            26 => {
+                start = Some(left);
+                rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("keeps far's state as far will have it once it takes the hand as far's new start, and empties its log: far's part run again from its start, {} turn{}, {} item{} of its log", a & 0xfffff, if a & 0xfffff == 1 { "" } else { "s" }, (a >> 20) & 0xfffff, if (a >> 20) & 0xfffff == 1 { "" } else { "s" }), String::new()]);
+                continue;
+            }
             // (the screen running far's part again, fm3 log 292)
             18 => {
-                rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("runs far's part again from its start to {}: {} turn{}, {} item{} of its log given at their times; takes far's units{}", store::spell_time(left), a & 0xfffff, if a & 0xfffff == 1 { "" } else { "s" }, (a >> 20) & 0xfffff, if (a >> 20) & 0xfffff == 1 { "" } else { "s" }, match a >> 40 { 0 => String::new(), n => format!(", and {} push{} or function{} partway far's part sent that it had not had", n, if n == 1 { "" } else { "es" }, if n == 1 { "" } else { "s" }) }), String::new()]);
+                rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("runs far's part again from {} to {}: {} turn{}, {} item{} of its log given at their times; takes far's units{}", start.map(|t| format!("far's start at {}", store::spell_time(t))).unwrap_or_else(|| "its start".to_string()), store::spell_time(left), a & 0xfffff, if a & 0xfffff == 1 { "" } else { "s" }, (a >> 20) & 0xfffff, if (a >> 20) & 0xfffff == 1 { "" } else { "s" }, match a >> 40 { 0 => String::new(), n => format!(", and {} push{} or function{} partway far's part sent that it had not had", n, if n == 1 { "" } else { "es" }, if n == 1 { "" } else { "s" }) }), String::new()]);
                 continue;
             }
             20 => {
@@ -7410,7 +7424,8 @@ mod tests {
                     let took = (n * 1_000_000 + speed - 1) / speed;
                     assert_eq!(*on, (*left).max(free) + took, "{}: {} went on at {}\n{}", way, what, on, table);
                     free = *on;
-                    if what.starts_with("text") {
+                    // (a piece of text, and a move, arrive whole: with their last item, fm3 log 298)
+                    if what.starts_with("text") || what.starts_with("the move's word") || what.contains("handed across at the move") {
                         assert!(*at >= on + 100_000, "{}\n{}", what, table);
                     } else {
                         assert_eq!(*at, on + 100_000, "{}\n{}", what, table);
@@ -7479,8 +7494,9 @@ mod tests {
     /// and forth four times. A narrow wire, 1 000 bytes a second: weighed,
     /// `tick`'s part is kept, the speed less than twice what the cut given
     /// put on the wire; the speed ignored (2048), it is given back, its
-    /// move's 928 bytes take most of a second, and a piece is later than
-    /// the bound. A steady wire: no move either way
+    /// move's 928 bytes take most of a second to arrive, and the screen,
+    /// a round trip held behind them, takes the part again: three moves.
+    /// A steady wire: no move either way
     #[test]
     fn the_chooser_weighs_the_wire() {
         let native = suite::backend_policy(Backend::Native).unwrap();
@@ -7506,7 +7522,8 @@ mod tests {
         assert_eq!(shown, shown2);
         assert_eq!((moves(&log), most(&pieces)), (1, 250_000), "{}", chose_said(&narrow, &log));
         assert!(chose_said(&narrow, &log).contains("\nkept: nothing far at 3 s: about 1000 bytes/s, less than twice the 3200 bytes/s the cut given put on the wire\n"));
-        assert!(moves(&log2) > 1 && most(&pieces2) > 1_000_000, "{}", chose_said(&narrow, &log2));
+        // (the speed ignored, the part is given back and its move, arriving whole, holds a round trip past the bound: taken again by running far's part, three moves where one was weighed, fm3 log 298)
+        assert!(moves(&log2) >= 3, "{}", chose_said(&narrow, &log2));
         // a steady wire, weighed or not: the cut given throughout
         let steady = Wire { d: 100_000, choose: Some(250_000), ..Default::default() };
         for but in [0, 1024 | 2048] {
@@ -7606,5 +7623,55 @@ mod tests {
         let (_, wrong, _, _) = wire_moved_case(&dir, "begin()", &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], chosen(slows), 512, None).unwrap();
         assert!(wrong.contains("\"371\\n390\\n410\\n431\\n453\\n476\\n500\" at 1 hz from 17 s"), "run again from where far is, the call is given again to a far that had it: a hundred too many, 371 for 271: {}", wrong);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Far's new start at a giving back (fm3 log 298, question 168). A
+    /// store of this test's own, a countdown whose running sum far keeps
+    /// and keys, over a wire gone 500 ms every 2 s from 1 s: far's part is
+    /// taken at 1.25 s, given back at 2.7 s, where the screen keeps far's
+    /// state as far will have it once it takes the hand, and taken again
+    /// at 3.2 s, from that start; a key at 4 s, after the second taking,
+    /// is read at the screen. The case's own line. With far's start not
+    /// moved (`__wire_but` 4096) the second taking runs from the world's
+    /// start, and a number is shown that is no piece of the line. And
+    /// what the three `going-two` runs were: a move over a wire with a
+    /// speed handing two functions partway, the second arriving after far
+    /// had worked past its time (a move now arrives whole); and a taking
+    /// while the giving back's word was still on the wire
+    #[test]
+    fn far_starts_again_at_a_giving_back() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let dir = std::env::temp_dir().join(format!("probe-wire-start-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sum")).unwrap();
+        std::fs::write(dir.join("sum/sum.zero"), "int i$ at (1 hz)\nint sum$\nsum$ << sum$ + i$ forever\nout$ << (sum$ << \"\\n\") forever\nint key$ = codes (in$)\nout$ << (\"key \" << key$ << \"\\n\") forever\n\non (int n) << code of (char c)\n    n << int(c)\n\non (int k$) << codes (char c$)\n    k$ << code of (c$)\n\non count down()\n    i$ << [5 through 1]\n    out$ << \"liftoff\\n\"\n").unwrap();
+        let case = "count down() with in \"ab\" at 1 s, in \"c\" at 2.5 s, in \"d\" at 4 s";
+        std::fs::write(dir.join("sum/sum.md"), format!("# sum\n*a running sum far keeps, and keys*\n\nlayer: runtime\n\n> (suite) 2026-10-17T12:00:00\nA countdown, its running sum, and keys.\n\n## testing\n>{} → \"5\\n\" at 0 s, \"key 97\\nkey 98\\n9\\n\" at 1 s, \"12\\n\" at 2 s, \"key 99\\n\" at 2.5 s, \"14\\n\" at 3 s, \"key 100\\n15\\n\" at 4 s, \"liftoff\" at 5 s\n", case)).unwrap();
+        let own = "\"5\\n\" at 0 s, \"key 97\\nkey 98\\n9\\n\" at 1 s, \"12\\nkey 99\\n14\\n\" at 2 hz from 2 s, \"key 100\\n15\\n\" at 4 s, \"liftoff\" at 5 s";
+        let coming = Wire { d: 100_000, every: Some((500_000, 2_000_000, 1_000_000)), choose: Some(250_000), ..Default::default() };
+        let ((_, shown, _, _), _, log) = wire_moved_case_said(&dir, case, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], &coming, 0, None).unwrap();
+        assert_eq!(shown, own);
+        let said = chose_said(&coming, &log);
+        assert!(said.contains("chose: nothing far at 1.25 s, by running far's part again") && said.contains("\nchose: the cut given at 2.7 s: ") && said.contains("\nchose: nothing far at 3.2 s, by running far's part again"), "{}", said);
+        let table = placement_wire_moved(&dir, Some("all"), &[], coming.clone(), Some(case), &native, opt::MAX_LEVEL).unwrap();
+        assert!(table.contains("keeps far's state as far will have it once it takes the hand as far's new start") && table.contains("runs far's part again from far's start at 2.7 s to 3.2 s: "), "{}", table);
+        let ((_, wrong, _, _), _, _) = wire_moved_case_said(&dir, case, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], &coming, 4096, None).unwrap();
+        assert!(wrong != own && wrong.contains("14\\n4\\n"), "run again from the world's start, a 4 that is no piece of the line: {}", wrong);
+        let _ = std::fs::remove_dir_all(&dir);
+        // going-two, hop fifty-two's chooser over 1 000 bytes a second: the three runs hop fifty-three left wrong
+        let two = Path::new("suite/zero/going-two");
+        let narrow = Wire { d: 100_000, speed: 1000, choose: Some(250_000), ..Default::default() };
+        for (case, line) in [
+            ("count down from (5) with in \"k\" at 2.5 s", "\"5\\n4\\n3\\n\" at 1 hz, \"2\\n10\\n\" at 3 s, \"1\\n9\\n\" at 4 s, \"8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz from 5 s"),
+            ("launch() with in \"k\" at 3.5 s", "\"10\\n9\\n8\\n7\\n\" at 1 hz, \"6\\n10\\n\" at 4 s, \"5\\n9\\n\" at 5 s, \"4\\n8\\n\" at 6 s, \"3\\n7\\n\" at 7 s, \"2\\n6\\n\" at 8 s, \"1\\n5\\n\" at 9 s, \"liftoff4\\n3\\n2\\n1\\nliftoff\" at 1 hz from 10 s"),
+            ("launch() with in \"k\" at 3.5 s, in \"k\" at 5.5 s", "\"10\\n9\\n8\\n7\\n\" at 1 hz, \"6\\n10\\n\" at 4 s, \"5\\n9\\n\" at 5 s, \"4\\n8\\n10\\n\" at 6 s, \"3\\n7\\n9\\n\" at 7 s, \"2\\n6\\n8\\n\" at 8 s, \"1\\n5\\n7\\n\" at 9 s, \"liftoff4\\n6\\n\" at 10 s, \"3\\n5\\n\" at 11 s, \"2\\n4\\n\" at 12 s, \"1\\n3\\n\" at 13 s, \"liftoff2\\n1\\nliftoff\" at 1 hz from 14 s"),
+        ] {
+            let (_, shown, _, _) = wire_moved_case(two, case, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], narrow.clone(), 1024 | 2048, None).unwrap();
+            assert_eq!(shown, line, "{}", case);
+        }
+        // ... and the first of them with no chooser: the cut moved at 3.6 s over a wire with a speed, two countdowns handed
+        let fast = Wire { d: 100_000, speed: 100_000, ..Default::default() };
+        let (_, shown, _, _) = wire_moved_case(two, "launch() with in \"k\" at 3.5 s, in \"k\" at 5.5 s", &native, opt::MAX_LEVEL, Backend::Native, Some("none"), &[("all".to_string(), 3_600_000)], fast, 0, None).unwrap();
+        assert!(shown.starts_with("\"10\\n9\\n8\\n7\\n\" at 1 hz, \"6\\n10\\n\" at 4 s, "), "a move arrives whole: {}", shown);
     }
 }
