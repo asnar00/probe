@@ -4,6 +4,20 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the chooser weighs the wire's speed and reliability before it gives far its part back — `ffd1fb9` · 2026-10-17
+
+Hop fifty-three's third landing, transformation 176 (fm3 log 296 and 297; questions 165, 166). Still least lateness, then least work at the device, lateness under the bound counting as none, and far's part taken as before: a round trip of the screen's own out longer than the bound while it waits on far. **Giving it back now weighs three things**: the round trips steady a second where the wire has gone at most once in the last ten seconds, otherwise a second for each time it went and the time it was gone in them (`__wsteady`); the speed last seen at least twice the rate the cut given put on the wire while it was held, remembered when the part was taken (`__wtaken`, `__wspeed_ok`); and nothing due within a round trip and the time the move's own bytes take at that speed (`__wmove_bytes`, `__wmove_time`). A choice says what it weighed (a line of kind 23); where the round trips would give the part back and the speed or the history does not, a line once a hold (24, 25).
+
+`probe zero suite/zero/hello run 'run()' --fast --far all --choose 250 ms --wire 100 ms, gone 500 ms every 2 s from 1 s`: taken at 1.25 s, given back at 2.7 s as after a wire that went once, taken at 3.2 s and kept, `kept: nothing far at 4.6 s: gone 2 times in the last 10 s, 1.35 s in all, so 3.35 s of round trips within 250 ms are wanted`; three moves where hop fifty-two's chooser made four; hello's own line, the first 10 late. Over 40 bytes/s, where held every piece is late by up to 6.125 s, taken at 250 ms and not given back, the first 10 late; with 10 000 bytes/s from 5 s, given back at 6.4265 s, `about 10000 bytes/s, at least twice the 1100 bytes/s the cut given put on the wire`.
+
+**The suite** chooses under seven wires, the five and two new: 1 000 bytes/s, over which a ping still comes back within the bound, and gone 500 ms every 2 s from 1 s; moves counted; `PROBE_ZERO_CUTS=choose52=250` is hop fifty-two's chooser in the same build for comparison. The five give hop fifty-two's numbers to the piece. Over the narrow wire: 141 of 141 runs give their line, 231 pieces late after the change, the most 750 ms, 155 moves; held 303 and 3.417 s; hop fifty-two's 138 of 141, 249, 1.814 s, 287 moves. Over the one that comes and goes: 141, 11 late, 250 ms, 133 moves; held 38 and 3.1 s; hop fifty-two's 19, 900 ms, 162.
+
+**Mended on the way**: a second taking by running far's part again showed again what the screen's own turns wrote while it held the part (`going-keys`, a `2` twice): what the part run again makes for a time before the part was last given back is had, and far's text and items are counted from then (`__wg` 136); the cut given's traffic counted far's own sends; a build with a speed did not build on wasm (`__wpace`, from `6361297`); `placement` gave a ping's size to the row before it. **Not mended**: hop fifty-two's chooser over the narrow wire gives three runs of `going-two` another line or a failed check, a key after a second taking (fm3 question 168).
+
+`the_chooser_weighs_the_wire`, with switches only it has (`__wire_but` 1024, the history ignored: four moves over the wire that comes and goes; 2048, the speed ignored: `tick`'s `mixed()` over 1 000 bytes/s given back, its move's 928 bytes taking most of a second, a piece 1.8 s late). hello's `run` counted with the chooser over a steady wire is 238 421, beside 232 367 and hop fifty-two's 220 681. Only where `--choose` is said: irdiff, placediff, wirediff, moveddiff and againdiff against `probe171` name nothing. The full run green (`scratchpad/chain177.log`).
+
+---
+
 ### zero: the chooser measures the wire's speed and its reliability — `276ba8d` · 2026-10-17
 
 Hop fifty-three's second landing, transformation 175 (fm3 log 295; question 165). The chooser measures two more things of the wire at the screen, never from `--wire`'s words or the wire's table, and prints them; it changes no choice.
