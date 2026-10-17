@@ -163,7 +163,38 @@ fn moves_said(args: &[String]) -> Result<(Vec<(String, i64)>, Vec<usize>), Strin
     Ok((out, used))
 }
 
+/// A word of the command line that the command does not know, refused
+/// with its name and nothing run (fm3 log 301, principle 8: a request
+/// that cannot be met stops). A word is one that begins `--`, or `-`
+/// and a letter; the rest are a command's own values, a case, a time, a
+/// cut. `--far`, the server's old name (fm3 question 169), is pointed
+/// at its new one
+fn unknown_word(args: &[String]) -> Option<String> {
+    let known: &[&str] = match (args.first().map(String::as_str), args.get(1).map(String::as_str)) {
+        (Some("test" | "meter" | "names"), _) => &[],
+        (Some(_), Some("emit")) if args.get(2).map(String::as_str) == Some("places") => &["--server", "--then", "--wire", "--choose"],
+        (Some(_), Some("emit")) => &[],
+        (Some(_), Some("placement")) => &["--server", "--case", "--then", "--wire", "--choose"],
+        (Some(_), Some("run")) => &["--fast", "-t", "--server", "--then", "--wire", "--choose"],
+        (Some(_), Some("trace")) => &["--json"],
+        _ => return None,
+    };
+    let flag = |a: &str| a.starts_with("--") || (a.starts_with('-') && a[1..].starts_with(|c: char| c.is_ascii_alphabetic()));
+    let w = args.iter().skip(1).find(|a| flag(a) && !known.contains(&a.as_str()))?;
+    Some(if w == "--far" && known.contains(&"--server") {
+        format!("{} is not a word the runner knows; did you mean --server?", w)
+    } else if known.is_empty() {
+        format!("{} is not a word the runner knows; this command takes none", w)
+    } else {
+        format!("{} is not a word the runner knows; this command knows {}", w, known.join(", "))
+    })
+}
+
 pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
+    if let Some(why) = unknown_word(args) {
+        eprintln!("{}", why);
+        return ExitCode::FAILURE;
+    }
     let usage = || {
         eprintln!("usage: probe zero <store> emit          print the store's IR");
         eprintln!("                            [sites|trace] ... of its diagnostic build, or its trace build, and the table of places");
@@ -361,5 +392,28 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
             }
         }
         _ => usage(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unknown_word;
+
+    fn words(s: &[&str]) -> Vec<String> {
+        s.iter().map(|w| w.to_string()).collect()
+    }
+
+    /// a word the command does not know is refused by name (fm3 log
+    /// 301); `--far`, the server's old name, points at `--server`; a
+    /// case, a time and a negative number are not words
+    #[test]
+    fn a_word_the_runner_does_not_know_is_refused() {
+        assert_eq!(unknown_word(&words(&["suite/zero/hello", "run", "run()", "--fast", "--far", "all"])).as_deref(), Some("--far is not a word the runner knows; did you mean --server?"));
+        assert_eq!(unknown_word(&words(&["suite/zero/hello", "run", "run()", "--fast", "--server", "all", "--then", "none", "at", "4.5", "s", "--wire", "100", "ms", "--choose", "250", "ms"])), None);
+        assert_eq!(unknown_word(&words(&["suite/zero/hello", "placement", "--server", "all", "--wire", "100ms", "--case", "run()"])), None);
+        assert_eq!(unknown_word(&words(&["suite/zero/hello", "run", "-t", "(-1) plus (2)"])), None);
+        assert_eq!(unknown_word(&words(&["suite/zero/hello", "trace", "run()", "--fast"])).as_deref(), Some("--fast is not a word the runner knows; this command knows --json"));
+        assert_eq!(unknown_word(&words(&["suite/zero/hello", "emit", "--far"])).as_deref(), Some("--far is not a word the runner knows; this command takes none"));
+        assert_eq!(unknown_word(&words(&["test", "suite/zero", "wasm", "-x"])).as_deref(), Some("-x is not a word the runner knows; this command takes none"));
     }
 }
