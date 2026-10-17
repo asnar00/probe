@@ -923,16 +923,43 @@ pub fn chose_said(wire: &Wire, log: &[i64]) -> String {
     if out.is_empty() {
         out.push_str("chose: nothing; the cut given held throughout\n");
     }
+    out.push_str(&measured_said(log));
     let (n, most) = round_trips(log);
     out.push_str(&format!("the screen's own round trips: {}{}\n", n, if n > 0 { format!(", the longest back {}", spell_late(most)) } else { String::new() }));
     out
 }
 
+/// what the chooser measured of the wire last (fm3 log 295), from the
+/// line of the record its world wrote at its end: the delay, the speed
+/// where one was seen, and how often and how long the wire went in the
+/// last ten seconds
+fn measured_said(log: &[i64]) -> String {
+    let Some(m) = log.chunks(6).filter(|c| c.len() == 6).find(|c| c[1] == 22) else { return String::new() };
+    let (delay, speed, gaps, gone) = (m[3], m[4], m[5] >> 40, m[5] & ((1 << 40) - 1));
+    let speed = if speed > 0 { format!("about {} bytes/s", two_figures(speed)) } else { "its speed not seen to limit".to_string() };
+    let gone = match gaps {
+        0 => "not gone in the last 10 s".to_string(),
+        n => format!("gone {} time{} in the last 10 s, {} in all", n, if n == 1 { "" } else { "s" }, spell_late(gone)),
+    };
+    format!("the wire: about {}, {}, {}\n", spell_late(two_figures(delay)), speed, gone)
+}
+
+/// a whole number to two figures: 39 is 39, 9 987 is 10 000
+fn two_figures(n: i64) -> i64 {
+    let mut unit = 1;
+    while n / unit >= 100 {
+        unit *= 10;
+    }
+    (n + unit / 2) / unit * unit
+}
+
 /// the screen's own round trips in a wire's record: how many were
-/// begun, and the longest that came back
+/// begun, and the longest that came back. The second of a pair, sent
+/// to measure the speed (fm3 log 295), is numbered below 0 and is not
+/// one
 fn round_trips(log: &[i64]) -> (usize, i64) {
     let rows: Vec<&[i64]> = log.chunks(6).filter(|c| c.len() == 6).collect();
-    let sent: Vec<(i64, i64)> = rows.iter().filter(|r| r[1] == 13).map(|r| (r[5], r[2])).collect();
+    let sent: Vec<(i64, i64)> = rows.iter().filter(|r| r[1] == 13 && r[5] > 0).map(|r| (r[5], r[2])).collect();
     let most = rows.iter().filter(|r| r[1] == 14 && r[3] < GONE).filter_map(|r| sent.iter().find(|(n, _)| *n == r[5]).map(|(_, at)| r[3] - at)).max().unwrap_or(0);
     (sent.len(), most)
 }
@@ -1158,7 +1185,7 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
                 continue;
             }
             // (the chooser's, fm3 log 290: its round trips are counted beneath, and each choice is a row)
-            13 | 14 => continue,
+            13 | 14 | 22 => continue,
             15 => {
                 rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("chooses nothing far: a round trip of its own out longer than {}", spell_late(a)), String::new()]);
                 continue;
@@ -7348,6 +7375,30 @@ mod tests {
         assert!(!plain.contains("data __wsp") && !plain.contains("\nfn __wpace("));
         let paced = emit_wired(hello, Some("all"), &[], Some(&wire)).unwrap();
         assert!(paced.contains("data __wsp") && paced.contains("__wire_pace(400, 0, 0, 0)"));
+    }
+
+    /// What the chooser measures of the wire (fm3 log 295), printed
+    /// beneath its choices: on a steady wire the delay, no speed seen to
+    /// limit and no gap; on a narrow wire its speed, from far's items
+    /// spaced by the wire; after the speed rises, the new one; and on a
+    /// wire that comes and goes, its gaps. Measuring changes no choice
+    #[test]
+    fn the_chooser_measures_the_wire() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let hello = Path::new("suite/zero/hello");
+        let said = |wire: Wire| -> String {
+            let out = run_wire_moved(hello, "run()", &native, opt::MAX_LEVEL, Some("all"), &[], Wire { choose: Some(250_000), ..wire }).unwrap();
+            out.lines().find(|l| l.starts_with("the wire: ")).unwrap_or_else(|| panic!("{}", out)).to_string()
+        };
+        let w = |speed: i64| Wire { d: 100_000, speed, ..Default::default() };
+        assert_eq!(said(w(0)), "the wire: about 100 ms, its speed not seen to limit, not gone in the last 10 s");
+        assert!(said(w(40)).contains(", about 40 bytes/s, "), "{}", said(w(40)));
+        let rises = Wire { then: vec![(5_000_000, 100_000)], speeds: vec![Some(10_000)], ..w(40) };
+        assert!(said(rises).starts_with("the wire: about 100 ms, about 10000 bytes/s, "));
+        let coming = Wire { every: Some((500_000, 2_000_000, 1_000_000)), ..w(0) };
+        assert!(said(coming.clone()).ends_with(", gone 5 times in the last 10 s, 3.2 s in all"), "{}", said(coming));
+        // two figures
+        assert_eq!((two_figures(39), two_figures(9_987), two_figures(5_612_000)), (39, 10_000, 5_600_000));
     }
 
     /// The cut chosen (fm3 log 290). With a steady wire of 100 ms every
