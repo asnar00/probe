@@ -36,38 +36,105 @@ fn wire_said(args: &[String]) -> Result<(Option<run::Wire>, Vec<usize>), String>
         }
         return Ok((None, Vec::new()));
     };
+    // (fm3 log 294: a comma is a word of its own or ends the word
+    // before it; each word of the wire's with the place in `args` it
+    // came from)
+    let mut words: Vec<(String, usize)> = Vec::new();
+    for (k, a) in args.iter().enumerate().skip(i + 1) {
+        if a.starts_with("--") {
+            break;
+        }
+        match a.strip_suffix(',') {
+            Some(w) if !w.is_empty() => {
+                words.push((w.to_string(), k));
+                words.push((",".to_string(), k));
+            }
+            _ => words.push((a.clone(), k)),
+        }
+    }
+    let word = |k: usize| words.get(k).map(|(w, _)| w.as_str());
     // a time at k, one word or two: the time, and the place after it
     let time_at = |k: usize| -> Result<(i64, usize), String> {
-        let Some(n) = args.get(k) else { return Err("a wire's delay is said `--wire <time>`: `--wire 100 ms`, `--wire 100 ms then 2 s at 3 s`".to_string()) };
-        let unit = args.get(k + 1).filter(|u| *u == "s" || *u == "ms");
+        let Some(n) = word(k) else { return Err("a wire's delay is said `--wire <time>`: `--wire 100 ms`, `--wire 100 ms then 2 s at 3 s`".to_string()) };
+        let unit = word(k + 1).filter(|u| *u == "s" || *u == "ms");
         let t = run::time_said(&match unit {
             Some(u) => format!("{}{}", n, u),
-            None => n.clone(),
+            None => n.to_string(),
         })?;
         Ok((t, k + if unit.is_some() { 2 } else { 1 }))
     };
-    let (d, mut k) = time_at(i + 1)?;
+    // ... a speed at k, `40 bytes/s` or `40bytes/s`
+    let speed_at = |k: usize| -> Option<(i64, usize)> {
+        let n = word(k)?;
+        if let Some(v) = n.strip_suffix("bytes/s") {
+            return v.parse::<i64>().ok().map(|v| (v, k + 1));
+        }
+        if word(k + 1) == Some("bytes/s") {
+            return n.parse::<i64>().ok().map(|v| (v, k + 2));
+        }
+        None
+    };
+    let (d, mut k) = time_at(0)?;
+    let (mut speed, mut every) = (0, None);
+    // `, <n> bytes/s` and `, gone <time> every <time> from <time>`
+    while word(k) == Some(",") {
+        if word(k + 1) == Some("gone") {
+            let (gap, a) = time_at(k + 2)?;
+            if word(a) != Some("every") {
+                return Err("a wire that comes and goes is said `, gone <time> every <time> from <time>`: `--wire 100 ms, gone 500 ms every 2 s from 1 s`".to_string());
+            }
+            let (per, b) = time_at(a + 1)?;
+            if word(b) != Some("from") {
+                return Err("a wire that comes and goes is said `, gone <time> every <time> from <time>`: `--wire 100 ms, gone 500 ms every 2 s from 1 s`".to_string());
+            }
+            let (from, c) = time_at(b + 1)?;
+            every = Some((gap, per, from));
+            k = c;
+        } else if let Some((v, next)) = speed_at(k + 1) {
+            speed = v;
+            k = next;
+        } else {
+            return Err("after a wire's delay a comma says its speed or its coming and going: `--wire 100 ms, 40 bytes/s`, `--wire 100 ms, gone 500 ms every 2 s from 1 s`".to_string());
+        }
+    }
     let mut then = Vec::new();
-    while args.get(k).map(String::as_str) == Some("then") {
-        let (v, next) = if args.get(k + 1).map(String::as_str) == Some("gone") { (run::GONE, k + 2) } else { time_at(k + 1)? };
-        if args.get(next).map(String::as_str) != Some("at") {
+    let mut speeds = Vec::new();
+    while word(k) == Some("then") {
+        let (v, mut next) = if word(k + 1) == Some("gone") { (run::GONE, k + 2) } else { time_at(k + 1)? };
+        let mut sp = None;
+        if word(next) == Some(",") && v < run::GONE {
+            let Some((s2, n2)) = speed_at(next + 1) else { return Err("a change's speed is said `then <time>, <n> bytes/s at <time>`: `then 100 ms, 10000 bytes/s at 5 s`".to_string()) };
+            sp = Some(s2);
+            next = n2;
+        }
+        if word(next) != Some("at") {
             return Err("a wire's change is said `then <time> at <time>` or `then gone at <time>`: `--wire 100 ms then gone at 3 s`".to_string());
         }
         let (at, after) = time_at(next + 1)?;
         then.push((at, v));
+        speeds.push(sp);
         k = after;
     }
-    let mut used: Vec<usize> = (i..k).collect();
+    let mut used: Vec<usize> = std::iter::once(i).chain(words[..k].iter().map(|(_, a)| *a)).collect();
+    used.dedup();
     // (the chooser's bound, said beside the wire, fm3 log 290)
     let choose = match args.iter().position(|a| a == "--choose") {
         Some(c) => {
-            let (b, after) = time_at(c + 1)?;
+            let (b, after) = {
+                let n = args.get(c + 1).ok_or("`--choose <bound>`: `--choose 250 ms`")?;
+                let unit = args.get(c + 2).filter(|u| *u == "s" || *u == "ms");
+                let t = run::time_said(&match unit {
+                    Some(u) => format!("{}{}", n, u),
+                    None => n.clone(),
+                })?;
+                (t, c + 1 + if unit.is_some() { 2 } else { 1 })
+            };
             used.extend(c..after);
             Some(b)
         }
         None => None,
     };
-    Ok((Some(run::Wire { d, then, choose }.checked()?), used))
+    Ok((Some(run::Wire { d, then, choose, speed, speeds, every }.checked()?), used))
 }
 
 /// The moves a command says (fm3 cut.md, "the cut, moved"): each `--then

@@ -9,7 +9,7 @@ use super::{lower, store};
 use crate::host::site_said;
 use crate::suite::{self, Backend, Report};
 use crate::{opt, ssa};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 /// lower a store and print its IR: one text on every path, the widths
@@ -54,7 +54,8 @@ pub fn emit_wired(dir: &Path, far: Option<&str>, then: &[(String, i64)], wire: O
     let mut s = match wire {
         Some(w) => {
             let mut s = wired(dir)?;
-            s.changes = !w.then.is_empty();
+            s.changes = !w.then.is_empty() || w.paced();
+            s.paced = w.paced();
             s.choose = w.choose.is_some();
             s
         }
@@ -645,6 +646,13 @@ pub struct Wire {
     /// said beside it, `--choose <bound>` (fm3 log 290): the runner
     /// chooses the cut after the first, between it and nothing far
     pub choose: Option<i64>,
+    /// its speed in bytes a second, 0 for as fast as it can be (fm3 log
+    /// 294); and each change's, `None` where the change keeps the speed
+    /// before it
+    pub speed: i64,
+    pub speeds: Vec<Option<i64>>,
+    /// a wire that comes and goes: the gap, the period, and from when
+    pub every: Option<(i64, i64, i64)>,
 }
 
 /// a gone wire's delay: the never-time of the world's text
@@ -652,7 +660,7 @@ pub const GONE: i64 = 1 << 62;
 
 impl From<i64> for Wire {
     fn from(d: i64) -> Wire {
-        Wire { d, then: Vec::new(), choose: None }
+        Wire { d, ..Default::default() }
     }
 }
 
@@ -666,14 +674,48 @@ impl Wire {
     /// as a person reads it: `100 ms then gone at 3 s`
     pub fn said(&self) -> String {
         let mut out = spell_late(self.d);
-        for (at, d) in &self.then {
-            out.push_str(&format!(" then {} at {}", if *d >= GONE { "gone".to_string() } else { spell_late(*d) }, store::spell_time(*at)));
+        if self.speed > 0 {
+            out.push_str(&format!(", {} bytes/s", self.speed));
+        }
+        if let Some((gap, every, from)) = self.every {
+            out.push_str(&format!(", gone {} every {} from {}", spell_late(gap), spell_late(every), store::spell_time(from)));
+        }
+        for (k, (at, d)) in self.then.iter().enumerate() {
+            let speed = match self.speeds.get(k) {
+                Some(Some(v)) if *d < GONE => format!(", {} bytes/s", v),
+                _ => String::new(),
+            };
+            out.push_str(&format!(" then {}{} at {}", if *d >= GONE { "gone".to_string() } else { spell_late(*d) }, speed, store::spell_time(*at)));
         }
         out
     }
+    /// does the wire have a speed or come and go (fm3 log 294): its
+    /// build is then one whose items queue on each way
+    pub fn paced(&self) -> bool {
+        self.speed > 0 || self.speeds.iter().any(|v| v.is_some()) || self.every.is_some()
+    }
     /// the calls that fill the build's table of changes, after the cut's
     pub fn calls(&self) -> Vec<(String, Vec<i64>)> {
-        self.then.iter().enumerate().map(|(k, (at, d))| ("__wire_at".to_string(), vec![k as i64, *at, *d])).collect()
+        let mut out: Vec<(String, Vec<i64>)> = self.then.iter().enumerate().map(|(k, (at, d))| ("__wire_at".to_string(), vec![k as i64, *at, *d])).collect();
+        if self.paced() {
+            out.extend(self.pace_calls());
+        }
+        out
+    }
+    /// the speed at first and after each change, a change that says
+    /// none keeping the one before it (fm3 log 294), and the coming and
+    /// going; each way of the wire emptied
+    fn pace_calls(&self) -> Vec<(String, Vec<i64>)> {
+        let (gap, every, from) = self.every.unwrap_or((0, 0, 0));
+        let mut out = vec![("__wire_pace".to_string(), vec![self.speed, from, every, gap])];
+        let mut now = self.speed;
+        for k in 0..self.then.len() {
+            if let Some(Some(v)) = self.speeds.get(k) {
+                now = *v;
+            }
+            out.push(("__wire_speed".to_string(), vec![k as i64, now]));
+        }
+        out
     }
     /// where the wire goes and does not come back, from when
     pub fn gone_for_good(&self) -> Option<i64> {
@@ -685,6 +727,17 @@ impl Wire {
     /// a wire said with changes is checked as `--then` is: forward in
     /// time, none at 0 s, `places::CHANGES` at most
     pub fn checked(self) -> Result<Wire, String> {
+        if let Some((gap, every, from)) = self.every {
+            if gap <= 0 || gap >= every {
+                return Err(format!("a wire that comes and goes is gone for less than its period: gone {} every {}", spell_late(gap), spell_late(every)));
+            }
+            if from <= 0 {
+                return Err("a wire comes and goes from a time after 0 s: `gone 500 ms every 2 s from 1 s`".to_string());
+            }
+        }
+        if self.speed < 0 || self.speeds.iter().any(|v| v.is_some_and(|v| v <= 0)) {
+            return Err("a wire's speed is a whole number of bytes a second above 0: `--wire 100 ms, 40 bytes/s`".to_string());
+        }
         if self.then.len() > super::places::CHANGES {
             return Err(format!("a wire's delay may change {} times in one run, and {} changes are said", super::places::CHANGES, self.then.len()));
         }
@@ -915,7 +968,8 @@ fn wire_moved_case_said<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Po
     let wire: Wire = wire.into();
     let mut s = wired(dir)?;
     s.moved = !then.is_empty() || wire.choose.is_some();
-    s.changes = !wire.then.is_empty();
+    s.changes = !wire.then.is_empty() || wire.paced();
+    s.paced = wire.paced();
     s.choose = wire.choose.is_some();
     let policy = &store_policy(&s, policy);
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
@@ -985,7 +1039,8 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
     let wire: Wire = wire.into();
     let mut s = wired(dir)?;
     s.moved = !then.is_empty() || wire.choose.is_some();
-    s.changes = !wire.then.is_empty();
+    s.changes = !wire.then.is_empty() || wire.paced();
+    s.paced = wire.paced();
     s.choose = wire.choose.is_some();
     let policy = &store_policy(&s, policy);
     let l = lower::lower(&s).map_err(|e| e.to_string())?;
@@ -1022,7 +1077,17 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
     // far went back, and each turn it took ahead and took back
     let mut rows: Vec<[String; 5]> = Vec::new();
     let mut text: Option<(i64, i64, i64, i64, String)> = None;
-    let flush = |text: &mut Option<(i64, i64, i64, i64, String)>, rows: &mut Vec<[String; 5]>| {
+    // (over a wire with a speed, fm3 log 294: each item's size and when
+    // it finished going on, from the line of the record beneath it; a
+    // piece of text's summed, a row of the table each)
+    let mut sized: HashMap<usize, (i64, i64)> = HashMap::new();
+    let mut piece: Option<(i64, i64)> = None;
+    let flush = |text: &mut Option<(i64, i64, i64, i64, String)>, rows: &mut Vec<[String; 5]>, piece: &mut Option<(i64, i64)>, sized: &mut HashMap<usize, (i64, i64)>| {
+        if let Some(z) = piece.take() {
+            if text.is_some() {
+                sized.insert(rows.len(), z);
+            }
+        }
         if let Some((to, left, at, stamp, t)) = text.take() {
             if to == 6 {
                 rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("dropped unshown: text {:?}", t), format!("for {}", store::spell_time(stamp))]);
@@ -1050,19 +1115,35 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
         // (text sent, and text dropped, a character a line of the record)
         // (and a character dropped by its count, fm3 log 292)
         let dropped_char = kind == 19 && a & 15 == 1;
+        if kind == 21 {
+            let (n, by) = (item[4], item[3]);
+            match (&text, &mut piece) {
+                (Some(_), Some((sz, on))) => {
+                    *sz += n;
+                    *on = (*on).max(by);
+                }
+                (Some(_), None) => piece = Some((n, by)),
+                (None, _) => {
+                    if !rows.is_empty() {
+                        sized.insert(rows.len() - 1, (n, by));
+                    }
+                }
+            }
+            continue;
+        }
         if kind == 1 || kind == 6 || dropped_char {
             let tag = if kind == 1 { to } else { kind };
             let ch = if dropped_char { (a >> 4) as u8 as char } else { a as u8 as char };
             match &mut text {
                 Some((t, l2, a2, s2, chars)) if (*t, *l2, *a2, *s2) == (tag, left, at, stamp) => chars.push(ch),
                 _ => {
-                    flush(&mut text, &mut rows);
+                    flush(&mut text, &mut rows, &mut piece, &mut sized);
                     text = Some((tag, left, at, stamp, ch.to_string()));
                 }
             }
             continue;
         }
-        flush(&mut text, &mut rows);
+        flush(&mut text, &mut rows, &mut piece, &mut sized);
         match kind {
             7 => {
                 rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("dropped unshown: {}", block(a)), format!("for {}", store::spell_time(stamp))]);
@@ -1125,12 +1206,24 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
         };
         rows.push([store::spell_time(left), store::spell_time(at), way.to_string(), what, format!("for {}", store::spell_time(stamp))]);
     }
-    flush(&mut text, &mut rows);
-    rows.insert(0, ["left".to_string(), "arrived".to_string(), String::new(), "what".to_string(), "its own time".to_string()]);
-    let w: Vec<usize> = (0..4).map(|k| rows.iter().map(|r| r[k].chars().count()).max().unwrap_or(0)).collect();
+    flush(&mut text, &mut rows, &mut piece, &mut sized);
+    // (with a speed, two columns more: when it had gone on, and its bytes)
+    let mut rows: Vec<Vec<String>> = rows.into_iter().enumerate().map(|(k, r)| {
+        let mut v = r.to_vec();
+        if wire.paced() {
+            let (on, n) = sized.get(&k).map(|(n, by)| (store::spell_time(*by), n.to_string())).unwrap_or_default();
+            v.insert(1, on);
+            v.insert(2, n);
+        }
+        v
+    }).collect();
+    rows.insert(0, if wire.paced() { ["left", "on by", "bytes", "arrived", "", "what", "its own time"] } else { ["left", "arrived", "", "what", "its own time", "", ""] }.iter().take(if wire.paced() { 7 } else { 5 }).map(|s| s.to_string()).collect());
+    let cols = rows[0].len();
+    let w: Vec<usize> = (0..cols - 1).map(|k| rows.iter().map(|r| r[k].chars().count()).max().unwrap_or(0)).collect();
     for r in &rows {
         let padded = |s: &str, n: usize| format!("{}{}", s, " ".repeat(n.saturating_sub(s.chars().count())));
-        out.push_str(&format!("{}  {}  {}  {}  {}\n", padded(&r[0], w[0]), padded(&r[1], w[1]), padded(&r[2], w[2]), padded(&r[3], w[3]), r[4]).trim_end().to_string());
+        let line: Vec<String> = (0..cols - 1).map(|k| padded(&r[k], w[k])).chain([r[cols - 1].clone()]).collect();
+        out.push_str(line.join("  ").trim_end());
         out.push('\n');
     }
     let shown = match p.call.expect {
@@ -1388,7 +1481,7 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
 /// prompt): a steady 100 ms; 2 s from 1 s; gone from 1 s; gone from
 /// 1 s and back at 3 s; and 3 s for one second
 fn choose_wires() -> Vec<Wire> {
-    let w = |then: Vec<(i64, i64)>| Wire { d: 100_000, then, choose: None };
+    let w = |then: Vec<(i64, i64)>| Wire { d: 100_000, then, ..Default::default() };
     vec![w(vec![]), w(vec![(1_000_000, 2_000_000)]), w(vec![(1_000_000, GONE)]), w(vec![(1_000_000, GONE), (3_000_000, 100_000)]), w(vec![(1_000_000, 3_000_000), (2_000_000, 100_000)])]
 }
 
@@ -7151,7 +7244,7 @@ mod tests {
         let key = "launch() with in \"k\" at 3.5 s";
         let line = "\"10\\n9\\n8\\n7\\n\" at 1 hz, \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nliftoff\" at 1 hz from 3.5 s";
         let late = |pieces: &[Shown]| -> Vec<(String, i64, i64)> { pieces.iter().filter(|p| p.shown > p.own).map(|p| (p.text.clone(), p.own, p.shown)).collect() };
-        let wire = |then: Vec<(i64, i64)>| Wire { d: 100_000, then, choose: None };
+        let wire = |then: Vec<(i64, i64)>| Wire { d: 100_000, then, ..Default::default() };
         // slower from 3 s: the key reaches far at 5.5 s and its text the screen at 7.5 s
         let (_, shown, pieces, _) = wire_moved_case(restart, key, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], wire(vec![(3_000_000, 2_000_000)]), 0, None).unwrap();
         assert_eq!(shown, line);
@@ -7186,6 +7279,77 @@ mod tests {
         assert!(changing.contains("\nfn __wat(") && changing.contains("__wire_at(0, 3000000, 4611686018427387904)"));
     }
 
+    /// A wire with a speed, and one that comes and goes (fm3 log 294):
+    /// on each way an item goes on when the way is free, taking its
+    /// bytes over the speed, and arrives the delay after it has gone on,
+    /// a piece of text whole; and no item goes on in a gap of the coming
+    /// and going. A wire that says neither is built as it was
+    #[test]
+    fn a_wire_has_a_speed_and_comes_and_goes() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let hello = Path::new("suite/zero/hello");
+        let line = "\"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s";
+        let speed = 400;
+        let wire = Wire { d: 100_000, speed, ..Default::default() };
+        // the items each way: when they left, went on, their bytes, when they arrived, what
+        let items = |table: &str| -> Vec<(String, i64, i64, i64, i64, String)> {
+            table.lines().filter_map(|l| {
+                let cols: Vec<&str> = l.split("  ").map(str::trim).filter(|c| !c.is_empty()).collect();
+                let way = cols.get(4).filter(|w| w.contains('→'))?;
+                Some((way.to_string(), time_said(cols[0]).ok()?, time_said(cols[1]).ok()?, cols[2].parse().ok()?, time_said(cols[3]).ok()?, cols[5].to_string()))
+            }).collect()
+        };
+        for then in [vec![], vec![("all".to_string(), 2_000_000)]] {
+            let far = if then.is_empty() { "all" } else { "none" };
+            let table = placement_wire_moved(hello, Some(far), &then, &wire, None, &native, opt::MAX_LEVEL).unwrap();
+            let rows = items(&table);
+            assert!(rows.len() > 10, "{}", table);
+            for way in ["screen → far", "far → screen"] {
+                let mut free = 0;
+                for (_, left, on, n, at, what) in rows.iter().filter(|r| r.0 == way) {
+                    // (the start, before the case, takes no time)
+                    if *at == *left && *on == *left {
+                        continue;
+                    }
+                    let took = (n * 1_000_000 + speed - 1) / speed;
+                    assert_eq!(*on, (*left).max(free) + took, "{}: {} went on at {}\n{}", way, what, on, table);
+                    free = *on;
+                    if what.starts_with("text") {
+                        assert!(*at >= on + 100_000, "{}\n{}", what, table);
+                    } else {
+                        assert_eq!(*at, on + 100_000, "{}\n{}", what, table);
+                    }
+                }
+            }
+            let (_, shown, _, _) = wire_moved_case(hello, "run()", &native, opt::MAX_LEVEL, Backend::Native, Some(far), &then, &wire, 0, None).unwrap();
+            assert_eq!(shown, line);
+        }
+        // a piece of text is one item: its head once, its characters arriving together
+        let table = placement_wire_moved(hello, Some("all"), &[], &wire, None, &native, opt::MAX_LEVEL).unwrap();
+        let rows = items(&table);
+        let ten = rows.iter().find(|r| r.5 == "text \"10\\n\"").unwrap();
+        assert_eq!(ten.3, (crate::zero::places::PACE_HEAD + 3) as i64, "{}", table);
+        let bye: Vec<_> = rows.iter().filter(|r| r.5.starts_with("text") && r.5 != "text \"10\\n\"" && r.4 == rows.iter().find(|r| r.5 == "text \"goodbye\"").unwrap().4).collect();
+        assert_eq!(bye.iter().map(|r| r.3).sum::<i64>(), (crate::zero::places::PACE_HEAD + 20) as i64, "{}", table);
+        // gone 500 ms every 2 s from 1 s: the move said at 1.2 s goes on at 1.5 s, when the wire is back
+        let coming = Wire { d: 100_000, every: Some((500_000, 2_000_000, 1_000_000)), ..Default::default() };
+        let table = placement_wire_moved(hello, Some("none"), &[("all".to_string(), 1_200_000)], &coming, None, &native, opt::MAX_LEVEL).unwrap();
+        let rows = items(&table);
+        let word = rows.iter().find(|r| r.5.starts_with("the move's word")).unwrap();
+        assert_eq!((word.1, word.2, word.4), (1_200_000, 1_500_000, 1_600_000), "{}", table);
+        for r in &rows {
+            let ph = (r.2 - 1_000_000).rem_euclid(2_000_000);
+            assert!(r.2 < 1_000_000 || ph >= 500_000 || r.2 == r.1 && r.4 == r.1, "{:?} went on in a gap\n{}", r, table);
+        }
+        let (_, shown, _, _) = wire_moved_case(hello, "run()", &native, opt::MAX_LEVEL, Backend::Native, Some("none"), &[("all".to_string(), 1_200_000)], &coming, 0, None).unwrap();
+        assert_eq!(shown, line);
+        // a wire that says neither is built as it was; one that does has the queue
+        let plain = emit_wired(hello, Some("all"), &[], Some(&Wire::from(100_000))).unwrap();
+        assert!(!plain.contains("data __wsp") && !plain.contains("\nfn __wpace("));
+        let paced = emit_wired(hello, Some("all"), &[], Some(&wire)).unwrap();
+        assert!(paced.contains("data __wsp") && paced.contains("__wire_pace(400, 0, 0, 0)"));
+    }
+
     /// The cut chosen (fm3 log 290). With a steady wire of 100 ms every
     /// round trip is 200 ms, under the bound of 250 ms, and the chooser
     /// holds the cut given: hello and restart as late as at a fixed cut.
@@ -7202,7 +7366,7 @@ mod tests {
         let hello = Path::new("suite/zero/hello");
         let restart = Path::new("suite/zero/restart");
         let line = "\"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s";
-        let chosen = |then: Vec<(i64, i64)>, b: i64| Wire { d: 100_000, then, choose: Some(b) };
+        let chosen = |then: Vec<(i64, i64)>, b: i64| Wire { d: 100_000, then, choose: Some(b), ..Default::default() };
         let out = run_wire_moved(hello, "run()", &native, opt::MAX_LEVEL, Some("all"), &[], chosen(vec![], 250_000)).unwrap();
         assert!(out.starts_with(&format!("run()\n→ {}\nlate: 1 piece of 12, the most 200 ms\n", line)), "{}", out);
         assert!(out.contains("\nchose: nothing; the cut given held throughout\n") && out.contains("the longest back 200 ms"), "{}", out);
@@ -7240,7 +7404,7 @@ mod tests {
         let hello = Path::new("suite/zero/hello");
         let restart = Path::new("suite/zero/restart");
         let line = "\"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s";
-        let chosen = |then: Vec<(i64, i64)>| Wire { d: 100_000, then, choose: Some(250_000) };
+        let chosen = |then: Vec<(i64, i64)>| Wire { d: 100_000, then, choose: Some(250_000), ..Default::default() };
         for then in [vec![(3_000_000, 2_000_000)], vec![(3_000_000, GONE)], vec![(3_000_000, GONE), (6_000_000, 100_000)]] {
             let out = run_wire_moved(hello, "run()", &native, opt::MAX_LEVEL, Some("all"), &[], chosen(then.clone())).unwrap();
             assert!(out.starts_with(&format!("run()\n→ {}\nlate: 1 piece of 12, the most 200 ms\n  \"10\\n\" for 0 s, shown at 200 ms, 200 ms late\n", line)), "{:?}\n{}", then, out);
