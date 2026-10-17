@@ -916,7 +916,9 @@ pub fn chose_said(wire: &Wire, log: &[i64]) -> String {
     for item in log.chunks(6).filter(|c| c.len() == 6) {
         match item[1] {
             15 => out.push_str(&format!("chose: nothing far at {}{}: a round trip of its own out longer than {}, the screen waiting on far\n", store::spell_time(item[2]), if log.chunks(6).any(|c| c.len() == 6 && c[1] == 18 && c[2] == item[2]) { ", by running far's part again" } else { "" }, spell_late(b))),
-            16 => out.push_str(&format!("chose: the cut given at {}: a second of round trips within {}, nothing due within {}\n", store::spell_time(item[2]), spell_late(b), spell_late(item[5]))),
+            16 => out.push_str(&format!("chose: the cut given at {}: {}\n", store::spell_time(item[2]), weighed_said(item, log, b))),
+            24 => out.push_str(&format!("kept: nothing far at {}: about {} bytes/s, less than twice the {} bytes/s the cut given put on the wire\n", store::spell_time(item[2]), two_figures(item[4]), two_figures(item[5]))),
+            25 => out.push_str(&format!("kept: nothing far at {}: {}, so {} of round trips within {} are wanted\n", store::spell_time(item[2]), gaps_said(item[5]), spell_late(item[4]), spell_late(b))),
             _ => {}
         }
     }
@@ -929,18 +931,42 @@ pub fn chose_said(wire: &Wire, log: &[i64]) -> String {
     out
 }
 
+/// what a choice to give far its part back weighed (fm3 log 296): how
+/// long the round trips were steady, and why that long; what was due;
+/// and, where a speed was seen, the speed against the rate the cut
+/// given put on the wire, and the move's own bytes. As hop fifty-one
+/// said it where no speed was seen and the wire went once
+fn weighed_said(item: &[i64], log: &[i64], b: i64) -> String {
+    let w = log.chunks(6).filter(|c| c.len() == 6).find(|c| c[1] == 23 && c[2] == item[2]);
+    let (steady, within) = (item[4], item[5]);
+    let mut out = if steady == 1_000_000 || w.is_none() { format!("a second of round trips within {}", spell_late(b)) } else { format!("{} of round trips within {}, {}", spell_late(steady), spell_late(b), gaps_said(w.unwrap()[0])) };
+    out.push_str(&format!(", nothing due within {}", spell_late(within)));
+    if let Some(w) = w.filter(|w| w[4] > 0) {
+        let took = (w[3] * 1_000_000 + w[4] - 1) / w[4];
+        out.push_str(&format!(", the move's {} bytes {} of it; about {} bytes/s, at least twice the {} bytes/s the cut given put on the wire", w[3], spell_late((took + 500) / 1000 * 1000), two_figures(w[4]), two_figures(w[5])));
+    }
+    out
+}
+
+/// how often and how long the wire went in the last ten seconds, as
+/// the chooser's world packs it: the count times 2^40 and the time
+fn gaps_said(packed: i64) -> String {
+    let (n, gone) = (packed >> 40, packed & ((1 << 40) - 1));
+    match n {
+        0 => "not gone in the last 10 s".to_string(),
+        n => format!("gone {} time{} in the last 10 s, {} in all", n, if n == 1 { "" } else { "s" }, spell_late(gone)),
+    }
+}
+
 /// what the chooser measured of the wire last (fm3 log 295), from the
 /// line of the record its world wrote at its end: the delay, the speed
 /// where one was seen, and how often and how long the wire went in the
 /// last ten seconds
 fn measured_said(log: &[i64]) -> String {
     let Some(m) = log.chunks(6).filter(|c| c.len() == 6).find(|c| c[1] == 22) else { return String::new() };
-    let (delay, speed, gaps, gone) = (m[3], m[4], m[5] >> 40, m[5] & ((1 << 40) - 1));
+    let (delay, speed) = (m[3], m[4]);
     let speed = if speed > 0 { format!("about {} bytes/s", two_figures(speed)) } else { "its speed not seen to limit".to_string() };
-    let gone = match gaps {
-        0 => "not gone in the last 10 s".to_string(),
-        n => format!("gone {} time{} in the last 10 s, {} in all", n, if n == 1 { "" } else { "s" }, spell_late(gone)),
-    };
+    let gone = gaps_said(m[5]);
     format!("the wire: about {}, {}, {}\n", spell_late(two_figures(delay)), speed, gone)
 }
 
@@ -1109,6 +1135,8 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
     // piece of text's summed, a row of the table each)
     let mut sized: HashMap<usize, (i64, i64)> = HashMap::new();
     let mut piece: Option<(i64, i64)> = None;
+    // (a ping's line and its answer's are not rows, nor their sizes)
+    let mut skip21 = false;
     let flush = |text: &mut Option<(i64, i64, i64, i64, String)>, rows: &mut Vec<[String; 5]>, piece: &mut Option<(i64, i64)>, sized: &mut HashMap<usize, (i64, i64)>| {
         if let Some(z) = piece.take() {
             if text.is_some() {
@@ -1142,6 +1170,10 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
         // (text sent, and text dropped, a character a line of the record)
         // (and a character dropped by its count, fm3 log 292)
         let dropped_char = kind == 19 && a & 15 == 1;
+        if kind == 21 && skip21 {
+            skip21 = false;
+            continue;
+        }
         if kind == 21 {
             let (n, by) = (item[4], item[3]);
             match (&text, &mut piece) {
@@ -1185,13 +1217,25 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, far: Option<&str>, then: 
                 continue;
             }
             // (the chooser's, fm3 log 290: its round trips are counted beneath, and each choice is a row)
-            13 | 14 | 22 => continue,
+            13 | 14 => {
+                skip21 = true;
+                continue;
+            }
+            22 | 23 => continue,
+            24 => {
+                rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("keeps nothing far: about {} bytes/s, less than twice the {} bytes/s the cut given put on the wire", two_figures(stamp), two_figures(a)), String::new()]);
+                continue;
+            }
+            25 => {
+                rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("keeps nothing far: {}, so {} of round trips within the bound are wanted", gaps_said(a), spell_late(stamp)), String::new()]);
+                continue;
+            }
             15 => {
                 rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("chooses nothing far: a round trip of its own out longer than {}", spell_late(a)), String::new()]);
                 continue;
             }
             16 => {
-                rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("chooses the cut given: a second of round trips within the bound, nothing due within {}", spell_late(a)), String::new()]);
+                rows.push([store::spell_time(left), String::new(), "at the screen".to_string(), format!("chooses the cut given: {} of round trips within the bound, nothing due within {}", if stamp == 1_000_000 { "a second".to_string() } else { spell_late(stamp) }, spell_late(a)), String::new()]);
                 continue;
             }
             // (the screen running far's part again, fm3 log 292)
@@ -1431,13 +1475,17 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
     // everything far, the runner choosing, under five wires
     let choose_asked = std::env::var("PROBE_ZERO_CUTS").ok().filter(|v| v.starts_with("choose")).map(|v| v.split('=').nth(1).and_then(|n| n.parse::<i64>().ok()).unwrap_or(250) * 1000);
     let mut chosen = Chosen::default();
+    // (`choose52=250`: the chooser as hop fifty-two had it, neither the
+    // speed nor the wire's history weighed, fm3 log 296: a measurement
+    // to compare with on the new wires)
+    let but = if std::env::var("PROBE_ZERO_CUTS").is_ok_and(|v| v.starts_with("choose52")) { 1024 | 2048 } else { 0 };
     if let Some(b) = choose_asked {
         for sdir in &stores {
-            test_choose(sdir, &policy, backend, level, &mut report, &mut chosen, b);
+            test_choose(sdir, &policy, backend, level, &mut report, &mut chosen, b, but);
         }
-        report.log.push_str(&format!("chosen, a bound of {}, everything far: {} stores with a time, {} built, {} refused by name\n", spell_late(b), chosen.stores, chosen.built, chosen.refused));
+        report.log.push_str(&format!("chosen, a bound of {}, everything far{}: {} stores with a time, {} built, {} refused by name\n", spell_late(b), if but != 0 { ", neither the speed nor the wire's history weighed" } else { "" }, chosen.stores, chosen.built, chosen.refused));
         for (k, w) in choose_wires().iter().enumerate() {
-            report.log.push_str(&format!("  a wire of {}: {} runs, {} give the case's own line, {} stop short where the wire went for good; {} of {} pieces for {} or after late, the most {}{}; {} runs chose nothing far, {} gave far its part back\n", w.said(), chosen.runs[k], chosen.held[k], chosen.short[k], chosen.late[k], chosen.after[k], store::spell_time(w.then.first().map(|t| t.0).unwrap_or(0)), spell_late(chosen.most[k]), chosen.worst[k], chosen.away[k], chosen.back[k]));
+            report.log.push_str(&format!("  a wire of {}: {} runs, {} give the case's own line, {} stop short where the wire went for good; {} of {} pieces for {} or after late, the most {}{}; {} runs chose nothing far, {} gave far its part back; {} moves\n", w.said(), chosen.runs[k], chosen.held[k], chosen.short[k], chosen.late[k], chosen.after[k], store::spell_time(changed_from(w)), spell_late(chosen.most[k]), chosen.worst[k], chosen.away[k], chosen.back[k], chosen.moves[k]));
         }
     }
     if std::env::var("PROBE_ZERO_CUTS").is_ok() && wire_asked.is_none() && choose_asked.is_none() {
@@ -1507,9 +1555,22 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
 /// the wires the suite chooses the cut under (fm3 log 290, the hop's
 /// prompt): a steady 100 ms; 2 s from 1 s; gone from 1 s; gone from
 /// 1 s and back at 3 s; and 3 s for one second
+///
+/// ... and two more (fm3 log 296): a narrow wire, 1 000 bytes a second,
+/// on which a ping still comes back within the bound but a store's
+/// start does not fit; and a wire gone 500 ms every 2 s from 1 s
 fn choose_wires() -> Vec<Wire> {
     let w = |then: Vec<(i64, i64)>| Wire { d: 100_000, then, ..Default::default() };
-    vec![w(vec![]), w(vec![(1_000_000, 2_000_000)]), w(vec![(1_000_000, GONE)]), w(vec![(1_000_000, GONE), (3_000_000, 100_000)]), w(vec![(1_000_000, 3_000_000), (2_000_000, 100_000)])]
+    vec![w(vec![]), w(vec![(1_000_000, 2_000_000)]), w(vec![(1_000_000, GONE)]), w(vec![(1_000_000, GONE), (3_000_000, 100_000)]), w(vec![(1_000_000, 3_000_000), (2_000_000, 100_000)]), Wire { speed: NARROW, ..w(vec![]) }, Wire { every: Some((500_000, 2_000_000, 1_000_000)), ..w(vec![]) }]
+}
+
+/// the narrow wire of the suite's chooser, in bytes a second (fm3 log 296)
+const NARROW: i64 = 1000;
+
+/// from when a wire is not what it was at first: its first change, or
+/// its first gap; 0 s for a wire narrow from the start
+fn changed_from(w: &Wire) -> i64 {
+    w.then.first().map(|t| t.0).or(w.every.map(|e| e.2)).unwrap_or(0)
 }
 
 /// what the suite with the cut chosen found, a row a wire
@@ -1518,24 +1579,27 @@ struct Chosen {
     stores: usize,
     built: usize,
     refused: usize,
-    runs: [usize; 5],
-    held: [usize; 5],
-    short: [usize; 5],
-    most: [i64; 5],
+    runs: [usize; 7],
+    held: [usize; 7],
+    short: [usize; 7],
+    most: [i64; 7],
     /// ... the store and case of it
-    worst: [String; 5],
+    worst: [String; 7],
     /// pieces for the change's time or after, and of them those late
-    after: [usize; 5],
-    late: [usize; 5],
-    away: [usize; 5],
-    back: [usize; 5],
+    after: [usize; 7],
+    late: [usize; 7],
+    away: [usize; 7],
+    back: [usize; 7],
+    /// the moves made, both ways, over all runs (fm3 log 296)
+    moves: [usize; 7],
 }
 
 /// One store with the cut chosen (fm3 log 290): every case, everything
 /// far, the runner choosing between that and nothing far, under each
 /// of `choose_wires`. A measurement, not a gate: a run that does not
 /// give the case's line is listed and counted, not failed
-fn test_choose(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, report: &mut Report, ch: &mut Chosen, bound: i64) {
+#[allow(clippy::too_many_arguments)]
+fn test_choose(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, report: &mut Report, ch: &mut Chosen, bound: i64, but: i64) {
     let name = sdir.file_name().unwrap().to_string_lossy().to_string();
     let Ok(mut s) = wired(sdir) else { return };
     if !s.features.iter().any(|f| f.cases.iter().any(|c| matches!(c.expect, store::Expect::Timed(_)))) {
@@ -1545,6 +1609,7 @@ fn test_choose(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize
     s.moved = true;
     s.choose = true;
     s.changes = true;
+    s.paced = true;
     let built = (|| -> Result<(Vec<Planned>, Vec<Run>, ssa::Module, lower::Lowered), String> {
         let policy = store_policy(&s, policy);
         let l = lower::lower(&s).map_err(|e| e.to_string())?;
@@ -1579,7 +1644,10 @@ fn test_choose(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize
     let runs: Vec<&Run> = runs.iter().filter(|r| !unreached.contains_key(&cases[r.case].call.func)).collect();
     for (k, w) in wires.iter().enumerate() {
         // (a steady wire in a build for one that changes is a change at the never-time)
-        let changes = if w.then.is_empty() { vec![("__wire_at".to_string(), vec![0, GONE, w.d])] } else { w.calls() };
+        // (and every case's wire said whole in a build whose wire may have a speed, fm3 log 294)
+        let mut changes = if w.then.is_empty() { vec![("__wire_at".to_string(), vec![0, GONE, w.d])] } else { w.then.iter().enumerate().map(|(k, (at, d))| ("__wire_at".to_string(), vec![k as i64, *at, *d])).collect() };
+        changes.extend(w.pace_calls());
+        changes.push(("__wire_but".to_string(), vec![but]));
         let mut scalls: [Vec<suite::Call>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         for r in &runs {
             let c = &cases[r.case].call;
@@ -1590,7 +1658,7 @@ fn test_choose(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize
         if runs.is_empty() {
             continue;
         }
-        let from = w.then.first().map(|t| t.0).unwrap_or(0);
+        let from = changed_from(w);
         let got = [0, 1, 2].map(|mode| suite::run_calls(&module, &lowered.ir, backend, &scalls[mode], &format!("{}-choose", name), level));
         match got {
             [Ok(own), Ok(shown), Ok(logs)] => {
@@ -1599,6 +1667,7 @@ fn test_choose(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize
                     let log = log.map(|g| g.marks).unwrap_or_default();
                     ch.away[k] += usize::from(log.chunks(6).any(|c| c.len() == 6 && c[1] == 15));
                     ch.back[k] += usize::from(log.chunks(6).any(|c| c.len() == 6 && c[1] == 16));
+                    ch.moves[k] += log.chunks(6).filter(|c| c.len() == 6 && (c[1] == 15 || c[1] == 16)).count();
                     let mut text = String::new();
                     if let (Ok(o), Ok(sh)) = (&own, &shown) {
                         let pieces = shown_pieces(&o.text, &o.marks, &sh.marks);
@@ -7396,9 +7465,54 @@ mod tests {
         let rises = Wire { then: vec![(5_000_000, 100_000)], speeds: vec![Some(10_000)], ..w(40) };
         assert!(said(rises).starts_with("the wire: about 100 ms, about 10000 bytes/s, "));
         let coming = Wire { every: Some((500_000, 2_000_000, 1_000_000)), ..w(0) };
-        assert!(said(coming.clone()).ends_with(", gone 5 times in the last 10 s, 3.2 s in all"), "{}", said(coming));
+        assert!(said(coming.clone()).ends_with(", gone 5 times in the last 10 s, 3.45 s in all"), "{}", said(coming));
         // two figures
         assert_eq!((two_figures(39), two_figures(9_987), two_figures(5_612_000)), (39, 10_000, 5_600_000));
+    }
+
+    /// What the chooser weighs before it gives far its part back (fm3
+    /// log 296), each against a switch only this test has. A wire gone
+    /// 500 ms every 2 s: weighed, the part is taken at the first gap,
+    /// given back after it, as after a wire that went once, and kept from
+    /// the second, the wire's history asking 3.35 s of steady round
+    /// trips; the wire's history ignored (`__wire_but` 1024), it goes back
+    /// and forth four times. A narrow wire, 1 000 bytes a second: weighed,
+    /// `tick`'s part is kept, the speed less than twice what the cut given
+    /// put on the wire; the speed ignored (2048), it is given back, its
+    /// move's 928 bytes take most of a second, and a piece is later than
+    /// the bound. A steady wire: no move either way
+    #[test]
+    fn the_chooser_weighs_the_wire() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let (hello, tick) = (Path::new("suite/zero/hello"), Path::new("suite/zero/tick"));
+        let line = "\"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s";
+        let run = |dir: &Path, case: &str, wire: &Wire, but: i64| -> (String, Vec<Shown>, Vec<i64>) {
+            let ((_, shown, pieces, _), _, log) = wire_moved_case_said(dir, case, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], wire, but, None).unwrap();
+            (shown, pieces, log)
+        };
+        let moves = |log: &[i64]| log.chunks(6).filter(|c| c.len() == 6 && (c[1] == 15 || c[1] == 16)).count();
+        let most = |pieces: &[Shown]| pieces.iter().map(|p| p.shown - p.own).max().unwrap_or(0);
+        let coming = Wire { d: 100_000, every: Some((500_000, 2_000_000, 1_000_000)), choose: Some(250_000), ..Default::default() };
+        let (shown, pieces, log) = run(hello, "run()", &coming, 0);
+        assert_eq!((shown.as_str(), moves(&log), most(&pieces)), (line, 3, 200_000));
+        let said = chose_said(&coming, &log);
+        assert!(said.contains("\nkept: nothing far at 4.6 s: gone 2 times in the last 10 s, 1.35 s in all, so 3.35 s of round trips within 250 ms are wanted\n"), "{}", said);
+        let (shown, _, log) = run(hello, "run()", &coming, 1024);
+        assert_eq!(shown, line);
+        assert!(moves(&log) >= 4, "{}", chose_said(&coming, &log));
+        let narrow = Wire { d: 100_000, speed: 1000, choose: Some(250_000), ..Default::default() };
+        let (shown, pieces, log) = run(tick, "mixed()", &narrow, 0);
+        let (shown2, pieces2, log2) = run(tick, "mixed()", &narrow, 2048);
+        assert_eq!(shown, shown2);
+        assert_eq!((moves(&log), most(&pieces)), (1, 250_000), "{}", chose_said(&narrow, &log));
+        assert!(chose_said(&narrow, &log).contains("\nkept: nothing far at 3 s: about 1000 bytes/s, less than twice the 3200 bytes/s the cut given put on the wire\n"));
+        assert!(moves(&log2) > 1 && most(&pieces2) > 1_000_000, "{}", chose_said(&narrow, &log2));
+        // a steady wire, weighed or not: the cut given throughout
+        let steady = Wire { d: 100_000, choose: Some(250_000), ..Default::default() };
+        for but in [0, 1024 | 2048] {
+            let (shown, _, log) = run(hello, "run()", &steady, but);
+            assert_eq!((shown.as_str(), moves(&log)), (line, 0));
+        }
     }
 
     /// The cut chosen (fm3 log 290). With a steady wire of 100 ms every
