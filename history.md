@@ -4,6 +4,18 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a wire's speed and a wire that comes and goes — `6361297` · 2026-10-17
+
+Hop fifty-three's first landing, transformation 174 (fm3 log 294; question 165, Ash's ruling: the chooser is to decide by the wire's measured speed and reliability, so the wire must first have them). New on the command line, no program and no case changed: `--wire 100 ms, 40 bytes/s`; in a change `then 100 ms, 10000 bytes/s at 5 s`; and `--wire 100 ms, gone 500 ms every 2 s from 1 s`, which holds the whole run on top of any change. A change that says no speed keeps the one before it.
+
+**The rule.** Each way of the wire is a queue: an item goes on when the way is free and the wire up, takes its size over the speed of that moment to go on, then travels the delay of the moment it has gone on (where the wire is gone then, it arrives when the wire comes back plus that delay). With no speed and the wire up it has gone on when it is put on, which is hop fifty-one's rule. **An item's size** is the build's: a head of 16 bytes; a piece of text its characters, a push its value, a record its row of the pool (8 bytes a column) and the fields that may cross with it, a telling its time and rank, the move's word the cut's table and what a move may hand, far's state what a move may hand. **A piece of text is one item**, characters and blocks put on one way at one moment for one time, the head paid once and every character arriving with the last.
+
+`probe zero suite/zero/hello run 'run()' --fast --far all --wire 100 ms, 400 bytes/s`: `late: 1 piece of 12, the most 0.7675 s`, the record of the case's call (208 bytes) taking 520 ms to go on. At 40 bytes/s every piece is late, the most 6.125 s; with `then 100 ms, 10000 bytes/s at 5 s` the call's record, begun at 40 bytes/s, has gone on at 5.2 s and the rest follows in 50 ms. Gone 500 ms every 2 s from 1 s, a move said at 1.2 s goes on at 1.5 s and arrives at 1.6 s. `placement` gains two columns, when each item had gone on and its bytes (a piece of text's summed).
+
+**How.** Only where a speed or the coming and going is said (`Store.paced`, which brings the table of changes with it): `__wsp`; `__wsize`, `__wspeed`, `__wup` (the first moment from a time the wire is up), `__wpace` (when an item has gone on, when it arrives, its size, and a piece's characters already on the wire brought to its arrival), `__wsized` (a line of kind 21 in the record after each item), `__wat` over `__wup`; the runner's `__wire_pace` and `__wire_speed`. `__wstamp` skips a line of kind 21; a turn far took ahead and took back puts the way's words back. `a_wire_has_a_speed_and_comes_and_goes` holds the queue's arithmetic, a fixed cut and a move, a piece's head paid once, nothing going on in a gap. `irdiff.sh`, `agent59/placediff.sh`, `agent61/wirediff.sh`, `agent62/moveddiff.sh` and `agent65/againdiff.sh` against `probe169` name nothing, nor the build that chooses. The full run green (`scratchpad/chain175.log`).
+
+---
+
 ### zero: the screen runs far's part again when it takes it, and drops what far sent before it heard — `c2d0643` · 2026-10-16
 
 Hop fifty-two, transformation 173 (fm3 log 292 and 293; question 163, Ash's ruling). Hop fifty-one's chooser took far's part by hop forty-nine's move, which waits for far's state over the same wire that is slow or gone, so choosing was later than holding. Now, where the chooser chooses nothing far, the screen works far's state out itself: far's state is a function of the program's start and of what the screen sent it, and the screen keeps both. A wire that is gone costs no more than one that is slow.
