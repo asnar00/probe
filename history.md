@@ -4,6 +4,26 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the chooser measures the wire's speed and its reliability — `276ba8d` · 2026-10-17
+
+Hop fifty-three's second landing, transformation 175 (fm3 log 295; question 165). The chooser measures two more things of the wire at the screen, never from `--wire`'s words or the wire's table, and prints them; it changes no choice.
+
+**Speed.** Each item of the wire carries its size (the build's, as for a wire with a speed) and the moment its sender put it on, as a packet carries a length and a send stamp (`__wq_sz`, `__wq_s`, in a build that chooses). At the screen, items that arrive at one moment are a burst, their bytes summed. A burst came one behind the one before where its first item was put on before that one could have gone on (earlier than its arrival less the least time an item has taken) and the arrivals are further apart than the sendings: the wire spaced them, and its speed is the burst's bytes over the gap (`__wmeasure`). On a wire with no speed nothing arrives spaced more than it was sent, and no speed is seen. Where the screen holds far's part and only its pings cross, they go in pairs, the second numbered below 0; the gap between the two answers is a head's time at the speed (the packet pair, Keshav 1991). The second is no round trip of its own.
+
+**Reliability.** A gap begins when a round trip of the screen's own has been out longer than the bound, from that ping's sending, and ends at the sending of one that came back within it; the last eight are kept (`__wgap_begin`, `__wgap_end`, `__wgaps`). The cut given's traffic is counted while it is held (`__wtraffic`), for the landing after.
+
+**Printed**, from a line of the record of kind 22 the world writes at its end (`__wmeasured`), beneath the choices of `run` and `placement`. `probe zero suite/zero/hello run 'run()' --fast --far all --choose 250 ms --wire 100 ms, 40 bytes/s then 100 ms, 10000 bytes/s at 5 s`:
+
+```
+chose: nothing far at 250 ms, by running far's part again: a round trip of its own out longer than 250 ms, the screen waiting on far
+chose: the cut given at 6.4265 s: a second of round trips within 250 ms, nothing due within 0.2032 s
+the wire: about 100 ms, about 10000 bytes/s, gone 1 time in the last 10 s, 5.0468 s in all
+```
+
+A steady wire of 100 ms: `the wire: about 100 ms, its speed not seen to limit, not gone in the last 10 s`; gone 500 ms every 2 s from 1 s: `gone 5 times in the last 10 s, 3.2 s in all`. `PROBE_ZERO_CUTS=choose=250 probe zero test suite/zero wasm` gives hop fifty-two's log line for line. Only where `--choose` is said: irdiff, placediff, wirediff, moveddiff and againdiff against `probe170` name nothing. hello's `run` counted with the chooser over a steady wire is 232 367, beside 220 681: the measuring at every arrival and every send. `the_chooser_measures_the_wire`. The full run green (`scratchpad/chain176.log`).
+
+---
+
 ### zero: a wire's speed and a wire that comes and goes — `6361297` · 2026-10-17
 
 Hop fifty-three's first landing, transformation 174 (fm3 log 294; question 165, Ash's ruling: the chooser is to decide by the wire's measured speed and reliability, so the wire must first have them). New on the command line, no program and no case changed: `--wire 100 ms, 40 bytes/s`; in a change `then 100 ms, 10000 bytes/s at 5 s`; and `--wire 100 ms, gone 500 ms every 2 s from 1 s`, which holds the whole run on top of any change. A change that says no speed keeps the one before it.
