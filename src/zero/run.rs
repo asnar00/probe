@@ -6806,7 +6806,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `x$ at (t)` is an index worked out in integers (fm3 question
+    /// `x$[t]` is an index worked out in integers (fm3 question
     /// 120, log 248): where the compiler knows the stream's rate and
     /// the time's divisor, the count times a reduced ratio, and the
     /// ring read by a place; where it does not, a tick and `__at_<T>`.
@@ -6823,17 +6823,56 @@ mod tests {
             ir.lines().skip_while(|l| !l.starts_with("fn f(")).skip(1).take_while(|l| l.starts_with(' ')).collect::<Vec<_>>().join("\n")
         };
         // 1 khz against a nanosecond's divisor: one over a million
-        let rated = f("", "    int x$ at (1 khz) << 1 << 2 << 3\n", "x$ at (m us)");
+        let rated = f("", "    int x$ at (1 khz) << 1 << 2 << 3\n", "x$[m us]");
         assert!(rated.contains(" = div ") && rated.contains(", 1000000\n") && rated.contains(" = peek ") && !rated.contains("sample") && !rated.contains("__at_"), "{}", rated);
         // a time written out: the index is worked out by the compiler
-        let lit = f("", "    int x$ at (1 khz) << 1 << 2 << 3\n", "x$ at (1600 us)");
+        let lit = f("", "    int x$ at (1 khz) << 1 << 2 << 3\n", "x$[1600 us]");
         assert!(!lit.contains(" = div ") && !lit.contains(" = mul ") && lit.contains(" = cmp.gt 1, "), "{}", lit);
         // 48 khz against a second's thirtieth: times 1600, no divide
-        let video = f("", "    int a$ at (48 khz) << 1 << 2 << 3\n", "a$ at (1 s / 30 * m)");
+        let video = f("", "    int a$ at (48 khz) << 1 << 2 << 3\n", "a$[1 s / 30 * m]");
         assert!(!video.contains("sample"), "{}", video);
         // no rate: the tick of the store's clock, and the search
-        let sparse = f("int k$\n\n", "    k$ << 1\n", "k$ at (m ms)");
+        let sparse = f("int k$\n\n", "    k$ << 1\n", "k$[m ms]");
         assert!(sparse.contains("__at_int(") && sparse.contains(" = div ") && !sparse.contains("sample"), "{}", sparse);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stream is read at a time in brackets, `x$[t]`, the type of
+    /// what is in them saying which read it is (fm3 question 170): a
+    /// time is the value at that moment, and the same IR as the read
+    /// written `x$ at (t)` gave. That spelling is refused showing the
+    /// line with the brackets; a negative time in them is refused;
+    /// `peek x$ at (k)` and an `int` in the brackets are what they were
+    #[test]
+    fn a_stream_is_read_at_a_time_in_brackets() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-brackets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-23T10:00:00\n\n## testing\n").unwrap();
+        let f = |body: &str| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), format!("on (time u) << twice (time t)\n    u << t * 2\n\non (int n) << f (int m, time w)\n    int x$ at (1 khz) << 1 << 2 << 3\n{}", body)).unwrap();
+            let ir = lower::lower(&store::read(&dir).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?.ir;
+            Ok(ir.lines().skip_while(|l| !l.starts_with("fn f(")).skip(1).take_while(|l| l.starts_with(' ')).collect::<Vec<_>>().join("\n"))
+        };
+        // a literal, a name and a unit, a parameter, `time of`, what a
+        // function gives, a time worked out: each the read at a time
+        for read in ["x$[1600 us]", "x$[m us]", "x$[w]", "x$[time of x$]", "x$[twice (w)]", "x$[w + 1 ms]", "x$[0 s - 1 s]"] {
+            let ir = f(&format!("    n << {}\n", read)).unwrap_or_else(|e| panic!("{}: {}", read, e));
+            assert!(ir.contains(" = peek ") || ir.contains("__at_"), "{}: {}", read, ir);
+        }
+        let refused = |body: &str, what: &str| {
+            let e = f(body).err().unwrap_or_else(|| panic!("not refused: {}", body));
+            assert!(e.contains(what), "{}: {}", body, e);
+        };
+        refused("    n << x$ at (1600 us)\n", "h.zero:6: `n << x$ at (1600 us)` reads a stream at a time, and that is written in brackets with the time inside, as an array is read at a place (fm3 question 170): write `n << x$[1600 us]`");
+        refused("    n << x$ at (w) + peek x$ at (0) + x$ at (time of x$)\n", "write `n << x$[w] + peek x$ at (0) + x$[time of x$]`");
+        refused("    n << x$ at (m)\n", "h.zero:6: 'x$ at (...)': a stream is read at a time in brackets with the time inside, `x$[80 ms]` (fm3 question 170); the item k on from where this reader stands is `peek x$ at (k)`");
+        refused("    n << x$[-1 ms]\n", "h.zero:6: `x$[-1 ms]`: a time in a stream's brackets is a moment on its clock, and a negative one is no time a stream can be read at; a time back from the present item is given no meaning (fm3 question 170)");
+        refused("    n << x$[-w]\n", "`x$[-w]`: a time in a stream's brackets is a moment on its clock");
+        refused("    n << x$[m]\n", "'x$[k]': an item by its place is an array's, and 'x$' is a stream (fm3 question 90). The item k on from where this reader stands is `peek x$ at (k)`; the array of what has arrived is `frame x$`, and one back is `x$[-1]`; read at a time it is `x$[80 ms]`, a time in the brackets (fm3 question 170)");
+        // what the ruling leaves as it was
+        assert!(f("    n << peek x$ at (1)\n").is_ok());
+        assert!(f("    advance x$ by (1)\n    int a[] = x$ from (w) to (w * 2)\n    n << [count] (a[]) + position x$\n").is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -6848,7 +6887,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-10T10:00:00\n\n## testing\n").unwrap();
         let ir = |decl: &str| -> Result<String, String> {
-            std::fs::write(dir.join("h/h.zero"), format!("on (float32 n) << f (int m)\n    {}\n    n << x$ at (m us)\n", decl)).unwrap();
+            std::fs::write(dir.join("h/h.zero"), format!("on (float32 n) << f (int m)\n    {}\n    n << x$[m us]\n", decl)).unwrap();
             let ir = lower::lower(&store::read(&dir).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?.ir;
             Ok(ir.lines().skip_while(|l| !l.starts_with("fn f(")).skip(1).take_while(|l| l.starts_with(' ')).collect::<Vec<_>>().join("\n"))
         };

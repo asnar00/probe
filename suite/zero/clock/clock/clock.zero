@@ -4,7 +4,7 @@ on (int t$) << ticks (int n)
     t$ << 1 << (t$ + 1) while (_ <= n)
 
 on (int v) << value at (int m)
-    v << t$ at (m ms)
+    v << t$[m ms]
 
 on (int i, time tick) << where it stands()
     advance t$ by (2)
@@ -23,10 +23,10 @@ on mark thrice()
 
 on (int v) << marked at (int m)
     mark thrice()
-    v << mark$ at (m ms)
+    v << mark$[m ms]
 
 on (int v) << none marked at (int m)
-    v << mark$ at (m ms)
+    v << mark$[m ms]
 
 on (int n) << paced()
     n << pace$
@@ -37,16 +37,16 @@ on (time t) << marked when()
 
 on (int v) << marked at its own time()
     mark thrice()
-    v << mark$ at (time of mark$)
+    v << mark$[time of mark$]
 
 on (time t) << none marked when()
     t << time of mark$
 
 on (int v) << ticked at its own time()
-    v << t$ at (time of t$)
+    v << t$[time of t$]
 
 on (int v) << through (int m)
     v << seen (t$) at (m)
 
 on (int v) << seen (int x$) at (int m)
-    v << x$ at (m ms)
+    v << x$[m ms]

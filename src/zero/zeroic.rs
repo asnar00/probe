@@ -157,6 +157,11 @@ fn asks_end(e: &Expr, x: &str) -> Option<&'static str> {
 
 /// the reader's word a phrase applies to `x`, if it applies one
 fn reader_word(e: &Expr, x: &str) -> Option<String> {
+    // `x$[80 ms]`, a read at a time (fm3 question 170), before the
+    // store's reading has written it as `x$ at (t)`
+    if let ExprKind::Index(base, idx) = &e.kind {
+        return (is_seq(base, x) && super::kinds::written_time(idx)).then(|| "at".to_string());
+    }
     let ExprKind::Phrase(parts) = &e.kind else { return None };
     match parts.as_slice() {
         [Part::Word(w), s, ..] if READER.contains(&w.as_str()) && names(s, x) => Some(w.clone()),

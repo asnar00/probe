@@ -15514,8 +15514,9 @@ impl Lowerer {
         }
     }
 
-    /// `x$ at (t)`, a stream read at a time, on indices (fm3 question
-    /// 120, log 248). A time is a count over a divisor, and the item
+    /// `x$[t]`, a stream read at a time, on indices (fm3 question
+    /// 120, log 248; written `x$ at (t)` until question 170, and so
+    /// still once the store is read). A time is a count over a divisor, and the item
     /// wanted is the time in the stream's own ticks. Where the compiler
     /// knows the stream's rate and the time's divisor the ratio of the
     /// two is reduced here, when the program is compiled, and the index
@@ -15813,8 +15814,8 @@ impl Lowerer {
 
     /// the stream words of section 9 applied to a stream variable —
     /// `peek x$ at (i)`, `latest x$`, `count x$`, `advance x$ by (n)`,
-    /// `frame x$`, `ended x$`, `end x$`, `x$ behind (k)`, `x$ at (t)`,
-    /// `x$ from (t1) to (t2)` — or None when the phrase is not one
+    /// `frame x$`, `ended x$`, `end x$`, `x$ behind (k)`, `x$ at (t)`
+    /// (`x$[t]` as written, fm3 question 170), `x$ from (t1) to (t2)` — or None when the phrase is not one
     fn stream_word(&mut self, parts: &[Part], want: Option<&Ty>, b: &mut Body, dst: Option<&str>, line: usize) -> Result<Option<Val>, Error> {
         let file = b.file.clone();
         let name_of = |p: &Part| -> Option<String> {
@@ -15903,8 +15904,8 @@ impl Lowerer {
                     // own rate
                     // A stream's name is its latest item, and reading
                     // takes nothing: so its time is its latest item's,
-                    // on the line of time `x$ at (t)` reads, and
-                    // `x$ at (time of x$)` is that item; `0 s` before
+                    // on the line of time `x$[t]` reads, and
+                    // `x$[time of x$]` is that item; `0 s` before
                     // the first. No reader's place enters it
                     let rate = if b.vars.contains_key(&n) { b.rates.get(&n).copied() } else { self.rates.get(&n).copied() };
                     let (r, pushed, last, none) = (b.tmp(), b.tmp(), b.tmp(), b.tmp());
@@ -16161,11 +16162,11 @@ impl Lowerer {
                 Ok(Some(self.copy_view(&elem, &h, b, dst)))
             }
             ("at", true, [arg]) => {
-                no_struct(self, "'at'")?;
+                no_struct(self, "a read at a time, `x$[t]`,")?;
                 let Some(a) = one_arg(arg) else { return Ok(None) };
                 match self.at_time(&sname, &s, &elem, &a, b, dst, line)? {
                     Some(v) => Ok(Some(v)),
-                    None => Err(lex::error(&file, a.line, "'x$ at (t)' takes a time, `1500 us`, `2 ms`, `1 s`")),
+                    None => Err(lex::error(&file, a.line, "'x$[t]' takes a time, `1500 us`, `2 ms`, `1 s`")),
                 }
             }
             ("from", true, [a1, Part::Word(to), a2]) if to == "to" => {
@@ -17072,7 +17073,8 @@ fn name_for(dst: Option<&str>, ty: &Ty, b: &mut Body) -> String {
 }
 
 /// The streams a body asks a time of (log 73, 85, zero.md section 9):
-/// the names under `x$ at (t)` with `t` not a rate, `x$ from (a) to
+/// the names under `x$ at (t)` with `t` not a rate (`x$[t]` as
+/// written, fm3 question 170), `x$ from (a) to
 /// (b)` and `time of x$` — `position x$` is the index alone and asks no
 /// time (question 42) — and whether one of them is a parameter of the
 /// function, when any stream may be passed there and the store keeps

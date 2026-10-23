@@ -133,6 +133,9 @@ struct Walk {
     sinks: Vec<String>,
     /// in a stream processor's body, where every line says a stream
     processor: bool,
+    /// the words of the functions that give one `time`, each method
+    /// of the name: a call of one in a stream's brackets is a time
+    timed: Vec<String>,
 }
 
 impl Walk {
@@ -240,7 +243,7 @@ impl Walk {
                 self.refuse(line, format!("`{}` is a stream's word, asked of what arrives over time, and '{}[]' is an array, all there (fm3 question 90){}", w, name, instead));
             }
             (Mark::Stream, Mark::Stream) if form.starts_with("an item by its place") && !self.processor => {
-                self.refuse(line, format!("'{}$[k]': an item by its place is an array's, and '{}$' is a stream (fm3 question 90). The item k on from where this reader stands is `peek {}$ at (k)`; the array of what has arrived is `frame {}$`, and one back is `{}$[-1]`", name, name, name, name, name));
+                self.refuse(line, format!("'{}$[k]': an item by its place is an array's, and '{}$' is a stream (fm3 question 90). The item k on from where this reader stands is `peek {}$ at (k)`; the array of what has arrived is `frame {}$`, and one back is `{}$[-1]`; read at a time it is `{}$[80 ms]`, a time in the brackets (fm3 question 170)", name, name, name, name, name, name));
             }
             // a look back outside a stream processor (fm3 log 162): a
             // function has no present item to look back from, and the
@@ -452,6 +455,31 @@ impl Walk {
                 self.expr(a, wants, "an arm of `if then else`");
                 self.expr(b, wants, "an arm of `if then else`");
             }
+            // `x$[80 ms]`: a stream read at a time (fm3 question 170).
+            // The brackets hold a time, and the type of what is in
+            // them says which read it is: written here as the read at
+            // a time has always been read, `x$ at (t)`, so that
+            // everything after reads what it read
+            ExprKind::Index(base, i) if matches!(&base.kind, ExprKind::Seq(n) if self.entry(n).is_none_or(|en| en.mark == Mark::Stream)) && self.timed(i) => {
+                let ExprKind::Seq(n) = &base.kind else { unreachable!() };
+                let (n, at) = (n.clone(), base.line);
+                if let ExprKind::Neg(x) = &i.kind {
+                    if self.timed(x) {
+                        let shown = self.source(line).and_then(|l| bracket_of(&l, &n)).unwrap_or_else(|| format!("{}$[-t]", n));
+                        self.refuse(line, format!("`{}`: a time in a stream's brackets is a moment on its clock, and a negative one is no time a stream can be read at; a time back from the present item is given no meaning (fm3 question 170)", shown));
+                    }
+                }
+                self.used(&n, Mark::Stream, line, "the word `at`".to_string(), wants);
+                self.expr(i, "one value", "the value");
+                if self.settle {
+                    let value = (**i).clone();
+                    e.kind = ExprKind::Phrase(vec![
+                        Part::Value(Expr { kind: ExprKind::Seq(n), line: at }),
+                        Part::Word("at".to_string()),
+                        Part::Args(vec![Arg { name: None, value }]),
+                    ]);
+                }
+            }
             ExprKind::Index(base, i) => {
                 let form = match i.kind {
                     ExprKind::Int(k) if k < 0 => "a look back, `[-k]`",
@@ -583,6 +611,23 @@ impl Walk {
         };
         if let Some((w, at, rest)) = word {
             let (n, mark) = seq(&parts[at]).unwrap();
+            // `x$ at (t)`: a read at a time is written in brackets, one
+            // way to say it (fm3 question 170, principles 7 and 8). A
+            // rate is a declaration's and is refused where it is read
+            if w == "at" && mark == Mark::Stream {
+                let given = match &parts[2] {
+                    Part::Args(a) if a.len() == 1 && a[0].name.is_none() => Some(&a[0].value),
+                    Part::Value(x) => Some(x),
+                    _ => None,
+                };
+                if !given.is_some_and(|x| matches!(&x.kind, ExprKind::Unit(_, u) if u == "hz" || u == "khz")) {
+                    let msg = match (given.is_some_and(|x| self.timed(x)), self.source(line).and_then(|l| bracketed(&l).map(|b| (l, b)))) {
+                        (true, Some((l, b))) => format!("`{}` reads a stream at a time, and that is written in brackets with the time inside, as an array is read at a place (fm3 question 170): write `{}`", l, b),
+                        _ => format!("'{}$ at (...)': a stream is read at a time in brackets with the time inside, `{}$[80 ms]` (fm3 question 170); the item k on from where this reader stands is `peek {}$ at (k)`", n, n, n),
+                    };
+                    self.refuse(line, msg);
+                }
+            }
             // of a stream `count` is how many it has had (`SO_FAR`)
             if self.settle && w == "count" && mark == Mark::Stream {
                 parts[0] = Part::Word(SO_FAR.to_string());
@@ -721,6 +766,34 @@ impl Walk {
     }
 
     /// a call's words name a task, with or without its rate, `ticks at`
+    /// Is what stands in a stream's brackets a `time` (fm3 question
+    /// 170)? Asked where the store is read, from how it is written and
+    /// how its names were declared: a literal with a unit word, a name
+    /// and a unit word, `time of y$`, a name declared `time`, a call of
+    /// a function that gives one, and a time worked out from those
+    fn timed(&self, e: &Expr) -> bool {
+        let named = |n: &str| self.entry(n).is_some_and(|en| en.mark == Mark::Plain && en.ty == "time");
+        if written_time(e) {
+            return true;
+        }
+        match &e.kind {
+            ExprKind::Name(n) => named(n),
+            ExprKind::Phrase(parts) => match parts.as_slice() {
+                [Part::Word(w)] => named(w),
+                _ => self.timed.contains(&spoken(parts)),
+            },
+            ExprKind::Bin(op, l, r) => match op.as_str() {
+                "+" | "-" | "*" => self.timed(l) || self.timed(r),
+                "/" => self.timed(l) && !self.timed(r),
+                _ => false,
+            },
+            ExprKind::Neg(x) => self.timed(x),
+            ExprKind::IfElse(_, a, b) => self.timed(a) || self.timed(b),
+            ExprKind::Index(base, _) => matches!(&base.kind, ExprKind::Arr(n) | ExprKind::Seq(n) if self.entry(n).is_some_and(|en| en.mark == Mark::Array && en.ty == "time")),
+            _ => false,
+        }
+    }
+
     fn is_task(&self, words: &str) -> bool {
         self.tasks.iter().any(|t| t == words || words.strip_suffix(" at") == Some(t.as_str()))
     }
@@ -778,10 +851,19 @@ impl Walk {
     /// the whole store: feature scope first, which is the store's,
     /// then each feature's functions, wirings and cases
     fn store(&mut self, features: &mut [&mut super::store::FeatureDoc]) {
+        let mut untimed: Vec<String> = Vec::new();
         for f in features.iter() {
             for d in &f.code.decls {
                 if let Decl::Wire(Expr { kind: ExprKind::Phrase(parts), .. }) = d {
                     self.sinks.push(spoken(parts));
+                }
+                if let Decl::Fn(fd) = d {
+                    let words = said(&fd.name);
+                    if matches!(fd.results.as_slice(), [r] if r.ty == "time" && !r.seq) {
+                        self.timed.push(words);
+                    } else {
+                        untimed.push(words);
+                    }
                 }
                 if let Decl::Fn(fd) = d {
                     if fd.task {
@@ -793,6 +875,7 @@ impl Walk {
                 }
             }
         }
+        self.timed.retain(|w| !w.is_empty() && !untimed.contains(w));
         for f in features.iter_mut() {
             self.file = f.code.file.clone();
             for d in &mut f.code.decls {
@@ -829,6 +912,85 @@ impl Walk {
     }
 }
 
+/// the time units, as a literal with a unit word says them
+const TIME_UNITS: [&str; 5] = ["s", "ms", "us", "ns", "min"];
+
+/// a time as it is written, whatever its names were declared: a
+/// literal with a unit word, `80 ms`, a name and a unit word, `m ms`,
+/// and `time of y$` (fm3 question 170)
+pub fn written_time(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Unit(_, u) => TIME_UNITS.contains(&u.as_str()),
+        ExprKind::Phrase(parts) => match parts.as_slice() {
+            [Part::Word(_), Part::Word(u)] => TIME_UNITS.contains(&u.as_str()),
+            [Part::Word(t), Part::Word(of), _] => t == "time" && of == "of",
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// A line with every read of a stream at a time, `x$ at (t)`, written
+/// in brackets, `x$[t]` (fm3 question 170): None where it has none.
+/// `peek x$ at (k)` and a rate, `at (4 hz)`, are no such read
+fn bracketed(text: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = text;
+    let mut changed = false;
+    while let Some(i) = rest.find("$ at (") {
+        let start = rest[..i].rfind(|c: char| !(c.is_alphanumeric() || c == '_')).map_or(0, |k| k + 1);
+        let peeked = rest[..start].trim_end().rsplit(|c: char| !(c.is_alphanumeric() || c == '_')).next() == Some("peek");
+        let open = i + "$ at (".len();
+        let mut depth = 1;
+        let mut close = None;
+        for (k, c) in rest[open..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + k);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close) = close else { break };
+        let inner = &rest[open..close];
+        if peeked || start == i || inner.trim_end().ends_with("hz") {
+            out.push_str(&rest[..=close]);
+        } else {
+            out.push_str(&rest[..i]);
+            out.push_str(&format!("$[{}]", inner));
+            changed = true;
+        }
+        rest = &rest[close + 1..];
+    }
+    out.push_str(rest);
+    changed.then_some(out)
+}
+
+/// `x$[-t]` as it is written on a line, for a refusal to show
+fn bracket_of(text: &str, name: &str) -> Option<String> {
+    let from = format!("{}$[-", name);
+    let i = text.find(&from)?;
+    let mut depth = 0;
+    for (k, c) in text[i..].char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(text[i..=i + k].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// the words of a phrase, as a reader says them
 /// the stream both sides name, where the left is `count x$` and the
 /// right `position x$`, each written with the stream's mark
@@ -863,7 +1025,7 @@ fn said(name: &[NamePart]) -> String {
 }
 
 fn walk(store: &Store, settle: bool) -> Walk {
-    Walk { names: Vec::new(), scopes: vec![HashMap::new()], settle, refused: None, file: String::new(), tasks: Vec::new(), procs: Vec::new(), takers: super::zeroic::takers(store), sinks: Vec::new(), processor: false }
+    Walk { names: Vec::new(), scopes: vec![HashMap::new()], settle, refused: None, file: String::new(), tasks: Vec::new(), procs: Vec::new(), takers: super::zeroic::takers(store), sinks: Vec::new(), processor: false, timed: Vec::new() }
 }
 
 /// Hold every name of a store to the mark it was declared with, and

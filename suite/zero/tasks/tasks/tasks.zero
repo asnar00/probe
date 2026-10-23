@@ -81,7 +81,7 @@ on (int k, time t) << rated()
 
 on (int n) << sampled at a rate()
     int c$ = count down from (3) at (1 hz)
-    n << c$ at (1 s)
+    n << c$[1 s]
 
 on (int k, time t) << composed at a rate()
     int s$ = sawtooth(2) at (1 hz)

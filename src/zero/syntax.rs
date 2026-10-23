@@ -2399,7 +2399,9 @@ impl<'a> Parser<'a> {
             Tok::Str(s) => ExprKind::Str(s),
             Tok::Seq(w) => {
                 // a phrase may begin with a sequence name when a word
-                // follows it: `x$ behind (2)`, `x$ at (t)` (section 9)
+                // follows it: `x$ behind (2)` (section 9); `x$ at (t)`,
+                // which the store's reading refuses for `x$[t]` (fm3
+                // question 170)
                 if matches!(self.peek(), Some(Tok::Word(v)) if !self.ends_phrase(v) && !self.joiner(v, &[]) && !UNITS.contains(&v.as_str())) {
                     let mut parts = vec![Part::Value(Expr { kind: ExprKind::Seq(w), line })];
                     parts.extend(self.parse_parts()?);

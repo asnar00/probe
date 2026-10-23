@@ -1,18 +1,18 @@
 # clock
-*a task ticking at a rate, and a consumer reading `t$ at (m ms)`: the smallest program that needs time at the boundary*
+*a task ticking at a rate, and a consumer reading `t$[m ms]`: the smallest program that needs time at the boundary*
 
 layer: runtime
 
 > (suite) 2026-09-08T10:00:00
-Plan item 12 of milestone 0: section 9's `x$ at (t)` with the time computed once at the boundary, over section 10's task at a rate.
+Plan item 12 of milestone 0: section 9's `x$[t]` with the time computed once at the boundary, over section 10's task at a rate.
 
 ## overview
 `ticks (5)` pushes 1 to 5 into `t$`, wired at `4 hz` on the store's clock, so the ticks fall at 0, 250, 500, 750 and 1000 ms. `value at (m)` turns the milliseconds into a `time` once, at the boundary, and reads the stream at it by its rule, `nearest`, which its declaration says; `where it stands` moves the feature's reader on two items and reports `position t$`, where the reader is, and `time of t$`, the time of the stream's latest item.
 
 ## interface
 - `ticks (n)` is the task; `int t$ nearest = ticks(5) at (4 hz)` wires it, and says that a time between two ticks reads the nearer (fm3 question 127, log 250). Until hop forty-three it said nothing and read the nearer; with nothing said a stream now reads the item at or before.
-- `value at (m)` is `t$ at (m ms)`.
-- `mark thrice` pushes 1, 2 and 3 into `mark$`, a stream with no rate, with a push into `pace$` at `2 hz` between them to move the clock: the case's function starts at 1.25 s, after the five ticks, so the three fall at 1.25 s, 2 s and 2.5 s. `marked at (m)` is `mark$ at (m ms)` after them: 0 before the first; between two the item at or before, `mark$` saying nothing, so 1.8 s reads the item at 1.25 s and 2.3 s the one at 2 s; the last after the last. `paced` reads `pace$` by its name, so that it is a stream of the program. `marked when` is `time of mark$` after the three, 2.5 s, and `none marked when` the same of a stream nothing has been pushed into, `0 s`. **`x$ at (time of x$)` is `x$`'s latest item**: `marked at its own time` gives 3 and `ticked at its own time`, `t$ at (time of t$)`, 5.
+- `value at (m)` is `t$[m ms]`.
+- `mark thrice` pushes 1, 2 and 3 into `mark$`, a stream with no rate, with a push into `pace$` at `2 hz` between them to move the clock: the case's function starts at 1.25 s, after the five ticks, so the three fall at 1.25 s, 2 s and 2.5 s. `marked at (m)` is `mark$[m ms]` after them: 0 before the first; between two the item at or before, `mark$` saying nothing, so 1.8 s reads the item at 1.25 s and 2.3 s the one at 2 s; the last after the last. `paced` reads `pace$` by its name, so that it is a stream of the program. `marked when` is `time of mark$` after the three, 2.5 s, and `none marked when` the same of a stream nothing has been pushed into, `0 s`. **`x$[time of x$]` is `x$`'s latest item**: `marked at its own time` gives 3 and `ticked at its own time`, `t$[time of t$]`, 5.
 - `where it stands` advances `t$` by two and gives `position t$`, the index of the next unread item, and `time of t$`, the time of the stream's latest item whatever the reader has taken, the fifth tick's, 1 s (fm3 question 132; until hop forty-three it was the next unread item's, 500 ms); `position` asks no time and `time of` is what times the stream (log 85, question 42).
 
 ## rules
@@ -46,4 +46,4 @@ Plan item 12 of milestone 0: section 9's `x$ at (t)` with the time computed once
 >paced() → 0
 
 ## hostile
-`t$ at (m)` without a unit is refused: "'x$ at (t)' takes a time, `1500 us`, `2 ms`, `1 s`". `value at (m)` with `m` a float parameter is refused: "'ms' takes a whole number, given a float".
+`t$[m]` without a unit is refused, an `int` in a stream's brackets being an item by its place: "'t$[k]': an item by its place is an array's, and 't$' is a stream (fm3 question 90). The item k on from where this reader stands is `peek t$ at (k)`; the array of what has arrived is `frame t$`, and one back is `t$[-1]`; read at a time it is `t$[80 ms]`, a time in the brackets (fm3 question 170)". The spelling before question 170, `v << t$ at (m ms)`, is refused showing the line with the brackets: "`v << t$ at (m ms)` reads a stream at a time, and that is written in brackets with the time inside, as an array is read at a place (fm3 question 170): write `v << t$[m ms]`". `value at (m)` with `m` a float parameter is refused: "'ms' takes a whole number, given a float".

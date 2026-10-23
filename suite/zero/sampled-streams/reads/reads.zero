@@ -10,22 +10,22 @@ on (int d$) << stepped (int x$)
 
 on (int n) << held at (int m)
     float32 x$ at (1 khz) << 10.0 << 20.0 << 30.0 << 40.0
-    float32 v = x$ at (m us)
+    float32 v = x$[m us]
     n << int(v)
 
 on (int n) << nearest at (int m)
     float32 x$ at (1 khz) nearest << 10.0 << 20.0 << 30.0 << 40.0
-    float32 v = x$ at (m us)
+    float32 v = x$[m us]
     n << int(v)
 
 on (int n) << blended at (int m)
     float32 level$ at (1 khz) linear << 10.0 << 20.0 << 30.0 << 40.0
-    float32 v = level$ at (m us)
+    float32 v = level$[m us]
     n << int(v * 10.0)
 
 on (int n) << blended halfway()
     float32 level$ at (1 khz) linear << 10.0 << 20.0 << 30.0 << 40.0
-    float32 v = level$ at (1500 us)
+    float32 v = level$[1500 us]
     n << int(v * 10.0)
 
 on (int n) << slid at (int m)
@@ -34,7 +34,7 @@ on (int n) << slid at (int m)
     slide$ << 20.0
     pace$ << 0
     slide$ << 40.0
-    n << int(slide$ at (m ms))
+    n << int(slide$[m ms])
 
 on (int n) << neared at (int m)
     near$ << 1
@@ -42,11 +42,11 @@ on (int n) << neared at (int m)
     near$ << 2
     pace$ << 0
     near$ << 3
-    n << near$ at (m ms)
+    n << near$[m ms]
 
 on (int a, int b) << before any()
     a << note$
-    b << note$ at (1 s)
+    b << note$[1 s]
 
 on (int a, int b) << latest before any()
     a << latest note$
@@ -54,12 +54,12 @@ on (int a, int b) << latest before any()
 
 on (int a, int b) << after one()
     note$ << 64
-    a << note$ * 100 + note$ at (0 s)
+    a << note$ * 100 + note$[0 s]
     b << step$
 
 on (int a, int b) << after two()
     note$ << 64 << 67
-    a << note$ at (250 ms) * 100 + note$ at (0 s - 1 s)
+    a << note$[250 ms] * 100 + note$[0 s - 1 s]
     b << step$
 
 on (int n) << seen and pushed (int k)
@@ -75,16 +75,16 @@ on (int n) << local before (int k)
 
 on (int n) << local stored before (int k)
     int own$ at (1 khz) else 9
-    int a = own$ at (2 ms)
+    int a = own$[2 ms]
     own$ << k
-    n << a * 100 + own$ at (2 ms)
+    n << a * 100 + own$[2 ms]
 
 on (int n) << handed (int m)
     float32 x$ at (1 khz) nearest << 10.0 << 20.0 << 30.0 << 40.0
     n << read (x$) at (m)
 
 on (int n) << read (float32 x$) at (int m)
-    n << int(x$ at (m us))
+    n << int(x$[m us])
 
 on (int n) << handed quiet (int m)
     int quiet$ at (1 khz) else 60
@@ -96,14 +96,14 @@ on (int n) << handed after (int k) at (int m)
     n << both of (quiet$) at (m)
 
 on (int n) << both of (int x$) at (int m)
-    n << x$ at (m us) * 100 + x$
+    n << x$[m us] * 100 + x$
 
 on (int n) << handed level()
     float32 level$ at (1 khz) else 2.5
     n << tenths of (level$)
 
 on (int n) << tenths of (float32 x$)
-    n << int(x$ at (3 ms) * 10.0)
+    n << int(x$[3 ms] * 10.0)
 
 on (int n) << handed note (int m)
     n << both of (note$) at (m)

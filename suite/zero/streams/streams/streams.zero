@@ -68,7 +68,7 @@ on (int k, time t) << position unread()
 
 on (int a, int b) << read at its own time()
     int x$ at (1000 hz) << 1 << 2 << 3
-    a << x$ at (time of x$)
+    a << x$[time of x$]
     b << x$
 
 on (bool b) << still open()
@@ -88,19 +88,33 @@ on (int n) << pushed after end()
 
 on (int n) << sampled()
     float32 x$ at (1 khz) nearest << 10.0 << 20.0 << 30.0 << 40.0
-    float32 v = x$ at (1600 us)
+    float32 v = x$[1600 us]
     n << int(v)
 
 on (int n) << sampled at (int m)
     float32 x$ at (1 khz) nearest << 10.0 << 20.0 << 30.0 << 40.0
-    float32 v = x$ at (m us)
+    float32 v = x$[m us]
     n << int(v)
 
 on (int n) << sampled at a time worked out()
     float32 x$ at (1 khz) nearest << 10.0 << 20.0 << 30.0 << 40.0
     time t = 800 us * 2
-    float32 v = x$ at (t)
+    float32 v = x$[t]
     n << int(v)
+
+on (int n) << sampled at a time handed (int m)
+    n << int(sample at (m us))
+
+on (float32 v) << sample at (time t)
+    float32 x$ at (1 khz) nearest << 10.0 << 20.0 << 30.0 << 40.0
+    v << x$[t]
+
+on (int n) << sampled at twice (int m)
+    float32 x$ at (1 khz) nearest << 10.0 << 20.0 << 30.0 << 40.0
+    n << int(x$[twice the time (m us)])
+
+on (time u) << twice the time (time t)
+    u << t * 2
 
 on (bool same) << windowed between times worked out()
     int x$ at (1000 hz) << 1 << 2 << 3 << 4 << 5
