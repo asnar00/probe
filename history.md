@@ -4,6 +4,14 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: a home that can be lost — the client takes being the home with the server's part — `adc7383` · 2026-10-24
+
+Hop fifty-eight, part 4 (fm3 places.md, "losing a wire or a place" and the amendment to point 7, ruled 24 October 2026; fm3 log 310). **No new mechanism**: a shared stream is a field of the server's context, so when the chooser takes the server's part by running it again (hop fifty-two) the client becomes the home with it, its pushes while the wire is gone are applied to its context in order, and the giving back (hop fifty-four, the server's new start) hands the server what the client worked out. One client, so no second writer: the ordering of items from two homes, by time and then by place, is the hop after this and is not built. **What shows it**: at the world's end a line of the record, kind 27, for each group's or everyone's stream kept as a word, its value at each place (`__whomes`, written only where there is such a stream), and `run` and `placement` end with it, the home being the client where the chooser's last word was to take the part.
+
+The counter with one person, everything on the server, `--choose 250 ms --wire 100 ms then gone at 3 s then 100 ms at 6 s`, its presses at 1 s, 4 s and 7 s: `→ "1 of 1\n" at 1 s, "2 of 2\n" at 4 s, "3 of 3" at 7 s`, the second shown at 4.25 s when the client took the part and the third on time; `at the end: all$ 3 at its home, the client, which holds the server's part; 2 at the server, whose part the client holds`. The world ends at 7 s with the part still held. With a fourth press at 9 s the part is given back at 7.2 s and the server writes `4 of 4` at 9 s, shown at 9.2 s: `at the end: all$ 4 at its home, the server`. Nothing lost, nothing twice. The plain case of the three presses is in `counter`; the wire that goes is the runner's and not a case's. `probe zero test suite/zero` 1358/1358 on native and wasm.
+
+---
+
 ### zero: the home's time stamps an item of a shared stream — `8875834` · 2026-10-24
 
 Hop fifty-eight, part 3 (fm3 places.md, "whose clock stamps a shared item", point 3, ruled 24 October 2026; fm3 log 309). An item pushed into a group's or everyone's stream with no rate carries its home's time. In a build for a wire such a push is written `__push_home`: at the server, the home, it is stamped with the later of the place's own time and the world's clock, which is when the push reached it; at the client, and while the client runs the server's part again, with the place's own time. Where the world's is the later a line of the record, kind 28, says so, and `run` and `placement` print it: `stamped: an item of a group's or everyone's stream, for 1 s, stamped 1.1 s by its home, the server, when the push reached it`. A stream with a rate needs nothing; a build for no wire, and every store with no shared stored stream, is as it was.
