@@ -1103,14 +1103,30 @@ fn wire_moved_case_said<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Po
     Ok(((p.text.split('→').next().unwrap_or("").trim().to_string(), shown, pieces, thrown), p.call.expect.clone(), log, homes))
 }
 
-/// What a home stamped (hop fifty-eight), from the record's lines of kind
-/// 28: each item a home stamped later than its own time
-fn homes_end_said(_homes: &[(String, String)], log: &[i64]) -> String {
+/// Where each group's and everyone's stream kept as a word stood at the
+/// world's end (hop fifty-eight), from the record's lines of kind 27: its
+/// value at its home and at the copy. The home is the server, but where
+/// the cut ends with nothing on it, the client having taken the server's
+/// part (the chooser's last word was to take it) and with it being the home
+fn homes_end_said(homes: &[(String, String)], log: &[i64]) -> String {
     let mut out = String::new();
     // (the home's stamps that were later than the item's own time)
     let stamped: Vec<&[i64]> = log.chunks(6).filter(|c| c.len() == 6 && c[1] == 28).collect();
     for c in &stamped {
         out.push_str(&format!("stamped: an item of a group's or everyone's stream, for {}, stamped {} by its home, the server, when the push reached it\n", store::spell_time(c[4]), store::spell_time(c[2])));
+    }
+    let rows: Vec<&[i64]> = log.chunks(6).filter(|c| c.len() == 6 && c[1] == 27).collect();
+    if rows.is_empty() {
+        return out;
+    }
+    let taken = log.chunks(6).filter(|c| c.len() == 6 && (c[1] == 15 || c[1] == 16)).last().is_some_and(|c| c[1] == 15);
+    let mut ks: Vec<i64> = rows.iter().map(|r| r[3]).collect();
+    ks.dedup();
+    for k in ks {
+        let Some((name, _)) = homes.get(k as usize) else { continue };
+        let at = |p: i64| rows.iter().find(|r| r[3] == k && r[0] == p).map(|r| r[5]).unwrap_or(0);
+        let (home, copy) = if taken { (0, 1) } else { (1, 0) };
+        out.push_str(&format!("at the end: {}$ {} at its home, the {}{}; {} at the {}\n", name, at(home), if home == 1 { "server" } else { "client" }, if taken { ", which holds the server's part" } else { "" }, at(copy), if copy == 1 { "server, whose part the client holds" } else { "client's copy, carried where a line at the client reads it" }));
     }
     out
 }
@@ -1292,7 +1308,7 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, server: Option<&str>, the
                 skip21 = true;
                 continue;
             }
-            22 | 23 => continue,
+            22 | 23 | 27 => continue,
             // (the home's stamp, hop fifty-eight)
             28 => {
                 rows.push([store::spell_time(left), String::new(), "the server".to_string(), format!("stamps an item of a group's or everyone's stream with its own time, {}: the push reached it then, the home", store::spell_time(left)), format!("for {}", store::spell_time(stamp))]);
@@ -7957,8 +7973,9 @@ mod tests {
     /// "what the product says", points 2, 3 and 7): its home is the server
     /// where the cut puts anything there, the client otherwise, and the
     /// placement says so; the home stamps an item with no rate with its
-    /// own time, when the push reached it; and a case that names two people
-    /// is refused at a cut
+    /// own time, when the push reached it; the home goes with the server's
+    /// part when the client takes it; and a case that names two people is
+    /// refused at a cut
     #[test]
     fn a_shared_stream_has_a_home_at_the_server() {
         let native = suite::backend_policy(Backend::Native).unwrap();
@@ -7979,6 +7996,10 @@ mod tests {
         let near = run_wire(stamp, case, &native, opt::MAX_LEVEL, None, 100_000).unwrap();
         assert!(near.contains("→ \"1 s\" at 1 s\n") && !near.contains("stamped:"), "{}", near);
         assert!(run_wire(stamp, case, &native, opt::MAX_LEVEL, Some("all"), 0).unwrap().contains("→ \"1 s\" at 1 s\n"));
+        // the home lost and the part taken: the client is the home
+        let lost = Wire { d: 100_000, then: vec![(3_000_000, GONE), (6_000_000, 100_000)], speeds: vec![None, None], choose: Some(250_000), ..Default::default() };
+        let got = run_wire_moved(counter, "run() with in \"k\" at 1 s, in \"k\" at 4 s, in \"k\" at 7 s", &native, opt::MAX_LEVEL, Some("all"), &[], lost).unwrap();
+        assert!(got.contains("→ \"1 of 1\\n\" at 1 s, \"2 of 2\\n\" at 4 s, \"3 of 3\" at 7 s\n") && got.contains("at the end: all$ 3 at its home, the client, which holds the server's part"), "{}", got);
         // two people at a cut
         let e = run_cut(counter, "run() with ann in \"k\" at 1 s, bob in \"k\" at 2 s, ann in \"k\" at 3 s", &native, opt::MAX_LEVEL, true, Some("all"), &[]).unwrap_err();
         assert!(e.contains("counter/counter.md:") && e.ends_with(": a case here names two people or more, and two people over a wire are the hop after fifty-eight (fm3 places.md; hop-58.md)"), "{}", e);

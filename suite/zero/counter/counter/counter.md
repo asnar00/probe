@@ -20,7 +20,16 @@ Ann's second line reads `2 of 3`: Bob's press is in `all$`, which they share, an
 
 Everyone a case names is one person with one device, and all of them are in one group. At one place, on one clock, a push into `all$` is the push of the line, and how two pushes combine is what the line says, `all$ << all$ + 1`, a sum (fm3 places.md, "the line is the merge").
 
-At two places, the client and the server, `all$` has a home: the server, the place every other place has a wire to and the one without devices. The client holds a copy. `mine$` has no home of its own: it is the device's, and is wherever the lines that use it are.
+At two places, the client and the server, `all$` has a home: the server, the place every other place has a wire to and the one without devices. The client holds a copy. `mine$` has no home of its own: it is the device's, and is wherever the lines that use it are. One person at the client, with everything on the server and a wire of 100 ms between them, presses a key at 1 s, at 4 s and at 7 s. Each line comes back to the client 200 ms after its key:
+
+    world    the client            the server, the home of all$
+    1.0 s    a key
+    1.1 s                          all$ is 1; "1 of 1" is written
+    1.2 s    "1 of 1" is shown
+
+With no wire named, the case gives its lines at their own times, 1 s, 4 s and 7 s, at every cut.
+
+The home can be lost. When the wire goes, from 3 s to 6 s, the client takes the server's part by running it again from the server's start and what it sent the server, and being the home is part of it: the press at 4 s is worked out at the client, and `2 of 2` is shown at 4.25 s, as soon as the client sees the server is not answering. When the wire is steady again the client gives the part back, and the home's copy is what the client worked out: nothing lost, nothing counted twice. That wire is the runner's, `--wire 100 ms then gone at 3 s then 100 ms at 6 s`, and not a case's (`probe zero suite/zero/counter run '...' --fast --server all --choose 250 ms --wire ...`).
 
 ## interface
 - `presses (c$)` is wired to `in$`: each key pressed runs `pressed (c)`, which pushes one more into `mine$` and into `all$` and writes the line.
@@ -35,6 +44,7 @@ At two places, the client and the server, `all$` has a home: the server, the pla
 
 ## testing
 >run() with in "k" at 1 s, in "k" at 2 s → "1 of 1\n" at 1 s, "2 of 2" at 2 s
+>run() with in "k" at 1 s, in "k" at 4 s, in "k" at 7 s → "1 of 1\n" at 1 s, "2 of 2\n" at 4 s, "3 of 3" at 7 s
 >run() with ann in "k" at 1 s, bob in "k" at 2 s, ann in "k" at 3 s → ann "1 of 1\n" at 1 s, "2 of 3" at 3 s; bob "1 of 2" at 2 s
 >run() with ann in "k" at 1 s, bob in "k" at 1 s → ann "1 of 1" at 1 s; bob "1 of 2" at 1 s
 >run() with ann in "kk" at 1 s → ann "1 of 1\n2 of 2" at 1 s; bob ""
